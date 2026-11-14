@@ -112,7 +112,9 @@ pub(crate) fn run_reserved(
         // refused (fixed head-tree compilation does this too). Classify only
         // without an allocator refusal; the audit below records host_memory.
         // Panics, observer faults and leaked charges still win as internal.
-        Ok(Err(failure)) if crate::alloc::refusals() == before => {
+        Ok(Err(failure))
+            if crate::alloc::refusals() == before && budget.allocator_refusals() == 0 =>
+        {
             classify::failure(&mut end, &failure, args.view);
         }
         Ok(_) => {}
@@ -126,7 +128,7 @@ pub(crate) fn run_reserved(
     if !end.slot_releasable {
         end.run_failure(ReasonCode::Internal);
     }
-    if crate::alloc::refusals() != before {
+    if crate::alloc::refusals() != before || end.accounts.allocator_refusals != 0 {
         end.run_failure(ReasonCode::HostMemory);
     }
     end.figures.input_peak = end.accounts.input.peak;

@@ -422,7 +422,24 @@ W2 does not model Python's dunder attributes: a class written from a non-dict va
 
 ### 3.14 Errors
 
-`error.rs` (scaffold, frozen) holds one `Error` with structural variants: `Detect`, `OutOfBounds`, `Malformed`, `Unsupported(Unsupported)`, `Decompress`, `Version`, `TypeIndex`, `Tree`, `AssetBundle(Box<ParseError>)`, `Entry { name, source }`, `Limit`, `Budget`, `NotFound`, `Deref(Box<DerefError>)`, `Io(IoError)`. `Error` is `PartialEq + Eq` (so `DerefError` and `ParseError::Deref` are too): `IoError` wraps the shared `std::io::Error` and compares kinds and OS codes, since `std::io::Error` has no equality. `LimitKind` names one variant per bound (`InputMemory` for the meter, `InputBytes`, `BlockOutput`, `DecodeWork`, `Inflate`, `ContainerDepth`, `TreeDepth`, `ValueDepth`, `ValuesPerObject`, `ZeroSizeElements`) plus `Count`, and a refused charge converts to `Limit` (the input's bound) or `Budget` (the pool's, tagged with its `Reservation`); `OutOfBounds::pos` is the signed reader position (3.3); `DerefError` separates `FileIdPastEnd` from `FileIdBelowStart` and has `ContainerDropped` (3.13). `Error`, `TreeError` and `ParseError` implement `once::CellError`, which says which variants are transient (never kept by a cell) and what heap a kept one owns (3.1). `walk::ParseError` is an object's L2 outcome (`l2_kind()` maps to the dump's kinds, a `CheckRead` whose `bytes_read` is negative to `other` as the oracle does, 3.10); `walk::WriteError` is L3's, with `NoTypeTree { class_id }` for an object with no tree (UnityPy raises the read's `TypeTreeError`, `files/ObjectReader.py:296-307`) and `Tree(Box<ParseError>)` for a tree that did not resolve (D request 4). All are `Clone + Send + Sync`. A new variant goes through package E (section 7.1); the enums are `#[non_exhaustive]`.
+`error.rs` (scaffold, frozen) holds one `Error` with structural variants: `Detect`, `OutOfBounds`, `Malformed`, `Unsupported(Unsupported)`, `Decompress`, `Version`, `TypeIndex`, `Tree`, `AssetBundle(Box<ParseError>)`, `Entry { name, source }`, `Limit`, `Budget`, `Allocator`, `NotFound`, `Deref(Box<DerefError>)`, `Io(IoError)`. `Error` is `PartialEq + Eq` (so `DerefError` and `ParseError::Deref` are too): `IoError` wraps the shared `std::io::Error` and compares kinds and OS codes, since `std::io::Error` has no equality. `LimitKind` names one variant per bound (`InputMemory` for the meter, `InputBytes`, `BlockOutput`, `DecodeWork`, `Inflate`, `ContainerDepth`, `TreeDepth`, `ValueDepth`, `ValuesPerObject`, `ZeroSizeElements`) plus `Count`, and a refused charge converts to `Limit` (the input's bound) or `Budget` (the pool's, tagged with its `Reservation`), or `Allocator` (the host allocator's); `OutOfBounds::pos` is the signed reader position (3.3); `DerefError` separates `FileIdPastEnd` from `FileIdBelowStart` and has `ContainerDropped` (3.13). `Error`, `TreeError` and `ParseError` implement `once::CellError`, which says which variants are transient (never kept by a cell) and what heap a kept one owns (3.1). `walk::ParseError` is an object's L2 outcome (`l2_kind()` maps to the dump's kinds, a `CheckRead` whose `bytes_read` is negative to `other` as the oracle does, 3.10); `walk::WriteError` is L3's, with `NoTypeTree { class_id }` for an object with no tree (UnityPy raises the read's `TypeTreeError`, `files/ObjectReader.py:296-307`) and `Tree(Box<ParseError>)` for a tree that did not resolve (D request 4). All are `Clone + Send + Sync`. A new variant goes through package E (section 7.1); the enums are `#[non_exhaustive]`.
+
+CR10 PR 1 adds the by-value `budget::AllocError { requested: u64, what:
+Reservation }`, with no owned source or message. `ChargeError`, `Error` and
+`DetectError` carry `Allocator`; tree/read/parse/dereference conversions reuse
+existing wrappers. `ProviderError::allocator` retains the same provenance through
+provider adapters. Allocator errors are transient, own no heap themselves and
+spend no input-meter work; they never trigger dependency-pool eviction or retry.
+This supplies CR10 routing, not CR2's proposed public refusal-query API.
+
+`MemoryBudget::allocator_refused` is a default no-op observer, notified exactly
+once where allocator refusal is detected. It shares budget operations' nonblocking,
+non-reentrant contract and must allocate nothing. Conversions and clones do not
+notify. Optional work may absorb a refusal, including settle after registry
+publication: the core load remains successful under CR1. Batch's separate audit
+then rejects and drops the entire attempt before another read or publication.
+Existing allocation sites keep their implementations until later CR10 PRs migrate
+them; PR 1 changes no successful-allocation format or read behavior.
 
 ### 3.15 Limits and no panics
 

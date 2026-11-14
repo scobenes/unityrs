@@ -347,6 +347,18 @@ pub enum ParseError {
     Deref(Arc<crate::env::DerefError>),
 }
 
+impl From<crate::budget::AllocError> for ReadDetail {
+    fn from(error: crate::budget::AllocError) -> Self {
+        Self::Charge(error.into())
+    }
+}
+
+impl From<crate::budget::AllocError> for ParseError {
+    fn from(error: crate::budget::AllocError) -> Self {
+        Self::Tree(error.into())
+    }
+}
+
 impl crate::once::CellError for ParseError {
     fn is_transient(&self) -> bool {
         match self {

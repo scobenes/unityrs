@@ -133,6 +133,12 @@ pub enum TreeError {
     Charge(#[from] ChargeError),
 }
 
+impl From<crate::budget::AllocError> for TreeError {
+    fn from(error: crate::budget::AllocError) -> Self {
+        Self::Charge(error.into())
+    }
+}
+
 impl crate::once::CellError for TreeError {
     fn is_transient(&self) -> bool {
         match self {

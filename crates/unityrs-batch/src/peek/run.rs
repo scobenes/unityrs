@@ -28,6 +28,9 @@ impl ngui::Hooks for Engine<'_> {
     fn refusals(&self) -> Option<u64> {
         Some(self.memory.budget.snapshot().refusals())
     }
+    fn allocator_refusals(&self) -> u64 {
+        self.memory.budget.allocator_refusals()
+    }
     fn meter(&self, meter: &Meter) {
         self.decoded.set(self.decoded.get().max(meter.decoded()));
         // This also runs from a drop guard during unwind. Never double-panic.
@@ -41,6 +44,8 @@ impl Engine<'_> {
     fn check(&self) -> Result<(), Failure> {
         if self.fault.get() {
             Err(classify::internal())
+        } else if self.memory.budget.allocator_refusals() != 0 {
+            Err(Failure::Run(classify::plain("host_memory")))
         } else if ngui::Hooks::stopped(self) {
             Err(Failure::Stopped)
         } else {
@@ -87,7 +92,7 @@ pub(crate) fn run_reserved(mut args: PeekArgs<'_>, memory: &crate::job_memory::M
     match catch_unwind(AssertUnwindSafe(|| execute(&mut args, &engine))) {
         Ok(Ok(outcome)) => end.outcome = Some(outcome),
         Ok(Err(failure)) => {
-            if crate::alloc::refusals() == before {
+            if crate::alloc::refusals() == before && memory.budget.allocator_refusals() == 0 {
                 failed(&mut end, failure, args.m);
             }
         }
@@ -146,7 +151,7 @@ fn audit(end: &mut PeekEnd, engine: &Engine<'_>, before: u64) {
     {
         run_failure(end, RunFailure::new(ReasonCode::Internal));
     }
-    if crate::alloc::refusals() != before {
+    if crate::alloc::refusals() != before || end.accounts.allocator_refusals != 0 {
         run_failure(end, RunFailure::new(ReasonCode::HostMemory));
     }
 }

@@ -146,6 +146,12 @@ pub enum DerefError {
     Load(#[from] Error),
 }
 
+impl From<crate::budget::AllocError> for DerefError {
+    fn from(error: crate::budget::AllocError) -> Self {
+        Self::Load(error.into())
+    }
+}
+
 impl DerefError {
     /// Whether it depends on what else is held ([`crate::once::CellError`]):
     /// only a load's own transient failure does.

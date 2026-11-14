@@ -105,12 +105,8 @@ fn a_limit_refusal_is_kept_whole_in_its_note_behind_any_names() {
             2,
         ))))
     };
-    let provider = ProviderError {
-        provider: "tpk",
-        detail: format!("{}{tail}", "d".repeat(400)).into(),
-        limit: Some(limit()),
-        memory: None,
-    };
+    let mut provider = ProviderError::new("tpk", format!("{}{tail}", "d".repeat(400)).into());
+    provider.limit = Some(limit());
     let reads = [
         read_limit(ReadDetail::Limit(limit())),
         read_tree_limit(),
@@ -150,17 +146,14 @@ fn a_memory_refusal_is_found_through_every_wrapper_and_is_no_limit() {
     ];
     for root in roots {
         for e in wrapped(&root) {
-            assert_eq!(memory_refused(&e), Some(&b));
+            assert_eq!(memory_refused(&e), Some(Error::Budget(b.clone())));
             let text = e.to_string();
             assert_eq!(note(&e), crate::record::note(&text));
         }
     }
-    let provider = ParseError::Provider(ProviderError {
-        provider: "tpk",
-        detail: b.to_string().into(),
-        limit: None,
-        memory: Some(b.clone()),
-    });
+    let mut provider = ProviderError::new("tpk", b.to_string().into());
+    provider.memory = Some(b.clone());
+    let provider = ParseError::Provider(provider);
     assert_eq!(out_of_memory(&provider), Err(Error::Budget(b.clone())));
     let w = WriteError::Tree(Box::new(provider));
     assert_eq!(write_out_of_memory(&w), Err(Error::Budget(b.clone())));
@@ -176,4 +169,35 @@ fn a_memory_refusal_is_found_through_every_wrapper_and_is_no_limit() {
     );
     assert!(memory_refused(&plain).is_none());
     assert_eq!(note(&plain), crate::record::note_of(&plain));
+}
+
+#[test]
+fn allocator_refusal_is_a_crash_through_reads_writes_and_provider_adapters() {
+    let a = AllocError {
+        requested: 4096,
+        what: Reservation::Provider,
+    };
+    let mut provider = ProviderError::new("synthetic", Arc::from("allocator refused"));
+    provider.allocator = Some(a);
+    let provider = ParseError::Provider(provider);
+    for parse in [
+        ParseError::from(a),
+        read_limit(ReadDetail::from(a)),
+        provider,
+    ] {
+        assert_eq!(out_of_memory(&parse), Err(Error::Allocator(a)));
+        assert_eq!(
+            write_out_of_memory(&WriteError::Tree(Box::new(parse))),
+            Err(Error::Allocator(a))
+        );
+    }
+    for root in [
+        Error::from(a),
+        Error::from(DetectError::from(a)),
+        Error::Tree(TreeError::from(a)),
+    ] {
+        for e in wrapped(&root) {
+            assert_eq!(memory_refused(&e), Some(Error::Allocator(a)));
+        }
+    }
 }

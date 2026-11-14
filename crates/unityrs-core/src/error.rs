@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use crate::budget::BudgetExceeded;
+use crate::budget::{AllocError, BudgetExceeded};
 use crate::codec::Codec;
 use crate::detect::DetectError;
 use crate::limits::{ChargeError, heap_cost};
@@ -94,6 +94,9 @@ pub enum Error {
     /// The memory budget refused a reservation, or the allocator failed.
     #[error(transparent)]
     Budget(#[from] BudgetExceeded),
+    /// The host allocator refused storage; no heap-owned source is retained.
+    #[error(transparent)]
+    Allocator(#[from] AllocError),
     /// A CAB, external, object or resource that is not there.
     #[error("not found: {0}")]
     NotFound(NotFound),
@@ -128,6 +131,7 @@ impl From<ChargeError> for Error {
         match e {
             ChargeError::Limit(l) => Self::Limit(l),
             ChargeError::Budget(b) => Self::Budget(b),
+            ChargeError::Allocator(a) => Self::Allocator(a),
         }
     }
 }
@@ -154,7 +158,7 @@ impl ChargeError {
     #[must_use]
     pub fn is_transient(&self) -> bool {
         match self {
-            Self::Budget(_) => true,
+            Self::Budget(_) | Self::Allocator(_) => true,
             Self::Limit(l) => l.kind == LimitKind::InputMemory,
         }
     }
@@ -170,7 +174,10 @@ impl ChargeError {
 impl CellError for Error {
     fn is_transient(&self) -> bool {
         match self {
-            Self::Budget(_) | Self::Io(_) => true,
+            Self::Budget(_)
+            | Self::Allocator(_)
+            | Self::Io(_)
+            | Self::Detect(DetectError::Allocator(_)) => true,
             Self::Limit(l) => l.kind == LimitKind::InputMemory,
             Self::Tree(t) => t.is_transient(),
             Self::AssetBundle(p) => p.is_transient(),

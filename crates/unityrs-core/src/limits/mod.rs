@@ -51,7 +51,7 @@
 //! [`MemoryBudget`]: crate::budget::MemoryBudget
 //! [`Reservation`]: crate::budget::Reservation
 
-use crate::budget::BudgetExceeded;
+use crate::budget::{AllocError, BudgetExceeded};
 use crate::error::LimitError;
 
 mod meter;
@@ -351,7 +351,20 @@ pub const fn shrink_moves(len: u64, cap: u64) -> bool {
 }
 
 /// A charge the meter or the budget refused. Nothing was allocated.
+///
+/// Callers must leave room for future refusal kinds.
+/// ```compile_fail,E0004
+/// use unityrs_core::limits::ChargeError;
+/// fn classify(error: ChargeError) {
+///     match error {
+///         ChargeError::Limit(_) => {},
+///         ChargeError::Budget(_) => {},
+///         ChargeError::Allocator(_) => {},
+///     }
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ChargeError {
     /// The input's own bound ([`Limits::max_input_memory`], or a buffer's
     /// cap such as [`Limits::max_block_output`]).
@@ -360,6 +373,9 @@ pub enum ChargeError {
     /// The shared budget refused, or the allocator failed.
     #[error(transparent)]
     Budget(#[from] BudgetExceeded),
+    /// The host allocator refused storage after any charge was granted.
+    #[error(transparent)]
+    Allocator(#[from] AllocError),
 }
 
 #[cfg(test)]

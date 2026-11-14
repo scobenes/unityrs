@@ -48,10 +48,18 @@ impl<'b> Engine<'b> {
     pub fn track<'a>(&'a self, meter: &'a Meter) -> MeterSample<'a, 'b> {
         MeterSample(self, meter)
     }
+    fn allocator_check(&self) -> Result<(), Failure> {
+        if self.budget.allocator_refusals() != 0 {
+            Err(Failure::Run(classify::plain("host_memory")))
+        } else {
+            Ok(())
+        }
+    }
     pub fn check(&self) -> Result<(), Failure> {
         if self.fault.get() {
             return Err(classify::internal());
         }
+        self.allocator_check()?;
         if ngui::Hooks::stopped(self) {
             Err(Failure::Stopped)
         } else {
@@ -59,6 +67,7 @@ impl<'b> Engine<'b> {
         }
     }
     pub fn point(&self, point: Point) -> Result<(), Failure> {
+        self.allocator_check()?;
         self.observer.point(point);
         self.check()
     }
@@ -70,8 +79,9 @@ impl<'b> Engine<'b> {
         &self,
         f: impl FnOnce(&mut Work) -> Result<T, crate::records::Error>,
     ) -> Result<T, Failure> {
+        self.allocator_check()?;
         let before = self.budget.snapshot().refusals();
-        f(&mut self.work.borrow_mut()).map_err(|e| {
+        let out = f(&mut self.work.borrow_mut()).map_err(|e| {
             let failure = classify::record(e);
             if self.budget.snapshot().refusals() == before
                 && matches!(&failure,
@@ -81,7 +91,9 @@ impl<'b> Engine<'b> {
             } else {
                 failure
             }
-        })
+        });
+        self.allocator_check()?;
+        out
     }
 }
 impl ngui::Hooks for Engine<'_> {
@@ -90,6 +102,9 @@ impl ngui::Hooks for Engine<'_> {
     }
     fn refusals(&self) -> Option<u64> {
         Some(self.budget.snapshot().refusals())
+    }
+    fn allocator_refusals(&self) -> u64 {
+        self.budget.allocator_refusals()
     }
     fn export_work(&self, bytes: u64) -> Result<(), Reason> {
         self.work
@@ -132,8 +147,15 @@ pub(crate) fn probe<T>(
     hooks: &dyn ngui::Hooks,
     f: impl FnOnce() -> Result<T, Class>,
 ) -> Result<T, Failure> {
+    if hooks.allocator_refusals() != 0 {
+        return Err(Failure::Run(classify::plain("host_memory")));
+    }
     let before = hooks.refusals();
-    f().map_err(|c| {
+    let out = f();
+    if hooks.allocator_refusals() != 0 {
+        return Err(Failure::Run(classify::plain("host_memory")));
+    }
+    out.map_err(|c| {
         let (Class::Skip(r) | Class::Input(r) | Class::Run(r)) = &c;
         if before.is_some() && before == hooks.refusals() && r.reason.starts_with("budget(") {
             Failure::Run(classify::plain("host_memory"))
@@ -141,4 +163,36 @@ pub(crate) fn probe<T>(
             c.into()
         }
     })
+}
+
+#[cfg(test)]
+mod allocator_tests {
+    use super::*;
+    #[test]
+    fn records_absorbing_a_refusal_stop_before_the_next_record_call() {
+        let memory = crate::job_memory::Memory::new(1 << 20, 1 << 20, false, None);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let engine = Engine {
+            memory: &memory,
+            budget: memory.budget.clone(),
+            stop: &stop,
+            observer: &ngui::NoHooks,
+            work: RefCell::new(Work::new(u64::MAX)),
+            decode_peak: Cell::new(0),
+            evictions: Cell::new(0),
+            fault: Cell::new(false),
+        };
+        let result = engine.records(|_| {
+            let _ = memory.meter.allocator_refused(4096);
+            Ok(())
+        });
+        assert!(matches!(result, Err(Failure::Run(r)) if r.reason == "host_memory"));
+        let mut called = false;
+        let _ = engine.records(|_| {
+            called = true;
+            Ok(())
+        });
+        assert!(!called, "no further record call after an absorbed refusal");
+        assert!(memory.budget.snapshot().is_clear());
+    }
 }

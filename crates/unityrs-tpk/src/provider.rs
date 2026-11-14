@@ -290,7 +290,7 @@ impl TpkProvider {
     /// next ask computes again, as `unityrs_core::once` treats a transient
     /// error. Otherwise the first outcome published wins.
     fn publish<T>(&self, cell: &OnceLock<Kept<T>>, outcome: Outcome<T>) -> Outcome<T> {
-        if matches!(&outcome, Err(e) if e.memory.is_some()) {
+        if matches!(&outcome, Err(e) if (e.memory.is_some() || e.allocator.is_some())) {
             return outcome;
         }
         get_or_publish(cell, || self.kept(outcome)).outcome.clone()
@@ -449,24 +449,19 @@ fn roots(
 }
 
 fn error(e: &dyn fmt::Display) -> ProviderError {
-    ProviderError {
-        provider: TpkProvider::NAME,
-        detail: e.to_string().into(),
-        limit: None,
-        memory: None,
-    }
+    ProviderError::new(TpkProvider::NAME, e.to_string().into())
 }
 
 /// A charge refused: by the allocator (the meter is unlimited), a refusal
 /// of memory ([`ProviderError::memory`]), which the provider never keeps.
 fn charge_error(e: &ChargeError) -> ProviderError {
+    let mut failure = error(e);
     match e {
-        ChargeError::Budget(b) => ProviderError {
-            memory: Some(b.clone()),
-            ..error(e)
-        },
-        ChargeError::Limit(_) => error(e),
+        ChargeError::Budget(b) => failure.memory = Some(b.clone()),
+        ChargeError::Allocator(a) => failure.allocator = Some(*a),
+        _ => {}
     }
+    failure
 }
 
 /// A walk that crossed a bound, as a limit error.
@@ -480,10 +475,9 @@ fn limit(kind: LimitKind, value: usize, max: usize) -> ProviderError {
 
 /// A bound, as the error that names it.
 fn limit_error(limit: LimitError) -> ProviderError {
-    ProviderError {
-        limit: Some(limit),
-        ..error(&limit)
-    }
+    let mut failure = error(&limit);
+    failure.limit = Some(limit);
+    failure
 }
 
 /// UnityPy's `get_common_strings()` (`helpers/TypeTreeNode.py:308-328`)

@@ -467,7 +467,7 @@ impl BundleFile {
 
     fn entry_error(&self, dir_index: usize, e: Error) -> Error {
         match e {
-            Error::Entry { .. } | Error::Limit(_) | Error::Budget(_) => e,
+            Error::Entry { .. } | Error::Limit(_) | Error::Budget(_) | Error::Allocator(_) => e,
             e => Error::Entry {
                 name: self
                     .directory

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{ChargeError, Limits, heap_cost};
-use crate::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation, Unbounded};
+use crate::budget::{AllocError, BudgetExceeded, MemoryBudget, Permit, Reservation, Unbounded};
 use crate::error::{LimitError, LimitKind};
 
 /// The bytes an `Arc` of a `T` of `size` bytes asks for: the value and the
@@ -82,6 +82,19 @@ impl fmt::Debug for Meter {
 }
 
 impl Meter {
+    /// Records one detected allocator refusal on this meter's budget and
+    /// returns its provenance. Call only at detection, never in conversions.
+    /// Arithmetic/count overflow must use the corresponding limit error.
+    #[must_use]
+    pub fn allocator_refused(&self, requested: u64) -> AllocError {
+        let error = AllocError {
+            requested,
+            what: self.reservation(),
+        };
+        self.account.budget.allocator_refused(error);
+        error
+    }
+
     /// The heap an input's first meter takes itself, outside every charge,
     /// in glibc chunks ([`heap_cost`]): the meter and the memory account, each
     /// in its `Arc` (plan section 3.15's constant per input). Each
