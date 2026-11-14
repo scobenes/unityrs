@@ -15,6 +15,13 @@
 //! `U+DC00 + byte`, written `\udcXX`). Bytes (`TypelessData`) are a value
 //! `json.dumps` cannot write ([`Unwritable`]).
 //!
+//! [`Options::MONO_BEHAVIOUR`] selects four spaces and `ensure_ascii=False`.
+//! In this mode valid non-ASCII characters remain UTF-8 (including DEL and
+//! U+2028); escaped source bytes are written back verbatim, modeling the
+//! final UTF-8 surrogateescape encoding. Only U+DC80..U+DCFF can arise from
+//! a raw byte string; Python's encoder would raise on other lone surrogates,
+//! which this value model cannot represent.
+//!
 //! Every write goes through a [`Sink`]: [`Count`] measures a document
 //! before anything is allocated for it, so the caller charges the exact
 //! size first, then writes into a buffer of that capacity. The value walk
@@ -22,7 +29,6 @@
 //! caller's meter before it grows, so no value's depth costs the thread's
 //! stack.
 
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use unityrs_core::limits::{ChargeError, Meter, MeteredVec};
@@ -33,6 +39,10 @@ use unityrs_core::{Map, Parsed, PrimArray, Value};
 pub trait Sink {
     /// Appends `bytes`.
     fn put(&mut self, bytes: &[u8]);
+    /// A refused sink write. Traversal stops before formatting more values.
+    fn check(&self) -> Result<(), ChargeError> {
+        Ok(())
+    }
 }
 
 /// A [`Sink`] that only counts.
@@ -58,6 +68,35 @@ impl Sink for Vec<u8> {
 #[error("a bytes value, which json.dumps cannot write")]
 pub struct Unwritable;
 
+/// JSON formatting; `MONO_BEHAVIOUR` includes the extractor's final
+/// UTF-8 `surrogateescape` encoding, so malformed source bytes round-trip.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    pub indent: usize,
+    pub ascii_only: bool,
+}
+impl Options {
+    pub const DEFAULT: Self = Self {
+        indent: 2,
+        ascii_only: true,
+    };
+    pub const MONO_BEHAVIOUR: Self = Self {
+        indent: 4,
+        ascii_only: false,
+    };
+}
+fn newline_with(level: usize, options: Options, out: &mut impl Sink) {
+    out.put(b"\n");
+    for _ in 0..level {
+        for _ in 0..options.indent {
+            if out.check().is_err() {
+                return;
+            }
+            out.put(b" ");
+        }
+    }
+}
+
 /// A newline and `level` levels of two spaces.
 pub fn newline(level: usize, out: &mut impl Sink) {
     out.put(b"\n");
@@ -68,7 +107,7 @@ pub fn newline(level: usize, out: &mut impl Sink) {
 
 /// Python's `repr` of a double, as `json.dumps` writes a float.
 pub fn float(x: f64, out: &mut impl Sink) {
-    out.put(float_repr(x).as_bytes());
+    super::pyjson_numbers::float(x, out);
 }
 
 /// Python's `repr(x)` for a float as `json.dumps` writes it: the core's
@@ -89,25 +128,48 @@ pub fn float_repr(x: f64) -> String {
 /// UTF-8 character as itself (`Ok`), each byte of an invalid sequence as one
 /// item of its own (`Err(byte)`), in order.
 pub fn decode_escaped(bytes: &[u8], mut each: impl FnMut(Result<char, u8>)) {
+    decode_escaped_while(bytes, |c| {
+        each(c);
+        true
+    });
+}
+
+// Bound validation ahead of a sink refusal, including within a large string.
+fn decode_escaped_while(bytes: &[u8], mut each: impl FnMut(Result<char, u8>) -> bool) {
     let mut rest = bytes;
     while !rest.is_empty() {
-        match std::str::from_utf8(rest) {
+        let (chunk, after_chunk) = rest.split_at(rest.len().min(1024));
+        match std::str::from_utf8(chunk) {
             Ok(s) => {
-                s.chars().for_each(|c| each(Ok(c)));
-                return;
+                for c in s.chars() {
+                    if !each(Ok(c)) {
+                        return;
+                    }
+                }
+                rest = after_chunk;
             }
             Err(e) => {
                 let valid = e.valid_up_to();
                 let (good, tail) = rest.split_at(valid);
                 if let Ok(s) = std::str::from_utf8(good) {
                     for c in s.chars() {
-                        each(Ok(c));
+                        if !each(Ok(c)) {
+                            return;
+                        }
                     }
+                }
+                // An incomplete codepoint at a chunk boundary belongs to
+                // the next chunk, rather than becoming surrogateescape bytes.
+                if e.error_len().is_none() && chunk.len() < rest.len() {
+                    rest = tail;
+                    continue;
                 }
                 let bad = e.error_len().unwrap_or(tail.len()).min(tail.len());
                 let (invalid, after) = tail.split_at(bad);
                 for &b in invalid {
-                    each(Err(b));
+                    if !each(Err(b)) {
+                        return;
+                    }
                 }
                 rest = after;
             }
@@ -118,10 +180,28 @@ pub fn decode_escaped(bytes: &[u8], mut each: impl FnMut(Result<char, u8>)) {
 /// A JSON string of `bytes`, decoded as [`decode_escaped`] decodes them and
 /// escaped as `ensure_ascii` escapes (module docs).
 pub fn string(bytes: &[u8], out: &mut impl Sink) {
+    string_with(bytes, true, out);
+}
+
+fn string_with(bytes: &[u8], ascii_only: bool, out: &mut impl Sink) {
     out.put(b"\"");
-    decode_escaped(bytes, |item| match item {
-        Ok(c) => char_escaped(c, out),
-        Err(b) => unit(0xDC00 + u32::from(b), out),
+    decode_escaped_while(bytes, |item| {
+        if out.check().is_err() {
+            return false;
+        }
+        match item {
+            Ok(c) if !ascii_only && c >= ' ' => match c {
+                '"' | '\\' => char_escaped(c, out),
+                _ => {
+                    let mut buf = [0; 4];
+                    out.put(c.encode_utf8(&mut buf).as_bytes());
+                }
+            },
+            Ok(c) => char_escaped(c, out),
+            Err(b) if !ascii_only => out.put(&[b]),
+            Err(b) => unit(0xDC00 + u32::from(b), out),
+        }
+        out.check().is_ok()
     });
     out.put(b"\"");
 }
@@ -150,14 +230,20 @@ fn char_escaped(c: char, out: &mut impl Sink) {
 
 /// `\uXXXX`, lowercase.
 fn unit(u: u32, out: &mut impl Sink) {
-    let mut s = String::with_capacity(6);
-    let _ = write!(s, "\\u{u:04x}");
-    out.put(s.as_bytes());
+    let hex = b"0123456789abcdef";
+    let mut bytes = *b"\\u0000";
+    for (i, dst) in bytes.iter_mut().skip(2).enumerate() {
+        *dst = hex
+            .get(((u >> (12 - i * 4)) & 15) as usize)
+            .copied()
+            .unwrap_or(b'0');
+    }
+    out.put(&bytes);
 }
 
 /// A decimal integer.
 pub fn int(i: i128, out: &mut impl Sink) {
-    out.put(i.to_string().as_bytes());
+    super::pyjson_numbers::int(i, out);
 }
 
 fn f32_value(bits: u32) -> f64 {
@@ -230,8 +316,10 @@ fn begin<'a>(
     parsed: &Parsed,
     value: &'a Value,
     level: usize,
+    options: Options,
     out: &mut impl Sink,
-) -> Result<Option<Frame<'a>>, Unwritable> {
+) -> Result<Option<Frame<'a>>, WriteError> {
+    out.check()?;
     let _ = parsed;
     match value {
         Value::Bool(b) => out.put(if *b { b"true" } else { b"false" }),
@@ -239,11 +327,11 @@ fn begin<'a>(
         Value::UInt(u) => int((*u).into(), out),
         Value::F32(bits) => float(f32_value(*bits), out),
         Value::F64(bits) => float(f64::from_bits(*bits), out),
-        Value::Str(s) => string(s.as_bytes(), out),
-        Value::Bytes(_) => return Err(Unwritable),
+        Value::Str(s) => string_with(s.as_bytes(), options.ascii_only, out),
+        Value::Bytes(_) => return Err(Unwritable.into()),
         _ => {
             let Some(items) = open(value) else {
-                return Err(Unwritable);
+                return Err(Unwritable.into());
             };
             let dict = matches!(items, Items::Dict(_));
             if items.len() == 0 {
@@ -258,6 +346,7 @@ fn begin<'a>(
             }));
         }
     }
+    out.check()?;
     Ok(None)
 }
 
@@ -286,11 +375,25 @@ pub fn value(
     out: &mut impl Sink,
     meter: &Arc<Meter>,
 ) -> Result<(), WriteError> {
+    value_with(parsed, value, level, Options::DEFAULT, out, meter)
+}
+
+/// [`value`] with explicit formatting and final UTF-8 surrogateescape encoding.
+pub fn value_with(
+    parsed: &Parsed,
+    value: &Value,
+    level: usize,
+    options: Options,
+    out: &mut impl Sink,
+    meter: &Arc<Meter>,
+) -> Result<(), WriteError> {
     let mut stack: MeteredVec<Frame<'_>> = MeteredVec::new(meter);
-    if let Some(f) = begin(parsed, value, level, out)? {
+    if let Some(f) = begin(parsed, value, level, options, out)? {
+        out.check()?;
         stack.push(f)?;
     }
     while let Some(top) = stack.as_mut_slice().last_mut() {
+        out.check()?;
         let i = top.next;
         let inner = top.level + 1;
         if i >= top.items.len() {
@@ -301,7 +404,7 @@ pub fn value(
             };
             let lvl = top.level;
             stack.truncate(stack.len().saturating_sub(1));
-            newline(lvl, out);
+            newline_with(lvl, options, out);
             out.put(close);
             continue;
         }
@@ -309,7 +412,7 @@ pub fn value(
         if i > 0 {
             out.put(b",");
         }
-        newline(inner, out);
+        newline_with(inner, options, out);
         let child = match &top.items {
             Items::Prims(p) => {
                 prim(p, i, out);
@@ -318,7 +421,7 @@ pub fn value(
             Items::Seq(v) => v.get(i),
             Items::Dict(m) => match m.entries().get(i) {
                 Some((k, v)) => {
-                    string(parsed.key_name(m, *k), out);
+                    string_with(parsed.key_name(m, *k), options.ascii_only, out);
                     out.put(b": ");
                     Some(v)
                 }
@@ -326,17 +429,37 @@ pub fn value(
             },
         };
         if let Some(v) = child
-            && let Some(f) = begin(parsed, v, inner, out)?
+            && let Some(f) = begin(parsed, v, inner, options, out)?
         {
+            out.check()?;
             stack.push(f)?;
         }
     }
+    out.check()?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Count, decode_escaped, float_repr, string};
+
+    #[test]
+    fn chunk_boundaries_preserve_utf8_and_surrogateescape() {
+        for prefix_len in 1020..1026 {
+            let prefix = "a".repeat(prefix_len);
+            let mut input = format!("{prefix}é😀\u{2028}\n").into_bytes();
+            input.extend_from_slice(b"\xe4\xb8\xff");
+            assert_eq!(
+                json(&input),
+                format!("\"{prefix}\\u00e9\\ud83d\\ude00\\u2028\\n\\udce4\\udcb8\\udcff\"")
+            );
+            let mut output = Vec::new();
+            super::string_with(&input, false, &mut output);
+            let mut expected = format!("\"{prefix}é😀\u{2028}\\n").into_bytes();
+            expected.extend_from_slice(b"\xe4\xb8\xff\"");
+            assert_eq!(output, expected);
+        }
+    }
 
     #[test]
     fn floats_are_written_as_python_reprs_them() {

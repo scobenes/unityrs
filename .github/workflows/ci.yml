@@ -430,6 +430,7 @@ jobs:
           python tools/fixtures/meshdecode.py --check
           python tools/fixtures/mesh_export.py --check
           python tools/fixtures/obj_export.py --check
+          python tools/fixtures/simple_export.py --check
           python tools/fixtures/pyfmt.py --check
           python tools/fixtures/ngui.py --check
           python tools/fixtures/sprites.py --check

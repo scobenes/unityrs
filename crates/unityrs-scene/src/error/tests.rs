@@ -48,9 +48,7 @@ fn assert_core(error: Error, want: bool) {
         source: Arc::new(error.clone()),
     };
     let deref = Error::Deref(Arc::new(DerefError::Load(error.clone())));
-    let parse = Error::AssetBundle(Arc::new(ParseError::Deref(Arc::new(DerefError::Load(
-        error.clone(),
-    )))));
+    let parse = Error::AssetBundle(Arc::new(ParseError::Deref(DerefError::Load(error.clone()))));
     for e in [error, entry, deref, parse] {
         let scene = SceneError::Deref(DerefError::Load(e));
         assert_eq!(scene.resource_refusal(), want, "{scene:?}");
