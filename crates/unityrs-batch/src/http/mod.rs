@@ -9,6 +9,7 @@ pub mod permit;
 pub mod request;
 pub mod resolve;
 mod response;
+pub mod shared;
 pub mod socket;
 mod tls;
 
@@ -54,7 +55,7 @@ impl Service {
         request: hyper::Request<Payload>,
         timeout: Duration,
     ) -> Result<Response<Stream>, Error> {
-        self.request_inner(permit, url, request, timeout, None)
+        self.request_inner(permit, url, request, timeout, None, None)
             .await
     }
     /// Staging acquires the lookup token itself, so it can check its canonical
@@ -70,7 +71,7 @@ impl Service {
         if !token.belongs_to(permit) {
             return Err(Error::InvalidRequest);
         }
-        self.request_inner(permit, url, request, timeout, Some(token))
+        self.request_inner(permit, url, request, timeout, Some(token), None)
             .await
     }
     async fn request_inner(
@@ -80,6 +81,7 @@ impl Service {
         request: hyper::Request<Payload>,
         timeout: Duration,
         token: Option<permit::OperationToken>,
+        connected: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<Response<Stream>, Error> {
         request::validate_url(url)?;
         request::validate_request(&request, Some(url))?;
@@ -92,6 +94,9 @@ impl Service {
             .connector
             .connect(permit, url, timeout, token, &mut envelope)
             .await?;
+        if let Some(connected) = connected {
+            connected.store(true, std::sync::atomic::Ordering::Release);
+        }
         response::exchange_charged(io, envelope, request).await
     }
     /// Only the test build can replace DNS or add trust anchors. This consumes

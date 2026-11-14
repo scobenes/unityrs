@@ -24,6 +24,8 @@
 //!   bounded typed attempt artifacts.
 //! - [`attempt`]: staged-path sealed extraction, copy-out and post-drop audit;
 //!   dispatch and publication remain the caller's.
+//! - [`store`]: the object-store client on `object_store` 0.12.5, wired to
+//!   [`http`] through the engine's own connector; no run executes it yet.
 //! - [`reason`]: exit codes and their precedence, the closed reason sets,
 //!   the limit-kind table and the map from outcomes to codes (9.1 to 9.3).
 //!
@@ -78,6 +80,7 @@ pub mod spec;
 pub mod spool;
 pub mod stage;
 pub mod start;
+pub mod store;
 #[allow(unsafe_code)]
 pub mod sys;
 pub mod view;

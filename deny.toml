@@ -104,6 +104,24 @@ license-files = [
     { path = "LICENSE-other-bits", hash = 0x8b770de2 },
 ]
 
+# Equal to about.toml's clarifications (it says why): chrono's MIT notice is
+# a part of its one licence file, and object_store takes its Apache-2.0
+# option, the only text it ships, with Apache Arrow's NOTICE.
+[[licenses.clarify]]
+crate = "chrono"
+expression = "MIT OR Apache-2.0"
+license-files = [
+    { path = "LICENSE.txt", hash = 0xed6eaefe },
+]
+
+[[licenses.clarify]]
+crate = "object_store"
+expression = "Apache-2.0"
+license-files = [
+    { path = "LICENSE.txt", hash = 0x4a461d6a },
+    { path = "NOTICE.txt", hash = 0x4a9a55d8 },
+]
+
 [bans]
 # Mirrored in deny-bans.toml, whose graph has no target or crate filters.
 # scripts/third_party_licenses_check.py keeps both policies equal.
