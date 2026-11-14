@@ -46,7 +46,7 @@ use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 14] = [
+const TARGETS: [&str; 15] = [
     "detect",
     "bundle",
     "serialized",
@@ -61,6 +61,7 @@ const TARGETS: [&str; 14] = [
     "zlib_match",
     "unitycn",
     "zip",
+    "fsb5",
 ];
 
 /// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
@@ -119,6 +120,9 @@ const MESH_CASES: &str = concat!(
 /// 64 bytes (refusing the first array), 16 KiB and 256 KiB (most of the
 /// fixture's arrays fit, the largest do not).
 pub(crate) const MESH_METERS: [u8; 4] = [0, 1, 16, 64];
+
+#[path = "fuzz_seeds/fsb5.rs"]
+mod fsb5;
 
 struct Seeds {
     dir: PathBuf,
@@ -697,6 +701,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
         s.add("unitycn", name, bytes)?;
     }
     zip::seeds(&mut s)?;
+    fsb5::write(&mut s)?;
     texture(&mut s)?;
     astc(&mut s)?;
     meshdecode(&mut s)?;

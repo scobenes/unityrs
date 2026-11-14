@@ -9,6 +9,7 @@
 //! target needs an item a crate does not export.
 
 pub mod astc;
+pub mod fsb5;
 pub mod lz4;
 pub mod meshdecode;
 #[cfg(test)]

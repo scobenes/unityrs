@@ -56,6 +56,7 @@ jobs:
           - zlib_match
           - unitycn
           - zip
+          - fsb5
     env:
       TARGET: ${{ matrix.target }}
     steps:

@@ -13,6 +13,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
+unityrs-audio = { path = "../crates/unityrs-audio" }
 libfuzzer-sys = "=0.4.13"
 # liblz4's own decoder, for the `lz4` target's comparison: 1.10.0 builds the
 # liblz4 1.9.4 it vendors, the version python-lz4 4.4.4 wraps in the oracle
@@ -129,6 +130,13 @@ bench = false
 [[bin]]
 name = "zip"
 path = "fuzz_targets/zip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fsb5"
+path = "fuzz_targets/fsb5.rs"
 test = false
 doc = false
 bench = false

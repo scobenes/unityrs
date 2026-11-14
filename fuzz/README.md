@@ -30,6 +30,7 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `texture` | `unityrs_texture::select` and `decode` (a format outside the thirty-six it decodes, the five version 1 exports, the rest of Pillow's raw and `bcn` formats, the ETC and EAC formats and the ASTC LDR formats, decoded as one of them), under the memory bound or a meter of the decode's peak charge (`Plan::peak_charge`) less 1, the charge or plus 1: an export must be of the texture's own format, the decode's answer its `plan`'s (but a refusal of a charge past the meter's limit), the image the plan's size, mode and charge, and the meter back at 0 after it. Its data is the input, a few KiB at most, so the decodes it reaches are small: what needs more data (a crop's decompression-bomb check, a large decode) is the unit and seeded tests' (`crates/unityrs-texture/src/decode/tests.rs`, `crates/unityrs-texture/tests/limits.rs`) | `unityrs_testkit::fuzz::TextureCase`: format, size, platform, meter, platform blob, data |
 | `astc` | `unityrs_texture::decode` of an ASTC LDR texture (the case's format taken as one of the twelve), under the memory bound or a meter of the decode's peak charge, its output and its tables, less 1, the charge or plus 1: the decode's answer its `plan`'s (but a refusal of a charge past the meter's limit), the image the plan's size, mode and charge, the meter back at 0 after it, so the tables are returned, and each block's texels in the image those of the block decoded alone as a one-block texture (every block of an image of up to 32, and of a larger one the first 32 and those the right and bottom edges cut): the assembly, the cut and the flip | `unityrs_testkit::fuzz::TextureCase`: format, size, platform, meter, platform blob, data |
 | `meshdecode` | `walk::boost::read` of a Mesh's or a Sprite's value, then `unityrs_meshdecode::MeshHandler::process` (with or without a resource reader, either byte order, any version), `get_triangles` twice and `process` again, run last once the first's outputs drop, under the case's limits and, when the case's meter is not 0, again under a meter of `meter² × 64` bytes with the same work bound: the second `get_triangles` and the second `process` must answer as the first (but a refusal of the work it adds), the smaller meter's answer must be the first's (but a refusal of a charge past its limit), and each meter back at 0 once the outputs drop | `unityrs_testkit::fuzz::MeshCase`: flags, meter, version, resource, then a `TreeCase` |
+| `fsb5` | `unityrs_audio::plan` and `decode`: bounded parsing, PCM and float WAV lengths, repeatability and charge release | raw audio bytes |
 
 Every run is bounded by the limits in `src/lib.rs`: 128 MiB of memory, of
 input and of one block's output (`MEMORY`), and 8 MiB of decode work and of
@@ -72,6 +73,9 @@ mesh and sprite case `unityrs-meshdecode`'s handler fixture records
 from UnityPy's own class trees), each under meters 0, 1, 16 and 64.
 The `zlib_match` seeds are the builders' outputs (capped at 4 MiB), plus
 zero and periodic inputs around match and window boundaries.
+The `fsb5` seeds use `unityrs_testkit::fsb5`: passthrough audio, all supported
+PCM widths at both bank versions, rates, names, extra chunks, empty/short
+subsounds, deferred codecs and hostile headers (54 synthetic inputs).
 
 ## Running
 
