@@ -349,7 +349,8 @@ fn panicked(payload: &unityrs_texture::Payload) -> Class {
 /// (`decompression_bomb`, `crop_overflow` for a box edge outside a C
 /// `int` or `long`, `pillow_memory_error` for an image wider than Pillow
 /// makes), a field of another shape is `read` (4.4 step 2's rule), a
-/// canvas past the renderer's bound is `limit(texture_pixels, ..)` as a
+/// sheet of a mode the renderer is not verified on `unsupported` (as a
+/// mesh part left to a later phase is), a canvas past the renderer's bound is `limit(texture_pixels, ..)` as a
 /// texture's is, a refused charge or work count is its own class, and a
 /// panic `decoder_panic`; every other exception UnityPy 1.25.2's
 /// `SpriteHelper` raises is `render`.
@@ -360,6 +361,7 @@ pub fn render(e: &SpriteError) -> Class {
         SpriteError::CIntOverflow { .. } | SpriteError::CLongOverflow => "crop_overflow",
         SpriteError::ImageTooWide => "pillow_memory_error",
         SpriteError::Malformed(_) => "read",
+        SpriteError::UnverifiedMode { .. } => "unsupported",
         SpriteError::AtlasUnresolved => return Class::Skip(Reason::plain("bad_pointer")),
         SpriteError::TooLarge { .. } => {
             return Class::Skip(Reason::plain(format!(
@@ -376,6 +378,7 @@ pub fn render(e: &SpriteError) -> Class {
         | SpriteError::SolveCast
         | SpriteError::Rotation(_)
         | SpriteError::AlphaSizeMismatch
+        | SpriteError::AlphaBandCount
         | SpriteError::NoVertices
         | SpriteError::Unpack { .. }
         | SpriteError::Index { .. }

@@ -66,6 +66,11 @@ fn every_sprite_error_takes_its_class() {
         (SpriteError::SolveCast, decode("render")),
         (SpriteError::Rotation(5), decode("render")),
         (SpriteError::AlphaSizeMismatch, decode("render")),
+        (SpriteError::AlphaBandCount, decode("render")),
+        (
+            SpriteError::UnverifiedMode { mode: "L" },
+            decode("unsupported"),
+        ),
         (SpriteError::NoVertices, decode("render")),
         (
             SpriteError::Unpack {

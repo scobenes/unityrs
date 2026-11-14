@@ -155,7 +155,7 @@ impl Settings {
 }
 
 /// Why a sprite did not render. Each variant but [`Self::Malformed`],
-/// [`Self::AtlasUnresolved`], [`Self::TooLarge`], [`Self::Charge`] and
+/// [`Self::UnverifiedMode`], [`Self::AtlasUnresolved`], [`Self::TooLarge`], [`Self::Charge`] and
 /// [`Self::Panicked`] is a case where UnityPy 1.25.2 raises;
 /// [`Self::python`] gives its exception's class and message.
 #[derive(Debug, thiserror::Error)]
@@ -215,6 +215,18 @@ pub enum SpriteError {
     /// `ValueError`.
     #[error("size mismatch")]
     AlphaSizeMismatch,
+    /// A texture of one band (BC4's `L`) beside an alpha texture:
+    /// `Image.merge`'s `ValueError`, raised before it compares sizes.
+    #[error("wrong number of bands")]
+    AlphaBandCount,
+    /// A texture, or an alpha texture, whose decoded mode the renderer is
+    /// not verified on (`L`), where UnityPy renders it: unityrs's own
+    /// refusal (Tier U, `PARITY.md` section 19.2).
+    #[error("the sprite renderer is not verified on a sheet of mode {mode}")]
+    UnverifiedMode {
+        /// Pillow's name for the mode.
+        mode: &'static str,
+    },
     /// `mask_sprite`'s `assert positions` (`AssertionError`).
     #[error("No vertices found in sprite mesh!")]
     NoVertices,
@@ -300,7 +312,8 @@ impl SpriteError {
             | Self::Sprite3d
             | Self::NoTriangles
             | Self::NegativeSize
-            | Self::AlphaSizeMismatch => "ValueError",
+            | Self::AlphaSizeMismatch
+            | Self::AlphaBandCount => "ValueError",
             Self::RoundInfinity | Self::CIntOverflow { .. } | Self::CLongOverflow => {
                 "OverflowError"
             }
@@ -314,6 +327,7 @@ impl SpriteError {
             Self::NoAtlasData => return Some(("StopIteration", String::new())),
             Self::Mesh(e) => return e.python(),
             Self::Malformed(_)
+            | Self::UnverifiedMode { .. }
             | Self::AtlasUnresolved
             | Self::TooLarge { .. }
             | Self::Charge(_)

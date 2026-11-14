@@ -68,24 +68,35 @@ impl<'a> Sheet<'a> {
     /// [`crate::decode()`] gave it, and, where the render data names an
     /// alpha texture, the first three bands of `texture` with the first of
     /// `alpha` (`Image.merge("RGBA", ...)`, `:50-52`), an `RGBA` image
-    /// charged to `meter` before it is allocated. Decoded sizes that differ
-    /// are [`SpriteError::AlphaSizeMismatch`] (`Image.merge`'s "size
-    /// mismatch", Tier U). Either texture is one of the five formats, which
-    /// decode to three or four bands, so the merge's band count always
-    /// holds: the callers render sprites only of what [`crate::select()`]
-    /// exports. A BC4 texture's `L` image, one band, is not rendered here
-    /// yet (where UnityPy's merge raises "wrong number of bands", `PARITY.md`
-    /// section 15.2): it is read as the bytes it holds, never past them. UnityPy's cache of the merged sheet is the caller's: a sheet
-    /// serves every sprite of its group.
+    /// charged to `meter` before it is allocated.
+    ///
+    /// The renderer is verified on `RGB` and `RGBA` sheets, the five
+    /// formats' (`PARITY.md` section 19.2), so it takes no other, and
+    /// refuses before anything is charged or drawn:
+    /// - a texture that decodes to `L` (BC4) beside an alpha texture is
+    ///   [`SpriteError::AlphaBandCount`], `Image.merge`'s `ValueError`
+    ///   "wrong number of bands", which it raises before it compares sizes;
+    /// - decoded sizes that differ are [`SpriteError::AlphaSizeMismatch`],
+    ///   its "size mismatch";
+    /// - an `L` texture alone, or an `L` alpha texture of the texture's
+    ///   size, which UnityPy renders, is [`SpriteError::UnverifiedMode`],
+    ///   unityrs's own refusal (Tier U) until a render of them is checked
+    ///   against UnityPy's.
+    ///
+    /// UnityPy's cache of the merged sheet is the caller's: a sheet serves
+    /// every sprite of its group.
     pub fn new(
         texture: &'a Image,
         alpha: Option<&Image>,
         meter: &Arc<Meter>,
     ) -> Result<Self, SpriteError> {
         match alpha {
-            None => Ok(Self {
-                image: SheetImage::Texture(texture),
-            }),
+            None => {
+                verified(texture.mode())?;
+                Ok(Self {
+                    image: SheetImage::Texture(texture),
+                })
+            }
             Some(alpha) => Sheet::merged(texture, alpha, meter),
         }
     }
@@ -97,9 +108,15 @@ impl<'a> Sheet<'a> {
         alpha: &Image,
         meter: &Arc<Meter>,
     ) -> Result<Sheet<'static>, SpriteError> {
+        // `Image.merge` counts the bands before it compares sizes; one band
+        // and the alpha's are two, where `RGBA` needs four.
+        if texture.mode() == Mode::L {
+            return Err(SpriteError::AlphaBandCount);
+        }
         if texture.width() != alpha.width() || texture.height() != alpha.height() {
             return Err(SpriteError::AlphaSizeMismatch);
         }
+        verified(alpha.mode())?;
         let mut merged = Canvas::new(Mode::Rgba, texture.width(), texture.height(), meter)?;
         let tb = bpp(texture.mode());
         let ab = bpp(alpha.mode());
@@ -155,6 +172,15 @@ impl<'a> Sheet<'a> {
         let at =
             usize::try_from(((h - 1 - y) * w + x).checked_mul(i64::try_from(b).ok()?)?).ok()?;
         image.pixels().get(at..at.checked_add(b)?)
+    }
+}
+
+/// A sheet's or an alpha texture's mode the renderer is verified on:
+/// `RGB` or `RGBA` ([`Sheet::new`]).
+fn verified(mode: Mode) -> Result<(), SpriteError> {
+    match mode {
+        Mode::Rgb | Mode::Rgba => Ok(()),
+        Mode::L => Err(SpriteError::UnverifiedMode { mode: mode.name() }),
     }
 }
 
@@ -452,6 +478,58 @@ pub(crate) fn crop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Format, decode};
+
+    /// A BC4 texture decodes to `L`, which the renderer is not verified on
+    /// (`Sheet::new`): beside an alpha texture it is `Image.merge`'s "wrong
+    /// number of bands", before the sizes are compared; alone, or as an
+    /// alpha texture of the texture's size, unityrs's own refusal; a size
+    /// mismatch is still `Image.merge`'s. Nothing is charged, and no
+    /// sheet is made.
+    #[test]
+    fn an_l_sheet_or_alpha_is_refused_before_anything_is_drawn() {
+        let meter = Meter::unlimited();
+        let l = decode(Format::Bc4, &[0; 8], 4, 4, &meter).unwrap();
+        let wide_l = decode(Format::Bc4, &[0; 16], 8, 4, &meter).unwrap();
+        let rgba = decode(Format::Rgba32, &[0; 64], 4, 4, &meter).unwrap();
+        let wide = decode(Format::Rgba32, &[0; 128], 8, 4, &meter).unwrap();
+        let rgb = decode(Format::Rgb24, &[0; 48], 4, 4, &meter).unwrap();
+        assert_eq!(l.mode(), Mode::L);
+        let held = meter.used();
+        let refused = |texture: &Image, alpha: Option<&Image>| {
+            Sheet::new(texture, alpha, &meter)
+                .map(|_| ())
+                .expect_err("refused")
+        };
+        // The alpha path: UnityPy's errors, the band count first.
+        for alpha in [&rgba, &rgb, &l, &wide] {
+            let e = refused(&l, Some(alpha));
+            assert!(matches!(e, SpriteError::AlphaBandCount), "{e:?}");
+            assert_eq!(
+                e.python(),
+                Some(("ValueError", "wrong number of bands".to_owned()))
+            );
+        }
+        let e = refused(&rgba, Some(&wide_l));
+        assert!(matches!(e, SpriteError::AlphaSizeMismatch), "{e:?}");
+        // An `L` alpha texture of the texture's size, and an `L` texture
+        // alone: unityrs's refusal, no exception of UnityPy's.
+        for e in [
+            refused(&rgba, Some(&l)),
+            refused(&rgb, Some(&l)),
+            refused(&l, None),
+        ] {
+            assert!(
+                matches!(e, SpriteError::UnverifiedMode { mode: "L" }),
+                "{e:?}"
+            );
+            assert_eq!(e.python(), None);
+        }
+        assert_eq!(meter.used(), held);
+        // The verified modes still make sheets.
+        assert!(Sheet::new(&rgb, None, &meter).is_ok());
+        assert!(Sheet::new(&rgb, Some(&rgba), &meter).is_ok());
+    }
 
     /// The renderer's bounds (`PARITY.md` section 19.3): Pillow's width cap
     /// first, whatever the height, then the pixel bound, before anything
