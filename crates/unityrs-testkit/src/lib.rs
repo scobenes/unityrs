@@ -47,6 +47,7 @@ pub mod search;
 pub mod serialized;
 pub mod stack;
 pub mod waits;
+pub mod web;
 pub mod writer;
 pub mod zip;
 

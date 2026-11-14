@@ -132,3 +132,17 @@ path = "fuzz_targets/zip.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "webfile"
+path = "fuzz_targets/webfile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "unityweb"
+path = "fuzz_targets/unityweb.rs"
+test = false
+doc = false
+bench = false

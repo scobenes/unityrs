@@ -83,3 +83,10 @@ yanked = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+# WebFile brotli: BSD-3-Clause/MIT; select the shipped BSD notice,
+# equal to about.toml. alloc-no-stdlib uses BSD-3-Clause too.
+[[licenses.clarify]]
+crate = "brotli-decompressor"
+expression = "BSD-3-Clause"
+license-files = [{ path = "LICENSE", hash = 0x1a60a92d }]

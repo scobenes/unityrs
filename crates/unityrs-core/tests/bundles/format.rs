@@ -260,10 +260,7 @@ fn unsupported_bundles_are_named() {
         },
         b"UnityWeb",
     );
-    assert!(matches!(
-        open_with(&web7, &c, &m),
-        Err(Error::Unsupported(Unsupported::WebRawLayout))
-    ));
+    assert!(open_with(&web7, &c, &m).is_err());
     let archive = unityrs_testkit::bundle::build_with_signature(&base, b"UnityArchive");
     assert!(matches!(
         open_with(&archive, &c, &m),

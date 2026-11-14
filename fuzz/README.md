@@ -20,6 +20,8 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `zlib_match` | derived deflate against pristine zlib 1.2.13, with 257-byte input and 509-byte output windows (`test-reference`) | any bytes, capped at 4 MiB |
 | `bundle` | `BundleFile::open` plus `load_all` (every block decoded, every entry parsed, nested bundles loaded), by the memory and the stream reader's rules | any bytes |
 | `zip` | central-directory/ZIP64 parsing, CRC-checked stored/deflate reads, and `Environment::load_zip_file` with nested frames, split joins and cached duplicate reads | arbitrary ZIP bytes; stored, deflate, split, empty and nested duplicate testkit seeds |
+| `webfile` | signed WebFile table parsing, nested member loading and bounded gzip/brotli inflation | plain, gzip, brotli, nested duplicates and hostile name lengths |
+| `unityweb` | legacy headers, signed level skip, LZMA and directories, memory and stream readers | UnityWeb/UnityRaw formats 1–6 |
 | `unitycn` | UnityCN header table construction and in-place token walk, including the virtual trailing zero and Tier U refusal; a valid synthetic signature keeps arbitrary nibble tables reachable | any bytes: the first 16 also mutate the encrypted table vector, and the first 8 select the block index |
 | `serialized` | `SerializedFile::parse`, then every object's `parse_as_dict(true)` (UnityPyBoost's reader or the pure-Python one, by the object's size), by both readers' rules | any bytes |
 | `typetree` | `parse_blob` (format 10 and from 12) or `parse_old`, as the format says, then `NodeList::from_rows` and `Tree::compile` | `unityrs_testkit::fuzz::blob_case`: format, endian, stored tree |

@@ -100,11 +100,11 @@ fn earlier_unsupported_shadowed_row_wins_before_metadata() {
         }
     }
     let mut scene = simple(&[]);
-    let mut web = b"UnityWebData1.0\0".to_vec();
-    web.resize(64, 0);
+    // A name length below -1 remains unsupported now that WebFiles load.
+    let unsupported = unityrs_testkit::web::unsupported_name_length(&[("raw", Vec::new())]);
     let malformed = asset(1, vec![V::Int(1)]);
     scene.bundles[0].data = unityrs_testkit::env::bundle(&[
-        ("shadow", web),
+        ("shadow", unsupported),
         ("shadow", file(&[], &[malformed], true).unwrap()),
     ]);
     let h = Harness::new(&scene, "x");

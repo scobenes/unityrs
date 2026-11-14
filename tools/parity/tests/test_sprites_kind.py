@@ -1,5 +1,5 @@
 """The `sprites` kind's reference (`sprites_kind.py`) on its own branches, beside the fixture its scenes record
-(`tools/fixtures/sprites.py`): a top-level WebFile row (`Divergence`); a `MemoryError` that is Pillow's
+(`tools/fixtures/sprites.py`): a refused top-level WebFile row (`Divergence`); a `MemoryError` that is Pillow's
 (`pillow_memory_error`) and one that is not (propagated); its own name read (`atlas_name`, B3's review round 2, T4);
 the render data's selection (E17, B3's review rounds 1 and 2, R2, T1 and S3), on objects made here: a tag's atlas
 found past another's and a nameless one, never reading a later one; a tag none has, whose walk reads every name; a
@@ -25,13 +25,13 @@ from rows_support import ORACLE  # noqa: E402
 
 if ORACLE:
     import ngui_read as rd
+    import ngui_scenes
     import sprites_kind as sk
     from PIL import Image
     from UnityPy.classes import GUID, PPtr, Sprite, SpriteAtlas, SpriteAtlasData, Texture2D
     from UnityPy.classes.UnknownObject import UnknownObject
     from UnityPy.enums import ClassIDType
     from UnityPy.export import SpriteHelper
-    from UnityPy.files import WebFile
 
 
 def raise_here():
@@ -121,15 +121,14 @@ def failure(test, f, want=("decode_error", "render")):
 
 @unittest.skipUnless(ORACLE, "needs the oracle image (UnityPy 1.25.2)")
 class Branches(unittest.TestCase):
-    def test_a_top_level_webfile_row_is_a_divergence(self):
-        web = WebFile.__new__(WebFile)
-        bundle = SimpleNamespace(files={})
-        with (
-            mock.patch.object(rd, "load", return_value=bundle),
-            mock.patch.object(rd, "rows", return_value=[("x.web", web)]),
-            self.assertRaises(rd.Divergence),
-        ):
-            sk.cut("x.bundle", {"x.bundle": b""}, "{name}.png")
+    def test_only_a_refused_top_level_webfile_row_is_a_divergence(self):
+        scene = ngui_scenes.scenes()["fallback_rows"]
+        with self.assertRaises(rd.Divergence):
+            sk.cut("d.bundle", scene.view("d.bundle"), "{name}.png")
+        scene = ngui_scenes.scenes()["webfile_sibling"]
+        result = sk.cut("d.bundle", scene.view("d.bundle"), "{name}.png")
+        self.assertEqual(result.outputs, [])
+        self.assertEqual(result.skips, [])
 
     def test_a_memory_error_is_pillows_only_from_pillow(self):
         own = data(1)

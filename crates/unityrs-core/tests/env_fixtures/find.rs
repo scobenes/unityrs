@@ -10,10 +10,9 @@ use std::sync::Arc;
 use serde_json::{Value as J, json};
 use unityrs_core::FileContext;
 use unityrs_core::env::{EnvOptions, LoadMode};
-use unityrs_core::error::{Error, Unsupported};
 use unityrs_testkit::env::find_scenes;
 
-use super::run::{Run, error_kind, load, ops, recorded, scene_by_name};
+use super::run::{Run, load, ops, recorded, scene_by_name};
 
 /// The recorded `find_file` scenes: each name and its steps.
 fn recorded_finds() -> Vec<(String, Vec<J>)> {
@@ -29,14 +28,6 @@ fn recorded_finds() -> Vec<(String, Vec<J>)> {
             )
         })
         .collect()
-}
-
-/// A step's state: everything but its op and result.
-fn state(step: &J) -> J {
-    let mut s = step.clone();
-    s["op"] = J::Null;
-    s["result"] = J::Null;
-    s
 }
 
 /// The option sets a replay runs under, each named: with
@@ -101,13 +92,9 @@ fn without_keep(want: &J, after: &J, rows: &J) -> J {
 
 /// Replays every recorded scene under `options` (named `what`), each step
 /// against UnityPy's, as `expect` turns it for these options (the step,
-/// the step after the loads, the container recorded then). A WebFile,
-/// which UnityPy returns and P1 refuses as `load` does (plan section 1,
-/// Q7), changes nothing: from it on, UnityPy's state holds the file and
-/// the core's is the state before it, so only the results are compared.
+/// the step after the loads, the container recorded then), including WebFile containers.
 fn replay(what: &str, options: &EnvOptions, expect: impl Fn(&J, &J, &J) -> J) {
     let scenes = find_scenes();
-    let refused = json!(error_kind(&Error::Unsupported(Unsupported::WebFile)));
     for (name, steps) in recorded_finds() {
         let (_, scene) = scenes.iter().find(|(n, _)| *n == name).unwrap();
         let loaded = steps.iter().rposition(|s| s["op"][0] == "load").unwrap();
@@ -115,23 +102,10 @@ fn replay(what: &str, options: &EnvOptions, expect: impl Fn(&J, &J, &J) -> J) {
         assert_eq!(steps[loaded + 1]["op"], json!(["container"]), "{name}");
         let rows = &steps[loaded + 1]["result"];
         let run = Run::with(scene.scene.clone(), options.load, options.clone());
-        let mut before = J::Null;
-        let mut web: Option<J> = None;
         for want in &steps {
             let got = run.step(&want["op"]);
             let want = expect(want, after, rows);
-            let at = format!("{name} {what} {}", want["op"]);
-            if want["result"][0] == "web" {
-                assert_eq!(got["result"], refused, "{at}");
-                assert_eq!(state(&got), before, "{at}: the refusal kept");
-                web = Some(before.clone());
-            } else if let Some(kept) = &web {
-                assert_eq!(got["result"], want["result"], "{at}");
-                assert_eq!(&state(&got), kept, "{at}: the state before the WebFile");
-            } else {
-                assert_eq!(got, want, "{at}");
-            }
-            before = state(&got);
+            assert_eq!(got, want, "{name} {what}");
         }
     }
 }
@@ -151,7 +125,7 @@ fn replay(what: &str, options: &EnvOptions, expect: impl Fn(&J, &J, &J) -> J) {
 /// `FileNotFoundError`, the resolver's `find_file`); and with
 /// `is_dependency=False` a bundle, a `SerializedFile` and a raw reader,
 /// whose objects join `env.objects` and whose CABs' rows join
-/// `env.container`. Last, a WebFile, which P1 refuses.
+/// `env.container`. Last, a WebFile with a serialized member.
 #[test]
 fn find_file_returns_what_unitypy_returns() {
     let recorded = recorded_finds();
