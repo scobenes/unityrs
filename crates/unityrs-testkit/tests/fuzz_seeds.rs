@@ -95,7 +95,7 @@ fn texture_seeds_are_cases(dir: &Path) {
         }
     }
     assert!(
-        formats.is_superset(&[3, 4, 10, 12, 25].into()),
+        formats.is_superset(&[3, 4, 10, 12, 25, 30, 31, 32, 33, 35, 36].into()),
         "{formats:?}"
     );
     assert_eq!(meters, [0, 1].into());

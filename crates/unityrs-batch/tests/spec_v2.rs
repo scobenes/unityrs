@@ -63,7 +63,7 @@ fn each_refusal_formats_adds() {
     // One of UnityPy's names that this binary does not decode: `range`
     // too (the stricter rule), never a skip at run time.
     assert_eq!(
-        formats(json!(["DXT1", "PVRTC_RGB2"])),
+        formats(json!(["DXT1", "ETC_RGB4_3DS"])),
         "range /outputs/formats/1"
     );
     assert_eq!(formats(json!(["DXT1Crunched"])), "range /outputs/formats/0");

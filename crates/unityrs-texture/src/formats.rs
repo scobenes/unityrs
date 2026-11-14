@@ -130,7 +130,7 @@ mod tests {
         assert_eq!(Formats::decoded("RGB565"), Ok(Format::Rgb565));
         assert_eq!(Formats::decoded("ETC2_RGBA8"), Ok(Format::Etc2Rgba8));
         // UnityPy names it; this crate does not decode it.
-        assert_eq!(Formats::decoded("PVRTC_RGB2"), Err(true));
+        assert_eq!(Formats::decoded("PVRTC_RGB2"), Ok(Format::PvrtcRgb2));
         assert_eq!(Formats::decoded("ARGBFloat"), Err(true));
         // Names are UnityPy's, case and all.
         assert_eq!(Formats::decoded("rgb565"), Err(false));

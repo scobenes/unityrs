@@ -35,6 +35,8 @@ fn the_largest_texture_plans_and_one_more_column_is_refused() {
             Format::Argb4444 | Format::Rgba4444 | Format::Rgb565 => 2 * MAX_PIXELS,
             Format::Rgb24 | Format::Bgr24 => 3 * MAX_PIXELS,
             Format::Rgba32 | Format::Bgra32 | Format::Argb32 => 4 * MAX_PIXELS,
+            // ATC stores 4x4 blocks but UnityPy does not pad its image.
+            Format::AtcRgb4 | Format::AtcRgba8 => pixels / 16 * format.block_bytes().unwrap(),
             _ => pixels / u64::try_from(bw * bh).unwrap() * format.block_bytes().unwrap(),
         };
         assert_eq!(p.input_bytes, want, "{format:?}");

@@ -313,3 +313,29 @@ fn the_meshdecode_check_takes_every_handler_fixture_case_under_each_meter() {
     );
     assert!(answers(&[]).is_none());
 }
+
+/// PVRTC wrap, small sizes, non-power-of-two grids, ATC cut edges and
+/// both meter boundaries, using the same texture target as other formats.
+#[test]
+fn pvrtc_atc_texture_inputs_match_their_plans_under_each_meter() {
+    for format in [30, 31, 32, 33, 35, 36] {
+        for meter in 0..4 {
+            for (width, height) in [(1, 1), (31, 15), (16, 32), (32, 8), (7, 9), (12, 12)] {
+                let mut rng = unityrs_testkit::Rng::new(0x0050_5652_5443);
+                let data = (0..64).flat_map(|_| rng.next_u64().to_le_bytes()).collect();
+                crate::texture::check(
+                    &TextureCase {
+                        format,
+                        width,
+                        height,
+                        platform: 19,
+                        meter,
+                        blob: None,
+                        data,
+                    }
+                    .encode(),
+                );
+            }
+        }
+    }
+}

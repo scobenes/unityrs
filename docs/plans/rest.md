@@ -41,7 +41,7 @@
 | 17 | **LZ4HC** is vendored (liblz4's `lz4hc.c` at the version python-lz4 4.4.4 bundles, BSD-2-Clause, through `cc`, with a charged constant state), not ported. | Byte-equality with liblz4 HC level 9 is the target, and vendoring the exact source is the direct route to it, as it was for zlib. |
 | 18 | **The TPK stays unembedded.** Tests read the oracle image's copy at test time. | Core Q2. |
 | 19 | **Audio lives in a new crate, `unityrs-audio`.** No batch kind for audio, text or shaders in P3. | It keeps `unityrs-export` light and isolates lewton, which allocates infallibly; CR10 binds audio only if a batch kind is added. |
-| 20 | **texture2ddecoder's quirks are Tier A:** ATC's palette wrap, and any PVRTC quirk, are kept. | They are UnityPy's output, and no normative reference contradicts them. |
+| 20 | **texture2ddecoder's quirks are Tier A:** ATC's palette byte conversions and clamped subtraction, and any PVRTC quirk, are kept (P3 T5 source check: the pinned `atc.cpp` uses `std::max(0, ...)`, so the earlier ‘palette wrap’ wording did not describe a reachable overflow). | They are UnityPy's output, and no normative reference contradicts them. |
 | 21 | **The ETC 3DS formats** get the decided Tier U refusal in `select` and `plan`, and no decoder. | `PARITY.md` section 17 files them U. |
 
 ---
@@ -93,7 +93,7 @@ Each format group is a module of its own, so the shared tables (`format.rs`, `se
 | Pillow's raw and BCn remainder: Alpha8, ARGB4444, RGB565, BGR24, DXT3 (BC2), RGBA4444, BGRA32, BC4 (into L), BC5 (into RGB), R8, ARGB32 | Pillow 9.5.0's `Unpack.c` unpackers and `BcnDecode.c` BC2, BC4 and BC5 | A, L5 | Pillow through UnityPy |
 | ASTC LDR (12 formats) | astcenc's decompressor as astc-encoder-py 0.1.12 bundles it, with `USE_DECODE_UNORM8`: integer sequence decoding, block modes, partitions, colour unquantisation, decimation and infill, dual plane, void extent | A, L5 | astc-encoder-py in the oracle |
 | ASTC HDR (6 formats) | astcenc's HDR profile, then `PARITY.md` section 17.1's half-and-float rule | C, L5 | a divergence test against astcenc's HDR decode in the oracle image |
-| PVRTC 2 and 4 bpp (4 formats), ATC RGB and RGBA (2) | texture2ddecoder 1.0.5's `pvrtc.cpp` and `atc.cpp` | A, L5, with ATC's palette wrap kept (decision 20) | texture2ddecoder through UnityPy |
+| PVRTC 2 and 4 bpp (4 formats), ATC RGB and RGBA (2) | texture2ddecoder 1.0.5's `pvrtc.cpp` and `atc.cpp` | A, L5, with ATC's palette arithmetic kept (decision 20) | texture2ddecoder through UnityPy |
 | crunch: DXT1Crunched and DXT5Crunched (legacy), ETC_RGB4Crunched and ETC2_RGBA8Crunched (Unity's fork), split at 2017.3 | texture2ddecoder's crunch: `crn_decomp.h` and Unity's fork of it | A, L5 | texture2ddecoder through UnityPy, on decision 5's fixtures |
 | Tier B raw formats: RHalf, RGHalf, RFloat, RGFloat, RGBFloat, RGBAFloat, RG16, R16, RG32, RGBA64, the eight signed formats, RGB9e5Float, YUY2 | section 17.1's closed forms, not a port | B, L5 | `test_texture_matrix.py`'s Tier B references, and divergence tests |
 | Tier C raw formats: RGBAHalf, RGB48 | the closed forms | C, L5 | pinned divergence tests |
