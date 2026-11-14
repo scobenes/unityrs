@@ -57,18 +57,19 @@ def tier_of(name, kind):
     return KIND_TIER[kind]
 
 
-# DESIGN.md section 5: the formats P1b implements; every other format is P3.
+# DESIGN.md section 5: the formats P1b implements; every other format is P3a's.
 P1B = ["BC7", "DXT1", "DXT5", "RGB24", "RGBA32"]
 # Their status: unityrs-texture decodes them, as crates/unityrs-texture/tests/oracle.rs checks against what
-# tools/fixtures/texture.py records (section 17's text); their Switch and Xbox 360 gates and `set_image` are P3.
-P1B_STATUS = "pinned P0; verified P1b (decoding); impl P3"
+# tools/fixtures/texture.py records (section 17's text); their Switch and Xbox 360 gates are P3a (and `set_image`,
+# section 18, P3b's).
+P1B_STATUS = "pinned P0; verified P1b (decoding); impl P3a"
 # The ETC and EAC formats P3 decodes (crates/unityrs-texture/tests/etc_oracle.rs replays what tools/fixtures/texture.py
 # records from tools/fixtures/texture_etc.py's cases), and their status: the Tier C ones', as section 19.1's
 # reference.
 P3 = ["EAC_R", "EAC_RG", "EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGB", "ETC2_RGBA1", "ETC2_RGBA8", "ETC_RGB4"]
-P3_STATUS = "pinned P0; verified P3 (decoding); impl P3"
+P3_STATUS = "pinned P0; verified P3 (decoding); impl P3a"
 P3_TIER_C = ["EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGBA1"]
-P3_TIER_C_STATUS = "pinned P0; verified P3 (decoding, as section 19.1's reference); impl P3"
+P3_TIER_C_STATUS = "pinned P0; verified P3 (decoding, as section 19.1's reference); impl P3a"
 
 
 def status_of(name):
@@ -79,7 +80,7 @@ def status_of(name):
         return P3_TIER_C_STATUS
     if name in P3:
         return P3_STATUS
-    return "pinned P0; impl P3"
+    return "pinned P0; impl P3a"
 
 VERSION = (2021, 3, 1, 3)  # the matrix's 2021.3.1f3
 # A platform blob that makes TextureSwizzler.is_switch_swizzled hold: 1 << 1 = 2 GOBs per block.

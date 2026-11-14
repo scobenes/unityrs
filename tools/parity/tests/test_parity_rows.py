@@ -622,7 +622,7 @@ class TestColumn(unittest.TestCase):
     def test_tol_metrics_are_stated_or_said_to_be_planned(self):
         """Both Tol definitions say each row states a metric and threshold. Until every Tol row does (a row names a
         `threshold`), both must say the rows are to state them in the phase each row's unityrs side lands in (its
-        status's `impl Pn`: P3 for audio) and that none does yet, not that each has one. The Sprite affine path,
+        status's `impl Pn`: P3b for audio) and that none does yet, not that each has one. The Sprite affine path,
         once a Tol row landing in P1b, is Tier A since its port was measured exact (docs/plans/extract.md section 3,
         item 6), so no Tol row names a sprite."""
         root = HERE.parent.parent
@@ -642,9 +642,9 @@ class TestColumn(unittest.TestCase):
         phases = {}
         for cells in tol:
             path = "the Sprite affine path" if "Sprite" in cells[0] else "audio"
-            phases.setdefault(path, set()).update(re.findall(r"\bimpl (P\d[ab]?)\b", cells[-1]))
-        self.assertEqual(phases, {"audio": {"P3"}})
-        when = "(P3 for audio)"
+            phases.setdefault(path, set()).update(re.findall(r"\bimpl (P\d[a-c]?)\b", cells[-1]))
+        self.assertEqual(phases, {"audio": {"P3b"}})
+        when = "(P3b for audio)"
         if len(stated) < len(tol):
             for text in definitions:
                 with self.subTest(text[:40]):
