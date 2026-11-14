@@ -11,7 +11,10 @@
 //! parse reads back, so the `ETag` and key parse as sent and the raw text
 //! no longer holds the word. A word anywhere else (a tag, an attribute, a
 //! comment or a CDATA section) fails the try, since it would reach
-//! `object_store`'s check as sent.
+//! `object_store`'s check as sent. So does markup quick-xml's reader
+//! refuses, on which `object_store`'s parse would fail. The scan reads the
+//! body as that reader does, a DOCTYPE's internal subset included, which a
+//! test checks against quick-xml itself.
 use super::{
     SMALL_CAP,
     attempt::{BodyFault, Fault, TrySlot},
@@ -135,7 +138,7 @@ pub(super) async fn complete_body<I: AsyncRead + AsyncWrite + Unpin>(
     }
     let (in_text, in_raw, scan) = count(&bytes);
     slot.update(|r| r.code = scan.code());
-    if scan.root() == Root::Error || in_raw > in_text {
+    if scan.root() == Root::Error || scan.malformed() || in_raw > in_text {
         return Ok(refuse());
     }
     if in_text == 0 {

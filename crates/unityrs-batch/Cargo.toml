@@ -65,6 +65,9 @@ http-body-util = { version = "=0.1.5", default-features = false }
 # A head GET's stream in the store's tests (`GetResult::into_stream`).
 # Already in the lock, through object_store.
 futures-util = { version = "=0.3.34", default-features = false }
+# The `<Code>` scan's reading of markup, checked against the reader
+# `object_store`'s parse uses. Already in the lock, through object_store.
+quick-xml = { version = "=0.41.0", default-features = false }
 # Scratch for the `JOB.json` cases, `mkfifo` through its child runner, and
 # the counting allocator of the validation measurement. Its `test-counters`
 # turns on the core's CR8 refusal counters (docs/plans/batch.md section 6)

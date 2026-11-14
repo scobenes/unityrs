@@ -517,3 +517,34 @@ fn a_complete_answered_by_an_error_root_fails() {
     let done = complete(&vec![b' '; 70_000], 4_096, &[]);
     assert_eq!(done.record.body, Some(BodyFault::OverCap));
 }
+
+#[test]
+fn a_complete_with_a_doctype_is_read_as_object_store_reads_it() {
+    // Review round 3: what a DOCTYPE's subset holds stays in it, as
+    // quick-xml's parse, `object_store`'s, reads it.
+    let answer =
+        "<CompleteMultipartUploadResult><ETag>\"e\"</ETag></CompleteMultipartUploadResult>";
+    for doctype in [
+        "<!DOCTYPE CompleteMultipartUploadResult [<!-- ]><Error> -->]>",
+        "<!DOCTYPE r [<?pi ]><Error> ?>]>",
+        "<!DOCTYPE r [<!ENTITY q \"]><Error>\">]>",
+        "<!DOCTYPE CompleteMultipartUploadResult>",
+    ] {
+        let body = format!("{doctype}{answer}");
+        for size in [1, 2, 5, 7, body.len() + 64] {
+            let done = complete(body.as_bytes(), size, &[]);
+            assert_eq!(
+                done.verdict,
+                verdict(true, Action::Success),
+                "{doctype} {size}"
+            );
+            assert_eq!(done.value.unwrap().e_tag.as_deref(), Some("\"e\""));
+        }
+    }
+    let body = b"<!DOCTYPE Error [<!-- <CompleteMultipartUploadResult> -->]><Error><Code>InternalError</Code></Error>";
+    for size in [1, 4, 64] {
+        let done = complete(body, size, &[]);
+        assert_eq!(done.verdict, verdict(false, RETRY));
+        assert!(done.record.code.is("InternalError"));
+    }
+}

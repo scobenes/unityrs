@@ -1386,6 +1386,7 @@ dependencies = [
  "libc",
  "md-5",
  "object_store",
+ "quick-xml",
  "rustls",
  "serde",
  "serde_json",
