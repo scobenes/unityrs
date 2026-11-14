@@ -168,7 +168,7 @@ fn text(value: OsString, max: usize) -> Result<String, Preflight> {
 }
 
 /// A date-time's instant, as nanoseconds from 1970-01-01T00:00:00Z. A leap
-/// second's `:60` is the next minute's start, the same instant to a second.
+/// second (second 60) is the next minute's start, the same instant to a second.
 #[must_use]
 pub fn instant(at: &DateTime) -> i128 {
     let (year, month) = (i64::from(at.year), i64::from(at.month));
