@@ -52,7 +52,7 @@ pub const INVENTORY: &[Exclusion] = &[
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        function: "unityrs_core::files::bundle::BundleFile::open_with_reader",
+        function: "unityrs_core::files::bundle::BundleFile::open_at_depth",
         platform: Platform::All,
         frame: None,
         name: "parsed-container cyclic Arc",
