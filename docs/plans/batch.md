@@ -891,10 +891,16 @@ with a `commit unknown at take` line (`ENOMEM` from the stat included; only
 the engine's own refused path copy is `host_memory`). After `running`, a
 finish that cannot read or build its rows writes nothing more: the head
 stays `running`, and the exit code is the worse of the stop's and the
-failure's. The finisher reads `T_hard` from the stop word on every try, so
-once it is armed, even after the finish began, the row files stop at
-`T_hard` less the head's reserve (3 s, or 5 s when reconciling), and a cut
-row never takes the head's time. Steps 1 and 2 run through a backend
+failure's. Row files that finish had already published stay on the sink,
+but no head names them, and only what a head names is published (7.2 to
+7.4). The finisher reads `T_hard` from the stop word at the start of every
+try, so once it is armed, even after the finish began, the row files stop
+at `T_hard` less the head's reserve (3 s, or 5 s when reconciling), and a
+cut row never takes the head's time. A try already in flight when `T_hard`
+is armed keeps the deadline it started with: for the directory sink, a
+write cannot be cut early and `T_hard`'s hard exit ends it; the object
+store's transport (B11) reads the live deadline while a request is in
+flight. Steps 1 and 2 run through a backend
 trait; the directory sink's has no journal and no uploads.
 
 **Threads.** The main thread runs, in order:
