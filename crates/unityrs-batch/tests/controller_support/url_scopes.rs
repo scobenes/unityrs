@@ -3,13 +3,16 @@
 //! through staging's end. Each scope adds what a try can meet: custom
 //! headers (literal and from the environment, in every scope), a retried
 //! status with a non-canonical reason, a two-hop redirect, a dripped body,
-//! a stop, and `https`. A refused run must also keep every connection whose
-//! response the origin had not finished open until after its finisher.
+//! a stop, `https`, a peer that cuts a body or closes without a reply
+//! (plain and over TLS), and an input that fails, armed through the run's
+//! teardown. A refused run must also keep every connection whose response
+//! the origin had not finished open until after its finisher.
 use super::{ACTIVE, EXEMPT, SEEN, SITE, Space, publication_support, run_support};
 use std::{
     collections::VecDeque,
     io::{Read, Write},
     net::{SocketAddr, TcpListener},
+    os::fd::{AsRawFd, RawFd},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
@@ -33,12 +36,18 @@ pub const SCOPES: &[&str] = &[
     "url-drip",
     "url-stop",
     "url-https",
+    "url-cut",
+    "url-noreply",
+    "url-https-cut",
+    "url-fail",
 ];
-/// Scopes whose allocation count follows the peer's timing (a drip's
-/// reads, a TLS record's split, where the stop lands): a site past a
-/// child's own count is unreached there, not a failure.
+/// Every url scope's allocation count follows the peer's timing and the
+/// machine's load (how a head or a body splits across reads, a drip's
+/// pieces, a TLS record's split, where the stop lands, which read meets a
+/// cut): a site past a child's own count is unreached there, not a
+/// failure, and an entry need only be reached in some scope it names.
 pub fn timed(scope: &str) -> bool {
-    matches!(scope, "url-drip" | "url-stop" | "url-https")
+    SCOPES.contains(&scope)
 }
 
 #[derive(Clone)]
@@ -48,6 +57,10 @@ enum Reply {
     /// A status line's code and reason, `Retry-After: 0`, no body.
     Status(&'static str),
     Redirect(String),
+    /// The head and this many body bytes, then a reset (true) or a FIN.
+    Cut(usize, bool),
+    /// No reply to the request: a reset (true) or a FIN (false).
+    Drop(bool),
 }
 /// One connection as the origin saw it: whether it wrote its whole reply,
 /// and whether the client closed it.
@@ -97,7 +110,10 @@ impl Origin {
             .map(|(_, b)| b.clone());
         (reply, body.unwrap_or_else(|| Arc::from([])))
     }
-    fn serve(&self, stream: &mut std::net::TcpStream, connection: &Connection) {
+    /// One connection, plain or TLS: the request's head, then its route's
+    /// reply. A reset sets `socket`'s zero linger: the caller's close
+    /// sends it.
+    fn serve(&self, stream: &mut impl ReadWrite, connection: &Connection, socket: RawFd) {
         let mut head = Vec::new();
         let mut buffer = [0; 4096];
         while !head.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -133,6 +149,29 @@ impl Origin {
                 stream,
                 "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
             ),
+            // The origin's own ends: no client close of these is early.
+            (Reply::Cut(count, reset), body) => {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                )
+                .and_then(|()| stream.write_all(&body[..count.min(body.len())]))
+                .and_then(|()| stream.flush());
+                std::thread::sleep(Duration::from_millis(5));
+                connection.complete.store(true, SeqCst);
+                if reset {
+                    let _ = unityrs_batch::sys::test_set_zero_linger(socket);
+                }
+                return;
+            }
+            (Reply::Drop(reset), _) => {
+                connection.complete.store(true, SeqCst);
+                if reset {
+                    let _ = unityrs_batch::sys::test_set_zero_linger(socket);
+                }
+                return;
+            }
         };
         if written.is_ok() {
             connection.complete.store(true, SeqCst);
@@ -140,29 +179,41 @@ impl Origin {
         }
     }
 }
+trait ReadWrite: Read + Write {}
+impl<T: Read + Write> ReadWrite for T {}
 /// A loopback origin on threads the refusals exempt, one request a
-/// connection.
-fn origin() -> (Arc<Origin>, SocketAddr) {
+/// connection; with `tls`, the same routes over TLS (the localhost leaf).
+/// Its connection records count either kind's closes.
+fn listen(origin: &Arc<Origin>, tls: bool) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
-    let origin = Arc::new(Origin::default());
     let state = origin.clone();
     std::thread::spawn(move || {
         EXEMPT.with(|e| e.set(true));
+        let config = tls.then(super::http_support::tls::server);
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let state = state.clone();
+            let (state, config) = (state.clone(), config.clone());
             std::thread::spawn(move || {
                 EXEMPT.with(|e| e.set(true));
                 let _ = stream.set_read_timeout(Some(unityrs_testkit::guard::DEADLOCK_GUARD));
                 let connection = Arc::new(Connection::default());
                 state.connections.lock().unwrap().push(connection.clone());
-                state.serve(&mut stream, &connection);
+                let socket = stream.as_raw_fd();
+                if let Some(config) = config {
+                    let session = rustls::ServerConnection::new(config).unwrap();
+                    let mut stream = rustls::StreamOwned::new(session, stream);
+                    state.serve(&mut stream, &connection, socket);
+                } else {
+                    state.serve(&mut stream, &connection, socket);
+                }
+                // The client closed it, or the origin ends it now (a cut's
+                // or a dropped reply's reset, by its zero linger).
                 connection.closed.store(true, SeqCst);
             });
         }
     });
-    (origin, address)
+    address
 }
 /// `localhost` is the TLS peer; every other host, the plain origin. No
 /// allocation: it runs on the engine's blocking pool.
@@ -188,9 +239,10 @@ impl unityrs_batch::stage::env::Environment for Environment {
 /// as a rule.
 const STOP_AT: usize = 12;
 /// Armed at the first dispatch; off at staging's end (the first peek or a
-/// stop's hand-over).
+/// stop's hand-over), unless `through` (until `drive_with` returns).
 struct Arm {
     stop: bool,
+    through: bool,
     polls: AtomicUsize,
     lifetime: Arc<Lifetime>,
 }
@@ -199,7 +251,9 @@ impl Hooks for Arm {
     fn event(&self, event: Event) {
         match event {
             Event::StageDispatched(_) => ACTIVE.store(true, SeqCst),
-            Event::PeekDispatched(_) | Event::HandOver => ACTIVE.store(false, SeqCst),
+            Event::PeekDispatched(_) | Event::HandOver if !self.through => {
+                ACTIVE.store(false, SeqCst);
+            }
             _ => {}
         }
     }
@@ -233,11 +287,14 @@ fn serve(
     SocketAddr,
     serde_json::Value,
     [String; 2],
-    Option<super::http_support::tls::Peer>,
+    Option<SocketAddr>,
 ) {
-    let (origin, address) = origin();
+    let origin = Arc::new(Origin::default());
+    let address = listen(&origin, false);
     let mut http = serde_json::json!({"attempts": 1});
     let mut tls = None;
+    let retries =
+        || serde_json::json!({"attempts": 3, "backoff_initial_ms": 0, "backoff_max_ms": 0});
     {
         let mut routes = origin.bodies.lock().unwrap();
         routes.push(("/b0".into(), bodies[0].clone().into()));
@@ -258,7 +315,7 @@ fn serve(
     match scope {
         "url" => {}
         "url-retry" => {
-            http = serde_json::json!({"attempts": 3, "backoff_initial_ms": 0, "backoff_max_ms": 0});
+            http = retries();
             script("/b0", vec![Reply::Status("503 X")]);
             script("/b1", vec![Reply::Status("500 X"), Reply::Status("503 X")]);
         }
@@ -273,25 +330,45 @@ fn serve(
             default("/b0", Reply::Ok(700));
             default("/b1", Reply::Ok(300));
         }
-        "url-https" => {
-            let mut response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
-                bodies[0].len()
-            )
-            .into_bytes();
-            response.extend_from_slice(&bodies[0]);
-            let peer = super::http_support::tls::Peer::tls_entered(response, true, || {
-                EXEMPT.with(|e| e.set(true));
-            });
-            urls[0] = format!("https://localhost:{}/b0", peer.address.port());
-            tls = Some(peer);
+        "url-https" | "url-https-cut" => {
+            let secure = listen(&origin, true);
+            urls[0] = format!("https://localhost:{}/b0", secure.port());
+            tls = Some(secure);
+            if scope == "url-https-cut" {
+                http = retries();
+                script(
+                    "/b0",
+                    vec![Reply::Cut(bodies[0].len() / 3, true), Reply::Drop(false)],
+                );
+            }
+        }
+        // A third of the input, then a reset; the dependency's head and a
+        // little, then a FIN (an incomplete body), then a retried status.
+        "url-cut" => {
+            http = retries();
+            script("/b0", vec![Reply::Cut(bodies[0].len() / 3, true)]);
+            script("/b1", vec![Reply::Cut(100, false), Reply::Status("503 X")]);
+        }
+        "url-noreply" => {
+            http = retries();
+            script("/b0", vec![Reply::Drop(true), Reply::Drop(false)]);
+            script("/b1", vec![Reply::Drop(false)]);
+        }
+        // The input's one try fails: no peek, and the arm stays on through
+        // the finisher and the run's teardown. The dependency stays local,
+        // so no body's reads (whose split follows the peer's timing) move
+        // this scope's sites.
+        "url-fail" => {
+            default("/b0", Reply::Status("404 X"));
+            urls[1].clear();
         }
         _ => panic!("unknown url scope: {scope}"),
     }
     (origin, address, http, urls, tls)
 }
-/// The input and the dependency moved onto `urls`, with custom headers
-/// (literal and from the environment) and the scope's `http` policy.
+/// The input and the dependency moved onto `urls` (but for an empty one),
+/// with custom headers (literal and from the environment) and the scope's
+/// `http` policy.
 fn onto(spec: &mut serde_json::Value, urls: &[String; 2], http: serde_json::Value) {
     let headers = serde_json::json!({
         "User-Agent": "sweep",
@@ -299,6 +376,9 @@ fn onto(spec: &mut serde_json::Value, urls: &[String; 2], http: serde_json::Valu
         "X-From-Env": {"env": "UNITYRS_SWEEP_TOKEN"},
     });
     for (list, url) in [("inputs", &urls[0]), ("dependencies", &urls[1])] {
+        if url.is_empty() {
+            continue;
+        }
         let bundle = spec[list][0].as_object_mut().unwrap();
         bundle.remove("path");
         bundle.insert("url".into(), url.clone().into());
@@ -361,6 +441,7 @@ pub fn child(scope: &str, site: usize) {
             lifetime: lifetime.clone(),
             controller_hooks: Arc::new(Arm {
                 stop: scope == "url-stop",
+                through: scope == "url-fail",
                 polls: AtomicUsize::new(0),
                 lifetime,
             }),
@@ -370,7 +451,7 @@ pub fn child(scope: &str, site: usize) {
                 hooks: Some(unityrs_batch::run::Hooks {
                     resolver: Arc::new(Resolve {
                         origin: address,
-                        tls: tls.as_ref().map(|p| p.address),
+                        tls,
                     }),
                     extra_roots: roots,
                 }),
@@ -383,10 +464,10 @@ pub fn child(scope: &str, site: usize) {
     let seen = SEEN.load(SeqCst);
     let end = result.unwrap();
     if site == 0 {
-        let expected = if scope == "url-stop" {
-            Code::Stopped
-        } else {
-            Code::Complete
+        let expected = match scope {
+            "url-stop" => Code::Stopped,
+            "url-fail" => Code::Incomplete,
+            _ => Code::Complete,
         };
         assert_eq!(end.code, expected, "{end:?}");
         assert!(seen > 0);

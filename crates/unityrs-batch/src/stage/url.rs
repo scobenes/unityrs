@@ -583,13 +583,26 @@ async fn body_wait<C: Clock, F: Future>(
         }
         started = true;
         let deadline = time.deadline();
+        let mut race = std::pin::pin!(super::timers::race(
+            cx.clock.as_ref(),
+            deadline,
+            future.as_mut(),
+        ));
+        let mut refused = false;
         let value = cx
-            .network_wait(super::timers::race(
-                cx.clock.as_ref(),
-                deadline,
-                future.as_mut(),
-            ))
+            .network_wait(poll_fn(|task| {
+                let before = crate::alloc::refusals();
+                let result = race.as_mut().poll(task);
+                refused |= crate::alloc::refusals() != before;
+                result
+            }))
             .await?;
+        // A refusal in this wait outranks the window it may have outlasted,
+        // and returns before `download` would close the response: the poll
+        // wrapper reports it, and the residual keeps the connection.
+        if refused {
+            return Err(memory());
+        }
         if !time.advance(cx.clock.now()) {
             return Err(download(Detail::Timeout));
         }

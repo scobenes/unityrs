@@ -216,7 +216,7 @@ pub const INVENTORY: &[Exclusion] = &[
     // the controller*): a request's lookup and chunk write enter the pool
     // through `execution::blocking`, the same admitted task cell.
     Exclusion {
-        scopes: URL,
+        scopes: REQUEST,
         functions: &["unityrs_batch::execution::blocking"],
         platform: Platform::All,
         frame: Some("tokio::runtime::task::core::Cell"),
@@ -229,7 +229,7 @@ pub const INVENTORY: &[Exclusion] = &[
     // later try or hop. Its values are copied into fallible storage first;
     // its names are phase 1's, whose clones count a reference.
     Exclusion {
-        scopes: URL,
+        scopes: REQUEST,
         functions: &["unityrs_batch::stage::headers::prepare"],
         platform: Platform::All,
         frame: Some("http::header::map::HeaderMap"),
@@ -247,9 +247,10 @@ pub const INVENTORY: &[Exclusion] = &[
     },
     // Tokio's reactor: a socket's registration (`Arc<ScheduledIo>`), and
     // the deregistration's `Vec::push` when a response's socket drops: at
-    // a body's end, or when a try or a hop drops its response.
+    // a body's end, when a try or a hop drops its response, or when an
+    // exchange's connection fails before its head.
     Exclusion {
-        scopes: URL,
+        scopes: REQUEST,
         functions: &["unityrs_batch::sys::reset::Socket::register"],
         platform: Platform::All,
         frame: Some("RegistrationSet>::allocate"),
@@ -259,6 +260,7 @@ pub const INVENTORY: &[Exclusion] = &[
     Exclusion {
         scopes: URL,
         functions: &[
+            EXCHANGE,
             "unityrs_batch::http::response::Response::poll_frame",
             "unityrs_batch::stage::url::Stage::download",
             "unityrs_batch::stage::url::Stage::try_download",
@@ -274,7 +276,7 @@ pub const INVENTORY: &[Exclusion] = &[
     // and, as its driver reads, its read buffer's growth and splits, the
     // body channel's `Arc`, and a non-canonical reason phrase's extension.
     Exclusion {
-        scopes: URL,
+        scopes: REQUEST,
         functions: &[EXCHANGE],
         platform: Platform::All,
         frame: Some("hyper::client::dispatch::Envelope"),
@@ -282,7 +284,7 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "hyper dispatch::channel mpsc",
     },
     Exclusion {
-        scopes: URL,
+        scopes: REQUEST,
         functions: &[EXCHANGE],
         platform: Platform::All,
         frame: Some("want::new"),
@@ -290,7 +292,7 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "hyper dispatch::channel want Arc",
     },
     Exclusion {
-        scopes: URL,
+        scopes: REQUEST,
         functions: &[EXCHANGE],
         platform: Platform::All,
         frame: Some("hyper::proto::h1::io::WriteBuf"),
@@ -298,7 +300,7 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "hyper WriteBuf::new",
     },
     Exclusion {
-        scopes: URL,
+        scopes: REQUEST,
         functions: &[EXCHANGE],
         platform: Platform::All,
         frame: Some("hyper::proto::h1::dispatch::Dispatcher"),
@@ -306,7 +308,7 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "hyper http1 handshake's dispatcher box",
     },
     Exclusion {
-        scopes: URL,
+        scopes: REQUEST,
         functions: &[EXCHANGE],
         platform: Platform::All,
         frame: Some("tokio::sync::oneshot::channel"),
@@ -316,7 +318,7 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "hyper send_request oneshot",
     },
     Exclusion {
-        scopes: URL,
+        scopes: REQUEST,
         functions: &[EXCHANGE, POLL_FRAME],
         platform: Platform::All,
         frame: Some("bytes::bytes_mut::BytesMut>::reserve_inner"),
@@ -324,7 +326,7 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "hyper read buffer BytesMut reserve",
     },
     Exclusion {
-        scopes: URL,
+        scopes: REQUEST,
         functions: &[EXCHANGE, POLL_FRAME],
         platform: Platform::All,
         frame: Some("bytes::bytes_mut::BytesMut>::promote_to_shared"),
@@ -340,7 +342,7 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "hyper body channel Arc",
     },
     Exclusion {
-        scopes: &["url-retry"],
+        scopes: STATUS,
         functions: &[EXCHANGE],
         platform: Platform::All,
         frame: Some("hyper::ext::h1_reason_phrase::ReasonPhrase"),
@@ -348,7 +350,7 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "hyper ReasonPhrase extension insert",
     },
     Exclusion {
-        scopes: &["url-retry"],
+        scopes: STATUS,
         functions: &[EXCHANGE],
         platform: Platform::All,
         frame: Some("hashbrown::alloc::inner::do_alloc"),
@@ -356,18 +358,67 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "hyper ReasonPhrase extension map",
     },
     Exclusion {
-        scopes: &["url-retry"],
+        scopes: STATUS,
         functions: &[EXCHANGE],
         platform: Platform::All,
         frame: Some("<bytes::bytes::Bytes>::copy_from_slice"),
         via: &[DRIVER],
         name: "hyper ReasonPhrase copy",
     },
+    // A transport failure's own storage, as the driver meets a peer's
+    // reset or close mid-reply: hyper's error box, its `io::Error` cause,
+    // and the decoder's incomplete-body `io::Error`. hyper builds these
+    // with `Box::new` (A13).
+    Exclusion {
+        scopes: CUT,
+        functions: &[EXCHANGE, POLL_FRAME],
+        platform: Platform::All,
+        frame: Some("<hyper::error::Error>::new"),
+        via: &[DRIVER],
+        name: "hyper error box of a transport failure",
+    },
+    Exclusion {
+        scopes: CUT,
+        functions: &[EXCHANGE, POLL_FRAME],
+        platform: Platform::All,
+        frame: Some("<hyper::error::Error>::with"),
+        via: &[DRIVER],
+        name: "hyper error cause of a transport failure",
+    },
+    Exclusion {
+        scopes: CUT,
+        functions: &[POLL_FRAME],
+        platform: Platform::All,
+        frame: Some("<hyper::proto::h1::decode::Decoder>::decode"),
+        via: &[DRIVER],
+        name: "hyper incomplete-body io::Error",
+    },
+    // The run's teardown, after its finisher wrote the final head: the
+    // parked owners' drop deregisters the wake owner's descriptor, and the
+    // runtime's drop shuts its reactor's registrations down. Both are
+    // tokio's infallible `Vec` growth; the result is already written, so
+    // the abort (A13) changes no outcome.
+    Exclusion {
+        scopes: &["url-fail"],
+        functions: &["unityrs_batch::run::drive_with"],
+        platform: Platform::All,
+        frame: Some("RegistrationSet>::deregister"),
+        via: &["AsyncFd<unityrs_batch::sys::wake::WakeOwner> as core::ops::drop::Drop>::drop"],
+        name: "tokio deregistration push at the wake owner's drop",
+    },
+    Exclusion {
+        scopes: &["url-fail"],
+        functions: &["unityrs_batch::execution::Execution::drop"],
+        platform: Platform::All,
+        frame: Some("RegistrationSet>::shutdown"),
+        via: &["<tokio::runtime::runtime::Runtime as core::ops::drop::Drop>::drop"],
+        name: "tokio reactor shutdown at the runtime's drop",
+    },
     // rustls (and ring under it) over `https`: the client connection's
     // setup, the handshake, and each record read or written after it.
     // rustls's API has no fallible allocation (A13).
     Exclusion {
-        scopes: &["url-https"],
+        scopes: TLS,
         functions: &["unityrs_batch::http::connect::Connector::secure"],
         platform: Platform::All,
         frame: Some("rustls"),
@@ -375,7 +426,7 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "rustls client connection",
     },
     Exclusion {
-        scopes: &["url-https"],
+        scopes: TLS,
         functions: &["unityrs_batch::http::connect::Connector::secure"],
         platform: Platform::All,
         frame: Some("rustls"),
@@ -383,7 +434,7 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "rustls handshake",
     },
     Exclusion {
-        scopes: &["url-https"],
+        scopes: TLS,
         functions: &["unityrs_batch::http::connect::Connector::secure"],
         platform: Platform::All,
         frame: Some("<ring::"),
@@ -391,7 +442,7 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "ring big-integer limbs of the handshake's signature check",
     },
     Exclusion {
-        scopes: &["url-https"],
+        scopes: TLS,
         functions: &["unityrs_batch::http::io::Stream::poll_read"],
         platform: Platform::All,
         frame: Some("rustls"),
@@ -401,7 +452,7 @@ pub const INVENTORY: &[Exclusion] = &[
         name: "rustls record read",
     },
     Exclusion {
-        scopes: &["url-https"],
+        scopes: TLS,
         functions: &[
             "unityrs_batch::http::io::Stream::poll_write",
             "unityrs_batch::http::io::Stream::poll_write_vectored",
@@ -428,6 +479,10 @@ const SPAWNING: &[&str] = &[
     "url-drip",
     "url-stop",
     "url-https",
+    "url-cut",
+    "url-noreply",
+    "url-https-cut",
+    "url-fail",
 ];
 const SPAWN_BLOCKING: &str = "<tokio::runtime::handle::Handle>::spawn_blocking";
 const EXCHANGE: &str = "unityrs_batch::http::response::exchange_charged";
@@ -444,7 +499,29 @@ const URL: &[&str] = &[
     "url-drip",
     "url-stop",
     "url-https",
+    "url-cut",
+    "url-noreply",
+    "url-https-cut",
 ];
+/// The scopes whose request is sent, the failing input's among them.
+const REQUEST: &[&str] = &[
+    "url",
+    "url-retry",
+    "url-redirect",
+    "url-drip",
+    "url-stop",
+    "url-https",
+    "url-cut",
+    "url-noreply",
+    "url-https-cut",
+    "url-fail",
+];
+/// The scopes over `https`.
+const TLS: &[&str] = &["url-https", "url-https-cut"];
+/// The scopes whose peer answers a try with a non-canonical status line.
+const STATUS: &[&str] = &["url-retry", "url-cut", "url-fail"];
+/// The scopes whose peer resets or closes a connection mid-reply.
+const CUT: &[&str] = &["url-cut", "url-noreply", "url-https-cut"];
 
 impl Exclusion {
     /// Whether a refusal's trace, whose innermost owner is `function`, is

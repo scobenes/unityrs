@@ -27,22 +27,26 @@ pub trait Values {
 pub struct Names(Box<[(Box<str>, HeaderName)]>);
 impl Names {
     pub(crate) fn from_spec(spec: &Spec) -> Self {
-        let mut names: Vec<(Box<str>, HeaderName)> = Vec::new();
-        for bundle in spec.bundles() {
-            for (name, _) in bundle.headers() {
-                let Err(at) = names.binary_search_by(|(n, _)| (**n).cmp(name)) else {
-                    continue;
-                };
+        // Every spelling once, sorted and deduplicated in one pass rather
+        // than kept sorted by insertion: a spec may repeat a name on each
+        // of many bundles.
+        let mut spellings: Vec<&str> = spec
+            .bundles()
+            .flat_map(|bundle| bundle.headers().map(|(name, _)| name))
+            .collect();
+        spellings.sort_unstable();
+        spellings.dedup();
+        let names = spellings
+            .into_iter()
+            .filter_map(|name| {
                 // An invalid name is left to `prepare`, which refuses it.
-                let Ok(parsed) = HeaderName::from_bytes(name.as_bytes()) else {
-                    continue;
-                };
+                let parsed = HeaderName::from_bytes(name.as_bytes()).ok()?;
                 let shared = parsed.clone();
                 drop(parsed);
-                names.insert(at, (name.into(), shared));
-            }
-        }
-        Self(names.into_boxed_slice())
+                Some((Box::from(name), shared))
+            })
+            .collect();
+        Self(names)
     }
     fn get(&self, name: &str) -> Option<&HeaderName> {
         self.0

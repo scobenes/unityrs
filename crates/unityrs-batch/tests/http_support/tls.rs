@@ -123,24 +123,19 @@ impl Peer {
         Self { address, done }
     }
     pub fn tls(response: Vec<u8>, hold_close: bool) -> Self {
-        Self::start(response, hold_close, false, false, LEAF, || ())
-    }
-    /// [`Self::tls`], calling `entered` first on the peer's thread (a
-    /// refusal sweep's exemption of its peer).
-    pub fn tls_entered(response: Vec<u8>, hold_close: bool, entered: fn()) -> Self {
-        Self::start(response, hold_close, false, false, LEAF, entered)
+        Self::start(response, hold_close, false, false, LEAF)
     }
     pub fn certificate(response: Vec<u8>, leaf: &'static [u8]) -> Self {
-        Self::start(response, false, false, false, leaf, || ())
+        Self::start(response, false, false, false, leaf)
     }
     pub fn tls_stress(response: Vec<u8>) -> Self {
-        Self::start(response, true, true, true, LEAF, || ())
+        Self::start(response, true, true, true, LEAF)
     }
     pub fn tls_large_chain(response: Vec<u8>) -> Self {
-        Self::start(response, true, true, false, LEAF, || ())
+        Self::start(response, true, true, false, LEAF)
     }
     pub fn tls_many_authorities(response: Vec<u8>) -> Self {
-        Self::start(response, true, false, true, LEAF, || ())
+        Self::start(response, true, false, true, LEAF)
     }
     pub fn twice(response: Vec<u8>) -> [Self; 2] {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -171,13 +166,11 @@ impl Peer {
         large_chain: bool,
         many_authorities: bool,
         leaf: &'static [u8],
-        entered: fn(),
     ) -> Self {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let address = listener.local_addr().unwrap();
         let (send, done) = mpsc::sync_channel(1);
         std::thread::spawn(move || {
-            entered();
             let config = Arc::new(server_config(large_chain, many_authorities, leaf));
             let _ = send.send(tls_peer(&listener, &response, hold_close, config, false));
         });
@@ -278,6 +271,12 @@ impl Write for HelloSocket {
             None => self.socket.flush(),
         }
     }
+}
+
+/// The peer's own configuration (the localhost leaf, TLS 1.3 and 1.2), for
+/// a scripted server of a test's own.
+pub fn server() -> Arc<ServerConfig> {
+    Arc::new(server_config(false, false, LEAF))
 }
 
 pub struct FixedResolver(pub Vec<SocketAddr>);

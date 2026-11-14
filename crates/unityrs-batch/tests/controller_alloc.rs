@@ -94,10 +94,6 @@ fn scopes() -> impl Iterator<Item = &'static str> {
     // A whole `unityrs batch` run with archives, armed at publication's
     // admission: winners and archive transfers, then the normal finisher.
     .chain(cfg!(feature = "test-hooks").then_some("archive"))
-    // A networked library run's staging: two URLs and a local copy, armed
-    // at the first dispatch through staging's end, in each of its scenes
-    // (`controller_support/url_scopes.rs`).
-    .chain(URL_SCOPES.iter().copied())
 }
 #[cfg(feature = "test-hooks")]
 const URL_SCOPES: &[&str] = url_scopes::SCOPES;
@@ -115,109 +111,175 @@ const URL_SCOPES: &[&str] = &[];
 #[test]
 #[cfg_attr(debug_assertions, ignore = "scale: run in release")]
 fn every_controller_allocation_is_fallible_after_the_running_head() {
-    let () = guard::finishes("controller refusal sweep", || {
-        let mut passed = true;
-        for kind in scopes() {
-            let output = refusal_child(kind, 0);
+    let _serial = sweeping();
+    let () = guard::finishes("controller refusal sweep", || sweep(scopes()));
+}
+/// A networked library run's staging: two URLs and a local copy, armed at
+/// the first dispatch through staging's end (or the run's teardown), in
+/// each of its scenes (`controller_support/url_scopes.rs`). Its own test,
+/// so its own guard.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "scale: run in release")]
+fn every_url_staging_allocation_is_fallible_after_the_first_dispatch() {
+    let _serial = sweeping();
+    let () = guard::finishes("url staging refusal sweep", || {
+        sweep(URL_SCOPES.iter().copied());
+    });
+}
+/// One sweep at a time: a url scope's reads follow its machine's load, and
+/// each guard times its own sweep, not a wait for the other.
+fn sweeping() -> std::sync::MutexGuard<'static, ()> {
+    static SWEEP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SWEEP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+/// Each scope's sites, one child a site, against the inventory.
+fn sweep(kinds: impl Iterator<Item = &'static str>) {
+    let mut passed = true;
+    // Every scope's reached entries, and the entries a timed scope leaves
+    // to them: each must be reached in some scope it names.
+    let mut reached_anywhere = std::collections::BTreeSet::new();
+    let mut deferred = std::collections::BTreeMap::new();
+    for kind in kinds {
+        let output = refusal_child(kind, 0);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let sites: usize = stdout
+            .lines()
+            .find_map(|s| s.strip_prefix(&format!("CONTROLLER_SITES kind={kind} sites=")))
+            .unwrap()
+            .parse()
+            .unwrap();
+        if kind.starts_with("progress") {
+            assert_eq!(
+                sites, 0,
+                "progress writer must never allocate after startup"
+            );
+            let output = refusal_child(kind, 1);
             assert!(
                 output.status.success(),
                 "{}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            let stdout = String::from_utf8(output.stdout).unwrap();
-            let sites: usize = stdout
-                .lines()
-                .find_map(|s| s.strip_prefix(&format!("CONTROLLER_SITES kind={kind} sites=")))
-                .unwrap()
-                .parse()
-                .unwrap();
-            if kind.starts_with("progress") {
-                assert_eq!(
-                    sites, 0,
-                    "progress writer must never allocate after startup"
+            println!(
+                "CONTROLLER_RESULT kind={kind} sites=0 fallible=0 excluded=0 functions=0 unreached=0 failures=0"
+            );
+            continue;
+        }
+        let expected = refusals::INVENTORY
+            .iter()
+            .filter(|e| e.applies(kind))
+            .collect::<Vec<_>>();
+        let Tally {
+            reached,
+            excluded,
+            mut failures,
+            unreached,
+        } = tally(kind, sites, &expected);
+        let fallible = sites - excluded - failures - unreached;
+        for entry in &expected {
+            // A timed scope's reach follows its peer's timing and the
+            // machine's load: a fixed scope holds each entry to staleness,
+            // and a timed one its own entries (the failing run's
+            // teardown), leaving the rest to the sweep's other scopes.
+            if reached.contains(entry.name) {
+                continue;
+            }
+            if !timed(kind) || entry.scopes == [kind] {
+                failures += 1;
+                eprintln!(
+                    "STALE_CR10 kind={kind} functions={:?} name={}",
+                    entry.functions, entry.name
                 );
-                let output = refusal_child(kind, 1);
-                assert!(
-                    output.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+            } else {
+                deferred.insert(entry.name, *entry);
+            }
+        }
+        reached_anywhere.extend(reached.iter().copied());
+        passed &= failures == 0;
+        println!(
+            "CONTROLLER_RESULT kind={kind} sites={sites} fallible={fallible} excluded={excluded} functions={} unreached={unreached} failures={failures}",
+            reached.len()
+        );
+    }
+    for entry in deferred.into_values() {
+        if !reached_anywhere.contains(entry.name) {
+            passed = false;
+            eprintln!(
+                "STALE_CR10 kind=any functions={:?} name={}",
+                entry.functions, entry.name
+            );
+        }
+    }
+    assert!(
+        passed,
+        "a post-head controller allocation did not report host_memory"
+    );
+}
+/// One scope's children, classified: the entries their aborts reached,
+/// and how many were excluded, failed or unreached.
+struct Tally {
+    reached: std::collections::BTreeSet<&'static str>,
+    excluded: usize,
+    failures: usize,
+    unreached: usize,
+}
+fn tally(kind: &str, sites: usize, expected: &[&'static refusals::Exclusion]) -> Tally {
+    let mut reached = std::collections::BTreeSet::new();
+    let mut excluded = 0;
+    let mut failures = 0;
+    let mut unreached = 0;
+    for (site, output) in children(kind, sites) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if unreached_site(kind, site, &output) {
+            unreached += 1;
+            continue;
+        }
+        if output.status.signal() == Some(libc::SIGABRT) {
+            // Resolve the first owning function, never an ancestor or a
+            // core/export type mentioned in a std generic argument.
+            let function = refusals::innermost(&stderr);
+            if let Some(entry) = expected
+                .iter()
+                .find(|e| e.admits(function.as_deref(), &stderr))
+            {
+                reached.insert(entry.name);
+                excluded += 1;
                 println!(
-                    "CONTROLLER_RESULT kind={kind} sites=0 fallible=0 excluded=0 functions=0 unreached=0 failures=0"
+                    "CR10_EXCLUDED kind={kind} site={site} function={} name={}",
+                    function.as_deref().unwrap_or_default(),
+                    entry.name
                 );
                 continue;
             }
-            let expected = refusals::INVENTORY
-                .iter()
-                .filter(|e| e.applies(kind))
-                .collect::<Vec<_>>();
-            let mut reached = std::collections::BTreeSet::new();
-            let mut excluded = 0;
-            let mut failures = 0;
-            let mut unreached = 0;
-            for (site, output) in children(kind, sites) {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if unreached_site(kind, site, &output) {
-                    unreached += 1;
-                    continue;
-                }
-                if output.status.signal() == Some(libc::SIGABRT) {
-                    // Resolve the first owning function, never an ancestor or a
-                    // core/export type mentioned in a std generic argument.
-                    let function = refusals::innermost(&stderr);
-                    if let Some(entry) = expected
-                        .iter()
-                        .find(|e| e.admits(function.as_deref(), &stderr))
-                    {
-                        reached.insert(entry.name);
-                        excluded += 1;
-                        println!(
-                            "CR10_EXCLUDED kind={kind} site={site} function={} name={}",
-                            function.as_deref().unwrap_or_default(),
-                            entry.name
-                        );
-                        continue;
-                    }
-                    failures += 1;
-                    eprintln!(
-                        "UNLISTED_ABORT kind={kind} site={site} function={function:?} allocating={:?} callee={:?} status={}\n{stderr}",
-                        refusals::allocating(&stderr),
-                        refusals::callee(&stderr),
-                        output.status
-                    );
-                } else if !output.status.success()
-                    || !stderr.contains(&format!("REFUSED_ALLOCATION site={site} size="))
-                {
-                    failures += 1;
-                    eprintln!(
-                        "UNHANDLED_REFUSAL kind={kind} site={site} status={}\n{stderr}",
-                        output.status
-                    );
-                }
-            }
-            let fallible = sites - excluded - failures - unreached;
-            for entry in &expected {
-                // A timed scope's reach follows its peer's timing; the
-                // fixed scopes hold each entry to staleness.
-                if !reached.contains(entry.name) && !timed(kind) {
-                    failures += 1;
-                    eprintln!(
-                        "STALE_CR10 kind={kind} functions={:?} name={}",
-                        entry.functions, entry.name
-                    );
-                }
-            }
-            passed &= failures == 0;
-            println!(
-                "CONTROLLER_RESULT kind={kind} sites={sites} fallible={fallible} excluded={excluded} functions={} unreached={unreached} failures={failures}",
-                reached.len()
+            failures += 1;
+            eprintln!(
+                "UNLISTED_ABORT kind={kind} site={site} function={function:?} allocating={:?} callee={:?} status={}\n{stderr}",
+                refusals::allocating(&stderr),
+                refusals::callee(&stderr),
+                output.status
+            );
+        } else if !output.status.success()
+            || !stderr.contains(&format!("REFUSED_ALLOCATION site={site} size="))
+        {
+            failures += 1;
+            eprintln!(
+                "UNHANDLED_REFUSAL kind={kind} site={site} status={}\n{stderr}",
+                output.status
             );
         }
-        assert!(
-            passed,
-            "a post-head controller allocation did not report host_memory"
-        );
-    });
+    }
+    Tally {
+        reached,
+        excluded,
+        failures,
+        unreached,
+    }
 }
 /// A timed url scope's child that allocated fewer than `site` times.
 fn unreached_site(kind: &str, site: usize, output: &std::process::Output) -> bool {
