@@ -112,11 +112,15 @@ fn measured_case(
     )?;
     manifest::assemble(
         &manifest::rows::Context {
-            prepared: &scene.prepared,
+            facts: &scene.prepared,
             inputs: &inputs,
-            handoff: &scene.handoff,
-            workspace: &scene.workspace,
-            frozen: &frozen,
+            selected: Some(manifest::rows::Selected {
+                handoff: &scene.handoff,
+                workspace: &scene.workspace,
+                outcomes: frozen.outcomes,
+            }),
+            stop: None,
+            found: None,
             account: finishing,
             stopped: &|| false,
             taken_at: std::time::Instant::now(),

@@ -66,14 +66,20 @@ fn every_engine_wait_has_a_bounded_or_idle_role_and_dispatch_unlocks_before_core
         ("controller/failure.rs", ".wait(", 1), // W1/W2 via Execution's descriptor poll
         ("controller/mod.rs", ".wait(", 1),     // W1/W2 via Execution's descriptor poll
         ("controller/passes.rs", ".wait(", 2),  // W1/W2 via controller's wait adapter
-        ("execution.rs", ".lock(", 9), // W20 init and startup gate priming/wait/release, W3 receive, results
-        ("execution.rs", ".recv(", 1), // W3 idle pool drive, lock drops before job()
-        ("execution.rs", ".recv_timeout(", 5), // W20: end/pool/worker priming and startup deadlines
-        ("execution.rs", ".wait(", 1), // W20 shared parking gate; Drop always releases on setup failure
-        ("execution.rs", ".wait_timeout(", 1), // zero-duration startup priming
-        ("execution.rs", "worker.join(", 2), // explicit quiesce only: extraction and pool drives
-        ("worker.rs", ".lock(", 2),    // W3 receive, and moving a completed owner
-        ("worker.rs", ".recv(", 1),    // W3 idle worker
+        // W20 init, startup gate priming/wait/release, results, and the
+        // pool prewarm's held count (a task's and the constructor's)
+        ("execution.rs", ".lock(", 10),
+        ("execution.rs", ".recv_timeout(", 3), // W20: end/worker priming and startup deadline
+        // W20 shared parking gate (Drop always releases on setup failure),
+        // and a prewarm task held until every pool thread has started
+        ("execution.rs", ".wait(", 2),
+        // zero-duration startup priming; the prewarm's one absolute second
+        ("execution.rs", ".wait_timeout(", 2),
+        ("execution.rs", "worker.join(", 1), // explicit quiesce only: extraction
+        // W20: the prewarm's queued no-ops draining, within its one second
+        ("execution.rs", "thread::yield_now(", 1),
+        ("worker.rs", ".lock(", 2), // W3 receive, and moving a completed owner
+        ("worker.rs", ".recv(", 1), // W3 idle worker
         ("sys/wake.rs", "libc::poll(", 1), // W1/W2: 1 s, stop and end descriptors
         ("sys/lifecycle.rs", "libc::poll(", 1), // W9: BOOTTIME timer, bounded fallback
         ("sys/reset.rs", "libc::poll(", 1), // zero-time disconnect inspection
@@ -97,19 +103,11 @@ fn every_engine_wait_has_a_bounded_or_idle_role_and_dispatch_unlocks_before_core
     assert!(
         !lock.contains("execute(") && !lock.contains("run_attempt(") && !lock.contains("run_peek(")
     );
+    // One pool: tasks go to the controller runtime's blocking threads,
+    // and no thread of the Execution's own drives a task queue.
     let pool = live_code(&std::fs::read_to_string(root.join("execution.rs")).unwrap());
-    let receive = pool
-        .split("let job = match receive.lock()")
-        .nth(1)
-        .unwrap()
-        .split("let Ok(job)")
-        .next()
-        .unwrap();
-    assert!(receive.contains("receiver.recv()"));
-    assert!(
-        !receive.contains("job()"),
-        "pool receive guard must drop before work"
-    );
+    assert!(pool.contains("self.pool.spawn_blocking("));
+    assert!(!pool.contains("batch-pool"));
     let mut mutant = BTreeMap::new();
     inventory(
         "worker.rs",

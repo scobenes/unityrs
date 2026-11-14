@@ -18,6 +18,18 @@ pub enum SpoolDetail {
     Enospc,
     Edquot,
 }
+impl SpoolDetail {
+    /// Its name in a head's `stop_detail` (`BATCH_SPEC.md` 7.3).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::SizeBytes => "size_bytes",
+            Self::Reserve => "reserve",
+            Self::Enospc => "ENOSPC",
+            Self::Edquot => "EDQUOT",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stop {

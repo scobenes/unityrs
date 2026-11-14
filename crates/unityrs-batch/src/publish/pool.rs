@@ -7,7 +7,7 @@ use crate::{
     control::{Control, Culprit},
     execution::Execution,
     phase::{self, Account, Buffer, Error},
-    phase1::PreparedRun,
+    phase1::Facts,
     sink::directory::Directory,
     spool::{FileSystem, workspace::Workspace},
     sys::{Lock, Shared},
@@ -18,8 +18,10 @@ use crate::{
 };
 use std::{path::PathBuf, sync::Arc};
 
+/// Publication's shared owner. The frozen facts are read without a lock, so
+/// no filesystem open is ever made under one (a held open blocks nobody).
 pub struct Owned {
-    pub prepared: Lock<PreparedRun>,
+    pub facts: Shared<Facts>,
     pub done: PathBuf,
     pub workspace: Workspace,
     pub handoff: winners::Handoff,
@@ -217,8 +219,7 @@ fn wave(
 /// the loose working set and archive drives the archive envelope; the waves
 /// never overlap, so each is bounded by the account on its own.
 fn drives(owned: &Owned, concurrency: u32) -> Result<(u64, [u64; 2]), Error> {
-    let declared =
-        u64::try_from(owned.prepared.lock().spec.archives.len()).map_err(|_| Error::internal())?;
+    let declared = u64::try_from(owned.facts.spec.archives.len()).map_err(|_| Error::internal())?;
     if (declared == 0) != owned.handoff.metadata.is_none() {
         return Err(Error::internal());
     }
@@ -242,7 +243,7 @@ fn drives(owned: &Owned, concurrency: u32) -> Result<(u64, [u64; 2]), Error> {
 fn drive(owned: &Owned, queue: &Lock<Queue>, archives: bool) -> Result<Report, Error> {
     let _overhead = owned.account.meter().charge(OVERHEAD)?;
     let stopped = || owned.control.stopped();
-    let spec = owned.prepared.lock().spec.clone();
+    let spec = &owned.facts.spec;
     let cx = Context {
         handoff: &owned.handoff,
         workspace: &owned.workspace,
@@ -335,10 +336,9 @@ fn archive_one(
 
 impl payload::Payloads for Owned {
     fn open(&self, input: u32, plan_index: u64) -> Result<Box<dyn std::io::Read + Send>, Error> {
-        let prepared = self.prepared.lock();
         payload::Committed {
             done: &self.done,
-            states: &prepared.inputs,
+            states: &self.facts.inputs,
             fs: &*self.fs,
         }
         .open(input, plan_index)

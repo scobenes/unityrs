@@ -16,7 +16,7 @@ use crate::{
         stream::{By, Cursor},
     },
 };
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use unityrs_core::limits::heap_cost;
 
 pub const BUFFER: usize = 16 * 1024 * 1024;
@@ -34,14 +34,23 @@ pub const fn working_set(archives: bool) -> u64 {
         WORKING_SET
     }
 }
+/// The commit gate: free, held by one commit, or closed for good by the
+/// controller's hand-over (2.9), which waits for an in-flight commit (W15).
 #[derive(Default)]
-pub struct Gate(AtomicBool);
+pub struct Gate(AtomicU8);
+const FREE: u8 = 0;
+const HELD: u8 = 1;
+const CLOSED: u8 = 2;
 // std's mutex can lazily allocate platform storage at its first lock. This
 // small non-reentrant mutex has no lazy heap, including on non-Linux hosts.
-struct Guard<'a>(&'a Gate);
+// A closed gate hands out an empty guard: it closes only on a stop, so the
+// stop check every holder makes next refuses the commit.
+struct Guard<'a>(Option<&'a Gate>);
 impl Drop for Guard<'_> {
     fn drop(&mut self) {
-        self.0.0.store(false, Ordering::Release);
+        if let Some(gate) = self.0 {
+            gate.0.store(FREE, Ordering::Release);
+        }
     }
 }
 pub struct Frozen<'a> {
@@ -50,20 +59,35 @@ pub struct Frozen<'a> {
 }
 impl Gate {
     fn lock(&self) -> Guard<'_> {
-        while self
-            .0
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+        loop {
+            match self
+                .0
+                .compare_exchange(FREE, HELD, Ordering::Acquire, Ordering::Relaxed)
+            {
+                Ok(_) => return Guard(Some(self)),
+                Err(CLOSED) => return Guard(None),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
+            }
         }
-        Guard(self)
     }
     pub fn freeze<'a>(&'a self, outcomes: &'a Outcomes) -> Result<Frozen<'a>, Error> {
         Ok(Frozen {
             _guard: self.lock(),
             outcomes,
         })
+    }
+    /// The hand-over's close: wait for a commit under way, then never
+    /// reopen. Every outcome a commit wrote is in the files once this returns.
+    pub fn close(&self) {
+        while let Err(state) =
+            self.0
+                .compare_exchange(FREE, CLOSED, Ordering::Acquire, Ordering::Relaxed)
+        {
+            if state == CLOSED {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

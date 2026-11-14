@@ -411,7 +411,7 @@ fn pool_drives_publish_archives_within_the_archive_envelope() {
             directory_support::preflight(&sink, 1, directory_support::fs(true)).unwrap();
         let outcomes = scene.outcomes("out", &Host);
         let owned = Arc::new(publish::Owned {
-            prepared: unityrs_batch::sys::Lock::new(scene.prepared),
+            facts: unityrs_batch::sys::Shared::new(scene.prepared).unwrap(),
             done: scene.done,
             workspace: scene.workspace,
             handoff: scene.handoff,

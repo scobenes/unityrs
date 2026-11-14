@@ -4740,6 +4740,7 @@ Used by:
 - unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-dump 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-export 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-gltf 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-imageio 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-mesh 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-meshdecode 0.0.1 (https://github.com/scobenes/unityrs)

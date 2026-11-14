@@ -258,3 +258,50 @@ fn failed_archive_constructor_accepts_only_failure_codes() {
         assert_eq!(Archive::failed(code).unwrap().code, code);
     }
 }
+
+/// The stopped finisher's view: a file whose zero-writes never ran, or ran
+/// short, reads `not_written` past its end; what was written reads back.
+#[test]
+fn a_missing_or_short_outcome_file_reads_not_written() {
+    use outcomes::Read;
+    let scratch = Scratch::new("outcome-view");
+    let view = outcomes::View::open(scratch.path(), 3, 2, &spool::Host).unwrap();
+    for index in 0..3 {
+        assert_eq!(view.loose(index).unwrap(), Code::NotWritten);
+    }
+    assert_eq!(view.archive(1).unwrap(), Archive::default());
+    assert!(view.loose(3).is_err() && view.archive(2).is_err());
+
+    let counter = Counter::new(1 << 20, 0, 4096).unwrap();
+    let out = Outcomes::create(
+        scratch.path(),
+        3,
+        2,
+        &counter,
+        &spool::Host,
+        &[0; 128],
+        &|| false,
+    )
+    .unwrap();
+    out.set(0, Code::Written).unwrap();
+    out.set(1, Code::Present).unwrap();
+    drop(out);
+    // Cut both files short: the loose file after its second record, the
+    // archive file inside its first.
+    let cut = |name: &str, len: u64| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(scratch.join(name))
+            .unwrap()
+            .set_len(len)
+            .unwrap();
+    };
+    cut("outcomes", 2);
+    cut("archive_outcomes", 64);
+    let view = outcomes::View::open(scratch.path(), 3, 2, &spool::Host).unwrap();
+    assert_eq!(view.loose(0).unwrap(), Code::Written);
+    assert_eq!(view.loose(1).unwrap(), Code::Present);
+    assert_eq!(view.loose(2).unwrap(), Code::NotWritten);
+    assert_eq!(view.archive(0).unwrap(), Archive::default());
+    assert_eq!(view.archive(1).unwrap(), Archive::default());
+}

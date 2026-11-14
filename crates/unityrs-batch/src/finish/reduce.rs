@@ -1,5 +1,5 @@
 use crate::{
-    manifest::rows::Context,
+    manifest::rows::{Context, Selected},
     outcomes,
     phase::Error,
     reason::Code,
@@ -8,8 +8,9 @@ use crate::{
 };
 
 pub(super) fn normal(cx: &Context<'_>) -> Result<Code, Error> {
+    let sel = cx.selected.ok_or_else(Error::internal)?;
     let mut code = Code::Complete;
-    for bundle in &cx.prepared.bundles {
+    for bundle in &cx.facts.bundles {
         if let Some(Failure::Data(failure)) = bundle.stage.and_then(|s| s.failure) {
             code = code.worst(if matches!(failure, DataFailure::InputBytes(_)) {
                 Code::Budget
@@ -18,13 +19,13 @@ pub(super) fn normal(cx: &Context<'_>) -> Result<Code, Error> {
             });
         }
     }
-    for state in &cx.prepared.inputs {
+    for state in &cx.facts.inputs {
         if let Some(received) = state.received {
             code = code.worst(received.code);
         }
         if let Some(bundle) = state.failure_bundle {
             let facts = cx
-                .prepared
+                .facts
                 .bundles
                 .get(usize::try_from(bundle).map_err(|_| Error::internal())?)
                 .ok_or_else(Error::internal)?;
@@ -37,8 +38,8 @@ pub(super) fn normal(cx: &Context<'_>) -> Result<Code, Error> {
         }
     }
     let mut outputs = Reader::open(
-        cx.workspace,
-        cx.handoff.outputs.as_ref(),
+        sel.workspace,
+        sel.handoff.outputs.as_ref(),
         File::Outputs,
         cx.account.meter(),
         cx.stopped,
@@ -55,11 +56,11 @@ pub(super) fn normal(cx: &Context<'_>) -> Result<Code, Error> {
             code = code.worst(Code::CompleteWithSkips);
         }
     }
-    if !cx.handoff.publication_blocked {
-        for index in 0..cx.handoff.counts.winners {
+    if !sel.handoff.publication_blocked {
+        for index in 0..sel.handoff.counts.winners {
             crate::phase::check(cx.stopped)?;
             if !matches!(
-                cx.frozen.outcomes.loose(index)?,
+                sel.outcomes.loose(index)?,
                 outcomes::Code::Written | outcomes::Code::Present
             ) {
                 code = code.worst(Code::Incomplete);
@@ -69,23 +70,23 @@ pub(super) fn normal(cx: &Context<'_>) -> Result<Code, Error> {
     // Read each family separately so its charged buffers are released before
     // the next stream; archive outcomes use declared indices, not key order.
     drop(outputs);
-    Ok(code.worst(archives(cx)?).worst(members(cx)?))
+    Ok(code.worst(archives(cx, sel)?).worst(members(cx, sel)?))
 }
 
-fn archives(cx: &Context<'_>) -> Result<Code, Error> {
+fn archives(cx: &Context<'_>, sel: Selected<'_>) -> Result<Code, Error> {
     let mut rows = Reader::open(
-        cx.workspace,
-        cx.handoff.archives.as_ref(),
+        sel.workspace,
+        sel.handoff.archives.as_ref(),
         File::Archives,
         cx.account.meter(),
         cx.stopped,
     )?;
-    let mut metadata = cx
+    let mut metadata = sel
         .handoff
         .metadata
         .as_ref()
         .map(|m| {
-            crate::winners::archives::Reader::open(cx.workspace, m, cx.account.meter(), cx.stopped)
+            crate::winners::archives::Reader::open(sel.workspace, m, cx.account.meter(), cx.stopped)
         })
         .transpose()?;
     let mut code = Code::Complete;
@@ -104,7 +105,7 @@ fn archives(cx: &Context<'_>) -> Result<Code, Error> {
         }
         if row.status == "not_written"
             && !matches!(
-                cx.frozen.outcomes.archive(u64::from(archive.index))?.code,
+                sel.outcomes.archive(u64::from(archive.index))?.code,
                 outcomes::Code::Written | outcomes::Code::Present
             )
         {
@@ -123,10 +124,10 @@ fn archives(cx: &Context<'_>) -> Result<Code, Error> {
     Ok(code)
 }
 
-fn members(cx: &Context<'_>) -> Result<Code, Error> {
+fn members(cx: &Context<'_>, sel: Selected<'_>) -> Result<Code, Error> {
     let mut rows = Reader::open(
-        cx.workspace,
-        cx.handoff.archive_members.as_ref(),
+        sel.workspace,
+        sel.handoff.archive_members.as_ref(),
         File::Members,
         cx.account.meter(),
         cx.stopped,
