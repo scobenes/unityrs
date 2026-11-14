@@ -501,7 +501,7 @@ impl<'a> Attempt<'a> {
             .get(i)
             .and_then(|x| x.obj.file().target_platform())
             .unwrap_or(UNKNOWN_PLATFORM);
-        read::answer(t, platform)
+        read::answer(t, platform, self.options.formats)
     }
 
     /// Texture `i`'s answer at the plan: its format, or the skip (its

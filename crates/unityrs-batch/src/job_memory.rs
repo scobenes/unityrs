@@ -28,6 +28,8 @@ impl Memory {
 pub(crate) struct Plan {
     pub m: u64,
     pub d: u64,
+    /// The UnityCN key preflight read, set in every context below.
+    pub key: Option<crate::start::key::UnityCnKey>,
     pub peeks: Vec<Memory>,
     pub attempts: Vec<Memory>,
     pub failures: Vec<Memory>,
@@ -38,6 +40,7 @@ impl Plan {
         Ok(Self {
             m: spec.max_decoded_bytes,
             d: spec.dep_cache_bytes,
+            key: None,
             peeks: (0..spec.bundle_count())
                 .map(|_| Memory::new(spec.max_decoded_bytes, 0, true, None))
                 .collect(),
@@ -63,6 +66,23 @@ impl Plan {
                 })
                 .collect::<Result<_, crate::phase::Error>>()?,
         })
+    }
+    /// Sets `key` in every load's options: before the plan is shared (its
+    /// contexts' only owner is this plan), else `Err`.
+    pub fn install_key(&mut self, key: crate::start::key::UnityCnKey) -> Result<(), ()> {
+        for memory in self
+            .peeks
+            .iter_mut()
+            .chain(&mut self.attempts)
+            .chain(&mut self.failures)
+        {
+            Arc::get_mut(&mut memory.context)
+                .ok_or(())?
+                .set_assetbundle_decrypt_key(key.bytes())
+                .map_err(|_| ())?;
+        }
+        self.key = Some(key);
+        Ok(())
     }
     pub fn observe(&self, usage: &Arc<AtomicU64>) {
         for memory in self

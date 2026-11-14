@@ -1,13 +1,14 @@
-//! The job spec, version 1 (`docs/BATCH_SPEC.md` section 1), and phase 1's
-//! validation (`docs/plans/batch.md` 2.1, 2.11 step 2).
+//! The job spec, versions 1 and 2 (`docs/BATCH_SPEC.md` section 1), and
+//! phase 1's validation (`docs/plans/batch.md` 2.1, 2.11 step 2).
 //!
 //! - [`read::read_job`]: `JOB.json`'s bytes, by the document's own rules.
 //! - [`parse`]: the bytes to a validated [`Validated`]: the typed
 //!   [`model::Spec`] with its defaults and the [`crate::view::Graph`] of its
 //!   `deps`, or the first [`BadSpec`] by section 10's order.
 //! - [`load`]: both, the bytes dropped when the parse ends.
-//! - [`fields`]: the parser's field table, which
-//!   `docs/batch/spec-v1.schema.json` must equal (`tests/schema.rs`).
+//! - [`fields`]: the parser's field tables, which
+//!   `docs/batch/spec-v1.schema.json` and `docs/batch/spec-v2.schema.json`
+//!   must equal (`tests/schema.rs`).
 //!
 //! Templates and literal keys stay raw strings in the spec; their rules
 //! (`template`, `key(<rule>)`) are checked in section 10's order through
@@ -19,7 +20,7 @@ pub mod read;
 pub mod store;
 
 mod build;
-mod formats;
+pub(crate) mod formats;
 pub(crate) mod node;
 mod parse;
 pub(crate) mod validate;
@@ -30,14 +31,16 @@ use std::path::Path;
 use crate::reason::KeyRule;
 use crate::view::Graph;
 
-/// The highest `spec_version` this crate reads.
-pub const SPEC_VERSION: u64 = 1;
+/// The highest `spec_version` this crate reads; it reads every version
+/// from 1 up to it.
+pub const SPEC_VERSION: u64 = 2;
 
-/// `docs/batch/spec-v1.schema.json`, byte for byte: what `unityrs batch
-/// --schema` prints. `tests/schema.rs` holds it to the parser's tables.
+/// `docs/batch/spec-v2.schema.json`, byte for byte, the schema of the
+/// highest version: what `unityrs batch --schema` prints. `tests/schema.rs`
+/// holds it, and version 1's file, to the parser's tables.
 pub const SCHEMA: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/batch/spec-v1.schema.json"
+    "/../../docs/batch/spec-v2.schema.json"
 ));
 
 /// The largest `JOB.json`, in bytes (`docs/BATCH_SPEC.md` section 1).
@@ -327,7 +330,7 @@ pub fn parse_with(bytes: Vec<u8>, view_work: u64) -> Result<Validated, BadSpec> 
         if let Some(e) = parsed.err {
             return Err(e);
         }
-        build::spec(top, parsed.store)?
+        build::spec(top, parsed.store, parsed.spec_version)?
     };
     spec.strings = text;
     #[cfg(test)]

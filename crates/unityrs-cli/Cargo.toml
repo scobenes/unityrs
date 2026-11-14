@@ -22,9 +22,14 @@ path = "src/main.rs"
 libc = "=0.2.191"
 unityrs-batch = { path = "../unityrs-batch" }
 unityrs-core = { path = "../unityrs-core" }
+unityrs-mesh = { path = "../unityrs-mesh" }
+unityrs-tpk = { path = "../unityrs-tpk" }
 unityrs-dump = { path = "../unityrs-dump" }
 
 [dev-dependencies]
+# The core's synthetic UnityCN encryptor, which the batch run harness
+# (`unityrs-batch/tests/run_support`) builds the encrypted golden with.
+aes = "=0.8.4"
 serde_json = "=1.0.154"
 unityrs-testkit = { path = "../unityrs-testkit" }
 

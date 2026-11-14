@@ -163,6 +163,7 @@ pub fn bundle(
             plain: &plaintext(),
             name: b"synthetic.resS",
             tables: Tables::default(),
+            flags: 0,
         },
     )
 }
@@ -171,6 +172,29 @@ struct Content<'a> {
     plain: &'a [u8],
     name: &'a [u8],
     tables: Tables,
+    /// The directory row's flags (4: a SerializedFile).
+    flags: u32,
+}
+
+/// An encrypted bundle (both levels encrypted, the default tables) of one
+/// entry `name` holding `plain`, flagged as a SerializedFile: the batch run
+/// harness's encrypted golden (`unityrs-batch/tests/run_support`).
+#[allow(dead_code)]
+pub fn serialized_bundle(plain: &[u8], name: &[u8]) -> Vec<u8> {
+    bundle_with(
+        b"2022.3.0f1",
+        7,
+        0x1000,
+        true,
+        false,
+        false,
+        Content {
+            plain,
+            name,
+            tables: Tables::default(),
+            flags: 4,
+        },
+    )
 }
 
 fn bundle_with(
@@ -186,6 +210,7 @@ fn bundle_with(
         plain,
         name,
         tables,
+        flags,
     } = content;
     let mut info = ByteWriter::be();
     let chunks: Vec<_> = plain.chunks(768).collect();
@@ -210,7 +235,7 @@ fn bundle_with(
     info.i32(1)
         .i64(0)
         .i64(i64::try_from(plain.len()).unwrap())
-        .u32(0)
+        .u32(flags)
         .cstr(name);
     let info = info.into_inner();
     let info_codec = if info_encrypted {
@@ -266,6 +291,7 @@ pub fn nested_bundle() -> Vec<u8> {
                 index: std::array::from_fn(|i| u8::try_from((i * 5 + 7) % 16).unwrap()),
                 substitute: std::array::from_fn(|i| u8::try_from((i * 3 + 2) % 16).unwrap()),
             },
+            flags: 0,
         },
     );
     bundle_with(
@@ -279,6 +305,7 @@ pub fn nested_bundle() -> Vec<u8> {
             plain: &inner,
             name: b"inner.bundle",
             tables: Tables::default(),
+            flags: 0,
         },
     )
 }

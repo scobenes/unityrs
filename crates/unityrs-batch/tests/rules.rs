@@ -262,7 +262,7 @@ fn spec_version_rules() {
         "type /spec_version"
     );
     assert_eq!(
-        refused(&with(|v| v["spec_version"] = json!(2))),
+        refused(&with(|v| v["spec_version"] = json!(3))),
         "version /spec_version"
     );
     assert_eq!(

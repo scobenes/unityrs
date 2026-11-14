@@ -40,6 +40,7 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `sprites_kind.py` | the `sprites` output kind's reference (`docs/plans/extract.md` E17): one PNG per Sprite of one input's view, its plan and sprite groups by `docs/BATCH_SPEC.md` 4.4, each image UnityPy 1.25.2's `SpriteHelper` and Pillow 9.5.0's PNG writer; a library and a command |
 | `sprites_scenes.py` | unityrs-testkit's `sprites` scenes, which cargo builds, for `tools/fixtures/sprites.py` |
 | `gltf_check.py` | L6g's independent check of a written GLB (`docs/plans/static3d.md` sections 2.4 and 3.2): reads the accessors with the standard library and compares them with MeshHandler's rows in Unity coordinates, X mirrored, V flipped and winding reversed, after the writer's documented normalisation; no exporter is its oracle |
+| `mesh_samples.py` | L6 (`docs/plans/static3d.md`): every Mesh in the pinned UnityPy samples, its arrays, type tags, triangles and raw OBJ text against `unityrs-mesh`'s `mesh_l6` example, with section 19.1's corrected decoding; prints aggregate counts only; needs the oracle stack |
 | `ruff.toml` | the lint and format settings for this folder (`uvx ruff check`, `uvx ruff format`) |
 | `tests/` | unittest self-tests; `test_readme.py` checks that this table lists every file in this folder, and no other |
 

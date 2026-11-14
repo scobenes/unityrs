@@ -1,10 +1,14 @@
-//! The parser's field table: every object of version 1 with its members,
-//! types, presence, defaults, ranges, closed values and formats, as
-//! `docs/BATCH_SPEC.md` section 1's tables give them.
+//! The parser's field tables: every object of each version with its
+//! members, types, presence, defaults, ranges, closed values and formats,
+//! as `docs/BATCH_SPEC.md` section 1's tables give them: [`TOP`] for
+//! version 1 and [`TOP_V2`] for version 2, which adds
+//! `outputs.formats`, `outputs.image` and `unitycn_key` and is version 1's
+//! otherwise ([`top`]).
 //!
 //! Validation's per-value pass (`validate`) walks the document against
-//! this table, and `tests/schema.rs` holds `docs/batch/spec-v1.schema.json`
-//! equal to it: each object's properties, required members and
+//! the table of its `spec_version`, and `tests/schema.rs` holds
+//! `docs/batch/spec-v1.schema.json` and `docs/batch/spec-v2.schema.json`
+//! equal to them: each object's properties, required members and
 //! `additionalProperties: false`, each value's bounds, closed values and
 //! patterns. A length here is in bytes; the schema states it as a
 //! code-point bound, which is looser (section 1). What the schema cannot
@@ -14,6 +18,8 @@
 /// The largest integer any field takes, 2^53 - 1 (`BATCH_SPEC`'s
 /// conventions).
 pub const MAX_INT: u64 = (1 << 53) - 1;
+
+use unityrs_export::ngui::TEXTURE_FORMATS;
 
 const MIB: u64 = 1 << 20;
 
@@ -63,6 +69,12 @@ pub enum Ty {
     Headers,
     /// The sink: [`DIRECTORY`] or [`OBJECT_STORE`], by its `kind`.
     Sink,
+    /// A `TextureFormat` member name of UnityPy 1.25.2 that this binary
+    /// decodes (`outputs.formats`' items, version 2): any other string is
+    /// `range`. The schema states UnityPy's names as its `enum`
+    /// ([`texture_format_names`]); which of them this binary decodes is the
+    /// parser's alone (`docs/BATCH_SPEC.md` 1.5).
+    TextureFormat,
 }
 
 /// A string's constraints.
@@ -376,11 +388,42 @@ pub static ATLASES: [Field; 4] = [
     with_default("skip_name_suffixes", Ty::Array(&SKIP_NAME_SUFFIXES), "[]"),
 ];
 
-/// `outputs` (1.5).
+/// `outputs` (1.5), version 1.
 pub static OUTPUTS: [Field; 3] = [
     field("textures", Ty::Object(&KEY_ONLY)),
     field("sprites", Ty::Object(&KEY_ONLY)),
     field("atlases", Ty::Object(&ATLASES)),
+];
+
+/// UnityPy 1.25.2's `TextureFormat` member names, in its order: the
+/// schema's `enum` for an item of `outputs.formats`.
+pub fn texture_format_names() -> impl Iterator<Item = &'static str> {
+    TEXTURE_FORMATS.iter().map(|(_, name)| *name)
+}
+
+/// `outputs.formats` (1.5, version 2): unique names, at least one.
+pub static FORMATS: Array = Array {
+    item: Ty::TextureFormat,
+    min: 1,
+    max: None,
+    unique: true,
+};
+
+/// `outputs.formats`' default: version 1's five, in `TextureFormat` order.
+pub const DEFAULT_FORMATS: &str = r#"["RGB24","RGBA32","DXT1","DXT5","BC7"]"#;
+
+/// `outputs.image`'s values in this binary. `png_fast` and `webp` are
+/// reserved for later releases (`docs/BATCH_SPEC.md` 1.5), and `range`
+/// until then, as any other string is.
+pub const IMAGES: &[&str] = &["png"];
+
+/// `outputs` (1.5), version 2.
+pub static OUTPUTS_V2: [Field; 5] = [
+    field("textures", Ty::Object(&KEY_ONLY)),
+    field("sprites", Ty::Object(&KEY_ONLY)),
+    field("atlases", Ty::Object(&ATLASES)),
+    with_default("formats", Ty::Array(&FORMATS), DEFAULT_FORMATS),
+    with_default("image", one_of(IMAGES), r#""png""#),
 ];
 
 /// A Prefer (1.5): each field nullable, at least one not null
@@ -441,7 +484,7 @@ pub static ARCHIVE: [Field; 2] = [
     ),
 ];
 
-/// The top level (1.1).
+/// The top level (1.1), version 1.
 pub static TOP: [Field; 26] = [
     required("spec_version", int(1, 1)),
     required("run_id", string(1, Some(64), Some(Format::RunId))),
@@ -488,3 +531,62 @@ pub static TOP: [Field; 26] = [
         r#""conditional""#,
     ),
 ];
+
+/// The top level (1.1), version 2: version 1's, with `spec_version` 2,
+/// [`OUTPUTS_V2`] and `unitycn_key`.
+pub static TOP_V2: [Field; 27] = [
+    required("spec_version", int(2, 2)),
+    required("run_id", string(1, Some(64), Some(Format::RunId))),
+    required("attempt", int(1, (1 << 31) - 1)),
+    nullable(
+        "deadline",
+        string(0, None, Some(Format::DateTime)),
+        Some("null"),
+    ),
+    with_default("shutdown_grace_ms", int(10_000, 600_000), "20000"),
+    with_default("stop_on_stdin_eof", Ty::Bool, "false"),
+    nullable("parent_pid", int(2, 1 << 22), Some("null")),
+    required("threads", int(1, 1024)),
+    required("download_concurrency", int(1, 256)),
+    required("max_inflight_uncompressed_bytes", int(64 * MIB, 1 << 50)),
+    required("max_decoded_bytes", int(MIB, 1 << 40)),
+    required("dep_cache_bytes", int(MIB, 1 << 40)),
+    with_default("max_view_bundles", int(1, MAX_VIEW_BUNDLES), "1024"),
+    with_default("max_attempt_evictions", int(0, 1 << 20), "1024"),
+    // Its default, 2 x `max_decoded_bytes`, is no literal.
+    field("max_export_work", int(MIB, MAX_INT)),
+    required("spool", Ty::Object(&SPOOL)),
+    with_default("http", Ty::Object(&HTTP), "{}"),
+    required("inputs", Ty::Bundles(&INPUTS, true)),
+    with_default("dependencies", Ty::Bundles(&BUNDLES, false), "[]"),
+    // The variable holding the UnityCN key (1.1): its value is read at
+    // preflight, never here.
+    nullable("unitycn_key", Ty::Object(&ENV), Some("null")),
+    required("outputs", Ty::Object(&OUTPUTS_V2)),
+    with_default("prefer", Ty::Prefer, "{}"),
+    with_default("publish_incomplete", Ty::Bool, "true"),
+    with_default("resume", Ty::Bool, "false"),
+    required("sink", Ty::Sink),
+    with_default(
+        "archives",
+        Ty::Array(&Array {
+            item: Ty::Object(&ARCHIVE),
+            min: 0,
+            max: Some(256),
+            unique: false,
+        }),
+        "[]",
+    ),
+    with_default(
+        "manifest_fencing",
+        one_of(&["conditional", "none"]),
+        r#""conditional""#,
+    ),
+];
+
+/// The top level's table for `version`, 1 or 2: version 1's for any other
+/// (its `version` rule is `spec_version`'s own, reported first).
+#[must_use]
+pub fn top(version: u64) -> &'static [Field] {
+    if version == 2 { &TOP_V2 } else { &TOP }
+}

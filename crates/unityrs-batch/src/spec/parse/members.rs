@@ -431,7 +431,8 @@ impl<'de> Visitor<'de> for Scalar<'_> {
 }
 
 /// `spec_version`'s verdict, by its token (`docs/BATCH_SPEC.md`'s
-/// conventions): the integer token 1 is version 1; any other integer token
+/// conventions): the integer tokens 1 and 2 are versions 1 and 2; any
+/// other integer token
 /// that fits in 64 bits, which `serde_json` hands over as an integer, is
 /// `version`; every other number (a fraction or an exponent, `-0`, an
 /// integer token too long for 64 bits), which it hands over as a double,
@@ -454,7 +455,7 @@ impl<'de> Visitor<'de> for Version {
     }
 
     fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
-        Ok(if v == SPEC_VERSION {
+        Ok(if (1..=SPEC_VERSION).contains(&v) {
             Ok(())
         } else {
             Err(Rule::Version)

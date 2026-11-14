@@ -61,10 +61,11 @@ fn pinned_synthetic_goldens_across_threads_admission_and_resume() {
                     fs::write(path, existing).unwrap();
                 }
             }
-            let prepared = phase1::prepare(
+            let mut prepared = phase1::prepare(
                 unityrs_batch::spec::parse(serde_json::to_vec(&spec).unwrap()).unwrap(),
             )
             .unwrap();
+            run::unitycn_key(&mut prepared, run_support::env(&case)).unwrap();
             let service = Service::start(
                 fs::File::create(scratch.join("progress")).unwrap(),
                 Snapshot::validate(0),

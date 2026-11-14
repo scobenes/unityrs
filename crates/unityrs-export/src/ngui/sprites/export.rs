@@ -136,9 +136,14 @@ impl Attempt<'_> {
             Err(c) => return self.skip_group(c, run, sprites),
         };
         let Some(alpha) = alpha else {
-            let sheet = Sheet::new(&texture, None, self.seam.meter)
-                .map_err(|e| Failure::from(classify::render(&e)))?;
-            return self.export_run(&sheet, run, sprites);
+            // A sheet the renderer refuses (an `L` one, BC4's, which a
+            // version 2 spec may export: `SpriteError::UnverifiedMode`) is
+            // each of its Sprites' skip, as a merge's refusal is, never the
+            // input's failure: the input's other outputs go on.
+            return match Sheet::new(&texture, None, self.seam.meter) {
+                Ok(sheet) => self.export_run(&sheet, run, sprites),
+                Err(e) => self.skip_group(classify::render(&e), run, sprites),
+            };
         };
         // The merged sheet is the texture's size, RGBA: counted once the
         // sizes are known to match (`Sheet::merged` refuses others before
@@ -236,14 +241,14 @@ impl Attempt<'_> {
     fn decode_texture(&self, obj: &unityrs_core::ObjectRef) -> Result<Image, Class> {
         let seam = self.seam;
         let t = seam.probe(|| read::texture(obj))?;
-        sheet_answers(&t, obj)?;
+        sheet_answers(&t, obj, self.options.formats)?;
         let format = if t.width == 0 || t.height == 0 {
             // `plan` gives the 0 x 0 image for a side of 0 whatever the
             // format; any of the five stands in.
             Format::Rgba32
         } else {
             let platform = obj.file().target_platform().unwrap_or(UNKNOWN_PLATFORM);
-            read::formats(&t, platform)?
+            read::formats(&t, platform, self.options.formats)?
         };
         decoded(&seam, obj.file(), &t, format, false)
     }

@@ -73,6 +73,10 @@ allow = ["NCSA"]
 [bans]
 multiple-versions = "warn"
 
+# As the workspace's: no HTTP client but the engine's.
+[[bans.deny]]
+name = "reqwest"
+
 [advisories]
 yanked = "deny"
 

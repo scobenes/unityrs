@@ -43,6 +43,7 @@
 use std::fmt;
 
 use crate::format::{Format, texture_format_name};
+use crate::formats::Formats;
 
 /// `BuildTarget.XBOX360` (`enums/BuildTarget.py:16`).
 pub const XBOX360: i32 = 11;
@@ -93,8 +94,8 @@ const _: () = crate::send_sync::<Selection>();
 pub enum Skip {
     /// A side of 0: `empty_image`.
     EmptyImage,
-    /// A format other than the five ([`Format::EXPORTED`]), by its
-    /// `TextureFormat` value:
+    /// A format outside the set exported (version 1's five,
+    /// [`Format::EXPORTED`]), by its `TextureFormat` value:
     /// `unsupported_format(<name>)`, UnityPy's member name, or the decimal
     /// value where its enum has none.
     UnsupportedFormat(i32),
@@ -153,16 +154,25 @@ pub fn is_switch_swizzled(platform: i32, platform_blob: Option<&[u8]>) -> bool {
 }
 
 /// Whether a texture is exported, and as what, or skipped, and why
-/// (module docs).
+/// (module docs), under version 1's five formats ([`Formats::V1`]).
 #[must_use]
 pub fn select(texture: &TextureFields<'_>) -> Selection {
+    select_in(texture, Formats::V1)
+}
+
+/// [`select()`] under the formats a spec names (`docs/BATCH_SPEC.md` 1.5):
+/// a format outside `formats` is `unsupported_format`, as one this crate
+/// does not decode is.
+#[must_use]
+pub fn select_in(texture: &TextureFields<'_>, formats: Formats) -> Selection {
     if texture.width == 0 || texture.height == 0 {
         return Selection::Skip(Skip::EmptyImage);
     }
-    // Version 1 exports the five of E15; the other formats this crate also
-    // decodes are `unsupported_format` to it (`docs/BATCH_SPEC.md` section
-    // 3).
-    let Some(format) = Format::from_texture_format(texture.texture_format).filter(|f| f.exported())
+    // Version 1 exports the five of E15, version 2 the formats its spec
+    // names; the other formats this crate also decodes are
+    // `unsupported_format` to it (`docs/BATCH_SPEC.md` section 3).
+    let Some(format) =
+        Format::from_texture_format(texture.texture_format).filter(|f| formats.contains(*f))
     else {
         return Selection::Skip(Skip::UnsupportedFormat(texture.texture_format));
     };

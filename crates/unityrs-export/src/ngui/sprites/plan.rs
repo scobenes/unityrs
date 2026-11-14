@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use unityrs_core::files::SerializedFile;
 use unityrs_core::{ObjectRef, RawStr};
+use unityrs_texture::Formats;
 use unityrs_texture::sprite::SpriteData;
 
 use super::super::attempt::{Attempt, Site, UNKNOWN_PLATFORM, Vars};
@@ -35,12 +36,12 @@ struct Scratch {
 /// Section 3's answers for a Sprite's sheet at the plan: none for a side
 /// of 0 (UnityPy's `parse_image_data` returns its 0 x 0 image before it
 /// reads the format, `export/Texture2DConverter.py`), else answers 2 and 3.
-pub(super) fn sheet_answers(t: &Texture, obj: &ObjectRef) -> Result<(), Class> {
+pub(super) fn sheet_answers(t: &Texture, obj: &ObjectRef, allowed: Formats) -> Result<(), Class> {
     if t.width == 0 || t.height == 0 {
         return Ok(());
     }
     let platform = obj.file().target_platform().unwrap_or(UNKNOWN_PLATFORM);
-    read::formats(t, platform).map(|_| ())
+    read::formats(t, platform, allowed).map(|_| ())
 }
 
 impl Attempt<'_> {
@@ -204,6 +205,7 @@ impl Attempt<'_> {
     /// skip. A refusal of `M_X`'s is the Sprite's, not kept.
     fn answer(&mut self, obj: &ObjectRef, scratch: &mut Scratch) -> Result<SheetId, Class> {
         let seam = self.seam;
+        let allowed = self.options.formats;
         let meter = seam.meter;
         let atlases = &mut scratch.atlases;
         let file = seam.probe(|| atlases.files.id(obj.file(), meter))?;
@@ -214,7 +216,7 @@ impl Attempt<'_> {
         if scratch.answers.get(&id).is_none() {
             let answer = seam
                 .probe(|| read::texture(obj))
-                .and_then(|t| sheet_answers(&t, obj));
+                .and_then(|t| sheet_answers(&t, obj, allowed));
             let kept = match answer {
                 Ok(()) => None,
                 // A refusal of `M_X`'s is this Sprite's, not kept.

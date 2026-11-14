@@ -44,6 +44,7 @@
 
 mod args;
 mod batch;
+mod obj;
 
 use std::ffi::OsStr;
 use std::io::Write;
@@ -68,8 +69,9 @@ mod test_alloc;
 #[global_allocator]
 static ALLOCATOR: Counting = Counting::new();
 
-const USAGE: &str = "usage: unityrs {dump,values,batch} ...\n\n\
+const USAGE: &str = "usage: unityrs {dump,values,batch,obj} ...\n\n\
   unityrs dump INPUT... -o OUT.jsonl[.gz] [options]   the canonical dump (dump -h)\n\
+  unityrs obj INPUT --path-id ID -o OUTPUT              OBJ/MTL export (obj -h)\n\
   unityrs values CASES.json                           the value-case protocol\n\
   unityrs batch --check JOB.json | --schema           the batch engine\n\
   unityrs --version                                   the version and spec version";
@@ -198,6 +200,7 @@ fn main() -> ExitCode {
     let rest = argv.get(1..).unwrap_or_default();
     match argv.first().map(Vec::as_slice) {
         Some(b"dump") => dump(rest),
+        Some(b"obj") => obj::main(rest),
         Some(b"batch") => engine(main_start, |c| batch::main(c, rest)),
         Some(b"--version") => engine(main_start, |c| batch::version(c, rest)),
         Some(b"values") => match rest {
@@ -220,7 +223,7 @@ fn main() -> ExitCode {
             USAGE,
             "unityrs",
             &format!(
-                "argument command: invalid choice: {} (choose from 'dump', 'values', 'batch')",
+                "argument command: invalid choice: {} (choose from 'dump', 'values', 'batch', 'obj')",
                 args::py_repr(other)
             ),
         ),

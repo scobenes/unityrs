@@ -184,3 +184,32 @@ checksum = "005fc765ddc5115da796cca915baa9557abae13ff35e0a47c47affc56f6c414d"
 path = "LICENSE-other-bits"
 license = "ISC"
 checksum = "f025ccfb7dfb6bdfedc75ca0f67acc69e6fb4998143d834f7c2f38a29989680f"
+
+# chrono's one licence file holds both texts; its MIT notice is the part
+# from its title to the closing `~~~~` fence (the checksum is that part's). Without the clarification cargo-about renders the SPDX
+# template for MIT, which the script refuses.
+[chrono.clarify]
+license = "MIT OR Apache-2.0"
+
+[[chrono.clarify.files]]
+path = "LICENSE.txt"
+license = "MIT"
+checksum = "7e4d00dc6c65ae3611917922343e49459ebffe1da646b0c1018f2ba16dfb67b1"
+start = "The MIT License (MIT)"
+end = "~~~~"
+
+# object_store is "MIT/Apache-2.0" but ships Apache-2.0's text alone, with
+# Apache Arrow's NOTICE, which Apache-2.0 section 4(d) asks a distribution to
+# carry. The clarification takes the Apache-2.0 option, both files with it.
+[object_store.clarify]
+license = "Apache-2.0"
+
+[[object_store.clarify.files]]
+path = "LICENSE.txt"
+license = "Apache-2.0"
+checksum = "240b8a39fdfd2bd3b3539c02e34466334884fc84b056b57f06e9da35323ecd97"
+
+[[object_store.clarify.files]]
+path = "NOTICE.txt"
+license = "Apache-2.0"
+checksum = "db0ba6e84734d37277ceae9dcca1ffbbb2f8e80e9c1db34e3788100792458c63"

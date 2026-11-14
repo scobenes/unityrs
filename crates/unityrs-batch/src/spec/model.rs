@@ -1,4 +1,4 @@
-//! The typed spec, version 1, with its defaults filled in
+//! The typed spec, version 1 or 2, with its defaults filled in
 //! (`docs/BATCH_SPEC.md` section 1). Built only from a document the
 //! per-value pass accepted; the cross-field rules are checked on it.
 //!
@@ -11,6 +11,8 @@
 
 use std::num::NonZeroU64;
 
+use unityrs_export::ngui::Formats;
+
 use super::store::{Chunks, Seg};
 
 /// Where a parse-time [`Seg`] of a string starts when it is in the escape
@@ -21,7 +23,7 @@ pub(crate) const ESCAPED: usize = 1 << 31;
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)] // The spec's own booleans.
 pub struct Spec {
-    /// Always [`super::SPEC_VERSION`] here.
+    /// The version the document was read by: 1 or 2.
     pub spec_version: u64,
     /// `run_id`.
     pub run_id: String,
@@ -77,6 +79,9 @@ pub struct Spec {
     pub archives: Vec<Archive>,
     /// `manifest_fencing`.
     pub manifest_fencing: Fencing,
+    /// `unitycn_key`'s variable name (version 2), never its value, which
+    /// preflight reads (`crate::start::key`).
+    pub unitycn_key: Option<String>,
     /// The string table: the document's text while phase 1 runs, then only
     /// the strings the tables name (`compact`).
     pub(crate) strings: String,
@@ -543,6 +548,28 @@ pub struct Outputs {
     pub sprites: Option<String>,
     /// `atlases`.
     pub atlases: Option<Atlases>,
+    /// `formats` (version 2): the formats a texture is exported in, a
+    /// sheet's included; version 1's five for a version 1 spec.
+    pub formats: Formats,
+    /// `image` (version 2): the image files' format; PNG for version 1.
+    pub image: Image,
+}
+
+/// `outputs.image` (1.5): the one value this binary writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Image {
+    /// `png`: Pillow 9.5.0's PNG bytes.
+    Png,
+}
+
+impl Image {
+    /// Its name in the spec and the manifest.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+        }
+    }
 }
 
 /// A Prefer (1.5). Once validated, not both `None` (`prefer_empty`).

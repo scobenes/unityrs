@@ -2,7 +2,7 @@
 //! barrier failure selection and commits; this layer starts no threads.
 pub mod headers;
 pub mod local;
-mod retry;
+pub(crate) mod retry;
 pub mod timers;
 pub mod url;
 use crate::{job::RunFailure, spec::model::Spec};

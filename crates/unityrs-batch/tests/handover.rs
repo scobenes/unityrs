@@ -266,11 +266,21 @@ fn execute(at: At) -> Outcome {
     execute_with(at, Stop::external(StopReason::Sigterm))
 }
 fn execute_with(at: At, stop: Stop) -> Outcome {
+    execute_spec(at, stop, |_| {})
+}
+/// [`execute_with`] on the scene's spec as `edit` leaves it; a UnityCN key
+/// it names is read from a made-up value.
+fn execute_spec(at: At, stop: Stop, edit: impl FnOnce(&mut Value)) -> Outcome {
     let scratch = Scratch::new("handover");
-    let spec = scene(&scratch);
-    let prepared =
+    let mut spec = scene(&scratch);
+    edit(&mut spec);
+    let mut prepared =
         phase1::prepare(unityrs_batch::spec::parse(serde_json::to_vec(&spec).unwrap()).unwrap())
             .unwrap();
+    run::unitycn_key(&mut prepared, |_| {
+        Some("000102030405060708090a0b0c0d0e0f".into())
+    })
+    .unwrap();
     let service = Service::start(
         fs::File::create(scratch.join("progress")).unwrap(),
         Snapshot::validate(0),
@@ -599,4 +609,25 @@ fn a_culprits_row_carries_the_stops_reason_as_its_detail() {
     // An input whose own bundle was the culprit is not itself named.
     let inputs = o.rows["inputs"].as_ref().unwrap();
     assert!(inputs.iter().all(|row| row["detail"].is_null()));
+}
+
+/// A version 2 spec's options reach the stopped finisher's head as the
+/// normal one's (`docs/BATCH_SPEC.md` 7.3): one encoder writes both.
+#[test]
+fn a_stopped_head_of_a_version_2_spec_names_its_options() {
+    for at in [At::StageDispatched, At::Selection, At::HandedOver] {
+        let o = execute_spec(at, Stop::external(StopReason::Sigterm), |spec| {
+            spec["spec_version"] = 2.into();
+            spec["outputs"]["formats"] = json!(["BC4", "RGBA32"]);
+            spec["unitycn_key"] = json!({"env": "UNITYRS_TEST_KEY"});
+        });
+        let head = o.head.as_ref().unwrap();
+        assert_eq!(head["manifest_version"], 2, "{at:?}");
+        assert_eq!(head["spec_version"], 2, "{at:?}");
+        assert_eq!(head["formats"], json!(["RGBA32", "BC4"]), "{at:?}");
+        assert_eq!(head["image"], "png", "{at:?}");
+        assert_eq!(head["unitycn_key"], true, "{at:?}");
+        let stopped = at != At::HandedOver;
+        assert_eq!(head["stop_reason"] == "sigterm", stopped, "{at:?}");
+    }
 }

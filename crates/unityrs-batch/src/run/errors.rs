@@ -62,6 +62,10 @@ impl Error {
             failure.detail.map(crate::attempt::DetailCode::name),
         )
     }
+    /// A preflight reason (exit 69) and its detail.
+    pub(super) fn preflight(reason: crate::reason::Preflight, detail: &str) -> Self {
+        Self::plain(Code::CouldNotStart, reason.name(), Some(detail))
+    }
 }
 /// A preflight scratch refusal, or a directory sink's `running` write:
 /// any error of that write is 74, with no head (`BATCH_SPEC.md` 7.4).
