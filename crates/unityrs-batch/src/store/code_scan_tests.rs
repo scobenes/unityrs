@@ -43,6 +43,10 @@ struct Read {
     good: usize,
     /// Whether it read to the end.
     whole: bool,
+    /// Character data before the root, which the scan leaves to the
+    /// deserializer: a reference, CDATA content, or text that is not all
+    /// XML 1.0 whitespace.
+    prolog_data: bool,
 }
 
 fn reader(body: &[u8]) -> Read {
@@ -53,6 +57,7 @@ fn reader(body: &[u8]) -> Read {
         text: vec![false; body.len()],
         good: 0,
         whole: false,
+        prolog_data: false,
     };
     let mut buf = Vec::new();
     loop {
@@ -69,7 +74,13 @@ fn reader(body: &[u8]) -> Read {
                     read.root = Some(start.name().as_ref().to_vec());
                 }
             }
-            Event::Text(_) | Event::GeneralRef(_) => read.text[from..to].fill(true),
+            Event::Text(_) | Event::GeneralRef(_) => {
+                read.text[from..to].fill(true);
+                let blank = body[from..to].iter().all(u8::is_ascii_whitespace)
+                    && !body[from..to].contains(&b'\x0c');
+                read.prolog_data |= read.root.is_none() && !blank;
+            }
+            Event::CData(cdata) => read.prolog_data |= read.root.is_none() && !cdata.is_empty(),
             _ => {}
         }
         buf.clear();
@@ -100,7 +111,9 @@ const BOM: &str = "\u{feff}";
 #[derive(Default)]
 struct Counts {
     compared: usize,
-    unchecked: usize,
+    /// Left to the parse: past the scan's bounds, or with character data
+    /// before the root.
+    left: usize,
     /// Taken by the deserializer, whatever the fields.
     taken: usize,
     read_whole: usize,
@@ -137,16 +150,16 @@ fn compare(body: &str, markup_only: bool, counts: &mut Counts) {
             assert!(!scan.refused_any(), "refused: {shown}");
             assert_eq!(scan.root(), want, "root: {shown}");
         }
-        // The scan takes what the deserializer takes, an `<Error>` root
-        // aside, which the engine fails by design.
-        // Past the bounds the scan keeps it may take what the parse
-        // refuses, never the other way.
-        if scan.unchecked() {
-            assert!(
-                !any || want != Root::Other || accepts(&scan),
-                "accept: {shown}"
-            );
-        } else {
+        // Never stricter than the parse: what the deserializer takes, the
+        // scan takes, an `<Error>` root aside, which the engine fails by
+        // design. Elsewhere it takes exactly that, but before the root and
+        // past the bounds it keeps, where it leaves the parse to decide.
+        let left = scan.unchecked() || read.prolog_data;
+        assert!(
+            !any || want != Root::Other || accepts(&scan),
+            "stricter: {shown}"
+        );
+        if !left {
             assert_eq!(
                 accepts(&scan),
                 any && want == Root::Other,
@@ -157,7 +170,7 @@ fn compare(body: &str, markup_only: bool, counts: &mut Counts) {
             assert_eq!(scan.root(), want, "root: {shown}");
         }
         assert!(!complete || any, "{shown}");
-        if markup_only && !scan.unchecked() {
+        if markup_only && !left {
             assert_eq!(
                 accepts(&scan),
                 complete && want == Root::Other,
@@ -178,7 +191,7 @@ fn compare(body: &str, markup_only: bool, counts: &mut Counts) {
         }
     }
     counts.compared += 1;
-    counts.unchecked += usize::from(self::scan(bytes, 1).0.unchecked());
+    counts.left += usize::from(self::scan(bytes, 1).0.unchecked() || read.prolog_data);
     counts.read_whole += usize::from(read.whole);
     counts.accepted += usize::from(complete);
     counts.taken += usize::from(any);
@@ -276,6 +289,10 @@ const PIECES: &[&str] = &[
     "&#32;",
     "&#X20;",
     "&a b;",
+    "<?xml version=\"1.1\"?>",
+    "\u{85}",
+    "\u{2028}",
+    "\r",
     "<b c='1' c='2'>",
     "</b>",
     "<a b='1'/>",
@@ -308,6 +325,12 @@ const PROLOGS: &[&str] = &[
     "\u{a0}",
     "\r\n",
     "<!-- -->\u{feff}",
+    "<?xml version=\"1.1\"?>\u{85}",
+    "<?xml version=\"1.1\"?>\r\u{85}\u{2028}",
+    "<?xml version='1.1'?>\n\u{2028}",
+    "<?xml version=\"1.0\"?>\u{85}",
+    "\u{85}",
+    "<?xml version=\"1.1\"?>\r\n",
 ];
 
 /// The root's attributes, which the deserializer reads before its content;
@@ -334,6 +357,8 @@ const ATTRS: &[&str] = &[
     " a='1'/b='2'",
     " a='1' b='2' c='3' d='4' e='5' a='6'",
     " a='&bogus;'",
+    " a='1'\u{85}b='2'",
+    " a='1'\u{2028}",
     " a='/' /",
     " /",
 ];
@@ -350,6 +375,7 @@ const TAILS: &[&str] = &[
     "<!-- ",
     "garbage &bogus; <",
     "<Error/>",
+    "\u{85}",
 ];
 
 /// A small deterministic generator (xorshift64).
@@ -437,9 +463,9 @@ fn the_scan_reads_markup_as_quick_xml_does() {
     }
     let all = [&counts, &markup];
     let sum = |f: fn(&Counts) -> usize| all.iter().map(|c| f(c)).sum::<usize>();
-    let (compared, unchecked, taken, whole, accepted, rejected, doctype) = (
+    let (compared, left, taken, whole, accepted, rejected, doctype) = (
         sum(|c| c.compared),
-        sum(|c| c.unchecked),
+        sum(|c| c.left),
         sum(|c| c.taken),
         sum(|c| c.read_whole),
         sum(|c| c.accepted),
@@ -447,7 +473,7 @@ fn the_scan_reads_markup_as_quick_xml_does() {
         sum(|c| c.doctype),
     );
     eprintln!(
-        "compared {compared} ({unchecked} past the scan's bounds), read whole {whole}, taken {taken}, deserialized {accepted}, \
+        "compared {compared} ({left} left to the parse), read whole {whole}, taken {taken}, deserialized {accepted}, \
          refused {rejected}, \
          with a DOCTYPE {doctype}; markup-only {} ({} deserialized); error bodies {errors}",
         markup.compared, markup.accepted
@@ -588,4 +614,35 @@ fn what_the_deserializer_checks_past_the_reader_the_scan_checks() {
         compare(body, false, &mut counts);
     }
     assert_eq!(counts.compared, 54);
+}
+
+#[test]
+fn what_comes_before_the_root_is_left_to_the_parse() {
+    // Review round 5: XML 1.1's line endings, which quick-xml normalises
+    // to a line feed before its deserializer skips whitespace, and any
+    // other character data before the root, never make the scan refuse.
+    let answer = "<CompleteMultipartUploadResult><ETag>e</ETag></CompleteMultipartUploadResult>";
+    let mut counts = Counts::default();
+    for prolog in [
+        "<?xml version=\"1.1\"?>\u{85}",
+        "<?xml version=\"1.1\"?>\u{2028}",
+        "<?xml version=\"1.1\"?>\r\u{85}\n\u{2028}",
+        "<?xml version=\"1.0\"?>\u{85}",
+        "x",
+        "&#32;",
+        "<![CDATA[x]]>",
+        "\u{feff}",
+    ] {
+        let body = format!("{prolog}{answer}");
+        compare(&body, true, &mut counts);
+        for size in [1, 2, 5, body.len()] {
+            assert!(
+                accepts(&scan(body.as_bytes(), size).0),
+                "{}",
+                body.escape_debug()
+            );
+        }
+    }
+    // The parse takes those XML 1.1 forms.
+    assert!(counts.accepted >= 4, "{}", counts.accepted);
 }

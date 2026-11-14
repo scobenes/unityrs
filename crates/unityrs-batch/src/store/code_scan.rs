@@ -10,9 +10,11 @@
 //! name, `<?>`, an `&` with no `;`, an end tag naming another element)
 //! latches the scan: no code is captured from there on, and one being read
 //! is dropped. Before the root element closes, it also leaves the scan
-//! [`malformed`](CodeScan::malformed), as do the few things the deserializer
-//! checks past its reader ([`Attrs`], [`Ref`], and character data before
-//! the root).
+//! [`malformed`](CodeScan::malformed), as do two things the deserializer
+//! checks past its reader, the root's attributes ([`Attrs`]) and the
+//! references in the root's own text ([`Ref`]). What comes before the root
+//! the scan leaves to the deserializer, which may normalise it first (XML
+//! 1.1's line endings): the scan is never stricter than the parse.
 //!
 //! After the root's end tag `object_store`'s parse reads no further:
 //! quick-xml's `from_reader` returns once the root's map ends
@@ -225,9 +227,6 @@ pub struct CodeScan {
     /// The hashes of the open elements' names, the first [`OPEN_MAX`]: an
     /// end tag must name the element it closes (`emit_end`).
     open: [u64; OPEN_MAX],
-    /// Bytes of a leading UTF-8 BOM read, which the reader drops; past
-    /// [`BOM`]'s length once the body's start is read.
-    bom: u8,
     /// The reference being read in character data, after its `&`.
     reference: Option<Ref>,
     /// The root start tag's attributes.
@@ -235,9 +234,8 @@ pub struct CodeScan {
     /// The deepest an element opened: past [`OPEN_MAX`], its end tag went
     /// unchecked.
     deepest: u32,
-    /// What the deserializer refuses where its reader does not: character
-    /// data before the root but whitespace, a reference it cannot resolve
-    /// before the root or in the root's own text, or the root's attributes
+    /// What the deserializer refuses where its reader does not: a reference
+    /// it cannot resolve in the root's own text, or the root's attributes
     /// misformed.
     unparsed: bool,
 }
@@ -248,9 +246,6 @@ const OPEN_MAX: usize = 8;
 
 /// FNV-1a's offset basis and prime.
 const FNV: (u64, u64) = (0xcbf2_9ce4_8422_2325, 0x0100_0000_01b3);
-
-/// The UTF-8 byte order mark.
-const BOM: &[u8] = b"\xef\xbb\xbf";
 
 /// Where the root element is.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -413,64 +408,31 @@ impl CodeScan {
         }
     }
 
-    /// A byte before the root: the deserializer takes whitespace there, and
-    /// no other character data (a leading BOM its reader drops).
-    fn prolog(&mut self, b: u8, text: bool) {
-        if let Some(&want) = BOM.get(usize::from(self.bom)) {
-            if b == want {
-                self.bom += 1;
-                return;
-            }
-            // A start that is no BOM: what of one it held is data.
-            self.unparsed |= self.bom > 0;
-            self.bom = u8::MAX;
-        }
-        // A CDATA section's content is data too; its `]]>` is not.
-        if let At::Cdata { brackets } = self.at {
-            self.unparsed |= match b {
-                b']' => false,
-                b'>' if brackets >= 2 => brackets > 2,
-                _ => brackets > 0 || !is_space(b),
-            };
-        }
-        if text && !is_space(b) {
-            self.unparsed = true;
-        }
-    }
-
     /// Reads a byte of character data as a reference's, `&` to `;`, if it
-    /// is one ([`Ref`]); whether it was.
-    fn reference(&mut self, b: u8) -> bool {
+    /// is one ([`Ref`]).
+    fn reference(&mut self, b: u8) {
         let Some(reference) = self.reference.as_mut() else {
             if b == b'&' {
                 self.reference = Some(Ref::default());
             }
-            return b == b'&';
+            return;
         };
         match b {
             b';' => {
                 let resolved = reference.resolved();
                 self.reference = None;
-                // Before the root the deserializer takes whitespace alone;
-                // in the root's own text, anything it resolves. Deeper,
-                // what it skips it does not resolve.
-                self.unparsed |= match self.phase {
-                    Phase::Prolog => resolved != Resolved::Blank,
-                    Phase::Open => self.depth == 1 && resolved == Resolved::Fails,
-                    Phase::Closed => false,
-                };
-                true
+                // In the root's own text the deserializer resolves every
+                // reference; deeper, what it skips it does not resolve.
+                // Before the root it decides alone.
+                self.unparsed |=
+                    self.phase == Phase::Open && self.depth == 1 && resolved == Resolved::Fails;
             }
             // An `&` with no `;` (`UnclosedReference`).
             b'<' | b'&' => {
                 self.refuse();
                 self.reference = (b == b'&').then(Ref::default);
-                b == b'&'
             }
-            _ => {
-                reference.feed(b);
-                true
-            }
+            _ => reference.feed(b),
         }
     }
 
@@ -692,11 +654,10 @@ impl CodeScan {
     }
 
     /// Whether `object_store`'s parse fails before the root element closed:
-    /// on markup quick-xml's reader refuses; on character data before the
-    /// root, which its deserializer reads as a string where a struct is due
-    /// (`deserialize_struct`, `src/de/mod.rs` 3221 to 3246; whitespace
-    /// alone it skips, `skip_whitespaces`, 2769 to 2779); or on the root's
-    /// attributes misformed.
+    /// on markup quick-xml's reader refuses, a reference in the root's own
+    /// text it cannot resolve, or the root's attributes misformed. It may
+    /// fail on more (character data before the root, a field's content),
+    /// which the scan leaves to it.
     #[must_use]
     pub fn malformed(&self) -> bool {
         self.refusal == Refusal::BeforeClose || self.unparsed
@@ -726,9 +687,8 @@ impl CodeScan {
     fn step(&mut self, b: u8) -> bool {
         const CDATA: &[u8] = b"CDATA[";
         let text = self.at == At::Text && b != b'<';
-        let reference = self.at == At::Text && self.reference(b);
-        if self.phase == Phase::Prolog {
-            self.prolog(b, text && !reference);
+        if self.at == At::Text {
+            self.reference(b);
         }
         self.at = match self.at {
             At::Text if b == b'<' => At::Open,

@@ -4,8 +4,8 @@
 //! 2457 to 2471; `resolve_xml_entity`, `src/escape.rs` 867 to 878), a
 //! character reference's number decimal, or hexadecimal after a lowercase
 //! `x`, unsigned, neither 0 nor past a `char` (`parse_number` and
-//! `from_str_radix`, `src/escape.rs` 2349 to 2372). It resolves them before
-//! the root and in the root's own text; a nested element it skips unread. Its reader refuses an `&` with no `;` before the next `<` or `&`
+//! `from_str_radix`, `src/escape.rs` 2349 to 2372). It resolves them in the
+//! root's own text; a nested element it skips unread. Its reader refuses an `&` with no `;` before the next `<` or `&`
 //! (`UnclosedReference`, `src/reader/mod.rs` 283 to 323).
 
 /// The largest `char`.
@@ -14,9 +14,7 @@ const CHAR_MAX: u32 = 0x10_ffff;
 /// What a reference resolves to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Resolved {
-    /// XML whitespace, which the deserializer trims.
-    Blank,
-    /// Any other character.
+    /// A character.
     Char,
     /// Nothing: the deserializer fails on it.
     Fails,
@@ -96,7 +94,6 @@ impl Ref {
             }
             Form::Decimal | Form::Hex => match char::from_u32(self.value) {
                 None | Some('\0') => Resolved::Fails,
-                Some(' ' | '\t' | '\r' | '\n') => Resolved::Blank,
                 Some(_) => Resolved::Char,
             },
             Form::Start | Form::Hash | Form::HexStart | Form::Bad => Resolved::Fails,

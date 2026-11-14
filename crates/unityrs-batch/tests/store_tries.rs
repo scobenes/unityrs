@@ -571,7 +571,6 @@ fn refused_markup_ends_the_code_scan_and_counts_only_before_the_root_closes() {
     for body in [
         "<CompleteMultipartUploadResult><!x><ETag>\"e\"</ETag></CompleteMultipartUploadResult>",
         "<!x><CompleteMultipartUploadResult><ETag>\"e\"</ETag></CompleteMultipartUploadResult>",
-        "x<CompleteMultipartUploadResult><ETag>\"e\"</ETag></CompleteMultipartUploadResult>",
         "<CompleteMultipartUploadResult a><ETag>\"e\"</ETag></CompleteMultipartUploadResult>",
         "<CompleteMultipartUploadResult>&bogus;<ETag>\"e\"</ETag></CompleteMultipartUploadResult>",
         "<CompleteMultipartUploadResult><ETag>\"e\"</ETag></Other>",
@@ -583,6 +582,19 @@ fn refused_markup_ends_the_code_scan_and_counts_only_before_the_root_closes() {
             assert!(done.value.is_none());
         }
     }
+    // Review round 5: what comes before the root is the parse's to judge.
+    // XML 1.1's line endings it takes as whitespace; other data it refuses,
+    // in its own parse.
+    let nel = "<?xml version=\"1.1\"?>\u{85}\u{2028}";
+    let body = format!("{nel}{answer}");
+    for size in [1, 2, 3, body.len() + 64] {
+        let done = complete(body.as_bytes(), size, &[]);
+        assert_eq!(done.verdict, verdict(true, Action::Success), "{size}");
+        assert_eq!(done.value.unwrap().e_tag.as_deref(), Some("\"e\""));
+    }
+    let done = complete(format!("x{answer}").as_bytes(), 64, &[]);
+    assert_ne!(done.verdict, verdict(true, Action::Success));
+    assert!(done.value.is_none());
     // No code is read past refused markup: this abort did not succeed.
     let path = Path::parse("a.zip").unwrap();
     let upload = "upload".to_owned();
