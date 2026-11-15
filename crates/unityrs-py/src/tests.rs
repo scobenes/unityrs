@@ -9,8 +9,21 @@ use pyo3::{prelude::*, types::PyBytes};
 use serde_json::Value;
 use std::path::Path;
 
+/// Serializes the tests that run Python. They share one embedded interpreter,
+/// and first imports racing on several test threads can hand one of them a
+/// partially initialized module: `CPython` breaks a cycle between two threads'
+/// import locks that way. Taken before the GIL, so the order is always this
+/// lock, then the GIL.
+pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static PYTHON: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    PYTHON
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn version_errors_decode_raw_bytes_with_surrogateescape() -> PyResult<()> {
+    let _serial = serial();
     Python::attach(|py| {
         let raw = unityrs_core::RawStr::from(unityrs_core::Bytes::from_static(b"invalid\xff"));
         let error = super::errors::core(unityrs_core::version::VersionError::NoMatch(raw).into());
@@ -53,6 +66,7 @@ fn staging_memory_refusal_preserves_work(stage: &str) -> PyResult<()> {
         typetree::{NodeList, NodeRow},
         value::ValueBuilder,
     };
+    let _serial = serial();
 
     let payload = vec![b'x'; 2 * 1024 * 1024];
     let row = if stage == "nodes" {
@@ -108,6 +122,7 @@ fn staging_memory_refusal_preserves_work(stage: &str) -> PyResult<()> {
 
 #[test]
 fn replays_unitypy_api_observations() -> PyResult<()> {
+    let _serial = serial();
     let records: Value = serde_json::from_str(include_str!("../tests/fixtures/api.json")).unwrap();
     Python::attach(|py| {
         let module = PyModule::new(py, "unityrs._native")?;
@@ -169,6 +184,7 @@ fn replays_unitypy_api_observations() -> PyResult<()> {
 
 #[test]
 fn replays_unitypy_helper_observations() -> PyResult<()> {
+    let _serial = serial();
     let records: Value = serde_json::from_str(include_str!("../tests/fixtures/api.json")).unwrap();
     Python::attach(|py| {
         let module = PyModule::new(py, "unityrs._native")?;
@@ -232,6 +248,7 @@ fn first_difference(got: &Value, want: &Value, path: &str) -> Option<String> {
 #[test]
 fn reader_exception_categories_survive_the_binding_boundary() -> PyResult<()> {
     use unityrs_core::walk::{ParseError, ReadDetail, ReadError, ReadErrorKind};
+    let _serial = serial();
     Python::attach(|py| {
         for (detail, expected) in [
             (ReadDetail::Python("IndexError"), "IndexError"),
@@ -272,6 +289,7 @@ fn reader_exception_categories_survive_the_binding_boundary() -> PyResult<()> {
 
 #[test]
 fn replays_object_mode_observations_from_synthetic_inputs() -> PyResult<()> {
+    let _serial = serial();
     let records: Value =
         serde_json::from_str(include_str!("../tests/fixtures/object_api.json")).unwrap();
     Python::attach(|py| {

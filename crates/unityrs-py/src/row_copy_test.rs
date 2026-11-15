@@ -82,6 +82,7 @@ pub(crate) fn before_copy() -> PyResult<()> {
 
 #[test]
 fn row_copy_releases_gil_between_python_extractions() -> PyResult<()> {
+    let _serial = crate::tests::serial();
     Python::attach(|py| {
         let module = PyModule::new(py, "unityrs._native")?;
         super::native(&module)?;
