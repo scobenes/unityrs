@@ -218,10 +218,12 @@ impl Controller {
         };
         let control = self.control.clone();
         let task = execution
-            .spawn(move || {
+            .spawn_named("a failure record's write", move || {
                 let before = crate::alloc::refusals();
-                let result = catch_unwind(AssertUnwindSafe(|| args.run()))
-                    .unwrap_or_else(|_| Err(RunFailure::new(ReasonCode::Internal)));
+                let result = catch_unwind(AssertUnwindSafe(|| args.run())).unwrap_or_else(|_| {
+                    crate::diagnostic::pending::panic(format_args!("a failure record's write: "));
+                    Err(RunFailure::new(ReasonCode::Internal))
+                });
                 // Drop the pool's owner/reference before publishing completion.
                 drop(args);
                 let result = if crate::alloc::refusals() == before {

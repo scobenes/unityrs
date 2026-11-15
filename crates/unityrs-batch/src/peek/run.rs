@@ -36,6 +36,7 @@ impl ngui::Hooks for Engine<'_> {
         // This also runs from a drop guard during unwind. Never double-panic.
         if !self.fault.get() && catch_unwind(AssertUnwindSafe(|| self.hooks.meter(meter))).is_err()
         {
+            crate::diagnostic::pending::panic(format_args!("a meter's observer: "));
             self.fault.set(true);
         }
     }
@@ -96,7 +97,10 @@ pub(crate) fn run_reserved(mut args: PeekArgs<'_>, memory: &crate::job_memory::M
                 failed(&mut end, failure, args.m);
             }
         }
-        Err(_) => run_failure(&mut end, RunFailure::new(ReasonCode::Internal)),
+        Err(_) => {
+            crate::diagnostic::pending::panic(format_args!("a peek: "));
+            run_failure(&mut end, RunFailure::new(ReasonCode::Internal));
+        }
     }
     // BeforeWord is a fault/hold seam too: run it before the final audit so
     // an observer's late charge or absorbed allocation refusal cannot publish.
@@ -104,7 +108,10 @@ pub(crate) fn run_reserved(mut args: PeekArgs<'_>, memory: &crate::job_memory::M
         match catch_unwind(AssertUnwindSafe(|| engine.point(Point::BeforeWord))) {
             Ok(Ok(())) => {}
             Ok(Err(f)) => failed(&mut end, f, args.m),
-            Err(_) => run_failure(&mut end, RunFailure::new(ReasonCode::Internal)),
+            Err(_) => {
+                crate::diagnostic::pending::panic(format_args!("a peek: "));
+                run_failure(&mut end, RunFailure::new(ReasonCode::Internal));
+            }
         }
     }
     audit(&mut end, &engine, before);
@@ -120,7 +127,10 @@ pub(crate) fn run_reserved(mut args: PeekArgs<'_>, memory: &crate::job_memory::M
         match publication {
             Ok(Ok(())) => {}
             Ok(Err(f)) => failed(&mut end, f, args.m),
-            Err(_) => run_failure(&mut end, RunFailure::new(ReasonCode::Internal)),
+            Err(_) => {
+                crate::diagnostic::pending::panic(format_args!("a peek's word: "));
+                run_failure(&mut end, RunFailure::new(ReasonCode::Internal));
+            }
         }
     }
     // A post-publication stop/fault keeps the word and file, but no successful
@@ -135,6 +145,7 @@ pub(crate) fn run_reserved(mut args: PeekArgs<'_>, memory: &crate::job_memory::M
     if end.state == State::RunFailure
         && catch_unwind(AssertUnwindSafe(|| args.hooks.request_stop(&end))).is_err()
     {
+        crate::diagnostic::pending::panic(format_args!("a peek's stop: "));
         run_failure(&mut end, RunFailure::new(ReasonCode::Internal));
     }
     end

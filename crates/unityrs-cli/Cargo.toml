@@ -26,6 +26,23 @@ unityrs-mesh = { path = "../unityrs-mesh" }
 unityrs-tpk = { path = "../unityrs-tpk" }
 unityrs-dump = { path = "../unityrs-dump" }
 
+[features]
+# The engine's official test hooks (`docs/plans/batch.md` 2.11), read from
+# their variables at step 1. Never in a release build.
+test-hooks = ["unityrs-batch/test-hooks"]
+
+[[test]]
+name = "batch_lifetime"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "batch_host"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "batch_host_lines"
+required-features = ["test-hooks"]
+
 [dev-dependencies]
 # The core's synthetic UnityCN encryptor, which the batch run harness
 # (`unityrs-batch/tests/run_support`) builds the encrypted golden with.

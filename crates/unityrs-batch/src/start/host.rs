@@ -156,7 +156,11 @@ impl Requirements {
             address,
             maps: spec.max_inflight_uncompressed_bytes / (128 * 1024) + 8_192,
             files: 4 * t + 16 * dc + 72,
-            threads: t + 7 + 2 * dc,
+            // The engine's threads (2.7): workers, the main, controller,
+            // progress, finisher and lifecycle threads, the early writer,
+            // both runtimes' `dc + 1` pool threads, and the stdin watch's
+            // own thread under `stop_on_stdin_eof`.
+            threads: t + 7 + 2 * dc + u64::from(spec.stop_on_stdin_eof),
         })
     }
 }

@@ -3,11 +3,15 @@ use std::io;
 
 /// UTC wall time for manifest timestamps, in fixed RFC 3339 storage.
 pub fn utc_now() -> io::Result<[u8; 20]> {
-    use std::io::Write;
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(io::Error::other)?
         .as_secs();
+    utc(i64::try_from(seconds).map_err(io::Error::other)?)
+}
+/// `seconds` since the epoch in [`utc_now`]'s form (years 0000 to 9999).
+pub fn utc(seconds: i64) -> io::Result<[u8; 20]> {
+    use std::io::Write;
     let seconds = libc::time_t::try_from(seconds).map_err(io::Error::other)?;
     let mut broken = std::mem::MaybeUninit::<libc::tm>::uninit();
     // SAFETY: seconds is readable and broken has writable storage for tm;

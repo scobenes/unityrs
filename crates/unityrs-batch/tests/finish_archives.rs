@@ -63,6 +63,7 @@ fn finish_scene(scene: &Scene, archive_codes: [outcomes::Code; 2]) -> serde_json
         memory_bound: 0,
         spool_peak: 0,
         vm_hwm: 0,
+        warnings: unityrs_batch::finish::Warnings::default(),
     };
     finish::running(&scene.prepared, &directory, &account, &identity).unwrap();
     let result = finish::normal(&cx, &directory, &identity, "2026-01-01T00:00:01Z").unwrap();

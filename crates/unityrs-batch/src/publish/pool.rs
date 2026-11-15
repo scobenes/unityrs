@@ -106,7 +106,7 @@ pub fn parallel(
     execution: &Execution,
     concurrency: u32,
 ) -> Result<Report, Error> {
-    let result = phase::on_pool(|| schedule(owned, execution, concurrency));
+    let result = phase::on_pool_named("publication", || schedule(owned, execution, concurrency));
     if result.is_ok() {
         owned.account.publication(|| Ok(()))?;
     }
@@ -171,7 +171,9 @@ fn wave(
         tasks.push(Some(
             execution
                 .spawn(move || {
-                    let result = phase::on_pool(|| drive(&state, &queue, archives));
+                    let result = phase::on_pool_named("a directory transfer", || {
+                        drive(&state, &queue, archives)
+                    });
                     if let Err(Error::Run(failure)) = result {
                         state.control.request_stop(failure, Culprit::None);
                     }
