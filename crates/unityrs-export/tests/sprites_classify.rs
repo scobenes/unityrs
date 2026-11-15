@@ -178,7 +178,6 @@ fn no_decoded_format_makes_a_sheet_an_inputs_failure() {
         "../../unityrs-texture/tests/fixtures/crunch_native.json"
     ))
     .unwrap();
-    let alpha = decode(Format::Rgba32, &data, 1, 1, &meter).unwrap();
     let skip_or_ok = |r: Result<Sheet<'_>, SpriteError>, f: Format, how: &str| match r {
         Ok(_) => true,
         Err(e) => {
@@ -205,7 +204,11 @@ fn no_decoded_format_makes_a_sheet_an_inputs_failure() {
                 .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
                 .collect::<Vec<_>>()
         });
-        let image = decode(f, crn.as_deref().unwrap_or(&data), 1, 1, &meter)
+        // YUY2 decodes whole pixel pairs only (an odd width is Tier U), so it
+        // is the one format taken two wide, beside an alpha texture as wide.
+        let width = if matches!(f, Format::Yuy2) { 2 } else { 1 };
+        let alpha = decode(Format::Rgba32, &data, width, 1, &meter).unwrap();
+        let image = decode(f, crn.as_deref().unwrap_or(&data), width, 1, &meter)
             .unwrap_or_else(|e| panic!("{f:?}: {e:?}"));
         assert_eq!(image.mode(), f.mode(), "{f:?}");
         let alone = skip_or_ok(Sheet::new(&image, None, &meter), f, "alone");
