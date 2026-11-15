@@ -78,6 +78,8 @@ name = "url_runs_scale"
 required-features = ["test-hooks"]
 
 [dev-dependencies]
+# Decision 19's source guard uses the fallback Rust lexer, not proc macros.
+proc-macro2 = { version = "=1.0.107", default-features = false }
 # Parser fixtures collect response DATA; production polls its bounded body.
 http-body-util = { version = "=0.1.5", default-features = false }
 # The `<Code>` scan's reading of markup, checked against the reader and

@@ -79,6 +79,13 @@ behavior. A filter accepts Unity class names or numeric ids. `--tpk FILE`
 supplies stripped schemas. The Rust API also accepts a filter that inspects
 metadata and then the parsed object.
 
+`--vorbis-headers FILE` supplies the runtime VST1 setup-header table for
+FSB5 Vorbis WAV decoding. There is no default path and the table is never
+fetched. It is loaded against the extraction budget before any input; a
+missing or invalid table ends the run with exit 1. Without the flag, Vorbis
+samples remain recorded object failures and a completed run exits 0.
+Batch never calls the extractor or audio exporter.
+
 `--max-input-memory N` defaults to 8589934592 charged bytes per loaded input
 and, separately, one shared extraction budget for exporter buffers, paths,
 the retained report and its JSON. `--max-input-bytes N` defaults to 4294967296

@@ -854,6 +854,19 @@ failures. The existing export crate can depend on `unityrs-mesh` without a
 cycle; no new crate or third-party package is needed. VideoClip remains E1's
 explicit Tier X API; UnityPy's extractor dispatch has no VideoClip entry.
 
+| item | reference | tier | level | test | status |
+|---|---|---|---|---|---|
+| extractor Vorbis opt-in | `extractor.exportAudioClip` writes decoded samples (section 16) | Tol (section 16's FMOD targets); synthetic decoder forwarding verified | L9 | `crates/unityrs-export/tests/audio.rs` extractor_vorbis_opt_in_writes_decoder_wav_and_none_records_failure_then_continues; `crates/unityrs-export/tests/audio.rs` extractor_without_vorbis_feature_keeps_supplied_table_a_typed_failure; `crates/unityrs-cli/tests/extract.rs` vorbis_headers_opt_in_exports_wav_and_absence_records_failure, missing_or_invalid_vorbis_headers_fail_before_loading_inputs | verified P3b for runtime table forwarding; FMOD parity awaits G8 |
+
+The extractor's `Options::vorbis` takes the caller's runtime `VorbisHeaders`
+table and defaults to `None`, retaining typed Vorbis failures while the run
+continues. Without the `vorbis` feature, a supplied table still produces the
+typed unsupported-codec failure. The CLI enables that feature and accepts
+`--vorbis-headers FILE`: a runtime VST1 setup-header table, with no default
+path and no fetch. It loads the table against the extraction meter before
+loading inputs; a missing or invalid table exits 1. Without the flag,
+reported Vorbis object failures still permit exit 0.
+
 `tools/fixtures/extractor.py --check` records original UnityPy trees or
 exceptions with partial trees, and the corrected section 19.2 expectations.
 Its embedded-tree inputs come from `extract_inputs`; the fixture stores only
@@ -1102,9 +1115,14 @@ are contained. Lewton's internal allocations remain infallible and
 unmetered, as decision 19 permits only for audio. `unityrs-audio` defaults
 to its `vorbis` feature; `unityrs-export` disables that dependency default
 and exposes its own explicit `vorbis` feature and `audio::export_with_vorbis`.
-A standalone batch build does not include lewton, and has no audio output
-kind. CLI extraction and Python callers can enable and forward this provider
-when their later PRs add those interfaces.
+The CLI enables the feature and forwards the caller's runtime table through
+`extractor::Options::vorbis` (section 15.7.2); Python exposure remains Y5.
+Batch has no audio output kind and never calls the extractor or audio exporter.
+`crates/unityrs-batch/tests/no_vorbis.rs` decision_19_batch_cannot_reach_vorbis
+pins that boundary by scanning the batch source tree. CR10's third-party
+admission list (`crates/unityrs-batch/tests/controller_support/refusals.rs`)
+admits no lewton frame. Feature unification may compile lewton into batch test
+binaries; decision 19's guarantee is reachability, not linkage.
 
 ## 17. TextureFormat matrix
 
