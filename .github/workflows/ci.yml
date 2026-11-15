@@ -475,6 +475,7 @@ jobs:
           python tools/fixtures/simple_export.py --check
           python tools/fixtures/image_webp.py --check
           python tools/fixtures/audio.py --check
+          # Checks Tier A plus shader_modern.json and shader_legacy.json (C/U).
           python tools/fixtures/shader.py --check
           python tools/fixtures/pyfmt.py --check
           python tools/fixtures/ngui.py --check
