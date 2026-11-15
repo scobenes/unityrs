@@ -10,6 +10,21 @@ use serde_json::Value;
 use std::path::Path;
 
 #[test]
+fn version_errors_decode_raw_bytes_with_surrogateescape() -> PyResult<()> {
+    Python::attach(|py| {
+        let raw = unityrs_core::RawStr::from(unityrs_core::Bytes::from_static(b"invalid\xff"));
+        let error = super::errors::core(unityrs_core::version::VersionError::NoMatch(raw).into());
+        let message: Vec<u8> = error
+            .value(py)
+            .str()?
+            .call_method1("encode", ("utf-8", "surrogateescape"))?
+            .extract()?;
+        assert_eq!(message, b"Invalid version string: invalid\xff");
+        Ok(())
+    })
+}
+
+#[test]
 fn replays_unitypy_api_observations() -> PyResult<()> {
     let records: Value = serde_json::from_str(include_str!("../tests/fixtures/api.json")).unwrap();
     Python::attach(|py| {
@@ -34,6 +49,9 @@ fn replays_unitypy_api_observations() -> PyResult<()> {
         let observer = py.import("binding_cases")?;
         let binding = py.import("unityrs")?;
         for record in records.as_array().unwrap() {
+            if record.get("observer").is_some() {
+                continue;
+            }
             let hex = record["hex"].as_str().unwrap().as_bytes();
             let bytes: Vec<u8> = hex
                 .as_chunks::<2>()
@@ -63,6 +81,44 @@ fn replays_unitypy_api_observations() -> PyResult<()> {
                 panic!("{}: {difference}", record["name"]);
             }
         }
+        Ok(())
+    })
+}
+
+#[test]
+fn replays_unitypy_helper_observations() -> PyResult<()> {
+    let records: Value = serde_json::from_str(include_str!("../tests/fixtures/api.json")).unwrap();
+    Python::attach(|py| {
+        let module = PyModule::new(py, "unityrs._native")?;
+        super::native(&module)?;
+        py.import("sys")?
+            .getattr("modules")?
+            .set_item("unityrs._native", module)?;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let paths = py.import("sys")?.getattr("path")?;
+        for directory in [root.join("python"), root.join("../../tools/parity")] {
+            paths.call_method1("insert", (0, directory.to_string_lossy().as_ref()))?;
+        }
+        let binding = py.import("unityrs")?;
+        let mut count = 0;
+        for record in records.as_array().unwrap() {
+            let Some(observer) = record.get("observer").and_then(Value::as_str) else {
+                continue;
+            };
+            let function = record["function"].as_str().unwrap();
+            let got = py.import(observer)?.getattr(function)?.call1((&binding,))?;
+            let encoded: String = py
+                .import("json")?
+                .getattr("dumps")?
+                .call1((got,))?
+                .extract()?;
+            let got: Value = serde_json::from_str(&encoded).unwrap();
+            if let Some(difference) = first_difference(&got, &record["expected"], "$") {
+                panic!("{}: {difference}", record["name"]);
+            }
+            count += 1;
+        }
+        assert_eq!(count, 10, "every Y3 observation group must replay");
         Ok(())
     })
 }

@@ -26,9 +26,7 @@
 //! to the same meter before it is allocated, with no allocation per row. The
 //! list keeps the charges, so its rows cost the input until the last `Arc`
 //! of it drops (a [`crate::Parsed`] holds its lists).
-//! The shared owner has one strong count: a 168-byte allocation charged at
-//! `heap_cost(168) = 176` on arm64 and x86-64, on every reader tier. The
-//! former two-count owner cost 192. Its full padded layout determines both
+//! The shared owner has one strong count. Its full padded layout determines both
 //! the reservation and the reported allocation size on refusal.
 //!
 //! Owner: the scaffold (implemented). Package B compiles a `NodeList` into a
@@ -147,6 +145,9 @@ pub enum TreeError {
     /// A caller's list names no node of its arena.
     #[error("typetree node {0} is not in the arena")]
     UnknownNode(usize),
+    /// A mutable caller graph points back into the current path.
+    #[error("typetree contains a cycle at node {0}")]
+    Cycle(usize),
     /// A compiled-tree bound was exceeded: its depth, or the open's work
     /// allowance, which the names a compile reads count toward
     /// ([`crate::LimitKind::DecodeWork`]: [`super::Tree::compile`]).
@@ -171,7 +172,8 @@ impl crate::once::CellError for TreeError {
             Self::Empty
             | Self::LevelUnderflow { .. }
             | Self::TooManyNodes(_)
-            | Self::UnknownNode(_) => false,
+            | Self::UnknownNode(_)
+            | Self::Cycle(_) => false,
         }
     }
 
@@ -182,7 +184,8 @@ impl crate::once::CellError for TreeError {
             Self::Empty
             | Self::LevelUnderflow { .. }
             | Self::TooManyNodes(_)
-            | Self::UnknownNode(_) => false,
+            | Self::UnknownNode(_)
+            | Self::Cycle(_) => false,
         }
     }
 
@@ -204,7 +207,9 @@ pub struct NodeList {
     /// `child_start[i]..child_start[i + 1]` indexes `children` for node `i`.
     child_start: Vec<u32>,
     children: Vec<NodeId>,
-    /// The three tables' allocations, on the input's meter.
+    /// HEAD's original node and child-list identities, before edge expansion.
+    identities: Option<Vec<(usize, usize)>>,
+    /// All table allocations, including optional identities, on the input's meter.
     charge: Charge,
 }
 
@@ -307,7 +312,7 @@ impl NodeList {
 
     /// Build a snapshot from actual edges expressed as preorder parents. The
     /// arena supplies valid parent indices; stored levels do not decide edges.
-    pub(super) fn from_preorder(
+    pub(crate) fn from_preorder(
         rows: MeteredVec<NodeRow>,
         parents: MeteredVec<u32>,
     ) -> Result<Self, TreeError> {
@@ -360,6 +365,7 @@ impl NodeList {
             rows,
             child_start,
             children,
+            identities: None,
             charge,
         })
     }
@@ -411,6 +417,19 @@ impl NodeList {
     #[must_use]
     pub fn row(&self, id: NodeId) -> Option<&NodeRow> {
         self.rows.get(id.index())
+    }
+
+    /// Original HEAD graph identities, scoped to the owning serialized file.
+    #[must_use]
+    pub fn graph_identity(&self, id: NodeId) -> Option<(usize, usize)> {
+        self.identities.as_ref()?.get(id.index()).copied()
+    }
+
+    pub(crate) fn with_graph_identities(mut self, identities: MeteredVec<(usize, usize)>) -> Self {
+        let (identities, charge) = identities.into_parts();
+        self.charge.absorb(charge);
+        self.identities = Some(identities);
+        self
     }
 
     /// A node's children, in order. Empty for a leaf or an unknown id.

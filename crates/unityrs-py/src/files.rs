@@ -54,6 +54,14 @@ impl NativeFile {
             if let File::Serialized(f) = &self.inner {
                 p::field(
                     &d,
+                    "resolved_version",
+                    &match f.version() {
+                        Some(v) => p::string(v.version.raw().as_bytes())?,
+                        None => p::none(),
+                    },
+                )?;
+                p::field(
+                    &d,
                     "unity_version",
                     &match f.unity_version() {
                         Some(s) => p::string(s.as_bytes())?,

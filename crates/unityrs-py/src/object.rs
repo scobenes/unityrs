@@ -16,6 +16,36 @@ impl NativeObject {
 }
 #[pymethods]
 impl NativeObject {
+    fn tree_traversal(&self) -> crate::traversal::TreeTraversal {
+        crate::traversal::TreeTraversal::on(
+            self.inner.file().meter(),
+            self.inner.file().context().limits.max_tree_depth,
+        )
+    }
+    fn nodes(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, crate::traversal::TreeTraversal)> {
+        py.detach(|| {
+            crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
+                crate::tree::object_nodes(&self.inner)
+            })
+        })
+    }
+    fn parse_nodes(
+        &self,
+        py: Python<'_>,
+        check_read: bool,
+        rows: Py<PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        py.detach(move || {
+            crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
+                let tree = crate::tree::compile_rows(&self.inner, &rows)?;
+                let parsed = self
+                    .inner
+                    .read_typetree(Some(&tree), check_read)
+                    .map_err(|e| errors::parse_reader(&e, self.inner.info().byte_size > 0))?;
+                value::convert(&parsed, self.inner.file().meter())
+            })
+        })
+    }
     fn metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         py.detach(|| {
             let d = p::dict()?;

@@ -79,7 +79,7 @@ fn blob(buffer: &[u8], children: &[u32]) -> Vec<u8> {
 /// once whatever their number (the two strings: one length, two hashes),
 /// each type's kind reads at most [`KIND_SCAN`] bytes, and every name byte
 /// read is counted on the list's meter: the open's work stays within twice
-/// the string buffer, the parse's one pass included.
+/// the string buffer, the parse's one pass included, plus one step per row.
 #[test]
 fn rows_naming_one_long_string_read_it_at_most_once() {
     const R: usize = 100_000;
@@ -99,8 +99,8 @@ fn rows_naming_one_long_string_read_it_at_most_once() {
     let parsed = meter.decoded();
     assert_eq!(
         parsed,
-        u64::try_from(buffer.len()).unwrap(),
-        "the parse's pass"
+        u64::try_from(buffer.len() + R + 1).unwrap(),
+        "the buffer pass and each parsed row"
     );
     let (read, scanned) = (read_now(), scanned_now());
     let tree = Tree::compile(list, &limits).unwrap();
@@ -110,7 +110,8 @@ fn rows_naming_one_long_string_read_it_at_most_once() {
     assert_eq!(read, 2 * len, "the two strings, hashed once each");
     assert_eq!(compiled, read, "every byte read is counted");
     assert!(
-        parsed + compiled <= 2 * u64::try_from(buffer.len()).unwrap(),
+        parsed + compiled
+            <= 2 * u64::try_from(buffer.len()).unwrap() + u64::try_from(R + 1).unwrap(),
         "the open's work: {parsed} + {compiled}"
     );
     let rows = u64::try_from(R + 1).unwrap();

@@ -28,8 +28,9 @@ pub trait ScriptGenerator: Send + Sync + fmt::Debug {
 /// size/version zero, meta flags retained, other optional fields absent.
 pub fn generator_node_list(mut rows: MeteredVec<NodeRow>) -> Result<NodeList, TreeError> {
     let meter = rows.charge().meter().clone();
+    let mut bounds = crate::limits::TreeTraversal::new(&meter, u32::MAX);
     for row in rows.as_mut_slice() {
-        meter.count_decode(1)?;
+        bounds.step(0, 0, 1)?;
         row.byte_size = 0;
         row.version = 0;
         row.type_flags = None;
@@ -256,14 +257,18 @@ fn refusal(error: ChargeError, detail: Arc<str>) -> ProviderError {
 }
 
 /// One step per comparison, plus an upper bound on the bytes it examines.
-fn same(meter: &Meter, a: &RawStr, b: &RawStr) -> Result<bool, ChargeError> {
+fn same(meter: &Arc<Meter>, a: &RawStr, b: &RawStr) -> Result<bool, ChargeError> {
     let bytes = if a.len() == b.len() { a.len() } else { 0 };
-    meter.count_decode(1_u64.saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX)))?;
+    crate::limits::TreeTraversal::new(meter, u32::MAX).step(
+        0,
+        0,
+        1_u64.saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX)),
+    )?;
     Ok(a == b)
 }
 
 fn keys_match(
-    meter: &Meter,
+    meter: &Arc<Meter>,
     a: &RawStr,
     f: &RawStr,
     assembly: &RawStr,

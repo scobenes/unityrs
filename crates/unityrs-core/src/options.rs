@@ -22,6 +22,8 @@ use crate::walk::{FloatMode, ReadOptions, WriteRules};
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct FileContext {
+    /// Optional mutable binding settings, snapshotted while each file loads.
+    pub runtime_config: Option<Arc<crate::config::RuntimeConfig>>,
     /// UnityPy's `config.FALLBACK_UNITY_VERSION`, plus opt-in, reported overrides.
     pub version: VersionPolicy,
     /// How a float32 signalling NaN reaches the value (plan section 3.10).
@@ -46,12 +48,19 @@ pub struct FileContext {
 }
 
 impl FileContext {
+    /// Whether the Python setting preserves the file's stored tree flag.
+    pub(crate) fn parse_typetree_enabled(&self) -> bool {
+        self.runtime_config
+            .as_ref()
+            .is_none_or(|config| config.snapshot().1)
+    }
     /// UnityPy 1.25.2's behaviour: no fallback version, no providers, the
     /// UnityPy codecs, no decryptor, no budget, `FloatMode::UnityPy`,
     /// `WriteRules::UnityPy`, the AssetBundle read at load.
     #[must_use]
     pub fn unitypy() -> Self {
         Self {
+            runtime_config: None,
             version: VersionPolicy::default(),
             floats: FloatMode::UnityPy,
             write: WriteRules::UnityPy,
@@ -85,6 +94,16 @@ impl FileContext {
             floats: self.floats,
             limits: self.limits,
         }
+    }
+
+    /// Version policy with the binding's current fallback snapshot.
+    #[must_use]
+    pub fn version_policy(&self) -> VersionPolicy {
+        let mut policy = self.version.clone();
+        if let Some(config) = &self.runtime_config {
+            policy.fallback = config.snapshot().0;
+        }
+        policy
     }
 }
 

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use unityrs_core::RawStr;
 use unityrs_core::limits::{Meter, MeteredVec};
 
-use super::{Stream, bounded, memory, range_count, read_version, struct_count};
+use super::{Stream, bounded, memory, range_count, struct_count};
 use crate::TpkError;
 
 /// Why a string UnityPy reads is refused: its length runs past the
@@ -18,22 +18,25 @@ pub(crate) const PAST_THE_END: &str = "a string longer than the rest of the payl
 /// 5 bytes (UnityPy reads on, `:449-454`).
 pub(crate) const LONG_PREFIX: &str = "a string length of more than 5 bytes";
 
+type CommonData = (MeteredVec<(u64, u8)>, MeteredVec<u16>);
+
 /// `TpkCommonString(stream)` (`Tpk.py:418-423`): the version information
-/// (a `range` count of versions, each with a count byte), read and not kept,
-/// since nothing in UnityPy 1.25.2 calls `GetCount` and `get_common_strings()`
-/// takes every index (`GetStrings`, `:425-426`); then the indices, a struct
+/// (a `range` count of versions, each with a count byte), retained for the
+/// Python helper's optional `GetCount`; then the indices, a struct
 /// format (`f"<{indicesCount}H"`: a negative count raises).
 pub(crate) fn read_common_string(
     s: &mut Stream<'_>,
     meter: &Arc<Meter>,
-) -> Result<MeteredVec<u16>, TpkError> {
+) -> Result<CommonData, TpkError> {
     let count = bounded(
         "common-string versions",
         range_count(s.i32("the common-string version count")?),
     )?;
+    let mut versions = MeteredVec::new(meter);
     for _ in 0..count {
-        read_version(s, "a common-string version")?;
-        s.u8("a common-string count")?;
+        let version = s.u64("a common-string version")?;
+        let count = s.u8("a common-string count")?;
+        versions.push((version, count)).map_err(memory)?;
     }
     let count = s.i32("the common-string index count")?;
     let count = bounded(
@@ -48,7 +51,7 @@ pub(crate) fn read_common_string(
     for id in ids {
         indices.push(u16::from_le_bytes(*id)).map_err(memory)?;
     }
-    Ok(indices)
+    Ok((versions, indices))
 }
 
 /// `TpkStringBuffer(stream)` (`Tpk.py:408-410`): a count (a `range`: a

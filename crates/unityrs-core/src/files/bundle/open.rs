@@ -280,7 +280,7 @@ fn read_fs_header(
         r.read_i8()?;
     }
     // :108-121
-    let engine = resolve_bundle(&version_engine, &ctx.version, charge)?;
+    let engine = resolve_bundle(&version_engine, &ctx.version_policy(), charge)?;
     let class = flags_class(&engine.version)?;
     // :123-124: the encryption flag, before the alignment.
     let mask = match class {

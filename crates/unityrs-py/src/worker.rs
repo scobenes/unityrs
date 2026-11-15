@@ -22,13 +22,22 @@ pub(crate) fn load_stack(limits: &unityrs_core::limits::Limits) -> usize {
 }
 
 pub(crate) fn run<T: Send>(stack: usize, f: impl FnOnce() -> PyResult<T> + Send) -> PyResult<T> {
+    let relay = crate::python::relay::Relay::default();
     std::thread::scope(|scope| {
         let thread = std::thread::Builder::new()
             .stack_size(stack)
-            .spawn_scoped(scope, f)
+            .spawn_scoped(scope, || relay.enter(f))
             .map_err(|_| PyOSError::new_err("could not create core worker"))?;
+        relay.dispatch();
         thread
             .join()
             .map_err(|_| PyRuntimeError::new_err("core worker failed"))?
     })
+}
+
+pub(crate) fn python_warning(
+    value: &unityrs_core::RawStr,
+    bundle: bool,
+) -> PyResult<(unityrs_core::RawStr, bool)> {
+    crate::python::relay::warning(value, bundle)
 }

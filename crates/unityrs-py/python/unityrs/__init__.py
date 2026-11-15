@@ -8,8 +8,9 @@ remain owned by Python and are outside this budget. ``fork()`` is safe only when
 call is in flight in another thread. Use multiprocessing's spawn or forkserver,
 or fork before reading. No child-side lock reset is installed.
 
-Object mode, generated classes, helper classes and exports belong to later
-binding releases. This scaffold has no UnityPy or Pillow runtime dependency.
+Mutable helpers, enums, versions and loader config accompany dict mode.
+Object mode, generated classes and exports belong to later binding releases.
+This package has no UnityPy or Pillow runtime dependency.
 """
 
 import ntpath
@@ -21,6 +22,8 @@ import weakref
 from functools import wraps
 
 from ._native import Budget, Limits, LimitError, TypeTreeError, NativeEnvironment
+from . import config, enums
+from .helpers import _tpk
 from .files import BundleFile, EndianBinaryReader, EndianBinaryReader_Stream, File, ObjectReader, SerializedFile, WebFile
 
 __version__ = "0.0.1"
@@ -49,7 +52,7 @@ class Environment:
     def __init__(self, *args, path=None, limits=None, budget=None):
         self._lock = threading.RLock()
         self._limits = limits if limits is not None else Limits()
-        self._native = NativeEnvironment(limits, budget)
+        self._native = NativeEnvironment(limits, budget, _tpk.provider())
         self.path = os.getcwd() if path is None else os.fspath(path)
         self.files = {}
         self.cabs = {}
@@ -65,7 +68,7 @@ class Environment:
                     self.path = ntpath.dirname(source) or "."
                 elif os.path.isdir(source):
                     self.path = source
-                self._native.load_path(source, True, False)
+                config._load(self._native, self._native.load_path, source, True, False)
                 self._sync()
             else:
                 self.load_file(source)
@@ -141,7 +144,7 @@ class Environment:
             if match:
                 key = re.sub(r"\.split\d+.*$", "", key)
                 self._keys[match.group(1)] = key
-            native = self._native.load_path(physical, False, is_dependency)
+            native = config._load(self._native, self._native.load_path, physical, False, is_dependency)
             self._sync()
             if native is None:
                 return None
@@ -162,7 +165,7 @@ class Environment:
                 if not isinstance(file, (bytes, bytearray, memoryview)):
                     raise TypeError("Unsupported file source")
                 data = file
-            native = self._native.load_bytes(bytes(data), native_key.encode("utf-8", "surrogateescape"), is_dependency, stream)
+            native = config._load(self._native, self._native.load_bytes, bytes(data), native_key.encode("utf-8", "surrogateescape"), is_dependency, stream)
             self._sync()
             if native is None:
                 return None
@@ -237,16 +240,16 @@ class Environment:
                 if base in seen:
                     continue
                 seen.add(base)
-            self._native.load_files(name)
+            config._load(self._native, self._native.load_files, name)
             self._sync()
 
     @_locked
     def load_zip_file(self, value):
         if isinstance(value, (str, os.PathLike)):
-            self._native.load_zip_path(os.fspath(value))
+            config._load(self._native, self._native.load_zip_path, os.fspath(value))
         else:
             data = self._read_stream(value) if hasattr(value, "read") else value
-            self._native.load_zip_bytes(bytes(data))
+            config._load(self._native, self._native.load_zip_bytes, bytes(data))
         self._sync()
 
     def load_assets(self, assets, open_f):
@@ -300,7 +303,7 @@ class Environment:
 
     @_locked
     def load_folder(self, path):
-        self._native.load_folder(os.fspath(path))
+        config._load(self._native, self._native.load_folder, os.fspath(path))
         self._sync()
 
     def get(self, key, default=None):
