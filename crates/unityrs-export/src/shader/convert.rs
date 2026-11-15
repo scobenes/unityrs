@@ -237,36 +237,42 @@ fn pass_write(
         }
     } else {
         state(v.field("m_State")?, out)?;
-        for (key, label) in [
-            ("progVertex", "vp"),
-            ("progFragment", "fp"),
-            ("progGeometry", "gp"),
-            ("progHull", "hp"),
-            ("progDomain", "dp"),
-        ] {
+        for (key, label) in super::layout::STAGES {
             let stage = v.field(key)?;
-            // Only the Tier A field. E3 can select player programs here.
-            let subs = stage.field("m_SubPrograms")?;
-            if !subs.empty() {
+            let (subs, player) = super::layout::selected(stage)?;
+            let mut has_variants = !subs.empty();
+            if player {
+                has_variants = false;
+                for group in subs.list()? {
+                    meter.count_decode(1)?;
+                    if !group.empty() {
+                        has_variants = true;
+                        break;
+                    }
+                }
+            }
+            if has_variants {
                 out.text("Program \"")?;
                 out.text(label)?;
                 out.text("\" {\n")?;
-                subprograms(subs, platforms, programs, out, meter)?;
+                subprograms(subs, player, platforms, programs, out, meter)?;
                 out.text("}\n")?;
             }
         }
     }
     out.text("}\n")
 }
-fn subprograms(
-    v: View<'_>,
+fn subprograms<'a>(
+    v: View<'a>,
+    player: bool,
     platforms: Seq<'_>,
     programs: &[Program<'_>],
     out: &mut Output<'_>,
     meter: &Arc<Meter>,
 ) -> Result<(), Error> {
     let mut sorted = MeteredVec::new(meter);
-    for (ordinal, sub) in v.list()?.enumerate() {
+    let mut ordinal = 0usize;
+    let mut add = |sub: View<'a>| -> Result<(), Error> {
         meter.count_decode(1)?;
         sorted.push((
             sub.field("m_BlobIndex")?.int()?,
@@ -274,6 +280,18 @@ fn subprograms(
             ordinal,
             sub,
         ))?;
+        ordinal += 1;
+        Ok(())
+    };
+    for sub in v.list()? {
+        meter.count_decode(1)?;
+        if player {
+            for sub in sub.list()? {
+                add(sub)?;
+            }
+        } else {
+            add(sub)?;
+        }
     }
     // Include ordinal to reproduce both Python stable sorts without a sort allocation.
     super::sort::by_key(sorted.as_mut_slice(), |s| (s.0, s.1, s.2), meter)?;
@@ -287,34 +305,45 @@ fn subprograms(
             }
             end += 1;
         }
-        for i in 0..platforms.len().min(programs.len()) {
-            meter.count_decode(1)?;
+        if let Some(i) = first_usable(platforms, programs.len(), first.1, meter)? {
             let platform = platforms.int(i)?;
-            if usable(platform, first.1)? {
-                for sub in sorted.as_slice().get(at..end).ok_or(Error::Index)? {
-                    out.text("SubProgram \"")?;
-                    out.text(platform_name(platform))?;
-                    out.text(" ")?;
-                    if end - at > 1 {
-                        out.text("hw_tier")?;
-                        let tier = sub.3.field("m_ShaderHardwareTier")?.int()?;
-                        // Python two-character formatting includes the sign in the two-character width.
-                        if (0..10).contains(&tier) {
-                            out.text("0")?;
-                        }
-                        out.int(i128::from(tier))?;
-                        out.text(" ")?;
+            for sub in sorted.as_slice().get(at..end).ok_or(Error::Index)? {
+                out.text("SubProgram \"")?;
+                out.text(platform_name(platform))?;
+                out.text(" ")?;
+                if !player && end - at > 1 {
+                    out.text("hw_tier")?;
+                    let tier = sub.3.field("m_ShaderHardwareTier")?.int()?;
+                    // Python two-character formatting includes the sign in the two-character width.
+                    if (0..10).contains(&tier) {
+                        out.text("0")?;
                     }
-                    out.text("\" {\n")?;
-                    programs.get(i).ok_or(Error::Index)?.write(sub.0, out)?;
-                    out.text("\n}\n")?;
+                    out.int(i128::from(tier))?;
+                    out.text(" ")?;
                 }
-                break;
+                out.text("\" {\n")?;
+                programs.get(i).ok_or(Error::Index)?.write(sub.0, out)?;
+                out.text("\n}\n")?;
             }
         }
         at = end;
     }
     Ok(())
+}
+// Share the renderer's short circuit with modern record collection.
+pub(super) fn first_usable(
+    platforms: Seq<'_>,
+    count: usize,
+    kind: i64,
+    meter: &Meter,
+) -> Result<Option<usize>, Error> {
+    for i in 0..platforms.len().min(count) {
+        meter.count_decode(1)?;
+        if usable(platforms.int(i)?, kind)? {
+            return Ok(Some(i));
+        }
+    }
+    Ok(None)
 }
 // export/ShaderConverter.py:375-493. Metal intentionally accepts VS only.
 pub(super) fn usable(platform: i64, kind: i64) -> Result<bool, Error> {

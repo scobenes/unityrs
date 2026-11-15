@@ -132,6 +132,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "image_writers"
+path = "fuzz_targets/image_writers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "unitycn"
 path = "fuzz_targets/unitycn.rs"
 test = false
@@ -162,6 +169,13 @@ bench = false
 [[bin]]
 name = "unityweb"
 path = "fuzz_targets/unityweb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webp"
+path = "fuzz_targets/webp.rs"
 test = false
 doc = false
 bench = false

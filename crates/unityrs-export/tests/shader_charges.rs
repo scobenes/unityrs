@@ -63,11 +63,23 @@ fn shader_allocations_are_charged_and_allocator_refusals_propagate() {
     counted::others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/shader.json")).unwrap();
+    let modern: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/shader_modern.json")).unwrap();
+    let legacy: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/shader_legacy.json")).unwrap();
     for case in fixture["cases"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|c| c["oracle"].get("text").is_some())
+        .chain(
+            modern["cases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .chain(legacy["cases"].as_array().unwrap())
+                .filter(|c| c["rust"].get("text").is_some()),
+        )
     {
         let text = case["input"].as_str().unwrap();
         let input: Vec<u8> = text
@@ -94,7 +106,10 @@ fn shader_allocations_are_charged_and_allocator_refusals_propagate() {
         };
         let obj = file.object(1).unwrap();
         let meter = Meter::new(u64::MAX, budget, Reservation::Input);
-        drop(unityrs_export::shader::export(&obj, &env, &meter).unwrap());
+        drop(
+            unityrs_export::shader::export(&obj, &env, &meter)
+                .unwrap_or_else(|e| panic!("{}: {e}", case["case"])),
+        );
         let baseline = HELD.load(Ordering::Relaxed);
         BASE_HELD.store(baseline, Ordering::Relaxed);
         BASE.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -267,4 +282,75 @@ fn field_name_searches_charge_hits_and_misses_at_the_work_bound() {
         }
         assert_eq!(exact.used(), 0);
     }
+}
+
+#[test]
+fn modern_detection_charges_for_passes_without_fields() {
+    use unityrs_export::shader::{self, Error};
+    use unityrs_testkit::{
+        ngui::{Object, V, st},
+        scene3d::{Layout, file},
+    };
+    let mut work = Vec::new();
+    for count in [1, 1000] {
+        let pass = st("SerializedPass", vec![]);
+        let passes = V::Vector("vector".into(), Box::new(pass.clone()), vec![pass; count]);
+        let sub = st("SerializedSubShader", vec![("m_Passes", passes)]);
+        let data = file(
+            Layout::Unity2022,
+            &[],
+            &[Object::new(
+                1,
+                48,
+                st(
+                    "Shader",
+                    vec![
+                        ("compressedBlob", V::Bytes(vec![1])),
+                        (
+                            "platforms",
+                            V::Vector("vector".into(), Box::new(V::Int(0)), vec![]),
+                        ),
+                        (
+                            "m_ParsedForm",
+                            st(
+                                "SerializedShader",
+                                vec![(
+                                    "m_SubShaders",
+                                    V::Vector("vector".into(), Box::new(sub.clone()), vec![sub]),
+                                )],
+                            ),
+                        ),
+                    ],
+                ),
+            )],
+        )
+        .unwrap();
+        let env = Environment::new(EnvOptions::unitypy());
+        let File::Serialized(file) = env
+            .load(Source::Bytes {
+                name: RawStr::from("synthetic.assets"),
+                data: Bytes::from(data),
+            })
+            .unwrap()
+        else {
+            panic!("file")
+        };
+        let object = file.object(1).unwrap();
+        let meter = work_meter(u64::MAX);
+        assert!(matches!(
+            shader::export(&object, &env, &meter),
+            Err(Error::Field("m_Name"))
+        ));
+        work.push(meter.decoded());
+        let limited = work_meter(meter.decoded() - 1);
+        assert!(matches!(
+            shader::export(&object, &env, &limited),
+            Err(Error::Charge(_))
+        ));
+        assert_eq!(limited.used(), 0);
+    }
+    assert!(
+        work[1] >= work[0] + 999,
+        "pass traversal was not charged: {work:?}"
+    );
 }

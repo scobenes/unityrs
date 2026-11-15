@@ -1,11 +1,12 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/export/ShaderConverter.py, UnityPy/classes/legacy_patch/Shader.py. See THIRD_PARTY_LICENSES.
-//! Tier A Shader export, through the `m_SubPrograms` layout. The 5.3–5.4
-//! blob path is a typed refusal; player programs and newer layouts belong
-//! to the separate Tier C extension. No batch output kind is added.
+//! Tier A Shader export and Tier C player/parameter record selection.
+//! Malformed legacy blobs and unfillable replacements have named Tier U refusals.
 //! Entry point: export/ShaderConverter.py:41-89;
 //! classes/legacy_patch/Shader.py:4-7.
 mod blob;
 mod convert;
+mod layout;
+mod legacy;
 mod output;
 mod sort;
 mod view;
@@ -30,6 +31,10 @@ pub enum Error {
     UnsupportedClass(i32),
     #[error("unsupported Shader layout: {0}")]
     Refusal(&'static str),
+    #[error("unsupported Shader layout (Tier U): {0:?}")]
+    Unsupported(Unsupported),
+    #[error("invalid Shader code or parameter blob index")]
+    LayoutIndex,
     #[error("missing or invalid Shader field {0}")]
     Field(&'static str),
     #[error("{0}")]
@@ -82,6 +87,13 @@ pub enum Error {
     Core(#[from] unityrs_core::Error),
     #[error(transparent)]
     Charge(#[from] ChargeError),
+}
+/// Legacy layouts without an established sample/reference contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unsupported {
+    BigEndian53Blob,
+    BigEndian54Blob,
+    GpuProgramIndex,
 }
 impl Error {
     /// The Python exception represented by a reference failure.
@@ -172,7 +184,7 @@ fn export_with_cap(
     if let Some(old) = root.optional("m_SubProgramBlob")?
         && !old.empty()
     {
-        return Err(Error::Refusal("5.3-5.4 m_SubProgramBlob (Tier U; E3)"));
+        return legacy::export(root, version, meter, max_block_output);
     }
     let mut out = Output::new(meter);
     out.text(HEADER)?;
@@ -182,6 +194,11 @@ fn export_with_cap(
         let platforms = root.field("platforms")?.seq()?;
         let bytes = bytes(blob.value, meter)?;
         let mut programs = MeteredVec::new(meter);
+        let modern = root
+            .optional("m_ParsedForm")?
+            .map(layout::modern)
+            .transpose()?
+            .unwrap_or(false);
         // UnityPy's short-circuit guards precede get_entry and offsets:
         // export/ShaderConverter.py:70-87 (get_entry: export/ShaderConverter.py:64-68).
         for i in 0..platforms.len() {
@@ -194,42 +211,55 @@ fn export_with_cap(
             if i >= decompressed.len() {
                 break;
             }
-            let length = compressed.entry(i)?;
-            let size = decompressed.entry(i)?;
-            let offset = root.field("offsets")?.seq()?.entry(i)?;
-            let range = offset.slice(length, bytes.len())?;
-            let mut input = bytes.slice(range);
-            let size = size.integer(view::ArrayUse::Decompressed)?;
-            // python-lz4's negative-size mode reads a stored LE size prefix.
-            // The core codec takes the resulting nonnegative maximum.
-            i32::try_from(size).map_err(|_| Error::Lz4Size)?;
-            let prefixed = size < 0;
-            let size = if prefixed {
-                let prefix: [u8; 4] = input
-                    .get(..4)
-                    .ok_or(Error::Lz4Prefix)?
-                    .try_into()
-                    .map_err(|_| Error::Lz4Prefix)?;
-                let size = u32::from_le_bytes(prefix);
-                if size > i32::MAX.unsigned_abs() {
-                    return Err(Error::Lz4HeaderSize(size));
-                }
-                input = input.slice(4..);
-                size
+            let count = if modern {
+                compressed.segment_count(i)?
             } else {
-                u32::try_from(size).map_err(|_| Error::Lz4Size)?
+                1
             };
-            // Both LZ4 passes may scan the complete input, even on failure.
-            meter.count_decode((input.len() as u64).saturating_mul(2))?;
-            let mut buf = DecodeBuf::new(meter, 0, max_block_output, LimitKind::BlockOutput)?;
-            decode_block(Codec::Lz4, &Lz4, &input, size, &mut buf, max_block_output)?;
-            if prefixed && buf.len() as u64 != u64::from(size) {
-                return Err(Error::Lz4HeaderLength {
-                    actual: buf.len(),
-                    expected: size,
-                });
+            let mut segments = MeteredVec::new(meter);
+            let offsets = root.field("offsets")?.seq()?;
+            if modern
+                && (count == 0
+                    || count != decompressed.segment_count(i)?
+                    || count != offsets.segment_count(i)?)
+            {
+                return Err(Error::LayoutIndex);
             }
-            programs.push(Program::decoded(buf, version, meter)?)?;
+            for segment in 0..count {
+                meter.count_decode(1)?;
+                let length = if modern {
+                    compressed.segment(i, segment)?
+                } else {
+                    compressed.entry(i)?
+                };
+                let size = if modern {
+                    decompressed.segment(i, segment)?
+                } else {
+                    decompressed.entry(i)?
+                };
+                let offset = if modern {
+                    offsets.segment(i, segment)?
+                } else {
+                    offsets.entry(i)?
+                };
+                let range = offset.slice(length, bytes.len())?;
+                let buf = decode(bytes.slice(range), size, meter, max_block_output)?;
+                if modern {
+                    segments.push(buf)?;
+                } else {
+                    programs.push(Program::decoded(buf, version, meter)?)?;
+                }
+            }
+            if modern {
+                programs.push(Program::modern(
+                    segments,
+                    version,
+                    root.field("m_ParsedForm")?,
+                    platforms,
+                    i,
+                    meter,
+                )?)?;
+            }
         }
         convert::shader(
             root.field("m_ParsedForm")?,
@@ -246,6 +276,45 @@ fn export_with_cap(
         out.text(&script)?;
     }
     Ok(out.bytes)
+}
+
+fn decode(
+    mut input: Bytes,
+    size: view::Entry<'_>,
+    meter: &Arc<Meter>,
+    max_block_output: u64,
+) -> Result<DecodeBuf, Error> {
+    let size = size.integer(view::ArrayUse::Decompressed)?;
+    // python-lz4's negative-size mode reads a stored LE size prefix.
+    // The core codec takes the resulting nonnegative maximum.
+    i32::try_from(size).map_err(|_| Error::Lz4Size)?;
+    let prefixed = size < 0;
+    let size = if prefixed {
+        let prefix: [u8; 4] = input
+            .get(..4)
+            .ok_or(Error::Lz4Prefix)?
+            .try_into()
+            .map_err(|_| Error::Lz4Prefix)?;
+        let size = u32::from_le_bytes(prefix);
+        if size > i32::MAX.unsigned_abs() {
+            return Err(Error::Lz4HeaderSize(size));
+        }
+        input = input.slice(4..);
+        size
+    } else {
+        u32::try_from(size).map_err(|_| Error::Lz4Size)?
+    };
+    // Both LZ4 passes may scan the complete input, even on failure.
+    meter.count_decode((input.len() as u64).saturating_mul(2))?;
+    let mut buf = DecodeBuf::new(meter, 0, max_block_output, LimitKind::BlockOutput)?;
+    decode_block(Codec::Lz4, &Lz4, &input, size, &mut buf, max_block_output)?;
+    if prefixed && buf.len() as u64 != u64::from(size) {
+        return Err(Error::Lz4HeaderLength {
+            actual: buf.len(),
+            expected: size,
+        });
+    }
+    Ok(buf)
 }
 /// Validate a platform's table and every subprogram without producing text.
 pub fn validate_blob(blob: &[u8], version: (u32, u32), meter: &Arc<Meter>) -> Result<(), Error> {

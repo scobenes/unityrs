@@ -74,6 +74,16 @@ fn run(m: &Arc<Meter>) -> Result<(), GltfError> {
     let mut scene = support::morph_directions(m)?;
     let report = write_glb(&scene, &Options::default(), m, &mut std::io::sink())?;
     drop(report);
+    scene.materials.as_mut_slice()[0].base_color_texture = Some(TextureInfo {
+        texture: 0,
+        scale: [1.; 2],
+        offset: [0.; 2],
+    });
+    if let Data::Float(v) = &mut scene.accessors.as_mut_slice()[4].data {
+        v.as_mut_slice()[0] = f64::INFINITY;
+    }
+    let report = write_glb(&scene, &Options::default(), m, &mut std::io::sink())?;
+    drop(report);
     if let Data::Float(v) = &mut scene.accessors.as_mut_slice()[2].data {
         v.as_mut_slice()[0] = f64::NAN;
     }
