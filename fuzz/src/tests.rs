@@ -434,3 +434,24 @@ fn pvrtc_atc_texture_inputs_match_their_plans_under_each_meter() {
         }
     }
 }
+
+#[test]
+fn scene_and_obj_checks_run_every_synthetic_seed_and_truncations() {
+    let mut scenes = 0;
+    let mut objs = 0;
+    for (_, case) in unityrs_testkit::fuzz::scene_cases() {
+        let bytes = case.encode();
+        scenes += usize::from(crate::scene_collect::check(&bytes));
+        objs += usize::from(crate::obj_text::check(&bytes));
+        if case.meter == 0 {
+            for cut in [0, 1, 3, bytes.len() / 2, bytes.len() - 1] {
+                crate::scene_collect::check(&bytes[..cut]);
+                crate::obj_text::check(&bytes[..cut]);
+            }
+        }
+    }
+    assert!(
+        scenes >= 100 && objs >= 100,
+        "targets must reach successful exports: scenes={scenes}, objs={objs}"
+    );
+}
