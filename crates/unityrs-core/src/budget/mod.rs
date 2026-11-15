@@ -491,7 +491,16 @@ impl DecodeBuf {
 
     /// An inflation buffer whose writes also count as decode work.
     pub(crate) fn inflated(meter: &Arc<Meter>, cap: u64) -> Result<Self, ChargeError> {
-        let mut out = Self::new(meter, 0, cap, LimitKind::Inflate)?;
+        Self::counted(meter, cap, LimitKind::Inflate)
+    }
+
+    /// An empty buffer whose writes count as work only after growth succeeds.
+    pub(crate) fn counted(
+        meter: &Arc<Meter>,
+        cap: u64,
+        cap_kind: LimitKind,
+    ) -> Result<Self, ChargeError> {
+        let mut out = Self::new(meter, 0, cap, cap_kind)?;
         out.count_writes = true;
         Ok(out)
     }

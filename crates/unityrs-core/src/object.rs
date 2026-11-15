@@ -284,6 +284,25 @@ impl ObjectRef {
         self.read_typetree(None, check_read)
     }
 
+    /// Replace the bytes file save will write, and mark every parent changed.
+    /// Reads continue using the original reader, as UnityPy does.
+    pub fn set_raw_data(&self, data: impl AsRef<[u8]>) -> Result<(), crate::files::SaveError> {
+        self.file.set_raw_data(self.index, data.as_ref())
+    }
+
+    /// Write and install a typetree, as `files/ObjectReader.py:264-276` does.
+    /// A failed write or replacement leaves the file's previous edit intact.
+    pub fn save_typetree(
+        &self,
+        value: &Parsed,
+        nodes: Option<&Arc<Tree>>,
+        rules: WriteRules,
+    ) -> Result<Bytes, crate::files::SaveError> {
+        let bytes = self.write_typetree(value, nodes, rules)?;
+        self.set_raw_data(&bytes)?;
+        Ok(bytes)
+    }
+
     /// `save_typetree`'s bytes: UnityPy's writer (or `rules`) over `value`,
     /// written into a buffer charged to the file's input meter, whose charge
     /// rides in the returned `Bytes`.
