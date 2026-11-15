@@ -43,7 +43,7 @@ fn parse(rows: &J, data: Vec<u8>) -> Parsed {
         })
         .collect();
     let tree = Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap();

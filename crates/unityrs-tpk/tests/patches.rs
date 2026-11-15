@@ -9,8 +9,6 @@
 //! have), the TPK is built here, and what is expected is the provider's
 //! documented bound.
 
-use std::sync::Arc;
-
 use common::{Blob, V2, assert_load_is_unitypys, limit_of, limits, load, stored, v2};
 use serde_json::Value as J;
 use unityrs_core::limits::Limits;
@@ -97,7 +95,10 @@ fn answer(
     });
     match (provider.node_list(class_id, v), tree) {
         (Ok(Some(list)), Ok(Some(tree))) => {
-            assert!(Arc::ptr_eq(&list, tree.list()));
+            assert!(unityrs_core::typetree::SharedNodes::ptr_eq(
+                &list,
+                tree.list()
+            ));
             Ok(Some(levels(&list)))
         }
         (Ok(None), Ok(None)) => Ok(None),
@@ -370,7 +371,7 @@ fn f3_an_entry_is_picked_by_a_forward_scan_as_unitypy_does() {
     assert_eq!(answer(&provider, 51, &versions[at(2018)]), Ok(None));
     let same = |a, b| {
         let list = |y| provider.node_list(51, &versions[at(y)]).unwrap().unwrap();
-        Arc::ptr_eq(&list(a), &list(b))
+        unityrs_core::typetree::SharedNodes::ptr_eq(&list(a), &list(b))
     };
     assert!(same(2019, 2020));
     assert!(!same(2020, 2021));

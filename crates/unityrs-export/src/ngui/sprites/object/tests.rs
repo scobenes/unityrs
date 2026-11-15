@@ -3,8 +3,6 @@
 //! unpacks, a walk over a map that is no list, and a `PPtr`'s construction,
 //! width and truth.
 
-use std::sync::Arc;
-
 use unityrs_core::env::EnvOptions;
 use unityrs_core::limits::{Limits, Meter};
 use unityrs_core::stream::Endian;
@@ -31,7 +29,7 @@ fn parse(rows: &[(u8, &str, &str, bool)], data: &[u8]) -> Parsed {
         })
         .collect();
     let list = NodeList::trusted(rows).unwrap();
-    let tree = Tree::compile(Arc::new(list), &Limits::default()).unwrap();
+    let tree = Tree::compile(list.into_shared().unwrap(), &Limits::default()).unwrap();
     let options = ReadOptions {
         limits: Limits::default(),
         ..EnvOptions::unitypy().context.read_options()

@@ -36,6 +36,7 @@ fn every_value_seed_is_written_at_each_memory_bound() {
         );
     }
     fsb5_seeds_cover_formats_versions_and_hostile_headers(&dir);
+    head_seeds_reach_the_new_readers(&dir);
     texture_seeds_are_cases(&dir);
     astc_seeds_are_cases(&dir);
     crunch_seeds_are_cases(&dir);
@@ -161,7 +162,6 @@ fn shader_seeds_are_cases(dir: &Path) {
 }
 
 fn complete_shader_seed_parses(case: &TreeCase) {
-    use std::sync::Arc;
     use unityrs_core::{
         Bytes, RawStr,
         limits::{Meter, MeteredVec},
@@ -184,7 +184,7 @@ fn complete_shader_seed_parses(case: &TreeCase) {
     }
     let options = ReadOptions::default();
     let tree = Tree::compile(
-        Arc::new(NodeList::from_rows(rows).unwrap()),
+        NodeList::from_rows(rows).unwrap().into_shared().unwrap(),
         &options.limits,
     )
     .unwrap();
@@ -371,6 +371,34 @@ fn fsb5_seeds_cover_formats_versions_and_hostile_headers(dir: &Path) {
             .flat_map(|v| [1, 2, 3, 4, 5, 7, 16].map(move |m| (v, m)))
             .collect()
     );
+}
+
+fn head_seeds_reach_the_new_readers(dir: &Path) {
+    let mut versions = BTreeSet::new();
+    for target in ["serialized", "bundle"] {
+        let mut count = 0;
+        for entry in std::fs::read_dir(dir.join(target)).unwrap() {
+            let path = entry.unwrap().path();
+            if !path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("-head-")
+            {
+                continue;
+            }
+            count += 1;
+            let bytes = std::fs::read(path).unwrap();
+            if target == "serialized" {
+                versions.insert(u32::from_be_bytes(bytes[8..12].try_into().unwrap()));
+            } else {
+                assert_eq!(u32::from_be_bytes(bytes[8..12].try_into().unwrap()), 9);
+            }
+        }
+        // Bundle seeds include the three explicit-offset empty-block cases.
+        assert_eq!(count, if target == "serialized" { 50 } else { 23 });
+    }
+    assert_eq!(versions, (23..=26).collect());
 }
 
 #[test]

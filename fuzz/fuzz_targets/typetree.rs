@@ -4,8 +4,6 @@
 //! as a node list and the list compiled, as a file's type is.
 #![no_main]
 
-use std::sync::Arc;
-
 use libfuzzer_sys::fuzz_target;
 use unityrs_core::Bytes;
 use unityrs_core::stream::{Endian, Reader};
@@ -31,7 +29,8 @@ fuzz_target!(|data: &[u8]| {
     } else {
         parse_old(&mut r, &data, format, &meter, &ctx.limits)
     };
-    if let Ok(Ok(list)) = rows.map(NodeList::from_rows) {
-        let _ = Tree::compile(Arc::new(list), &ctx.limits);
+    if let Ok(Ok(list)) = rows.map(|rows| NodeList::from_rows(rows).and_then(NodeList::into_shared))
+    {
+        let _ = Tree::compile(list, &ctx.limits);
     }
 });

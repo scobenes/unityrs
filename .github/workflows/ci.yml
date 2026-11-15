@@ -441,6 +441,7 @@ jobs:
           python tools/fixtures/walk.py --check
           python tools/fixtures/files.py --check
           python tools/fixtures/serialized_save.py --check
+          python tools/fixtures/head_read.py --check
           python tools/fixtures/unitycn.py --check
           python tools/fixtures/loading.py --check
           python tools/fixtures/web.py --check

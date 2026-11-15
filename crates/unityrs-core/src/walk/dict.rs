@@ -464,7 +464,6 @@ pub(crate) fn ref_tree(t: &SerializedType, limits: &Limits, at: u64) -> Result<R
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use bytes::Bytes;
 
@@ -493,7 +492,7 @@ mod tests {
             rows.push(NodeRow::new(1, "int", name.as_str()));
         }
         let tree = Tree::compile(
-            Arc::new(NodeList::trusted(rows).unwrap()),
+            NodeList::trusted(rows).unwrap().into_shared().unwrap(),
             &Limits::default(),
         )
         .unwrap();

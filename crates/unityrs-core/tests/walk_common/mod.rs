@@ -36,7 +36,7 @@ pub fn hex(b: &[u8]) -> String {
 }
 
 /// `[[level, type, name, meta], ...]` as a node list.
-pub fn nodes(rows: &Json) -> Arc<NodeList> {
+pub fn nodes(rows: &Json) -> unityrs_core::typetree::SharedNodes {
     let rows = rows
         .as_array()
         .unwrap()
@@ -47,7 +47,7 @@ pub fn nodes(rows: &Json) -> Arc<NodeList> {
                 .with_meta_flag(i32::try_from(r[3].as_i64().unwrap()).unwrap())
         })
         .collect();
-    Arc::new(NodeList::trusted(rows).unwrap())
+    NodeList::trusted(rows).unwrap().into_shared().unwrap()
 }
 
 pub fn compile(rows: &Json) -> Arc<Tree> {
