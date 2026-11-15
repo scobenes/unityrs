@@ -223,8 +223,20 @@ def _sign_extend(value: int, bits: int) -> int:
     return value - (1 << bits) if value >> (bits - 1) & 1 else value
 
 
-def bc6h_block(block: bytes, unquantize=bc6h_unquantize, rounding: int = 32) -> list[tuple[int, int, int]]:
-    """The 16 texels of an unsigned BC6H block (texel x + 4y) as binary16 bit patterns (red, green, blue).
+def bc6h_signed_unquantize(value: int, bits: int) -> int:
+    """Section 20.2's signed endpoint expansion, including the saturated negative endpoint."""
+    if bits >= 16:
+        return value
+    magnitude = abs(value)
+    if magnitude == 0:
+        return 0
+    expanded = 0x7FFF if magnitude >= (1 << (bits - 1)) - 1 else ((magnitude << 15) + 0x4000) >> (bits - 1)
+    return -expanded if value < 0 else expanded
+
+
+def bc6h_block(block: bytes, unquantize=bc6h_unquantize, rounding: int = 32, *, signed: bool = False
+               ) -> list[tuple[int, int, int]]:
+    """The 16 texels of a BC6H block (texel x + 4y) as binary16 bit patterns (red, green, blue).
 
     `unquantize` and `rounding` (the `+ 32` of Equation 2) are section 20.2's; the self-test passes other
     values to reproduce the decoders that depart from it."""
@@ -250,7 +262,11 @@ def bc6h_block(block: bytes, unquantize=bc6h_unquantize, rounding: int = 32) -> 
         for endpoint in endpoints[1:]:
             for c in range(3):
                 endpoint[c] = (endpoints[0][c] + _sign_extend(endpoint[c], delta[c])) & ((1 << endpoint_bits) - 1)
-    endpoints = [[unquantize(value, endpoint_bits) for value in endpoint] for endpoint in endpoints]
+    if signed:
+        endpoints = [[bc6h_signed_unquantize(_sign_extend(value, endpoint_bits), endpoint_bits)
+                      for value in endpoint] for endpoint in endpoints]
+    else:
+        endpoints = [[unquantize(value, endpoint_bits) for value in endpoint] for endpoint in endpoints]
     partition = bits >> position & ((1 << partition_bits) - 1)
     position += partition_bits
     index_bits = 3 if subsets == 2 else 4
@@ -266,7 +282,8 @@ def bc6h_block(block: bytes, unquantize=bc6h_unquantize, rounding: int = 32) -> 
         interpolated = [
             ((64 - weight) * e0 + weight * e1 + rounding) >> 6 for e0, e1 in zip(low_end, high_end, strict=True)
         ]
-        texels.append(tuple(value * 31 >> 6 for value in interpolated))  # the final unquantization, 31/64
+        texels.append(tuple((abs(value) * 31 >> 5) | (0x8000 if value < 0 else 0)
+                            if signed else value * 31 >> 6 for value in interpolated))
     assert position == 128
     return texels
 

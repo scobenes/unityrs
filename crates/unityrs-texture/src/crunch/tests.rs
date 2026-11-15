@@ -145,7 +145,7 @@ fn crunch_selection_uses_the_version_and_keeps_platform_gates() {
     fields.platform = crate::XBOX360;
     assert_eq!(
         crate::select_crunch(&fields, (5, 6)),
-        Selection::Skip(Skip::UnsupportedPlatform(SkippedPlatform::Xbox360))
+        Selection::Export(Format::Dxt5Crunched)
     );
     fields.platform = crate::SWITCH;
     fields.platform_blob = Some(&[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
@@ -227,14 +227,7 @@ fn allow_list_selection_checks_crunch_version_before_platform() {
                 Selection::Skip(Skip::UnsupportedFormat(fields.texture_format))
             );
             fields.platform = crate::XBOX360;
-            assert_eq!(
-                select_in(&fields, allowed, version),
-                if fields.texture_format < 30 {
-                    Selection::Skip(Skip::UnsupportedPlatform(SkippedPlatform::Xbox360))
-                } else {
-                    want
-                }
-            );
+            assert_eq!(select_in(&fields, allowed, version), want);
             fields.platform = crate::SWITCH;
             fields.platform_blob = Some(&[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
             assert_eq!(

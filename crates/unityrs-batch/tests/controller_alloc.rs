@@ -13,6 +13,9 @@ mod run_support;
 mod sites;
 mod stage_support;
 #[cfg(feature = "test-hooks")]
+#[path = "controller_support/url_schedule.rs"]
+mod url_schedule;
+#[cfg(feature = "test-hooks")]
 #[path = "controller_support/url_scopes.rs"]
 mod url_scopes;
 use std::os::unix::process::ExitStatusExt;
@@ -119,6 +122,15 @@ fn timed(kind: &str) -> bool {
         false
     }
 }
+fn scheduled(kind: &str) -> bool {
+    #[cfg(feature = "test-hooks")]
+    return url_schedule::contains(kind);
+    #[cfg(not(feature = "test-hooks"))]
+    {
+        let _ = kind;
+        false
+    }
+}
 #[cfg(not(feature = "test-hooks"))]
 const URL_SCOPES: &[&str] = &[];
 #[test]
@@ -135,6 +147,13 @@ fn every_controller_allocation_is_fallible_after_the_running_head() {
 fn every_url_staging_allocation_is_fallible_after_the_first_dispatch() {
     let _serial = sweeping();
     sweep(URL_SCOPES.iter().copied());
+}
+#[cfg(feature = "test-hooks")]
+#[test]
+#[cfg_attr(debug_assertions, ignore = "scale: run in release")]
+fn every_scheduled_url_variant_refuses_all_its_own_sites() {
+    let _serial = sweeping();
+    sweep(url_schedule::SCOPES.iter().copied());
 }
 /// One sweep at a time: a url scope's reads follow its machine's load.
 /// The deadlock guard is each child's ([`refusal_child`]), not a sweep's: a
@@ -268,7 +287,12 @@ impl Tally {
     ) -> bool {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if unreached_site(kind, site, output) {
-            self.unreached += 1;
+            if scheduled(kind) {
+                self.failures += 1;
+                eprintln!("UNREACHED_SCHEDULED_SITE kind={kind} site={site}");
+            } else {
+                self.unreached += 1;
+            }
             return false;
         }
         if output.status.signal() == Some(libc::SIGABRT) {
@@ -313,7 +337,7 @@ type Target = (usize, Option<(u64, usize)>);
 /// A scope's children: each ordinal its census child counted, or, for a
 /// url scope, each occurrence of each key its census child listed.
 fn targets(kind: &str, sites: usize, stdout: &str) -> Vec<Target> {
-    if !timed(kind) {
+    if !timed(kind) && !scheduled(kind) {
         return (1..=sites).map(|site| (site, None)).collect();
     }
     sites::census(kind, stdout)

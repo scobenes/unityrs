@@ -276,14 +276,8 @@ fn every_selection_is_the_oracle_one() {
             got.split('(').next().unwrap().to_owned()
         });
     }
-    let want: BTreeSet<String> = [
-        "empty_image",
-        "export",
-        "unsupported_format",
-        "unsupported_platform(switch)",
-        "unsupported_platform(xbox360)",
-    ]
-    .map(str::to_owned)
-    .into();
+    let want: BTreeSet<String> = ["empty_image", "export", "unsupported_format"]
+        .map(str::to_owned)
+        .into();
     assert_eq!(seen, want);
 }

@@ -15,6 +15,12 @@ pub fn check(input: &[u8]) {
         Arc::new(Unbounded),
         Reservation::Input,
     );
+    // The runtime setup provider is data supplied by the caller. Fuzz only
+    // its bounded VST1 parser here: no FMOD table is a seed or embedded.
+    if let Ok(headers) = unityrs_audio::VorbisHeaders::from_bytes(input, &meter) {
+        drop(headers);
+    }
+    assert_eq!(meter.used(), 0);
     if let Ok(plan) = unityrs_audio::plan(input, true, &meter) {
         if let Ok(first) = unityrs_audio::decode(&plan, b"fuzz", &meter) {
             assert_eq!(

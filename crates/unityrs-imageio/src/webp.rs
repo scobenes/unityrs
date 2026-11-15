@@ -1,7 +1,9 @@
-// Ported from Pillow 9.5.0 (MIT-CMU): src/PIL/WebPImagePlugin.py's _save and src/_webp.c's WebPEncode_wrapper. See THIRD_PARTY_LICENSES.
-//! Still images without metadata. Pillow's _save converts L to RGB and LA
+// Ported from Pillow 9.5.0 (MIT-CMU): src/PIL/WebPImagePlugin.py's _save, src/_webp.c's WebPEncode_wrapper, src/libImaging/Convert.c's p2rgb and Palette.c's ImagingPaletteNew. See THIRD_PARTY_LICENSES.
+//! Still images without metadata. Pillow's _save converts L/P to RGB and LA
 //! to RGBA; RGB/RGBA pass through. Defaults: quality 80, method 4, exact
-//! false, lossless off (WebPImagePlugin.py _save, _webp.c:586-624).
+//! false, lossless off (WebPImagePlugin.py:319-357, _webp.c's `WebPEncode_wrapper`).
+//! P indices select RGB triples from the explicit palette, or the implicit
+//! grey ramp. Transparency metadata and RGBA palettes are outside Image's model.
 //! Alpha uses libwebp's default `alpha_quality=100` and `alpha_compression=1`;
 //! even lossy WebP needs the lossless encoder for that alpha plane.
 use crate::webp_ffi;
@@ -31,10 +33,6 @@ impl Default for WebpOptions {
 /// Typed refusals, before any charge or allocation where possible.
 #[derive(Debug, thiserror::Error)]
 pub enum WebpError<R> {
-    /// Palette (`P`) images are refused until the encoder takes Pillow's
-    /// palette conversion; the extractor never produces them.
-    #[error("WebP does not take palette images yet")]
-    Palette,
     /// WebP sides must be in 1..=16383.
     #[error("WebP refuses dimensions {width}x{height}")]
     Dimensions { width: u32, height: u32 },
@@ -60,7 +58,8 @@ pub enum WebpError<R> {
 /// inside the C allocator. See `tests/webp_charges.rs` and `vendor/WEBP.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WebpPlan {
-    /// Constant plus per-pixel allowance, including L/LA mode conversion.
+    /// Constant plus per-pixel allowance, including L/LA/P mode conversion
+    /// (at most four bytes per pixel, deducted from the C allocator's limit).
     pub workspace: usize,
     /// One bounded output allocation; no growth callback can exceed it.
     pub output: usize,
@@ -149,9 +148,6 @@ fn encode_webp_impl<C: Charger>(
     charger: &mut C,
     lossless: bool,
 ) -> Result<Webp<C::Charge>, WebpError<C::Refusal>> {
-    if image.mode() == Mode::P {
-        return Err(WebpError::Palette);
-    }
     if !options.quality.is_finite()
         || !(0.0..=100.0).contains(&options.quality)
         || options.method > 6
@@ -211,7 +207,29 @@ fn encode_webp_impl<C: Charger>(
             }
             (converted.as_slice(), image.mode() == Mode::La)
         }
-        Mode::P => return Err(WebpError::Palette),
+        Mode::P => {
+            // WebPImagePlugin.py:332-338 converts opaque P to RGB.
+            // Convert.c:1128-1137 selects only the indexed entry;
+            // Palette.c:24-51 initialises the implicit 256-entry grey ramp.
+            let n = image
+                .pixels()
+                .len()
+                .checked_mul(3)
+                .ok_or(WebpError::Memory)?;
+            converted
+                .try_reserve_exact(n)
+                .map_err(|_| WebpError::Memory)?;
+            for &index in image.pixels() {
+                if let Some(palette) = image.palette() {
+                    if let Some(rgb) = palette.as_chunks::<3>().0.get(usize::from(index)) {
+                        converted.extend_from_slice(rgb);
+                    }
+                } else {
+                    converted.extend_from_slice(&[index; 3]);
+                }
+            }
+            (converted.as_slice(), false)
+        }
     };
     let written = webp_ffi::encode(
         pixels,

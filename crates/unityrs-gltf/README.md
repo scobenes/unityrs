@@ -439,6 +439,10 @@ well as budget refusals, including suffixed candidate names.
 
 Every format in `Formats::DECODED` is eligible. Unsupported formats/platforms,
 missing or malformed data omit only the affected slot with a counted reason.
+Selection uses the texture's own file version. Planning and decoding use its
+platform fields too: Switch GOB deswizzling, RGB promotion and crop, and Xbox
+byte swapping before unpacking. `tests/material_platform.rs` checks the
+embedded pixels and malformed-layout omissions.
 Before any output allocation/work charge, the decode plan checks data length,
 signed dimensions, padded pixel count, raw row width and crop bounds. A header
 beyond 2^28 padded pixels or the decoder's static row/crop caps is implausible
