@@ -229,7 +229,7 @@ jobs:
               -print_final_stats=1 > "$RUNNER_TEMP/fuzz-$1.log" 2>&1
           }
           failed=""
-          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc crunch meshdecode zlib_match unitycn zip" "webfile unityweb" "fsb5" "serialized_save" "scene_collect obj_text" "shader"; do
+          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc crunch meshdecode zlib_match unitycn zip" "webfile unityweb" "fsb5 image_writers" "serialized_save" "scene_collect obj_text" "shader"; do
             pids=""
             for t in $batch; do
               run "$t" &
@@ -239,7 +239,7 @@ jobs:
               wait "${p#*:}" || failed="$failed ${p%%:*}"
             done
           done
-          for t in detect bundle serialized serialized_save typetree boost_read python_read write_after_read lz4 texture astc crunch meshdecode zlib_match unitycn zip webfile unityweb fsb5 scene_collect obj_text shader; do
+          for t in detect bundle serialized serialized_save typetree boost_read python_read write_after_read lz4 texture astc crunch meshdecode zlib_match unitycn zip webfile unityweb fsb5 image_writers scene_collect obj_text shader; do
             echo "== $t"
             grep -E '^(stat::|#[0-9]+ +DONE)' "$RUNNER_TEMP/fuzz-$t.log" || true
           done
@@ -575,6 +575,7 @@ jobs:
           export LD_LIBRARY_PATH="$zlib"
           python -c 'import zlib; from PIL import Image; v = (Image.core.zlib_version, zlib.ZLIB_RUNTIME_VERSION); assert v == ("1.2.13",) * 2, v'
           python tools/fixtures/imageio.py --check
+          python tools/fixtures/image_writers.py --check
           python tools/fixtures/ngui.py --check
           python tools/fixtures/sprites.py --check
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
