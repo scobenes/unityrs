@@ -4,7 +4,7 @@
 //! Every block the encoder takes in proportion to the image, and zlib's
 //! deflate state, is first offered to the caller's [`Charger`] as the
 //! requests it will make of Rust's global allocator, one [`Buffer`] at a
-//! time; a refusal allocates nothing and ends the encode. [`plan`] gives the
+//! time; a refusal allocates nothing and ends the encode. [`plan_image`] gives the
 //! same requests ahead of time. The engine's charger charges the sum of each
 //! request's `heap_cost` (`unityrs_core::limits::heap_cost`) to the job's
 //! meter (`Meter::charge`) and holds the `Charge` until the buffer is freed:
@@ -121,11 +121,33 @@ pub struct Plan {
 /// Pillow 9.5.0 writes no PNG of it ([`ImageError::ZeroSide`], then
 /// [`ImageError::TooWide`], in the order Pillow's `_setimage` checks), or
 /// why this crate does not ([`ImageError::TooLarge`]).
+/// For P this assumes an explicit 256-entry palette; [`plan_image`] also
+/// handles Pillow's implicit palette, whose PNG is one bit per pixel.
 pub fn plan(width: u32, height: u32, mode: Mode) -> Result<Plan, ImageError> {
+    plan_bits(
+        width,
+        height,
+        mode,
+        u32::try_from(mode.channels() * 8).unwrap_or(32),
+    )
+}
+
+/// An image's plan distinguishes the implicit one-colour P palette from a
+/// full RGB palette. `plan` alone assumes the latter for P.
+pub fn plan_image(image: &crate::Image<'_>) -> Result<Plan, ImageError> {
+    let bits = if image.mode() == Mode::P && image.palette().is_none() {
+        1
+    } else {
+        u32::try_from(image.mode().channels() * 8).unwrap_or(32)
+    };
+    plan_bits(image.width(), image.height(), image.mode(), bits)
+}
+
+fn plan_bits(width: u32, height: u32, mode: Mode, bits: u32) -> Result<Plan, ImageError> {
     if width == 0 || height == 0 {
         return Err(ImageError::ZeroSide { width, height });
     }
-    let widest = widest(mode);
+    let widest = if bits == 1 { 536_870_910 } else { widest(mode) };
     if width > widest {
         return Err(ImageError::TooWide {
             width,
@@ -135,14 +157,15 @@ pub fn plan(width: u32, height: u32, mode: Mode) -> Result<Plan, ImageError> {
     }
     // Within `widest`, the row (at most 268,435,448 bytes) and the encoder
     // buffer, `max(65536, 4 x width)` bytes (at most 1,073,741,792), are C
-    // ints, so neither the encoder's check of the row (Pillow 9.5.0,
+    // ints (the implicit P palette permits a buffer up to 2,147,483,640),
+    // so neither the encoder's check of the row (Pillow 9.5.0,
     // `src/libImaging/ZipEncode.c:38-41`) nor a buffer size past a C int can
     // refuse. The rest is the crate's own.
     let too_large = ImageError::TooLarge { width, height };
     if u64::from(height) > u64::from(i32::MAX.unsigned_abs()) {
         return Err(too_large);
     }
-    let row = u64::from(width) * mode.channels() as u64;
+    let row = (u64::from(width) * u64::from(bits)).div_ceil(8);
     let idat_size = (u64::from(width) * 4).max(65536);
     let filtered = u64::from(height) * (row + 1);
     let bound = deflate_bound(filtered).ok_or(too_large.clone())?;
@@ -151,7 +174,13 @@ pub fn plan(width: u32, height: u32, mode: Mode) -> Result<Plan, ImageError> {
         .checked_mul(CHUNK)
         .and_then(|c| c.checked_add(FRAMING))
         .and_then(|c| c.checked_add(bound))
-        .and_then(|c| c.checked_add(1))
+        .and_then(|c| {
+            c.checked_add(if mode == Mode::P {
+                if bits == 1 { 16 } else { 781 }
+            } else {
+                1
+            })
+        })
         .and_then(|c| usize::try_from(c).ok())
         .ok_or(too_large.clone())?;
     let row = usize::try_from(row + 1).map_err(|_| too_large.clone())?;
@@ -171,7 +200,7 @@ pub fn plan(width: u32, height: u32, mode: Mode) -> Result<Plan, ImageError> {
 /// [`ImageError::TooWide`].
 const fn widest(mode: Mode) -> u32 {
     let bits = match mode {
-        Mode::L => 8,
+        Mode::L | Mode::P => 8,
         Mode::La => 16,
         Mode::Rgb => 24,
         Mode::Rgba => 32,

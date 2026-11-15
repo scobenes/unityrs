@@ -261,7 +261,7 @@ fn idat(case: &Value) -> Vec<u64> {
 fn the_fixture_covers_every_mode_kind_and_chunk_size() {
     let fixture = fixture();
     let cases = fixture["cases"].as_array().unwrap();
-    for mode in Mode::ALL {
+    for mode in Mode::EXTRACTOR {
         let of_mode: Vec<&Value> = cases.iter().filter(|c| c["mode"] == mode.name()).collect();
         // Several IDAT chunks, of the encoder buffer's size but the last: at
         // widths past 16384 (4 x width bytes) and below it (65,536).

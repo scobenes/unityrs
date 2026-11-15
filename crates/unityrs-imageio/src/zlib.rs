@@ -215,7 +215,14 @@ impl Deflater {
     }
 
     /// `deflateInit2` at Pillow's settings; zlib's return code.
+    #[cfg(test)]
     pub(crate) fn init(self: Pin<&mut Self>) -> c_int {
+        self.init_palette(false)
+    }
+
+    /// Palette PNGs select `Z_DEFAULT_STRATEGY` (`ZipEncode.c`), other PNGs
+    /// `Z_FILTERED`. Both allocate exactly the same deflate state.
+    pub(crate) fn init_palette(self: Pin<&mut Self>, palette: bool) -> c_int {
         // SAFETY: nothing is moved out of the pinned value; its fields are
         // only written in place.
         let this = unsafe { self.get_unchecked_mut() };
@@ -235,7 +242,7 @@ impl Deflater {
                 Z_DEFLATED,
                 WINDOW_BITS,
                 MEM_LEVEL,
-                STRATEGY,
+                if palette { 0 } else { STRATEGY },
                 c"1.2.13".as_ptr(),
                 size,
             )

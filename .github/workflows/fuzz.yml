@@ -60,6 +60,7 @@ jobs:
           - webfile
           - unityweb
           - fsb5
+          - image_writers
     env:
       TARGET: ${{ matrix.target }}
     steps:

@@ -1,5 +1,8 @@
-//! PNG files byte-identical to Pillow 9.5.0's, and the visible-pixel hash
+//! Image files byte-identical to Pillow 9.5.0's, and the visible-pixel hash
 //! (`docs/plans/extract.md` E19, E20, E59; `docs/DESIGN.md` section 4).
+//! [`writers`] also provides BMP/DIB, TGA, PPM, PCX, SGI, IM, raw TIFF,
+//! DDS, ICO, ICNS and EPS, their typed refusals, and the extractor's PNG
+//! fallback policy. `tools/fixtures/image_writers.py` records their oracle.
 //!
 //! - [`encode`] writes an image of mode `L`, `LA`, `RGB` or `RGBA` as
 //!   Pillow 9.5.0's `Image.save(fp, "PNG")` writes it at its defaults, byte
@@ -23,7 +26,7 @@
 //!   enables a C zlib of flate2's.
 //! - Every buffer sized by the image, and zlib's deflate state, is offered
 //!   to the caller's [`Charger`] before it is allocated ([`charge`] module
-//!   docs; [`plan`] gives the same figures ahead of time), and allocated
+//!   docs; [`plan_image`] gives the same figures ahead of time), and allocated
 //!   fallibly: a refusal is an error, never an abort.
 //!
 //! The tests replay oracle fixtures that `tools/fixtures/imageio.py`
@@ -56,9 +59,10 @@ mod image;
 #[cfg(test)]
 mod memory_tests;
 mod png;
+pub mod writers;
 mod zlib;
 
-pub use charge::{Buffer, Charger, DEFLATE_STATE_REQUESTS, Plan, Unmetered, plan};
+pub use charge::{Buffer, Charger, DEFLATE_STATE_REQUESTS, Plan, Unmetered, plan, plan_image};
 pub use hash::visible_hash;
 pub use image::{Image, ImageError, Mode};
 pub use png::{EncodeError, Png, ZlibFailure, encode};

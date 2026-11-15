@@ -48,13 +48,15 @@ use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_
 
 #[path = "fuzz_seeds/crunch.rs"]
 mod crunch;
+#[path = "fuzz_seeds/image_writers.rs"]
+mod image_writers;
 #[path = "fuzz_seeds/web.rs"]
 mod web;
 #[path = "fuzz_seeds/zip.rs"]
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 18] = [
+const TARGETS: [&str; 19] = [
     "detect",
     "bundle",
     "serialized",
@@ -73,6 +75,7 @@ const TARGETS: [&str; 18] = [
     "webfile",
     "unityweb",
     "fsb5",
+    "image_writers",
 ];
 
 /// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
@@ -714,6 +717,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     zip::seeds(&mut s)?;
     web::seeds(&mut s)?;
     fsb5::write(&mut s)?;
+    image_writers::write(&mut s)?;
     texture(&mut s)?;
     pvrtc_atc::write(&mut s)?;
     astc(&mut s)?;

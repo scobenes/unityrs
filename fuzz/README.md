@@ -34,8 +34,10 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `crunch` | legacy CRN DXT1 and DXT5 decode with dimensions bounded to -4 through 128 and data capped at 64 KiB, under the memory bound or the conservative planned peak charge and its neighbours: output size, mode and retained charge match the plan, malformed-stream errors repeat deterministically, and every meter returns to zero | `unityrs_testkit::fuzz::TextureCase`: format taken as 28 or 29, size, meter and CRN stream |
 | `meshdecode` | `walk::boost::read` of a Mesh's or a Sprite's value, then `unityrs_meshdecode::MeshHandler::process` (with or without a resource reader, either byte order, any version), `get_triangles` twice and `process` again, run last once the first's outputs drop, under the case's limits and, when the case's meter is not 0, again under a meter of `meter² × 64` bytes with the same work bound: the second `get_triangles` and the second `process` must answer as the first (but a refusal of the work it adds), the smaller meter's answer must be the first's (but a refusal of a charge past its limit), and each meter back at 0 once the outputs drop | `unityrs_testkit::fuzz::MeshCase`: flags, meter, version, resource, then a `TreeCase` |
 | `fsb5` | `unityrs_audio::plan` and `decode`: bounded parsing, PCM and float WAV lengths, repeatability and charge release | raw audio bytes |
+| `image_writers` | `Image::new` and palette validation, then default image writers: deterministic output and typed refusals, charged output and released charges; at most 65,536 source pixels and 4 MiB per writer run; ICNS uses a zero allocation budget to bound its mandatory resize | width/height u32 LE, mode, format, dimension policy, budget selector, filename selector, then repeating pixel/palette bytes |
 
-Every run is bounded by the limits in `src/lib.rs`: 128 MiB of memory, of
+Except for `image_writers`' tighter bounds above, runs use the limits in
+`src/lib.rs`: 128 MiB of memory, of
 input and of one block's output (`MEMORY`), and 8 MiB of decode work and of
 inflate (`WORK`). A value read never reaches 128 MiB within the work bound,
 so a `TreeCase` with `SMALL_MEMORY` set bounds its memory at 8 MiB instead
@@ -86,6 +88,13 @@ zero and periodic inputs around match and window boundaries.
 The `fsb5` seeds use `unityrs_testkit::fsb5`: passthrough audio, all supported
 PCM widths at both bank versions, rates, names, extra chunks, empty/short
 subsounds, deferred codecs and hostile headers (54 synthetic inputs).
+The `image_writers` seeds cover all 19 format selectors and five image modes,
+explicit and absent palettes, empty, odd and maximum bounded image sizes,
+16-bit dimension boundaries, signed/unsigned maxima, exact/short/long pixel
+buffers, all dimension policies, allocation budgets and filename selectors.
+Small supported images reach successful writes; incompatible modes, deferred
+formats, malformed dimensions and the small budgets reach refusals. Pixel
+sources stay at most 768 bytes and ICNS always refuses allocation before resizing.
 
 ## Running
 
@@ -128,6 +137,8 @@ at step 1.
 - `.github/workflows/ci.yml`'s `fuzz-build`: on every push, every target
   built and run for 30 seconds from the seeds, the harness's own tests
   (`cargo test --lib`), and `cargo fmt --check` over this crate.
+  Its explicit build and smoke lists include `image_writers`; the nightly
+  matrix runs the same target from its generated seeds.
 
 ## Licences
 

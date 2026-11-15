@@ -4,9 +4,11 @@ use std::fmt;
 
 /// An image mode Pillow 9.5.0 writes as an 8-bit PNG: the modes of a
 /// decoded texture (`RGBA`, `RGB`, `L`) and of a sprite masked from an `L`
-/// texture (`LA`), `PARITY.md` section 15.8.
+/// texture (`LA`), plus palette indices (`P`), `PARITY.md` section 15.8.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mode {
+    /// One byte a pixel, an index into a 256-entry RGB palette.
+    P,
     /// One byte a pixel, grey.
     L,
     /// Two bytes a pixel: grey, then alpha.
@@ -18,15 +20,18 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// Every mode.
-    pub const ALL: [Self; 4] = [Self::L, Self::La, Self::Rgb, Self::Rgba];
+    /// Every supported mode.
+    pub const ALL: [Self; 5] = [Self::L, Self::La, Self::Rgb, Self::Rgba, Self::P];
+
+    /// Modes directly produced by the extractor, without palette images.
+    pub const EXTRACTOR: [Self; 4] = [Self::L, Self::La, Self::Rgb, Self::Rgba];
 
     /// Bytes a pixel (Pillow's raw mode's bits over 8: `bpp` in
     /// `ZipEncode.c`).
     #[must_use]
     pub const fn channels(self) -> usize {
         match self {
-            Self::L => 1,
+            Self::L | Self::P => 1,
             Self::La => 2,
             Self::Rgb => 3,
             Self::Rgba => 4,
@@ -34,10 +39,12 @@ impl Mode {
     }
 
     /// The PNG colour type Pillow writes for the mode (`_OUTMODES` in
-    /// `PngImagePlugin.py`): 0, 4, 2 and 6, each at bit depth 8.
+    /// `PngImagePlugin.py`): 0, 4, 2, 6 and 3. The explicit palette has
+    /// bit depth 8; Pillow's implicit palette has bit depth 1.
     #[must_use]
     pub const fn color_type(self) -> u8 {
         match self {
+            Self::P => 3,
             Self::L => 0,
             Self::La => 4,
             Self::Rgb => 2,
@@ -49,6 +56,7 @@ impl Mode {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::P => "P",
             Self::L => "L",
             Self::La => "LA",
             Self::Rgb => "RGB",
@@ -78,6 +86,7 @@ pub struct Image<'a> {
     height: u32,
     mode: Mode,
     pixels: &'a [u8],
+    palette: Option<&'a [u8; 768]>,
 }
 
 impl fmt::Debug for Image<'_> {
@@ -111,7 +120,27 @@ impl<'a> Image<'a> {
             height,
             mode,
             pixels,
+            palette: None,
         })
+    }
+
+    /// A palette image with 256 RGB entries and no transparency metadata.
+    pub fn with_palette(
+        width: u32,
+        height: u32,
+        pixels: &'a [u8],
+        palette: &'a [u8; 768],
+    ) -> Result<Self, ImageError> {
+        let mut image = Self::new(width, height, Mode::P, pixels)?;
+        image.palette = Some(palette);
+        Ok(image)
+    }
+
+    /// RGB triples, or Pillow's implicit palette if absent. Its pixels
+    /// convert through a grey ramp; PNG writes a one-entry PLTE at depth 1.
+    #[must_use]
+    pub const fn palette(&self) -> Option<&'a [u8; 768]> {
+        self.palette
     }
 
     /// Its width in pixels.
