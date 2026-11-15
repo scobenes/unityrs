@@ -1534,6 +1534,7 @@ dependencies = [
  "libc",
  "md-5",
  "object_store",
+ "proc-macro2",
  "quick-xml",
  "rustls",
  "serde",

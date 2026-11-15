@@ -42,7 +42,7 @@ md5 = { package = "md-5", version = "=0.11.0", default-features = false }
 # join's late names, for tests/tag_walk.rs and tests/late_names.rs); CI's
 # feature step enables it.
 [features]
-# Explicit opt-in for library/CLI/Python callers; never enabled by batch.
+# Explicit opt-in for library/CLI/Python callers; never called by batch.
 vorbis = ["unityrs-audio/vorbis"]
 test-hooks = []
 test-counters = ["unityrs-core/test-counters"]

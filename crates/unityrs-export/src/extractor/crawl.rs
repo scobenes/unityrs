@@ -53,6 +53,7 @@ pub(super) fn export(
     env: &Environment,
     root: &ObjectRef,
     stem: &[u8],
+    caller_options: &Options<'_>,
     sink: &mut dyn Sink,
     meter: &Arc<Meter>,
     report: &mut Report,
@@ -62,8 +63,13 @@ pub(super) fn export(
     let mut seen = MeteredVec::new(meter);
     let exported_start = report.exported.len();
     pending.push(root.clone())?;
+    // UnityPy tools/extractor.py:300 calls export_obj(ref, fp, True, True):
+    // append names and IDs, with unknown-type export and filtering at defaults.
+    // Container selection and directory trimming happened before this crawl;
+    // only the caller's runtime decoder context needs forwarding here.
     let options = Options {
         append_path_id: true,
+        vorbis: caller_options.vorbis,
         ..Options::default()
     };
     while let Some(obj) = pending.pop() {
