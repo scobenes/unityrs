@@ -344,43 +344,66 @@ pub fn open_trace(path: &std::path::Path) -> Result<std::fs::File, (&'static str
 /// `nanosleep`) on storage armed before any handler was installed.
 #[cfg(feature = "test-hooks")]
 pub mod held {
-    use std::{
-        ffi::CString,
-        sync::{
-            OnceLock,
-            atomic::{AtomicI32, AtomicU8, Ordering::SeqCst},
-        },
-    };
-    static MODE: AtomicU8 = AtomicU8::new(0);
-    static TRACE: AtomicI32 = AtomicI32::new(-1);
-    static PATH: OnceLock<CString> = OnceLock::new();
+    static EXIT: super::ExitPoint = super::ExitPoint::new();
     /// Arm the hold once, at step 1: `None` spins, a path waits for it.
-    pub fn arm(wait: Option<CString>, trace: Option<i32>) {
-        if let Some(path) = wait {
-            if PATH.set(path).is_err() {
-                return;
-            }
-            MODE.store(2, SeqCst);
-        } else {
-            MODE.store(1, SeqCst);
-        }
-        TRACE.store(trace.unwrap_or(-1), SeqCst);
+    pub fn arm(wait: Option<std::ffi::CString>, trace: Option<i32>) {
+        EXIT.arm(wait, trace);
     }
     pub(super) fn at_exit() {
-        match MODE.load(SeqCst) {
+        EXIT.reached(b"exit_now reached\n");
+    }
+}
+/// A prearmed test hold callable from a signal handler. The path and
+/// trace descriptor live until process exit; reaching it allocates nothing
+/// and calls only `write`, `access` and `nanosleep`.
+#[cfg(feature = "test-hooks")]
+pub struct ExitPoint {
+    mode: std::sync::atomic::AtomicU8,
+    trace: std::sync::atomic::AtomicI32,
+    path: std::sync::OnceLock<std::ffi::CString>,
+}
+#[cfg(feature = "test-hooks")]
+impl ExitPoint {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            mode: std::sync::atomic::AtomicU8::new(0),
+            trace: std::sync::atomic::AtomicI32::new(-1),
+            path: std::sync::OnceLock::new(),
+        }
+    }
+    /// Arm before the test reaches the handler: `None` spins; a path waits
+    /// for it to exist. Publish the mode after its path and fd are ready.
+    pub fn arm(&self, wait: Option<std::ffi::CString>, trace: Option<i32>) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mode = if let Some(path) = wait {
+            if self.path.set(path).is_err() {
+                return;
+            }
+            2
+        } else {
+            1
+        };
+        self.trace.store(trace.unwrap_or(-1), SeqCst);
+        self.mode.store(mode, SeqCst);
+    }
+    /// Append a caller-supplied fixed trace line, then wait or spin. The
+    /// fd and path were prepared before the mode became visible.
+    pub fn reached(&self, line: &[u8]) {
+        use std::sync::atomic::Ordering::SeqCst;
+        match self.mode.load(SeqCst) {
             1 => loop {
                 std::hint::spin_loop();
             },
             2 => {
-                let line = b"exit_now reached\n";
-                let fd = TRACE.load(SeqCst);
+                let fd = self.trace.load(SeqCst);
                 if fd >= 0 {
                     // SAFETY: an fd the hooks leaked open; a fixed line.
                     unsafe {
                         libc::write(fd, line.as_ptr().cast(), line.len());
                     }
                 }
-                let Some(path) = PATH.get() else { return };
+                let Some(path) = self.path.get() else { return };
                 let pause = libc::timespec {
                     tv_sec: 0,
                     tv_nsec: 1_000_000,
@@ -396,6 +419,12 @@ pub mod held {
             }
             _ => {}
         }
+    }
+}
+#[cfg(feature = "test-hooks")]
+impl Default for ExitPoint {
+    fn default() -> Self {
+        Self::new()
     }
 }
 #[cfg(feature = "test-hooks")]

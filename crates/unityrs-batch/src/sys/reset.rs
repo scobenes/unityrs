@@ -46,6 +46,32 @@ pub const MAX_IOVECS: usize = 64;
 const SEALED: u64 = 1 << 63;
 const GENERATION: u64 = 1 << 32;
 const MAX_GENERATION: u64 = (1 << 31) - 1;
+#[cfg(feature = "test-hooks")]
+#[derive(Clone, Copy)]
+pub enum SocketPoint {
+    BeforePublish,
+    BeforeConnect,
+    AfterConnect,
+    ClosingRejected,
+}
+
+#[cfg(feature = "test-hooks")]
+static SOCKET_POINT: std::sync::OnceLock<fn(SocketPoint, usize)> = std::sync::OnceLock::new();
+
+/// Install the process test callback before controller startup. The reset
+/// scan never invokes it, so the scan stays signal safe even in hook builds.
+#[cfg(feature = "test-hooks")]
+pub fn arm_socket_points(callback: fn(SocketPoint, usize)) {
+    let _ = SOCKET_POINT.set(callback);
+}
+
+#[cfg(feature = "test-hooks")]
+fn socket_point(point: SocketPoint, permit: usize) {
+    if let Some(callback) = SOCKET_POINT.get() {
+        callback(point, permit);
+    }
+}
+
 pub struct SocketTable {
     closing: AtomicBool,
     entries: [AtomicU64; SOCKET_CAPACITY],
@@ -133,6 +159,8 @@ impl SocketTable {
         }
         let word = ((generation + 1) * GENERATION)
             | u64::try_from(fd.as_raw_fd()).map_err(|_| io::ErrorKind::InvalidInput)?;
+        #[cfg(feature = "test-hooks")]
+        socket_point(SocketPoint::BeforePublish, permit);
         entry
             .compare_exchange(old, word, SeqCst, SeqCst)
             .map_err(|_| io::ErrorKind::WouldBlock)?;
@@ -144,6 +172,8 @@ impl SocketTable {
         };
         // Publication precedes this load. Late publication never connects.
         if self.closing() {
+            #[cfg(feature = "test-hooks")]
+            socket_point(SocketPoint::ClosingRejected, permit);
             return Err(io::ErrorKind::ConnectionAborted.into());
         }
         Ok(owned)
@@ -266,12 +296,20 @@ impl Socket {
     }
     pub fn connect(&self, address: SocketAddr) -> io::Result<()> {
         if self.table.closing() {
+            #[cfg(feature = "test-hooks")]
+            socket_point(SocketPoint::ClosingRejected, self.entry);
             return Err(io::ErrorKind::ConnectionAborted.into());
         }
+        #[cfg(feature = "test-hooks")]
+        socket_point(SocketPoint::BeforeConnect, self.entry);
         let fd = self.as_raw_fd();
         let result = connect(fd, address);
+        #[cfg(feature = "test-hooks")]
+        socket_point(SocketPoint::AfterConnect, self.entry);
         if self.table.closing() {
             let _ = disconnect(fd);
+            #[cfg(feature = "test-hooks")]
+            socket_point(SocketPoint::ClosingRejected, self.entry);
             return Err(io::ErrorKind::ConnectionAborted.into());
         }
         result

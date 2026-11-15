@@ -40,7 +40,7 @@ Layout reaches meshes in table order, their primitives in order, attributes
 in semantic order, indices, then morph POSITION/NORMAL/TANGENT slots, followed
 by skin inverse binds and images. Shared accessors are placed on first reach;
 unreferenced accessors are omitted. Value checks run only for emitted data,
-with POSITION/NORMAL/TANGENT analysed first to decide omissions. Each view
+with POSITION/NORMAL/TANGENT, colours and UVs analysed to decide omissions. Each view
 starts at a multiple of four.
 View lengths exclude padding; BIN padding is zero and JSON padding is space.
 An empty scene has no BIN chunk. Checked lengths refuse GLBs larger than u32.
@@ -67,6 +67,14 @@ Nonzero node rotations are renormalized in f64 and clamped to [-1,1];
 raw rotations refuse components outside that range. Rotation changes count
 f64 scalar bits once per node in `Report::rotation_components`; asset extras
 include `rotation_components` when nonzero (absence means zero).
+Finite colour components clamp to [0,1] before rounding; non-finite colours
+omit the colour attribute, and non-finite UVs (including f32 overflow) omit only
+their set, per primitive. Surviving UVs compact in source order. Texture info
+uses the first surviving set; if none remains, only that primitive uses a
+material variant without texture references. `color_components` counts differing
+emitted scalars once per shared accessor; `dropped_color_attributes` and
+`dropped_texcoord_attributes` count attributes per retained primitive;
+`dropped_texture_references` counts lost slots per retained primitive.
 The returned report and asset extras carry these counts and primitive issues.
 Issue `mesh` and `primitive` indices refer to output arrays, both null for
 omitted primitives; `source_mesh` and `source_primitive` retain model indices.
@@ -189,16 +197,23 @@ arrays are padded with zero and long arrays are truncated. Each repair or
 degradation is recorded in node extras and in `collection_issues` in both
 `Report` and asset extras, with original model node, reason, and repaired-entry
 count (one for a degraded renderer). Unresolved joints are also included there.
-Invalid source geometry, including non-finite UV/color/morph values in
-normalise mode, leaves a reported empty node with `unresolved_renderer`.
-UV checks include overflow when rounding decoded values to f32.
+Invalid source geometry, including non-finite morph values in normalise mode,
+leaves a reported empty node with `unresolved_renderer`. Bad colours and UVs
+follow the primitive-local writer rules above. A processed Mesh with neither
+positions nor indices skips the renderer as `empty_mesh`, distinct from
+`mesh_decode_failed`, counted in report, asset extras and node extras.
 Malformed batch ranges and decoded attribute counts differing from POSITION
 likewise omit only their renderer. Missing mesh pointers are reported too.
 Memory, allocation, work and other resource refusals still propagate.
 Raw-mode duplicate palettes retain signed
 weights while merging matching influences.
 Morph-only renderers with no bones keep their ordinary hierarchy and have no
-skin. Four vertex influences are used; variable-count weights remain P2b's.
+skin. Four vertex influences are used; one- or two-wide indices with matching
+weights pad with joint 0 / weight 0. One-wide indices without weights get
+weight 1 on their joint. Width padding applies even with `normalise: false`,
+because VEC4 is structural; `padded_skin_rows` counts rows once per collected
+source mesh in collection issues, before any weight normalization.
+Variable-count weights remain P2b's.
 
 Geometry, indices, sparse targets and inverse bind accessors are shared by
 source file identity and path id. Mesh variants reference those same accessors
@@ -206,7 +221,10 @@ for different submesh selections. Nonempty submeshes each produce one
 triangle-list primitive; empty submeshes produce none. Base vertices are added
 with checked arithmetic. UV sets retain their indices; a missing set before a
 present one is explicitly filled with zero UVs to satisfy glTF's contiguous
-semantic requirement. Morph channels select their last frame; sorted sparse
+semantic requirement. When an invalid source set is dropped, these generated
+fillers are excluded from fallback selection and only real surviving source
+sets are compacted. Raw mode preserves the gap fillers and original sets.
+Morph channels select their last frame; sorted sparse
 indices retain implicit zero rows, including entirely zero targets. Duplicate
 or out-of-range sparse indices and invalid frame ranges are refused. Channel
 frame ranges and full frame weights are retained as string extras. Renderer
@@ -421,6 +439,10 @@ well as budget refusals, including suffixed candidate names.
 
 Every format in `Formats::DECODED` is eligible. Unsupported formats/platforms,
 missing or malformed data omit only the affected slot with a counted reason.
+Selection uses the texture's own file version. Planning and decoding use its
+platform fields too: Switch GOB deswizzling, RGB promotion and crop, and Xbox
+byte swapping before unpacking. `tests/material_platform.rs` checks the
+embedded pixels and malformed-layout omissions.
 Before any output allocation/work charge, the decode plan checks data length,
 signed dimensions, padded pixel count, raw row width and crop bounds. A header
 beyond 2^28 padded pixels or the decoder's static row/crop caps is implausible

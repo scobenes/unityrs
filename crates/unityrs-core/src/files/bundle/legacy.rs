@@ -16,12 +16,12 @@ use crate::raw::RawStr;
 use crate::stream::{Endian, Reader, ReaderKind};
 use crate::typetree::parse::string_to_null;
 use bytes::Bytes;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[allow(clippy::too_many_arguments)]
 #[expect(
     clippy::too_many_lines,
-    reason = "legacy fields and charged container construction"
+    reason = "format-gated legacy header, legacy fields and charged container construction"
 )]
 pub(super) fn open(
     name: RawStr,
@@ -97,6 +97,7 @@ pub(super) fn open(
     let entries = keep(entries, &mut charge)?;
     let (ends, c) = Ends::new(0, meter)?;
     charge.absorb(c);
+    let runs = RunIndex::mutex(&mut charge)?;
     let header = BundleHeader {
         signature,
         format,
@@ -126,7 +127,7 @@ pub(super) fn open(
         source_depth,
         lengths: Box::default(),
         ends,
-        runs: Mutex::new(RunIndex::new(meter)),
+        runs,
         counts: DecodeCounts::default(),
         entries,
         twins,

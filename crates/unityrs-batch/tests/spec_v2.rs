@@ -42,17 +42,25 @@ fn formats_name_any_decoded_format_in_any_order() {
             "RGB565",
             "DXT1",
             "ETC2_RGBA8",
+            "PVRTC_RGB2",
+            "PVRTC_RGBA4",
+            "ATC_RGB4",
+            "ATC_RGBA8",
             "ASTC_RGB_6x6",
+            "ASTC_HDR_6x6",
+            "BC6H",
             "DXT1Crunched",
             "DXT5Crunched",
             "ETC_RGB4Crunched",
             "ETC2_RGBA8Crunched",
-            "PVRTC_RGB2",
             "PVRTC_RGBA2",
             "PVRTC_RGB4",
-            "PVRTC_RGBA4",
-            "ATC_RGB4",
-            "ATC_RGBA8"
+            "RHalf",
+            "RGBAFloat",
+            "RGB48",
+            "RGBAHalf",
+            "YUY2",
+            "RGBA64_SIGNED"
         ]);
     }))
     .spec;
@@ -61,20 +69,29 @@ fn formats_name_any_decoded_format_in_any_order() {
         .with(Format::Rgb565)
         .with(Format::Dxt1)
         .with(Format::Etc2Rgba8)
+        .with(Format::PvrtcRgb2)
+        .with(Format::PvrtcRgba4)
+        .with(Format::AtcRgb4)
+        .with(Format::AtcRgba8)
         .with(Format::AstcRgb6x6)
+        .with(Format::AstcHdr6x6)
+        .with(Format::Bc6h)
         .with(Format::Dxt1Crunched)
         .with(Format::Dxt5Crunched)
         .with(Format::EtcRgb4Crunched)
         .with(Format::Etc2Rgba8Crunched)
-        .with(Format::PvrtcRgb2)
         .with(Format::PvrtcRgba2)
         .with(Format::PvrtcRgb4)
-        .with(Format::PvrtcRgba4)
-        .with(Format::AtcRgb4)
-        .with(Format::AtcRgba8);
+        .with(Format::RHalf)
+        .with(Format::RgbaFloat)
+        .with(Format::Rgb48)
+        .with(Format::RgbaHalf)
+        .with(Format::Yuy2)
+        .with(Format::Rgba64Signed);
     assert_eq!(s.outputs.formats, want);
     // Every format this binary decodes is accepted, all at once.
     let all: Vec<_> = Format::ALL.iter().map(|f| f.name()).collect();
+    assert_eq!(all.len(), 75);
     let s = accepted(&v2(|v| v["outputs"]["formats"] = json!(all))).spec;
     assert_eq!(s.outputs.formats, Formats::DECODED);
 }
@@ -92,8 +109,7 @@ fn each_refusal_formats_adds() {
         formats(json!(["DXT1", "ETC_RGB4_3DS"])),
         "range /outputs/formats/1"
     );
-    assert_eq!(formats(json!(["BC6H"])), "range /outputs/formats/0");
-    assert_eq!(formats(json!(["ASTC_HDR_4x4"])), "range /outputs/formats/0");
+    assert_eq!(formats(json!(["ARGBFloat"])), "range /outputs/formats/0");
     // A repeat, at the later item; none at all.
     assert_eq!(
         formats(json!(["BC4", "DXT1", "BC4"])),
@@ -112,14 +128,10 @@ fn image_accepts_fast_png_and_refuses_reserved_values() {
     let s = accepted(&v2(|v| v["outputs"]["image"] = json!("png_fast"))).spec;
     assert_eq!(s.outputs.image.name(), "png_fast");
     let prepared = unityrs_batch::attempt::Prepared::from_spec(&s).unwrap();
-    assert!(prepared.options.png_fast);
+    assert_eq!(prepared.options.image, Image::PngFast);
     for reserved in ["webp", "PNG", ""] {
         assert_eq!(image(json!(reserved)), "range /outputs/image", "{reserved}");
     }
-    assert_eq!(
-        image(json!({"webp": {"quality": 80}})),
-        "type /outputs/image"
-    );
     assert_eq!(image(Value::Null), "type /outputs/image");
 }
 
@@ -204,4 +216,49 @@ fn the_version_is_known_before_the_members_it_governs() {
 fn outputs_still_needs_one_kind_in_version_2() {
     let v = v2(|v| v["outputs"] = json!({"formats": ["DXT1"], "image": "png"}));
     assert_eq!(refused(&v), "outputs_empty /outputs");
+}
+
+#[test]
+fn webp_quality_is_validated_and_version_1_refuses_it() {
+    for quality in [0u8, 80, 95, 100] {
+        let s = accepted(&v2(|v| {
+            v["outputs"]["image"] = json!({"webp": {"quality": quality}});
+        }))
+        .spec;
+        assert_eq!(s.outputs.image, Image::Webp { quality });
+    }
+    assert_eq!(
+        accepted(&v2(|v| v["outputs"]["image"] = json!({"webp": {}})))
+            .spec
+            .outputs
+            .image
+            .name(),
+        "webp"
+    );
+    for (value, error) in [
+        (
+            json!({"webp": {"quality": 101}}),
+            "range /outputs/image/webp/quality",
+        ),
+        (
+            json!({"webp": {"quality": -1}}),
+            "range /outputs/image/webp/quality",
+        ),
+        (
+            json!({"webp": {"quality": 80.5}}),
+            "type /outputs/image/webp/quality",
+        ),
+        (
+            json!({"webp": {"lossless": true}}),
+            "unknown_field /outputs/image/webp/lossless",
+        ),
+        (json!({}), "missing /outputs/image/webp"),
+        (json!({"webp": null}), "type /outputs/image/webp"),
+    ] {
+        assert_eq!(refused(&v2(|v| v["outputs"]["image"] = value)), error);
+    }
+    assert_eq!(
+        refused(&with(|v| v["outputs"]["image"] = json!({"webp": {}}))),
+        "unknown_field /outputs/image"
+    );
 }

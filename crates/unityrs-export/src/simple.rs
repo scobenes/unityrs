@@ -175,7 +175,7 @@ pub(crate) fn read(obj: &ObjectRef, env: &Environment) -> Result<Parsed, Error> 
     }
     Ok(parsed)
 }
-fn read_failed(error: &Error) -> bool {
+pub(crate) fn read_failed(error: &Error) -> bool {
     match error {
         Error::CheckRead { .. } => true,
         Error::Parse(p) => semantic(p),
@@ -337,7 +337,7 @@ impl Sink for Buffer {
         self.error.clone().map_or(Ok(()), Err)
     }
 }
-fn json(parsed: &Parsed, meter: &Arc<Meter>) -> Result<MeteredVec<u8>, Error> {
+pub(crate) fn json(parsed: &Parsed, meter: &Arc<Meter>) -> Result<MeteredVec<u8>, Error> {
     let write = |sink: &mut Buffer| {
         pyjson::value_with(
             parsed,

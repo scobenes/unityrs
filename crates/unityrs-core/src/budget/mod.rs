@@ -83,7 +83,8 @@ pub struct BudgetExceeded {
 /// record per distinct home a charge absorbs, so a budget that made a home
 /// per reservation would grow every owner's bookkeeping.
 pub trait MemoryBudget: Send + Sync + fmt::Debug {
-    /// Reserves `bytes`, or refuses at once.
+    /// Reserves `bytes`, or refuses at once. A successful permit holds exactly
+    /// `bytes`, including when detached from any home.
     fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded>;
 
     /// Observes a detected allocator refusal exactly once at its source.
@@ -112,12 +113,58 @@ pub trait PermitHome: Send + Sync {
 /// absorbs, a permit of the same home adds its bytes, and one of another
 /// home merges into the record kept for that home, so a permit holds one
 /// record per distinct home whatever it absorbed ([`Self::records`]).
+/// Up to two distinct homes are stored inline, without heap allocation.
 #[must_use = "a permit returns its bytes when dropped"]
 pub struct Permit {
+    primary: PermitRecord,
+    // Two phase homes can meet in a retained charge. Keep the first additional
+    // home inline so that crossing that boundary never allocates bookkeeping.
+    more: PermitRecords,
+}
+
+enum PermitRecords {
+    Empty,
+    Inline(PermitRecord),
+    Heap(Vec<PermitRecord>),
+}
+
+impl PermitRecords {
+    fn as_slice(&self) -> &[PermitRecord] {
+        match self {
+            Self::Empty => &[],
+            Self::Inline(record) => std::slice::from_ref(record),
+            Self::Heap(records) => records,
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [PermitRecord] {
+        match self {
+            Self::Empty => &mut [],
+            Self::Inline(record) => std::slice::from_mut(record),
+            Self::Heap(records) => records,
+        }
+    }
+}
+
+struct PermitRecord {
     bytes: u64,
     home: Option<Arc<dyn PermitHome>>,
-    /// Absorbed permits whose home differs from this one's, one per home.
-    more: Vec<Permit>,
+}
+
+impl PermitRecord {
+    fn release(&mut self, n: u64) {
+        let n = n.min(self.bytes);
+        if let Some(home) = &self.home {
+            home.release(n);
+        }
+        self.bytes -= n;
+    }
+}
+
+impl Drop for PermitRecord {
+    fn drop(&mut self) {
+        self.release(self.bytes);
+    }
 }
 
 fn same_home(a: Option<&Arc<dyn PermitHome>>, b: Option<&Arc<dyn PermitHome>>) -> bool {
@@ -133,18 +180,19 @@ impl Permit {
     /// A permit that belongs to no budget.
     pub fn detached(bytes: u64) -> Self {
         Self {
-            bytes,
-            home: None,
-            more: Vec::new(),
+            primary: PermitRecord { bytes, home: None },
+            more: PermitRecords::Empty,
         }
     }
 
     /// A permit that returns its bytes to `home`.
     pub fn new(bytes: u64, home: Arc<dyn PermitHome>) -> Self {
         Self {
-            bytes,
-            home: Some(home),
-            more: Vec::new(),
+            primary: PermitRecord {
+                bytes,
+                home: Some(home),
+            },
+            more: PermitRecords::Empty,
         }
     }
 
@@ -152,74 +200,89 @@ impl Permit {
     #[must_use]
     pub fn bytes(&self) -> u64 {
         self.more
+            .as_slice()
             .iter()
-            .fold(self.bytes, |n, p| n.saturating_add(p.bytes()))
+            .fold(self.primary.bytes, |n, p| n.saturating_add(p.bytes))
     }
 
     /// Takes `other` in: its bytes are returned when this permit drops
-    /// (merged by home, type docs).
-    pub fn absorb(&mut self, mut other: Permit) {
-        for p in std::mem::take(&mut other.more) {
-            self.absorb(p);
+    /// (merged by home, type docs). The first additional home stays inline.
+    pub fn absorb(&mut self, other: Permit) {
+        match other.more {
+            PermitRecords::Empty => (),
+            PermitRecords::Inline(record) => self.absorb_record(record),
+            PermitRecords::Heap(records) => {
+                for record in records {
+                    self.absorb_record(record);
+                }
+            }
         }
+        self.absorb_record(other.primary);
+    }
+
+    fn absorb_record(&mut self, mut other: PermitRecord) {
         if other.bytes == 0 {
-            // Nothing to return: dropped without a record.
             other.home = None;
             return;
         }
-        if same_home(self.home.as_ref(), other.home.as_ref()) {
-            self.bytes = self.bytes.saturating_add(other.bytes);
-        } else if let Some(kept) = self
-            .more
-            .iter_mut()
+        if let Some(kept) = std::iter::once(&mut self.primary)
+            .chain(self.more.as_mut_slice())
             .find(|p| same_home(p.home.as_ref(), other.home.as_ref()))
         {
             kept.bytes = kept.bytes.saturating_add(other.bytes);
-        } else if self.bytes == 0 {
-            // An empty permit (a charge's first, detached) takes the home.
-            self.home = other.home.take();
-            self.bytes = other.bytes;
+            other.bytes = 0;
+            other.home = None;
+        } else if self.primary.bytes == 0 {
+            self.primary = other;
         } else {
-            self.more.push(other);
-            return;
+            match &mut self.more {
+                PermitRecords::Empty => self.more = PermitRecords::Inline(other),
+                PermitRecords::Heap(records) => records.push(other),
+                PermitRecords::Inline(_) => {
+                    let previous = std::mem::replace(&mut self.more, PermitRecords::Empty);
+                    if let PermitRecords::Inline(record) = previous {
+                        self.more = PermitRecords::Heap(vec![record, other]);
+                    }
+                }
+            }
         }
-        other.bytes = 0;
-        other.home = None;
     }
 
     /// How many records this permit keeps besides its own: one per other
-    /// home it absorbed.
+    /// home it absorbed. The first is inline and requires no allocation.
     #[must_use]
     pub fn records(&self) -> usize {
-        self.more.len()
+        self.more.as_slice().len()
     }
 
     /// Returns every byte above `keep` to its budget now.
     pub fn shrink_to(&mut self, keep: u64) {
         let mut excess = self.bytes().saturating_sub(keep);
-        while excess > 0 {
-            let Some(last) = self.more.last_mut() else {
-                break;
-            };
-            if last.bytes <= excess {
-                excess -= last.bytes;
-                self.more.pop();
-            } else {
-                last.release(excess);
-                excess = 0;
+        match &mut self.more {
+            PermitRecords::Empty => (),
+            PermitRecords::Inline(record) => {
+                let n = excess.min(record.bytes);
+                record.release(n);
+                excess -= n;
+                if record.bytes == 0 {
+                    self.more = PermitRecords::Empty;
+                }
+            }
+            PermitRecords::Heap(records) => {
+                while excess > 0 {
+                    let Some(last) = records.last_mut() else {
+                        break;
+                    };
+                    let n = excess.min(last.bytes);
+                    last.release(n);
+                    excess -= n;
+                    if last.bytes == 0 {
+                        records.pop();
+                    }
+                }
             }
         }
-        if excess > 0 {
-            self.release(excess);
-        }
-    }
-
-    fn release(&mut self, n: u64) {
-        let n = n.min(self.bytes);
-        if let Some(home) = &self.home {
-            home.release(n);
-        }
-        self.bytes -= n;
+        self.primary.release(excess);
     }
 }
 
@@ -227,17 +290,9 @@ impl fmt::Debug for Permit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Permit")
             .field("bytes", &self.bytes())
-            .field("attached", &self.home.is_some())
-            .field("more", &self.more.len())
-            .finish()
-    }
-}
-
-impl Drop for Permit {
-    fn drop(&mut self) {
-        if let Some(home) = self.home.take() {
-            home.release(self.bytes);
-        }
+            .field("attached", &self.primary.home.is_some())
+            .field("more", &self.records())
+            .finish_non_exhaustive()
     }
 }
 

@@ -174,6 +174,11 @@ fn no_decoded_format_makes_a_sheet_an_inputs_failure() {
 
     let meter = Meter::unlimited();
     let data = [0x5a_u8; 64];
+    // ASTC HDR validates its block content: a legal HDR void extent with
+    // unbounded extents and zero half-float colour, for every footprint.
+    let mut hdr = [0; 16];
+    hdr[..8].fill(255);
+    hdr[0] = 0xfc;
     let crunch: serde_json::Value = serde_json::from_str(include_str!(
         "../../unityrs-texture/tests/fixtures/crunch_native.json"
     ))
@@ -220,7 +225,8 @@ fn no_decoded_format_makes_a_sheet_an_inputs_failure() {
         // is the one format taken two wide, beside an alpha texture as wide.
         let width = if matches!(f, Format::Yuy2) { 2 } else { 1 };
         let alpha = decode(Format::Rgba32, &data, width, 1, &meter).unwrap();
-        let image = decode(f, crn.as_deref().unwrap_or(&data), width, 1, &meter)
+        let bytes = if f.is_astc_hdr() { &hdr[..] } else { &data[..] };
+        let image = decode(f, crn.as_deref().unwrap_or(bytes), width, 1, &meter)
             .unwrap_or_else(|e| panic!("{f:?}: {e:?}"));
         assert_eq!(image.mode(), f.mode(), "{f:?}");
         let alone = skip_or_ok(Sheet::new(&image, None, &meter), f, "alone");

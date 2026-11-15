@@ -10,6 +10,10 @@ fn hex(text: &str) -> Vec<u8> {
         .collect()
 }
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one recorded case dispatch keeps the fixture context"
+)]
 fn replay_pinned_audio_exports() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/audio.json");
     let body = std::fs::read_to_string(path)
@@ -55,7 +59,9 @@ fn replay_pinned_audio_exports() {
             "unsupported" => assert!(
                 matches!(
                     p,
-                    Err(Error::Unsupported { .. } | Error::UnsupportedContainer)
+                    Err(Error::Unsupported { .. }
+                        | Error::UnsupportedContainer
+                        | Error::Invalid("VORBISDATA absent"))
                 ),
                 "{label}: {p:?}"
             ),

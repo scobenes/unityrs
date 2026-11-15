@@ -5,6 +5,9 @@ Expected JSON: a list of {mesh, primitive, attributes, indices, targets} records
 Attributes and targets contain dense rows in Unity coordinates, as recorded by
 MeshHandler. Missing optional keys are not compared. Values are rounded to f32;
 normalise follows the writer's documented rules. No exporter is used as oracle.
+Set complete_texcoords on a record to check all UV sets and structural gap
+padding; otherwise unspecified UV expectations are left unexamined. A UV family
+containing invalid sets must be complete so that compaction is unambiguous.
 """
 import argparse
 import json
@@ -89,12 +92,16 @@ def converted(semantic, values, normalise=True, morph=False):
     out = []
     for source in values:
         row = list(source)
+        if semantic in ("JOINTS_0", "WEIGHTS_0") and len(row) in (1, 2):
+            row += [0] * (4 - len(row))
         if semantic in ("POSITION", "NORMAL", "TANGENT"):
             row[0] = -row[0]
             if semantic == "TANGENT" and not morph:
                 row[3] = -row[3]
         if semantic.startswith("TEXCOORD_"):
             row[1] = 1 - row[1]
+        if normalise and semantic in ("COLOR_0", "_COLOR_0"):
+            row = [min(1., max(0., v)) if math.isfinite(v) else v for v in row]
         row = list(map(f32, row))
         if normalise and not morph:
             if semantic in ("NORMAL", "TANGENT"):
@@ -119,7 +126,7 @@ def equal(actual, expected, label):
 
 
 def expected_omissions(attrs):
-    """Decide omissions from rounded source directions before unit normalization."""
+    """Decide omissions independently from source rows and documented rounding."""
     omitted = set()
     for semantic in ("NORMAL", "TANGENT"):
         for row in attrs.get(semantic, []):
@@ -129,7 +136,38 @@ def expected_omissions(attrs):
                 if semantic == "NORMAL":
                     omitted.add("TANGENT")
                 break
+    for semantic, values in attrs.items():
+        if semantic in ("COLOR_0", "_COLOR_0") or semantic.startswith("TEXCOORD_"):
+            if any(not math.isfinite(v) for row in converted(semantic, values) for v in row):
+                omitted.add(semantic)
     return omitted
+
+
+def expected_attributes(attrs, normalise, complete_texcoords=False):
+    """Build emitted semantics, including structural skin and UV padding."""
+    omitted = expected_omissions(attrs) if normalise else set()
+    values = {s: converted(s, rows, normalise) for s, rows in attrs.items() if s not in omitted}
+    if "JOINTS_0" in attrs and "WEIGHTS_0" not in attrs and all(len(row) == 1 for row in attrs["JOINTS_0"]):
+        values["WEIGHTS_0"] = [[1., 0., 0., 0.] for _ in attrs["JOINTS_0"]]
+    if normalise and "JOINTS_0" in values and "WEIGHTS_0" in attrs:
+        # The all-zero fallback resets all joints, even though its repaired
+        # first weight is one. Other zero-weight slots use palette joint zero.
+        values["JOINTS_0"] = [
+            [j if w > 0 else 0 for j, w in zip(js, ws)]
+            if any(math.isfinite(f32(v)) and f32(v) > 0 for v in original) else [0, 0, 0, 0]
+            for js, ws, original in zip(values["JOINTS_0"], values["WEIGHTS_0"], attrs["WEIGHTS_0"])]
+    uv_sets = sorted((int(s.split("_")[1]), s) for s in attrs if s.startswith("TEXCOORD_"))
+    repair = any(s in omitted for _, s in uv_sets)
+    if uv_sets and (repair or complete_texcoords):
+        uv_values = {i: values.pop(s) for i, s in uv_sets if s in values}
+        if repair:
+            rows = [uv_values[i] for i in sorted(uv_values)]
+        else:
+            count = len(attrs[uv_sets[0][1]])
+            rows = [uv_values.get(i, [[0., 0.] for _ in range(count)])
+                    for i in range(uv_sets[-1][0] + 1)]
+        values.update((f"TEXCOORD_{i}", row) for i, row in enumerate(rows))
+    return values, omitted
 
 
 def check_accessors(doc, binary, expected, normalise=True):
@@ -141,18 +179,20 @@ def check_accessors(doc, binary, expected, normalise=True):
             continue
         p = doc["meshes"][case["mesh"]]["primitives"][case["primitive"]]
         attrs = case.get("attributes", {})
-        omitted = expected_omissions(attrs) if normalise else set()
+        complete_texcoords = case.get("complete_texcoords", False)
+        emitted, omitted = expected_attributes(attrs, normalise, complete_texcoords)
         for semantic in sorted(omitted):
-            if semantic in p["attributes"]:
+            if not semantic.startswith("TEXCOORD_") and semantic in p["attributes"]:
                 raise AssertionError(f"{semantic}: expected absent")
-        for semantic, values in attrs.items():
-            if semantic in omitted:
-                continue
-            converted_values = converted(semantic, values, normalise)
-            if semantic == "JOINTS_0" and normalise and "WEIGHTS_0" in attrs:
-                weights = converted("WEIGHTS_0", attrs["WEIGHTS_0"], True)
-                converted_values = [[j if w > 0 else 0 for j, w in zip(js, ws)] if any(math.isfinite(f32(v)) and f32(v) > 0 for v in original) else [0,0,0,0] for js, ws, original in zip(converted_values, weights, attrs["WEIGHTS_0"])]
-            equal(accessor(doc, binary, p["attributes"][semantic]), converted_values, semantic)
+        if complete_texcoords or any(s.startswith("TEXCOORD_") for s in omitted):
+            actual_uvs = {s for s in p["attributes"] if s.startswith("TEXCOORD_")}
+            expected_uvs = {s for s in emitted if s.startswith("TEXCOORD_")}
+            if actual_uvs != expected_uvs:
+                raise AssertionError("TEXCOORD sets: expected compacted survivors or structural padding")
+        for semantic, values in emitted.items():
+            if semantic not in p["attributes"]:
+                raise AssertionError(f"{semantic}: expected present")
+            equal(accessor(doc, binary, p["attributes"][semantic]), values, semantic)
         if "indices" in case:
             values = case["indices"]
             equal(accessor(doc, binary, p["indices"]), [[i] for t in values for i in reversed(t)], "indices")
@@ -177,7 +217,8 @@ def cross(a, b):
     return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]
 
 
-def orientation(doc, binary):
+def orientation(doc, binary, strict=True):
+    """Return per-primitive agreement; strict fixture mode enforces the 99% gate."""
     results = []
     for mi, mesh in enumerate(doc.get("meshes", [])):
         for pi, p in enumerate(mesh["primitives"]):
@@ -186,7 +227,7 @@ def orientation(doc, binary):
             if "NORMAL" in attrs:
                 positions = accessor(doc, binary, attrs["POSITION"])
                 normals = accessor(doc, binary, attrs["NORMAL"])
-                diagonal2 = sum((max(v[c] for v in positions)-min(v[c] for v in positions))**2 for c in range(3))
+                diagonal2 = sum((max(v[c] for v in positions)-min(v[c] for v in positions))**2 for c in range(3)) if positions else 0
                 indices = [v[0] for v in accessor(doc, binary, p["indices"])] if "indices" in p else list(range(len(positions)))
                 for i in range(0, len(indices), 3):
                     a, b, c = indices[i:i+3]
@@ -197,9 +238,11 @@ def orientation(doc, binary):
                     eligible += 1
                     mean = [sum(normals[j][k] for j in (a,b,c))/3 for k in range(3)]
                     agree += sum(x*y for x,y in zip(winding, mean)) > 0
-            status = "N/A" if eligible == 0 else "pass" if agree/eligible >= 0.99 else "fail"
-            results.append(dict(mesh=mi, primitive=pi, eligible=eligible, agree=agree, status=status))
-            if status == "fail":
+            fraction = agree / eligible if eligible else None
+            status = "N/A" if eligible == 0 else "pass" if fraction >= 0.99 else "fail"
+            results.append(dict(mesh=mi, primitive=pi, eligible=eligible, agree=agree,
+                                agreement_fraction=fraction, status=status))
+            if strict and status == "fail":
                 raise AssertionError(f"orientation mesh {mi} primitive {pi}: {agree}/{eligible}")
     return results
 
@@ -209,10 +252,16 @@ def main():
     parser.add_argument("glb", type=Path)
     parser.add_argument("--expected", type=Path)
     parser.add_argument("--raw", action="store_true")
+    parser.add_argument("--report", action="store_true",
+                        help="report all orientation outcomes without enforcing the orientation gate")
     args = parser.parse_args()
     doc, binary = read_glb(args.glb)
     compared = check_accessors(doc, binary, json.loads(args.expected.read_text(encoding="utf-8")), not args.raw) if args.expected else 0
-    print(json.dumps(dict(compared=compared, orientation=orientation(doc,binary)), ensure_ascii=False))
+    results = orientation(doc, binary, strict=not args.report)
+    summary = {key: sum(row['status'] == status for row in results)
+               for key, status in [('pass', 'pass'), ('fail', 'fail'), ('not_applicable', 'N/A')]}
+    print(json.dumps(dict(compared=compared, orientation=results,
+                         orientation_summary=summary), ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -295,6 +295,24 @@ class NoticeTests(unittest.TestCase):
     def test_the_committed_notices_name_their_holders(self):
         self.assertEqual(T.notice_problems((ROOT / "THIRD_PARTY_LICENSES").read_text(encoding="utf-8")), [])
 
+    def test_a_patents_notice_is_required_in_ported_code_not_as_a_licence(self):
+        grant = "Additional intellectual property grant. Patent rights retained.\n"
+        with scratch.folder("unityrs-patents-") as tmp:
+            root = Path(tmp)
+            write_tree(root, "(MIT OR Apache-2.0) AND BSD-2-Clause")
+            (root / "crates/demo/NOTICE-PATENTS").write_text(grant)
+            crates = f"{BANNER}\nCrates\n{BANNER}\n{OVERVIEW}{LICENCE}"
+            for where in ("missing", "crates", "ported"):
+                with self.subTest(where=where):
+                    ported = grant if where == "ported" else ""
+                    text = f"{BANNER}\nPorted code\n{BANNER}\n{ported}\n{crates}"
+                    if where == "crates":
+                        text += grant
+                    problems = T.notice_problems(text, root)
+                    self.assertEqual(len(problems), 0 if where == "ported" else 1, problems)
+                    if problems:
+                        self.assertIn("NOTICE-PATENTS: its text is not in full in Ported code", problems[0])
+
     def test_a_template_notice_fails(self):
         for line in (
             "Copyright (c) <year> <copyright holders>",
@@ -555,14 +573,19 @@ class PortTests(unittest.TestCase):
                 "UnityPy git 417d595": ["LICENSE-UNITYPY-HEAD"],
                 "fmod_toolkit 0.1.3": ["LICENSE-FMOD-TOOLKIT"],
                 "vgmstream r2168": ["LICENSE-VGMSTREAM"],
+                "python-fsb5": ["LICENSE-PYTHON-FSB5"],
+                "Fmod5Sharp": ["LICENSE-FMOD5SHARP"],
                 "liblz4 1.9.4": ["LICENSE-LZ4"],
                 "CPython 3.11": ["NOTICE-PSF", "LICENSE-PSF"],
                 "Pillow 9.5.0": ["LICENSE-PILLOW"],
                 "texture2ddecoder 1.0.5": ["LICENSE-TEXTURE2DDECODER", "LICENSE-ASSETSTUDIO", "LICENSE-MIKUNYAN"],
+                "AssetStudio v0.16.47": ["LICENSE-ASSETSTUDIO"],
                 "OpenBLAS 0.3.31": ["LICENSE-OPENBLAS", "LICENSE-OPENBLAS-KERNELS", "LICENSE-OPENBLAS-DSCAL"],
                 "GotoBLAS2 code in OpenBLAS 0.3.31": ["LICENSE-OPENBLAS-UT"],
                 "zlib 1.2.13": ["LICENSE-ZLIB"],
+                "libwebp 1.3.0": ["LICENSE-WEBP", "NOTICE-WEBP-PATENTS"],
                 "Arm astcenc commit 631fb04": ["LICENSE-ASTCENC"],
+                "bcdec v0.985": ["LICENSE-BCDEC"],
                 "Crunch legacy decoder in texture2ddecoder 1.0.5": ["LICENSE-CRUNCH"],
                 "Crunch Unity decoder in texture2ddecoder 1.0.5": ["LICENSE-UNITYCRUNCH"],
                 "RazTools/Studio": ["LICENSE-RAZTOOLS"],

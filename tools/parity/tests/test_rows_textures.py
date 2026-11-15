@@ -437,6 +437,18 @@ class Rows(unittest.TestCase):
             [image.tobytes() for image in inline], [self.flipped_rgba(data[:64]), self.flipped_rgba(data[64:])]
         )
 
+    # Sections 14.2, 19.2: ASTC HDR graphics formats have no array mapping.
+    def test_texture2darray_hdr_graphics_formats_are_unmapped(self):
+        from UnityPy.enums.GraphicsFormat import GRAPHICS_TO_TEXTURE_MAP
+
+        for value, side in zip(range(145, 151), (4, 5, 6, 8, 10, 12)):
+            fmt = GraphicsFormat(value)
+            with self.subTest(format=fmt.name):
+                self.assertEqual(fmt.name, f"RGBA_ASTC{side}X{side}_UFloat")
+                self.assertNotIn(fmt, GRAPHICS_TO_TEXTURE_MAP)
+                with self.assertRaises(NotImplementedError):
+                    Texture2DArray.images.fget(self.texture_array(fmt, bytes(64), side, 1))
+
     # Sections 14.2, 19.2: the 8-bit integer graphics formats map to 16-bit texture formats.
     def test_texture2darray_8bit_integer_formats(self):
         raises = {

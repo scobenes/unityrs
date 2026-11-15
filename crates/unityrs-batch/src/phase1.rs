@@ -42,6 +42,10 @@ pub struct PreparedRun {
     /// Each distinct header name the bundles send, parsed here too, so a
     /// request's map clones a name and parses none.
     pub(crate) header_names: Arc<crate::stage::headers::Names>,
+    /// The process masker's two reference buffers: spec-only startup and
+    /// resolved preflight. Actual heap storage is measured in phase 1;
+    /// references are filled only after the host retains the spec/values.
+    pub(crate) masker: [Vec<&'static str>; 2],
     /// Phase-1 storage for the dispatch snapshot the split copies out of
     /// `active`, so freezing the facts allocates nothing.
     slots: Vec<Option<Dispatched>>,
@@ -322,6 +326,8 @@ pub fn prepare(validated: spec::Validated) -> Result<PreparedRun, PreparationErr
             })
             .collect(),
         header_names: Arc::new(crate::stage::headers::Names::from_spec(&spec)),
+        masker: crate::stage::env::Values::mask_storage(&spec)
+            .map_err(|_| PreparationError::Winners(crate::phase::Error::memory()))?,
         slots: Vec::with_capacity(spec.threads as usize),
         spec: Arc::new(spec),
         graph: Arc::new(graph),

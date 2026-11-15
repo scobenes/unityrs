@@ -14,7 +14,6 @@
 //! integer, as UnityPy's `CLASSES_CACHE` is (`Tpk.py:16`, `:44`): rabex keys
 //! by class alone, so the first version to ask fixes a class's tree for every
 //! later version (`docs/spikes/rabex.md` section 5).
-//!
 //! The TPK itself is not here: `unityrs-tpk` (package A) loads one from a
 //! path and implements [`TypeTreeProvider`]. With no provider, a stripped
 //! object is `no_typetree`. Where no provider has a class's tree, which of
@@ -23,7 +22,6 @@
 //! `NotImplementedError` for a file with no version) is
 //! [`ProviderChain::why_none`]'s answer (review round 11: nothing public
 //! told them apart, and a binding must raise UnityPy's).
-//!
 //! **The cache.** [`ProviderChain`] caches *answers only*, as UnityPy does
 //! (`Tpk.py:42-54` raises before `CLASSES_CACHE[key] = node` on a miss): a
 //! miss is asked again next time, so input-chosen keys that find nothing
@@ -44,9 +42,6 @@
 //! A provider is caller code: the chain calls it with no lock held, so a
 //! provider may itself call [`ProviderChain::lookup`].
 //!
-//! Owner: the scaffold (implemented). Package D adds tests and may add
-//! providers; `unityrs-tpk` (package A) implements the TPK one.
-
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt;
@@ -62,7 +57,10 @@ use crate::typetree::Tree;
 use crate::typetree::commonstring::CommonStrings;
 use crate::version::{Packed, UnityVersion};
 
+mod exception;
+pub mod generator;
 mod no_tree;
+pub use exception::PythonException;
 
 pub use no_tree::NoTree;
 
@@ -103,6 +101,9 @@ pub struct TreeRequest<'a> {
 #[error("{provider}: {detail}")]
 #[non_exhaustive]
 pub struct ProviderError {
+    /// Optional Python exception type, message and ancestry from a generator. Only
+    /// `ValueError` and its subclasses are swallowed by MonoBehaviour fallback.
+    pub python_exception: Option<PythonException>,
     /// The provider's name.
     pub provider: &'static str,
     /// What failed. Shared, so a clone allocates nothing: a provider keeps
@@ -131,6 +132,7 @@ impl ProviderError {
     #[must_use]
     pub fn new(provider: &'static str, detail: Arc<str>) -> Self {
         Self {
+            python_exception: None,
             provider,
             detail,
             limit: None,

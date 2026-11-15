@@ -2,7 +2,7 @@
 //! context and meter of one input, a thread with the stack a read needs,
 //! a [`TreeCase`]'s tree and ref types as the core's, and the `lz4`,
 //! `texture`, `astc`, `crunch`, `meshdecode`, `fsb5`, `image_writers`,
-//! `scene_collect`, `obj_text` and `shader` targets'
+//! `scene_collect`, `obj_text`, `shader` and `extractor_paths` targets'
 //! checks ([`lz4`], [`texture`], [`astc`], [`crunch`], [`meshdecode`],
 //! [`fsb5`], [`image_writers`], [`scene_collect`], [`obj_text`], [`shader`]),
 //! here so that their tests run.
@@ -16,6 +16,7 @@
 pub mod astc;
 pub mod bundle_save;
 pub mod crunch;
+pub mod extractor_paths;
 pub mod fsb5;
 pub mod image_writers;
 pub mod lz4;

@@ -239,7 +239,10 @@ pub fn drive_with(
     ),
     options: &Options,
 ) -> Result<ResultEnd, Error> {
-    start::supported_with(&prepared.spec, options.network.is_some()).map_err(|_| Error::usage())?;
+    start::supported(&prepared.spec).map_err(|_| Error::usage())?;
+    if options.network.is_none() && prepared.spec.bundles().any(|b| b.url().is_some()) {
+        return Err(Error::usage());
+    }
     let fin = Account::observed(crate::bound::C_FIN, Some(progress.phase()));
     let started_at = crate::sys::utc_now().map_err(|_| Error::host_io())?;
     let started_at = std::str::from_utf8(&started_at).map_err(|_| Error::internal())?;
@@ -370,7 +373,7 @@ impl Body<'_> {
         parked: &mut Parked,
         execution: Option<Execution>,
     ) -> Result<HandOver, Error> {
-        self.body(prepared, parked, execution)?;
+        self.body(prepared, parked, execution, None)?;
         parked.handover.take().ok_or_else(Error::internal)
     }
     /// [`Self::run`]'s steps, building the hand-over in `parked`.
@@ -380,10 +383,10 @@ impl Body<'_> {
         prepared: PreparedRun,
         parked: &mut Parked,
         execution: Option<Execution>,
+        staging: Option<controller::Staging>,
     ) -> Result<(), Error> {
         let network = self.options.network.as_ref();
-        let local =
-            start::supported_with(&prepared.spec, network.is_some()).map_err(|_| Error::usage())?;
+        let local = start::supported(&prepared.spec).map_err(|_| Error::usage())?;
         // The host reads a named key at preflight ([`unitycn_key`]).
         if local.spec().unitycn_key.is_some() && prepared.memory.key.is_none() {
             return Err(Error::internal());
@@ -397,17 +400,22 @@ impl Body<'_> {
             s.memory.inflight_limit = prepared.spec.max_inflight_uncompressed_bytes;
             s.spool.size = prepared.spec.spool.size_bytes;
         });
-        let values = network
-            .map(|n| network::values(n, &prepared.spec))
-            .transpose()?;
+        let values = if staging.is_none() {
+            network
+                .map(|n| network::values(n, &prepared.spec))
+                .transpose()?
+        } else {
+            None
+        };
         let execution = match execution {
             Some(execution) => execution,
             None => Execution::prepare(&prepared).map_err(|_| Error::spawn())?,
         };
         let _ = control.wake.set(execution.wake());
         let execution = parked.execution.insert(execution);
-        let staging = match (network, values) {
-            (Some(n), Some(values)) => Some(network::staging(
+        let staging = match (staging, network, values) {
+            (Some(staging), _, _) => Some(staging),
+            (_, Some(n), Some(values)) => Some(network::staging(
                 n,
                 values,
                 execution,

@@ -1,11 +1,12 @@
-//! The `astc` target's check: an ASTC LDR texture's size and blocks
+//! The `astc` target's check: an ASTC LDR or HDR texture's size and blocks
 //! (`unityrs_testkit::fuzz::TextureCase`, its format taken as one of the
-//! twelve ASTC LDR formats) through `unityrs-texture`'s `decode`, under the
+//! eighteen ASTC formats) through `unityrs-texture`'s `decode`, under the
 //! memory bound ([`crate::MEMORY`]) or a meter of about the decode's peak
 //! charge, its output and its tables (`Plan::peak_charge`).
 //!
 //! Besides a panic, a finding is: a decode whose answer is not its plan's,
-//! but for the meter's refusal of a charge past its limit; an image whose
+//! but for a typed HDR content error or the meter's refusal of a charge
+//! past its limit; an image whose
 //! size, mode or charge is not the plan's; a meter not back at 0 once the
 //! image drops, so the tables are returned; and an image whose texels are
 //! not each block's decoded alone, as a one-block texture: the assembly,
@@ -24,7 +25,7 @@ use crate::MEMORY;
 /// The blocks of an image that are each decoded alone, at least.
 const ALONE: usize = 32;
 
-/// The twelve ASTC LDR formats, in `TextureFormat` order.
+/// The eighteen ASTC formats, in `TextureFormat` order.
 fn formats() -> impl Iterator<Item = Format> {
     Format::ALL
         .into_iter()
@@ -36,7 +37,10 @@ pub fn check(input: &[u8]) {
     let case = TextureCase::decode(input);
     let count = i32::try_from(formats().count()).unwrap_or(1);
     let any = usize::try_from(case.format.rem_euclid(count)).unwrap_or(0);
-    let format = formats().nth(any).unwrap_or(Format::AstcRgba4x4);
+    let format = Format::from_texture_format(case.format)
+        .filter(|f| f.name().starts_with("ASTC_"))
+        .or_else(|| formats().nth(any))
+        .unwrap_or(Format::AstcRgba4x4);
     let planned = plan(format, case.data.len(), case.width, case.height);
     let charge = planned.as_ref().map_or(0, Plan::peak_charge);
     // The memory bound, or the peak charge less 1, the charge, or plus 1.
@@ -65,6 +69,7 @@ pub fn check(input: &[u8]) {
         (Err(DecodeError::Charge(ChargeError::Limit(_))), Ok(p)) => {
             assert!(limit < p.peak_charge(), "refused within the charge");
         }
+        (Err(DecodeError::Hdr(_)), Ok(_)) => assert!(format.is_astc_hdr()),
         (got, planned) => assert_eq!(
             got.map(|_| ()),
             planned.map(|_| ()),

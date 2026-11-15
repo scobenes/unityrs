@@ -1,4 +1,5 @@
-//! Default Pillow 9.5.0 image writers (PARITY section 15.8, W2).
+// Ported from Pillow 9.5.0 (MIT-CMU): src/PIL/WebPImagePlugin.py's _save and src/_webp.c's WebPEncode_wrapper (default WebP dispatch). See THIRD_PARTY_LICENSES.
+//! Default Pillow 9.5.0 image writers (PARITY section 15.8, W2/W1c).
 //! Images have no metadata beyond their optional RGB palette. Output and
 //! working buffers are charged before fallible allocation.
 mod dispatch;
@@ -66,7 +67,7 @@ pub enum SaveError<R> {
     /// Pillow refuses the image.
     #[error(transparent)]
     Pillow(#[from] Refusal),
-    /// A named writer deferred by decision 7 (or W1 for WebP).
+    /// A named writer deferred by decision 7.
     #[error("unsupported image writer {format:?}")]
     Unsupported {
         /// The writer.
@@ -75,6 +76,9 @@ pub enum SaveError<R> {
     /// Memory charging, allocation, PNG, or address-space failure.
     #[error(transparent)]
     Encode(#[from] EncodeError<R>),
+    /// WebP resource or encoder failure. Never triggers a PNG fallback.
+    #[error(transparent)]
+    Webp(#[from] crate::WebpError<R>),
 }
 /// Owned file bytes and the live charge for their allocation.
 pub struct Saved<C> {
@@ -121,12 +125,25 @@ pub fn save<C: Charger>(
         let (bytes, charge) = crate::encode(image, charger)?.into_parts();
         return Ok(Saved::new(bytes, charge));
     }
+    if format == Format::Webp {
+        let (bytes, charge) = crate::encode_webp(image, crate::WebpOptions::default(), charger)
+            .map_err(|error| match error {
+                // _webp.c's WebPEncode_wrapper surfaces invalid picture
+                // dimensions as ValueError, VP8_ENC_ERROR_BAD_DIMENSION (5).
+                crate::WebpError::Dimensions { .. } => {
+                    SaveError::Pillow(Refusal::new(Exception::ValueError, "encoding error 5"))
+                }
+                error => SaveError::Webp(error),
+            })?
+            .into_parts();
+        return Ok(Saved::new(bytes, charge));
+    }
     if matches!(format, Format::Ico | Format::Icns) {
         return icons::encode(image, format, charger);
     }
     if matches!(
         format,
-        Format::Gif | Format::Jpeg | Format::Mpo | Format::Pdf | Format::Jpeg2000 | Format::Webp
+        Format::Gif | Format::Jpeg | Format::Mpo | Format::Pdf | Format::Jpeg2000
     ) {
         return Err(SaveError::Unsupported { format });
     }

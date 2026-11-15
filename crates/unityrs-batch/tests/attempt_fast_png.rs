@@ -25,7 +25,7 @@ fn fast_png_replays_texture_atlas_and_sprite_pixels_from_disk() {
                 .unwrap()
                 .1;
             let mut harness = Harness::new(scene, want["input"].as_str().unwrap());
-            harness.options.png_fast = true;
+            harness.options.image = unityrs_export::ngui::ImageEncoding::PngFast;
             let end = harness.run(limits(), &NoHooks);
             clear(&end);
             assert_eq!(end.state, State::Done, "{want}");

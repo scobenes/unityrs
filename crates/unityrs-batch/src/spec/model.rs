@@ -555,25 +555,8 @@ pub struct Outputs {
     pub image: Image,
 }
 
-/// `outputs.image` (1.5): the PNG encoding this binary writes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Image {
-    /// `png`: Pillow 9.5.0's PNG bytes.
-    Png,
-    /// `png_fast`: lossless PNG, zlib level 1 and fixed Sub filtering.
-    PngFast,
-}
-
-impl Image {
-    /// Its name in the spec and the manifest.
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Png => "png",
-            Self::PngFast => "png_fast",
-        }
-    }
-}
+/// The shared image writer selection (version 2).
+pub use unityrs_export::ngui::ImageEncoding as Image;
 
 /// A Prefer (1.5). Once validated, not both `None` (`prefer_empty`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
