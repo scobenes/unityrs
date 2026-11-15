@@ -9,23 +9,37 @@ pub const CHUNK: usize = 16 * 1024 * 1024;
 
 pub trait Destination {
     fn publish(&mut self, family: Family, chunk: u64, bytes: &[u8]) -> Result<(), WriteError>;
+    /// A destination may consume the charged chunk (S3 requires owned bytes).
+    /// Returning None lets the chunker allocate its next buffer only after the
+    /// request has released the old one; a final flush needs no replacement.
+    fn publish_owned(
+        &mut self,
+        family: Family,
+        chunk: u64,
+        bytes: Buffer<u8>,
+    ) -> Result<Option<Buffer<u8>>, WriteError> {
+        self.publish(family, chunk, &bytes)?;
+        Ok(Some(bytes))
+    }
 }
 pub(super) struct Chunks<'a> {
     destination: &'a mut dyn Destination,
     family: Family,
-    bytes: Buffer<u8>,
+    bytes: Option<Buffer<u8>>,
+    account: &'a Account,
     count: u64,
 }
 impl<'a> Chunks<'a> {
     pub fn new(
         destination: &'a mut dyn Destination,
         family: Family,
-        account: &Account,
+        account: &'a Account,
     ) -> Result<Self, WriteError> {
         Ok(Self {
             destination,
             family,
-            bytes: Buffer::new(account.meter(), CHUNK)?,
+            bytes: Some(Buffer::new(account.meter(), CHUNK)?),
+            account,
             count: 0,
         })
     }
@@ -40,19 +54,30 @@ impl<'a> Chunks<'a> {
         {
             return Err(Error::internal().into());
         }
-        if self.bytes.len() + line.len() > CHUNK {
+        if self.bytes.as_ref().map_or(0, |b| b.len()) + line.len() > CHUNK {
             self.flush()?;
         }
-        self.bytes.extend(line).map_err(Into::into)
+        if self.bytes.is_none() {
+            self.bytes = Some(Buffer::new(self.account.meter(), CHUNK)?);
+        }
+        self.bytes
+            .as_mut()
+            .ok_or_else(Error::internal)?
+            .extend(line)
+            .map_err(Into::into)
     }
     fn flush(&mut self) -> Result<(), WriteError> {
-        if self.bytes.is_empty() {
+        if self.bytes.as_ref().is_none_or(|b| b.is_empty()) {
             return Ok(());
         }
-        self.destination
-            .publish(self.family, self.count, &self.bytes)?;
+        let bytes = self.bytes.take().ok_or_else(Error::internal)?;
+        self.bytes = self
+            .destination
+            .publish_owned(self.family, self.count, bytes)?;
         self.count = self.count.checked_add(1).ok_or_else(Error::internal)?;
-        self.bytes.clear();
+        if let Some(bytes) = self.bytes.as_mut() {
+            bytes.clear();
+        }
         Ok(())
     }
     pub fn finish(mut self) -> Result<u64, WriteError> {

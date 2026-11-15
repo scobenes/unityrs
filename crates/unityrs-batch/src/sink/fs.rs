@@ -37,7 +37,7 @@ pub trait FileSystem: Send + Sync {
     fn rename(&self, parent: &File, from: &CStr, to: &CStr) -> io::Result<()> {
         crate::sys::rooted_rename(parent, from, to)
     }
-    fn lock(&self, file: &File) -> io::Result<()> {
+    fn lock(&self, file: File) -> io::Result<crate::sys::FlockLease> {
         crate::sys::lock_exclusive(file)
     }
     fn write(&self, mut file: &File, bytes: &[u8]) -> io::Result<usize> {

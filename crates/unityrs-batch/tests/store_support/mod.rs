@@ -2,6 +2,9 @@
 //! next scripted reply, whose bytes arrive one chunk per read once the
 //! request has been written. No socket, no resolver, no network.
 #![allow(dead_code)]
+pub mod fake;
+mod fake_ops;
+pub mod sign;
 use std::{
     collections::VecDeque,
     future::Future,
@@ -135,6 +138,8 @@ pub struct Script {
     replies: Arc<Mutex<VecDeque<Reply>>>,
     pub seen: Arc<Seen>,
     pub sent: Arc<AtomicUsize>,
+    /// Test cancellation sweeps: one wake+Pending before each read/write.
+    pub yield_io: bool,
 }
 
 impl Script {
@@ -194,6 +199,9 @@ impl Transport for Script {
                     writes,
                     reader: None,
                     seen: self.seen.clone(),
+                    yield_io: self.yield_io,
+                    read_yielded: false,
+                    write_yielded: false,
                 };
                 http::exchange(io, permit, request).await
             }
@@ -208,6 +216,9 @@ pub struct ScriptIo {
     writes: Arc<Mutex<Vec<u8>>>,
     reader: Option<Waker>,
     seen: Arc<Seen>,
+    yield_io: bool,
+    read_yielded: bool,
+    write_yielded: bool,
 }
 
 impl AsyncRead for ScriptIo {
@@ -216,6 +227,12 @@ impl AsyncRead for ScriptIo {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        if self.yield_io && !self.read_yielded {
+            self.read_yielded = true;
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        self.read_yielded = false;
         // The peer answers once the request's head has arrived.
         if !self
             .writes
@@ -250,10 +267,16 @@ impl AsyncRead for ScriptIo {
 impl AsyncWrite for ScriptIo {
     fn poll_write(
         self: Pin<&mut Self>,
-        _: &mut Context<'_>,
+        cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
+        if this.yield_io && !this.write_yielded {
+            this.write_yielded = true;
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        this.write_yielded = false;
         this.writes.lock().unwrap().extend_from_slice(buf);
         if let Some(reader) = this.reader.take() {
             reader.wake();
