@@ -1,4 +1,4 @@
-// Ported from Pillow 9.5.0 (MIT-CMU): src/PIL/PngImagePlugin.py's _save, putchunk and _idat, src/PIL/ImageFile.py's _save and _encode_tile, and src/libImaging/ZipEncode.c's ImagingZipEncode. See THIRD_PARTY_LICENSES.
+// Ported from Pillow 9.5.0 (MIT-CMU): src/PIL/PngImagePlugin.py's _save, putchunk and _idat, src/PIL/ImageFile.py's _save and _encode_tile, src/libImaging/ZipEncode.c's ImagingZipEncode and Pack.c's pack1. See THIRD_PARTY_LICENSES.
 //! A PNG file byte-identical to Pillow 9.5.0's `Image.save(fp, "PNG")` at
 //! its defaults, for an image with no `info` (`docs/plans/extract.md` E19).
 //!
@@ -167,9 +167,9 @@ pub fn encode<C: Charger>(
 
 /// Encodes a lossless PNG at zlib level 1 with a fixed Sub filter. This
 /// skips adaptive filter scoring and uses zlib's fast match search. Bytes
-/// differ from Pillow's defaults; all pixel bytes, including hidden RGB,
-/// are preserved. Uses the same charge plan and fallible allocator path
-/// as [`encode`], with no additional allocations.
+/// differ from Pillow's defaults; hidden RGB is preserved. Palette images
+/// use the same palette depth and index packing as [`encode`]. Uses the
+/// same charge plan and fallible allocator path, with no additional allocations.
 pub fn encode_fast<C: Charger>(
     image: &Image<'_>,
     charger: &mut C,
@@ -182,7 +182,14 @@ fn encode_with<C: Charger>(
     charger: &mut C,
     fast: bool,
 ) -> Result<Png<C::Charge>, EncodeError<C::Refusal>> {
-    let plan = charge::plan(image.width(), image.height(), image.mode())?;
+    let plan = charge::plan_image(image)?;
+    let palette_bits = if image.mode() != crate::Mode::P {
+        0
+    } else if image.palette().is_some() {
+        8
+    } else {
+        1
+    };
     let bound = charge::deflate_bound(plan.filtered).ok_or(zlib_failure(ZlibFailure::Bound))?;
 
     // Each charge is declared before what it pays for, so it drops after it.
@@ -191,7 +198,7 @@ fn encode_with<C: Charger>(
     match if fast {
         z.as_mut().init_fast()
     } else {
-        z.as_mut().init()
+        z.as_mut().init_palette(image.mode() == crate::Mode::P)
     } {
         Z_OK => {}
         Z_MEM_ERROR if z.over_allowance() => {
@@ -222,16 +229,7 @@ fn encode_with<C: Charger>(
         out: &mut out,
         len: 0,
     };
-    w.put(&SIGNATURE)?;
-    // The size, bit depth 8, the colour type, then compression, filter
-    // method and interlace 0.
-    let [w0, w1, w2, w3] = image.width().to_be_bytes();
-    let [h0, h1, h2, h3] = image.height().to_be_bytes();
-    let color = image.mode().color_type();
-    w.chunk(
-        *b"IHDR",
-        &[w0, w1, w2, w3, h0, h1, h2, h3, 8, color, 0, 0, 0],
-    )?;
+    header(&mut w, image, palette_bits)?;
 
     let mut pixels = image.pixels().chunks_exact(image.row_bytes());
     let mut stage = Stage::Rows;
@@ -255,7 +253,14 @@ fn encode_with<C: Charger>(
         let Some(output) = w.out.get_mut(data..end) else {
             return Err(zlib_failure(ZlibFailure::Bound));
         };
-        let (n, done) = encode_call(z.as_mut(), &mut rows, &mut pixels, &mut stage, output)?;
+        let (n, done) = encode_call(
+            z.as_mut(),
+            &mut rows,
+            &mut pixels,
+            &mut stage,
+            output,
+            palette_bits,
+        )?;
         w.len = data;
         w.skip(n)?;
         w.seal(head, *b"IDAT")?;
@@ -276,6 +281,47 @@ fn encode_with<C: Charger>(
     })
 }
 
+/// The PNG signature, IHDR and optional palette, at Pillow's defaults.
+fn header<R>(
+    w: &mut Writer<'_>,
+    image: &Image<'_>,
+    palette_bits: u8,
+) -> Result<(), EncodeError<R>> {
+    w.put(&SIGNATURE)?;
+    // The size, bit depth, colour type, then compression, filter
+    // method and interlace 0.
+    let [w0, w1, w2, w3] = image.width().to_be_bytes();
+    let [h0, h1, h2, h3] = image.height().to_be_bytes();
+    let color = image.mode().color_type();
+    w.chunk(
+        *b"IHDR",
+        &[
+            w0,
+            w1,
+            w2,
+            w3,
+            h0,
+            h1,
+            h2,
+            h3,
+            if palette_bits == 1 { 1 } else { 8 },
+            color,
+            0,
+            0,
+            0,
+        ],
+    )?;
+
+    if image.mode() == crate::Mode::P {
+        w.chunk(
+            *b"PLTE",
+            image.palette().map_or([0; 3].as_slice(), |p| p.as_slice()),
+        )?;
+    }
+
+    Ok(())
+}
+
 /// One call of `ImagingZipEncode` (`ZipEncode.c:23-344`) into `output`:
 /// the bytes it wrote there, and whether the stream ended. The two calls
 /// that hand zlib its input and output are unsafe: zlib keeps both pointers
@@ -287,6 +333,7 @@ fn encode_call<R>(
     pixels: &mut ChunksExact<'_, u8>,
     stage: &mut Stage,
     output: &mut [u8],
+    palette_bits: u8,
 ) -> Result<(usize, bool), EncodeError<R>> {
     let window = output.len();
     // SAFETY: the output is neither read nor written, nor moved, until this
@@ -306,8 +353,23 @@ fn encode_call<R>(
                 *stage = Stage::Finish;
                 break;
             };
-            rows.current_pixels().copy_from_slice(row);
-            let chosen = rows.choose();
+            if palette_bits == 1 {
+                // Pack.c pack1: each nonzero index sets its bit, MSB first.
+                for (out, chunk) in rows.current_pixels().iter_mut().zip(row.chunks(8)) {
+                    *out = chunk.iter().enumerate().fold(0, |byte, (bit, &index)| {
+                        byte | (u8::from(index != 0) << (7 - bit))
+                    });
+                }
+            } else {
+                rows.current_pixels().copy_from_slice(row);
+            }
+            // At Pillow's defaults ZIP_PNG_PALETTE leaves every selector
+            // at zero. Fast PNG applies Sub to the packed row in all modes.
+            let chosen = if palette_bits != 0 && !rows.fast {
+                crate::filter::Chosen::None
+            } else {
+                rows.choose()
+            };
             // SAFETY: zlib reads the chosen row during this deflate and, if
             // the window fills first, during the next call's first deflate
             // (above), before any row is written again: rows are filtered

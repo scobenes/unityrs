@@ -69,7 +69,18 @@ pub fn visible_hash(image: &Image<'_>) -> [u8; 32] {
         let mut n = 0;
         let (out, _) = rgba.as_chunks_mut::<4>();
         for (out, px) in out.iter_mut().zip(pixels.chunks_exact(channels)) {
-            *out = visible(image.mode(), px);
+            *out = if let (Mode::P, &[index]) = (image.mode(), px) {
+                let offset = usize::from(index) * 3;
+                match image
+                    .palette()
+                    .and_then(|palette| palette.get(offset..offset + 3))
+                {
+                    Some(&[red, green, blue]) => [red, green, blue, 255],
+                    _ => [index, index, index, 255],
+                }
+            } else {
+                visible(image.mode(), px)
+            };
             n += 4;
         }
         sha.update(rgba.get(..n).unwrap_or_default());
@@ -130,6 +141,10 @@ mod tests {
 
     #[test]
     fn other_modes_hash_as_pillows_rgba() {
+        let palette = std::array::from_fn(|i: usize| i.to_le_bytes()[0]);
+        let indexed = Image::with_palette(2, 1, &[0, 1], &palette).unwrap();
+        let expanded = Image::new(2, 1, Mode::Rgba, &[0, 1, 2, 255, 3, 4, 5, 255]).unwrap();
+        assert_eq!(visible_hash(&indexed), visible_hash(&expanded));
         let l = Image::new(2, 1, Mode::L, &[3, 250]).unwrap();
         let rgba = Image::new(2, 1, Mode::Rgba, &[3, 3, 3, 255, 250, 250, 250, 255]).unwrap();
         assert_eq!(visible_hash(&l), visible_hash(&rgba));
