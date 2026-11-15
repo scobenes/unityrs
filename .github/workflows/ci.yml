@@ -482,6 +482,11 @@ jobs:
           python tools/fixtures/pyfmt.py --check
           python tools/fixtures/ngui.py --check
           python tools/fixtures/sprites.py --check
+      - name: Independently encoded Vorbis fixtures and optional export integration
+        run: |
+          python -m pip install --no-deps --target "$RUNNER_TEMP/vorbis-tools" -r tools/fixtures/requirements-vorbis.txt
+          PYTHONPATH="$RUNNER_TEMP/vorbis-tools" python tools/fixtures/audio_vorbis.py --check
+          cargo test -p unityrs-export --features vorbis --test audio
       # sprite.py records UnityPy's SpriteHelper on hand-built sprites (its
       # trees and cases in sprite_build.py and sprite_cases.py, over
       # meshdecode.py's builders), into sprite.json, and numpy's solution bits
@@ -602,7 +607,7 @@ jobs:
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=596
+          tools/parity/tests=598
           tools/perf/tests=10
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6

@@ -4,7 +4,7 @@
 //! channels; bits 7-33 encode 32-byte offsets). The rate at index 3 is
 //! 12000 in the pinned FMOD oracle (tests/fixtures/audio.json), matching
 //! that project. No third-party parser code is included.
-use crate::{Error, adpcm, send_sync, wav};
+use crate::{Error, adpcm, send_sync, vorbis, wav};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
 
@@ -290,6 +290,9 @@ pub(crate) fn parse<'a>(
             if sub.samples > 0 && sub.data.len() < block {
                 return Err(Error::Invalid("ADPCM first block"));
             }
+        } else if header.mode == 15 {
+            sub.data = section;
+            vorbis::validate(sub, meter)?;
         } else {
             let size = u64::from(sub.samples) * u64::from(sub.channels) * u64::from(width);
             let size = usize::try_from(size).map_err(|_| Error::OutputSize)?;

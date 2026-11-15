@@ -573,6 +573,8 @@ class PortTests(unittest.TestCase):
                 "UnityPy git 417d595": ["LICENSE-UNITYPY-HEAD"],
                 "fmod_toolkit 0.1.3": ["LICENSE-FMOD-TOOLKIT"],
                 "vgmstream r2168": ["LICENSE-VGMSTREAM"],
+                "python-fsb5": ["LICENSE-PYTHON-FSB5"],
+                "Fmod5Sharp": ["LICENSE-FMOD5SHARP"],
                 "liblz4 1.9.4": ["LICENSE-LZ4"],
                 "CPython 3.11": ["NOTICE-PSF", "LICENSE-PSF"],
                 "Pillow 9.5.0": ["LICENSE-PILLOW"],
