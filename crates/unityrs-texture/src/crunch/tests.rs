@@ -117,7 +117,7 @@ fn palette_entries_are_validated_where_the_reference_fetches_them() {
 }
 
 #[test]
-fn crunch_selection_requires_a_legacy_version_and_keeps_platform_gates() {
+fn crunch_selection_requires_a_legacy_version_and_refuses_switch_texel_blocks() {
     use crate::{Format, Selection, Skip, SkippedPlatform, TextureFields};
     let mut fields = TextureFields {
         texture_format: 28,
@@ -140,7 +140,7 @@ fn crunch_selection_requires_a_legacy_version_and_keeps_platform_gates() {
     fields.platform = crate::XBOX360;
     assert_eq!(
         crate::select_crunch(&fields, (5, 6)).unwrap(),
-        Selection::Skip(Skip::UnsupportedPlatform(SkippedPlatform::Xbox360))
+        Selection::Export(Format::Dxt5Crunched)
     );
     fields.platform = crate::SWITCH;
     fields.platform_blob = Some(&[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
@@ -161,7 +161,7 @@ fn crunch_selection_requires_a_legacy_version_and_keeps_platform_gates() {
 
 #[test]
 fn allow_list_selection_checks_crunch_version_before_platform() {
-    use crate::{Format, Formats, Selection, Skip, SkippedPlatform, TextureFields, select_in};
+    use crate::{Format, Formats, Selection, Skip, TextureFields, select_in};
     let mut fields = TextureFields {
         texture_format: 28,
         width: 1,
@@ -189,14 +189,7 @@ fn allow_list_selection_checks_crunch_version_before_platform() {
                 Selection::Skip(Skip::UnsupportedFormat(fields.texture_format))
             );
             fields.platform = crate::XBOX360;
-            assert_eq!(
-                select_in(&fields, allowed, version),
-                if version < (2017, 3) {
-                    Selection::Skip(Skip::UnsupportedPlatform(SkippedPlatform::Xbox360))
-                } else {
-                    want
-                }
-            );
+            assert_eq!(select_in(&fields, allowed, version), want);
         }
     }
     for format in [28, 29, 64, 65] {

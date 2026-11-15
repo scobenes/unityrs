@@ -261,7 +261,7 @@ fn a_switch_blob_is_read_as_bytes() {
     t.platform_blob = blob(12, Some([1, 0, 0, 0]));
     assert_eq!(
         answer(&t, 38, Formats::V1),
-        skip("unsupported_platform(switch)")
+        Ok(unityrs_texture::Format::Rgba32)
     );
     // Off Switch the blob is never read.
     assert!(answer(&t, 13, Formats::V1).is_ok());
@@ -309,10 +309,7 @@ fn the_spec_formats_decide_answer_2() {
         skip("empty_image")
     );
     // The Xbox 360 swap list holds RGB565 (`XBOX_SWAP_FORMATS`).
-    assert_eq!(
-        answer(&t, 11, rgb565),
-        skip("unsupported_platform(xbox360)")
-    );
+    assert_eq!(answer(&t, 11, rgb565), Ok(unityrs_texture::Format::Rgb565));
 }
 
 #[test]

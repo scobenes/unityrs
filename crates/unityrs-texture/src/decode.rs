@@ -186,6 +186,9 @@ const INT_MAX: u32 = 0x7FFF_FFFF;
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeError {
+    /// An unsupported platform layout or a size that cannot be represented.
+    #[error(transparent)]
+    Platform(#[from] crate::PlatformError),
     /// A malformed legacy CRN stream or unsupported CRN feature.
     #[error(transparent)]
     Crunch(crunch::CrunchError),
@@ -559,6 +562,7 @@ fn decode_with(
     fill: Fill,
 ) -> Result<Image, DecodeError> {
     let plan = plan(format, data.len(), width, height)?;
+    meter.count_decode(plan.output_bytes)?;
     let (Ok(out_len), Ok(w), Ok(h)) = (
         usize::try_from(plan.output_bytes),
         usize::try_from(plan.width),

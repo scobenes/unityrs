@@ -62,7 +62,7 @@ P1B = ["BC7", "DXT1", "DXT5", "RGB24", "RGBA32"]
 # Their status: unityrs-texture decodes them, as crates/unityrs-texture/tests/oracle.rs checks against what
 # tools/fixtures/texture.py records (section 17's text); their Switch and Xbox 360 gates are P3a (and `set_image`,
 # section 18, P3b's).
-P1B_STATUS = "pinned P0; verified P1b (decoding); impl P3a"
+P1B_STATUS = "pinned P0; verified P1b (decoding); verified P3a (platform gates)"
 # The formats P3 decodes, and their status: the ETC and EAC formats (crates/unityrs-texture/tests/etc_oracle.rs
 # replays what tools/fixtures/texture.py records from tools/fixtures/texture_etc.py's cases), the Tier C ones' as
 # section 19.1's reference; the rest of Pillow's raw and bcn formats (crates/unityrs-texture/tests/raw_oracle.rs,
@@ -72,9 +72,9 @@ P3_ETC = ["EAC_R", "EAC_RG", "EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGB", "ETC2_
 P3_PILLOW = ["ARGB32", "ARGB4444", "Alpha8", "BC4", "BC5", "BGR24", "BGRA32", "DXT3", "R8", "RGB565", "RGBA4444"]
 P3_ASTC = [f"ASTC_{kind}_{n}x{n}" for kind in ("RGB", "RGBA") for n in (4, 5, 6, 8, 10, 12)]
 P3 = sorted(P3_ETC + P3_PILLOW + P3_ASTC)
-P3_STATUS = "pinned P0; verified P3 (decoding); impl P3a"
+P3_STATUS = "pinned P0; verified P3 (decoding); verified P3a (platform gates)"
 P3_TIER_C = ["EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGBA1"]
-P3_TIER_C_STATUS = "pinned P0; verified P3 (decoding, as section 19.1's reference); impl P3a"
+P3_TIER_C_STATUS = "pinned P0; verified P3 (decoding, as section 19.1's reference); verified P3a (platform gates)"
 
 
 def status_of(name):
@@ -84,7 +84,7 @@ def status_of(name):
     if name in P3_TIER_C:
         return P3_TIER_C_STATUS
     if name in ("DXT1Crunched", "DXT5Crunched"):
-        return "pinned P0; impl P3 (legacy decoding before 2017.3); impl P3a (Unity 2017.3+ decoding and platform gates)"
+        return "pinned P0; impl P3 (legacy decoding before 2017.3); impl P3a (Unity 2017.3+ decoding); verified P3a (platform gates)"
     if name in P3:
         return P3_STATUS
     return "pinned P0; impl P3a"

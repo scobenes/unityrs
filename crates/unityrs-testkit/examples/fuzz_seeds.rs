@@ -45,6 +45,8 @@ use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_
 
 #[path = "fuzz_seeds/crunch.rs"]
 mod crunch;
+#[path = "fuzz_seeds/platform.rs"]
+mod platform;
 #[path = "fuzz_seeds/zip.rs"]
 mod zip;
 
@@ -458,6 +460,7 @@ fn texture(s: &mut Seeds) -> std::io::Result<()> {
             s.add("texture", &format!("f{format}-7x9-{tag}"), &case.encode())?;
         }
     }
+    platform::seeds(s)?;
     texture_blocks(s)
 }
 

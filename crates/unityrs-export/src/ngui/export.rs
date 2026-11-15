@@ -17,7 +17,7 @@ use unityrs_core::files::SerializedFile;
 use unityrs_core::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost};
 use unityrs_core::{Parsed, Value};
 use unityrs_imageio::{Buffer, Charger, EncodeError, ImageError, visible_hash};
-use unityrs_texture::{Format, Image, Mode, decode, plan};
+use unityrs_texture::{Format, Image, Mode, decode_in, plan_in};
 
 use super::attempt::{Attempt, Site};
 use super::classify::{self, Class, Reason};
@@ -70,9 +70,13 @@ pub(super) fn decoded(
 ) -> Result<Image, Class> {
     let _sample = super::read::Sample(file.meter(), seam.hooks);
     let data = resource::data(seam, file, t)?;
-    let (width, height) = t.sides();
-    let planned =
-        seam.probe(|| plan(format, data.len(), width, height).map_err(|e| classify::decode(&e)))?;
+    let mut blob = [0u8; 12];
+    let fields = t.fields(
+        format.texture_format(),
+        file.target_platform().unwrap_or(0),
+        &mut blob,
+    );
+    let planned = seam.probe(|| plan_in(&fields, data.len()).map_err(|e| classify::decode(&e)))?;
     if plain && too_wide(planned.width, planned.mode) {
         return Err(unwritable());
     }
@@ -81,10 +85,10 @@ pub(super) fn decoded(
         #[cfg(feature = "test-hooks")]
         let result = unityrs_texture::contain(std::panic::AssertUnwindSafe(|| {
             seam.hooks.decoder_fault();
-            decode(format, &data, width, height, seam.meter)
+            decode_in(&fields, &data, seam.meter)
         }));
         #[cfg(not(feature = "test-hooks"))]
-        let result = decode(format, &data, width, height, seam.meter);
+        let result = decode_in(&fields, &data, seam.meter);
         result.map_err(|e| classify::decode(&e))
     })
 }

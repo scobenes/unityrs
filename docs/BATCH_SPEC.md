@@ -256,15 +256,15 @@ What one input exports (E66):
 
 The input's **own SerializedFiles** are the SerializedFiles among its bundle's top-level files, as `BundleFile::files()` gives them: UnityPy's `files` dict, where a later directory row of a repeated path replaces an earlier one in its place. A nested container's files are not selected, where UnityPy's `env.objects` and `env.container` reach them; each such container is a `nested_container` diagnostic (7.3). Selection opens each of the input's top-level directory rows, in directory order, one `files()` shadows included; one that fails to open (a WebFile, `unsupported`) fails X as `batch.md` 2.7's bytes row says (`entry_error`, naming the first such row in directory order), so a cut never meets such a row of X. UnityPy parses a WebFile row and goes on.
 
-A texture is exported only in the spec's formats (`outputs.formats`, 1.5; version 1's are E15's five), and only where UnityPy 1.25.2 neither unswizzles nor byte-swaps it:
+A texture is exported only in the spec's formats (`outputs.formats`, 1.5; version 1's are E15's five). Platform preprocessing follows UnityPy 1.25.2:
 - any other format is skipped, `unsupported_format(<name>)`;
 - `DXT1Crunched` (28) and `DXT5Crunched` (29), when allow-listed by version 2, use legacy crunch only where the texture's own SerializedFile has a Unity version below (2017, 3). At or above (2017, 3), and for formats 64/65 at every version, selection skips `unsupported_format(<name>)` until T4b lands; this precedes the platform checks;
-- a texture for which UnityPy's `is_switch_swizzled` holds (`helpers/TextureSwizzler.py`: platform Switch, platform blob of at least 12 bytes, more than one GOB per block) is skipped, `unsupported_platform(switch)`;
-- an Xbox 360 texture of a format UnityPy byte-swaps (`XBOX_SWAP_FORMATS`: RGB565, DXT1, DXT1Crunched, DXT5 and DXT5Crunched; of version 1's five, DXT1 and DXT5) is skipped, `unsupported_platform(xbox360)`. An Xbox 360 texture of any other of the spec's formats, RGBA32 or RGB24 among them, is exported like any other.
+- a texture for which UnityPy's `is_switch_swizzled` holds (`helpers/TextureSwizzler.py`: platform Switch, platform blob of at least 12 bytes, more than one GOB per block) is deswizzled with its blob's GOB count and cropped after decoding; a format with no Switch texel block is skipped, `unsupported_platform(switch)`;
+- an Xbox 360 texture of a format UnityPy byte-swaps (`XBOX_SWAP_FORMATS`: RGB565, DXT1, DXT1Crunched, DXT5 and DXT5Crunched; of version 1's five, DXT1 and DXT5) is byte-swapped before crunch unpacking and decoding. Other Xbox formats use their ordinary decoder.
 
 A texture with a side of 0 is skipped, `empty_image`. UnityPy's extractor skips a zero width and raises on a zero height; the oracle records both as `empty_image` (`extract.md` section 5).
 
-**A texture's answer.** Once the texture's object is read (a failure of that read is its skip where `batch.md` 2.7 classifies it as one: 2.6 step 5, 2.7) and it keeps its name (4.4 step 1), its answer is the first of these that applies, in this order, except for a sheet's texture output (section 5), which asks 4 to 10, then the sheet's decode, whose refused charge (12) or panic (13) is the sheet's answer, taken by its texture output and every atlas alike, then 11, then its PNG's own charge (12). `batch.md` 2.7 maps the decoders' errors to them, and `unityrs_texture::plan` gives 5 to 10 from the data's length alone, before anything is allocated:
+**A texture's answer.** Once the texture's object is read (a failure of that read is its skip where `batch.md` 2.7 classifies it as one: 2.6 step 5, 2.7) and it keeps its name (4.4 step 1), its answer is the first of these that applies, in this order, except for a sheet's texture output (section 5), which asks 4 to 10, then the sheet's decode, whose refused charge (12) or panic (13) is the sheet's answer, taken by its texture output and every atlas alike, then 11, then its PNG's own charge (12). `batch.md` 2.7 maps the decoders' errors to them, and `unityrs_texture::plan_in` gives 5 to 10 from the data's length alone, before anything is allocated:
 1. `empty_image`: a side of 0, whatever the format, the platform or the data (`parse_image_data` returns its empty image before it reads any of them, `export/Texture2DConverter.py:265-266`);
 2. `unsupported_format(<name>)`;
 3. `unsupported_platform(...)`, which so names only a texture of the spec's formats;
@@ -789,7 +789,7 @@ A reason is `name` or `name(argument, ...)`. A `limit`'s arguments are its kind,
 | class | reasons | why |
 |---|---|---|
 | expected (no code) | `unsupported_format(<name>)`, the named form only | a well-formed texture in a format outside the spec's formats (version 1's five, or `outputs.formats`, section 3) |
-| | `unsupported_platform(switch \| xbox360)` | a texture whose platform layout version 1 does not undo (section 3) |
+| | `unsupported_platform(switch \| xbox360)` | a texture whose platform layout has no reference (section 3); `xbox360` is retained in the reason vocabulary |
 | | `ngui_layout_unsupported` | an NGUI layout version 1 does not read (section 5) |
 | | `empty_rect` | a sprite with a side of 0 or less, a negative side included, which the rule decides the same way (section 5) |
 | | `empty_image` | a texture with a side of 0 (section 3) |

@@ -23,8 +23,8 @@
 //! before it looks at the format or the platform
 //! (`export/Texture2DConverter.py:265-266`), so the oracle records
 //! `empty_image` for such a texture in any format; then the format
-//! (`unsupported_format`); then the platform (`unsupported_platform`). A
-//! texture is on one platform, so the Switch and Xbox 360 skips never meet.
+//! (`unsupported_format`); then the platform (`unsupported_platform`).
+//! Switch layouts without a referenced texel block retain a platform refusal.
 //! A negative side is no skip: UnityPy raises for it while decoding
 //! (Pillow's "Width and height must be >= 0", or a crop or tile error), and
 //! [`crate::decode()`] returns [`crate::DecodeError::NegativeSize`].
@@ -76,6 +76,27 @@ pub struct TextureFields<'a> {
 
 const _: () = crate::send_sync::<TextureFields<'static>>();
 
+impl TextureFields<'_> {
+    /// The decoded mode, including empty images and Switch's RGB promotion,
+    /// without validating sizes, reading data or allocating.
+    #[must_use]
+    pub fn image_mode(&self) -> Option<crate::Mode> {
+        if self.width == 0 || self.height == 0 {
+            return Some(crate::Mode::Rgba);
+        }
+        let format = if is_switch_swizzled(self.platform, self.platform_blob) {
+            match self.texture_format {
+                3 => 4,
+                8 => 14,
+                other => other,
+            }
+        } else {
+            self.texture_format
+        };
+        Format::from_texture_format(format).map(Format::mode)
+    }
+}
+
 /// What [`select()`] decides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Selection {
@@ -99,7 +120,7 @@ pub enum Skip {
     /// `unsupported_format(<name>)`, UnityPy's member name, or the decimal
     /// value where its enum has none.
     UnsupportedFormat(i32),
-    /// A texture UnityPy would deswizzle or byte-swap:
+    /// A Switch texture without a referenced texel block:
     /// `unsupported_platform(switch | xbox360)`.
     UnsupportedPlatform(SkippedPlatform),
 }
@@ -111,7 +132,7 @@ const _: () = crate::send_sync::<Skip>();
 pub enum SkippedPlatform {
     /// A Switch texture `is_switch_swizzled` holds for.
     Switch,
-    /// An Xbox 360 texture of a format in [`XBOX_SWAP_FORMATS`].
+    /// Retained reason vocabulary for callers; Xbox byte swapping is implemented.
     Xbox360,
 }
 
@@ -182,11 +203,15 @@ pub fn select_in(
     else {
         return Selection::Skip(Skip::UnsupportedFormat(texture.texture_format));
     };
-    if is_switch_swizzled(texture.platform, texture.platform_blob) {
+    let switch_format = match texture.texture_format {
+        3 => 4,
+        8 => 14,
+        other => other,
+    };
+    if is_switch_swizzled(texture.platform, texture.platform_blob)
+        && crate::platform::switch_block(switch_format).is_none()
+    {
         return Selection::Skip(Skip::UnsupportedPlatform(SkippedPlatform::Switch));
-    }
-    if texture.platform == XBOX360 && XBOX_SWAP_FORMATS.contains(&texture.texture_format) {
-        return Selection::Skip(Skip::UnsupportedPlatform(SkippedPlatform::Xbox360));
     }
     Selection::Export(format)
 }
@@ -206,7 +231,7 @@ fn unity_crunch(texture_format: i32, unity_version: (u16, u16)) -> bool {
 /// Select legacy crunched DXT with an explicit Unity `(major, minor)`.
 /// The version split and ETC exception are UnityPy's
 /// `export/Texture2DConverter.py:297-306`. Empty images precede it, and
-/// the existing Switch/Xbox gates still apply. Other formats use
+/// Switch texel-block refusals still apply; Xbox swaps are implemented. Other formats use
 /// [`select()`]; that version-1 batch API continues exporting its five.
 pub fn select_crunch(
     texture: &TextureFields<'_>,

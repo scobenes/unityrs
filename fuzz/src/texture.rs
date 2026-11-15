@@ -20,13 +20,41 @@ use std::sync::Arc;
 use unityrs_core::budget::{Reservation, Unbounded};
 use unityrs_core::limits::{ChargeError, Meter};
 use unityrs_testkit::fuzz::TextureCase;
-use unityrs_texture::{DecodeError, Format, Plan, Selection, TextureFields, decode, plan, select};
+use unityrs_texture::{
+    DecodeError, Format, Plan, Selection, TextureFields, array, decode_in, plan_in, platform,
+    select,
+};
 
 use crate::MEMORY;
 
 /// Runs one input, panicking at a finding.
 pub fn check(input: &[u8]) {
     let case = TextureCase::decode(input);
+    // Exercise the entire 29-entry table even when its pixel decoder is
+    // not linked yet. The synthetic seeds hold complete padded GOBs.
+    if case.platform == unityrs_texture::SWITCH
+        && let Some(exponent) = case
+            .blob
+            .as_deref()
+            .and_then(|b| b.get(8..12))
+            .and_then(|b| b.try_into().ok())
+            .map(u32::from_le_bytes)
+    {
+        let format = match case.format {
+            3 => 4,
+            8 => 14,
+            other => other,
+        };
+        if let Ok(layout) = platform::switch_layout(format, case.width, case.height, exponent) {
+            let meter = Meter::new(MEMORY, Arc::new(Unbounded), Reservation::Input);
+            let linear = platform::deswizzle(&case.data, &layout, &meter);
+            if let Ok(ref linear) = linear {
+                assert_eq!(linear.len(), case.data.len());
+            }
+            drop(linear);
+            assert_eq!(meter.used(), 0, "deswizzle leaked its charge");
+        }
+    }
     let selected = select(&TextureFields {
         texture_format: case.format,
         width: case.width,
@@ -46,15 +74,14 @@ pub fn check(input: &[u8]) {
     let format = Format::from_texture_format(case.format)
         .or_else(|| Format::ALL.get(any).copied())
         .unwrap_or(Format::Rgba32);
-    // Crunch's length-only plan cannot validate a CRN stream; its own
-    // target checks those later malformed-stream errors. Keep this
-    // target's byte-independent plan equality on the plain decoders.
-    let format = match format {
-        Format::Dxt1Crunched => Format::Dxt1,
-        Format::Dxt5Crunched => Format::Dxt5,
-        other => other,
+    let fields = TextureFields {
+        texture_format: format.texture_format(),
+        width: case.width,
+        height: case.height,
+        platform: case.platform,
+        platform_blob: case.blob.as_deref(),
     };
-    let planned = plan(format, case.data.len(), case.width, case.height);
+    let planned = plan_in(&fields, case.data.len());
     let charge = planned.as_ref().map_or(0, Plan::peak_charge);
     // The memory bound, or the peak charge less 1, the charge, or plus 1.
     let limit = match case.meter & 3 {
@@ -62,10 +89,7 @@ pub fn check(input: &[u8]) {
         m => (charge + u64::from(m)).saturating_sub(2),
     };
     let meter = Meter::new(limit, Arc::new(Unbounded), Reservation::Input);
-    match (
-        decode(format, &case.data, case.width, case.height, &meter),
-        planned,
-    ) {
+    match (decode_in(&fields, &case.data, &meter), planned) {
         (Ok(image), Ok(p)) => {
             assert_eq!(
                 u64::try_from(image.pixels().len()).ok(),
@@ -81,6 +105,8 @@ pub fn check(input: &[u8]) {
         (Err(DecodeError::Charge(ChargeError::Limit(_))), Ok(p)) => {
             assert!(limit < p.peak_charge(), "refused within the charge");
         }
+        // A length-only crunch plan can succeed before content validation.
+        (Err(DecodeError::Crunch(_)), Ok(_)) if format.is_crunched() => {}
         (got, planned) => assert_eq!(
             got.map(|_| ()),
             planned.map(|_| ()),
@@ -88,4 +114,28 @@ pub fn check(input: &[u8]) {
         ),
     }
     assert_eq!(meter.used(), 0, "the meter is not back at 0");
+    // The same mutated dimensions/platform also reach array layout and its
+    // independent platform refusals. Depth and declared data size can both
+    // be hostile, independent of the available slice bytes.
+    let blob = case.blob.as_deref().unwrap_or_default();
+    let depth = blob
+        .get(..4)
+        .and_then(|b| b.try_into().ok())
+        .map_or(1, i32::from_le_bytes);
+    let data_size = blob
+        .get(4..12)
+        .and_then(|b| b.try_into().ok())
+        .map_or(case.data.len() as u64, u64::from_le_bytes);
+    let fields = array::ArrayFields {
+        graphics_format: case.format,
+        width: case.width,
+        height: case.height,
+        platform: case.platform,
+        depth,
+        data_size,
+    };
+    let meter = Meter::new(MEMORY, Arc::new(Unbounded), Reservation::Input);
+    let result = array::decode(&fields, &case.data, None, &meter);
+    drop(result);
+    assert_eq!(meter.used(), 0, "array decode leaked its charge");
 }

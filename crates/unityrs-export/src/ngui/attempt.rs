@@ -503,11 +503,21 @@ impl<'a> Attempt<'a> {
         read::answer(t, platform, self.options.formats, unity_version)
     }
 
-    /// Texture `i`'s answer at the plan: its format, or the skip (its
+    /// Texture `i`'s answer at the plan: its decoded mode, or the skip (its
     /// object read's failure, then a selection skip).
-    pub fn sheet_answer(&mut self, i: usize) -> Result<Format, Class> {
+    pub fn sheet_answer(&mut self, i: usize) -> Result<unityrs_texture::Mode, Class> {
         let t = self.texture(i)?;
-        self.selection(i, &t)
+        let format = self.selection(i, &t)?;
+        let platform = self
+            .texs
+            .as_slice()
+            .get(i)
+            .and_then(|t| t.obj.file().target_platform())
+            .unwrap_or(UNKNOWN_PLATFORM);
+        let mut blob = [0u8; 12];
+        Ok(t.fields(format.texture_format(), platform, &mut blob)
+            .image_mode()
+            .unwrap_or(format.mode()))
     }
 
     /// Expands `template` for an output of `obj` into the key scratch.

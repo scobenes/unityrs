@@ -38,6 +38,12 @@
 //!   it runs), its pixel loop run under [`contain()`] so a panic is an
 //!   error ([`DecodeError::Panicked`]).
 //!
+//! [`plan_in`] and [`decode_in`] add platform fields: Switch GOB deswizzling
+//! (including RGB24/BGR24 promotion), Xbox byte pairs before crunch, and the
+//! crop after decoding. [`array`] maps `GraphicsFormat` values, resolves streamed
+//! data and decodes slices, applying PARITY section 19.2's B/C corrections
+//! and platform refusals. [`pad_image`] repeats edge pixels for encoder callers.
+//!
 //! **How each format matches UnityPy.** UnityPy decodes the five, and the
 //! eleven of P3's Pillow formats, with Pillow (`CONV_TABLE`,
 //! `export/Texture2DConverter.py:488-566`), so each of their decoders here is
@@ -105,6 +111,7 @@
     )
 )]
 
+pub mod array;
 mod astc;
 mod bcn;
 mod contain;
@@ -113,6 +120,8 @@ mod decode;
 mod etc;
 mod format;
 mod formats;
+mod image;
+pub mod platform;
 mod raw;
 mod select;
 pub mod sprite;
@@ -122,6 +131,8 @@ pub use crunch::CrunchError;
 pub use decode::{DecodeError, Image, MAX_CROP_PIXELS, MAX_PIXELS, Plan, bcn_length, decode, plan};
 pub use format::{Format, Mode, TEXTURE_FORMATS, texture_format_name};
 pub use formats::Formats;
+pub use image::{image_from_pixels, pad_image};
+pub use platform::{PlatformError, decode_in, plan_in};
 pub use select::{
     SWITCH, Selection, Skip, SkippedPlatform, TextureFields, UnsupportedUnityCrunch,
     XBOX_SWAP_FORMATS, XBOX360, is_switch_swizzled, select, select_crunch, select_in,

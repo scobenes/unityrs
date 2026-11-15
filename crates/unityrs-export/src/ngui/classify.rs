@@ -337,6 +337,7 @@ pub fn decode(e: &DecodeError) -> Class {
         DecodeError::NotEnoughData { .. } => "not_enough_data",
         DecodeError::DecompressionBomb { .. } => "decompression_bomb",
         DecodeError::Crunch(_) => "crunch",
+        DecodeError::Platform(_) => "read",
         DecodeError::TooLarge { .. } => {
             return Class::Skip(Reason::plain(format!(
                 "limit(texture_pixels, {MAX_PIXELS})"

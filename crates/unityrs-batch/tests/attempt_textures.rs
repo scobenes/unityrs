@@ -162,7 +162,17 @@ fn x1_decode_cases_through_disk() {
 fn x1_selection_cases_through_disk() {
     let select = fixture("../unityrs-texture/tests/fixtures/select.json");
     for case in select["cases"].as_array().unwrap() {
-        let harness = Harness::new(&scene(case, vec![0; 128], false), "x");
+        // Give newly admitted Switch layouts complete GOB storage. The
+        // fixture's bounded exponents are 0, 1 and 4; the others are hostile.
+        let hostile_gobs = case["platform"] == 38
+            && case["blob"].as_array().is_some_and(|b| {
+                b.get(8..12).is_some_and(|v| {
+                    u32::from_le_bytes(std::array::from_fn(|i| {
+                        u8::try_from(v[i].as_u64().unwrap()).unwrap()
+                    })) >= 32
+                })
+            });
+        let harness = Harness::new(&scene(case, vec![0; 8192], false), "x");
         let end = harness.run(limits(), &NoHooks);
         clear(&end);
         assert_eq!(end.state, State::Done, "{case}: {end:?}");
@@ -174,6 +184,10 @@ fn x1_selection_cases_through_disk() {
             let skip = rows.iter().find(|r| r["type"] == "skip").unwrap();
             assert_eq!(skip["reason"], "decode_error");
             assert_eq!(skip["detail"], "negative_size");
+        } else if selected.starts_with("export(") && hostile_gobs {
+            let skip = rows.iter().find(|r| r["type"] == "skip").unwrap();
+            assert_eq!(skip["reason"], "decode_error");
+            assert_eq!(skip["detail"], "read");
         } else if selected.starts_with("export(") {
             assert_eq!(end.outputs, 1, "{case}");
         } else {
@@ -185,6 +199,35 @@ fn x1_selection_cases_through_disk() {
         }
     }
     assert_eq!(select["cases"].as_array().unwrap().len(), 723);
+}
+
+#[test]
+fn x1_platform_images_flow_through_the_shared_decoder() {
+    let doc = fixture("../unityrs-texture/tests/fixtures/platform.json");
+    let scratch = Scratch::new("platform-images");
+    let mut jobs = Vec::new();
+    for (i, row) in doc["textures"].as_array().unwrap().iter().enumerate() {
+        if ![3, 4, 10, 12, 25].contains(&row["format"].as_i64().unwrap()) || row["mode"].is_null() {
+            continue;
+        }
+        let mut case = row.clone();
+        if let Some(blob) = row["blob"].as_str() {
+            case["blob"] = json!(build(&json!({"hex":blob})));
+        }
+        let data = build(&json!({"hex":row["data"]}));
+        let harness = Harness::new(&scene(&case, data, false), "x");
+        let end = harness.run(limits(), &NoHooks);
+        clear(&end);
+        assert_eq!(end.state, State::Done, "{}", row["id"]);
+        assert_eq!(end.outputs, 1, "{}", row["id"]);
+        let rows = harness.rows();
+        let made = rows.iter().find(|r| r["type"] == "candidate").unwrap();
+        let output = scratch.join(format!("image{i}"));
+        fs::write(&output, harness.output(made)).unwrap();
+        jobs.push(json!({"file":output, "want":{"mode":row["mode"],"size":row["size"],"pixels_sha256":row["sha256"]}}));
+    }
+    assert_eq!(jobs.len(), 44);
+    check_files(&scratch, &jobs);
 }
 
 #[cfg(feature = "test-hooks")]

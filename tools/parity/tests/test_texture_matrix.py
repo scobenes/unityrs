@@ -138,7 +138,7 @@ class ThisParityFile(unittest.TestCase):
         p1b = sorted(name for name, row in self.rows.items() if row["status"] == P1B_STATUS)
         self.assertEqual(p1b, P1B)
         # And the ETC and EAC formats, the rest of Pillow's and the ASTC LDR formats are the thirty-one P3 has verified.
-        p3 = sorted(name for name, row in self.rows.items() if "verified P3" in row["status"])
+        p3 = sorted(name for name, row in self.rows.items() if "verified P3 (decoding" in row["status"])
         self.assertEqual(p3, P3)
 
     def test_tier_and_status_follow_the_result(self):

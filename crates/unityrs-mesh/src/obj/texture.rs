@@ -40,8 +40,6 @@ pub(super) fn write(
     let width = int("m_Width")?;
     let height = int("m_Height")?;
     let texture_format = int("m_TextureFormat")?;
-    let format = unityrs_texture::Format::from_texture_format(texture_format)
-        .ok_or(MeshError::Field("unsupported texture format"))?;
     let Value::Bytes(inline) = get("image_data")? else {
         return Err(MeshError::Field("image_data"));
     };
@@ -61,34 +59,25 @@ pub(super) fn write(
         inline.as_ref()
     };
     let platform = object.file().target_platform().unwrap_or(0);
-    if platform == unityrs_texture::SWITCH {
-        let blob = match view::optional_attr(&parsed, root, "m_PlatformBlob", meter)? {
+    let blob = if platform == unityrs_texture::SWITCH {
+        match view::optional_attr(&parsed, root, "m_PlatformBlob", meter)? {
             Some(Value::Bytes(b) | Value::Prims(unityrs_core::PrimArray::U8(b))) => {
                 Some(b.as_ref())
             }
             None => None,
             _ => return Err(MeshError::Field("m_PlatformBlob")),
-        };
-        if unityrs_texture::is_switch_swizzled(platform, blob) {
-            return Err(MeshError::Field("unsupported swizzled texture"));
         }
-    }
-    let mut swapped = unityrs_core::limits::MeteredVec::new(meter);
-    let data = if platform == unityrs_texture::XBOX360
-        && unityrs_texture::XBOX_SWAP_FORMATS.contains(&texture_format)
-    {
-        swapped.reserve_exact(data.len())?;
-        meter.count_decode(data.len() as u64)?;
-        for pair in data.chunks(2) {
-            for &byte in pair.iter().rev() {
-                swapped.push(byte)?;
-            }
-        }
-        swapped.as_slice()
     } else {
-        data
+        None
     };
-    let image = unityrs_texture::decode(format, data, width, height, meter)?;
+    let fields = unityrs_texture::TextureFields {
+        texture_format,
+        width,
+        height,
+        platform,
+        platform_blob: blob,
+    };
+    let image = unityrs_texture::decode_in(&fields, data, meter)?;
     let mode = match image.mode() {
         unityrs_texture::Mode::L => unityrs_imageio::Mode::L,
         unityrs_texture::Mode::Rgb => unityrs_imageio::Mode::Rgb,
