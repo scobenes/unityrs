@@ -180,6 +180,7 @@ fn texture2ddecoders_formats_refuse_what_it_reads_past() {
         // These assertions are ETC/EAC-specific: PVRTC restricts the
         // block grid, and ATC has no UnityPy padding/crop.
         f.library() == Library::Texture2DDecoder
+            && !f.is_crunched()
             && f.pvrtc_2bpp().is_none()
             && f.block_size().is_some()
     });

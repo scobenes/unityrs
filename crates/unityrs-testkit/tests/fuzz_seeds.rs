@@ -54,7 +54,8 @@ fn every_value_seed_is_written_at_each_memory_bound() {
     }
 }
 
-/// Valid CRN headers for both base formats are retained at every meter;
+/// Valid CRN headers for legacy DXT, Unity DXT (128/129 in the harness),
+/// and Unity ETC are retained at every meter;
 /// malformed seeds remain canonical cases too.
 fn crunch_seeds_are_cases(dir: &Path) {
     let (mut formats, mut meters, mut valid) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
@@ -62,16 +63,16 @@ fn crunch_seeds_are_cases(dir: &Path) {
         let bytes = std::fs::read(entry.expect("an entry").path()).expect("a seed");
         let case = TextureCase::decode(&bytes);
         assert_eq!(case.encode(), bytes, "a seed that is not a case");
-        assert!([28, 29].contains(&case.format));
+        assert!([28, 29, 64, 65, 128, 129].contains(&case.format));
         formats.insert(case.format);
         meters.insert(case.meter);
         if case.data.starts_with(b"Hx") && case.data.len() >= 62 {
             valid.insert((case.format, case.meter));
         }
     }
-    assert_eq!(formats, [28, 29].into());
+    assert_eq!(formats, [28, 29, 64, 65, 128, 129].into());
     assert_eq!(meters, (0..4).collect());
-    assert_eq!(valid.len(), 8);
+    assert_eq!(valid.len(), 24);
 }
 
 /// The shader seeds reach the entry-table width and subprogram header

@@ -453,6 +453,7 @@ jobs:
           python tools/fixtures/texture_astc.py --check
           python tools/fixtures/texture_pvrtc_atc.py --check
           python tools/fixtures/texture_crunch.py --native crates/unityrs-texture/tests/fixtures/crunch_native.json --check
+          python tools/fixtures/texture_crunch.py --unity-native crates/unityrs-texture/tests/fixtures/unitycrunch_native.json --check
           if [ -f crates/unityrs-texture/tests/fixtures/crunch.json ]; then
             python tools/fixtures/texture_crunch.py --check
           fi

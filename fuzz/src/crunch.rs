@@ -1,4 +1,4 @@
-//! Legacy Crunch DXT1 and DXT5 decoding from a `TextureCase`. Dimensions
+//! Legacy and Unity fork Crunch DXT/ETC decoding from a `TextureCase`. Dimensions
 //! are bounded to keep a valid stream's pixel work small. The meter is the
 //! shared memory bound or the plan's conservative peak charge and its
 //! neighbours; malformed streams may fail after the length-only plan.
@@ -15,10 +15,13 @@ use crate::MEMORY;
 /// Runs one input, panicking at an inconsistent answer or leaked charge.
 pub fn check(input: &[u8]) {
     let case = TextureCase::decode(input);
-    let format = if case.format.rem_euclid(2) == 0 {
-        Format::Dxt1Crunched
-    } else {
-        Format::Dxt5Crunched
+    let format = match case.format {
+        128 => Format::UnityDxt1Crunched,
+        129 => Format::UnityDxt5Crunched,
+        64 => Format::EtcRgb4Crunched,
+        65 => Format::Etc2Rgba8Crunched,
+        value if value.rem_euclid(2) == 0 => Format::Dxt1Crunched,
+        _ => Format::Dxt5Crunched,
     };
     let (width, height) = (case.width.clamp(-4, 128), case.height.clamp(-4, 128));
     let data = &case.data[..case.data.len().min(64 << 10)];
