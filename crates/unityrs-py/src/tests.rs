@@ -90,3 +90,44 @@ fn first_difference(got: &Value, want: &Value, path: &str) -> Option<String> {
     }
     Some(format!("{path}: keys differ"))
 }
+
+#[test]
+fn reader_exception_categories_survive_the_binding_boundary() -> PyResult<()> {
+    use unityrs_core::walk::{ParseError, ReadDetail, ReadError, ReadErrorKind};
+    Python::attach(|py| {
+        for (detail, expected) in [
+            (ReadDetail::Python("IndexError"), "IndexError"),
+            (ReadDetail::Python("AttributeError"), "AttributeError"),
+            (ReadDetail::Python("KeyError: 'type'"), "KeyError"),
+            (
+                ReadDetail::Python("TypeError: malformed pointer"),
+                "TypeError",
+            ),
+            (
+                ReadDetail::BoostEof {
+                    method: "read_bool",
+                    need: 1,
+                    exception: "ValueError",
+                },
+                "ValueError",
+            ),
+            (
+                ReadDetail::BoostEof {
+                    method: "read_length",
+                    need: 4,
+                    exception: "EOFError",
+                },
+                "EOFError",
+            ),
+        ] {
+            let error = ParseError::Read(ReadError {
+                kind: ReadErrorKind::Other,
+                at: 0,
+                detail,
+            });
+            let error = super::errors::parse_reader(&error, false);
+            assert_eq!(error.get_type(py).name()?.to_str()?, expected);
+        }
+        Ok(())
+    })
+}

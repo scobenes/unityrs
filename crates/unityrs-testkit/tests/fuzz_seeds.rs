@@ -500,6 +500,34 @@ fn head_seeds_reach_the_new_readers(dir: &Path) {
 }
 
 #[test]
+fn webp_seeds_cover_modes_quality_and_dimension_refusals() {
+    let dir = Scratch::new("webp-seeds");
+    seeds::write(&dir).unwrap();
+    let mut modes = BTreeSet::new();
+    let mut qualities = BTreeSet::new();
+    let mut dimensions = BTreeSet::new();
+    for entry in std::fs::read_dir(dir.join("webp")).unwrap() {
+        let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+        let width = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+        let height = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        modes.insert(bytes[8]);
+        qualities.insert(bytes[9]);
+        dimensions.insert((width, height));
+        assert_eq!(
+            bytes.len(),
+            12 + width as usize * height as usize * (usize::from(bytes[8]) + 1)
+        );
+    }
+    assert_eq!(modes, (0..4).collect());
+    assert_eq!(qualities, [0, 80, 95, 100, 255].into());
+    assert!(
+        dimensions.contains(&(1, 1))
+            && dimensions.contains(&(3, 5))
+            && dimensions.contains(&(u32::MAX, 0))
+    );
+}
+
+#[test]
 fn scene_case_round_trips_and_truncations_are_total() {
     use unityrs_testkit::fuzz::SceneCase;
     let case = SceneCase {

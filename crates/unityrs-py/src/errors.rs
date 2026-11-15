@@ -5,7 +5,7 @@ use pyo3::{
     exceptions::{
         PyAssertionError, PyAttributeError, PyEOFError, PyException, PyFileNotFoundError,
         PyIndexError, PyIsADirectoryError, PyKeyError, PyMemoryError, PyNotImplementedError,
-        PyOSError, PyOverflowError, PyPermissionError, PyValueError,
+        PyOSError, PyOverflowError, PyPermissionError, PyTypeError, PyValueError,
     },
     prelude::*,
 };
@@ -144,24 +144,12 @@ pub(crate) fn parse_reader(error: &ParseError, boost: bool) -> PyErr {
                 PyValueError::new_err("SerializedFile has no ref_types")
             }
             ReadDetail::Stream(s) => exception(s.exception(), message(s)),
-            ReadDetail::BoostEof { method, .. } => {
-                let text = format!("{method} out of bounds");
-                if matches!(
-                    *method,
-                    "read_bool"
-                        | "read_u8"
-                        | "read_s8"
-                        | "read_bool_array"
-                        | "read_u8_array"
-                        | "read_s8_array"
-                        | "read_bytes"
-                ) {
-                    PyValueError::new_err(text)
-                } else {
-                    PyEOFError::new_err(text)
-                }
-            }
-            ReadDetail::Eof { need } => Python::attach(|py| {
+            ReadDetail::BoostEof {
+                method,
+                exception: kind,
+                ..
+            } => exception(kind, format!("{method} out of bounds")),
+            ReadDetail::Eof { need, .. } => Python::attach(|py| {
                 match py
                     .import("struct")
                     .and_then(|m| m.getattr("error"))
@@ -178,7 +166,7 @@ pub(crate) fn parse_reader(error: &ParseError, boost: bool) -> PyErr {
                 PyValueError::new_err("Negative length read from TypeTree")
             }
             ReadDetail::Python(s) => {
-                let (name, text) = s.split_once(": ").unwrap_or(("ValueError", s));
+                let (name, text) = s.split_once(": ").unwrap_or((s, s));
                 exception(name, message(&text))
             }
             _ if r.kind == ReadErrorKind::OutOfBounds => PyEOFError::new_err(message(&r.detail)),
@@ -189,6 +177,11 @@ pub(crate) fn parse_reader(error: &ParseError, boost: bool) -> PyErr {
 }
 fn exception(name: &str, message: String) -> PyErr {
     match name {
+        "IndexError" => PyIndexError::new_err(message),
+        "AttributeError" => PyAttributeError::new_err(message),
+        "KeyError" => PyKeyError::new_err(message),
+        "TypeError" => PyTypeError::new_err(message),
+        "EOFError" => PyEOFError::new_err(message),
         "OverflowError" => PyOverflowError::new_err(message),
         "OSError" => PyOSError::new_err(message),
         _ => PyValueError::new_err(message),
