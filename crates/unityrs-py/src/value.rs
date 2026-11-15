@@ -35,6 +35,31 @@ fn cloned(object: &Py<PyAny>) -> Py<PyAny> {
 
 pub(crate) fn convert(parsed: &Parsed, meter: &Arc<Meter>) -> PyResult<Py<PyAny>> {
     let mut charge = Charge::zero(meter);
+    convert_charged(parsed, meter, &mut charge)
+}
+
+pub(crate) fn convert_charged(
+    parsed: &Parsed,
+    meter: &Arc<Meter>,
+    charge: &mut Charge,
+) -> PyResult<Py<PyAny>> {
+    convert_mode(parsed, meter, charge, false)
+}
+
+pub(crate) fn convert_fields(
+    parsed: &Parsed,
+    meter: &Arc<Meter>,
+    charge: &mut Charge,
+) -> PyResult<Py<PyAny>> {
+    convert_mode(parsed, meter, charge, true)
+}
+
+fn convert_mode(
+    parsed: &Parsed,
+    meter: &Arc<Meter>,
+    charge: &mut Charge,
+    fields: bool,
+) -> PyResult<Py<PyAny>> {
     let mut tasks = MeteredVec::new(meter);
     tasks
         .push(Task::Value(parsed.value(), Target::Root))
@@ -61,10 +86,14 @@ pub(crate) fn convert(parsed: &Parsed, meter: &Arc<Meter>) -> PyResult<Py<PyAny>
                 charge
                     .grow((x.as_bytes().len() as u64).saturating_mul(4))
                     .map_err(errors::charge)?;
+                meter
+                    .count_decode((x.as_bytes().len() as u64).saturating_mul(4))
+                    .map_err(errors::charge)?;
                 p::string(x.as_bytes())?
             }
             Value::Bytes(x) => {
                 charge.grow(x.len() as u64).map_err(errors::charge)?;
+                meter.count_decode(x.len() as u64).map_err(errors::charge)?;
                 p::bytes(x)?
             }
             Value::Dict(map) => {
@@ -79,10 +108,19 @@ pub(crate) fn convert(parsed: &Parsed, meter: &Arc<Meter>) -> PyResult<Py<PyAny>
                     charge
                         .grow((name.len() as u64).saturating_mul(8))
                         .map_err(errors::charge)?;
-                    p::set(&out, &p::string(name)?, &p::none())?;
+                    let key = if fields {
+                        p::uint(u64::from(key.0))?
+                    } else {
+                        p::string(name)?
+                    };
+                    p::set(&out, &key, &p::none())?;
                 }
                 for (key, v) in map.entries().iter().rev() {
-                    let key = p::string(parsed.key_name(map, *key))?;
+                    let key = if fields {
+                        p::uint(u64::from(key.0))?
+                    } else {
+                        p::string(parsed.key_name(map, *key))?
+                    };
                     tasks
                         .push(Task::Value(v, Target::Dict(cloned(&out), key)))
                         .map_err(errors::charge)?;
@@ -116,7 +154,7 @@ pub(crate) fn convert(parsed: &Parsed, meter: &Arc<Meter>) -> PyResult<Py<PyAny>
                 }
                 continue;
             }
-            Value::Prims(array) => primitives(array, &mut charge)?,
+            Value::Prims(array) => primitives(array, charge)?,
         };
         assign(target, item, &mut result)?;
     }

@@ -113,6 +113,18 @@ pub(crate) fn read_with_mode(
     kind: ReaderKind,
     (head, object_mode): (bool, bool),
 ) -> Result<Parsed, ReadError> {
+    read_with_fields(file, start, tree, ctx, kind, (head, object_mode), None)
+}
+
+pub(crate) fn read_with_fields(
+    file: &Bytes,
+    start: i128,
+    tree: &Arc<Tree>,
+    ctx: &ReadCtx<'_>,
+    kind: ReaderKind,
+    (head, object_mode): (bool, bool),
+    progress: Option<&mut super::FieldProgress>,
+) -> Result<Parsed, ReadError> {
     let work = Work::start(ctx.options.limits, ctx.meter)?;
     let builder =
         ValueBuilder::new(ctx.meter, tree.list().clone()).map_err(|e| charge_error(0, e))?;
@@ -125,6 +137,7 @@ pub(crate) fn read_with_mode(
         kind,
         head,
         object_mode,
+        progress,
         big: ctx.endian == Endian::Big,
         floats: ctx.options.floats,
         ref_types: ctx.ref_types,
@@ -154,7 +167,7 @@ pub(crate) fn read_with_mode(
 /// for a file loaded from a path, and `TypeTreeConfig`
 /// (`helpers/TypeTreeHelper.py:78-85`).
 #[allow(clippy::struct_excessive_bools)] // Endian, tier, object mode and registry are independent.
-struct Reader<'a, 'c> {
+struct Reader<'a, 'c, 'p> {
     data: &'a Bytes,
     bytes: &'a [u8],
     /// `reader.Position`: any Python integer on the memory reader (plan
@@ -166,6 +179,7 @@ struct Reader<'a, 'c> {
     /// SF 23+ selects HEAD's aligned byte-array behavior.
     head: bool,
     object_mode: bool,
+    progress: Option<&'p mut super::FieldProgress>,
     big: bool,
     floats: FloatMode,
     ref_types: RefTypes<'c>,
@@ -205,7 +219,7 @@ enum Py {
     Limit(crate::error::LimitError),
 }
 
-impl Reader<'_, '_> {
+impl Reader<'_, '_, '_> {
     fn at(&self) -> u64 {
         u64::try_from(self.pos.saturating_sub(self.start)).unwrap_or(0)
     }
@@ -384,11 +398,21 @@ impl Reader<'_, '_> {
     }
 
     fn value(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId) -> Result<Out, ReadError> {
+        if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
+            return Ok(Out::Plain(Value::Int(0)));
+        }
         let at = self.at();
         self.work.enter(at)?;
         let out = self.value_inner(t, lx, node);
         self.work.leave();
-        out
+        self.recover(out)
+    }
+
+    fn recover(&mut self, out: Result<Out, ReadError>) -> Result<Out, ReadError> {
+        match (out, &mut self.progress) {
+            (Err(error), Some(progress)) => progress.recover(error),
+            (out, _) => out,
+        }
     }
 
     fn child(t: &Tree, node: NodeId, i: usize) -> Result<NodeId, Py> {
@@ -417,8 +441,14 @@ impl Reader<'_, '_> {
             // `:193-196`: the first child is read before the second is indexed.
             let a = Self::child(t, node, 0).map_err(|e| self.raise(e))?;
             let first = self.value(t, lx, a)?;
-            let b = Self::child(t, node, 1).map_err(|e| self.raise(e))?;
-            let second = self.value(t, lx, b)?;
+            let second = match Self::child(t, node, 1) {
+                Ok(b) => self.value(t, lx, b)?,
+                Err(error) => {
+                    let error = self.raise(error);
+                    self.recover(Err(error))?;
+                    return self.tuple([first]);
+                }
+            };
             self.tuple(vec_of2(first, second))?
         } else if kind == Kind::ReferencedObject {
             self.ref_object(t, lx, node, false)?
@@ -448,10 +478,10 @@ impl Reader<'_, '_> {
         Ok(out)
     }
 
-    fn tuple(&mut self, items: [Out; 2]) -> Result<Out, ReadError> {
+    fn tuple<const N: usize>(&mut self, items: [Out; N]) -> Result<Out, ReadError> {
         let at = self.at();
         let mut v = self.builder.vec();
-        v.reserve_exact(2).map_err(|e| charge_error(at, e))?;
+        v.reserve_exact(N).map_err(|e| charge_error(at, e))?;
         for item in items {
             item.push_to(&mut v).map_err(|e| charge_error(at, e))?;
         }
@@ -489,7 +519,12 @@ impl Reader<'_, '_> {
         let kids = t.list().children(node);
         let is_registry = |c: NodeId| registry && t.py_kind(c) == Kind::ManagedReferencesRegistry;
         let dup = t.info(node).is_some_and(|i| i.dup_names);
-        let mut d = Dict::new(&self.builder, kids.len(), dup, at)?;
+        let mut d = Dict::new(
+            &self.builder,
+            kids.len(),
+            dup && self.progress.is_none(),
+            at,
+        )?;
         let outer = self.has_registry;
         for c in kids {
             visit();
@@ -506,10 +541,22 @@ impl Reader<'_, '_> {
             let v = self.value(t, lx, *c)?;
             let (key, slot) = t.info(*c).map_or((*c, 0), |i| (i.key, i.slot));
             let at = self.at();
-            d.set(&mut self.work, key, slot, v, at)?;
+            d.set(
+                &mut self.work,
+                if self.progress.is_some() { *c } else { key },
+                slot,
+                v,
+                at,
+            )?;
+            if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
+                break;
+            }
         }
         self.has_registry = outer;
-        if self.object_mode && t.list().type_name(node).starts_with(b"PPtr<") {
+        if self.object_mode
+            && self.progress.is_none()
+            && t.list().type_name(node).starts_with(b"PPtr<")
+        {
             self.work
                 .open
                 .steps(kids.len())
@@ -524,7 +571,13 @@ impl Reader<'_, '_> {
                 })
             };
             if !has(b"m_FileID") || !has(b"m_PathID") {
-                return Err(self.raise(Py::Other(if registry { "KeyError" } else { "TypeError" })));
+                return Err(self.raise(Py::Other(if !registry {
+                    "TypeError"
+                } else if !has(b"m_FileID") {
+                    "KeyError: m_FileID"
+                } else {
+                    "KeyError: m_PathID"
+                })));
             }
             if !registry
                 && kids
@@ -534,7 +587,11 @@ impl Reader<'_, '_> {
                 return Err(self.raise(Py::Other("TypeError")));
             }
         }
-        d.finish(&self.builder, lx, self.at())
+        let result = d.finish(&self.builder, lx, self.at())?;
+        if let Some(progress) = &mut self.progress {
+            progress.finish_class();
+        }
+        Ok(result)
     }
 
     /// A `ReferencedObject` (`TypeTreeHelper.py:197-206`), or an aligned array's element
@@ -553,6 +610,7 @@ impl Reader<'_, '_> {
         let at = self.at();
         let kids = t.list().children(node);
         let mut d = Dict::new(&self.builder, kids.len(), true, at)?;
+        d.preserve_fields(self.progress.is_some());
         // The slot of the children named `type`, once one is visited.
         let mut type_slot = None;
         let mut object_type = false;
@@ -576,7 +634,17 @@ impl Reader<'_, '_> {
                         .and_then(|s| d.position(s))
                         .and_then(|p| d.entries.as_slice().get(p))
                         .map(|(_, v)| v);
-                    resolved.insert(self.ref_node(ty, object_type)?).clone()
+                    let found = match self.ref_node(ty, object_type) {
+                        Ok(found) => found,
+                        Err(error) => {
+                            if let Some(progress) = &mut self.progress {
+                                progress.recover(error)?;
+                                break;
+                            }
+                            return Err(error);
+                        }
+                    };
+                    resolved.insert(found).clone()
                 };
                 match (node, in_array) {
                     (Some(RefNode::Tree(rt)), _) => {
@@ -590,19 +658,37 @@ impl Reader<'_, '_> {
                         continue;
                     }
                     (None | Some(RefNode::NoTree), true) => {
-                        return Err(self.fail(ReadErrorKind::Other, ReadDetail::RefTypeNoTree));
+                        let error = self.fail(ReadErrorKind::Other, ReadDetail::RefTypeNoTree);
+                        if let Some(progress) = &mut self.progress {
+                            progress.recover(error)?;
+                            break;
+                        }
+                        return Err(error);
                     }
                 }
             } else {
                 self.value(t, lx, *c)?
             };
             let at = self.at();
-            d.set(&mut self.work, key, slot, v, at)?;
+            d.set(
+                &mut self.work,
+                if self.progress.is_some() { *c } else { key },
+                slot,
+                v,
+                at,
+            )?;
+            if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
+                break;
+            }
             if Some(slot) == type_slot {
                 resolved = None;
             }
         }
-        d.finish(&self.builder, lx, self.at())
+        let result = d.finish(&self.builder, lx, self.at())?;
+        if let Some(progress) = &mut self.progress {
+            progress.finish_class();
+        }
+        Ok(result)
     }
 
     /// `get_ref_type_node` (`TypeTreeHelper.py:88-109`) on the dict read so
@@ -626,6 +712,7 @@ impl Reader<'_, '_> {
             m,
             name,
             &mut self.work.open,
+            object_type,
         ) {
             Ok(Some(v)) => Ok(v),
             Ok(None) if object_type => Err(Py::Other("AttributeError")),
@@ -662,9 +749,15 @@ impl Reader<'_, '_> {
                 FindError::Charge(e) => charge_error(at, e),
                 FindError::Work(l) => limit_refused(at, l),
             })?;
-        match found {
-            Some(r) => Ok(Some(ref_tree(r, &self.work.limits, at)?)),
-            None => Err(self.fail(ReadErrorKind::RefType, ReadDetail::RefTypeNotFound)),
+        if let Some(r) = found {
+            Ok(Some(ref_tree(r, &self.work.limits, at)?))
+        } else {
+            if let (Some(progress), Value::Str(cls), Value::Str(ns), Value::Str(asm)) =
+                (&mut self.progress, cls, ns, asm)
+            {
+                progress.reference_names = Some([cls.clone(), ns.clone(), asm.clone()]);
+            }
+            Err(self.fail(ReadErrorKind::RefType, ReadDetail::RefTypeNotFound))
         }
     }
 }

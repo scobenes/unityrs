@@ -90,6 +90,24 @@ impl NativeFile {
             Ok(d)
         })
     }
+    fn externals(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        py.detach(|| {
+            let mut charge = unityrs_core::limits::Charge::zero(self.inner.meter());
+            charge.grow(64).map_err(errors::charge)?;
+            let out = p::list()?;
+            if let File::Serialized(file) = &self.inner {
+                for external in file.externals() {
+                    charge
+                        .grow(512 + (external.path.as_bytes().len() as u64).saturating_mul(8))
+                        .map_err(errors::charge)?;
+                    let row = p::dict()?;
+                    p::field(&row, "path", &p::string(external.path.as_bytes())?)?;
+                    p::push(&out, &row)?;
+                }
+            }
+            Ok(out)
+        })
+    }
     fn entries(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         py.detach(|| {
             let mut staging = unityrs_core::limits::Charge::zero(self.inner.meter());

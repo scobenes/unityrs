@@ -328,3 +328,126 @@ fn retained_work_refusals_are_fatal_and_successful_runs_are_complete() {
     }
     assert!(completed);
 }
+
+#[test]
+fn vorbis_headers_opt_in_exports_wav_and_absence_records_failure() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../unityrs-audio/tests/fixtures/vorbis.json"
+    ))
+    .unwrap();
+    let case = &fixture["cases"][1];
+    let bank = unhex(case["bank"].as_str().unwrap());
+    // The independent encoder's own setup packet, never an external table.
+    let setup = unhex(case["setup"].as_str().unwrap());
+    let mut table = b"VST1".to_vec();
+    for n in [
+        1u32,
+        u32::try_from(case["crc"].as_u64().unwrap()).unwrap(),
+        u32::try_from(setup.len()).unwrap(),
+    ] {
+        table.extend_from_slice(&n.to_le_bytes());
+    }
+    table.extend(setup);
+    let tmp = Scratch::new("extract-vorbis");
+    let headers_path = tmp.join("setup.vst1");
+    std::fs::write(&headers_path, &table).unwrap();
+    let audio = Object::new(
+        1,
+        83,
+        st(
+            "AudioClip",
+            vec![("m_Name", s("clip")), ("m_AudioData", V::Bytes(bank))],
+        ),
+    );
+    let text = Object::new(
+        2,
+        49,
+        st(
+            "TextAsset",
+            vec![("m_Name", s("after")), ("m_Script", s("continued"))],
+        ),
+    );
+    let input = tmp.join("audio.assets");
+    std::fs::write(
+        &input,
+        scene3d::file(Layout::Unity2022, &[], &[audio, text]).unwrap(),
+    )
+    .unwrap();
+    for enabled in [false, true] {
+        let output = tmp.join(if enabled { "with" } else { "without" });
+        let extra = if enabled {
+            vec!["--vorbis-headers", headers_path.to_str().unwrap()]
+        } else {
+            vec![]
+        };
+        let result = run(&input, &output, &extra);
+        assert_eq!(
+            result.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(
+            std::fs::read(output.join("after.txt")).unwrap(),
+            b"continued"
+        );
+        if enabled {
+            assert_eq!(report["failures"], json!([]));
+            assert_eq!(report["written"].as_array().unwrap().len(), 2);
+            // Compare every byte to the same runtime provider's library export.
+            let meter = unityrs_core::limits::Meter::unlimited();
+            let headers = unityrs_export::VorbisHeaders::from_bytes(&table, &meter).unwrap();
+            let env = unityrs_core::env::Environment::new(unityrs_core::env::EnvOptions::unitypy());
+            let unityrs_core::File::Serialized(file) = env
+                .load(unityrs_core::env::Source::Path(input.clone()))
+                .unwrap()
+            else {
+                panic!("serialized fixture")
+            };
+            let expected = unityrs_export::audio::export_with_vorbis(
+                &file.object(1).unwrap(),
+                &env,
+                true,
+                Some(&headers),
+                &meter,
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(output.join("clip.wav")).unwrap(),
+                expected.as_slice()[0].bytes.as_slice()
+            );
+        } else {
+            assert_eq!(report["written"].as_array().unwrap().len(), 1);
+            assert_eq!(report["failures"].as_array().unwrap().len(), 1);
+            assert_eq!(report["failures"][0]["reason"], "audio");
+            assert_eq!(report["failures"][0]["class_id"], 83);
+            assert!(!output.join("clip.wav").exists());
+        }
+    }
+}
+
+#[test]
+fn missing_or_invalid_vorbis_headers_fail_before_loading_inputs() {
+    let tmp = Scratch::new("extract-vorbis-invalid");
+    let missing = tmp.join("missing.vst1");
+    let invalid = tmp.join("invalid.vst1");
+    std::fs::write(&invalid, b"invalid table").unwrap();
+    for table in [missing, invalid] {
+        let output = tmp.join("dst");
+        let result = run(
+            &tmp.join("missing.assets"),
+            &output,
+            &["--vorbis-headers", table.to_str().unwrap()],
+        );
+        assert_eq!(result.status.code(), Some(1));
+        assert_eq!(result.stdout, [] as [u8; 0]);
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains("Vorbis"), "{error}");
+        assert!(
+            !error.contains("missing.assets"),
+            "table must load before inputs: {error}"
+        );
+        assert!(!output.exists());
+    }
+}

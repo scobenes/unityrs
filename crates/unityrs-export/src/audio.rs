@@ -38,7 +38,7 @@ pub fn export(
 }
 
 /// Export using runtime Vorbis setup headers supplied by the caller. Enable
-/// the `vorbis` feature for the decoder; batch never enables or calls it.
+/// the `vorbis` feature for the decoder; batch never calls this exporter.
 pub fn export_with_vorbis(
     obj: &ObjectRef,
     env: &Environment,

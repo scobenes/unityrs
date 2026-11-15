@@ -48,6 +48,7 @@
 )]
 
 pub mod audio;
+pub use unityrs_audio::VorbisHeaders;
 pub mod extractor;
 pub mod ngui;
 pub mod pyjson;

@@ -97,6 +97,7 @@ pub(crate) struct Dict {
     slots: Option<MeteredVec<u32>>,
     /// The most entries it can come to: one a child.
     most: usize,
+    preserve_fields: bool,
 }
 
 impl Dict {
@@ -117,7 +118,12 @@ impl Dict {
             entries,
             slots: keyed.then(|| builder.vec()),
             most: children,
+            preserve_fields: false,
         })
+    }
+
+    pub(crate) fn preserve_fields(&mut self, preserve: bool) {
+        self.preserve_fields = preserve;
     }
 
     /// The entry position of `slot`, if set.
@@ -148,7 +154,7 @@ impl Dict {
         at: u64,
     ) -> Result<(), ReadError> {
         steps(1);
-        if let Some(pos) = self.position(slot) {
+        if let Some(pos) = self.position(slot).filter(|_| !self.preserve_fields) {
             // The value it replaces was built and is not kept.
             work.discard();
             value.set_entry(&mut self.entries, pos);
@@ -252,11 +258,19 @@ impl Trees {
         map: &'v Map,
         name: &[u8],
         work: &mut OpenWork<'_>,
+        constructed: bool,
     ) -> Result<Option<&'v Value>, LimitError> {
-        for (k, v) in map.entries() {
+        // Ordered object fields may repeat a name; construction overwrites
+        // with the final occurrence. Ordinary dict maps already have one.
+        for (k, v) in map.entries().iter().rev() {
             steps(1);
             work.steps(1)?;
-            if self.name(map.list(), *k) == name {
+            let raw = self.name(map.list(), *k);
+            if if constructed {
+                super::write::cleans_to(raw, name)
+            } else {
+                raw == name
+            } {
                 return Ok(Some(v));
             }
         }
