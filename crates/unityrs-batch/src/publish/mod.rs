@@ -6,6 +6,7 @@ mod pool;
 pub use pool::{Owned, parallel};
 pub mod payload;
 mod resume;
+pub mod store;
 use crate::{
     outcomes::{Code, Outcomes},
     phase::{self, Account, Error},

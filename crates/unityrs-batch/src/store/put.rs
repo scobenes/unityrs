@@ -169,7 +169,9 @@ impl<'a> Request<'a> {
                         .put_opts(path, payload, options(content_type))
                         .await
                         .map_err(|_| Ended::Error)?;
-                    tag(result.e_tag.as_deref())
+                    // Output PUTs need no tag for fencing. Preserve its absence
+                    // as an empty tag for outcome 7's size-only verification.
+                    tag(Some(result.e_tag.as_deref().unwrap_or_default()))
                 }
             })
             .await?;

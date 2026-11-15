@@ -9,15 +9,20 @@ use unityrs_batch::{
 
 #[test]
 fn normal_head_is_complete_and_self_consistent() {
+    normal_head_with_code(unityrs_batch::outcomes::Code::Written);
+}
+#[test]
+fn a_size_verified_write_is_complete_and_counted_as_written() {
+    normal_head_with_code(unityrs_batch::outcomes::Code::WrittenBySize);
+}
+fn normal_head_with_code(outcome: unityrs_batch::outcomes::Code) {
     let scene = Scene::new(&["key"], false, 4096);
     std::fs::create_dir(scene.scratch.join("sink")).unwrap();
     let dir =
         directory_support::preflight(&scene.scratch.join("sink"), 1, directory_support::fs(true))
             .unwrap();
     let outcomes = scene.outcomes("out", &Host);
-    outcomes
-        .set(0, unityrs_batch::outcomes::Code::Written)
-        .unwrap();
+    outcomes.set(0, outcome).unwrap();
     let gate = Gate::default();
     let frozen = gate.freeze(&outcomes).unwrap();
     let account = Account::new(unityrs_batch::bound::C_FIN);

@@ -272,6 +272,11 @@ impl<T: Transport> Engine<T> {
         });
         let code = StatusCode::from_u16(status).map_err(|_| Fault::Internal)?;
         let mut head = forwarded(response.headers());
+        // object_store requires this header even for output PUTs, whose signed
+        // bytes are acknowledged without it. An empty tag records that absence.
+        if kind == Kind::Put && !response.headers().contains_key(hyper::http::header::ETAG) {
+            head.insert(hyper::http::header::ETAG, HeaderValue::from_static(""));
+        }
         let body = if !(200..300).contains(&status) {
             body::error_body(slot, &mut response).await
         } else if kind == Kind::Complete {

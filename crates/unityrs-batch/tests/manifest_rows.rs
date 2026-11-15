@@ -15,6 +15,23 @@ struct Rows {
     rows: BTreeMap<String, Vec<serde_json::Value>>,
     fail: Option<Family>,
 }
+#[test]
+fn outcome_seven_manifest_etags_strip_one_quote_pair_from_the_stored_tag() {
+    let scene = Scene::new(&["z", "a", "m"], true, 4096);
+    let out = scene.outcomes("returned-etag", &Host);
+    out.set_archive(
+        0,
+        &Archive::success(Code::WrittenBySize, 9, [0; 16], Some("\"ABC-2\"")).unwrap(),
+    )
+    .unwrap();
+    let (_, rows) = assemble_outcomes(&scene, None, &out);
+    let written = rows.rows["archives"]
+        .iter()
+        .find(|r| r["status"] == "written")
+        .unwrap();
+    assert_eq!(written["etag"], "ABC-2");
+    assert_eq!(out.archive(0).unwrap().etag().unwrap(), Some("\"ABC-2\""));
+}
 impl Destination for Rows {
     fn publish(&mut self, family: Family, _: u64, bytes: &[u8]) -> Result<(), WriteError> {
         if self.fail == Some(family) {

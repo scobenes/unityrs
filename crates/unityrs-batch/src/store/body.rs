@@ -195,8 +195,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Inner<I> {
         self.response = None;
         self.read = None;
         let code = self.code.code();
+        let truncated = self.scan.as_ref().and_then(TagScan::truncated);
         self.slot.update(|r| {
             r.code = code;
+            r.list_truncated = truncated;
             if fault.is_some() {
                 r.body = fault;
             }
@@ -239,7 +241,19 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Inner<I> {
         self.read = None;
         let data = match data {
             Ok(Some(data)) => data,
-            Ok(None) => return self.end(None),
+            Ok(None) => {
+                if self.kind == Kind::ListPage
+                    && (self
+                        .scan
+                        .as_ref()
+                        .is_none_or(|s| !s.list_root() || !s.pagination_valid())
+                        || !self.code.closed()
+                        || self.code.malformed())
+                {
+                    return self.end(Some(BodyFault::Scan));
+                }
+                return self.end(None);
+            }
             Err(http::Error::Transport(failure)) => {
                 return self.end(Some(BodyFault::Transport(failure.detail)));
             }
