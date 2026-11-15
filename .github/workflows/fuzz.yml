@@ -57,6 +57,7 @@ jobs:
           - scene_collect
           - obj_text
           - zlib_match
+          - webp
           - unitycn
           - zip
           - webfile

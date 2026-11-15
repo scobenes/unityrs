@@ -174,6 +174,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "webp"
+path = "fuzz_targets/webp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "scene_collect"
 path = "fuzz_targets/scene_collect.rs"
 test = false

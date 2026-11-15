@@ -20,6 +20,7 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | target | what it runs | input |
 |---|---|---|
 | `detect` | `detect::check_file_type` (the gzip check bounded by `max_inflate`) | any bytes |
+| `webp` | libwebp 1.3.0 encoder, metered and fallible; hostile dimensions and quality/method | 12-byte header (LE u32 width/height, mode, quality, method, exact), then at most 1 MiB of pixels |
 | `zlib_match` | derived deflate against pristine zlib 1.2.13, with 257-byte input and 509-byte output windows (`test-reference`) | any bytes, capped at 4 MiB |
 | `bundle` | `BundleFile::open` plus `load_all` (every block decoded, every entry parsed, nested bundles loaded), by the memory and the stream reader's rules | any bytes |
 | `zip` | central-directory/ZIP64 parsing, CRC-checked stored/deflate reads, and `Environment::load_zip_file` with nested frames, split joins and cached duplicate reads | arbitrary ZIP bytes; stored, deflate, split, empty and nested duplicate testkit seeds |
@@ -114,6 +115,9 @@ offsets, each under meters 0, 1, 16 and 64 (the usual memory bound,
 Additional shader seeds are `TreeCase` values with UTF-8 and invalid UTF-8
 script bytes, string and integer scripts, and arbitrary missing or wrongly
 typed converter fields, at both value memory bounds.
+Complete converter seeds retain the Tier A cases and add player subprograms,
+separate parameter records, 6000.3 segmented tables, and big-endian 5.3/5.4
+blobs with valid and unfillable replacements.
 The `zlib_match` seeds are the builders' outputs (capped at 4 MiB), plus
 zero and periodic inputs around match and window boundaries.
 The `fsb5` seeds use `unityrs_testkit::fsb5`: passthrough audio, all supported

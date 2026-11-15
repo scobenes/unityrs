@@ -1,0 +1,16 @@
+Upstream: 0edbb6ea7176eca19955be701178fa70ecb497ee (libwebp 1.3.1)
+Subject: PaletteSortModifiedZeng: fix leak on error
+Author: James Zern
+License: BSD-3-Clause, as libwebp's COPYING.
+Upstream source changes; see ../WEBP.md.
+
+--- a/src/enc/vp8l_enc.c
++++ b/src/enc/vp8l_enc.c
+@@ -259,6 +259,7 @@ static int PaletteSortModifiedZeng(
+     return 0;
+   }
+   if (!CoOccurrenceBuild(pic, palette_sorted, num_colors, cooccurrence)) {
++    WebPSafeFree(cooccurrence);
+     return 0;
+   }
+ 

@@ -130,12 +130,24 @@ fn shader_seeds_are_cases(dir: &Path) {
             }
         }
     }
-    assert!(versions.is_superset(&[(5, 3), (2019, 2), (2019, 3), (2021, 1)].into()));
+    assert!(versions.is_superset(&[(5, 3), (2019, 2), (2019, 3), (2021, 1), (6000, 3)].into()));
     assert_eq!(meters, [0, 1, 16, 64].into());
     assert!(counts.is_superset(&[-1, 0, 1, 2, i32::MAX].into()));
     assert!(programs.is_superset(&[201_509_030, 201_608_170, 201_806_140, 202_012_090].into()));
-    assert_eq!(trees, 32);
-    assert_eq!(complete.len(), 12);
+    assert_eq!(trees, 62);
+    assert_eq!(complete.len(), 42);
+    for name in [
+        "player_progVertex_6000_3_0",
+        "parameters_first_True_6000_3",
+        "segments_6000_3_valid",
+        "big_endian_5_3_valid",
+        "big_endian_5_4_index_bad_9",
+    ] {
+        assert!(
+            complete.iter().any(|seed| seed.contains(name)),
+            "missing modern layout seed {name}"
+        );
+    }
     assert!(kinds.is_superset(&[1, 23, 24].into()));
     assert_eq!(
         script_types,
@@ -484,6 +496,34 @@ fn head_seeds_reach_the_new_readers(dir: &Path) {
         assert_eq!(count, if target == "serialized" { 50 } else { 23 });
     }
     assert_eq!(versions, (23..=26).collect());
+}
+
+#[test]
+fn webp_seeds_cover_modes_quality_and_dimension_refusals() {
+    let dir = Scratch::new("webp-seeds");
+    seeds::write(&dir).unwrap();
+    let mut modes = BTreeSet::new();
+    let mut qualities = BTreeSet::new();
+    let mut dimensions = BTreeSet::new();
+    for entry in std::fs::read_dir(dir.join("webp")).unwrap() {
+        let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+        let width = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+        let height = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        modes.insert(bytes[8]);
+        qualities.insert(bytes[9]);
+        dimensions.insert((width, height));
+        assert_eq!(
+            bytes.len(),
+            12 + width as usize * height as usize * (usize::from(bytes[8]) + 1)
+        );
+    }
+    assert_eq!(modes, (0..4).collect());
+    assert_eq!(qualities, [0, 80, 95, 100, 255].into());
+    assert!(
+        dimensions.contains(&(1, 1))
+            && dimensions.contains(&(3, 5))
+            && dimensions.contains(&(u32::MAX, 0))
+    );
 }
 
 #[test]

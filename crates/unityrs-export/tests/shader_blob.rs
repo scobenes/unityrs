@@ -134,7 +134,10 @@ fn legacy_blob_refusal_precedes_script_and_output_allocation() {
     };
     let meter = Meter::unlimited();
     let error = unityrs_export::shader::export(&file.object(1).unwrap(), &env, &meter).unwrap_err();
-    assert!(matches!(error, unityrs_export::shader::Error::Refusal(_)));
+    assert!(matches!(
+        error,
+        unityrs_export::shader::Error::Unsupported(_)
+    ));
     assert_eq!(meter.used(), 0);
     assert!(meter.decoded() > 0); // Field-name searches are charged before the refusal.
 }
