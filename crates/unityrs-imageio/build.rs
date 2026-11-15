@@ -35,6 +35,9 @@
 //! checksums (`adler32.c` for the zlib stream, `crc32.c` for PNG chunks) and
 //! `zutil.c`.
 
+#[path = "build_webp.rs"]
+mod build_webp;
+
 use std::env;
 use std::fmt::Write;
 use std::fs;
@@ -94,6 +97,7 @@ fn derived_deflate(dir: &Path, out: &Path) -> PathBuf {
 fn main() {
     let dir = Path::new(ZLIB);
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+    build_webp::build(&out);
     let deflate = derived_deflate(dir, &out);
     let mut build = cc::Build::new();
     build

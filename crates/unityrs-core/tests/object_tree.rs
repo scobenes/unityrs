@@ -27,6 +27,19 @@ use unityrs_testkit::serialized::{ExternalSpec, ObjectSpec, SerializedSpec, Type
 
 const ALIGN: i64 = 0x4000;
 
+#[test]
+fn public_monobehaviour_head_and_generator_methods() {
+    let s = setup(&[(0, 100)], false, true);
+    let obj = ObjectRef::new(s.file.clone(), 0).unwrap();
+    let head = obj.parse_monobehaviour_head(None).unwrap();
+    assert!(head.bytes_read < i64::from(obj.info().byte_size));
+    let generated = s.env.generate_monobehaviour_node(&obj, None).unwrap();
+    assert_eq!(
+        generated.tree.list().rows().last().unwrap().name.as_bytes(),
+        b"m_Value"
+    );
+}
+
 fn string_rows(level: i32, name: &str) -> Vec<NodeRow> {
     vec![
         NodeRow::new(level, "string", name),

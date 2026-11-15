@@ -44,7 +44,7 @@ impl Prepared {
             }),
             atlases: atlases.is_some(),
             formats: spec.outputs.formats,
-            png_fast: spec.outputs.image == crate::spec::model::Image::PngFast,
+            image: spec.outputs.image,
         };
         let mut members = Vec::new();
         for (archive, a) in spec.archives.iter().enumerate() {

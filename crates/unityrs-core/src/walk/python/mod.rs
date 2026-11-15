@@ -102,16 +102,16 @@ pub fn read_with_reader(
     ctx: &ReadCtx<'_>,
     kind: ReaderKind,
 ) -> Result<Parsed, ReadError> {
-    read_versioned(file, start, tree, ctx, kind, false)
+    read_with_mode(file, start, tree, ctx, kind, (false, false))
 }
 
-pub(crate) fn read_versioned(
+pub(crate) fn read_with_mode(
     file: &Bytes,
     start: i128,
     tree: &Arc<Tree>,
     ctx: &ReadCtx<'_>,
     kind: ReaderKind,
-    head: bool,
+    (head, object_mode): (bool, bool),
 ) -> Result<Parsed, ReadError> {
     let work = Work::start(ctx.options.limits, ctx.meter)?;
     let builder =
@@ -124,6 +124,7 @@ pub(crate) fn read_versioned(
         start,
         kind,
         head,
+        object_mode,
         big: ctx.endian == Endian::Big,
         floats: ctx.options.floats,
         ref_types: ctx.ref_types,
@@ -152,6 +153,7 @@ pub(crate) fn read_versioned(
 /// (`streams/EndianBinaryReader.py:231-284`), or `_Streamable` (`:287-324`)
 /// for a file loaded from a path, and `TypeTreeConfig`
 /// (`helpers/TypeTreeHelper.py:78-85`).
+#[allow(clippy::struct_excessive_bools)] // Endian, tier, object mode and registry are independent.
 struct Reader<'a, 'c> {
     data: &'a Bytes,
     bytes: &'a [u8],
@@ -163,6 +165,7 @@ struct Reader<'a, 'c> {
     kind: ReaderKind,
     /// SF 23+ selects HEAD's aligned byte-array behavior.
     head: bool,
+    object_mode: bool,
     big: bool,
     floats: FloatMode,
     ref_types: RefTypes<'c>,
@@ -190,11 +193,12 @@ macro_rules! num {
 mod array;
 
 /// A Python exception the reader raises.
+#[derive(Clone, Copy)]
 enum Py {
     /// `struct.error`: an unpack past the buffer, a negative count.
     Struct(u64),
     /// `IndexError` on a node's `m_Children`.
-    Index(ReadDetail),
+    Index,
     /// A `TypeError` or `KeyError`/`AttributeError` (kind `other`).
     Other(&'static str),
     /// No Python exception: the open's work passed its allowance.
@@ -217,8 +221,14 @@ impl Reader<'_, '_> {
     fn raise(&self, e: Py) -> ReadError {
         match e {
             // The dump maps none of these messages to a kind of its own.
-            Py::Struct(need) => self.fail(ReadErrorKind::Other, ReadDetail::Eof { need }),
-            Py::Index(d) => self.fail(ReadErrorKind::Other, d),
+            Py::Struct(need) => self.fail(
+                ReadErrorKind::Other,
+                ReadDetail::Eof {
+                    need,
+                    exception: "error",
+                },
+            ),
+            Py::Index => self.fail(ReadErrorKind::Other, ReadDetail::Python("IndexError")),
             Py::Other(m) => self.fail(ReadErrorKind::Other, ReadDetail::Python(m)),
             Py::Limit(l) => limit_refused(self.at(), l),
         }
@@ -381,12 +391,8 @@ impl Reader<'_, '_> {
         out
     }
 
-    fn child(t: &Tree, node: NodeId, i: usize, missing: ReadDetail) -> Result<NodeId, Py> {
-        t.list()
-            .children(node)
-            .get(i)
-            .copied()
-            .ok_or(Py::Index(missing))
+    fn child(t: &Tree, node: NodeId, i: usize) -> Result<NodeId, Py> {
+        t.list().children(node).get(i).copied().ok_or(Py::Index)
     }
 
     /// The vector's `Array` child, when the node reads as one: its first
@@ -409,9 +415,9 @@ impl Reader<'_, '_> {
             Out::Plain(self.typeless()?)
         } else if kind == Kind::Pair {
             // `:193-196`: the first child is read before the second is indexed.
-            let a = Self::child(t, node, 0, ReadDetail::PairChildren).map_err(|e| self.raise(e))?;
+            let a = Self::child(t, node, 0).map_err(|e| self.raise(e))?;
             let first = self.value(t, lx, a)?;
-            let b = Self::child(t, node, 1, ReadDetail::PairChildren).map_err(|e| self.raise(e))?;
+            let b = Self::child(t, node, 1).map_err(|e| self.raise(e))?;
             let second = self.value(t, lx, b)?;
             self.tuple(vec_of2(first, second))?
         } else if kind == Kind::ReferencedObject {
@@ -426,8 +432,7 @@ impl Reader<'_, '_> {
                     ReadDetail::NegativeLength(i64::from(size)),
                 ));
             };
-            let elem =
-                Self::child(t, array, 1, ReadDetail::ArrayChildren).map_err(|e| self.raise(e))?;
+            let elem = Self::child(t, array, 1).map_err(|e| self.raise(e))?;
             if t.info(elem).is_some_and(|i| i.align) {
                 self.array(t, lx, elem, i64::from(size))?
             } else {
@@ -504,6 +509,31 @@ impl Reader<'_, '_> {
             d.set(&mut self.work, key, slot, v, at)?;
         }
         self.has_registry = outer;
+        if self.object_mode && t.list().type_name(node).starts_with(b"PPtr<") {
+            self.work
+                .open
+                .steps(kids.len())
+                .map_err(|e| limit_refused(self.at(), e))?;
+            let has = |name: &[u8]| {
+                kids.iter().any(|&c| {
+                    if registry {
+                        crate::walk::write::cleans_to(t.list().name(c), name)
+                    } else {
+                        t.list().name(c) == name
+                    }
+                })
+            };
+            if !has(b"m_FileID") || !has(b"m_PathID") {
+                return Err(self.raise(Py::Other(if registry { "KeyError" } else { "TypeError" })));
+            }
+            if !registry
+                && kids
+                    .iter()
+                    .any(|&c| !matches!(t.list().name(c), b"m_FileID" | b"m_PathID"))
+            {
+                return Err(self.raise(Py::Other("TypeError")));
+            }
+        }
         d.finish(&self.builder, lx, self.at())
     }
 
@@ -525,6 +555,7 @@ impl Reader<'_, '_> {
         let mut d = Dict::new(&self.builder, kids.len(), true, at)?;
         // The slot of the children named `type`, once one is visited.
         let mut type_slot = None;
+        let mut object_type = false;
         // The current `type`'s resolution, kept until a child sets `type`
         // again, as the Boost reader keeps it.
         let mut resolved: Option<Option<RefNode>> = None;
@@ -534,6 +565,9 @@ impl Reader<'_, '_> {
             if type_slot.is_none() && t.info(*c).is_some() && t.list().name(*c) == b"type" {
                 type_slot = Some(slot);
             }
+            if t.list().name(*c) == b"type" {
+                object_type = self.object_mode && t.py_kind(*c) != Kind::ReferencedObject;
+            }
             let v = if t.py_kind(*c) == Kind::ReferencedObjectData {
                 let node = if let Some(r) = &resolved {
                     r.clone()
@@ -542,7 +576,7 @@ impl Reader<'_, '_> {
                         .and_then(|s| d.position(s))
                         .and_then(|p| d.entries.as_slice().get(p))
                         .map(|(_, v)| v);
-                    resolved.insert(self.ref_node(ty)?).clone()
+                    resolved.insert(self.ref_node(ty, object_type)?).clone()
                 };
                 match (node, in_array) {
                     (Some(RefNode::Tree(rt)), _) => {
@@ -576,7 +610,11 @@ impl Reader<'_, '_> {
     /// (`KeyError`, or `AttributeError` when `type` is not a dict), then
     /// `ref_types` (absent or empty: `ref_type`), then the empty-class skip,
     /// then the scan.
-    fn ref_node(&mut self, ty: Option<&Value>) -> Result<Option<RefNode>, ReadError> {
+    fn ref_node(
+        &mut self,
+        ty: Option<&Value>,
+        object_type: bool,
+    ) -> Result<Option<RefNode>, ReadError> {
         let Some(ty) = ty else {
             return Err(self.raise(Py::Other("KeyError: 'type'")));
         };
@@ -590,6 +628,7 @@ impl Reader<'_, '_> {
             &mut self.work.open,
         ) {
             Ok(Some(v)) => Ok(v),
+            Ok(None) if object_type => Err(Py::Other("AttributeError")),
             Ok(None) => Err(Py::Other(msg)),
             Err(l) => Err(Py::Limit(l)),
         };

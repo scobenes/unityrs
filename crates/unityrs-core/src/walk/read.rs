@@ -5,7 +5,8 @@
 use super::{ParseError, ReadCtx, boost, python, stream_refused};
 use crate::stream::ReaderKind;
 use crate::typetree::Tree;
-use crate::{Bytes, Parsed};
+use crate::value::Parsed;
+use bytes::Bytes;
 use std::sync::Arc;
 
 /// `TypeTreeHelper.read_typetree` over bytes (UnityPy's memory reader):
@@ -52,28 +53,29 @@ pub fn read_typetree_with_reader(
     check_read: bool,
     kind: ReaderKind,
 ) -> Result<Parsed, ParseError> {
-    read_typetree_versioned(
+    read_typetree_with_mode(
         file,
         byte_start,
         byte_size,
         tree,
         ctx,
         check_read,
-        (kind, false),
+        (kind, false, false),
     )
 }
 
-/// Stored HEAD-tier trees use HEAD's pure-Python array behavior.
-pub(crate) fn read_typetree_versioned(
+/// Select HEAD-tier array behavior independently of object mode.
+/// Keep dict values, but preserve object-mode reader exceptions for the
+/// MonoBehaviour fallback's `wrap=True` reads.
+pub(crate) fn read_typetree_with_mode(
     file: &Bytes,
     byte_start: i128,
     byte_size: u32,
     tree: &Arc<Tree>,
     ctx: &ReadCtx<'_>,
     check_read: bool,
-    mode: (ReaderKind, bool),
+    (kind, head, object_mode): (ReaderKind, bool, bool),
 ) -> Result<Parsed, ParseError> {
-    let (kind, head) = mode;
     // UnityPy files/ObjectReader.py:214-215, :251: `reset()`.
     let start = kind.seek(byte_start).map_err(|e| stream_refused(0, e))?;
     // UnityPy TypeTreeHelper.py:146-153: `byte_size and read_typetree_boost`.
@@ -85,7 +87,7 @@ pub(crate) fn read_typetree_versioned(
             .map_err(|e| stream_refused(0, e))?;
         boost::read(&file.slice(range), tree, ctx)?
     } else {
-        python::read_versioned(file, start, tree, ctx, kind, head)?
+        python::read_with_mode(file, start, tree, ctx, kind, (head, object_mode))?
     };
     // UnityPy TypeTreeHelper.py:155-156.
     if check_read && parsed.bytes_read != i64::from(byte_size) {
