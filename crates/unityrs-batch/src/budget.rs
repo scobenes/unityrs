@@ -38,6 +38,8 @@ impl Account {
 impl PermitHome for Account {
     fn release(&self, bytes: u64) {
         self.used.fetch_sub(bytes, Ordering::AcqRel);
+        #[cfg(feature = "test-hooks")]
+        crate::run::hooks::memory::charge(bytes, false);
         if let Some(used) = self.telemetry.get() {
             used.fetch_sub(bytes, Ordering::AcqRel);
         }
@@ -136,6 +138,8 @@ impl MemoryBudget for SealedBudget {
                 used.checked_add(bytes).filter(|&n| n <= account.limit)
             });
         if let Ok(old) = result {
+            #[cfg(feature = "test-hooks")]
+            crate::run::hooks::memory::charge(bytes, true);
             account
                 .peak
                 .fetch_max(old.saturating_add(bytes), Ordering::AcqRel);

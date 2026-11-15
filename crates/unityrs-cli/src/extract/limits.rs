@@ -21,6 +21,7 @@ pub(super) fn parse(raw: &[Vec<u8>]) -> Result<Limits, Box<dyn std::error::Error
             }
             b"-o"
             | b"--tpk"
+            | b"--vorbis-headers"
             | b"--report"
             | b"--asset-filter"
             | b"--ignore-first-container-dirs" => {

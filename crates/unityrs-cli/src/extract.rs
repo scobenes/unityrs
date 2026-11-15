@@ -20,6 +20,7 @@ const USAGE: &str = "usage: unityrs extract INPUT... -o DIR [options]\n\
   --export-unknown-as-typetree          JSON or raw .bin for other classes\n\
   --asset-filter CLASS                 class name or integer id; repeat to include more\n\
   --tpk FILE                          schema provider for stripped files\n\
+  --vorbis-headers FILE                runtime VST1 setup-header table; no default, never fetched\n\
   --report PATH                       also save JSON at this relative path beneath DIR\n\
   --max-input-memory N                 charged bytes per input and extraction budget (default 8589934592)\n\
   --max-input-bytes N                  source bytes per input (default 4294967296)\n\
@@ -50,6 +51,7 @@ fn run(raw: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
     let mut inputs = MeteredVec::new(&meter);
     let mut output = None;
     let mut tpk = None;
+    let mut vorbis_headers = None;
     let mut report_path = None;
     let mut options = Options::default();
     let mut filter = Filter(MeteredVec::new(&meter));
@@ -64,6 +66,9 @@ fn run(raw: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
             b"--" => positional = true,
             b"-o" => output = Some(path(args.next().ok_or("missing DIR")?)),
             b"--tpk" => tpk = Some(path(args.next().ok_or("missing TPK")?)),
+            b"--vorbis-headers" => {
+                vorbis_headers = Some(path(args.next().ok_or("missing Vorbis headers FILE")?));
+            }
             b"--report" => report_path = Some(args.next().ok_or("missing report PATH")?.as_slice()),
             b"--max-input-memory"
             | b"--max-input-bytes"
@@ -107,6 +112,10 @@ fn run(raw: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
     if !filter.0.is_empty() {
         options.asset_filter = Some(&filter);
     }
+    let headers = vorbis_headers
+        .map(|path| unityrs_export::VorbisHeaders::load(path, &meter))
+        .transpose()?;
+    options.vorbis = headers.as_ref();
     let mut env_options = EnvOptions::unitypy();
     let mut context = (*env_options.context).clone();
     context.limits = limits;

@@ -57,8 +57,9 @@ pub struct PermitPool {
     waiter: Arc<Mutex<Option<Waker>>>,
 }
 impl PermitPool {
-    /// Startup storage belongs to measured phase-1 state. No slot is allocated
-    /// on acquisition. Zero slots cannot make progress and are refused.
+    /// Process startup storage follows the per-pool `m_pool` slope (one slot
+    /// per possible blocking operation), not fixed `c_base`. No slot is
+    /// allocated on acquisition. Zero slots cannot make progress.
     pub fn new(capacity: usize) -> std::io::Result<Self> {
         Self::with_base(0, capacity)
     }
@@ -262,6 +263,8 @@ pub struct Charge {
 impl Drop for Charge {
     fn drop(&mut self) {
         self.slot.bytes.fetch_sub(self.bytes, Ordering::AcqRel);
+        #[cfg(feature = "test-hooks")]
+        crate::run::hooks::memory::network(self.bytes, false);
         self.slot.state.fetch_sub(CHARGE, Ordering::AcqRel);
         self.slot.released();
     }
@@ -280,6 +283,8 @@ impl Charge {
             })
             .ok()?;
         self.bytes = total;
+        #[cfg(feature = "test-hooks")]
+        crate::run::hooks::memory::network(bytes, true);
         Some(())
     }
     pub(crate) fn additional(&self, bytes: u64) -> Option<Self> {
@@ -297,6 +302,8 @@ fn charge(slot: &Arc<Slot>, bytes: u64) -> Option<Charge> {
         })
         .ok()?;
     slot.state.fetch_add(CHARGE, Ordering::AcqRel);
+    #[cfg(feature = "test-hooks")]
+    crate::run::hooks::memory::network(bytes, true);
     Some(Charge {
         slot: slot.clone(),
         bytes,

@@ -23,6 +23,9 @@ pub(super) fn write(seeds: &mut Seeds) -> std::io::Result<()> {
             seeds.add("serialized_save", &name, &data)?;
             super::extractor_paths::file(seeds, &name, &data)?;
         }
+        if target == "bundle" {
+            seeds.add("bundle_save", &name, &data)?;
+        }
     }
     Ok(())
 }

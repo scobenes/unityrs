@@ -153,6 +153,16 @@ class WorkflowTests(unittest.TestCase):
         job = workflow["jobs"]["gltf"]
         self.assertEqual(str(job.get("env", {}).get("UNITYRS_GLTF_VALIDATOR_REQUIRED")), "1")
 
+    def test_scale_runs_memory_component_probes_optimized_including_ignored(self):
+        workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text())
+        runs = [step.get("run", "").split() for step in workflow["jobs"]["scale"]["steps"]]
+        probes = [run for run in runs if "memory_constants" in run]
+        self.assertEqual(len(probes), 1, "scale must execute the memory component probes")
+        command = probes[0]
+        self.assertEqual(command[command.index("--profile") + 1], "sweep")
+        self.assertEqual(command[command.index("memory_constants") - 1], "--test")
+        self.assertIn("--include-ignored", command[command.index("--") + 1:])
+
     def test_fuzz_targets_are_in_both_ci_loops_and_the_nightly_matrix(self):
         import tomllib
         root = WORKFLOWS.parents[1]

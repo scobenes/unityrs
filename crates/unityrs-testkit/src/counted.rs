@@ -141,6 +141,12 @@ pub trait Tally: Sync {
     /// A block of `size` bytes was freed on a counted thread: told once
     /// `System` has freed it.
     fn shrank(&self, size: usize);
+    /// Replace an old block after a successful in-place shrink. There was
+    /// no provisional new block; coherent tallies update in one event.
+    fn shrunk(&self, old: usize, new: usize) {
+        self.shrank(old);
+        self.grew(new, false);
+    }
 }
 
 /// A global allocator that forwards to `System` and tells its [`Tally`] of
@@ -251,10 +257,16 @@ unsafe impl<T: Tally> GlobalAlloc for Allocator<T> {
         if no_unwind(|| self.0.refuses_realloc(new_size)) {
             return ptr::null_mut();
         }
-        let tell = self.before(new_size);
+        let in_place = layout.align() <= MIN_ALIGN && layout.align() <= new_size;
+        let shrinking = new_size <= layout.size() && in_place;
+        let tell = if shrinking {
+            counted()
+        } else {
+            self.before(new_size)
+        };
         // SAFETY: the caller's contract is `System.realloc`'s.
         let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if tell && p.is_null() {
+        if tell && p.is_null() && !shrinking {
             no_unwind(|| self.0.failed(new_size));
         }
         if !p.is_null() && tell {
@@ -264,13 +276,11 @@ unsafe impl<T: Tally> GlobalAlloc for Allocator<T> {
                 // otherwise it allocates, copies and frees (std's
                 // `realloc_fallback`), both blocks live: as the engine's
                 // allocator counts it (`unityrs_batch::alloc`).
-                let in_place = layout.align() <= MIN_ALIGN && layout.align() <= new_size;
-                if new_size <= layout.size() && in_place {
+                if shrinking {
                     // glibc shrinks a block where it is (a heap chunk split
                     // in place, a mapped one cut by `mremap`): no second
                     // block ever exists (plan section 3.15, perf stage 2).
-                    self.0.shrank(layout.size());
-                    self.0.grew(new_size, false);
+                    self.0.shrunk(layout.size(), new_size);
                 } else {
                     // A growth may move: both blocks exist until it is done.
                     self.0.grew(new_size, false);

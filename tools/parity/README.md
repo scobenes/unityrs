@@ -17,7 +17,11 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `binding_names.py` | Boost field-name normalization for synthetic object observations |
 | `object_cases.py` | Y2 synthetic object-mode inputs and observations; records input fields only, with no generated schema or defaults |
 | `binding_cases.py` | Y1 synthetic API observations, including exact Python types, traversal, local paths and stream origins; shared by the recorder, Rust replay and binding suite |
-| `bindings/` | Explicit installed-wheel comparison suite (`python -m unittest bindings.test_y1 bindings.test_y2`); requires `unityrs` and UnityPy 1.25.2, and never skips |
+| `binding_y3_config.py` | Y3 config, fallback warnings, container helper and name-peek observations on synthetic inputs |
+| `binding_y3_objects.py` | Y3 ObjectReader helpers and embedded typetree observations, including the vendored HEAD reader |
+| `binding_y3_tree.py` | Y3 mutable TypeTreeNode construction, traversal, parsing, dumping and cache behavior |
+| `binding_y3_values.py` | Y3 handwritten enum members and lookup tables, unknown members, and UnityVersion parsing and comparisons |
+| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=61`); requires `unityrs` and UnityPy 1.25.2, and never skips |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |
 | `child.py` | how every Python test and tool here runs a child process: a child the system killed (SIGKILL) is run again, up to `KILLED_RUNS` runs, any other ending comes back at once, and each run gets a scratch folder its parent removes (standard library only) |
 | `scratch.py` | where every Python test and tool here writes outside its memory: scratch folders removed whatever happens, a test's with its cleanups, a child's with its run, a dead process's at the next sweep (standard library only) |
@@ -156,6 +160,7 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `head_oracle.py`, `head_417d595/` | not tests: UnityPy git `417d595`'s `helpers/CompressionHelper.py`, `files/BundleFile.py`, `files/SerializedFile.py`, `helpers/TypeTreeNode.py` and `helpers/TypeTreeHelper.py`, plus the class generator `tools/TpkClassGenerator.py` used by Y2, kept byte for byte with its MIT `LICENSE` (ruff skips the folder), and the loader that checks each file's git blob id and runs them inside UnityPy 1.25.2, for the HEAD-tier writing rows and synthetic reading recordings (`PARITY.md` section 20; `test_rows_writing.py` head_saves; `tools/fixtures/head_read.py --check`) | UnityPy |
 | `test_object_mode.py` | `PARITY.md` section 9.2.1 holds exactly what `object_mode.py` prints, and section 9.2's extra-field rule holds for every class of `UnityPy.classes` | UnityPy with UnityPyBoost |
 | `test_doc_tiers.py` | `PARITY.md` and `DESIGN.md` agree on what a tier covers where a zero side, an image mode, a missing characterisation, a walk past a UnityCN block, an empty first FSB5 subsound or a reader handed to a reader decides it | stdlib |
+| `test_b2b_writing.py` | B2b HEAD writes cite measured L4 Rust replays while Editor reading stays a target; WebFile brotli writing has an explicit Tier C reload rule | stdlib |
 | `test_readme.py` | this README's two tables list every file in this folder and in `tests/`, and no other | stdlib |
 | `test_fixture_modules.py` | each module under `tools/fixtures` (a file no step runs, which a fixture script imports) runs on its own, as plan section 10's G4 line runs every `tools/fixtures/*.py` with `--check`: it puts on its path what it imports | UnityPy |
 | `test_vorbis_tools.py` | independent encoder packet lacing and in-memory conversion of external runtime setup tables, using invented data only; each check runs in a child, since `audio_vorbis` lives in tools/fixtures and the in-process dumps refuse a module from there | stdlib |

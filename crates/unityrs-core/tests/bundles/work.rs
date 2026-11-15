@@ -174,12 +174,16 @@ fn eager_parse_work(r: usize, rows: usize) -> u64 {
 /// once and counts it: the buffer, plus the two metadata strings it reads
 /// to their NUL (`2018.4.0f1` and the empty user information, 12 bytes),
 /// and its version's packing (round 7: `2018.4.0f1`'s 10 bytes and 9 limbs,
-/// `version` module docs, "Work"), the same for 1,000 rows as for 20,000.
+/// `version` module docs, "Work"), plus one step per blob row.
 #[test]
 fn an_entrys_blob_strings_cost_one_search_of_its_buffer_whatever_its_rows() {
     const PER_PARSE: u64 = 65_536 + 12 + (10 + 9 * 8);
     for r in [1_000, 20_000] {
-        assert_eq!(eager_parse_work(r, 3), 3 * PER_PARSE, "{r} blob rows");
+        assert_eq!(
+            eager_parse_work(r, 3),
+            3 * (PER_PARSE + r as u64),
+            "{r} blob rows"
+        );
     }
 }
 

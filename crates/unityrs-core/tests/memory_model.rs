@@ -32,9 +32,8 @@
 //! allocation's rounding (8 to 23 bytes, a page for an mmapped chunk) as
 //! room in which an uncharged allocation could hide: an 8-byte box per list
 //! costs a 32-byte chunk and would pass (round 4).
-//! A shared node-list owner now allocates 168 bytes (`heap_cost` 176),
-//! replacing the two-count owner's 192-byte charge on both arm64 and
-//! x86-64. `node_owner.rs` measures the allocation and pins the 1.25.2
+//! A shared node-list owner includes its optional HEAD graph identity table
+//! and one strong count. `node_owner.rs` measures the allocation and pins the 1.25.2
 //! blob reader's exact memory boundary, one byte below and at the bound.
 
 #![allow(unsafe_code, clippy::cast_precision_loss)]

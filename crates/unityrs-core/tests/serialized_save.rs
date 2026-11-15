@@ -82,7 +82,7 @@ fn unhex(text: &str) -> Vec<u8> {
 }
 
 #[test]
-fn head_tier_save_refuses_before_output_or_charges() {
+fn formats_above_head_refuse_before_output_or_charges() {
     use unityrs_core::budget::{Reservation, Unbounded};
     use unityrs_core::files::{SaveError, SaveLayout};
     use unityrs_core::stream::ReaderKind;
@@ -97,9 +97,14 @@ fn head_tier_save_refuses_before_output_or_charges() {
     {
         let meter =
             Meter::with_decode_work(1 << 24, 1 << 24, Arc::new(Unbounded), Reservation::Input);
+        let mut input = unhex(case["hex"].as_str().unwrap());
+        if input[8..12] != 26u32.to_be_bytes() {
+            continue;
+        }
+        input[8..12].copy_from_slice(&27u32.to_be_bytes());
         let file = SerializedFile::parse_with_reader(
             RawStr::from_static(b"CAB-head-save"),
-            Bytes::from(unhex(case["hex"].as_str().unwrap())),
+            Bytes::from(input),
             None,
             &meter,
             &Arc::new(FileContext::unitypy()),
@@ -135,7 +140,7 @@ fn head_tier_save_refuses_before_output_or_charges() {
             drop(held);
         }
     }
-    assert_eq!(formats, [23, 24, 25, 26].into());
+    assert_eq!(formats, [27].into());
 }
 
 #[test]

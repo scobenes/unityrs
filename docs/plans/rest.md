@@ -248,7 +248,7 @@ About 400-1,500 non-test lines each. Each depends on the PRs it names; the first
 8. **Licences and provenance.** The FMOD-derived Vorbis table, RazTools/Studio, vgmstream, Unity's crunch fork and libwebp's PATENTS all need verifying. A failure blocks the PR that depends on it, not the phase.
 9. **Thin real-world evidence.** Section 4's corpus bullet.
 10. **Merge contention** in `unityrs-texture`'s shared tables and the core's `env/load`: per-format modules, and section 3's merge order.
-11. **Known red tests.** The parity suite's ASTC_HDR failures on arm and its lz4 failures are understood in T8 and B2a, so they do not mask new regressions.
+11. **Known red tests.** The parity suite's ASTC_HDR failures on arm are understood in T8. B2a fixes `test_lz4_reserves_the_stored_size_before_it_decodes`: its absolute 1 GiB `RLIMIT_AS` was below the emulated process's starting address space, so the emulator failed to allocate before python-lz4 could report its reservation refusal. The test now permits 1 GiB above the starting address space, still too little for the requested 2 GiB reservation; both valid and corrupt blocks report `MemoryError`. The 15 container/writing parity tests pass with this correction.
 
 ---
 

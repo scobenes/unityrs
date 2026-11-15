@@ -215,8 +215,9 @@ impl Host {
         self.process.exit(error.code)
     }
     /// A 69 once the progress thread runs: its mailbox, at most 1 s.
-    fn hand(&self, running: &Running, error: Error) -> ! {
+    fn hand(&'static self, running: &Running, error: Error) -> ! {
         self.process.state.store_final(error.code);
+        self.early.terminal_note(&self.secrets());
         let code = error.code;
         let _ = running.service.exit(
             self.snapshot(running),
@@ -253,8 +254,9 @@ fn spawn(
         .map(drop)
         .map_err(|_| Error::spawn())
 }
-/// Steps 3 to 8, `note` the uncertified bound's stderr line written first
-/// as the main thread's lines are. Never returns: the finisher, the
+/// Steps 3 to 8, `note` queued at startup and written by main once the
+/// controller is independent, or with a terminal startup diagnostic.
+/// Never returns: the finisher, the
 /// lifecycle thread, a second signal or a startup failure ends the
 /// process; a panic of the main thread is `exit_now` at once, with the
 /// more severe of 70 and the code stored.
@@ -360,7 +362,7 @@ fn steps(
         .as_ref()
         .and_then(|d| crate::lifetime::unix_ns(&d.at).ok());
     let writer: &'static Writer = held.writer.get_or_init(|| startup.writer);
-    let early = Early::new(clock, deadline, startup.spares);
+    let early = Early::new(clock, deadline, startup.spares, note);
     #[cfg(feature = "test-hooks")]
     let mut hooks = startup.hooks;
     #[cfg(feature = "test-hooks")]
@@ -378,9 +380,6 @@ fn steps(
     // The main thread and the early writer thread register too.
     register();
     progress::early::on_thread_start(register);
-    if let Some(note) = note {
-        early.note(note);
-    }
     // Step 3: E57's allocator.
     if sys::allocator(spec.threads).is_err() {
         early.fail(&Error::startup("mallopt", None));
@@ -717,6 +716,7 @@ fn steps(
         super::hooks::arm_sockets(running.points.clone());
         running.points.at(&Point::Main);
     }
+    let pending_note = host.early.has_note().then(|| host.writer.pending_line());
     let builder = std::thread::Builder::new()
         .name("batch-controller".into())
         .stack_size(STACK);
@@ -744,6 +744,9 @@ fn steps(
         Ok(handle) => handle,
         Err(error) => host.hand(running, error),
     };
+    // Main can remain in a regular stderr file's writeback while the
+    // controller hands over, progress writes and the finisher exits.
+    host.note(pending_note);
     // Step 8: the join never returns; if it does, a stop `internal`.
     let _ = handle.join();
     host.request(StopReason::Internal);

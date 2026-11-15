@@ -49,9 +49,16 @@ const WRITER_STACK: usize = 2 << 20;
 /// Writes `out` on stdout, then `err` on stderr, without a deadline, both
 /// within [`OWN_WAIT`] of the call (module docs). Either may be empty.
 pub fn write(out: &[u8], err: &[u8]) {
+    write_on([(io::stdout().as_fd(), out), (io::stderr().as_fd(), err)]);
+}
+pub(crate) fn write_on<const N: usize>(lines: [(BorrowedFd<'_>, &[u8]); N]) {
     let until = Instant::now() + OWN_WAIT;
-    own(io::stdout().as_fd(), out, until);
-    own(io::stderr().as_fd(), err, until);
+    write_on_until(lines, until);
+}
+pub(crate) fn write_on_until<const N: usize>(lines: [(BorrowedFd<'_>, &[u8]); N], until: Instant) {
+    for (fd, line) in lines {
+        own(fd, line, until);
+    }
 }
 
 /// Writes `out` on stdout, then `err` on stderr, through the writer
@@ -66,7 +73,10 @@ pub fn within(out: &[u8], err: &[u8], wait: Duration) -> bool {
 }
 
 /// [`within`] on the descriptors given, in order.
-pub(crate) fn within_on(lines: [(BorrowedFd<'_>, &[u8]); 2], wait: Duration) -> bool {
+pub(crate) fn within_on<const N: usize>(
+    lines: [(BorrowedFd<'_>, &[u8]); N],
+    wait: Duration,
+) -> bool {
     if wait.is_zero() {
         return false;
     }

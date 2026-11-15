@@ -17,9 +17,11 @@ use super::parse::Parser;
 type Hash = ShortArray<16>;
 
 pub(super) struct Handler {
-    hash: Hash,
+    pub(super) hash: Hash,
     nodes: Option<crate::typetree::SharedNodes>,
-    refs: MeteredVec<Hash>,
+    pub(super) refs: MeteredVec<Hash>,
+    pub(super) version: i32,
+    pub(super) original_nodes: Option<crate::typetree::SharedNodes>,
 }
 
 fn invalid(detail: &'static str) -> Error {
@@ -60,11 +62,13 @@ impl Parser<'_> {
         let hash = self.r.read_short_array();
         let size = self.r.read_u32()?;
         let mut refs = MeteredVec::new(self.meter);
+        let mut embedded_version = 0;
         let nodes = if size >= 8 {
             if self.r.read_bytes_short(4) != b"mhtt" {
                 return Err(invalid("Invalid type tree blob magic"));
             }
-            let version = u32::try_from(self.r.read_i32()?).unwrap_or(0);
+            embedded_version = self.r.read_i32()?;
+            let version = u32::try_from(embedded_version).unwrap_or(0);
             let mut rows = crate::typetree::parse::parse_blob(
                 &mut self.r,
                 self.data,
@@ -83,7 +87,13 @@ impl Parser<'_> {
         } else {
             None
         };
-        Ok(Handler { hash, nodes, refs })
+        Ok(Handler {
+            hash,
+            original_nodes: nodes.clone(),
+            nodes,
+            refs,
+            version: embedded_version,
+        })
     }
 }
 
@@ -95,6 +105,7 @@ struct Entry {
     row: NodeId,
     children: usize,
     marks: Marks,
+    visiting: bool,
 }
 
 #[derive(Default)]
@@ -218,6 +229,7 @@ impl Arena {
                         row,
                         children,
                         marks: Marks::default(),
+                        visiting: false,
                     })?;
                 }
             }
@@ -234,19 +246,21 @@ impl Arena {
     }
 
     fn snapshot(
-        &self,
+        &mut self,
         root: usize,
         snapshots: &mut MeteredVec<Visit>,
         meter: &Arc<Meter>,
         limits: &crate::limits::Limits,
     ) -> Result<std::ops::Range<usize>, Error> {
         let start = snapshots.len();
+        let mut bounds = crate::limits::TreeTraversal::new(meter, limits.max_tree_depth);
         let mut stack = MeteredVec::new(meter);
         stack.push((root, 1u32, None::<usize>))?;
         while let Some((id, depth, finish)) = stack.as_slice().last().copied() {
             stack.truncate(stack.len() - 1);
             meter.count_decode(1)?;
             if let Some(at) = finish {
+                self.entry_mut(id)?.visiting = false;
                 let end = snapshots.len();
                 snapshots
                     .as_mut_slice()
@@ -255,7 +269,11 @@ impl Arena {
                     .end = end;
                 continue;
             }
-            check_depth(depth, limits)?;
+            bounds.step(u64::from(depth), 0, 0)?;
+            if self.entry(id)?.visiting {
+                return Err(invalid("shared subtree cycle"));
+            }
+            self.entry_mut(id)?.visiting = true;
             let at = snapshots.len();
             snapshots.push(Visit { node: id, end: 0 })?;
             stack.push((id, depth, Some(at)))?;
@@ -373,7 +391,7 @@ impl Arena {
     }
 
     fn child_frame(
-        &self,
+        &mut self,
         frame: &Frame,
         at: usize,
         visit: Visit,
@@ -561,7 +579,11 @@ impl Arena {
                 walk.truncate(walk.len() - 1);
                 meter.count_decode(1)?;
                 check_depth(depth, limits)?;
-                if heights.as_slice().get(id).copied().unwrap_or(0) > 0 {
+                let known = heights.as_slice().get(id).copied().unwrap_or(0);
+                if !visited && known == u32::MAX {
+                    return Err(invalid("shared subtree cycle"));
+                }
+                if known > 0 && known != u32::MAX {
                     continue;
                 }
                 if visited {
@@ -582,6 +604,9 @@ impl Arena {
                         *h = height;
                     }
                 } else {
+                    if let Some(h) = heights.as_mut_slice().get_mut(id) {
+                        *h = u32::MAX;
+                    }
                     walk.push((id, true, depth))?;
                     for at in self.children(id)?.rev() {
                         meter.count_decode(1)?;
@@ -597,29 +622,39 @@ impl Arena {
         handlers: &[Handler],
         roots: usize,
         meter: &Arc<Meter>,
+        limits: &crate::limits::Limits,
     ) -> Result<MeteredVec<Option<crate::typetree::SharedNodes>>, Error> {
         let mut output = MeteredVec::new(meter);
+        let mut bounds = crate::limits::TreeTraversal::new(meter, limits.max_tree_depth);
         for root in 0..roots {
             let Some(node) = self.root(root) else {
                 output.push(None)?;
                 continue;
             };
             let mut rows = MeteredVec::new(meter);
-            // A separate flat traversal retains depth without recursive owners.
+            let mut parents = MeteredVec::new(meter);
+            let mut identities = MeteredVec::new(meter);
+            // Keep stored levels separate from the resolved edges: HEAD does
+            // not rewrite a shared child's m_Level when attaching it.
             let mut pending = MeteredVec::new(meter);
-            pending.push((node, 0i32))?;
-            while let Some((id, depth)) = pending.as_mut_slice().last().copied() {
+            pending.push((node, u32::MAX, 1_u64))?;
+            while let Some((id, parent, depth)) = pending.as_mut_slice().last().copied() {
                 pending.truncate(pending.len() - 1);
-                meter.count_decode(1)?;
-                let mut row = self.row(handlers, id)?.clone();
-                row.level = depth;
-                rows.push(row)?;
+                bounds.step(depth, 0, 1)?;
+                let index = u32::try_from(rows.len()).map_err(|_| invalid("node index"))?;
+                rows.push(self.row(handlers, id)?.clone())?;
+                identities.push((id, self.entry(id)?.children))?;
+                parents.push(parent)?;
                 for at in self.children(id)?.rev() {
                     meter.count_decode(1)?;
-                    pending.push((self.edge(at)?, depth.saturating_add(1)))?;
+                    pending.push((self.edge(at)?, index, depth.saturating_add(1)))?;
                 }
             }
-            output.push(Some(NodeList::from_rows(rows)?.into_shared()?))?;
+            output.push(Some(
+                NodeList::from_preorder(rows, parents)?
+                    .with_graph_identities(identities)
+                    .into_shared()?,
+            ))?;
         }
         Ok(output)
     }
@@ -637,7 +672,7 @@ pub(super) fn resolve(
     let mut arena = Arena::new(handlers.as_slice(), meter)?;
     arena.resolve_roots(handlers.as_slice(), roots, &index, meter, limits)?;
     arena.check_heights(roots, meter, limits)?;
-    let mut output = arena.materialize(handlers.as_slice(), roots, meter)?;
+    let mut output = arena.materialize(handlers.as_slice(), roots, meter, limits)?;
     for (handler, nodes) in handlers
         .as_mut_slice()
         .iter_mut()

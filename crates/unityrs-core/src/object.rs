@@ -234,8 +234,16 @@ impl ObjectRef {
     /// Read each child's node and value without collapsing duplicate names.
     /// A later reader error is returned with the completed construction prefix.
     pub fn read_object_fields(&self) -> Result<(Parsed, crate::walk::FieldProgress), ParseError> {
+        self.read_object_fields_with_nodes(None)
+    }
+
+    /// Read object fields using an explicit tree before the file's own tree.
+    pub fn read_object_fields_with_nodes(
+        &self,
+        nodes: Option<&Arc<Tree>>,
+    ) -> Result<(Parsed, crate::walk::FieldProgress), ParseError> {
         let mut progress = crate::walk::FieldProgress::default();
-        let parsed = self.read_fields_mode(None, false, true, Some(&mut progress))?;
+        let parsed = self.read_fields_mode(nodes, false, true, Some(&mut progress))?;
         Ok((parsed, progress))
     }
 

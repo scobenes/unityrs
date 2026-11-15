@@ -80,6 +80,10 @@ impl Control for Lifetime {
 /// Observation points around the hand-over, for acceptance. They run on the
 /// controller's thread and must not drop anything they are shown.
 pub trait Observer: Send + Sync {
+    #[cfg(feature = "test-hooks")]
+    fn sort_options(&self) -> crate::sort::Options {
+        crate::sort::Options::default()
+    }
     /// Just before a library step that has no hook of its own.
     fn seam(&self, _: Seam) {}
     fn handed_over(&self, _: &HandOver) {}
@@ -581,9 +585,17 @@ impl Body<'_> {
         });
         handover.phase = Phase::Winners;
         self.options.observer.seam(Seam::Selection);
-        let Some((workspace, handoff)) =
-            phases::select(&facts, &started, &account, &control, execution, &sink, &fs)
-        else {
+        let Some((workspace, handoff)) = phases::select(
+            &facts,
+            &started,
+            &account,
+            &control,
+            execution,
+            &sink,
+            &fs,
+            #[cfg(feature = "test-hooks")]
+            self.options.observer.sort_options(),
+        ) else {
             stamp(handover, Phase::Winners);
             return Ok(());
         };

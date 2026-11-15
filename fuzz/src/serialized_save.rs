@@ -26,7 +26,7 @@ fn resource_refusal(error: &Error) -> bool {
 /// An accepted save must reload with the same live objects and raw bytes,
 /// then save identically. Every operation uses its own work allowance;
 /// a memory/budget refusal is an allowed outcome at every stage.
-/// Formats above 22 refuse save until HEAD-tier writing is implemented.
+/// Formats 23-26 use HEAD's writer; formats above 26 refuse save.
 pub fn check(data: &[u8]) {
     let ctx = crate::context();
     let bytes = Bytes::copy_from_slice(data);
@@ -97,7 +97,7 @@ pub fn check(data: &[u8]) {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn head_format_26_save_refusal_regression() {
+    fn head_format_26_save_roundtrip_regression() {
         // The HEAD seed that previously saved v22 metadata under a v26 header.
         let hex = concat!(
             "00000000000000000000001a000000000000000000000049000000000000",
@@ -123,9 +123,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(file.header().version, 26);
-        assert_eq!(
-            file.save(unityrs_core::files::SaveOptions::default()),
-            Err(unityrs_core::files::SaveError::HeadTierWritesNotImplemented)
+        assert!(
+            file.save(unityrs_core::files::SaveOptions::default())
+                .is_ok()
         );
         super::check(&data);
     }
@@ -151,6 +151,25 @@ mod tests {
                 .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
                 .collect();
             super::check(&data);
+        }
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../crates/unityrs-core/tests/fixtures/head_save_serialized.json"
+        ))
+        .unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            for field in ["input", "output"] {
+                let Some(hex) = case[field].as_str() else {
+                    continue;
+                };
+                let data: Vec<u8> = hex
+                    .as_bytes()
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+                    .collect();
+                super::check(&data);
+            }
         }
     }
 }

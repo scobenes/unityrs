@@ -69,6 +69,12 @@ impl Sender {
             update(&mut state.latest);
             state.pending = true;
             self.0.changed.notify_one();
+            #[cfg(feature = "test-hooks")]
+            {
+                let phase = state.latest.phase;
+                drop(state);
+                crate::run::hooks::memory::at(crate::run::hooks::memory::Point::Phase(phase));
+            }
         }
     }
     #[must_use]

@@ -71,6 +71,9 @@ impl FileSystem for Host {}
 /// The permanent lock is retained separately from all run artifacts.
 pub struct Started {
     pub counter: Arc<Counter>,
+    /// On Linux this starts at the retained root descriptor, so every
+    /// generated worker path is short even when realpath expands an alias.
+    /// A user of this path keeps the Started lease until its last open.
     pub run: PathBuf,
     root: File,
     lock: crate::sys::FlockLease,
@@ -248,7 +251,20 @@ fn prepare_run(root: &File, canonical_spool: &Path, run_id: &str) -> Result<Path
     for name in [c"in", c"attempts", c"fail", c"done", c"winners"] {
         mkdir(&run, name)?;
     }
-    let base = crate::spool::path::join(canonical_spool, Path::new("runs"))
+    #[cfg(target_os = "linux")]
+    let rooted = {
+        use std::os::fd::AsRawFd;
+        let _ = canonical_spool;
+        let fd =
+            u64::try_from(root.as_raw_fd()).map_err(|_| Error::plain(Class::Unusable, "path"))?;
+        crate::spool::path::indexed(Path::new("/proc/self/fd"), "", fd)
+            .map_err(|_| Error::plain(Class::HostMemory, "path"))?
+    };
+    #[cfg(target_os = "linux")]
+    let base_root = rooted.as_path();
+    #[cfg(not(target_os = "linux"))]
+    let base_root = canonical_spool;
+    let base = crate::spool::path::join(base_root, Path::new("runs"))
         .map_err(|_| Error::plain(Class::HostMemory, "path"))?;
     let path = crate::spool::path::join(&base, Path::new(run_id))
         .map_err(|_| Error::plain(Class::HostMemory, "path"))?;

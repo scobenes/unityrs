@@ -9,12 +9,14 @@ use crate::{
     progress::{self, Exit, Phase, Snapshot, clock::Clock},
 };
 use std::{
+    io,
+    os::fd::AsFd,
     os::fd::OwnedFd,
     sync::{
         Mutex, PoisonError,
-        atomic::{AtomicU64, Ordering::SeqCst},
+        atomic::{AtomicBool, AtomicU64, Ordering::SeqCst},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Step 1's two spare descriptors (`/dev/null`; std opens `O_CLOEXEC`).
@@ -37,15 +39,49 @@ pub(super) struct Early {
     /// (milliseconds; `u64::MAX` before).
     boot: AtomicU64,
     spare: Mutex<[Option<OwnedFd>; 2]>,
+    note: Option<Note>,
+    noted: AtomicBool,
+}
+pub(super) struct Note {
+    pub bytes: [u8; crate::diagnostic::LINE_BYTES],
+    pub len: usize,
 }
 impl Early {
-    pub fn new(clock: Clock, deadline: Option<i128>, spare: [Option<OwnedFd>; 2]) -> Self {
+    pub fn new(
+        clock: Clock,
+        deadline: Option<i128>,
+        spare: [Option<OwnedFd>; 2],
+        note: Option<&str>,
+    ) -> Self {
+        let note = note.map(|text| {
+            let mut bytes = [0; crate::diagnostic::LINE_BYTES];
+            let mut len = text.len().min(bytes.len());
+            while !text.is_char_boundary(len) {
+                len -= 1;
+            }
+            if let Some(target) = bytes.get_mut(..len) {
+                target.copy_from_slice(text.as_bytes().get(..len).unwrap_or_default());
+            }
+            Note { bytes, len }
+        });
         Self {
             clock,
             deadline,
             boot: AtomicU64::new(u64::MAX),
             spare: Mutex::new(spare),
+            note,
+            noted: AtomicBool::new(false),
         }
+    }
+    pub fn take_note(&self) -> Option<&Note> {
+        if self.noted.swap(true, SeqCst) {
+            None
+        } else {
+            self.note.as_ref()
+        }
+    }
+    pub fn has_note(&self) -> bool {
+        self.note.is_some() && !self.noted.load(SeqCst)
     }
     /// Step 6's conversion: the time left is read on the boot clock after.
     pub fn converted(&self, deadline: Option<Boot>) {
@@ -91,25 +127,65 @@ impl Early {
             _ => Wait::Never,
         }
     }
-    /// `out` on stdout, then `err` on stderr, as the main thread writes
-    /// them: itself without a deadline, its writer thread with one.
-    pub fn lines(&self, out: &[u8], err: &[u8]) {
-        self.release();
+    /// The successful warning retains the early writer's deadline budget.
+    pub fn note_wait(&self) -> Duration {
         match self.budget() {
-            Wait::Own => progress::early::write(out, err),
-            Wait::Within(wait) => {
-                let _ = progress::early::within(out, err, wait);
+            Wait::Own => progress::early::OWN_WAIT,
+            Wait::Within(wait) => wait,
+            Wait::Never => Duration::ZERO,
+        }
+    }
+    /// Try the warning before stdout, with its own half-budget deadline.
+    /// The remaining diagnostics retain the original total output bound.
+    pub fn lines(&self, out: &[u8], note: &[u8], err: &[u8]) {
+        self.release();
+        let stdout = io::stdout();
+        let stderr = io::stderr();
+        let budget = self.budget();
+        let wait = match budget {
+            Wait::Own => progress::early::OWN_WAIT,
+            Wait::Within(wait) => wait,
+            Wait::Never => Duration::ZERO,
+        };
+        let started = Instant::now();
+        let until = started + wait;
+        if !note.is_empty() {
+            let note_until = started + wait / 2;
+            match budget {
+                Wait::Own => progress::early::write_on_until([(stderr.as_fd(), note)], note_until),
+                Wait::Within(_) => {
+                    let _ = progress::early::within_on(
+                        [(stderr.as_fd(), note)],
+                        note_until.saturating_duration_since(Instant::now()),
+                    );
+                }
+                Wait::Never => {}
+            }
+        }
+        let lines = [(stdout.as_fd(), out), (stderr.as_fd(), err)];
+        match budget {
+            Wait::Own => progress::early::write_on_until(lines, until),
+            Wait::Within(_) => {
+                let _ = progress::early::within_on(
+                    lines,
+                    until.saturating_duration_since(Instant::now()),
+                );
             }
             Wait::Never => {}
         }
         // The reservation kept for a later 69 when this one ends nothing.
         self.restore();
     }
-    /// A post-validation warning, using the already prepared spec masker.
-    pub fn note(&self, note: &str) {
-        let mut buffer = [0; crate::diagnostic::LINE_BYTES];
-        let n = super::current_secrets().mask(note, &mut buffer);
-        self.lines(b"", buffer.get(..n).unwrap_or_default());
+    /// A terminal startup failure after the progress service exists. With
+    /// no controller, a bounded early writer substitutes for its stack.
+    pub fn terminal_note(&self, secrets: &crate::diagnostic::Secrets<'_>) {
+        if let Some(note) = self.take_note() {
+            let text = std::str::from_utf8(note.bytes.get(..note.len).unwrap_or_default())
+                .unwrap_or_default();
+            let mut buffer = [0; crate::diagnostic::LINE_BYTES];
+            let len = secrets.mask(text, &mut buffer);
+            self.lines(b"", buffer.get(..len).unwrap_or_default(), b"");
+        }
     }
     /// A start's line, before `running`: `seq` 0, its stderr line
     /// `unityrs batch: <reason> <detail>`.
@@ -140,7 +216,23 @@ impl Early {
             }
             None => err.as_bytes(),
         };
-        self.lines(snapshot.line(Some(&exit)).as_bytes(), err);
+        // A failure before the progress service tries the pending warning
+        // first, within the terminal diagnostics' total output bound.
+        let mut buffer = [0; crate::diagnostic::LINE_BYTES];
+        let note = if let Some(note) = self.take_note() {
+            let text = std::str::from_utf8(note.bytes.get(..note.len).unwrap_or_default())
+                .unwrap_or_default();
+            match secrets {
+                Some(secrets) => {
+                    let len = secrets.mask(text, &mut buffer);
+                    buffer.get(..len).unwrap_or_default()
+                }
+                None => text.as_bytes(),
+            }
+        } else {
+            &[]
+        };
+        self.lines(snapshot.line(Some(&exit)).as_bytes(), note, err);
     }
     /// A 69 before the process word exists: nothing to reset.
     pub fn fail(&self, error: &Error) -> ! {

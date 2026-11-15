@@ -81,6 +81,17 @@ pub(super) fn write_pending(
     });
 }
 impl Host {
+    /// The successful startup's warning runs on main after controller spawn,
+    /// so stderr can hold neither progress, handover nor the lifecycle.
+    /// No detached early-writer stack overlaps the full engine topology.
+    pub(super) fn note(&'static self, pending: Option<diagnostic::PendingLine<'_>>) {
+        if let (Some(pending), Some(note)) = (pending, self.early.take_note()) {
+            let text = std::str::from_utf8(note.bytes.get(..note.len).unwrap_or_default())
+                .unwrap_or_default();
+            let mut buffer = [0; LINE_BYTES];
+            pending.within(text, &self.secrets(), &mut buffer, self.early.note_wait());
+        }
+    }
     pub(super) fn line(&'static self, args: std::fmt::Arguments<'_>) {
         write_line(self.writer, &self.secrets(), args, false);
     }
@@ -310,6 +321,8 @@ pub(super) fn finisher(
         ));
     }
     host.pending(false);
+    #[cfg(feature = "test-hooks")]
+    super::super::hooks::memory::at(super::super::hooks::memory::Point::Exit);
     host.process.exit(code)
 }
 /// The finisher's thread body around [`finisher`]: a panic exits with the

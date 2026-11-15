@@ -145,6 +145,12 @@ pub trait Hook: Sync {
     fn shrank(&self, size: usize) {
         let _ = size;
     }
+    /// A successful nonmoving shrink: no second allocation was requested.
+    /// Coherent observers replace the old cost with the new in one event.
+    fn shrunk(&self, old: usize, new: usize) {
+        self.shrank(old);
+        self.grew(new, false);
+    }
 }
 
 /// The binary's hook: sees nothing, refuses nothing.
@@ -268,23 +274,27 @@ unsafe impl<H: Hook> GlobalAlloc for Counting<H> {
             refused();
             return std::ptr::null_mut();
         }
-        no_unwind(|| self.0.growing(new_size));
+        let in_place = layout.align() <= MIN_ALIGN && layout.align() <= new_size;
+        let shrinking = new_size <= layout.size() && in_place;
+        if !shrinking {
+            no_unwind(|| self.0.growing(new_size));
+        }
         // SAFETY: the caller's contract is `System.realloc`'s.
         let p = unsafe { System.realloc(ptr, layout, new_size) };
         if p.is_null() {
             // The old block stays live and counted.
             refused();
-            no_unwind(|| self.0.failed(new_size));
+            if !shrinking {
+                no_unwind(|| self.0.failed(new_size));
+            }
             return p;
         }
         let old = layout.size();
-        let in_place = layout.align() <= MIN_ALIGN && layout.align() <= new_size;
-        if new_size <= old && in_place {
+        if shrinking {
             sub(old);
             add(new_size);
             no_unwind(|| {
-                self.0.shrank(old);
-                self.0.grew(new_size, false);
+                self.0.shrunk(old, new_size);
             });
         } else {
             // Both blocks may be live while it copies: its peak.

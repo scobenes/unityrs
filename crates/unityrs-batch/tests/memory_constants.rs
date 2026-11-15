@@ -21,8 +21,9 @@
 mod controller_support;
 mod stage_support;
 
+use std::cell::Cell;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 
 use serde_json::json;
 use unityrs_batch::alloc::{self, Counting, Hook};
@@ -42,50 +43,138 @@ use unityrs_testkit::ledger::Ledger;
 use unityrs_testkit::scratch::Scratch;
 
 static LEDGER: Ledger = Ledger::new(heap_cost);
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+// Admission and its ledger event must finish before a generation can change.
+// Checking the generation before taking this lock would leave a check/use race.
+static DISPATCH: AtomicBool = AtomicBool::new(false);
+struct Dispatch;
+impl Dispatch {
+    fn enter() -> Self {
+        while DISPATCH
+            .compare_exchange_weak(false, true, SeqCst, SeqCst)
+            .is_err()
+        {
+            std::hint::spin_loop();
+        }
+        Self
+    }
+}
+impl Drop for Dispatch {
+    fn drop(&mut self) {
+        DISPATCH.store(false, SeqCst);
+    }
+}
+std::thread_local! {
+    static PROBE: Cell<u64> = const { Cell::new(0) };
+}
+fn register() {
+    PROBE.with(|p| p.set(GENERATION.load(SeqCst)));
+    count_this_thread();
+}
+fn observing() -> bool {
+    counted()
+        && PROBE
+            .try_with(|p| p.get() == GENERATION.load(SeqCst))
+            .unwrap_or(false)
+}
+fn observed(event: impl FnOnce(&Ledger)) {
+    if !counted() {
+        return;
+    }
+    let _dispatch = Dispatch::enter();
+    if observing() {
+        event(&LEDGER);
+    }
+}
 
 /// The engine's allocator, bridged to the ledger for registered threads:
 /// the stand-in for B9's tally hook.
 struct Bridge;
 
 impl Hook for Bridge {
+    fn shrunk(&self, old: usize, new: usize) {
+        observed(|ledger| ledger.shrunk(old, new));
+    }
     fn growing(&self, size: usize) {
-        if counted() {
-            LEDGER.growing(size);
-        }
+        observed(|ledger| ledger.growing(size));
     }
     fn failed(&self, size: usize) {
-        if counted() {
-            LEDGER.failed(size);
-        }
+        observed(|ledger| ledger.failed(size));
     }
     fn grew(&self, size: usize, zeroed: bool) {
-        if counted() {
-            LEDGER.grew(size, zeroed);
-        }
+        observed(|ledger| ledger.grew(size, zeroed));
     }
     fn shrank(&self, size: usize) {
-        if counted() {
-            LEDGER.shrank(size);
-        }
+        observed(|ledger| ledger.shrank(size));
     }
 }
 
 #[global_allocator]
 static ALLOC: Counting<Bridge> = Counting(Bridge);
 
-/// Runs `f` on a registered thread of its own, the only one counted, so
-/// the probes, which libtest runs side by side, never see each other.
+/// Serialize complete driver lifetimes. Pool teardown can finish after its
+/// runtime's drop; its registration belongs only to the generation that
+/// created it, so a later probe cannot observe those trailing frees.
 fn alone<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    {
+        let _dispatch = Dispatch::enter();
+        GENERATION.fetch_add(1, SeqCst);
+    }
     let (tx, rx) = std::sync::mpsc::channel();
-    let _ = std::thread::spawn(move || {
-        static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _one = ONE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        count_this_thread();
-        let _ = tx.send(f());
+    let driver = std::thread::spawn(move || {
+        register();
+        let result = f();
+        unityrs_testkit::counted::stop_counting_this_thread();
+        let _ = tx.send(result);
     });
-    guard::recv(&rx, what)
+    let result = guard::recv(&rx, what);
+    driver.join().unwrap();
+    result
+}
+
+#[test]
+fn late_cleanup_from_a_completed_probe_cannot_change_the_next_measurement() {
+    static READY: AtomicBool = AtomicBool::new(false);
+    static RELEASE: AtomicBool = AtomicBool::new(false);
+    static DONE: AtomicBool = AtomicBool::new(false);
+    fn wait(flag: &AtomicBool) {
+        let until = std::time::Instant::now() + guard::DEADLOCK_GUARD;
+        while !flag.load(SeqCst) {
+            assert!(
+                std::time::Instant::now() < until,
+                "probe cleanup acknowledgment"
+            );
+            std::thread::yield_now();
+        }
+    }
+    let old = alone("old probe", || {
+        let old = std::thread::spawn(|| {
+            register();
+            let buffer = vec![0_u8; 64 << 10];
+            READY.store(true, SeqCst);
+            wait(&RELEASE);
+            drop(std::hint::black_box(buffer));
+            DONE.store(true, SeqCst);
+        });
+        wait(&READY);
+        old
+    });
+    alone("next probe", move || {
+        LEDGER.arm(0);
+        let before = LEDGER.observe().heap;
+        RELEASE.store(true, SeqCst);
+        wait(&DONE);
+        assert_eq!(
+            LEDGER.observe().heap,
+            before,
+            "old probe entered this window"
+        );
+        old.join().unwrap();
+    });
 }
 
 fn end() -> End {
@@ -173,6 +262,89 @@ fn a_private_environments_fixed_parts_fit_c_env_whatever_d() {
     println!("c_env: one Environment keeps {} B", kept[0]);
     assert_eq!(kept[0], kept[1], "an Environment's fixed parts grew with D");
     assert!(kept[0] > 0);
+}
+
+/// Both process request-slot tables are built after phase 1. Their bounded
+/// per-pool storage must follow the pool slope, not a fixed `c_base` residual.
+/// This isolates their contribution; runtime/task-cell heap still needs its
+/// own incremental probe before `m_pool` can be selected.
+#[test]
+fn both_request_slot_tables_fit_the_pool_terms_at_maximum_concurrency() {
+    use unityrs_batch::http::permit::{FINISHER_BASE, PermitPool};
+    for dc in [1_usize, 8, 256] {
+        let (peak, fits, retained) = alone("the request-slot tables probe", move || {
+            let baseline = LEDGER.observe().heap;
+            LEDGER.arm(PROVISIONAL.m_pool * 2 * (dc as u64 + 1));
+            let controller = PermitPool::with_base(0, dc).unwrap();
+            let finisher = PermitPool::with_base(FINISHER_BASE, dc).unwrap();
+            let observation = LEDGER.observe();
+            drop((controller, finisher));
+            (
+                observation.peak_above_arm,
+                observation.first_violation.is_none(),
+                LEDGER.observe().heap - baseline,
+            )
+        });
+        println!("two request-slot tables: dc {dc}, peak {peak} B");
+        assert!(fits, "dc {dc}: request tables passed the pool allowance");
+        assert_eq!(retained, 0, "request-slot storage remained after drop");
+    }
+}
+
+/// Initialize the real blocking pools, counting their parent-side startup
+/// allocations and their worker threads. Runtime construction is measured
+/// separately; this probe adds pool state to the actual table contribution.
+#[test]
+fn initialized_pools_and_request_tables_fit_the_incremental_pool_coefficient() {
+    for dc in [1, 4, 16] {
+        let (peak, fits) = alone("both initialized pools", move || {
+            let runtimes = unityrs_batch::lifetime::Runtimes::prepare_with(dc, register).unwrap();
+            LEDGER.arm(2 * u64::from(dc + 1) * PROVISIONAL.m_pool);
+            let controller =
+                unityrs_batch::http::permit::PermitPool::with_base(0, dc as usize).unwrap();
+            let finisher =
+                unityrs_batch::http::permit::PermitPool::with_base(257, dc as usize).unwrap();
+            runtimes.prewarm().unwrap();
+            let o = LEDGER.observe();
+            drop((controller, finisher, runtimes));
+            (o.peak_above_arm, o.first_violation.is_none())
+        });
+        println!("initialized pool/table increment: dc {dc}, peak {peak} B");
+        assert!(fits, "dc {dc}: initialized pools exceed m_pool");
+    }
+}
+
+#[test]
+fn a_nonmoving_shrink_does_not_create_an_uncharged_instant() {
+    let (peak, fits) = alone("coherent in-place shrink", || {
+        let mut buffer = Vec::with_capacity(64 * 1024);
+        buffer.resize(1024, 1_u8);
+        LEDGER.arm(0);
+        buffer.shrink_to_fit();
+        let o = LEDGER.observe();
+        drop(std::hint::black_box(buffer));
+        (o.peak_above_arm, o.first_violation.is_none())
+    });
+    assert_eq!(peak, 0, "shrinking in place needs no second block");
+    assert!(fits);
+}
+
+/// Actual engine view containers at the schema's maximum, independently
+/// of a scene's payloads. The core checks its private dependency owners'
+/// remaining 896 B share in its own module, where their types are visible.
+#[test]
+fn full_size_view_vectors_fit_their_structural_share() {
+    alone("full-size view vector capacities", || {
+        use unityrs_batch::{attempt::StagedBundle, view::BoundedWalker};
+        const N: usize = 65536;
+        LEDGER.arm(128 * N as u64);
+        let walk = BoundedWalker::try_new(N).unwrap();
+        let paths = Vec::<std::path::PathBuf>::with_capacity(N);
+        let members = Vec::<StagedBundle<'static>>::with_capacity(N);
+        let o = LEDGER.observe();
+        drop((walk, paths, members));
+        assert!(o.first_violation.is_none(), "full view containers: {o:?}");
+    });
 }
 
 /// Drives `n` inputs, each with a dependency of its own, to the last

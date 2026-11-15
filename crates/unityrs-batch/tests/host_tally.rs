@@ -14,6 +14,9 @@ use std::{
 use unityrs_batch::{phase1, progress::clock::Clock, run::hooks::Tally, run::process, spec};
 use unityrs_testkit::child;
 
+#[path = "host_tally/warnings.rs"]
+mod warnings;
+
 /// Appends `<what> <thread name>` to the child's log.
 fn note(what: &str) {
     let path = std::env::var_os("B9_TALLY").unwrap();
@@ -38,7 +41,7 @@ fn job(dir: &Path) -> std::path::PathBuf {
         fs::create_dir_all(dir.join(name)).unwrap();
     }
     fs::write(dir.join("a.bin"), b"not a bundle").unwrap();
-    // An hour ahead: the note's early line goes through the writer thread.
+    // An hour ahead: all host threads start before the deadline.
     let at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -71,6 +74,10 @@ fn tally_child() {
         return;
     };
     let clock = Clock::process(Instant::now());
+    if std::env::var_os("B9_FILL_STDOUT").is_some() {
+        warnings::fill_stdout();
+    }
+    warnings::retry_hooks();
     let mut startup = process::Startup::prepare().unwrap();
     startup.hooks().tally = Some(Tally { register, mark });
     startup.hooks().skip_host_checks = true;
@@ -112,7 +119,6 @@ fn every_engine_thread_registers_and_the_two_watches_mark() {
         let lines: Vec<&str> = text.lines().collect();
         for name in [
             "tally_child",
-            "exit-writer",
             "batch-progress",
             "batch-finisher",
             "batch-lifecycle",
@@ -124,14 +130,18 @@ fn every_engine_thread_registers_and_the_two_watches_mark() {
             let line = format!("register {name}");
             assert!(lines.contains(&line.as_str()), "{name}: {text}");
         }
+        assert!(
+            !lines.contains(&"register exit-writer"),
+            "a successful warning must use main: {text}"
+        );
         // Both runtimes' blocking pools, `dc + 1` threads each.
         let pooled = lines
             .iter()
             .filter(|l| {
-                l.starts_with("register ")
-                    && !l.contains(" batch-")
-                    && !l.ends_with(" tally_child")
-                    && !l.ends_with(" exit-writer")
+                matches!(
+                    **l,
+                    "register batch-controller-pool" | "register batch-finisher-pool"
+                )
             })
             .count();
         assert!(pooled >= 4, "{text}");
