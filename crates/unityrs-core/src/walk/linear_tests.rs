@@ -39,7 +39,7 @@ struct Steps {
 /// must succeed.
 fn measure(rows: Vec<NodeRow>, data: &[u8], refs: &[SerializedType]) -> Vec<Steps> {
     let tree = Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap();
@@ -94,7 +94,7 @@ fn ref_types(classes: impl Iterator<Item = String>) -> Vec<SerializedType> {
                 RawStr::from(c.as_str()),
                 RawStr::from(""),
                 RawStr::from(""),
-                Some(Arc::new(NodeList::trusted(rows).unwrap())),
+                Some(NodeList::trusted(rows).unwrap().into_shared().unwrap()),
             )
         })
         .collect()
@@ -239,7 +239,7 @@ fn refused() -> LimitError {
 
 fn compile(rows: Vec<NodeRow>) -> Arc<Tree> {
     Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap()

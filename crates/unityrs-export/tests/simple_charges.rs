@@ -177,7 +177,7 @@ fn script_cases() -> Vec<(cases::Case, Arc<ProviderChain>)> {
     use unityrs_testkit::serialized::{ObjectSpec, SerializedSpec, TypeSpec, build};
     let tree = |rows| {
         Tree::compile(
-            Arc::new(NodeList::trusted(rows).unwrap()),
+            NodeList::trusted(rows).unwrap().into_shared().unwrap(),
             &Limits::default(),
         )
         .unwrap()

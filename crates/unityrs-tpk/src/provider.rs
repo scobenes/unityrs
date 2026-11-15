@@ -24,7 +24,8 @@ use crate::tree::{WalkError, builds, generate_node};
 use crate::{TpkError, file};
 
 /// What a release root's walk resolved to.
-type Outcome<T> = Result<Option<Arc<T>>, ProviderError>;
+type Outcome<T> = Result<Option<T>, ProviderError>;
+type NodesOutcome = Outcome<unityrs_core::typetree::SharedNodes>;
 
 /// An outcome as a root keeps it: a kept error's heap is charged to the
 /// provider's meter for as long as it is kept (crate docs, "Memory").
@@ -46,8 +47,8 @@ struct Root {
     /// the walk is asked for (round 4 of CR8: made at load, it was counted
     /// for every root past the total, asked for or not).
     over: Option<u64>,
-    rows: OnceLock<Kept<NodeList>>,
-    tree: OnceLock<Kept<Tree>>,
+    rows: OnceLock<Kept<unityrs_core::typetree::SharedNodes>>,
+    tree: OnceLock<Kept<Arc<Tree>>>,
 }
 
 /// A TPK's class trees, as UnityPy's `helpers/Tpk.py` builds them (crate
@@ -248,7 +249,7 @@ impl TpkProvider {
         &self,
         class_id: i32,
         version: &UnityVersion,
-    ) -> Result<Option<Arc<NodeList>>, ProviderError> {
+    ) -> Result<Option<unityrs_core::typetree::SharedNodes>, ProviderError> {
         match self.entry(class_id, version) {
             Ok(root) => self.rows_of(root),
             Err(_) => Ok(None),
@@ -277,7 +278,7 @@ impl TpkProvider {
             .ok_or(NoTree::NoReleaseRoot)
     }
 
-    fn rows_of(&self, root: &Root) -> Outcome<NodeList> {
+    fn rows_of(&self, root: &Root) -> NodesOutcome {
         match root.rows.get() {
             Some(kept) => kept.outcome.clone(),
             None => self.publish(&root.rows, self.walk(root)),
@@ -289,7 +290,7 @@ impl TpkProvider {
     /// that moment, not on the request, so it is returned unkept and the
     /// next ask computes again, as `unityrs_core::once` treats a transient
     /// error. Otherwise the first outcome published wins.
-    fn publish<T>(&self, cell: &OnceLock<Kept<T>>, outcome: Outcome<T>) -> Outcome<T> {
+    fn publish<T: Clone>(&self, cell: &OnceLock<Kept<T>>, outcome: Outcome<T>) -> Outcome<T> {
         if matches!(&outcome, Err(e) if (e.memory.is_some() || e.allocator.is_some())) {
             return outcome;
         }
@@ -313,7 +314,7 @@ impl TpkProvider {
 
     /// `generate_node(class_info)` (`Tpk.py:58-88`) from one release root,
     /// unless its walk is past the provider's total.
-    fn walk(&self, root: &Root) -> Outcome<NodeList> {
+    fn walk(&self, root: &Root) -> NodesOutcome {
         if let Some(rows) = root.over {
             return Err(limit_error(LimitError::refused(
                 LimitKind::Count,
@@ -337,7 +338,7 @@ impl TpkProvider {
         })?;
         // `TypeTreeNode.from_list(nodes)` (`Tpk.py:86`).
         NodeList::from_rows(rows)
-            .map(|list| Some(Arc::new(list)))
+            .and_then(|list| list.into_shared().map(Some))
             .map_err(|e| match &e {
                 TreeError::Charge(c) => charge_error(c),
                 e => error(e),

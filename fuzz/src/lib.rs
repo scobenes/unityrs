@@ -126,7 +126,7 @@ pub fn with_stack<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 /// A case's rows as a node list on `meter`, or `None` when the meter
 /// refuses them.
 #[must_use]
-pub fn node_list(rows: &[Row], meter: &Arc<Meter>) -> Option<Arc<NodeList>> {
+pub fn node_list(rows: &[Row], meter: &Arc<Meter>) -> Option<unityrs_core::typetree::SharedNodes> {
     let mut v: MeteredVec<NodeRow> = MeteredVec::new(meter);
     for r in rows {
         let row = NodeRow::new(
@@ -137,7 +137,7 @@ pub fn node_list(rows: &[Row], meter: &Arc<Meter>) -> Option<Arc<NodeList>> {
         .with_meta_flag(r.meta_flag);
         v.push(row).ok()?;
     }
-    NodeList::from_rows(v).ok().map(Arc::new)
+    NodeList::from_rows(v).and_then(NodeList::into_shared).ok()
 }
 
 /// What a [`TreeCase`] describes, as the core's values.

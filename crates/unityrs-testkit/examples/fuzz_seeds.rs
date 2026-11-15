@@ -143,7 +143,8 @@ pub(crate) const MESH_METERS: [u8; 4] = [0, 1, 16, 64];
 
 #[path = "fuzz_seeds/fsb5.rs"]
 mod fsb5;
-
+#[path = "fuzz_seeds/head.rs"]
+mod head;
 struct Seeds {
     dir: PathBuf,
     count: [usize; TARGETS.len()],
@@ -668,6 +669,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     zip::seeds(&mut s)?;
     web::seeds(&mut s)?;
     fsb5::write(&mut s)?;
+    head::write(&mut s)?;
     shader::seeds(&mut s)?;
     texture(&mut s)?;
     pvrtc_atc::write(&mut s)?;

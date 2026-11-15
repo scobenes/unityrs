@@ -1,4 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/files/BundleFile.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy git 417d595 (MIT): UnityPy/files/BundleFile.py, UnityPy/helpers/CompressionHelper.py. See THIRD_PARTY_LICENSES.
 //! [`BundleFile::open`]: the header, blocks-info and directory, read as
 //! `read_fs` reads them, UnityPy's `files` dict, and where each block's
 //! stored bytes are. No data block is decoded.
@@ -116,13 +117,13 @@ impl BundleFile {
             data_flags,
             0,
         )?;
-        let (mut blocks, directory) = read_blocks_info(&info, meter)?;
+        let (mut blocks, directory, offsets) = read_blocks_info(&info, format, meter)?;
         // :170-171
         if class == FlagsClass::New && data_flags & 0x200 != 0 {
             r.align(16)?;
         }
         // :173-184: the blocks, read in order from here.
-        let (stored, lengths) = stored_blocks(&mut blocks, &mut r, meter, ctx)?;
+        let (stored, lengths) = stored_blocks(&mut blocks, &offsets, &mut r, meter, ctx)?;
         let files = files_dict(&directory, meter)?;
         let entries = entry_cells(directory.len(), meter)?;
         let header = BundleHeader {
@@ -187,13 +188,20 @@ impl BundleFile {
 #[allow(clippy::type_complexity)]
 fn stored_blocks(
     blocks: &mut MeteredVec<BlockInfo>,
+    offsets: &MeteredVec<u64>,
     r: &mut Reader<'_>,
     meter: &Arc<Meter>,
     ctx: &FileContext,
 ) -> Result<(MeteredVec<Range<usize>>, MeteredVec<ResultCell<u64, Error>>), Error> {
     let mut stored = MeteredVec::new(meter);
     let mut lengths = MeteredVec::new(meter);
-    for b in blocks.as_mut_slice() {
+    let base = r.position();
+    for (i, b) in blocks.as_mut_slice().iter_mut().enumerate() {
+        // HEAD files/BundleFile.py:485-491: offsets are relative to the data
+        // start, independent of block order, gaps and alignment.
+        if let Some(offset) = offsets.as_slice().get(i) {
+            r.set_position(base + i128::from(*offset))?;
+        }
         let range = r.read_range(i64::from(b.compressed))?;
         b.bytes_read = u32::try_from(range.len()).unwrap_or(u32::MAX);
         stored.push(range)?;
@@ -322,18 +330,25 @@ fn read_fs_header(
 
 /// The blocks-info and directory tables (`files/BundleFile.py:141-165`), read
 /// big-endian from the decoded section; paths are slices of it.
+#[allow(clippy::type_complexity)]
 fn read_blocks_info(
     info: &Bytes,
+    format: u32,
     meter: &Arc<Meter>,
-) -> Result<(MeteredVec<BlockInfo>, MeteredVec<DirEntry>), Error> {
+) -> Result<(MeteredVec<BlockInfo>, MeteredVec<DirEntry>, MeteredVec<u64>), Error> {
     let mut r = Reader::new(info, Endian::Big);
     // The uncompressed-data hash, read and discarded (short at the end).
     r.read_bytes_short(16);
     let mut blocks = MeteredVec::new(meter);
+    let mut offsets = MeteredVec::new(meter);
     for _ in 0..r.read_i32()?.max(0) {
         let uncompressed = r.read_u32()?;
         let compressed = r.read_u32()?;
         let flags = u32::from(r.read_u16()?);
+        // HEAD helpers/CompressionHelper.py:158-172.
+        if format >= 9 {
+            offsets.push(r.read_u64()?)?;
+        }
         blocks.push(BlockInfo {
             uncompressed,
             compressed,
@@ -354,7 +369,7 @@ fn read_blocks_info(
             path,
         })?;
     }
-    Ok((blocks, directory))
+    Ok((blocks, directory, offsets))
 }
 
 /// UnityPy's `files` dict over the directory: each path at its first
