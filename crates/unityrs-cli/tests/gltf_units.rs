@@ -108,6 +108,96 @@ fn has_reason(report: &Value, reason: &str) -> bool {
 }
 
 #[test]
+fn empty_mesh_renderers_are_skipped_and_counted_without_losing_healthy_geometry() {
+    use unityrs_testkit::ngui::{V, vector};
+    for declared in [0, 3] {
+        let tmp = Scratch::new("gltf-cli-empty-mesh");
+        let mut objects = scene_objects((0, 7));
+        objects[0] = Object::new(
+            1,
+            1,
+            s::game_object(b"empty", &[(0, 2), (0, 3), (0, 4), (0, 5)]),
+        );
+        objects.push(Object::new(5, 23, s::mesh_renderer((0, 1), &[], (0, 0))));
+        let mut empty = s::mesh::mesh(7, b"empty", &[], &[], s::mesh::MeshVersion::V2022);
+        let channel = st(
+            "ChannelInfo",
+            vec![
+                ("stream", V::UInt8(0)),
+                ("offset", V::UInt8(0)),
+                ("format", V::UInt8(0)),
+                ("dimension", V::UInt8(0)),
+            ],
+        );
+        s::set(
+            &mut empty.value,
+            "m_VertexData",
+            st(
+                "VertexData",
+                vec![
+                    ("m_VertexCount", V::UInt(declared)),
+                    ("m_Channels", vector(channel.clone(), vec![channel])),
+                    ("m_DataSize", V::Bytes(vec![])),
+                ],
+            ),
+        );
+        objects.extend([
+            empty,
+            Object::new(
+                10,
+                1,
+                s::game_object(b"healthy", &[(0, 11), (0, 12), (0, 13)]),
+            ),
+            Object::new(11, 4, s::transform((0, 10), (0, 0), &[], false)),
+            Object::new(12, 33, s::mesh_filter((0, 10), (0, 20))),
+            Object::new(13, 23, s::mesh_renderer((0, 10), &[], (0, 0))),
+            mesh(20),
+        ]);
+        let input = write_file(&tmp, "level0", &[], &objects);
+        let (scene, report) = export(&tmp, "empty", &[&input], &["--scene", "level0"]);
+        assert_eq!(scene["meshes"].as_array().unwrap().len(), 1);
+        assert!(scene["nodes"][0].get("mesh").is_none());
+        assert_eq!(scene["nodes"][1]["mesh"], 0);
+        assert_eq!(scene["nodes"][0]["extras"]["empty_mesh"], "2");
+        let count = |issues: &Value| {
+            issues
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|i| i["reason"] == "empty_mesh")
+                .map(|i| i["count"].as_u64().unwrap())
+                .sum::<u64>()
+        };
+        assert_eq!(count(&report["collection_issues"]), 2);
+        assert_eq!(count(&scene["asset"]["extras"]["collection_issues"]), 2);
+        assert!(!has_reason(&report, "mesh_decode_failed"));
+    }
+}
+
+#[test]
+fn missing_indices_with_positions_is_a_decode_failure_and_missing_positions_with_indices_is_not_empty()
+ {
+    for (vertices, indices) in [(&[[0., 0., 0.]][..], &[][..]), (&[][..], &[0, 1, 2][..])] {
+        let tmp = Scratch::new("gltf-cli-nonempty-mesh-errors");
+        let mut objects = scene_objects((0, 7));
+        objects.push(s::mesh::mesh(
+            7,
+            b"malformed",
+            vertices,
+            indices,
+            s::mesh::MeshVersion::V2022,
+        ));
+        let input = write_file(&tmp, "level0", &[], &objects);
+        let (scene, report) = export(&tmp, "malformed", &[&input], &["--scene", "level0"]);
+        assert!(scene.get("meshes").is_none());
+        assert!(!has_reason(&report, "empty_mesh"));
+        if !vertices.is_empty() {
+            assert!(has_reason(&report, "mesh_decode_failed"));
+        }
+    }
+}
+
+#[test]
 fn default_builtin_placeholders_and_missing_resolve_degrade_with_reports() {
     let tmp = Scratch::new("gltf-cli-builtin-missing");
     let input = write_file(

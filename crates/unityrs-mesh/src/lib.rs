@@ -49,7 +49,7 @@ mod read;
 mod shapes;
 
 pub use model::*;
-pub use read::{read_mesh, read_mesh_for_obj};
+pub use read::{read_mesh, read_mesh_for_gltf, read_mesh_for_obj};
 pub use unityrs_meshdecode::{ProcessedOwned, Triangles};
 
 /// A mesh could not be read. Errors retain no input-sized diagnostic text.
@@ -59,6 +59,9 @@ pub enum MeshError {
     /// The object is not a Mesh.
     #[error("object is not a Mesh")]
     NotMesh,
+    /// The glTF reader found neither positions nor indices after processing.
+    #[error("mesh has no positions or indices")]
+    Empty,
     /// The core could not parse the object.
     #[error(transparent)]
     Parse(#[from] unityrs_core::walk::ParseError),

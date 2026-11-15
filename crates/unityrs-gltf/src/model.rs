@@ -46,6 +46,9 @@ pub struct Scene {
     /// compares against the source so repairs made while merging palettes are
     /// counted once per emitted accessor, including clamping and zero rows.
     pub collected_weight_sources: MeteredVec<(usize, usize)>,
+    /// Accessors generated only to fill absent Unity UV channels. These are
+    /// not valid fallback sets when a real UV set is omitted by normalization.
+    pub collected_uv_fillers: MeteredVec<usize>,
 }
 const _: () = crate::send_sync::<Scene>();
 impl Scene {
@@ -65,6 +68,7 @@ impl Scene {
             extras: MeteredVec::new(meter),
             collection_issues: MeteredVec::new(meter),
             collected_weight_sources: MeteredVec::new(meter),
+            collected_uv_fillers: MeteredVec::new(meter),
         }
     }
 }

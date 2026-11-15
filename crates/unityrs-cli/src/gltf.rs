@@ -65,6 +65,53 @@ fn scene_in_file(
     }
     Ok(())
 }
+
+#[derive(Debug)]
+struct ContainerCount {
+    class: &'static str,
+    count: usize,
+}
+impl std::fmt::Display for ContainerCount {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            out,
+            "container path requires exactly one {}; found {} {} entries",
+            self.class, self.count, self.class
+        )
+    }
+}
+impl std::error::Error for ContainerCount {}
+
+fn container_unit(env: &Environment, requested: &[u8], prefab: bool) -> Result<Unit> {
+    let mut selected = None;
+    let mut count = 0usize;
+    for entry in env.container()? {
+        let entry = entry?;
+        entry.file.meter().count_decode(requested.len() as u64)?;
+        if entry
+            .row
+            .path
+            .as_ref()
+            .is_none_or(|p| p.as_bytes() != requested)
+        {
+            continue;
+        }
+        let unit = unityrs_scene::unit_from_container(env, &entry.file, &entry.row)?;
+        if let Some(unit) = unit.filter(|unit| matches!(unit, Unit::Prefab(_)) == prefab) {
+            count = count.checked_add(1).ok_or("container count overflow")?;
+            selected = Some(unit);
+        }
+    }
+    if count == 1 {
+        return selected.ok_or_else(|| "missing selected container unit".into());
+    }
+    Err(ContainerCount {
+        class: if prefab { "GameObject" } else { "SceneAsset" },
+        count,
+    }
+    .into())
+}
+
 fn select(
     env: &Environment,
     args: &args::Args<'_>,
@@ -72,28 +119,13 @@ fn select(
 ) -> Result<Unit> {
     use args::Selection;
     if let Selection::Prefab(requested) = args.selection {
-        let mut selected = None;
-        for entry in env.container()? {
-            let entry = entry?;
-            if entry
-                .row
-                .path
-                .as_ref()
-                .is_some_and(|p| p.as_bytes() == requested)
-            {
-                let unit = unityrs_scene::unit_from_container(env, &entry.file, &entry.row)?
-                    .ok_or("container entry is not a prefab or SceneAsset")?;
-                if selected.replace(unit).is_some() {
-                    return Err("ambiguous prefab container path".into());
-                }
-            }
-        }
-        return selected.ok_or_else(|| "no prefab container entry with that path".into());
+        return container_unit(env, requested, true);
     }
-    if matches!(args.selection, Selection::Scene(_)) {
-        return scene
-            .map(Unit::Scene)
-            .ok_or_else(|| "no scene file with that name".into());
+    if let Selection::Scene(requested) = args.selection {
+        return match scene {
+            Some(scene) => Ok(Unit::Scene(scene)),
+            None => container_unit(env, requested, false),
+        };
     }
     let Selection::PathId(id) = args.selection else {
         return Err("missing path id selector".into());
@@ -137,6 +169,7 @@ fn run(raw: &[Vec<u8>]) -> Result<()> {
         }
     }
     let unit = select(&env, &args, scene)?;
+    peak.start_export();
     let meter = unit.meter();
     let profile = if let Some(path) = args.profile {
         let bytes = read_path(path, &args.limits, meter)?;
@@ -165,7 +198,7 @@ fn run(raw: &[Vec<u8>]) -> Result<()> {
     let written = written.ok_or("missing writer report")?;
     if let Some(path) = args.report {
         outputs.write(path, |out| {
-            report::write(out, &written, &graph, peak.peak(), meter)
+            report::write(out, &written, &graph, peak.peaks(), meter)
         })?;
     }
     outputs.finish()?;
