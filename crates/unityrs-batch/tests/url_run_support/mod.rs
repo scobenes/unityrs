@@ -106,7 +106,13 @@ impl Origin {
             .filter(|s| s.path.split('?').next() == Some(path))
             .count()
     }
-    /// The most connections open at once, a request seen and not yet closed.
+    /// The most requests in flight at once. Each counts from its arrival
+    /// until just before its response's final byte is written: the client
+    /// cannot finish the response, close and free its permit before that
+    /// byte arrives, so a next request from it always starts after the
+    /// count has dropped, however the serving threads are scheduled. A
+    /// reply that never completes (silent, held) counts until its last
+    /// write.
     pub fn most_open(&self) -> usize {
         self.state.most_open.load(Ordering::SeqCst)
     }
@@ -167,6 +173,8 @@ impl Drop for Origin {
 fn serve(state: &State, mut stream: TcpStream) -> io::Result<()> {
     stream.set_read_timeout(Some(DEADLOCK_GUARD))?;
     stream.set_write_timeout(Some(DEADLOCK_GUARD))?;
+    // The final byte goes alone (`respond`): don't let Nagle hold it.
+    stream.set_nodelay(true)?;
     let mut head = Vec::new();
     let mut buffer = [0; 4096];
     while !head.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -199,41 +207,52 @@ fn serve(state: &State, mut stream: TcpStream) -> io::Result<()> {
     }
     let open = state.open.fetch_add(1, Ordering::SeqCst) + 1;
     state.most_open.fetch_max(open, Ordering::SeqCst);
-    let result = answer(&mut stream, reply, body, &close);
+    let written = respond(&mut stream, reply, body);
     state.open.fetch_sub(1, Ordering::SeqCst);
-    result
+    if let Some(byte) = written? {
+        stream.write_all(&[byte])?;
+    }
+    stream.flush()?;
+    observe_close(&mut stream, &close)
 }
-fn answer(
+/// Writes all of `bytes` but the last, which it returns for the caller to
+/// send once the request is no longer counted (`Origin::most_open`).
+fn all_but_last(stream: &mut TcpStream, bytes: &[u8]) -> io::Result<Option<u8>> {
+    let Some((&last, head)) = bytes.split_last() else {
+        return Ok(None);
+    };
+    stream.write_all(head)?;
+    Ok(Some(last))
+}
+/// Writes the reply but its final byte, which it returns (none for a reply
+/// that writes nothing more).
+fn respond(
     stream: &mut TcpStream,
     reply: Reply,
     body: Option<Arc<[u8]>>,
-    close: &Mutex<Option<Close>>,
-) -> io::Result<()> {
-    let mut buffer = [0; 4096];
+) -> io::Result<Option<u8>> {
     match (reply, body) {
         (Reply::Ok, Some(body)) => {
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
-                body.len()
-            )?;
-            stream.write_all(&body)?;
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+            if body.is_empty() {
+                return all_but_last(stream, head.as_bytes());
+            }
+            stream.write_all(head.as_bytes())?;
+            all_but_last(stream, &body)
         }
-        (Reply::Ok, None) => {
-            stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")?;
-        }
-        (Reply::Status(status, fields), _) => {
-            write!(
-                stream,
-                "HTTP/1.1 {status} Scripted\r\n{fields}Content-Length: 0\r\n\r\n"
-            )?;
-        }
-        (Reply::Redirect(location), _) => {
-            write!(
-                stream,
-                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
-            )?;
-        }
+        (Reply::Ok, None) => all_but_last(
+            stream,
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        ),
+        (Reply::Status(status, fields), _) => all_but_last(
+            stream,
+            format!("HTTP/1.1 {status} Scripted\r\n{fields}Content-Length: 0\r\n\r\n").as_bytes(),
+        ),
+        (Reply::Redirect(location), _) => all_but_last(
+            stream,
+            format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n")
+                .as_bytes(),
+        ),
         (Reply::Hold(count), body) => {
             let body = body.unwrap_or_else(|| Arc::from(vec![0; count + 1]));
             write!(
@@ -242,8 +261,9 @@ fn answer(
                 body.len()
             )?;
             stream.write_all(&body[..count.min(body.len())])?;
+            Ok(None)
         }
-        (Reply::Silent, _) => {}
+        (Reply::Silent, _) => Ok(None),
         (Reply::HoldAfter(count, flag), body) => {
             let body = body.unwrap_or_else(|| Arc::from(vec![0; count + 1]));
             write!(
@@ -258,9 +278,12 @@ fn answer(
                 std::thread::sleep(Duration::from_millis(2));
             }
             stream.write_all(&body[..count.min(body.len())])?;
+            Ok(None)
         }
     }
-    stream.flush()?;
+}
+fn observe_close(stream: &mut TcpStream, close: &Mutex<Option<Close>>) -> io::Result<()> {
+    let mut buffer = [0; 4096];
     // Observe how the client ends the connection: one request each, so
     // anything it sends now is the close.
     let ended = loop {
