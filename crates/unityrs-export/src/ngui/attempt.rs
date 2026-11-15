@@ -495,13 +495,12 @@ impl<'a> Attempt<'a> {
     /// Texture `i`'s section 3 answers 1 to 3 ([`read::answer`]): its
     /// format, or the skip.
     pub fn selection(&self, i: usize, t: &Texture) -> Result<Format, Class> {
-        let platform = self
-            .texs
-            .as_slice()
-            .get(i)
-            .and_then(|x| x.obj.file().target_platform())
+        let obj = self.texs.as_slice().get(i).map(|x| &x.obj);
+        let platform = obj
+            .and_then(|obj| obj.file().target_platform())
             .unwrap_or(UNKNOWN_PLATFORM);
-        read::answer(t, platform, self.options.formats)
+        let unity_version = obj.map_or((u16::MAX, u16::MAX), read::unity_version);
+        read::answer(t, platform, self.options.formats, unity_version)
     }
 
     /// Texture `i`'s answer at the plan: its format, or the skip (its

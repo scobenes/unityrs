@@ -64,6 +64,13 @@ fn decode(
             platform_blob: blob,
         },
         unityrs_texture::Formats::DECODED,
+        // Crunch's decoder follows the texture's own file's version; without
+        // a usable one, never assume legacy crunch (as the NGUI reader does).
+        object
+            .file()
+            .version()
+            .and_then(|v| v.version.as_tuple().ok())
+            .map_or((u16::MAX, u16::MAX), |(major, minor, ..)| (major, minor)),
     );
     let format = match selected {
         unityrs_texture::Selection::Export(f) => f,

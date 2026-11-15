@@ -21,8 +21,8 @@
 //! as its mip 0.
 //!
 //! **The order.** [`plan()`] and [`decode()`] make one series of checks,
-//! the first that fails naming the error, so a plan's answer is the
-//! decode's:
+//! the first that fails naming the error. For ordinary formats a plan's
+//! answer is the decode's; crunch also validates content during unpacking:
 //! 1. A side of 0 gives an empty `RGBA` image, 0x0, before the data, the
 //!    format or the other side is looked at (`:265-266`).
 //! 2. Empty data is [`DecodeError::NoImageData`], UnityPy's
@@ -98,7 +98,7 @@
 //! **The bound, where UnityPy has none.** [`MAX_PIXELS`] is 16384 x 16384
 //! at the padded size, the largest size Unity's texture importer offers,
 //! checked before the data's length (step 4), so the output is at most
-//! 1 GiB, the work linear in it, and [`plan()`] needs only the data's
+//! 1 GiB, pixel work is linear in it, and [`plan()`] needs only the data's
 //! length. It is
 //! the stated divergence (`PARITY.md` section 19.3), and every limit Pillow
 //! has that a texture could meet beyond steps 5 and 8 lies past it:
@@ -115,7 +115,16 @@
 //! `INT_MAX - 7 * bits + 7`. Sizes are computed here in `u64`, from the
 //! `i32` sides, so none wraps.
 //!
-//! **Memory** (`docs/plans/extract.md` E59). The output is the only buffer a
+//! **Legacy crunch.** `DXT1Crunched` and `DXT5Crunched` explicitly select
+//! legacy input. Call [`crate::select_in`] or [`crate::select_crunch`] with
+//! the Unity version before choosing them: 2017.3+ and ETC crunch require
+//! T4b. Unpacking chooses mip zero, then the existing BC1/BC3 path crops and flips its blocks. The
+//! `crunch` module checks header ranges and models; failures are typed
+//! [`DecodeError::Crunch`], even after a length-only plan succeeds. The
+//! native builder fixture checks blocks at every mip; the optional pinned
+//! UnityPy fixture must be recorded before claiming pixel parity.
+//!
+//! **Memory** (`docs/plans/extract.md` E59). Except for crunch, the output is the only buffer a
 //! decode allocates in proportion to the texture (no scratch: a block is 64
 //! bytes on the stack). An ASTC format's decode also builds its footprint's
 //! tables (the `astc` module, at most about 0.55 MB, at 12x12, whatever the
@@ -131,7 +140,13 @@
 //! [`Plan::charge`], at most [`Plan::peak_charge`] while it runs, and write
 //! [`Plan::output_bytes`] (export work,
 //! `docs/plans/batch.md` 2.6 step 10); an `Err` is the decode's error, which
-//! charges nothing.
+//! charges nothing. For crunch an `Ok` plan only validates sizes and the
+//! minimum header length: content errors can follow. `Plan::scratch` also
+//! bounds a second buffer (8/16 bytes per block), palettes and Huffman tables.
+//! Actual scratch allocations are fallible `MeteredVec`s sized from checked
+//! header counts, released before returning the image. Palette and model setup
+//! also charges the meter's decode-work allowance before its loops. A plan's maximum uses
+//! the header's 16-bit palette counts and the codec's 8192-symbol limit.
 
 use std::fmt;
 use std::panic::AssertUnwindSafe;
@@ -141,7 +156,7 @@ use unityrs_core::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost};
 
 use crate::contain::Payload;
 use crate::format::{Format, Library, Mode};
-use crate::{astc, bcn, etc, raw};
+use crate::{astc, bcn, crunch, etc, raw};
 
 /// The most pixels a texture may have, at its padded size: 16384 x 16384.
 /// UnityPy has no such bound (module docs; `PARITY.md` section 19.3).
@@ -171,6 +186,9 @@ const INT_MAX: u32 = 0x7FFF_FFFF;
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeError {
+    /// A malformed legacy CRN stream or unsupported CRN feature.
+    #[error(transparent)]
+    Crunch(crunch::CrunchError),
     /// The data is empty: UnityPy's `ValueError("Texture2D has no
     /// image data")`.
     #[error("the texture has no image data")]
@@ -241,6 +259,15 @@ pub enum DecodeError {
 
 const _: () = crate::send_sync::<DecodeError>();
 
+impl From<crunch::CrunchError> for DecodeError {
+    fn from(error: crunch::CrunchError) -> Self {
+        match error {
+            crunch::CrunchError::Charge(charge) => Self::Charge(charge),
+            other => Self::Crunch(other),
+        }
+    }
+}
+
 /// What decoding a texture of a format and a size, from data of a given
 /// length, will need and give, worked out before the data is read
 /// ([`plan()`]).
@@ -253,13 +280,14 @@ pub struct Plan {
     /// The image's height: the texture's, or 0 for a side of 0.
     pub height: u32,
     /// The bytes of data mip 0 takes, at its padded size; 0 for a side of
-    /// 0.
+    /// 0. For crunch, the minimum CRN header size (74), not its variable
+    /// compressed length.
     pub input_bytes: u64,
     /// The image's bytes: width x height x the mode's bytes per pixel.
     pub output_bytes: u64,
     /// What the decode charges beside the output while it runs, and returns
-    /// before it ends: an ASTC format's tables (the `astc` module), 0 for
-    /// the rest.
+    /// before it ends: an ASTC format's tables, or a conservative bound for
+    /// crunch blocks, palettes and Huffman tables; 0 for the rest.
     pub scratch: u64,
 }
 
@@ -285,7 +313,9 @@ impl Plan {
 
 /// What decoding `format` at `width` x `height` from `data_len` bytes of
 /// data needs and gives, or the error [`decode()`] returns for it: the
-/// module docs' checks, all of them but the decode itself, in their order.
+/// module docs' size/length checks in their order. For crunch, success
+/// only establishes a memory bound: header or bitstream validation may
+/// subsequently return [`DecodeError::Crunch`].
 pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<Plan, DecodeError> {
     if width == 0 || height == 0 {
         return Ok(Plan {
@@ -324,19 +354,27 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
     let library = format.library();
     // From here every size is at most 4 x MAX_PIXELS.
     let len = u64::try_from(data_len).unwrap_or(u64::MAX);
-    let (input_bytes, seen) = match (block, format.block_size(), library) {
-        (Some(b), Some((bw, bh)), _) => {
-            let blocks = padded_w / u64::from(bw) * (padded_h / u64::from(bh));
-            let seen = if library == Library::PillowBcn {
-                bcn_length(data_len)
-            } else {
-                len
-            };
-            (blocks * b, seen)
+    let unpacked_bytes = block.map_or(0, |b| padded_w / 4 * (padded_h / 4) * b);
+    let (input_bytes, seen) = if format.is_crunched() {
+        // Fixed header/first offset plus a nonempty level region. The
+        // reference zero-extends it indefinitely, so consumed chunk bits
+        // cannot impose a larger length bound (crunch::validate).
+        (75, len)
+    } else {
+        match (block, format.block_size(), library) {
+            (Some(b), Some((bw, bh)), _) => {
+                let blocks = padded_w / u64::from(bw) * (padded_h / u64::from(bh));
+                let seen = if library == Library::PillowBcn {
+                    bcn_length(data_len)
+                } else {
+                    len
+                };
+                (blocks * b, seen)
+            }
+            // Pillow's raw decoder reads whole rows of `bits` a pixel, each a
+            // whole number of bytes here.
+            _ => (pixels * u64::from(format.raw_bits().unwrap_or(0) / 8), len),
         }
-        // Pillow's raw decoder reads whole rows of `bits` a pixel, each a
-        // whole number of bytes here.
-        _ => (pixels * u64::from(format.raw_bits().unwrap_or(0) / 8), len),
     };
     let short = seen < input_bytes;
     let not_enough = || DecodeError::NotEnoughData {
@@ -375,7 +413,11 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
         height: h,
         input_bytes,
         output_bytes: shown * mode.bytes_per_pixel(),
-        scratch: astc_footprint(format).map_or(0, astc::Tables::charge),
+        scratch: if format.is_crunched() {
+            crunch::scratch(unpacked_bytes)
+        } else {
+            astc_footprint(format).map_or(0, astc::Tables::charge)
+        },
     })
 }
 
@@ -528,6 +570,9 @@ fn decode_with(
             max: MAX_PIXELS,
         });
     };
+    if out_len > 0 && format.is_crunched() {
+        crunch::validate(data, format == Format::Dxt5Crunched, (w, h))?;
+    }
     // The empty image of a side of 0 charges and allocates nothing.
     let (pixels, charge) = MeteredVec::<u8>::with_capacity(meter, out_len)?.into_parts();
     let mut image = Image {
@@ -540,6 +585,24 @@ fn decode_with(
     // Within the capacity just reserved: no allocation.
     image.pixels.resize(out_len, 0);
     if out_len > 0 {
+        if format.is_crunched() {
+            // CRN ranges/counts are checked before their allocations. The
+            // second buffer and all temporary tables remain metered until
+            // freed. Pillow BC1/BC3 supplies precisely the existing pixels.
+            crate::contain(AssertUnwindSafe(|| {
+                let dxt5 = format == Format::Dxt5Crunched;
+                let blocks = crunch::unpack(data, dxt5, (w, h), 0, meter)?;
+                bcn::decode(
+                    if dxt5 { bcn::Kind::Bc3 } else { bcn::Kind::Bc1 },
+                    blocks.as_slice(),
+                    w,
+                    h,
+                    &mut image.pixels,
+                );
+                Ok(())
+            }))?;
+            return Ok(image);
+        }
         // An ASTC format's tables, charged after the output (`Plan::scratch`)
         // and dropped before the decode returns.
         let mut tables = match astc_footprint(format) {
@@ -584,9 +647,9 @@ fn fill(
         Format::Rgba4444 => raw::decode(raw::Kind::Rgba4BRgba, data, w, h, out),
         Format::Bgra32 => raw::decode(raw::Kind::Bgra, data, w, h, out),
         Format::R8 => raw::decode(raw::Kind::R, data, w, h, out),
-        Format::Dxt1 => bcn::decode(bcn::Kind::Bc1, data, w, h, out),
+        Format::Dxt1 | Format::Dxt1Crunched => bcn::decode(bcn::Kind::Bc1, data, w, h, out),
         Format::Dxt3 => bcn::decode(bcn::Kind::Bc2, data, w, h, out),
-        Format::Dxt5 => bcn::decode(bcn::Kind::Bc3, data, w, h, out),
+        Format::Dxt5 | Format::Dxt5Crunched => bcn::decode(bcn::Kind::Bc3, data, w, h, out),
         Format::Bc4 => bcn::decode(bcn::Kind::Bc4, data, w, h, out),
         Format::Bc5 => bcn::decode(bcn::Kind::Bc5, data, w, h, out),
         Format::Bc7 => bcn::decode(bcn::Kind::Bc7, data, w, h, out),

@@ -165,6 +165,111 @@ class ConfigTests(unittest.TestCase):
         about["ring"]["clarify"]["license"] = "MIT"
         self.assertEqual(T.member_problems(about, ROOT), [])
 
+    def test_licenseref_is_omitted_only_from_cargo_about(self):
+        about = copy.deepcopy(ABOUT)
+        clarify = about["unityrs-texture"]["clarify"]
+        clarify["license"] = clarify["license"].removesuffix(" AND LicenseRef-Crunch")
+        clarify["files"] = [f for f in clarify["files"] if f["path"] != "LICENSE-CRUNCH"]
+        about["unityrs-texture"]["accepted"] = ["BSD-2-Clause-Views"]
+        self.assertEqual(T.config_problems(about, DENY), [])
+        self.assertEqual(T.member_problems(about, ROOT), [])
+
+    def test_a_stray_licenseref_in_the_clarify_expression_fails(self):
+        about = copy.deepcopy(ABOUT)
+        about["unityrs-texture"]["clarify"]["license"] = T._crate_licence(ROOT, "unityrs-texture")
+        self.assertIn("LicenseRef", "\n".join(T.member_problems(about, ROOT)))
+
+    def test_an_unknown_licenseref_fails_even_without_a_clarification(self):
+        with scratch.folder("unityrs-licenses-") as tmp:
+            root = Path(tmp)
+            write_tree(root, "MIT AND LicenseRef-Unknown")
+            self.assertIn("unknown LicenseRef", "\n".join(T.member_problems({}, root)))
+
+    def test_cargo_deny_must_keep_the_custom_licence_checks(self):
+        for kind in ("expression", "file", "exception"):
+            deny = copy.deepcopy(DENY)
+            clarify = next(c for c in deny["licenses"]["clarify"] if c["crate"] == "unityrs-texture")
+            if kind == "expression":
+                clarify["expression"] = clarify["expression"].removesuffix(" AND LicenseRef-Crunch")
+            elif kind == "file":
+                clarify["license-files"] = [f for f in clarify["license-files"] if f["path"] != "LICENSE-CRUNCH"]
+            else:
+                exception = next(e for e in deny["licenses"]["exceptions"] if e["crate"] == "unityrs-texture")
+                exception["allow"].remove("LicenseRef-Crunch")
+            with self.subTest(kind=kind):
+                self.assertTrue(T.config_problems(ABOUT, deny) + T.member_problems(ABOUT, ROOT, deny))
+
+    def test_unknown_licenseref_cannot_hide_in_dependency_clarifications(self):
+        about, deny = copy.deepcopy(ABOUT), copy.deepcopy(DENY)
+        about["ring"].setdefault("accepted", []).append("LicenseRef-Unrelated")
+        clarify = next(c for c in deny["licenses"]["clarify"] if c["crate"] == "ring")
+        clarify["expression"] += " AND LicenseRef-Unrelated"
+        deny["licenses"]["exceptions"].append({"crate": "ring", "allow": ["LicenseRef-Unrelated"]})
+        self.assertIn("unknown LicenseRef", "\n".join(self.problems(about, deny)))
+
+    def test_every_config_license_field_rejects_unknown_licenserefs(self):
+        for location in (
+            "about-global",
+            "about-accepted",
+            "about-clarify",
+            "about-file",
+            "deny-allow",
+            "deny-deny",
+            "deny-exception",
+            "deny-clarify",
+        ):
+            about, deny = copy.deepcopy(ABOUT), copy.deepcopy(DENY)
+            if location == "about-global":
+                about["accepted"].append("LicenseRef-Unrelated")
+            elif location == "about-accepted":
+                about["ring"].setdefault("accepted", []).append("LicenseRef-Unrelated")
+            elif location == "about-clarify":
+                about["ring"]["clarify"]["license"] += " AND LicenseRef-Unrelated"
+            elif location == "about-file":
+                about["ring"]["clarify"]["files"][0]["license"] = "LicenseRef-Unrelated"
+            elif location == "deny-clarify":
+                deny["licenses"]["clarify"][0]["expression"] += " AND LicenseRef-Unrelated"
+            elif location == "deny-exception":
+                deny["licenses"]["exceptions"][0]["allow"].append("LicenseRef-Unrelated")
+            else:
+                deny["licenses"].setdefault(location.removeprefix("deny-"), []).append("LicenseRef-Unrelated")
+            with self.subTest(location=location):
+                self.assertIn("unknown LicenseRef", "\n".join(self.problems(about, deny)))
+
+    def test_fuzz_only_entries_reject_unknown_licenserefs(self):
+        for entry in (
+            {"clarify": [{"crate": "libfuzzer-sys", "expression": "MIT AND LicenseRef-Unrelated"}]},
+            {"exceptions": [{"crate": "libfuzzer-sys", "allow": ["LicenseRef-Unrelated"]}]},
+            {"deny": ["LicenseRef-Unrelated"]},
+        ):
+            fuzz = copy.deepcopy(load("fuzz/deny.toml"))
+            for kind, entries in entry.items():
+                fuzz["licenses"].setdefault(kind, []).extend(entries)
+            with self.subTest(entry=entry):
+                self.assertIn("unknown LicenseRef", "\n".join(T.fuzz_problems(DENY, fuzz, set())))
+
+    def test_only_texture_can_use_the_registered_crunch_licenseref(self):
+        about, deny = copy.deepcopy(ABOUT), copy.deepcopy(DENY)
+        about["ring"]["clarify"]["license"] += " AND LicenseRef-Crunch"
+        about["ring"]["clarify"]["files"].append({"path": "LICENSE-CRUNCH"})
+        clarify = next(c for c in deny["licenses"]["clarify"] if c["crate"] == "ring")
+        clarify["expression"] += " AND LicenseRef-Crunch"
+        clarify["license-files"].append({"path": "LICENSE-CRUNCH", "hash": 1})
+        deny["licenses"]["exceptions"].append({"crate": "ring", "allow": ["LicenseRef-Crunch"]})
+        self.assertIn("only for unityrs-texture", "\n".join(self.problems(about, deny)))
+
+        about = copy.deepcopy(ABOUT)
+        about["ring"]["clarify"]["files"][0]["license"] = "LicenseRef-Crunch"
+        self.assertIn("only for unityrs-texture", "\n".join(self.problems(about, DENY)))
+
+    def test_pruning_is_limited_to_the_registered_id_and_crate(self):
+        self.assertEqual(
+            T.spdx_without_license_refs("MIT AND LicenseRef-Unrelated", "unityrs-texture"),
+            "MIT AND LicenseRef-Unrelated",
+        )
+        self.assertEqual(T.spdx_without_license_refs("MIT AND LicenseRef-Crunch", "ring"), "MIT AND LicenseRef-Crunch")
+        self.assertEqual(T.spdx_without_license_refs("MIT AND LicenseRef-Crunch", "unityrs-texture"), "MIT")
+
     def test_the_command_line(self):
         script = SCRIPTS / "third_party_licenses_check.py"
         ok = child.run([sys.executable, str(script), "config"], capture_output=True, text=True)
@@ -243,6 +348,30 @@ class NoticeTests(unittest.TestCase):
                     for problem, start in zip(out, want, strict=True):
                         self.assertTrue(problem.startswith(start), out)
 
+    def test_a_licenseref_text_in_ported_code_passes(self):
+        with scratch.folder("unityrs-notices-") as tmp:
+            root = Path(tmp)
+            write_tree(root, "MIT AND LicenseRef-Crunch", table="", licence_file=None)
+            (root / "crates/demo").rename(root / "crates/unityrs-texture")
+            (root / "crates/unityrs-texture/LICENSE-CRUNCH").write_text(LICENCE)
+            text = f"{BANNER}\nPorted code\n{BANNER}\n{LICENCE}\n{BANNER}\nCrates\n{BANNER}\n"
+            self.assertEqual(T.notice_problems(text, root), [])
+
+    def test_a_licenseref_text_missing_from_ported_code_fails(self):
+        with scratch.folder("unityrs-notices-") as tmp:
+            root = Path(tmp)
+            write_tree(root, "MIT AND LicenseRef-Crunch", table="", licence_file=None)
+            (root / "crates/demo").rename(root / "crates/unityrs-texture")
+            (root / "crates/unityrs-texture/LICENSE-CRUNCH").write_text(LICENCE)
+            for ported in ("", LICENCE.split("\n\n")[1]):
+                with self.subTest(ported=ported):
+                    # Even a full copy under Crates cannot replace the Ported code copy.
+                    text = f"{BANNER}\nPorted code\n{BANNER}\n{ported}\n{BANNER}\nCrates\n{BANNER}\n{LICENCE}"
+                    out = T.notice_problems(text, root)
+                    self.assertEqual(len(out), 1, out)
+                    self.assertIn("LICENSE-CRUNCH: its text is not", out[0])
+                    self.assertIn("Ported code", out[0])
+
 
 RULE = "-" * 80
 BANNER = "=" * 80
@@ -304,6 +433,7 @@ def copy_repository(dest: Path):
     """The parts of the repository `ports` reads: about.hbs, the manifests, each crate's notice files and sources,
     and the generator of its tables."""
     shutil.copy(ROOT / "about.hbs", dest / "about.hbs")
+    shutil.copy(ROOT / "README.md", dest / "README.md")
     (dest / "tools" / "gen").mkdir(parents=True)
     for generator in (ROOT / "tools" / "gen").glob("*.py"):
         shutil.copy(generator, dest / "tools" / "gen" / generator.name)
@@ -318,6 +448,23 @@ def copy_repository(dest: Path):
 
 
 class SpdxTests(unittest.TestCase):
+    def test_removing_licenserefs_keeps_the_spdx_requirements(self):
+        cases = {
+            "(MIT OR Apache-2.0) AND LicenseRef-Crunch": "(MIT OR Apache-2.0)",
+            "LicenseRef-Crunch AND MIT": "MIT",
+            "MIT AND (Apache-2.0 OR LicenseRef-Crunch)": "MIT AND Apache-2.0",
+            "LicenseRef-Crunch": "",
+            "Apache-2.0 WITH LLVM-exception AND LicenseRef-Crunch": "Apache-2.0 WITH LLVM-exception",
+        }
+        for expression, expected in cases.items():
+            with self.subTest(expression=expression):
+                # Parentheses around the remaining choice are optional after pruning.
+                actual = T.spdx_without_license_refs(expression, "unityrs-texture")
+                if expected:
+                    self.assertEqual(T.spdx_parse(actual), T.spdx_parse(expected))
+                else:
+                    self.assertEqual(actual, "")
+
     def test_a_licence_must_be_in_every_alternative(self):
         cases = {
             "MIT": {"MIT": True},
@@ -333,6 +480,7 @@ class SpdxTests(unittest.TestCase):
             # A licence with an exception, or a later version, is another licence.
             "Apache-2.0 WITH LLVM-exception": {"Apache-2.0": False, "Apache-2.0 WITH LLVM-exception": True},
             "GPL-2.0+ AND MIT": {"GPL-2.0": False, "MIT": True},
+            "(MIT OR Apache-2.0) AND LicenseRef-Crunch": {"LicenseRef-Crunch": True, "Zlib": False},
         }
         for expression, wants in cases.items():
             tree = T.spdx_parse(expression)
@@ -410,10 +558,26 @@ class PortTests(unittest.TestCase):
                 "GotoBLAS2 code in OpenBLAS 0.3.31": ["LICENSE-OPENBLAS-UT"],
                 "zlib 1.2.13": ["LICENSE-ZLIB"],
                 "Arm astcenc commit 631fb04": ["LICENSE-ASTCENC"],
+                "Crunch legacy decoder in texture2ddecoder 1.0.5": ["LICENSE-CRUNCH"],
                 "RazTools/Studio": ["LICENSE-RAZTOOLS"],
                 "Razmoth/PGRStudio": ["LICENSE-RAZMOTH"],
             },
         )
+
+    def test_crunch_custom_licence_and_public_credits(self):
+        sections = T.ported_sections((ROOT / "about.hbs").read_text())
+        crunch = next(s for s in sections if s.source.startswith("Crunch legacy"))
+        self.assertEqual(crunch.licence, "LicenseRef-Crunch")
+        credit = "Crunch Library Copyright (c) 2010-2016 Richard Geldreich, Jr."
+        self.assertIn(credit, (ROOT / "README.md").read_text())
+        # The credit in the quoted licence restriction alone is insufficient.
+        for file in ("README.md", "about.hbs"):
+            with self.subTest(file=file), scratch.folder("unityrs-crunch-credits-") as tmp:
+                root = Path(tmp)
+                copy_repository(root)
+                p = root / file
+                p.write_text(p.read_text().replace(credit + "\n", "", 1))
+                self.assert_named("required Crunch credit", T.port_problems(root))
 
     def test_a_consistent_port_passes(self):
         self.assertEqual(self.problems(), [])

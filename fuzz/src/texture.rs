@@ -46,6 +46,14 @@ pub fn check(input: &[u8]) {
     let format = Format::from_texture_format(case.format)
         .or_else(|| Format::ALL.get(any).copied())
         .unwrap_or(Format::Rgba32);
+    // Crunch's length-only plan cannot validate a CRN stream; its own
+    // target checks those later malformed-stream errors. Keep this
+    // target's byte-independent plan equality on the plain decoders.
+    let format = match format {
+        Format::Dxt1Crunched => Format::Dxt1,
+        Format::Dxt5Crunched => Format::Dxt5,
+        other => other,
+    };
     let planned = plan(format, case.data.len(), case.width, case.height);
     let charge = planned.as_ref().map_or(0, Plan::peak_charge);
     // The memory bound, or the peak charge less 1, the charge, or plus 1.
