@@ -14,8 +14,14 @@ pub enum Unsupported {
 }
 /// Validate the execution subset before any host inspection or mutation.
 /// Full schema validation and `--check` remain independent of this guard.
+/// A URL is refused here until the CLI activates URL staging; a library run
+/// given a network admits it through [`supported_with`].
 pub fn supported(spec: &Spec) -> Result<Local<'_>, Unsupported> {
-    if spec.bundles().any(|b| b.url().is_some()) {
+    supported_with(spec, false)
+}
+/// [`supported`], admitting URL bundles when `urls` (a networked run).
+pub(crate) fn supported_with(spec: &Spec, urls: bool) -> Result<Local<'_>, Unsupported> {
+    if !urls && spec.bundles().any(|b| b.url().is_some()) {
         return Err(Unsupported::UrlSource);
     }
     let Sink::Directory { root } = &spec.sink else {

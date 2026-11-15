@@ -20,6 +20,10 @@ impl Error {
     pub(super) fn host_io() -> Self {
         Self::plain(Code::Host, "host_io", None)
     }
+    /// A header variable preflight refused: 69, the variable its detail.
+    pub(super) fn header_env(refusal: crate::stage::env::Refusal, name: &str) -> Self {
+        Self::plain(Code::CouldNotStart, refusal.name(), Some(name))
+    }
     pub(super) fn memory() -> Self {
         Self::plain(Code::Host, "host_memory", None)
     }

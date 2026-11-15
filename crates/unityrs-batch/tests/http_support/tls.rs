@@ -1,4 +1,4 @@
-//! Synthetic localhost TLS peer and fixed socket-table adapter; no DNS fallback.
+//! Synthetic localhost TLS peer and the observed socket table; no DNS fallback.
 use rustls::{
     ServerConfig, ServerConnection, StreamOwned,
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
@@ -6,17 +6,14 @@ use rustls::{
 use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener},
-    os::fd::RawFd,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc,
-    },
+    sync::{Arc, Mutex, mpsc},
 };
-use unityrs_batch::http::{
-    Error, Service,
-    resolve::{Addresses, Resolver},
-    socket::SocketTable,
+use unityrs_batch::{
+    http::{
+        Service,
+        resolve::{Addresses, Resolver},
+    },
+    sys::reset::SocketTable,
 };
 use unityrs_testkit::guard::{self, DEADLOCK_GUARD};
 #[path = "reframe.rs"]
@@ -276,6 +273,12 @@ impl Write for HelloSocket {
     }
 }
 
+/// The peer's own configuration (the localhost leaf, TLS 1.3 and 1.2), for
+/// a scripted server of a test's own.
+pub fn server() -> Arc<ServerConfig> {
+    Arc::new(server_config(false, false, LEAF))
+}
+
 pub struct FixedResolver(pub Vec<SocketAddr>);
 impl Resolver for FixedResolver {
     fn resolve(&self, host: &str, _: u16) -> io::Result<Addresses> {
@@ -283,13 +286,10 @@ impl Resolver for FixedResolver {
         Ok(Addresses::first(self.0.iter().copied()))
     }
 }
+/// The production socket table, observed: sockets created and released.
 #[derive(Default)]
 pub struct Table {
-    pub closing: AtomicBool,
-    pub close_on_register: AtomicBool,
-    pub added: AtomicUsize,
-    pub removed: AtomicUsize,
-    descriptors: Mutex<[Option<RawFd>; 32]>,
+    pub sockets: Arc<SocketTable>,
 }
 impl Table {
     pub fn service(
@@ -303,39 +303,16 @@ impl Table {
         } else {
             Vec::new()
         };
-        Service::new(handle, self.clone())
+        Service::new(handle, self.sockets.clone())
             .unwrap()
             .with_test_hooks(Arc::new(FixedResolver(addresses.to_vec())), &roots)
             .unwrap()
     }
-}
-impl SocketTable for Table {
-    fn register(&self, descriptor: RawFd) -> Result<usize, Error> {
-        assert!(unityrs_batch::sys::test_zero_linger(descriptor).unwrap());
-        let entry = self.added.fetch_add(1, Ordering::AcqRel);
-        self.descriptors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)[entry] = Some(descriptor);
-        if self.close_on_register.load(Ordering::Acquire) {
-            self.closing.store(true, Ordering::Release);
-        }
-        Ok(entry)
+    pub fn added(&self) -> usize {
+        usize::try_from(self.sockets.created()).unwrap()
     }
-    fn closing(&self) -> bool {
-        self.closing.load(Ordering::Acquire)
-    }
-    fn remove(&self, entry: usize) {
-        let descriptor = self
-            .descriptors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)[entry]
-            .take()
-            .unwrap();
-        assert!(
-            !unityrs_batch::sys::test_socket_live(descriptor),
-            "descriptor closed before clearing table"
-        );
-        self.removed.fetch_add(1, Ordering::AcqRel);
+    pub fn removed(&self) -> usize {
+        self.added() - self.sockets.live()
     }
 }
 

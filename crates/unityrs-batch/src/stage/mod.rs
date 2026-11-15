@@ -1,8 +1,10 @@
 //! Directly driven local staging seams. B5b owns launch order/concurrency,
 //! barrier failure selection and commits; this layer starts no threads.
+pub mod env;
 pub mod headers;
 pub mod local;
 pub(crate) mod retry;
+pub mod slot;
 pub mod timers;
 pub mod url;
 use crate::{job::RunFailure, spec::model::Spec};

@@ -168,8 +168,8 @@ fn tls_handshake_and_streaming_fit_the_network_allowance() {
             runtime.block_on(tls_scene(&service, &mut permit, &url, scene));
             assert_eq!(permit.charged(), 0);
             assert_eq!(pool.snapshot().outstanding, 0);
-            assert_eq!(table.added.load(std::sync::atomic::Ordering::Acquire), 1);
-            assert_eq!(table.removed.load(std::sync::atomic::Ordering::Acquire), 1);
+            assert_eq!(table.added(), 1);
+            assert_eq!(table.removed(), 1);
             drop(permit);
             assert_eq!(pool.snapshot().occupied, 0);
         }

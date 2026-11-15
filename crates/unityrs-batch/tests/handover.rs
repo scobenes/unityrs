@@ -310,6 +310,7 @@ fn execute_spec(at: At, stop: Stop, edit: impl FnOnce(&mut Value)) -> Outcome {
             observer: probe.clone(),
             parked_drops: Some(drops.clone()),
             spool: None,
+            network: None,
         },
     );
     assert!(probe.fired.load(Ordering::SeqCst), "{at:?} was not reached");

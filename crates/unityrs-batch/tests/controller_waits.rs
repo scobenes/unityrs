@@ -66,6 +66,10 @@ fn every_engine_wait_has_a_bounded_or_idle_role_and_dispatch_unlocks_before_core
         ("controller/failure.rs", ".wait(", 1), // W1/W2 via Execution's descriptor poll
         ("controller/mod.rs", ".wait(", 1),     // W1/W2 via Execution's descriptor poll
         ("controller/passes.rs", ".wait(", 2),  // W1/W2 via controller's wait adapter
+        // W1/W2 in a networked staging pass: the stop and end wakes are
+        // registered with its runtime, so a stop wakes it; it never awaits
+        // a slot, and returns at the stop
+        ("controller/network.rs", ".block_on(", 1),
         // W20 init, startup gate priming/wait/release, results, and the
         // pool prewarm's held count (a task's and the constructor's)
         ("execution.rs", ".lock(", 10),

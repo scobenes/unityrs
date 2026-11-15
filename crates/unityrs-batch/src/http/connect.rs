@@ -4,21 +4,26 @@ use super::{
     io::Stream,
     permit::{Charge, OperationToken, RequestPermit},
     resolve::{self, Source},
-    socket::{Registration, SocketTable},
 };
+use crate::sys::reset::{RegisteredSocket, SocketTable};
 use rustls::{ClientConfig, pki_types::ServerName};
-use std::{future::poll_fn, os::fd::AsRawFd, sync::Arc, time::Duration};
+use std::{future::poll_fn, mem::MaybeUninit, sync::Arc, time::Duration};
 use tokio::{
-    net::TcpSocket,
     runtime::Handle,
     time::{Instant, timeout_at},
 };
-use tokio_rustls::TlsConnector;
+use tokio_rustls::{TlsConnector, client::TlsStream};
 use url::Url;
 
+/// An `https` request's server name and its stream's storage, both taken
+/// before the first socket: a refusal after a connect would drop (reset) it.
+struct Secure {
+    name: ServerName<'static>,
+    storage: Box<MaybeUninit<TlsStream<RegisteredSocket>>>,
+}
 pub(crate) struct Connector {
     pub(crate) pool: Handle,
-    pub(crate) table: Arc<dyn SocketTable>,
+    pub(crate) table: Arc<SocketTable>,
     pub(crate) tls: Arc<ClientConfig>,
     pub(crate) resolver: Source,
 }
@@ -63,6 +68,11 @@ impl Connector {
         envelope
             .grow(resolve::LOOKUP_ENVELOPE)
             .ok_or(Error::Memory)?;
+        let mut secure = if url.scheme() == "http" {
+            None
+        } else {
+            Some(Secure::new(host)?)
+        };
         let mut last = Error::transport(Detail::Connect);
         let count = addresses.len();
         for index in 0..count {
@@ -74,68 +84,74 @@ impl Connector {
                 return Err(Error::transport(Detail::Connect));
             }
             let share = now + left / remaining;
-            let socket = match if address.is_ipv4() {
-                TcpSocket::new_v4()
-            } else {
-                TcpSocket::new_v6()
-            } {
+            // The table makes the zero-linger socket and publishes it in
+            // this permit's entry before any connect; a closing table or a
+            // sealed or busy entry refuses, and no further address is tried.
+            let socket = match self.table.socket(permit.index(), address.is_ipv6()) {
+                Ok(socket) => socket,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::InvalidInput
+                    ) =>
+                {
+                    return Err(super::classify::connect(&error));
+                }
+                Err(error) => {
+                    last = super::classify::connect(&error);
+                    continue;
+                }
+            };
+            let socket = match socket.register(&self.pool) {
                 Ok(socket) => socket,
                 Err(error) => {
                     last = super::classify::connect(&error);
                     continue;
                 }
             };
-            if let Err(error) = socket.set_zero_linger() {
-                last = super::classify::connect(&error);
-                continue;
-            }
-            let registration = Registration::new(&self.table, socket.as_raw_fd());
-            let registration = match registration {
-                Ok(registration) => registration,
-                Err(error) => {
-                    drop(socket);
-                    return Err(error);
-                }
-            };
-            if let Err(error) = registration.check() {
-                drop(socket);
-                drop(registration);
-                return Err(error);
-            }
-            // timeout_at owns the connect future: it drops that future (and
-            // its socket) before this registration is removed on failure.
-            match timeout_at(share, socket.connect(address)).await {
-                Ok(Ok(stream)) => {
-                    let stream = registration.wrap(stream);
-                    return self.secure(stream, url, host).await;
-                }
+            // timeout_at owns only the readiness wait. The socket's owner
+            // clears its entry and closes (zero linger: RST) on failure.
+            match timeout_at(share, connect(&socket, address)).await {
+                Ok(Ok(())) => return self.secure(socket, secure.take()).await,
                 Ok(Err(error)) => last = super::classify::connect(&error),
                 Err(_) => last = Error::transport(Detail::Connect),
             }
-            drop(registration);
         }
         Err(last)
     }
     async fn secure(
         &self,
-        stream: super::socket::Registered<tokio::net::TcpStream>,
-        url: &Url,
-        host: &str,
+        stream: RegisteredSocket,
+        secure: Option<Secure>,
     ) -> Result<Stream, Error> {
-        if url.scheme() == "http" {
+        let Some(Secure { name, storage }) = secure else {
             return Ok(Stream::Plain(stream));
-        }
+        };
+        let stream = TlsConnector::from(self.tls.clone())
+            .connect(name, stream)
+            .await
+            .map_err(|e| super::classify::tls(&e))?;
+        Ok(Stream::Tls(Box::write(storage, stream)))
+    }
+}
+impl Secure {
+    fn new(host: &str) -> Result<Self, Error> {
         let mut owned = String::new();
         owned
             .try_reserve_exact(host.len())
             .map_err(|_| Error::Memory)?;
         owned.push_str(host);
         let name = ServerName::try_from(owned).map_err(|_| Error::InvalidRequest)?;
-        let stream = TlsConnector::from(self.tls.clone())
-            .connect(name, stream)
-            .await
-            .map_err(|e| super::classify::tls(&e))?;
-        let stream = crate::alloc::try_box(stream).map_err(|_| Error::Memory)?;
-        Ok(Stream::Tls(stream))
+        let storage = crate::alloc::try_box_uninit().map_err(|_| Error::Memory)?;
+        Ok(Self { name, storage })
+    }
+}
+/// One connect: at once, or left in progress and completed on readiness.
+async fn connect(socket: &RegisteredSocket, address: std::net::SocketAddr) -> std::io::Result<()> {
+    match socket.connect(address) {
+        Err(error) if error.raw_os_error() == Some(libc::EINPROGRESS) => socket.connected().await,
+        result => result,
     }
 }

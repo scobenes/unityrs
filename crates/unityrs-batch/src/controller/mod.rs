@@ -2,6 +2,7 @@
 //! startup/publication; B9 owns process lifetime, arbitration and diagnostics.
 mod commit;
 pub(crate) mod failure;
+mod network;
 mod passes;
 mod progress;
 mod queue;
@@ -16,6 +17,7 @@ use crate::{
     spool::{Counter, Directory, FileSystem},
     sys::Wake,
 };
+pub(crate) use network::Staging;
 pub use queue::Admission;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -60,6 +62,8 @@ pub enum Point {
     FailureCreated(u32),
     BeforePoll,
     PollReturned,
+    /// Before the controller polls a URL stage's future.
+    StagePoll(u32),
 }
 /// Typed bounded observations, independent of the B9 trace protocol. Worker
 /// callbacks run on their job's thread; commit callbacks run on the controller.
@@ -160,6 +164,8 @@ pub struct Controller {
     driven: bool,
     reached: crate::progress::Phase,
     pub(crate) progress: Option<crate::progress::live::Sender>,
+    /// A networked run's URL stages and its request permits.
+    pub(crate) network: Option<Staging>,
 }
 /// Everything a controller owns besides its prepared state: the spool's
 /// lease, a pending failure directory and its write's pool task. A stopped
@@ -172,9 +178,35 @@ pub struct Residue {
     _failure_task: Option<crate::execution::Task<Result<failure::FailureEnd, RunFailure>>>,
     _failure_owner: Option<Shared<OnceLock<Directory>>>,
     _progress: Option<crate::progress::live::Sender>,
+    _network: Option<Staging>,
 }
 impl Controller {
+    /// A local run's controller: a URL anywhere in the spec, an unused
+    /// dependency's included, is refused. A networked run's controller is
+    /// the crate's [`Self::networked`].
     pub fn new(
+        prepared: PreparedRun,
+        spool: PreparedSpool,
+        control: Arc<dyn Control>,
+        hooks: Arc<dyn Hooks>,
+    ) -> Result<Self, SetupError> {
+        crate::stage::require_local(&prepared.spec).map_err(|_| SetupError::UrlUnsupported)?;
+        Self::build(prepared, spool, control, hooks)
+    }
+    /// A controller that stages URLs through `network`, on the Execution's
+    /// runtime, beside local copies.
+    pub(crate) fn networked(
+        prepared: PreparedRun,
+        spool: PreparedSpool,
+        control: Arc<dyn Control>,
+        hooks: Arc<dyn Hooks>,
+        network: Staging,
+    ) -> Result<Self, SetupError> {
+        let mut controller = Self::build(prepared, spool, control, hooks)?;
+        controller.network = Some(network);
+        Ok(controller)
+    }
+    fn build(
         mut prepared: PreparedRun,
         spool: PreparedSpool,
         control: Arc<dyn Control>,
@@ -192,7 +224,6 @@ impl Controller {
             }
             prepared.memory = Arc::new(plan);
         }
-        crate::stage::require_local(&prepared.spec).map_err(|_| SetupError::UrlUnsupported)?;
         let s = &prepared.spec;
         let admission = Admission::new(
             s.threads,
@@ -221,6 +252,7 @@ impl Controller {
             driven: false,
             reached: crate::progress::Phase::Start,
             progress: None,
+            network: None,
         })
     }
     pub fn progress(&mut self, sender: crate::progress::live::Sender) {
@@ -245,6 +277,7 @@ impl Controller {
                 _failure_task: self.failure_task,
                 _failure_owner: self.failure_owner,
                 _progress: self.progress,
+                _network: self.network,
             },
         )
     }
