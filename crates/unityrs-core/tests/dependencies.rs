@@ -240,8 +240,25 @@ const C_FUNCTIONS: [(&str, &str); 6] = [
 /// The C functions a crate compiles from vendored source, which link
 /// whatever the glibc: zlib 1.2.13's, which unityrs-imageio's `build.rs`
 /// compiles under `Z_PREFIX`, each declared by the `z_` name that
-/// `zconf.h` gives it there, and only in the file named.
-const VENDORED_C_FUNCTIONS: [(&str, &str); 9] = [
+/// `zconf.h` gives it there; and liblz4 1.9.4's, renamed by the compression
+/// bridge's build script. Each is declared only in the file named.
+const VENDORED_C_FUNCTIONS: [(&str, &str); 13] = [
+    (
+        "unityrs_LZ4_versionNumber",
+        "unityrs-compress-sys/src/lib.rs",
+    ),
+    (
+        "unityrs_LZ4_sizeofStateHC",
+        "unityrs-compress-sys/src/lib.rs",
+    ),
+    (
+        "unityrs_LZ4_compressBound",
+        "unityrs-compress-sys/src/lib.rs",
+    ),
+    (
+        "unityrs_LZ4_compress_HC_extStateHC",
+        "unityrs-compress-sys/src/lib.rs",
+    ),
     // The pristine zlib 1.2.13 reference under the `test-reference`
     // feature, its entry points renamed (`zlib-match/reference.c`).
     (
@@ -434,21 +451,41 @@ fn every_c_function_a_crate_declares_links_on_every_glibc_it_builds_on() {
         .map(|l| l.split_whitespace().collect::<Vec<_>>())
         .filter(|w| w.len() == 3 && w[0] == "#define")
         .collect();
+    let lz4_headers = ["lz4.h", "lz4hc.h"].map(|header| {
+        std::fs::read_to_string(
+            crates
+                .join("unityrs-compress-sys/vendor/lz4-1.9.4")
+                .join(header),
+        )
+        .unwrap()
+        .split_whitespace()
+        .collect::<String>()
+    });
     for (name, _) in VENDORED_C_FUNCTIONS {
         assert!(
             declared.contains_key(name),
             "VENDORED_C_FUNCTIONS lists {name}, which no file declares"
         );
-        let found = match name.strip_prefix("unityrs_zref_") {
-            Some(bare) => reference.iter().any(|w| w[1] == bare && w[2] == name),
-            None => renames
+        let found = if let Some(bare) = name
+            .strip_prefix("unityrs_")
+            .filter(|n| n.starts_with("LZ4_"))
+        {
+            // The bridge's archive/link tests also check the compiled
+            // namespace and pristine source manifest on ELF and Mach-O.
+            lz4_headers
                 .iter()
-                .any(|w| Some(w[2]) == name.strip_prefix("z_") && w[3] == name),
+                .any(|header| header.contains(&format!("{bare}(")))
+        } else {
+            match name.strip_prefix("unityrs_zref_") {
+                Some(bare) => reference.iter().any(|w| w[1] == bare && w[2] == name),
+                None => renames
+                    .iter()
+                    .any(|w| Some(w[2]) == name.strip_prefix("z_") && w[3] == name),
+            }
         };
         assert!(
             found,
-            "{name} is no function zconf.h renames under Z_PREFIX, nor one \
-             zlib-match/reference.c renames for the test-only reference"
+            "{name} is no declared function of the pinned vendored libraries"
         );
     }
 }

@@ -426,6 +426,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs-compress-sys"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "liblzma-sys",
+]
+
+[[package]]
 name = "unityrs-core"
 version = "0.0.1"
 dependencies = [
@@ -436,6 +444,7 @@ dependencies = [
  "liblzma",
  "thiserror",
  "triomphe",
+ "unityrs-compress-sys",
 ]
 
 [[package]]

@@ -55,6 +55,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "bundle_save"
+path = "fuzz_targets/bundle_save.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "serialized"
 path = "fuzz_targets/serialized.rs"
 test = false

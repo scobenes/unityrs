@@ -14,6 +14,7 @@
 //! target needs an item a crate does not export.
 
 pub mod astc;
+pub mod bundle_save;
 pub mod crunch;
 pub mod fsb5;
 pub mod image_writers;

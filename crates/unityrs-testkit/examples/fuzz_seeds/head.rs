@@ -22,6 +22,9 @@ pub(super) fn write(seeds: &mut Seeds) -> std::io::Result<()> {
         if target == "serialized" {
             seeds.add("serialized_save", &name, &data)?;
         }
+        if target == "bundle" {
+            seeds.add("bundle_save", &name, &data)?;
+        }
     }
     Ok(())
 }
