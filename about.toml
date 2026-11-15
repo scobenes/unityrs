@@ -213,3 +213,32 @@ checksum = "240b8a39fdfd2bd3b3539c02e34466334884fc84b056b57f06e9da35323ecd97"
 path = "NOTICE.txt"
 license = "Apache-2.0"
 checksum = "db0ba6e84734d37277ceae9dcca1ffbbb2f8e80e9c1db34e3788100792458c63"
+
+# vgmstream's multi-holder ISC notice needs explicit recognition.
+[unityrs-audio.clarify]
+license = "(MIT OR Apache-2.0) AND MIT AND ISC"
+
+[[unityrs-audio.clarify.files]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "62feb1c960db825f6100a158728819196f24f7a6358cff078bb9ec117233bd89"
+
+[[unityrs-audio.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+
+[[unityrs-audio.clarify.files]]
+path = "LICENSE-UNITYPY"
+license = "MIT"
+checksum = "d86f8e7dd654370bfe954deb63a8fc972a0eaea943880ba691ff540104bd4c8f"
+
+[[unityrs-audio.clarify.files]]
+path = "LICENSE-FMOD-TOOLKIT"
+license = "MIT"
+checksum = "16c432f5e0ac00f263bccd2a5ae79156a1f462a86a99260c0fa94b2f35ce7468"
+
+[[unityrs-audio.clarify.files]]
+path = "LICENSE-VGMSTREAM"
+license = "ISC"
+checksum = "1457b0323191784863916846df32a92a278ec88baef94b57685bdf9bbc67d4ca"

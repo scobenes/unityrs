@@ -1,11 +1,11 @@
 [package]
 name = "unityrs-audio"
-description = "Bounded AudioClip dispatch, FSB5 parsing and PCM WAV export."
+description = "Bounded AudioClip dispatch, FSB5 parsing and PCM/ADPCM WAV export."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-# UnityPy's dispatch/table and fmod_toolkit's WAV rules (both MIT).
-license = "(MIT OR Apache-2.0) AND MIT"
+# UnityPy/fmod_toolkit rules (MIT) and vgmstream decoders (ISC).
+license = "(MIT OR Apache-2.0) AND MIT AND ISC"
 repository.workspace = true
 authors.workspace = true
 

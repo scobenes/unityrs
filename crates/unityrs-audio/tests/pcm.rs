@@ -120,7 +120,7 @@ fn short_pcm_is_tier_c_and_first_empty_is_unsupported() {
         plan(&data, true, &m),
         Err(Error::EmptyFirstSubsound)
     ));
-    for mode in [7, 11, 15, 16, 17, 99] {
+    for mode in [11, 15, 17, 99] {
         let data = bank(mode, &[(&[0; 32], 4, 1, 8)]);
         assert!(
             matches!(plan(&data, true, &m), Err(Error::Unsupported { codec }) if codec == mode)
