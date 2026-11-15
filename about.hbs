@@ -619,11 +619,31 @@ unityrs-imageio ports Pillow 9.5.0's PNG writer as Image.save(fp, "PNG")
 runs it at its defaults, so its PNG files are Pillow's byte for byte:
 crates/unityrs-imageio/src/png.rs translates src/PIL/PngImagePlugin.py's
 _save, putchunk and _idat, src/PIL/ImageFile.py's _save and _encode_tile,
-and the encode loop of src/libImaging/ZipEncode.c;
+and the encode loop of src/libImaging/ZipEncode.c, plus Pack.c's pack1
+for an implicit palette PNG;
 crates/unityrs-imageio/src/filter.rs translates ZipEncode.c's choice of each
 row's PNG filter; crates/unityrs-imageio/src/hash.rs translates the
 converters of convert("RGBA") in src/libImaging/Convert.c (l2rgb, la2rgb,
 rgb2rgba).
+
+crates/unityrs-imageio/src/writers/raster.rs translates the default BMP,
+DIB, TGA, PPM, PCX and DDS writers in src/PIL/BmpImagePlugin.py,
+TgaImagePlugin.py, PpmImagePlugin.py, PcxImagePlugin.py and DdsImagePlugin.py,
+and src/libImaging/PcxEncode.c. writers/structured.rs translates SGI, IM,
+raw TIFF and EPS from SgiImagePlugin.py, ImImagePlugin.py, TiffImagePlugin.py,
+EpsImagePlugin.py, src/libImaging/Pack.c and EpsEncode.c.
+writers/icons.rs translates IcoImagePlugin.py and IcnsImagePlugin.py;
+writers/resample.rs translates Image.py's thumbnail/resize rules and
+src/libImaging/Resample.c and Convert.c for their resized PNG payloads.
+The palette nearest-neighbor path follows src/libImaging/Geometry.c.
+The translated SGI and ICNS plugins additionally carry these notices:
+Copyright (c) 2016 by Mickael Bonfill.
+Copyright (c) 2008 by Karsten Hiddemann.
+Copyright (c) 2004 by Bob Ippolito.
+Copyright (c) 2004 by Secret Labs.
+Copyright (c) 2004 by Fredrik Lundh.
+Copyright (c) 2014 by Alastair Houghton.
+Copyright (c) 2020 by Pan Jing.
 
 crates/unityrs-texture/src/bcn.rs translates Pillow 9.5.0's BC1, BC2, BC3,
 BC4, BC5 and BC7 block decoders to Rust (src/libImaging/BcnDecode.c:

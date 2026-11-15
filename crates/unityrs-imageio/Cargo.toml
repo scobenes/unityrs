@@ -1,12 +1,13 @@
 [package]
 name = "unityrs-imageio"
-description = "PNG files byte-identical to Pillow 9.5.0's, over a vendored zlib 1.2.13, and the visible-pixel hash."
+description = "Default image writers byte-identical to Pillow 9.5.0's, metered PNG over zlib 1.2.13, and the visible-pixel hash."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 # The encoder ports Pillow 9.5.0's PNG writer and its RGBA conversions
 # (MIT-CMU: src/png.rs, src/filter.rs, src/hash.rs), whose notice is its
-# LICENSE-PILLOW, and the build compiles the deflate side of zlib 1.2.13
+# LICENSE-PILLOW; src/writers ports its other raw writers and PNG icon
+# containers, including their resampling. The build compiles zlib 1.2.13's deflate
 # (Zlib), vendored pristine in vendor/zlib-1.2.13/. build.rs derives an
 # altered deflate.c with zlib-match/longest_match.c; its licence is
 # LICENSE-ZLIB (a link to the vendored LICENSE). See THIRD_PARTY_LICENSES.
