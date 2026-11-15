@@ -7,6 +7,8 @@ liblz4); for `unityrs-texture`'s decoders and selection
 vertex-data unpack and triangles (E16, E59); and for scene/prefab collection,
 GLB writing and OBJ/MTL text (`docs/plans/static3d.md` section 4.3). Any panic, timeout over 10 s,
 or allocation over 2 GiB is a bug.
+The `shader` target exercises `unityrs-export`'s shader program parser and
+converter over arbitrary typetree values.
 The `zlib_match` target also compares unityrs-imageio's derived deflate
 with pristine zlib 1.2.13, byte for byte at Pillow's settings.
 
@@ -37,6 +39,7 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `scene_collect` | graph construction for the complete scene or the last GameObject in object-table order as a prefab, strict profile parsing, collect with UnlitExtras or CorePbr, then streaming GLB writing twice; fresh exports must repeat their outcome, smaller-meter exports must produce identical bytes or a named memory/work refusal, and operation meters return to zero | `unityrs_testkit::fuzz::SceneCase`: meter byte, policy flags, u16 profile length, JSON profile, serialized scene bytes |
 | `obj_text` | raw mesh OBJ plus corrected renderer OBJ/MTL/texture export to a streaming digest; repeated fresh exports must match, smaller-meter exports must match or name their memory/work refusal, and operation meters return to zero | `SceneCase`, sharing the synthetic scene seeds |
 | `fsb5` | `unityrs_audio::plan` and `decode`: bounded parsing, PCM and float WAV lengths, repeatability and charge release | raw audio bytes |
+| `shader` | `shader::Program::parse` and every entry's export through `shader::render_all`, twice on fresh meters with the same memory and work bounds: the verdict and attempted entry count must repeat and temporary memory charges must return to zero; rendering errors must not hide later entries; then `walk::boost::read` and `shader::export_parsed` over the same input as an arbitrary tree value, under the case's memory and work limits, with conversion charges released | both interpretations: `unityrs_testkit::fuzz::ShaderCase` (Unity major/minor version, meter, program blob) and `TreeCase`; input capped at 8 MiB |
 
 Every run is bounded by the limits in `src/lib.rs`: 128 MiB of memory, of
 input and of one block's output (`MEMORY`), and 8 MiB of decode work and of
@@ -95,11 +98,21 @@ profile means defaults. A nonzero meter also runs at `meter² × 64` bytes.
 Source loading keeps the normal input/work bounds; graph, collect and
 output operations use the selected meter. GLB and OBJ output is hashed as
 it streams, without retaining a complete output buffer.
+The `shader` seeds are synthetic program blobs on either side of the
+2019.3 entry-table change and each subprogram-header boundary, with empty
+and textual code, global and local keywords, repeated entries, truncated
+fields, negative and oversized counts and
+offsets, each under meters 0, 1, 16 and 64 (the usual memory bound,
+64 bytes, 16 KiB and 256 KiB).
+Additional shader seeds are `TreeCase` values with UTF-8 and invalid UTF-8
+script bytes, string and integer scripts, and arbitrary missing or wrongly
+typed converter fields, at both value memory bounds.
 The `zlib_match` seeds are the builders' outputs (capped at 4 MiB), plus
 zero and periodic inputs around match and window boundaries.
 The `fsb5` seeds use `unityrs_testkit::fsb5`: passthrough audio, all supported
-PCM widths at both bank versions, rates, names, extra chunks, empty/short
-subsounds, deferred codecs and hostile headers (54 synthetic inputs).
+PCM widths, IMA ADPCM and FADPCM at both bank versions, rates, names, extra
+chunks, empty/short subsounds, deferred codecs and hostile headers
+(83 synthetic inputs, including ADPCM coefficient and shift edges).
 
 ## Running
 

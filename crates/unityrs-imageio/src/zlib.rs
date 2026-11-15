@@ -216,6 +216,16 @@ impl Deflater {
 
     /// `deflateInit2` at Pillow's settings; zlib's return code.
     pub(crate) fn init(self: Pin<&mut Self>) -> c_int {
+        self.init_level(LEVEL)
+    }
+
+    /// Fast PNG changes only the level; window, memory and strategy stay
+    /// the same, so the charged state and deflateBound remain valid.
+    pub(crate) fn init_fast(self: Pin<&mut Self>) -> c_int {
+        self.init_level(1)
+    }
+
+    fn init_level(self: Pin<&mut Self>, level: c_int) -> c_int {
         // SAFETY: nothing is moved out of the pinned value; its fields are
         // only written in place.
         let this = unsafe { self.get_unchecked_mut() };
@@ -231,7 +241,7 @@ impl Deflater {
         let code = unsafe {
             z_deflateInit2_(
                 &raw mut this.stream,
-                LEVEL,
+                level,
                 Z_DEFLATED,
                 WINDOW_BITS,
                 MEM_LEVEL,

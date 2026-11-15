@@ -113,10 +113,19 @@ fn encoded(e: EncodeError<ChargeError>) -> Class {
 }
 
 /// A PNG of `p`, its bytes and charge, and its picture.
-pub(super) fn png(p: &Pixels<'_>, meter: &Arc<Meter>) -> Result<(Vec<u8>, Charge, Picture), Class> {
+pub(super) fn png(
+    p: &Pixels<'_>,
+    meter: &Arc<Meter>,
+    fast: bool,
+) -> Result<(Vec<u8>, Charge, Picture), Class> {
     let image = unityrs_imageio::Image::new(p.width, p.height, png_mode(p.mode), p.data)
         .map_err(|e| encoded(EncodeError::Image(e)))?;
-    let encoded = unityrs_imageio::encode(&image, &mut Metered(meter)).map_err(encoded)?;
+    let result = if fast {
+        unityrs_imageio::encode_fast(&image, &mut Metered(meter))
+    } else {
+        unityrs_imageio::encode(&image, &mut Metered(meter))
+    };
+    let encoded = result.map_err(encoded)?;
     let picture = Picture {
         mode: png_mode(p.mode).name(),
         width: p.width,
@@ -428,7 +437,7 @@ impl Attempt<'_> {
         };
         let meter = self.seam.meter;
         self.seam
-            .probe(|| png(&p, meter).map(|(b, c, pic)| (b, c, Some(pic))))
+            .probe(|| png(&p, meter, self.options.png_fast).map(|(b, c, pic)| (b, c, Some(pic))))
     }
 
     fn export_sheet(
@@ -544,7 +553,7 @@ impl Attempt<'_> {
                     height: u32::try_from(s.height).unwrap_or(u32::MAX),
                     data: &pixels,
                 };
-                seam.probe(|| png(&p, seam.meter))
+                seam.probe(|| png(&p, seam.meter, self.options.png_fast))
             });
             match made {
                 Ok((bytes, charge, pic)) => {

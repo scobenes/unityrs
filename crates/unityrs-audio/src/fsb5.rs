@@ -4,7 +4,7 @@
 //! channels; bits 7-33 encode 32-byte offsets). The rate at index 3 is
 //! 12000 in the pinned FMOD oracle (tests/fixtures/audio.json), matching
 //! that project. No third-party parser code is included.
-use crate::{Error, send_sync, wav};
+use crate::{Error, adpcm, send_sync, wav};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
 
@@ -105,10 +105,61 @@ fn wav_frequency(frequency: u32) -> Result<u32, Error> {
         .filter(|&n| n > 0 && i32::try_from(n).is_ok())
         .ok_or(Error::Invalid("frequency"))
 }
+fn read_sample<'a>(reader: &mut Reader<'a>) -> Result<Subsound<'a>, Error> {
+    let raw = reader.u64()?;
+    let mut frequency = rate((raw >> 1) & 15);
+    let mut channels = match (raw >> 5) & 3 {
+        0 => 1,
+        1 => 2,
+        2 => 6,
+        _ => 8,
+    };
+    let chunks_start = reader.pos;
+    let mut more = raw & 1 != 0;
+    while more {
+        let chunk = reader.u32()?;
+        more = chunk & 1 != 0;
+        let size = ((chunk >> 1) & 0x00ff_ffff) as usize;
+        let payload = reader.take(size)?;
+        match chunk >> 25 {
+            1 => {
+                if payload.len() != 1 {
+                    return Err(Error::Invalid("channels chunk size"));
+                }
+                channels = u16::from(*payload.first().ok_or(Error::Invalid("channels chunk"))?);
+            }
+            2 => {
+                frequency = Some(word(payload)?);
+            }
+            _ => {}
+        }
+    }
+    let frequency = wav_frequency(frequency.ok_or(Error::Invalid("frequency"))?)?;
+    if channels == 0 {
+        return Err(Error::Invalid("channels"));
+    }
+    if channels > 32 {
+        return Err(Error::TooManyChannels { channels });
+    }
+    Ok(Subsound {
+        name: None,
+        frequency,
+        channels,
+        data_offset: u32::try_from((raw >> 7) & 0x07ff_ffff).map_err(|_| Error::OutputSize)? * 32,
+        samples: (raw >> 34) as u32,
+        extra_chunks: reader
+            .bytes
+            .get(chunks_start..reader.pos)
+            .ok_or(Error::Invalid("extra chunks"))?,
+        data: &[],
+        wav_bytes: 0,
+    })
+}
+
 type Parsed<'a> = (Header, MeteredVec<Subsound<'a>>, u64);
 #[allow(
     clippy::too_many_lines,
-    reason = "one bounded traversal of bank sections and subsounds"
+    reason = "bounded metadata preflight followed by subsound planning"
 )]
 pub(crate) fn parse<'a>(
     bytes: &'a [u8],
@@ -146,6 +197,7 @@ pub(crate) fn parse<'a>(
     let names = sections.take(header.name_table_size as usize)?;
     sections.field = "data section";
     let data = sections.take(header.data_size as usize)?;
+    let data_start = sections.pos - data.len();
     // Trailing bytes are permitted, but no declared section may run into them.
     let count = header.subsound_count as usize;
     if count == 0 {
@@ -156,7 +208,7 @@ pub(crate) fn parse<'a>(
     }
     // Charge the metadata traversal before any allocation or loop. Names may
     // alias, so their per-byte searches are additionally counted below.
-    meter.count_decode((header_size + sample_bytes.len() + names.len()) as u64)?;
+    meter.count_decode(header_size as u64 + sample_bytes.len() as u64 * 2 + names.len() as u64)?;
     // Grow only after validating each record; the declared count is untrusted.
     let mut subs = MeteredVec::new(meter);
     let mut samples = Reader {
@@ -172,39 +224,14 @@ pub(crate) fn parse<'a>(
         pos: 0,
         field: "name offsets",
     };
+    // Validate every channel override before even allocating metadata for an
+    // earlier valid subsound. Both passes are charged above.
     for _ in 0..count {
-        let raw = samples.u64()?;
-        let mut frequency = rate((raw >> 1) & 15);
-        let mut channels = match (raw >> 5) & 3 {
-            0 => 1,
-            1 => 2,
-            2 => 6,
-            _ => 8,
-        };
-        let chunks_start = samples.pos;
-        let mut more = raw & 1 != 0;
-        while more {
-            let chunk = samples.u32()?;
-            more = chunk & 1 != 0;
-            let size = ((chunk >> 1) & 0x00ff_ffff) as usize;
-            let payload = samples.take(size)?;
-            match chunk >> 25 {
-                1 => {
-                    if payload.len() != 1 {
-                        return Err(Error::Invalid("channels chunk size"));
-                    }
-                    channels = u16::from(*payload.first().ok_or(Error::Invalid("channels chunk"))?);
-                }
-                2 => {
-                    frequency = Some(word(payload)?);
-                }
-                _ => {}
-            }
-        }
-        let frequency = wav_frequency(frequency.ok_or(Error::Invalid("frequency"))?)?;
-        if channels == 0 {
-            return Err(Error::Invalid("channels"));
-        }
+        read_sample(&mut samples)?;
+    }
+    samples.pos = 0;
+    for _ in 0..count {
+        let mut sub = read_sample(&mut samples)?;
         let name = if names.is_empty() {
             None
         } else {
@@ -226,19 +253,8 @@ pub(crate) fn parse<'a>(
             }
             Some(span(tail, 0, length, "name")?)
         };
-        subs.push(Subsound {
-            name,
-            frequency,
-            channels,
-            data_offset: u32::try_from((raw >> 7) & 0x07ff_ffff).map_err(|_| Error::OutputSize)?
-                * 32,
-            samples: (raw >> 34) as u32,
-            extra_chunks: sample_bytes
-                .get(chunks_start..samples.pos)
-                .ok_or(Error::Invalid("extra chunks"))?,
-            data: &[],
-            wav_bytes: 0,
-        })?;
+        sub.name = name;
+        subs.push(sub)?;
     }
     if subs.as_slice().first().is_some_and(|s| s.samples == 0) {
         return Err(Error::EmptyFirstSubsound);
@@ -263,10 +279,22 @@ pub(crate) fn parse<'a>(
             available as usize,
             "subsound data",
         )?;
-        let size = u64::from(sub.samples) * u64::from(sub.channels) * u64::from(width);
-        let size = usize::try_from(size).map_err(|_| Error::OutputSize)?;
-        sub.data = span(section, 0, size, "PCM samples")?;
         sub.wav_bytes = wav::size(sub, header.mode, convert)?;
+        if let Some((block, _)) = adpcm::layout(header.mode, sub.channels) {
+            // FMOD reads through later subsounds and trailing input bytes.
+            // Section/offset ordering is still validated above, as for PCM.
+            let start = data_start
+                .checked_add(sub.data_offset as usize)
+                .ok_or(Error::OutputSize)?;
+            sub.data = bytes.get(start..).ok_or(Error::Invalid("ADPCM offset"))?;
+            if sub.samples > 0 && sub.data.len() < block {
+                return Err(Error::Invalid("ADPCM first block"));
+            }
+        } else {
+            let size = u64::from(sub.samples) * u64::from(sub.channels) * u64::from(width);
+            let size = usize::try_from(size).map_err(|_| Error::OutputSize)?;
+            sub.data = span(section, 0, size, "PCM samples")?;
+        }
         total = total
             .checked_add(sub.wav_bytes as u64)
             .ok_or(Error::OutputSize)?;

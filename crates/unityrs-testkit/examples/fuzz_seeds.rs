@@ -9,8 +9,9 @@
 //! blocks of every output, textures of every size class the decoders tell
 //! apart, ASTC blocks of every kind `unityrs-texture`'s oracle fixture
 //! crafts (`tools/fixtures/texture_astc.py`), legacy CRN streams built by
-//! `tools/fixtures/texture_crunch.py`, and every mesh and sprite case `unityrs-meshdecode`'s oracle
-//! fixture records (`tools/fixtures/meshdecode.py`'s synthetic values).
+//! `tools/fixtures/texture_crunch.py`, every mesh and sprite case recorded
+//! by `tools/fixtures/meshdecode.py`, and synthetic Shader program blobs
+//! across their header-version boundaries and converter field shapes.
 //! Nothing comes from a corpus. One folder per target:
 //!
 //! ```text
@@ -43,18 +44,21 @@ use unityrs_core::{FileContext, RawStr};
 use unityrs_testkit::Rng;
 use unityrs_testkit::blob::{NodeSpec, Strings, blob_tree, old_tree};
 use unityrs_testkit::bundle::{TestCodec, compress};
-use unityrs_testkit::depth::{Depth, Wrap, Z_ROWS};
 use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_case, lz4_case};
 
 #[path = "fuzz_seeds/crunch.rs"]
 mod crunch;
+#[path = "fuzz_seeds/depth.rs"]
+mod depth;
+#[path = "fuzz_seeds/shader.rs"]
+mod shader;
 #[path = "fuzz_seeds/web.rs"]
 mod web;
 #[path = "fuzz_seeds/zip.rs"]
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 20] = [
+const TARGETS: [&str; 21] = [
     "detect",
     "bundle",
     "serialized",
@@ -75,6 +79,7 @@ const TARGETS: [&str; 20] = [
     "fsb5",
     "scene_collect",
     "obj_text",
+    "shader",
 ];
 
 /// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
@@ -317,56 +322,6 @@ fn specs(nodes: &NodeList) -> Vec<NodeSpec> {
             n
         })
         .collect()
-}
-
-/// `depth`'s shapes, a few levels deep, through ref types `A` and `Z`.
-fn depth_cases() -> Vec<(String, TreeCase)> {
-    let to_rows = |rows: &[(u8, &str, &str, i32)]| -> Vec<Row> {
-        rows.iter()
-            .map(|(l, t, n, m)| Row::new(*l, t.as_bytes(), n.as_bytes(), *m))
-            .collect()
-    };
-    let shapes = [
-        Wrap::Class,
-        Wrap::Vector,
-        Wrap::Aligned,
-        Wrap::ClassArray,
-        Wrap::Pair,
-        Wrap::PairArray,
-    ];
-    let mut out = Vec::new();
-    for (i, w) in shapes.iter().enumerate() {
-        let next = shapes[(i + 1) % shapes.len()];
-        for wraps in [vec![*w], vec![*w, next]] {
-            let d = Depth::new(&wraps);
-            let a = to_rows(&d.rows);
-            let refs = vec![
-                RefType {
-                    class: b"A".to_vec(),
-                    namespace: b"n".to_vec(),
-                    assembly: b"a".to_vec(),
-                    rows: Some(a.clone()),
-                },
-                RefType {
-                    class: b"Z".to_vec(),
-                    namespace: b"n".to_vec(),
-                    assembly: b"a".to_vec(),
-                    rows: Some(to_rows(&Z_ROWS)),
-                },
-            ];
-            for n in [1, 3] {
-                let case = TreeCase {
-                    flags: 0,
-                    start: 0,
-                    rows: a.clone(),
-                    refs: refs.clone(),
-                    data: d.data(n),
-                };
-                out.push((format!("depth-{wraps:?}-{n}"), case));
-            }
-        }
-    }
-    out
 }
 
 /// The format the `texture` target's check decodes `format` as
@@ -716,6 +671,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     zip::seeds(&mut s)?;
     web::seeds(&mut s)?;
     fsb5::write(&mut s)?;
+    shader::seeds(&mut s)?;
     texture(&mut s)?;
     pvrtc_atc::write(&mut s)?;
     astc(&mut s)?;
@@ -731,7 +687,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
         let periodic: Vec<_> = (0..len).map(|i| (i % 17).to_le_bytes()[0]).collect();
         s.add("zlib_match", &format!("periodic-{len}"), &periodic)?;
     }
-    for (name, case) in depth_cases() {
+    for (name, case) in depth::cases() {
         for r in case.refs.iter().filter_map(|r| r.rows.as_ref()) {
             let nodes = r
                 .iter()

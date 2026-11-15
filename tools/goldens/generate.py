@@ -32,6 +32,10 @@ def main():
     different = []
     expected = set()
     for name, case in sorted(CASES.items()):
+        # Decision 2b: goldens pin Pillow's default bytes. W1b's opt-in
+        # is replayed against pixel recordings by attempt_fast_png.rs.
+        if case["spec"]["outputs"].get("image", "png") != "png":
+            raise ValueError(f"golden must use Pillow PNG encoding: {name}")
         # Each pin lives under its spec's version: tests/specs/v<N>/.
         path = specs / f"v{case['spec']['spec_version']}" / f"{name}.json"
         expected.add(path)

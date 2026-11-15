@@ -18,6 +18,8 @@
 //!   under and its data, for the `texture` target.
 //! - [`MeshCase`]: a Mesh's or a Sprite's value, its file's version and
 //!   byte order, its resource and the meter, for the `meshdecode` target.
+//! - [`ShaderCase`]: a shader program blob, its Unity version and the meter,
+//!   for the `shader` target.
 //!
 //! Every decoder here takes any bytes: a field the input does not reach is
 //! empty (a row, a reference, the data), never an error.
@@ -415,6 +417,47 @@ impl MeshCase {
     }
 }
 
+/// A shader program blob and the Unity version selecting its entry table.
+///
+/// Layout: major and minor version, each a little-endian `u32`, the meter
+/// selector (one byte), then the blob through the end. A header cut short
+/// decodes to the default case.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShaderCase {
+    /// Unity's major and minor version (the table changes at 2019.3).
+    pub version: (u32, u32),
+    /// 0 uses the fuzz memory bound; another value uses `meter² × 64` bytes.
+    pub meter: u8,
+    /// The little-endian shader program blob.
+    pub blob: Vec<u8>,
+}
+
+impl ShaderCase {
+    /// The case's bytes.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = self.version.0.to_le_bytes().to_vec();
+        out.extend_from_slice(&self.version.1.to_le_bytes());
+        out.push(self.meter);
+        out.extend_from_slice(&self.blob);
+        out
+    }
+
+    /// The case `input` holds; a missing header is the default case.
+    #[must_use]
+    pub fn decode(input: &[u8]) -> Self {
+        let mut c = Cursor(input);
+        let (Some(major), Some(minor), Some(meter)) = (c.u32(), c.u32(), c.u8()) else {
+            return Self::default();
+        };
+        Self {
+            version: (major, minor),
+            meter,
+            blob: c.0.to_vec(),
+        }
+    }
+}
+
 /// The bytes not yet read.
 struct Cursor<'a>(&'a [u8]);
 
@@ -435,6 +478,10 @@ impl Cursor<'_> {
 
     fn i32(&mut self) -> Option<i32> {
         Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
     }
 
     fn str(&mut self) -> Option<Vec<u8>> {
