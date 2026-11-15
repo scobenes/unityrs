@@ -71,7 +71,7 @@ pub(super) fn select(
         let (facts, fs, account, stop) =
             (facts.clone(), fs.clone(), account.clone(), control.clone());
         let lease = (started.clone(), directory.clone());
-        let task = execution.spawn(move || {
+        let task = execution.spawn_named("a phase-6 task", move || {
             let _lease = lease;
             (|| {
                 let inputs =
@@ -130,30 +130,64 @@ pub(super) fn outcomes(
 pub(super) fn done(run: &std::path::Path) -> Result<std::path::PathBuf, Error> {
     crate::spool::path::join(run, std::path::Path::new("done")).map_err(Error::from)
 }
-/// The finish's counts, from the frozen facts: a dispatched input that did
-/// not commit is `not_run`, and nothing is queued or running.
-pub(super) fn post_finish(progress: &Sender, handover: &HandOver) {
+/// The finish's counts (`BATCH_SPEC.md` section 10), from the frozen
+/// facts, with `found`, the hand-over slot's input whose commit the
+/// finisher's stat found, counted as committed. Nothing is queued once a
+/// stop is seen. A dispatched input that did not commit counts in
+/// `running` in the finisher's lines and, at the `last` (the `exit`
+/// line's), in `not_run`; every other input not committed is `not_run`.
+/// Without facts (a stop before `running`), whatever was running or
+/// queued is `not_run`, so the counts still partition `total`.
+pub(super) fn post_finish(progress: &Sender, handover: &HandOver, found: Option<u32>, last: bool) {
+    progress.update(|s| finish_counts(s, handover, found, last));
+}
+/// [`post_finish`]'s counts on `s`: the `exit` line's alone, never posted
+/// as a line of their own, at the `last`.
+pub(super) fn finish_counts(
+    s: &mut crate::progress::Snapshot,
+    handover: &HandOver,
+    found: Option<u32>,
+    last: bool,
+) {
     let Some(facts) = handover.facts.as_deref() else {
+        s.inputs.running = 0;
+        s.inputs.queued = 0;
+        s.inputs.not_run = s.inputs.total - s.inputs.complete - s.inputs.failed;
         return;
     };
-    progress.update(|s| {
-        let committed =
-            |state: &crate::phase1::InputState| state.phase == crate::phase1::InputPhase::Committed;
+    {
+        let committed = |(i, state): &(usize, &crate::phase1::InputState)| {
+            state.phase == crate::phase1::InputPhase::Committed
+                || found.is_some_and(|f| usize::try_from(f).is_ok_and(|f| f == *i))
+        };
         s.inputs.complete = facts
             .inputs
             .iter()
-            .filter(|state| {
-                committed(state)
-                    && state.failure_bundle.is_none()
-                    && state
+            .enumerate()
+            .filter(|entry| {
+                committed(entry)
+                    && entry.1.failure_bundle.is_none()
+                    && entry
+                        .1
                         .received
                         .is_some_and(|r| r.state == crate::attempt::State::Done)
             })
             .count() as u64;
         s.inputs.failed =
-            facts.inputs.iter().filter(|s| committed(s)).count() as u64 - s.inputs.complete;
-        s.inputs.not_run = s.inputs.total - s.inputs.complete - s.inputs.failed;
-        s.inputs.running = 0;
+            facts.inputs.iter().enumerate().filter(committed).count() as u64 - s.inputs.complete;
+        s.inputs.running = if last {
+            0
+        } else {
+            facts
+                .inputs
+                .iter()
+                .enumerate()
+                .filter(|entry| {
+                    entry.1.phase == crate::phase1::InputPhase::Running && !committed(entry)
+                })
+                .count() as u64
+        };
+        s.inputs.not_run = s.inputs.total - s.inputs.complete - s.inputs.failed - s.inputs.running;
         s.inputs.queued = 0;
-    });
+    }
 }

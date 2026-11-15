@@ -311,6 +311,7 @@ fn execute_spec(at: At, stop: Stop, edit: impl FnOnce(&mut Value)) -> Outcome {
             parked_drops: Some(drops.clone()),
             spool: None,
             network: None,
+            warnings: unityrs_batch::finish::Warnings::default(),
         },
     );
     assert!(probe.fired.load(Ordering::SeqCst), "{at:?} was not reached");

@@ -64,6 +64,8 @@ fn every_allocation_is_charged_first_and_fallible() {
     for data in [
         support::bank(2, &[(&pcm, 16, 1, 8), (&pcm, 8, 2, 9)]),
         support::bank(5, &[(&pcm, 8, 1, 8)]),
+        support::bank(7, &[(&[0x12; 0x24 * 6 * 3], 192, 6, 8)]),
+        support::bank(16, &[(&[0x12; 0x8c * 8 * 3], 768, 8, 8)]),
         b"OggSsynthetic".to_vec(),
     ] {
         let budget = Arc::new(Budget(Arc::new(Home)));

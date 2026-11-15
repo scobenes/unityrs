@@ -84,6 +84,8 @@ pub enum ImageEncoding {
     /// Pillow's default PNG.
     #[default]
     Png,
+    /// Lossless PNG with zlib level 1 and fixed Sub filtering.
+    PngFast,
     /// Lossy WebP with integer quality 0..=100, method 4, exact false.
     Webp { quality: u8 },
 }
@@ -93,6 +95,7 @@ impl ImageEncoding {
     pub fn name(self) -> &'static str {
         match self {
             Self::Png => "png",
+            Self::PngFast => "png_fast",
             Self::Webp { .. } => "webp",
         }
     }

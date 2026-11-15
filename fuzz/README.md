@@ -6,6 +6,8 @@ liblz4); for `unityrs-texture`'s decoders and selection
 (`docs/plans/extract.md` E15, E18, E59, E66); and for `unityrs-meshdecode`'s
 vertex-data unpack and triangles (E16, E59). Any panic, timeout over 10 s,
 or allocation over 2 GiB is a bug.
+The `shader` target exercises `unityrs-export`'s shader program parser and
+converter over arbitrary typetree values.
 The `zlib_match` target also compares unityrs-imageio's derived deflate
 with pristine zlib 1.2.13, byte for byte at Pillow's settings.
 
@@ -30,11 +32,12 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `python_read` | `walk::python::read_with_reader`, from the case's start, by the memory or the stream reader's rules | `TreeCase` |
 | `write_after_read` | a read, `walk::write::write` under `WriteRules::MirrorReader`, the read again and the write again: the value and the bytes must come back the same (`docs/DESIGN.md`'s write rule); a writer's refusal must be its named error | `TreeCase` |
 | `lz4` | `codec::decode_block` with `codec::Lz4` against liblz4 1.9.4's `LZ4_decompress_safe` (lz4-sys 1.10.0): the same verdict, the same bytes, the same error code; the differences allowed are `PARITY.md`'s LZ4 row and its limits (an output past the 8 MiB block bound is refused with `BlockOutput`) | `unityrs_testkit::fuzz::lz4_case`: declared size, block |
-| `texture` | `unityrs_texture::select` and `decode` (the forty-two byte-independent formats: the five version 1 exports, the rest of Pillow's raw and `bcn` formats, the ETC and EAC formats, the ASTC LDR formats, PVRTC and ATC; any other format maps to one of them, with the two CRN formats mapped to plain DXT1 or DXT5 and checked separately by `crunch`), under the memory bound or a meter of the decode's peak charge (`Plan::peak_charge`) less 1, the charge or plus 1: an export must be of the texture's own format, the decode's answer its `plan`'s (but a refusal of a charge past the meter's limit), the image the plan's size, mode and charge, and the meter back at 0 after it. Its data is the input, a few KiB at most, so the decodes it reaches are small: what needs more data (a crop's decompression-bomb check, a large decode) is the unit and seeded tests' (`crates/unityrs-texture/src/decode/tests.rs`, `crates/unityrs-texture/tests/limits.rs`) | `unityrs_testkit::fuzz::TextureCase`: format, size, platform, meter, platform blob, data |
+| `texture` | `unityrs_texture::select`, `select_in` and `decode` (the sixty-four byte-independent formats: the five version 1 exports, the rest of Pillow's raw and `bcn` formats, the ETC and EAC formats, the ASTC LDR formats, PVRTC and ATC, and twenty-two Tier B/C raw closed forms; ARGBFloat and odd-width YUY2 exercise Tier U refusals, and unknown formats map to a decoded format, with the two CRN formats mapped to plain DXT1 or DXT5 and checked separately by `crunch`), under the memory bound or a meter of the decode's peak charge (`Plan::peak_charge`) less 1, the charge or plus 1: an export must be of the texture's own format, the decode's answer its `plan`'s (but a refusal of a charge past the meter's limit), the image the plan's size, mode and charge, and the meter back at 0 after it. Its data is the input, a few KiB at most, so the decodes it reaches are small: what needs more data (a crop's decompression-bomb check, a large decode) is the unit and seeded tests' (`crates/unityrs-texture/src/decode/tests.rs`, `crates/unityrs-texture/tests/limits.rs`) | `unityrs_testkit::fuzz::TextureCase`: format, size, platform, meter, platform blob, data |
 | `astc` | `unityrs_texture::decode` of an ASTC LDR texture (the case's format taken as one of the twelve), under the memory bound or a meter of the decode's peak charge, its output and its tables, less 1, the charge or plus 1: the decode's answer its `plan`'s (but a refusal of a charge past the meter's limit), the image the plan's size, mode and charge, the meter back at 0 after it, so the tables are returned, and each block's texels in the image those of the block decoded alone as a one-block texture (every block of an image of up to 32, and of a larger one the first 32 and those the right and bottom edges cut): the assembly, the cut and the flip | `unityrs_testkit::fuzz::TextureCase`: format, size, platform, meter, platform blob, data |
 | `crunch` | legacy CRN DXT1 and DXT5 decode with dimensions bounded to -4 through 128 and data capped at 64 KiB, under the memory bound or the conservative planned peak charge and its neighbours: output size, mode and retained charge match the plan, malformed-stream errors repeat deterministically, and every meter returns to zero | `unityrs_testkit::fuzz::TextureCase`: format taken as 28 or 29, size, meter and CRN stream |
 | `meshdecode` | `walk::boost::read` of a Mesh's or a Sprite's value, then `unityrs_meshdecode::MeshHandler::process` (with or without a resource reader, either byte order, any version), `get_triangles` twice and `process` again, run last once the first's outputs drop, under the case's limits and, when the case's meter is not 0, again under a meter of `meter² × 64` bytes with the same work bound: the second `get_triangles` and the second `process` must answer as the first (but a refusal of the work it adds), the smaller meter's answer must be the first's (but a refusal of a charge past its limit), and each meter back at 0 once the outputs drop | `unityrs_testkit::fuzz::MeshCase`: flags, meter, version, resource, then a `TreeCase` |
 | `fsb5` | `unityrs_audio::plan` and `decode`: bounded parsing, PCM and float WAV lengths, repeatability and charge release | raw audio bytes |
+| `shader` | `shader::Program::parse` and every entry's export through `shader::render_all`, twice on fresh meters with the same memory and work bounds: the verdict and attempted entry count must repeat and temporary memory charges must return to zero; rendering errors must not hide later entries; then `walk::boost::read` and `shader::export_parsed` over the same input as an arbitrary tree value, under the case's memory and work limits, with conversion charges released | both interpretations: `unityrs_testkit::fuzz::ShaderCase` (Unity major/minor version, meter, program blob) and `TreeCase`; input capped at 8 MiB |
 
 Every run is bounded by the limits in `src/lib.rs`: 128 MiB of memory, of
 input and of one block's output (`MEMORY`), and 8 MiB of decode work and of
@@ -73,7 +76,9 @@ encoder's, random and crafted blocks of every block-mode class, partition
 count, dual-plane channel, endpoint mode, void extent and error block), as
 textures of each of the twelve ASTC LDR formats; 576 PVRTC/ATC seeds
 covering all six formats, tiny and odd sizes, rectangular Morton grids,
-wrap, modulation modes, alpha orders and short/long data; and every
+wrap, modulation modes, alpha orders and short/long data; 1,182 Tier B/C raw seeds
+from `tierb.json`, with exact/short data, IEEE specials, rounding boundaries,
+shared exponents and Tier U refusals under both meters; and every
 mesh and sprite case `unityrs-meshdecode`'s handler fixture records
 (`crates/unityrs-meshdecode/tests/fixtures/process.json`, synthetic values
 from UnityPy's own class trees), each under meters 0, 1, 16 and 64.
@@ -82,6 +87,15 @@ The `crunch` seeds retain every synthetic legacy DXT1 and DXT5 CRN stream in
 plus truncated streams and corrupt signatures. The streams are generated
 by `tools/fixtures/texture_crunch.py`, including multi-mip streams; decoding
 uses mip zero. Unity 2017.3+ Crunch and ETC Crunch remain pending.
+The `shader` seeds are synthetic program blobs on either side of the
+2019.3 entry-table change and each subprogram-header boundary, with empty
+and textual code, global and local keywords, repeated entries, truncated
+fields, negative and oversized counts and
+offsets, each under meters 0, 1, 16 and 64 (the usual memory bound,
+64 bytes, 16 KiB and 256 KiB).
+Additional shader seeds are `TreeCase` values with UTF-8 and invalid UTF-8
+script bytes, string and integer scripts, and arbitrary missing or wrongly
+typed converter fields, at both value memory bounds.
 The `zlib_match` seeds are the builders' outputs (capped at 4 MiB), plus
 zero and periodic inputs around match and window boundaries.
 The `fsb5` seeds use `unityrs_testkit::fsb5`: passthrough audio, all supported

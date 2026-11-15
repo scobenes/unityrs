@@ -126,6 +126,9 @@ pub(super) fn png(
         ImageEncoding::Png => unityrs_imageio::encode(&image, &mut Metered(meter))
             .map_err(encoded)?
             .into_parts(),
+        ImageEncoding::PngFast => unityrs_imageio::encode_fast(&image, &mut Metered(meter))
+            .map_err(encoded)?
+            .into_parts(),
         ImageEncoding::Webp { quality } => unityrs_imageio::encode_webp(
             &image,
             unityrs_imageio::WebpOptions {

@@ -12,6 +12,10 @@
 //! - [`encode_webp`] writes Pillow 9.5.0's still-image WebP bytes through
 //!   libwebp 1.3.0 with upstream failure-path fixes, generic C on every target, with bounded fallible
 //!   allocation. [`webp_plan`] gives its measured and enforced allowance.
+//! - [`encode_fast`] opts into zlib level 1 and a fixed Sub filter, with
+//!   the same windowBits 15, memLevel 9 and `Z_FILTERED`, charge plan and
+//!   fallible allocations. Its PNG preserves every pixel byte while
+//!   trading compression ratio for speed; default byte parity is unchanged.
 //! - [`visible_hash`] is E20's hash: SHA-256 over `"{width}x{height}:"` and
 //!   the RGBA bytes, alpha-0 pixels cleared, other modes converted as
 //!   Pillow's `convert("RGBA")` converts them.
@@ -73,7 +77,7 @@ pub use webp::{
 pub use charge::{Buffer, Charger, DEFLATE_STATE_REQUESTS, Plan, Unmetered, plan};
 pub use hash::visible_hash;
 pub use image::{Image, ImageError, Mode};
-pub use png::{EncodeError, Png, ZlibFailure, encode};
+pub use png::{EncodeError, Png, ZlibFailure, encode, encode_fast};
 pub use zlib::zlib_version;
 
 /// Test/fuzz support comparing the derived deflate with pristine zlib.

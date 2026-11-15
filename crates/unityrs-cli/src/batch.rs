@@ -4,7 +4,7 @@
 //! ```text
 //! unityrs batch --check JOB.json   validate; exit 0 or 78, one `exit` line
 //! unityrs batch --schema           the spec's JSON Schema; exit 0, 74, or 69 at step 1
-//! unityrs batch JOB.json           temporary local normal-run execution
+//! unityrs batch JOB.json           a normal run: local sources, a directory sink
 //! unityrs --version                one line; exit 0, 74, or 69 at step 1
 //! ```
 //!
@@ -23,9 +23,12 @@
 //! command line is 78 `usage`. `--schema` and `--version` write stdout and
 //! exit 74 when that write fails.
 //!
-//! Runs use the temporary local normal-run subset, archives included.
-//! Unsupported URL/store and lifetime capabilities are refused with 78
-//! before mutation.
+//! A run starts with 2.11 step 1's services
+//! (`unityrs_batch::run::process::Startup`), then phase 1, then the process
+//! host, which ends the process itself. Runs use the local normal-run
+//! subset, archives and the lifetime fields (`deadline`,
+//! `stop_on_stdin_eof`, `parent_pid`) included; URL sources and the object
+//! store are refused with 78 before mutation.
 
 mod normal;
 
@@ -46,7 +49,7 @@ use unityrs_batch::spec::{self, BadSpec, SPEC_VERSION};
 
 pub const USAGE: &str = "usage: unityrs batch --check JOB.json\n       \
                          unityrs batch --schema\n       \
-                         unityrs batch JOB.json   (temporary normal-run subset: local sources, directory sink; no lifetime fields)";
+                         unityrs batch JOB.json   (temporary normal-run subset: local sources, directory sink)";
 
 const VERSION_USAGE: &str = "usage: unityrs --version";
 
@@ -83,10 +86,34 @@ pub fn main(clock: &Clock, args: &[Vec<u8>]) -> ExitCode {
             (Ok(v), m) => checked(clock, &v, m),
             (Err(error), _) => phase1_failed(clock, error),
         },
-        Some(Command::Run(p)) => match phase1(p) {
-            (Ok(prepared), measured) => normal::run(clock, prepared, measured),
-            (Err(error), _) => phase1_failed(clock, error),
-        },
+        Some(Command::Run(p)) => {
+            // 2.11 step 1's services, before phase 1.
+            let mut startup = match unityrs_batch::run::process::Startup::prepare() {
+                Ok(startup) => startup,
+                Err(error) => return start_failed(clock, &error),
+            };
+            // The spares closed through phase 1's read, so a low
+            // `RLIMIT_NOFILE` leaves `JOB.json` its descriptor, and opened
+            // again once the spec is validated.
+            startup.release_spares();
+            let phase1 = phase1(p);
+            startup.restore_spares();
+            match phase1 {
+                (Ok(prepared), measured) => normal::run(clock, startup, prepared, measured),
+                (Err(Phase1Error::Descriptors(errno)), _) => {
+                    drop(startup);
+                    start_failed(
+                        clock,
+                        &unityrs_batch::run::Error::startup("open", Some(errno)),
+                    )
+                }
+                (Err(error), _) => {
+                    // Its spare descriptors closed before the lines.
+                    drop(startup);
+                    phase1_failed(clock, error)
+                }
+            }
+        }
         None => refused(
             clock,
             &BadSpec::usage(),
@@ -137,6 +164,8 @@ fn code(c: Code) -> ExitCode {
 
 enum Phase1Error {
     Validation(BadSpec),
+    /// `JOB.json`'s open at a full descriptor table: 69, the host's.
+    Descriptors(i32),
     Preparation,
 }
 /// Phase 1 on `path`, measured from its read through preparation (2.7, 5.3).
@@ -144,9 +173,11 @@ fn phase1(p: &[u8]) -> (Result<PreparedRun, Phase1Error>, alloc::Measured) {
     use std::os::unix::ffi::OsStrExt;
     let path = Path::new(std::ffi::OsStr::from_bytes(p));
     alloc::measured(|| {
-        let validated = spec::read::read_job(path)
-            .and_then(spec::parse)
-            .map_err(Phase1Error::Validation)?;
+        let bytes = spec::read::read_job_on_host(path).map_err(|e| match e {
+            spec::read::ReadError::Bad(bad) => Phase1Error::Validation(bad),
+            spec::read::ReadError::Descriptors(errno) => Phase1Error::Descriptors(errno),
+        })?;
+        let validated = spec::parse(bytes).map_err(Phase1Error::Validation)?;
         // Validation used the same template parser. Its accepted templates
         // compile here before phase 1's retained-heap measurement ends.
         phase1::prepare(validated).map_err(|_| Phase1Error::Preparation)
@@ -154,8 +185,15 @@ fn phase1(p: &[u8]) -> (Result<PreparedRun, Phase1Error>, alloc::Measured) {
 }
 
 fn phase1_failed(clock: &Clock, error: Phase1Error) -> ExitCode {
-    if let Phase1Error::Validation(bad) = error {
-        return refused(clock, &bad, "unityrs batch", "");
+    match error {
+        Phase1Error::Validation(bad) => return refused(clock, &bad, "unityrs batch", ""),
+        // `--check`'s: a run's exception alone (`BATCH_SPEC.md` section
+        // 10), so `--check` keeps 78 `bad_spec unreadable`.
+        Phase1Error::Descriptors(errno) => {
+            let bad = spec::read::ReadError::Descriptors(errno).into_bad_spec();
+            return refused(clock, &bad, "unityrs batch", "");
+        }
+        Phase1Error::Preparation => {}
     }
     let exit = Exit {
         status: None,
@@ -185,7 +223,7 @@ fn checked(clock: &Clock, v: &PreparedRun, m: alloc::Measured) -> ExitCode {
         status: None,
         code: Code::Complete,
         reason: None,
-        detail: Some(format!("memory_bound {}", bound.total())),
+        detail: Some(format!("memory_bound {}", bound.total()).into()),
     };
     // Uncertified off 4 KiB pages (`unityrs_batch::bound`): a stderr line.
     let note = Certification::of(unityrs_batch::sys::page_size()).note("unityrs batch");
@@ -256,9 +294,17 @@ fn startup_failure_lines(ms: u64, e: &std::io::Error) -> (String, String) {
         status: None,
         code: Code::CouldNotStart,
         reason: Some("startup_failed"),
-        detail: Some(detail),
+        detail: Some(detail.into()),
     };
     (Snapshot::validate(ms).line(Some(&exit)), err)
+}
+
+/// A 69 from a run's step 1 services (`unityrs_batch::run::process`),
+/// before phase 1: the `exit` line, then `unityrs batch: <reason> <detail>`.
+fn start_failed(clock: &Clock, error: &unityrs_batch::run::Error) -> ExitCode {
+    let detail = error.detail.clone().unwrap_or_default();
+    let err = format!("unityrs batch: {} {detail}\n", error.reason);
+    end(clock, error.code, error.reason, detail, &err)
 }
 
 /// The `exit` line of an end in phase 1, and `err` on stderr.
@@ -269,7 +315,7 @@ fn end(clock: &Clock, c: Code, reason: &'static str, detail: String, err: &str) 
         status: None,
         code: c,
         reason: Some(reason),
-        detail: Some(detail),
+        detail: Some(detail.into()),
     };
     early::write(snap.line(Some(&exit)).as_bytes(), err.as_bytes());
     code(c)

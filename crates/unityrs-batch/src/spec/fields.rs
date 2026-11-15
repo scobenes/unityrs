@@ -75,7 +75,7 @@ pub enum Ty {
     /// ([`texture_format_names`]); which of them this binary decodes is the
     /// parser's alone (`docs/BATCH_SPEC.md` 1.5).
     TextureFormat,
-    /// PNG string or the closed WebP options object.
+    /// PNG encoding strings or the closed WebP options object.
     Image,
 }
 
@@ -413,6 +413,9 @@ pub static FORMATS: Array = Array {
 
 /// `outputs.formats`' default: version 1's five, in `TextureFormat` order.
 pub const DEFAULT_FORMATS: &str = r#"["RGB24","RGBA32","DXT1","DXT5","BC7"]"#;
+
+/// String image encodings accepted by version 2.
+pub const IMAGES: &[&str] = &["png", "png_fast"];
 
 /// WebP quality, integer 0..=100; Pillow's default is 80.
 pub static WEBP_OPTIONS: [Field; 1] = [with_default("quality", int(0, 100), "80")];

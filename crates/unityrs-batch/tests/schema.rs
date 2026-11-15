@@ -108,7 +108,7 @@ fn refused_pattern() -> String {
 fn ty(t: &Ty) -> Value {
     match t {
         Ty::Image => {
-            json!({"oneOf": [{"type": "string", "enum": ["png"]}, object(&fields::WEBP_IMAGE)]})
+            json!({"oneOf": [{"type": "string", "enum": fields::IMAGES}, object(&fields::WEBP_IMAGE)]})
         }
         Ty::Bool => json!({"type": "boolean"}),
         Ty::Int { min, max } => json!({"type": "integer", "minimum": min, "maximum": max}),

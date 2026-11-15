@@ -231,3 +231,23 @@ fn webp_spec_reaches_publication_and_records_effective_quality() {
         }
     }
 }
+
+#[test]
+fn fast_png_is_published_and_recorded_in_the_version_2_manifest() {
+    let (code, scratch) = run_with(|s| s["outputs"]["image"] = json!("png_fast"), only(KEY_HEX));
+    assert_eq!(code.unwrap(), Code::Complete);
+    let head: Value = serde_json::from_slice(
+        &fs::read(scratch.join("sink/_unityrs/golden/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(head["image"], "png_fast");
+    assert_eq!(head["manifest_version"], 2);
+    assert_eq!(head["counts"]["outputs_written"], 2);
+    let (code, default) = run_with(|_| {}, only(KEY_HEX));
+    assert_eq!(code.unwrap(), Code::Complete);
+    for key in ["RGB565.png", "RGBA32.png"] {
+        let fast = fs::read(scratch.join(format!("sink/{key}"))).unwrap();
+        assert_eq!(&fast[..8], b"\x89PNG\r\n\x1a\n");
+        assert_ne!(fast, fs::read(default.join(format!("sink/{key}"))).unwrap());
+    }
+}

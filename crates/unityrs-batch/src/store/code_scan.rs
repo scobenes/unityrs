@@ -33,18 +33,12 @@ pub struct Code {
     len: u8,
 }
 
-/// The codes the engine acts on (`BATCH_SPEC.md` 1.6's table, and the
-/// 2xx words `object_store` retries on), which alone render.
-const NAMED: [&str; 4] = ["NoSuchUpload", "ExpiredToken", "InternalError", "SlowDown"];
-
-/// A code the table names renders as itself; any other, as its length, as
-/// a server can put anything there.
+/// Only the length: even a recognized code may equal a credential reflected
+/// by a hostile store. Names render only through the credential-checked
+/// vocabulary in `store::rows::code`.
 impl std::fmt::Debug for Code {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match NAMED.iter().find(|name| self.is(name)) {
-            Some(name) => write!(f, "Code({name})"),
-            None => write!(f, "Code(<{} bytes>)", self.len),
-        }
+        write!(f, "Code(<{} bytes>)", self.len)
     }
 }
 

@@ -9,8 +9,9 @@
 //! blocks of every output, textures of every size class the decoders tell
 //! apart, ASTC blocks of every kind `unityrs-texture`'s oracle fixture
 //! crafts (`tools/fixtures/texture_astc.py`), legacy CRN streams built by
-//! `tools/fixtures/texture_crunch.py`, and every mesh and sprite case `unityrs-meshdecode`'s oracle
-//! fixture records (`tools/fixtures/meshdecode.py`'s synthetic values).
+//! `tools/fixtures/texture_crunch.py`, every mesh and sprite case recorded
+//! by `tools/fixtures/meshdecode.py`, and synthetic Shader program blobs
+//! across their header-version boundaries and converter field shapes.
 //! Nothing comes from a corpus. One folder per target:
 //!
 //! ```text
@@ -48,6 +49,10 @@ use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_
 
 #[path = "fuzz_seeds/crunch.rs"]
 mod crunch;
+#[path = "fuzz_seeds/shader.rs"]
+mod shader;
+#[path = "fuzz_seeds/tierb.rs"]
+mod tierb;
 #[path = "fuzz_seeds/web.rs"]
 mod web;
 #[path = "fuzz_seeds/webp.rs"]
@@ -56,7 +61,7 @@ mod webp;
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 19] = [
+const TARGETS: [&str; 20] = [
     "detect",
     "bundle",
     "serialized",
@@ -76,10 +81,11 @@ const TARGETS: [&str; 19] = [
     "webfile",
     "unityweb",
     "fsb5",
+    "shader",
 ];
 
-/// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
-/// RGBA32, DXT1, DXT5, BC7), a named one it skips (`ETC_RGB4`) and a value
+/// The baseline `texture` seeds' formats: the five V1 exports (RGB24,
+/// RGBA32, DXT1, DXT5, BC7), one V1 skips (`ETC_RGB4`) and a value
 /// with no name.
 const TEXTURE_FORMATS: [i32; 7] = [3, 4, 10, 12, 25, 34, 1000];
 
@@ -370,24 +376,18 @@ fn depth_cases() -> Vec<(String, TreeCase)> {
     out
 }
 
-/// The format the `texture` target's check decodes `format` as
-/// (`fuzz/src/texture.rs`): itself when it is one of the five, else the
-/// five's `format mod 5`th, in `TextureFormat` order.
+/// The baseline seed formats as the texture target decodes them. The sole
+/// unknown value, 1000, selects ALL[1000 mod 66] = DXT5 in the combined
+/// registry. Additional format families have their own seed writers.
 fn texture_decoded_as(format: i32) -> i32 {
     match format {
-        3 | 4 | 10 | 12 | 25 => format,
-        _ => match format.rem_euclid(5) {
-            0 => 3,
-            1 => 4,
-            2 => 10,
-            3 => 12,
-            _ => 25,
-        },
+        3 | 4 | 10 | 12 | 25 | 34 => format,
+        _ => 12,
     }
 }
 
 /// What mip 0 of a `width` x `height` texture of `format` holds, decoded
-/// as the check decodes it: 4x4 blocks of 8 bytes (DXT1) or 16 (DXT5,
+/// as the check decodes it: 4x4 blocks of 8 bytes (DXT1, ETC1) or 16 (DXT5,
 /// BC7), else 3 bytes a pixel (RGB24) or 4 (RGBA32); 0 for a side of 0 or
 /// below.
 fn texture_need(format: i32, width: i32, height: i32) -> u64 {
@@ -396,7 +396,7 @@ fn texture_need(format: i32, width: i32, height: i32) -> u64 {
     };
     let blocks = w.div_ceil(4) * h.div_ceil(4);
     match texture_decoded_as(format) {
-        10 => blocks * 8,
+        10 | 34 => blocks * 8,
         12 | 25 => blocks * 16,
         3 => w * h * 3,
         _ => w * h * 4,
@@ -718,9 +718,11 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     zip::seeds(&mut s)?;
     web::seeds(&mut s)?;
     fsb5::write(&mut s)?;
+    shader::seeds(&mut s)?;
     texture(&mut s)?;
     pvrtc_atc::write(&mut s)?;
     astc(&mut s)?;
+    tierb::write(&mut s)?;
     crunch::write(&mut s)?;
     meshdecode(&mut s)?;
     for len in [2, 3, 257, 258, 259, 262, 32768, 65536, 65537, 131_333] {

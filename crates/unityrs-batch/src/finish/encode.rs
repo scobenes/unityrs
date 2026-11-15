@@ -50,6 +50,7 @@ pub(super) fn head(
         json.value("formats", FormatList(spec.outputs.formats))?;
         match spec.outputs.image {
             crate::spec::model::Image::Png => json.text("image", Some("png"))?,
+            crate::spec::model::Image::PngFast => json.text("image", Some("png_fast"))?,
             crate::spec::model::Image::Webp { quality } => {
                 json.object("image")?;
                 json.object("webp")?;
@@ -61,7 +62,13 @@ pub(super) fn head(
         json.value("unitycn_key", spec.unitycn_key.is_some())?;
     }
     json.text("started_at", Some(identity.started_at))?;
-    json.text("deadline", None)?;
+    let mut deadline = [0; 30];
+    let deadline = spec
+        .deadline
+        .as_ref()
+        .map(|d| utc(&d.at, &mut deadline))
+        .transpose()?;
+    json.text("deadline", deadline)?;
     json.text("ended_at", ended_at)?;
     json.text("verified", None)?;
     json.value("verified_by_size", 0)?;
@@ -71,15 +78,16 @@ pub(super) fn head(
     counts(&mut json, &report.counts)?;
     run(&mut json, spec, &report.run, identity, final_head.is_some())?;
     json.object("warnings")?;
-    for warning in [
-        "resume_list_failed",
-        "verify_list_failed",
-        "etag_not_md5",
-        "stderr_dropped",
-        "abort_failed",
-        "stdin_watch_ended",
+    let warnings = identity.warnings.read();
+    for (warning, count) in [
+        ("resume_list_failed", 0),
+        ("verify_list_failed", 0),
+        ("etag_not_md5", 0),
+        ("stderr_dropped", warnings.stderr_dropped),
+        ("abort_failed", 0),
+        ("stdin_watch_ended", u64::from(warnings.stdin_watch_ended)),
     ] {
-        json.value(warning, 0)?;
+        json.value(warning, count)?;
     }
     json.close_object()?;
     json.object("rows")?;
@@ -171,4 +179,30 @@ fn run(
     json.value("reserve_bytes", spec.spool.reserve_bytes)?;
     json.close_object()?;
     json.close_object()
+}
+/// A deadline as the head writes it (7.3): RFC 3339 in UTC, its fraction
+/// kept to the nanosecond, trailing zeros dropped.
+fn utc<'a>(at: &crate::spec::model::DateTime, out: &'a mut [u8; 30]) -> Result<&'a str, Error> {
+    use std::io::Write;
+    let ns = crate::lifetime::unix_ns(at).map_err(|_| Error::internal())?;
+    let seconds = i64::try_from(ns.div_euclid(1_000_000_000)).map_err(|_| Error::internal())?;
+    let mut nanos = ns.rem_euclid(1_000_000_000);
+    let date = crate::sys::utc(seconds).map_err(|_| Error::internal())?;
+    let mut used = 19;
+    out.get_mut(..used)
+        .ok_or_else(Error::internal)?
+        .copy_from_slice(date.get(..used).ok_or_else(Error::internal)?);
+    if nanos != 0 {
+        let mut width = 9;
+        while nanos % 10 == 0 {
+            nanos /= 10;
+            width -= 1;
+        }
+        let mut rest = out.get_mut(used..).ok_or_else(Error::internal)?;
+        write!(rest, ".{nanos:0width$}").map_err(|_| Error::internal())?;
+        used += 1 + width;
+    }
+    *out.get_mut(used).ok_or_else(Error::internal)? = b'Z';
+    std::str::from_utf8(out.get(..=used).ok_or_else(Error::internal)?)
+        .map_err(|_| Error::internal())
 }

@@ -131,7 +131,8 @@ pub const WORKER_STATE: u64 = 115_344;
 pub const PANIC_SLOT: u64 = 2 * KIB;
 
 /// The stack of each named thread (main, controller, lifecycle, progress,
-/// finisher) and of each blocking-pool thread.
+/// finisher, and the stdin watch under `stop_on_stdin_eof`) and of each
+/// blocking-pool thread.
 pub const THREAD_STACK: u64 = 2 * MIB;
 
 /// The stack each level of container nesting adds to a worker's
@@ -215,8 +216,11 @@ pub fn memory_bound(spec: &Spec, phase1: Measured, env_block: u64, k: &Constants
         .saturating_add(mul(CONTAINER_LEVEL_STACK, levels))
         .saturating_add(WORKER_STATE)
         .saturating_add(PANIC_SLOT);
+    // The five named threads, and the stdin watch's under
+    // `stop_on_stdin_eof` (2.11).
+    let named = 5 + u64::from(spec.stop_on_stdin_eof);
     let c_thr = mul(threads, worker)
-        .saturating_add(5 * THREAD_STACK)
+        .saturating_add(mul(named, THREAD_STACK))
         .saturating_add(env_block)
         .saturating_add(mul(pool, THREAD_STACK));
     let c_env = mul(

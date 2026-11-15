@@ -6,7 +6,7 @@ mod runtimes;
 mod stdin;
 mod watch;
 mod word;
-pub use clock::{Boot, Policy, TimingError};
+pub use clock::{Boot, Policy, TimingError, unix_ns};
 pub use process::Process;
 pub use runtimes::Runtimes;
 pub use stdin::StdinWatch;

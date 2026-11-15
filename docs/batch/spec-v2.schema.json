@@ -133,7 +133,7 @@
           "uniqueItems": true,
           "default": ["RGB24", "RGBA32", "DXT1", "DXT5", "BC7"]
         },
-        "image": {"oneOf": [{"type": "string", "enum": ["png"]}, {"type": "object", "properties": {"webp": {"type": "object", "properties": {"quality": {"type": "integer", "minimum": 0, "maximum": 100, "default": 80}}, "required": [], "additionalProperties": false}}, "required": ["webp"], "additionalProperties": false}], "default": "png"}
+        "image": {"oneOf": [{"type": "string", "enum": ["png", "png_fast"]}, {"type": "object", "properties": {"webp": {"type": "object", "properties": {"quality": {"type": "integer", "minimum": 0, "maximum": 100, "default": 80}}, "required": [], "additionalProperties": false}}, "required": ["webp"], "additionalProperties": false}], "default": "png", "description": "png is Pillow byte parity; png_fast is lossless level-1 PNG with fixed Sub filtering; webp selects lossy WebP with method 4 and exact false."}
       },
       "required": [],
       "additionalProperties": false

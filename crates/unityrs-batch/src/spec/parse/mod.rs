@@ -378,7 +378,7 @@ impl<'de> Value<'_, 'de> {
     fn string(self, s: &str) -> bool {
         let rule = match self.ty {
             Ty::Str(st) => validate::str_rule(s, st),
-            Ty::Image => (s != "png").then_some(Rule::Range),
+            Ty::Image => (!fields::IMAGES.contains(&s)).then_some(Rule::Range),
             Ty::TextureFormat => Formats::decoded(s).err().map(|_| Rule::Range),
             _ => Some(Rule::Type),
         };

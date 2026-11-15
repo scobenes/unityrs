@@ -310,9 +310,11 @@ impl<'a> Builder<'a> {
         let Some(text) = self.opt_string(node)? else {
             return Ok(None);
         };
+        // One the head cannot write in UTC (7.3), its offset carrying it
+        // out of years 0000 to 9999, is `format` too (section 1).
         match formats::date_time(&text) {
-            Some(at) => Ok(Some(Deadline { text, at })),
-            None => Err(self.err(Rule::Format)),
+            Some(at) if utc_representable(&at) => Ok(Some(Deadline { text, at })),
+            _ => Err(self.err(Rule::Format)),
         }
     }
 
@@ -430,6 +432,7 @@ impl<'a> Builder<'a> {
                     "image" => {
                         out.image = match value {
                             Node::Str(s) if s == "png" => Image::Png,
+                            Node::Str(s) if s == "png_fast" => Image::PngFast,
                             Node::Obj(members) => {
                                 let mut quality = 80;
                                 for (_, options) in members {
@@ -587,4 +590,14 @@ impl<'a> Builder<'a> {
             path: self.need(path, "path")?,
         })
     }
+}
+
+/// Whether `at`, converted to UTC by its offset, falls in years 0000 to
+/// 9999, the head's `deadline` form (`BATCH_SPEC.md` 7.3).
+fn utc_representable(at: &super::model::DateTime) -> bool {
+    /// 0000-01-01T00:00:00Z and 9999-12-31T23:59:59Z, in Unix seconds.
+    const FIRST: i128 = -62_167_219_200;
+    const LAST: i128 = 253_402_300_799;
+    crate::lifetime::unix_ns(at)
+        .is_ok_and(|ns| (FIRST..=LAST).contains(&ns.div_euclid(1_000_000_000)))
 }
