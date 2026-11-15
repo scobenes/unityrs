@@ -75,6 +75,8 @@ pub enum Ty {
     /// ([`texture_format_names`]); which of them this binary decodes is the
     /// parser's alone (`docs/BATCH_SPEC.md` 1.5).
     TextureFormat,
+    /// PNG string or the closed WebP options object.
+    Image,
 }
 
 /// A string's constraints.
@@ -412,10 +414,10 @@ pub static FORMATS: Array = Array {
 /// `outputs.formats`' default: version 1's five, in `TextureFormat` order.
 pub const DEFAULT_FORMATS: &str = r#"["RGB24","RGBA32","DXT1","DXT5","BC7"]"#;
 
-/// `outputs.image`'s values in this binary. `png_fast` and `webp` are
-/// reserved for later releases (`docs/BATCH_SPEC.md` 1.5), and `range`
-/// until then, as any other string is.
-pub const IMAGES: &[&str] = &["png"];
+/// WebP quality, integer 0..=100; Pillow's default is 80.
+pub static WEBP_OPTIONS: [Field; 1] = [with_default("quality", int(0, 100), "80")];
+/// The closed wrapper object; exactly one writer is selected.
+pub static WEBP_IMAGE: [Field; 1] = [required("webp", Ty::Object(&WEBP_OPTIONS))];
 
 /// `outputs` (1.5), version 2.
 pub static OUTPUTS_V2: [Field; 5] = [
@@ -423,7 +425,7 @@ pub static OUTPUTS_V2: [Field; 5] = [
     field("sprites", Ty::Object(&KEY_ONLY)),
     field("atlases", Ty::Object(&ATLASES)),
     with_default("formats", Ty::Array(&FORMATS), DEFAULT_FORMATS),
-    with_default("image", one_of(IMAGES), r#""png""#),
+    with_default("image", Ty::Image, r#""png""#),
 ];
 
 /// A Prefer (1.5): each field nullable, at least one not null

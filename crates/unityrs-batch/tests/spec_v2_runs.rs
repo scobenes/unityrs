@@ -207,3 +207,27 @@ fn drive_refuses_a_named_key_that_was_not_read() {
     assert_eq!(e.reason, "internal");
     assert!(!scratch.join("sink/_unityrs").exists());
 }
+
+#[test]
+fn webp_spec_reaches_publication_and_records_effective_quality() {
+    for quality in [80, 95] {
+        let (code, scratch) = run_with(
+            |s| {
+                s["outputs"]["image"] = json!({"webp": {"quality": quality}});
+                s["outputs"]["textures"]["key"] = json!("{name}.webp");
+            },
+            only(KEY_HEX),
+        );
+        assert_eq!(code.unwrap(), Code::Complete);
+        let head: Value = serde_json::from_slice(
+            &fs::read(scratch.join("sink/_unityrs/golden/manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(head["image"], json!({"webp": {"quality": quality}}));
+        for name in ["RGB565", "RGBA32"] {
+            let bytes = fs::read(scratch.join(format!("sink/{name}.webp"))).unwrap();
+            assert_eq!(&bytes[..4], b"RIFF");
+            assert_eq!(&bytes[8..12], b"WEBP");
+        }
+    }
+}

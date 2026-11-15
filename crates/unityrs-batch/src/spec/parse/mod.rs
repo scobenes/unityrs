@@ -378,6 +378,7 @@ impl<'de> Value<'_, 'de> {
     fn string(self, s: &str) -> bool {
         let rule = match self.ty {
             Ty::Str(st) => validate::str_rule(s, st),
+            Ty::Image => (s != "png").then_some(Rule::Range),
             Ty::TextureFormat => Formats::decoded(s).err().map(|_| Rule::Range),
             _ => Some(Rule::Type),
         };
@@ -456,6 +457,9 @@ impl<'de> Visitor<'de> for Value<'_, 'de> {
         match *self.ty {
             Ty::Object(table) => Ok(Node::Obj(
                 object(self.cx, map, table, false)?.into_boxed_slice(),
+            )),
+            Ty::Image => Ok(Node::Obj(
+                object(self.cx, map, &fields::WEBP_IMAGE, false)?.into_boxed_slice(),
             )),
             Ty::Prefer => prefer(self.cx, map),
             Ty::Headers => headers(self.cx, map),

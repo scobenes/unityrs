@@ -161,3 +161,10 @@ path = "fuzz_targets/unityweb.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "webp"
+path = "fuzz_targets/webp.rs"
+test = false
+doc = false
+bench = false

@@ -31,6 +31,8 @@ use crate::zlib;
 /// A buffer the encoder charges before it allocates it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Buffer {
+    /// The bounded WebP encoder workspace and mode conversion.
+    WebpState,
     /// zlib's deflate state: the five blocks `deflateInit2` allocates at
     /// Pillow's settings, through `zalloc` ([`DEFLATE_STATE_REQUESTS`]),
     /// charged as a constant before `deflateInit2`.

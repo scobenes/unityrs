@@ -55,6 +55,7 @@ jobs:
           - crunch
           - meshdecode
           - zlib_match
+          - webp
           - unitycn
           - zip
           - webfile

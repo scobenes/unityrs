@@ -25,7 +25,7 @@ This is the inventory `DESIGN.md` section 3 asks for. It maps every public Unity
 | A, C (or A; C for …) | the item has parts in each tier; the row's notes and section 19 say which. An observable quirk callers can depend on that is not wrong data (a file name, a dict key, a `str()` form) is Tier A |
 | — | not a behaviour of its own: a Python helper whose effect the named row covers, or Python-only tooling with no unityrs counterpart. The Python bindings (P3c) decide whether to mirror it. A case such a row calls not characterised is not Tier U: unityrs has no side of its own there to refuse it with |
 
-**Level** is a verification level from `DESIGN.md` section 6: L0 detection, L1 container metadata, L2 typetree dicts, L2b TPK nodes, L3 object re-save, L4 file save, L5 pixels, mode and visible hash, L5b PNG bytes, L6 mesh numbers and OBJ text, L6g glTF beyond UnityPy (validator clean, accessors equal to L6's arrays under the stated transform, the orientation check: section 24), L7 text exports, L8 audio, L9 extractor tree, L10 consumer shadow runs, L11 3D TRS. **L1 (env)** marks metadata at Environment scope (container paths after the preload pass, cross-file PPtrs): the canonical dump's format 1 leaves it out (`CANONICAL_DUMP.md` section 8), so it needs a format bump. **API** marks a Python-binding behaviour (a return type, an exception, a side effect) with no output of its own; it is tested through `unityrs-py` in P3c.
+**Level** is a verification level from `DESIGN.md` section 6: L0 detection, L1 container metadata, L2 typetree dicts, L2b TPK nodes, L3 object re-save, L4 file save, L5 pixels, mode and visible hash, L5b image-file bytes, L6 mesh numbers and OBJ text, L6g glTF beyond UnityPy (validator clean, accessors equal to L6's arrays under the stated transform, the orientation check: section 24), L7 text exports, L8 audio, L9 extractor tree, L10 consumer shadow runs, L11 3D TRS. **L1 (env)** marks metadata at Environment scope (container paths after the preload pass, cross-file PPtrs): the canonical dump's format 1 leaves it out (`CANONICAL_DUMP.md` section 8), so it needs a format bump. **API** marks a Python-binding behaviour (a return type, an exception, a side effect) with no output of its own; it is tested through `unityrs-py` in P3c.
 
 **Status:**
 - **verified P0 (Ln):** the oracle (`tools/parity/unitypy_dump.py`) records UnityPy's behaviour at level Ln in the canonical dump, `compare.py` diffs it, and the named self-test pins the oracle's side, or the test column says the corpus dump shows it. The rabex spike, the candidate for the base layer, matched it on every record of the corpus game and UnityPy's samples with its one-hunk header fix (`docs/spikes/rabex.md` section 3). The production crate lands in the phase given after the semicolon.
@@ -812,6 +812,18 @@ CI's generator check rejects a missing or stale recording.
 | XBM | `.xbm` | raises `OSError` | raises `OSError` | raises `OSError` | raises `OSError` | — | C | writes `{fp}{extension}.png` (section 19.2) |
 
 51 extensions, 28 formats. The libraries the writers call are section 1's.
+
+**WebP implementation (W1, still images).** Pillow 9.5.0's
+`src/PIL/WebPImagePlugin.py` `_save` and `src/_webp.c` `WebPEncode_wrapper`
+are ported over pristine libwebp 1.3.0, generic C on arm64 and amd64.
+The table above remains the oracle's generated writer contract. The
+extractor's by-extension dispatch and PNG fallback remain W2/E4 work.
+
+| item | reference | tier | level | test | status |
+|---|---|---|---|---|---|
+| WebP still-image bytes, mode conversion and alpha | Pillow 9.5.0 `WebPImagePlugin._save`: L to RGB, LA to RGBA; quality 80, method 4, exact false, lossless off; also quality 95 and exact true; libwebp alpha defaults | A | L5b | `crates/unityrs-imageio/tests/pillow_webp.rs` webps_equal_pillows_still_image_bytes replays all 576 files recorded by `tools/fixtures/image_webp.py` in `tests/fixtures/webp.json` | verified P3a W1 |
+| WebP dimension refusals | Pillow 9.5.0 `_webp.c` WebPEncode_wrapper: zero sides and sides over 16383 raise ValueError | A (typed refusal); C fallback remains planned | L5b | `crates/unityrs-imageio/tests/webp_charges.rs` webp_replays_dimension_refusals_and_rejects_invalid_options replays the oracle's five refused sizes | verified P3a W1 (encoder refusal); planned P3b (extractor fallback) |
+| WebP invalid options and refusal order | Pillow 9.5.0 `WebPEncode_wrapper` validates quality/method before picture dimensions, including when both are invalid | A | L5b | `crates/unityrs-imageio/tests/webp_charges.rs` pillow_validates_options_before_picture_dimensions replays the five option refusals in `webp.json` | verified P3a W1 |
 
 **Until P4, five writers are a temporary U** (`docs/plans/rest.md` decision 7): unityrs refuses GIF, JPEG, MPO, PDF and JPEG2000 with a named `Unsupported`, and P4 writes them. The table's tier column is printed from what Pillow does and keeps the target, A where Pillow saves, so its cells stay as generated.
 

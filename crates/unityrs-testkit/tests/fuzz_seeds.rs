@@ -186,3 +186,31 @@ fn fsb5_seeds_cover_formats_versions_and_hostile_headers(dir: &Path) {
         (0..=1).flat_map(|v| (1..=5).map(move |m| (v, m))).collect()
     );
 }
+
+#[test]
+fn webp_seeds_cover_modes_quality_and_dimension_refusals() {
+    let dir = Scratch::new("webp-seeds");
+    seeds::write(&dir).unwrap();
+    let mut modes = BTreeSet::new();
+    let mut qualities = BTreeSet::new();
+    let mut dimensions = BTreeSet::new();
+    for entry in std::fs::read_dir(dir.join("webp")).unwrap() {
+        let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+        let width = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+        let height = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        modes.insert(bytes[8]);
+        qualities.insert(bytes[9]);
+        dimensions.insert((width, height));
+        assert_eq!(
+            bytes.len(),
+            12 + width as usize * height as usize * (usize::from(bytes[8]) + 1)
+        );
+    }
+    assert_eq!(modes, (0..4).collect());
+    assert_eq!(qualities, [0, 80, 95, 100, 255].into());
+    assert!(
+        dimensions.contains(&(1, 1))
+            && dimensions.contains(&(3, 5))
+            && dimensions.contains(&(u32::MAX, 0))
+    );
+}

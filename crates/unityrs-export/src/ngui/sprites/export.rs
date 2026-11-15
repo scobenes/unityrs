@@ -286,7 +286,7 @@ impl Attempt<'_> {
             data: image.pixels(),
         };
         let seam = self.seam;
-        let file = seam.probe(|| png(&p, seam.meter));
+        let file = seam.probe(|| png(&p, seam.meter, self.options.image));
         drop(image);
         match file {
             Ok((bytes, charge, picture)) => {

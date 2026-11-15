@@ -16,7 +16,7 @@
 //! 9.3's, its details 7.3's, classified as 2.7's `classify` does
 //! ([`classify`]). [`winners`] decides 4.5's steps 1 to 3 over several
 //! inputs' cuts. The `sprites` kind (`outputs.sprites`, E17) is
-//! [`sprites`]'s: one PNG per Sprite of the input's own files, rendered by
+//! [`sprites`]'s: one image per Sprite of the input's own files, rendered by
 //! `unityrs_texture::sprite` from a sheet that may be in a dependency.
 //!
 //! Not here, being the engine's: staging, the peek pass, the attempt's
@@ -74,6 +74,28 @@ pub struct Options {
     /// (`outputs.formats`, `docs/BATCH_SPEC.md` 1.5 and section 3):
     /// [`Formats::V1`] for a version 1 spec.
     pub formats: Formats,
+    /// Image writer for every texture, sprite and atlas crop.
+    pub image: ImageEncoding,
+}
+
+/// Still-image writer; keys and archive member templates stay caller-controlled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageEncoding {
+    /// Pillow's default PNG.
+    #[default]
+    Png,
+    /// Lossy WebP with integer quality 0..=100, method 4, exact false.
+    Webp { quality: u8 },
+}
+impl ImageEncoding {
+    /// Writer name in the run manifest.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Webp { .. } => "webp",
+        }
+    }
 }
 
 /// A bundle of the view: its spec id and its bytes.
@@ -99,7 +121,7 @@ pub struct View<'a> {
 pub enum OutputKind {
     /// `texture`.
     Texture,
-    /// `sprite`: a Sprite's PNG (E17).
+    /// `sprite`: a Sprite's image (E17).
     Sprite,
     /// `atlas_json`.
     AtlasJson,
@@ -125,7 +147,7 @@ impl OutputKind {
 pub enum SkipOutput {
     /// `texture`.
     Texture,
-    /// `sprite`: a Sprite's PNG.
+    /// `sprite`: a Sprite's image.
     Sprite,
     /// `atlas_json`.
     AtlasJson,
@@ -149,7 +171,7 @@ impl SkipOutput {
     }
 }
 
-/// A PNG output's image.
+/// An image output's source pixels, before encoding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Picture {
     /// Its mode: `RGB` or `RGBA`.

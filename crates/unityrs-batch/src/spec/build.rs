@@ -428,9 +428,21 @@ impl<'a> Builder<'a> {
                     "atlases" => out.atlases = Some(b.atlases(value)?),
                     "formats" => out.formats = b.formats(value)?,
                     "image" => {
-                        out.image = match &*b.string(value)? {
-                            "png" => Image::Png,
-                            _ => return Err(b.err(Rule::Range)),
+                        out.image = match value {
+                            Node::Str(s) if s == "png" => Image::Png,
+                            Node::Obj(members) => {
+                                let mut quality = 80;
+                                for (_, options) in members {
+                                    for (_, q) in b.members(options)? {
+                                        if let Node::UInt(n) = q {
+                                            quality =
+                                                u8::try_from(n).map_err(|_| b.err(Rule::Range))?;
+                                        }
+                                    }
+                                }
+                                Image::Webp { quality }
+                            }
+                            _ => return Err(b.err(Rule::Type)),
                         };
                     }
                     _ => return Err(b.err(Rule::UnknownField)),

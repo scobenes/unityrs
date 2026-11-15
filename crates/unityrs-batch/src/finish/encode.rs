@@ -48,7 +48,16 @@ pub(super) fn head(
     if spec.spec_version >= 2 {
         // The effective options, never the key: whether one was named.
         json.value("formats", FormatList(spec.outputs.formats))?;
-        json.text("image", Some(spec.outputs.image.name()))?;
+        match spec.outputs.image {
+            crate::spec::model::Image::Png => json.text("image", Some("png"))?,
+            crate::spec::model::Image::Webp { quality } => {
+                json.object("image")?;
+                json.object("webp")?;
+                json.value("quality", quality)?;
+                json.close_object()?;
+                json.close_object()?;
+            }
+        }
         json.value("unitycn_key", spec.unitycn_key.is_some())?;
     }
     json.text("started_at", Some(identity.started_at))?;

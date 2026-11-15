@@ -56,6 +56,7 @@ pub fn options(scene: &AtlasScene) -> Options {
             .collect(),
         atlases: true,
         formats: unityrs_export::ngui::Formats::V1,
+        image: unityrs_export::ngui::ImageEncoding::Png,
     }
 }
 

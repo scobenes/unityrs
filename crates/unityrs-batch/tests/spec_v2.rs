@@ -94,15 +94,11 @@ fn each_refusal_formats_adds() {
 }
 
 #[test]
-fn image_is_png_and_the_reserved_values_are_refused() {
+fn image_rejects_unknown_strings_and_null() {
     let image = |value: Value| refused(&v2(|v| v["outputs"]["image"] = value));
     for reserved in ["png_fast", "webp", "PNG", ""] {
         assert_eq!(image(json!(reserved)), "range /outputs/image", "{reserved}");
     }
-    assert_eq!(
-        image(json!({"webp": {"quality": 80}})),
-        "type /outputs/image"
-    );
     assert_eq!(image(Value::Null), "type /outputs/image");
 }
 
@@ -187,4 +183,49 @@ fn the_version_is_known_before_the_members_it_governs() {
 fn outputs_still_needs_one_kind_in_version_2() {
     let v = v2(|v| v["outputs"] = json!({"formats": ["DXT1"], "image": "png"}));
     assert_eq!(refused(&v), "outputs_empty /outputs");
+}
+
+#[test]
+fn webp_quality_is_validated_and_version_1_refuses_it() {
+    for quality in [0u8, 80, 95, 100] {
+        let s = accepted(&v2(|v| {
+            v["outputs"]["image"] = json!({"webp": {"quality": quality}});
+        }))
+        .spec;
+        assert_eq!(s.outputs.image, Image::Webp { quality });
+    }
+    assert_eq!(
+        accepted(&v2(|v| v["outputs"]["image"] = json!({"webp": {}})))
+            .spec
+            .outputs
+            .image
+            .name(),
+        "webp"
+    );
+    for (value, error) in [
+        (
+            json!({"webp": {"quality": 101}}),
+            "range /outputs/image/webp/quality",
+        ),
+        (
+            json!({"webp": {"quality": -1}}),
+            "range /outputs/image/webp/quality",
+        ),
+        (
+            json!({"webp": {"quality": 80.5}}),
+            "type /outputs/image/webp/quality",
+        ),
+        (
+            json!({"webp": {"lossless": true}}),
+            "unknown_field /outputs/image/webp/lossless",
+        ),
+        (json!({}), "missing /outputs/image/webp"),
+        (json!({"webp": null}), "type /outputs/image/webp"),
+    ] {
+        assert_eq!(refused(&v2(|v| v["outputs"]["image"] = value)), error);
+    }
+    assert_eq!(
+        refused(&with(|v| v["outputs"]["image"] = json!({"webp": {}}))),
+        "unknown_field /outputs/image"
+    );
 }
