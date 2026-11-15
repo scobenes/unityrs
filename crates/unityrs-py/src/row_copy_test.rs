@@ -3,7 +3,6 @@ use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use std::{
     cell::RefCell,
     sync::{Arc, Condvar, Mutex},
-    time::Duration,
 };
 
 thread_local! {
@@ -22,9 +21,13 @@ impl State {
         let phase = self.phase.lock().map_err(lock_error)?;
         let (_phase, timeout) = self
             .changed
-            .wait_timeout_while(phase, Duration::from_secs(10), |&mut (started, ack)| {
-                if acknowledged { !ack } else { !started }
-            })
+            .wait_timeout_while(
+                phase,
+                unityrs_testkit::guard::DEADLOCK_GUARD,
+                |&mut (started, ack)| {
+                    if acknowledged { !ack } else { !started }
+                },
+            )
             .map_err(lock_error)?;
         if timeout.timed_out() {
             return Err(PyRuntimeError::new_err(if acknowledged {
