@@ -10,6 +10,7 @@ use super::{ctx, ctx_with, meter_for, open_with};
 use unityrs_core::budget::{Reservation, Unbounded};
 use unityrs_core::detect::DetectError;
 use unityrs_core::files::File;
+use unityrs_core::once::CellError as _;
 use unityrs_core::{Error, FileContext, LimitKind};
 use unityrs_testkit::bundle::{BlockOverride, BundleSpec, EntrySpec, TestCodec, build};
 use unityrs_testkit::serialized::build as file;
@@ -423,13 +424,18 @@ fn many_rows_of_one_entry_stop_at_the_meter() {
     let m = meter_for(&ctx);
     let b = open_with(&data, &ctx, &m).unwrap();
     let got = b.load_all();
-    // The meter refuses at a row's own charge: the bundle's limit, as it
-    // is. Under CR8's test feature too, whose key makes the bundle larger
-    // by what its open charges (round 1: a key of 280 bytes moved the
-    // refusal inside row CAB-560's type tree, as that row's error).
+    // The meter refuses at whichever charge crosses the limit: a row's own
+    // (the bundle's `Error::Limit`, as it is) or one inside a row's type
+    // tree, reported as that row's error. Which one depends on byte sizes:
+    // CR8's test key (280 bytes moved it inside row CAB-560's tree), and
+    // charging changes elsewhere, move it. Either is the input's memory
+    // limit refusing, and nothing passes the bound.
+    let err = got.expect_err("2,000 rows of one entry pass the 2 MiB limit");
+    assert!(err.is_meter_refusal(), "{err:?}");
     assert!(
-        matches!(&got, Err(Error::Limit(l)) if l.kind() == LimitKind::InputMemory),
-        "{got:?}"
+        matches!(&err, Error::Limit(l) if l.kind() == LimitKind::InputMemory)
+            || matches!(&err, Error::Entry { .. }),
+        "{err:?}"
     );
     assert!(m.used() <= 2 << 20);
 }
