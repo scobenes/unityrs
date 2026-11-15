@@ -873,7 +873,7 @@ explicit Tier X API; UnityPy's extractor dispatch has no VideoClip entry.
 
 | item | reference | tier | level | test | status |
 |---|---|---|---|---|---|
-| extractor Vorbis opt-in | `extractor.exportAudioClip` writes decoded samples (section 16) | Tol (section 16's FMOD targets); synthetic decoder forwarding verified | L9 | `crates/unityrs-export/tests/audio.rs` extractor_vorbis_opt_in_writes_decoder_wav_and_none_records_failure_then_continues; `crates/unityrs-export/tests/audio.rs` extractor_without_vorbis_feature_keeps_supplied_table_a_typed_failure; `crates/unityrs-cli/tests/extract.rs` vorbis_headers_opt_in_exports_wav_and_absence_records_failure, missing_or_invalid_vorbis_headers_fail_before_loading_inputs | verified P3b for runtime table forwarding; FMOD parity awaits G8 |
+| extractor Vorbis opt-in | `extractor.exportAudioClip` writes decoded samples (section 16) | Tol (threshold: same sample count, per-channel SNR ≥90 dB and peak error ≤2 LSB int16 against FMOD, as section 16's FSB5 Vorbis row); synthetic decoder forwarding verified | L9 | `crates/unityrs-export/tests/audio.rs` extractor_vorbis_opt_in_writes_decoder_wav_and_none_records_failure_then_continues; `crates/unityrs-export/tests/audio.rs` extractor_without_vorbis_feature_keeps_supplied_table_a_typed_failure; `crates/unityrs-cli/tests/extract.rs` vorbis_headers_opt_in_exports_wav_and_absence_records_failure, missing_or_invalid_vorbis_headers_fail_before_loading_inputs | verified P3b for runtime table forwarding; FMOD parity awaits G8 |
 
 The extractor's `Options::vorbis` takes the caller's runtime `VorbisHeaders`
 table and defaults to `None`, retaining typed Vorbis failures while the run
