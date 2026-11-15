@@ -1371,10 +1371,39 @@ Level L6g (`DESIGN.md` section 6) is the validator, the L6 arrays and the orient
 | collect: geometry | each submesh's primitive from `unityrs-mesh`'s arrays, converted by the stated transform, the V flip included; a source Mesh's accessors written once per unit and shared, a glTF mesh per (source Mesh, material bindings), materials by submesh | X | L6g | the L6 arrays under the stated transform; the orientation check; the OBJ's positions, normals and faces by construction; an asymmetric textured fixture with a normal map for the V flip, the texture transform and tangent w | `crates/unityrs-gltf/tests/collect.rs`, `collect_validation.rs`, `collect_oracle.rs`: testkit collect→GLB, independent accessor/orientation checks and pinned L6 positions; normal-map fixtures and corpus aggregates pending | planned (P2a) |
 | collect: hierarchy and TRS | `unityrs-scene`'s graph (Transforms through `m_Children`, `m_Father` checked, cycles and depth bounded, an unresolved PPtr an issue with its reason) to glTF nodes, rotations (x, -y, -z, w); inactive nodes, layers and LODGroups as the profile says | X | L6g | the Editor fixtures; until then, testkit scenes whose values are known by construction | `crates/unityrs-gltf/tests/collect.rs`: testkit hierarchy, root order, inactive/layer/LOD filters; Editor fixture comparison pending | planned (P2a) |
 | collect: skins and morph targets | `m_Bones` as joints, `m_BindPose` as inverse bind matrices conjugated by diag(-1, 1, 1, 1), `m_RootBone` as the skeleton, the top four weights from the vertex data; `m_Shapes` as sparse morph targets, a multi-frame channel's last frame with the frame list in extras, each renderer's `m_BlendShapeWeights` as its node's `weights` | X | L6g | the L6 arrays (weights, indices and bind poses under the stated transform); the Editor fixtures for the skin's and morphs' meaning | `crates/unityrs-gltf/tests/collect.rs`: identity-root skins, conjugated inverse binds, shared accessors, sparse morphs and per-node weights; Editor fixture comparison pending | planned (P2a) |
-| materials | the `MaterialMapper` trait with `UnlitExtras` (`KHR_materials_unlit`) and `CorePbr` (base colour, normal map, metallic and roughness, emissive, alpha mode, double-sided, `KHR_texture_transform`); textures decoded by `unityrs-texture` and embedded as PNG by `unityrs-imageio`, a format it cannot decode leaving factors only with a report reason | X | L6g, L5 | the validator; each embedded image's pixels equal to `unityrs-texture`'s decode (L5); the Editor fixtures' Built-in and URP materials for the mapping | planned: `unityrs-gltf` material tests under the validator; Editor fixture comparison | planned (P2a) |
+| materials | the `MaterialMapper` trait with `UnlitExtras` (`KHR_materials_unlit`) and `CorePbr` (base colour, normal map, metallic and roughness, emissive, alpha mode, double-sided, `KHR_texture_transform`); textures decoded by `unityrs-texture` and embedded as PNG by `unityrs-imageio`, a format it cannot decode leaving factors only with a report reason | X | L6g, L5 | the validator; each embedded image's decoded pixels follow the documented slot conversion from `unityrs-texture` (L5); the Editor fixtures' Built-in and URP materials for the mapping | `crates/unityrs-gltf/tests/materials.rs`, `material_review.rs`, `material_round1.rs`, `collect_charges.rs`: testkit collect→GLB and validator gates, independent PNG pixels and UV/ST lookup, mappings, shader rules, reported omissions, cross-file sharing, material offsets and refusal sweeps; Editor material comparison pending | planned (P2a) |
 | scenes and prefabs | a scene file (`levelN`, or a scene bundle's `BuildPlayer-<name>` CAB with its `.sharedAssets`) as one unit, its roots the Transforms with no `m_Father`, in the object table's order (`SerializedFile::objects`, not the path ids' order); each container entry whose PPtr targets a GameObject as one unit; `scene_roots` and `exclusions` filters | X | L6g | the validator; the Editor fixtures for Unity's root order, which until then is the object table's, documented | planned: `unityrs-gltf` tests on testkit scene files and prefab bundles, one whose object table's order differs from its path ids' order; Editor fixture comparison | planned (P2a) |
 | static batching | a renderer with `m_StaticBatchInfo` and `subMeshCount` above 0 reads its range of the combined mesh, whose vertices are in world space, un-batched by default into a world-space node at the scene root, the original node keeping its TRS and `extras.static_batched` (`static_batch: keep_combined` the alternative) | X | L6g | the Editor fixtures' static-batched scene, the only reference for placement: until it exists the row stays planned; the validator and the L6 arrays check the range read, not where it lands | `crates/unityrs-gltf/tests/collect.rs`: combined-mesh ranges, identity roots and keep_combined; Editor fixture comparison pending | planned (P2a) |
 | built-in meshes and the default material | a PPtr to `Library/unity default resources` or `Resources/unity_builtin_extra` recognised by its external's basename (section 7.2) and file id (Cube 10202, Cylinder 10206, Sphere 10207, Capsule 10208, Plane 10209, Quad 10210, Default-Material 10303); profile `builtin`: `placeholder` (default: an empty node with `extras.unity_builtin` and a report entry), `resolve` (through a file the user supplies), or `procedural` (Cube, Quad and Plane, tagged `extras.approximate`) | X | L6g | the Editor fixtures for the file ids; the validator for every mode; `procedural` is approximate by statement, not Unity's vertex sets | planned: `unityrs-scene` recognition tests on testkit externals; Editor fixture comparison | planned (P2a) |
+
+Material round-one semantics (synthetic tests in `material_round1.rs`; Editor
+comparison remains pending): material RGB factors use the exact sRGB EOTF,
+alpha stays linear. Texture `m_ColorSpace` 0/1 means linear/sRGB; pixels convert
+into sRGB for base/emissive and linear for all other slots, with conversion
+usage and parameters in cache identity. Missing flags assume native slot
+encoding. Unity RG-or-AG normals reconstruct Z without reversing green (+Y in
+both Unity and glTF); `_BumpScale` is glTF normal scale. Metallic R and map A
+(or albedo A) become glTF B and `G = 1 - smoothness * scale`; Standard uses
+`_GlossMapScale`, URP uses `_Smoothness`. When albedo alpha supplies smoothness,
+the base image alpha becomes 1 and null albedo supplies white alpha 1. Specular workflows are counted and
+retain raw specular extras, metallic 0 and gloss roughness. Occlusion G moves
+to R. `_EMISSION` gates emission; linear HDR uses the maximum component as
+`KHR_materials_emissive_strength`, preserving ratios. Standard `_Mode` and
+URP `_Surface`/`_AlphaClip` choose coverage; `_Cutoff` is only a threshold.
+Lit slots share base ST before the V flip. Wrap/filter settings emit shared
+samplers; MirrorOnce becomes Mirror with `mirror_once`. Known shaders ignoring
+vertex colour (Standard, Specular setup, URP Lit/Simple Lit/Unlit and the
+Unlit Texture/Color/Transparent/Cutout shaders) keep it as `_COLOR_0` and count
+`vertex_colors_ignored`; unknown shaders and known consumers keep COLOR_0.
+Legacy subset positions pair with material slots. Excess submeshes retain
+default-material geometry with `submesh_without_material` (Unity does not draw
+them). Invalid texture plans are counted data skips: dimensions, byte length,
+2^28 padded pixels and static row/crop caps are checked before output charges;
+only actual resource/meter/allocator refusals propagate. See
+[`unityrs-gltf` README](crates/unityrs-gltf/README.md#materials) for equations,
+shader source links, sampler constants and the resampling boundary when albedo
+and metallic image sizes differ. The reviewer harness's negative ST,
+asymmetric texels and huge-header scenarios are retained as regression cases.
 
 ## Appendix A. Generated classes
 

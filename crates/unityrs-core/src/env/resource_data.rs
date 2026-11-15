@@ -117,7 +117,7 @@ impl Environment {
             self.fallback_load(&external.path)?;
         }
         for c in &candidates {
-            self.room(|| self.fallback_load(&c.joined(meter)?))?;
+            self.room(|| self.fallback_candidate(c, meter))?;
         }
         if let Some(bytes) = self.room(|| self.resource_try(from, &candidates, offset, size))? {
             return Ok(bytes);
@@ -129,13 +129,33 @@ impl Environment {
     /// `load_file(name, True)` for a resource fallback: what the resolver
     /// returns for `name`, if anything.
     fn fallback_load(&self, name: &RawStr) -> Result<(), Error> {
-        let Some(resolver) = self.inner.options.resolver.clone() else {
+        let Some(resolver) = self.inner.options.resolver.as_ref() else {
             return Ok(());
         };
         let Some(source) = resolver.resolve(name.as_bytes()) else {
             return Ok(());
         };
         self.load_resolved(&source, Asked::Fallback(name)).map(drop)
+    }
+
+    /// Lookup temporaries never need a shared owner. Only a successful load
+    /// persists its registered name in fallible shared storage, so a suffixed
+    /// resolver hit cannot abort while promoting its temporary name.
+    fn fallback_candidate(
+        &self,
+        candidate: &Candidate,
+        meter: &Arc<crate::limits::Meter>,
+    ) -> Result<(), Error> {
+        let name = candidate.joined_vec(meter)?;
+        let Some(resolver) = self.inner.options.resolver.as_ref() else {
+            return Ok(());
+        };
+        let Some(source) = resolver.resolve(name.as_slice()) else {
+            return Ok(());
+        };
+        let persistent = RawStr::from_metered(name, meter)?;
+        self.load_resolved(&source, Asked::Fallback(&persistent))
+            .map(drop)
     }
 
     /// The first candidate a registered slot answers, read.
@@ -148,8 +168,8 @@ impl Environment {
     ) -> Result<Option<Bytes>, Error> {
         let meter = from.meter();
         for c in candidates {
-            let name = c.joined(meter)?;
-            let Some(slot) = self.inner.registry.slot(&name, meter)? else {
+            let name = c.joined_vec(meter)?;
+            let Some(slot) = self.inner.registry.slot_bytes(name.as_slice(), meter)? else {
                 continue;
             };
             drop(name);

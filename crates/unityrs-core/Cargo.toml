@@ -24,6 +24,8 @@ aes = "=0.8.4"
 # Zero-copy buffers: the input, each decoded block run, every entry, every
 # SerializedFile and every TypelessData value share one allocation.
 bytes = "=1.12.1"
+# Fallible shared owners for computed names; std Arc::try_new is unstable.
+triomphe = { version = "=0.1.17", default-features = false, features = ["std"] }
 thiserror = "=2.0.21"
 # Block codecs (docs/spikes/lzma.md: liblzma static, pinned). LZ4 has no
 # dependency: `codec/lz4.rs` ports liblz4 1.9.4's decoder (plan section 3.6).
