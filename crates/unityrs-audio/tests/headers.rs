@@ -196,6 +196,41 @@ fn channel_override_replaces_header_bits() {
 }
 
 #[test]
+fn excessive_channels_refuse_before_any_metadata_allocation() {
+    for (mode, size, samples) in [
+        (1, 4, 4),
+        (2, 8, 4),
+        (3, 12, 4),
+        (4, 16, 4),
+        (5, 16, 4),
+        (7, 36, 64),
+        (16, 140, 256),
+    ] {
+        for channels in [33, 64] {
+            for index in [0, 1] {
+                let payload = vec![0; size * usize::from(channels)];
+                let mut data = bank(
+                    mode,
+                    &[(&payload, samples, 1, 8), (&payload, samples, 1, 8)],
+                );
+                let at = 60 + index * 8;
+                data[at] |= 1;
+                let chunk = [(1u32 << 25 | 2).to_le_bytes().as_slice(), &[channels]].concat();
+                data.splice(at + 8..at + 8, chunk);
+                data[12..16].copy_from_slice(&21u32.to_le_bytes());
+                let m = meter();
+                let p = plan(&data, true, &m);
+                assert!(
+                    matches!(p, Err(Error::TooManyChannels { channels: n }) if n == u16::from(channels)),
+                    "mode {mode}, channels {channels}: {p:?}"
+                );
+                assert_eq!(m.granted(), 0, "allocated before channel refusal");
+            }
+        }
+    }
+}
+
+#[test]
 fn invalid_early_record_does_not_reserve_the_declared_count() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, PermitHome};

@@ -70,7 +70,14 @@ impl Drop for Stream<'_> {
     }
 }
 
-fn compress(input: &[u8], input_chunk: usize, output_chunk: usize, reference: bool) -> Vec<u8> {
+fn compress(
+    input: &[u8],
+    input_chunk: usize,
+    output_chunk: usize,
+    reference: bool,
+    settings: [c_int; 4],
+) -> Vec<u8> {
+    let [level, window_bits, mem_level, strategy] = settings;
     let (init, run, end): (Init, Run, End) = if reference {
         (
             unityrs_zref_deflateInit2_,
@@ -89,11 +96,11 @@ fn compress(input: &[u8], input_chunk: usize, output_chunk: usize, reference: bo
     let code = unsafe {
         init(
             &raw mut backing.stream,
-            LEVEL,
+            level,
             Z_DEFLATED,
-            WINDOW_BITS,
-            MEM_LEVEL,
-            STRATEGY,
+            window_bits,
+            mem_level,
+            strategy,
             c"1.2.13".as_ptr(),
             c_int::try_from(size_of::<ZStream>()).unwrap(),
         )
@@ -117,6 +124,19 @@ fn compress(input: &[u8], input_chunk: usize, output_chunk: usize, reference: bo
     bytes
 }
 
+/// Deflate already-filtered PNG scanlines with pristine zlib 1.2.13 at
+/// level 1, windowBits 15, memLevel 9 and `Z_FILTERED` (1).
+/// These settings deliberately do not use the production constants.
+///
+/// # Panics
+/// Panics on zlib failure or a chunk size outside 1..=1 MiB.
+#[must_use]
+pub fn deflate_fast_png(input: &[u8], input_chunk: usize, output_chunk: usize) -> Vec<u8> {
+    assert!((1..=1 << 20).contains(&input_chunk));
+    assert!((1..=1 << 20).contains(&output_chunk));
+    compress(input, input_chunk, output_chunk, true, [1, 15, 9, 1])
+}
+
 /// Assert byte equality with pristine zlib at Pillow's settings, with the
 /// same input/output chunk sizes. Test and fuzz support only.
 ///
@@ -125,8 +145,9 @@ fn compress(input: &[u8], input_chunk: usize, output_chunk: usize, reference: bo
 pub fn assert_deflate_equal(input: &[u8], input_chunk: usize, output_chunk: usize) {
     assert!((1..=1 << 20).contains(&input_chunk));
     assert!((1..=1 << 20).contains(&output_chunk));
-    let actual = compress(input, input_chunk, output_chunk, false);
-    let reference = compress(input, input_chunk, output_chunk, true);
+    let settings = [LEVEL, WINDOW_BITS, MEM_LEVEL, STRATEGY];
+    let actual = compress(input, input_chunk, output_chunk, false, settings);
+    let reference = compress(input, input_chunk, output_chunk, true, settings);
     assert_eq!(
         actual.len(),
         reference.len(),

@@ -45,7 +45,7 @@ pub fn check(input: &[u8]) {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn synthetic_seeds_reach_pcm_and_malformed_paths() {
+    fn synthetic_seeds_reach_pcm_adpcm_and_malformed_paths() {
         unityrs_testkit::fsb5::seeds(|_, input| {
             super::check(input);
             for end in 0..input.len() {
