@@ -535,5 +535,64 @@
         }
       ]
     }
+  ],
+  "descriptor_cases": [
+    {
+      "id": "DXT1Crunched-ignored-alpha-endpoint-range",
+      "format": 28,
+      "width": 1,
+      "height": 1,
+      "palette_count": 1,
+      "long_codes": false,
+      "data": {
+        "hex": "4878004a017e000000aaad8100010001010100000000000000000000000000000000004a00001f00010000690000130001ffffff00000000000000000000000000002c00007c000000a80082b6db24924b2cb2cb48b94ba248040adb6c92492cb2cb2d22e52ea92d1d0102b6db24924b2cb2cb5bfc5433ecd433ec800802b6db24924b2cb2cb67ffffffffffffffffffff38001adb6c92492cb2cb2d10006b6db24924b2cb2cb4400000"
+      },
+      "data_sha256": "11de01a59b5091d4794c68540e4334d13664975e485585cb3c865bd30417a3db",
+      "levels": [
+        {
+          "width": 1,
+          "height": 1,
+          "blocks": "20f8e10f96289628"
+        }
+      ]
+    },
+    {
+      "id": "DXT1Crunched-ignored-alpha-selector-range",
+      "format": 28,
+      "width": 1,
+      "height": 1,
+      "palette_count": 1,
+      "long_codes": false,
+      "data": {
+        "hex": "4878004aecb9000000aaad8100010001010100000000000000000000000000000000004a00001f000100006900001300010000000000000000ffffff0000000001002c00007c000000a80082b6db24924b2cb2cb48b94ba248040adb6c92492cb2cb2d22e52ea92d1d0102b6db24924b2cb2cb5bfc5433ecd433ec800802b6db24924b2cb2cb67ffffffffffffffffffff38001adb6c92492cb2cb2d10006b6db24924b2cb2cb4400000"
+      },
+      "data_sha256": "e9eeb6f94967c5c153041ac34173bb213f751bddf771d88157f208e63ecc5237",
+      "levels": [
+        {
+          "width": 1,
+          "height": 1,
+          "blocks": "20f8e10f96289628"
+        }
+      ]
+    },
+    {
+      "id": "DXT1Crunched-ignored-alpha-both-range",
+      "format": 28,
+      "width": 1,
+      "height": 1,
+      "palette_count": 1,
+      "long_codes": false,
+      "data": {
+        "hex": "4878004a5b80000000aaad8100010001010100000000000000000000000000000000004a00001f00010000690000130001ffffff0000000000ffffff0000000001002c00007c000000a80082b6db24924b2cb2cb48b94ba248040adb6c92492cb2cb2d22e52ea92d1d0102b6db24924b2cb2cb5bfc5433ecd433ec800802b6db24924b2cb2cb67ffffffffffffffffffff38001adb6c92492cb2cb2d10006b6db24924b2cb2cb4400000"
+      },
+      "data_sha256": "6516f46bab99adb1d216ce0090cc6fe7ed682aedcf439abb51d3ac2dbd37e3a2",
+      "levels": [
+        {
+          "width": 1,
+          "height": 1,
+          "blocks": "20f8e10f96289628"
+        }
+      ]
+    }
   ]
 }

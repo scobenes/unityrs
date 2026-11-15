@@ -72,6 +72,7 @@ pub(super) fn decoded(
 ) -> Result<Image, Class> {
     let _sample = super::read::Sample(file.meter(), seam.hooks);
     let data = resource::data(seam, file, t)?;
+    let format = super::read::data_format(t, file, format, &data)?;
     let (width, height) = t.sides();
     let planned =
         seam.probe(|| plan(format, data.len(), width, height).map_err(|e| classify::decode(&e)))?;

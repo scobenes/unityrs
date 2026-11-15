@@ -8,7 +8,7 @@ when it is stale).
 It has two parts. The first holds the notices of code ported or vendored into
 unityrs from other projects (UnityPy and UnityPyBoost, liblz4, CPython's
 standard library, Pillow, texture2ddecoder with the AssetStudio and mikunyan
-code it carries, the legacy Crunch decoder, Arm astcenc, zlib, libwebp, OpenBLAS
+code it carries, the legacy and Unity Crunch decoders, Arm astcenc, zlib, libwebp, OpenBLAS
 under BSD-3-Clause and its GotoBLAS2 code under BSD-2-Clause-Views), and the provenance of bundled
 data; the notice of a new port is added to about.hbs, its licence to its
 crate's, and the notice to the crate's own files (a LICENSE-* file, and a
@@ -24,6 +24,36 @@ compiles (twice: the vendored LICENSE, and its LICENSE-ZLIB, the same text).
 ================================================================================
 Ported code
 ================================================================================
+
+--------------------------------------------------------------------------------
+Crunch Unity decoder in texture2ddecoder 1.0.5
+https://github.com/K0lb3/texture2ddecoder
+Licence: Zlib.
+
+unityrs-texture ports the one-face DXT1, DXT5, ETC1 and ETC2A8 unpacker
+from src/Texture2DDecoder/unitycrunch/crn_decomp.h to safe metered Rust.
+Altered source: checked header, Huffman and palette reads, fallible
+allocations, shared legacy components where identical.
+
+Copyright (c) 2010-2016 Richard Geldreich, Jr. and Binomial LLC
+
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+claim that you wrote the original software. If you use this software
+in a product, an acknowledgment in the product documentation would be
+appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source distribution.
 
 --------------------------------------------------------------------------------
 Crunch legacy decoder in texture2ddecoder 1.0.5
@@ -1131,8 +1161,8 @@ Licences:
 - BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 - Apache License 2.0 (Apache-2.0)
 - ISC License (ISC)
-- Python Software Foundation License 2.0 (PSF-2.0)
 - zlib License (Zlib)
+- Python Software Foundation License 2.0 (PSF-2.0)
 - CMU License (MIT-CMU)
 - BSD Zero Clause License (0BSD)
 - BSD 2-Clause "Simplified" License (BSD-2-Clause)
@@ -5956,6 +5986,33 @@ freely, subject to the following restrictions:
 
 2. Altered source versions must be plainly marked as such, and must not be
    misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source distribution.
+
+
+--------------------------------------------------------------------------------
+zlib License (Zlib)
+
+Used by:
+- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+
+Copyright (c) 2010-2016 Richard Geldreich, Jr. and Binomial LLC
+
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+claim that you wrote the original software. If you use this software
+in a product, an acknowledgment in the product documentation would be
+appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+misrepresented as being the original software.
 
 3. This notice may not be removed or altered from any source distribution.
 

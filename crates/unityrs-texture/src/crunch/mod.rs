@@ -17,34 +17,38 @@
 //! This legacy decoder contains static Huffman models only
 //! (crn_decomp.h:1981-2042, crn_decomp.h:3085-3161). The changing state is
 //! the chunk encoding reservoir and previous palette indices, not an
-//! adaptive Huffman tree. Unity's fork is a separate, unsupported codec.
+//! adaptive Huffman tree. Unity's fork is implemented in `unity`, sharing the bit reader and models.
 
 mod blocks;
 mod header;
 mod palettes;
 mod symbol;
+pub(crate) mod unity;
 
 /// Why legacy crunch could not be unpacked. No error owns input-sized heap.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum CrunchError {
     /// A malformed header, range, dimension or palette descriptor.
-    #[error("invalid legacy crunch header: {0}")]
+    #[error("invalid crunch header: {0}")]
     Header(&'static str),
     /// A bitstream region is empty (reference `start_decoding` refuses it).
-    #[error("truncated legacy crunch bitstream")]
+    #[error("truncated crunch bitstream")]
     Truncated,
     /// Invalid Huffman model, run or canonical code.
-    #[error("invalid legacy crunch Huffman code")]
+    #[error("invalid crunch Huffman code")]
     Huffman,
     /// A decoded palette index or selector delta is out of range.
-    #[error("invalid legacy crunch palette index")]
+    #[error("invalid crunch palette index")]
     Palette,
+    /// A block reference reads row storage the reference never initialized.
+    #[error("uninitialized crunch block reference")]
+    Reference,
     /// The reference `Texture2D` wrapper provides only one destination face.
-    #[error("legacy crunch Texture2D requires one face, got {0}")]
+    #[error("crunch Texture2D requires one face, got {0}")]
     Faces(u8),
     /// Segmented CRN needs an external level source the wrapper cannot supply.
-    #[error("segmented legacy crunch is unsupported")]
+    #[error("segmented crunch is unsupported")]
     Segmented,
     /// Allocation or meter refusal, with every live buffer released on return.
     #[error(transparent)]
@@ -72,6 +76,35 @@ pub(crate) fn scratch(block_bytes: u64) -> u64 {
         + heap_cost(16383)
 }
 
+/// Precharge traversal of every block in the even-rounded block grid and
+/// an upper bound on its u32 symbols, including hidden edge blocks. Both
+/// traversals round block extents to even dimensions. One reference symbol
+/// per block is conservative;
+/// endpoint and selector counts are bounded independently of their codes.
+/// Output pixel work belongs to the caller and is not charged here.
+fn block_work(size: (usize, usize), symbols: u64, meter: &Arc<Meter>) -> Result<()> {
+    let width = (size.0 as u64).div_ceil(4).div_ceil(2) * 2;
+    let height = (size.1 as u64).div_ceil(4).div_ceil(2) * 2;
+    meter.count_decode(width * height * (1 + symbols * 4))?;
+    Ok(())
+}
+
+/// Palette symbols are u32 values. Both reference decoders skip both alpha
+/// palettes when the alpha-endpoint count is zero, regardless of selectors.
+fn palette_work(header: &header::Header, symbols: [u64; 4], meter: &Arc<Meter>) -> Result<()> {
+    meter.count_decode(
+        header
+            .palettes
+            .iter()
+            .zip(symbols)
+            .enumerate()
+            .filter(|(i, _)| *i < 2 || header.palettes[2].count != 0)
+            .map(|(_, (region, symbols))| region.count as u64 * symbols * 4)
+            .sum(),
+    )?;
+    Ok(())
+}
+
 /// Unpack the requested mip. Public `Texture2D` decoding always calls this
 /// with zero (texture2ddecoder 1.0.5 sdist src/pylink.cpp:134-155).
 pub(crate) fn unpack(
@@ -91,13 +124,8 @@ pub(crate) fn unpack(
     // Palette symbol decodes are independent of image dimensions and may
     // greatly exceed the output work (6/8/2/8 symbols per entry). Count
     // their u32 bytes before setup; model alphabet work is charged by Model itself.
-    let palette_work = header
-        .palettes
-        .iter()
-        .zip([6, 8, 2, 8])
-        .map(|(region, symbols)| region.count as u64 * symbols * 4)
-        .sum();
-    meter.count_decode(palette_work)?;
+    block_work((width, height), if dxt5 { 5 } else { 3 }, meter)?;
+    palette_work(&header, [6, 8, 2, 8], meter)?;
     let models = blocks::Models::new(&header, data, meter)?;
     let palettes = palettes::Palettes::new(&header, data, meter)?;
     let mut out = MeteredVec::with_capacity(meter, len)?;
