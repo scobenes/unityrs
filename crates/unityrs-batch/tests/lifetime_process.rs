@@ -314,11 +314,12 @@ fn lifecycle(
             watch.fail_timer();
         }
         if case == "signal_watch" {
-            watch
-                .trace(&std::path::PathBuf::from(
+            watch.with_trace(
+                sys::lifecycle::open_trace(&std::path::PathBuf::from(
                     std::env::var_os("B9_TRACE").unwrap(),
                 ))
-                .unwrap();
+                .unwrap(),
+            );
         }
         if case == "hard" {
             process.request(Stop::external(StopReason::Deadline));

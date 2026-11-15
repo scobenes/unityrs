@@ -24,6 +24,16 @@ impl Error {
     pub(super) fn header_env(refusal: crate::stage::env::Refusal, name: &str) -> Self {
         Self::plain(Code::CouldNotStart, refusal.name(), Some(name))
     }
+    /// 2.11 step 1's or steps 3 to 5's `startup_failed`: `<call> <ERRNO>`;
+    /// the CLI's too, for `JOB.json`'s open at a full descriptor table.
+    #[must_use]
+    pub fn startup(name: &str, errno: Option<i32>) -> Self {
+        call(Code::CouldNotStart, "startup_failed", name, errno)
+    }
+    /// 69 with no detail: `deadline_too_close` (`BATCH_SPEC.md` 1.1).
+    pub(super) fn could_not_start(reason: &'static str) -> Self {
+        Self::plain(Code::CouldNotStart, reason, None)
+    }
     pub(super) fn memory() -> Self {
         Self::plain(Code::Host, "host_memory", None)
     }
@@ -185,7 +195,8 @@ pub(super) fn host(e: &start::host::Error) -> Error {
     )
 }
 
-fn call(code: Code, reason: &'static str, name: &str, errno: Option<i32>) -> Error {
+/// `reason` with the detail `<call> <ERRNO name>`, or the call alone.
+pub(super) fn call(code: Code, reason: &'static str, name: &str, errno: Option<i32>) -> Error {
     let mut detail = String::new();
     if detail.try_reserve_exact(name.len() + 32).is_err() {
         return Error::plain(Code::Host, "host_memory", None);
@@ -193,27 +204,7 @@ fn call(code: Code, reason: &'static str, name: &str, errno: Option<i32>) -> Err
     detail.push_str(name);
     if let Some(errno) = errno {
         detail.push(' ');
-        let named = [
-            (libc::EIO, "EIO"),
-            (libc::ENOENT, "ENOENT"),
-            (libc::EACCES, "EACCES"),
-            (libc::EPERM, "EPERM"),
-            (libc::EINVAL, "EINVAL"),
-            (libc::ENOSYS, "ENOSYS"),
-            (libc::ENOSPC, "ENOSPC"),
-            (libc::EDQUOT, "EDQUOT"),
-            (libc::ENOTDIR, "ENOTDIR"),
-            (libc::ELOOP, "ELOOP"),
-            (libc::EMFILE, "EMFILE"),
-            (libc::ENFILE, "ENFILE"),
-            (libc::ENOMEM, "ENOMEM"),
-            (libc::EROFS, "EROFS"),
-            (libc::EEXIST, "EEXIST"),
-            (libc::EBADF, "EBADF"),
-        ]
-        .into_iter()
-        .find(|(n, _)| *n == errno)
-        .map(|(_, name)| name);
+        let named = errno_name(errno);
         if let Some(name) = named {
             detail.push_str(name);
         } else {
@@ -226,4 +217,31 @@ fn call(code: Code, reason: &'static str, name: &str, errno: Option<i32>) -> Err
         detail: Some(detail),
         status: None,
     }
+}
+/// The errno names details use (`BATCH_SPEC.md` 9.3); others print as
+/// their decimal value.
+pub(super) fn errno_name(errno: i32) -> Option<&'static str> {
+    [
+        (libc::EIO, "EIO"),
+        (libc::ENOENT, "ENOENT"),
+        (libc::EACCES, "EACCES"),
+        (libc::EPERM, "EPERM"),
+        (libc::EINVAL, "EINVAL"),
+        (libc::ENOSYS, "ENOSYS"),
+        (libc::ENOSPC, "ENOSPC"),
+        (libc::EDQUOT, "EDQUOT"),
+        (libc::ENOTDIR, "ENOTDIR"),
+        (libc::ELOOP, "ELOOP"),
+        (libc::EMFILE, "EMFILE"),
+        (libc::ENFILE, "ENFILE"),
+        (libc::ENOMEM, "ENOMEM"),
+        (libc::EROFS, "EROFS"),
+        (libc::EEXIST, "EEXIST"),
+        (libc::EBADF, "EBADF"),
+        (libc::ENXIO, "ENXIO"),
+        (libc::EAGAIN, "EAGAIN"),
+    ]
+    .into_iter()
+    .find(|(n, _)| *n == errno)
+    .map(|(_, name)| name)
 }

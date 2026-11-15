@@ -88,7 +88,20 @@ impl Sender {
 impl Service {
     /// Startup fixed storage is `C_base`. No line storage grows at runtime.
     pub fn start(file: File, initial: Snapshot) -> io::Result<Self> {
-        Self::start_with(file, initial, || {})
+        Self::start_with(file, initial, || {}, || {}, || {})
+    }
+    /// The process host's service: `initializing` runs on its thread once
+    /// the start is released (the `tally` hook's registration, its test
+    /// point); a panic on the
+    /// thread, which ends its writes, calls `on_panic` (a stop `internal`,
+    /// 2.11's *Panics*) from the thread's own `catch_unwind`.
+    pub fn start_hosted(
+        file: File,
+        initial: Snapshot,
+        initializing: impl FnOnce() + Send + 'static,
+        on_panic: impl FnOnce() + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::start_with(file, initial, || {}, initializing, on_panic)
     }
     /// Delay/observe writer initialization in refusal tests.
     #[cfg(any(test, feature = "test-hooks"))]
@@ -97,12 +110,17 @@ impl Service {
         initial: Snapshot,
         initializing: impl FnOnce() + Send + 'static,
     ) -> io::Result<Self> {
-        Self::start_with(file, initial, initializing)
+        Self::start_with(file, initial, initializing, || {}, || {})
     }
+    /// `delay` runs before the writer releases the starting thread (the
+    /// refusal tests' delay); `initializing` after, so a hosted thread's
+    /// test point or panic never holds its start.
     fn start_with(
         file: File,
         initial: Snapshot,
+        delay: impl FnOnce() + Send + 'static,
         initializing: impl FnOnce() + Send + 'static,
+        on_panic: impl FnOnce() + Send + 'static,
     ) -> io::Result<Self> {
         let line = Line::new()?;
         let sender = Sender(Arc::new(Shared {
@@ -126,8 +144,22 @@ impl Service {
             .name("batch-progress".into())
             .stack_size(2 << 20)
             .spawn(move || {
-                initializing();
-                writer(file, line, &shared);
+                let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    delay();
+                    writer(file, line, &shared, initializing);
+                }));
+                if body.is_err() {
+                    crate::diagnostic::pending::panic(format_args!("the progress thread: "));
+                    // Never leave the starting thread waiting.
+                    let mut state = shared
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.initialization = Initialization::Ready;
+                    shared.changed.notify_all();
+                    drop(state);
+                    on_panic();
+                }
             })?;
         let mut state = sender.0.state.lock().map_err(|_| io::ErrorKind::Other)?;
         while matches!(state.initialization, Initialization::Waiting) {
@@ -202,7 +234,9 @@ impl std::fmt::Write for Line {
         Ok(())
     }
 }
-fn writer(mut file: File, mut line: Line, shared: &Shared) {
+/// The thread's writes, `initializing` called once the starting thread is
+/// released.
+fn writer(mut file: File, mut line: Line, shared: &Shared, initializing: impl FnOnce()) {
     let clock = Clock::process(Instant::now());
     {
         let Ok(state) = shared.state.lock() else {
@@ -216,6 +250,7 @@ fn writer(mut file: File, mut line: Line, shared: &Shared) {
         state.initialization = Initialization::Ready;
         shared.changed.notify_all();
     }
+    initializing();
     let mut seq = 0;
     loop {
         let (mut snapshot, exit) = {

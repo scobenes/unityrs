@@ -120,6 +120,7 @@ impl ngui::Hooks for Engine<'_> {
             && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.observer.meter(meter)))
                 .is_err()
         {
+            crate::diagnostic::pending::panic(format_args!("a meter's observer: "));
             self.fault.set(true);
         }
     }

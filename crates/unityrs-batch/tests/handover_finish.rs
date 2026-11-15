@@ -6,7 +6,7 @@ mod publication_support;
 use serde_json::{Value, json};
 use std::{
     fs, io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -221,6 +221,7 @@ fn finish_once(h: &HandOver, taken: Option<Stop>) -> Finished {
         memory_bound: 0,
         spool_peak: 0,
         vm_hwm: 0,
+        warnings: unityrs_batch::finish::Warnings::default(),
     };
     finish::run(
         h,
@@ -477,4 +478,69 @@ fn a_stop_racing_startup_exits_with_its_own_code_whenever_no_head_was_written() 
         }
     }
     println!("RACE instants={instants} headless={headless} whole={whole:?}");
+}
+
+/// The warnings' live counters (a test's stand-in for the process host's).
+static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static ENDED: AtomicBool = AtomicBool::new(false);
+fn sampled() -> finish::Warnings {
+    finish::Warnings {
+        stderr_dropped: DROPPED.load(Ordering::SeqCst),
+        stdin_watch_ended: ENDED.load(Ordering::SeqCst),
+        sample: None,
+    }
+}
+/// Reads the `running` head at phase 6's seam, then moves both counters.
+struct Bump(PathBuf, Mutex<Option<Value>>);
+impl Observer for Bump {
+    fn seam(&self, seam: Seam) {
+        if seam == Seam::Selection {
+            let bytes = fs::read(&self.0).unwrap();
+            *self.1.lock().unwrap() = Some(serde_json::from_slice(&bytes).unwrap());
+            DROPPED.store(5, Ordering::SeqCst);
+            ENDED.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Both heads sample the warnings as each is encoded (7.3): the `running`
+/// head the counters before it, the final head their later values.
+#[test]
+fn each_head_records_the_warnings_sampled_as_it_is_encoded() {
+    let scratch = Scratch::new("warnings");
+    let prepared = one_input(&scratch);
+    let service = Service::start(
+        fs::File::create(scratch.join("progress")).unwrap(),
+        Snapshot::validate(0),
+    )
+    .unwrap();
+    DROPPED.store(3, Ordering::SeqCst);
+    let bump = Arc::new(Bump(
+        scratch.join("sink/_unityrs/r1/manifest.json"),
+        Mutex::new(None),
+    ));
+    let end = run::drive_with(
+        prepared,
+        0,
+        &service.sender(),
+        (&Space, Arc::new(publication_support::Portable)),
+        &Options {
+            observer: bump.clone(),
+            warnings: finish::Warnings {
+                sample: Some(sampled),
+                ..finish::Warnings::default()
+            },
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(end.code, Code::Complete);
+    let running = bump.1.lock().unwrap().take().expect("phase 6's seam");
+    assert_eq!(running["status"], "running", "{running}");
+    assert_eq!(running["warnings"]["stderr_dropped"], 3, "{running}");
+    assert_eq!(running["warnings"]["stdin_watch_ended"], 0, "{running}");
+    let last = head(&scratch).unwrap();
+    assert_eq!(last["status"], "complete", "{last}");
+    assert_eq!(last["warnings"]["stderr_dropped"], 5, "{last}");
+    assert_eq!(last["warnings"]["stdin_watch_ended"], 1, "{last}");
 }

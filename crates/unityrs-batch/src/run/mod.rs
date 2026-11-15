@@ -4,15 +4,20 @@
 //! in [`Parked`] until the finisher has returned, as the process host parks
 //! them until `_exit`. Cooperative quiescence is for tests alone.
 mod errors;
+#[cfg(feature = "test-hooks")]
+pub mod faults;
+#[cfg(feature = "test-hooks")]
+pub mod hooks;
 mod network;
 mod phases;
+pub mod process;
 use crate::{
     control::{Control, Culprit},
     controller::{self, Boundary, Controller, PreparedSpool},
     execution::Execution,
     finish::{self, FinishCause, HandOver, Identity, ResultEnd, Selected},
     job::RunFailure,
-    lifetime::{State, Stop},
+    lifetime::{Process, State, Stop},
     phase::{self, Account},
     phase1::{Owners, PreparedRun},
     progress::{Phase, live::Sender},
@@ -28,18 +33,36 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-/// The library's stop word: the process word's reduction and take, and a
-/// wake of the Execution's controller wait on every request.
+/// The run's stop word: the library's own, or the process host's, whose
+/// request also writes the lifecycle's self-pipe. Each request wakes the
+/// Execution's controller wait.
 #[derive(Default)]
 pub struct Lifetime {
-    pub state: State,
+    process: Option<&'static Process>,
+    own: State,
     wake: OnceLock<Arc<Wake>>,
 }
 impl Lifetime {
+    /// The process host's: its handlers and lifecycle share this word.
+    #[must_use]
+    pub fn process(process: &'static Process) -> Self {
+        Self {
+            process: Some(process),
+            own: State::new(),
+            wake: OnceLock::new(),
+        }
+    }
+    #[must_use]
+    pub fn state(&self) -> &State {
+        self.process.map_or(&self.own, |p| &p.state)
+    }
     /// An external stop (a signal, the deadline): what the host's handlers
     /// and lifecycle thread request.
     pub fn request(&self, stop: Stop) {
-        self.state.request(stop);
+        match self.process {
+            Some(process) => process.request(stop),
+            None => self.own.request(stop),
+        }
         if let Some(wake) = self.wake.get() {
             let _ = wake.notify();
         }
@@ -47,7 +70,7 @@ impl Lifetime {
 }
 impl Control for Lifetime {
     fn stopped(&self) -> bool {
-        self.state.live().is_some()
+        self.state().live().is_some()
     }
     fn request_stop(&self, failure: RunFailure, culprit: Culprit) {
         self.request((failure, culprit).into());
@@ -86,6 +109,10 @@ pub struct Options {
     pub spool: Option<Arc<dyn spool::FileSystem>>,
     /// Stages URL bundles; without it a URL is refused.
     pub network: Option<Network>,
+    /// The process warnings both heads record, the `running` head's and
+    /// the final one's, each sampled as it is encoded (7.3): the process
+    /// host's live counters; a library run has none.
+    pub warnings: finish::Warnings,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -97,6 +124,7 @@ impl Default for Options {
             parked_drops: None,
             spool: None,
             network: None,
+            warnings: finish::Warnings::default(),
         }
     }
 }
@@ -114,6 +142,9 @@ impl Default for Options {
 /// `_exit`.
 #[derive(Default)]
 struct Parked {
+    /// The hand-over as the body builds it, here so a panic's unwind
+    /// keeps what it holds (the process host's controller thread).
+    handover: Option<HandOver>,
     execution: Option<Execution>,
     owners: Option<Owners>,
     residue: Option<controller::Residue>,
@@ -224,40 +255,93 @@ pub fn drive_with(
         started_at,
     };
     let handover = body
-        .run(prepared, &mut parked)
-        .map_err(|e| terminal(e, options.lifetime.state.take()))?;
+        .run(prepared, &mut parked, None)
+        .map_err(|e| terminal(e, options.lifetime.state().take()))?;
     options.observer.handed_over(&handover);
-    let taken = options.lifetime.state.take();
+    let taken = options.lifetime.state().take();
     options.observer.taken(taken);
-    progress.update(|s| s.phase = Phase::Finish);
-    let started = handover.spool.as_ref().and_then(|s| s.lease.clone());
-    let identity = Identity {
-        started_at,
-        memory_bound: bound,
-        spool_peak: started.as_ref().map_or(0, |s| s.counter.peak()),
-        vm_hwm: crate::progress::proc_memory("VmHWM:"),
-    };
-    let finished = finish::run(
+    let finished = finish_handover(
         &handover,
         taken,
+        &Ending {
+            state: options.lifetime.state(),
+            fin: &fin,
+            started_at,
+            bound,
+            progress,
+            warnings: options.warnings,
+        },
+    );
+    // The library's caller writes its `exit` line from the last snapshot.
+    phases::post_finish(progress, &handover, found(&finished), true);
+    options.observer.finished(&finished);
+    drop(handover);
+    // The owners outlive the finisher, as the process host's do until _exit.
+    drop(parked);
+    Ok(finished.end)
+}
+/// What the finisher's part reads besides the hand-over.
+struct Ending<'a> {
+    state: &'a State,
+    fin: &'a Account,
+    started_at: &'a str,
+    bound: u64,
+    progress: &'a Sender,
+    warnings: finish::Warnings,
+}
+/// The finisher's part, after its take: the finish's progress, the 7.4
+/// finish and the counts it posts, a dispatched input not committed still
+/// `running` in each; the `exit` line's alone count it `not_run`. The
+/// library's and the host's.
+fn finish_handover(handover: &HandOver, taken: Option<Stop>, e: &Ending<'_>) -> finish::Finished {
+    // The finish's snapshot at its take: the frozen view's, before its
+    // reconciliation, in one line with the phase.
+    e.progress.update(|s| {
+        s.phase = Phase::Finish;
+        phases::finish_counts(s, handover, None, false);
+    });
+    let started = handover.spool.as_ref().and_then(|s| s.lease.clone());
+    let identity = Identity {
+        started_at: e.started_at,
+        memory_bound: e.bound,
+        spool_peak: started.as_ref().map_or(0, |s| s.counter.peak()),
+        vm_hwm: crate::progress::proc_memory("VmHWM:"),
+        warnings: e.warnings,
+    };
+    let finished = finish::run(
+        handover,
+        taken,
         &mut finish::Finisher {
-            account: &fin,
+            account: e.fin,
             identity: &identity,
             // `T_hard` read live: unarmed until a deadline is armed.
             budget: finish::budget::Budget {
-                hard: &options.lifetime.state,
+                hard: e.state,
                 reconcile: false,
             },
             clock: &finish::budget::BootClock,
             backend: &mut finish::budget::NoJournal,
         },
     );
-    phases::post_finish(progress, &handover);
-    options.observer.finished(&finished);
-    drop(handover);
-    // The owners outlive the finisher, as the process host's do until _exit.
-    drop(parked);
-    Ok(finished.end)
+    phases::post_finish(e.progress, handover, found(&finished), false);
+    finished
+}
+/// The `exit` line's counts (`BATCH_SPEC.md` section 10), on it alone: a
+/// dispatched input not committed is `not_run` there, `running` before.
+fn exit_inputs(
+    mut snapshot: crate::progress::Snapshot,
+    handover: &HandOver,
+    finished: &finish::Finished,
+) -> crate::progress::Inputs {
+    phases::finish_counts(&mut snapshot, handover, found(finished), true);
+    snapshot.inputs
+}
+/// The input whose commit the finisher's stat found at its take.
+fn found(finished: &finish::Finished) -> Option<u32> {
+    match finished.reconcile {
+        Some(finish::Reconcile::Found(i)) => Some(i),
+        _ => None,
+    }
 }
 /// A preflight end's code against the stop the finisher took (9.1).
 fn terminal(mut error: Error, taken: Option<Stop>) -> Error {
@@ -278,9 +362,25 @@ struct Body<'a> {
 }
 impl Body<'_> {
     /// The controller's body. `Err` is a terminal end before the `running`
-    /// head; every later end is a hand-over.
+    /// head; every later end is a hand-over. The host gives its Execution,
+    /// prepared on the controller runtime it lends; a library run makes one.
+    fn run(
+        &self,
+        prepared: PreparedRun,
+        parked: &mut Parked,
+        execution: Option<Execution>,
+    ) -> Result<HandOver, Error> {
+        self.body(prepared, parked, execution)?;
+        parked.handover.take().ok_or_else(Error::internal)
+    }
+    /// [`Self::run`]'s steps, building the hand-over in `parked`.
     #[allow(clippy::too_many_lines)] // 2.11's order, start to hand-over, in one place.
-    fn run(&self, prepared: PreparedRun, parked: &mut Parked) -> Result<HandOver, Error> {
+    fn body(
+        &self,
+        prepared: PreparedRun,
+        parked: &mut Parked,
+        execution: Option<Execution>,
+    ) -> Result<(), Error> {
         let network = self.options.network.as_ref();
         let local =
             start::supported_with(&prepared.spec, network.is_some()).map_err(|_| Error::usage())?;
@@ -300,7 +400,10 @@ impl Body<'_> {
         let values = network
             .map(|n| network::values(n, &prepared.spec))
             .transpose()?;
-        let execution = Execution::prepare(&prepared).map_err(|_| Error::spawn())?;
+        let execution = match execution {
+            Some(execution) => execution,
+            None => Execution::prepare(&prepared).map_err(|_| Error::spawn())?,
+        };
         let _ = control.wake.set(execution.wake());
         let execution = parked.execution.insert(execution);
         let staging = match (network, values) {
@@ -320,9 +423,11 @@ impl Body<'_> {
             // A stop before or during the spool's startup or cleanup is
             // 7.4's first row, decided by the finisher like any later stop.
             Err(e) if e.class == start::spool::Class::Stopped => {
-                let mut handover = HandOver::new(FinishCause::Stop, Phase::Start);
+                let handover = parked
+                    .handover
+                    .insert(HandOver::new(FinishCause::Stop, Phase::Start));
                 handover.directory = Some(directory);
-                return Ok(handover);
+                return Ok(());
             }
             Err(e) => return Err(errors::spool(&e)),
         };
@@ -357,7 +462,9 @@ impl Body<'_> {
         let owner_slot = Slot::<publish::Owned>::reserve().map_err(|_| Error::memory())?;
         let facts_slot = Slot::reserve().map_err(|_| Error::memory())?;
         let done = phases::done(&started.run)?;
-        let mut handover = HandOver::new(FinishCause::Stop, Phase::Start);
+        let handover = parked
+            .handover
+            .insert(HandOver::new(FinishCause::Stop, Phase::Start));
         handover.directory = Some(directory.clone());
         handover.spool = Some(finish::Spool {
             run: started.run.clone(),
@@ -367,7 +474,7 @@ impl Body<'_> {
         });
         if control.stopped() {
             // 7.4's first row: the `running` write was never sent.
-            return Ok(handover);
+            return Ok(());
         }
         finish::running(
             controller.state(),
@@ -378,6 +485,7 @@ impl Body<'_> {
                 memory_bound: self.bound,
                 spool_peak: 0,
                 vm_hwm: 0,
+                warnings: self.options.warnings,
             },
         )
         .map_err(errors::running)?;
@@ -392,18 +500,22 @@ impl Body<'_> {
         let facts = facts_slot.write(facts);
         handover.facts = Some(facts.clone());
         handover.pending = pending;
+        handover.phase = reached;
         if boundary != Boundary::ReadyForWinners {
-            return Ok(stamp(handover, reached));
+            stamp(handover, reached);
+            return Ok(());
         }
         progress.update(|s| {
             s.phase = Phase::Winners;
             s.memory.slots_reserved = 0;
         });
+        handover.phase = Phase::Winners;
         self.options.observer.seam(Seam::Selection);
         let Some((workspace, handoff)) = phases::select(
             &facts, &started, &account, &control, execution, &directory, &fs,
         ) else {
-            return Ok(stamp(handover, Phase::Winners));
+            stamp(handover, Phase::Winners);
+            return Ok(());
         };
         let concurrency = facts.spec.download_concurrency;
         progress.update(|s| {
@@ -411,16 +523,21 @@ impl Body<'_> {
             s.outputs.winners = handoff.counts.winners;
             s.memory.slots_reserved = 0;
         });
+        let winners = handoff.counts.winners;
+        // Parked before phase 7's setup, so a panic there hands over the
+        // selected families; promoted to the publication owner below.
+        handover.selected = Some(Selected::Parts { workspace, handoff });
+        handover.phase = Phase::Publish;
         let archives = u64::try_from(facts.spec.archives.len()).map_err(|_| Error::internal())?;
         self.options.observer.seam(Seam::Outcomes);
-        let Some(outcomes) = phases::outcomes(
-            &started,
-            (handoff.counts.winners, archives),
-            &account,
-            (&*control, &*fs),
-        ) else {
-            handover.selected = Some(Selected::Parts { workspace, handoff });
-            return Ok(stamp(handover, Phase::Publish));
+        let Some(outcomes) =
+            phases::outcomes(&started, (winners, archives), &account, (&*control, &*fs))
+        else {
+            stamp(handover, Phase::Publish);
+            return Ok(());
+        };
+        let Some(Selected::Parts { workspace, handoff }) = handover.selected.take() else {
+            return Err(Error::internal());
         };
         let owned = owner_slot.write(publish::Owned {
             facts,
@@ -438,6 +555,8 @@ impl Body<'_> {
             spool_lease: Some(started.clone()),
         });
         parked.owned = Some(owned.clone());
+        // Here before publication, so a panic's hand-over reads its outcomes.
+        handover.selected = Some(Selected::Owned(owned.clone()));
         let published = publish::parallel(&owned, execution, concurrency);
         if published.is_ok() {
             self.options.observer.seam(Seam::Verified);
@@ -452,16 +571,15 @@ impl Body<'_> {
         // The hand-over takes the commit lock: a commit under way lands
         // first, and none after (W15).
         owned.gate.close();
-        handover.selected = Some(Selected::Owned(owned));
-        Ok(stamp(handover, Phase::Publish))
+        stamp(handover, Phase::Publish);
+        Ok(())
     }
 }
 /// The phase reached and the hand-over instant, sampled as it is made.
-fn stamp(mut handover: HandOver, phase: Phase) -> HandOver {
+fn stamp(handover: &mut HandOver, phase: Phase) {
     handover.phase = phase;
     handover.at = std::time::Instant::now();
     handover.boot = crate::lifetime::Boot::now().ok();
-    handover
 }
 
 #[cfg(test)]

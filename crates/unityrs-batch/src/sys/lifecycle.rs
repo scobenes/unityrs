@@ -83,8 +83,11 @@ impl AsRawFd for Pipe {
         self.read.as_raw_fd()
     }
 }
+/// The lifecycle's absolute `CLOCK_BOOTTIME` timer. Off Linux (a developer
+/// host, non-normative) there is none: [`Self::absent`] says so, and the
+/// lifecycle runs its bounded-poll fallback from the start.
 pub struct Timer {
-    fd: OwnedFd,
+    fd: Option<OwnedFd>,
     #[cfg(feature = "test-hooks")]
     fail_arm: bool,
 }
@@ -101,15 +104,24 @@ impl Timer {
             }
             // SAFETY: timerfd_create returned a newly owned fd.
             Ok(Self {
-                fd: unsafe { OwnedFd::from_raw_fd(fd) },
+                fd: Some(unsafe { OwnedFd::from_raw_fd(fd) }),
                 #[cfg(feature = "test-hooks")]
                 fail_arm: false,
             })
         }
         #[cfg(not(target_os = "linux"))]
         {
-            Err(io::Error::from_raw_os_error(libc::ENOSYS))
+            Ok(Self {
+                fd: None,
+                #[cfg(feature = "test-hooks")]
+                fail_arm: false,
+            })
         }
+    }
+    /// No timer on this host: `poll` ignores its negative descriptor.
+    #[must_use]
+    pub fn absent(&self) -> bool {
+        self.fd.is_none()
     }
     pub fn arm(&self, deadline: Boot) -> io::Result<()> {
         #[cfg(feature = "test-hooks")]
@@ -149,6 +161,9 @@ impl Timer {
         }
     }
     pub fn drain(&self) {
+        if self.fd.is_none() {
+            return;
+        }
         let mut n = 0_u64;
         // SAFETY: writable counter storage; nonblocking descriptor we own.
         unsafe {
@@ -167,7 +182,7 @@ pub fn test_mark() {
 }
 impl AsRawFd for Timer {
     fn as_raw_fd(&self) -> i32 {
-        self.fd.as_raw_fd()
+        self.fd.as_ref().map_or(-1, AsRawFd::as_raw_fd)
     }
 }
 #[cfg(feature = "test-hooks")]
@@ -216,7 +231,12 @@ impl Stdin {
         // SAFETY: scalar descriptor queries, no ownership or flag changes.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         // SAFETY: scalar descriptor query, no caller memory.
-        let terminal = unsafe { libc::isatty(fd) } == 1;
+        let tty = unsafe { libc::isatty(fd) } == 1;
+        // A pty whose master closed (a hung-up terminal) fails `isatty` with
+        // `EIO`, not `ENOTTY`: still a terminal, whose read is then EOF.
+        let terminal = tty
+            || (kind == libc::S_IFCHR
+                && io::Error::last_os_error().raw_os_error() == Some(libc::EIO));
         if flags < 0
             || flags & libc::O_ACCMODE == libc::O_WRONLY
             || !(kind == libc::S_IFIFO || kind == libc::S_IFSOCK || terminal)
@@ -289,8 +309,94 @@ mod tests;
 /// No unwinding, destructors, flushing or writes precede the process exit.
 pub fn exit(code: crate::reason::Code, sockets: &super::reset::SocketTable) -> ! {
     sockets.reset();
+    #[cfg(feature = "test-hooks")]
+    held::at_exit();
     // SAFETY: _exit takes only a status; all socket resets completed above.
     unsafe { libc::_exit(i32::from(code.value())) }
+}
+/// The host's exit before its socket table exists (2.11 steps 1 to 4's
+/// early failures): no socket can be live, so there is nothing to reset.
+pub fn exit_unprepared(code: crate::reason::Code) -> ! {
+    // SAFETY: _exit takes only a status; no socket table exists yet.
+    unsafe { libc::_exit(i32::from(code.value())) }
+}
+/// Step 1's lifecycle trace FIFO (`<trace>.lifecycle`): opened
+/// `O_WRONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY`, so a missing reader is
+/// `ENXIO` at once; a path an `fstat` finds is not a FIFO is refused. The
+/// error names the call: `open` with its errno, or `fstat` alone.
+#[cfg(feature = "test-hooks")]
+pub fn open_trace(path: &std::path::Path) -> Result<std::fs::File, (&'static str, Option<i32>)> {
+    use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY)
+        .open(path)
+        .map_err(|e| ("open", e.raw_os_error()))?;
+    match file.metadata() {
+        Ok(meta) if meta.file_type().is_fifo() => Ok(file),
+        _ => Err(("fstat", None)),
+    }
+}
+/// The `point` hook's hold at `exit_now`, after its resets (2.11's *Test
+/// hooks*): `spin`, or `wait`, which appends `exit_now reached` to the
+/// `trace` log and polls for the test's file. A signal handler reaches
+/// it too, so it makes only async-signal-safe calls (`write`, `access`,
+/// `nanosleep`) on storage armed before any handler was installed.
+#[cfg(feature = "test-hooks")]
+pub mod held {
+    use std::{
+        ffi::CString,
+        sync::{
+            OnceLock,
+            atomic::{AtomicI32, AtomicU8, Ordering::SeqCst},
+        },
+    };
+    static MODE: AtomicU8 = AtomicU8::new(0);
+    static TRACE: AtomicI32 = AtomicI32::new(-1);
+    static PATH: OnceLock<CString> = OnceLock::new();
+    /// Arm the hold once, at step 1: `None` spins, a path waits for it.
+    pub fn arm(wait: Option<CString>, trace: Option<i32>) {
+        if let Some(path) = wait {
+            if PATH.set(path).is_err() {
+                return;
+            }
+            MODE.store(2, SeqCst);
+        } else {
+            MODE.store(1, SeqCst);
+        }
+        TRACE.store(trace.unwrap_or(-1), SeqCst);
+    }
+    pub(super) fn at_exit() {
+        match MODE.load(SeqCst) {
+            1 => loop {
+                std::hint::spin_loop();
+            },
+            2 => {
+                let line = b"exit_now reached\n";
+                let fd = TRACE.load(SeqCst);
+                if fd >= 0 {
+                    // SAFETY: an fd the hooks leaked open; a fixed line.
+                    unsafe {
+                        libc::write(fd, line.as_ptr().cast(), line.len());
+                    }
+                }
+                let Some(path) = PATH.get() else { return };
+                let pause = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 1_000_000,
+                };
+                // SAFETY: a NUL-terminated path that lives for the process;
+                // `access` and `nanosleep` are async-signal-safe.
+                while unsafe { libc::access(path.as_ptr(), libc::F_OK) } != 0 {
+                    // SAFETY: a valid timespec; a null remainder.
+                    unsafe {
+                        libc::nanosleep(&raw const pause, std::ptr::null_mut());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 #[cfg(feature = "test-hooks")]
 pub(crate) fn trace(file: &std::fs::File, line: &[u8]) {
