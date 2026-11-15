@@ -115,6 +115,9 @@ offsets, each under meters 0, 1, 16 and 64 (the usual memory bound,
 Additional shader seeds are `TreeCase` values with UTF-8 and invalid UTF-8
 script bytes, string and integer scripts, and arbitrary missing or wrongly
 typed converter fields, at both value memory bounds.
+Complete converter seeds retain the Tier A cases and add player subprograms,
+separate parameter records, 6000.3 segmented tables, and big-endian 5.3/5.4
+blobs with valid and unfillable replacements.
 The `zlib_match` seeds are the builders' outputs (capped at 4 MiB), plus
 zero and periodic inputs around match and window boundaries.
 The `fsb5` seeds use `unityrs_testkit::fsb5`: passthrough audio, all supported

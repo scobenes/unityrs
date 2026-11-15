@@ -149,6 +149,23 @@ impl<'a> Seq<'a> {
             entry => Ok(entry),
         }
     }
+    pub fn segment_count(self, i: usize) -> Result<usize, Error> {
+        match self.element(i)? {
+            Entry::Other(v) if matches!(v, Value::List(_) | Value::Tuple(_) | Value::Prims(_)) => {
+                Ok(Self::new(v)?.len())
+            }
+            _ => Ok(1),
+        }
+    }
+    pub fn segment(self, i: usize, segment: usize) -> Result<Entry<'a>, Error> {
+        match self.element(i)? {
+            Entry::Other(v) if matches!(v, Value::List(_) | Value::Tuple(_) | Value::Prims(_)) => {
+                Self::new(v)?.element(segment)
+            }
+            item if segment == 0 => Ok(item),
+            _ => Err(Error::Index),
+        }
+    }
     fn element(self, i: usize) -> Result<Entry<'a>, Error> {
         if i >= self.len() {
             return Err(Error::Index);

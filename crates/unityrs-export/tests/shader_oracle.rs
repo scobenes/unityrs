@@ -35,6 +35,11 @@ fn every_shader_export_matches_the_pinned_oracle() {
     for case in cases {
         let name = case["case"].as_str().unwrap();
         assert!(names.insert(name), "duplicate fixture case {name}");
+        // E3 replays these same inputs with pinned Tier C text in
+        // shader_modern.json, retaining the omitted-program oracle answer.
+        if name.starts_with("player_only_") {
+            continue;
+        }
         let env = Environment::new(EnvOptions::unitypy());
         let File::Serialized(file) = env
             .load(Source::Bytes {

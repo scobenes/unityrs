@@ -130,12 +130,24 @@ fn shader_seeds_are_cases(dir: &Path) {
             }
         }
     }
-    assert!(versions.is_superset(&[(5, 3), (2019, 2), (2019, 3), (2021, 1)].into()));
+    assert!(versions.is_superset(&[(5, 3), (2019, 2), (2019, 3), (2021, 1), (6000, 3)].into()));
     assert_eq!(meters, [0, 1, 16, 64].into());
     assert!(counts.is_superset(&[-1, 0, 1, 2, i32::MAX].into()));
     assert!(programs.is_superset(&[201_509_030, 201_608_170, 201_806_140, 202_012_090].into()));
-    assert_eq!(trees, 32);
-    assert_eq!(complete.len(), 12);
+    assert_eq!(trees, 62);
+    assert_eq!(complete.len(), 42);
+    for name in [
+        "player_progVertex_6000_3_0",
+        "parameters_first_True_6000_3",
+        "segments_6000_3_valid",
+        "big_endian_5_3_valid",
+        "big_endian_5_4_index_bad_9",
+    ] {
+        assert!(
+            complete.iter().any(|seed| seed.contains(name)),
+            "missing modern layout seed {name}"
+        );
+    }
     assert!(kinds.is_superset(&[1, 23, 24].into()));
     assert_eq!(
         script_types,

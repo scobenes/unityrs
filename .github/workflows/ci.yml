@@ -476,6 +476,7 @@ jobs:
           python tools/fixtures/simple_export.py --check
           python tools/fixtures/image_webp.py --check
           python tools/fixtures/audio.py --check
+          # Checks Tier A plus shader_modern.json and shader_legacy.json (C/U).
           python tools/fixtures/shader.py --check
           python tools/fixtures/pyfmt.py --check
           python tools/fixtures/ngui.py --check
@@ -600,7 +601,7 @@ jobs:
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=584
+          tools/parity/tests=595
           tools/perf/tests=10
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6
