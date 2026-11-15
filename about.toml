@@ -249,6 +249,16 @@ path = "LICENSE-VGMSTREAM"
 license = "ISC"
 checksum = "1457b0323191784863916846df32a92a278ec88baef94b57685bdf9bbc67d4ca"
 
+[[unityrs-audio.clarify.files]]
+path = "LICENSE-PYTHON-FSB5"
+license = "MIT"
+checksum = "1470a02eef9e41fc7b48626069e1c4cbf6dea9a48c06b8d8f6edd56a705e20e3"
+
+[[unityrs-audio.clarify.files]]
+path = "LICENSE-FMOD5SHARP"
+license = "MIT"
+checksum = "c31ab18d3300b0666925b29071e5c60459ee12d7740b8ecde556fc83d3ea948d"
+
 # The release declares BSD-3-Clause/MIT and ships this BSD notice.
 [brotli-decompressor.clarify]
 license = "BSD-3-Clause"
@@ -256,3 +266,12 @@ license = "BSD-3-Clause"
 path = "LICENSE"
 license = "BSD-3-Clause"
 checksum = "c0c56f26d9c051cac4d200c34c84e7ae9aaa853e01a982a1df08b09931e518ae"
+
+# lewton ships MIT and Apache text in one LICENSE file; without this
+# clarification cargo-about selects a template instead of its real notice.
+[lewton.clarify]
+license = "MIT"
+[[lewton.clarify.files]]
+path = "LICENSE"
+license = "MIT"
+checksum = "9e32628a9d574751cb0a0136a207221b55ca3d95bde271880343a73de20b5964"

@@ -81,7 +81,15 @@ license-files = [
     { path = "LICENSE-UNITYPY", hash = 0x25f1bbc9 },
     { path = "LICENSE-FMOD-TOOLKIT", hash = 0x853131fc },
     { path = "LICENSE-VGMSTREAM", hash = 0x41ce9b8b },
+    { path = "LICENSE-PYTHON-FSB5", hash = 0xde9a0d8e },
+    { path = "LICENSE-FMOD5SHARP", hash = 0x42636d81 },
 ]
+
+# Use the actual combined notice shipped by lewton 0.10.2.
+[[licenses.clarify]]
+crate = "lewton"
+expression = "MIT"
+license-files = [{ path = "LICENSE", hash = 0x80e073d7 }]
 
 [bans]
 multiple-versions = "warn"
