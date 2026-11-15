@@ -13,6 +13,8 @@
 //! - [`simple`]: metered single-object `TextAsset`, Font, MonoBehaviour JSON
 //!   (or raw fallback), and Tier X `VideoClip` resource payloads.
 //! - [`shader::export`]: Tier A Shader text with metered platform-blob decoding.
+//! - [`extractor`]: UnityPy's extraction order and names, typed reports,
+//!   and corrected `GameObject` crawls, through a caller's metered sink.
 //! - [`pyjson`]: `CPython` 3.11's `json.dumps(value, indent=2)` of a typetree
 //!   value, byte for byte (E24).
 //!
@@ -46,6 +48,8 @@
 )]
 
 pub mod audio;
+pub use unityrs_audio::VorbisHeaders;
+pub mod extractor;
 pub mod ngui;
 pub mod pyjson;
 mod pyjson_numbers;

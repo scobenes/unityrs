@@ -8,10 +8,13 @@
 )]
 
 use pyo3::prelude::*;
+mod class_tpk;
+mod construction;
 mod environment;
 mod errors;
 mod files;
 mod object;
+mod object_nodes;
 mod python;
 mod settings;
 mod value;
@@ -19,6 +22,7 @@ mod worker;
 
 #[pymodule(name = "_native")]
 fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(class_tpk::class_tpk_lz4, m)?)?;
     m.add_class::<environment::NativeEnvironment>()?;
     m.add_class::<files::NativeFile>()?;
     m.add_class::<object::NativeObject>()?;

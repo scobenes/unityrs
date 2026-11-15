@@ -152,6 +152,10 @@ mod index;
 mod legacy;
 pub(super) mod open;
 mod runs;
+mod write;
+mod write_legacy;
+
+pub use write::{BundlePacker, BundleSaveOptions};
 
 pub use counts::BundleCounts;
 use counts::DecodeCounts;
@@ -241,6 +245,7 @@ pub struct FileSlot {
 
 /// A bundle: header and directory parsed, data decoded on demand.
 pub struct BundleFile {
+    pub(super) changed: std::sync::atomic::AtomicBool,
     name: RawStr,
     source: Bytes,
     legacy_data: Option<Bytes>,

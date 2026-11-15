@@ -235,7 +235,10 @@ pub(crate) fn read_source(
 ) -> Result<(bytes::Bytes, ReaderKind), Error> {
     let (data, reader) = match source {
         Source::Bytes { data, .. } => (data.clone(), ReaderKind::Memory),
-        Source::Path(p) => crate::env::split::read_source_path(p, &ctx.limits, meter)?,
+        Source::Path(p) => crate::env::split::read_source_path(p, None, &ctx.limits, meter)?,
+        Source::ConfinedPath { path, root } => {
+            crate::env::split::read_source_path(path, Some(root), &ctx.limits, meter)?
+        }
         Source::Fetch { fetch, .. } => {
             if let Some(stated) = fetch.size_hint() {
                 within_input_bytes(stated, &ctx.limits)?;

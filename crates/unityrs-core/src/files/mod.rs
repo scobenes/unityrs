@@ -16,7 +16,10 @@
 //! Owner: package C.
 
 pub mod bundle;
+mod changed;
+pub mod save;
 pub mod serialized;
+pub use save::{SaveError, SaveLayout, SaveOptions};
 mod teardown;
 pub mod web;
 
@@ -25,7 +28,8 @@ use std::sync::{Arc, Weak};
 use bytes::Bytes;
 
 pub use bundle::{
-    BlockInfo, BundleCounts, BundleFile, BundleHeader, DirEntry, FileSlot, LayoutKind,
+    BlockInfo, BundleCounts, BundleFile, BundleHeader, BundlePacker, BundleSaveOptions, DirEntry,
+    FileSlot, LayoutKind,
 };
 pub use serialized::{
     External, ObjectInfo, ScriptRef, SerializedFile, SerializedHeader, SerializedType,

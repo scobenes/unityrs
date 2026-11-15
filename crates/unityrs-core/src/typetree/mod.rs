@@ -9,6 +9,7 @@ mod from_list;
 pub mod parse;
 pub mod rows;
 pub mod tree;
+mod write;
 
 pub use from_list::{FromListError, NodeDict, TypeTreeNode};
 pub use rows::{NodeId, NodeList, NodeRow, SharedNodes, TreeError};

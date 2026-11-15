@@ -1,0 +1,26 @@
+[package]
+name = "unityrs-compress-sys"
+description = "Safe fallible bridges for Unity bundle compression over pinned LZ4HC and liblzma."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "(MIT OR Apache-2.0) AND BSD-2-Clause"
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Already linked by unityrs-core, same version and features. The raw API
+# supplies stack filters and a fallible global allocator for the writer.
+liblzma-sys = { version = "=0.4.9", features = ["static"] }
+
+[build-dependencies]
+# Already locked through the workspace's native codecs.
+cc = "=1.10.0"
+
+[dev-dependencies]
+unityrs-testkit = { path = "../unityrs-testkit" }
+# Already in the workspace lock; checks the pristine vendor manifest.
+sha2 = "=0.11.1"
+
+[lints]
+workspace = true

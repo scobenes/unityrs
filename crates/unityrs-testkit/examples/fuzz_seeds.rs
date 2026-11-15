@@ -48,10 +48,14 @@ use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_
 
 #[path = "fuzz_seeds/astc.rs"]
 mod astc;
+#[path = "fuzz_seeds/bundle_save.rs"]
+mod bundle_save;
 #[path = "fuzz_seeds/crunch.rs"]
 mod crunch;
 #[path = "fuzz_seeds/depth.rs"]
 mod depth;
+#[path = "fuzz_seeds/extractor_paths.rs"]
+mod extractor_paths;
 #[path = "fuzz_seeds/hdr.rs"]
 mod hdr;
 #[path = "fuzz_seeds/image_writers.rs"]
@@ -70,10 +74,12 @@ mod webp;
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 23] = [
+const TARGETS: [&str; 26] = [
     "detect",
     "bundle",
+    "bundle_save",
     "serialized",
+    "serialized_save",
     "typetree",
     "boost_read",
     "python_read",
@@ -94,6 +100,7 @@ const TARGETS: [&str; 23] = [
     "scene_collect",
     "obj_text",
     "shader",
+    "extractor_paths",
 ];
 
 /// The baseline `texture` seeds' formats: the five V1 exports (RGB24,
@@ -222,6 +229,7 @@ impl Seeds {
         match check_file_type(bytes, &ctx.limits) {
             Ok(FileType::BundleFile) => {
                 self.add("bundle", name, bytes)?;
+                self.add("bundle_save", name, bytes)?;
                 let Ok(b) = BundleFile::open(RawStr::from(name), data, None, &meter, &ctx) else {
                     return Ok(());
                 };
@@ -236,6 +244,8 @@ impl Seeds {
             // SerializedFile for one, and the target parses whatever it gets.
             Ok(FileType::AssetsFile | FileType::ResourceFile) => {
                 self.add("serialized", name, bytes)?;
+                self.add("serialized_save", name, bytes)?;
+                extractor_paths::file(self, name, bytes)?;
                 if let Ok(f) = SerializedFile::parse(RawStr::from(name), data, None, &meter, &ctx) {
                     self.objects(name, &f)?;
                 }
@@ -570,7 +580,9 @@ fn module_seeds(s: &mut Seeds) -> std::io::Result<()> {
     fsb5::write(s)?;
     image_writers::write(s)?;
     head::write(s)?;
+    bundle_save::write(s)?;
     shader::seeds(s)?;
+    extractor_paths::write(s)?;
     texture(s)?;
     pvrtc_atc::write(s)?;
     astc::write(s)?;

@@ -59,7 +59,7 @@ impl Fmt {
     }
 }
 
-impl Reader<'_, '_> {
+impl Reader<'_, '_, '_> {
     /// `[read_value(subtype) for _ in range(size)]` (`TypeTreeHelper.py:220`): a list of an
     /// element read one by one; a primitive element's list is held as a run
     /// (the same Python list of numbers), `vector<UInt8>`'s as a slice.
@@ -91,6 +91,9 @@ impl Reader<'_, '_> {
             }
             v.push_to(&mut items)
                 .map_err(|e| charge_error(self.at(), e))?;
+            if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
+                break;
+            }
             self.work.filled(i, first);
         }
         Ok(Out::Built(self.builder.list(items)))
@@ -288,7 +291,8 @@ impl Reader<'_, '_> {
             let min = t.info(node).map_or(0, |i| i.min_size);
             self.comprehension(count, min, |r| {
                 let first = r.direct(t, lx, a)?;
-                let second = r.direct(t, lx, b)?;
+                let second = r.direct(t, lx, b);
+                let second = r.recover(second)?;
                 r.tuple([first, second])
             })?
         } else if kind == Kind::ReferencedObject {
@@ -350,12 +354,16 @@ impl Reader<'_, '_> {
             self.work.values(1, self.at())?;
             grow_step(&mut items, count).map_err(|e| charge_error(self.at(), e))?;
             let (before, mark) = (self.pos, self.work.discards());
-            let v = item(self)?;
+            let v = item(self);
+            let v = self.recover(v)?;
             if self.pos <= before {
                 self.work.zero_size(mark, self.at())?;
             }
             v.push_to(&mut items)
                 .map_err(|e| charge_error(self.at(), e))?;
+            if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
+                break;
+            }
             self.work.filled(i, first);
         }
         Ok(Out::Built(self.builder.list(items)))

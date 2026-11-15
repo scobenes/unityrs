@@ -354,7 +354,9 @@ GameObject component accessors and renderer mesh lookup
 (UnityPy/classes/legacy_patch/GameObject.py and
 UnityPy/export/MeshRendererExporter.py's get_mesh), and unityrs-audio its AudioClip magic dispatch and extension table
 (UnityPy/export/AudioClipConverter.py and UnityPy/enums/Audio.py),
-and unityrs-export its
+and unityrs-export its extractor traversal and file naming
+(UnityPy/tools/extractor.py), with the failure and path-confinement
+corrections recorded in PARITY.md, and its
 sprites kind (UnityPy/export/SpriteHelper.py's get_image_from_sprite and
 get_image: which Sprites are read and rendered, the atlas lookup among them,
 and the sheet and alpha texture each takes; UnityPyBoost/TypeTreeHelper.cpp's
@@ -441,8 +443,10 @@ Licence: MIT.
 unityrs-core ports the HEAD reading rules for SerializedFile versions 23-26
 (node-info envelopes and shared children) and bundle format 9 (block offsets).
 Its files name this revision in a Ported from header, alongside 1.25.2 where
-that reader is reused. The crate carries this revision's notice separately
-as LICENSE-UNITYPY-HEAD; MIT is already required by its licence expression.
+that reader is reused. unityrs-py ports this revision's
+UnityPy/tools/TpkClassGenerator.py, the generator of unityrs.classes. Each
+crate carries this revision's notice separately as LICENSE-UNITYPY-HEAD; MIT
+is already required by its licence expression.
 
 {{!-- notice: LICENSE-UNITYPY-HEAD --}}
 MIT License
@@ -478,8 +482,15 @@ decoder (lib/lz4.c: LZ4_decompress_generic as LZ4_decompress_safe calls it,
 read_variable_length and the fast loop's constants) to Rust, keeping each of
 its checks at its place, so a block decodes or fails as under the liblz4
 that UnityPy's python-lz4 4.4.4 runs. The file's header holds lib/lz4.c's
-notice. liblz4's lib/LICENSE follows; it is unityrs-core's LICENSE-LZ4,
-listed under BSD-2-Clause below.
+notice. The writer also vendors pristine lz4.c, lz4.h, lz4hc.c and lz4hc.h
+from liblz4 1.9.4 in crates/unityrs-compress-sys/vendor/lz4-1.9.4/. They
+match the sources bundled by python-lz4 4.4.4 byte for byte; the sibling
+vendor/lz4-1.9.4.sha256
+records each file and the source distribution's hash. build.rs compiles HC
+level 9 with private symbol names and no C heap allocator; its state is
+provided by the caller and charged before a fallible allocation.
+liblz4's lib/LICENSE follows; it is both crates' LICENSE-LZ4, listed under
+BSD-2-Clause below.
 
 {{!-- notice: LICENSE-LZ4 --}}
 LZ4 Library

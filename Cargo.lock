@@ -1534,6 +1534,7 @@ dependencies = [
  "libc",
  "md-5",
  "object_store",
+ "proc-macro2",
  "quick-xml",
  "rustls",
  "serde",
@@ -1567,14 +1568,26 @@ dependencies = [
  "libc",
  "rustls",
  "serde_json",
+ "sha2 0.11.1",
  "unityrs-batch",
  "unityrs-core",
  "unityrs-dump",
+ "unityrs-export",
  "unityrs-gltf",
  "unityrs-mesh",
  "unityrs-scene",
  "unityrs-testkit",
  "unityrs-tpk",
+]
+
+[[package]]
+name = "unityrs-compress-sys"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "liblzma-sys",
+ "sha2 0.11.1",
+ "unityrs-testkit",
 ]
 
 [[package]]
@@ -1590,6 +1603,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "triomphe",
+ "unityrs-compress-sys",
  "unityrs-testkit",
 ]
 
@@ -1621,6 +1635,7 @@ dependencies = [
  "unityrs-audio",
  "unityrs-core",
  "unityrs-imageio",
+ "unityrs-mesh",
  "unityrs-meshdecode",
  "unityrs-testkit",
  "unityrs-texture",

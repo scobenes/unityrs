@@ -45,6 +45,8 @@ jobs:
           - detect
           - bundle
           - serialized
+          - serialized_save
+          - bundle_save
           - typetree
           - boost_read
           - python_read
@@ -65,6 +67,7 @@ jobs:
           - fsb5
           - image_writers
           - shader
+          - extractor_paths
     env:
       TARGET: ${{ matrix.target }}
     steps:
