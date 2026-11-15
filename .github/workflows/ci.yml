@@ -238,7 +238,7 @@ jobs:
               -print_final_stats=1 > "$RUNNER_TEMP/fuzz-$1.log" 2>&1
           }
           failed=""
-          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc crunch meshdecode zlib_match webp unitycn zip" "webfile unityweb" "fsb5 image_writers" "scene_collect obj_text" "shader"; do
+          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc crunch meshdecode zlib_match webp unitycn zip" "webfile unityweb" "fsb5 image_writers" "scene_collect obj_text" "shader extractor_paths"; do
             pids=""
             for t in $batch; do
               run "$t" &
@@ -248,7 +248,7 @@ jobs:
               wait "${p#*:}" || failed="$failed ${p%%:*}"
             done
           done
-          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture astc crunch meshdecode zlib_match webp unitycn zip webfile unityweb fsb5 image_writers scene_collect obj_text shader; do
+          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture astc crunch meshdecode zlib_match webp unitycn zip webfile unityweb fsb5 image_writers scene_collect obj_text shader extractor_paths; do
             echo "== $t"
             grep -E '^(stat::|#[0-9]+ +DONE)' "$RUNNER_TEMP/fuzz-$t.log" || true
           done
@@ -324,7 +324,7 @@ jobs:
             -r scripts/requirements-tests.txt
       # A skipped test, or fewer tests than the minimum, fails the job.
       - name: Self-tests (scripts)
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=113'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=114'
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
   # section 3) and with UnityPy's samples, so the tests that need them run;
@@ -596,6 +596,7 @@ jobs:
           python -c 'import zlib; from PIL import Image; v = (Image.core.zlib_version, zlib.ZLIB_RUNTIME_VERSION); assert v == ("1.2.13",) * 2, v'
           python tools/fixtures/imageio.py --check
           python tools/fixtures/image_writers.py --check
+          python tools/fixtures/extractor.py --check
           python tools/fixtures/ngui.py --check
           python tools/fixtures/sprites.py --check
       - name: The vendored WebP encoder equals its pinned release tarball

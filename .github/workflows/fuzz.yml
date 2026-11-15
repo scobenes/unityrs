@@ -65,6 +65,7 @@ jobs:
           - fsb5
           - image_writers
           - shader
+          - extractor_paths
     env:
       TARGET: ${{ matrix.target }}
     steps:

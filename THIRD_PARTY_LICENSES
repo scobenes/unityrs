@@ -350,7 +350,9 @@ GameObject component accessors and renderer mesh lookup
 (UnityPy/classes/legacy_patch/GameObject.py and
 UnityPy/export/MeshRendererExporter.py's get_mesh), and unityrs-audio its AudioClip magic dispatch and extension table
 (UnityPy/export/AudioClipConverter.py and UnityPy/enums/Audio.py),
-and unityrs-export its
+and unityrs-export its extractor traversal and file naming
+(UnityPy/tools/extractor.py), with the failure and path-confinement
+corrections recorded in PARITY.md, and its
 sprites kind (UnityPy/export/SpriteHelper.py's get_image_from_sprite and
 get_image: which Sprites are read and rendered, the atlas lookup among them,
 and the sheet and alpha texture each takes; UnityPyBoost/TypeTreeHelper.cpp's

@@ -21,6 +21,13 @@ pub(super) fn write(seeds: &mut Seeds) -> std::io::Result<()> {
             &format!("head-{}", case["name"].as_str().expect("case name")),
             &data,
         )?;
+        if target == "serialized" {
+            super::extractor_paths::file(
+                seeds,
+                &format!("head-{}", case["name"].as_str().expect("case name")),
+                &data,
+            )?;
+        }
     }
     Ok(())
 }
