@@ -1,4 +1,4 @@
-# Ported from UnityPy git 417d595 (MIT): UnityPy/tools/TpkClassGenerator.py. See LICENSE-UNITYPY and THIRD_PARTY_LICENSES.
+# Ported from UnityPy git 417d595 (MIT): UnityPy/tools/TpkClassGenerator.py. See LICENSE-UNITYPY-HEAD and THIRD_PARTY_LICENSES.
 """Generate in memory from the caller's TPK, never from a committed schema.
 
 HEAD tools/TpkClassGenerator.py:132-306 defines field merging and typing;

@@ -1,4 +1,4 @@
-# Ported from UnityPy 1.25.2 and UnityPyBoost (MIT): UnityPy/helpers/TypeTreeHelper.py, UnityPyBoost/TypeTreeHelper.cpp. See LICENSE-UNITYPY and THIRD_PARTY_LICENSES.
+# Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/TypeTreeHelper.py, UnityPyBoost/TypeTreeHelper.cpp. See LICENSE-UNITYPY and THIRD_PARTY_LICENSES.
 """Object construction, after detached core parsing and metered conversion.
 
 UnityPyBoost/TypeTreeHelper.cpp:458-583 is the Boost construction rule.
