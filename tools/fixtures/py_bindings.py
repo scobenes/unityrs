@@ -25,7 +25,7 @@ def main():
     with scratch.folder("unityrs-py-api-") as root:
         data = next(data for name, data in B.cases() if name == "text")
         records.append({"name": "paths", "hex": data.hex(), "expected": B.observe_paths(UnityPy, data, root)})
-    encoded = "[\n" + ",\n".join(json.dumps(r, ensure_ascii=True, separators=(",", ":")) for r in records) + "\n]\n"
+    encoded = "[\n" + ",\n".join(json.dumps(r, separators=(",", ":")) for r in records) + "\n]\n"
     out = ROOT / "crates/unityrs-py/tests/fixtures/api.json"
     if args.check:
         if out.read_text() != encoded:
