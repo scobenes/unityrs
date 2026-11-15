@@ -185,6 +185,13 @@ impl RunIndex {
     /// An empty, synchronized index, with its lock's heap paid for by the
     /// bundle. Initialize the lock before publishing the bundle so reads
     /// and counts never allocate synchronization state outside this charge.
+    #[cfg_attr(
+        not(target_vendor = "apple"),
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "only Darwin's lazily boxed mutex is charged here"
+        )
+    )]
     pub(super) fn mutex(charge: &mut Charge) -> Result<Mutex<Self>, ChargeError> {
         let runs = Mutex::new(Self::new(charge.meter()));
         #[cfg(target_vendor = "apple")]
