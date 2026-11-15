@@ -24,6 +24,9 @@
 //! The core splits what the builders made (a bundle into its files, a file
 //! into its objects); the inputs are the builders' alone.
 
+#[path = "fuzz_seeds/pvrtc_atc.rs"]
+mod pvrtc_atc;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -707,6 +710,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     zip::seeds(&mut s)?;
     web::seeds(&mut s)?;
     texture(&mut s)?;
+    pvrtc_atc::write(&mut s)?;
     astc(&mut s)?;
     crunch::write(&mut s)?;
     meshdecode(&mut s)?;

@@ -125,8 +125,10 @@
 //! UnityPy fixture must be recorded before claiming pixel parity.
 //!
 //! **Memory** (`docs/plans/extract.md` E59). Except for crunch, the output is the only buffer a
-//! decode allocates in proportion to the texture (no scratch: a block is 64
-//! bytes on the stack). An ASTC format's decode also builds its footprint's
+//! decode allocates in proportion to the texture. PVRTC uses a fixed
+//! nine-block neighborhood on the stack (about 1.5 KiB); ATC uses one
+//! 16-pixel block and allocates no scratch. An ASTC format's decode also
+//! builds its footprint's
 //! tables (the `astc` module, at most about 0.55 MB, at 12x12, whatever the
 //! texture's size), charged to the same meter after the output and dropped
 //! before the decode returns: [`Plan::scratch`]. The output is charged to the caller's [`Meter`] at
@@ -156,7 +158,7 @@ use unityrs_core::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost};
 
 use crate::contain::Payload;
 use crate::format::{Format, Library, Mode};
-use crate::{astc, bcn, crunch, etc, raw};
+use crate::{astc, atc, bcn, crunch, etc, pvrtc, raw};
 
 /// The most pixels a texture may have, at its padded size: 16384 x 16384.
 /// UnityPy has no such bound (module docs; `PARITY.md` section 19.3).
@@ -245,6 +247,9 @@ pub enum DecodeError {
         /// [`MAX_CROP_PIXELS`].
         max: u64,
     },
+    /// texture2ddecoder refuses a PVRTC grid with non-power-of-two block counts.
+    #[error("PVRTC block counts must be powers of two")]
+    PvrtcBlockCount,
     /// The meter or its budget refused the output buffer, or the allocator
     /// did; nothing was allocated.
     #[error(transparent)]
@@ -350,6 +355,13 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
             max: MAX_PIXELS,
         });
     }
+    if let Some(is2) = format.pvrtc_2bpp() {
+        let bx = padded_w / if is2 { 8 } else { 4 };
+        let by = padded_h / 4;
+        if !bx.is_power_of_two() || !by.is_power_of_two() {
+            return Err(DecodeError::PvrtcBlockCount);
+        }
+    }
     let mode = format.mode();
     let library = format.library();
     // From here every size is at most 4 x MAX_PIXELS.
@@ -371,6 +383,8 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
                 };
                 (blocks * b, seen)
             }
+            // ATC is block storage without UnityPy padding or a crop.
+            (Some(b), None, _) => (w64.div_ceil(4) * h64.div_ceil(4) * b, len),
             // Pillow's raw decoder reads whole rows of `bits` a pixel, each a
             // whole number of bytes here.
             _ => (pixels * u64::from(format.raw_bits().unwrap_or(0) / 8), len),
@@ -653,6 +667,10 @@ fn fill(
         Format::Bc4 => bcn::decode(bcn::Kind::Bc4, data, w, h, out),
         Format::Bc5 => bcn::decode(bcn::Kind::Bc5, data, w, h, out),
         Format::Bc7 => bcn::decode(bcn::Kind::Bc7, data, w, h, out),
+        Format::PvrtcRgb2 | Format::PvrtcRgba2 => pvrtc::decode(data, w, h, true, out),
+        Format::PvrtcRgb4 | Format::PvrtcRgba4 => pvrtc::decode(data, w, h, false, out),
+        Format::AtcRgb4 => atc::decode(data, w, h, false, out),
+        Format::AtcRgba8 => atc::decode(data, w, h, true, out),
         Format::EtcRgb4 => etc::decode(etc::Kind::Etc1, data, w, h, out),
         Format::EacR => etc::decode(etc::Kind::EacR, data, w, h, out),
         Format::EacRSigned => etc::decode(etc::Kind::EacRSigned, data, w, h, out),
