@@ -6,23 +6,14 @@ use crate::spec::model::{Sink, Spec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unsupported {
-    UrlSource,
     ObjectStore,
 }
 /// Validate the execution subset before any host inspection or mutation.
 /// Full schema validation and `--check` remain independent of this guard.
-/// A URL is refused here until the CLI activates URL staging; a library run
-/// given a network admits it through [`supported_with`]. The lifetime
+/// Local files and HTTP(S) URL bundles are supported. The lifetime
 /// fields (`deadline`, `stop_on_stdin_eof`, `parent_pid`) are the process
 /// host's (`run::process`); a library run ignores them.
 pub fn supported(spec: &Spec) -> Result<Local<'_>, Unsupported> {
-    supported_with(spec, false)
-}
-/// [`supported`], admitting URL bundles when `urls` (a networked run).
-pub(crate) fn supported_with(spec: &Spec, urls: bool) -> Result<Local<'_>, Unsupported> {
-    if !urls && spec.bundles().any(|b| b.url().is_some()) {
-        return Err(Unsupported::UrlSource);
-    }
     let Sink::Directory { root } = &spec.sink else {
         return Err(Unsupported::ObjectStore);
     };

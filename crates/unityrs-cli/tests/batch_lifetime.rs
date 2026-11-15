@@ -234,7 +234,7 @@ fn stdin_eof_stops_the_run_and_an_unwatchable_stdin_is_69() {
 /// `running` head, sampled as it is encoded, records it, as the final head
 /// does.
 #[test]
-fn the_running_head_records_a_stdin_watch_that_ended_before_it() {
+fn the_running_head_records_a_stdin_watch_and_masks_its_resolved_header_secret() {
     use std::{net::UdpSocket, os::fd::OwnedFd};
     child::scene(|scene| {
         let dir = scene.scratch.path().to_owned();
@@ -249,13 +249,19 @@ fn the_running_head_records_a_stdin_watch_that_ended_before_it() {
         drop(closed);
         let socket = UdpSocket::bind("127.0.0.1:0")?;
         socket.connect(address)?;
-        let job = job(&dir, |v| v["stop_on_stdin_eof"] = json!(true));
+        let job = job(&dir, |v| {
+            v["stop_on_stdin_eof"] = json!(true);
+            v["dependencies"] = json!([{"id":"unused", "url":"http://127.0.0.1:9/unused",
+                "headers":{"X-Secret":{"env":"UNITYRS_STDIN_SECRET"}}}]);
+            v["http"] = json!({"attempts":1});
+        });
         let s = start(
             scene,
             &job,
             &[
                 ("UNITYRS_TEST_TRACE", trace.to_str().unwrap()),
                 ("UNITYRS_TEST_POINT", &points),
+                ("UNITYRS_STDIN_SECRET", "stdin"),
             ],
             Stdio::from(OwnedFd::from(socket.try_clone()?)),
         );
@@ -265,7 +271,7 @@ fn the_running_head_records_a_stdin_watch_that_ended_before_it() {
         let mut err = Vec::new();
         while !String::from_utf8_lossy(&err)
             .lines()
-            .any(|l| l == "stdin watch ended")
+            .any(|l| l.ends_with("watch ended"))
         {
             assert!(scene.running(s.live)?, "ended before the watch did");
             assert!(Instant::now() < until, "the watch never ended");
@@ -275,6 +281,8 @@ fn the_running_head_records_a_stdin_watch_that_ended_before_it() {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
+        assert!(String::from_utf8_lossy(&err).contains("*** watch ended"));
+        assert!(!String::from_utf8_lossy(&err).contains("stdin"));
         fs::write(&start_controller, b"")?;
         traced(scene, s.live, &trace, "poll reached");
         let running = head(&dir);

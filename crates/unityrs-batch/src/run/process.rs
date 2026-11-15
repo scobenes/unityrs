@@ -15,6 +15,7 @@
 //! `running` and the facts' write lie only moves, the controller's own
 //! drive catching every unwind.
 mod early;
+mod network;
 mod threads;
 #[cfg(feature = "test-hooks")]
 use super::hooks::{Log, Point, Points, TestHooks};
@@ -133,6 +134,11 @@ impl Startup {
 /// What every thread shares, leaked at step 4.
 struct Host {
     process: Process,
+    network: OnceLock<network::Resources>,
+    spec: Arc<crate::spec::model::Spec>,
+    values: OnceLock<Arc<crate::stage::env::Values>>,
+    masked: OnceLock<Vec<&'static str>>,
+    mask_buffer: Mutex<Option<Vec<&'static str>>>,
     writer: &'static Writer,
     /// The controller's and the finisher's wakes.
     ctrl: Arc<Wake>,
@@ -162,6 +168,8 @@ struct Running {
 /// The main thread's owners, static, so a panic's unwind there drops none
 /// of them (2.11's *Panics*).
 struct Held {
+    spec: OnceLock<Arc<crate::spec::model::Spec>>,
+    known: OnceLock<Vec<&'static str>>,
     /// The stderr writer, the main thread's first owner.
     writer: OnceLock<Writer>,
     host: OnceLock<&'static Host>,
@@ -172,7 +180,11 @@ struct Held {
 impl Host {
     fn secrets(&'static self) -> Secrets<'static> {
         Secrets {
-            values: &[],
+            values: self
+                .masked
+                .get()
+                .or_else(|| HELD.known.get())
+                .map_or(&[], Vec::as_slice),
             credentials: &self.credentials,
         }
     }
@@ -196,9 +208,9 @@ impl Host {
     }
     /// A 69 once the process word exists: the final code first, so a second
     /// signal exits 69, then the main thread's lines (2.11).
-    fn fail(&self, error: &Error) -> ! {
+    fn fail(&'static self, error: &Error) -> ! {
         self.process.state.store_final(error.code);
-        self.early.write(error);
+        self.early.write_masked(error, Some(&self.secrets()));
         self.process.exit(error.code)
     }
     /// A 69 once the progress thread runs: its mailbox, at most 1 s.
@@ -252,6 +264,7 @@ pub fn run(
     bound: u64,
     note: Option<&str>,
 ) -> ! {
+    diagnostic::format::source(current_secrets);
     let held = &HELD;
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         steps(held, startup, clock, prepared, (bound, note));
@@ -266,10 +279,7 @@ pub fn run(
     // Before the host: through the writer, with no credentials yet,
     // waiting for another drain no longer than a line may (1 s).
     if let Some(writer) = held.writer.get() {
-        let secrets = Secrets {
-            values: &[],
-            credentials: &NO_CREDENTIALS,
-        };
+        let secrets = current_secrets();
         let until = std::time::Instant::now() + Duration::from_secs(1);
         threads::write_pending(writer, &secrets, true, Some(until), || {});
     }
@@ -299,9 +309,22 @@ const SAMPLED: crate::finish::Warnings = crate::finish::Warnings {
     stdin_watch_ended: false,
     sample: Some(warnings),
 };
-/// The secrets of a line written before the host exists: none.
+/// The spec-only secrets remain available before host construction, including
+/// while unwinding out of its setup. Resolved values join through the host.
+fn current_secrets() -> Secrets<'static> {
+    HELD.host.get().map_or_else(
+        || Secrets {
+            values: HELD.known.get().map_or(&[], Vec::as_slice),
+            credentials: &NO_CREDENTIALS,
+        },
+        |host| host.secrets(),
+    )
+}
+/// No credentials before the host exists.
 static NO_CREDENTIALS: OnceLock<[&'static str; 3]> = OnceLock::new();
 static HELD: Held = Held {
+    spec: OnceLock::new(),
+    known: OnceLock::new(),
     writer: OnceLock::new(),
     host: OnceLock::new(),
     runtimes: OnceLock::new(),
@@ -329,7 +352,8 @@ fn steps(
     mut prepared: PreparedRun,
     (bound, note): (u64, Option<&str>),
 ) -> ! {
-    let spec = prepared.spec.clone();
+    let spec = held.spec.get_or_init(|| prepared.spec.clone());
+    let [mut known, resolved] = std::mem::take(&mut prepared.masker);
     let deadline = spec
         .deadline
         .as_ref()
@@ -337,7 +361,7 @@ fn steps(
     let writer: &'static Writer = held.writer.get_or_init(|| startup.writer);
     let early = Early::new(clock, deadline, startup.spares);
     #[cfg(feature = "test-hooks")]
-    let hooks = startup.hooks;
+    let mut hooks = startup.hooks;
     #[cfg(feature = "test-hooks")]
     let failing = hooks.spawn;
     #[cfg(not(feature = "test-hooks"))]
@@ -346,11 +370,15 @@ fn steps(
     let (register, mark) = registration(&hooks);
     #[cfg(not(feature = "test-hooks"))]
     let (register, mark): (fn(), fn()) = (|| {}, || {});
+    if crate::stage::env::Values::unresolved_secrets(spec, &mut known).is_err() {
+        early.fail(&Error::memory());
+    }
+    let _ = held.known.set(known);
     // The main thread and the early writer thread register too.
     register();
     progress::early::on_thread_start(register);
     if let Some(note) = note {
-        early.lines(b"", note.as_bytes());
+        early.note(note);
     }
     // Step 3: E57's allocator.
     if sys::allocator(spec.threads).is_err() {
@@ -376,6 +404,11 @@ fn steps(
     };
     let host: &'static Host = Box::leak(Box::new(Host {
         process,
+        network: OnceLock::new(),
+        spec: spec.clone(),
+        values: OnceLock::new(),
+        masked: OnceLock::new(),
+        mask_buffer: Mutex::new(Some(resolved)),
         writer,
         ctrl,
         fin,
@@ -391,7 +424,20 @@ fn steps(
         handover: hooks.handover.clone(),
     }));
     let _ = held.host.set(host);
-    let stdin = if spec.stop_on_stdin_eof {
+    let (network, permits) = match network::Resources::prepare(
+        runtimes,
+        &host.process,
+        spec.download_concurrency,
+        #[cfg(feature = "test-hooks")]
+        &mut hooks,
+        #[cfg(feature = "test-hooks")]
+        host.log.clone(),
+    ) {
+        Ok(resources) => resources,
+        Err(error) => host.fail(&error),
+    };
+    let _ = host.network.set(network);
+    let mut stdin = if spec.stop_on_stdin_eof {
         match StdinWatch::prepare(
             &host.process,
             &host.stdin_ended,
@@ -425,7 +471,7 @@ fn steps(
     #[cfg(feature = "test-hooks")]
     let policy = match (hooks.cutoff_in, deadline, sys::boottime()) {
         // The wall clock read as the cutoff less `cutoff_in`.
-        (Some(ms), Some(deadline), Some(boot)) => Policy::at(
+        (Some(ms), Some(deadline), Some(boot)) if hooks.cutoff_arm.is_none() => Policy::at(
             at,
             grace,
             deadline - i128::from(grace + ms) * 1_000_000,
@@ -455,6 +501,12 @@ fn steps(
     // variable is read (`BATCH_SPEC.md` 1.1): before the host checks (2.7).
     if let Err(error) = super::unitycn_key(&mut prepared, |name| std::env::var_os(name)) {
         host.fail(&error);
+    }
+    if let Err(error) = host.headers() {
+        host.fail(&error);
+    }
+    if let Some(stdin) = &mut stdin {
+        stdin.secrets(host.secrets());
     }
     #[cfg(feature = "test-hooks")]
     let checked = if hooks.skip_host_checks {
@@ -545,6 +597,20 @@ fn steps(
     }
     watch.on_panic(lifecycle_panicked);
     #[cfg(feature = "test-hooks")]
+    if let Some(path) = &hooks.cutoff_arm {
+        use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+        {
+            Ok(file) if file.metadata().is_ok_and(|m| m.file_type().is_fifo()) => file,
+            _ => host.fail(&Error::startup("UNITYRS_TEST_CUTOFF_ARM", None)),
+        };
+        watch.cutoff_after(file, hooks.cutoff_in.unwrap_or(0));
+    }
+    #[cfg(feature = "test-hooks")]
     {
         super::hooks::arm_lifecycle(hooks.tally, running.points.clone());
         watch.mark(super::hooks::lifecycle_mark);
@@ -583,13 +649,18 @@ fn steps(
     if failing == Some(Thread::Worker) {
         host.hand(running, Error::spawn());
     }
-    let Ok(execution) = Execution::prepare_hosted(
-        &prepared,
-        runtimes.controller.handle().clone(),
-        host.ctrl.clone(),
-        register,
-    ) else {
+    let Ok(execution) =
+        Execution::prepare_lent(&prepared, &runtimes.controller, host.ctrl.clone(), register)
+    else {
         host.hand(running, Error::spawn())
+    };
+    let staging = if spec.bundles().any(|b| b.url().is_some()) {
+        match host.staging(&execution, &prepared, policy, permits) {
+            Ok(staging) => Some(staging),
+            Err(error) => host.hand(running, error),
+        }
+    } else {
+        None
     };
     *held
         .execution
@@ -607,8 +678,6 @@ fn steps(
                 .files
                 .as_ref()
                 .map(|f| f.started.clone() as Arc<dyn crate::spool::FileSystem>),
-            // URL staging through the host is B10c-2's; a URL is refused
-            // before it (`start::supported`).
             network: None,
             warnings: SAMPLED,
         },
@@ -633,7 +702,19 @@ fn steps(
         )
     });
     #[cfg(feature = "test-hooks")]
-    running.points.at(&Point::Main);
+    {
+        crate::execution::trace::arm_pools(
+            runtimes.controller.handle(),
+            runtimes.finisher.handle(),
+            host.log.clone(),
+        );
+        if let Err(refused) = super::hooks::arm_abort(&hooks, host.log.as_ref().map(|log| log.fd()))
+        {
+            host.hand(running, Error::startup(refused.0, None));
+        }
+        super::hooks::arm_sockets(running.points.clone());
+        running.points.at(&Point::Main);
+    }
     let builder = std::thread::Builder::new()
         .name("batch-controller".into())
         .stack_size(STACK);
@@ -649,9 +730,9 @@ fn steps(
                     .unwrap_or_else(PoisonError::into_inner)
                     .take();
                 match execution {
-                    Some(execution) => {
-                        threads::controller(host, running, prepared, execution, &options, files)
-                    }
+                    Some(execution) => threads::controller(
+                        host, running, prepared, execution, &options, files, staging,
+                    ),
                     None => host.request(StopReason::Internal),
                 }
             })

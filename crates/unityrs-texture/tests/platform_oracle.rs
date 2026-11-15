@@ -132,22 +132,29 @@ fn switch_padding_crop_promotions_xbox_swap_and_crunch_order_replay() {
         }
         if c["mode"].is_null() {
             let error = got.err().unwrap_or_else(|| panic!("{id}: decoded"));
-            let expected = if fields.texture_format == 6 {
+            let expected = if fields.texture_format == 24 {
+                // The oracle still raises "bad image mode". The linked
+                // specification decoder reaches a reserved mode in these
+                // synthetic blocks after the platform plan succeeds.
+                assert_eq!(c["raises"], "ValueError", "{id}");
+                assert_eq!(c["message"], "bad image mode", "{id}");
+                assert!(planned.is_ok(), "{id}");
+                unityrs_texture::DecodeError::Hdr(unityrs_texture::HdrError::ReservedMode)
+            } else if fields.texture_format == 6 {
                 unityrs_texture::DecodeError::Unsupported {
                     format: unityrs_texture::Format::ArgbFloat,
                     width: fields.width,
                 }
             } else {
-                unityrs_texture::DecodeError::Platform(if c["block"].is_null() {
-                    unityrs_texture::PlatformError::SwitchFormat(fields.texture_format)
-                } else {
-                    // BC6H still awaits its decoder task.
-                    assert_eq!(fields.texture_format, 24, "{id}");
-                    unityrs_texture::PlatformError::TextureFormat(fields.texture_format)
-                })
+                assert!(c["block"].is_null(), "{id}");
+                unityrs_texture::DecodeError::Platform(
+                    unityrs_texture::PlatformError::SwitchFormat(fields.texture_format),
+                )
             };
             assert_eq!(error, expected, "{id}");
-            assert_eq!(planned.unwrap_err(), expected, "{id}");
+            if fields.texture_format != 24 {
+                assert_eq!(planned.unwrap_err(), expected, "{id}");
+            }
             refusals += 1;
         } else {
             let got = got.unwrap_or_else(|e| panic!("{id}: {e}"));

@@ -18,9 +18,10 @@ pub(super) fn write(seeds: &mut Seeds) -> std::io::Result<()> {
         let target = case["kind"].as_str().expect("HEAD target");
         let name = format!("head-{}", case["name"].as_str().expect("case name"));
         seeds.add(target, &name, &data)?;
-        // Every SerializedFile seed is also the save target's.
+        // Every SerializedFile seed is also the save target's and extraction's.
         if target == "serialized" {
             seeds.add("serialized_save", &name, &data)?;
+            super::extractor_paths::file(seeds, &name, &data)?;
         }
     }
     Ok(())

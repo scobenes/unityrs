@@ -129,8 +129,8 @@ class ThisParityFile(unittest.TestCase):
                 self.assertEqual(cells[2], references.TIER_B[name])
                 self.assertTrue(cells[3].strip() and cells[3] != "—")
                 if name == "BC6H":
-                    self.assertEqual(cells[4], "planned: divergence test against `references.decode`")
-                    self.assertEqual(cells[5], "planned (P3a)")
+                    self.assertEqual(cells[4], "`crates/unityrs-texture/tests/bc6h_oracle.rs` bc6h_signed_and_unsigned_raw_half_oracle and bc6h_cropped_flipped_images_match_reference_and_unitypy_still_raises")
+                    self.assertEqual(cells[5], "verified P3 (decoding)")
                 else:
                     if name in {"RHalf", "RGHalf", "RFloat", "RGFloat", "RGBFloat", "RGBAFloat"}:
                         values_test = "floats_use_f64_and_round_half_up_with_ieee_specials"
@@ -153,7 +153,7 @@ class ThisParityFile(unittest.TestCase):
     def test_p1b_formats_are_the_five_design_names(self):
         p1b = sorted(name for name, row in self.rows.items() if row["status"].startswith(P1B_STATUS))
         self.assertEqual(p1b, P1B)
-        # ETC/EAC, Pillow, ASTC LDR, PVRTC/ATC and closed forms, plus ARGBFloat's refusal, are verified P3.
+        # ETC/EAC, Pillow, ASTC LDR/HDR, BC6H, PVRTC/ATC and closed forms, plus ARGBFloat's refusal, are verified P3.
         p3 = sorted(name for name, row in self.rows.items() if "verified P3 (" in row["status"])
         self.assertEqual(p3, P3)
 
@@ -291,6 +291,27 @@ class AgainstTheOracle(unittest.TestCase):
                         case = PIXEL_CASES[fmt.name][1]()
                         self.assertEqual(self.decode_case(fmt, case.data), (case.mode, case.pixels))
                 self.assertIs(texture_cells.Texture2DConverter.astc_encoder, saved)
+
+    def test_hdr_pixel_comparisons_pin_avx2_when_the_selected_build_is_scalar(self):
+        """FP16 blocks under UnityPy's LDR profile are magenta in scalar, white in the reference build."""
+        from astc_encoder import _encoder_none as scalar
+
+        # Probe before selecting scalar: unavailable reference builds skip this comparison alone.
+        with texture_cells.reference_astc():
+            pass
+        converter = texture_cells.Texture2DConverter
+        namespace = SimpleNamespace(**vars(converter.astc_encoder))
+        for name in ("ASTCConfig", "ASTCContext", "ASTCError", "ASTCImage", "ASTCSwizzle"):
+            setattr(namespace, name, getattr(scalar, name))
+        with texture_cells.decoding_with(namespace):
+            for size in (4, 5, 6, 8, 10, 12):
+                fmt = TextureFormat[f"ASTC_HDR_{size}x{size}"]
+                case = PIXEL_CASES[fmt.name][1]()
+                with self.subTest(fmt.name):
+                    self.assertEqual(set(decode(case.data, fmt).getdata()), {(255, 0, 255, 255)})
+                    self.assertEqual(self.decode_case(fmt, case.data), case.unitypy)
+                    self.assertIs(converter.astc_encoder, namespace)
+                    self.assertEqual(set(decode(case.data, fmt).getdata()), {(255, 0, 255, 255)})
 
     def decode_case(self, fmt, data, platform=None, blob=None):
         """Decode `data`; for a crunched format, the unpacker hands it on as the base format's data."""

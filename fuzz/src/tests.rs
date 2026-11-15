@@ -187,6 +187,14 @@ fn the_texture_check_takes_each_answer_under_each_meter() {
         // An image (refused under the charge less 1), short data, past the
         // bound, Pillow's raw width cap, a side of 0, empty data.
         crate::texture::check(&case(4, 2, 2, meter, vec![7; 16]));
+        for format in [24, 66, 67, 68, 69, 70, 71] {
+            for data in [vec![0; 16], vec![19; 16], vec![0; 15]] {
+                crate::texture::check(&case(format, 2, 2, meter, data.clone()));
+                if format != 24 {
+                    crate::astc::check(&case(format, 2, 2, meter, data));
+                }
+            }
+        }
         // Every Tier B/C raw format reaches its pixel loop or the meter's
         // refusal, plus short data and both Tier U layout refusals.
         for (format, bytes) in [

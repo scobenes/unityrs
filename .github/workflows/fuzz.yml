@@ -67,6 +67,7 @@ jobs:
           - image_writers
           - set_image
           - shader
+          - extractor_paths
     env:
       TARGET: ${{ matrix.target }}
     steps:

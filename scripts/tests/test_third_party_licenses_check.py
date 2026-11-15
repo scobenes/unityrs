@@ -588,6 +588,7 @@ class PortTests(unittest.TestCase):
                 "zlib 1.2.13": ["LICENSE-ZLIB"],
                 "libwebp 1.3.0": ["LICENSE-WEBP", "NOTICE-WEBP-PATENTS"],
                 "Arm astcenc commit 631fb04": ["LICENSE-ASTCENC"],
+                "bcdec v0.985": ["LICENSE-BCDEC"],
                 "Crunch legacy decoder in texture2ddecoder 1.0.5": ["LICENSE-CRUNCH"],
                 "Crunch Unity decoder in texture2ddecoder 1.0.5": ["LICENSE-UNITYCRUNCH"],
                 "RazTools/Studio": ["LICENSE-RAZTOOLS"],

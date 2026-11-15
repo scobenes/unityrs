@@ -214,3 +214,10 @@ path = "fuzz_targets/set_image.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "extractor_paths"
+path = "fuzz_targets/extractor_paths.rs"
+test = false
+doc = false
+bench = false
