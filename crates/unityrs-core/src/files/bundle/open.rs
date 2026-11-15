@@ -59,10 +59,6 @@ impl BundleFile {
         Self::open_at_depth(name, data, parent, meter, ctx, reader, 0)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "format-gated header and charged container construction"
-    )]
     pub(crate) fn open_at_depth(
         name: RawStr,
         data: Bytes,
