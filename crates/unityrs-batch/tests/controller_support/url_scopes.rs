@@ -44,8 +44,9 @@ pub const SCOPES: &[&str] = &[
 /// Every url scope's allocation count follows the peer's timing and the
 /// machine's load (how a head or a body splits across reads, a drip's
 /// pieces, a TLS record's split, where the stop lands, which read meets a
-/// cut): a site past a child's own count is unreached there, not a
-/// failure, and an entry need only be reached in some scope it names.
+/// cut), so its sites are keyed by call stack and the scope settles
+/// (`sites.rs`): an occurrence a child never meets is unreached there, not
+/// a failure, and an entry need only be reached in some scope it names.
 pub fn timed(scope: &str) -> bool {
     SCOPES.contains(&scope)
 }
@@ -463,19 +464,23 @@ pub fn child(scope: &str, site: usize) {
     ACTIVE.store(false, SeqCst);
     let seen = SEEN.load(SeqCst);
     let end = result.unwrap();
-    if site == 0 {
+    // A run that refused nothing: the census's, or a child's that never
+    // met its aim (a settled one's among them).
+    if site == 0 || !super::sites::met() {
         let expected = match scope {
             "url-stop" => Code::Stopped,
             "url-fail" => Code::Incomplete,
             _ => Code::Complete,
         };
         assert_eq!(end.code, expected, "{end:?}");
+    }
+    if site == 0 {
         assert!(seen > 0);
         println!("CONTROLLER_SITES kind={scope} sites={seen}");
+        super::sites::report(scope);
         return;
     }
-    if seen < site {
-        assert!(timed(scope), "unreached {scope} {site}");
+    if !super::sites::met() {
         println!("CONTROLLER_UNREACHED kind={scope} site={site}");
         return;
     }
