@@ -52,6 +52,8 @@ mod crunch;
 mod depth;
 #[path = "fuzz_seeds/shader.rs"]
 mod shader;
+#[path = "fuzz_seeds/tierb.rs"]
+mod tierb;
 #[path = "fuzz_seeds/web.rs"]
 mod web;
 #[path = "fuzz_seeds/zip.rs"]
@@ -82,8 +84,8 @@ const TARGETS: [&str; 21] = [
     "shader",
 ];
 
-/// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
-/// RGBA32, DXT1, DXT5, BC7), a named one it skips (`ETC_RGB4`) and a value
+/// The baseline `texture` seeds' formats: the five V1 exports (RGB24,
+/// RGBA32, DXT1, DXT5, BC7), one V1 skips (`ETC_RGB4`) and a value
 /// with no name.
 const TEXTURE_FORMATS: [i32; 7] = [3, 4, 10, 12, 25, 34, 1000];
 
@@ -324,24 +326,18 @@ fn specs(nodes: &NodeList) -> Vec<NodeSpec> {
         .collect()
 }
 
-/// The format the `texture` target's check decodes `format` as
-/// (`fuzz/src/texture.rs`): itself when it is one of the five, else the
-/// five's `format mod 5`th, in `TextureFormat` order.
+/// The baseline seed formats as the texture target decodes them. The sole
+/// unknown value, 1000, selects ALL[1000 mod 66] = DXT5 in the combined
+/// registry. Additional format families have their own seed writers.
 fn texture_decoded_as(format: i32) -> i32 {
     match format {
-        3 | 4 | 10 | 12 | 25 => format,
-        _ => match format.rem_euclid(5) {
-            0 => 3,
-            1 => 4,
-            2 => 10,
-            3 => 12,
-            _ => 25,
-        },
+        3 | 4 | 10 | 12 | 25 | 34 => format,
+        _ => 12,
     }
 }
 
 /// What mip 0 of a `width` x `height` texture of `format` holds, decoded
-/// as the check decodes it: 4x4 blocks of 8 bytes (DXT1) or 16 (DXT5,
+/// as the check decodes it: 4x4 blocks of 8 bytes (DXT1, ETC1) or 16 (DXT5,
 /// BC7), else 3 bytes a pixel (RGB24) or 4 (RGBA32); 0 for a side of 0 or
 /// below.
 fn texture_need(format: i32, width: i32, height: i32) -> u64 {
@@ -350,7 +346,7 @@ fn texture_need(format: i32, width: i32, height: i32) -> u64 {
     };
     let blocks = w.div_ceil(4) * h.div_ceil(4);
     match texture_decoded_as(format) {
-        10 => blocks * 8,
+        10 | 34 => blocks * 8,
         12 | 25 => blocks * 16,
         3 => w * h * 3,
         _ => w * h * 4,
@@ -675,6 +671,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     texture(&mut s)?;
     pvrtc_atc::write(&mut s)?;
     astc(&mut s)?;
+    tierb::write(&mut s)?;
     crunch::write(&mut s)?;
     meshdecode(&mut s)?;
     for (name, case) in unityrs_testkit::fuzz::scene_cases() {

@@ -29,11 +29,44 @@ fn open(path: &Path) -> std::io::Result<File> {
 const CAP: usize = (64 << 20) + 1;
 const _: () = assert!(CAP as u64 == MAX_SPEC_BYTES + 1);
 
+/// Why `JOB.json` was not read: the spec's (`bad_spec`), or the host's, a
+/// full descriptor table at its open (`EMFILE`, `ENFILE`), which says
+/// nothing of the spec and is a 69, never the never-retry 78.
+#[derive(Debug)]
+pub enum ReadError {
+    Bad(BadSpec),
+    Descriptors(i32),
+}
+impl ReadError {
+    /// As `--check` reports it: a full table is `unreadable` there.
+    #[must_use]
+    pub fn into_bad_spec(self) -> BadSpec {
+        match self {
+            Self::Bad(bad) => bad,
+            Self::Descriptors(_) => BadSpec::new(Rule::Unreadable, ""),
+        }
+    }
+}
 /// Reads `JOB.json` at `path`: its bytes, or `unreadable`, `not_regular`
 /// or `too_large` (`docs/BATCH_SPEC.md` section 10).
 pub fn read_job(path: &Path) -> Result<Vec<u8>, BadSpec> {
+    read_job_on_host(path).map_err(ReadError::into_bad_spec)
+}
+/// [`read_job`], a full descriptor table at the open told apart.
+pub fn read_job_on_host(path: &Path) -> Result<Vec<u8>, ReadError> {
+    let mut file = match open(path) {
+        Ok(file) => file,
+        Err(e) => {
+            return Err(match e.raw_os_error() {
+                Some(errno @ (libc::EMFILE | libc::ENFILE)) => ReadError::Descriptors(errno),
+                _ => ReadError::Bad(BadSpec::new(Rule::Unreadable, "")),
+            });
+        }
+    };
+    read_open(&mut file).map_err(ReadError::Bad)
+}
+fn read_open(file: &mut File) -> Result<Vec<u8>, BadSpec> {
     let unreadable = || BadSpec::new(Rule::Unreadable, "");
-    let mut file = open(path).map_err(|_| unreadable())?;
     let meta = file.metadata().map_err(|_| unreadable())?;
     if !meta.file_type().is_file() {
         return Err(BadSpec::new(Rule::NotRegular, ""));
@@ -41,7 +74,7 @@ pub fn read_job(path: &Path) -> Result<Vec<u8>, BadSpec> {
     if meta.len() > MAX_SPEC_BYTES {
         return Err(BadSpec::new(Rule::TooLarge, ""));
     }
-    let buf = read_capped(&mut file, meta.len()).map_err(|_| unreadable())?;
+    let buf = read_capped(file, meta.len()).map_err(|_| unreadable())?;
     if buf.len() as u64 > MAX_SPEC_BYTES {
         return Err(BadSpec::new(Rule::TooLarge, ""));
     }

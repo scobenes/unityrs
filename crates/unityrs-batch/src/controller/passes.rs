@@ -133,7 +133,7 @@ impl Controller {
                 let hooks = self.hooks.clone();
                 let lease = self.spool.clone();
                 let task = execution
-                    .spawn(move || {
+                    .spawn_named("a local copy", move || {
                         // Returning on hand-over must not unlock beside late I/O.
                         let _lease = lease;
                         let adapter = StageHooks {

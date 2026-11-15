@@ -99,7 +99,7 @@ fn a_detail_is_cut_to_fit_as_written() {
         status: Some("failed"),
         code: Code::Internal,
         reason: Some("bad_spec"),
-        detail: Some(detail),
+        detail: Some(detail.into()),
     };
     // A quote escapes to two bytes, U+0001 to six.
     for filler in ["a", "\"", "\u{1}", "\u{e9}"] {

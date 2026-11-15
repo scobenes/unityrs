@@ -142,7 +142,7 @@ pub enum Admission {
     Drained(Report),
 }
 pub fn drive(cx: &Context<'_>) -> Result<Admission, Error> {
-    phase::on_pool(|| cx.at(Point::Admission))?;
+    phase::on_pool_named("publication", || cx.at(Point::Admission))?;
     if cx.account.snapshot().input.used != 0 {
         return Ok(Admission::Busy);
     }

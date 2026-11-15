@@ -8,7 +8,8 @@ use unityrs_testkit::{child, scratch::Scratch};
 
 #[test]
 fn unavailable_capabilities_are_refused_before_mutation_but_check_accepts_them() {
-    for kind in ["url", "unused_url", "store", "deadline", "stdin", "parent"] {
+    // The lifetime fields are the process host's (`batch_lifetime.rs`).
+    for kind in ["url", "unused_url", "store"] {
         let scratch = Scratch::new("batch-refusals");
         fs::create_dir(scratch.join("spool")).unwrap();
         fs::create_dir(scratch.join("sink")).unwrap();
@@ -27,9 +28,6 @@ fn unavailable_capabilities_are_refused_before_mutation_but_check_accepts_them()
                     json!({"kind":"object_store","bucket":"bucket","region":"region","prefix":""});
                 spec["deadline"] = "2099-01-01T00:00:00Z".into();
             }
-            "deadline" => spec["deadline"] = "2099-01-01T00:00:00Z".into(),
-            "stdin" => spec["stop_on_stdin_eof"] = true.into(),
-            "parent" => spec["parent_pid"] = 2.into(),
             _ => unreachable!(),
         }
         let path = scratch.join("job.json");
