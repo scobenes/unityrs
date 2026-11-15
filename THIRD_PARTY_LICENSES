@@ -335,7 +335,8 @@ read and a class's type tree picked from it), and unityrs-texture its
 texture rules (UnityPy/export/Texture2DConverter.py: which textures are
 decoded or skipped, and how a block format is padded, cropped and flipped
 around Pillow's decoder; UnityPy/helpers/TextureSwizzler.py's
-is_switch_swizzled; UnityPy/enums/TextureFormat.py's names and values; and
+is_switch_swizzled, padding and swizzle, and the write rules of
+UnityPy/classes/legacy_patch/Texture2D.py and image_to_texture2d; UnityPy/enums/TextureFormat.py's names and values; and
 the Xbox 360 and Switch values of UnityPy/enums/BuildTarget.py), and
 unityrs-meshdecode its mesh rules (UnityPy/helpers/MeshHelper.py's
 MeshHandler: the vertex data's channels, streams and formats, the index
@@ -613,6 +614,38 @@ agrees to be bound by the terms and conditions of this License
 Agreement.
 
 --------------------------------------------------------------------------------
+Little CMS 2.15
+https://github.com/mm2/Little-CMS/tree/lcms2.15
+Licence: MIT.
+
+crates/unityrs-texture/src/write/lab.rs ports cmsintrp.c tetrahedral
+interpolation and lcms2_internal.h fixed-point conversions. lab.bin is the
+33-cubed transform CLUT of Pillow 9.5.0 default LAB-to-RGBA conversion,
+extracted from its pinned Little CMS 2.15 build by tools/fixtures/set_image_lab.py.
+The immutable table adds no runtime dependency.
+
+Little CMS 2.15
+Copyright (c) 1998-2023 Marti Maria Saguer
+
+Permission is hereby granted, free of charge, to any person obtaining
+ a copy of this software and associated documentation files (the "Software"),
+ to deal in the Software without restriction, including without limitation
+ the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ and/or sell copies of the Software, and to permit persons to whom the Software
+ is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+ all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+ THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+ LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+--------------------------------------------------------------------------------
 Pillow 9.5.0 (the Python Imaging Library's fork)
 https://github.com/python-pillow/Pillow
 Licence: MIT-CMU.
@@ -639,6 +672,9 @@ EpsImagePlugin.py, src/libImaging/Pack.c and EpsEncode.c.
 writers/icons.rs translates IcoImagePlugin.py and IcnsImagePlugin.py;
 writers/resample.rs translates Image.py's thumbnail/resize rules and
 src/libImaging/Resample.c and Convert.c for their resized PNG payloads.
+The same public BICUBIC port generates texture mip levels.
+crates/unityrs-texture/src/write/source.rs and ycbcr.rs port Image.convert,
+Convert.c and ConvertYCbCr.c for the raw writers image modes.
 The palette nearest-neighbor path follows src/libImaging/Geometry.c.
 The translated SGI and ICNS plugins additionally carry these notices:
 Copyright (c) 2016 by Mickael Bonfill.
@@ -5573,6 +5609,34 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+
+--------------------------------------------------------------------------------
+MIT License (MIT)
+
+Used by:
+- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+
+Little CMS 2.15
+Copyright (c) 1998-2023 Marti Maria Saguer
+
+Permission is hereby granted, free of charge, to any person obtaining
+ a copy of this software and associated documentation files (the "Software"),
+ to deal in the Software without restriction, including without limitation
+ the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ and/or sell copies of the Software, and to permit persons to whom the Software
+ is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+ all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+ THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+ LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 --------------------------------------------------------------------------------

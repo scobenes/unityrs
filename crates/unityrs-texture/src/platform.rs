@@ -155,6 +155,45 @@ pub fn deswizzle(
     Ok(out)
 }
 
+/// Inverse of `deswizzle`, using the same checked layout and GOB order.
+/// UnityPy's write loop is `helpers/TextureSwizzler.py:44-69`.
+pub fn swizzle(
+    data: &[u8],
+    layout: &SwitchLayout,
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<u8>, DecodeError> {
+    if data.len() < layout.bytes {
+        return Err(DecodeError::NotEnoughData {
+            needed: layout.bytes as u64,
+            got: data.len() as u64,
+        });
+    }
+    meter.count_decode(data.len() as u64)?;
+    let mut out = MeteredVec::with_capacity(meter, data.len())?;
+    let bx = u64::from(layout.width / layout.block.0);
+    let by = u64::from(layout.height / layout.block.1);
+    let gobs = u64::from(layout.gobs);
+    for i in 0..by / 8 / gobs {
+        for j in 0..bx / 4 {
+            for k in 0..gobs {
+                for v in 0..32u64 {
+                    let x = ((v >> 3) & 2) | ((v >> 1) & 1);
+                    let y = ((v >> 1) & 6) | (v & 1);
+                    let offset = (((i * gobs + k) * 8 + y) * bx + j * 4 + x) * 16;
+                    let at = usize::try_from(offset).map_err(|_| PlatformError::SizeOverflow)?;
+                    out.extend_from_slice(
+                        data.get(at..at + 16).ok_or(PlatformError::SizeOverflow)?,
+                    )?;
+                }
+            }
+        }
+    }
+    while out.len() < data.len() {
+        out.push(0)?;
+    }
+    Ok(out)
+}
+
 /// Swap every pair, keeping an odd last byte (`export/Texture2DConverter.py:323-328`).
 pub fn swap_bytes_for_xbox(data: &[u8], meter: &Arc<Meter>) -> Result<MeteredVec<u8>, DecodeError> {
     meter.count_decode(data.len() as u64)?;

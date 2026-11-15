@@ -62,6 +62,8 @@ mod hdr;
 mod image_writers;
 #[path = "fuzz_seeds/platform.rs"]
 mod platform;
+#[path = "fuzz_seeds/set_image.rs"]
+mod set_image;
 #[path = "fuzz_seeds/shader.rs"]
 mod shader;
 #[path = "fuzz_seeds/tierb.rs"]
@@ -74,7 +76,7 @@ mod webp;
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 26] = [
+const TARGETS: [&str; 27] = [
     "detect",
     "bundle",
     "bundle_save",
@@ -97,6 +99,7 @@ const TARGETS: [&str; 26] = [
     "unityweb",
     "fsb5",
     "image_writers",
+    "set_image",
     "scene_collect",
     "obj_text",
     "shader",
@@ -579,6 +582,7 @@ fn module_seeds(s: &mut Seeds) -> std::io::Result<()> {
     web::seeds(s)?;
     fsb5::write(s)?;
     image_writers::write(s)?;
+    set_image::write(s)?;
     head::write(s)?;
     bundle_save::write(s)?;
     shader::seeds(s)?;

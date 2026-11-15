@@ -66,6 +66,7 @@ jobs:
           - unityweb
           - fsb5
           - image_writers
+          - set_image
           - shader
           - extractor_paths
     env:
