@@ -54,6 +54,11 @@ enum Pool {
 /// reservations (or, for [`Pool::Never`], count them) and fail on a mutant
 /// that removes its retry.
 const CALLS: &[(&str, Pool, &[&str])] = &[
+    (
+        "Environment::generate_monobehaviour_node",
+        Pool::Own,
+        &[TREE, TREE_FULL],
+    ),
     ("Environment::new", Pool::Never, &[]),
     ("Environment::options", Pool::Never, &[NEVER]),
     ("Environment::registry", Pool::Never, &[NEVER]),

@@ -25,7 +25,7 @@ use crate::files::{ObjectInfo, SerializedFile, SerializedType};
 use crate::provider::{NoTree, TreeRef, TreeRequest, TreeSource};
 use crate::typetree::Tree;
 use crate::value::Parsed;
-use crate::walk::{ParseError, ReadCtx, WriteCtx, WriteError, WriteRules, read_typetree_versioned};
+use crate::walk::{ParseError, ReadCtx, WriteCtx, WriteError, WriteRules, read_typetree_with_mode};
 
 /// One object of a `SerializedFile`: the file and the index of its row
 /// (module docs).
@@ -51,6 +51,39 @@ static NO_ROW: ObjectInfo = ObjectInfo {
 };
 
 impl ObjectRef {
+    /// Read only the MonoBehaviour head, ignoring trailing script fields
+    /// (`files/ObjectReader.py:325-330`). With no override, request class 114
+    /// from the providers, even when the object stores an embedded tree.
+    pub fn parse_monobehaviour_head(
+        &self,
+        nodes: Option<&Arc<Tree>>,
+    ) -> Result<Parsed, ParseError> {
+        if let Some(nodes) = nodes {
+            return self.read_typetree_object(Some(nodes), false);
+        }
+        let tree = self
+            .file
+            .version()
+            .map(|version| {
+                self.file.context().providers.lookup(&TreeRequest {
+                    class_id: 114,
+                    version: &version.version,
+                    script: None,
+                })
+            })
+            .transpose()?
+            .flatten()
+            .ok_or(ParseError::NoTypeTree {
+                class_id: 114,
+                why: self
+                    .file
+                    .context()
+                    .providers
+                    .why_none(114, self.file.version().map(|v| &v.version)),
+            })?;
+        self.read_typetree_object(Some(&tree.tree), false)
+    }
+
     /// The object at `index` in [`SerializedFile::object_infos`], or `None`
     /// past the table's end.
     #[must_use]
@@ -184,6 +217,25 @@ impl ObjectRef {
         nodes: Option<&Arc<Tree>>,
         check_read: bool,
     ) -> Result<Parsed, ParseError> {
+        self.read_typetree_mode(nodes, check_read, false)
+    }
+
+    /// The fallback reads with `wrap=True`; retain its exception categories
+    /// while storing the result in the core's dict value model.
+    pub(crate) fn read_typetree_object(
+        &self,
+        nodes: Option<&Arc<Tree>>,
+        check_read: bool,
+    ) -> Result<Parsed, ParseError> {
+        self.read_typetree_mode(nodes, check_read, true)
+    }
+
+    fn read_typetree_mode(
+        &self,
+        nodes: Option<&Arc<Tree>>,
+        check_read: bool,
+        object_mode: bool,
+    ) -> Result<Parsed, ParseError> {
         // UnityPy files/ObjectReader.py:244-262
         let Some(tree) = self.tree(nodes)? else {
             return Err(ParseError::NoTypeTree {
@@ -200,14 +252,14 @@ impl ObjectRef {
             meter: file.meter(),
         };
         let info = self.info();
-        let mut read = read_typetree_versioned(
+        let mut read = read_typetree_with_mode(
             file.data(),
             info.byte_start,
             info.byte_size,
             &tree.tree,
             &ctx,
             check_read,
-            (file.reader_kind(), file.header().version >= 23),
+            (file.reader_kind(), file.header().version >= 23, object_mode),
         );
         // A value kept past the file's handles keeps alive the buffer its
         // slices are of: copied out of a run much larger than they are
