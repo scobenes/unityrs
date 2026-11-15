@@ -82,6 +82,8 @@ impl MemoryBudget for Peak {
         // returns the phase charge first, preserving that bound during updates.
         let old = phase.charges.live.fetch_add(bytes, Ordering::Relaxed);
         phase.charges.peak.fetch_max(old + bytes, Ordering::Relaxed);
+        // Permit keeps both phase homes inline when a retained charge grows
+        // across the boundary; absorbing this permit cannot allocate.
         Ok(Permit::new(bytes, phase.clone()))
     }
 }
@@ -218,6 +220,60 @@ fn string(out: &mut dyn Write, value: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_charge_growth_during_export_allocates_no_bookkeeping() {
+        let budget = Arc::new(Peak::default());
+        let meter = Meter::new(1000, budget.clone(), Reservation::Input);
+        let mut retained = meter.charge(100).unwrap();
+        budget.start_export();
+        let (grown, measured) = unityrs_batch::alloc::measured(|| retained.grow(30));
+        grown.unwrap();
+        assert_eq!(measured.peak, 0, "phase bookkeeping must not allocate");
+        assert_eq!(
+            budget.peaks(),
+            Peaks {
+                total: 130,
+                input: 100,
+                export: 30
+            }
+        );
+        retained.release(20);
+        let exported = meter.charge(40).unwrap();
+        assert_eq!(
+            budget.peaks(),
+            Peaks {
+                total: 150,
+                input: 100,
+                export: 50
+            }
+        );
+        drop(retained);
+        assert_eq!(budget.input.charges.live.load(Ordering::Relaxed), 0);
+        assert_eq!(budget.export.charges.live.load(Ordering::Relaxed), 40);
+        drop(exported);
+        assert_eq!(budget.home.live.load(Ordering::Relaxed), 0);
+
+        // A fresh retained charge must also cross the boundary safely while
+        // the allocator refuses its next request (including bookkeeping).
+        let budget = Arc::new(Peak::default());
+        let meter = Meter::new(1000, budget.clone(), Reservation::Input);
+        let mut retained = meter.charge(100).unwrap();
+        budget.start_export();
+        crate::test_alloc::REFUSE.with(|r| r.set(true));
+        let grown = retained.grow(30);
+        let still_armed = crate::test_alloc::REFUSE.with(|r| r.replace(false));
+        grown.unwrap();
+        assert!(still_armed, "growth must not call the allocator");
+        assert_eq!(
+            budget.peaks(),
+            Peaks {
+                total: 130,
+                input: 100,
+                export: 30
+            }
+        );
+    }
 
     #[test]
     fn export_peak_excludes_retained_inputs_and_released_input_spikes() {

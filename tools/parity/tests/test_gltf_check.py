@@ -37,7 +37,114 @@ def repeated_triangles(agree, disagree):
     return doc, data[:72] + struct.pack('<' + 'H' * len(ids), *ids)
 
 
+def attribute_fixture(attributes):
+    """Pack literal output rows; expectations never come from the checker."""
+    doc = {'bufferViews': [], 'accessors': []}
+    binary = b''
+    ids = {}
+    for semantic, rows in attributes.items():
+        width = len(rows[0])
+        code = 'H' if semantic == 'JOINTS_0' else 'f'
+        binary += bytes(-len(binary) % 4)
+        data = struct.pack('<' + code * (len(rows) * width),
+                           *(v for row in rows for v in row))
+        ids[semantic] = len(doc['accessors'])
+        doc['bufferViews'].append({'byteOffset': len(binary), 'byteLength': len(data)})
+        doc['accessors'].append({'bufferView': len(doc['bufferViews']) - 1,
+                                 'componentType': 5123 if code == 'H' else 5126,
+                                 'type': 'VEC' + str(width), 'count': len(rows)})
+        binary += data
+    doc['meshes'] = [{'primitives': [{'attributes': ids}]}]
+    return doc, binary
+
+
 class Checks(unittest.TestCase):
+    def check_attributes(self, source, output, normalise=True):
+        return g.check_accessors(*attribute_fixture(output),
+                                 [{'mesh': 0, 'primitive': 0, 'attributes': source,
+                                   'complete_texcoords': True}],
+                                 normalise=normalise)
+
+    def test_partial_uv_expectations_leave_unspecified_sets_unexamined(self):
+        output = {'TEXCOORD_0': [[.5, .75]], 'TEXCOORD_1': [[.25, .5]]}
+        for semantic, source in (('TEXCOORD_0', [[.5, .25]]),
+                                  ('TEXCOORD_1', [[.25, .5]])):
+            self.assertEqual(g.check_accessors(
+                *attribute_fixture(output),
+                [{'mesh': 0, 'primitive': 0, 'attributes': {semantic: source}}]), 1)
+        # Repair needs the whole source UV family, even with the default
+        # comparison settings. A bad set left in the output must fail.
+        expected = [{'mesh': 0, 'primitive': 0, 'attributes': {
+            'TEXCOORD_0': [[float('nan'), .25]]}}]
+        with self.assertRaises(AssertionError):
+            g.check_accessors(*attribute_fixture({'TEXCOORD_0': [[float('nan'), .75]]}),
+                              expected)
+
+    def test_colors_clamp_before_f32_rounding_including_custom_colors(self):
+        for semantic in ('COLOR_0', '_COLOR_0'):
+            source = {semantic: [[-2., .5, 1e300, 2.]]}
+            self.assertEqual(self.check_attributes(source, {semantic: [[0., .5, 1., 1.]]}), 1)
+            with self.assertRaises(AssertionError):
+                self.check_attributes(source, {semantic: [[-2., .5, float('inf'), 2.]]})
+            self.assertEqual(self.check_attributes(
+                source, {semantic: [[-2., .5, float('inf'), 2.]]}, normalise=False), 1)
+
+    def test_nonfinite_colors_are_omitted_only_in_normalised_mode(self):
+        for semantic in ('COLOR_0', '_COLOR_0'):
+            for value in (float('nan'), float('inf'), -float('inf')):
+                source = {semantic: [[value, 0., 0., 1.]]}
+                self.assertEqual(self.check_attributes(source, {}), 1)
+                with self.assertRaises(AssertionError):
+                    self.check_attributes(source, source)
+                self.assertEqual(self.check_attributes(source, source, normalise=False), 1)
+
+    def test_invalid_uv_sets_are_dropped_and_survivors_compacted(self):
+        for invalid in (float('nan'), float('inf'), 1e300):
+            source = {'TEXCOORD_0': [[invalid, .25]],
+                      'TEXCOORD_2': [[.25, .5]], 'TEXCOORD_7': [[.5, .75]]}
+            output = {'TEXCOORD_0': [[.25, .5]], 'TEXCOORD_1': [[.5, .25]]}
+            self.assertEqual(self.check_attributes(source, output), 1)
+            with self.assertRaises(AssertionError):
+                self.check_attributes(source, {'TEXCOORD_2': [[.25, .5]],
+                                               'TEXCOORD_7': [[.5, .25]]})
+            with self.assertRaises(AssertionError):
+                self.check_attributes(source, dict(output, TEXCOORD_2=[[0., 0.]]))
+            self.assertEqual(self.check_attributes({'TEXCOORD_0': [[invalid, .25]]}, {}), 1)
+
+    def test_uv_gaps_are_zero_filled_without_an_invalid_set_even_in_raw_mode(self):
+        source = {'TEXCOORD_2': [[.5, .25]]}
+        output = {'TEXCOORD_0': [[0., 0.]], 'TEXCOORD_1': [[0., 0.]],
+                  'TEXCOORD_2': [[.5, .75]]}
+        for normalise in (True, False):
+            self.assertEqual(self.check_attributes(source, output, normalise), 1)
+            with self.assertRaises(AssertionError):
+                self.check_attributes(source, {'TEXCOORD_0': [[.5, .75]]}, normalise)
+        raw = {'TEXCOORD_0': [[float('inf'), .75]], 'TEXCOORD_1': [[0., 0.]],
+               'TEXCOORD_2': [[.5, .75]]}
+        self.assertEqual(self.check_attributes(dict(source, TEXCOORD_0=[[1e300, .25]]),
+                                              raw, normalise=False), 1)
+
+    def test_short_skin_rows_are_padded_before_weight_and_joint_repairs(self):
+        source = {'JOINTS_0': [[3, 4], [5, 6]], 'WEIGHTS_0': [[2., 2.], [-1., 0.]]}
+        output = {'JOINTS_0': [[3, 4, 0, 0], [0, 0, 0, 0]],
+                  'WEIGHTS_0': [[.5, .5, 0., 0.], [1., 0., 0., 0.]]}
+        self.assertEqual(self.check_attributes(source, output), 1)
+        raw = {'JOINTS_0': [[3, 4, 0, 0], [5, 6, 0, 0]],
+               'WEIGHTS_0': [[2., 2., 0., 0.], [-1., 0., 0., 0.]]}
+        self.assertEqual(self.check_attributes(source, raw, normalise=False), 1)
+        for normalise, actual in ((True, output), (False, raw)):
+            broken = dict(actual, JOINTS_0=[[3, 4, 1, 0], actual['JOINTS_0'][1]])
+            with self.assertRaises(AssertionError):
+                self.check_attributes(source, broken, normalise)
+        for normalise in (True, False):
+            self.assertEqual(self.check_attributes(
+                {'JOINTS_0': [[3]]}, {'JOINTS_0': [[3, 0, 0, 0]],
+                                      'WEIGHTS_0': [[1., 0., 0., 0.]]}, normalise), 1)
+            with self.assertRaises(AssertionError):
+                self.check_attributes({'JOINTS_0': [[3]]},
+                                      {'JOINTS_0': [[3, 0, 0, 0]],
+                                       'WEIGHTS_0': [[0., 0., 0., 0.]]}, normalise)
+
     def test_orientation_pass(self):
         self.assertEqual(g.orientation(*fixture())[0]['status'],'pass')
 
