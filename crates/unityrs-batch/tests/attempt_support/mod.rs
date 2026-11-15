@@ -46,6 +46,7 @@ pub fn options(scene: &AtlasScene) -> Options {
             .collect(),
         atlases: true,
         formats: unityrs_export::ngui::Formats::V1,
+        png_fast: false,
     }
 }
 pub fn limits() -> AttemptLimits {
