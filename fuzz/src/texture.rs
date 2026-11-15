@@ -4,13 +4,13 @@
 //! (`docs/plans/extract.md` E15, E18, E59, E66), under the memory bound
 //! ([`crate::MEMORY`]) or a meter of about the decode's charge.
 //!
-//! A format outside the forty-two byte-independent formats the crate decodes
-//! (the five version 1 exports, the rest of Pillow's raw and `bcn` formats,
-//! the ETC and EAC formats, the ASTC LDR formats, PVRTC and ATC) decodes as
-//! one of them, and all CRN variants as plain DXT/ETC formats (the `crunch`
-//! target checks CRN streams), so every input reaches a decoder. Besides a
-//! panic (libFuzzer's hook aborts at it, before the decoder's containment can
-//! catch it), a finding is: a
+//! The sixty-four byte-independent formats include Pillow raw and `bcn`,
+//! ETC/EAC, ASTC LDR, PVRTC/ATC and Tier B/C raw closed forms. ARGBFloat
+//! and odd-width YUY2 exercise the Tier U refusals. Other unknown formats
+//! map to a decoded format, and all CRN variants to plain DXT/ETC formats
+//! (the `crunch` target checks CRN streams). Besides a panic (libFuzzer's
+//! hook aborts at it,
+//! before the decoder's containment can catch it), a finding is: a
 //! selection that exports a format the texture does not have; a decode
 //! whose answer is not its plan's, but for the meter's refusal of a charge
 //! past its limit (the peak charge, `Plan::peak_charge`: an ASTC format's
@@ -22,32 +22,43 @@ use std::sync::Arc;
 use unityrs_core::budget::{Reservation, Unbounded};
 use unityrs_core::limits::{ChargeError, Meter};
 use unityrs_testkit::fuzz::TextureCase;
-use unityrs_texture::{DecodeError, Format, Plan, Selection, TextureFields, decode, plan, select};
+use unityrs_texture::{
+    DecodeError, Format, Formats, Plan, Selection, TextureFields, decode, plan, select, select_in,
+};
 
 use crate::MEMORY;
 
 /// Runs one input, panicking at a finding.
 pub fn check(input: &[u8]) {
     let case = TextureCase::decode(input);
-    let selected = select(&TextureFields {
+    let fields = TextureFields {
         texture_format: case.format,
         width: case.width,
         height: case.height,
         platform: case.platform,
         platform_blob: case.blob.as_deref(),
-    });
-    if let Selection::Export(f) = selected {
-        assert_eq!(
-            Some(f),
-            Format::from_texture_format(case.format),
-            "exported as another format"
-        );
+    };
+    for selected in [
+        select(&fields),
+        select_in(&fields, Formats::DECODED, (2021, 3)),
+    ] {
+        if let Selection::Export(f) = selected {
+            assert_eq!(
+                f.texture_format(),
+                case.format,
+                "exported as another format"
+            );
+        }
     }
     let len = i32::try_from(Format::ALL.len()).unwrap_or(1);
     let any = usize::try_from(case.format.rem_euclid(len)).unwrap_or(0);
-    let format = Format::from_texture_format(case.format)
-        .or_else(|| Format::ALL.get(any).copied())
-        .unwrap_or(Format::Rgba32);
+    let format = if case.format == 6 {
+        Some(Format::ArgbFloat)
+    } else {
+        Format::from_texture_format(case.format)
+    }
+    .or_else(|| Format::ALL.get(any).copied())
+    .unwrap_or(Format::Rgba32);
     // Crunch's length-only plan cannot validate a CRN stream; its own
     // target checks those later malformed-stream errors. Keep this
     // target's byte-independent plan equality on the plain decoders.

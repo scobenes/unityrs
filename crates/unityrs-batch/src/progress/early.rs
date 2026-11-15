@@ -70,12 +70,41 @@ pub(crate) fn within_on(lines: [(BorrowedFd<'_>, &[u8]); 2], wait: Duration) -> 
     if wait.is_zero() {
         return false;
     }
-    let lines = lines
-        .into_iter()
-        .filter(|(_, l)| !l.is_empty())
-        .filter_map(|(fd, l)| Some((File::from(fd.try_clone_to_owned().ok()?), l.to_vec())))
-        .collect();
-    through_thread(lines, wait)
+    let until = Instant::now() + wait;
+    let mut owned = Vec::new();
+    for (fd, line) in lines.iter().filter(|(_, l)| !l.is_empty()) {
+        let Ok(dup) = fd.try_clone_to_owned() else {
+            // A full descriptor table: both lines, in order, on the
+            // borrowed descriptors, on a thread, within the same wait.
+            drop(owned);
+            return borrowed(&lines, until);
+        };
+        owned.push((File::from(dup), line.to_vec()));
+    }
+    through_thread(owned, wait)
+}
+
+/// Lines no description of their own could be made for: on the borrowed
+/// descriptors, on a thread, by `until`, each tried whatever another's
+/// write did. Each one not written whole when the wait ends is counted
+/// ([`dropped`]): one that failed, never began or had no thread, and one
+/// still in its write, which may yet land but which nothing will vouch
+/// for (2.11). Gives whether every one was written.
+fn borrowed(lines: &[(BorrowedFd<'_>, &[u8])], until: Instant) -> bool {
+    let outcome = crate::sys::borrowed::write(lines, until, ON_START.get().copied());
+    let left = outcome.failed.saturating_add(outcome.unresolved);
+    DROPPED.fetch_add(
+        u64::try_from(left).unwrap_or(u64::MAX),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    left == 0
+}
+static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The main thread's early lines a full descriptor table dropped, each
+/// counted (the head's `stderr_dropped`).
+#[must_use]
+pub fn dropped() -> u64 {
+    DROPPED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// One line on `fd`, by `until`.
@@ -95,6 +124,9 @@ fn own_with_reopen(
         return;
     }
     let Ok(dup) = fd.try_clone_to_owned() else {
+        // A full descriptor table: the borrowed descriptor, on a thread,
+        // never waited on past the budget.
+        let _ = borrowed(&[(fd, line)], until);
         return;
     };
     let file = File::from(dup);
@@ -159,6 +191,13 @@ pub(crate) fn nonblocking(file: &File, line: &[u8], until: Instant) {
     }
 }
 
+/// What the writer thread calls first: the process host's thread
+/// registration (the `tally` hook's), set once.
+static ON_START: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+/// Set the writer thread's [`ON_START`] (the process host, at its start).
+pub fn on_thread_start(register: fn()) {
+    let _ = ON_START.set(register);
+}
 /// Writes each line on its file, in order, on a writer thread of its own,
 /// and waits for it at most `wait`: gives whether it finished in time. A
 /// thread that cannot be spawned writes nothing; one still writing when
@@ -173,6 +212,9 @@ pub(crate) fn through_thread(lines: Vec<(File, Vec<u8>)>, wait: Duration) -> boo
         .name("exit-writer".into())
         .stack_size(WRITER_STACK)
         .spawn(move || {
+            if let Some(register) = ON_START.get() {
+                register();
+            }
             for (f, l) in lines {
                 nonblocking(&f, &l, until);
             }

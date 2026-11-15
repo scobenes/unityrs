@@ -333,6 +333,8 @@ impl Controller {
                 Boundary::HandOver
             }
             Err(_) => {
+                // Its line, written by the host after the hand-over (2.4).
+                crate::diagnostic::pending::panic(format_args!(""));
                 self.fail(RunFailure::new(attempt::ReasonCode::Internal));
                 Boundary::HandOver
             }

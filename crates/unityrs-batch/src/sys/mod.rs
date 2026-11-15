@@ -10,6 +10,7 @@
 //!   `EFBIG` instead of killing it.
 //! - [`boottime`]: `CLOCK_BOOTTIME`, which the progress stream's `ms`
 //!   counts in (`docs/BATCH_SPEC.md` section 10), suspend included.
+//! - [`allocator`]: E57's glibc `mallopt` settings (2.11 step 3).
 //! - [`clock_ticks`]: `sysconf(_SC_CLK_TCK)`, the unit of
 //!   `/proc/self/stat`'s start time.
 //! - [`page_size`]: `sysconf(_SC_PAGESIZE)`, which the memory bound's
@@ -19,6 +20,7 @@ use std::{io, time::Duration};
 
 mod wake;
 pub use wake::{RegisteredWake, Wake, poll_wakes};
+pub(crate) mod borrowed;
 pub mod lifecycle;
 pub mod reset;
 pub mod signals;
@@ -78,31 +80,56 @@ pub fn ignore_job_control() -> io::Result<()> {
     Ok(())
 }
 
-/// `CLOCK_BOOTTIME`'s time since boot; `None` off Linux, or when the call
-/// fails.
+/// `CLOCK_BOOTTIME`'s time since boot; `None` when the call fails. Off
+/// Linux, a developer host only, it is `CLOCK_MONOTONIC`'s, so the
+/// lifetime's deadline arithmetic still runs there (non-normative: such a
+/// clock may not count a suspend).
 #[must_use]
 pub fn boottime() -> Option<Duration> {
     #[cfg(target_os = "linux")]
-    {
-        let mut ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        // SAFETY: `ts` is a valid, writable `timespec` for the call's
-        // duration; `CLOCK_BOOTTIME` is a clock id Linux has had since
-        // 2.6.39.
-        let rc = unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &raw mut ts) };
-        if rc != 0 {
-            return None;
-        }
-        let secs = u64::try_from(ts.tv_sec).ok()?;
-        let nanos = u32::try_from(ts.tv_nsec).ok()?;
-        Some(Duration::new(secs, nanos))
-    }
+    let clock = libc::CLOCK_BOOTTIME;
     #[cfg(not(target_os = "linux"))]
-    {
-        None
+    let clock = libc::CLOCK_MONOTONIC;
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable `timespec` for the call's
+    // duration; `CLOCK_BOOTTIME` is a clock id Linux has had since 2.6.39,
+    // and `CLOCK_MONOTONIC` one every other Unix has.
+    let rc = unsafe { libc::clock_gettime(clock, &raw mut ts) };
+    if rc != 0 {
+        return None;
     }
+    let secs = u64::try_from(ts.tv_sec).ok()?;
+    let nanos = u32::try_from(ts.tv_nsec).ok()?;
+    Some(Duration::new(secs, nanos))
+}
+
+/// `extract.md` E57, `batch.md` 2.11 step 3: on glibc, `mallopt`'s
+/// `M_MMAP_THRESHOLD` at 128 KiB, so a large buffer is mapped and freed
+/// back, and `M_ARENA_MAX` at `threads + 2`. Elsewhere nothing.
+///
+/// # Errors
+/// `mallopt`'s refusal, which sets no errno.
+pub fn allocator(threads: u32) -> io::Result<()> {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        let arenas = libc::c_int::try_from(u64::from(threads) + 2)
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        for (option, value) in [
+            (libc::M_MMAP_THRESHOLD, 128 * 1024),
+            (libc::M_ARENA_MAX, arenas),
+        ] {
+            // SAFETY: two scalar arguments; glibc's documented options.
+            if unsafe { libc::mallopt(option, value) } != 1 {
+                return Err(io::ErrorKind::Other.into());
+            }
+        }
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    let _ = threads;
+    Ok(())
 }
 
 /// `sysconf(_SC_CLK_TCK)`: clock ticks a second; `None` when unknown.
@@ -693,13 +720,15 @@ pub use socket::{test_set_zero_linger, test_socket_live, test_zero_linger};
 
 #[path = "time.rs"]
 mod time;
-pub use time::utc_now;
+pub use time::{utc, utc_now};
 
 #[path = "shared.rs"]
 mod shared;
 pub use shared::{Lock, Shared, Slot};
 
 pub use entry::{local_source, spool_mkdir, spool_rename};
+mod journal;
+pub(crate) use journal::journal_file;
 
 #[path = "procfs.rs"]
 mod procfs;

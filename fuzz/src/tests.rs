@@ -187,6 +187,48 @@ fn the_texture_check_takes_each_answer_under_each_meter() {
         // An image (refused under the charge less 1), short data, past the
         // bound, Pillow's raw width cap, a side of 0, empty data.
         crate::texture::check(&case(4, 2, 2, meter, vec![7; 16]));
+        // Every Tier B/C raw format reaches its pixel loop or the meter's
+        // refusal, plus short data and both Tier U layout refusals.
+        for (format, bytes) in [
+            (9, 2),
+            (15, 2),
+            (16, 4),
+            (17, 8),
+            (18, 4),
+            (19, 8),
+            (20, 16),
+            (21, 2),
+            (22, 4),
+            (23, 12),
+            (62, 2),
+            (72, 4),
+            (73, 6),
+            (74, 8),
+            (75, 1),
+            (76, 2),
+            (77, 3),
+            (78, 4),
+            (79, 2),
+            (80, 4),
+            (81, 6),
+            (82, 8),
+        ] {
+            for len in [0, bytes * 4 - 1, bytes * 4, bytes * 4 + 1] {
+                crate::texture::check(&case(format, 2, 2, meter, vec![7; len]));
+            }
+        }
+        // Versioned DXT selection and every crunched value still reach the
+        // plain decoder here; CRN streams have their own target.
+        for format in [28, 29, 64, 65] {
+            crate::texture::check(&case(format, 4, 4, meter, vec![7; 16]));
+        }
+        // Versioned DXT selection and every crunched value still reach the
+        // plain decoder here; CRN streams have their own target.
+        for format in [28, 29, 64, 65] {
+            crate::texture::check(&case(format, 4, 4, meter, vec![7; 16]));
+        }
+        crate::texture::check(&case(6, 2, 2, meter, vec![7; 64]));
+        crate::texture::check(&case(21, 3, 2, meter, vec![7; 12]));
         crate::texture::check(&case(25, 5, 3, meter, vec![1; 31]));
         crate::texture::check(&case(10, 16385, 16384, meter, vec![1; 3]));
         crate::texture::check(&case(4, 67_108_857, 1, meter, vec![1]));

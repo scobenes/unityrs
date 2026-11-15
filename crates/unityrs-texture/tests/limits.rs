@@ -27,7 +27,12 @@ fn the_largest_texture_plans_and_one_more_column_is_refused() {
             .map_or((1, 1), |(w, h)| (i32::from(w), i32::from(h)));
         let (w, h) = (16384 / bw * bw, 16384 / bh * bh);
         let pixels = u64::try_from(w * h).unwrap();
-        let p = plan(format, ENOUGH, w, h).unwrap();
+        let enough = if format.block_bytes().is_none() {
+            usize::try_from(16 * MAX_PIXELS).unwrap()
+        } else {
+            ENOUGH
+        };
+        let p = plan(format, enough, w, h).unwrap();
         assert_eq!(u64::from(p.width) * u64::from(p.height), pixels);
         assert_eq!(p.output_bytes, pixels * format.mode().bytes_per_pixel());
         let want = match format {
@@ -36,6 +41,21 @@ fn the_largest_texture_plans_and_one_more_column_is_refused() {
             Format::Argb4444 | Format::Rgba4444 | Format::Rgb565 => 2 * MAX_PIXELS,
             Format::Rgb24 | Format::Bgr24 => 3 * MAX_PIXELS,
             Format::Rgba32 | Format::Bgra32 | Format::Argb32 => 4 * MAX_PIXELS,
+            _ if format.block_bytes().is_none() => {
+                let value = format.texture_format();
+                let bpp = match value {
+                    75 => 1,
+                    9 | 15 | 21 | 62 | 76 | 79 => 2,
+                    77 => 3,
+                    16 | 18 | 22 | 72 | 78 | 80 => 4,
+                    73 | 81 => 6,
+                    17 | 19 | 74 | 82 => 8,
+                    23 => 12,
+                    20 => 16,
+                    other => panic!("unknown raw format {other}"),
+                };
+                pixels * bpp
+            }
             // ATC stores 4x4 blocks but UnityPy does not pad its image.
             Format::AtcRgb4 | Format::AtcRgba8 => pixels / 16 * format.block_bytes().unwrap(),
             _ => pixels / u64::try_from(bw * bh).unwrap() * format.block_bytes().unwrap(),
@@ -46,13 +66,14 @@ fn the_largest_texture_plans_and_one_more_column_is_refused() {
         // ASTC side of 16384 to a whole block past it.
         let pad =
             |side: i32, block: i32| u64::try_from((side + block - 1) / block * block).unwrap();
+        let wider = if format == Format::Yuy2 { 16386 } else { 16385 };
         let too_large = Err(DecodeError::TooLarge {
-            pixels: pad(16385, bw) * pad(16384, bh),
+            pixels: pad(wider, bw) * pad(16384, bh),
             max: MAX_PIXELS,
         });
         // Whatever the data: enough, short, a byte.
         for len in [ENOUGH, 1 << 20, 1] {
-            assert_eq!(plan(format, len, 16385, 16384), too_large, "{format:?}");
+            assert_eq!(plan(format, len, wider, 16384), too_large, "{format:?}");
         }
     }
     // A block format's padding counts: 16383 pads to 16384, within the
@@ -68,6 +89,7 @@ fn the_largest_texture_plans_and_one_more_column_is_refused() {
 fn sizes_do_not_wrap() {
     for format in Format::ALL {
         for (w, h) in [(i32::MAX, i32::MAX), (i32::MAX, 1), (1, i32::MAX)] {
+            let w = supported_width(format, w);
             // Past the bound, whatever the data's length, and nothing charged.
             assert!(
                 matches!(
@@ -87,6 +109,7 @@ fn sizes_do_not_wrap() {
             (i32::MIN, i32::MIN),
             (-1, i32::MAX),
         ] {
+            let w = supported_width(format, w);
             assert_eq!(
                 plan(format, ENOUGH, w, h),
                 Err(DecodeError::NegativeSize {
@@ -98,6 +121,7 @@ fn sizes_do_not_wrap() {
         // A side of 0 is the empty RGBA image, whatever the other side and
         // the data.
         for (w, h) in [(0, i32::MIN), (i32::MAX, 0), (0, 0)] {
+            let w = supported_width(format, w);
             for len in [0, 1, ENOUGH] {
                 assert_eq!(
                     plan(format, len, w, h),
@@ -124,7 +148,7 @@ fn sizes_do_not_wrap() {
 
 #[test]
 fn the_output_is_charged_before_it_is_allocated() {
-    let data = vec![7u8; 4 * 64 * 64];
+    let data = vec![7u8; 16 * 64 * 64];
     for format in Format::ALL.into_iter().filter(|f| !f.is_crunched()) {
         let p = plan(format, data.len(), 64, 64).unwrap();
         // One byte short of the charge (and of an ASTC format's tables
@@ -247,9 +271,9 @@ const BIG: u64 = 1 << 20;
 fn no_panic_on_any_input() {
     let mut rng = Rng::new(0x7e57_0000_0000_0001);
     let mut decoded = 0;
-    // The most data a round asks for: an RGBA32 texture at the bound, and
-    // a byte more.
-    let zeros = vec![0u8; usize::try_from(4 * MAX_PIXELS + 1).unwrap()];
+    // The most stored data a round asks for: RGBAFloat at the bound,
+    // and a byte more. Only the pages actually decoded are touched.
+    let zeros = vec![0u8; usize::try_from(16 * MAX_PIXELS + 1).unwrap()];
     for round in 0..10_000 {
         let format = Format::ALL[rng.below(Format::ALL.len())];
         let side = |rng: &mut Rng| {
@@ -382,4 +406,18 @@ fn skips_follow_unitypy_order() {
         select(&fields(4, -4, 19, None)),
         Selection::Export(Format::Rgba32)
     );
+}
+
+// These limit checks exercise supported layouts; odd YUY2 has its own
+// selection/plan refusal test in tierb_oracle.rs.
+fn supported_width(format: Format, width: i32) -> i32 {
+    if format == Format::Yuy2 && width % 2 != 0 {
+        if width > 0 {
+            width.saturating_add(1) & !1
+        } else {
+            width - 1
+        }
+    } else {
+        width
+    }
 }

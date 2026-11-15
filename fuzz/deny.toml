@@ -72,6 +72,18 @@ allow = ["BSD-2-Clause-Views", "LicenseRef-Crunch"]
 crate = "libfuzzer-sys"
 allow = ["NCSA"]
 
+# Equal to about.toml: retain vgmstream's complete ISC copyright notice.
+[[licenses.clarify]]
+crate = "unityrs-audio"
+expression = "(MIT OR Apache-2.0) AND MIT AND ISC"
+license-files = [
+    { path = "LICENSE-MIT", hash = 0xb9a65ddd },
+    { path = "LICENSE-APACHE", hash = 0xb5518783 },
+    { path = "LICENSE-UNITYPY", hash = 0x25f1bbc9 },
+    { path = "LICENSE-FMOD-TOOLKIT", hash = 0x853131fc },
+    { path = "LICENSE-VGMSTREAM", hash = 0x41ce9b8b },
+]
+
 [bans]
 multiple-versions = "warn"
 

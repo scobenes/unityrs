@@ -19,7 +19,9 @@ use unityrs_testkit::scratch::Scratch;
 #[test]
 fn every_value_seed_is_written_at_each_memory_bound() {
     let dir = Scratch::new("fuzz-seeds");
-    seeds::write(&dir).expect("the seeds are written");
+    // One count per target (`TARGETS` sets the array's length): each wrote seeds.
+    let counts = seeds::write(&dir).expect("the seeds are written");
+    assert!(counts.iter().all(|n| *n > 0), "{counts:?}");
     fsb5_seeds_cover_formats_versions_and_hostile_headers(&dir);
     texture_seeds_are_cases(&dir);
     astc_seeds_are_cases(&dir);
@@ -224,13 +226,24 @@ fn astc_seeds_are_cases(dir: &Path) {
 /// not. (Run from the test above, so the seeds are written once.)
 fn texture_seeds_are_cases(dir: &Path) {
     let (mut formats, mut meters) = (BTreeSet::new(), BTreeSet::new());
+    let mut tierb = BTreeSet::new();
+    let mut odd_yuy2 = false;
+    let (mut pvrtc_atc_count, mut tierb_count) = (0, 0);
     let (mut bc7_modes, mut dxt1, mut dxt5) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     for entry in std::fs::read_dir(dir.join("texture")).expect("the target's folder") {
-        let bytes = std::fs::read(entry.expect("an entry").path()).expect("a seed");
+        let path = entry.expect("an entry").path();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        pvrtc_atc_count += usize::from(name.contains("-pvrtc-atc-"));
+        tierb_count += usize::from(name.contains("-tierb-"));
+        let bytes = std::fs::read(path).expect("a seed");
         let case = TextureCase::decode(&bytes);
         assert_eq!(case.encode(), bytes, "a seed that is not a case");
         formats.insert(case.format);
         meters.insert(case.meter);
+        if case.width == 8 && case.height == 8 && case.meter == 0 {
+            tierb.insert(case.format);
+        }
+        odd_yuy2 |= case.format == 21 && case.width % 2 != 0;
         if (case.width, case.height, case.meter) != (4, 4, 0) {
             continue;
         }
@@ -251,6 +264,18 @@ fn texture_seeds_are_cases(dir: &Path) {
         formats.is_superset(&[3, 4, 10, 12, 25, 30, 31, 32, 33, 35, 36].into()),
         "{formats:?}"
     );
+    assert!(
+        tierb.is_superset(
+            &[
+                9, 15, 16, 17, 18, 19, 20, 21, 22, 23, 62, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
+                82
+            ]
+            .into()
+        )
+    );
+    assert!(formats.contains(&6) && odd_yuy2);
+    assert_eq!(pvrtc_atc_count, 576);
+    assert_eq!(tierb_count, 1182);
     assert_eq!(meters, [0, 1].into());
     assert_eq!(bc7_modes, (0..=8).collect(), "BC7 modes");
     assert_eq!(dxt1, [false, true].into(), "DXT1 c0 > c1");
@@ -297,6 +322,7 @@ fn mesh_seeds_are_cases(dir: &Path) {
 
 fn fsb5_seeds_cover_formats_versions_and_hostile_headers(dir: &Path) {
     let mut formats = BTreeSet::new();
+    let (mut coefs, mut shifts) = (BTreeSet::new(), BTreeSet::new());
     let mut count = 0;
     let mut hostile_count = false;
     for entry in std::fs::read_dir(dir.join("fsb5")).expect("the fsb5 target's folder") {
@@ -305,15 +331,30 @@ fn fsb5_seeds_cover_formats_versions_and_hostile_headers(dir: &Path) {
         if bytes.starts_with(b"FSB5") && bytes.len() >= 28 {
             let word = |at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
             hostile_count |= word(8) == u32::MAX;
-            if word(4) <= 1 && word(8) == 1 && (1..=5).contains(&word(24)) {
+            if word(4) <= 1 && word(8) == 1 && [1, 2, 3, 4, 5, 7, 16].contains(&word(24)) {
                 formats.insert((word(4), word(24)));
+            }
+            if word(4) <= 1 && word(24) == 16 && word(12) == 8 && word(16) == 0 {
+                let start = if word(4) == 0 { 72 } else { 68 };
+                for frame in bytes[start..].as_chunks::<0x8c>().0 {
+                    for &b in &frame[..4] {
+                        coefs.extend([b & 15, b >> 4]);
+                    }
+                    for &b in &frame[4..8] {
+                        shifts.extend([b & 15, b >> 4]);
+                    }
+                }
             }
         }
     }
-    assert_eq!(count, 54);
+    assert_eq!(count, 83, "missing ADPCM edge seeds");
     assert!(hostile_count);
+    assert_eq!(coefs, (0..16).collect());
+    assert_eq!(shifts, (0..16).collect());
     assert_eq!(
         formats,
-        (0..=1).flat_map(|v| (1..=5).map(move |m| (v, m))).collect()
+        (0..=1)
+            .flat_map(|v| [1, 2, 3, 4, 5, 7, 16].map(move |m| (v, m)))
+            .collect()
     );
 }

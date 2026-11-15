@@ -124,7 +124,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(Format::ALL.len(), 46);
+        assert_eq!(Format::ALL.len(), 68);
         assert_eq!(Formats::DECODED.iter().count(), Format::ALL.len());
         assert!(
             Format::ALL
@@ -134,6 +134,18 @@ mod tests {
         assert!(Formats::DECODED.contains(Format::UnityDxt1Crunched));
         assert!(Formats::DECODED.contains(Format::UnityDxt5Crunched));
         assert_eq!(Formats::decoded("ASTC_RGBA_8x8"), Ok(Format::AstcRgba8x8));
+    }
+
+    #[test]
+    fn all_formats_iterate_in_texture_format_order() {
+        let values: Vec<_> = Formats::DECODED
+            .iter()
+            .map(Format::texture_format)
+            .collect();
+        assert!(
+            values.windows(2).all(|pair| pair[0] < pair[1]),
+            "{values:?}"
+        );
     }
 
     #[test]
@@ -154,8 +166,11 @@ mod tests {
         ] {
             assert_eq!(Formats::decoded(f.name()), Ok(f));
         }
-        // UnityPy names it; this crate does not decode it.
+        assert_eq!(Formats::decoded("RHalf"), Ok(Format::RHalf));
+        assert_eq!(Formats::decoded("RGB48"), Ok(Format::Rgb48));
+        // UnityPy names these; this crate does not decode them.
         assert_eq!(Formats::decoded("ARGBFloat"), Err(true));
+        assert_eq!(Formats::decoded("ETC_RGB4_3DS"), Err(true));
         // Names are UnityPy's, case and all.
         assert_eq!(Formats::decoded("rgb565"), Err(false));
         assert_eq!(Formats::decoded("Unknown"), Err(false));

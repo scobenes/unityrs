@@ -175,6 +175,9 @@ pub fn select_in(
     if texture.width == 0 || texture.height == 0 {
         return Selection::Skip(Skip::EmptyImage);
     }
+    if texture.texture_format == 6 || (texture.texture_format == 21 && texture.width % 2 != 0) {
+        return Selection::Skip(Skip::UnsupportedFormat(texture.texture_format));
+    }
     // Version 1 exports the five of E15, version 2 the formats its spec
     // names; the other formats this crate also decodes are
     // `unsupported_format` to it (`docs/BATCH_SPEC.md` section 3).

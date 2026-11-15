@@ -5,105 +5,17 @@
 //! engine exports five ([`Format::exported`]), and the image modes they
 //! decode to ([`Mode`]).
 
-/// UnityPy 1.25.2's `TextureFormat` members, value and name, in its order
-/// (`enums/TextureFormat.py:4-82`). Values 37 to 40 are unassigned.
-pub const TEXTURE_FORMATS: [(i32, &str); 78] = [
-    (1, "Alpha8"),
-    (2, "ARGB4444"),
-    (3, "RGB24"),
-    (4, "RGBA32"),
-    (5, "ARGB32"),
-    (6, "ARGBFloat"),
-    (7, "RGB565"),
-    (8, "BGR24"),
-    (9, "R16"),
-    (10, "DXT1"),
-    (11, "DXT3"),
-    (12, "DXT5"),
-    (13, "RGBA4444"),
-    (14, "BGRA32"),
-    (15, "RHalf"),
-    (16, "RGHalf"),
-    (17, "RGBAHalf"),
-    (18, "RFloat"),
-    (19, "RGFloat"),
-    (20, "RGBAFloat"),
-    (21, "YUY2"),
-    (22, "RGB9e5Float"),
-    (23, "RGBFloat"),
-    (24, "BC6H"),
-    (25, "BC7"),
-    (26, "BC4"),
-    (27, "BC5"),
-    (28, "DXT1Crunched"),
-    (29, "DXT5Crunched"),
-    (30, "PVRTC_RGB2"),
-    (31, "PVRTC_RGBA2"),
-    (32, "PVRTC_RGB4"),
-    (33, "PVRTC_RGBA4"),
-    (34, "ETC_RGB4"),
-    (35, "ATC_RGB4"),
-    (36, "ATC_RGBA8"),
-    (41, "EAC_R"),
-    (42, "EAC_R_SIGNED"),
-    (43, "EAC_RG"),
-    (44, "EAC_RG_SIGNED"),
-    (45, "ETC2_RGB"),
-    (46, "ETC2_RGBA1"),
-    (47, "ETC2_RGBA8"),
-    (48, "ASTC_RGB_4x4"),
-    (49, "ASTC_RGB_5x5"),
-    (50, "ASTC_RGB_6x6"),
-    (51, "ASTC_RGB_8x8"),
-    (52, "ASTC_RGB_10x10"),
-    (53, "ASTC_RGB_12x12"),
-    (54, "ASTC_RGBA_4x4"),
-    (55, "ASTC_RGBA_5x5"),
-    (56, "ASTC_RGBA_6x6"),
-    (57, "ASTC_RGBA_8x8"),
-    (58, "ASTC_RGBA_10x10"),
-    (59, "ASTC_RGBA_12x12"),
-    (60, "ETC_RGB4_3DS"),
-    (61, "ETC_RGBA8_3DS"),
-    (62, "RG16"),
-    (63, "R8"),
-    (64, "ETC_RGB4Crunched"),
-    (65, "ETC2_RGBA8Crunched"),
-    (66, "ASTC_HDR_4x4"),
-    (67, "ASTC_HDR_5x5"),
-    (68, "ASTC_HDR_6x6"),
-    (69, "ASTC_HDR_8x8"),
-    (70, "ASTC_HDR_10x10"),
-    (71, "ASTC_HDR_12x12"),
-    (72, "RG32"),
-    (73, "RGB48"),
-    (74, "RGBA64"),
-    (75, "R8_SIGNED"),
-    (76, "RG16_SIGNED"),
-    (77, "RGB24_SIGNED"),
-    (78, "RGBA32_SIGNED"),
-    (79, "R16_SIGNED"),
-    (80, "RG32_SIGNED"),
-    (81, "RGB48_SIGNED"),
-    (82, "RGBA64_SIGNED"),
-];
-
-/// UnityPy 1.25.2's name for a `TextureFormat` value, or `None` for a value
-/// its enum lacks (where `TextureFormat(value)` raises `ValueError`).
-#[must_use]
-pub fn texture_format_name(value: i32) -> Option<&'static str> {
-    TEXTURE_FORMATS
-        .iter()
-        .find(|(v, _)| *v == value)
-        .map(|(_, name)| *name)
-}
+mod names;
+pub use names::{TEXTURE_FORMATS, texture_format_name};
 
 /// The formats this crate decodes: the five of `docs/plans/extract.md` E15
 /// and the rest of the formats UnityPy decodes with Pillow's raw and `bcn`
 /// decoders (`raw`'s and `bcn`'s module docs), the eight ETC and EAC
 /// formats texture2ddecoder decodes for it (`etc`'s module docs), and the
 /// twelve ASTC LDR formats astcenc decodes for it (`astc`'s module docs),
-/// and the four PVRTC and two ATC formats (`pvrtc` and `atc`).
+/// the four PVRTC and two ATC formats (`pvrtc` and `atc`),
+/// and twenty-two raw formats using independent closed forms (`tierb`).
+/// `ArgbFloat` is a refusal-only sentinel, excluded from `ALL`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Format {
     /// `Alpha8` (1): Pillow's raw `A` into `RGBA`.
@@ -117,10 +29,15 @@ pub enum Format {
     Rgba32,
     /// `ARGB32` (5): Pillow's raw `ARGB` into `RGBA`.
     Argb32,
+    /// `ARGBFloat` (6): refusal only; not in `ALL` or `Formats::DECODED`.
+    /// Its channel order is unknown (PARITY.md section 17.1, Tier U).
+    ArgbFloat,
     /// `RGB565` (7): Pillow's raw `BGR;16` into `RGB`.
     Rgb565,
     /// `BGR24` (8): Pillow's raw `BGR` into `RGB`.
     Bgr24,
+    /// `R16` (9): closed form of PARITY.md sections 17.1 and 19.
+    R16,
     /// `DXT1` (10): Pillow's `bcn` 1 (BC1) into `RGBA`.
     Dxt1,
     /// `DXT3` (11): Pillow's `bcn` 2 (BC2) into `RGBA`.
@@ -132,6 +49,24 @@ pub enum Format {
     Rgba4444,
     /// `BGRA32` (14): Pillow's raw `BGRA` into `RGBA`.
     Bgra32,
+    /// `RHalf` (15): closed form of PARITY.md sections 17.1 and 19.
+    RHalf,
+    /// `RGHalf` (16): closed form of PARITY.md sections 17.1 and 19.
+    RgHalf,
+    /// `RGBAHalf` (17): closed form of PARITY.md sections 17.1 and 19.
+    RgbaHalf,
+    /// `RFloat` (18): closed form of PARITY.md sections 17.1 and 19.
+    RFloat,
+    /// `RGFloat` (19): closed form of PARITY.md sections 17.1 and 19.
+    RgFloat,
+    /// `RGBAFloat` (20): closed form of PARITY.md sections 17.1 and 19.
+    RgbaFloat,
+    /// `YUY2` (21): closed form of PARITY.md sections 17.1 and 19.
+    Yuy2,
+    /// `RGB9e5Float` (22): closed form of PARITY.md sections 17.1 and 19.
+    Rgb9e5Float,
+    /// `RGBFloat` (23): closed form of PARITY.md sections 17.1 and 19.
+    RgbFloat,
     /// `BC7` (25): Pillow's `bcn` 7 into `RGBA`.
     Bc7,
     /// `BC4` (26): Pillow's `bcn` 4 into `L`.
@@ -212,12 +147,36 @@ pub enum Format {
     /// `ASTC_RGBA_12x12` (59): astcenc's LDR decode of 12x12 blocks into
     /// `RGBA` (the `astc` module).
     AstcRgba12x12,
+    /// `RG16` (62): closed form of PARITY.md sections 17.1 and 19.
+    Rg16,
     /// `R8` (63): Pillow's raw `R` into `RGB`.
     R8,
     /// `ETC_RGB4Crunched` (64): Unity fork, then ETC1.
     EtcRgb4Crunched,
     /// `ETC2_RGBA8Crunched` (65): Unity fork, then ETC2 A8.
     Etc2Rgba8Crunched,
+    /// `RG32` (72): closed form of PARITY.md sections 17.1 and 19.
+    Rg32,
+    /// `RGB48` (73): closed form of PARITY.md sections 17.1 and 19.
+    Rgb48,
+    /// `RGBA64` (74): closed form of PARITY.md sections 17.1 and 19.
+    Rgba64,
+    /// `R8_SIGNED` (75): closed form of PARITY.md sections 17.1 and 19.
+    R8Signed,
+    /// `RG16_SIGNED` (76): closed form of PARITY.md sections 17.1 and 19.
+    Rg16Signed,
+    /// `RGB24_SIGNED` (77): closed form of PARITY.md sections 17.1 and 19.
+    Rgb24Signed,
+    /// `RGBA32_SIGNED` (78): closed form of PARITY.md sections 17.1 and 19.
+    Rgba32Signed,
+    /// `R16_SIGNED` (79): closed form of PARITY.md sections 17.1 and 19.
+    R16Signed,
+    /// `RG32_SIGNED` (80): closed form of PARITY.md sections 17.1 and 19.
+    Rg32Signed,
+    /// `RGB48_SIGNED` (81): closed form of PARITY.md sections 17.1 and 19.
+    Rgb48Signed,
+    /// `RGBA64_SIGNED` (82): closed form of PARITY.md sections 17.1 and 19.
+    Rgba64Signed,
 }
 
 const _: () = crate::send_sync::<Format>();
@@ -237,12 +196,15 @@ pub(crate) enum Library {
     /// astcenc (astc-encoder-py), on the size padded to whole blocks, its
     /// output then read by Pillow's raw decoder as `RGBA`.
     Astcenc,
+    /// Independent closed forms, with no Pillow raw decoder or its width cap.
+    ClosedForm,
 }
 
 impl Format {
-    /// One variant per `TextureFormat` value. DXT entries select legacy CRN;
+    /// One variant per decoded `TextureFormat` value, in numeric order.
+    /// DXT entries select legacy CRN;
     /// `select_in` and `select_crunch` choose Unity fork variants at Unity 2017.3+.
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 68] = [
         Self::Alpha8,
         Self::Argb4444,
         Self::Rgb24,
@@ -250,11 +212,21 @@ impl Format {
         Self::Argb32,
         Self::Rgb565,
         Self::Bgr24,
+        Self::R16,
         Self::Dxt1,
         Self::Dxt3,
         Self::Dxt5,
         Self::Rgba4444,
         Self::Bgra32,
+        Self::RHalf,
+        Self::RgHalf,
+        Self::RgbaHalf,
+        Self::RFloat,
+        Self::RgFloat,
+        Self::RgbaFloat,
+        Self::Yuy2,
+        Self::Rgb9e5Float,
+        Self::RgbFloat,
         Self::Bc7,
         Self::Bc4,
         Self::Bc5,
@@ -286,9 +258,21 @@ impl Format {
         Self::AstcRgba8x8,
         Self::AstcRgba10x10,
         Self::AstcRgba12x12,
+        Self::Rg16,
         Self::R8,
         Self::EtcRgb4Crunched,
         Self::Etc2Rgba8Crunched,
+        Self::Rg32,
+        Self::Rgb48,
+        Self::Rgba64,
+        Self::R8Signed,
+        Self::Rg16Signed,
+        Self::Rgb24Signed,
+        Self::Rgba32Signed,
+        Self::R16Signed,
+        Self::Rg32Signed,
+        Self::Rgb48Signed,
+        Self::Rgba64Signed,
     ];
 
     /// The five version 1 of the batch engine exports
@@ -301,6 +285,29 @@ impl Format {
     #[must_use]
     pub const fn from_texture_format(value: i32) -> Option<Self> {
         match value {
+            9 => Some(Self::R16),
+            15 => Some(Self::RHalf),
+            16 => Some(Self::RgHalf),
+            17 => Some(Self::RgbaHalf),
+            18 => Some(Self::RFloat),
+            19 => Some(Self::RgFloat),
+            20 => Some(Self::RgbaFloat),
+            21 => Some(Self::Yuy2),
+            22 => Some(Self::Rgb9e5Float),
+            23 => Some(Self::RgbFloat),
+            62 => Some(Self::Rg16),
+            72 => Some(Self::Rg32),
+            73 => Some(Self::Rgb48),
+            74 => Some(Self::Rgba64),
+            75 => Some(Self::R8Signed),
+            76 => Some(Self::Rg16Signed),
+            77 => Some(Self::Rgb24Signed),
+            78 => Some(Self::Rgba32Signed),
+            79 => Some(Self::R16Signed),
+            80 => Some(Self::Rg32Signed),
+            81 => Some(Self::Rgb48Signed),
+            82 => Some(Self::Rgba64Signed),
+
             1 => Some(Self::Alpha8),
             2 => Some(Self::Argb4444),
             3 => Some(Self::Rgb24),
@@ -355,6 +362,30 @@ impl Format {
     #[must_use]
     pub const fn texture_format(self) -> i32 {
         match self {
+            Self::ArgbFloat => 6,
+            Self::R16 => 9,
+            Self::RHalf => 15,
+            Self::RgHalf => 16,
+            Self::RgbaHalf => 17,
+            Self::RFloat => 18,
+            Self::RgFloat => 19,
+            Self::RgbaFloat => 20,
+            Self::Yuy2 => 21,
+            Self::Rgb9e5Float => 22,
+            Self::RgbFloat => 23,
+            Self::Rg16 => 62,
+            Self::Rg32 => 72,
+            Self::Rgb48 => 73,
+            Self::Rgba64 => 74,
+            Self::R8Signed => 75,
+            Self::Rg16Signed => 76,
+            Self::Rgb24Signed => 77,
+            Self::Rgba32Signed => 78,
+            Self::R16Signed => 79,
+            Self::Rg32Signed => 80,
+            Self::Rgb48Signed => 81,
+            Self::Rgba64Signed => 82,
+
             Self::Alpha8 => 1,
             Self::Argb4444 => 2,
             Self::Rgb24 => 3,
@@ -408,6 +439,30 @@ impl Format {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::ArgbFloat => "ARGBFloat",
+            Self::R16 => "R16",
+            Self::RHalf => "RHalf",
+            Self::RgHalf => "RGHalf",
+            Self::RgbaHalf => "RGBAHalf",
+            Self::RFloat => "RFloat",
+            Self::RgFloat => "RGFloat",
+            Self::RgbaFloat => "RGBAFloat",
+            Self::Yuy2 => "YUY2",
+            Self::Rgb9e5Float => "RGB9e5Float",
+            Self::RgbFloat => "RGBFloat",
+            Self::Rg16 => "RG16",
+            Self::Rg32 => "RG32",
+            Self::Rgb48 => "RGB48",
+            Self::Rgba64 => "RGBA64",
+            Self::R8Signed => "R8_SIGNED",
+            Self::Rg16Signed => "RG16_SIGNED",
+            Self::Rgb24Signed => "RGB24_SIGNED",
+            Self::Rgba32Signed => "RGBA32_SIGNED",
+            Self::R16Signed => "R16_SIGNED",
+            Self::Rg32Signed => "RG32_SIGNED",
+            Self::Rgb48Signed => "RGB48_SIGNED",
+            Self::Rgba64Signed => "RGBA64_SIGNED",
+
             Self::Alpha8 => "Alpha8",
             Self::Argb4444 => "ARGB4444",
             Self::Rgb24 => "RGB24",
@@ -468,7 +523,8 @@ impl Format {
         )
     }
 
-    /// The mode UnityPy decodes it to (`CONV_TABLE`,
+    /// The output mode: for closed forms, PARITY.md sections 17.1 and 19;
+    /// otherwise the mode UnityPy decodes it to (`CONV_TABLE`,
     /// `export/Texture2DConverter.py:488-566`): `L` for `BC4` (`:513`);
     /// `RGB` for `RGB24` (`:491`), `RGB565` (`:495`), `BGR24` (`:496`), `R8`
     /// (`:497`) and `BC5` (`:514`); `RGBA` for the rest. A texture with a
@@ -476,6 +532,13 @@ impl Format {
     /// ([`crate::decode()`]).
     #[must_use]
     pub const fn mode(self) -> Mode {
+        if let Some(layout) = crate::tierb::layout(self) {
+            return if layout.channels == 4 {
+                Mode::Rgba
+            } else {
+                Mode::Rgb
+            };
+        }
         match self {
             Self::Bc4 => Mode::L,
             Self::Rgb24 | Self::Rgb565 | Self::Bgr24 | Self::R8 | Self::Bc5 => Mode::Rgb,
@@ -530,7 +593,30 @@ impl Format {
             | Self::AstcRgba8x8
             | Self::AstcRgba10x10
             | Self::AstcRgba12x12 => Some(16),
-            Self::Alpha8
+            Self::ArgbFloat
+            | Self::R16
+            | Self::RHalf
+            | Self::RgHalf
+            | Self::RgbaHalf
+            | Self::RFloat
+            | Self::RgFloat
+            | Self::RgbaFloat
+            | Self::Yuy2
+            | Self::Rgb9e5Float
+            | Self::RgbFloat
+            | Self::Rg16
+            | Self::Rg32
+            | Self::Rgb48
+            | Self::Rgba64
+            | Self::R8Signed
+            | Self::Rg16Signed
+            | Self::Rgb24Signed
+            | Self::Rgba32Signed
+            | Self::R16Signed
+            | Self::Rg32Signed
+            | Self::Rgb48Signed
+            | Self::Rgba64Signed
+            | Self::Alpha8
             | Self::Argb4444
             | Self::Rgb24
             | Self::Rgba32
@@ -577,7 +663,7 @@ impl Format {
     /// `INT_MAX / bits - 7` pixels (`decode`'s module docs).
     pub(crate) const fn raw_bits(self) -> Option<u32> {
         match self.library() {
-            Library::PillowBcn => None,
+            Library::PillowBcn | Library::ClosedForm => None,
             Library::Texture2DDecoder | Library::Astcenc => Some(32),
             Library::PillowRaw => Some(match self {
                 Self::Alpha8 | Self::R8 => 8,
@@ -618,6 +704,9 @@ impl Format {
 
     /// The library that decodes it for UnityPy (`CONV_TABLE`).
     pub(crate) const fn library(self) -> Library {
+        if crate::tierb::layout(self).is_some() || matches!(self, Self::ArgbFloat) {
+            return Library::ClosedForm;
+        }
         match self {
             Self::Dxt1
             | Self::Dxt3

@@ -202,11 +202,11 @@ pub const INVENTORY: &[Exclusion] = &[
     // There is no fallible submission in tokio's API, and a pool task is how
     // every blocking write is kept off the controller (`docs/plans/batch.md`
     // 2.11), so the refusal is the documented abort (A13: status 134 from
-    // step 4). Everything else `Execution::spawn` allocates is fallible, and
-    // the prewarm leaves tokio no thread to start or queue to grow.
+    // step 4). Everything else `Execution::spawn_named` (under `spawn`)
+    // allocates is fallible; the prewarm leaves tokio no thread or queue to grow.
     Exclusion {
         scopes: SPAWNING,
-        functions: &["unityrs_batch::execution::Execution::spawn"],
+        functions: &["unityrs_batch::execution::Execution::spawn_named"],
         platform: Platform::All,
         frame: Some("tokio::runtime::task::core::Cell"),
         via: &[SPAWN_BLOCKING],

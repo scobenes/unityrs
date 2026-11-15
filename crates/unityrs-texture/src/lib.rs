@@ -41,6 +41,14 @@
 //!   it runs), its pixel loop run under [`contain()`] so a panic is an
 //!   error ([`DecodeError::Panicked`]).
 //!
+//! **Tier B/C raw formats.** The twenty-two raw formats of `PARITY.md`
+//! sections 17.1, 19.1 and 19.2 use independent closed forms in `tierb`,
+//! with no Pillow conversion. `tests/tierb_oracle.rs` pins UnityPy's actual
+//! images/exceptions beside those references. Nonempty `ARGBFloat` and
+//! odd-width YUY2 layouts are refused by selection and planning; zero
+//! sides retain the empty image behavior. These decoders charge only
+//! their output and need no scratch allocation.
+//!
 //! **How each format matches UnityPy.** UnityPy decodes the five, and the
 //! eleven of P3's Pillow formats, with Pillow (`CONV_TABLE`,
 //! `export/Texture2DConverter.py:488-566`), so each of their decoders here is
@@ -129,6 +137,7 @@ mod pvrtc;
 mod raw;
 mod select;
 pub mod sprite;
+mod tierb;
 
 pub use contain::{MESSAGE_BYTES, NON_STRING_PAYLOAD, Payload, contain};
 pub use crunch::CrunchError;

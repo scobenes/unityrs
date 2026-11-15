@@ -102,8 +102,9 @@ pub const TIMED_WAITS: &[&str] = &[
 /// Comment lines are not scanned. The engine's early `exit` line
 /// (`unityrs_batch::progress::early`), whose wait is the contract's own
 /// bound, is left out for its one wait only: a count there other than one
-/// is reported as `<file>: <n> timed waits, the exemption is for one`.
-/// Execution's two production startup deadlines, two channel-priming
+/// is reported as `<file>: <n> timed waits, the exemption is for one`; so
+/// is the same line's writer on a descriptor it could not duplicate
+/// (`unityrs_batch::sys::borrowed`). Execution's two production startup deadlines, two channel-priming
 /// waits and one startup-gate priming wait are exempted by their exact
 /// count; a sixth wait is reported. Normal progress (`progress/live.rs`)
 /// is exempted for its heartbeat, its final acknowledgment and one startup
@@ -136,6 +137,15 @@ pub fn unguarded(root: &Path) -> Vec<String> {
         // most 1 s, or the time left to the deadline), not for a test's:
         // that one wait, and no other.
         if path.ends_with("unityrs-batch/src/progress/early.rs") {
+            if hits.len() != 1 {
+                found.push(exemption_broken(&path, hits.len(), "timed waits"));
+            }
+            continue;
+        }
+        // The same line on a descriptor the main thread could not
+        // duplicate (`unityrs_batch::sys::borrowed`): its writer thread
+        // waited on for the same bound, that one wait.
+        if path.ends_with("unityrs-batch/src/sys/borrowed.rs") {
             if hits.len() != 1 {
                 found.push(exemption_broken(&path, hits.len(), "timed waits"));
             }
@@ -218,6 +228,17 @@ mod tests {
                 file.display()
             )]
         );
+    }
+
+    #[test]
+    fn the_borrowed_writer_s_exemption_is_for_one_wait() {
+        let dir = crate::scratch::Scratch::new("guard-borrowed");
+        let file = dir.join("unityrs-batch/src/sys/borrowed.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        for n in [1, 2] {
+            std::fs::write(&file, "rx.recv_timeout(a);\n".repeat(n)).unwrap();
+            assert_eq!(unguarded(dir.path()).len(), usize::from(n != 1));
+        }
     }
 
     #[test]

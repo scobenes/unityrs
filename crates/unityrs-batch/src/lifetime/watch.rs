@@ -19,6 +19,9 @@ pub struct Watch<'a> {
     pub controller: &'a Wake,
     pub finisher: &'a Wake,
     timer: Timer,
+    /// After a panic's line is queued, before the exit: the host's write of
+    /// the queued lines.
+    on_panic: fn(),
     #[cfg(feature = "test-hooks")]
     trace: Option<std::fs::File>,
     #[cfg(feature = "test-hooks")]
@@ -37,25 +40,22 @@ impl<'a> Watch<'a> {
             controller,
             finisher,
             timer: Timer::new()?,
+            on_panic: || {},
             #[cfg(feature = "test-hooks")]
             trace: None,
             #[cfg(feature = "test-hooks")]
             mark: || {},
         })
     }
-    /// A lifecycle trace can only be a fresh nonblocking FIFO, never a file.
+    /// What a panic of the thread calls before its exit.
+    pub fn on_panic(&mut self, on_panic: fn()) {
+        self.on_panic = on_panic;
+    }
+    /// The lifecycle trace FIFO step 1 opened
+    /// ([`crate::sys::lifecycle::open_trace`]): never a regular file.
     #[cfg(feature = "test-hooks")]
-    pub fn trace(&mut self, path: &std::path::Path) -> io::Result<()> {
-        use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY)
-            .open(path)?;
-        if !file.metadata()?.file_type().is_fifo() {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
+    pub fn with_trace(&mut self, file: std::fs::File) {
         self.trace = Some(file);
-        Ok(())
     }
     // Without `test-hooks` the trace is compiled out, and with it `self`.
     #[cfg_attr(not(feature = "test-hooks"), allow(clippy::unused_self))]
@@ -77,8 +77,13 @@ impl<'a> Watch<'a> {
     }
     pub fn run(mut self) -> ! {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.drive()));
-        let _ = result;
-        self.process.exit(Code::Internal)
+        if result.is_err() {
+            crate::diagnostic::pending::panic(format_args!("the lifecycle thread: "));
+            (self.on_panic)();
+        }
+        // The more severe of 70 and the code so far: a stored 69 stays.
+        self.process
+            .exit(Code::Internal.worst(self.process.state.end_code(None)))
     }
     #[allow(clippy::too_many_lines)] // The ordered W9 state machine stays in one audit scope.
     fn drive(&mut self) -> ! {
@@ -92,7 +97,9 @@ impl<'a> Watch<'a> {
         let mut notified = false;
         let mut cutoff_seen = false;
         let mut programmed = None;
-        let mut fallback = false;
+        // No timer on this host (off Linux): bounded polls from the start,
+        // with no stop, since nothing failed.
+        let mut fallback = self.timer.absent();
         loop {
             let Ok(now) = Boot::now() else {
                 self.process.exit(Code::Internal)

@@ -412,10 +412,9 @@ pub static FORMATS: Array = Array {
 /// `outputs.formats`' default: version 1's five, in `TextureFormat` order.
 pub const DEFAULT_FORMATS: &str = r#"["RGB24","RGBA32","DXT1","DXT5","BC7"]"#;
 
-/// `outputs.image`'s values in this binary. `png_fast` and `webp` are
-/// reserved for later releases (`docs/BATCH_SPEC.md` 1.5), and `range`
-/// until then, as any other string is.
-pub const IMAGES: &[&str] = &["png"];
+/// `outputs.image`'s values in this binary. WebP remains reserved
+/// (`docs/BATCH_SPEC.md` 1.5); unknown strings are `range`.
+pub const IMAGES: &[&str] = &["png", "png_fast"];
 
 /// `outputs` (1.5), version 2.
 pub static OUTPUTS_V2: [Field; 5] = [

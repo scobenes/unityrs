@@ -20,6 +20,12 @@
 //! (later mips, anything else) are ignored, so a texture with mips decodes
 //! as its mip 0.
 //!
+//! **Closed-form raw formats.** `tierb` follows PARITY.md sections 17.1,
+//! 19.1 and 19.2, independently of UnityPy. After the zero-side check, a
+//! nonempty `ARGBFloat` or odd-width YUY2 layout is `DecodeError::Unsupported`,
+//! before the data check. These formats validate the full stored length,
+//! use no Pillow width cap and allocate only the metered RGB(A) output.
+//!
 //! **The order.** [`plan()`] and [`decode()`] make one series of checks,
 //! the first that fails naming the error. For ordinary formats a plan's
 //! answer is the decode's; crunch also validates content during unpacking:
@@ -190,6 +196,14 @@ const INT_MAX: u32 = 0x7FFF_FFFF;
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeError {
+    /// A Tier U layout: `ARGBFloat`, or YUY2 with an odd width.
+    #[error("unsupported texture layout: {format:?} at width {width}")]
+    Unsupported {
+        /// The refused format.
+        format: Format,
+        /// The stored width.
+        width: i32,
+    },
     /// A malformed legacy or Unity CRN stream or unsupported CRN feature.
     #[error(transparent)]
     Crunch(crunch::CrunchError),
@@ -334,6 +348,9 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
             scratch: 0,
         });
     }
+    if format == Format::ArgbFloat || (format == Format::Yuy2 && width % 2 != 0) {
+        return Err(DecodeError::Unsupported { format, width });
+    }
     if data_len == 0 {
         return Err(DecodeError::NoImageData);
     }
@@ -366,7 +383,7 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
     }
     let mode = format.mode();
     let library = format.library();
-    // From here every size is at most 4 x MAX_PIXELS.
+    // Output is at most 4 x MAX_PIXELS; raw stored input at most 16 x MAX_PIXELS.
     let len = u64::try_from(data_len).unwrap_or(u64::MAX);
     let unpacked_bytes = block.map_or(0, |b| padded_w / 4 * (padded_h / 4) * b);
     let (input_bytes, seen) = if format.is_crunched() {
@@ -389,7 +406,7 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
             (Some(b), None, _) => (w64.div_ceil(4) * h64.div_ceil(4) * b, len),
             // Pillow's raw decoder reads whole rows of `bits` a pixel, each a
             // whole number of bytes here.
-            _ => (pixels * u64::from(format.raw_bits().unwrap_or(0) / 8), len),
+            _ => (pixels * raw_pixel_bytes(format), len),
         }
     };
     let short = seen < input_bytes;
@@ -429,14 +446,27 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
         height: h,
         input_bytes,
         output_bytes: shown * mode.bytes_per_pixel(),
-        scratch: if format.is_unity_crunched() {
-            crunch::unity::scratch(unpacked_bytes, w64)
-        } else if format.is_crunched() {
-            crunch::scratch(unpacked_bytes)
-        } else {
-            astc_footprint(format).map_or(0, astc::Tables::charge)
-        },
+        scratch: scratch_charge(format, unpacked_bytes, w64),
     })
+}
+
+/// The temporary buffers and tables needed beside a decode's output.
+fn scratch_charge(format: Format, unpacked_bytes: u64, width: u64) -> u64 {
+    if format.is_unity_crunched() {
+        crunch::unity::scratch(unpacked_bytes, width)
+    } else if format.is_crunched() {
+        crunch::scratch(unpacked_bytes)
+    } else {
+        astc_footprint(format).map_or(0, astc::Tables::charge)
+    }
+}
+
+/// Stored bytes per pixel for raw Pillow and closed-form formats.
+fn raw_pixel_bytes(format: Format) -> u64 {
+    crate::tierb::layout(format).map_or_else(
+        || u64::from(format.raw_bits().unwrap_or(0) / 8),
+        crate::tierb::Layout::bytes,
+    )
 }
 
 /// An ASTC format's footprint.
@@ -655,6 +685,10 @@ fn fill(
         astc::decode_image(tables, data, (w, h), true, astc::ERROR, out);
         return;
     }
+    if crate::tierb::layout(format).is_some() {
+        crate::tierb::decode(format, data, w, h, out);
+        return;
+    }
     match format {
         Format::Alpha8 => raw::decode(raw::Kind::A, data, w, h, out),
         Format::Argb4444 => raw::decode(raw::Kind::Rgba4BArgb, data, w, h, out),
@@ -690,8 +724,32 @@ fn fill(
         Format::Etc2Rgba8 | Format::Etc2Rgba8Crunched => {
             etc::decode(etc::Kind::Etc2A8, data, w, h, out);
         }
+        // Closed forms and refusals handled before this match.
+        Format::R16
+        | Format::RHalf
+        | Format::RgHalf
+        | Format::RgbaHalf
+        | Format::RFloat
+        | Format::RgFloat
+        | Format::RgbaFloat
+        | Format::Yuy2
+        | Format::Rgb9e5Float
+        | Format::RgbFloat
+        | Format::Rg16
+        | Format::Rg32
+        | Format::Rgb48
+        | Format::Rgba64
+        | Format::R8Signed
+        | Format::Rg16Signed
+        | Format::Rgb24Signed
+        | Format::Rgba32Signed
+        | Format::R16Signed
+        | Format::Rg32Signed
+        | Format::Rgb48Signed
+        | Format::Rgba64Signed
+        | Format::ArgbFloat
         // Decoded above, with their tables.
-        Format::AstcRgb4x4
+        | Format::AstcRgb4x4
         | Format::AstcRgb5x5
         | Format::AstcRgb6x6
         | Format::AstcRgb8x8
