@@ -554,6 +554,24 @@ fn meshdecode(s: &mut Seeds) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The targets whose seeds a writer of their own makes, in the order
+/// `write` has always run them (the trees they add come before the depth
+/// cases').
+fn module_seeds(s: &mut Seeds) -> std::io::Result<()> {
+    zip::seeds(s)?;
+    web::seeds(s)?;
+    fsb5::write(s)?;
+    image_writers::write(s)?;
+    head::write(s)?;
+    shader::seeds(s)?;
+    texture(s)?;
+    pvrtc_atc::write(s)?;
+    astc::write(s)?;
+    tierb::write(s)?;
+    crunch::write(s)?;
+    meshdecode(s)
+}
+
 /// Every target's seeds, in a folder of `dir` each, and how many. Crate-wide:
 /// `tests/fuzz_seeds.rs` includes this file and checks what it writes.
 pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
@@ -595,18 +613,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     ] {
         s.add("unitycn", name, bytes)?;
     }
-    zip::seeds(&mut s)?;
-    web::seeds(&mut s)?;
-    fsb5::write(&mut s)?;
-    image_writers::write(&mut s)?;
-    head::write(&mut s)?;
-    shader::seeds(&mut s)?;
-    texture(&mut s)?;
-    pvrtc_atc::write(&mut s)?;
-    astc::write(&mut s)?;
-    tierb::write(&mut s)?;
-    crunch::write(&mut s)?;
-    meshdecode(&mut s)?;
+    module_seeds(&mut s)?;
     for (name, case) in unityrs_testkit::fuzz::scene_cases() {
         for target in ["scene_collect", "obj_text"] {
             s.add(target, &name, &case.encode())?;
