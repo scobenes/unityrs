@@ -18,6 +18,11 @@
 //! and zero weight rows become [1,0,0,0]. Changed scalar components are counted
 //! once per emitted shared accessor, in the report and asset extras. Non-finite f32
 //! positions refuse their primitives; invalid normals drop NORMAL and TANGENT.
+//! Finite colours clamp to [0,1]; non-finite colours or UV sets drop only their
+//! primitive attribute. UV sets compact in source order; textures use the first
+//! surviving set or lose their reference, with each omission counted. Collection
+//! pads one-/two-wide skin rows structurally to four in both modes, counted as
+//! `padded_skin_rows`; a one-wide row without weights gets [1,0,0,0].
 //! Raw mode preserves f32 bits in BIN and may fail validation. [`collect`]
 //! converts Unity coordinates and UVs into this model using a typed [`Profile`].
 //! Material mapping uses [`UnlitExtras`] or an injected [`MaterialMapper`],
@@ -34,6 +39,7 @@
     )
 )]
 
+mod attribute_policy;
 mod collect;
 pub use collect::{collect, collect_with_mapper};
 mod image;

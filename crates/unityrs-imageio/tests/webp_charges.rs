@@ -104,7 +104,7 @@ fn webp_allocations_are_charged_fallible_and_freed() {
         (16383, 1),
         (1, 16383),
     ] {
-        for mode in Mode::EXTRACTOR {
+        for mode in Mode::ALL {
             let mut state = 0x1234_5678_u32;
             let raw: Vec<u8> = (0..width * height * mode.channels() as u32)
                 .map(|_| {
@@ -189,9 +189,17 @@ fn sweep(extended: bool) {
         (Mode::Rgb, 17, 17, "palette"),
         (Mode::La, 15, 17, "gradient"),
         (Mode::L, 15, 17, "random"),
+        (Mode::P, 31, 33, "palette"),
+        (Mode::P, 17, 17, "implicit"),
     ] {
         let raw = pixels(mode, width, height, kind);
-        let image = Image::new(width, height, mode, &raw).unwrap();
+        let palette = std::array::from_fn(|i| (i * 19 + i / 3 * 7) as u8);
+        let image = if mode == Mode::P && kind != "implicit" {
+            Image::with_palette(width, height, &raw, &palette)
+        } else {
+            Image::new(width, height, mode, &raw)
+        }
+        .unwrap();
         for method in 0..=6 {
             for &(quality, exact) in if extended {
                 &[(0.0, false), (95.0, false), (100.0, true)][..]
@@ -372,22 +380,42 @@ fn higher_methods_plan_their_larger_alpha_workspace() {
 }
 
 #[test]
-fn palette_images_are_refused_before_any_charge() {
-    let palette = [7u8; 768];
-    let pixels = [0u8; 6];
-    let image = Image::with_palette(3, 2, &pixels, &palette).unwrap();
+fn webp_dispatch_propagates_resource_failures_without_png_fallback() {
+    use unityrs_imageio::writers::{Outcome, SaveError, save_by_extension};
+    let palette = std::array::from_fn(|i| (i * 19 + i / 3 * 7) as u8);
+    let pixels = pixels(Mode::P, 3, 2, "random");
     let _measurement = measure();
-    for options in [
-        WebpOptions::default(),
-        WebpOptions {
-            quality: f32::NAN,
-            ..WebpOptions::default()
-        },
+    for image in [
+        Image::with_palette(3, 2, &pixels, &palette).unwrap(),
+        Image::new(3, 2, Mode::P, &pixels).unwrap(),
     ] {
-        assert!(matches!(
-            encode_webp(&image, options, &mut Grant(None)),
-            Err(WebpError::Palette)
-        ));
+        start();
+        let out = save_by_extension(&image, ".webp", "image.webp", &mut Grant(None)).unwrap();
+        let calls = CALLS.load(Relaxed);
+        assert!(matches!(out, Outcome::Original(_)));
+        drop(out);
+        settled();
+        for buffer in [Buffer::WebpState, Buffer::Output] {
+            start();
+            let result = save_by_extension(&image, ".webp", "image.webp", &mut Grant(Some(buffer)));
+            assert!(
+                matches!(result, Err(SaveError::Webp(WebpError::Refused { buffer: b, .. })) if b == buffer)
+            );
+            assert_eq!(CALLS.load(Relaxed), 0);
+            settled();
+        }
+        for fail in 1..=calls {
+            start();
+            FAIL.store(fail, Relaxed);
+            let result = save_by_extension(&image, ".webp", "image.webp", &mut Grant(None));
+            FAIL.store(0, Relaxed);
+            assert!(
+                matches!(result, Err(SaveError::Webp(WebpError::Memory))),
+                "{fail}: {result:?}"
+            );
+            assert!(CALLS.load(Relaxed) >= fail);
+            drop(result);
+            settled();
+        }
     }
-    settled();
 }

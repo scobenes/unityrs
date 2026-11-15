@@ -6,10 +6,16 @@ pub(crate) fn row(a: &Accessor, row: usize, normalise: bool) -> Result<[f32; 16]
     let mut out = [0f32; 16];
     let width = a.kind.width();
     for (i, value) in out.iter_mut().take(width).enumerate() {
+        let value64 = a
+            .data
+            .value(row * width + i)
+            .ok_or_else(|| invalid("accessor data"))?;
         *value = round(
-            a.data
-                .value(row * width + i)
-                .ok_or_else(|| invalid("accessor data"))?,
+            if normalise && a.kind == Kind::Color && value64.is_finite() {
+                value64.clamp(0., 1.)
+            } else {
+                value64
+            },
         );
     }
     if normalise {

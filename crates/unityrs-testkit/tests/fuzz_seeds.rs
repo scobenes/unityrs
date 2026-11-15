@@ -256,13 +256,20 @@ fn texture_seeds_are_cases(dir: &Path) {
     let mut odd_yuy2 = false;
     let (mut pvrtc_atc_count, mut tierb_count) = (0, 0);
     let (mut bc7_modes, mut dxt1, mut dxt5) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+    let mut platform_seeds = 0;
+    let mut complete_switch = false;
     for entry in std::fs::read_dir(dir.join("texture")).expect("the target's folder") {
-        let path = entry.expect("an entry").path();
-        let name = path.file_name().unwrap().to_str().unwrap();
+        let entry = entry.expect("an entry");
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
         pvrtc_atc_count += usize::from(name.contains("-pvrtc-atc-"));
         tierb_count += usize::from(name.contains("-tierb-"));
-        let bytes = std::fs::read(path).expect("a seed");
+        platform_seeds += usize::from(name.contains("platform-"));
+        let bytes = std::fs::read(entry.path()).expect("a seed");
         let case = TextureCase::decode(&bytes);
+        complete_switch |= case.platform == 38
+            && case.data.len() >= 1024
+            && case.blob.as_ref().is_some_and(|b| b.get(8) == Some(&1));
         assert_eq!(case.encode(), bytes, "a seed that is not a case");
         formats.insert(case.format);
         meters.insert(case.meter);
@@ -306,6 +313,8 @@ fn texture_seeds_are_cases(dir: &Path) {
     assert_eq!(bc7_modes, (0..=8).collect(), "BC7 modes");
     assert_eq!(dxt1, [false, true].into(), "DXT1 c0 > c1");
     assert_eq!(dxt5, [false, true].into(), "DXT5 a0 > a1");
+    assert_eq!(platform_seeds, 182 * 2 + 7 + 111);
+    assert!(complete_switch, "no complete swizzled GOB seed");
 }
 
 /// Every `meshdecode` seed is a `MeshCase` as written, and the seeds hold

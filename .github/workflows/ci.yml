@@ -462,6 +462,7 @@ jobs:
           python tools/fixtures/texture.py --check
           python tools/fixtures/texture_tierb.py --check
           python tools/fixtures/texture_astc.py --check
+          python tools/fixtures/texture_platform.py --check
           python tools/fixtures/texture_pvrtc_atc.py --check
           python tools/fixtures/texture_crunch.py --native crates/unityrs-texture/tests/fixtures/crunch_native.json --check
           python tools/fixtures/texture_crunch.py --unity-native crates/unityrs-texture/tests/fixtures/unitycrunch_native.json --check
@@ -600,7 +601,7 @@ jobs:
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=583
+          tools/parity/tests=594
           tools/perf/tests=10
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6

@@ -95,7 +95,7 @@ fn run(image: &Image<'_>, format: Format, filename: &str, limit: u64) -> Answer 
         }
         Err(SaveError::Pillow(error)) => Answer::Pillow(error),
         Err(SaveError::Unsupported { format }) => Answer::Unsupported(format),
-        Err(SaveError::Encode(_)) => Answer::Encode,
+        Err(SaveError::Encode(_) | SaveError::Webp(_)) => Answer::Encode,
     };
     assert_eq!(meter.used(), 0, "writer leaked a charge");
     answer

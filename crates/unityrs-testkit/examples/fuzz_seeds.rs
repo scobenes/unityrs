@@ -56,6 +56,8 @@ mod depth;
 mod extractor_paths;
 #[path = "fuzz_seeds/image_writers.rs"]
 mod image_writers;
+#[path = "fuzz_seeds/platform.rs"]
+mod platform;
 #[path = "fuzz_seeds/shader.rs"]
 mod shader;
 #[path = "fuzz_seeds/tierb.rs"]
@@ -430,6 +432,7 @@ fn texture(s: &mut Seeds) -> std::io::Result<()> {
             s.add("texture", &format!("f{format}-7x9-{tag}"), &case.encode())?;
         }
     }
+    platform::seeds(s)?;
     texture_blocks(s)
 }
 

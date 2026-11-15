@@ -9,6 +9,8 @@ pub enum Reason {
     NonFinitePosition,
     InvalidNormal,
     InvalidTangent,
+    InvalidColor,
+    InvalidTexCoord,
 }
 const _: () = crate::send_sync::<Reason>();
 /// One primitive decision, with optional output indices and original source indices.
@@ -32,6 +34,10 @@ pub struct Report {
     pub tangent_components: u64,
     pub weight_components: u64,
     pub zero_weight_rows: u64,
+    pub color_components: u64,
+    pub dropped_color_attributes: u64,
+    pub dropped_texcoord_attributes: u64,
+    pub dropped_texture_references: u64,
     pub issues: MeteredVec<Issue>,
     pub collection_issues: MeteredVec<crate::CollectionIssue>,
 }
@@ -57,12 +63,15 @@ pub(crate) struct AccessorLayout {
     pub changes: u64,
     pub zeros: u64,
     pub joint_changes: u64,
+    pub uv_filler: bool,
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PrimitiveLayout {
     pub keep: bool,
     pub normal: bool,
     pub tangent: bool,
+    pub material: Option<usize>,
+    pub uv_gaps: crate::attribute_policy::UvGaps,
 }
 #[derive(Debug)]
 pub(crate) struct MeshLayout {
@@ -81,6 +90,8 @@ pub struct Layout {
     pub(crate) meshes: MeteredVec<MeshLayout>,
     pub(crate) rotations: MeteredVec<[f64; 4]>,
     pub(crate) image_views: MeteredVec<usize>,
+    /// Source material ids for variants whose texture references are omitted.
+    pub(crate) textureless_materials: MeteredVec<usize>,
 }
 const _: () = crate::send_sync::<Layout>();
 impl Layout {
@@ -120,6 +131,10 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
             tangent_components: 0,
             weight_components: 0,
             zero_weight_rows: 0,
+            color_components: 0,
+            dropped_color_attributes: 0,
+            dropped_texcoord_attributes: 0,
+            dropped_texture_references: 0,
             issues: MeteredVec::new(meter),
             collection_issues: crate::array(meter, s.collection_issues.as_slice())?,
         },
@@ -127,6 +142,7 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
         accessor_order: MeteredVec::new(meter),
         meshes: MeteredVec::with_capacity(meter, s.meshes.len())?,
         image_views: MeteredVec::new(meter),
+        textureless_materials: MeteredVec::new(meter),
         rotations: MeteredVec::with_capacity(meter, s.nodes.len())?,
     };
     meter.count_decode(s.nodes.len() as u64 * 32)?;
@@ -164,7 +180,17 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
             changes: 0,
             zeros: 0,
             joint_changes: 0,
+            uv_filler: false,
         })?;
+    }
+    meter.count_decode(s.collected_uv_fillers.len() as u64)?;
+    for &id in s.collected_uv_fillers.as_slice() {
+        validate::accessor(s, id, Kind::TexCoord)?;
+        l.accessors
+            .as_mut_slice()
+            .get_mut(id)
+            .ok_or_else(|| validate::invalid("UV filler accessor"))?
+            .uv_filler = true;
     }
     let mut mesh_id = 0;
     for (mi, m) in s.meshes.as_slice().iter().enumerate() {
@@ -180,11 +206,18 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
                 keep: true,
                 normal: true,
                 tangent: true,
+                material: p.material,
+                uv_gaps: crate::attribute_policy::UvGaps::Preserve,
             };
             for &(kind, id) in p.attributes.as_slice() {
                 if matches!(
                     kind,
-                    Attribute::Position | Attribute::Normal | Attribute::Tangent
+                    Attribute::Position
+                        | Attribute::Normal
+                        | Attribute::Tangent
+                        | Attribute::Color
+                        | Attribute::CustomColor
+                        | Attribute::TexCoord(_)
                 ) {
                     analyse(s, &mut l, id, *opts, meter)?;
                 }
@@ -202,6 +235,11 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
                         Attribute::Tangent => {
                             pl.tangent = false;
                             Reason::InvalidTangent
+                        }
+                        Attribute::Color | Attribute::CustomColor => Reason::InvalidColor,
+                        Attribute::TexCoord(_) => {
+                            pl.uv_gaps = crate::attribute_policy::UvGaps::Omit;
+                            Reason::InvalidTexCoord
                         }
                         _ => return Err(validate::invalid("invalid attribute")),
                     };
@@ -272,6 +310,23 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
                     }
                 }
             }
+            if pl.keep {
+                crate::attribute_policy::material(s, &mut l, p, &mut pl, meter)?;
+                meter.count_decode((l.report.issues.len() - issue_start) as u64)?;
+                for issue in l
+                    .report
+                    .issues
+                    .as_slice()
+                    .get(issue_start..)
+                    .ok_or_else(|| validate::invalid("issue range"))?
+                {
+                    match issue.reason {
+                        Reason::InvalidColor => l.report.dropped_color_attributes += 1,
+                        Reason::InvalidTexCoord => l.report.dropped_texcoord_attributes += 1,
+                        _ => {}
+                    }
+                }
+            }
             if pl.keep && ml.id.is_none() {
                 ml.id = Some(mesh_id);
                 mesh_id += 1;
@@ -311,9 +366,7 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
                 continue;
             }
             for &(kind, id) in p.attributes.as_slice() {
-                if (kind == Attribute::Normal && !pl.normal)
-                    || (kind == Attribute::Tangent && !pl.tangent)
-                {
+                if !crate::attribute_policy::keep(&l, pl, kind, id) {
                     continue;
                 }
                 place(s, &mut l, id, *opts, meter)?;
@@ -372,6 +425,7 @@ fn place(
         .get(id)
         .ok_or_else(|| validate::invalid("accessor index"))?;
     match a.kind {
+        Kind::Color => l.report.color_components += al.changes,
         Kind::Normal => l.report.normal_components += al.changes,
         Kind::Tangent => l.report.tangent_components += al.changes,
         Kind::Weights => {
@@ -467,6 +521,7 @@ fn analyse(
         changes: 0,
         zeros: 0,
         joint_changes: 0,
+        uv_filler: al.uv_filler,
     };
     let mut changes = 0;
     let mut zeros = 0;
@@ -523,12 +578,16 @@ fn analyse(
             }
         }
         for (j, (&x, &old)) in out.iter().zip(&raw).take(a.kind.width()).enumerate() {
-            if opts.normalise && a.kind == Kind::Color && !(0. ..=1.).contains(&x) {
-                return Err(validate::invalid("color component outside [0,1]"));
-            }
             if !x.is_finite() {
                 if opts.normalise
-                    && !matches!(a.kind, Kind::Position | Kind::Normal | Kind::Tangent)
+                    && !matches!(
+                        a.kind,
+                        Kind::Position
+                            | Kind::Normal
+                            | Kind::Tangent
+                            | Kind::Color
+                            | Kind::TexCoord
+                    )
                 {
                     return Err(validate::invalid("non-finite accessor"));
                 }

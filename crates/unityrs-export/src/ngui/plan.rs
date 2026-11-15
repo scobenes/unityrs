@@ -497,7 +497,7 @@ impl Attempt<'_> {
             }
         };
         let mut atlas = AtlasPlan::new(obj.clone(), name, parsed, sheet, meter);
-        self.plan_keys(&mut atlas, elements.as_slice(), format.mode())?;
+        self.plan_keys(&mut atlas, elements.as_slice(), format)?;
         Ok(Some(atlas))
     }
 
