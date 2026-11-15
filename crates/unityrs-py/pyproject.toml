@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin==1.9.6"]
+build-backend = "maturin"
+
+[project]
+name = "unityrs"
+version = "0.0.1"
+requires-python = ">=3.10"
+description = "Read Unity asset files through the unityrs Rust core."
+license = "(MIT OR Apache-2.0) AND MIT"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE", "LICENSE-UNITYPY", "THIRD_PARTY_LICENSES"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "unityrs._native"
+features = ["extension-module"]

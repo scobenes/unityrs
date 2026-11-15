@@ -102,7 +102,7 @@ pub fn read_with_reader(
     ctx: &ReadCtx<'_>,
     kind: ReaderKind,
 ) -> Result<Parsed, ReadError> {
-    read_with_mode(file, start, tree, ctx, kind, false)
+    read_with_mode(file, start, tree, ctx, kind, (false, false))
 }
 
 pub(crate) fn read_with_mode(
@@ -111,7 +111,7 @@ pub(crate) fn read_with_mode(
     tree: &Arc<Tree>,
     ctx: &ReadCtx<'_>,
     kind: ReaderKind,
-    object_mode: bool,
+    (head, object_mode): (bool, bool),
 ) -> Result<Parsed, ReadError> {
     let work = Work::start(ctx.options.limits, ctx.meter)?;
     let builder =
@@ -123,6 +123,7 @@ pub(crate) fn read_with_mode(
         pos: start,
         start,
         kind,
+        head,
         object_mode,
         big: ctx.endian == Endian::Big,
         floats: ctx.options.floats,
@@ -152,6 +153,7 @@ pub(crate) fn read_with_mode(
 /// (`streams/EndianBinaryReader.py:231-284`), or `_Streamable` (`:287-324`)
 /// for a file loaded from a path, and `TypeTreeConfig`
 /// (`helpers/TypeTreeHelper.py:78-85`).
+#[allow(clippy::struct_excessive_bools)] // Endian, tier, object mode and registry are independent.
 struct Reader<'a, 'c> {
     data: &'a Bytes,
     bytes: &'a [u8],
@@ -161,6 +163,8 @@ struct Reader<'a, 'c> {
     start: i128,
     /// Which reader's rules.
     kind: ReaderKind,
+    /// SF 23+ selects HEAD's aligned byte-array behavior.
+    head: bool,
     object_mode: bool,
     big: bool,
     floats: FloatMode,
@@ -639,11 +643,14 @@ impl Reader<'_, '_> {
             Py::Limit(l) => limit_refused(at, l),
             e => self.raise(e),
         })?;
-        if matches!(self.ref_types, RefTypes::Absent) {
-            return Err(self.fail(ReadErrorKind::RefType, ReadDetail::Python("AttributeError")));
-        }
         if !matches!(self.ref_types, RefTypes::List(l) if !l.is_empty()) {
-            return Err(self.fail(ReadErrorKind::RefType, ReadDetail::NoRefTypes));
+            return Err(self.fail(
+                ReadErrorKind::RefType,
+                ReadDetail::NoRefTypes {
+                    reader: ReadBy::Python,
+                    absent: matches!(self.ref_types, RefTypes::Absent),
+                },
+            ));
         }
         if matches!(cls, Value::Str(s) if s.is_empty()) {
             return Ok(None);

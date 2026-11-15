@@ -1,6 +1,6 @@
 // Ported from UnityPy 1.25.2 (MIT): export/AudioClipConverter.py and enums/Audio.py. See THIRD_PARTY_LICENSES.
 // Ported from fmod_toolkit 0.1.3 (MIT): fmod.py subsound filenames. See THIRD_PARTY_LICENSES.
-//! `AudioClip` dispatch and FSB5 PCM exports, with no FMOD dependency.
+//! `AudioClip` dispatch and FSB5 PCM/ADPCM exports, with no FMOD dependency.
 //!
 //! [`plan`] validates the real bank boundaries and bounds WAV output before
 //! decoding. Its metadata, every output name and payload are metered and
@@ -16,7 +16,7 @@
 //! Integer PCM is copied, float defaults to numpy's saturated int16 rule.
 //! WAVs shorter than four data bytes are Tier C (`fmod_toolkit` raises).
 //! A bank with an empty first subsound is Tier U and refused. Other codecs
-//! are typed unsupported errors, deferred to A2/A3 or optional future work.
+//! are typed unsupported errors, deferred to A3 or optional future work.
 #![forbid(unsafe_code)]
 #![cfg_attr(
     not(test),
@@ -29,6 +29,7 @@
     )
 )]
 
+mod adpcm;
 mod fsb5;
 mod wav;
 
@@ -55,6 +56,8 @@ pub enum Error {
     UnsupportedContainer,
     #[error("unsupported FSB5 bank with no samples in its first subsound (Tier U)")]
     EmptyFirstSubsound,
+    #[error("FSB5 channel count {channels} exceeds FMOD's maximum of 32")]
+    TooManyChannels { channels: u16 },
     #[error("audio output exceeds WAV's signed 32-bit fields or address space")]
     OutputSize,
     #[error(transparent)]

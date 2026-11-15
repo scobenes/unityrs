@@ -71,7 +71,7 @@ allow = ["PSF-2.0"]
 # mirrors, with the crate's own expression).
 [[licenses.clarify]]
 crate = "unityrs-texture"
-expression = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0 AND LicenseRef-Crunch"
+expression = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0 AND LicenseRef-Crunch AND Zlib"
 license-files = [
     { path = "LICENSE-MIT", hash = 0xb9a65ddd },
     { path = "LICENSE-APACHE", hash = 0xb5518783 },
@@ -86,6 +86,7 @@ license-files = [
     { path = "LICENSE-OPENBLAS-UT", hash = 0x443007d2 },
     { path = "LICENSE-ASTCENC", hash = 0xb06ccc7a },
     { path = "LICENSE-CRUNCH", hash = 0x049cfc10 },
+    { path = "LICENSE-UNITYCRUNCH", hash = 0x9e44785d },
 ]
 
 [[licenses.exceptions]]
@@ -121,6 +122,18 @@ expression = "Apache-2.0"
 license-files = [
     { path = "LICENSE.txt", hash = 0x4a461d6a },
     { path = "NOTICE.txt", hash = 0x4a9a55d8 },
+]
+
+# Equal to about.toml: retain vgmstream's complete ISC copyright notice.
+[[licenses.clarify]]
+crate = "unityrs-audio"
+expression = "(MIT OR Apache-2.0) AND MIT AND ISC"
+license-files = [
+    { path = "LICENSE-MIT", hash = 0xb9a65ddd },
+    { path = "LICENSE-APACHE", hash = 0xb5518783 },
+    { path = "LICENSE-UNITYPY", hash = 0x25f1bbc9 },
+    { path = "LICENSE-FMOD-TOOLKIT", hash = 0x853131fc },
+    { path = "LICENSE-VGMSTREAM", hash = 0x41ce9b8b },
 ]
 
 [bans]

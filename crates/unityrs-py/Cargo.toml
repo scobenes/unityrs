@@ -1,0 +1,28 @@
+[package]
+name = "unityrs-py"
+description = "Python abi3 bindings for unityrs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "(MIT OR Apache-2.0) AND MIT"
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+unityrs-core = { path = "../unityrs-core" }
+# Required Python ABI boundary; MIT OR Apache-2.0, already accepted globally.
+pyo3 = { version = "=0.29.3", features = ["abi3-py310", "auto-initialize"] }
+
+[dev-dependencies]
+unityrs-testkit = { path = "../unityrs-testkit" }
+serde_json = "=1.0.154"
+
+[lints]
+workspace = true

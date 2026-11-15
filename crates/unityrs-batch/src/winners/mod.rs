@@ -254,6 +254,7 @@ fn notify(cx: &Context<'_>, result: Result<Artifacts, Error>) -> Result<Artifact
         }))
         .is_err()
     {
+        crate::diagnostic::pending::panic(format_args!("the winners' stop: "));
         return Err(Error::internal());
     }
     result
@@ -307,6 +308,7 @@ pub fn complete(cx: &mut Context<'_>) -> Result<Handoff, Error> {
         }))
         .is_err()
     {
+        crate::diagnostic::pending::panic(format_args!("the winners' stop: "));
         return Err(Error::internal());
     }
     result

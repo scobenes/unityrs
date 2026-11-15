@@ -258,7 +258,7 @@ fn own(p: &Parsed, seen: &mut HashSet<usize>) -> u64 {
     let lists: u64 = p
         .lists()
         .iter()
-        .filter(|l| seen.insert(Arc::as_ptr(l) as usize))
+        .filter(|l| seen.insert(unityrs_core::typetree::SharedNodes::as_ptr(l) as usize))
         .map(|l| l.charge().bytes())
         .sum();
     p.charge().bytes() + lists

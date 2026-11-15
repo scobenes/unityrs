@@ -77,7 +77,10 @@ fn fallback_warning_comparisons_charge_steps_and_bytes_before_comparing() {
 
 fn tree() -> Arc<Tree> {
     Tree::compile(
-        Arc::new(NodeList::trusted(vec![NodeRow::new(0, "int", "x")]).unwrap()),
+        NodeList::trusted(vec![NodeRow::new(0, "int", "x")])
+            .unwrap()
+            .into_shared()
+            .unwrap(),
         &unityrs_core::limits::Limits::default(),
     )
     .unwrap()

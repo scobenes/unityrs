@@ -57,7 +57,7 @@ fn bound_of(dir: &Scratch, text: &str, inputs: u64) -> u64 {
         status: None,
         code: Code::Complete,
         reason: None,
-        detail: Some(format!("memory_bound {bound}")),
+        detail: Some(format!("memory_bound {bound}").into()),
     }));
     assert_eq!(line, want);
     bound

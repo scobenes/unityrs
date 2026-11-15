@@ -72,6 +72,9 @@
 pub mod boost;
 mod dict;
 pub mod python;
+mod read;
+pub(crate) use read::read_typetree_with_mode;
+pub use read::{read_typetree, read_typetree_with_reader};
 mod work;
 pub mod write;
 
@@ -227,7 +230,6 @@ impl L2Kind {
         }
     }
 }
-
 /// A reader failure, with its kind decided structurally (never parsed from a message).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{kind:?} at byte {at}: {detail}")]
@@ -239,7 +241,6 @@ pub struct ReadError {
     /// What happened.
     pub detail: ReadDetail,
 }
-
 /// A reader failure's L2 kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ReadErrorKind {
@@ -252,7 +253,6 @@ pub enum ReadErrorKind {
     /// `other`.
     Other,
 }
-
 /// What a reader failure was.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -262,8 +262,18 @@ pub enum ReadDetail {
     Eof {
         /// Bytes needed.
         need: u64,
-        /// Actual reader exception: Boost uses `ValueError` for byte/bool
-        /// and raw-byte bounds, `EOFError` otherwise; Python uses `struct.error`.
+        /// Actual reader exception category (`struct.error` for Python reads).
+        exception: &'static str,
+    },
+    /// UnityPyBoost's failed read, retaining the function whose public
+    /// exception class and message apply.
+    #[error("{method} out of bounds (needs {need} bytes)")]
+    BoostEof {
+        /// The C++ reader function name.
+        method: &'static str,
+        /// Bytes requested by the read.
+        need: u64,
+        /// Actual Boost exception category for this read.
         exception: &'static str,
     },
     /// A negative length.
@@ -277,7 +287,12 @@ pub enum ReadDetail {
     PairChildren,
     /// `ReferencedObject` data with no `ref_types` to resolve it.
     #[error("no SerializedFile.ref_types")]
-    NoRefTypes,
+    NoRefTypes {
+        /// The reader selected by the object's byte size.
+        reader: crate::value::ReadBy,
+        /// Whether this format omits the `ref_types` attribute (below 20).
+        absent: bool,
+    },
     /// `ReferencedObject` data whose `(class, ns, asm)` is not in `ref_types`.
     #[error("Failed to get ref type node")]
     RefTypeNotFound,
@@ -308,7 +323,6 @@ pub enum ReadDetail {
     #[error(transparent)]
     Tree(TreeError),
 }
-
 /// Why reading an object failed: the L2 outcome other than success.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -555,10 +569,6 @@ impl WriteError {
         }
     }
 }
-
-mod read;
-pub(crate) use read::read_typetree_with_mode;
-pub use read::{read_typetree, read_typetree_with_reader};
 
 /// The stream reader's refusal at `at` bytes into a read (kind `other`, as
 /// the oracle maps a `ValueError` or `OverflowError` it names no kind for).

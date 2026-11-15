@@ -49,14 +49,14 @@ struct Shape {
     refs: Vec<SerializedType>,
 }
 
-fn list(rows: &[Row]) -> Arc<NodeList> {
+fn list(rows: &[Row]) -> unityrs_core::typetree::SharedNodes {
     let rows = rows
         .iter()
         .map(|&(level, ty, name, meta)| {
             NodeRow::new(i32::from(level), ty, name).with_meta_flag(meta)
         })
         .collect();
-    Arc::new(NodeList::trusted(rows).unwrap())
+    NodeList::trusted(rows).unwrap().into_shared().unwrap()
 }
 
 impl Shape {
@@ -74,7 +74,7 @@ impl Shape {
         let depth = Depth::new(&wraps);
         let a = list(&depth.rows);
         let tree = Tree::compile(a.clone(), &Limits::default()).unwrap();
-        let ref_type = |class: &str, l: Arc<NodeList>| {
+        let ref_type = |class: &str, l: unityrs_core::typetree::SharedNodes| {
             SerializedType::ref_type(
                 114,
                 RawStr::from(class),

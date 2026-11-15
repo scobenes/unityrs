@@ -30,6 +30,7 @@ replaced by one that returns its base format's case, so its conversion is checke
 and the crunch stream itself is not.
 """
 
+import contextlib
 import json
 import math
 import random
@@ -39,6 +40,8 @@ import struct
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
@@ -46,6 +49,7 @@ sys.path.insert(0, str(HERE / "tests"))
 
 import child  # noqa: E402
 import scratch  # noqa: E402
+import texture_cells  # noqa: E402
 from texture_cases import PIXEL_CASES, RGB48_PIXELS, H, W, rgb48  # noqa: E402
 from texture_cells import (  # noqa: E402
     COLUMNS,
@@ -124,7 +128,19 @@ class ThisParityFile(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(cells[2], references.TIER_B[name])
                 self.assertTrue(cells[3].strip() and cells[3] != "—")
-                self.assertEqual(cells[4], "planned: divergence test against `references.decode`")
+                if name == "BC6H":
+                    self.assertEqual(cells[4], "planned: divergence test against `references.decode`")
+                    self.assertEqual(cells[5], "planned (P3a)")
+                else:
+                    if name in {"RHalf", "RGHalf", "RFloat", "RGFloat", "RGBFloat", "RGBAFloat"}:
+                        values_test = "floats_use_f64_and_round_half_up_with_ieee_specials"
+                    elif name in {"RGB9e5Float", "YUY2"}:
+                        values_test = "shared_exponent_and_bt601_have_the_stated_channel_order"
+                    else:
+                        values_test = "integers_reduce_high_bytes_and_offset_signed_channels"
+                    self.assertEqual(cells[4], f"`crates/unityrs-texture/tests/tierb_oracle.rs` {name.lower()}; "
+                                     f"`crates/unityrs-texture/tests/tierb_values.rs` {values_test}")
+                    self.assertEqual(cells[5], "verified P3 (decoding)")
         self.assertEqual(
             sorted(references.UNSUPPORTED),
             [
@@ -137,8 +153,7 @@ class ThisParityFile(unittest.TestCase):
     def test_p1b_formats_are_the_five_design_names(self):
         p1b = sorted(name for name, row in self.rows.items() if row["status"] == P1B_STATUS)
         self.assertEqual(p1b, P1B)
-        # And the ETC and EAC formats, the rest of Pillow's, the ASTC LDR formats, PVRTC and ATC are the
-        # thirty-seven P3 has verified.
+        # ETC/EAC, Pillow, ASTC LDR, PVRTC/ATC and closed forms, plus ARGBFloat's refusal, are verified P3.
         p3 = sorted(name for name, row in self.rows.items() if "verified P3" in row["status"])
         self.assertEqual(p3, P3)
 
@@ -235,13 +250,58 @@ class AgainstTheOracle(unittest.TestCase):
                 got = self.decode_case(fmt, case.data)
                 self.check_case(result, case, got, row["mode"])
 
+    def test_astc_scope_restores_encoder_and_discards_cached_contexts(self):
+        converter = texture_cells.Texture2DConverter
+        saved = converter.astc_encoder
+        old_context = converter.get_astc_context((4, 4))
+        # A distinct namespace using the available build also exercises this on hosts without AVX2.
+        namespace = SimpleNamespace(**vars(saved))
+        for raises in (False, True):
+            with self.subTest(raises=raises):
+                try:
+                    with texture_cells.decoding_with(namespace):
+                        self.assertIs(converter.astc_encoder, namespace)
+                        outer = converter.get_astc_context((4, 4))
+                        self.assertIsNot(outer, old_context)
+                        with texture_cells.decoding_with(saved):
+                            self.assertIs(converter.astc_encoder, saved)
+                            self.assertIsNot(converter.get_astc_context((4, 4)), outer)
+                        self.assertIs(converter.astc_encoder, namespace)
+                        if raises:
+                            raise ValueError("decode failed")
+                except ValueError as error:
+                    self.assertEqual(str(error), "decode failed")
+                self.assertIs(converter.astc_encoder, saved)
+                self.assertEqual(converter._get_astc_context.cache_info().currsize, 0)
+                self.assertIsNot(converter.get_astc_context((4, 4)), outer)
+
+    def test_unavailable_astc_backend_skips_only_dependent_comparisons(self):
+        guard = texture_cells.reference_astc_backend
+        self.addCleanup(guard.cache_clear)
+        for code, detail in ((1, "ImportError: backend unavailable"), (-4, "")):
+            with self.subTest(code=code):
+                guard.cache_clear()
+                probe = child.CompletedProcess([], code, stdout="", stderr=detail)
+                saved = texture_cells.Texture2DConverter.astc_encoder
+                with mock.patch.object(child, "run", return_value=probe):
+                    with self.assertRaisesRegex(unittest.SkipTest, r"astc_encoder\._encoder_avx2"):
+                        self.decode_case(TextureFormat.ASTC_HDR_4x4, PIXEL_CASES["ASTC_HDR_4x4"][1]().data)
+                    # Backend-independent ASTC LDR and other formats still compare their pixels.
+                    for fmt in (TextureFormat.ASTC_RGBA_4x4, TextureFormat.RGBA32):
+                        case = PIXEL_CASES[fmt.name][1]()
+                        self.assertEqual(self.decode_case(fmt, case.data), (case.mode, case.pixels))
+                self.assertIs(texture_cells.Texture2DConverter.astc_encoder, saved)
+
     def decode_case(self, fmt, data, platform=None, blob=None):
         """Decode `data`; for a crunched format, the unpacker hands it on as the base format's data."""
         calls, patches = stand_in_unpackers()
         for patch in patches:
             patch.start()
         try:
-            image = decode(data, fmt, platform=platform, blob=blob)
+            # Only the FP16/error blocks' recorded white pixels depend on the astcenc build (section 19.3).
+            scope = texture_cells.reference_astc() if fmt.name.startswith("ASTC_HDR_") else contextlib.nullcontext()
+            with scope:
+                image = decode(data, fmt, platform=platform, blob=blob)
         finally:
             for patch in reversed(patches):
                 patch.stop()

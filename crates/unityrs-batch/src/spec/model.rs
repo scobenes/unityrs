@@ -555,11 +555,13 @@ pub struct Outputs {
     pub image: Image,
 }
 
-/// `outputs.image` (1.5): the one value this binary writes.
+/// `outputs.image` (1.5): the PNG encoding this binary writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Image {
     /// `png`: Pillow 9.5.0's PNG bytes.
     Png,
+    /// `png_fast`: lossless PNG, zlib level 1 and fixed Sub filtering.
+    PngFast,
 }
 
 impl Image {
@@ -568,6 +570,7 @@ impl Image {
     pub fn name(self) -> &'static str {
         match self {
             Self::Png => "png",
+            Self::PngFast => "png_fast",
         }
     }
 }

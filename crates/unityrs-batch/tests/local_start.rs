@@ -69,13 +69,7 @@ fn directory_archives_are_in_the_execution_subset() {
 }
 #[test]
 fn unsupported_execution_fields_are_typed_and_mutate_nothing() {
-    for kind in [
-        Unsupported::UrlSource,
-        Unsupported::ObjectStore,
-        Unsupported::Deadline,
-        Unsupported::StdinWatch,
-        Unsupported::ParentWatch,
-    ] {
+    for kind in [Unsupported::UrlSource, Unsupported::ObjectStore] {
         let scratch = Scratch::new("local-refusal");
         let sink = Scratch::new("local-refusal-sink");
         old(scratch.path());
@@ -89,9 +83,6 @@ fn unsupported_execution_fields_are_typed_and_mutate_nothing() {
                     json!({"kind":"object_store","bucket":"bucket","region":"region","prefix":""});
                 v["deadline"] = json!("2099-01-01T00:00:00Z");
             }
-            Unsupported::Deadline => v["deadline"] = json!("2099-01-01T00:00:00Z"),
-            Unsupported::StdinWatch => v["stop_on_stdin_eof"] = json!(true),
-            Unsupported::ParentWatch => v["parent_pid"] = json!(2),
         }
         let spec = parse(&v);
         assert_eq!(start::supported(&spec).err(), Some(kind));
@@ -102,6 +93,16 @@ fn unsupported_execution_fields_are_typed_and_mutate_nothing() {
         assert!(!scratch.join("lock").exists());
         assert!(!sink.join("_unityrs").exists());
     }
+}
+/// The lifetime fields are the process host's, accepted by the subset.
+#[test]
+fn lifetime_fields_are_in_the_execution_subset() {
+    let sink = Scratch::new("local-lifetime-sink");
+    let mut v = job(Path::new("/spool"), sink.path());
+    v["deadline"] = json!("2099-01-01T00:00:00Z");
+    v["stop_on_stdin_eof"] = json!(true);
+    v["parent_pid"] = json!(2);
+    assert!(start::supported(&parse(&v)).is_ok());
 }
 #[test]
 fn cleanup_is_no_follow_and_creates_only_fresh_run_layout_and_zero_claims() {
@@ -249,6 +250,75 @@ fn spool_lock_child() {
             .class,
         Class::Locked
     );
+}
+
+#[cfg(feature = "test-hooks")]
+#[test]
+fn spool_lock_is_released_while_an_unrelated_child_is_before_exec() {
+    use std::io::{Read, Write};
+    struct ForkAtSpace {
+        socket: unityrs_batch::sys::testing::Rendezvous,
+        acquired: std::sync::mpsc::Sender<()>,
+        free: u64,
+    }
+    impl FileSystem for ForkAtSpace {
+        fn in_memory(&self, _: &fs::File) -> io::Result<bool> {
+            Ok(false)
+        }
+        fn available(&self, _: &fs::File) -> io::Result<u64> {
+            // Startup already owns the lock. Let the other thread fork,
+            // then wait until the child confirms it is before exec.
+            self.acquired.send(()).unwrap();
+            let mut ready = [0];
+            self.socket.stream().read_exact(&mut ready)?;
+            assert_eq!(ready, [1]);
+            Ok(self.free)
+        }
+    }
+    let () = guard::finishes("spool lock inherited across fork", || {
+        // Both a returned lease and a startup error must release the lock.
+        for free in [10, 0] {
+            child::scene(|scene| {
+                let scratch = Scratch::new("local-lock-fork");
+                let sink = Scratch::new("local-lock-fork-sink");
+                let spec = parse(&job(scratch.path(), sink.path()));
+                let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+                cmd.args(["--exact", "spool_lock_child"]);
+                let socket =
+                    unityrs_batch::sys::testing::hold_before_exec(&mut cmd, guard::DEADLOCK_GUARD)?;
+                let (acquired, held) = std::sync::mpsc::channel();
+                let fs = ForkAtSpace {
+                    socket,
+                    acquired,
+                    free,
+                };
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let local = start::supported(&spec).unwrap();
+                    let first = spool::start(&local, &fs, &|| false).map(drop);
+                    // The child inherited the locked description and cannot
+                    // exec until we reply. CLOEXEC cannot close its copy yet.
+                    let next = spool::start(&local, &space(), &|| false);
+                    fs.socket.stream().write_all(&[1]).unwrap();
+                    tx.send((first, next)).unwrap();
+                });
+                guard::wait(&held, "startup owns the spool lock");
+                let inode = fs::metadata(scratch.join("lock"))?.ino();
+                let live = child::live(scene, &mut cmd, false)?;
+                assert!(scene.wait(live)?.success());
+                // Reap before asserting so even a failure leaves no held child.
+                let (first, next) = guard::recv(&rx, "pre-exec spool child");
+                if free == 0 {
+                    assert_eq!(first.unwrap_err().class, Class::NoSpace);
+                } else {
+                    first.unwrap();
+                }
+                assert_eq!(next.unwrap().lock().metadata()?.ino(), inode);
+                Ok(())
+            })
+            .unwrap();
+        }
+    });
 }
 
 struct ReplaceSpool<'a> {

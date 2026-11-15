@@ -18,14 +18,14 @@ fn a_map_can_name_a_list_past_u16() {
     // An object that reads through 65,536 distinct ref-type trees has 65,537
     // lists; the last one's keys must still resolve.
     let n = 65_537_usize;
-    let list = Arc::new(
-        NodeList::trusted(vec![
-            NodeRow::new(0, "Base", "Base"),
-            NodeRow::new(1, "int", "x"),
-        ])
-        .unwrap(),
-    );
-    let lists: Vec<Arc<NodeList>> = (0..n).map(|_| list.clone()).collect();
+    let list = NodeList::trusted(vec![
+        NodeRow::new(0, "Base", "Base"),
+        NodeRow::new(1, "int", "x"),
+    ])
+    .unwrap()
+    .into_shared()
+    .unwrap();
+    let lists: Vec<crate::typetree::SharedNodes> = (0..n).map(|_| list.clone()).collect();
     let tail = super::ListIx::try_from(n - 1).unwrap();
     let inner = Map::from_entries(tail, vec![(NodeId(1), Value::Int(5))]);
     let p = Parsed::for_tests(lists, Value::Dict(inner), 4);
@@ -40,7 +40,10 @@ fn a_map_can_name_a_list_past_u16() {
 fn bytes_read_can_be_negative() {
     // UnityPy's pure-Python reader: a TypelessData length of -100 at byte 200
     // ends the read at 104, so bytes_read is -96 (tests/fixtures: walk).
-    let list = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
+    let list = NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")])
+        .unwrap()
+        .into_shared()
+        .unwrap();
     let p = Parsed::for_tests(
         vec![list],
         Value::Dict(Map::new(0)),
@@ -56,7 +59,10 @@ fn a_parsed_value_holds_its_charge_until_it_drops() {
     // A batch budget sees a value a caller keeps, and gets it back on drop.
     let budget = Arc::new(Counting::new(1 << 20));
     let meter = Meter::new(1 << 20, budget.clone(), Reservation::Input);
-    let list = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "int", "v")]).unwrap());
+    let list = NodeList::trusted(vec![NodeRow::new(0, "int", "v")])
+        .unwrap()
+        .into_shared()
+        .unwrap();
     let b = super::ValueBuilder::new(&meter, list).unwrap();
     let mut items = b.vec();
     for i in 0..100 {
@@ -80,10 +86,18 @@ fn the_lists_table_is_charged_and_deduplicated() {
     // Round 3 (codex HIGH): `Parsed::lists` was allocated by the caller
     // and charged by nobody.
     let meter = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Input);
-    let root = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
+    let root = NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")])
+        .unwrap()
+        .into_shared()
+        .unwrap();
     let mut b = super::ValueBuilder::new(&meter, root).unwrap();
     let refs: Vec<_> = (0..100)
-        .map(|_| Arc::new(NodeList::trusted(vec![NodeRow::new(0, "R", "R")]).unwrap()))
+        .map(|_| {
+            NodeList::trusted(vec![NodeRow::new(0, "R", "R")])
+                .unwrap()
+                .into_shared()
+                .unwrap()
+        })
         .collect();
     for r in refs.iter().chain(refs.iter()) {
         b.list_index(r).unwrap();
@@ -92,7 +106,7 @@ fn the_lists_table_is_charged_and_deduplicated() {
     let v = b.scalar(Value::Int(0)).unwrap();
     let p = b.finish(v, 0);
     assert_eq!(p.lists().len(), 101, "one per distinct tree");
-    let table = 128 * std::mem::size_of::<Arc<NodeList>>();
+    let table = 128 * std::mem::size_of::<crate::typetree::SharedNodes>();
     assert_eq!(meter.used(), heap_cost(u64::try_from(table).unwrap()));
     drop(p);
     assert_eq!(meter.used(), 0);
@@ -107,7 +121,10 @@ fn a_built_value_keeps_its_charge_when_the_builder_is_dropped() {
     // builder and handed the value out bare, so a 1,000-item list built
     // and kept past a dropped builder was alive with the meter at zero.
     let meter = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Input);
-    let root = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
+    let root = NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")])
+        .unwrap()
+        .into_shared()
+        .unwrap();
     let b = super::ValueBuilder::new(&meter, root).unwrap();
     let mut items = b.vec();
     for i in 0..1000 {
@@ -142,7 +159,7 @@ fn a_built_value_keeps_its_charge_when_the_builder_is_dropped() {
         "the map carries its entries' charge and each child's"
     );
     // The builder holds only its table of node lists (one, the root).
-    let table = u64::try_from(std::mem::size_of::<Arc<NodeList>>()).unwrap();
+    let table = u64::try_from(std::mem::size_of::<crate::typetree::SharedNodes>()).unwrap();
     assert_eq!(meter.used(), map.charge().bytes() + heap_cost(table));
     drop(b);
     assert_eq!(
@@ -161,7 +178,10 @@ fn a_built_value_keeps_its_charge_when_the_builder_is_dropped() {
 #[test]
 fn a_value_with_heap_of_its_own_is_built_only_by_the_builder() {
     use crate::limits::Meter;
-    let root = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
+    let root = NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")])
+        .unwrap()
+        .into_shared()
+        .unwrap();
     let b = super::ValueBuilder::new(&Meter::unlimited(), root).unwrap();
     for owns in [
         Value::List(vec![Value::Int(1)]),
@@ -187,7 +207,10 @@ fn a_replaced_entry_takes_the_new_values_charge() {
     use crate::budget::{Reservation, Unbounded};
     use crate::limits::Meter;
     let meter = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Input);
-    let root = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap());
+    let root = NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")])
+        .unwrap()
+        .into_shared()
+        .unwrap();
     let b = super::ValueBuilder::new(&meter, root).unwrap();
     let mut entries = b.vec();
     entries
@@ -236,7 +259,7 @@ fn fields_resolve_through_the_node_list() {
             (NodeId(2), Value::Str("x".into())),
         ],
     );
-    let p = Parsed::for_tests(vec![Arc::new(list)], Value::Dict(m), 12);
+    let p = Parsed::for_tests(vec![list.into_shared().unwrap()], Value::Dict(m), 12);
     assert_eq!(p.get(&[b"m_Name"]).and_then(Value::as_str), Some("x"));
     assert_eq!(p.get(&[b"a"]).and_then(Value::as_i64), Some(7));
     assert_eq!(p.get(&[b"missing"]), None);

@@ -543,7 +543,7 @@ mod tests {
                     chain.lookup(&inner)?;
                 }
                 let list = NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap();
-                return Ok(Some(Tree::for_tests(Arc::new(list))));
+                return Ok(Some(Tree::for_tests(list.into_shared().unwrap())));
             }
             Ok(None)
         }
@@ -746,7 +746,7 @@ mod tests {
                     let _held = self.gil.lock().unwrap();
                 }
                 let list = NodeList::trusted(vec![NodeRow::new(0, "Base", "Base")]).unwrap();
-                Ok(Some(Tree::for_tests(Arc::new(list))))
+                Ok(Some(Tree::for_tests(list.into_shared().unwrap())))
             }
         }
         let (tx, rx) = mpsc::channel();

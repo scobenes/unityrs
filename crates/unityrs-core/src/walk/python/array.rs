@@ -1,4 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/streams/EndianBinaryReader.py, UnityPy/helpers/TypeTreeHelper.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy git 417d595 (MIT): UnityPy/helpers/TypeTreeHelper.py. See THIRD_PARTY_LICENSES.
 //! The pure-Python reader's arrays: a vector's elements read one by one
 //! (`read_value`'s list comprehension, a primitive element's list held as a
 //! run) and `read_value_array` for an aligned element, with its `struct`
@@ -271,13 +272,14 @@ impl Reader<'_, '_> {
         } else if kind == Kind::Str {
             self.comprehension(count, 4, |r| r.string().map(Out::Plain))?
         } else if kind == Kind::Bytes {
-            // `TypeTreeHelper.py:280`: `read_bytes()` without its length, once there is an element.
-            if count > 0 {
+            // `TypeTreeHelper.py:280`: the legacy call omits the length.
+            // HEAD calls read_byte_array(), which reads each length first.
+            if count > 0 && !self.head {
                 return Err(self.raise(Py::Other(
                     "TypeError: read_bytes() missing 1 required positional argument",
                 )));
             }
-            self.comprehension(0, 4, |r| r.typeless().map(Out::Plain))?
+            self.comprehension(count, 4, |r| r.typeless().map(Out::Plain))?
         } else if kind == Kind::Pair {
             // `TypeTreeHelper.py:282-293`: both children before the loop; each read without
             // its own flag when its type is in `FUNCTION_READ_MAP`.

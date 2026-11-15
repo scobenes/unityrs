@@ -35,7 +35,9 @@ fn is_value_error(e: &ParseError) -> bool {
                 && p.allocator.is_none()
         }
         ParseError::Read(r) => match &r.detail {
-            ReadDetail::Eof { exception, .. } | ReadDetail::Python(exception) => {
+            ReadDetail::Eof { exception, .. }
+            | ReadDetail::BoostEof { exception, .. }
+            | ReadDetail::Python(exception) => {
                 matches!(
                     *exception,
                     "ValueError"
@@ -48,8 +50,10 @@ fn is_value_error(e: &ParseError) -> bool {
             ReadDetail::NegativeLength(_)
             | ReadDetail::ArrayChildren
             | ReadDetail::PairChildren
-            | ReadDetail::NoRefTypes
             | ReadDetail::RefTypeNotFound => true,
+            ReadDetail::NoRefTypes { reader, absent } => {
+                *reader == crate::value::ReadBy::Boost || !absent
+            }
             ReadDetail::Stream(e) => e.exception() == "ValueError",
             ReadDetail::RefTypeNoTree
             | ReadDetail::Limit(_)

@@ -26,7 +26,12 @@ impl Palettes {
             colors: colors(ce, data, meter)?,
             color_selectors: color_selectors(cs, data, meter)?,
             alphas: alphas(ae, data, meter)?,
-            alpha_selectors: alpha_selectors(ass, data, meter)?,
+            // decode_palettes gates both alpha palettes on endpoints.
+            alpha_selectors: if ae.count != 0 {
+                alpha_selectors(ass, data, meter)?
+            } else {
+                MeteredVec::with_capacity(meter, 0)?
+            },
         })
     }
 }
@@ -34,7 +39,7 @@ impl Palettes {
 // Six components accumulate independently, modulo RGB565's 32/64/32,
 // crn_decomp.h:3841-3902.
 #[allow(clippy::many_single_char_names)] // RGB565 component names from the source.
-fn colors(region: Region, data: &[u8], meter: &Arc<Meter>) -> Result<MeteredVec<u32>> {
+pub(super) fn colors(region: Region, data: &[u8], meter: &Arc<Meter>) -> Result<MeteredVec<u32>> {
     let mut out = MeteredVec::with_capacity(meter, region.count)?;
     if region.count == 0 {
         return Ok(out);
@@ -60,7 +65,7 @@ fn colors(region: Region, data: &[u8], meter: &Arc<Meter>) -> Result<MeteredVec<
     Ok(out)
 }
 
-fn alphas(region: Region, data: &[u8], meter: &Arc<Meter>) -> Result<MeteredVec<u16>> {
+pub(super) fn alphas(region: Region, data: &[u8], meter: &Arc<Meter>) -> Result<MeteredVec<u16>> {
     let mut out = MeteredVec::with_capacity(meter, region.count)?;
     if region.count == 0 {
         return Ok(out);

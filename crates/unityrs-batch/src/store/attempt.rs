@@ -331,6 +331,15 @@ pub struct Tries<'a> {
     pub unsettled: &'a AtomicU64,
 }
 
+/// Allocation-free retained request bookkeeping. A started try which never
+/// reaches `ended` was abandoned; reads never update a write's observer.
+pub trait Observer {
+    fn started(&self) {}
+    fn ended(&self, _record: &Record, _verdict: Verdict) {}
+}
+pub struct Unobserved;
+impl Observer for Unobserved {}
+
 impl Tries<'_> {
     /// Waits for the slot's lookup token and takes it; `false` when the
     /// cutoff came first.
@@ -355,6 +364,21 @@ impl Tries<'_> {
         &self,
         slot: &Arc<TrySlot>,
         kind: Kind,
+        op: F,
+    ) -> Result<Done<T>, Fault>
+    where
+        F: FnMut(u32) -> Fut,
+        Fut: Future<Output = Result<T, Ended>>,
+    {
+        self.run_observed(slot, kind, &Unobserved, op).await
+    }
+    /// As `run`, retaining each admitted try before polling its operation and
+    /// each verdict before another try/read can replace the slot's record.
+    pub async fn run_observed<T, F, Fut>(
+        &self,
+        slot: &Arc<TrySlot>,
+        kind: Kind,
+        observer: &dyn Observer,
         mut op: F,
     ) -> Result<Done<T>, Fault>
     where
@@ -385,6 +409,7 @@ impl Tries<'_> {
                 self.unsettled.fetch_add(1, Ordering::AcqRel);
             }
             slot.begin(kind);
+            observer.started();
             let result = SLOT
                 .scope(
                     Arc::clone(slot),
@@ -398,14 +423,23 @@ impl Tries<'_> {
             };
             let record = slot.record();
             if let Some(fault) = record.fault {
+                observer.ended(
+                    &record,
+                    classify::classify(kind, done.tries > 1, &record.facts(), Ended::Error),
+                );
                 return Err(fault);
             }
             if record.calls == 0 {
                 // No request went out, so 1.6 has no row for the try: an
                 // error before sending is the engine's, not the store's.
+                observer.ended(
+                    &record,
+                    classify::classify(kind, done.tries > 1, &record.facts(), Ended::Error),
+                );
                 return Err(Fault::Internal);
             }
             let verdict = classify::classify(kind, done.tries > 1, &record.facts(), ended);
+            observer.ended(&record, verdict);
             if verdict.settled && kind.counted() {
                 self.unsettled.fetch_sub(1, Ordering::AcqRel);
             }

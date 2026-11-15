@@ -59,7 +59,7 @@ fn pptr_rows(level: i32, name: &str) -> Vec<NodeRow> {
 
 fn tree(rows: Vec<NodeRow>) -> Arc<Tree> {
     Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap()

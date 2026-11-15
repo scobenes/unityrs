@@ -11,5 +11,5 @@ pub mod rows;
 pub mod tree;
 
 pub use from_list::{FromListError, NodeDict, TypeTreeNode};
-pub use rows::{NodeId, NodeList, NodeRow, TreeError};
+pub use rows::{NodeId, NodeList, NodeRow, SharedNodes, TreeError};
 pub use tree::{Kind, NodeInfo, Shape, Tree};

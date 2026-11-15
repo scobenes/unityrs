@@ -268,17 +268,11 @@ pub struct BundleFile {
     counts: DecodeCounts,
     /// Parsed entries, by directory index, published once; a kept error
     /// carries the charge for its heap, and a refused charge is not kept.
-    entries: Box<[ResultCell<File, Error>]>,
+    pub(super) entries: Box<[super::teardown::FileCell]>,
     /// Each row's first twin (module docs, "Twins"): the first row, in
     /// directory order, with its offset, size and name rule; a row with no
     /// earlier twin names itself.
     twins: Box<[u32]>,
-    /// The handle and its tables (header, blocks, directory, `files`, the
-    /// parse cells), charged to the input at open, with the engine version's
-    /// heap ([`crate::version::UnityVersion::heap_bytes`], charged by the chain
-    /// before it was allocated; its string is the
-    /// header's own slice, never a copy).
-    charge: Charge,
     /// The caller's context, and whether the header built a decryptor
     /// (UnityPy's `self.decryptor`): what the blocks decode with.
     ctx: BlockContext,
@@ -292,6 +286,19 @@ pub struct BundleFile {
     /// `docs/plans/batch.md` section 6, CR8). Without it a unit struct,
     /// which takes no room.
     origin: Origin,
+    /// The handle and its tables (header, blocks, directory, `files`, the
+    /// parse cells), charged to the input at open, with the engine version's
+    /// heap ([`crate::version::UnityVersion::heap_bytes`], charged by the chain
+    /// before it was allocated; its string is the
+    /// header's own slice, never a copy).
+    /// Last so all the storage it covers is freed before its refund.
+    pub(super) charge: Charge,
+}
+
+impl Drop for BundleFile {
+    fn drop(&mut self) {
+        super::teardown::drain(&mut self.entries, &self.charge);
+    }
 }
 
 impl std::fmt::Debug for BundleFile {

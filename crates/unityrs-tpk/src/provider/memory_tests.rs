@@ -25,7 +25,6 @@
 //! it counts only the thread under test (`unityrs_testkit::counted`).
 
 use std::cell::Cell;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use unityrs_core::UnityVersion;
@@ -255,7 +254,10 @@ fn every_table_the_provider_builds_is_charged_before_it_is_allocated() {
         let tree = watching(watched, &format!("{what}: the compile"), || {
             provider.tree(&req).unwrap().unwrap()
         });
-        assert!(Arc::ptr_eq(tree.list(), &list), "{what}");
+        assert!(
+            unityrs_core::typetree::SharedNodes::ptr_eq(tree.list(), &list),
+            "{what}"
+        );
     }
     let bytes = tpk(false);
     let meter = provider_meter();

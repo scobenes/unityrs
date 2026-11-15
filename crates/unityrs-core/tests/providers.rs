@@ -204,7 +204,11 @@ fn nodes_override_reads_the_recorded_value_and_relinked_nodes_read_past_it() {
     };
     let obj = file.object(1).unwrap();
     let tree = Tree::compile(
-        Arc::new(nodes.node_list(&Limits::default()).unwrap()),
+        nodes
+            .node_list(&Limits::default())
+            .unwrap()
+            .into_shared()
+            .unwrap(),
         &Limits::default(),
     )
     .unwrap();
@@ -219,7 +223,11 @@ fn nodes_override_reads_the_recorded_value_and_relinked_nodes_read_past_it() {
     );
     nodes.relink().unwrap();
     let tree = Tree::compile(
-        Arc::new(nodes.node_list(&Limits::default()).unwrap()),
+        nodes
+            .node_list(&Limits::default())
+            .unwrap()
+            .into_shared()
+            .unwrap(),
         &Limits::default(),
     )
     .unwrap();
@@ -345,7 +353,7 @@ fn synthetic_dump_styles_replay_generator_normalization_and_cache_keys() {
     assert_eq!(rows(source.as_slice()), f["generator"]["input"]);
     let list = generator_node_list(source).unwrap();
     assert_eq!(rows(list.rows()), f["generator"]["rows"]);
-    let tree = Tree::compile(Arc::new(list), &Limits::default()).unwrap();
+    let tree = Tree::compile(list.into_shared().unwrap(), &Limits::default()).unwrap();
     for style in ["api", "il2cpp"] {
         let entry = if style == "api" {
             DumpEntry::api(
@@ -421,7 +429,10 @@ impl ScriptGenerator for RecordingDump {
 
 fn compile(rows: Vec<NodeRow>) -> Arc<Tree> {
     Tree::compile(
-        Arc::new(unityrs_core::typetree::NodeList::trusted(rows).unwrap()),
+        unityrs_core::typetree::NodeList::trusted(rows)
+            .unwrap()
+            .into_shared()
+            .unwrap(),
         &Limits::default(),
     )
     .unwrap()

@@ -137,10 +137,11 @@ pub(crate) fn parse_data(error: &unityrs_core::walk::ParseError) -> bool {
         ParseError::Read(e) => match &e.detail {
             ReadDetail::Tree(e) => tree_data(e),
             ReadDetail::Eof { .. }
+            | ReadDetail::BoostEof { .. }
             | ReadDetail::NegativeLength(_)
             | ReadDetail::ArrayChildren
             | ReadDetail::PairChildren
-            | ReadDetail::NoRefTypes
+            | ReadDetail::NoRefTypes { .. }
             | ReadDetail::RefTypeNotFound
             | ReadDetail::RefTypeNoTree
             | ReadDetail::Python(_)
@@ -168,6 +169,7 @@ pub(crate) fn core_data(error: &unityrs_core::Error) -> bool {
             e,
             unityrs_core::detect::DetectError::Unterminated
                 | unityrs_core::detect::DetectError::Gzip(_)
+                | unityrs_core::detect::DetectError::GzipCrc { .. }
         ),
         Error::Tree(e) => tree_data(e),
         Error::Deref(e) => deref_data(e),
@@ -254,6 +256,14 @@ mod tests {
             mesh_reason(&MeshError::Parse(parse(ReadDetail::Eof {
                 need: 1,
                 exception: "EOFError"
+            }))),
+            Some("mesh_parse_failed")
+        );
+        assert_eq!(
+            mesh_reason(&MeshError::Parse(parse(ReadDetail::BoostEof {
+                method: "read_bool",
+                need: 1,
+                exception: "ValueError",
             }))),
             Some("mesh_parse_failed")
         );

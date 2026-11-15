@@ -44,13 +44,17 @@ fn catch_kind(error: &unityrs_core::walk::ParseError) -> &'static str {
         ParseError::Deref(_) => "FileNotFoundError",
         ParseError::Read(r) => match &r.detail {
             ReadDetail::Python(kind) => kind.split(':').next().unwrap(),
-            ReadDetail::Eof { exception, .. } => exception,
+            ReadDetail::Eof { exception, .. } | ReadDetail::BoostEof { exception, .. } => exception,
+            ReadDetail::NoRefTypes {
+                reader: unityrs_core::value::ReadBy::Python,
+                absent: true,
+            }
+            | ReadDetail::RefTypeNoTree => "AttributeError",
             ReadDetail::PairChildren
             | ReadDetail::ArrayChildren
             | ReadDetail::NegativeLength(_)
             | ReadDetail::RefTypeNotFound
-            | ReadDetail::NoRefTypes => "ValueError",
-            ReadDetail::RefTypeNoTree => "AttributeError",
+            | ReadDetail::NoRefTypes { .. } => "ValueError",
             ReadDetail::Stream(e) => e.exception(),
             other => panic!("unexpected detail: {other:?}"),
         },

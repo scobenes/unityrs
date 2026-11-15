@@ -259,7 +259,7 @@ impl ObjectRef {
             &tree.tree,
             &ctx,
             check_read,
-            (file.reader_kind(), object_mode),
+            (file.reader_kind(), file.header().version >= 23, object_mode),
         );
         // A value kept past the file's handles keeps alive the buffer its
         // slices are of: copied out of a run much larger than they are

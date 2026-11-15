@@ -117,6 +117,16 @@ impl Execution {
         pool: tokio::runtime::Handle,
         stop_wake: Arc<Wake>,
     ) -> Result<Self, SetupError> {
+        Self::prepare_hosted(p, pool, stop_wake, || {})
+    }
+    /// [`Self::prepare_on`], each worker calling `on_start` first (the
+    /// `tally` hook's registration).
+    pub fn prepare_hosted(
+        p: &crate::phase1::PreparedRun,
+        pool: tokio::runtime::Handle,
+        stop_wake: Arc<Wake>,
+        on_start: fn(),
+    ) -> Result<Self, SetupError> {
         let capacity = pool_size(&p.spec)?;
         let end_wake = Arc::new(Wake::new().map_err(|_| SetupError::Execution)?);
         let (send, ends) = mpsc::sync_channel(p.spec.threads as usize);
@@ -155,6 +165,7 @@ impl Execution {
                     &unityrs_core::limits::Limits::default(),
                 ))
                 .spawn(move || {
+                    on_start();
                     if let Ok(receiver) = receive.lock() {
                         let _ = receiver.recv_timeout(std::time::Duration::from_millis(1));
                     }
@@ -216,6 +227,15 @@ impl Execution {
         &self,
         job: impl FnOnce() -> T + Send + 'static,
     ) -> io::Result<Task<T>> {
+        self.spawn_named("a blocking-pool task", job)
+    }
+    /// [`Self::spawn`], a panic's stderr line naming the task's `kind`
+    /// (2.11's *Threads*), read on the pool thread that panicked.
+    pub(crate) fn spawn_named<T: Send + 'static>(
+        &self,
+        kind: &'static str,
+        job: impl FnOnce() -> T + Send + 'static,
+    ) -> io::Result<Task<T>> {
         let result = crate::sys::Shared::new(crate::sys::Lock::new(None))?;
         self.outstanding
             .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
@@ -228,7 +248,9 @@ impl Execution {
         let wake = self.end_wake.clone();
         let spawned = catch_unwind(AssertUnwindSafe(|| {
             drop(self.pool.spawn_blocking(move || {
-                let value = catch_unwind(AssertUnwindSafe(job)).map_err(|_| ());
+                let value = catch_unwind(AssertUnwindSafe(job)).map_err(|_| {
+                    crate::diagnostic::pending::panic(format_args!("{kind}: "));
+                });
                 // The callback and its captures have dropped; free the place
                 // before publishing, so a woken host may submit again at once.
                 outstanding.fetch_sub(1, Ordering::AcqRel);
@@ -293,7 +315,7 @@ pub(crate) fn blocking<T: Send + 'static>(
     job: impl FnOnce() -> T + Send + 'static,
 ) -> tokio::task::JoinHandle<T> {
     // Kept a frame of its own (no tail call), so a refused task cell names
-    // this entry, as `Execution::spawn`'s names that one.
+    // this entry, as `Execution::spawn_named`'s names that one.
     std::hint::black_box(pool.spawn_blocking(job))
 }
 impl Drop for Execution {

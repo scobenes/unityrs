@@ -319,8 +319,8 @@ fn parse(rows: &J, data: Vec<u8>) -> Result<Parsed, String> {
         })
         .collect();
     let list = NodeList::trusted(rows).map_err(|e| failed("the node list", &e))?;
-    let tree =
-        Tree::compile(Arc::new(list), &Limits::default()).map_err(|e| failed("the tree", &e))?;
+    let tree = Tree::compile(list.into_shared().unwrap(), &Limits::default())
+        .map_err(|e| failed("the tree", &e))?;
     let options = ReadOptions::default();
     let meter = Meter::unlimited();
     let ctx = ReadCtx {

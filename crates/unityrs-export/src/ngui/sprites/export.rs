@@ -24,7 +24,7 @@ use unityrs_meshdecode::{MeshError, MeshHandler, Source, Version};
 use unityrs_texture::sprite::{Sheet, render};
 use unityrs_texture::{Format, Image, Mode};
 
-use super::super::attempt::{Attempt, Site, UNKNOWN_PLATFORM};
+use super::super::attempt::{Attempt, Site};
 use super::super::classify::{self, Class, Reason};
 use super::super::export::{Made, Pixels, decoded, png};
 use super::super::plan::too_wide;
@@ -247,8 +247,7 @@ impl Attempt<'_> {
             // format; any of the five stands in.
             Format::Rgba32
         } else {
-            let platform = obj.file().target_platform().unwrap_or(UNKNOWN_PLATFORM);
-            read::formats(&t, platform, self.options.formats, read::unity_version(obj))?
+            read::object_answer(&t, Some(obj), self.options.formats)?
         };
         decoded(&seam, obj.file(), &t, format, false)
     }
@@ -286,7 +285,7 @@ impl Attempt<'_> {
             data: image.pixels(),
         };
         let seam = self.seam;
-        let file = seam.probe(|| png(&p, seam.meter));
+        let file = seam.probe(|| png(&p, seam.meter, self.options.png_fast));
         drop(image);
         match file {
             Ok((bytes, charge, picture)) => {

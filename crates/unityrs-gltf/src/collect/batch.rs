@@ -3,8 +3,10 @@ use super::{
     Arc, Component, Graph, Meter, MeteredVec, ObjectRef, PPtrTarget, Profile, Result, builtin,
     diagnostics, same, selection,
 };
+#[allow(clippy::too_many_arguments)]
 pub(super) fn selected(
     env: &super::Environment,
+    builtins: &mut builtin::Cache,
     graph: &Graph,
     selected: &[selection::Selected],
     object: &ObjectRef,
@@ -44,7 +46,7 @@ pub(super) fn selected(
             let source = match source {
                 Some(PPtrTarget::Object(object)) => object,
                 Some(PPtrTarget::Builtin(b)) if profile.builtin == crate::Builtin::Resolve => {
-                    resolved = match builtin::resolve(env, b, meter) {
+                    resolved = match builtins.resolve(env, b, meter) {
                         Ok(object) => object,
                         // Its own collection visit reports malformed/missing sources.
                         Err(super::GltfError::Invalid(_)) => continue,
@@ -91,6 +93,7 @@ pub(super) fn selected(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn material_renderer<'a>(
     env: &super::Environment,
+    builtins: &mut builtin::Cache,
     graph: &'a Graph,
     selected: &[selection::Selected],
     ids: &[Option<usize>],
@@ -124,7 +127,7 @@ pub(super) fn material_renderer<'a>(
             let source = match source {
                 Some(PPtrTarget::Object(o)) => o,
                 Some(PPtrTarget::Builtin(b)) if profile.builtin == crate::Builtin::Resolve => {
-                    resolved = match builtin::resolve(env, b, meter) {
+                    resolved = match builtins.resolve(env, b, meter) {
                         Ok(o) => o,
                         Err(super::GltfError::Invalid(_)) => continue,
                         Err(super::GltfError::Mesh(e))

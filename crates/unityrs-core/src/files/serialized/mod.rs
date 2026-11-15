@@ -69,11 +69,12 @@ use crate::options::FileContext;
 use crate::pin::{Copies, CopyCounts};
 use crate::raw::RawStr;
 use crate::stream::{Endian, ReaderKind, ShortArray};
-use crate::typetree::{NodeList, Tree, TreeError};
+use crate::typetree::{Tree, TreeError};
 use crate::value::Parsed;
 use crate::version::ResolvedVersion;
 use crate::walk::RefTypes;
 
+mod head;
 mod parse;
 
 /// The header, as read.
@@ -113,7 +114,7 @@ pub struct SerializedType {
     /// `old_type_hash` (format 13 and up), as `script_id`.
     pub old_type_hash: Option<ShortArray<16>>,
     /// The stored tree, when type trees are enabled.
-    pub nodes: Option<Arc<NodeList>>,
+    pub nodes: Option<crate::typetree::SharedNodes>,
     /// Plain types, format 21 and up, type trees enabled.
     pub type_dependencies: Option<Box<[i32]>>,
     /// Ref types, format 21 and up, type trees enabled: `m_ClassName`.
@@ -129,7 +130,7 @@ impl SerializedType {
     /// A plain type record: `class_id` and its stored tree, every other
     /// field as a format below 13 leaves it (`script_type_index` -1).
     #[must_use]
-    pub fn new(class_id: i32, nodes: Option<Arc<NodeList>>) -> Self {
+    pub fn new(class_id: i32, nodes: Option<crate::typetree::SharedNodes>) -> Self {
         Self {
             class_id,
             is_stripped_type: None,
@@ -153,7 +154,7 @@ impl SerializedType {
         class_name: RawStr,
         namespace: RawStr,
         assembly: RawStr,
-        nodes: Option<Arc<NodeList>>,
+        nodes: Option<crate::typetree::SharedNodes>,
     ) -> Self {
         Self {
             class_name: Some(class_name),
@@ -178,7 +179,7 @@ impl SerializedType {
 
     fn tree_with(
         &self,
-        compile: impl FnOnce(Arc<NodeList>) -> Result<Arc<Tree>, TreeError>,
+        compile: impl FnOnce(crate::typetree::SharedNodes) -> Result<Arc<Tree>, TreeError>,
     ) -> Option<Result<Arc<Tree>, TreeError>> {
         let nodes = self.nodes.as_ref()?;
         Some(get_or_publish_result(&self.tree, nodes.meter(), || compile(nodes.clone())).cloned())

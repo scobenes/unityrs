@@ -79,7 +79,7 @@ fn parse(rows: &J, data: Vec<u8>) -> Parsed {
         })
         .collect();
     let list = NodeList::trusted(rows).unwrap();
-    let tree = Tree::compile(Arc::new(list), &Limits::default()).unwrap();
+    let tree = Tree::compile(list.into_shared().unwrap(), &Limits::default()).unwrap();
     let options = ReadOptions::default();
     let meter = Meter::unlimited();
     let ctx = ReadCtx {

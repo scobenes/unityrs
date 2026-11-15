@@ -82,7 +82,11 @@ fn node_graph_warning_keys_and_dump_cache_charge_before_allocating_and_release()
     check(|| {
         let mut nodes = TypeTreeNode::from_list(&dictionaries, &meter).unwrap();
         nodes.relink().unwrap();
-        let snapshot = nodes.node_list(&Limits::default()).unwrap();
+        let snapshot = nodes
+            .node_list(&Limits::default())
+            .unwrap()
+            .into_shared()
+            .unwrap();
         assert_eq!(snapshot.len(), 511);
     });
     let text = RawStr::from("a".repeat(16384).as_str());
@@ -92,7 +96,10 @@ fn node_graph_warning_keys_and_dump_cache_charge_before_allocating_and_release()
         get_fallback_version(Some(&text), &mut warnings, |_| {}).unwrap();
     });
     let tree = Tree::compile(
-        Arc::new(NodeList::trusted(vec![NodeRow::new(0, "int", "x")]).unwrap()),
+        NodeList::trusted(vec![NodeRow::new(0, "int", "x")])
+            .unwrap()
+            .into_shared()
+            .unwrap(),
         &Limits::default(),
     )
     .unwrap();

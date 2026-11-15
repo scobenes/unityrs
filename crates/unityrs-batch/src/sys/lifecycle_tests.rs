@@ -47,3 +47,42 @@ fn full_self_pipe_is_already_a_wake_and_can_be_drained() {
     assert!(pipe.drain());
     assert!(!pipe.drain());
 }
+/// A pty whose master closed: `isatty` fails with `EIO`, yet it is a
+/// terminal, watched, and its hang-up is EOF (`stdin_eof`), not 69.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hung_up_pty_is_a_terminal_at_eof() {
+    let (mut master, mut slave) = (-1, -1);
+    // SAFETY: writable descriptor outputs; null name, termios and size.
+    let opened = unsafe {
+        libc::openpty(
+            &raw mut master,
+            &raw mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    assert_eq!(opened, 0);
+    // SAFETY: openpty returned these two owned descriptors.
+    let (master, slave) = unsafe {
+        (
+            std::os::fd::OwnedFd::from_raw_fd(master),
+            std::os::fd::OwnedFd::from_raw_fd(slave),
+        )
+    };
+    drop(master);
+    // SAFETY: scalar query of an open descriptor.
+    assert_eq!(unsafe { libc::isatty(slave.as_raw_fd()) }, 0);
+    assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EIO));
+    let stdin = Stdin::at(slave.as_raw_fd()).unwrap();
+    assert!(stdin.terminal);
+    let mut fds = [libc::pollfd {
+        fd: slave.as_raw_fd(),
+        events: libc::POLLIN | libc::POLLHUP,
+        revents: 0,
+    }];
+    poll(&mut fds, 1_000).unwrap();
+    let mut buffer = [0; 4096];
+    assert_eq!(stdin.read(fds[0].revents, &mut buffer), Input::Eof);
+}

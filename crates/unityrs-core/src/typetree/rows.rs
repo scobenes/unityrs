@@ -26,6 +26,10 @@
 //! to the same meter before it is allocated, with no allocation per row. The
 //! list keeps the charges, so its rows cost the input until the last `Arc`
 //! of it drops (a [`crate::Parsed`] holds its lists).
+//! The shared owner has one strong count: a 168-byte allocation charged at
+//! `heap_cost(168) = 176` on arm64 and x86-64, on every reader tier. The
+//! former two-count owner cost 192. Its full padded layout determines both
+//! the reservation and the reported allocation size on refusal.
 //!
 //! Owner: the scaffold (implemented). Package B compiles a `NodeList` into a
 //! [`super::Tree`]; package C produces rows from files.
@@ -192,7 +196,7 @@ impl crate::once::CellError for TreeError {
 }
 
 /// The kept tree of a typetree, as pre-order rows with their child lists.
-/// Not `Clone`: it is shared as `Arc<NodeList>`, and owns the charge for
+/// Not `Clone`: it is shared as `crate::typetree::SharedNodes`, and owns the charge for
 /// its rows.
 #[derive(Debug)]
 pub struct NodeList {
@@ -203,6 +207,11 @@ pub struct NodeList {
     /// The three tables' allocations, on the input's meter.
     charge: Charge,
 }
+
+/// Fallible shared ownership of a node list. Cloning never allocates.
+pub type SharedNodes = triomphe::Arc<NodeList>;
+
+const _: () = crate::send_sync::<crate::typetree::rows::SharedNodes>();
 
 impl PartialEq for NodeList {
     fn eq(&self, other: &Self) -> bool {
@@ -223,7 +232,22 @@ fn to_u32(i: usize) -> u32 {
 /// the hidden root.
 const ROOT: u32 = u32::MAX;
 
+// triomphe::ArcInner is repr(C), with one strong count before its value.
+// Include both field alignment and trailing padding in the allocation size.
+#[repr(C)]
+struct SharedOwnerLayout {
+    strong: usize,
+    value: NodeList,
+}
+
 impl NodeList {
+    /// Allocate the list's shared owner, already charged by `from_rows`.
+    pub fn into_shared(self) -> Result<SharedNodes, TreeError> {
+        let meter = self.charge.meter().clone();
+        let bytes = u64::try_from(std::mem::size_of::<SharedOwnerLayout>()).unwrap_or(u64::MAX);
+        triomphe::Arc::try_new(self).map_err(|_| meter.allocator_refused(bytes).into())
+    }
+
     /// Builds the tree by UnityPy's rule (module docs). The input is every row
     /// the file stores, in order, grown by the parser on the input's meter;
     /// the list's own tables are charged to that meter before they exist.
@@ -289,9 +313,9 @@ impl NodeList {
     ) -> Result<Self, TreeError> {
         let meter = rows.charge().meter().clone();
         let (rows, mut charge) = rows.into_parts();
-        // The `Arc` the list is kept in (it always is), charged with it.
+        // Charge the same padded owner allocation that into_shared requests.
         charge.grow(heap_cost(
-            u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
+            u64::try_from(std::mem::size_of::<SharedOwnerLayout>()).unwrap_or(u64::MAX),
         ))?;
         let n = rows.len();
 
@@ -427,6 +451,42 @@ mod tests {
             .map(|(i, l)| NodeRow::new(*l, "int", format!("n{i}").as_str()))
             .collect();
         MeteredVec::from_vec(rows, &Meter::unlimited()).unwrap()
+    }
+
+    #[test]
+    fn both_constructors_charge_exactly_one_padded_shared_owner() {
+        use crate::limits::{Limits, heap_cost};
+        use crate::typetree::TypeTreeNode;
+        use std::mem::size_of;
+
+        for snapshot in [false, true] {
+            let meter = Meter::unlimited();
+            let mut rows = MeteredVec::new(&meter);
+            rows.push(NodeRow::new(0, "int", "x")).unwrap();
+            rows.push(NodeRow::new(1, "int", "y")).unwrap();
+            let list = if snapshot {
+                TypeTreeNode::from_nodes(rows)
+                    .unwrap()
+                    .node_list(&Limits::default())
+                    .unwrap()
+            } else {
+                NodeList::from_rows(rows).unwrap()
+            };
+            let expected = [
+                list.rows.capacity() * size_of::<NodeRow>(),
+                list.child_start.capacity() * size_of::<u32>(),
+                list.children.capacity() * size_of::<NodeId>(),
+                size_of::<super::SharedOwnerLayout>(),
+            ]
+            .into_iter()
+            .map(|bytes| heap_cost(u64::try_from(bytes).unwrap()))
+            .sum::<u64>();
+            assert_eq!(list.charge().bytes(), expected, "snapshot={snapshot}");
+            let shared = list.into_shared().unwrap();
+            assert_eq!(shared.charge().bytes(), expected);
+            drop(shared);
+            assert_eq!(meter.used(), 0);
+        }
     }
 
     #[test]

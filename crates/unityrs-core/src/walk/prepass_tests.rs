@@ -57,7 +57,7 @@ fn wide(n: usize, shape: Shape) -> Arc<Tree> {
         Shape::Plain | Shape::Dup => {}
     }
     Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap()
@@ -84,7 +84,10 @@ fn failing_read(reader: &str, tree: &Arc<Tree>) -> (u64, u64, u64) {
     // The read's own failure: the input ends inside the first `int`.
     let e = r.expect_err(reader);
     assert!(
-        matches!(e.detail, ReadDetail::Eof { need: 4, .. }),
+        matches!(
+            e.detail,
+            ReadDetail::Eof { need: 4, .. } | ReadDetail::BoostEof { need: 4, .. }
+        ),
         "{reader}: {e:?}"
     );
     (
@@ -139,7 +142,7 @@ fn a_long_type_name_is_read_once_per_compile_not_once_per_visit() {
         NodeRow::new(4, "int", "x"),
     ];
     let tree = Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap();
@@ -201,7 +204,7 @@ fn a_referenced_object_of_many_data_children_grows_in_linear_steps() {
         rows.push(NodeRow::new(2, "ReferencedObjectData", name.as_str()));
     }
     let tree = Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap();
@@ -212,7 +215,10 @@ fn a_referenced_object_of_many_data_children_grows_in_linear_steps() {
         data.resize(data.len().next_multiple_of(4), 0);
     }
     let data = Bytes::from(data);
-    let empty = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "Empty", "Base")]).unwrap());
+    let empty = NodeList::trusted(vec![NodeRow::new(0, "Empty", "Base")])
+        .unwrap()
+        .into_shared()
+        .unwrap();
     let refs = [crate::files::SerializedType::ref_type(
         114,
         crate::raw::RawStr::from("C"),

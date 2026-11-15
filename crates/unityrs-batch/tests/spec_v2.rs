@@ -44,7 +44,15 @@ fn formats_name_any_decoded_format_in_any_order() {
             "ETC2_RGBA8",
             "ASTC_RGB_6x6",
             "DXT1Crunched",
-            "DXT5Crunched"
+            "DXT5Crunched",
+            "ETC_RGB4Crunched",
+            "ETC2_RGBA8Crunched",
+            "PVRTC_RGB2",
+            "PVRTC_RGBA2",
+            "PVRTC_RGB4",
+            "PVRTC_RGBA4",
+            "ATC_RGB4",
+            "ATC_RGBA8"
         ]);
     }))
     .spec;
@@ -55,7 +63,15 @@ fn formats_name_any_decoded_format_in_any_order() {
         .with(Format::Etc2Rgba8)
         .with(Format::AstcRgb6x6)
         .with(Format::Dxt1Crunched)
-        .with(Format::Dxt5Crunched);
+        .with(Format::Dxt5Crunched)
+        .with(Format::EtcRgb4Crunched)
+        .with(Format::Etc2Rgba8Crunched)
+        .with(Format::PvrtcRgb2)
+        .with(Format::PvrtcRgba2)
+        .with(Format::PvrtcRgb4)
+        .with(Format::PvrtcRgba4)
+        .with(Format::AtcRgb4)
+        .with(Format::AtcRgba8);
     assert_eq!(s.outputs.formats, want);
     // Every format this binary decodes is accepted, all at once.
     let all: Vec<_> = Format::ALL.iter().map(|f| f.name()).collect();
@@ -76,10 +92,7 @@ fn each_refusal_formats_adds() {
         formats(json!(["DXT1", "ETC_RGB4_3DS"])),
         "range /outputs/formats/1"
     );
-    assert_eq!(
-        formats(json!(["ETC_RGB4Crunched"])),
-        "range /outputs/formats/0"
-    );
+    assert_eq!(formats(json!(["BC6H"])), "range /outputs/formats/0");
     assert_eq!(formats(json!(["ASTC_HDR_4x4"])), "range /outputs/formats/0");
     // A repeat, at the later item; none at all.
     assert_eq!(
@@ -94,9 +107,13 @@ fn each_refusal_formats_adds() {
 }
 
 #[test]
-fn image_is_png_and_the_reserved_values_are_refused() {
+fn image_accepts_fast_png_and_refuses_reserved_values() {
     let image = |value: Value| refused(&v2(|v| v["outputs"]["image"] = value));
-    for reserved in ["png_fast", "webp", "PNG", ""] {
+    let s = accepted(&v2(|v| v["outputs"]["image"] = json!("png_fast"))).spec;
+    assert_eq!(s.outputs.image.name(), "png_fast");
+    let prepared = unityrs_batch::attempt::Prepared::from_spec(&s).unwrap();
+    assert!(prepared.options.png_fast);
+    for reserved in ["webp", "PNG", ""] {
         assert_eq!(image(json!(reserved)), "range /outputs/image", "{reserved}");
     }
     assert_eq!(
@@ -146,7 +163,7 @@ fn version_1_refuses_version_2s_members_as_before() {
         "unknown_field /outputs/formats"
     );
     assert_eq!(
-        refused(&with(|v| v["outputs"]["image"] = json!("png"))),
+        refused(&with(|v| v["outputs"]["image"] = json!("png_fast"))),
         "unknown_field /outputs/image"
     );
 }

@@ -141,6 +141,7 @@ fn finisher_child() {
                 memory_bound: 0,
                 spool_peak: 0,
                 vm_hwm: 0,
+                warnings: unityrs_batch::finish::Warnings::default(),
             };
             finish::running(&scene.prepared, &directory, &account, &identity).unwrap();
             SEEN.with(|s| s.set(0));
@@ -236,6 +237,7 @@ fn stopped_scope(keys: &[&str], archives: bool) {
         memory_bound: 0,
         spool_peak: 0,
         vm_hwm: 0,
+        warnings: unityrs_batch::finish::Warnings::default(),
     };
     let mut allocations = 0;
     let mut site = 0;

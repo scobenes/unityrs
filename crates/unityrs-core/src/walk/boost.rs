@@ -58,6 +58,7 @@ pub fn read(data: &Bytes, tree: &Arc<Tree>, ctx: &ReadCtx<'_>) -> Result<Parsed,
         trees,
         work,
         has_registry: false,
+        method: "read_length",
     };
     let value = r.value(tree, 0, tree.root());
     let at = r.at();
@@ -88,6 +89,7 @@ struct Reader<'a, 'c> {
     work: Work<'c>,
     /// `config->has_registry` (R13).
     has_registry: bool,
+    method: &'static str,
 }
 
 /// A fixed-width number from its bytes in the file's order.
@@ -119,7 +121,8 @@ impl Reader<'_, '_> {
     fn eof(&self, need: usize, exception: &'static str) -> ReadError {
         self.fail(
             ReadErrorKind::OutOfBounds,
-            ReadDetail::Eof {
+            ReadDetail::BoostEof {
+                method: self.method,
                 need: u64::try_from(need).unwrap_or(u64::MAX),
                 exception,
             },
@@ -160,6 +163,7 @@ impl Reader<'_, '_> {
     /// `_read_length` (UnityPy TypeTreeHelper.cpp:266-286): bounds, then a
     /// negative length fails before the cursor moves.
     fn length(&mut self) -> Result<usize, ReadError> {
+        self.method = "read_length";
         let end = self.bound(4, "EOFError")?;
         let b = self
             .bytes
@@ -180,6 +184,7 @@ impl Reader<'_, '_> {
     /// R4, R5: one scalar (`read_u8`, `read_s8`, `read_bool`, `read_num`,
     /// UnityPy TypeTreeHelper.cpp:74-204).
     fn prim(&mut self, kind: Kind) -> Result<Value, ReadError> {
+        self.method = read_method(kind, false);
         let big = self.big;
         Ok(match kind {
             Kind::U8 => int(i64::from(u8::from_le_bytes(self.fixed()?))),
@@ -243,6 +248,7 @@ impl Reader<'_, '_> {
             // raw bytes, then always aligned.
             Shape::Str => {
                 let len = self.length()?;
+                self.method = "read_str";
                 let end = self.bound(len, "EOFError")?;
                 let s = RawStr::from_shared(self.data.slice(self.pos..end));
                 self.pos = end;
@@ -252,6 +258,7 @@ impl Reader<'_, '_> {
             // R7 (UnityPy TypeTreeHelper.cpp:307-323): aligned only by its flag.
             Shape::Bytes => {
                 let len = self.length()?;
+                self.method = "read_bytes";
                 let end = self.bound(len, "ValueError")?;
                 let b = self.data.slice(self.pos..end);
                 self.pos = end;
@@ -350,6 +357,7 @@ impl Reader<'_, '_> {
     ) -> Result<Out, ReadError> {
         let big = self.big;
         let floats = self.floats;
+        self.method = read_method(ei.kind, true);
         let out = match ei.kind {
             Kind::U8 => {
                 let end = self.bound(count, "ValueError")?;
@@ -559,7 +567,10 @@ impl Reader<'_, '_> {
         let ref_type = |d: ReadDetail| self.fail(ReadErrorKind::RefType, d);
         if let RefTypes::NoFile | RefTypes::Absent = self.ref_types {
             // `:587-591`, `:592-598`.
-            return Err(ref_type(ReadDetail::NoRefTypes));
+            return Err(ref_type(ReadDetail::NoRefTypes {
+                reader: crate::value::ReadBy::Boost,
+                absent: matches!(self.ref_types, RefTypes::Absent),
+            }));
         }
         // `:600-606`: `type` read yet; `:611-635`: a dict with all three
         // keys (any other object the reader makes has no such attributes).
@@ -606,4 +617,33 @@ fn two(t: &Tree, node: NodeId) -> (NodeId, NodeId) {
 
 fn as_u64(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
+}
+
+// TypeTreeHelper.cpp's typeid(T).name() uses the platform C++ ABI.
+fn read_method(kind: Kind, array: bool) -> &'static str {
+    macro_rules! name {
+        ($suffix:literal) => {
+            if array {
+                concat!("read_", $suffix, "_array")
+            } else {
+                concat!("read_", $suffix)
+            }
+        };
+    }
+    match kind {
+        Kind::Bool => name!("bool"),
+        Kind::U8 => name!("u8"),
+        Kind::S8 => name!("s8"),
+        Kind::U16 => name!("t"),
+        Kind::S16 => name!("s"),
+        Kind::U32 => name!("j"),
+        Kind::S32 => name!("i"),
+        Kind::U64 if cfg!(target_os = "macos") => name!("y"),
+        Kind::S64 if cfg!(target_os = "macos") => name!("x"),
+        Kind::U64 => name!("m"),
+        Kind::S64 => name!("l"),
+        Kind::F32 => name!("f"),
+        Kind::F64 => name!("d"),
+        _ => "read_length",
+    }
 }
