@@ -253,3 +253,59 @@ fn replay_pinned_audio_data_sources() {
         assert_eq!(m.used(), 0, "{label}");
     }
 }
+
+#[test]
+#[cfg(feature = "vorbis")]
+fn vorbis_audio_clip_uses_the_callers_runtime_provider() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../unityrs-audio/tests/fixtures/vorbis.json"
+    ))
+    .unwrap();
+    let case = &fixture["cases"][1];
+    let hex = |text: &str| {
+        text.as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let (env, obj) = load(st(
+        "AudioClip",
+        vec![
+            ("m_Name", s("clip")),
+            ("m_AudioData", V::Bytes(hex(case["bank"].as_str().unwrap()))),
+        ],
+    ));
+    let m = Meter::unlimited();
+    assert!(matches!(
+        unityrs_export::audio::export(&obj, &env, true, &m),
+        Err(unityrs_export::audio::Error::Audio(
+            unityrs_audio::Error::VorbisHeadersRequired
+        ))
+    ));
+    let setup = hex(case["setup"].as_str().unwrap());
+    let mut table = b"VST1".to_vec();
+    for n in [
+        1u32,
+        u32::try_from(case["crc"].as_u64().unwrap()).unwrap(),
+        u32::try_from(setup.len()).unwrap(),
+    ] {
+        table.extend_from_slice(&n.to_le_bytes());
+    }
+    table.extend(setup);
+    let headers = unityrs_audio::VorbisHeaders::from_bytes(&table, &m).unwrap();
+    let files =
+        unityrs_export::audio::export_with_vorbis(&obj, &env, true, Some(&headers), &m).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files.as_slice()[0].name.as_slice(), b"clip.wav");
+    let wav = files.as_slice()[0].bytes.as_slice();
+    assert_eq!(
+        wav.len(),
+        44 + usize::try_from(case["frames"].as_u64().unwrap() * 4).unwrap()
+    );
+    assert!(wav[44..].iter().any(|&b| b != 0));
+    drop(files);
+    drop(headers);
+    assert_eq!(m.used(), 0);
+}

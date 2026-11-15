@@ -246,10 +246,11 @@ fn every_raw_and_bcn_decode_is_the_oracle_image_or_error() {
 }
 
 /// Every format the crate decodes is one of the five, the eleven here, an
-/// ETC or EAC format (`tests/etc_oracle.rs`) or an ASTC LDR format
+/// ETC or EAC format (`tests/etc_oracle.rs`) or an ASTC LDR/HDR format
 /// (`tests/astc_oracle.rs`), PVRTC/ATC (`tests/pvrtc_atc_oracle.rs`),
 /// or a closed-form raw format (`tests/tierb_oracle.rs`): together the
-/// fixtures replay the 64 plain formats. Four crunched Unity values use
+/// fixtures replay the 71 plain formats, including BC6H (`tests/bc6h_oracle.rs`)
+/// and ASTC HDR (`tests/astc_hdr_oracle.rs`). Four crunched Unity values use
 /// `tests/crunch_oracle.rs` and `tests/unitycrunch_oracle.rs`; their pixel
 /// replay requires `crunch.json`.
 #[test]
@@ -266,11 +267,12 @@ fn every_format_is_replayed_by_an_oracle_fixture() {
                 || name.starts_with("PVRTC")
                 || name.starts_with("ATC")
                 || format.is_crunched()
+                || format == Format::Bc6h
                 || crate_tierb(format),
             "{name}"
         );
     }
-    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 6 + 4 + 22);
+    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 18 + 6 + 4 + 22 + 1);
 }
 
 fn crate_tierb(format: Format) -> bool {

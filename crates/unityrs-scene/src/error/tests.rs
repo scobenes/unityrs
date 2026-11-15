@@ -216,10 +216,14 @@ fn ordinary_parse_and_pointer_failures_remain_recoverable() {
         false,
     );
     for detail in [
-        ReadDetail::Eof { need: 1 },
+        ReadDetail::Eof {
+            need: 1,
+            exception: "EOFError",
+        },
         ReadDetail::BoostEof {
             method: "read_bool",
             need: 1,
+            exception: "ValueError",
         },
         ReadDetail::NegativeLength(-1),
         ReadDetail::ArrayChildren,

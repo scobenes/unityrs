@@ -95,7 +95,12 @@ impl Controller {
                 .any(|s| s.task.is_some() || s.run.is_some() || s.held.is_some());
             if !busy && *next == self.prepared.bundles.len() {
                 let permits = &self.network.as_ref().ok_or(())?.permits;
-                return Ok(permits.poll_idle(cx).is_ready());
+                let idle = permits.poll_idle(cx).is_ready();
+                #[cfg(any(test, feature = "test-hooks"))]
+                if idle {
+                    self.hooks.network_idle(permits.snapshot());
+                }
+                return Ok(idle);
             }
             if !progressed {
                 return Ok(false);

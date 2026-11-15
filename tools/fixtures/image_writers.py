@@ -25,6 +25,7 @@ FORMATS = {
     "BMP": ".bmp", "DIB": ".dib", "TGA": ".tga", "PPM": ".ppm",
     "PCX": ".pcx", "SGI": ".sgi", "IM": ".im", "TIFF": ".tiff",
     "DDS": ".dds", "ICO": ".ico", "ICNS": ".icns", "EPS": ".eps",
+    "WEBP": ".webp",
 }
 FALLBACKS = [".blp", ".bufr", ".fit", ".grib", ".h5", ".msp", ".palm",
              ".wmf", ".xbm", ".psd", ".unknown", ""]
@@ -91,8 +92,9 @@ def record(fmt, mode, width, height, kind="pattern", name=None, policy="writer",
     try:
         if resize is not None:
             image = image.resize(tuple(resize[:2]), getattr(Image.Resampling, resize[2]))
-        # Unknown extensions exercise Image.save's dispatch, not a plugin.
-        image.save(saved, fmt if fmt in FORMATS or fmt in DEFERRED or fmt == "PNG" else None)
+        # WebP and unknown extensions exercise Image.save's dispatch.
+        explicit = fmt in FORMATS or fmt in DEFERRED or fmt == "PNG"
+        image.save(saved, fmt if explicit and fmt != "WEBP" else None)
     except Exception as error:
         case["exception"] = type(error).__name__
         case["message"] = str(error)
@@ -121,6 +123,9 @@ def fixture():
             sizes += [(15, 15), (16, 16), (17, 31), (24, 24), (32, 32),
                       (48, 48), (64, 64), (128, 128), (256, 256), (257, 259)]
             sizes += [(63, 47), (127, 257), (1025, 17)]
+        if fmt == "WEBP":
+            sizes = [(1, 1), (3, 2), (0, 0), (0, 3), (3, 0),
+                     (16383, 1), (1, 16383), (16384, 1), (1, 16384)]
         for mode in MODES:
             for width, height in sizes:
                 cases.append(record(fmt, mode, width, height))
@@ -136,6 +141,9 @@ def fixture():
         if fmt in ("SGI", "IM"):
             for name in ("other.NAME", "café.im", "a" * 110 + ".im", "folder/.hidden",
                          "a." + "e" * 100, "folder/a\\b.im", "image.IM", "image.SGI"):
+                cases.append(record(fmt, "RGB", 3, 2, name=name))
+        if fmt == "WEBP":
+            for name in ("image.WeBp", "café.WEBP"):
                 cases.append(record(fmt, "RGB", 3, 2, name=name))
     for extension in FALLBACKS:
         for mode in MODES:

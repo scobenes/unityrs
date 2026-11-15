@@ -171,8 +171,8 @@ fn scene_rows_match(doc: &J, all: &[(&str, AtlasScene)]) {
 
 /// The rows the fixture test compares: outputs, skips, sheets, and nested
 /// containers (these computed apart from the reference, which records none).
-const ROWS_OUTPUTS: usize = 211;
-const ROWS_SKIPS: usize = 97;
+const ROWS_OUTPUTS: usize = 212;
+const ROWS_SKIPS: usize = 96;
 const ROWS_SHEETS: usize = 99;
 const ROWS_NESTED: usize = 5;
 

@@ -77,7 +77,14 @@ fn tally_child() {
     let bytes = spec::read::read_job(Path::new(&job)).unwrap();
     let prepared = phase1::prepare(spec::parse(bytes).unwrap()).unwrap();
     // A note, as the uncertified page size's, written at the start.
-    process::run(startup, clock, prepared, 1 << 30, Some("tally note\n"))
+    let note = if std::env::var_os("B9_MASK").is_some() {
+        unityrs_batch::bound::Certification::of(Some(16384))
+            .note("unityrs batch")
+            .unwrap()
+    } else {
+        "tally note\n".into()
+    };
+    process::run(startup, clock, prepared, 1 << 30, Some(&note))
 }
 
 #[test]
@@ -168,4 +175,45 @@ fn a_main_thread_panic_before_the_host_writes_its_line() {
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn spec_secrets_mask_the_page_warning_and_a_panic_before_the_host() {
+    for panic in [false, true] {
+        child::scene(|scene| {
+            let dir = scene.scratch.path();
+            let job = job(dir);
+            let mut spec: serde_json::Value = serde_json::from_slice(&fs::read(&job)?)?;
+            spec["dependencies"] = serde_json::json!([{"id":"unused",
+                "url":"http://127.0.0.1/unused?registration",
+                "headers":{"X-Secret":"uncertified"}}]);
+            fs::write(&job, serde_json::to_vec(&spec)?)?;
+            let log = dir.join("tally");
+            fs::write(&log, b"")?;
+            let mut cmd = Command::new(std::env::current_exe()?);
+            cmd.args(["--exact", "tally_child", "--nocapture", "--test-threads=1"])
+                .env("B9_JOB", &job)
+                .env("B9_TALLY", log)
+                .env("B9_MASK", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped());
+            if panic {
+                cmd.env("B9_PANIC_EARLY", "1");
+            }
+            let engine = child::live(scene, &mut cmd, false)?;
+            let stdin = scene.take_stdin(engine);
+            let (rx, reader) = child::drain(scene.take_stderr(engine).unwrap());
+            let status = scene.wait(engine)?;
+            drop(stdin);
+            reader.join().unwrap();
+            let err = String::from_utf8(rx.try_iter().flatten().collect()).unwrap();
+            assert_eq!(status.code(), Some(if panic { 70 } else { 4 }), "{err}");
+            assert!(!err.contains("uncertified"), "{err}");
+            assert!(!err.contains("registration"), "{err}");
+            assert!(err.contains("***"), "{err}");
+            Ok(())
+        })
+        .unwrap();
+    }
 }

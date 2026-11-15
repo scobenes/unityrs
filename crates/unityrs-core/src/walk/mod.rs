@@ -73,7 +73,7 @@ pub mod boost;
 mod dict;
 pub mod python;
 mod read;
-pub(crate) use read::read_typetree_versioned;
+pub(crate) use read::read_typetree_with_mode;
 pub use read::{read_typetree, read_typetree_with_reader};
 mod work;
 pub mod write;
@@ -262,6 +262,8 @@ pub enum ReadDetail {
     Eof {
         /// Bytes needed.
         need: u64,
+        /// Actual reader exception category (`struct.error` for Python reads).
+        exception: &'static str,
     },
     /// UnityPyBoost's failed read, retaining the function whose public
     /// exception class and message apply.
@@ -271,14 +273,16 @@ pub enum ReadDetail {
         method: &'static str,
         /// Bytes requested by the read.
         need: u64,
+        /// Actual Boost exception category for this read.
+        exception: &'static str,
     },
     /// A negative length.
     #[error("negative length {0}")]
     NegativeLength(i64),
-    /// An `Array` node without two children ("Array node must have 2 children").
+    /// Boost's `ValueError` for an `Array` node without two children.
     #[error("Array node must have 2 children")]
     ArrayChildren,
-    /// A `pair` node without two children ("Pair node must have 2 children").
+    /// Boost's `ValueError` for a `pair` node without two children.
     #[error("Pair node must have 2 children")]
     PairChildren,
     /// `ReferencedObject` data with no `ref_types` to resolve it.
@@ -299,7 +303,9 @@ pub enum ReadDetail {
     /// `data` instead, as for an empty class (plan R14).
     #[error("'NoneType' object has no attribute 'm_MetaFlag'")]
     RefTypeNoTree,
-    /// A pure-Python-path `TypeError` or `struct.error` (aligned `SInt8` or `TypelessData` arrays).
+    /// A Python exception category, sometimes followed by its diagnostic:
+    /// malformed-child `IndexError`, aligned-array `TypeError`, attribute
+    /// access failures, or an unpack format's `struct.error`.
     #[error("python reader: {0}")]
     Python(&'static str),
     /// The stream reader's refusal (a file loaded from a path): a negative

@@ -305,14 +305,10 @@ pub fn c_hdr(spec: &Spec) -> u64 {
             .map(|n| heap_cost(n.len() as u64))
             .fold(0, u64::saturating_add),
     );
-    // A note for the PR that builds the masker (2.11 step 2), which does
-    // not exist yet: this counts only its header part, an entry per
-    // header variable pointing at the value `values` counts. Its spec
-    // part (a signed URL's query, a literal header value) is built in
-    // phase 1, so `C_spec`'s measure holds it only once phase 1 builds
-    // it; its credentials part is one of the six credential copies
-    // below. That PR checks each part lands in one of those terms, and
-    // counts here, and in 5.3, any copy of a secret that lands in none.
+    // Both full reference buffers (spec-only and resolved) are reserved
+    // during phase 1, so C_spec measures their actual capacity, including
+    // repeated variables across bundles. This per-variable allowance is
+    // conservative extra room; header text remains shared with Values.
     let masker = heap_cost(mul(n_vars, MASK_ENTRY));
     let blocks = if largest == 0 {
         0

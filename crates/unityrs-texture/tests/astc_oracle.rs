@@ -262,12 +262,12 @@ fn every_astc_decode_is_the_oracle_image_or_error() {
     assert_eq!(raises, kinds);
 }
 
-/// The twelve are every format of the crate whose decoder is astcenc.
+/// The twelve are every LDR format of the crate whose decoder is astcenc.
 #[test]
 fn the_twelve_are_the_astcenc_formats() {
     let astc: BTreeSet<&str> = Format::ALL
         .iter()
-        .filter(|f| f.name().starts_with("ASTC"))
+        .filter(|f| f.name().starts_with("ASTC") && !f.is_astc_hdr())
         .map(|f| f.name())
         .collect();
     let ours: BTreeSet<&str> = FORMATS.iter().map(|f| f.name()).collect();

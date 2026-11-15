@@ -481,11 +481,10 @@ def selection(texture, platform: int) -> str | None:
     name = format_name(texture.m_TextureFormat)
     if name not in FIVE:
         return f"unsupported_format({name})"
-    if TextureSwizzler.is_switch_swizzled(platform, texture.m_PlatformBlob):
+    fmt = TextureFormat(texture.m_TextureFormat)
+    switch_format = {TextureFormat.RGB24: TextureFormat.RGBA32, TextureFormat.BGR24: TextureFormat.BGRA32}.get(fmt, fmt)
+    if TextureSwizzler.is_switch_swizzled(platform, texture.m_PlatformBlob) and switch_format not in TextureSwizzler.TEXTURE_FORMAT_BLOCK_SIZE_MAP:
         return "unsupported_platform(switch)"
-    swapped = TextureFormat(texture.m_TextureFormat) in Texture2DConverter.XBOX_SWAP_FORMATS
-    if platform == BuildTarget.XBOX360 and swapped:
-        return "unsupported_platform(xbox360)"
     return None
 
 

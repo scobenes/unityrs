@@ -117,6 +117,7 @@ pub(crate) fn mesh_reason(error: &unityrs_mesh::MeshError) -> Option<&'static st
     use unityrs_mesh::MeshError;
     match error {
         MeshError::NotMesh => Some("source_not_mesh"),
+        MeshError::Empty => Some("empty_mesh"),
         MeshError::Field(_) => Some("malformed_mesh_field"),
         MeshError::Decode(unityrs_meshdecode::MeshError::Charge(_)) => None,
         MeshError::Parse(e) if parse_data(e) => Some("mesh_parse_failed"),
@@ -253,13 +254,17 @@ mod tests {
             assert_eq!(mesh_reason(&error), None);
         }
         assert_eq!(
-            mesh_reason(&MeshError::Parse(parse(ReadDetail::Eof { need: 1 }))),
+            mesh_reason(&MeshError::Parse(parse(ReadDetail::Eof {
+                need: 1,
+                exception: "EOFError"
+            }))),
             Some("mesh_parse_failed")
         );
         assert_eq!(
             mesh_reason(&MeshError::Parse(parse(ReadDetail::BoostEof {
                 method: "read_bool",
                 need: 1,
+                exception: "ValueError",
             }))),
             Some("mesh_parse_failed")
         );

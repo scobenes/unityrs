@@ -1,0 +1,129 @@
+//! Divergence replays keep UnityPy's recorded answer beside our expected text.
+use unityrs_core::{
+    Bytes, File, RawStr,
+    env::{EnvOptions, Environment, Source},
+    limits::Meter,
+};
+use unityrs_export::shader;
+
+#[test]
+fn modern_layouts_and_refusals_replay_the_recording() {
+    replay_recording(None);
+}
+
+#[test]
+fn player_parameters_follow_their_variant_on_each_platform() {
+    replay_recording(Some("player_variant_parameters_per_platform"));
+    replay_recording(Some("player_group_parameters_per_platform"));
+}
+
+#[test]
+fn player_selection_stops_at_the_first_usable_platform() {
+    replay_recording(Some("player_first_usable_platform"));
+}
+
+#[test]
+fn empty_player_groups_emit_no_program_blocks() {
+    replay_recording(Some("player_empty_groups_active_False"));
+    replay_recording(Some("player_empty_groups_active_True"));
+}
+
+fn replay_recording(selected: Option<&str>) {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/shader_modern.json")).unwrap();
+    let legacy: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/shader_legacy.json")).unwrap();
+    let cases: Vec<_> = fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(legacy["cases"].as_array().unwrap())
+        .collect();
+    assert_eq!(fixture["reference"], "UnityPy 1.25.2");
+    assert_eq!(legacy["reference"], "UnityPy 1.25.2");
+    assert!(cases.len() >= 100);
+    let mut names = std::collections::HashSet::new();
+    for case in cases {
+        let name = case["case"].as_str().unwrap();
+        assert!(names.insert(name), "duplicate case {name}");
+        if selected.is_some_and(|selected| selected != name) {
+            continue;
+        }
+        assert!(case["oracle"].get("text").is_some() || case["oracle"].get("exception").is_some());
+        let hex = case["input"].as_str().unwrap();
+        let bytes: Vec<u8> = hex
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+            .collect();
+        let env = Environment::new(EnvOptions::unitypy());
+        let File::Serialized(file) = env
+            .load(Source::Bytes {
+                name: RawStr::from("synthetic.assets"),
+                data: Bytes::from(bytes),
+            })
+            .unwrap()
+        else {
+            panic!("file")
+        };
+        let meter = Meter::unlimited();
+        let result = shader::export(&file.object(1).unwrap(), &env, &meter);
+        let expected = &case["rust"];
+        if let Some(text) = expected.get("text") {
+            if let Some(replacement) = case.get("replacement_oracle") {
+                assert_eq!(
+                    text.as_str().unwrap(),
+                    shader::HEADER.to_owned() + replacement["text"].as_str().unwrap(),
+                    "{name}: direct replacement oracle"
+                );
+            }
+            let output = result.unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(
+                output.as_slice(),
+                text.as_str().unwrap().as_bytes(),
+                "{name}"
+            );
+        } else {
+            let error = result.unwrap_err();
+            let want = expected
+                .get("refusal")
+                .or_else(|| expected.get("error"))
+                .unwrap()
+                .as_str()
+                .unwrap();
+            let matches = match want {
+                "BigEndian53Blob" => matches!(
+                    error,
+                    shader::Error::Unsupported(shader::Unsupported::BigEndian53Blob)
+                ),
+                "BigEndian54Blob" => matches!(
+                    error,
+                    shader::Error::Unsupported(shader::Unsupported::BigEndian54Blob)
+                ),
+                "GpuProgramIndex" => {
+                    assert!(matches!(
+                        case["replacement_oracle"]["exception"].as_str(),
+                        Some("ValueError" | "IndexError")
+                    ));
+                    matches!(
+                        error,
+                        shader::Error::Unsupported(shader::Unsupported::GpuProgramIndex)
+                    )
+                }
+                "LayoutIndex" => matches!(error, shader::Error::LayoutIndex),
+                "ProgramType" => matches!(error, shader::Error::ProgramType(_)),
+                _ => panic!("unknown expected error {want}"),
+            };
+            assert!(matches, "{name}: {error:?}, expected {want}");
+            if expected.get("refusal").is_some() {
+                assert_eq!(error.exception(), None);
+            }
+        }
+        assert_eq!(meter.used(), 0, "{name}: retained charge");
+    }
+    if let Some(selected) = selected {
+        assert!(names.contains(selected), "missing case {selected}");
+    }
+}

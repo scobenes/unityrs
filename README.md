@@ -71,6 +71,47 @@ files, safe to delete. Exit status is 0 for success/help and 1 for any export or
 argument error, following `unityrs obj`. Run `unityrs gltf --help` for all options.
 Batch GLB/OBJ integration and animation remain P2b.
 
+`unityrs extract INPUT... -o DIR` exports the UnityPy extractor tree. It uses
+container paths by default; `--no-container` exports objects by name.
+`--ignore-first-container-dirs N`, `--append-path-id` (UnityPy's `_None`),
+`--export-unknown-as-typetree` and repeated `--asset-filter CLASS` select its
+behavior. A filter accepts Unity class names or numeric ids. `--tpk FILE`
+supplies stripped schemas. The Rust API also accepts a filter that inspects
+metadata and then the parsed object.
+
+`--max-input-memory N` defaults to 8589934592 charged bytes per loaded input
+and, separately, one shared extraction budget for exporter buffers, paths,
+the retained report and its JSON. `--max-input-bytes N` defaults to 4294967296
+source bytes per input; `--max-decode-work N` to 34359738368 work bytes per
+input and separately per extraction; `--max-tree-depth N` to 256. These use
+the `gltf` limit spellings and defaults. A memory or work budget refusal is
+a typed resource failure and ends extraction with exit 1, including a refusal
+retained during an object export. Completed files can remain after a refusal.
+
+JSON on stdout records completed writes, including overwritten files, and
+object failures; `--report PATH` also saves it at a relative path beneath DIR.
+Object failures are recorded and extraction continues. Exit status is 0 for a
+completed extraction/help, including reported object failures, and 1 for an
+argument, input, traversal, output-root or report error that prevents completion,
+as for `gltf`. GameObject crawls use actual path ids and visit each file/id once.
+MonoBehaviours use JSON or raw `.bin`; vertex-less meshes create no file.
+Zero-width textures are skipped; other zero-side images pass through their
+writers, retaining SGI and ICNS output, and produce no file where Pillow
+raises or writes an ICO holding no image. Unsafe paths and symlink parents
+are refused. Complete files replace earlier leaves by rename without following
+leaf symlinks or modifying outside hard links.
+
+Confinement is to directory inodes reached from the held `-o` descriptor by
+safe relative opens, each component opened against its held parent without
+following symlinks or `..`. It is established when those directories are opened,
+not checked against their later pathnames. A concurrent rename moves a held
+directory and its files together, and writes continue in that inode, just as
+if the rename happened after extraction. A directory moved outside the `-o`
+pathname can therefore receive subsequent writes through its held descriptor;
+this does not grant access to a directory the renamer could not write to.
+Interrupted runs may leave
+`.unityrs-extract-*.tmp` files, safe to delete. Python exposure is Y5.
+
 ## Licence
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or

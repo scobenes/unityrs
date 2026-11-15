@@ -63,6 +63,7 @@
 
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use crate::error::Error;
 use crate::limits::{Charge, heap_cost};
@@ -265,6 +266,10 @@ pub struct VersionPolicy {
     /// each time it is used; a bad string fails there). `None` raises where
     /// UnityPy raises (`config.py:25-32`); the oracle leaves it unset.
     pub fallback: Option<RawStr>,
+    /// Shared warning filter/emitter for `config.get_fallback_version`.
+    /// Bindings install their Python warning emitter; native callers may opt
+    /// into collecting warnings. Called before parsing the fallback string.
+    pub fallback_warnings: Option<Arc<dyn crate::config::FallbackWarningSink>>,
     /// Replaces chain 1's result.
     pub force_bundle: Option<UnityVersion>,
     /// Replaces chain 2's result.
@@ -291,7 +296,9 @@ pub enum VersionError {
     #[error("invalid version type byte {0}")]
     TypeByte(u8),
     /// No usable version and no fallback set.
-    #[error("no valid Unity version, and no fallback version set")]
+    #[error(
+        "No valid Unity version found, and the fallback version is not correctly configured. Please explicitly set the value of UnityPy.config.FALLBACK_UNITY_VERSION."
+    )]
     NoFallback,
 }
 
@@ -337,6 +344,9 @@ fn forced(v: &UnityVersion, charge: &mut Charge) -> Result<ResolvedVersion, Erro
 /// no fallback raises; a fallback that does not match raises too.
 fn fallback(policy: &VersionPolicy, charge: &mut Charge) -> Result<ResolvedVersion, Error> {
     let s = policy.fallback.as_ref().ok_or(VersionError::NoFallback)?;
+    if let Some(warnings) = &policy.fallback_warnings {
+        warnings.warn(s)?;
+    }
     Ok(ResolvedVersion {
         version: UnityVersion::parse_charged(s, charge)??,
         source: VersionSource::Fallback,
