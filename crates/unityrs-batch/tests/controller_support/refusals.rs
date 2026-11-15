@@ -151,14 +151,6 @@ pub const INVENTORY: &[Exclusion] = &[
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        functions: &["unityrs_export::ngui::read::Reader::new"],
-        platform: Platform::All,
-        frame: None,
-        via: &[],
-        name: "head NodeList and Tree Arcs",
-    },
-    Exclusion {
-        scopes: &["attempt", "complete"],
         functions: &["unityrs_core::typetree::tree::Tree::compile_inner"],
         platform: Platform::All,
         frame: None,

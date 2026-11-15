@@ -269,7 +269,7 @@ pub fn case_tree(case: &Case, limits: &Limits, meter: &Arc<Meter>) -> Result<Arc
             ..NodeRow::default()
         })?;
     }
-    Tree::compile(Arc::new(NodeList::from_rows(rows)?), limits)
+    Tree::compile(NodeList::from_rows(rows)?.into_shared()?, limits)
 }
 
 /// Runs one case on a meter of its own under `limits`, booked with

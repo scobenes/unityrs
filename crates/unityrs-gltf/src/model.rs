@@ -68,6 +68,16 @@ impl Scene {
         }
     }
 }
+/// Structured built-in identity, written in node `extras.unity_builtin`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BuiltinIdentity {
+    pub file: &'static str,
+    pub id: i64,
+    /// Unknown ids retain their resource and id, with a null name.
+    pub name: Option<&'static str>,
+}
+const _: () = crate::send_sync::<BuiltinIdentity>();
+
 /// Scene node. Weights belong to this instance, not its shared geometry.
 #[derive(Debug)]
 pub struct Node {
@@ -80,6 +90,8 @@ pub struct Node {
     pub children: MeteredVec<usize>,
     pub weights: MeteredVec<f64>,
     pub extras: Extras,
+    /// Sorted, unique built-in identities; separate from string metadata.
+    pub builtins: MeteredVec<BuiltinIdentity>,
 }
 const _: () = crate::send_sync::<Node>();
 impl Node {
@@ -96,6 +108,7 @@ impl Node {
             children: MeteredVec::new(meter),
             weights: MeteredVec::new(meter),
             extras: MeteredVec::new(meter),
+            builtins: MeteredVec::new(meter),
         }
     }
 }

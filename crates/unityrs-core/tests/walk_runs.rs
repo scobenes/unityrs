@@ -65,7 +65,7 @@ fn compile(rows: &Json) -> Arc<Tree> {
         })
         .collect();
     Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap()
@@ -257,7 +257,7 @@ fn the_pure_python_reader_counts_each_element_it_reads_again() {
         .map(|&(level, ty, name)| NodeRow::new(level, ty, name))
         .collect();
     let tree = Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap();

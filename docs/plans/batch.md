@@ -1996,7 +1996,7 @@ positions.
 |---|---|---|---|
 | `unityrs-core` | `budget/mod.rs` | `charged_bytes`: `Bytes::from_owner`'s owner box, reached by `DecodeBuf::into_bytes` and charged `RawStr` construction/concatenation | All |
 | `unityrs-core` | `files/mod.rs` | `RawFile::with_reader`: RawFile `Arc` | All |
-| `unityrs-core` | `files/bundle/open.rs` | `BundleFile::open_with_reader`: parsed-container `Arc::new_cyclic` | All |
+| `unityrs-core` | `files/bundle/open.rs` | `BundleFile::open_at_depth`, reached through `open_with_reader`: parsed-container `Arc::new_cyclic` | All |
 | `unityrs-core` | `files/bundle/runs.rs` | `BundleFile::read_span_pinned` → `cached`: std's lazily boxed mutex | Darwin only |
 | `unityrs-core` | `files/bundle/index/mod.rs` | `RunIndex::publish`: run-index `BTreeMap` | All |
 | `unityrs-core` | `env/mod.rs` | `Environment::new`: Environment and dependency-cache `Arc`s | All |
@@ -2008,7 +2008,7 @@ positions.
 | `unityrs-core` | `limits/meter.rs` | `Meter::with_decode_work`, reached through `new` and `for_input`: account and meter `Arc`s; `Meter::reopen`: meter `Arc`; `Meter::unlimited`, reached through `NodeList::trusted`: unbounded-budget `Arc` and meter construction | All |
 | `unityrs-core` | `typetree/rows.rs` | `NodeRow::new`: head-row type/name text copies; `NodeList::trusted`: head-tree meter construction | All |
 | `unityrs-core` | `typetree/tree.rs` | `Tree::compile_inner`: compiled Tree `Arc` | All |
-| `unityrs-export` | `ngui/read.rs` | `Reader::new` → `head_rows`: row `Vec`s and text copies via `NodeRow::new`, `NodeList` `Arc`s, compiled `Tree` `Arc`s and their meters | All |
+| `unityrs-export` | `ngui/read.rs` | `Reader::new` → `head_rows`: row `Vec`s and text copies via `NodeRow::new`, and compiled `Tree` `Arc`s and their meters (the `NodeList` `Arc` is fallible, through `NodeList::into_shared`) | All |
 | `unityrs-export` | `ngui/plan.rs`, `ngui/keys.rs` | `Attempt::plan`: template clones through derived `Template::clone` (piece `Vec`) and `Piece::clone` (text `Vec`s) | All |
 | `unityrs-export` | `ngui/classify.rs` | `Reason::plain`, `Reason::decode_error`, `text`, `with_argument`: owned reason/detail strings; `limit`, `decode`, `render`: formatted limits; `panicked`, `entry_error`: owned reason/detail construction. Their `budget`, `charge`, `tree`, `parse`, `deref`, `error`, `resource`, `outside_view`, `outside_view_cab`, `internal` and `mesh` wrappers reach these constructors | All |
 | `unityrs-export` | `ngui/register.rs` | `dependency_failed`: formatted dependency wrapper; `container`: container reclassification; `open`, `opened`, `own`, `internal`, `peeked`, `Peeked::member`, `Peeked::finish`, `same_open`: reason construction through classify's constructors and these wrappers | All |
@@ -2027,12 +2027,12 @@ qualified inline function names as well as line tables;
 command includes `--test controller_alloc` under `--profile sweep`; use
 that profile for manual refusal sweeps too. The release profile is unchanged.
 
-For the current synthetic sweep, **Linux expects all 18 `Platform::All`
+For the current synthetic sweep, **Linux expects all 17 `Platform::All`
 function entries**: `charged_bytes`, `RawFile::with_reader`, `Reason::plain`,
-`BundleFile::open_with_reader`, `Environment::new`,
+`BundleFile::open_at_depth`, `Environment::new`,
 `Meter::with_decode_work`, `Environment::try_load_dep`,
 `Registry::new_slot`, `Registry::apply`, `RunIndex::publish`, `Lru::use_key`,
-`head_rows`, `NodeRow::new`, `Meter::unlimited`, `Reader::new`,
+`head_rows`, `NodeRow::new`, `Meter::unlimited`,
 `Tree::compile_inner`, `Template::clone` and `Piece::clone`.
 **CR10 PR 1 boundary.** `AllocError { requested, what }` is carried by value
 through charge, detection, tree, read, parse and dereference errors. The default

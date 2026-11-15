@@ -50,7 +50,7 @@ pub(crate) fn file(
     }));
 }
 
-fn tree(rows: &[(i32, &[u8], &[u8])]) -> Arc<NodeList> {
+fn tree(rows: &[(i32, &[u8], &[u8])]) -> unityrs_core::typetree::SharedNodes {
     let rows = rows
         .iter()
         .enumerate()
@@ -67,7 +67,7 @@ fn tree(rows: &[(i32, &[u8], &[u8])]) -> Arc<NodeList> {
             ref_type_hash: Some(u64::MAX),
         })
         .collect();
-    Arc::new(NodeList::trusted(rows).unwrap())
+    NodeList::trusted(rows).unwrap().into_shared().unwrap()
 }
 
 pub(crate) fn serialized_l1(

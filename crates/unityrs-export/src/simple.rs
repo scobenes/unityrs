@@ -228,6 +228,7 @@ fn semantic(error: &ParseError) -> bool {
                         d,
                         unityrs_core::detect::DetectError::Unterminated
                             | unityrs_core::detect::DetectError::Gzip(_)
+                            | unityrs_core::detect::DetectError::GzipCrc { .. }
                     );
                 }
                 unityrs_core::Error::Io(e) => return e.0.kind() != std::io::ErrorKind::OutOfMemory,

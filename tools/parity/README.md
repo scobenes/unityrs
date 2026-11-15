@@ -14,6 +14,8 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `dump_records.py` | the oracle's records of one input (its file and object records, or its crash record), which `unitypy_dump.py` runs in a process per input |
 | `compare.py` | diffs two dumps; summarises by level, class and field path |
 | `g3b.py` | G3b's verdict (`docs/plans/core.md` section 6): every file under `--inputs` in both dumps, and each mutated input the dumps differ on, with its reason checked (a limit, the non-UTF-8 crash, a count UnityPy allocates before it reads; never a unityrs crash); needs the oracle stack |
+| `binding_cases.py` | Y1 synthetic API observations, including exact Python types, traversal, local paths and stream origins; shared by the recorder, Rust replay and binding suite |
+| `bindings/` | Explicit installed-wheel comparison suite (`python -m unittest bindings.test_y1`); requires `unityrs` and UnityPy 1.25.2, and never skips |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |
 | `child.py` | how every Python test and tool here runs a child process: a child the system killed (SIGKILL) is run again, up to `KILLED_RUNS` runs, any other ending comes back at once, and each run gets a scratch folder its parent removes (standard library only) |
 | `scratch.py` | where every Python test and tool here writes outside its memory: scratch folders removed whatever happens, a test's with its cleanups, a child's with its run, a dead process's at the next sweep (standard library only) |
@@ -40,6 +42,7 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `sprites_kind.py` | the `sprites` output kind's reference (`docs/plans/extract.md` E17): one PNG per Sprite of one input's view, its plan and sprite groups by `docs/BATCH_SPEC.md` 4.4, each image UnityPy 1.25.2's `SpriteHelper` and Pillow 9.5.0's PNG writer; a library and a command |
 | `sprites_scenes.py` | unityrs-testkit's `sprites` scenes, which cargo builds, for `tools/fixtures/sprites.py` |
 | `gltf_check.py` | L6g's independent check of a written GLB (`docs/plans/static3d.md` sections 2.4 and 3.2): reads the accessors with the standard library and compares them with MeshHandler's rows in Unity coordinates, X mirrored, V flipped and winding reversed, after the writer's documented normalisation; no exporter is its oracle |
+| `mesh_dump.py` | L6 corpus JSONL digests and exact masked comparison; standalone oracle dump, `unityrs dump --mesh` candidate; arrays preserve binary64 bits and numeric tags, triangles preserve partial/empty tuples, OBJ streams into SHA-256; output stays outside the repository |
 | `mesh_samples.py` | L6 (`docs/plans/static3d.md`): every Mesh in the pinned UnityPy samples, its arrays, type tags, triangles and raw OBJ text against `unityrs-mesh`'s `mesh_l6` example, with section 19.1's corrected decoding; prints aggregate counts only; needs the oracle stack |
 | `ruff.toml` | the lint and format settings for this folder (`uvx ruff check`, `uvx ruff format`) |
 | `tests/` | unittest self-tests; `test_readme.py` checks that this table lists every file in this folder, and no other |
@@ -148,7 +151,7 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_inventory.py` | the inventory's matching rules (standard library): whole dotted chains, compact rows, enum values, a name under a wrong parent, what counts as an attribute; with the oracle, that `collect()` finds exactly the group sizes `PARITY.md` section 21 states, that `PARITY.md` names every UnityPy module, class, function, module-level table or setting, class member, attrs field, other attribute, package re-export, UnityPyBoost export or member, enum member with its value, and `TextureFormat`, and that removing any one entry, or writing it under a wrong parent, fails the check | stdlib; UnityPy for the rest |
 | `test_texture_matrix.py`, with `texture_cells.py` and `texture_cases.py` (not tests) | the TextureFormat matrix of `PARITY.md` section 17: its columns, and its tier and phase rules, and section 17.1's table of Tier B references, one per Tier B row, with the values it states checked against `references.py` (standard library), and BC6H's reference against the two BC6H decoders in the oracle image, each with its one departure from the specification; with the oracle, every cell of every row, built from UnityPy (`CONV_TABLE`, the cited source lines, the result on real-sized data, the padding, Switch, Xbox and crunch gates observed through stand-ins, what `set_image` writes) and from the pixel cases, and a check that no builder reads `PARITY.md` (the rows built again in a new process from a copy with every cell changed are the same); the decoded pixels of every format that returns an image against a reference built from the format's layout (or, for a row marked wrong, the specific wrong pixels), also swizzled for Switch and byte-swapped for XBOX360 as the gates say | stdlib; UnityPy for the rest |
 | `test_parity_rows.py`, `test_rows_*.py`, with `rows_support.py` and `export_support.py` (not tests) | the `PARITY.md` rows a review disputed, a module a topic, each run on the smallest synthetic input that shows it (UnityFS bundles, WebFiles and serialized files built by `synth.py`); each test names its rows, and each row's test column names the test back (`test_parity_rows.py`'s `TestColumn` checks both) | UnityPy |
-| `head_oracle.py`, `head_417d595/` | not tests: UnityPy git `417d595`'s `helpers/CompressionHelper.py` and `files/BundleFile.py`, kept byte for byte with its MIT `LICENSE` (ruff skips the folder), and the loader that checks each file's git blob id and runs them inside UnityPy 1.25.2, for the HEAD-tier writing rows (`PARITY.md` section 20; `test_rows_writing.py` head_saves) | UnityPy |
+| `head_oracle.py`, `head_417d595/` | not tests: UnityPy git `417d595`'s `helpers/CompressionHelper.py`, `files/BundleFile.py`, `files/SerializedFile.py`, `helpers/TypeTreeNode.py` and `helpers/TypeTreeHelper.py`, kept byte for byte with its MIT `LICENSE` (ruff skips the folder), and the loader that checks each file's git blob id and runs them inside UnityPy 1.25.2, for the HEAD-tier writing rows and synthetic reading recordings (`PARITY.md` section 20; `test_rows_writing.py` head_saves; `tools/fixtures/head_read.py --check`) | UnityPy |
 | `test_object_mode.py` | `PARITY.md` section 9.2.1 holds exactly what `object_mode.py` prints, and section 9.2's extra-field rule holds for every class of `UnityPy.classes` | UnityPy with UnityPyBoost |
 | `test_doc_tiers.py` | `PARITY.md` and `DESIGN.md` agree on what a tier covers where a zero side, an image mode, a missing characterisation, a walk past a UnityCN block, an empty first FSB5 subsound or a reader handed to a reader decides it | stdlib |
 | `test_readme.py` | this README's two tables list every file in this folder and in `tests/`, and no other | stdlib |
@@ -164,6 +167,7 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_sprites_kind.py` | the `sprites` kind's reference on its own branches: a top-level WebFile row's `Divergence`, a `MemoryError` that is Pillow's (`pillow_memory_error`) and one that is not (propagated), the render data's selection on objects made in the test (the first atlas of the tag's name, names read only up to it, no match, a missing key, no tag) and a Sprite's fields of another shape | UnityPy, Pillow 9.5.0 |
 | `test_texture_seal.py` | every Texture2D either reference constructs, nested or read directly, refuses an `image` child without opening a host path: the sprite_attributes scene's unused path-valued textures under a texture, a Sprite and an atlas, each parent still exported, and `PIL.Image.open` never called while the references run | UnityPy, Pillow 9.5.0 |
 | `synth.py`, `dump_harness.py` | not tests: `synth.py` builds the synthetic inputs, and `dump_harness.py` holds what the `test_dump*.py` modules share (the sample pins included) | stdlib; UnityPy for `dump_harness.py`'s dumps |
+| `test_mesh_dump.py` | mesh digest framing, signed zero/NaN payloads/type tags, optional arrays, triangle counts, Unicode JSON, exact field masks, duplicate/missing records, corpus pin bytes, resource refusals and committed synthetic OBJ replay | stdlib + pinned UnityPy for replay |
 | `test_gltf_check.py` | `gltf_check.py` on hand-built GLBs: the orientation verdict (pass, a reversed winding, no normals, degenerate triangles), accessor reads (sparse, stride and offset, ranges, raw values), the UV, tangent, normal and weight conversions, morph deltas left unnormalised, and the attributes an invalid normal or tangent must omit | stdlib |
 
 **Samples.** The samples are UnityPy's `tests/samples` at commit `417d595`. They are read from `$UNITYRS_UNITYPY_SAMPLES` when set, else from the folder the corpus index (`$UNITYRS_CORPUS_INDEX`, default `/corpus/index.json`) gives for its `unitypy-sample` entries, and their sha256 is checked against pinned values. They are game bundles, so they are never copied into this repository. Without them the sample tests skip.
@@ -230,3 +234,27 @@ scripts/dev bash -c 'time python tools/parity/compare.py /tmp/dumps/corpus20.jso
 # over both builds, run on 2026-10-29.
 scripts/dev python tools/parity/shader_survey.py --index /corpus/index.json --build 4100,100056
 ```
+
+Mesh corpus dumps use `python tools/parity/mesh_dump.py INPUT -o /tmp/reference.jsonl --corrected`
+and `unityrs dump INPUT --mesh --tpk TPK -o /tmp/candidate.jsonl`. Both write only Mesh rows,
+ordered by input, raw SerializedFile basename and signed path id; an input load or resource refusal stops
+the run. ZIP/APK corpus inputs are explicitly refused by the candidate; use their extracted bundles. The candidate reuses the dump's input selection, index pins, gzip, parallel ordering and output
+protections. The oracle checks the pinned stack and accepts the same selection flags; it runs inputs
+serially. Both hash and parse the same bytes, with read, parse, arrays, digests and JSON sharing the
+candidate input meter; ordinary sibling resources resolve through a charged directory fetcher. `--corrected` applies the existing section 19.1 MeshHandler corrections in memory.
+Compare with `python tools/parity/mesh_dump.py compare /tmp/reference.jsonl /tmp/candidate.jsonl`.
+Add `--mask /outside/mask.json` for an array of `{"key":[INPUT,FILE_HEX,PATH_ID],
+"path":["result","arrays","attrs","m_Normals"]}` entries. Each entry permits exactly that field's
+observed difference; missing, duplicate or stale masks fail. Missing or duplicate meshes cannot be masked.
+Only aggregate counts appear on stdout, including comparison failures; no corpus artifact is committed.
+
+The version-1 digest protocol hashes big-endian lengths as u64. An array starts with `array-v1\0`,
+its tuple count, then each tuple's component count and each component's `i` + signed i64 or `f` + raw
+binary64 bits. Bind-pose matrix rows are flattened into tuples of up to 16 values. Indices start with
+`indices-v1\0`, their count and u32 values; absent arrays remain absent and an absent index buffer is null.
+Triangles start with `triangles-v1\0`, the submesh count, then for each submesh: full triangle count and
+u32 indices, cut-tuple length and u32 indices, empty-tuple count and the post-handler indexCount.
+OBJ is SHA-256 over raw export bytes (surrogateescape UTF-8), or null for False. A failed Mesh is
+`{"error":EXCEPTION_CLASS}`; candidate-only unsupported/wrapped/malformed outcomes are explicitly
+prefixed `unityrs:` and remain differences until covered by an exact mask. Rows use literal Unicode
+JSON (`ensure_ascii=False`); invalid input-name UTF-8 uses the canonical `{"t":"str","hex":...}` form.

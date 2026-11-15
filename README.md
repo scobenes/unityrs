@@ -4,12 +4,11 @@ Fast Unity asset extraction in Rust: asset bundles, serialized files,
 typetrees, textures, sprites, meshes, animation and glTF export, as a library,
 a command-line tool and Python bindings.
 
-**Status: pre-alpha.** The core (phase P1) reads asset bundles, serialized
-files and typetrees as UnityPy 1.25.2 reads them. Its one user-facing command
-is `unityrs dump`, which writes the canonical dump the parity gate compares
-with UnityPy's (`unityrs values` serves the parity tools). Nothing else is
-built yet: textures, sprites and batch extraction are the next phase (P1b).
-The plan and its phases are in [`docs/DESIGN.md`](docs/DESIGN.md).
+**Status: pre-alpha.** The core reads asset bundles, serialized files and
+typetrees as UnityPy 1.25.2 reads them. The CLI provides the canonical dump,
+value-case protocol, batch extraction, OBJ/MTL and static scene/prefab GLB export.
+Animation and batch GLB/OBJ integration remain P2b. The plan and phases are in
+[`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Goals
 
@@ -24,6 +23,53 @@ The plan and its phases are in [`docs/DESIGN.md`](docs/DESIGN.md).
 - **Any game.** Version detection, a typetree-provider chain for stripped files,
   and hooks for encryption, altered headers and custom compression.
 - **3D export.** Prefabs, skins, Mecanim animation and scenes to glTF/GLB.
+
+## Static 3D export
+
+`unityrs gltf` writes one scene or prefab unit as a GLB. Load dependencies,
+including a scene's `.sharedAssets` sibling, as additional inputs:
+
+```sh
+unityrs gltf level0 level0.sharedAssets --scene level0 -o scene.glb --report scene-report.json
+unityrs gltf prefab.bundle geometry.bundle --prefab assets/example.prefab -o prefab.glb
+unityrs gltf input.assets --path-id 123 -o root.glb --profile profile.json --mapper pbr
+```
+
+Select exactly one unit with `--scene FILE` (SerializedFile name), `--prefab PATH`
+(exact container path targeting a GameObject), or `--path-id ID` (a GameObject
+subtree or a SceneAsset's owning scene file). Ambiguous selectors fail. A scene's
+roots follow its object-table order, pending Editor confirmation; children keep
+`m_Children` order. Additional dependency roots never join the selected unit.
+The library exposes the same selections through `unityrs_scene::Unit`.
+
+`--profile FILE` accepts the strict version-1 [export profile](crates/unityrs-gltf/README.md).
+The default mapper is unlit with saved-property extras; `--mapper pbr` selects
+CorePbr. Built-ins default to empty nodes with `unity_builtin` extras and a counted
+report reason. Set `"builtin":"resolve"` in the profile and supply
+`--builtin-file FILE` for resolution through `CabResolver`, or opt into
+`"builtin":"procedural"` for approximate Cube, Quad and Plane geometry.
+Unsupported procedural shapes and missing resource objects degrade with reasons.
+No Editor resource file is included. `--tpk FILE` supplies stripped schemas.
+
+`--max-input-memory`, `--max-input-bytes`, `--max-decode-work` and
+`--max-tree-depth` set the core's per-input bounds (bytes except depth).
+Graph, collect and writer buffers charge the selected input's meter before
+allocation. The report records repairs, omissions and peak charged bytes;
+writer/collect details also appear in GLB asset extras. `--report FILE` adds
+JSON with graph reasons and the invocation's aggregate peak. One renderer's,
+material's or texture's bad data degrades with a reason; resource refusals fail.
+Raw `normalise:false` output can fail glTF validation.
+
+Output files and symlinks are overwritten by sibling-temp rename after successful
+export. All destinations are checked for directories before publication.
+GLB/report destinations in the same canonical directory whose final names are
+equal under Unicode case folding are rejected as an argument error on every
+filesystem, before either output is published. A
+publish failure leaves earlier complete outputs in place and removes only this
+invocation's remaining temps; an interrupted run may leave `.unityrs-gltf-*.tmp`
+files, safe to delete. Exit status is 0 for success/help and 1 for any export or
+argument error, following `unityrs obj`. Run `unityrs gltf --help` for all options.
+Batch GLB/OBJ integration and animation remain P2b.
 
 ## Licence
 

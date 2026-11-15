@@ -68,7 +68,7 @@ fn compile(rows: &Json) -> Arc<Tree> {
         })
         .collect();
     Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap()

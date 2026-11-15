@@ -484,9 +484,24 @@ dependencies = [
  "unityrs-audio",
  "unityrs-core",
  "unityrs-export",
+ "unityrs-gltf",
  "unityrs-imageio",
+ "unityrs-mesh",
  "unityrs-meshdecode",
+ "unityrs-scene",
  "unityrs-testkit",
+ "unityrs-texture",
+]
+
+[[package]]
+name = "unityrs-gltf"
+version = "0.0.1"
+dependencies = [
+ "unityrs-core",
+ "unityrs-imageio",
+ "unityrs-mesh",
+ "unityrs-meshdecode",
+ "unityrs-scene",
  "unityrs-texture",
 ]
 
@@ -500,10 +515,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs-mesh"
+version = "0.0.1"
+dependencies = [
+ "thiserror",
+ "unityrs-core",
+ "unityrs-imageio",
+ "unityrs-meshdecode",
+ "unityrs-scene",
+ "unityrs-texture",
+]
+
+[[package]]
 name = "unityrs-meshdecode"
 version = "0.0.1"
 dependencies = [
  "thiserror",
+ "unityrs-core",
+]
+
+[[package]]
+name = "unityrs-scene"
+version = "0.0.1"
+dependencies = [
  "unityrs-core",
 ]
 

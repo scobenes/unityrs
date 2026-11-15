@@ -75,8 +75,12 @@ pub enum Format {
     Bc5,
     /// `DXT1Crunched` (28): legacy CRN, then Pillow BC1; below Unity 2017.3.
     Dxt1Crunched,
+    /// Unity 2017.3+ `DXT1Crunched` (28), explicitly selecting Unity's fork.
+    UnityDxt1Crunched,
     /// `DXT5Crunched` (29): legacy CRN, then Pillow BC3; below Unity 2017.3.
     Dxt5Crunched,
+    /// Unity 2017.3+ `DXT5Crunched` (29), explicitly selecting Unity's fork.
+    UnityDxt5Crunched,
     /// `PVRTC_RGB2` (30): texture2ddecoder into `RGBA`.
     PvrtcRgb2,
     /// `PVRTC_RGBA2` (31): texture2ddecoder into `RGBA`.
@@ -147,6 +151,10 @@ pub enum Format {
     Rg16,
     /// `R8` (63): Pillow's raw `R` into `RGB`.
     R8,
+    /// `ETC_RGB4Crunched` (64): Unity fork, then ETC1.
+    EtcRgb4Crunched,
+    /// `ETC2_RGBA8Crunched` (65): Unity fork, then ETC2 A8.
+    Etc2Rgba8Crunched,
     /// `RG32` (72): closed form of PARITY.md sections 17.1 and 19.
     Rg32,
     /// `RGB48` (73): closed form of PARITY.md sections 17.1 and 19.
@@ -193,8 +201,10 @@ pub(crate) enum Library {
 }
 
 impl Format {
-    /// Every format, in `TextureFormat` order.
-    pub const ALL: [Self; 66] = [
+    /// One variant per decoded `TextureFormat` value, in numeric order.
+    /// DXT entries select legacy CRN;
+    /// `select_in` and `select_crunch` choose Unity fork variants at Unity 2017.3+.
+    pub const ALL: [Self; 68] = [
         Self::Alpha8,
         Self::Argb4444,
         Self::Rgb24,
@@ -250,6 +260,8 @@ impl Format {
         Self::AstcRgba12x12,
         Self::Rg16,
         Self::R8,
+        Self::EtcRgb4Crunched,
+        Self::Etc2Rgba8Crunched,
         Self::Rg32,
         Self::Rgb48,
         Self::Rgba64,
@@ -267,7 +279,9 @@ impl Format {
     /// (`docs/BATCH_SPEC.md` section 3), in `TextureFormat` order.
     pub const EXPORTED: [Self; 5] = [Self::Rgb24, Self::Rgba32, Self::Dxt1, Self::Dxt5, Self::Bc7];
 
-    /// The format of a `TextureFormat` value, when this crate decodes it.
+    /// The canonical format of a decoded `TextureFormat` value. DXT crunch
+    /// entries name legacy input; use [`crate::select_in`] with the Unity
+    /// version to choose the decoder. Both variants have Unity's same name.
     #[must_use]
     pub const fn from_texture_format(value: i32) -> Option<Self> {
         match value {
@@ -315,9 +329,9 @@ impl Format {
             31 => Some(Self::PvrtcRgba2),
             32 => Some(Self::PvrtcRgb4),
             33 => Some(Self::PvrtcRgba4),
+            34 => Some(Self::EtcRgb4),
             35 => Some(Self::AtcRgb4),
             36 => Some(Self::AtcRgba8),
-            34 => Some(Self::EtcRgb4),
             41 => Some(Self::EacR),
             42 => Some(Self::EacRSigned),
             43 => Some(Self::EacRg),
@@ -338,6 +352,8 @@ impl Format {
             58 => Some(Self::AstcRgba10x10),
             59 => Some(Self::AstcRgba12x12),
             63 => Some(Self::R8),
+            64 => Some(Self::EtcRgb4Crunched),
+            65 => Some(Self::Etc2Rgba8Crunched),
             _ => None,
         }
     }
@@ -385,15 +401,15 @@ impl Format {
             Self::Bc7 => 25,
             Self::Bc4 => 26,
             Self::Bc5 => 27,
-            Self::Dxt1Crunched => 28,
-            Self::Dxt5Crunched => 29,
+            Self::Dxt1Crunched | Self::UnityDxt1Crunched => 28,
+            Self::Dxt5Crunched | Self::UnityDxt5Crunched => 29,
             Self::PvrtcRgb2 => 30,
             Self::PvrtcRgba2 => 31,
             Self::PvrtcRgb4 => 32,
             Self::PvrtcRgba4 => 33,
+            Self::EtcRgb4 => 34,
             Self::AtcRgb4 => 35,
             Self::AtcRgba8 => 36,
-            Self::EtcRgb4 => 34,
             Self::EacR => 41,
             Self::EacRSigned => 42,
             Self::EacRg => 43,
@@ -402,6 +418,8 @@ impl Format {
             Self::Etc2Rgba1 => 46,
             Self::Etc2Rgba8 => 47,
             Self::R8 => 63,
+            Self::EtcRgb4Crunched => 64,
+            Self::Etc2Rgba8Crunched => 65,
             Self::AstcRgb4x4 => 48,
             Self::AstcRgb5x5 => 49,
             Self::AstcRgb6x6 => 50,
@@ -460,15 +478,15 @@ impl Format {
             Self::Bc7 => "BC7",
             Self::Bc4 => "BC4",
             Self::Bc5 => "BC5",
-            Self::Dxt1Crunched => "DXT1Crunched",
-            Self::Dxt5Crunched => "DXT5Crunched",
+            Self::Dxt1Crunched | Self::UnityDxt1Crunched => "DXT1Crunched",
+            Self::Dxt5Crunched | Self::UnityDxt5Crunched => "DXT5Crunched",
             Self::PvrtcRgb2 => "PVRTC_RGB2",
             Self::PvrtcRgba2 => "PVRTC_RGBA2",
             Self::PvrtcRgb4 => "PVRTC_RGB4",
             Self::PvrtcRgba4 => "PVRTC_RGBA4",
+            Self::EtcRgb4 => "ETC_RGB4",
             Self::AtcRgb4 => "ATC_RGB4",
             Self::AtcRgba8 => "ATC_RGBA8",
-            Self::EtcRgb4 => "ETC_RGB4",
             Self::EacR => "EAC_R",
             Self::EacRSigned => "EAC_R_SIGNED",
             Self::EacRg => "EAC_RG",
@@ -477,6 +495,8 @@ impl Format {
             Self::Etc2Rgba1 => "ETC2_RGBA1",
             Self::Etc2Rgba8 => "ETC2_RGBA8",
             Self::R8 => "R8",
+            Self::EtcRgb4Crunched => "ETC_RGB4Crunched",
+            Self::Etc2Rgba8Crunched => "ETC2_RGBA8Crunched",
             Self::AstcRgb4x4 => "ASTC_RGB_4x4",
             Self::AstcRgb5x5 => "ASTC_RGB_5x5",
             Self::AstcRgb6x6 => "ASTC_RGB_6x6",
@@ -537,6 +557,7 @@ impl Format {
         match self {
             Self::Dxt1
             | Self::Dxt1Crunched
+            | Self::UnityDxt1Crunched
             | Self::Bc4
             | Self::PvrtcRgb2
             | Self::PvrtcRgba2
@@ -544,6 +565,7 @@ impl Format {
             | Self::PvrtcRgba4
             | Self::AtcRgb4
             | Self::EtcRgb4
+            | Self::EtcRgb4Crunched
             | Self::EacR
             | Self::EacRSigned
             | Self::Etc2Rgb
@@ -552,11 +574,13 @@ impl Format {
             | Self::Dxt3
             | Self::Dxt5
             | Self::Dxt5Crunched
+            | Self::UnityDxt5Crunched
             | Self::Bc7
             | Self::Bc5
             | Self::EacRg
             | Self::EacRgSigned
             | Self::Etc2Rgba8
+            | Self::Etc2Rgba8Crunched
             | Self::AstcRgb4x4
             | Self::AstcRgb5x5
             | Self::AstcRgb6x6
@@ -659,11 +683,23 @@ impl Format {
         }
     }
 
-    /// Whether this format expects legacy CRN rather than plain blocks.
-    /// Unity 2017.3+ and ETC crunched formats require the T4b decoder.
+    /// Whether this format expects CRN rather than plain blocks.
+    /// Use `select_in` or `select_crunch` to choose the DXT variant for the Unity version.
     #[must_use]
     pub const fn is_crunched(self) -> bool {
-        matches!(self, Self::Dxt1Crunched | Self::Dxt5Crunched)
+        matches!(self, Self::Dxt1Crunched | Self::Dxt5Crunched) || self.is_unity_crunched()
+    }
+
+    /// Whether the input uses Unity's fork of CRN.
+    #[must_use]
+    pub const fn is_unity_crunched(self) -> bool {
+        matches!(
+            self,
+            Self::UnityDxt1Crunched
+                | Self::UnityDxt5Crunched
+                | Self::EtcRgb4Crunched
+                | Self::Etc2Rgba8Crunched
+        )
     }
 
     /// The library that decodes it for UnityPy (`CONV_TABLE`).
@@ -676,7 +712,9 @@ impl Format {
             | Self::Dxt3
             | Self::Dxt5
             | Self::Dxt1Crunched
+            | Self::UnityDxt1Crunched
             | Self::Dxt5Crunched
+            | Self::UnityDxt5Crunched
             | Self::Bc4
             | Self::Bc5
             | Self::Bc7 => Library::PillowBcn,
@@ -687,13 +725,15 @@ impl Format {
             | Self::AtcRgb4
             | Self::AtcRgba8
             | Self::EtcRgb4
+            | Self::EtcRgb4Crunched
             | Self::EacR
             | Self::EacRSigned
             | Self::EacRg
             | Self::EacRgSigned
             | Self::Etc2Rgb
             | Self::Etc2Rgba1
-            | Self::Etc2Rgba8 => Library::Texture2DDecoder,
+            | Self::Etc2Rgba8
+            | Self::Etc2Rgba8Crunched => Library::Texture2DDecoder,
             Self::AstcRgb4x4
             | Self::AstcRgb5x5
             | Self::AstcRgb6x6

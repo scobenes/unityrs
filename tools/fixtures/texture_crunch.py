@@ -4,7 +4,8 @@ No encoder or external input is used. ``--native PATH`` writes CRNs and known
 BC blocks using only the standard library; adding ``--check`` compares without
 writing. With neither option, the pinned oracle records Texture2D.image from
 synthetic SerializedFiles in tests/fixtures/crunch.json. Unity 2017.2 selects
-legacy Crunch; Unity's newer Crunch variant is deliberately excluded.
+legacy Crunch; Unity 2017.3 selects the fork for DXT, and crunched ETC always
+uses the fork. ``--unity-native PATH`` writes the fork's known blocks.
 
 Format rules below cite crn_decomp.h from the texture2ddecoder 1.0.5 sdist
 (src/Texture2DDecoder/crunch, the legacy implementation). The legacy codec has
@@ -381,6 +382,24 @@ def edge_block_cases():
     return out
 
 
+def descriptor_cases():
+    """Ignored alpha ranges: crunch/crn_decomp.h:3824-3839 gates on endpoints."""
+    out = []
+    for label, descriptors in (("endpoint", (2,)), ("selector", (3,)), ("both", (2, 3))):
+        data, levels = build(1, 1, False, count=1)
+        data = bytearray(data)
+        for i in descriptors:
+            # Endpoints remain absent; selectors advertise one ignored entry.
+            data[33+8*i:41+8*i] = bytes.fromhex(
+                'ffffff0000000000' if i == 2 else 'ffffff0000000001')
+        data[4:6] = crc16(data[6:74]).to_bytes(2, 'big')
+        out.append({"id": f"DXT1Crunched-ignored-alpha-{label}-range", "format": 28,
+                    "width": 1, "height": 1, "palette_count": 1, "long_codes": False,
+                    "data": {"hex": data.hex()}, "data_sha256": hashlib.sha256(data).hexdigest(),
+                    "levels": levels})
+    return out
+
+
 def serialized(case):
     """A hand-built Texture2D typetree and object, never a saved asset.
 
@@ -403,18 +422,22 @@ def serialized(case):
     body = S.s32("Synthetic Crunch — texture") + struct.pack(
         "<9i", case["width"], case["height"], len(raw), case["format"], len(case["levels"]), 1, 2, 0, 0)
     body += bytes((1, 0, 0, 0)) + struct.pack("<iif", 1, 1, 0) + struct.pack("<i", len(raw)) + raw
-    return S.serialized_file([S.Type(28, tree)], [S.Obj(1, 0, body)], unity_version=b"2017.2.0f1")
+    return S.serialized_file([S.Type(28, tree)], [S.Obj(1, 0, body)], unity_version=b"2017.3.0f1" if case.get("unity") else b"2017.2.0f1")
 
 
 def fixture(native=False):
+    from texture_unitycrunch import cases as unity_cases
+    unity = unity_cases()
     rows = cases()
     truncated = truncated_cases()
     underdeclared = data_size_cases()
     edges = edge_block_cases()
+    descriptors = descriptor_cases()
     doc = {"generator": "tools/fixtures/texture_crunch.py", "schema": 1, "cases": rows, "truncated_cases": truncated,
-           "data_size_cases": underdeclared, "edge_block_cases": edges}
+           "data_size_cases": underdeclared, "edge_block_cases": edges, "descriptor_cases": descriptors}
     if native:
         return doc
+    doc["unity_cases"] = unity
     import PIL
     import UnityPy
     import texture2ddecoder
@@ -423,11 +446,28 @@ def fixture(native=False):
     if found != ("1.25.2", "9.5.0", "1.0.5"):
         raise RuntimeError(f"needs UnityPy 1.25.2, Pillow 9.5.0 and texture2ddecoder 1.0.5; found {found}")
     doc.update(unitypy=found[0], pillow=found[1], texture2ddecoder=found[2])
-    for case in underdeclared + edges:
+    for case in underdeclared + edges + descriptors:
         blocks = texture2ddecoder.unpack_crunch(bytes.fromhex(case["data"]["hex"]))
         assert blocks.hex() == case["levels"][0]["blocks"], case["id"]
         case["levels"][0]["blocks"] = blocks.hex()
-    for case in rows + truncated + underdeclared + edges:
+    # Verify every fork mip through the actual pinned wrapper, whose Python
+    # binding always asks for level zero. Repoint level zero to each mip;
+    # checksums are ignored by unpack_begin, as by UnityPy's native wrapper.
+    for case in unity:
+        raw = bytes.fromhex(case["data"]["hex"])
+        for index, mip in enumerate(case["levels"]):
+            data = bytearray(raw)
+            start = raw[70+4*index:74+4*index]
+            if index+1 < len(case["levels"]):
+                end = int.from_bytes(raw[74+4*index:78+4*index], "big")
+                data = data[:end]
+            data[6:10] = len(data).to_bytes(4, "big")
+            data[12:16] = struct.pack(">HH", mip["width"], mip["height"])
+            data[16] = 1
+            data[70:74] = start
+            blocks = texture2ddecoder.unpack_unity_crunch(bytes(data))
+            assert blocks.hex() == mip["blocks"], (case["id"], index)
+    for case in rows + truncated + underdeclared + edges + descriptors + unity:
         data = serialized(case)
         case["file"] = data.hex()
         env = UnityPy.Environment()
@@ -446,11 +486,17 @@ def dump(doc):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="regenerate and compare; write nothing")
-    parser.add_argument("--native", type=Path, metavar="PATH", help="write only synthetic CRNs and expected BC blocks")
+    outputs = parser.add_mutually_exclusive_group()
+    outputs.add_argument("--unity-native", type=Path, metavar="PATH", help="write synthetic Unity fork CRNs and expected blocks")
+    outputs.add_argument("--native", type=Path, metavar="PATH", help="write only synthetic CRNs and expected BC blocks")
     args = parser.parse_args()
-    path = args.native if args.native is not None else OUT
+    path = args.unity_native or args.native or OUT
     try:
-        text = dump(fixture(native=args.native is not None))
+        if args.unity_native is not None:
+            from texture_unitycrunch import cases as unity_cases
+            text = dump({"schema": 1, "cases": unity_cases()})
+        else:
+            text = dump(fixture(native=args.native is not None))
     except (ImportError, RuntimeError) as error:
         print(str(error), file=sys.stderr)
         return 2

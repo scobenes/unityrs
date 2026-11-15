@@ -34,12 +34,12 @@ fn tree(rows: &[(i32, &str, &str)]) -> Arc<Tree> {
     Tree::compile(list(rows), &Limits::default()).unwrap()
 }
 
-fn list(rows: &[(i32, &str, &str)]) -> Arc<NodeList> {
+fn list(rows: &[(i32, &str, &str)]) -> unityrs_core::typetree::SharedNodes {
     let rows = rows
         .iter()
         .map(|&(level, ty, name)| NodeRow::new(level, ty, name))
         .collect();
-    Arc::new(NodeList::trusted(rows).unwrap())
+    NodeList::trusted(rows).unwrap().into_shared().unwrap()
 }
 
 /// Whether the pure-Python reader's read of `data` by `rows` under

@@ -38,7 +38,7 @@ use std::sync::Arc;
 use serde_json::Value as J;
 use unityrs_core::limits::Limits;
 use unityrs_core::provider::{NoTree, TreeRequest, TypeTreeProvider};
-use unityrs_core::typetree::{NodeList, NodeRow};
+use unityrs_core::typetree::{NodeRow, SharedNodes};
 use unityrs_core::{LimitError, LimitKind, UnityVersion};
 use unityrs_testkit::child;
 use unityrs_testkit::scratch::Scratch;
@@ -131,7 +131,7 @@ fn compare<'r>(
     let mut pairs = 0;
     // UnityPy's tree object (its number) to the provider's list for it, held
     // while the comparison runs so that no list's address is reused.
-    let mut shared: HashMap<u64, Arc<NodeList>> = HashMap::new();
+    let mut shared: HashMap<u64, SharedNodes> = HashMap::new();
     for record in classes {
         let class_id = i32::try_from(record["class"].as_i64().unwrap()).unwrap();
         assert!(seen.insert(class_id), "class {class_id}: two records");
@@ -160,12 +160,12 @@ fn compare<'r>(
             let at = || format!("class {class_id} at {:?}", v.packed());
             match (want.get("rows"), got, tree) {
                 (Some(rows), Ok(Some(list)), Ok(Some(tree))) => {
-                    assert!(Arc::ptr_eq(tree.list(), &list), "{}: the tree's list", at());
+                    assert!(SharedNodes::ptr_eq(tree.list(), &list), "{}", at());
                     assert_eq!(provider.why_none(class_id, Some(v)), None, "{}", at());
                     let object = want["tree"].as_u64().unwrap();
                     let first = shared.entry(object).or_insert_with(|| list.clone());
                     assert!(
-                        Arc::ptr_eq(first, &list),
+                        SharedNodes::ptr_eq(first, &list),
                         "{}: UnityPy's tree {object} is shared",
                         at()
                     );
@@ -235,7 +235,7 @@ fn compare_common(provider: &TpkProvider, want: &J) {
     assert_eq!(&got, want, "common strings");
 }
 
-fn compare_rows(list: &Arc<NodeList>, want: &J, at: &str) {
+fn compare_rows(list: &SharedNodes, want: &J, at: &str) {
     let want = want.as_array().unwrap();
     assert_eq!(list.rows().len(), want.len(), "{at}: row count");
     for (i, (row, want)) in list.rows().iter().zip(want).enumerate() {
@@ -644,8 +644,8 @@ fn two_versions_that_pick_one_entry_share_one_node_list() {
     let a = provider.node_list(50, &at(2017, 0)).unwrap().unwrap();
     let b = provider.node_list(50, &at(2017, 3)).unwrap().unwrap();
     let c = provider.node_list(50, &at(2019, 0)).unwrap().unwrap();
-    assert!(Arc::ptr_eq(&a, &b));
-    assert!(!Arc::ptr_eq(&a, &c));
+    assert!(SharedNodes::ptr_eq(&a, &b));
+    assert!(!SharedNodes::ptr_eq(&a, &c));
     // 2018 picks the entry that removes the class: no tree, and no stepping
     // back to the 2017 entry.
     assert!(provider.node_list(50, &at(2018, 0)).unwrap().is_none());
@@ -678,7 +678,9 @@ fn the_provider_answers_trees_where_unitypy_builds_them_and_shares_each() {
                 };
                 let list = provider.node_list(class_id, &v);
                 match (provider.tree(&req), list) {
-                    (Ok(Some(tree)), Ok(Some(list))) => assert!(Arc::ptr_eq(tree.list(), &list)),
+                    (Ok(Some(tree)), Ok(Some(list))) => {
+                        assert!(SharedNodes::ptr_eq(tree.list(), &list));
+                    }
                     (Ok(None), Ok(None)) => {}
                     (Err(tree), Err(list)) => assert_eq!(tree, list, "class {class_id}"),
                     (tree, list) => panic!("class {class_id}: tree {tree:?}, node list {list:?}"),
