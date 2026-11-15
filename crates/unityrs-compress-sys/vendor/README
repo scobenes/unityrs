@@ -1,0 +1,22 @@
+liblz4 1.9.4, pristine
+====================
+
+The pinned oracle installs python-lz4 4.4.4, whose library reports 1.9.4.
+The four C/header files here were extracted from the official python-lz4
+4.4.4 source distribution's lz4libs/ directory and compared byte for byte
+with https://github.com/lz4/lz4/tree/v1.9.4/lib. All four match exactly.
+The source distribution omits liblz4's LICENSE; that file was obtained
+unchanged from v1.9.4/lib/LICENSE. Its text also matches unityrs-core's
+existing LICENSE-LZ4. lz4-1.9.4.sha256 records every file and the official
+source distribution's SHA-256. No file in lz4-1.9.4/ has been modified.
+
+build.rs compiles lz4.c and lz4hc.c with renamed exported symbols, hidden
+visibility and C heap allocation disabled. Core calls only the HC external
+state entry point, at level 9, with fallibly allocated metered state. The
+native bridge validates the size and alignment supplied by that caller.
+The C/header originals retain their own upstream copyright notices and
+are exempt from the repository's Rust/Python source-file size limit.
+
+The LZMA bridge uses the same already-linked static liblzma-sys version as
+unityrs-core's decoder. It adds no new third-party package version. The
+only build dependency, cc, was already locked by the workspace's codecs.

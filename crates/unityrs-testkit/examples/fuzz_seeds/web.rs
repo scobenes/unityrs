@@ -4,11 +4,9 @@ use unityrs_testkit::web;
 pub(super) fn seeds(s: &mut Seeds) -> std::io::Result<()> {
     for f in 1..=6 {
         for sig in ["UnityWeb", "UnityRaw"] {
-            s.add(
-                "unityweb",
-                &format!("{sig}-{f}"),
-                &web::legacy(sig.as_bytes(), f, &[("raw.resS", b"payload")]),
-            )?;
+            let data = web::legacy(sig.as_bytes(), f, &[("raw.resS", b"payload")]);
+            s.add("unityweb", &format!("{sig}-{f}"), &data)?;
+            s.add("bundle_save", &format!("{sig}-{f}"), &data)?;
         }
     }
     s.add("webfile", "huffman", &web::huffman())?;

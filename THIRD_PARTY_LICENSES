@@ -476,8 +476,15 @@ decoder (lib/lz4.c: LZ4_decompress_generic as LZ4_decompress_safe calls it,
 read_variable_length and the fast loop's constants) to Rust, keeping each of
 its checks at its place, so a block decodes or fails as under the liblz4
 that UnityPy's python-lz4 4.4.4 runs. The file's header holds lib/lz4.c's
-notice. liblz4's lib/LICENSE follows; it is unityrs-core's LICENSE-LZ4,
-listed under BSD-2-Clause below.
+notice. The writer also vendors pristine lz4.c, lz4.h, lz4hc.c and lz4hc.h
+from liblz4 1.9.4 in crates/unityrs-compress-sys/vendor/lz4-1.9.4/. They
+match the sources bundled by python-lz4 4.4.4 byte for byte; the sibling
+vendor/lz4-1.9.4.sha256
+records each file and the source distribution's hash. build.rs compiles HC
+level 9 with private symbol names and no C heap allocator; its state is
+provided by the caller and charged before a fallible allocation.
+liblz4's lib/LICENSE follows; it is both crates' LICENSE-LZ4, listed under
+BSD-2-Clause below.
 
 LZ4 Library
 Copyright (c) 2011-2020, Yann Collet
@@ -1351,10 +1358,10 @@ Licences:
 - BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 - ISC License (ISC)
 - zlib License (Zlib)
+- BSD 2-Clause "Simplified" License (BSD-2-Clause)
 - Python Software Foundation License 2.0 (PSF-2.0)
 - CMU License (MIT-CMU)
 - BSD Zero Clause License (0BSD)
-- BSD 2-Clause "Simplified" License (BSD-2-Clause)
 - BSD 2-Clause with views sentence (BSD-2-Clause-Views)
 - Community Data License Agreement Permissive 2.0 (CDLA-Permissive-2.0)
 
@@ -2772,6 +2779,8 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 BSD 2-Clause "Simplified" License (BSD-2-Clause)
 
 Used by:
+- unityrs-compress-sys 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-compress-sys 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
 
 LZ4 Library
@@ -5917,6 +5926,7 @@ Used by:
 - unityrs-batch 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-bench-lzma 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-cli 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-compress-sys 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-dump 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-export 0.0.1 (https://github.com/scobenes/unityrs)
