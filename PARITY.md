@@ -869,12 +869,13 @@ CI's generator check rejects a missing or stale recording.
 SHA-256 or the exception class/message recorded by `tools/fixtures/image_writers.py` in
 `crates/unityrs-imageio/tests/fixtures/writers.json`: BMP, DIB, TGA, PPM, PCX,
 SGI, IM, raw uncompressed TIFF, DDS, ICO, ICNS and EPS, all four extractor
-modes and P where relevant. The fixture is 246,859 bytes: each complete file,
+modes and P where relevant. W1c adds WEBP through the same writer and extension
+dispatcher. The fixture is 267,312 bytes: each complete file,
 including a PNG fallback, records `len` in bytes and lowercase whole-file
 `sha256`, with full `hex` for files of at most 256 bytes or `head` hex of the
 first 64 bytes for larger files. Mismatches report the first differing byte
-in the recorded hex when available. The 725 cases include 652 direct writer
-cases, 48 refused-extension cases and 25 decision-7 cases. Filename-dependent
+in the recorded hex when available. The 791 cases include 714 direct writer
+cases, 48 refused-extension cases, 25 decision-7 cases and four resize cases. Filename-dependent
 bytes use the same basename; IM's Unicode refusal preserves its exception
 class and uses a stable description. References: Pillow 9.5.0,
 `src/PIL/BmpImagePlugin.py`, `TgaImagePlugin.py`, `PpmImagePlugin.py`,
@@ -890,7 +891,7 @@ TOC and repeated payloads, PCX's one-pixel RGB plane omission, raw row
 order and padding, format dimension gates, and SGI/IM names are replayed.
 `extension_selection_replays_original_files` checks original files and
 case-insensitive selection against recorded whole-file lengths and SHA-256.
-`png_fallbacks_and_no_file_replay_the_oracle` replays 317 PNG fallback or
+`png_fallbacks_and_no_file_replay_the_oracle` replays 346 PNG fallback or
 no-file outcomes for the same inputs, including an empty ICO, zero sides,
 unsupported modes, `.psd`, and unknown/empty extensions (section 19.2).
 `decision_seven_writers_are_named_unsupported` replays the 25 policy cases
@@ -901,20 +902,37 @@ checks pre-allocation charging and cleanup at every charge/allocation refusal;
 the `image_writers` fuzz target bounds untrusted dimensions and pixels.
 The extension dispatcher returns the original file, a PNG to save with
 `.png` appended, or no file; E4 still owns filesystem names and extractor
-integration, so the extractor tree rows remain planned. The dispatcher still refuses `.webp` as a named deferred writer; calling the WebP encoder below from it is a follow-up.
+integration, so the extractor tree rows remain planned. W1c dispatches `.webp`
+through `encode_webp` with Pillow's defaults, including explicit and implicit P
+palettes. `webp_dispatch_replays_every_recorded_original` checks all 29 WebP
+originals (all five modes, side 16383 in either axis, mixed-case extensions and
+alternate names); the shared refusal and fallback tests replay 25 WebP
+`ValueError`/`encoding error 5` cases: 15 zero-side inputs produce no file and
+ten inputs with a side of 16384 produce the recorded PNG fallback.
 
 **WebP implementation (W1, still images).** Pillow 9.5.0's
 `src/PIL/WebPImagePlugin.py` `_save` and `src/_webp.c` `WebPEncode_wrapper`
-are ported over pristine libwebp 1.3.0, generic C on arm64 and amd64.
+are ported over vendored libwebp 1.3.0, generic C on arm64 and amd64.
 The table above remains the oracle's generated writer contract. The
 by-extension dispatch and PNG fallback are W2's, above; extractor
 integration is E4's.
 
 | item | reference | tier | level | test | status |
 |---|---|---|---|---|---|
-| WebP still-image bytes, mode conversion and alpha | Pillow 9.5.0 `WebPImagePlugin._save`: L to RGB, LA to RGBA; quality 80, method 4, exact false, lossless off; also quality 95 and exact true; libwebp alpha defaults | A | L5b | `crates/unityrs-imageio/tests/pillow_webp.rs` webps_equal_pillows_still_image_bytes replays all 576 files recorded by `tools/fixtures/image_webp.py` in `tests/fixtures/webp.json` | verified P3a W1 |
-| WebP dimension refusals | Pillow 9.5.0 `_webp.c` WebPEncode_wrapper: zero sides and sides over 16383 raise ValueError | A (typed refusal); C fallback remains planned | L5b | `crates/unityrs-imageio/tests/webp_charges.rs` webp_replays_dimension_refusals_and_rejects_invalid_options replays the oracle's five refused sizes | verified P3a W1 (encoder refusal); planned P3b (extractor fallback) |
+| WebP still-image bytes, mode conversion and alpha | Pillow 9.5.0 `WebPImagePlugin._save`: L to RGB, LA to RGBA; quality 80, method 4, exact false, lossless off; also quality 95 and exact true; libwebp alpha defaults | A | L5b | `crates/unityrs-imageio/tests/pillow_webp.rs` webps_equal_pillows_still_image_bytes replays all 648 files recorded by `tools/fixtures/image_webp.py` in `tests/fixtures/webp.json`, including the 576 extractor-mode files | verified P3a W1; verified P3b W1c (palette files below) |
+| WebP palette conversion | Pillow 9.5.0 `src/PIL/WebPImagePlugin.py:319-357` converts opaque P to RGB; `src/libImaging/Convert.c:1128-1137` selects each pixel's indexed RGB triple; `src/libImaging/Palette.c:24-51` initialises the implicit 256-entry grey ramp | A | L5b | `crates/unityrs-imageio/tests/pillow_webp.rs` webps_equal_pillows_still_image_bytes replays 72 explicit/implicit palette files, all 256 indices included, at default/95 quality and exact true | verified P3b W1c; transparency metadata and RGBA palettes outside Image's model |
+| WebP default writer and extension dispatch | Pillow 9.5.0 `src/PIL/WebPImagePlugin.py:319-357`: quality 80, method 4, exact false, lossless off; `Image.save` selects `.webp` case-insensitively | A | L5b | `crates/unityrs-imageio/tests/writers.rs` every_writer_replays_pillow_bytes_and_refusals and webp_dispatch_replays_every_recorded_original replay the 54 WebP cases from image_writers.py (29 files, 25 refusals); extension_selection_replays_original_files also checks upper-case selection | verified P3b W1c (writer layer); planned P3b E4 (filesystem integration) |
+| WebP dimension refusals | Pillow 9.5.0 `_webp.c` WebPEncode_wrapper: zero sides and sides over 16383 raise ValueError, message `encoding error 5` | A (typed refusal); C (PNG/no-file dispatch policy) | L5b | `crates/unityrs-imageio/tests/webp_charges.rs` webp_replays_dimension_refusals_and_rejects_invalid_options replays five refused sizes; `crates/unityrs-imageio/tests/writers.rs` every_writer_replays_pillow_bytes_and_refusals and png_fallbacks_and_no_file_replay_the_oracle replay all five modes' refusals and PNG/no-file outcomes | verified P3a W1 (encoder refusal); verified P3b W1c (writer policy); planned P3b E4 (filesystem integration) |
 | WebP invalid options and refusal order | Pillow 9.5.0 `WebPEncode_wrapper` validates quality/method before picture dimensions, including when both are invalid | A | L5b | `crates/unityrs-imageio/tests/webp_charges.rs` pillow_validates_options_before_picture_dimensions replays the five option refusals in `webp.json` | verified P3a W1 |
+
+The palette conversion is included in `webp_plan`'s `WebpState` workspace
+charge before its fallible allocation, and its capacity is deducted from the
+C allocator's allowance. `tests/webp_charges.rs` measures P as well as extractor
+modes, sweeps explicit/implicit palette allocation refusals at methods 0–6,
+and checks that dispatcher resource failures propagate without PNG fallback.
+Transparent P images would convert to RGBA in Pillow's `_save`; the borrowed
+RGB palette model carries neither transparency metadata nor RGBA palettes,
+so that path is out of scope rather than an encoder refusal.
 
 **Until P4, five writers are a temporary U** (`docs/plans/rest.md` decision 7): unityrs refuses GIF, JPEG, MPO, PDF and JPEG2000 with a named `Unsupported`, and P4 writes them. The table's tier column is printed from what Pillow does and keeps the target, A where Pillow saves, so its cells stay as generated.
 
@@ -1201,6 +1219,7 @@ Defects found while writing this file, each decided by `DESIGN.md` section 3's d
 
 | defect | UnityPy 1.25.2 | tier | unityrs, and the reference or acceptance rule | level | test | status |
 |---|---|---|---|---|---|---|
+| WebP extension dispatch at refused dimensions | Pillow 9.5.0 `src/PIL/WebPImagePlugin.py:319-357` and `src/_webp.c` WebPEncode_wrapper: `.webp` saves all four extractor modes and opaque P via RGB conversion; zero sides and sides over 16383 raise `ValueError`, message `encoding error 5` | A (original bytes); C (refusal policy) | the default WebP bytes where Pillow saves; a PNG with `.png` appended where PNG accepts the refused size, otherwise no file (section 15.8); charge, allocator and encoder failures propagate | L5b | `crates/unityrs-imageio/tests/writers.rs` webp_dispatch_replays_every_recorded_original, every_writer_replays_pillow_bytes_and_refusals and png_fallbacks_and_no_file_replay_the_oracle replay 29 WebP files and 25 refusals/fallback outcomes from image_writers.py; `tests/webp_charges.rs` webp_dispatch_propagates_resource_failures_without_png_fallback | verified P3b W1c (writer policy); planned P3b E4 (filesystem integration) |
 | local filesystem home expansion | fsspec 2025.5.1 calls `os.path.expanduser`: `~user` uses `pwd.getpwnam`, and `~` or `~/...` with HOME unset uses `pwd.getpwuid(os.getuid())`; paths under an existing account's home can be found | B | leaves `~user` literal, so paths needing named-user expansion are not found; also leaves `~` and `~/...` literal when HOME is unset, omitting the account fallback to avoid a new dependency. With HOME set (including empty), current-user expansion follows CPython's slash stripping | API | `crates/unityrs-core/src/env/paths/local.rs` named_users_are_left_literal; `crates/unityrs-core/tests/loading_home.rs` home_unset_leaves_tilde_literal and local_filesystem_expands_a_temporary_home | verified P3 (unityrs); UnityPy side from source reading |
 | RGB48 decodes wrong | Pillow's `RGB;16` is packed 5-6-5, two bytes per pixel, so a pure red `(0xFFFF, 0, 0)` decodes as white (`export/Texture2DConverter.py:556`) | C | each 16-bit channel reduced to its high byte, `v >> 8`, as Pillow 9.5.0's raw mode `RGB;16L` reduces it (rounding, `round(v * 255 / 65535)`, would give 254 for `0xFF00` and 1 for `0x00FF`); the reference is the stored values reduced so | L5 | `test_texture_matrix.py` pixels_match_the_matrix (UnityPy's side); `test_texture_matrix.py` rgb48_reference_is_the_high_byte; `crates/unityrs-texture/tests/tierb_oracle.rs` rgb48; `crates/unityrs-texture/tests/tierb_values.rs` integers_reduce_high_bytes_and_offset_signed_channels | pinned P0; verified P3 (decoding) |
 | `set_image` to BC7 raises | `etcpak.compress_bc7(data, w, h, None)`; etcpak 0.9.14 rejects `None` parameters with `ValueError` (`export/Texture2DConverter.py:95`) | C (writing) | writes what etcpak 0.9.14's `compress_bc7` writes with a default `BC7CompressBlockParams()`, the call UnityPy means to make, on the data `image_to_texture2d` hands it: the image flipped top to bottom, padded to whole 4×4 blocks by `pad_image` and packed as RGBA (`export/Texture2DConverter.py:129-130`, `:222-223`). On a texture where `TextureSwizzler.is_switch_swizzled` holds, the image is padded instead to `TextureSwizzler.get_padded_texture_size` with BC7's 4×4 block and the blob's GOBs per block, compressed the same way, and the compressed bytes swizzled with `TextureSwizzler.swizzle` (`:205-218`, `:220-232`); this is a single level, since mips on such a texture are Tier U. Acceptance: byte equality with those bytes, which makes the writer Tier A against that encoder. No image-quality bar is set: the bytes are the rule | L5 | `test_rows_textures.py` bc7_set_image_reference_is_etcpak_default (UnityPy's raise and the reference bytes); `test_texture_matrix.py` texture_matrix_matches_the_oracle (the raise); planned: `set_image` round trip | pinned P0; impl P3b |
