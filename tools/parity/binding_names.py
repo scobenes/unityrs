@@ -1,4 +1,4 @@
-# Ported from UnityPyBoost (MIT): UnityPyBoost/TypeTreeHelper.cpp. See THIRD_PARTY_LICENSES.
+# Ported from UnityPy 1.25.2 (MIT): UnityPyBoost/TypeTreeHelper.cpp. See THIRD_PARTY_LICENSES.
 """Fixture observation names (UnityPyBoost/TypeTreeHelper.cpp:28-65)."""
 import re
 

@@ -405,8 +405,10 @@ Licence: MIT.
 unityrs-core ports the HEAD reading rules for SerializedFile versions 23-26
 (node-info envelopes and shared children) and bundle format 9 (block offsets).
 Its files name this revision in a Ported from header, alongside 1.25.2 where
-that reader is reused. The crate carries this revision's notice separately
-as LICENSE-UNITYPY-HEAD; MIT is already required by its licence expression.
+that reader is reused. unityrs-py ports this revision's
+UnityPy/tools/TpkClassGenerator.py, the generator of unityrs.classes. Each
+crate carries this revision's notice separately as LICENSE-UNITYPY-HEAD; MIT
+is already required by its licence expression.
 
 MIT License
 
@@ -5450,6 +5452,7 @@ MIT License (MIT)
 
 Used by:
 - unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-py 0.0.1 (https://github.com/scobenes/unityrs)
 
 MIT License
 

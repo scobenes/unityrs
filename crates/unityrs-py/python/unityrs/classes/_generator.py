@@ -1,4 +1,4 @@
-# Ported from UnityPy git 417d595 (MIT): UnityPy/tools/TpkClassGenerator.py. See LICENSE-UNITYPY and THIRD_PARTY_LICENSES.
+# Ported from UnityPy git 417d595 (MIT): UnityPy/tools/TpkClassGenerator.py. See LICENSE-UNITYPY-HEAD and THIRD_PARTY_LICENSES.
 """Generates the classes for the UnityPy objects from the TypeTree of the TPK files."""
 
 from __future__ import annotations
