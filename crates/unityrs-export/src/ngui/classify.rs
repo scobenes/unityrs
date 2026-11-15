@@ -542,7 +542,10 @@ mod tests {
             skip("decode_error", Some("read"))
         );
         assert_eq!(
-            parse(&read(ReadDetail::Eof { need: 4 })),
+            parse(&read(ReadDetail::Eof {
+                need: 4,
+                exception: "EOFError"
+            })),
             skip("decode_error", Some("read"))
         );
         let depth = LimitError::refused(LimitKind::ValueDepth, 600, 512);

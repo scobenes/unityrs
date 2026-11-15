@@ -67,6 +67,23 @@ pub struct NodeRow {
 }
 
 impl NodeRow {
+    /// Copy caller-owned row strings without `Bytes`' infallible promotion on
+    /// its first clone. Each copied name is charged before allocating it.
+    pub fn copy_charged(&self, meter: &Arc<Meter>) -> Result<Self, ChargeError> {
+        Ok(Self {
+            level: self.level,
+            ty: RawStr::charged(self.ty.as_bytes(), meter)?,
+            name: RawStr::charged(self.name.as_bytes(), meter)?,
+            byte_size: self.byte_size,
+            version: self.version,
+            type_flags: self.type_flags,
+            variable_count: self.variable_count,
+            index: self.index,
+            meta_flag: self.meta_flag,
+            ref_type_hash: self.ref_type_hash,
+        })
+    }
+
     /// A row with a level, a type and a name; the other fields as UnityPy's
     /// `from_list` patches them (`m_ByteSize` 0, `m_Version` 0, the rest `None`).
     #[must_use]
@@ -123,6 +140,9 @@ pub enum TreeError {
     /// More rows than a `u32` indexes.
     #[error("typetree has {0} nodes")]
     TooManyNodes(usize),
+    /// A caller's list names no node of its arena.
+    #[error("typetree node {0} is not in the arena")]
+    UnknownNode(usize),
     /// A compiled-tree bound was exceeded: its depth, or the open's work
     /// allowance, which the names a compile reads count toward
     /// ([`crate::LimitKind::DecodeWork`]: [`super::Tree::compile`]).
@@ -144,7 +164,10 @@ impl crate::once::CellError for TreeError {
         match self {
             Self::Charge(c) => c.is_transient(),
             Self::Limit(l) => l.kind() == crate::LimitKind::InputMemory,
-            Self::Empty | Self::LevelUnderflow { .. } | Self::TooManyNodes(_) => false,
+            Self::Empty
+            | Self::LevelUnderflow { .. }
+            | Self::TooManyNodes(_)
+            | Self::UnknownNode(_) => false,
         }
     }
 
@@ -152,7 +175,10 @@ impl crate::once::CellError for TreeError {
         match self {
             Self::Charge(c) => c.is_meter_refusal(),
             Self::Limit(l) => l.kind() == crate::LimitKind::InputMemory,
-            Self::Empty | Self::LevelUnderflow { .. } | Self::TooManyNodes(_) => false,
+            Self::Empty
+            | Self::LevelUnderflow { .. }
+            | Self::TooManyNodes(_)
+            | Self::UnknownNode(_) => false,
         }
     }
 
@@ -203,11 +229,7 @@ impl NodeList {
     /// the list's own tables are charged to that meter before they exist.
     pub fn from_rows(rows: MeteredVec<NodeRow>) -> Result<Self, TreeError> {
         let meter = rows.charge().meter().clone();
-        let (mut rows, mut charge) = rows.into_parts();
-        // The `Arc` the list is kept in (it always is), charged with it.
-        charge.grow(heap_cost(
-            u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
-        ))?;
+        let (mut rows, charge) = rows.into_parts();
         if rows.is_empty() {
             return Err(TreeError::Empty);
         }
@@ -256,6 +278,21 @@ impl NodeList {
         }
         drop(stack);
         rows.truncate(kept_end.unwrap_or(rows.len()));
+        Self::from_preorder(MeteredVec::from_charged_parts(rows, charge)?, parents)
+    }
+
+    /// Build a snapshot from actual edges expressed as preorder parents. The
+    /// arena supplies valid parent indices; stored levels do not decide edges.
+    pub(super) fn from_preorder(
+        rows: MeteredVec<NodeRow>,
+        parents: MeteredVec<u32>,
+    ) -> Result<Self, TreeError> {
+        let meter = rows.charge().meter().clone();
+        let (rows, mut charge) = rows.into_parts();
+        // The `Arc` the list is kept in (it always is), charged with it.
+        charge.grow(heap_cost(
+            u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
+        ))?;
         let n = rows.len();
 
         // Pass 2: child lists by counting, so no allocation per row.

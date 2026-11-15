@@ -187,6 +187,7 @@ mod listing;
 mod listing_tests;
 mod load;
 mod object_tree;
+pub use object_tree::MonoBehaviourError;
 mod paths;
 #[cfg(test)]
 mod preload_tests;

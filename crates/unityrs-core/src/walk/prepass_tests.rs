@@ -84,7 +84,7 @@ fn failing_read(reader: &str, tree: &Arc<Tree>) -> (u64, u64, u64) {
     // The read's own failure: the input ends inside the first `int`.
     let e = r.expect_err(reader);
     assert!(
-        matches!(e.detail, ReadDetail::Eof { need: 4 }),
+        matches!(e.detail, ReadDetail::Eof { need: 4, .. }),
         "{reader}: {e:?}"
     );
     (
