@@ -22,6 +22,56 @@ fn load(value: V) -> (Environment, unityrs_core::ObjectRef) {
     };
     (env, f.object(1).unwrap())
 }
+
+#[test]
+fn adpcm_audio_clips_replay_fmod_wavs() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../unityrs-audio/tests/fixtures/audio.json"
+    ))
+    .unwrap();
+    let hex = |text: &str| -> Vec<u8> {
+        text.as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16).unwrap())
+            .collect()
+    };
+    for label in [
+        "ima_c2_frames3",
+        "fadpcm_c6_frames3",
+        "fadpcm_c2_count259_short_frame",
+        "fadpcm_c8_count512_short1",
+        "ima_c6_count511_short1",
+        "ima_c32_limit",
+        "fadpcm_c32_limit",
+    ] {
+        let case = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["case"] == label)
+            .unwrap();
+        let (env, obj) = load(st(
+            "AudioClip",
+            vec![
+                ("m_Name", s("clip")),
+                ("m_AudioData", V::Bytes(hex(case["data"].as_str().unwrap()))),
+            ],
+        ));
+        let m = Meter::unlimited();
+        let files = unityrs_export::audio::export(&obj, &env, true, &m).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files.as_slice()[0].name.as_slice(), b"clip.wav");
+        assert_eq!(
+            files.as_slice()[0].bytes.as_slice(),
+            hex(case["oracle"]["files"]["clip.wav"].as_str().unwrap()),
+            "{label}"
+        );
+        drop(files);
+        assert_eq!(m.used(), 0);
+    }
+}
 #[test]
 fn inline_precedes_resource_and_accepts_legacy_byte_arrays() {
     for data in [

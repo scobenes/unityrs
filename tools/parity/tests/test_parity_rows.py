@@ -620,11 +620,7 @@ class TestColumn(unittest.TestCase):
         self.assertRegex(design.split("## 3. Parity", 1)[1].split("\n## 4.", 1)[0], three_d)
 
     def test_tol_metrics_are_stated_or_said_to_be_planned(self):
-        """Both Tol definitions say each row states a metric and threshold. Until every Tol row does (a row names a
-        `threshold`), both must say the rows are to state them in the phase each row's unityrs side lands in (its
-        status's `impl Pn`: P3b for audio) and that none does yet, not that each has one. The Sprite affine path,
-        once a Tol row landing in P1b, is Tier A since its port was measured exact (docs/plans/extract.md section 3,
-        item 6), so no Tol row names a sprite."""
+        """Tol definitions distinguish measured ADPCM thresholds from pending codec metrics."""
         root = HERE.parent.parent
         parity = (root / "PARITY.md").read_text(encoding="utf-8")
         design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
@@ -649,7 +645,12 @@ class TestColumn(unittest.TestCase):
             for text in definitions:
                 with self.subTest(text[:40]):
                     self.assertIn(f"when unityrs's side lands {when}", text)
-                    self.assertRegex(text, r"\b(?:no row states them|none is stated) yet\b")
+                    if stated:
+                        self.assertIn("IMA ADPCM and FADPCM", text)
+                        self.assertIn("exact", text)
+                        self.assertIn("remaining thresholds are planned", text)
+                    else:
+                        self.assertRegex(text, r"\b(?:no row states them|none is stated) yet\b")
                     self.assertNotRegex(text, r"(?i)\b(?:has|within) a stated metric\b")
 
     def test_module_level_data_is_tier_a_for_loop_variables(self):

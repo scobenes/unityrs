@@ -430,6 +430,7 @@ impl<'a> Builder<'a> {
                     "image" => {
                         out.image = match &*b.string(value)? {
                             "png" => Image::Png,
+                            "png_fast" => Image::PngFast,
                             _ => return Err(b.err(Rule::Range)),
                         };
                     }

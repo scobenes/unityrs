@@ -93,8 +93,7 @@ pub fn bank(
     Ok(out)
 }
 
-/// Visit the original 50 oracle-shaped inputs plus every supported PCM width
-/// at version 0 (version 1 widths and version 0 PCM16 are in the original set).
+/// Visit PCM/ADPCM banks of both versions, passthroughs and hostile inputs.
 pub fn seeds(mut add: impl FnMut(&str, &[u8]) -> io::Result<()>) -> io::Result<()> {
     for (name, data) in [
         ("ogg", b"OggSsynthetic".as_slice()),
@@ -152,14 +151,13 @@ pub fn seeds(mut add: impl FnMut(&str, &[u8]) -> io::Result<()>) -> io::Result<(
         add(v0, &bank(mode, &[entry], 0, None)?)?;
     }
     for (mode, name) in [
-        (7, "deferred_codec7"),
         (11, "deferred_codec11"),
         (15, "deferred_codec15"),
-        (16, "deferred_codec16"),
         (17, "deferred_codec17"),
     ] {
         add(name, &bank(mode, &[(&[0; 64], 32, 1, 8, &[])], 1, None)?)?;
     }
+    adpcm_seeds(&mut add)?;
     let good = bank(2, &[(&pcm, 8, 1, 8, &[])], 1, None)?;
     for (name, at, value) in [
         ("hostile_count", 8, u32::MAX),
@@ -176,6 +174,191 @@ pub fn seeds(mut add: impl FnMut(&str, &[u8]) -> io::Result<()>) -> io::Result<(
     add("truncated", &good[..good.len() - 1])?;
     let bad_name = bank(2, &[(&pcm, 8, 1, 8, &[])], 1, Some(&[b"broken"]))?;
     add("bad_name", &bad_name[..bad_name.len() - 17])
+}
+
+fn adpcm_seeds(add: &mut impl FnMut(&str, &[u8]) -> io::Result<()>) -> io::Result<()> {
+    for (mode, size, samples, labels) in [
+        (
+            7,
+            0x24,
+            64,
+            [
+                "ima_mono",
+                "ima_stereo",
+                "ima_6ch",
+                "ima_8ch",
+                "ima_3ch",
+                "ima_short_last",
+                "ima_short_first",
+                "ima_trailing",
+                "ima_next",
+                "ima_large",
+            ],
+        ),
+        (
+            16,
+            0x8c,
+            256,
+            [
+                "fadpcm_mono",
+                "fadpcm_stereo",
+                "fadpcm_6ch",
+                "fadpcm_8ch",
+                "fadpcm_3ch",
+                "fadpcm_short_last",
+                "fadpcm_short_first",
+                "fadpcm_trailing",
+                "fadpcm_next",
+                "fadpcm_large",
+            ],
+        ),
+    ] {
+        let mut payload = [0x12; 0x8c * 8 * 3];
+        if mode == 16 {
+            for (i, frame) in payload.as_chunks_mut::<0x8c>().0.iter_mut().enumerate() {
+                // Coefficient and shift nibbles span all sixteen classes.
+                let patterns = [
+                    [0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe],
+                    [0x98, 0xba, 0xdc, 0xfe, 0x10, 0x32, 0x54, 0x76],
+                ];
+                frame[..8].copy_from_slice(&patterns[i % 2]);
+            }
+        }
+        for (channel, label, old_label) in [
+            (
+                1,
+                labels[0],
+                if mode == 7 {
+                    "ima_mono_v0"
+                } else {
+                    "fadpcm_mono_v0"
+                },
+            ),
+            (
+                2,
+                labels[1],
+                if mode == 7 {
+                    "ima_stereo_v0"
+                } else {
+                    "fadpcm_stereo_v0"
+                },
+            ),
+            (
+                6,
+                labels[2],
+                if mode == 7 {
+                    "ima_6ch_v0"
+                } else {
+                    "fadpcm_6ch_v0"
+                },
+            ),
+            (
+                8,
+                labels[3],
+                if mode == 7 {
+                    "ima_8ch_v0"
+                } else {
+                    "fadpcm_8ch_v0"
+                },
+            ),
+        ] {
+            let entry = (
+                &payload[..size * usize::from(channel) * 3],
+                samples * 3,
+                channel,
+                8,
+                &[][..],
+            );
+            add(label, &bank(mode, &[entry], 1, None)?)?;
+            add(old_label, &bank(mode, &[entry], 0, None)?)?;
+        }
+        adpcm_edges(add, mode, size, samples, labels, &payload)?;
+    }
+    ima_bad_steps(add)
+}
+
+fn ima_bad_steps(add: &mut impl FnMut(&str, &[u8]) -> io::Result<()>) -> io::Result<()> {
+    for (channels, step_offset, label) in [
+        (1, 2, "ima_bad_mono"),
+        (2, 6, "ima_bad_stereo"),
+        (6, 18, "ima_bad_6ch"),
+    ] {
+        let mut payload = [0x12; 0x24 * 6 * 3];
+        payload[0x24 * usize::from(channels) + step_offset] = 255;
+        add(
+            label,
+            &bank(
+                7,
+                &[(
+                    &payload[..0x24 * usize::from(channels) * 3],
+                    192,
+                    channels,
+                    8,
+                    &[],
+                )],
+                1,
+                None,
+            )?,
+        )?;
+    }
+    Ok(())
+}
+
+fn adpcm_edges(
+    add: &mut impl FnMut(&str, &[u8]) -> io::Result<()>,
+    mode: u32,
+    size: usize,
+    samples: u32,
+    labels: [&str; 10],
+    payload: &[u8],
+) -> io::Result<()> {
+    add(
+        labels[4],
+        &bank(
+            mode,
+            &[(&payload[..size * 9], samples * 3, 1, 8, &[(1, &[3])])],
+            1,
+            None,
+        )?,
+    )?;
+    add(
+        labels[5],
+        &bank(
+            mode,
+            &[(&payload[..size * 4 - 1], samples * 2, 2, 8, &[])],
+            1,
+            None,
+        )?,
+    )?;
+    add(
+        labels[6],
+        &bank(
+            mode,
+            &[(&payload[..size * 2 - 1], samples, 2, 8, &[])],
+            1,
+            None,
+        )?,
+    )?;
+    let mut trailing = bank(mode, &[(&payload[..size], samples * 3, 1, 8, &[])], 1, None)?;
+    append(&mut trailing, &payload[..size])?;
+    add(labels[7], &trailing)?;
+    add(
+        labels[8],
+        &bank(
+            mode,
+            &[
+                (&payload[..16], samples * 4, 1, 8, &[]),
+                (&payload[..size * 2], samples * 2, 1, 8, &[]),
+            ],
+            1,
+            None,
+        )?,
+    )?;
+    add(
+        labels[9],
+        &bank(mode, &[(&payload[..size], 1 << 20, 1, 8, &[])], 1, None)?,
+    )?;
+    Ok(())
 }
 
 fn pcm_rates(add: &mut impl FnMut(&str, &[u8]) -> io::Result<()>, pcm: &[u8]) -> io::Result<()> {

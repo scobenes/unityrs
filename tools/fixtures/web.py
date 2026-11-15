@@ -4,12 +4,17 @@ Run in the oracle container: python tools/fixtures/web.py [--check].
 All inputs are testkit builders. Gzip is Tier B: record UnityPy's load
 failure and compare with the same WebFile loaded uncompressed. Name lengths
 below -1 are Tier U and deliberately never handed to UnityPy's unbounded loop.
+Also records twelve texture-resource shadow cases in texture's fetch.json,
+one JSON object per line: WebFile, WebFile in bundle, bundle in WebFile and
+bundle control, shadow registered before/after, and outer-only nested resources.
+ResourceReader and Texture2D.get_image_data are both called on each case.
 """
 from __future__ import annotations
 import argparse
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/parity"))
@@ -20,8 +25,11 @@ import brotli  # noqa: E402
 from UnityPy.files import File, BundleFile, WebFile, SerializedFile  # noqa: E402
 from UnityPy.helpers import ImportHelper  # noqa: E402
 from UnityPy.streams import EndianBinaryReader  # noqa: E402
+from UnityPy.helpers.ResourceReader import get_resource_data  # noqa: E402
+from UnityPy.classes import Texture2D  # noqa: E402
 
 DEST = ROOT / "crates/unityrs-core/tests/fixtures/web/oracle.json"
+FETCH_DEST = ROOT / "crates/unityrs-texture/tests/fixtures/fetch.json"
 ORIGINAL = File.read_files
 
 
@@ -102,6 +110,33 @@ def record(inputs):
             "brotli": brotli.__version__, "inputs": inputs, "answers": answers}
 
 
+def record_fetch(case):
+    """ResourceReader and Texture2D share the registry, including across WebFiles.
+
+    helpers/ResourceReader.py:10-33; classes/legacy_patch/Texture2D.py:63-75.
+    Shadow before/after loading distinguishes registration from parent lookup.
+    """
+    env = UnityPy.Environment()
+    shadow = bytes.fromhex(case["shadow_hex"])
+    if case["shadow_first"]:
+        env.load_file(shadow, name="r.resS")
+    root = env.load_file(bytes.fromhex(case["hex"]), name="synthetic")
+    inner = root.files["nested"] if "nested" in root.files else root
+    asset = inner.files["CAB-test"]
+    if not case["shadow_first"]:
+        env.load_file(shadow, name="r.resS")
+    data = get_resource_data(case["path"], asset, case["offset"], case["size"])
+    texture = SimpleNamespace(
+        image_data=b"", object_reader=SimpleNamespace(assets_file=asset),
+        m_StreamData=SimpleNamespace(path=case["path"], offset=case["offset"], size=case["size"]),
+    )
+    image_data = Texture2D.get_image_data(texture)
+    expected = (shadow if not case["shadow_first"] else
+                b"outer resource" if case["outer_only"] else b"inner resource")[1:6]
+    assert bytes(data) == bytes(image_data) == expected, case["id"]
+    return {"input": case, "resource_hex": bytes(data).hex(), "image_data_hex": bytes(image_data).hex()}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
@@ -110,13 +145,21 @@ def main():
                                   "--example", "web_fixtures"], cwd=ROOT, capture_output=True,
                                  text=True, check=True).stdout)
     output = json.dumps(record(inputs), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    fetch_inputs = json.loads(child.run(
+        ["cargo", "run", "--quiet", "--locked", "-p", "unityrs-texture", "--example", "fetch_fixtures"],
+        cwd=ROOT, capture_output=True, text=True, check=True).stdout)
+    fetch_output = "\n".join(json.dumps(record_fetch(case), sort_keys=True) for case in fetch_inputs) + "\n"
     if args.check:
         if not DEST.is_file() or DEST.read_text(encoding="utf-8") != output:
             raise SystemExit("C2 oracle is missing or stale; run tools/fixtures/web.py")
+        if not FETCH_DEST.is_file() or FETCH_DEST.read_text(encoding="utf-8") != fetch_output:
+            raise SystemExit("texture fetch oracle is missing or stale; run tools/fixtures/web.py")
     else:
         DEST.parent.mkdir(parents=True, exist_ok=True)
         DEST.write_text(output, encoding="utf-8")
         print(DEST.relative_to(ROOT))
+        FETCH_DEST.write_text(fetch_output, encoding="utf-8")
+        print(FETCH_DEST.relative_to(ROOT))
 
 
 if __name__ == "__main__":
