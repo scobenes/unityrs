@@ -202,20 +202,24 @@ fn complete_shader_seed_parses(case: &TreeCase) {
     }
 }
 
-/// Every `astc` seed is a `TextureCase` as written, of an ASTC LDR format,
-/// and each of the twelve has seeds of whole blocks.
+/// Every `astc` seed is a `TextureCase` as written, of an ASTC format,
+/// and all eighteen have seeds of whole blocks.
 fn astc_seeds_are_cases(dir: &Path) {
     let mut formats = BTreeSet::new();
     for entry in std::fs::read_dir(dir.join("astc")).expect("the target's folder") {
         let bytes = std::fs::read(entry.expect("an entry").path()).expect("a seed");
         let case = TextureCase::decode(&bytes);
         assert_eq!(case.encode(), bytes, "a seed that is not a case");
-        assert!((48..60).contains(&case.format), "{}", case.format);
+        assert!(
+            (48..60).contains(&case.format) || (66..72).contains(&case.format),
+            "{}",
+            case.format
+        );
         if case.data.len().is_multiple_of(16) && !case.data.is_empty() {
             formats.insert(case.format);
         }
     }
-    assert_eq!(formats, (48..60).collect());
+    assert_eq!(formats, (48..60).chain(66..72).collect());
 }
 
 /// Every `texture` seed is a `TextureCase` as written, and the seeds hold
@@ -273,6 +277,7 @@ fn texture_seeds_are_cases(dir: &Path) {
         )
     );
     assert!(formats.contains(&6) && odd_yuy2);
+    assert!(formats.is_superset(&[24, 66, 67, 68, 69, 70, 71].into()));
     assert_eq!(pvrtc_atc_count, 576);
     assert_eq!(tierb_count, 1182);
     assert_eq!(meters, [0, 1].into());

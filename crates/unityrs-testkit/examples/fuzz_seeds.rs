@@ -49,6 +49,8 @@ use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_
 
 #[path = "fuzz_seeds/crunch.rs"]
 mod crunch;
+#[path = "fuzz_seeds/hdr.rs"]
+mod hdr;
 #[path = "fuzz_seeds/shader.rs"]
 mod shader;
 #[path = "fuzz_seeds/tierb.rs"]
@@ -719,6 +721,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     pvrtc_atc::write(&mut s)?;
     astc(&mut s)?;
     tierb::write(&mut s)?;
+    hdr::write(&mut s)?;
     crunch::write(&mut s)?;
     meshdecode(&mut s)?;
     for len in [2, 3, 257, 258, 259, 262, 32768, 65536, 65537, 131_333] {

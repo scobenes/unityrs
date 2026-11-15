@@ -337,6 +337,7 @@ pub fn decode(e: &DecodeError) -> Class {
         DecodeError::NotEnoughData { .. } => "not_enough_data",
         DecodeError::DecompressionBomb { .. } => "decompression_bomb",
         DecodeError::Crunch(_) => "crunch",
+        DecodeError::Hdr(_) => "malformed",
         DecodeError::TooLarge { .. } => {
             return Class::Skip(Reason::plain(format!(
                 "limit(texture_pixels, {MAX_PIXELS})"
@@ -597,6 +598,18 @@ mod tests {
     fn malformed_crunch_is_an_object_decode_skip() {
         let e = DecodeError::Crunch(unityrs_texture::CrunchError::Header("signature"));
         assert_eq!(super::decode(&e), skip("decode_error", Some("crunch")));
+    }
+
+    #[test]
+    fn every_hdr_content_error_is_a_malformed_object_skip() {
+        use unityrs_texture::HdrError;
+
+        for error in [HdrError::ReservedMode, HdrError::InvalidBlock] {
+            assert_eq!(
+                super::decode(&DecodeError::Hdr(error)),
+                skip("decode_error", Some("malformed"))
+            );
+        }
     }
 
     #[test]

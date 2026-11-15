@@ -7,6 +7,8 @@
 
 mod names;
 pub use names::{TEXTURE_FORMATS, texture_format_name};
+mod mode;
+pub use mode::Mode;
 
 /// The formats this crate decodes: the five of `docs/plans/extract.md` E15
 /// and the rest of the formats UnityPy decodes with Pillow's raw and `bcn`
@@ -67,6 +69,8 @@ pub enum Format {
     Rgb9e5Float,
     /// `RGBFloat` (23): closed form of PARITY.md sections 17.1 and 19.
     RgbFloat,
+    /// `BC6H` (24): specification-defined unsigned RGB half floats.
+    Bc6h,
     /// `BC7` (25): Pillow's `bcn` 7 into `RGBA`.
     Bc7,
     /// `BC4` (26): Pillow's `bcn` 4 into `L`.
@@ -147,6 +151,18 @@ pub enum Format {
     Rg16,
     /// `R8` (63): Pillow's raw `R` into `RGB`.
     R8,
+    /// `ASTC_HDR_4x4`: astcenc's HDR profile, then the half rule.
+    AstcHdr4x4,
+    /// `ASTC_HDR_5x5`: astcenc's HDR profile, then the half rule.
+    AstcHdr5x5,
+    /// `ASTC_HDR_6x6`: astcenc's HDR profile, then the half rule.
+    AstcHdr6x6,
+    /// `ASTC_HDR_8x8`: astcenc's HDR profile, then the half rule.
+    AstcHdr8x8,
+    /// `ASTC_HDR_10x10`: astcenc's HDR profile, then the half rule.
+    AstcHdr10x10,
+    /// `ASTC_HDR_12x12`: astcenc's HDR profile, then the half rule.
+    AstcHdr12x12,
     /// `RG32` (72): closed form of PARITY.md sections 17.1 and 19.
     Rg32,
     /// `RGB48` (73): closed form of PARITY.md sections 17.1 and 19.
@@ -194,7 +210,7 @@ pub(crate) enum Library {
 
 impl Format {
     /// Every format, in `TextureFormat` order.
-    pub const ALL: [Self; 66] = [
+    pub const ALL: [Self; 73] = [
         Self::Alpha8,
         Self::Argb4444,
         Self::Rgb24,
@@ -217,6 +233,7 @@ impl Format {
         Self::Yuy2,
         Self::Rgb9e5Float,
         Self::RgbFloat,
+        Self::Bc6h,
         Self::Bc7,
         Self::Bc4,
         Self::Bc5,
@@ -250,6 +267,12 @@ impl Format {
         Self::AstcRgba12x12,
         Self::Rg16,
         Self::R8,
+        Self::AstcHdr4x4,
+        Self::AstcHdr5x5,
+        Self::AstcHdr6x6,
+        Self::AstcHdr8x8,
+        Self::AstcHdr10x10,
+        Self::AstcHdr12x12,
         Self::Rg32,
         Self::Rgb48,
         Self::Rgba64,
@@ -306,6 +329,13 @@ impl Format {
             12 => Some(Self::Dxt5),
             13 => Some(Self::Rgba4444),
             14 => Some(Self::Bgra32),
+            24 => Some(Self::Bc6h),
+            66 => Some(Self::AstcHdr4x4),
+            67 => Some(Self::AstcHdr5x5),
+            68 => Some(Self::AstcHdr6x6),
+            69 => Some(Self::AstcHdr8x8),
+            70 => Some(Self::AstcHdr10x10),
+            71 => Some(Self::AstcHdr12x12),
             25 => Some(Self::Bc7),
             26 => Some(Self::Bc4),
             27 => Some(Self::Bc5),
@@ -382,6 +412,13 @@ impl Format {
             Self::Dxt5 => 12,
             Self::Rgba4444 => 13,
             Self::Bgra32 => 14,
+            Self::Bc6h => 24,
+            Self::AstcHdr4x4 => 66,
+            Self::AstcHdr5x5 => 67,
+            Self::AstcHdr6x6 => 68,
+            Self::AstcHdr8x8 => 69,
+            Self::AstcHdr10x10 => 70,
+            Self::AstcHdr12x12 => 71,
             Self::Bc7 => 25,
             Self::Bc4 => 26,
             Self::Bc5 => 27,
@@ -457,6 +494,13 @@ impl Format {
             Self::Dxt5 => "DXT5",
             Self::Rgba4444 => "RGBA4444",
             Self::Bgra32 => "BGRA32",
+            Self::Bc6h => "BC6H",
+            Self::AstcHdr4x4 => "ASTC_HDR_4x4",
+            Self::AstcHdr5x5 => "ASTC_HDR_5x5",
+            Self::AstcHdr6x6 => "ASTC_HDR_6x6",
+            Self::AstcHdr8x8 => "ASTC_HDR_8x8",
+            Self::AstcHdr10x10 => "ASTC_HDR_10x10",
+            Self::AstcHdr12x12 => "ASTC_HDR_12x12",
             Self::Bc7 => "BC7",
             Self::Bc4 => "BC4",
             Self::Bc5 => "BC5",
@@ -521,7 +565,9 @@ impl Format {
         }
         match self {
             Self::Bc4 => Mode::L,
-            Self::Rgb24 | Self::Rgb565 | Self::Bgr24 | Self::R8 | Self::Bc5 => Mode::Rgb,
+            Self::Rgb24 | Self::Rgb565 | Self::Bgr24 | Self::R8 | Self::Bc5 | Self::Bc6h => {
+                Mode::Rgb
+            }
             _ => Mode::Rgba,
         }
     }
@@ -548,7 +594,14 @@ impl Format {
             | Self::EacRSigned
             | Self::Etc2Rgb
             | Self::Etc2Rgba1 => Some(8),
-            Self::AtcRgba8
+            Self::Bc6h
+            | Self::AstcHdr4x4
+            | Self::AstcHdr5x5
+            | Self::AstcHdr6x6
+            | Self::AstcHdr8x8
+            | Self::AstcHdr10x10
+            | Self::AstcHdr12x12
+            | Self::AtcRgba8
             | Self::Dxt3
             | Self::Dxt5
             | Self::Dxt5Crunched
@@ -617,12 +670,12 @@ impl Format {
         match self {
             Self::AtcRgb4 | Self::AtcRgba8 => None,
             Self::PvrtcRgb2 | Self::PvrtcRgba2 => Some((8, 4)),
-            Self::AstcRgb4x4 | Self::AstcRgba4x4 => Some((4, 4)),
-            Self::AstcRgb5x5 | Self::AstcRgba5x5 => Some((5, 5)),
-            Self::AstcRgb6x6 | Self::AstcRgba6x6 => Some((6, 6)),
-            Self::AstcRgb8x8 | Self::AstcRgba8x8 => Some((8, 8)),
-            Self::AstcRgb10x10 | Self::AstcRgba10x10 => Some((10, 10)),
-            Self::AstcRgb12x12 | Self::AstcRgba12x12 => Some((12, 12)),
+            Self::AstcRgb4x4 | Self::AstcRgba4x4 | Self::AstcHdr4x4 => Some((4, 4)),
+            Self::AstcRgb5x5 | Self::AstcRgba5x5 | Self::AstcHdr5x5 => Some((5, 5)),
+            Self::AstcRgb6x6 | Self::AstcRgba6x6 | Self::AstcHdr6x6 => Some((6, 6)),
+            Self::AstcRgb8x8 | Self::AstcRgba8x8 | Self::AstcHdr8x8 => Some((8, 8)),
+            Self::AstcRgb10x10 | Self::AstcRgba10x10 | Self::AstcHdr10x10 => Some((10, 10)),
+            Self::AstcRgb12x12 | Self::AstcRgba12x12 | Self::AstcHdr12x12 => Some((12, 12)),
             _ if self.block_bytes().is_some() => Some((4, 4)),
             _ => None,
         }
@@ -650,6 +703,20 @@ impl Format {
         }
     }
 
+    /// Whether this uses the corrected HDR profile.
+    #[must_use]
+    pub const fn is_astc_hdr(self) -> bool {
+        matches!(
+            self,
+            Self::AstcHdr4x4
+                | Self::AstcHdr5x5
+                | Self::AstcHdr6x6
+                | Self::AstcHdr8x8
+                | Self::AstcHdr10x10
+                | Self::AstcHdr12x12
+        )
+    }
+
     /// The PVRTC modulation footprint, or `None` for another decoder.
     pub(crate) const fn pvrtc_2bpp(self) -> Option<bool> {
         match self {
@@ -668,7 +735,7 @@ impl Format {
 
     /// The library that decodes it for UnityPy (`CONV_TABLE`).
     pub(crate) const fn library(self) -> Library {
-        if crate::tierb::layout(self).is_some() || matches!(self, Self::ArgbFloat) {
+        if crate::tierb::layout(self).is_some() || matches!(self, Self::ArgbFloat | Self::Bc6h) {
             return Library::ClosedForm;
         }
         match self {
@@ -705,43 +772,14 @@ impl Format {
             | Self::AstcRgba6x6
             | Self::AstcRgba8x8
             | Self::AstcRgba10x10
-            | Self::AstcRgba12x12 => Library::Astcenc,
+            | Self::AstcRgba12x12
+            | Self::AstcHdr4x4
+            | Self::AstcHdr5x5
+            | Self::AstcHdr6x6
+            | Self::AstcHdr8x8
+            | Self::AstcHdr10x10
+            | Self::AstcHdr12x12 => Library::Astcenc,
             _ => Library::PillowRaw,
-        }
-    }
-}
-
-/// An image mode, as Pillow names it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Mode {
-    /// `L`: one byte a pixel.
-    L,
-    /// `RGB`: three bytes a pixel, red first.
-    Rgb,
-    /// `RGBA`: four bytes a pixel, red first, alpha last.
-    Rgba,
-}
-
-const _: () = crate::send_sync::<Mode>();
-
-impl Mode {
-    /// Pillow's name for it.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::L => "L",
-            Self::Rgb => "RGB",
-            Self::Rgba => "RGBA",
-        }
-    }
-
-    /// The bytes one pixel takes.
-    #[must_use]
-    pub const fn bytes_per_pixel(self) -> u64 {
-        match self {
-            Self::L => 1,
-            Self::Rgb => 3,
-            Self::Rgba => 4,
         }
     }
 }

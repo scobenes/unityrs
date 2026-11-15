@@ -43,6 +43,8 @@ fn formats_name_any_decoded_format_in_any_order() {
             "DXT1",
             "ETC2_RGBA8",
             "ASTC_RGB_6x6",
+            "ASTC_HDR_6x6",
+            "BC6H",
             "DXT1Crunched",
             "DXT5Crunched"
         ]);
@@ -54,6 +56,8 @@ fn formats_name_any_decoded_format_in_any_order() {
         .with(Format::Dxt1)
         .with(Format::Etc2Rgba8)
         .with(Format::AstcRgb6x6)
+        .with(Format::AstcHdr6x6)
+        .with(Format::Bc6h)
         .with(Format::Dxt1Crunched)
         .with(Format::Dxt5Crunched);
     assert_eq!(s.outputs.formats, want);
@@ -80,7 +84,7 @@ fn each_refusal_formats_adds() {
         formats(json!(["ETC_RGB4Crunched"])),
         "range /outputs/formats/0"
     );
-    assert_eq!(formats(json!(["ASTC_HDR_4x4"])), "range /outputs/formats/0");
+    assert_eq!(formats(json!(["ARGBFloat"])), "range /outputs/formats/0");
     // A repeat, at the later item; none at all.
     assert_eq!(
         formats(json!(["BC4", "DXT1", "BC4"])),

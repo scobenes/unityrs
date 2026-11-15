@@ -293,7 +293,7 @@ fn decode_error(e: unityrs_texture::DecodeError) -> GltfError {
             GltfError::Invalid("texture_too_large")
         }
         E::NoImageData => GltfError::Invalid("missing_texture"),
-        E::NegativeSize { .. } | E::NotEnoughData { .. } | E::Panicked { .. } => {
+        E::Hdr(_) | E::NegativeSize { .. } | E::NotEnoughData { .. } | E::Panicked { .. } => {
             GltfError::Invalid("texture_malformed")
         }
         _ => GltfError::Mesh(unityrs_mesh::MeshError::Texture(e)),

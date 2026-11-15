@@ -261,6 +261,7 @@ fn a_panic_in_the_pixel_loop_is_contained() {
             assert_eq!(out.len(), 4 * 64 * 64);
             panic!("in the loop");
         },
+        false,
     );
     match got {
         Err(DecodeError::Panicked { payload }) => assert_eq!(payload.message(), "in the loop"),
@@ -268,9 +269,15 @@ fn a_panic_in_the_pixel_loop_is_contained() {
     }
     assert_eq!(meter.used(), 0);
     // The checks run outside it: their errors are their own.
-    let got = decode_with(Format::Rgba32, &[], 64, 64, &meter, |_, _, _, _, _, _| {
-        panic!("not reached")
-    });
+    let got = decode_with(
+        Format::Rgba32,
+        &[],
+        64,
+        64,
+        &meter,
+        |_, _, _, _, _, _| panic!("not reached"),
+        false,
+    );
     assert_eq!(got.map(|_| ()), Err(DecodeError::NoImageData));
 }
 

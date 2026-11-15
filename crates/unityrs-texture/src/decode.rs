@@ -194,6 +194,9 @@ const INT_MAX: u32 = 0x7FFF_FFFF;
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeError {
+    /// Reserved or illegal content in a specification-defined HDR block.
+    #[error(transparent)]
+    Hdr(#[from] crate::HdrError),
     /// A Tier U layout: `ARGBFloat`, or YUY2 with an odd width.
     #[error("unsupported texture layout: {format:?} at width {width}")]
     Unsupported {
@@ -334,7 +337,8 @@ impl Plan {
 /// data needs and gives, or the error [`decode()`] returns for it: the
 /// module docs' size/length checks in their order. For crunch, success
 /// only establishes a memory bound: header or bitstream validation may
-/// subsequently return [`DecodeError::Crunch`].
+/// subsequently return [`DecodeError::Crunch`]. HDR block content can
+/// likewise return [`DecodeError::Hdr`] after planning succeeds.
 pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<Plan, DecodeError> {
     if width == 0 || height == 0 {
         return Ok(Plan {
@@ -580,7 +584,19 @@ pub fn decode(
     height: i32,
     meter: &Arc<Meter>,
 ) -> Result<Image, DecodeError> {
-    decode_with(format, data, width, height, meter, fill)
+    decode_with(format, data, width, height, meter, fill, false)
+}
+
+/// Decode signed BC6H with the same bounds, metering, crop and flip as
+/// [`decode`]. Unity's `TextureFormat::BC6H` selects unsigned decoding;
+/// this entry point supports the specification's signed encoding.
+pub fn decode_bc6h_signed(
+    data: &[u8],
+    width: i32,
+    height: i32,
+    meter: &Arc<Meter>,
+) -> Result<Image, DecodeError> {
+    decode_with(Format::Bc6h, data, width, height, meter, fill, true)
 }
 
 /// The pixels the loop writes: `out` is `w` x `h` pixels of the format's
@@ -596,6 +612,7 @@ fn decode_with(
     height: i32,
     meter: &Arc<Meter>,
     fill: Fill,
+    signed_bc6h: bool,
 ) -> Result<Image, DecodeError> {
     let plan = plan(format, data.len(), width, height)?;
     let (Ok(out_len), Ok(w), Ok(h)) = (
@@ -653,6 +670,19 @@ fn decode_with(
         // read, so their half-written bytes are seen by no one; `data` is
         // only read.
         crate::contain(AssertUnwindSafe(|| {
+            if format.is_astc_hdr() {
+                let tables = tables.as_mut().ok_or(crate::HdrError::InvalidBlock)?;
+                astc::hdr::decode_image(tables, data, w, h, out)?;
+                return Ok(());
+            }
+            if format == Format::Bc6h {
+                if signed_bc6h {
+                    crate::bc6h::decode_signed(data, w, h, out)?;
+                } else {
+                    crate::bc6h::decode(data, w, h, out)?;
+                }
+                return Ok(());
+            }
             fill(format, data, w, h, out, tables.as_mut());
             Ok(())
         }))?;
@@ -709,7 +739,14 @@ fn fill(
         Format::Etc2Rgba1 => etc::decode(etc::Kind::Etc2A1, data, w, h, out),
         Format::Etc2Rgba8 => etc::decode(etc::Kind::Etc2A8, data, w, h, out),
         // Closed forms and refusals handled before this match.
-        Format::R16
+        Format::Bc6h
+        | Format::AstcHdr4x4
+        | Format::AstcHdr5x5
+        | Format::AstcHdr6x6
+        | Format::AstcHdr8x8
+        | Format::AstcHdr10x10
+        | Format::AstcHdr12x12
+        | Format::R16
         | Format::RHalf
         | Format::RgHalf
         | Format::RgbaHalf
@@ -748,20 +785,8 @@ fn fill(
     }
 }
 
-/// The length Pillow 9.5.0's `BCn` decoder sees for `len` bytes of data:
-/// `ImagingBcnDecode` passes its `Py_ssize_t` length to `decode_bcn`'s `int`
-/// parameter, a conversion GCC and Clang both make modulo 2^32, then as a
-/// signed value (C leaves an out-of-range conversion to the
-/// implementation), so the decode loop (`while (bytes >= SZ)`) runs on the
-/// length's low 32 bits, none when bit 31 is set. Below 2 GiB it is the
-/// length itself.
-#[must_use]
-pub fn bcn_length(len: usize) -> u64 {
-    let low = u64::try_from(len).unwrap_or(u64::MAX) & 0xFFFF_FFFF;
-    // As a signed 32-bit value: negative when bit 31 is set, and then the
-    // loop decodes no block.
-    if low >= 1 << 31 { 0 } else { low }
-}
+mod length;
+pub use length::bcn_length;
 
 #[cfg(test)]
 mod tests;

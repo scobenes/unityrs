@@ -264,11 +264,12 @@ fn every_format_is_replayed_by_an_oracle_fixture() {
                 || name.starts_with("PVRTC")
                 || name.starts_with("ATC")
                 || format.is_crunched()
+                || format == Format::Bc6h
                 || crate_tierb(format),
             "{name}"
         );
     }
-    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 6 + 2 + 22);
+    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 18 + 6 + 2 + 22 + 1);
 }
 
 fn crate_tierb(format: Format) -> bool {

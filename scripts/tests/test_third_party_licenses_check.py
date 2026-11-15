@@ -560,6 +560,7 @@ class PortTests(unittest.TestCase):
                 "GotoBLAS2 code in OpenBLAS 0.3.31": ["LICENSE-OPENBLAS-UT"],
                 "zlib 1.2.13": ["LICENSE-ZLIB"],
                 "Arm astcenc commit 631fb04": ["LICENSE-ASTCENC"],
+                "bcdec v0.985": ["LICENSE-BCDEC"],
                 "Crunch legacy decoder in texture2ddecoder 1.0.5": ["LICENSE-CRUNCH"],
                 "RazTools/Studio": ["LICENSE-RAZTOOLS"],
                 "Razmoth/PGRStudio": ["LICENSE-RAZMOTH"],
