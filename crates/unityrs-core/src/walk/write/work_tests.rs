@@ -25,7 +25,7 @@ const LONG: usize = 1 << 16;
 
 fn tree(rows: Vec<NodeRow>) -> Arc<Tree> {
     Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap()

@@ -72,6 +72,9 @@
 pub mod boost;
 mod dict;
 pub mod python;
+mod read;
+pub(crate) use read::read_typetree_versioned;
+pub use read::{read_typetree, read_typetree_with_reader};
 mod work;
 pub mod write;
 
@@ -89,15 +92,13 @@ mod prepass_tests;
 
 use std::sync::Arc;
 
-use bytes::Bytes;
-
 use crate::error::{LimitError, LimitKind};
 use crate::files::SerializedType;
 use crate::limits::{ChargeError, Limits, Meter, MeteredVec};
 use crate::provider::{NoTree, ProviderError};
 use crate::raw::RawStr;
-use crate::stream::{Endian, ReaderKind, StreamRefusal};
-use crate::typetree::{NodeId, Tree, TreeError};
+use crate::stream::{Endian, StreamRefusal};
+use crate::typetree::{NodeId, TreeError};
 use crate::value::{Built, Parsed, Value};
 
 /// How a float32 signalling NaN reaches the value.
@@ -229,7 +230,6 @@ impl L2Kind {
         }
     }
 }
-
 /// A reader failure, with its kind decided structurally (never parsed from a message).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{kind:?} at byte {at}: {detail}")]
@@ -241,7 +241,6 @@ pub struct ReadError {
     /// What happened.
     pub detail: ReadDetail,
 }
-
 /// A reader failure's L2 kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ReadErrorKind {
@@ -254,7 +253,6 @@ pub enum ReadErrorKind {
     /// `other`.
     Other,
 }
-
 /// What a reader failure was.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -263,6 +261,15 @@ pub enum ReadDetail {
     #[error("needs {need} bytes past the end")]
     Eof {
         /// Bytes needed.
+        need: u64,
+    },
+    /// UnityPyBoost's failed read, retaining the function whose public
+    /// exception class and message apply.
+    #[error("{method} out of bounds (needs {need} bytes)")]
+    BoostEof {
+        /// The C++ reader function name.
+        method: &'static str,
+        /// Bytes requested by the read.
         need: u64,
     },
     /// A negative length.
@@ -276,7 +283,12 @@ pub enum ReadDetail {
     PairChildren,
     /// `ReferencedObject` data with no `ref_types` to resolve it.
     #[error("no SerializedFile.ref_types")]
-    NoRefTypes,
+    NoRefTypes {
+        /// The reader selected by the object's byte size.
+        reader: crate::value::ReadBy,
+        /// Whether this format omits the `ref_types` attribute (below 20).
+        absent: bool,
+    },
     /// `ReferencedObject` data whose `(class, ns, asm)` is not in `ref_types`.
     #[error("Failed to get ref type node")]
     RefTypeNotFound,
@@ -305,7 +317,6 @@ pub enum ReadDetail {
     #[error(transparent)]
     Tree(TreeError),
 }
-
 /// Why reading an object failed: the L2 outcome other than success.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -551,73 +562,6 @@ impl WriteError {
             Self::Tree(_) | Self::Limit(_) | Self::Charge(_) => &[],
         }
     }
-}
-
-/// `TypeTreeHelper.read_typetree` over bytes (UnityPy's memory reader):
-/// [`boost::read`] over the Python slice `file[byte_start : byte_start +
-/// byte_size]` ([`crate::stream::py_read`]: short at the end of a truncated
-/// file, from the end for a negative start) when `byte_size > 0`, else
-/// [`python::read`] from `byte_start`; then, with `check_read`, `bytes_read
-/// != byte_size` is [`ParseError::CheckRead`] carrying the value.
-pub fn read_typetree(
-    file: &Bytes,
-    byte_start: i128,
-    byte_size: u32,
-    tree: &Arc<Tree>,
-    ctx: &ReadCtx<'_>,
-    check_read: bool,
-) -> Result<Parsed, ParseError> {
-    read_typetree_with_reader(
-        file,
-        byte_start,
-        byte_size,
-        tree,
-        ctx,
-        check_read,
-        ReaderKind::Memory,
-    )
-}
-
-/// [`read_typetree`] from the file's reader of `kind`
-/// ([`crate::files::SerializedFile::reader_kind`]): `reset()` sets the
-/// position to `byte_start`, which the stream reader refuses when negative
-/// or at or above 2^63 ([`ReadDetail::Stream`], kind `other`), as UnityPy's
-/// does on every machine; a `byte_start` past the largest file the file
-/// system takes is UnityPy's `OSError` on that machine, and taken here
-/// ([`crate::stream::ReaderKind`], `PARITY.md` section 19.3). The Boost
-/// path is given `read_bytes(byte_size)` from there (on both readers the
-/// bytes that exist), and the pure-Python reader reads by the reader's
-/// rules ([`python::read_with_reader`]).
-pub fn read_typetree_with_reader(
-    file: &Bytes,
-    byte_start: i128,
-    byte_size: u32,
-    tree: &Arc<Tree>,
-    ctx: &ReadCtx<'_>,
-    check_read: bool,
-    kind: ReaderKind,
-) -> Result<Parsed, ParseError> {
-    // UnityPy files/ObjectReader.py:214-215, :251: `reset()`.
-    let start = kind.seek(byte_start).map_err(|e| stream_refused(0, e))?;
-    // UnityPy TypeTreeHelper.py:146-153: `byte_size and read_typetree_boost`.
-    let parsed = if byte_size > 0 {
-        // UnityPy TypeTreeHelper.py:147: `reader.read_bytes(byte_size)`: on
-        // the memory reader a Python slice of the file from `byte_start`.
-        let (range, _) = kind
-            .read(file.len(), start, i64::from(byte_size))
-            .map_err(|e| stream_refused(0, e))?;
-        boost::read(&file.slice(range), tree, ctx)?
-    } else {
-        python::read_with_reader(file, start, tree, ctx, kind)?
-    };
-    // UnityPy TypeTreeHelper.py:155-156.
-    if check_read && parsed.bytes_read != i64::from(byte_size) {
-        return Err(ParseError::CheckRead {
-            expected: byte_size,
-            parsed: Arc::new(parsed),
-        });
-    }
-    Ok(parsed)
 }
 
 /// The stream reader's refusal at `at` bytes into a read (kind `other`, as

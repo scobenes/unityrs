@@ -93,7 +93,7 @@ fn refusal(o: &Result<Parsed, ParseError>) -> Option<LimitError> {
             Some(*l)
         }
         Err(ParseError::Read(ReadError {
-            detail: ReadDetail::Eof { .. },
+            detail: ReadDetail::Eof { .. } | ReadDetail::BoostEof { .. },
             ..
         })) => None,
         o => panic!("not a read failing where its bytes end: {o:?}"),

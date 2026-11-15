@@ -378,7 +378,7 @@ mod tests {
         let rows = vec![NodeRow::new(0, "Base", "Base"), NodeRow::new(1, "int", "k")];
         let b = ValueBuilder::new(
             &Meter::unlimited(),
-            Arc::new(NodeList::trusted(rows).unwrap()),
+            NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         )
         .unwrap();
         let mut v: Built = b.scalar(Value::Int(1)).unwrap();

@@ -1,16 +1,17 @@
 [package]
 name = "unityrs-imageio"
-description = "PNG and lossy WebP files byte-identical to Pillow 9.5.0, and the visible-pixel hash."
+description = "Default image writers and lossy WebP byte-identical to Pillow 9.5.0's, metered PNG over zlib 1.2.13, and the visible-pixel hash."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 # The encoders port Pillow 9.5.0's PNG/WebP writers and mode conversions
 # (MIT-CMU: src/png.rs, src/filter.rs, src/hash.rs), whose notice is its
-# LICENSE-PILLOW, and the build compiles the deflate side of zlib 1.2.13
-# (Zlib), and the libwebp 1.3.0 encoder (BSD-3-Clause plus PATENTS),
-# vendored pristine in vendor/zlib-1.2.13/ and vendor/libwebp-1.3.0/.
-# BSD-3-Clause upstream WebP failure-path patches in vendor/patches/ are
-# applied only to an OUT_DIR copy; see vendor/WEBP.md.
+# LICENSE-PILLOW; src/writers ports its other raw writers and PNG icon
+# containers, including their resampling. The build compiles the deflate
+# side of zlib 1.2.13 (Zlib) and the libwebp 1.3.0 encoder (BSD-3-Clause
+# plus PATENTS), vendored pristine in vendor/zlib-1.2.13/ and
+# vendor/libwebp-1.3.0/. BSD-3-Clause upstream WebP failure-path patches in
+# vendor/patches/ are applied only to an OUT_DIR copy; see vendor/WEBP.md.
 # LICENSE-WEBP and NOTICE-WEBP-PATENTS ship the WebP notices. build.rs derives an
 # altered deflate.c with zlib-match/longest_match.c; its licence is
 # LICENSE-ZLIB (a link to the vendored LICENSE). See THIRD_PARTY_LICENSES.

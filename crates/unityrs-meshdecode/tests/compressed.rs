@@ -8,8 +8,6 @@
 //! (each Tier C case against the corrected answer the script records, its
 //! expected-divergence mask `DIVERGES`).
 
-use std::sync::Arc;
-
 use serde_json::{Value as J, json};
 use unityrs_core::limits::{Limits, Meter};
 use unityrs_core::stream::Endian;
@@ -52,7 +50,7 @@ fn parse(rows: &J, data: Vec<u8>) -> Parsed {
         })
         .collect();
     let tree = Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap();

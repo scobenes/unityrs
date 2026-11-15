@@ -31,6 +31,10 @@ impl Default for WebpOptions {
 /// Typed refusals, before any charge or allocation where possible.
 #[derive(Debug, thiserror::Error)]
 pub enum WebpError<R> {
+    /// Palette (`P`) images are refused until the encoder takes Pillow's
+    /// palette conversion; the extractor never produces them.
+    #[error("WebP does not take palette images yet")]
+    Palette,
     /// WebP sides must be in 1..=16383.
     #[error("WebP refuses dimensions {width}x{height}")]
     Dimensions { width: u32, height: u32 },
@@ -145,6 +149,9 @@ fn encode_webp_impl<C: Charger>(
     charger: &mut C,
     lossless: bool,
 ) -> Result<Webp<C::Charge>, WebpError<C::Refusal>> {
+    if image.mode() == Mode::P {
+        return Err(WebpError::Palette);
+    }
     if !options.quality.is_finite()
         || !(0.0..=100.0).contains(&options.quality)
         || options.method > 6
@@ -204,6 +211,7 @@ fn encode_webp_impl<C: Charger>(
             }
             (converted.as_slice(), image.mode() == Mode::La)
         }
+        Mode::P => return Err(WebpError::Palette),
     };
     let written = webp_ffi::encode(
         pixels,

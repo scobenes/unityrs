@@ -21,7 +21,7 @@ fuzz_target!(|data: &[u8]| {
     let width = u32::from_le_bytes(data[..4].try_into().unwrap());
     let height = u32::from_le_bytes(data[4..8].try_into().unwrap());
     let _ = webp_plan(width, height);
-    let mode = Mode::ALL[data[8] as usize % 4];
+    let mode = Mode::ALL[data[8] as usize % Mode::ALL.len()];
     let pixels = &data[12..data.len().min((1 << 20) + 12)];
     if let Ok(image) = Image::new(width, height, mode, pixels) {
         let options = WebpOptions {

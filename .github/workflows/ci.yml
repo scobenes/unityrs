@@ -237,7 +237,7 @@ jobs:
               -print_final_stats=1 > "$RUNNER_TEMP/fuzz-$1.log" 2>&1
           }
           failed=""
-          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc crunch meshdecode zlib_match webp unitycn zip" "webfile unityweb" "fsb5" "scene_collect obj_text" "shader"; do
+          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc crunch meshdecode zlib_match webp unitycn zip" "webfile unityweb" "fsb5 image_writers" "scene_collect obj_text" "shader"; do
             pids=""
             for t in $batch; do
               run "$t" &
@@ -247,7 +247,7 @@ jobs:
               wait "${p#*:}" || failed="$failed ${p%%:*}"
             done
           done
-          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture astc crunch meshdecode zlib_match webp unitycn zip webfile unityweb fsb5 scene_collect obj_text shader; do
+          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture astc crunch meshdecode zlib_match webp unitycn zip webfile unityweb fsb5 image_writers scene_collect obj_text shader; do
             echo "== $t"
             grep -E '^(stat::|#[0-9]+ +DONE)' "$RUNNER_TEMP/fuzz-$t.log" || true
           done
@@ -448,6 +448,7 @@ jobs:
           python tools/fixtures/pure_python_rules.py --check
           python tools/fixtures/walk.py --check
           python tools/fixtures/files.py --check
+          python tools/fixtures/head_read.py --check
           python tools/fixtures/unitycn.py --check
           python tools/fixtures/loading.py --check
           python tools/fixtures/web.py --check
@@ -582,6 +583,7 @@ jobs:
           export LD_LIBRARY_PATH="$zlib"
           python -c 'import zlib; from PIL import Image; v = (Image.core.zlib_version, zlib.ZLIB_RUNTIME_VERSION); assert v == ("1.2.13",) * 2, v'
           python tools/fixtures/imageio.py --check
+          python tools/fixtures/image_writers.py --check
           python tools/fixtures/ngui.py --check
           python tools/fixtures/sprites.py --check
       - name: The vendored WebP encoder equals its pinned release tarball
@@ -656,3 +658,41 @@ jobs:
         run: cargo test --locked -p unityrs-gltf -- --nocapture
       - name: Independent accessor and orientation checker
         run: python3 -m unittest tools.parity.tests.test_gltf_check
+
+  python-wheel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Build the abi3 wheel
+        run: |
+          python -m venv "$RUNNER_TEMP/builder"
+          "$RUNNER_TEMP/builder/bin/python" -m pip install maturin==1.9.6
+          "$RUNNER_TEMP/builder/bin/maturin" build --locked --release \
+            --manifest-path crates/unityrs-py/Cargo.toml --out "$RUNNER_TEMP/wheels"
+      - name: Install the wheel and oracle in a fresh runtime venv
+        run: |
+          python -m venv "$RUNNER_TEMP/bindings"
+          echo "$RUNNER_TEMP/bindings/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bindings/bin/python" -m pip install --require-hashes -r tools/parity/requirements-oracle.txt
+          "$RUNNER_TEMP/bindings/bin/python" -m pip install --no-deps "$RUNNER_TEMP"/wheels/*.whl
+          "$RUNNER_TEMP/bindings/bin/python" -m pip check
+      - name: Replay the recorded API in Rust
+        run: cargo test -p unityrs-py
+      - name: Check the API oracle fixtures
+        run: python tools/fixtures/py_bindings.py --check
+      - name: Test the installed wheel
+        run: python -m unittest discover -s crates/unityrs-py/python/tests
+      - name: Compare the binding with UnityPy
+        working-directory: tools/parity
+        run: python -m unittest bindings.test_y1

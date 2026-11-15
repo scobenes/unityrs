@@ -17,6 +17,7 @@
 
 pub mod bundle;
 pub mod serialized;
+mod teardown;
 pub mod web;
 
 use std::sync::{Arc, Weak};

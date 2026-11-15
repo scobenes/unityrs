@@ -13,11 +13,9 @@
 //! bytes, `null` where a member does not apply.
 
 use std::fmt;
-use std::sync::Arc;
 
 use unityrs_core::detect::{FileType, ParsedAs};
 use unityrs_core::stream::ShortArray;
-use unityrs_core::typetree::NodeList;
 use unityrs_core::version::{FlagsClass, Packed};
 use unityrs_core::walk::L2Kind;
 use unityrs_core::{LimitError, RawStr};
@@ -277,7 +275,7 @@ pub struct TypeRecord {
     /// `old_type_hash`, as read.
     pub old_type_hash: Option<ShortArray<16>>,
     /// The stored tree, written as its rows.
-    pub nodes: Option<Arc<NodeList>>,
+    pub nodes: Option<unityrs_core::typetree::SharedNodes>,
     /// `type_dependencies`.
     pub type_dependencies: Option<Vec<i32>>,
     /// `class_name` (ref types).

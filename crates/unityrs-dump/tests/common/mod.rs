@@ -4,7 +4,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 
 use serde_json::Value as Json;
 use unityrs_core::limits::{Meter, MeteredVec};
@@ -149,7 +148,7 @@ pub fn parsed(desc: &Json) -> Parsed {
             .into_iter()
             .map(|n| NodeRow::new(1, "int", RawStr::from(n))),
     );
-    let list = Arc::new(NodeList::trusted(rows).unwrap());
+    let list = NodeList::trusted(rows).unwrap().into_shared().unwrap();
     let b = ValueBuilder::new(&Meter::unlimited(), list).unwrap();
     let mut next_key = 1;
     let v = build(&b, desc, &mut next_key);

@@ -6,13 +6,13 @@ use crate::typetree::{NodeList, NodeRow};
 
 #[test]
 fn package_b_can_build_ref_types_without_package_c() {
-    let nodes = Arc::new(
-        NodeList::trusted(vec![
-            NodeRow::new(0, "Foo", "Base"),
-            NodeRow::new(1, "int", "x"),
-        ])
-        .unwrap(),
-    );
+    let nodes = NodeList::trusted(vec![
+        NodeRow::new(0, "Foo", "Base"),
+        NodeRow::new(1, "int", "x"),
+    ])
+    .unwrap()
+    .into_shared()
+    .unwrap();
     let t = SerializedType::ref_type(
         114,
         RawStr::from("Foo"),
@@ -43,8 +43,11 @@ fn a_refused_compile_is_not_kept() {
     let pool = Arc::new(Counting::new(4096));
     let meter = Meter::new(u64::MAX, pool.clone(), Reservation::Dependency);
     let rows = MeteredVec::from_vec(vec![NodeRow::new(0, "Base", "Base")], &meter).unwrap();
-    let t = SerializedType::new(1, Some(Arc::new(NodeList::from_rows(rows).unwrap())));
-    let compile = |nodes: Arc<NodeList>| {
+    let t = SerializedType::new(
+        1,
+        Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
+    );
+    let compile = |nodes: crate::typetree::SharedNodes| {
         let _scratch = nodes.meter().charge(1024).map_err(TreeError::Charge)?;
         Ok(Tree::for_tests(nodes))
     };
@@ -61,7 +64,7 @@ fn a_refused_compile_is_not_kept() {
     );
     // A failure the rows decide is kept.
     let deep = SerializedType::new(2, t.nodes.clone());
-    let too_deep = |_: Arc<NodeList>| {
+    let too_deep = |_: crate::typetree::SharedNodes| {
         Err(TreeError::Limit(crate::LimitError::refused(
             crate::LimitKind::TreeDepth,
             2,
@@ -94,10 +97,13 @@ fn a_compile_the_meter_refuses_on_its_own_runs_a_bounded_number_of_times() {
     };
     let meter = Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input);
     let rows = MeteredVec::from_vec(vec![NodeRow::new(0, "Base", "Base")], &meter).unwrap();
-    let t = SerializedType::new(1, Some(Arc::new(NodeList::from_rows(rows).unwrap())));
+    let t = SerializedType::new(
+        1,
+        Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
+    );
     let rows_held = meter.used();
     let runs = AtomicUsize::new(0);
-    let compile = |nodes: Arc<NodeList>| -> Result<Arc<Tree>, TreeError> {
+    let compile = |nodes: crate::typetree::SharedNodes| -> Result<Arc<Tree>, TreeError> {
         runs.fetch_add(1, Ordering::Relaxed);
         // A table that grows towards twice the meter.
         let mut table: MeteredVec<u8> = MeteredVec::new(nodes.meter());

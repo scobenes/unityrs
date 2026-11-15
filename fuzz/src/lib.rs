@@ -1,17 +1,22 @@
 //! What the fuzz targets share: the limits every run is bounded by, the
 //! context and meter of one input, a thread with the stack a read needs,
 //! a [`TreeCase`]'s tree and ref types as the core's, and the `lz4`,
-//! `texture`, `astc`, `crunch`, `meshdecode`, `fsb5` and `shader` targets'
+//! `texture`, `astc`, `crunch`, `meshdecode`, `fsb5`, `image_writers`,
+//! `scene_collect`, `obj_text` and `shader` targets'
 //! checks ([`lz4`], [`texture`], [`astc`], [`crunch`], [`meshdecode`],
-//! [`fsb5`], [`shader`]), here so that their tests run.
+//! [`fsb5`], [`image_writers`], [`scene_collect`], [`obj_text`], [`shader`]),
+//! here so that their tests run.
 //!
 //! Every target uses the public API of the crate it runs (the core's,
-//! `unityrs-texture`'s or `unityrs-meshdecode`'s), as a caller would: no
+//! `unityrs-texture`'s, `unityrs-meshdecode`'s, `unityrs-audio`'s,
+//! `unityrs-imageio`'s, `unityrs-scene`'s, `unityrs-gltf`'s, `unityrs-mesh`'s
+//! or `unityrs-export`'s), as a caller would: no
 //! target needs an item a crate does not export.
 
 pub mod astc;
 pub mod crunch;
 pub mod fsb5;
+pub mod image_writers;
 pub mod lz4;
 pub mod meshdecode;
 pub mod obj_text;
@@ -126,7 +131,7 @@ pub fn with_stack<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 /// A case's rows as a node list on `meter`, or `None` when the meter
 /// refuses them.
 #[must_use]
-pub fn node_list(rows: &[Row], meter: &Arc<Meter>) -> Option<Arc<NodeList>> {
+pub fn node_list(rows: &[Row], meter: &Arc<Meter>) -> Option<unityrs_core::typetree::SharedNodes> {
     let mut v: MeteredVec<NodeRow> = MeteredVec::new(meter);
     for r in rows {
         let row = NodeRow::new(
@@ -137,7 +142,7 @@ pub fn node_list(rows: &[Row], meter: &Arc<Meter>) -> Option<Arc<NodeList>> {
         .with_meta_flag(r.meta_flag);
         v.push(row).ok()?;
     }
-    NodeList::from_rows(v).ok().map(Arc::new)
+    NodeList::from_rows(v).and_then(NodeList::into_shared).ok()
 }
 
 /// What a [`TreeCase`] describes, as the core's values.

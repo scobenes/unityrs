@@ -69,7 +69,10 @@ fn every_class_that_names_one_release_root_shares_its_tree() {
         let tree = ask(&provider, id).unwrap().unwrap();
         assert!(Arc::ptr_eq(&tree, &first), "class {id}");
         let rows = provider.node_list(id, &v2()).unwrap().unwrap();
-        assert!(Arc::ptr_eq(&rows, &list), "class {id}");
+        assert!(
+            unityrs_core::typetree::SharedNodes::ptr_eq(&rows, &list),
+            "class {id}"
+        );
     }
 }
 
@@ -135,7 +138,7 @@ fn the_trees_of_every_release_root_together_stop_at_the_total() {
         match provider.node_list(id, &v2()) {
             Ok(Some(list)) => {
                 assert!(usize::try_from(id).unwrap() < fit, "class {id} built");
-                if held.insert(Arc::as_ptr(&list) as usize) {
+                if held.insert(unityrs_core::typetree::SharedNodes::as_ptr(&list) as usize) {
                     rows += list.rows().len();
                 }
             }

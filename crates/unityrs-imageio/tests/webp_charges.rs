@@ -104,7 +104,7 @@ fn webp_allocations_are_charged_fallible_and_freed() {
         (16383, 1),
         (1, 16383),
     ] {
-        for mode in Mode::ALL {
+        for mode in Mode::EXTRACTOR {
             let mut state = 0x1234_5678_u32;
             let raw: Vec<u8> = (0..width * height * mode.channels() as u32)
                 .map(|_| {
@@ -369,4 +369,25 @@ fn higher_methods_plan_their_larger_alpha_workspace() {
             assert!(encode_webp(&image, options, &mut Unmetered).is_ok());
         }
     }
+}
+
+#[test]
+fn palette_images_are_refused_before_any_charge() {
+    let palette = [7u8; 768];
+    let pixels = [0u8; 6];
+    let image = Image::with_palette(3, 2, &pixels, &palette).unwrap();
+    let _measurement = measure();
+    for options in [
+        WebpOptions::default(),
+        WebpOptions {
+            quality: f32::NAN,
+            ..WebpOptions::default()
+        },
+    ] {
+        assert!(matches!(
+            encode_webp(&image, options, &mut Grant(None)),
+            Err(WebpError::Palette)
+        ));
+    }
+    settled();
 }
