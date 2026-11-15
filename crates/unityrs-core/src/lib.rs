@@ -40,6 +40,7 @@
 pub mod budget;
 pub mod classid;
 pub mod codec;
+pub mod config;
 pub mod container;
 mod counters;
 pub mod detect;

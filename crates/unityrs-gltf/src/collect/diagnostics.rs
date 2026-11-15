@@ -253,13 +253,17 @@ mod tests {
             assert_eq!(mesh_reason(&error), None);
         }
         assert_eq!(
-            mesh_reason(&MeshError::Parse(parse(ReadDetail::Eof { need: 1 }))),
+            mesh_reason(&MeshError::Parse(parse(ReadDetail::Eof {
+                need: 1,
+                exception: "EOFError"
+            }))),
             Some("mesh_parse_failed")
         );
         assert_eq!(
             mesh_reason(&MeshError::Parse(parse(ReadDetail::BoostEof {
                 method: "read_bool",
                 need: 1,
+                exception: "ValueError",
             }))),
             Some("mesh_parse_failed")
         );
