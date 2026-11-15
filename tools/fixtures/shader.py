@@ -35,7 +35,7 @@ def tags(name):
         "pair", "data", leaf("first", "string"), leaf("second", "string"))))
 
 
-def tree(nested=False, *, omit=(), types=None, player=False):
+def tree(nested=False, *, omit=(), types=None, player=False, parameters=False):
     prop = klass("SerializedProperty", "data", vec("m_Attributes", leaf("data", "string")),
                  leaf("m_Name", "string"), leaf("m_Description", "string"), leaf("m_Type"),
                  leaf("m_Flags"), *(leaf(f"m_DefValue[{i}]", "float") for i in range(4)),
@@ -81,6 +81,8 @@ def tree(nested=False, *, omit=(), types=None, player=False):
                                leaf("m_GpuProgramType"), vec("m_KeywordIndices", leaf("data")),
                                leaf("m_ShaderRequirements"))
             node.children.append(vec("m_PlayerSubPrograms", vec("data", player_sub)))
+        if parameters and node.type == "SerializedProgram":
+            node.children.append(vec("m_ParameterBlobIndices", vec("data", leaf("data"))))
     vary(root)
     return root
 
@@ -114,12 +116,19 @@ def aligned_string(text, output):
     output.extend(b"\0" * (-len(output) % 4))
 
 
-def program(version, entries):
+def program(version, entries, table_lengths=False):
     """Program table and subprogram records, with real little-endian offsets."""
     stride = 12 if version >= (2019, 3) else 8
     output = bytearray(struct.pack("<i", len(entries)) + bytes(stride * len(entries)))
     for i, entry in enumerate(entries):
         struct.pack_into("<i", output, 4 + i * stride, len(output))
+        if "raw" in entry:
+            output.extend(entry["raw"])
+            output.extend(bytes(-len(output) % 4))
+            if table_lengths:
+                struct.pack_into("<i", output, 8 + i * stride, len(entry["raw"]))
+            continue
+        start = len(output)
         rev = entry.get("revision", 201806140)
         output.extend(struct.pack("<ii", rev, entry["kind"]) + bytes(12))
         if rev >= 201608170:
@@ -136,6 +145,8 @@ def program(version, entries):
         code = entry.get("code", b"code\n")
         output.extend(struct.pack("<i", len(code)) + code)
         output.extend(b"\0" * (-len(output) % 4))
+        if table_lengths:
+            struct.pack_into("<i", output, 8 + i * stride, len(output) - start)
     return bytes(output)
 
 
@@ -186,7 +197,7 @@ def make_case(name, *, version=(2021, 3, 9), platforms=(0,), entries=None, passe
     entries = [[{"kind": 1}]] if entries is None else entries
     blob, offsets, compressed, decompressed = bytearray(b"prefix"), [], [], []
     for items in entries:
-        raw = program(version, items)
+        raw = program(version, items, table_lengths=bool((schema or {}).get("parameters")))
         packed = literal_lz4(raw)
         offsets.append(len(blob))
         compressed.append(len(packed))
@@ -209,7 +220,7 @@ def make_case(name, *, version=(2021, 3, 9), platforms=(0,), entries=None, passe
     if nested:
         for field in ("offsets", "compressedLengths", "decompressedLengths"):
             # The second item must be ignored by get_entry.
-            value[field] = [[n, 2147483647] for n in value[field]]
+            value[field] = [[n] if (schema or {}).get("parameters") else [n, 2147483647] for n in value[field]]
     value.update(overrides or {})
     root = tree(nested, **(schema or {}))
     output = bytearray()
@@ -530,6 +541,8 @@ def main():
         OUT.parent.mkdir(parents=True, exist_ok=True)
         OUT.write_bytes(body.encode("utf8"))
     print(f"shader: {len(cases)} synthetic cases, Boost and pure Python exports agree; {len(blobs)} blob cases")
+    from shader_modern import generate
+    generate(args.check)
     return 0
 
 

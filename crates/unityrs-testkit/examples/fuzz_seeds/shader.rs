@@ -53,7 +53,7 @@ fn repeated(version: (u32, u32), blob: &[u8]) -> Vec<u8> {
 }
 
 pub(super) fn seeds(s: &mut Seeds) -> std::io::Result<()> {
-    for version in [(5, 3), (2019, 2), (2019, 3), (2021, 1)] {
+    for version in [(5, 3), (2019, 2), (2019, 3), (2021, 1), (6000, 3)] {
         let mut cases = vec![
             ("empty".to_owned(), Vec::new()),
             ("zero".to_owned(), 0i32.to_le_bytes().to_vec()),
@@ -127,7 +127,15 @@ fn recorded_converter_seeds(s: &mut Seeds) -> std::io::Result<()> {
         "../../../unityrs-export/tests/fixtures/shader.json"
     ))
     .map_err(std::io::Error::other)?;
+    let modern: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../unityrs-export/tests/fixtures/shader_modern.json"
+    ))
+    .map_err(std::io::Error::other)?;
     let bad = || std::io::Error::other("invalid synthetic shader fixture");
+    let legacy: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../unityrs-export/tests/fixtures/shader_legacy.json"
+    ))
+    .map_err(std::io::Error::other)?;
     for name in [
         "program_kind_1",
         "program_kind_23",
@@ -135,11 +143,28 @@ fn recorded_converter_seeds(s: &mut Seeds) -> std::io::Result<()> {
         "metal_header_offset",
         "converter_invalid_source_utf8",
         "multiple_platforms_tiers_sorted_nested_True",
+        "player_progVertex_6000_3_0",
+        "player_progFragment_6000_3_0",
+        "player_progGeometry_6000_3_0",
+        "player_progHull_6000_3_0",
+        "player_progDomain_6000_3_0",
+        "parameters_first_False_6000_3",
+        "parameters_first_True_6000_3",
+        "player_groups_duplicate_sorted",
+        "segments_6000_3_valid",
+        "negative_code_index",
+        "missing_parameter_index",
+        "big_endian_5_3_valid",
+        "big_endian_5_4_valid",
+        "big_endian_5_3_index_bad_9",
+        "big_endian_5_4_index_bad_9",
     ] {
         let case = fixture["cases"]
             .as_array()
             .ok_or_else(bad)?
             .iter()
+            .chain(modern["cases"].as_array().ok_or_else(bad)?)
+            .chain(legacy["cases"].as_array().ok_or_else(bad)?)
             .find(|case| case["case"] == name)
             .ok_or_else(bad)?;
         let hex = case["input"].as_str().ok_or_else(bad)?;
