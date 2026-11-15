@@ -60,11 +60,13 @@ mod shader;
 mod tierb;
 #[path = "fuzz_seeds/web.rs"]
 mod web;
+#[path = "fuzz_seeds/webp.rs"]
+mod webp;
 #[path = "fuzz_seeds/zip.rs"]
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 22] = [
+const TARGETS: [&str; 23] = [
     "detect",
     "bundle",
     "serialized",
@@ -78,6 +80,7 @@ const TARGETS: [&str; 22] = [
     "crunch",
     "meshdecode",
     "zlib_match",
+    "webp",
     "unitycn",
     "zip",
     "webfile",
@@ -584,6 +587,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
         trees: BTreeSet::new(),
         nodes: Vec::new(),
     };
+    webp::add(&mut s)?;
     let outputs = unityrs_testkit::mutate::builder_outputs();
     for (name, bytes) in &outputs {
         s.file(name, bytes, 0)?;

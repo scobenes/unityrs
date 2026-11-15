@@ -8,11 +8,11 @@ when it is stale).
 It has two parts. The first holds the notices of code ported or vendored into
 unityrs from other projects (UnityPy and UnityPyBoost, liblz4, CPython's
 standard library, Pillow, texture2ddecoder with the AssetStudio and mikunyan
-code it carries, the legacy and Unity Crunch decoders, Arm astcenc, zlib, OpenBLAS
+code it carries, the legacy and Unity Crunch decoders, Arm astcenc, zlib, libwebp, OpenBLAS
 under BSD-3-Clause and its GotoBLAS2 code under BSD-2-Clause-Views), and the provenance of bundled
 data; the notice of a new port is added to about.hbs, its licence to its
 crate's, and the notice to the crate's own files (a LICENSE-* file, and a
-NOTICE-* file for a text of ours its licence asks for), so that the crate's
+NOTICE-* file for a required notice that is not a licence), so that the crate's
 package carries it with the code. The second holds the licence of every crate the
 unityrs workspace builds, its own members included, grouped by licence
 text. A crate offered under a choice of licences (such as "MIT OR
@@ -589,6 +589,8 @@ crates/unityrs-imageio/src/png.rs translates src/PIL/PngImagePlugin.py's
 _save, putchunk and _idat, src/PIL/ImageFile.py's _save and _encode_tile,
 and the encode loop of src/libImaging/ZipEncode.c, plus Pack.c's pack1
 for an implicit palette PNG;
+crates/unityrs-imageio/src/webp.rs and webp-shim.c translate the still-image
+WebPImagePlugin._save and _webp.c WebPEncode_wrapper paths, without metadata.
 crates/unityrs-imageio/src/filter.rs translates ZipEncode.c's choice of each
 row's PNG filter; crates/unityrs-imageio/src/hash.rs translates the
 converters of convert("RGBA") in src/libImaging/Convert.c (l2rgb, la2rgb,
@@ -932,6 +934,80 @@ The views and conclusions contained in the software and
 documentation are those of the authors and should not be
 interpreted as representing official policies, either expressed
 or implied, of The University of Texas at Austin.
+
+--------------------------------------------------------------------------------
+libwebp 1.3.0 (vendored encoder)
+https://chromium.googlesource.com/webm/libwebp
+Licence: BSD-3-Clause.
+
+unityrs-imageio keeps the pristine encoder subset in
+crates/unityrs-imageio/vendor/libwebp-1.3.0/ from the release tarball
+libwebp-1.3.0.tar.gz (SHA-256
+64ac4614db292ae8c5aa26de0295bf1623dbb3985054cb656c55e67431def17c).
+Each file is pinned in vendor/libwebp-1.3.0.sha256. build_webp.rs copies it
+to OUT_DIR and applies the BSD-3-Clause upstream failure-path fixes from
+libwebp 1.3.1 in vendor/patches/ (see vendor/WEBP.md), checking exact patch
+positions and context. It adds symbol prefixes, hidden visibility and Rust
+allocation without changing any vendored file. Generic C is pinned across architectures. This includes the
+lossless encoder needed for lossy WebP's alpha plane, and SharpYUV used by
+the encoder. LICENSE-WEBP links to COPYING; NOTICE-WEBP-PATENTS to PATENTS.
+The additional intellectual property grant is a notice, not an SPDX licence.
+
+{{!-- notice: LICENSE-WEBP --}}
+Copyright (c) 2010, Google Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in
+    the documentation and/or other materials provided with the
+    distribution.
+
+  * Neither the name of Google nor the names of its contributors may
+    be used to endorse or promote products derived from this software
+    without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+{{!-- notice: NOTICE-WEBP-PATENTS --}}
+Additional IP Rights Grant (Patents)
+------------------------------------
+
+"These implementations" means the copyrightable works that implement the WebM
+codecs distributed by Google as part of the WebM Project.
+
+Google hereby grants to you a perpetual, worldwide, non-exclusive, no-charge,
+royalty-free, irrevocable (except as stated in this section) patent license to
+make, have made, use, offer to sell, sell, import, transfer, and otherwise
+run, modify and propagate the contents of these implementations of WebM, where
+such license applies only to those patent claims, both currently owned by
+Google and acquired in the future, licensable by Google that are necessarily
+infringed by these implementations of WebM. This grant does not include claims
+that would be infringed only as a consequence of further modification of these
+implementations. If you or your agent or exclusive licensee institute or order
+or agree to the institution of patent litigation or any other patent
+enforcement activity against any entity (including a cross-claim or
+counterclaim in a lawsuit) alleging that any of these implementations of WebM
+or any code incorporated within any of these implementations of WebM
+constitute direct or contributory patent infringement, or inducement of
+patent infringement, then any patent rights granted to you under this License
+for these implementations of WebM shall terminate as of the date such
+litigation is filed.
 
 --------------------------------------------------------------------------------
 zlib 1.2.13 (vendored)

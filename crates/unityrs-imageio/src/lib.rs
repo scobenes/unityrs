@@ -15,6 +15,9 @@
 //!   Palette mode `P` adds PLTE and uses unfiltered rows with zlib's default
 //!   strategy: 8-bit indices with an explicit palette, or packed 1-bit
 //!   indices with Pillow's implicit one-entry palette.
+//! - [`encode_webp`] writes Pillow 9.5.0's still-image WebP bytes through
+//!   libwebp 1.3.0 with upstream failure-path fixes, generic C on every target, with bounded fallible
+//!   allocation. [`webp_plan`] gives its measured and enforced allowance.
 //! - [`encode_fast`] opts into zlib level 1 and a fixed Sub filter, with
 //!   the same windowBits 15, memLevel 9 and `Z_FILTERED`, charge plan and
 //!   fallible allocations. It preserves hidden RGB and uses the same
@@ -43,7 +46,8 @@
 //!
 //! Untrusted sizes and bytes never panic: clippy denies `unwrap`, `expect`,
 //! `panic` and indexing outside tests, as in the core (`docs/plans/core.md`
-//! 3.15). `unsafe` is confined to the zlib bindings (`src/zlib.rs`) and the
+//! 3.15). WebP unsafe is confined to `src/webp_ffi.rs`; PNG unsafe to the
+//! zlib bindings (`src/zlib.rs`) and the
 //! two calls of [`encode`] that hand zlib its input and output.
 
 #![deny(unsafe_code)]
@@ -67,8 +71,16 @@ mod image;
 #[cfg(test)]
 mod memory_tests;
 mod png;
+mod webp;
+mod webp_ffi;
 pub mod writers;
 mod zlib;
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub use webp::test_encode_webp_lossless;
+pub use webp::{
+    Webp, WebpError, WebpOptions, WebpPlan, encode_webp, webp_plan, webp_plan_with_options,
+};
 
 pub use charge::{Buffer, Charger, DEFLATE_STATE_REQUESTS, Plan, Unmetered, plan, plan_image};
 pub use hash::visible_hash;
@@ -94,3 +106,8 @@ const _: () = send_sync::<Unmetered>();
 const _: () = send_sync::<Png<()>>();
 const _: () = send_sync::<EncodeError<std::convert::Infallible>>();
 const _: () = send_sync::<ZlibFailure>();
+
+const _: () = send_sync::<WebpOptions>();
+const _: () = send_sync::<WebpPlan>();
+const _: () = send_sync::<Webp<()>>();
+const _: () = send_sync::<WebpError<std::convert::Infallible>>();
