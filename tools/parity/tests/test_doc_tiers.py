@@ -53,6 +53,19 @@ class DocTiers(unittest.TestCase):
         """DESIGN.md section 3's Tier U bullet with its list."""
         return self.design.split(f"- **{UNSUPPORTED_RULE}.**", 1)[1].split("\n- **")[0]
 
+    def test_semantic_save_short_fixed_fields_has_a_tier_c_acceptance_rule(self):
+        rows = [cells for cells, tier in rows_by_tier(self.parity)
+                if cells[0] == "`SerializedFile.save` with short GUIDs or hashes" and tier == "C (writing)"]
+        self.assertEqual(len(rows), 1)
+        row = " | ".join(rows[0])
+        for field in ("guid", "script_id", "old_type_hash"):
+            self.assertIn(f"`{field}`", row)
+        self.assertIn("exactly 16 bytes", row)
+        self.assertIn("SaveError::Range", row)
+        self.assertIn("Acceptance:", row)
+        self.assertIn("SaveLayout::UnityPy", row)
+        self.assertIn("semantic_save_refuses_a_reader_accepted_short_guid", row)
+
     def test_not_characterised_is_a_tier_u_ground(self):
         """Tier U covers a case no test has run UnityPy on as well as one that waits for a sample and a reference:
         both definitions say so, every PARITY.md sentence that calls a case not characterised files it as Tier U,

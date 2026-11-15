@@ -20,6 +20,19 @@ use unityrs_testkit::scratch::Scratch;
 fn every_value_seed_is_written_at_each_memory_bound() {
     let dir = Scratch::new("fuzz-seeds");
     seeds::write(&dir).expect("the seeds are written");
+    let read_seeds = std::fs::read_dir(dir.join("serialized")).unwrap().count();
+    let save_seeds = std::fs::read_dir(dir.join("serialized_save"))
+        .unwrap()
+        .count();
+    assert!(read_seeds > 0);
+    assert_eq!(read_seeds, save_seeds);
+    for entry in std::fs::read_dir(dir.join("serialized")).unwrap() {
+        let entry = entry.unwrap();
+        assert_eq!(
+            std::fs::read(entry.path()).unwrap(),
+            std::fs::read(dir.join("serialized_save").join(entry.file_name())).unwrap()
+        );
+    }
     fsb5_seeds_cover_formats_versions_and_hostile_headers(&dir);
     texture_seeds_are_cases(&dir);
     astc_seeds_are_cases(&dir);

@@ -54,10 +54,11 @@ mod web;
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 18] = [
+const TARGETS: [&str; 19] = [
     "detect",
     "bundle",
     "serialized",
+    "serialized_save",
     "typetree",
     "boost_read",
     "python_read",
@@ -220,6 +221,7 @@ impl Seeds {
             // SerializedFile for one, and the target parses whatever it gets.
             Ok(FileType::AssetsFile | FileType::ResourceFile) => {
                 self.add("serialized", name, bytes)?;
+                self.add("serialized_save", name, bytes)?;
                 if let Ok(f) = SerializedFile::parse(RawStr::from(name), data, None, &meter, &ctx) {
                     self.objects(name, &f)?;
                 }

@@ -34,6 +34,7 @@ pub enum WebPacker {
 
 /// A `WebFile`.
 pub struct WebFile {
+    pub(super) changed: std::sync::atomic::AtomicBool,
     name: RawStr,
     signature: RawStr,
     packer: WebPacker,
@@ -138,6 +139,7 @@ impl WebFile {
         let files = super::bundle::open::keep(files, &mut charge)?;
         let entries = super::bundle::open::keep(entries, &mut charge)?;
         Ok(Arc::new_cyclic(|this| Self {
+            changed: std::sync::atomic::AtomicBool::new(false),
             name,
             signature,
             packer,

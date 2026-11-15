@@ -8,6 +8,7 @@ pub mod commonstring;
 pub mod parse;
 pub mod rows;
 pub mod tree;
+mod write;
 
 pub use rows::{NodeId, NodeList, NodeRow, TreeError};
 pub use tree::{Kind, NodeInfo, Shape, Tree};

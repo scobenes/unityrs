@@ -110,6 +110,7 @@ pub(super) fn open(
         blocks_info: None,
     };
     Ok(Arc::new_cyclic(|this| BundleFile {
+        changed: std::sync::atomic::AtomicBool::new(false),
         name,
         source,
         legacy_data: Some(data),

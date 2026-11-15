@@ -161,3 +161,10 @@ path = "fuzz_targets/unityweb.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "serialized_save"
+path = "fuzz_targets/serialized_save.rs"
+test = false
+doc = false
+bench = false

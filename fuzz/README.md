@@ -24,6 +24,7 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `unityweb` | legacy headers, signed level skip, LZMA and directories, memory and stream readers | UnityWeb/UnityRaw formats 1–6 |
 | `unitycn` | UnityCN header table construction and in-place token walk, including the virtual trailing zero and Tier U refusal; a valid synthetic signature keeps arbitrary nibble tables reachable | any bytes: the first 16 also mutate the encrypted table vector, and the first 8 select the block index |
 | `serialized` | `SerializedFile::parse`, then every object's `parse_as_dict(true)` (UnityPyBoost's reader or the pure-Python one, by the object's size), by both readers' rules | any bytes |
+| `serialized_save` | load, save, reload: same objects and raw bytes; the next save is identical; typed resource refusals are allowed | any bytes (the serialized seeds) |
 | `typetree` | `parse_blob` (format 10 and from 12) or `parse_old`, as the format says, then `NodeList::from_rows` and `Tree::compile` | `unityrs_testkit::fuzz::blob_case`: format, endian, stored tree |
 | `boost_read` | `walk::boost::read` | `unityrs_testkit::fuzz::TreeCase`: rows, ref types, value bytes |
 | `python_read` | `walk::python::read_with_reader`, from the case's start, by the memory or the stream reader's rules | `TreeCase` |
