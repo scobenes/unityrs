@@ -64,11 +64,17 @@ impl<T> Task<T> {
         self.0.lock().is_some()
     }
 }
+#[cfg(feature = "test-hooks")]
+pub(crate) mod trace;
+
 /// One controller pool: the controller runtime's blocking threads, `dc + 1`
 /// of them. The host lends its prepared runtime's handle; a library
 /// caller's Execution builds and owns one, and shuts it down on drop.
 pub struct Execution {
     runtime: Option<tokio::runtime::Runtime>,
+    /// The process retains its runtimes until `_exit`; this borrow drives
+    /// IO and time without taking ownership of either runtime.
+    lent: Option<&'static tokio::runtime::Runtime>,
     pool: tokio::runtime::Handle,
     /// Tasks submitted and not yet stored: at most `dc + 1`, local copies,
     /// failure writes and phase-6/7 tasks together.
@@ -137,6 +143,7 @@ impl Execution {
         let receive = Arc::new(Mutex::new(receive));
         let mut execution = Self {
             runtime: None,
+            lent: None,
             pool,
             outstanding: Arc::new(AtomicUsize::new(0)),
             peak: Arc::new(AtomicUsize::new(0)),
@@ -185,6 +192,19 @@ impl Execution {
         drop(gate);
         Ok(execution)
     }
+    /// The process's lent controller runtime, already prepared and
+    /// prewarmed in startup order. A handle alone cannot drive a
+    /// current-thread runtime's IO or timers.
+    pub(crate) fn prepare_lent(
+        p: &crate::phase1::PreparedRun,
+        runtime: &'static tokio::runtime::Runtime,
+        stop_wake: Arc<Wake>,
+        on_start: fn(),
+    ) -> Result<Self, SetupError> {
+        let mut execution = Self::prepare_hosted(p, runtime.handle().clone(), stop_wake, on_start)?;
+        execution.lent = Some(runtime);
+        Ok(execution)
+    }
     pub fn bind(&self, controller: &Controller) -> Result<(), SetupError> {
         if !self.matches(&controller.prepared.spec) {
             return Err(SetupError::Execution);
@@ -197,10 +217,10 @@ impl Execution {
         Arc::ptr_eq(&self.spec, spec)
     }
     /// The runtime a networked run's staging is driven on, when this
-    /// Execution owns it. The host lends only a handle; its controller
-    /// thread drives its own runtime (B10c-2).
+    /// Execution owns it or the process lends it. Only the controller
+    /// thread drives this runtime.
     pub(crate) fn runtime(&self) -> Option<&tokio::runtime::Runtime> {
-        self.runtime.as_ref()
+        self.runtime.as_ref().or(self.lent)
     }
     /// The controller pool's handle: its blocking threads and its reactor.
     pub(crate) fn handle(&self) -> &tokio::runtime::Handle {
@@ -246,6 +266,8 @@ impl Execution {
         let slot = result.clone();
         let outstanding = self.outstanding.clone();
         let wake = self.end_wake.clone();
+        #[cfg(feature = "test-hooks")]
+        let trace = trace::task(&self.pool, kind);
         let spawned = catch_unwind(AssertUnwindSafe(|| {
             drop(self.pool.spawn_blocking(move || {
                 let value = catch_unwind(AssertUnwindSafe(job)).map_err(|_| {
@@ -253,6 +275,8 @@ impl Execution {
                 });
                 // The callback and its captures have dropped; free the place
                 // before publishing, so a woken host may submit again at once.
+                #[cfg(feature = "test-hooks")]
+                drop(trace);
                 outstanding.fetch_sub(1, Ordering::AcqRel);
                 *slot.lock() = Some(value);
                 // Readiness cannot trail wake.

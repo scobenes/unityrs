@@ -4,7 +4,7 @@
 //! ```text
 //! unityrs batch --check JOB.json   validate; exit 0 or 78, one `exit` line
 //! unityrs batch --schema           the spec's JSON Schema; exit 0, 74, or 69 at step 1
-//! unityrs batch JOB.json           a normal run: local sources, a directory sink
+//! unityrs batch JOB.json           a normal run: local or URL sources, a directory sink
 //! unityrs --version                one line; exit 0, 74, or 69 at step 1
 //! ```
 //!
@@ -27,8 +27,8 @@
 //! (`unityrs_batch::run::process::Startup`), then phase 1, then the process
 //! host, which ends the process itself. Runs use the local normal-run
 //! subset, archives and the lifetime fields (`deadline`,
-//! `stop_on_stdin_eof`, `parent_pid`) included; URL sources and the object
-//! store are refused with 78 before mutation.
+//! `stop_on_stdin_eof`, `parent_pid`) included; local and URL sources are
+//! supported. The object store is refused with 78 before mutation.
 
 mod normal;
 
@@ -49,7 +49,7 @@ use unityrs_batch::spec::{self, BadSpec, SPEC_VERSION};
 
 pub const USAGE: &str = "usage: unityrs batch --check JOB.json\n       \
                          unityrs batch --schema\n       \
-                         unityrs batch JOB.json   (temporary normal-run subset: local sources, directory sink)";
+                         unityrs batch JOB.json   (temporary normal-run subset: local and URL sources, directory sink)";
 
 const VERSION_USAGE: &str = "usage: unityrs --version";
 
@@ -166,7 +166,7 @@ enum Phase1Error {
     Validation(BadSpec),
     /// `JOB.json`'s open at a full descriptor table: 69, the host's.
     Descriptors(i32),
-    Preparation,
+    Preparation(Code),
 }
 /// Phase 1 on `path`, measured from its read through preparation (2.7, 5.3).
 fn phase1(p: &[u8]) -> (Result<PreparedRun, Phase1Error>, alloc::Measured) {
@@ -180,12 +180,19 @@ fn phase1(p: &[u8]) -> (Result<PreparedRun, Phase1Error>, alloc::Measured) {
         let validated = spec::parse(bytes).map_err(Phase1Error::Validation)?;
         // Validation used the same template parser. Its accepted templates
         // compile here before phase 1's retained-heap measurement ends.
-        phase1::prepare(validated).map_err(|_| Phase1Error::Preparation)
+        phase1::prepare(validated).map_err(|error| preparation_error(&error))
     })
 }
 
+fn preparation_error(error: &phase1::PreparationError) -> Phase1Error {
+    let memory = matches!(error,
+        phase1::PreparationError::Winners(unityrs_batch::phase::Error::Run(f))
+            if f.reason == unityrs_batch::attempt::ReasonCode::HostMemory);
+    Phase1Error::Preparation(if memory { Code::Host } else { Code::Internal })
+}
+
 fn phase1_failed(clock: &Clock, error: Phase1Error) -> ExitCode {
-    match error {
+    let c = match error {
         Phase1Error::Validation(bad) => return refused(clock, &bad, "unityrs batch", ""),
         // `--check`'s: a run's exception alone (`BATCH_SPEC.md` section
         // 10), so `--check` keeps 78 `bad_spec unreadable`.
@@ -193,19 +200,28 @@ fn phase1_failed(clock: &Clock, error: Phase1Error) -> ExitCode {
             let bad = spec::read::ReadError::Descriptors(errno).into_bad_spec();
             return refused(clock, &bad, "unityrs batch", "");
         }
-        Phase1Error::Preparation => {}
-    }
+        Phase1Error::Preparation(code) => code,
+    };
+    let reason = if c == Code::Host {
+        "host_memory"
+    } else {
+        "internal"
+    };
     let exit = Exit {
         status: None,
-        code: Code::Internal,
-        reason: Some("internal"),
+        code: c,
+        reason: Some(reason),
         detail: None,
     };
     early::write(
         Snapshot::validate(clock.ms()).line(Some(&exit)).as_bytes(),
-        b"unityrs batch: internal\n",
+        if c == Code::Host {
+            b"unityrs batch: host_memory\n"
+        } else {
+            b"unityrs batch: internal\n"
+        },
     );
-    code(Code::Internal)
+    code(c)
 }
 
 /// `--check`'s line for a valid spec: code 0, `memory_bound <bytes>`.
@@ -324,6 +340,15 @@ fn end(clock: &Clock, c: Code, reason: &'static str, detail: String, err: &str) 
 #[cfg(test)]
 mod tests {
     use super::{Command, command};
+    #[test]
+    fn preparation_memory_refusal_is_host_memory() {
+        let error =
+            unityrs_batch::phase1::PreparationError::Winners(unityrs_batch::phase::Error::memory());
+        assert!(matches!(
+            super::preparation_error(&error),
+            super::Phase1Error::Preparation(unityrs_batch::reason::Code::Host)
+        ));
+    }
 
     /// Removing either suppression or changing the returned status must
     /// fail, including for a character device that is not a terminal.

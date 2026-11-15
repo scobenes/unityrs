@@ -25,6 +25,8 @@ pub struct Watch<'a> {
     #[cfg(feature = "test-hooks")]
     trace: Option<std::fs::File>,
     #[cfg(feature = "test-hooks")]
+    cutoff_arm: Option<(std::fs::File, u64)>,
+    #[cfg(feature = "test-hooks")]
     mark: fn(),
 }
 impl<'a> Watch<'a> {
@@ -43,6 +45,8 @@ impl<'a> Watch<'a> {
             on_panic: || {},
             #[cfg(feature = "test-hooks")]
             trace: None,
+            #[cfg(feature = "test-hooks")]
+            cutoff_arm: None,
             #[cfg(feature = "test-hooks")]
             mark: || {},
         })
@@ -66,6 +70,10 @@ impl<'a> Watch<'a> {
         }
         #[cfg(not(feature = "test-hooks"))]
         let _ = line;
+    }
+    #[cfg(feature = "test-hooks")]
+    pub fn cutoff_after(&mut self, fifo: std::fs::File, delay_ms: u64) {
+        self.cutoff_arm = Some((fifo, delay_ms));
     }
     #[cfg(feature = "test-hooks")]
     pub fn fail_timer(&mut self) {
@@ -143,6 +151,7 @@ impl<'a> Watch<'a> {
                 let _ = self.finisher.notify();
                 self.traced(b"lifecycle_stop_woken reached\n");
             }
+            #[cfg_attr(feature = "test-hooks", allow(unused_mut))]
             let mut fds = [
                 libc::pollfd {
                     fd: self.process.pipe.as_raw_fd(),
@@ -151,6 +160,19 @@ impl<'a> Watch<'a> {
                 },
                 libc::pollfd {
                     fd: self.timer.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            #[cfg(feature = "test-hooks")]
+            let mut fds = [
+                fds[0],
+                fds[1],
+                libc::pollfd {
+                    fd: self
+                        .cutoff_arm
+                        .as_ref()
+                        .map_or(-1, |(file, _)| file.as_raw_fd()),
                     events: libc::POLLIN,
                     revents: 0,
                 },
@@ -169,6 +191,18 @@ impl<'a> Watch<'a> {
                 self.traced(b"lifecycle_pipe_read reached\n");
             }
             self.timer.drain();
+            #[cfg(feature = "test-hooks")]
+            if let Some((file, delay)) = &mut self.cutoff_arm {
+                use std::io::Read;
+                if file.read(&mut [0]).is_ok_and(|n| n == 1) {
+                    let Ok(now) = Boot::now() else {
+                        self.process.exit(Code::Internal);
+                    };
+                    self.policy.cutoff = Some(Boot(now.0.saturating_add(*delay)));
+                    self.cutoff_arm = None;
+                    self.traced(b"cutoff armed\n");
+                }
+            }
         }
     }
 }

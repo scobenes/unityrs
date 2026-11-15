@@ -524,6 +524,8 @@ impl<R: Body> Stage<R> {
         let control = cx.control.clone();
         let clock = cx.clock.clone();
         let start = cx.clock.now();
+        #[cfg(feature = "test-hooks")]
+        let trace = crate::execution::trace::task(pool, "download write");
         let task = crate::execution::blocking(pool, move || {
             let before = crate::alloc::refusals();
             let mut result = catch_unwind(AssertUnwindSafe(|| {
@@ -545,6 +547,8 @@ impl<R: Body> Stage<R> {
             if let Err(Failure::Run(f)) = result {
                 control.request_stop(f, Culprit::None);
             }
+            #[cfg(feature = "test-hooks")]
+            drop(trace);
             Written {
                 file,
                 data,

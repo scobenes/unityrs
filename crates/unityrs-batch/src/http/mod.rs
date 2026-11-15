@@ -1,5 +1,5 @@
 //! Bounded one-request HTTP/1.1 transport. A library run given a network
-//! stages URLs through it; `start::supported` and the CLI still refuse them.
+//! stages URLs through it; the process host uses its own shared reset table.
 //! Redirects, retries, body timers and spool writes belong to staging.
 mod addresses;
 mod classify;
@@ -24,6 +24,8 @@ use url::Url;
 
 pub use error::{Detail, Error, Failure, RetryClass};
 pub use io::Stream;
+#[cfg(feature = "test-hooks")]
+pub use io::{PlainReadHooks, arm_plain_reads};
 pub use request::{Payload, prepare};
 pub use response::{Data, HEAD_CAP, LIBRARY_ENVELOPE, Response, exchange};
 
@@ -45,6 +47,18 @@ impl Service {
                 resolver: resolve::Source::System,
             },
         })
+    }
+    /// Another runtime on this same process table and immutable TLS
+    /// configuration. Startup only: both runtimes keep independent pools.
+    pub(crate) fn on_runtime(&self, pool: Handle) -> Self {
+        Self {
+            connector: connect::Connector {
+                pool,
+                table: self.connector.table.clone(),
+                tls: self.connector.tls.clone(),
+                resolver: self.connector.resolver.clone(),
+            },
+        }
     }
     /// The caller prepares an origin-form request from this same URL. Waiting
     /// for a previous lookup token precedes the connection timer. No runtime or
