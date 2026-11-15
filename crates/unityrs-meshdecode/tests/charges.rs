@@ -139,7 +139,7 @@ fn rows_of(rows: &J) -> Vec<NodeRow> {
 
 fn parse(rows: Vec<NodeRow>, data: Vec<u8>) -> Parsed {
     let tree = Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap();

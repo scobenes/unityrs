@@ -39,7 +39,7 @@ use unityrs_dump::{LIFTABLE, Levels};
 
 pub const USAGE: &str = "usage: unityrs dump [-h] -o OUTPUT [--index] [--kind KIND] [--build BUILD] \
 [--allow-index-mismatch] [--name NAME] [--sample SAMPLE] [--limit LIMIT] [--levels LEVELS] \
-[-j JOBS] [--stats STATS] [-q] [--tpk TPK] [--reverse-prepass] [--unbounded UNBOUNDED] \
+[-j JOBS] [--stats STATS] [-q] [--tpk TPK] [--reverse-prepass] [--unbounded UNBOUNDED] [--mesh] \
 input [input ...]";
 
 pub const HELP: &str = "\
@@ -63,7 +63,7 @@ options:
   --name NAME           glob on the dump-relative path (repeatable)
   --sample SAMPLE       keep N inputs spread evenly over the sorted list
   --limit LIMIT         keep the first N inputs
-  --levels LEVELS       levels to dump (default: L0,L1,L2,L3)
+  --mesh                L6 Mesh digests (tools/parity/mesh_dump.py)\n  --levels LEVELS       levels to dump (default: L0,L1,L2,L3)
   -j JOBS, --jobs JOBS  inputs dumped at once (default 1)
   --stats STATS         write per-input timings and totals as JSON to this path
   -q, --quiet           no per-input progress on stderr
@@ -99,11 +99,12 @@ enum Dest {
     Tpk,
     LazyReverse,
     Unbounded,
+    Mesh,
 }
 
 /// `_option_string_actions`, in the order `add_argument` fills it: an
 /// ambiguous prefix lists its matches in this order.
-const STRINGS: [(&str, Dest); 20] = [
+const STRINGS: [(&str, Dest); 21] = [
     ("-h", Dest::Help),
     ("--help", Dest::Help),
     ("-o", Dest::Output),
@@ -124,6 +125,7 @@ const STRINGS: [(&str, Dest); 20] = [
     ("--tpk", Dest::Tpk),
     ("--reverse-prepass", Dest::LazyReverse),
     ("--unbounded", Dest::Unbounded),
+    ("--mesh", Dest::Mesh),
 ];
 
 impl Dest {
@@ -131,7 +133,7 @@ impl Dest {
     fn takes_value(self) -> bool {
         !matches!(
             self,
-            Self::Help | Self::Index | Self::Allow | Self::Quiet | Self::LazyReverse
+            Self::Help | Self::Index | Self::Allow | Self::Quiet | Self::LazyReverse | Self::Mesh
         )
     }
 
@@ -177,6 +179,7 @@ pub struct DumpArgs {
     pub tpk: Option<PathBuf>,
     /// `--reverse-prepass`, an extension: G1c's pre-pass.
     pub lazy_reverse: bool,
+    pub mesh: bool,
     /// `--unbounded`, an extension: the limits G3b's check lifts, in
     /// [`LIFTABLE`] order.
     pub unbounded: Vec<LimitKind>,
@@ -641,15 +644,12 @@ pub fn parse(args: &[Vec<u8>]) -> Result<Parsed, Usage> {
         Some(b) if !b.is_empty() => Some(split(b)),
         _ => None,
     };
-    let levels = match ns.last(Dest::Levels) {
-        Some(l) => String::from_utf8_lossy(l).into_owned(),
-        None => "L0,L1,L2,L3".to_owned(),
-    };
-    let levels = Levels::parse(&levels).map_err(Usage)?;
+    let levels = parsed_levels(&ns)?;
     let unbounded = match ns.last(Dest::Unbounded) {
         Some(u) => unbounded(u)?,
         None => Vec::new(),
     };
+    check_mesh_flags(&ns, &unbounded)?;
     Ok(Parsed::Dump(Box::new(DumpArgs {
         inputs: ns.inputs.iter().map(|a| path(a)).collect(),
         output: output.unwrap_or_default(),
@@ -672,8 +672,26 @@ pub fn parse(args: &[Vec<u8>]) -> Result<Parsed, Usage> {
         quiet: ns.flag(Dest::Quiet),
         tpk: ns.last(Dest::Tpk).map(path),
         lazy_reverse: ns.flag(Dest::LazyReverse),
+        mesh: ns.flag(Dest::Mesh),
         unbounded,
     })))
+}
+
+fn parsed_levels(ns: &Namespace) -> Result<Levels, Usage> {
+    let levels = match ns.last(Dest::Levels) {
+        Some(l) => String::from_utf8_lossy(l).into_owned(),
+        None => "L0,L1,L2,L3".to_owned(),
+    };
+    Levels::parse(&levels).map_err(Usage)
+}
+
+fn check_mesh_flags(ns: &Namespace, unbounded: &[LimitKind]) -> Result<(), Usage> {
+    if ns.flag(Dest::Mesh) && (!unbounded.is_empty() || ns.flag(Dest::LazyReverse)) {
+        return Err(Usage(
+            "--mesh cannot be combined with --unbounded or --reverse-prepass".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// `--unbounded`'s comma list: each a [`LIFTABLE`] kind's name, any order,

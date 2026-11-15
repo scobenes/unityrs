@@ -87,6 +87,7 @@ const CALLS: &[(&str, Pool, &[&str])] = &[
     ("Environment::load", Pool::Inner, &[SETTLE]),
     ("Environment::load_file", Pool::Inner, &[SETTLE]),
     ("Environment::load_zip_file", Pool::Inner, &[SETTLE]),
+    ("Environment::load_reader", Pool::Inner, &[SETTLE]),
     ("Environment::load_path", Pool::Inner, &[SETTLE]),
     ("Environment::load_files", Pool::Inner, &[SETTLE]),
     ("Environment::load_folder", Pool::Inner, &[SETTLE]),
@@ -358,6 +359,7 @@ fn sorted_keys(env: &Environment) -> Vec<String> {
 enum Dropper {
     Load,
     LoadFile,
+    LoadReader,
     LoadZip,
     LoadPath,
     LoadFiles,
@@ -378,6 +380,7 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
     let inner = match how {
         Dropper::Load
         | Dropper::LoadFile
+        | Dropper::LoadReader
         | Dropper::LoadZip
         | Dropper::LoadPath
         | Dropper::LoadFiles
@@ -397,6 +400,18 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
         None => match how {
             Dropper::Load => drop(env.load(source(&d, 3)).unwrap()),
             Dropper::LoadFile => drop(env.load_file(source(&d, 3)).unwrap()),
+            Dropper::LoadReader => {
+                let (name, bytes) = &d.scene.files[3];
+                drop(
+                    env.load_reader(
+                        RawStr::from(name.as_slice()),
+                        Bytes::copy_from_slice(bytes),
+                        unityrs_core::stream::ReaderKind::Memory,
+                        false,
+                    )
+                    .unwrap(),
+                );
+            }
             Dropper::LoadZip => {
                 let (name, bytes) = &d.scene.files[3];
                 let zip = unityrs_testkit::zip::archive(&[(
@@ -445,6 +460,7 @@ fn a_registration_that_drops_a_dependencys_container_makes_room_to_reach_it() {
     for how in [
         Dropper::Load,
         Dropper::LoadFile,
+        Dropper::LoadReader,
         Dropper::LoadZip,
         Dropper::LoadPath,
         Dropper::LoadFiles,

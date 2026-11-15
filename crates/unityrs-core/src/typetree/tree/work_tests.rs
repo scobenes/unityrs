@@ -38,13 +38,16 @@ fn input_meter(limits: &Limits) -> Arc<Meter> {
 
 /// A list on `meter` of a `Base` root and one child per name in `names`,
 /// each child's type and name that one string.
-fn list_on(meter: &Arc<Meter>, names: impl IntoIterator<Item = RawStr>) -> Arc<NodeList> {
+fn list_on(
+    meter: &Arc<Meter>,
+    names: impl IntoIterator<Item = RawStr>,
+) -> crate::typetree::SharedNodes {
     let mut rows = MeteredVec::new(meter);
     rows.push(NodeRow::new(0, "Base", "Base")).unwrap();
     for s in names {
         rows.push(NodeRow::new(1, s.clone(), s)).unwrap();
     }
-    Arc::new(NodeList::from_rows(rows).unwrap())
+    NodeList::from_rows(rows).unwrap().into_shared().unwrap()
 }
 
 /// A format-22 blob over `buffer`: a root naming offset 0 for its type and
@@ -92,7 +95,7 @@ fn rows_naming_one_long_string_read_it_at_most_once() {
     let meter = input_meter(&limits);
     let mut r = Reader::new(&data, Endian::Little);
     let rows = parse_blob(&mut r, &data, 22, &meter, &limits, None).unwrap();
-    let list = Arc::new(NodeList::from_rows(rows).unwrap());
+    let list = NodeList::from_rows(rows).unwrap().into_shared().unwrap();
     let parsed = meter.decoded();
     assert_eq!(
         parsed,
@@ -227,7 +230,7 @@ fn names_number_as_a_dict_keys_them_and_every_byte_read_is_counted() {
                 rows.push(NodeRow::new(2, "int", name)).unwrap();
             }
         }
-        let list = Arc::new(NodeList::from_rows(rows).unwrap());
+        let list = NodeList::from_rows(rows).unwrap().into_shared().unwrap();
         for collide in [false, true] {
             let before = (read_now(), meter.decoded());
             let tree = if collide {
@@ -438,7 +441,7 @@ fn a_types_nul_is_looked_for_only_in_its_head() {
             rows.push(NodeRow::new(1, ty.clone(), name.clone()))
                 .unwrap();
         }
-        let list = Arc::new(NodeList::from_rows(rows).unwrap());
+        let list = NodeList::from_rows(rows).unwrap().into_shared().unwrap();
         let before = scanned_now();
         let tree = Tree::compile(list, &Limits::default()).unwrap();
         (tree, scanned_now() - before)
@@ -493,7 +496,7 @@ fn a_name_table_knows_its_strings_buffers_and_nothing_else() {
                 .into_iter()
                 .map(|n| NodeRow::new(1, strings[1].clone(), n)),
         );
-        Arc::new(NodeList::trusted(rows).unwrap())
+        NodeList::trusted(rows).unwrap().into_shared().unwrap()
     };
     let s = |i: usize| strings[i].clone();
     let ours = list(vec![s(2), s(3), s(4), s(2)]);
@@ -535,7 +538,7 @@ fn a_compile_through_a_name_table_costs_its_own_rows_whatever_the_tables_size() 
             for i in 1..rows {
                 list.push(NodeRow::new(1, high(1), high(i))).unwrap();
             }
-            let list = Arc::new(NodeList::from_rows(list).unwrap());
+            let list = NodeList::from_rows(list).unwrap().into_shared().unwrap();
             let (read, before) = (read_now(), meter.granted());
             let tree = Tree::compile_with_names(list, &Limits::default(), &table).unwrap();
             assert_eq!(read_now(), read, "{size} strings, {rows} rows: a name read");
@@ -579,7 +582,7 @@ fn a_name_tables_compile_is_the_plain_compile() {
             let (ty, name) = (pick(&mut rng), pick(&mut rng));
             rows.push(NodeRow::new(level, ty, name)).unwrap();
         }
-        let list = Arc::new(NodeList::from_rows(rows).unwrap());
+        let list = NodeList::from_rows(rows).unwrap().into_shared().unwrap();
         let read = read_now();
         let with = Tree::compile_with_names(list.clone(), &Limits::default(), &table).unwrap();
         assert_eq!(read_now(), read, "case {case}: a name read");
@@ -622,7 +625,7 @@ fn a_name_table_keeps_the_buffers_it_knows() {
     for s in &fresh[1..8] {
         rows.push(NodeRow::new(1, s.clone(), s.clone())).unwrap();
     }
-    let list = Arc::new(NodeList::from_rows(rows).unwrap());
+    let list = NodeList::from_rows(rows).unwrap().into_shared().unwrap();
     let read = read_now();
     let with = Tree::compile_with_names(list.clone(), &Limits::default(), &table).unwrap();
     assert!(

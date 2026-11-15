@@ -85,7 +85,7 @@ fn a_missing_script_object_falls_back() {
         NodeRow::new(2, "SInt64", "m_PathID"),
     ])
     .unwrap();
-    let tree = Tree::compile(Arc::new(nodes), &Limits::default()).unwrap();
+    let tree = Tree::compile(nodes.into_shared().unwrap(), &Limits::default()).unwrap();
     let export = run(Ok(tree)).unwrap().unwrap();
     assert_eq!(export.extension, ".bin");
     assert_eq!(export.fallback, Some(Fallback::ReadFailed));

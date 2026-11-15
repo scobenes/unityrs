@@ -11,7 +11,6 @@ use crate::counters::Origin;
 use crate::error::{Error, LimitKind};
 use crate::files::Parent;
 use crate::limits::{Meter, MeteredVec, heap_cost};
-use crate::once::ResultCell;
 use crate::options::FileContext;
 use crate::raw::RawStr;
 use crate::stream::{Endian, Reader, ReaderKind};
@@ -89,7 +88,7 @@ pub(super) fn open(
     let twins = keep(twins(&directory, meter)?, &mut charge)?;
     let mut entries = MeteredVec::new(meter);
     for _ in &directory {
-        entries.push(ResultCell::new())?;
+        entries.push(super::super::teardown::FileCell::new())?;
     }
     let entries = keep(entries, &mut charge)?;
     let (ends, c) = Ends::new(0, meter)?;

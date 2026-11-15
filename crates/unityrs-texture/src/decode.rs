@@ -121,10 +121,12 @@
 //! `INT_MAX - 7 * bits + 7`. Sizes are computed here in `u64`, from the
 //! `i32` sides, so none wraps.
 //!
-//! **Legacy crunch.** `DXT1Crunched` and `DXT5Crunched` explicitly select
+//! **Crunch.** [`Format::Dxt1Crunched`] and [`Format::Dxt5Crunched`] select
 //! legacy input. Call [`crate::select_in`] or [`crate::select_crunch`] with
-//! the Unity version before choosing them: 2017.3+ and ETC crunch require
-//! T4b. Unpacking chooses mip zero, then the existing BC1/BC3 path crops and flips its blocks. The
+//! the Unity version: Unity 2017.3+ selects `UnityDxt1Crunched` or
+//! `UnityDxt5Crunched`; crunched ETC always selects the Unity fork.
+//! Unpacking chooses mip zero, then the existing BC1/BC3 or ETC path crops
+//! and flips its blocks. The
 //! `crunch` module checks header ranges and models; failures are typed
 //! [`DecodeError::Crunch`], even after a length-only plan succeeds. The
 //! native builder fixture checks blocks at every mip; the optional pinned
@@ -202,7 +204,7 @@ pub enum DecodeError {
         /// The stored width.
         width: i32,
     },
-    /// A malformed legacy CRN stream or unsupported CRN feature.
+    /// A malformed legacy or Unity CRN stream or unsupported CRN feature.
     #[error(transparent)]
     Crunch(crunch::CrunchError),
     /// The data is empty: UnityPy's `ValueError("Texture2D has no
@@ -444,12 +446,19 @@ pub fn plan(format: Format, data_len: usize, width: i32, height: i32) -> Result<
         height: h,
         input_bytes,
         output_bytes: shown * mode.bytes_per_pixel(),
-        scratch: if format.is_crunched() {
-            crunch::scratch(unpacked_bytes)
-        } else {
-            astc_footprint(format).map_or(0, astc::Tables::charge)
-        },
+        scratch: scratch_charge(format, unpacked_bytes, w64),
     })
+}
+
+/// The temporary buffers and tables needed beside a decode's output.
+fn scratch_charge(format: Format, unpacked_bytes: u64, width: u64) -> u64 {
+    if format.is_unity_crunched() {
+        crunch::unity::scratch(unpacked_bytes, width)
+    } else if format.is_crunched() {
+        crunch::scratch(unpacked_bytes)
+    } else {
+        astc_footprint(format).map_or(0, astc::Tables::charge)
+    }
 }
 
 /// Stored bytes per pixel for raw Pillow and closed-form formats.
@@ -610,7 +619,11 @@ fn decode_with(
         });
     };
     if out_len > 0 && format.is_crunched() {
-        crunch::validate(data, format == Format::Dxt5Crunched, (w, h))?;
+        if format.is_unity_crunched() {
+            crunch::unity::validate(data, format, (w, h))?;
+        } else {
+            crunch::validate(data, format == Format::Dxt5Crunched, (w, h))?;
+        }
     }
     // The empty image of a side of 0 charges and allocates nothing.
     let (pixels, charge) = MeteredVec::<u8>::with_capacity(meter, out_len)?.into_parts();
@@ -629,15 +642,12 @@ fn decode_with(
             // second buffer and all temporary tables remain metered until
             // freed. Pillow BC1/BC3 supplies precisely the existing pixels.
             crate::contain(AssertUnwindSafe(|| {
-                let dxt5 = format == Format::Dxt5Crunched;
-                let blocks = crunch::unpack(data, dxt5, (w, h), 0, meter)?;
-                bcn::decode(
-                    if dxt5 { bcn::Kind::Bc3 } else { bcn::Kind::Bc1 },
-                    blocks.as_slice(),
-                    w,
-                    h,
-                    &mut image.pixels,
-                );
+                let blocks = if format.is_unity_crunched() {
+                    crunch::unity::unpack(data, format, (w, h), 0, meter)?
+                } else {
+                    crunch::unpack(data, format == Format::Dxt5Crunched, (w, h), 0, meter)?
+                };
+                fill(format, blocks.as_slice(), w, h, &mut image.pixels, None);
                 Ok(())
             }))?;
             return Ok(image);
@@ -690,9 +700,13 @@ fn fill(
         Format::Rgba4444 => raw::decode(raw::Kind::Rgba4BRgba, data, w, h, out),
         Format::Bgra32 => raw::decode(raw::Kind::Bgra, data, w, h, out),
         Format::R8 => raw::decode(raw::Kind::R, data, w, h, out),
-        Format::Dxt1 | Format::Dxt1Crunched => bcn::decode(bcn::Kind::Bc1, data, w, h, out),
+        Format::Dxt1 | Format::Dxt1Crunched | Format::UnityDxt1Crunched => {
+            bcn::decode(bcn::Kind::Bc1, data, w, h, out);
+        }
         Format::Dxt3 => bcn::decode(bcn::Kind::Bc2, data, w, h, out),
-        Format::Dxt5 | Format::Dxt5Crunched => bcn::decode(bcn::Kind::Bc3, data, w, h, out),
+        Format::Dxt5 | Format::Dxt5Crunched | Format::UnityDxt5Crunched => {
+            bcn::decode(bcn::Kind::Bc3, data, w, h, out);
+        }
         Format::Bc4 => bcn::decode(bcn::Kind::Bc4, data, w, h, out),
         Format::Bc5 => bcn::decode(bcn::Kind::Bc5, data, w, h, out),
         Format::Bc7 => bcn::decode(bcn::Kind::Bc7, data, w, h, out),
@@ -700,14 +714,16 @@ fn fill(
         Format::PvrtcRgb4 | Format::PvrtcRgba4 => pvrtc::decode(data, w, h, false, out),
         Format::AtcRgb4 => atc::decode(data, w, h, false, out),
         Format::AtcRgba8 => atc::decode(data, w, h, true, out),
-        Format::EtcRgb4 => etc::decode(etc::Kind::Etc1, data, w, h, out),
+        Format::EtcRgb4 | Format::EtcRgb4Crunched => etc::decode(etc::Kind::Etc1, data, w, h, out),
         Format::EacR => etc::decode(etc::Kind::EacR, data, w, h, out),
         Format::EacRSigned => etc::decode(etc::Kind::EacRSigned, data, w, h, out),
         Format::EacRg => etc::decode(etc::Kind::EacRg, data, w, h, out),
         Format::EacRgSigned => etc::decode(etc::Kind::EacRgSigned, data, w, h, out),
         Format::Etc2Rgb => etc::decode(etc::Kind::Etc2, data, w, h, out),
         Format::Etc2Rgba1 => etc::decode(etc::Kind::Etc2A1, data, w, h, out),
-        Format::Etc2Rgba8 => etc::decode(etc::Kind::Etc2A8, data, w, h, out),
+        Format::Etc2Rgba8 | Format::Etc2Rgba8Crunched => {
+            etc::decode(etc::Kind::Etc2A8, data, w, h, out);
+        }
         // Closed forms and refusals handled before this match.
         Format::R16
         | Format::RHalf

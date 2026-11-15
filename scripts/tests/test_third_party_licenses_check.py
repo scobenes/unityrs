@@ -190,7 +190,9 @@ class ConfigTests(unittest.TestCase):
             deny = copy.deepcopy(DENY)
             clarify = next(c for c in deny["licenses"]["clarify"] if c["crate"] == "unityrs-texture")
             if kind == "expression":
-                clarify["expression"] = clarify["expression"].removesuffix(" AND LicenseRef-Crunch")
+                expression = clarify["expression"]
+                clarify["expression"] = expression.replace(" AND LicenseRef-Crunch", "")
+                self.assertNotEqual(clarify["expression"], expression)
             elif kind == "file":
                 clarify["license-files"] = [f for f in clarify["license-files"] if f["path"] != "LICENSE-CRUNCH"]
             else:
@@ -550,6 +552,7 @@ class PortTests(unittest.TestCase):
             notices,
             {
                 "UnityPy 1.25.2": ["LICENSE-UNITYPY"],
+                "UnityPy git 417d595": ["LICENSE-UNITYPY-HEAD"],
                 "fmod_toolkit 0.1.3": ["LICENSE-FMOD-TOOLKIT"],
                 "vgmstream r2168": ["LICENSE-VGMSTREAM"],
                 "liblz4 1.9.4": ["LICENSE-LZ4"],
@@ -562,6 +565,7 @@ class PortTests(unittest.TestCase):
                 "zlib 1.2.13": ["LICENSE-ZLIB"],
                 "Arm astcenc commit 631fb04": ["LICENSE-ASTCENC"],
                 "Crunch legacy decoder in texture2ddecoder 1.0.5": ["LICENSE-CRUNCH"],
+                "Crunch Unity decoder in texture2ddecoder 1.0.5": ["LICENSE-UNITYCRUNCH"],
                 "RazTools/Studio": ["LICENSE-RAZTOOLS"],
                 "Razmoth/PGRStudio": ["LICENSE-RAZMOTH"],
             },
