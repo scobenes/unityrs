@@ -75,6 +75,12 @@ pub struct Writer {
     route: crate::sys::stderr::Route,
     dropped: AtomicU64,
 }
+/// Count a startup line before a controller can finish. A process that exits
+/// during its write reports it as unresolved, just like the early writer.
+pub(crate) struct PendingLine<'a>(&'a Writer);
+#[cfg(test)]
+#[path = "diagnostic/retry_tests.rs"]
+mod retry_tests;
 impl Writer {
     /// Early, single-threaded setup may replace fd 2 but never changes flags
     /// of the caller's shared description.
@@ -96,9 +102,32 @@ impl Writer {
             self.dropped.fetch_add(1, Relaxed);
         }
     }
+    /// Includes a startup warning still being written when sampled.
     #[must_use]
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Relaxed)
+    }
+    pub(crate) fn pending_line(&self) -> PendingLine<'_> {
+        self.dropped.fetch_add(1, Relaxed);
+        PendingLine(self)
+    }
+}
+impl PendingLine<'_> {
+    /// Mask once and retry within the early-output budget. Only a complete
+    /// write clears the outstanding line; expiry leaves its one drop counted.
+    pub(crate) fn within(
+        self,
+        text: &str,
+        secrets: &Secrets<'_>,
+        buffer: &mut [u8; LINE_BYTES],
+        wait: std::time::Duration,
+    ) {
+        let n = secrets.mask(text, buffer);
+        if crate::sys::stderr::within(self.0.route, buffer.get(..n).unwrap_or_default(), wait) {
+            self.0.dropped.fetch_sub(1, Relaxed);
+        }
+        #[cfg(any(test, feature = "test-hooks"))]
+        crate::sys::stderr::retry_finished();
     }
 }
 

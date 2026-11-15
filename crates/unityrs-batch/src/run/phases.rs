@@ -54,6 +54,7 @@ pub(super) fn halt(control: &dyn Control, error: phase::Error) {
 /// Phase 6 on one pool task, holding a share of the frozen facts and its
 /// own workspace. On a stop the task keeps both; the controller's share is
 /// the finisher's, so a held task blocks no read.
+#[cfg_attr(feature = "test-hooks", allow(clippy::too_many_arguments))] // Library-only sort cuts join the existing phase owners.
 pub(super) fn select(
     facts: &Shared<Facts>,
     started: &Arc<start::spool::Started>,
@@ -62,6 +63,7 @@ pub(super) fn select(
     execution: &Execution,
     directory: &Arc<Directory>,
     fs: &Arc<dyn spool::FileSystem>,
+    #[cfg(feature = "test-hooks")] sorting: crate::sort::Options,
 ) -> Option<(Workspace, winners::Handoff)> {
     let result = (|| -> Result<_, phase::Error> {
         let path =
@@ -84,7 +86,10 @@ pub(super) fn select(
                     inputs: &inputs,
                     workspace: &mut workspace,
                     account: &account,
+                    #[cfg(not(feature = "test-hooks"))]
                     options: crate::sort::Options::default(),
+                    #[cfg(feature = "test-hooks")]
+                    options: sorting,
                     stopped: &|| stop.stopped(),
                     hooks: &crate::sort::NoHooks,
                     observer: &winners::NoObserver,

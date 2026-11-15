@@ -128,6 +128,29 @@ impl Dependency {
     }
 }
 
+#[cfg(test)]
+mod batch_view_inventory {
+    use super::Dependency;
+    use crate::limits::{Meter, heap_cost};
+
+    /// The directory engine uses descriptor-rooted staged paths of at most
+    /// 128 bytes, including the longest generated basename. Registry/data
+    /// allocations are metered separately. Leave 128 B per member for the
+    /// engine's path/member/walk vectors within its 1 KiB view coefficient.
+    #[test]
+    fn uncharged_dependency_owners_fit_the_bounded_view_share() {
+        let owner = heap_cost((size_of::<Dependency>() + 2 * size_of::<usize>()) as u64);
+        let paths = 2 * heap_cost(128);
+        let basename = heap_cost(16) + heap_cost(32);
+        let total = owner + Meter::OWN_HEAP + paths + basename;
+        println!(
+            "view dependency owner {owner}, meter {}, paths {paths}, name {basename}, total {total}",
+            Meter::OWN_HEAP
+        );
+        assert!(total <= 1024 - 128);
+    }
+}
+
 /// A weak handle on a dependency's top-level file.
 #[derive(Debug)]
 pub(crate) enum WeakFile {

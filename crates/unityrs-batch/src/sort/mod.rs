@@ -78,6 +78,10 @@ pub(crate) struct Control<'a> {
 impl Control<'_> {
     pub fn at(&self, point: Point) -> Result<(), Error> {
         check(self.stopped)?;
+        #[cfg(feature = "test-hooks")]
+        if point == Point::MergeGroup {
+            crate::run::hooks::memory::at(crate::run::hooks::memory::Point::SortMerge);
+        }
         self.hooks.point(point);
         check(self.stopped)
     }

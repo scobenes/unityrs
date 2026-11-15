@@ -1,8 +1,7 @@
 //! One coherent, allocation-free observation of a counted engine's heap
-//! and its held charges (`docs/plans/extract.md` X12, X13): the test-only
-//! stand-in for the engine's tally hook (`docs/plans/batch.md` 2.11's
-//! `tally` row) until that hook lands, with the interface it is to keep, so
-//! that the hook replaces this module's [`Ledger`] and no test changes.
+//! and its held charges (`docs/plans/extract.md` X12, X13). The engine's
+//! counting allocator and official thread-registration/account hooks feed
+//! this test-only ledger (`docs/plans/batch.md` 2.11's `tally` row).
 //!
 //! - **Registration** is [`crate::counted::count_this_thread`]: a test
 //!   registers each engine thread before its measured work (Tokio's
@@ -151,7 +150,9 @@ impl Ledger {
     /// rise since now less the charges', is held against `allowance`, the
     /// uncharged bytes the window may hold, and the peaks and the first
     /// violation start again. The live heap and charges are not reset.
-    pub fn arm(&self, allowance: u64) {
+    /// Returns the coherent `(heap, charged)` at the arm for phase-local
+    /// absolute residual comparisons.
+    pub fn arm(&self, allowance: u64) -> (i64, i64) {
         let _held = self.hold();
         let heap = self.heap.load(Ordering::Relaxed);
         let charged = self.charged.load(Ordering::Relaxed);
@@ -163,6 +164,7 @@ impl Ledger {
         self.max_residual.store(0, Ordering::Relaxed);
         self.max_at.store(0, Ordering::Relaxed);
         self.first_at.store(NONE, Ordering::Relaxed);
+        (heap, charged)
     }
 
     /// One event: `heap` and `charged` move by the deltas, and the state
@@ -230,9 +232,16 @@ impl Ledger {
 /// Counted conservatively: a block is counted before `System` is asked for
 /// it and uncounted once `System` has freed it, so the ledger's heap is
 /// never below the live heap, whatever the threads' interleaving; a
-/// `realloc` counts its new block before the call and drops its old one
-/// after it succeeds, and a failed request is rolled back.
+/// moving `realloc` counts its new block before the call and drops its old
+/// one after success; a failed request is rolled back. A nonmoving shrink
+/// holds the old cost through the call, then replaces it in one event.
 impl Tally for Ledger {
+    fn shrunk(&self, old: usize, new: usize) {
+        self.event(
+            signed((self.cost)(new as u64)).saturating_sub(signed((self.cost)(old as u64))),
+            0,
+        );
+    }
     fn growing(&self, size: usize) {
         self.event(signed((self.cost)(size as u64)), 0);
     }

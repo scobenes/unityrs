@@ -105,8 +105,19 @@ impl Values {
                     continue;
                 };
                 let value = read(environment, name).map_err(|r| Error::Refused(r, name))?;
-                self.entries.try_reserve(1)?;
-                self.entries.insert(at, (copy(name)?, copy(&value)?));
+                if self.entries.len() == self.entries.capacity() {
+                    // C_hdr has 48 B per table entry and 32 B of spare
+                    // masker allowance. A 32 B entry with doubling growth
+                    // would hold 96 B per entry while realloc moves it.
+                    // Grow by a quarter instead: both capacities total at
+                    // most 72 B per entry, leaving room for chunk rounding.
+                    let extra = (self.entries.capacity() / 4).max(1);
+                    self.entries.try_reserve_exact(extra)?;
+                }
+                // Keep the validated value's allocation, rather than briefly
+                // owning a second full-size copy beside the header table.
+                self.entries
+                    .insert(at, (copy(name)?, value.into_boxed_str()));
             }
         }
         Ok(())
@@ -199,6 +210,49 @@ fn userinfo(url: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn variable_table_growth_fits_headers_at_their_live_value_sizes() {
+        use serde_json::json;
+        use unityrs_core::limits::heap_cost;
+        struct Environment;
+        impl super::Environment for Environment {
+            fn var(&self, _: &str) -> Option<OsString> {
+                Some("v".into())
+            }
+        }
+        // Just past a doubling boundary: a moving realloc must count both
+        // table capacities, rather than only the final table's length.
+        let count = 8_193_u64;
+        let inputs: Vec<_> = (0..count)
+            .map(|n| {
+                json!({"id":format!("input-{n:05}"),
+                "url":"http://127.0.0.1/file", "headers":{
+                    "X-Value":{"env":format!("TOKEN_{n:05}")}
+                }})
+            })
+            .collect();
+        let raw = json!({"spec_version":1,"run_id":"r","attempt":1,"threads":1,
+            "download_concurrency":1,"max_inflight_uncompressed_bytes":67_108_864,
+            "max_decoded_bytes":1_048_576,"dep_cache_bytes":1_048_576,
+            "spool":{"dir":"/spool","size_bytes":1_073_741_824,"reserve_bytes":0},
+            "inputs":inputs,"outputs":{"textures":{"key":"{input}/{name}.png"}},
+            "sink":{"kind":"directory","root":"/sink"}});
+        let spec = crate::spec::parse(serde_json::to_vec(&raw).unwrap())
+            .unwrap()
+            .spec;
+        // Fit the header term using the actual one-byte values; counting
+        // unread values at 16 KiB would hide a growing table behind slack.
+        let allowance =
+            crate::bound::c_hdr(&spec) - count * (heap_cost(VALUE_CAP as u64) - heap_cost(1));
+        let (values, measured) =
+            crate::alloc::measured(|| Values::resolve(&spec, &Environment).unwrap());
+        assert_eq!(values.len(), usize::try_from(count).unwrap());
+        assert!(
+            measured.peak <= allowance,
+            "header peak {} exceeds live-value allowance {allowance}",
+            measured.peak
+        );
+    }
     #[test]
     fn repeated_headers_fit_measured_masker_storage_without_later_growth() {
         use serde_json::json;

@@ -78,6 +78,9 @@ impl Drop for Ungate {
 }
 
 impl Tally for Gated {
+    fn shrunk(&self, old: usize, new: usize) {
+        self.0.shrunk(old, new);
+    }
     fn growing(&self, size: usize) {
         self.0.growing(size);
         let gated = GATE.compare_exchange(size, 0, Ordering::AcqRel, Ordering::Acquire);
@@ -312,5 +315,22 @@ fn a_growing_realloc_is_observed_with_both_blocks() {
         });
         assert_eq!(o.peak_above_arm, i64::try_from(chunk(grown)).unwrap());
         assert_eq!(o.heap, again, "an observation moved the heap");
+    });
+}
+
+#[test]
+fn an_in_place_shrink_keeps_the_new_block_without_an_overlap_peak() {
+    serially("the in-place shrink ledger", || {
+        let baseline = ledger().observe().heap;
+        let mut bytes = counting(|| Vec::<u8>::with_capacity(64 * 1024));
+        bytes.resize(1024, 0);
+        ledger().arm(0);
+        counting(|| bytes.shrink_to_fit());
+        let o = ledger().observe();
+        counting(|| drop(black_box(bytes)));
+        assert_eq!(o.peak_above_arm, 0);
+        assert_eq!(o.first_violation, None);
+        assert_eq!(o.heap - baseline, i64::try_from(chunk(1024)).unwrap());
+        assert_eq!(ledger().observe().heap, baseline);
     });
 }
