@@ -227,6 +227,15 @@ pub(crate) fn parse_reader(error: &ParseError, boost: bool) -> PyErr {
             }
             ReadDetail::Python(s) => {
                 let (name, text) = s.split_once(": ").unwrap_or((s, s));
+                // Core diagnostics render a missing reference key with quotes;
+                // KeyError itself adds those quotes around its argument.
+                let text = if name == "KeyError" {
+                    text.strip_prefix('\'')
+                        .and_then(|key| key.strip_suffix('\''))
+                        .unwrap_or(text)
+                } else {
+                    text
+                };
                 exception(name, message(&text))
             }
             _ if r.kind == ReadErrorKind::OutOfBounds => PyEOFError::new_err(message(&r.detail)),

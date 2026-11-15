@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/parity"))
 import binding_cases as B
 import UnityPy
+import object_cases as O
 import scratch
 
 HELPERS = [
@@ -54,6 +55,15 @@ def main():
     else:
         out.write_text(encoded)
     print(f"Python API: {len(records)} synthetic API fixtures")
+    objects = [{"name": name, "hex": data.hex(), "expected": O.observe(UnityPy, data)} for name, data in O.cases()]
+    encoded = "[\n" + ",\n".join(json.dumps(r, separators=(",", ":")) for r in objects) + "\n]\n"
+    out = ROOT / "crates/unityrs-py/tests/fixtures/object_api.json"
+    if args.check:
+        if out.read_text() != encoded:
+            raise SystemExit("Y2 object API fixtures differ")
+    else:
+        out.write_text(encoded)
+    print(f"Y2: {len(objects)} synthetic object API fixtures")
 
 
 if __name__ == "__main__":

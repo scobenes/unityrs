@@ -42,6 +42,15 @@ use crate::value::{ListIx, Parsed, PrimArray, PrimRun, Value, ValueBuilder};
 /// Its work is the open's, counted on `ctx.meter` whatever the outcome
 /// (the module docs of [`super`], "Work").
 pub fn read(data: &Bytes, tree: &Arc<Tree>, ctx: &ReadCtx<'_>) -> Result<Parsed, ReadError> {
+    read_with_fields(data, tree, ctx, None)
+}
+
+pub(crate) fn read_with_fields(
+    data: &Bytes,
+    tree: &Arc<Tree>,
+    ctx: &ReadCtx<'_>,
+    progress: Option<&mut super::FieldProgress>,
+) -> Result<Parsed, ReadError> {
     let work = Work::start(ctx.options.limits, ctx.meter)?;
     let builder =
         ValueBuilder::new(ctx.meter, tree.list().clone()).map_err(|e| charge_error(0, e))?;
@@ -59,6 +68,7 @@ pub fn read(data: &Bytes, tree: &Arc<Tree>, ctx: &ReadCtx<'_>) -> Result<Parsed,
         work,
         has_registry: false,
         method: "read_length",
+        progress,
     };
     let value = r.value(tree, 0, tree.root());
     let at = r.at();
@@ -74,7 +84,7 @@ pub fn read(data: &Bytes, tree: &Arc<Tree>, ctx: &ReadCtx<'_>) -> Result<Parsed,
 
 /// UnityPyBoost's `ReaderT` (`TypeTreeHelper.cpp:13-18`) and its config
 /// (`:20-26`), with the reader's own bounds on work.
-struct Reader<'a, 'c> {
+struct Reader<'a, 'c, 'p> {
     data: &'a Bytes,
     bytes: &'a [u8],
     /// `ptr - start`: may pass the end after an alignment (R3).
@@ -90,6 +100,7 @@ struct Reader<'a, 'c> {
     /// `config->has_registry` (R13).
     has_registry: bool,
     method: &'static str,
+    progress: Option<&'p mut super::FieldProgress>,
 }
 
 /// A fixed-width number from its bytes in the file's order.
@@ -103,7 +114,7 @@ macro_rules! num {
     };
 }
 
-impl Reader<'_, '_> {
+impl Reader<'_, '_, '_> {
     fn at(&self) -> u64 {
         u64::try_from(self.pos).unwrap_or(u64::MAX)
     }
@@ -206,11 +217,17 @@ impl Reader<'_, '_> {
     }
 
     fn value(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId) -> Result<Out, ReadError> {
+        if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
+            return Ok(Out::Plain(Value::Int(0)));
+        }
         let at = self.at();
         self.work.enter(at)?;
         let out = self.value_inner(t, lx, node);
         self.work.leave();
-        out
+        match (out, &mut self.progress) {
+            (Err(error), Some(progress)) => progress.recover(error),
+            (out, _) => out,
+        }
     }
 
     /// A class's or a `ReferencedObject`'s child, read by `read`: under a
@@ -339,6 +356,9 @@ impl Reader<'_, '_> {
             }
             v.push_to(&mut items)
                 .map_err(|e| charge_error(self.at(), e))?;
+            if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
+                break;
+            }
             self.work.filled(i, first);
         }
         Ok(Out::Built(self.builder.list(items)))
@@ -457,6 +477,9 @@ impl Reader<'_, '_> {
             let pair = self.tuple2(first, second)?;
             pair.push_to(&mut items)
                 .map_err(|e| charge_error(self.at(), e))?;
+            if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
+                break;
+            }
             self.work.filled(i, reserved);
         }
         Ok(Out::Built(self.builder.list(items)))
@@ -476,7 +499,12 @@ impl Reader<'_, '_> {
     ) -> Result<Out, ReadError> {
         let at = self.at();
         let kids = t.list().children(node);
-        let mut dict = Dict::new(&self.builder, kids.len(), me.dup_names, at)?;
+        let mut dict = Dict::new(
+            &self.builder,
+            kids.len(),
+            me.dup_names && self.progress.is_none(),
+            at,
+        )?;
         let mut changed = false;
         for c in kids {
             visit();
@@ -492,12 +520,25 @@ impl Reader<'_, '_> {
             }
             let v = self.child(ci.repeated, |r| r.value(t, lx, *c))?;
             let at = self.at();
-            dict.set(&mut self.work, ci.key, ci.slot, v, at)?;
+            dict.set(
+                &mut self.work,
+                if self.progress.is_some() { *c } else { ci.key },
+                ci.slot,
+                v,
+                at,
+            )?;
+            if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
+                break;
+            }
         }
         if changed {
             self.has_registry = false;
         }
-        dict.finish(&self.builder, lx, self.at())
+        let result = dict.finish(&self.builder, lx, self.at())?;
+        if let Some(progress) = &mut self.progress {
+            progress.finish_class();
+        }
+        Ok(result)
     }
 
     /// R14: a `ReferencedObject` (UnityPy TypeTreeHelper.cpp:751-811). Its
@@ -508,10 +549,12 @@ impl Reader<'_, '_> {
         let at = self.at();
         let kids = t.list().children(node);
         let mut dict = Dict::new(&self.builder, kids.len(), true, at)?;
+        dict.preserve_fields(self.progress.is_some());
         // The slot of the children named `type`, once one is visited: a
         // data child before it finds no `type`, as UnityPyBoost's lookup in
         // the dict read so far finds none.
         let mut type_slot = None;
+        let mut object_type = false;
         // The current `type`'s resolution, made at the first data child that
         // asks and kept until a child sets `type` again: a node of many data
         // children resolves each `type` value once (claude X, review round 2).
@@ -524,6 +567,9 @@ impl Reader<'_, '_> {
             if type_slot.is_none() && t.list().name(*c) == b"type" {
                 type_slot = Some(ci.slot);
             }
+            if t.list().name(*c) == b"type" {
+                object_type = self.progress.is_some() && ci.kind != Kind::ReferencedObject;
+            }
             let v = if ci.kind == Kind::ReferencedObjectData {
                 let node = if let Some(r) = &resolved {
                     r.clone()
@@ -532,7 +578,17 @@ impl Reader<'_, '_> {
                         .and_then(|s| dict.position(s))
                         .and_then(|p| dict.entries.as_slice().get(p))
                         .map(|(_, v)| v);
-                    resolved.insert(self.ref_node(ty)?).clone()
+                    let found = match self.ref_node(ty, object_type) {
+                        Ok(found) => found,
+                        Err(error) => {
+                            if let Some(progress) = &mut self.progress {
+                                progress.recover(error)?;
+                                break;
+                            }
+                            return Err(error);
+                        }
+                    };
+                    resolved.insert(found).clone()
                 };
                 match node {
                     None | Some(RefNode::NoTree) => {
@@ -550,12 +606,25 @@ impl Reader<'_, '_> {
                 self.child(ci.repeated, |r| r.value(t, lx, *c))?
             };
             let at = self.at();
-            dict.set(&mut self.work, ci.key, ci.slot, v, at)?;
+            dict.set(
+                &mut self.work,
+                if self.progress.is_some() { *c } else { ci.key },
+                ci.slot,
+                v,
+                at,
+            )?;
+            if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
+                break;
+            }
             if Some(ci.slot) == type_slot {
                 resolved = None;
             }
         }
-        dict.finish(&self.builder, lx, self.at())
+        let result = dict.finish(&self.builder, lx, self.at())?;
+        if let Some(progress) = &mut self.progress {
+            progress.finish_class();
+        }
+        Ok(result)
     }
 
     /// `get_ref_type_node` (UnityPy TypeTreeHelper.cpp:585-681) on the dict
@@ -563,7 +632,11 @@ impl Reader<'_, '_> {
     /// (the data is skipped), else the matched ref type's node. Every
     /// failure is `ref_type`: the caller replaces the message with "Failed
     /// to get ref type node" (`:763`).
-    fn ref_node(&mut self, ty: Option<&Value>) -> Result<Option<RefNode>, ReadError> {
+    fn ref_node(
+        &mut self,
+        ty: Option<&Value>,
+        object_type: bool,
+    ) -> Result<Option<RefNode>, ReadError> {
         let ref_type = |d: ReadDetail| self.fail(ReadErrorKind::RefType, d);
         if let RefTypes::NoFile | RefTypes::Absent = self.ref_types {
             // `:587-591`, `:592-598`.
@@ -580,7 +653,7 @@ impl Reader<'_, '_> {
         let at = self.at();
         let mut field = |name: &[u8]| {
             self.trees
-                .field(m, name, &mut self.work.open)
+                .field(m, name, &mut self.work.open, object_type)
                 .map_err(|l| limit_refused(at, l))
         };
         let (Some(cls), Some(ns), Some(asm)) = (field(b"class")?, field(b"ns")?, field(b"asm")?)

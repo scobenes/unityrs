@@ -25,6 +25,88 @@ fn version_errors_decode_raw_bytes_with_surrogateescape() -> PyResult<()> {
 }
 
 #[test]
+fn string_staging_memory_refusal_preserves_work() -> PyResult<()> {
+    staging_memory_refusal_preserves_work("string")
+}
+
+#[test]
+fn bytes_staging_memory_refusal_preserves_work() -> PyResult<()> {
+    staging_memory_refusal_preserves_work("bytes")
+}
+
+#[test]
+fn nodes_staging_memory_refusal_preserves_work() -> PyResult<()> {
+    staging_memory_refusal_preserves_work("nodes")
+}
+
+#[test]
+fn references_staging_memory_refusal_preserves_work() -> PyResult<()> {
+    staging_memory_refusal_preserves_work("references")
+}
+
+fn staging_memory_refusal_preserves_work(stage: &str) -> PyResult<()> {
+    use std::sync::Arc;
+    use unityrs_core::{
+        Value as CoreValue,
+        budget::{Counting, Reservation},
+        limits::{Charge, Meter},
+        typetree::{NodeList, NodeRow},
+        value::ValueBuilder,
+    };
+
+    let payload = vec![b'x'; 2 * 1024 * 1024];
+    let row = if stage == "nodes" {
+        NodeRow::new(0, "Object", payload.clone())
+    } else {
+        NodeRow::new(0, "Object", "Base")
+    };
+    let nodes = NodeList::trusted(vec![row]).unwrap().into_shared().unwrap();
+    let builder = ValueBuilder::new(&Meter::unlimited(), nodes).unwrap();
+    let value = match stage {
+        "string" => CoreValue::Str(payload.into()),
+        "bytes" => CoreValue::Bytes(payload.into()),
+        _ => CoreValue::Int(7),
+    };
+    let built = builder.scalar(value).unwrap();
+    let parsed = builder.finish(built, 0);
+    let budget = Arc::new(Counting::new(64 * 1024 * 1024));
+    let meter = Meter::with_decode_work(
+        64 * 1024 * 1024,
+        12 * 1024 * 1024,
+        budget.clone(),
+        Reservation::Input,
+    );
+    let other = Meter::new(64 * 1024 * 1024, budget, Reservation::Input);
+    let available = if stage == "references" { 128 } else { 1024 };
+    let contention = other.charge(64 * 1024 * 1024 - available).unwrap();
+    let convert = || {
+        let mut charge = Charge::zero(&meter);
+        match stage {
+            "nodes" => super::object_nodes::convert(&parsed, &mut charge),
+            "references" => super::object_nodes::references(&parsed, None, &mut charge),
+            _ => super::value::convert(&parsed, &meter),
+        }
+    };
+    let error = convert().unwrap_err();
+    Python::attach(|py| {
+        assert!(error.is_instance_of::<pyo3::exceptions::PyMemoryError>(py));
+    });
+    assert_eq!(meter.decoded(), 0, "{stage}: refused staging spent work");
+    drop(contention);
+    let result = convert()?;
+    assert!(meter.decoded() > 0, "{stage}: retry must charge work");
+    Python::attach(|py| -> PyResult<()> {
+        match stage {
+            "string" => assert_eq!(result.extract::<String>(py)?, "x".repeat(2 * 1024 * 1024)),
+            "bytes" => assert_eq!(result.extract::<Vec<u8>>(py)?, vec![b'x'; 2 * 1024 * 1024]),
+            _ => {}
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
 fn replays_unitypy_api_observations() -> PyResult<()> {
     let records: Value = serde_json::from_str(include_str!("../tests/fixtures/api.json")).unwrap();
     Python::attach(|py| {
@@ -183,6 +265,56 @@ fn reader_exception_categories_survive_the_binding_boundary() -> PyResult<()> {
             });
             let error = super::errors::parse_reader(&error, false);
             assert_eq!(error.get_type(py).name()?.to_str()?, expected);
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn replays_object_mode_observations_from_synthetic_inputs() -> PyResult<()> {
+    let records: Value =
+        serde_json::from_str(include_str!("../tests/fixtures/object_api.json")).unwrap();
+    Python::attach(|py| {
+        let module = PyModule::new(py, "unityrs._native")?;
+        super::native(&module)?;
+        py.import("sys")?
+            .getattr("modules")?
+            .set_item("unityrs._native", module)?;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let paths = py.import("sys")?.getattr("path")?;
+        paths.call_method1(
+            "insert",
+            (0, root.join("python").to_string_lossy().as_ref()),
+        )?;
+        paths.call_method1(
+            "insert",
+            (
+                0,
+                root.join("../../tools/parity").to_string_lossy().as_ref(),
+            ),
+        )?;
+        let observer = py.import("object_cases")?;
+        let binding = py.import("unityrs")?;
+        for record in records.as_array().unwrap() {
+            let hex = record["hex"].as_str().unwrap().as_bytes();
+            let bytes: Vec<u8> = hex
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
+                .collect();
+            let got = observer
+                .getattr("observe")?
+                .call1((&binding, PyBytes::new(py, &bytes)))?;
+            let encoded: String = py
+                .import("json")?
+                .getattr("dumps")?
+                .call1((got,))?
+                .extract()?;
+            let got: Value = serde_json::from_str(&encoded).unwrap();
+            if let Some(difference) = first_difference(&got, &record["expected"], "$") {
+                panic!("{}: {difference}", record["name"]);
+            }
         }
         Ok(())
     })

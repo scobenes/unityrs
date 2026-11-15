@@ -61,6 +61,27 @@ class Helpers(unittest.TestCase):
 
     def test_objects(self):
         self.compare("binding_y3_objects", "observe_objects")
+        # The merged API must use helper-selected nodes for object mode too.
+        from binding_cases import S
+        from binding_y3_objects import _load
+        tree = S.Node("Synthetic", "Base", [S.Node("int", "value")])
+        data = S.serialized_file([S.Type(49, tree)], [S.Obj(1, 0, bytes([7, 0, 0, 0]))])
+        for module in (UnityPy, unityrs):
+            with self.subTest(module=module.__name__):
+                obj = _load(module, data).objects[1]
+                node = obj._get_typetree_node()
+                Node = type(node)
+                node.m_Children[0] = Node(1, "int", "renamed", 4, 1)
+                self.assertEqual(obj.read().renamed, 7)
+                self.assertEqual(obj.read_typetree(wrap=True).renamed, 7)
+                if module is unityrs:
+                    self.assertEqual(obj.read_typetree(as_dict=False).renamed, 7)
+                    self.assertEqual(obj.read_typetree(wrap=True, as_dict=True), {"renamed": 7})
+                rows = [dict(m_Level=0, m_Type="Synthetic", m_Name="Base", m_ByteSize=-1, m_Version=1),
+                        dict(m_Level=1, m_Type="int", m_Name="explicit", m_ByteSize=4, m_Version=1)]
+                result = obj.parse_as_object(rows)
+                self.assertEqual(result.explicit, 7)
+                self.assertIs(result.object_reader, obj)
 
     def test_head(self):
         self.compare("binding_y3_objects", "observe_head")

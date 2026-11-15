@@ -4,6 +4,7 @@ from .Audio import AUDIO_TYPE_EXTEMSION, AudioCompressionFormat, AudioType
 from .BuildTarget import BuildTarget
 from .BundleFile import ArchiveFlags, ArchiveFlagsOld, CompressionFlags
 from .ClassIDType import ClassIDType
+from .ExtendableEnum import ExtendableEnum
 from .CommonString import CommonString
 from .FileType import FileType
 from .GfxPrimitiveType import GfxPrimitiveType

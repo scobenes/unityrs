@@ -168,12 +168,14 @@ impl NativeEnvironment {
             )
         })
     }
+    #[pyo3(signature = (path, constructor, dependency, root=None))]
     fn load_path(
         &self,
         py: Python<'_>,
         path: PathBuf,
         constructor: bool,
         dependency: bool,
+        root: Option<PathBuf>,
     ) -> PyResult<Option<NativeFile>> {
         py.detach(|| {
             crate::worker::run(
@@ -183,7 +185,11 @@ impl NativeEnvironment {
                         self.inner.load_path(&path).map_err(errors::core)?;
                         Ok(None)
                     } else {
-                        let source = Source::Path(path);
+                        let source = if let Some(root) = root {
+                            Source::ConfinedPath { path, root }
+                        } else {
+                            Source::Path(path)
+                        };
                         let file = if dependency {
                             self.inner.load_dependency(source).map(Some)
                         } else {

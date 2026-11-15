@@ -27,6 +27,7 @@ class File:
                 self.target_platform = BuildTarget(self.target_platform)
             else:
                 self.target_platform = BuildTarget.UnknownPlatform
+            self.externals = [SimpleNamespace(**entry) for entry in native.externals()]
             self._cache = {}
             self._type_nodes = {}
             self._head_nodes = {}
@@ -134,11 +135,6 @@ class EndianBinaryReader_Memoryview:
 
     read_bytes = read
 
-    def __getattr__(self, name):
-        # UnityPy's raw readers return None for an unknown delegated attribute.
-        return None
-
-
 class ObjectReader:
     def __init__(self, native, assets_file):
         self._native = native
@@ -163,15 +159,40 @@ class ObjectReader:
     def get_raw_data(self):
         return self._native.raw_data()
 
-    def read_typetree(self, nodes=None, wrap=False, check_read=True):
-        if wrap:
-            raise NotImplementedError("object mode belongs to the classes API")
-        if (nodes is not None or "_node" in self.__dict__
-                or self.type_id in self.assets_file._type_nodes or self.assets_file._head_nodes):
-            node = self._get_typetree_node(nodes)
-            return self._native.parse_nodes(check_read, node._native_rows(
-                use_boost=bool(self.byte_size), _guard=self._native.tree_traversal()))
-        return self._native.parse(check_read)
+    def read_typetree(self, nodes=None, wrap=False, check_read=True, *, as_dict=None):
+        if as_dict is not None:
+            wrap = not as_dict
+        with self.assets_file.environment._lock:
+            rows = None
+            if (nodes is not None or "_node" in self.__dict__
+                    or self.type_id in self.assets_file._type_nodes or self.assets_file._head_nodes):
+                node = self._get_typetree_node(nodes)
+                rows = node._native_rows(
+                    use_boost=bool(self.byte_size), _guard=self._native.tree_traversal())
+            if not wrap:
+                if rows is not None:
+                    return self._native.parse_nodes(check_read, rows)
+                return self._native.parse(check_read)
+            return self._read_object(rows, check_read)
+
+    def _read_object(self, rows, check_read):
+        from ._object import build
+        data, lists, references, bytes_read, completed, error, charge = self._native.object_data(rows)
+        result = build(data, lists, self.assets_file, self.byte_size > 0, references, completed, error, charge)
+        if check_read and bytes_read != self.byte_size:
+            raise ValueError(f"Expected to read {self.byte_size} bytes, but only read {bytes_read} bytes")
+        result.set_object_reader(self)
+        return result
+
+    def read(self, check_read=True):
+        return self.read_typetree(wrap=True, check_read=check_read)
+
+    def parse_as_object(self, node=None, check_read=True):
+        return self.read_typetree(nodes=node, wrap=True, check_read=check_read)
+
+    def get_class(self):
+        from .classes.ClassIDTypeToClassMap import ClassIDTypeToClassMap
+        return ClassIDTypeToClassMap.get(self.type)
 
     def parse_as_dict(self, node=None, check_read=True):
         return self.read_typetree(nodes=node, check_read=check_read)
