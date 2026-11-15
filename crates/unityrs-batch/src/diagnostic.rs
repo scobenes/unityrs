@@ -4,6 +4,7 @@ use std::sync::{
     OnceLock,
     atomic::{AtomicU64, Ordering::Relaxed},
 };
+pub(crate) mod format;
 pub const LINE_BYTES: usize = libc::PIPE_BUF;
 pub struct Secrets<'a> {
     pub values: &'a [&'a str],
@@ -105,7 +106,7 @@ impl Writer {
 /// slot; the body's `catch_unwind` reads it after hand-over. Pool `JoinError`s
 /// carry their own payload to the controller instead.
 pub mod panic {
-    use std::{cell::RefCell, fmt::Write};
+    use std::cell::RefCell;
     #[derive(Clone, Copy)]
     pub struct Slot {
         pub bytes: [u8; 1024],
@@ -121,23 +122,6 @@ pub mod panic {
             }
         }
     }
-    impl Write for Slot {
-        fn write_str(&mut self, s: &str) -> std::fmt::Result {
-            if self.cut {
-                return Ok(());
-            }
-            let mut n = s.len().min(self.bytes.len() - self.len);
-            while !s.is_char_boundary(n) {
-                n -= 1;
-            }
-            if let Some(dst) = self.bytes.get_mut(self.len..self.len + n) {
-                dst.copy_from_slice(s.get(..n).unwrap_or_default().as_bytes());
-            }
-            self.len += n;
-            self.cut |= n < s.len();
-            Ok(())
-        }
-    }
     thread_local! { static SLOT: RefCell<Slot> = const { RefCell::new(Slot::new()) }; }
     pub fn install() {
         std::panic::set_hook(Box::new(|info| {
@@ -146,16 +130,26 @@ pub mod panic {
                     return;
                 };
                 *slot = Slot::new();
-                if let Some(location) = info.location() {
-                    let _ = write!(&mut *slot, "{}:{}: ", location.file(), location.line());
-                }
                 let payload = info
                     .payload()
                     .downcast_ref::<&str>()
                     .copied()
                     .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
                     .unwrap_or("non-string panic payload");
-                let _ = slot.write_str(payload);
+                let mut capture = |args| {
+                    let (len, cut) = super::format::current().format(args, &mut slot.bytes);
+                    slot.len = len;
+                    slot.cut = cut;
+                };
+                if let Some(location) = info.location() {
+                    capture(format_args!(
+                        "{}:{}: {payload}",
+                        location.file(),
+                        location.line()
+                    ));
+                } else {
+                    capture(format_args!("{payload}"));
+                }
             });
         }));
     }
@@ -184,7 +178,6 @@ pub mod panic {
 /// its bound ([`pending::drain`]).
 pub mod pending {
     use std::{
-        fmt::Write,
         sync::{
             Mutex, MutexGuard, PoisonError, TryLockError,
             atomic::{AtomicU64, Ordering::SeqCst},
@@ -358,28 +351,11 @@ pub mod pending {
         }
     }
     static RING: Ring = Ring::new();
-    struct Cursor<'a>(&'a mut [u8], usize);
-    impl Write for Cursor<'_> {
-        fn write_str(&mut self, s: &str) -> std::fmt::Result {
-            let room = self.0.len().saturating_sub(self.1);
-            let mut n = s.len().min(room);
-            while !s.is_char_boundary(n) {
-                n -= 1;
-            }
-            if let Some(dst) = self.0.get_mut(self.1..self.1 + n) {
-                dst.copy_from_slice(s.get(..n).unwrap_or_default().as_bytes());
-            }
-            self.1 += n;
-            Ok(())
-        }
-    }
     /// `args` into `line`: cut at `LINE - 1` bytes on a UTF-8 boundary,
     /// then ended by its `\n`. Gives its length.
     pub(crate) fn fit(args: std::fmt::Arguments<'_>, line: &mut [u8; LINE]) -> usize {
         let (text, end) = line.split_at_mut(LINE - 1);
-        let mut cursor = Cursor(text, 0);
-        let _ = cursor.write_fmt(args);
-        let len = cursor.1;
+        let (len, _) = super::format::current().format(args, text);
         if len > 0 && text.get(len - 1) == Some(&b'\n') {
             return len;
         }

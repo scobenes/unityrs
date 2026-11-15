@@ -105,9 +105,20 @@ impl Early {
         // The reservation kept for a later 69 when this one ends nothing.
         self.restore();
     }
+    /// A post-validation warning, using the already prepared spec masker.
+    pub fn note(&self, note: &str) {
+        let mut buffer = [0; crate::diagnostic::LINE_BYTES];
+        let n = super::current_secrets().mask(note, &mut buffer);
+        self.lines(b"", buffer.get(..n).unwrap_or_default());
+    }
     /// A start's line, before `running`: `seq` 0, its stderr line
     /// `unityrs batch: <reason> <detail>`.
     pub fn write(&self, error: &Error) {
+        self.write_masked(error, Some(&super::current_secrets()));
+    }
+    /// The host's early stderr route, using the spec-only or resolved
+    /// secret slice. Structured progress details retain their typed names.
+    pub fn write_masked(&self, error: &Error, secrets: Option<&crate::diagnostic::Secrets<'_>>) {
         let mut snapshot = Snapshot::validate(self.clock.ms());
         snapshot.phase = Phase::Preflight;
         snapshot.memory.rss = progress::rss();
@@ -121,7 +132,15 @@ impl Early {
             reason: Some(error.reason),
             detail: error.detail.clone().map(Into::into),
         };
-        self.lines(snapshot.line(Some(&exit)).as_bytes(), err.as_bytes());
+        let mut masked = [0; crate::diagnostic::LINE_BYTES];
+        let err = match secrets {
+            Some(secrets) => {
+                let len = secrets.mask(&err, &mut masked);
+                masked.get(..len).unwrap_or_default()
+            }
+            None => err.as_bytes(),
+        };
+        self.lines(snapshot.line(Some(&exit)).as_bytes(), err);
     }
     /// A 69 before the process word exists: nothing to reset.
     pub fn fail(&self, error: &Error) -> ! {

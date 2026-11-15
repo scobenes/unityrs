@@ -239,7 +239,8 @@ fn missing_materials_and_textures_degrade_with_report_and_asset_reasons() {
 fn unsupported_and_missing_or_short_texture_data_leave_factors() {
     for (objects, reason) in [
         (h::texture_case(999, vec![0; 16]), "undecodable_texture"),
-        (h::texture_case(24, vec![0; 16]), "undecodable_texture"),
+        // ARGBFloat remains unsupported; BC6H now decodes.
+        (h::texture_case(6, vec![0; 16]), "undecodable_texture"),
         (
             h::texture_case(ngui::format::RGBA32, vec![]),
             "missing_texture",

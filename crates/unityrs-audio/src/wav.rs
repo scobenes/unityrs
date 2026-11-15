@@ -3,14 +3,14 @@
 //! The pinned oracle has numpy: multiply in float32, clip, truncate to i16.
 //! NaN converts to zero; infinities saturate. The no-numpy branch's different
 //! thresholds are outside the pinned stack. No FMOD code is used.
-use crate::{Error, Subsound, adpcm};
+use crate::{Error, Subsound, VorbisHeaders, adpcm, vorbis};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
 
 pub(crate) fn width(mode: u32) -> Result<u8, Error> {
     match mode {
         1 => Ok(1),
-        2 | 7 | 16 => Ok(2),
+        2 | 7 | 15 | 16 => Ok(2),
         3 => Ok(3),
         4 | 5 => Ok(4),
         codec => Err(Error::Unsupported { codec }),
@@ -39,6 +39,7 @@ pub(crate) fn decode(
     sub: &Subsound<'_>,
     mode: u32,
     convert: bool,
+    headers: Option<&VorbisHeaders>,
     meter: &Arc<Meter>,
 ) -> Result<MeteredVec<u8>, Error> {
     let bits = bits(mode, convert)?;
@@ -52,7 +53,7 @@ pub(crate) fn decode(
         .frequency
         .checked_mul(u32::from(block))
         .ok_or(Error::OutputSize)?;
-    let compressed = adpcm::layout(mode, sub.channels).is_some();
+    let compressed = mode == 15 || adpcm::layout(mode, sub.channels).is_some();
     let work = if compressed {
         sub.wav_bytes as u64
     } else {
@@ -80,12 +81,17 @@ pub(crate) fn decode(
             let n = (sub.wav_bytes - out.len()).min(zeros.len());
             out.extend_from_slice(zeros.get(..n).ok_or(Error::OutputSize)?)?;
         }
-        adpcm::decode(
-            sub,
-            mode,
-            out.as_mut_slice().get_mut(44..).ok_or(Error::OutputSize)?,
-            meter,
-        )?;
+        let output = out.as_mut_slice().get_mut(44..).ok_or(Error::OutputSize)?;
+        if mode == 15 {
+            vorbis::decode(
+                sub,
+                headers.ok_or(Error::VorbisHeadersRequired)?,
+                output,
+                meter,
+            )?;
+        } else {
+            adpcm::decode(sub, mode, output, meter)?;
+        }
     } else if mode == 5 && convert {
         for chunk in sub.data.as_chunks::<4>().0 {
             let value = f32::from_le_bytes(*chunk);

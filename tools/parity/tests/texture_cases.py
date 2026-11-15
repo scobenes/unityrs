@@ -235,7 +235,8 @@ def rgb48():
 
 
 def astc_hdr(block):
-    # (0.5, 0.25, 1, 1) in FP16. astcenc's LDR profile decodes every FP16 constant block as 0xFFFF.
+    # (0.5, 0.25, 1, 1) in FP16. The LDR profile rejects FP16 constant blocks; its NaN error texels
+    # store as white in the pinned AVX2 build, magenta in scalar/SSE/NEON (PARITY.md section 19.3).
     encoded = astc_void_extent(*(half_bits(v) for v in (0.5, 0.25, 1.0, 1.0)), hdr=True)
     case = blocks(block, block, "RGBA", [(encoded, (128, 64, 255, 255))], 16)
     return case._replace(unitypy=("RGBA", [(255, 255, 255, 255)] * (W * H)))

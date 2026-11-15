@@ -338,3 +338,25 @@ fn publishing_runs_one_at_a_time_holds_nothing_the_meter_has_not_charged() {
         }
     }
 }
+
+/// Inspecting a freshly opened bundle must not allocate an uncharged lock
+/// box, even for a legacy bundle whose reads do not use the run index.
+#[test]
+fn inspecting_fresh_bundle_counts_holds_nothing_the_meter_has_not_charged() {
+    for data in [
+        many_rows(1),
+        unityrs_testkit::web::legacy(b"UnityRaw", 5, &[("entry", b"raw")]),
+    ] {
+        let (data, ty, ctx) = input(data);
+        let m = meter();
+        let Ok(File::Bundle(b)) = parse_file(RawStr::from("counts"), data, ty, None, &m, &ctx)
+        else {
+            panic!("not a bundle");
+        };
+        let (_, peak) = watch(&m, || b.counts());
+        assert!(
+            peak <= 0,
+            "the heap rose {peak} bytes above the meter's charge"
+        );
+    }
+}

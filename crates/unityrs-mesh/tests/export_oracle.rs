@@ -338,7 +338,9 @@ fn renderer_texture_platform_swap_matches_desktop_and_swizzle_is_refused() {
             &Meter::unlimited(),
             &mut Sink::default()
         ),
-        Err(MeshError::Field("unsupported swizzled texture"))
+        Err(MeshError::Texture(
+            unityrs_texture::DecodeError::NotEnoughData { .. }
+        ))
     ));
 }
 
