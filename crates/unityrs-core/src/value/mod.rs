@@ -17,7 +17,7 @@
 //! | `tuple` (`pair`; the pure-Python path's aligned primitive arrays) | `Tuple` |
 //! | `dict` (insertion order, `PyDict_SetItem`) | `Dict` |
 //!
-//! Dict keys are [`NodeId`]s of the [`NodeList`] the map was read with, so a
+//! Dict keys are [`NodeId`]s of the [`crate::typetree::NodeList`] the map was read with, so a
 //! field costs no allocation and no reference count. A [`Parsed`] holds those
 //! lists: the root tree's first, then each ref-type tree a `ReferencedObject`
 //! read through. [`Map::list`] says which list a map's keys belong to.
@@ -136,11 +136,10 @@
 //!
 //! ```
 //! // What the snippets above refuse, a caller does this way.
-//! use std::sync::Arc;
 //! use unityrs_core::limits::Meter;
 //! use unityrs_core::typetree::{NodeList, NodeRow};
 //! use unityrs_core::{Value, ValueBuilder};
-//! let root = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "int", "v")]).unwrap());
+//! let root = NodeList::trusted(vec![NodeRow::new(0, "int", "v")]).unwrap().into_shared().unwrap();
 //! let b = ValueBuilder::new(&Meter::unlimited(), root).unwrap();
 //! let mut items = b.vec();
 //! items.push(Value::Int(1)).unwrap();
@@ -152,15 +151,13 @@
 //! Owner: the scaffold (implemented types and helpers); package B may add
 //! methods and fast paths but not change these signatures.
 
-use std::sync::Arc;
-
 use bytes::Bytes;
 
 use crate::limits::{Charge, ChargeError, MeteredVec};
 use crate::raw::RawStr;
-use crate::typetree::{NodeId, NodeList};
+use crate::typetree::NodeId;
 
-/// Index of a [`NodeList`] in [`Parsed::lists`]: the root tree's list, then
+/// Index of a [`crate::typetree::NodeList`] in [`Parsed::lists`]: the root tree's list, then
 /// one per distinct ref-type tree a `ReferencedObject` read through
 /// (deduplicated by `Arc` pointer, so the count is bounded by the file's ref
 /// types, which the input's meter bounds, and which can pass `u16`). A `u32`
@@ -172,7 +169,7 @@ pub type ListIx = u32;
 /// (module docs).
 #[derive(Debug)]
 pub struct Parsed {
-    lists: Vec<Arc<NodeList>>,
+    lists: Vec<crate::typetree::SharedNodes>,
     value: Value,
     /// Where the read ended, from the object's start (the trailing alignment
     /// included); compared with `byte_size` by `check_read`. Signed: the
@@ -459,7 +456,11 @@ impl Parsed {
     /// A value with lists the crate's tests make (65,537 copies of one list,
     /// which a builder would deduplicate), charging nothing.
     #[cfg(test)]
-    pub(crate) fn for_tests(lists: Vec<Arc<NodeList>>, value: Value, bytes_read: i64) -> Self {
+    pub(crate) fn for_tests(
+        lists: Vec<crate::typetree::SharedNodes>,
+        value: Value,
+        bytes_read: i64,
+    ) -> Self {
         Self {
             lists,
             value,
@@ -502,7 +503,7 @@ impl Parsed {
 
     /// The node lists; `[0]` is the tree the object was read with.
     #[must_use]
-    pub fn lists(&self) -> &[Arc<NodeList>] {
+    pub fn lists(&self) -> &[crate::typetree::SharedNodes] {
         &self.lists
     }
 

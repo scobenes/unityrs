@@ -147,7 +147,7 @@ fn compile(rows: &[(i32, String, String, i32)]) -> Arc<Tree> {
         .map(|(l, t, n, m)| NodeRow::new(*l, t.as_str(), n.as_str()).with_meta_flag(*m))
         .collect();
     Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap()

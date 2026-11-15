@@ -95,10 +95,14 @@ pub trait CellError: Send + Sync {
 /// An error a cell keeps, with the charge for its heap.
 pub struct KeptError<E> {
     error: E,
-    _charge: Charge,
+    charge: Charge,
 }
 
 impl<E> KeptError<E> {
+    pub(crate) fn into_parts(self) -> (E, Charge) {
+        (self.error, self.charge)
+    }
+
     /// The error.
     pub fn error(&self) -> &E {
         &self.error
@@ -162,10 +166,7 @@ fn keep<'a, T, E: CellError + Clone>(
 ) -> Result<&'a T, E> {
     match meter.charge(e.heap_bytes()) {
         Ok(charge) => {
-            let kept = KeptError {
-                error: e,
-                _charge: charge,
-            };
+            let kept = KeptError { error: e, charge };
             cell.get_or_init(move || Err(kept))
                 .as_ref()
                 .map_err(|k| k.error.clone())

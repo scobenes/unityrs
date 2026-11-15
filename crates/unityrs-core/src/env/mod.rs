@@ -192,6 +192,7 @@ mod paths;
 mod preload_tests;
 #[cfg(test)]
 mod race_tests;
+mod reader;
 mod resource_data;
 mod revisit;
 mod split;

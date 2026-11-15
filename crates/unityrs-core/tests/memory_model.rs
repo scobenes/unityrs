@@ -32,6 +32,10 @@
 //! allocation's rounding (8 to 23 bytes, a page for an mmapped chunk) as
 //! room in which an uncharged allocation could hide: an 8-byte box per list
 //! costs a 32-byte chunk and would pass (round 4).
+//! A shared node-list owner now allocates 168 bytes (`heap_cost` 176),
+//! replacing the two-count owner's 192-byte charge on both arm64 and
+//! x86-64. `node_owner.rs` measures the allocation and pins the 1.25.2
+//! blob reader's exact memory boundary, one byte below and at the bound.
 
 #![allow(unsafe_code, clippy::cast_precision_loss)]
 
@@ -283,16 +287,21 @@ fn typetree_rows(counting: bool) -> f64 {
 /// by nobody).
 fn parsed_values(counting: bool) -> u64 {
     let m = meter(u64::MAX, counting);
-    let list = Arc::new(
-        NodeList::trusted(vec![
-            NodeRow::new(0, "Base", "Base"),
-            NodeRow::new(1, "int", "a"),
-            NodeRow::new(1, "int", "b"),
-        ])
-        .unwrap(),
-    );
-    let refs: Vec<Arc<NodeList>> = (0..64)
-        .map(|_| Arc::new(NodeList::trusted(vec![NodeRow::new(0, "Ref", "Base")]).unwrap()))
+    let list = NodeList::trusted(vec![
+        NodeRow::new(0, "Base", "Base"),
+        NodeRow::new(1, "int", "a"),
+        NodeRow::new(1, "int", "b"),
+    ])
+    .unwrap()
+    .into_shared()
+    .unwrap();
+    let refs: Vec<unityrs_core::typetree::SharedNodes> = (0..64)
+        .map(|_| {
+            NodeList::trusted(vec![NodeRow::new(0, "Ref", "Base")])
+                .unwrap()
+                .into_shared()
+                .unwrap()
+        })
         .collect();
     let mut kept: Vec<Parsed> = Vec::with_capacity(4096 + 2);
     let base = reset_peak();

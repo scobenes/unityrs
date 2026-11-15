@@ -24,6 +24,7 @@ fn every_value_seed_is_written_at_each_memory_bound() {
     assert!(counts.iter().all(|n| *n > 0), "{counts:?}");
     fsb5_seeds_cover_formats_versions_and_hostile_headers(&dir);
     image_writer_seeds_cover_the_harness_layout(&dir);
+    head_seeds_reach_the_new_readers(&dir);
     texture_seeds_are_cases(&dir);
     astc_seeds_are_cases(&dir);
     crunch_seeds_are_cases(&dir);
@@ -55,7 +56,8 @@ fn every_value_seed_is_written_at_each_memory_bound() {
     }
 }
 
-/// Valid CRN headers for both base formats are retained at every meter;
+/// Valid CRN headers for legacy DXT, Unity DXT (128/129 in the harness),
+/// and Unity ETC are retained at every meter;
 /// malformed seeds remain canonical cases too.
 fn crunch_seeds_are_cases(dir: &Path) {
     let (mut formats, mut meters, mut valid) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
@@ -63,16 +65,16 @@ fn crunch_seeds_are_cases(dir: &Path) {
         let bytes = std::fs::read(entry.expect("an entry").path()).expect("a seed");
         let case = TextureCase::decode(&bytes);
         assert_eq!(case.encode(), bytes, "a seed that is not a case");
-        assert!([28, 29].contains(&case.format));
+        assert!([28, 29, 64, 65, 128, 129].contains(&case.format));
         formats.insert(case.format);
         meters.insert(case.meter);
         if case.data.starts_with(b"Hx") && case.data.len() >= 62 {
             valid.insert((case.format, case.meter));
         }
     }
-    assert_eq!(formats, [28, 29].into());
+    assert_eq!(formats, [28, 29, 64, 65, 128, 129].into());
     assert_eq!(meters, (0..4).collect());
-    assert_eq!(valid.len(), 8);
+    assert_eq!(valid.len(), 24);
 }
 
 /// The shader seeds reach the entry-table width and subprogram header
@@ -148,7 +150,6 @@ fn shader_seeds_are_cases(dir: &Path) {
 }
 
 fn complete_shader_seed_parses(case: &TreeCase) {
-    use std::sync::Arc;
     use unityrs_core::{
         Bytes, RawStr,
         limits::{Meter, MeteredVec},
@@ -171,7 +172,7 @@ fn complete_shader_seed_parses(case: &TreeCase) {
     }
     let options = ReadOptions::default();
     let tree = Tree::compile(
-        Arc::new(NodeList::from_rows(rows).unwrap()),
+        NodeList::from_rows(rows).unwrap().into_shared().unwrap(),
         &options.limits,
     )
     .unwrap();
@@ -455,6 +456,34 @@ fn image_writer_seeds_cover_the_harness_layout(dir: &Path) {
     }
     assert_eq!(headers, (0..13).collect());
     assert_eq!(count, 2749);
+}
+
+fn head_seeds_reach_the_new_readers(dir: &Path) {
+    let mut versions = BTreeSet::new();
+    for target in ["serialized", "bundle"] {
+        let mut count = 0;
+        for entry in std::fs::read_dir(dir.join(target)).unwrap() {
+            let path = entry.unwrap().path();
+            if !path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("-head-")
+            {
+                continue;
+            }
+            count += 1;
+            let bytes = std::fs::read(path).unwrap();
+            if target == "serialized" {
+                versions.insert(u32::from_be_bytes(bytes[8..12].try_into().unwrap()));
+            } else {
+                assert_eq!(u32::from_be_bytes(bytes[8..12].try_into().unwrap()), 9);
+            }
+        }
+        // Bundle seeds include the three explicit-offset empty-block cases.
+        assert_eq!(count, if target == "serialized" { 50 } else { 23 });
+    }
+    assert_eq!(versions, (23..=26).collect());
 }
 
 #[test]

@@ -29,7 +29,7 @@ fn tree(rows: &[(i32, &str, &str)]) -> Arc<Tree> {
         .map(|(level, ty, name)| NodeRow::new(*level, *ty, *name))
         .collect();
     Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap()
@@ -328,7 +328,7 @@ fn a_list_read_past_its_first_reservation_holds_no_spare_item() {
                 NodeRow::new(*l, *t, *n).with_meta_flag(if i == 0 { flag } else { 0 })
             }));
             let t = Tree::compile(
-                Arc::new(NodeList::trusted(rows).unwrap()),
+                NodeList::trusted(rows).unwrap().into_shared().unwrap(),
                 &Limits::default(),
             )
             .unwrap();

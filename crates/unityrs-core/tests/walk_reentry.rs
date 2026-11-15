@@ -65,8 +65,8 @@ fn unhex(s: &str) -> Vec<u8> {
         .collect()
 }
 
-fn list(rows: Vec<NodeRow>) -> Arc<NodeList> {
-    Arc::new(NodeList::trusted(rows).unwrap())
+fn list(rows: Vec<NodeRow>) -> unityrs_core::typetree::SharedNodes {
+    NodeList::trusted(rows).unwrap().into_shared().unwrap()
 }
 
 /// `[[level, type, name, meta], ...]` as rows.
@@ -187,7 +187,10 @@ fn gives(r: &Result<Parsed, ReadError>, want: &Json) -> Result<(), String> {
     let class = want["err"].as_str().unwrap();
     if kind(e.kind) == want["kind"]
         && matches!(class, "EOFError" | "error")
-        && matches!(e.detail, ReadDetail::Eof { .. })
+        && matches!(
+            e.detail,
+            ReadDetail::Eof { .. } | ReadDetail::BoostEof { .. }
+        )
     {
         Ok(())
     } else {
