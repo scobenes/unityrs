@@ -550,6 +550,7 @@ class PortTests(unittest.TestCase):
             notices,
             {
                 "UnityPy 1.25.2": ["LICENSE-UNITYPY"],
+                "UnityPy git 417d595": ["LICENSE-UNITYPY-HEAD"],
                 "fmod_toolkit 0.1.3": ["LICENSE-FMOD-TOOLKIT"],
                 "liblz4 1.9.4": ["LICENSE-LZ4"],
                 "CPython 3.11": ["NOTICE-PSF", "LICENSE-PSF"],

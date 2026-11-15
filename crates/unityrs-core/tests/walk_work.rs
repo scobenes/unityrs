@@ -40,7 +40,7 @@ fn tree(rows: &[(i32, &str, &str)]) -> Arc<Tree> {
         .map(|&(level, ty, name)| NodeRow::new(level, ty, name))
         .collect();
     Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap()
@@ -636,13 +636,13 @@ fn two_refs_bytes() -> Vec<u8> {
 /// `fillers` ref types `("C0000", "n", "a")`, `("C0001", "n", "a")` and so
 /// on, which no reference names, then `("X", "n", "a")`.
 fn ref_list(fillers: usize) -> Vec<SerializedType> {
-    let z = Arc::new(
-        NodeList::trusted(vec![
-            NodeRow::new(0, "X", "Base"),
-            NodeRow::new(1, "int", "z"),
-        ])
-        .unwrap(),
-    );
+    let z = NodeList::trusted(vec![
+        NodeRow::new(0, "X", "Base"),
+        NodeRow::new(1, "int", "z"),
+    ])
+    .unwrap()
+    .into_shared()
+    .unwrap();
     let one = |class: String| {
         SerializedType::ref_type(
             114,

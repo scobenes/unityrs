@@ -182,7 +182,7 @@ fn the_head_reads_a_head_laid_out_as_a_file_stores_it() {
         data.extend([0xEE; 8]);
         let data = Bytes::from(data);
         let list = NodeList::trusted(head_rows(wide)).unwrap();
-        let tree = Tree::compile(Arc::new(list), &Limits::default()).unwrap();
+        let tree = Tree::compile(list.into_shared().unwrap(), &Limits::default()).unwrap();
         let size = u32::try_from(data.len()).unwrap();
         for byte_size in [size, 0] {
             let parsed = walk::read_typetree(&data, 0, byte_size, &tree, &ctx, false).unwrap();

@@ -39,7 +39,7 @@ fn text_asset() -> Arc<Tree> {
         ]);
     }
     Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap()

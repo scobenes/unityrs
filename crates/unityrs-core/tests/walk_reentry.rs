@@ -65,8 +65,8 @@ fn unhex(s: &str) -> Vec<u8> {
         .collect()
 }
 
-fn list(rows: Vec<NodeRow>) -> Arc<NodeList> {
-    Arc::new(NodeList::trusted(rows).unwrap())
+fn list(rows: Vec<NodeRow>) -> unityrs_core::typetree::SharedNodes {
+    NodeList::trusted(rows).unwrap().into_shared().unwrap()
 }
 
 /// `[[level, type, name, meta], ...]` as rows.

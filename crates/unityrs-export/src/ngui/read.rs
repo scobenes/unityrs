@@ -190,7 +190,8 @@ impl Reader {
         }
         let tree = |wide| {
             let list = NodeList::trusted(head_rows(wide)).map_err(internal)?;
-            Tree::compile(Arc::new(list), &Limits::default()).map_err(internal)
+            Tree::compile(list.into_shared().map_err(internal)?, &Limits::default())
+                .map_err(internal)
         };
         Ok(Self {
             wide: tree(true)?,
@@ -334,8 +335,10 @@ fn peek_tree(
     })?;
     let peek = seam.probe(|| NodeList::from_rows(kept).map_err(|e| classify::tree(&e)))?;
     let limits = &file.context().limits;
-    let compiled =
-        seam.probe(|| Tree::compile(Arc::new(peek), limits).map_err(|e| classify::tree(&e)))?;
+    let compiled = seam.probe(|| {
+        Tree::compile(peek.into_shared().map_err(|e| classify::tree(&e))?, limits)
+            .map_err(|e| classify::tree(&e))
+    })?;
     Ok(Some(compiled))
 }
 

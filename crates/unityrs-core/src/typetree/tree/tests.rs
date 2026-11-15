@@ -6,12 +6,12 @@ use crate::error::LimitKind;
 use crate::limits::{ChargeError, Limits, Meter, MeteredVec};
 use crate::typetree::{NodeId, NodeList, NodeRow, TreeError};
 
-fn list(rows: &[(i32, &str, &str, i32)]) -> Arc<NodeList> {
+fn list(rows: &[(i32, &str, &str, i32)]) -> crate::typetree::SharedNodes {
     let rows = rows
         .iter()
         .map(|(l, t, n, m)| NodeRow::new(*l, *t, *n).with_meta_flag(*m))
         .collect();
-    Arc::new(NodeList::trusted(rows).unwrap())
+    NodeList::trusted(rows).unwrap().into_shared().unwrap()
 }
 
 fn compile(rows: &[(i32, &str, &str, i32)]) -> Arc<Tree> {
@@ -145,7 +145,7 @@ fn a_wide_class_groups_its_names_without_quadratic_work() {
         rows.push(NodeRow::new(1, "int", n.as_str()));
     }
     let t = Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap();
@@ -219,7 +219,7 @@ fn min_sizes_bound_a_successful_read() {
 fn a_tree_deeper_than_the_limit_does_not_compile() {
     let chain = |n: i32| {
         let rows = (0..n).map(|l| NodeRow::new(l, "Foo", "f")).collect();
-        Arc::new(NodeList::trusted(rows).unwrap())
+        NodeList::trusted(rows).unwrap().into_shared().unwrap()
     };
     let limits = Limits {
         max_tree_depth: 8,
@@ -231,9 +231,10 @@ fn a_tree_deeper_than_the_limit_does_not_compile() {
         TreeError::Limit(crate::LimitError::refused(LimitKind::TreeDepth, 9, 8))
     );
     // A level jump nests one level deeper, whatever the jump.
-    let jump = Arc::new(
-        NodeList::trusted(vec![NodeRow::new(0, "A", "a"), NodeRow::new(50, "B", "b")]).unwrap(),
-    );
+    let jump = NodeList::trusted(vec![NodeRow::new(0, "A", "a"), NodeRow::new(50, "B", "b")])
+        .unwrap()
+        .into_shared()
+        .unwrap();
     assert_eq!(Tree::compile(jump, &limits).unwrap().depth(), 2);
 }
 
@@ -249,7 +250,7 @@ fn the_compile_is_charged_to_the_lists_meter() {
         &meter,
     )
     .unwrap();
-    let list = Arc::new(NodeList::from_rows(rows).unwrap());
+    let list = NodeList::from_rows(rows).unwrap().into_shared().unwrap();
     let held = meter.used();
     let tree = Tree::compile(list.clone(), &Limits::default()).unwrap();
     assert_eq!(
@@ -293,7 +294,7 @@ fn colliding_names_group_in_k_log_k_comparisons() {
     for n in names.iter().chain(names.iter().rev()) {
         rows.push(NodeRow::new(1, "int", n.as_str()));
     }
-    let list = Arc::new(NodeList::trusted(rows).unwrap());
+    let list = NodeList::trusted(rows).unwrap().into_shared().unwrap();
     COMPARED.with(|c| c.set(0));
     let (ids, _) = name_ids(&list, |_| 0).unwrap();
     let compared = COMPARED.with(std::cell::Cell::get);

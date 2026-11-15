@@ -57,7 +57,7 @@ impl<'a> Lookup<'a> {
         let native = usize::try_from(map.list())
             .ok()
             .and_then(|i| parsed.lists().get(i))
-            .is_some_and(|l| Arc::ptr_eq(l, tree.list()))
+            .is_some_and(|l| triomphe::Arc::ptr_eq(l, tree.list()))
             && map
                 .entries()
                 .first()

@@ -197,7 +197,10 @@ fn ordinary_parse_and_pointer_failures_remain_recoverable() {
     use unityrs_core::stream::StreamRefusal;
     use unityrs_core::typetree::{NodeList, NodeRow};
     use unityrs_core::value::{Value, ValueBuilder};
-    let rows = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "bool", "value")]).unwrap());
+    let rows = NodeList::trusted(vec![NodeRow::new(0, "bool", "value")])
+        .unwrap()
+        .into_shared()
+        .unwrap();
     let builder = ValueBuilder::new(&Meter::unlimited(), rows).unwrap();
     let value = builder.scalar(Value::Bool(true)).unwrap();
     assert_core(

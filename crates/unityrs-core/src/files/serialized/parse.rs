@@ -1,4 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/files/SerializedFile.py, UnityPy/files/ObjectReader.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy git 417d595 (MIT): UnityPy/files/SerializedFile.py. See THIRD_PARTY_LICENSES.
 //! [`SerializedFile::parse`]: `SerializedFile.__init__`'s metadata read,
 //! by the rules the `serialized` module docs list, and the `objects` dict's
 //! order.
@@ -49,18 +50,7 @@ impl SerializedFile {
         let mut charge = meter.charge(heap_cost(
             u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
         ))?;
-        let mut p = Parser {
-            r: Reader::with_kind(&data, Endian::Big, reader),
-            data: &data,
-            pinned: super::pinned(parent.as_ref(), &data),
-            trees: (0, 0),
-            meter,
-            limits: &ctx.limits,
-            common: ctx.providers.common_strings(),
-            version: 0,
-            enable_type_tree: true,
-            kept: Charge::zero(meter),
-        };
+        let mut p = Parser::new(&data, parent.as_ref(), meter, ctx, reader);
         let header = p.header()?;
         p.version = header.version;
         p.r.set_endian(header.endian);
@@ -101,11 +91,15 @@ impl SerializedFile {
         // :302-304
         let externals = p.externals()?;
         // :306-308
-        let ref_types = if format >= 20 {
-            Some(keep(p.types(true)?, &mut charge)?)
+        let mut ref_types = if format >= 20 {
+            Some(p.types(true)?)
         } else {
             None
         };
+        if format >= 26 {
+            p.read_shared(&mut types, ref_types.as_mut())?;
+        }
+        let ref_types = ref_types.map(|t| keep(t, &mut charge)).transpose()?;
         // :313-314
         let user_information = if format >= 5 {
             Some(string_to_null(&mut p.r, &data, meter)?)
@@ -172,25 +166,50 @@ fn keep<T>(table: MeteredVec<T>, charge: &mut Charge) -> Result<Box<[T]>, Error>
 }
 
 /// The metadata reader of one parse.
-struct Parser<'a> {
-    r: Reader<'a>,
-    data: &'a Bytes,
+pub(super) struct Parser<'a> {
+    pub(super) r: Reader<'a>,
+    pub(super) data: &'a Bytes,
     /// The buffer `data` is a slice of ([`SerializedFile::pinned`]).
     pinned: u64,
     /// The typetrees whose strings were copied out of it, and their bytes
     /// ([`crate::pin`]).
     trees: (u64, u64),
-    meter: &'a Arc<Meter>,
-    limits: &'a Limits,
+    pub(super) meter: &'a Arc<Meter>,
+    pub(super) limits: &'a Limits,
     /// The caller's TPK's common strings, which blob trees read (`None`:
     /// UnityPy's MIT table).
-    common: Option<&'a CommonStrings>,
+    pub(super) common: Option<&'a CommonStrings>,
     /// The format (`header.version`).
     version: u32,
     /// `_enable_type_tree` as read so far.
     enable_type_tree: bool,
     /// Charges of what the type records keep outside their node lists.
     kept: Charge,
+    pub(super) handlers: MeteredVec<super::head::Handler>,
+}
+
+impl<'a> Parser<'a> {
+    pub(super) fn new(
+        data: &'a Bytes,
+        parent: Option<&Parent>,
+        meter: &'a Arc<Meter>,
+        ctx: &'a FileContext,
+        reader: ReaderKind,
+    ) -> Self {
+        Self {
+            r: Reader::with_kind(data, Endian::Big, reader),
+            data,
+            pinned: super::pinned(parent, data),
+            trees: (0, 0),
+            meter,
+            limits: &ctx.limits,
+            common: ctx.providers.common_strings(),
+            version: 0,
+            enable_type_tree: true,
+            kept: Charge::zero(meter),
+            handlers: MeteredVec::new(meter),
+        }
+    }
 }
 
 impl Parser<'_> {
@@ -323,29 +342,29 @@ impl Parser<'_> {
             t.old_type_hash = Some(self.r.read_short_array());
         }
         if self.enable_type_tree {
-            let mut rows = if is_blob_format(v) {
-                parse_blob(
-                    &mut self.r,
-                    self.data,
-                    v,
-                    self.meter,
-                    self.limits,
-                    self.common,
-                )?
+            if v >= 23 {
+                let handler = self.head_handler()?;
+                t.nodes = handler.nodes();
+                self.handlers.push(handler)?;
             } else {
-                parse_old(&mut self.r, self.data, v, self.meter, self.limits)?
-            };
-            // A value keeps its tree's node list, whose names are slices of
-            // the file: copied out when they would keep its buffer alive
-            // (`crate::pin`; plan section 8, R3).
-            let n = crate::pin::copy_out(&mut rows, self.data, self.pinned, self.meter);
-            if n > 0 {
-                self.trees = (
-                    self.trees.0.saturating_add(1),
-                    self.trees.1.saturating_add(n),
-                );
+                let mut rows = if is_blob_format(v) {
+                    parse_blob(
+                        &mut self.r,
+                        self.data,
+                        v,
+                        self.meter,
+                        self.limits,
+                        self.common,
+                    )?
+                } else {
+                    parse_old(&mut self.r, self.data, v, self.meter, self.limits)?
+                };
+                // A value keeps its tree's node list, whose names are slices of
+                // the file: copied out when they would keep its buffer alive
+                // (`crate::pin`; plan section 8, R3).
+                self.copy_tree_strings(&mut rows);
+                t.nodes = Some(NodeList::from_rows(rows)?.into_shared()?);
             }
-            t.nodes = Some(Arc::new(NodeList::from_rows(rows)?));
             if v >= 21 {
                 if is_ref {
                     t.class_name = Some(string_to_null(&mut self.r, self.data, self.meter)?);
@@ -361,6 +380,16 @@ impl Parser<'_> {
             }
         }
         Ok(t)
+    }
+
+    pub(super) fn copy_tree_strings(&mut self, rows: &mut MeteredVec<crate::typetree::NodeRow>) {
+        let n = crate::pin::copy_out(rows, self.data, self.pinned, self.meter);
+        if n > 0 {
+            self.trees = (
+                self.trees.0.saturating_add(1),
+                self.trees.1.saturating_add(n),
+            );
+        }
     }
 
     /// The object table (`ObjectReader.from_reader`, `ObjectReader.py:67-130`),

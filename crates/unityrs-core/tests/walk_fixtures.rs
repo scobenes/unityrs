@@ -21,13 +21,12 @@
 //! it raised; a read's failure is compared by its kind only.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use serde_json::{Value as Json, json};
 use unityrs_core::files::SerializedType;
 use unityrs_core::limits::{Limits, Meter};
 use unityrs_core::stream::Endian;
-use unityrs_core::typetree::{NodeId, NodeList};
+use unityrs_core::typetree::NodeId;
 use unityrs_core::walk::{
     self, ParseError, ReadCtx, ReadError, ReadErrorKind, ReadOptions, RefTypes, WriteError,
     WriteRules,
@@ -430,12 +429,12 @@ fn value_cases(raised: &mut Raised) -> Vec<String> {
 /// Builds a W2 value spec into `items` (a list's or a tuple's) or returns it.
 struct Specs {
     builder: ValueBuilder,
-    aux: Arc<NodeList>,
+    aux: unityrs_core::typetree::SharedNodes,
     aux_ix: u32,
 }
 
 impl Specs {
-    fn new(root: Arc<NodeList>) -> Self {
+    fn new(root: unityrs_core::typetree::SharedNodes) -> Self {
         let mut builder = ValueBuilder::new(&Meter::unlimited(), root).unwrap();
         let aux = nodes(&json!([
             [0, "Aux", "Aux", 0],

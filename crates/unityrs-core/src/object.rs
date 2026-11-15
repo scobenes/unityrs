@@ -25,9 +25,7 @@ use crate::files::{ObjectInfo, SerializedFile, SerializedType};
 use crate::provider::{NoTree, TreeRef, TreeRequest, TreeSource};
 use crate::typetree::Tree;
 use crate::value::Parsed;
-use crate::walk::{
-    ParseError, ReadCtx, WriteCtx, WriteError, WriteRules, read_typetree_with_reader,
-};
+use crate::walk::{ParseError, ReadCtx, WriteCtx, WriteError, WriteRules, read_typetree_versioned};
 
 /// One object of a `SerializedFile`: the file and the index of its row
 /// (module docs).
@@ -202,14 +200,14 @@ impl ObjectRef {
             meter: file.meter(),
         };
         let info = self.info();
-        let mut read = read_typetree_with_reader(
+        let mut read = read_typetree_versioned(
             file.data(),
             info.byte_start,
             info.byte_size,
             &tree.tree,
             &ctx,
             check_read,
-            file.reader_kind(),
+            (file.reader_kind(), file.header().version >= 23),
         );
         // A value kept past the file's handles keeps alive the buffer its
         // slices are of: copied out of a run much larger than they are
