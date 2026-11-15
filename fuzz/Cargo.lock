@@ -447,6 +447,7 @@ dependencies = [
  "unityrs-audio",
  "unityrs-core",
  "unityrs-imageio",
+ "unityrs-mesh",
  "unityrs-meshdecode",
  "unityrs-texture",
 ]

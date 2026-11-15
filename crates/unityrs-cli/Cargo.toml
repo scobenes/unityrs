@@ -25,6 +25,7 @@ unityrs-batch = { path = "../unityrs-batch" }
 unityrs-core = { path = "../unityrs-core" }
 unityrs-gltf = { path = "../unityrs-gltf" }
 unityrs-scene = { path = "../unityrs-scene" }
+unityrs-export = { path = "../unityrs-export" }
 unityrs-mesh = { path = "../unityrs-mesh" }
 unityrs-tpk = { path = "../unityrs-tpk" }
 unityrs-dump = { path = "../unityrs-dump" }
@@ -47,6 +48,8 @@ name = "batch_host_lines"
 required-features = ["test-hooks"]
 
 [dev-dependencies]
+# Existing pinned digest implementation for the L9 CLI oracle replay.
+sha2 = "=0.11.1"
 # The core's synthetic UnityCN encryptor, which the batch run harness
 # (`unityrs-batch/tests/run_support`) builds the encrypted golden with.
 aes = "=0.8.4"
