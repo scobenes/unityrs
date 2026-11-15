@@ -1,0 +1,24 @@
+#!/bin/sh
+# Apache-2.0 standalone test infrastructure, never linked or vendored.
+# Release assets: https://github.com/versity/versitygw/releases/tag/v1.10.0
+set -eu
+: "${1:?usage: scripts/store-conformance-server DESTINATION}"
+store_dest=$1
+case "$(uname -s):$(uname -m)" in
+  Linux:x86_64) store_platform=Linux_x86_64; store_sha=8f9869752939d4dc9cfe1bddb935a02cc6610e95319a3a9fc2947d2a6ebd2c91 ;;
+  Linux:aarch64) store_platform=Linux_arm64; store_sha=6307b377caee30c1f0fc8950e62ba684e0440a92f8e6a3a06bee1b83a857f03a ;;
+  Darwin:arm64) store_platform=Darwin_arm64; store_sha=2234e3151e8f1ab8c143cdab541a91f10e394c75670a43ab46ee89195a3d8707 ;;
+  Darwin:x86_64) store_platform=Darwin_x86_64; store_sha=23352b524028b44ada33323466c6baeab769ab4e777911c08a0eee4c9e4cdcc3 ;;
+  *) echo 'unsupported conformance platform' >&2; exit 1 ;;
+esac
+store_name=versitygw_v1.10.0_$store_platform
+mkdir -p "$store_dest"
+curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+  "https://github.com/versity/versitygw/releases/download/v1.10.0/$store_name.tar.gz" \
+  -o "$store_dest/server.tar.gz"
+if command -v sha256sum >/dev/null 2>&1; then
+  printf '%s  %s\n' "$store_sha" "$store_dest/server.tar.gz" | sha256sum -c -
+else
+  printf '%s  %s\n' "$store_sha" "$store_dest/server.tar.gz" | shasum -a 256 -c -
+fi
+tar -xzf "$store_dest/server.tar.gz" -C "$store_dest" --strip-components=1 "$store_name/versitygw"

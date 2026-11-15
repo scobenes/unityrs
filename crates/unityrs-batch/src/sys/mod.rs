@@ -681,6 +681,8 @@ mod shared;
 pub use shared::{Lock, Shared, Slot};
 
 pub use entry::{local_source, spool_mkdir, spool_rename};
+mod journal;
+pub(crate) use journal::journal_file;
 
 #[path = "procfs.rs"]
 mod procfs;
