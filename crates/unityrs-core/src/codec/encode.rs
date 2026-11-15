@@ -1,4 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/CompressionHelper.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy git 417d595 (MIT): UnityPy/helpers/CompressionHelper.py. See THIRD_PARTY_LICENSES.
 //! Bundle packers following `helpers/CompressionHelper.py:158-231`.
 //! LZ4 and LZ4HC both use pristine liblz4 1.9.4 HC at level 9.
 
@@ -13,21 +14,23 @@ use crate::files::save::{SaveError, Writer, narrow};
 use crate::limits::{Meter, MeteredVec};
 use crate::stream::Endian;
 
-/// One ten-byte UnityFS block-table row, before it is serialized.
+/// One UnityFS block-table row, before it is serialized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockInfo {
     /// Input length of this block.
     pub uncompressed: u32,
     /// Stored length of this block.
     pub compressed: u32,
-    /// The caller's flags, with the codec cleared only when compression grew.
+    /// The caller's flags, with the codec cleared for a stored chunk.
     pub flags: u16,
+    /// HEAD format 9's offset in the padded compressed payload.
+    pub offset: Option<u64>,
 }
 
 /// Packed bundle payload and its metered block table.
 #[derive(Debug)]
 pub struct PackedBlocks {
-    /// Concatenated stored blocks, without padding.
+    /// Concatenated stored blocks, padded to 16 bytes for HEAD format 9.
     pub data: Bytes,
     /// Block rows, in payload order.
     pub blocks: MeteredVec<BlockInfo>,
@@ -62,6 +65,27 @@ pub fn chunk_based_compress(
     flags: u16,
     meter: &Arc<Meter>,
 ) -> Result<PackedBlocks, SaveError> {
+    chunks(data, flags, None, meter)
+}
+
+/// HEAD 417d595's `chunk_based_compress`: the bytes already written, with
+/// padding, determine whether the next block is stored. From format 9 each
+/// compressed-packer block has an offset and trailing 16-byte alignment.
+pub fn head_chunk_based_compress(
+    data: &[u8],
+    flags: u16,
+    version: u32,
+    meter: &Arc<Meter>,
+) -> Result<PackedBlocks, SaveError> {
+    chunks(data, flags, Some(version), meter)
+}
+
+fn chunks(
+    data: &[u8],
+    flags: u16,
+    head: Option<u32>,
+    meter: &Arc<Meter>,
+) -> Result<PackedBlocks, SaveError> {
     let codec = Codec::from_flags(u32::from(flags));
     let chunk = match codec {
         Codec::None => data.len().max(1),
@@ -76,6 +100,7 @@ pub fn chunk_based_compress(
             uncompressed: len,
             compressed: len,
             flags,
+            offset: head.filter(|version| *version >= 9).map(|_| 0),
         })?;
         return Ok(PackedBlocks {
             data: compress(data, codec, meter)?,
@@ -85,7 +110,12 @@ pub fn chunk_based_compress(
     let mut out = Writer::new(meter, Endian::Big)?;
     for part in data.chunks(chunk) {
         let packed = compress(part, codec, meter)?;
-        let (stored, block_flags) = if packed.len() > part.len() {
+        let store = if head.is_some() {
+            out.len() >= chunk
+        } else {
+            packed.len() > part.len()
+        };
+        let (stored, block_flags) = if store {
             (part, flags ^ u16::from(codec.id()))
         } else {
             (packed.as_ref(), flags)
@@ -94,8 +124,16 @@ pub fn chunk_based_compress(
             uncompressed: narrow(part.len(), "uncompressed block length")?,
             compressed: narrow(stored.len(), "compressed block length")?,
             flags: block_flags,
+            offset: if head.is_some_and(|version| version >= 9) {
+                Some(narrow(out.len(), "block offset")?)
+            } else {
+                None
+            },
         })?;
         out.bytes(stored)?;
+        if head.is_some_and(|version| version >= 9) {
+            out.align(16)?;
+        }
     }
     Ok(PackedBlocks {
         data: out.finish()?,

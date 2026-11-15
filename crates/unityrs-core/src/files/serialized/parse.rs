@@ -38,6 +38,10 @@ impl SerializedFile {
     /// [`Self::parse`] by the rules of the reader UnityPy would read `data`
     /// with ([`ReaderKind::Stream`] for a top-level file loaded from a path),
     /// which its objects' reads follow too.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "format-gated metadata and charged file construction"
+    )]
     pub fn parse_with_reader(
         name: RawStr,
         data: Bytes,
@@ -96,6 +100,7 @@ impl SerializedFile {
         } else {
             None
         };
+        let head_roots = p.handlers.len();
         if format >= 26 {
             p.read_shared(&mut types, ref_types.as_mut())?;
         }
@@ -115,11 +120,13 @@ impl SerializedFile {
         let externals = keep(externals, &mut charge)?;
         let object_order = keep(object_order, &mut charge)?;
         let by_path = keep(by_path, &mut charge)?;
+        let copies = CopyCounts::new(p.trees.0, p.trees.1);
+        let head_handlers = p.handlers;
         let file = Arc::new(Self {
             changed: std::sync::atomic::AtomicBool::new(false),
             edits: std::sync::Mutex::new(MeteredVec::new(meter)),
             // Before `data` moves: the parser reads it.
-            copies: CopyCounts::new(p.trees.0, p.trees.1),
+            copies,
             name,
             data,
             header,
@@ -130,8 +137,11 @@ impl SerializedFile {
             big_id_enabled,
             types,
             ref_types,
+            head_handlers,
+            head_roots,
             script_types,
             externals,
+            pending_externals: std::sync::Mutex::new(MeteredVec::new(meter)),
             user_information,
             object_infos,
             object_order,

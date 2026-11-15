@@ -19,6 +19,10 @@ use bytes::Bytes;
 use std::sync::{Arc, Mutex};
 
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "legacy fields and charged container construction"
+)]
 pub(super) fn open(
     name: RawStr,
     source: Bytes,
@@ -109,6 +113,7 @@ pub(super) fn open(
         blocks_info: None,
     };
     Ok(Arc::new_cyclic(|this| BundleFile {
+        writable: crate::files::cab::WritableCabs::new(meter),
         changed: std::sync::atomic::AtomicBool::new(false),
         name,
         source,

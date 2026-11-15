@@ -18,6 +18,10 @@ impl BundleFile {
             return Err(SaveError::Unsupported("legacy layout on an FS bundle"));
         }
         let mut directory_size = 4usize;
+        let cabs = self.writeable_cabs()?;
+        for cab in cabs.as_slice() {
+            cab.validate_name(options.layout, false)?;
+        }
         for slot in &self.files {
             self.meter().count_decode(8)?;
             let nul = usize::from(
@@ -26,14 +30,31 @@ impl BundleFile {
             );
             directory_size = add(directory_size, add(slot.name.len(), 8 + nul)?)?;
         }
+        for cab in cabs.as_slice() {
+            let nul = usize::from(
+                options.layout != SaveLayout::Semantic
+                    || cab.name().len() != crate::stream::STRING_TO_NULL_WINDOW,
+            );
+            directory_size = add(directory_size, add(cab.name().len(), 8 + nul)?)?;
+        }
         directory_size = aligned(directory_size, 4)?;
         let mut directory = Writer::metadata(self.meter(), Endian::Big, options.layout)?;
         let mut payload = Writer::new(self.meter(), Endian::Big)?;
-        directory.count(self.files.len())?;
+        directory.count(add(self.files.len(), cabs.len())?)?;
         for slot in &self.files {
             self.meter().count_decode(8)?;
             let bytes = self.save_child(slot.dir_index, options)?;
             directory.cstr(slot.name.as_bytes())?;
+            directory.u32(narrow(
+                add(directory_size, payload.len())?,
+                "legacy entry offset",
+            )?)?;
+            directory.u32(narrow(bytes.len(), "legacy entry size")?)?;
+            payload.bytes(&bytes)?;
+        }
+        for cab in cabs.as_slice() {
+            let bytes = cab.save()?;
+            directory.cstr(cab.name().as_bytes())?;
             directory.u32(narrow(
                 add(directory_size, payload.len())?,
                 "legacy entry offset",

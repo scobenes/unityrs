@@ -1,4 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/files/SerializedFile.py, UnityPy/files/ObjectReader.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy git 417d595 (MIT): UnityPy/files/SerializedFile.py, UnityPy/helpers/TypeTreeNode.py. See THIRD_PARTY_LICENSES.
 //! File save (`files/SerializedFile.py:389-493`), type records
 //! (`files/SerializedFile.py:151-198`) and object rows
 //! (`files/ObjectReader.py:132-179`). Types and metadata retain file order;
@@ -10,6 +11,9 @@ use crate::files::save::{SaveError, SaveOptions, Writer, narrow, required};
 use crate::stream::Endian;
 use bytes::Bytes;
 
+#[path = "write_head.rs"]
+mod head_writer;
+
 impl SerializedFile {
     /// Save metadata and objects, sorting by signed path id and padding every
     /// data block to eight bytes. The result owns its meter charge. Saving
@@ -17,14 +21,24 @@ impl SerializedFile {
     ///
     /// Old trees, required pre-v13 trees, and pre-v9's data offset are
     /// corrected under both layouts (Tier C writing). Otherwise `UnityPy`
-    /// matches UnityPy 1.25.2's uncompressed save through format 22.
-    /// Formats above 22 refuse before building or charging any output:
-    /// HEAD-tier writes are not implemented.
+    /// matches UnityPy 1.25.2's uncompressed save through format 22 and
+    /// HEAD 417d595 for formats 23-26. HEAD's absent per-type node assertion
+    /// and formats above 26 refuse before building or charging output.
     pub fn save(&self, options: SaveOptions) -> Result<Bytes, SaveError> {
         let h = &self.header;
         let v = h.version;
-        if v > 22 {
+        if v > 26 {
             return Err(SaveError::HeadTierWritesNotImplemented);
+        }
+        if v >= 23 && self.enable_type_tree {
+            for t in self
+                .types
+                .iter()
+                .chain(self.ref_types.iter().flat_map(|r| r.iter()))
+            {
+                self.meter().count_decode(1)?;
+                required(t.nodes.as_ref(), "HEAD type node")?;
+            }
         }
         let mut meta = Writer::metadata(self.meter(), h.endian, options.layout)?;
         let mut data = Writer::new(self.meter(), h.endian)?;
@@ -41,8 +55,8 @@ impl SerializedFile {
             meta.boolean(trees)?;
         }
         meta.count(self.types.len())?;
-        for t in &self.types {
-            t.write(self, &mut meta, trees, false, options)?;
+        for (i, t) in self.types.iter().enumerate() {
+            t.write(self, &mut meta, trees, false, i, options)?;
         }
         if (7..14).contains(&v) {
             meta.i32(self.big_id_enabled)?;
@@ -124,8 +138,17 @@ impl SerializedFile {
                 }
             }
         }
-        meta.count(self.externals.len())?;
-        for e in &self.externals {
+        let pending = self
+            .pending_externals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        meta.count(
+            self.externals
+                .len()
+                .checked_add(pending.len())
+                .ok_or(SaveError::Range("externals"))?,
+        )?;
+        for e in self.externals.iter().chain(pending.as_slice()) {
             if v >= 6 {
                 meta.cstr(required(e.temp_empty.as_ref(), "temp_empty")?.as_bytes())?;
             }
@@ -138,9 +161,22 @@ impl SerializedFile {
         if v >= 20 {
             let refs = required(self.ref_types.as_ref(), "ref_types")?;
             meta.count(refs.len())?;
-            for t in refs {
-                t.write(self, meta, trees, true, options)?;
+            for (i, t) in refs.iter().enumerate() {
+                t.write(
+                    self,
+                    meta,
+                    trees,
+                    true,
+                    self.types
+                        .len()
+                        .checked_add(i)
+                        .ok_or(SaveError::Range("HEAD type index"))?,
+                    options,
+                )?;
             }
+        }
+        if v >= 26 {
+            head_writer::write_shared(self, meta, options)?;
         }
         if v >= 5 {
             meta.cstr(required(self.user_information.as_ref(), "userInformation")?.as_bytes())?;
@@ -232,6 +268,7 @@ impl SerializedType {
         out: &mut Writer,
         trees: bool,
         is_ref: bool,
+        index: usize,
         options: SaveOptions,
     ) -> Result<(), SaveError> {
         let v = file.header.version;
@@ -255,17 +292,25 @@ impl SerializedType {
             )?;
         }
         if trees {
-            let nodes = required(self.nodes.as_ref(), "node")?;
-            if crate::typetree::parse::is_blob_format(v) {
-                nodes.write_blob(
-                    out,
-                    v,
-                    file.header.endian,
-                    options.layout,
-                    file.ctx.providers.common_strings(),
-                )?;
+            if v >= 23 {
+                required(
+                    file.head_handlers.as_slice().get(index),
+                    "HEAD type handler",
+                )?
+                .write(file, out, options)?;
             } else {
-                nodes.write_old(out, v)?;
+                let nodes = required(self.nodes.as_ref(), "node")?;
+                if crate::typetree::parse::is_blob_format(v) {
+                    nodes.write_blob(
+                        out,
+                        v,
+                        file.header.endian,
+                        options.layout,
+                        file.ctx.providers.common_strings(),
+                    )?;
+                } else {
+                    nodes.write_old(out, v)?;
+                }
             }
             if v >= 21 {
                 if is_ref {

@@ -155,6 +155,7 @@ impl BundleFile {
         let (ends, c) = Ends::new(blocks.len(), meter)?;
         charge.absorb(c);
         Ok(Arc::new_cyclic(|this| Self {
+            writable: crate::files::cab::WritableCabs::new(meter),
             changed: std::sync::atomic::AtomicBool::new(false),
             name,
             source: data,

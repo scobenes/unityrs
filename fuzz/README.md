@@ -22,7 +22,7 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `detect` | `detect::check_file_type` (the gzip check bounded by `max_inflate`) | any bytes |
 | `zlib_match` | derived deflate against pristine zlib 1.2.13, with 257-byte input and 509-byte output windows (`test-reference`) | any bytes, capped at 4 MiB |
 | `bundle` | `BundleFile::open` plus `load_all` (every block decoded, every entry parsed, nested bundles loaded), by the memory and the stream reader's rules | any bytes |
-| `bundle_save` | load, save, reload: same files, flags and saved child content; the next save is identical; runs uncompressed plus an input-selected LZ4, tuple HC or LZMA packer; typed refusals are allowed | any bytes (the bundle seeds, HEAD refusals and legacy signatures included) |
+| `bundle_save` | load, save, reload: same files, flags and saved child content; the next save is identical (canonical uncompressed for original); runs uncompressed plus an input-selected LZ4, tuple HC, named HEAD HC, LZMA or original packer, including format 9; typed refusals are allowed | any bytes (the bundle seeds, HEAD writes and future-format refusals, nested WebFiles and legacy signatures included) |
 | `zip` | central-directory/ZIP64 parsing, CRC-checked stored/deflate reads, and `Environment::load_zip_file` with nested frames, split joins and cached duplicate reads | arbitrary ZIP bytes; stored, deflate, split, empty and nested duplicate testkit seeds |
 | `webfile` | signed WebFile table parsing, nested member loading and bounded gzip/brotli inflation | plain, gzip, brotli, nested duplicates and hostile name lengths |
 | `unityweb` | legacy headers, signed level skip, LZMA and directories, memory and stream readers | UnityWeb/UnityRaw formats 1–6 |

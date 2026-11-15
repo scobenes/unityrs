@@ -1,4 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/files/BundleFile.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy git 417d595 (MIT): UnityPy/files/BundleFile.py. See THIRD_PARTY_LICENSES.
 //! Bundle save and block/directory layout (`files/BundleFile.py:188-393`).
 //! Output and all temporary buffers charge the opened input's meter.
 
@@ -22,7 +23,7 @@ pub enum BundlePacker {
     Lz4,
     /// Raw LZMA1 with UnityPy's settings, (65, 1).
     Lzma,
-    /// The named HEAD packer; B2b supplies its different chunk rule.
+    /// HEAD 417d595's HC level 9 packer and cumulative-output chunk rule.
     /// For 1.25.2 HC use `Flags { data: 195, blocks: 3 }`.
     Lz4Hc,
     /// `(data_flag, block_info_flag)` as `save_fs` actually takes them.
@@ -55,9 +56,9 @@ impl BundleFile {
     /// loaded block's codec, so a stored first chunk can change the next
     /// `Original` save's block layout, as in UnityPy.
     ///
-    /// Formats above 8 and the named HEAD HC packer refuse with
-    /// `HeadTierWritesNotImplemented`. HC level 9 is available through the
-    /// 1.25.2 tuple flags. Legacy signatures ignore the packer, as UnityPy does.
+    /// Format 9 and named HC follow HEAD 417d595. Earlier formats retain
+    /// 1.25.2's other packers. Formats above 9 refuse before output charges.
+    /// Legacy signatures ignore the packer, as UnityPy does.
     pub fn save(&self, options: BundleSaveOptions) -> Result<Bytes, SaveError> {
         self.save_version()?;
         let child_options = SaveOptions {
@@ -77,13 +78,18 @@ impl BundleFile {
                 }
                 BundlePacker::Lz4 => (194, 2),
                 BundlePacker::Lzma => (65, 1),
-                BundlePacker::Lz4Hc => return Err(SaveError::HeadTierWritesNotImplemented),
+                BundlePacker::Lz4Hc => (195, 3),
                 BundlePacker::Flags { data, blocks } => (data, blocks),
             }
         } else {
             (64, 64)
         };
-        self.save_fs(data, blocks, child_options)
+        self.save_fs_impl(
+            data,
+            blocks,
+            child_options,
+            options.packer == BundlePacker::Lz4Hc,
+        )
     }
 
     /// Save the FS layout, with header/blocks-info flags first and data
@@ -95,6 +101,16 @@ impl BundleFile {
         data_flag: u32,
         block_info_flag: u16,
         options: SaveOptions,
+    ) -> Result<Bytes, SaveError> {
+        self.save_fs_impl(data_flag, block_info_flag, options, false)
+    }
+
+    fn save_fs_impl(
+        &self,
+        data_flag: u32,
+        block_info_flag: u16,
+        options: SaveOptions,
+        named_hc: bool,
     ) -> Result<Bytes, SaveError> {
         self.save_version()?;
         if self.header.layout != LayoutKind::Fs {
@@ -111,7 +127,16 @@ impl BundleFile {
             return Err(SaveError::Missing("directory flag 0x40"));
         }
         let (file_data, directory) = self.save_entries(options)?;
-        let packed = encode::chunk_based_compress(&file_data, block_info_flag, self.meter())?;
+        let packed = if named_hc || self.header.format >= 9 {
+            encode::head_chunk_based_compress(
+                &file_data,
+                block_info_flag,
+                self.header.format,
+                self.meter(),
+            )?
+        } else {
+            encode::chunk_based_compress(&file_data, block_info_flag, self.meter())?
+        };
         let mut info = Writer::new(self.meter(), Endian::Big)?;
         info.bytes(&[0; 16])?;
         info.count(packed.blocks.len())?;
@@ -119,6 +144,9 @@ impl BundleFile {
             info.u32(block.uncompressed)?;
             info.u32(block.compressed)?;
             info.u16(block.flags)?;
+            if let Some(offset) = block.offset {
+                info.u64(offset)?;
+            }
         }
         info.bytes(&directory)?;
         let info_len = narrow(info.len(), "blocks-info size")?;
@@ -173,7 +201,7 @@ impl BundleFile {
     }
 
     pub(super) fn save_version(&self) -> Result<(), SaveError> {
-        if self.header.format > 8 {
+        if self.header.format > 9 {
             return Err(SaveError::HeadTierWritesNotImplemented);
         }
         Ok(())
@@ -189,9 +217,13 @@ impl BundleFile {
     }
 
     fn save_entries(&self, options: SaveOptions) -> Result<(Bytes, Bytes), SaveError> {
+        let cabs = self.writeable_cabs()?;
+        for cab in cabs.as_slice() {
+            cab.validate_name(options.layout, false)?;
+        }
         let mut data = Writer::new(self.meter(), Endian::Big)?;
         let mut directory = Writer::metadata(self.meter(), Endian::Big, options.layout)?;
-        directory.count(self.files.len())?;
+        directory.count(add(self.files.len(), cabs.len())?)?;
         for slot in &self.files {
             self.meter().count_decode(8)?;
             let row = required(self.directory.get(slot.dir_index), "directory row")?;
@@ -200,6 +232,14 @@ impl BundleFile {
             directory.i64(narrow(bytes.len(), "entry size")?)?;
             directory.u32(row.flags.unwrap_or(0))?;
             directory.cstr(slot.name.as_bytes())?;
+            data.bytes(&bytes)?;
+        }
+        for cab in cabs.as_slice() {
+            let bytes = cab.save()?;
+            directory.i64(narrow(data.len(), "entry offset")?)?;
+            directory.i64(narrow(bytes.len(), "entry size")?)?;
+            directory.u32(cab.flags())?;
+            directory.cstr(cab.name().as_bytes())?;
             data.bytes(&bytes)?;
         }
         directory.end_metadata()?;
@@ -218,7 +258,10 @@ impl BundleFile {
                 layout: options.layout,
                 packer: BundlePacker::None,
             }),
-            File::Web(_) => Err(SaveError::Unsupported("WebFile save")),
+            File::Web(web) => web.save(crate::files::WebSaveOptions {
+                layout: options.layout,
+                packer: crate::files::WebPacker::None,
+            }),
         }
     }
 }
