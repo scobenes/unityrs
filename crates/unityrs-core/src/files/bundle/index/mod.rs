@@ -17,8 +17,8 @@ mod tests;
 
 use std::collections::BTreeMap;
 use std::mem::size_of;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 
@@ -182,6 +182,25 @@ pub(super) enum Published {
 }
 
 impl RunIndex {
+    /// An empty, synchronized index, with its lock's heap paid for by the
+    /// bundle. Initialize the lock before publishing the bundle so reads
+    /// and counts never allocate synchronization state outside this charge.
+    pub(super) fn mutex(charge: &mut Charge) -> Result<Mutex<Self>, ChargeError> {
+        let runs = Mutex::new(Self::new(charge.meter()));
+        #[cfg(target_vendor = "apple")]
+        {
+            // Darwin's std mutex lazily boxes a 64-byte pthread_mutex_t on
+            // first lock. It is separate from the inline Mutex and the
+            // bundle's Arc, and stays live until the mutex is dropped.
+            charge.grow(heap_cost(64))?;
+            drop(
+                runs.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+        }
+        Ok(runs)
+    }
+
     /// An empty index charging `meter`.
     pub(crate) fn new(meter: &Arc<Meter>) -> Self {
         Self {
