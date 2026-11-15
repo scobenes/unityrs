@@ -274,7 +274,15 @@ fn archive(
     json.value("members", r.members)?;
     json.value("left_out", r.left_out)?;
     json.hex("md5", success.then_some(value.md5.as_slice()))?;
-    json.text("etag", if success { value.etag()? } else { None })?;
+    let tag = if success { value.etag()? } else { None };
+    // Outcome 7 keeps the response verbatim; public archive tags omit one
+    // surrounding quote pair, just as the digest-based records already do.
+    let tag = tag.map(|s| {
+        s.strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(s)
+    });
+    json.text("etag", tag)?;
     json.optional("size", success.then_some(value.size))?;
     counts.status(Family::Archives, status)
 }

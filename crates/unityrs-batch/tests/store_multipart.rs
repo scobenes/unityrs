@@ -33,13 +33,18 @@ fn sizes_have_no_empty_last_part_and_stop_before_create_at_ten_thousand() {
 }
 #[test]
 fn multipart_journals_before_parts_retires_on_complete_and_releases_phase_memory() {
+    for (returned, by_size) in [("expected-2", false), ("returned-3", true)] {
+        multipart_journal_scene(returned, by_size);
+    }
+}
+fn multipart_journal_scene(returned: &str, by_size: bool) {
     let scratch = Scratch::new("multipart");
     let journal = Journal::new(scratch.path()).unwrap();
     let h = Harness::new([
         created("upload"),
         part("one"),
         part("two"),
-        complete("expected-2"),
+        complete(returned),
     ]);
     let part_budget = unityrs_batch::store::multipart::PartBudget::new();
     let account = Account::new(32 << 20);
@@ -94,7 +99,8 @@ fn multipart_journals_before_parts_retires_on_complete_and_releases_phase_memory
         transfer.complete(&request, b"expected-2").await
     })
     .unwrap();
-    assert!(!result.verify_by_size);
+    assert_eq!(result.verify_by_size, by_size);
+    assert_eq!(result.etag.as_bytes(), format!("\"{returned}\"").as_bytes());
     assert!(journal.reader().unwrap().next().unwrap().is_none());
     assert_eq!(h.script.seen.count(), 4);
     assert!(h.script.seen.line(1).contains("partNumber=1"));

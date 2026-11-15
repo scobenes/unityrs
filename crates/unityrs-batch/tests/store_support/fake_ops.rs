@@ -1,6 +1,6 @@
 //! S3-shaped state transitions for the independent loopback peer.
 #![allow(dead_code)]
-use super::fake::{Object, Operation, State, Upload};
+use super::fake::{Fault, ListPagination, Object, Operation, State, Upload};
 use hyper::{HeaderMap, Method, Uri};
 use md5::{Digest, Md5};
 use serde::Deserialize;
@@ -101,7 +101,7 @@ pub fn apply(state: &mut State, input: &Input) -> Answer {
             answer
         }
         Operation::Get | Operation::Head => get(input, state.objects.get(&identity)),
-        Operation::List => list(state, input),
+        Operation::List => list(state, input, &Fault::default()),
         Operation::Create => {
             state.upload_sequence += 1;
             let id = format!("upload-{}", state.upload_sequence);
@@ -224,7 +224,10 @@ fn precondition(input: &Input, object: Option<&Object>) -> Option<Answer> {
     None
 }
 
-fn list(state: &State, input: &Input) -> Answer {
+pub(super) fn list(state: &State, input: &Input, fault: &Fault) -> Answer {
+    if input.bucket != state.bucket {
+        return Answer::error(404, "NoSuchBucket");
+    }
     let prefix = input.query.get("prefix").map_or("", String::as_str);
     let delimiter = input.query.get("delimiter").map_or("", String::as_str);
     let max = input
@@ -232,7 +235,8 @@ fn list(state: &State, input: &Input) -> Answer {
         .get("max-keys")
         .and_then(|n| n.parse::<usize>().ok())
         .unwrap_or(1000)
-        .min(1000);
+        .min(1000)
+        .min(fault.list_page_size.unwrap_or(1000));
     let start = input
         .query
         .get("continuation-token")
@@ -264,13 +268,23 @@ fn list(state: &State, input: &Input) -> Answer {
         entries.insert(prefix, None);
     }
     let total = entries.len();
-    let truncated = max != 0 && start.saturating_add(max) < total;
+    let truncated = match fault.list_pagination {
+        Some(ListPagination::TruncatedWithoutToken | ListPagination::NilTokenOnTruncatedPage) => {
+            true
+        }
+        Some(ListPagination::TokenOnFinalPage) => false,
+        None => max != 0 && start.saturating_add(max) < total,
+    };
     let mut body = format!(
         "<ListBucketResult><Name>{}</Name><Prefix>{}</Prefix><MaxKeys>{max}</MaxKeys><IsTruncated>{truncated}</IsTruncated>",
         xml(&input.bucket),
         xml(prefix)
     );
-    for (key, object) in entries.into_iter().skip(start).take(max) {
+    let mut page: Vec<_> = entries.into_iter().skip(start).take(max).collect();
+    if fault.list_reverse {
+        page.reverse();
+    }
+    for (key, object) in page {
         let encoded;
         let key = if input
             .query
@@ -293,14 +307,7 @@ fn list(state: &State, input: &Input) -> Answer {
             .unwrap();
         }
     }
-    if truncated {
-        write!(
-            &mut body,
-            "<NextContinuationToken>offset:{}</NextContinuationToken>",
-            start + max
-        )
-        .unwrap();
-    }
+    continuation(&mut body, fault, truncated, start + max);
     if input
         .query
         .get("encoding-type")
@@ -310,6 +317,29 @@ fn list(state: &State, input: &Input) -> Answer {
     }
     body.push_str("</ListBucketResult>");
     Answer::xml(body)
+}
+fn continuation(body: &mut String, fault: &Fault, truncated: bool, next: usize) {
+    if fault.list_pagination == Some(ListPagination::TruncatedWithoutToken) {
+        return;
+    }
+    if fault.list_pagination == Some(ListPagination::NilTokenOnTruncatedPage) {
+        body.push_str("<NextContinuationToken xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:nil=\"true\"/>");
+        return;
+    }
+    if let Some(token) = &fault.list_token {
+        write!(
+            body,
+            "<NextContinuationToken>{}</NextContinuationToken>",
+            xml(token)
+        )
+        .unwrap();
+    } else if truncated {
+        write!(
+            body,
+            "<NextContinuationToken>offset:{next}</NextContinuationToken>"
+        )
+        .unwrap();
+    }
 }
 
 #[derive(Deserialize)]
