@@ -40,6 +40,7 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `sprites_kind.py` | the `sprites` output kind's reference (`docs/plans/extract.md` E17): one PNG per Sprite of one input's view, its plan and sprite groups by `docs/BATCH_SPEC.md` 4.4, each image UnityPy 1.25.2's `SpriteHelper` and Pillow 9.5.0's PNG writer; a library and a command |
 | `sprites_scenes.py` | unityrs-testkit's `sprites` scenes, which cargo builds, for `tools/fixtures/sprites.py` |
 | `gltf_check.py` | L6g's independent check of a written GLB (`docs/plans/static3d.md` sections 2.4 and 3.2): reads the accessors with the standard library and compares them with MeshHandler's rows in Unity coordinates, X mirrored, V flipped and winding reversed, after the writer's documented normalisation; no exporter is its oracle |
+| `mesh_dump.py` | L6 corpus JSONL digests and exact masked comparison; standalone oracle dump, `unityrs dump --mesh` candidate; arrays preserve binary64 bits and numeric tags, triangles preserve partial/empty tuples, OBJ streams into SHA-256; output stays outside the repository |
 | `mesh_samples.py` | L6 (`docs/plans/static3d.md`): every Mesh in the pinned UnityPy samples, its arrays, type tags, triangles and raw OBJ text against `unityrs-mesh`'s `mesh_l6` example, with section 19.1's corrected decoding; prints aggregate counts only; needs the oracle stack |
 | `ruff.toml` | the lint and format settings for this folder (`uvx ruff check`, `uvx ruff format`) |
 | `tests/` | unittest self-tests; `test_readme.py` checks that this table lists every file in this folder, and no other |
@@ -163,6 +164,7 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_sprites_kind.py` | the `sprites` kind's reference on its own branches: a top-level WebFile row's `Divergence`, a `MemoryError` that is Pillow's (`pillow_memory_error`) and one that is not (propagated), the render data's selection on objects made in the test (the first atlas of the tag's name, names read only up to it, no match, a missing key, no tag) and a Sprite's fields of another shape | UnityPy, Pillow 9.5.0 |
 | `test_texture_seal.py` | every Texture2D either reference constructs, nested or read directly, refuses an `image` child without opening a host path: the sprite_attributes scene's unused path-valued textures under a texture, a Sprite and an atlas, each parent still exported, and `PIL.Image.open` never called while the references run | UnityPy, Pillow 9.5.0 |
 | `synth.py`, `dump_harness.py` | not tests: `synth.py` builds the synthetic inputs, and `dump_harness.py` holds what the `test_dump*.py` modules share (the sample pins included) | stdlib; UnityPy for `dump_harness.py`'s dumps |
+| `test_mesh_dump.py` | mesh digest framing, signed zero/NaN payloads/type tags, optional arrays, triangle counts, Unicode JSON, exact field masks, duplicate/missing records, corpus pin bytes, resource refusals and committed synthetic OBJ replay | stdlib + pinned UnityPy for replay |
 | `test_gltf_check.py` | `gltf_check.py` on hand-built GLBs: the orientation verdict (pass, a reversed winding, no normals, degenerate triangles), accessor reads (sparse, stride and offset, ranges, raw values), the UV, tangent, normal and weight conversions, morph deltas left unnormalised, and the attributes an invalid normal or tangent must omit | stdlib |
 
 **Samples.** The samples are UnityPy's `tests/samples` at commit `417d595`. They are read from `$UNITYRS_UNITYPY_SAMPLES` when set, else from the folder the corpus index (`$UNITYRS_CORPUS_INDEX`, default `/corpus/index.json`) gives for its `unitypy-sample` entries, and their sha256 is checked against pinned values. They are game bundles, so they are never copied into this repository. Without them the sample tests skip.
@@ -229,3 +231,27 @@ scripts/dev bash -c 'time python tools/parity/compare.py /tmp/dumps/corpus20.jso
 # over both builds, run on 2026-10-29.
 scripts/dev python tools/parity/shader_survey.py --index /corpus/index.json --build 4100,100056
 ```
+
+Mesh corpus dumps use `python tools/parity/mesh_dump.py INPUT -o /tmp/reference.jsonl --corrected`
+and `unityrs dump INPUT --mesh --tpk TPK -o /tmp/candidate.jsonl`. Both write only Mesh rows,
+ordered by input, raw SerializedFile basename and signed path id; an input load or resource refusal stops
+the run. ZIP/APK corpus inputs are explicitly refused by the candidate; use their extracted bundles. The candidate reuses the dump's input selection, index pins, gzip, parallel ordering and output
+protections. The oracle checks the pinned stack and accepts the same selection flags; it runs inputs
+serially. Both hash and parse the same bytes, with read, parse, arrays, digests and JSON sharing the
+candidate input meter; ordinary sibling resources resolve through a charged directory fetcher. `--corrected` applies the existing section 19.1 MeshHandler corrections in memory.
+Compare with `python tools/parity/mesh_dump.py compare /tmp/reference.jsonl /tmp/candidate.jsonl`.
+Add `--mask /outside/mask.json` for an array of `{"key":[INPUT,FILE_HEX,PATH_ID],
+"path":["result","arrays","attrs","m_Normals"]}` entries. Each entry permits exactly that field's
+observed difference; missing, duplicate or stale masks fail. Missing or duplicate meshes cannot be masked.
+Only aggregate counts appear on stdout, including comparison failures; no corpus artifact is committed.
+
+The version-1 digest protocol hashes big-endian lengths as u64. An array starts with `array-v1\0`,
+its tuple count, then each tuple's component count and each component's `i` + signed i64 or `f` + raw
+binary64 bits. Bind-pose matrix rows are flattened into tuples of up to 16 values. Indices start with
+`indices-v1\0`, their count and u32 values; absent arrays remain absent and an absent index buffer is null.
+Triangles start with `triangles-v1\0`, the submesh count, then for each submesh: full triangle count and
+u32 indices, cut-tuple length and u32 indices, empty-tuple count and the post-handler indexCount.
+OBJ is SHA-256 over raw export bytes (surrogateescape UTF-8), or null for False. A failed Mesh is
+`{"error":EXCEPTION_CLASS}`; candidate-only unsupported/wrapped/malformed outcomes are explicitly
+prefixed `unityrs:` and remain differences until covered by an exact mask. Rows use literal Unicode
+JSON (`ensure_ascii=False`); invalid input-name UTF-8 uses the canonical `{"t":"str","hex":...}` form.

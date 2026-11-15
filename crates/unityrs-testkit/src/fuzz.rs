@@ -22,6 +22,54 @@
 //! Every decoder here takes any bytes: a field the input does not reach is
 //! empty (a row, a reference, the data), never an error.
 
+mod scene;
+pub use scene::scene_cases;
+
+/// A synthetic serialized scene and strict export profile for the 3D targets.
+/// Layout: meter and flags (one byte each), a little-endian u16 profile
+/// length, that many profile bytes, then the serialized file to the end.
+/// Flag 1 selects a prefab graph, flag 2 the `CorePbr` mapper. Nonzero meters
+/// also run the export under `meter² × 64` bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SceneCase {
+    /// The operation's additional small-meter selector; zero runs only full.
+    pub meter: u8,
+    /// Graph and material policy bits.
+    pub flags: u8,
+    /// Strict profile JSON; empty means the default profile.
+    pub profile: Vec<u8>,
+    /// A serialized file, with embedded hand-built trees in the seeds.
+    pub data: Vec<u8>,
+}
+impl SceneCase {
+    /// Encode the profile before the mutable scene bytes.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let len = self.profile.len().min(usize::from(u16::MAX));
+        let mut out = vec![self.meter, self.flags];
+        out.extend_from_slice(&u16::try_from(len).unwrap_or(u16::MAX).to_le_bytes());
+        out.extend_from_slice(&self.profile[..len]);
+        out.extend_from_slice(&self.data);
+        out
+    }
+    /// Decode arbitrary bytes; a truncated profile retains only its prefix.
+    #[must_use]
+    pub fn decode(input: &[u8]) -> Self {
+        let mut case = Self {
+            meter: input.first().copied().unwrap_or(0),
+            flags: input.get(1).copied().unwrap_or(0),
+            ..Self::default()
+        };
+        if let Some(header) = input.get(2..4) {
+            let len = usize::from(u16::from_le_bytes([header[0], header[1]]));
+            let end = 4usize.saturating_add(len).min(input.len());
+            case.profile = input[4..end].to_vec();
+            case.data = input[end..].to_vec();
+        }
+        case
+    }
+}
+
 /// A typetree row: what the readers and the compiler read of a node.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Row {

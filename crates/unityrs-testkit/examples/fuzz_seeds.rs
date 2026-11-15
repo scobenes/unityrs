@@ -54,7 +54,7 @@ mod web;
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 18] = [
+const TARGETS: [&str; 20] = [
     "detect",
     "bundle",
     "serialized",
@@ -73,6 +73,8 @@ const TARGETS: [&str; 18] = [
     "webfile",
     "unityweb",
     "fsb5",
+    "scene_collect",
+    "obj_text",
 ];
 
 /// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
@@ -719,6 +721,11 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     astc(&mut s)?;
     crunch::write(&mut s)?;
     meshdecode(&mut s)?;
+    for (name, case) in unityrs_testkit::fuzz::scene_cases() {
+        for target in ["scene_collect", "obj_text"] {
+            s.add(target, &name, &case.encode())?;
+        }
+    }
     for len in [2, 3, 257, 258, 259, 262, 32768, 65536, 65537, 131_333] {
         s.add("zlib_match", &format!("zero-{len}"), &vec![0; len])?;
         let periodic: Vec<_> = (0..len).map(|i| (i % 17).to_le_bytes()[0]).collect();
