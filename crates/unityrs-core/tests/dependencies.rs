@@ -240,8 +240,10 @@ const C_FUNCTIONS: [(&str, &str); 6] = [
 /// The C functions a crate compiles from vendored source, which link
 /// whatever the glibc: zlib 1.2.13's, which unityrs-imageio's `build.rs`
 /// compiles under `Z_PREFIX`, each declared by the `z_` name that
-/// `zconf.h` gives it there, and only in the file named.
-const VENDORED_C_FUNCTIONS: [(&str, &str); 9] = [
+/// `zconf.h` gives it there, and libwebp 1.3.0's, reached through the one
+/// entry point of unityrs-imageio's own shim (`webp-shim.c`); each only in
+/// the file named.
+const VENDORED_C_FUNCTIONS: [(&str, &str); 10] = [
     // The pristine zlib 1.2.13 reference under the `test-reference`
     // feature, its entry points renamed (`zlib-match/reference.c`).
     (
@@ -262,6 +264,7 @@ const VENDORED_C_FUNCTIONS: [(&str, &str); 9] = [
     ("z_deflateEnd", "unityrs-imageio/src/zlib.rs"),
     ("z_deflateInit2_", "unityrs-imageio/src/zlib.rs"),
     ("z_zlibVersion", "unityrs-imageio/src/zlib.rs"),
+    ("unityrs_webp_encode", "unityrs-imageio/src/webp_ffi.rs"),
 ];
 
 /// The oldest glibc Rust's `*-linux-gnu` targets run on, which the
@@ -434,21 +437,34 @@ fn every_c_function_a_crate_declares_links_on_every_glibc_it_builds_on() {
         .map(|l| l.split_whitespace().collect::<Vec<_>>())
         .filter(|w| w.len() == 3 && w[0] == "#define")
         .collect();
+    // The WebP shim defines its entry points itself, each at the start of
+    // a line (`int unityrs_webp_encode(...`).
+    let shim = std::fs::read_to_string(crates.join("unityrs-imageio/webp-shim.c")).unwrap();
     for (name, _) in VENDORED_C_FUNCTIONS {
         assert!(
             declared.contains_key(name),
             "VENDORED_C_FUNCTIONS lists {name}, which no file declares"
         );
-        let found = match name.strip_prefix("unityrs_zref_") {
-            Some(bare) => reference.iter().any(|w| w[1] == bare && w[2] == name),
-            None => renames
-                .iter()
-                .any(|w| Some(w[2]) == name.strip_prefix("z_") && w[3] == name),
+        let found = if name.starts_with("unityrs_webp_") {
+            shim.lines().any(|l| {
+                l.split_once('(')
+                    .and_then(|(head, _)| head.split_whitespace().last())
+                    .is_some_and(|f| f == name)
+                    && !l.starts_with(char::is_whitespace)
+            })
+        } else {
+            match name.strip_prefix("unityrs_zref_") {
+                Some(bare) => reference.iter().any(|w| w[1] == bare && w[2] == name),
+                None => renames
+                    .iter()
+                    .any(|w| Some(w[2]) == name.strip_prefix("z_") && w[3] == name),
+            }
         };
         assert!(
             found,
             "{name} is no function zconf.h renames under Z_PREFIX, nor one \
-             zlib-match/reference.c renames for the test-only reference"
+             zlib-match/reference.c renames for the test-only reference, nor \
+             one webp-shim.c defines"
         );
     }
 }
