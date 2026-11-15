@@ -190,7 +190,11 @@ fn unhex(s: &str) -> Vec<u8> {
 /// A node list whose names are already shared, so cloning one into an
 /// error allocates nothing (a `Bytes` made from a `Vec` allocates its
 /// shared header on its first clone).
-fn nodes(rows: &Json) -> Arc<NodeList> {
+fn shared_nodes(rows: Vec<NodeRow>) -> unityrs_core::typetree::SharedNodes {
+    NodeList::trusted(rows).unwrap().into_shared().unwrap()
+}
+
+fn nodes(rows: &Json) -> unityrs_core::typetree::SharedNodes {
     let rows: Vec<NodeRow> = rows
         .as_array()
         .unwrap()
@@ -205,7 +209,7 @@ fn nodes(rows: &Json) -> Arc<NodeList> {
     for r in list.rows() {
         drop((r.ty.clone(), r.name.clone()));
     }
-    Arc::new(list)
+    list.into_shared().unwrap()
 }
 
 fn endian(c: &Json) -> Endian {
@@ -348,11 +352,7 @@ fn cases(counting: bool) -> usize {
 fn big(n: usize, counting: bool) {
     let mut rows = vec![NodeRow::new(0, "Base", "Base")];
     rows.extend((0..n).map(|i| NodeRow::new(1, "int", format!("n{i}").as_str())));
-    let class = Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
-        &Limits::default(),
-    )
-    .unwrap();
+    let class = Tree::compile(shared_nodes(rows), &Limits::default()).unwrap();
     let class_data = Bytes::from(
         (0..n)
             .flat_map(|i| u32::try_from(i).unwrap().to_le_bytes())
@@ -360,16 +360,13 @@ fn big(n: usize, counting: bool) {
     );
     let _shared = class_data.clone();
     let list = Tree::compile(
-        Arc::new(
-            NodeList::trusted(vec![
-                NodeRow::new(0, "Base", "Base"),
-                NodeRow::new(1, "vector", "v"),
-                NodeRow::new(2, "Array", "Array"),
-                NodeRow::new(3, "int", "size"),
-                NodeRow::new(3, "string", "data"),
-            ])
-            .unwrap(),
-        ),
+        shared_nodes(vec![
+            NodeRow::new(0, "Base", "Base"),
+            NodeRow::new(1, "vector", "v"),
+            NodeRow::new(2, "Array", "Array"),
+            NodeRow::new(3, "int", "size"),
+            NodeRow::new(3, "string", "data"),
+        ]),
         &Limits::default(),
     )
     .unwrap();
@@ -434,11 +431,7 @@ fn renamed(n: usize, counting: bool) {
             .rev()
             .map(|i| NodeRow::new(2, "int", format!("n{i}").as_str())),
     );
-    let tree = Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
-        &Limits::default(),
-    )
-    .unwrap();
+    let tree = Tree::compile(shared_nodes(rows), &Limits::default()).unwrap();
     let data = Bytes::from(
         (0..2 * n)
             .flat_map(|i| u32::try_from(i).unwrap().to_le_bytes())
@@ -483,9 +476,7 @@ fn references(n: u32, counting: bool) {
                 RawStr::from(format!("C{i}").as_str()),
                 RawStr::from(""),
                 RawStr::from(""),
-                Some(Arc::new(
-                    NodeList::trusted(vec![NodeRow::new(0, "Empty", "Base")]).unwrap(),
-                )),
+                Some(shared_nodes(vec![NodeRow::new(0, "Empty", "Base")])),
             )
         })
         .collect();
@@ -505,13 +496,10 @@ fn references(n: u32, counting: bool) {
         (4, "ReferencedObjectData", "data"),
     ];
     let tree = Tree::compile(
-        Arc::new(
-            NodeList::trusted(
-                rows.iter()
-                    .map(|(l, t, n)| NodeRow::new(*l, *t, *n))
-                    .collect(),
-            )
-            .unwrap(),
+        shared_nodes(
+            rows.iter()
+                .map(|(l, t, n)| NodeRow::new(*l, *t, *n))
+                .collect(),
         ),
         &Limits::default(),
     )
@@ -566,13 +554,10 @@ fn shared(n: u32, counting: bool) {
         (5, "int", "zz"),
     ];
     let tree = Tree::compile(
-        Arc::new(
-            NodeList::trusted(
-                rows.iter()
-                    .map(|(l, t, n)| NodeRow::new(*l, *t, *n))
-                    .collect(),
-            )
-            .unwrap(),
+        shared_nodes(
+            rows.iter()
+                .map(|(l, t, n)| NodeRow::new(*l, *t, *n))
+                .collect(),
         ),
         &Limits::default(),
     )
@@ -678,7 +663,10 @@ fn parses(counting: bool) {
         } else {
             parse_old(&mut r, &data, 9, &m, &limits)
         };
-        let list = Arc::new(NodeList::from_rows(rows.unwrap()).unwrap());
+        let list = NodeList::from_rows(rows.unwrap())
+            .unwrap()
+            .into_shared()
+            .unwrap();
         let what = if blob {
             "a blob's parse"
         } else {
@@ -734,7 +722,10 @@ fn compile_rows(other: [u8; 8], name: &mut impl FnMut(&[u8]) -> RawStr) -> Vec<N
 /// A compile of `rows` on `m`'s meter, under watch when `watched`; the work
 /// it counted.
 fn compile_on(m: &Arc<Meter>, rows: Vec<NodeRow>, watched: bool, names: Option<&NameTable>) -> u64 {
-    let list = Arc::new(NodeList::from_rows(MeteredVec::from_vec(rows, m).unwrap()).unwrap());
+    let list = NodeList::from_rows(MeteredVec::from_vec(rows, m).unwrap())
+        .unwrap()
+        .into_shared()
+        .unwrap();
     let (work, watching) = (m.decoded(), watched.then(|| watch_from(m)));
     let tree = match names {
         Some(t) => Tree::compile_with_names(list, &Limits::default(), t),

@@ -51,6 +51,8 @@
 pub mod encode;
 pub mod input;
 pub mod json;
+pub mod mesh;
+mod mesh_resource;
 pub mod read;
 pub mod record;
 pub mod run;
@@ -157,6 +159,8 @@ pub struct DumpOptions {
     /// directory order, nested bundles' included, with nothing decoded up
     /// front ([`input::prepass_reverse`]). The dump must not change.
     pub lazy_reverse: bool,
+    /// L6 corpus Mesh digest rows instead of canonical L0-L3 records.
+    pub mesh: bool,
     /// The bounds lifted by [`DumpOptions::with_unbounded`] (`--unbounded`),
     /// in [`LIFTABLE`] order; the header's `producer` names them.
     pub unbounded: Vec<LimitKind>,
@@ -169,6 +173,7 @@ impl Default for DumpOptions {
             jobs: 1,
             context: Arc::new(FileContext::unitypy()),
             lazy_reverse: false,
+            mesh: false,
             unbounded: Vec::new(),
         }
     }

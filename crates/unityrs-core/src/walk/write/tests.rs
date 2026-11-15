@@ -16,7 +16,7 @@ const N: u32 = 1 << 16;
 /// back, counting the writer's map steps.
 fn write_steps(rows: Vec<NodeRow>, data: &[u8]) -> [(&'static str, u64); 2] {
     let tree = Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap();

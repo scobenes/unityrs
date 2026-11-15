@@ -19,10 +19,12 @@
 //!
 //! Legacy `DXT1Crunched` and `DXT5Crunched` are also supported through the
 //! `crunch` module and existing BC1/BC3 decoders. [`select_in`] and
-//! [`select_crunch`] take the Unity version explicitly and refuse Unity's
-//! fork (T4b). Version 2 may allow-list both names; version 1 keeps its five.
-//! Their native builder fixtures pass; the optional UnityPy pixel replay
-//! awaits recording.
+//! [`select_crunch`] take the Unity version and choose legacy or Unity fork
+//! DXT; crunched ETC always uses the Unity fork and existing ETC decoders.
+//! Version 2 may allow-list Unity's four crunched names; version 1 keeps
+//! its five formats. Native builder fixtures and the pinned UnityPy pixel
+//! fixture cover both forks (`tests/crunch_oracle.rs` and
+//! `tests/unitycrunch_oracle.rs`).
 //!
 //! - [`select()`]: a texture's fields to [`Selection::Export`] with its
 //!   [`Format`], or [`Selection::Skip`] with the [`Skip`] reason the manifest
@@ -165,8 +167,8 @@ pub fn decode_bc6h_block(data: &[u8; 16], signed: bool) -> Result<[[u16; 3]; 16]
     bc6h::block(data, signed).ok_or(HdrError::ReservedMode)
 }
 pub use select::{
-    SWITCH, Selection, Skip, SkippedPlatform, TextureFields, UnsupportedUnityCrunch,
-    XBOX_SWAP_FORMATS, XBOX360, is_switch_swizzled, select, select_crunch, select_in,
+    SWITCH, Selection, Skip, SkippedPlatform, TextureFields, XBOX_SWAP_FORMATS, XBOX360,
+    is_switch_swizzled, select, select_crunch, select_in,
 };
 
 /// Asserts at compile time that `T` is `Send + Sync` (plan section 3.16).

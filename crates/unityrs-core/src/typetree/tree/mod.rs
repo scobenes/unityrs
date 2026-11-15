@@ -315,7 +315,7 @@ pub struct NodeInfo {
 /// A compiled typetree.
 #[derive(Debug)]
 pub struct Tree {
-    list: Arc<NodeList>,
+    list: crate::typetree::SharedNodes,
     info: Box<[NodeInfo]>,
     depth: u32,
     /// Some node's `m_Type` holds a NUL among its first [`KIND_SCAN`]
@@ -571,7 +571,10 @@ impl Tree {
     /// buffer that shares its length with another is hashed once, and
     /// compared when another shares its hash, its length counted before
     /// each).
-    pub fn compile(list: Arc<NodeList>, limits: &Limits) -> Result<Arc<Self>, TreeError> {
+    pub fn compile(
+        list: crate::typetree::SharedNodes,
+        limits: &Limits,
+    ) -> Result<Arc<Self>, TreeError> {
         Self::compile_inner(list, limits, None)
     }
 
@@ -580,7 +583,7 @@ impl Tree {
     /// the list, whatever the table holds ([`NameTable`]); a list with any
     /// other name is compiled as [`Self::compile`] compiles it.
     pub fn compile_with_names(
-        list: Arc<NodeList>,
+        list: crate::typetree::SharedNodes,
         limits: &Limits,
         names: &NameTable,
     ) -> Result<Arc<Self>, TreeError> {
@@ -588,7 +591,7 @@ impl Tree {
     }
 
     fn compile_inner(
-        list: Arc<NodeList>,
+        list: crate::typetree::SharedNodes,
         limits: &Limits,
         table: Option<&NameTable>,
     ) -> Result<Arc<Self>, TreeError> {
@@ -681,7 +684,7 @@ impl Tree {
     /// A tree with no node facts, for the scaffold's own tests of code that
     /// only passes trees around (the provider cache) before package B lands.
     #[cfg(test)]
-    pub(crate) fn for_tests(list: Arc<NodeList>) -> Arc<Self> {
+    pub(crate) fn for_tests(list: crate::typetree::SharedNodes) -> Arc<Self> {
         let charge = Charge::zero(list.meter());
         Arc::new(Self {
             list,
@@ -695,7 +698,7 @@ impl Tree {
 
     /// The rows and structure this tree compiles.
     #[must_use]
-    pub fn list(&self) -> &Arc<NodeList> {
+    pub fn list(&self) -> &crate::typetree::SharedNodes {
         &self.list
     }
 

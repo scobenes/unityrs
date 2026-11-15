@@ -1,4 +1,6 @@
 // Ported from Crunch legacy decoder in texture2ddecoder 1.0.5 (LicenseRef-Crunch): legacy CRN unpacking. See THIRD_PARTY_LICENSES.
+// Ported from Crunch Unity decoder in texture2ddecoder 1.0.5 (Zlib): shared packed header and Unity format tags. See THIRD_PARTY_LICENSES.
+// Unity fork: src/Texture2DDecoder/unitycrunch/crn_defs.h:244-291; crnlib.h:48-81.
 // src/Texture2DDecoder/crunch/crn_decomp.h:272-323, crn_decomp.h:2702-2771,
 // crn_decomp.h:3690-3740. Altered source: checked, borrowed Rust header.
 // Crunch Library Copyright (c) 2010-2016 Richard Geldreich, Jr.
@@ -25,6 +27,7 @@ pub(super) struct Header {
     pub width: usize,
     pub height: usize,
     pub dxt5: bool,
+    pub format: u8,
     pub palettes: [Region; 4],
     pub tables: Region,
     pub levels: usize,
@@ -38,6 +41,14 @@ fn uint(data: &[u8], at: usize, n: usize) -> Result<usize> {
 
 impl Header {
     pub fn parse(data: &[u8]) -> Result<Self> {
+        Self::parse_codec(data, false)
+    }
+
+    pub fn parse_unity(data: &[u8]) -> Result<Self> {
+        Self::parse_codec(data, true)
+    }
+
+    fn parse_codec(data: &[u8], unity: bool) -> Result<Self> {
         if data.get(..2) != Some(b"Hx") {
             return Err(Error::Header("signature"));
         }
@@ -57,7 +68,7 @@ impl Header {
         if levels == 0 || levels > 16 || size < 70 + 4 * levels {
             return Err(Error::Header("level count"));
         }
-        if format != 0 && format != 2 {
+        if !(matches!(format, 0 | 2) || unity && matches!(format, 10..=12)) {
             return Err(Error::Header("expected DXT1 or DXT5"));
         }
         if uint(data, 19, 2)? & 1 != 0 {
@@ -71,8 +82,14 @@ impl Header {
                 len: uint(data, at + 3, 3)?,
                 count: uint(data, at + 6, 2)?,
             };
-            if region.count != 0 {
-                validate_region(*region, size, end)?;
+        }
+        // decode_palettes reads each endpoint/selector pair only when its
+        // endpoint count is nonzero, regardless of the selector count:
+        // crunch/crn_decomp.h:3824-3839; unitycrunch/crn_decomp.h:3131-3147.
+        for [endpoint, selector] in palettes.as_chunks::<2>().0 {
+            if endpoint.count != 0 {
+                validate_region(*endpoint, size, end)?;
+                validate_region(*selector, size, end)?;
             }
         }
         let tables = Region {
@@ -80,11 +97,13 @@ impl Header {
             len: uint(data, 65, 2)?,
             count: 0,
         };
+        // init_tables always reads the table stream before either palette
+        // gate (crunch/crn_decomp.h:3796-3822; unitycrunch/crn_decomp.h:3102-3129).
         validate_region(tables, size, end)?;
         // The unpack loops dereference these palettes unconditionally.
         if palettes
             .iter()
-            .take(if format == 2 { 4 } else { 2 })
+            .take(if matches!(format, 2 | 12) { 4 } else { 2 })
             .any(|p| p.count == 0)
         {
             return Err(Error::Header("missing palette"));
@@ -102,6 +121,7 @@ impl Header {
             width,
             height,
             dxt5: format == 2,
+            format: u8::try_from(format).map_err(|_| Error::Header("format"))?,
             palettes,
             tables,
             levels,
@@ -142,4 +162,61 @@ fn validate_region(region: Region, header: usize, end: usize) -> Result<()> {
         return Err(Error::Header("palette/table range"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, Header};
+
+    fn sample() -> Vec<u8> {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/crunch_native.json")).unwrap();
+        let hex = fixture["cases"][0]["data"]["hex"].as_str().unwrap();
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn descriptor_ranges_follow_endpoint_gates_in_both_forks() {
+        for parse in [Header::parse, Header::parse_unity] {
+            let data = sample();
+            // With no colour endpoints, neither colour range is read. This
+            // decoder safely refuses the later required palette fetch.
+            for at in [33, 41] {
+                let mut bad = data.clone();
+                bad[39..41].fill(0);
+                bad[at..at + 3].fill(255);
+                assert!(matches!(parse(&bad), Err(Error::Header("missing palette"))));
+            }
+            // With no alpha endpoints, both ranges are ignored even with
+            // a nonzero selector count and an out-of-buffer offset.
+            for at in [49, 57] {
+                let mut ignored = data.clone();
+                ignored[at..at + 3].fill(255);
+                ignored[63..65].copy_from_slice(&1u16.to_be_bytes());
+                assert!(parse(&ignored).is_ok());
+            }
+            // Each live pair reads both descriptors, including a selector
+            // stream whose count is zero. Tables are always read.
+            for at in [33, 41, 49, 57, 67] {
+                for selectors in [0u16, 1] {
+                    let mut bad = data.clone();
+                    bad[55..57].copy_from_slice(&1u16.to_be_bytes());
+                    bad[47..49].copy_from_slice(&selectors.to_be_bytes());
+                    bad[63..65].copy_from_slice(&selectors.to_be_bytes());
+                    // Supply valid alpha ranges before corrupting one.
+                    let region: [u8; 6] = bad[33..39].try_into().unwrap();
+                    bad[49..55].copy_from_slice(&region);
+                    bad[57..63].copy_from_slice(&region);
+                    bad[at..at + 3].fill(255);
+                    assert!(
+                        matches!(parse(&bad), Err(Error::Header("palette/table range"))),
+                        "offset {at}, selector count {selectors}"
+                    );
+                }
+            }
+        }
+    }
 }

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::{Built, ListIx, Map, Parsed, PrimArray, PrimRun, Value};
 use crate::error::{LimitError, LimitKind};
 use crate::limits::{Charge, ChargeError, Meter, MeteredVec, hash_table_cost};
-use crate::typetree::{NodeId, NodeList};
+use crate::typetree::NodeId;
 
 /// Builds one object's value on its input's meter: the reader's only way to
 /// make a [`Parsed`] (plan section 3.10).
@@ -22,7 +22,7 @@ use crate::typetree::{NodeId, NodeList};
 /// ([`Parsed::lists`]) grows the same way. The builder keeps no value's
 /// charge, so dropping it (a read that failed) leaves nothing uncharged.
 pub struct ValueBuilder {
-    lists: MeteredVec<Arc<NodeList>>,
+    lists: MeteredVec<crate::typetree::SharedNodes>,
     /// Once there are more than [`SCANNED_LISTS`] lists, each one's index by
     /// its address ([`Self::list_index`]).
     by_address: Option<ListTable>,
@@ -71,7 +71,10 @@ fn owns_heap(value: &Value) -> bool {
 impl ValueBuilder {
     /// A builder charging `meter`, whose first node list is `root` (the tree
     /// the object is read with).
-    pub fn new(meter: &Arc<Meter>, root: Arc<NodeList>) -> Result<Self, ChargeError> {
+    pub fn new(
+        meter: &Arc<Meter>,
+        root: crate::typetree::SharedNodes,
+    ) -> Result<Self, ChargeError> {
         let mut lists = MeteredVec::new(meter);
         lists.push(root)?;
         Ok(Self {
@@ -100,8 +103,11 @@ impl ValueBuilder {
     /// types finds them in steps linear in `n` (claude X, review round 2: a
     /// scan of every list made it `n`²). The lists' and the table's growth
     /// are charged; past `u32` it is `LimitKind::Count`.
-    pub fn list_index(&mut self, list: &Arc<NodeList>) -> Result<ListIx, ChargeError> {
-        let addr = Arc::as_ptr(list).addr();
+    pub fn list_index(
+        &mut self,
+        list: &crate::typetree::SharedNodes,
+    ) -> Result<ListIx, ChargeError> {
+        let addr = triomphe::Arc::as_ptr(list).addr();
         let found = match &self.by_address {
             Some(t) => {
                 crate::walk::steps(1);
@@ -109,7 +115,7 @@ impl ValueBuilder {
             }
             None => self.lists.as_slice().iter().position(|l| {
                 crate::walk::steps(1);
-                Arc::ptr_eq(l, list)
+                triomphe::Arc::ptr_eq(l, list)
             }),
         };
         let at = if let Some(at) = found {
@@ -129,7 +135,11 @@ impl ValueBuilder {
     /// Appends `list`, at `addr`, to the lists and to their table (built
     /// once they pass [`SCANNED_LISTS`]), the table charged before it
     /// grows, so a refusal leaves the two as they were.
-    fn push_list(&mut self, list: &Arc<NodeList>, addr: usize) -> Result<usize, ChargeError> {
+    fn push_list(
+        &mut self,
+        list: &crate::typetree::SharedNodes,
+        addr: usize,
+    ) -> Result<usize, ChargeError> {
         let at = self.lists.len();
         let n = at + 1;
         match &mut self.by_address {
@@ -141,7 +151,7 @@ impl ValueBuilder {
                 let mut index = HashMap::with_capacity(n);
                 for (i, l) in self.lists.as_slice().iter().enumerate() {
                     crate::walk::steps(1);
-                    index.insert(Arc::as_ptr(l).addr(), i);
+                    index.insert(triomphe::Arc::as_ptr(l).addr(), i);
                 }
                 self.by_address = Some(ListTable { index, charge });
             }

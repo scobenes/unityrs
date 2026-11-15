@@ -7,7 +7,7 @@
 //! The byte-independent formats include Pillow raw and `bcn`,
 //! ETC/EAC, ASTC LDR/HDR, BC6H, PVRTC/ATC and Tier B/C raw closed forms. ARGBFloat
 //! and odd-width YUY2 exercise the Tier U refusals. Other unknown formats
-//! map to a decoded format, and the two CRN formats to plain DXT1 or DXT5
+//! map to a decoded format, and all CRN variants to plain DXT/ETC formats
 //! (the `crunch` target checks CRN streams). Besides a panic (libFuzzer's
 //! hook aborts at it,
 //! before the decoder's containment can catch it), a finding is: a
@@ -46,8 +46,8 @@ pub fn check(input: &[u8]) {
     ] {
         if let Selection::Export(f) = selected {
             assert_eq!(
-                Some(f),
-                Format::from_texture_format(case.format),
+                f.texture_format(),
+                case.format,
                 "exported as another format"
             );
         }
@@ -65,8 +65,10 @@ pub fn check(input: &[u8]) {
     // target checks those later malformed-stream errors. Keep this
     // target's byte-independent plan equality on the plain decoders.
     let format = match format {
-        Format::Dxt1Crunched => Format::Dxt1,
-        Format::Dxt5Crunched => Format::Dxt5,
+        Format::Dxt1Crunched | Format::UnityDxt1Crunched => Format::Dxt1,
+        Format::Dxt5Crunched | Format::UnityDxt5Crunched => Format::Dxt5,
+        Format::EtcRgb4Crunched => Format::EtcRgb4,
+        Format::Etc2Rgba8Crunched => Format::Etc2Rgba8,
         other => other,
     };
     // Every BC6H seed reaches both encodings of the same block layout.

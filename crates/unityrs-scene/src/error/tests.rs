@@ -123,6 +123,11 @@ fn all_core_and_detection_variants_preserve_the_refusal_policy() {
     for error in [
         Error::Detect(DetectError::Unterminated),
         Error::Detect(DetectError::Gzip(Arc::from("corrupt gzip"))),
+        Error::Detect(DetectError::GzipCrc {
+            detail: Arc::from("BadGzipFile: CRC check failed"),
+            expected: 1,
+            actual: 2,
+        }),
         Error::OutOfBounds {
             what: "test",
             pos: 0,
@@ -197,7 +202,10 @@ fn ordinary_parse_and_pointer_failures_remain_recoverable() {
     use unityrs_core::stream::StreamRefusal;
     use unityrs_core::typetree::{NodeList, NodeRow};
     use unityrs_core::value::{Value, ValueBuilder};
-    let rows = Arc::new(NodeList::trusted(vec![NodeRow::new(0, "bool", "value")]).unwrap());
+    let rows = NodeList::trusted(vec![NodeRow::new(0, "bool", "value")])
+        .unwrap()
+        .into_shared()
+        .unwrap();
     let builder = ValueBuilder::new(&Meter::unlimited(), rows).unwrap();
     let value = builder.scalar(Value::Bool(true)).unwrap();
     assert_core(
@@ -209,10 +217,17 @@ fn ordinary_parse_and_pointer_failures_remain_recoverable() {
     );
     for detail in [
         ReadDetail::Eof { need: 1 },
+        ReadDetail::BoostEof {
+            method: "read_bool",
+            need: 1,
+        },
         ReadDetail::NegativeLength(-1),
         ReadDetail::ArrayChildren,
         ReadDetail::PairChildren,
-        ReadDetail::NoRefTypes,
+        ReadDetail::NoRefTypes {
+            reader: unityrs_core::value::ReadBy::Boost,
+            absent: false,
+        },
         ReadDetail::RefTypeNotFound,
         ReadDetail::RefTypeNoTree,
         ReadDetail::Python("bad input"),

@@ -25,12 +25,12 @@ const ALIGN: i32 = 0x4000;
 
 type Row<'a> = (i32, &'a str, &'a str, i32);
 
-fn list(rows: &[Row<'_>]) -> Arc<NodeList> {
+fn list(rows: &[Row<'_>]) -> unityrs_core::typetree::SharedNodes {
     let rows = rows
         .iter()
         .map(|&(level, ty, name, meta)| NodeRow::new(level, ty, name).with_meta_flag(meta))
         .collect();
-    Arc::new(NodeList::trusted(rows).unwrap())
+    NodeList::trusted(rows).unwrap().into_shared().unwrap()
 }
 
 fn tree(rows: &[Row<'_>]) -> Arc<Tree> {
@@ -677,14 +677,18 @@ fn random_trees_and_bytes_never_panic() {
         let Ok(list) = NodeList::trusted(random_rows(&mut rng)) else {
             continue;
         };
-        let Ok(t) = Tree::compile(Arc::new(list), &Limits::default()) else {
+        let Ok(t) = Tree::compile(list.into_shared().unwrap(), &Limits::default()) else {
             continue;
         };
         compiled += 1;
         let refs: Vec<SerializedType> = (0..rng.below(3))
             .map(|_| {
                 let nodes = (rng.below(4) != 0)
-                    .then(|| NodeList::trusted(random_rows(&mut rng)).ok().map(Arc::new))
+                    .then(|| {
+                        NodeList::trusted(random_rows(&mut rng))
+                            .and_then(NodeList::into_shared)
+                            .ok()
+                    })
                     .flatten();
                 SerializedType::ref_type(
                     114,

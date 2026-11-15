@@ -218,7 +218,9 @@ impl CellError for Error {
 
     fn heap_bytes(&self) -> u64 {
         match self {
-            Self::Detect(DetectError::Gzip(d)) => arc_heap_of(d.len()),
+            Self::Detect(DetectError::Gzip(d) | DetectError::GzipCrc { detail: d, .. }) => {
+                arc_heap_of(d.len())
+            }
             Self::Malformed { detail, .. } | Self::Decompress { detail, .. } => {
                 arc_heap_of(detail.len())
             }

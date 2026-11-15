@@ -1,5 +1,4 @@
 //! Encoding modes, scalar boundaries and arbitrary byte strings.
-use std::sync::Arc;
 use unityrs_core::{
     RawStr, Value, ValueBuilder,
     limits::Meter,
@@ -8,14 +7,14 @@ use unityrs_core::{
 use unityrs_export::pyjson::{self, Options};
 #[test]
 fn non_ascii_and_surrogateescaped_keys_preserve_insertion_order() {
-    let nodes = Arc::new(
-        NodeList::trusted(vec![
-            NodeRow::new(0, "Root", "Base"),
-            NodeRow::new(1, "string", RawStr::from_static(b"z\xff")),
-            NodeRow::new(1, "string", "é"),
-        ])
-        .unwrap(),
-    );
+    let nodes = NodeList::trusted(vec![
+        NodeRow::new(0, "Root", "Base"),
+        NodeRow::new(1, "string", RawStr::from_static(b"z\xff")),
+        NodeRow::new(1, "string", "é"),
+    ])
+    .unwrap()
+    .into_shared()
+    .unwrap();
     let b = ValueBuilder::new(&Meter::unlimited(), nodes).unwrap();
     let mut entries = b.vec();
     entries

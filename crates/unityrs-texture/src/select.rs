@@ -162,9 +162,10 @@ pub fn select(texture: &TextureFields<'_>) -> Selection {
 
 /// [`select()`] under the formats a spec names (`docs/BATCH_SPEC.md` 1.5):
 /// a format outside `formats` is `unsupported_format`, as one this crate
-/// does not decode is. Crunched DXT is supported only before Unity
-/// 2017.3; Unity's fork (2017.3+ DXT and all crunched ETC) is also
-/// `unsupported_format`, until its separate decoder lands.
+/// does not decode is. Unity's names in `formats` allow both DXT crunch
+/// variants: before Unity 2017.3 the decoder is legacy, from 2017.3 it is
+/// Unity's fork. An unknown version `(u16::MAX, u16::MAX)` uses the fork.
+/// Crunched ETC always uses the fork (`export/Texture2DConverter.py:297-306`).
 #[must_use]
 pub fn select_in(
     texture: &TextureFields<'_>,
@@ -181,7 +182,12 @@ pub fn select_in(
     // names; the other formats this crate also decodes are
     // `unsupported_format` to it (`docs/BATCH_SPEC.md` section 3).
     let Some(format) = Format::from_texture_format(texture.texture_format)
-        .filter(|f| formats.contains(*f) && !unity_crunch(texture.texture_format, unity_version))
+        .filter(|f| formats.contains(*f))
+        .map(|f| match f {
+            Format::Dxt1Crunched if unity_version >= (2017, 3) => Format::UnityDxt1Crunched,
+            Format::Dxt5Crunched if unity_version >= (2017, 3) => Format::UnityDxt5Crunched,
+            other => other,
+        })
     else {
         return Selection::Skip(Skip::UnsupportedFormat(texture.texture_format));
     };
@@ -194,38 +200,20 @@ pub fn select_in(
     Selection::Export(format)
 }
 
-/// Unity's fork needs the separate T4b decoder. Its streams must never be
-/// routed through the legacy unpacker, even for the same `TextureFormat`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("Unity crunch (2017.3+ DXT and all ETC crunched formats) requires T4b")]
-pub struct UnsupportedUnityCrunch;
-const _: () = crate::send_sync::<UnsupportedUnityCrunch>();
-
-fn unity_crunch(texture_format: i32, unity_version: (u16, u16)) -> bool {
-    matches!(texture_format, 64 | 65)
-        || (matches!(texture_format, 28 | 29) && unity_version >= (2017, 3))
-}
-
-/// Select legacy crunched DXT with an explicit Unity `(major, minor)`.
+/// Select crunched DXT/ETC with an explicit Unity `(major, minor)`.
 /// The version split and ETC exception are UnityPy's
 /// `export/Texture2DConverter.py:297-306`. Empty images precede it, and
 /// the existing Switch/Xbox gates still apply. Other formats use
-/// [`select()`]; that version-1 batch API continues exporting its five.
-pub fn select_crunch(
-    texture: &TextureFields<'_>,
-    unity_version: (u16, u16),
-) -> Result<Selection, UnsupportedUnityCrunch> {
-    let selected = select_in(
+/// version 1's five formats, as [`select()`] does.
+#[must_use]
+pub fn select_crunch(texture: &TextureFields<'_>, unity_version: (u16, u16)) -> Selection {
+    select_in(
         texture,
         Formats::V1
             .with(Format::Dxt1Crunched)
-            .with(Format::Dxt5Crunched),
+            .with(Format::Dxt5Crunched)
+            .with(Format::EtcRgb4Crunched)
+            .with(Format::Etc2Rgba8Crunched),
         unity_version,
-    );
-    if matches!(selected, Selection::Skip(Skip::UnsupportedFormat(_)))
-        && unity_crunch(texture.texture_format, unity_version)
-    {
-        return Err(UnsupportedUnityCrunch);
-    }
-    Ok(selected)
+    )
 }

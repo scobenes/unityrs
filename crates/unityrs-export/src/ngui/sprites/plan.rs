@@ -14,7 +14,7 @@ use unityrs_core::{ObjectRef, RawStr};
 use unityrs_texture::Formats;
 use unityrs_texture::sprite::SpriteData;
 
-use super::super::attempt::{Attempt, Site, UNKNOWN_PLATFORM, Vars};
+use super::super::attempt::{Attempt, Site, Vars};
 use super::super::classify::{self, Class, Reason};
 use super::super::kept::Kept;
 use super::super::keys::{Template, TemplateKind};
@@ -40,8 +40,7 @@ pub(super) fn sheet_answers(t: &Texture, obj: &ObjectRef, allowed: Formats) -> R
     if t.width == 0 || t.height == 0 {
         return Ok(());
     }
-    let platform = obj.file().target_platform().unwrap_or(UNKNOWN_PLATFORM);
-    read::formats(t, platform, allowed, read::unity_version(obj)).map(|_| ())
+    read::object_answer(t, Some(obj), allowed).map(|_| ())
 }
 
 impl Attempt<'_> {

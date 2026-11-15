@@ -102,6 +102,17 @@ pub fn read_with_reader(
     ctx: &ReadCtx<'_>,
     kind: ReaderKind,
 ) -> Result<Parsed, ReadError> {
+    read_versioned(file, start, tree, ctx, kind, false)
+}
+
+pub(crate) fn read_versioned(
+    file: &Bytes,
+    start: i128,
+    tree: &Arc<Tree>,
+    ctx: &ReadCtx<'_>,
+    kind: ReaderKind,
+    head: bool,
+) -> Result<Parsed, ReadError> {
     let work = Work::start(ctx.options.limits, ctx.meter)?;
     let builder =
         ValueBuilder::new(ctx.meter, tree.list().clone()).map_err(|e| charge_error(0, e))?;
@@ -112,6 +123,7 @@ pub fn read_with_reader(
         pos: start,
         start,
         kind,
+        head,
         big: ctx.endian == Endian::Big,
         floats: ctx.options.floats,
         ref_types: ctx.ref_types,
@@ -149,6 +161,8 @@ struct Reader<'a, 'c> {
     start: i128,
     /// Which reader's rules.
     kind: ReaderKind,
+    /// SF 23+ selects HEAD's aligned byte-array behavior.
+    head: bool,
     big: bool,
     floats: FloatMode,
     ref_types: RefTypes<'c>,
@@ -591,7 +605,13 @@ impl Reader<'_, '_> {
             e => self.raise(e),
         })?;
         if !matches!(self.ref_types, RefTypes::List(l) if !l.is_empty()) {
-            return Err(self.fail(ReadErrorKind::RefType, ReadDetail::NoRefTypes));
+            return Err(self.fail(
+                ReadErrorKind::RefType,
+                ReadDetail::NoRefTypes {
+                    reader: ReadBy::Python,
+                    absent: matches!(self.ref_types, RefTypes::Absent),
+                },
+            ));
         }
         if matches!(cls, Value::Str(s) if s.is_empty()) {
             return Ok(None);

@@ -25,11 +25,13 @@ mod error;
 mod graph;
 mod model;
 mod read;
+mod unit;
 mod visited;
 
 pub use error::SceneError;
 pub use graph::{graph_from_game_object, graph_from_scene_file};
 pub use model::*;
+pub use unit::{Unit, unit_from_container, unit_from_object};
 
 pub(crate) const fn send_sync<T: Send + Sync + ?Sized>() {}
 

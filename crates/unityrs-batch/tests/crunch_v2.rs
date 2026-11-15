@@ -1,4 +1,4 @@
-//! Legacy crunch through spec validation, selection, decode and publication.
+//! Legacy and Unity fork crunch through spec validation, selection, decode and publication.
 
 mod common;
 mod publication_support;
@@ -28,11 +28,13 @@ impl unityrs_batch::start::spool::FileSystem for Space {
     }
 }
 
-fn crn(format: i32) -> Vec<u8> {
-    let fixture: Value = serde_json::from_str(include_str!(
-        "../../unityrs-texture/tests/fixtures/crunch_native.json"
-    ))
-    .unwrap();
+fn crn(format: i32, unity: bool) -> Vec<u8> {
+    let text = if unity {
+        include_str!("../../unityrs-texture/tests/fixtures/unitycrunch_native.json")
+    } else {
+        include_str!("../../unityrs-texture/tests/fixtures/crunch_native.json")
+    };
+    let fixture: Value = serde_json::from_str(text).unwrap();
     let case = fixture["cases"]
         .as_array()
         .unwrap()
@@ -81,20 +83,21 @@ fn file(version: &str, externals: &[&str], items: &[ngui::Object]) -> Vec<u8> {
 }
 
 fn texture_file(version: &str, malformed: bool) -> Vec<u8> {
+    // Only 2017.2 is legacy among these fixture versions.
+    let unity = version != "2017.2.0f1";
+    let payload = |format| {
+        if malformed {
+            vec![0; 128]
+        } else {
+            crn(format, unity || format >= 64)
+        }
+    };
     let items: Vec<_> = [
-        (
-            1,
-            "dxt1",
-            28,
-            if malformed { vec![0; 128] } else { crn(28) },
-        ),
-        (
-            2,
-            "dxt5",
-            29,
-            if malformed { vec![0; 128] } else { crn(29) },
-        ),
+        (1, "dxt1", 28, payload(28)),
+        (2, "dxt5", 29, payload(29)),
         (3, "plain", 4, vec![255; 4]),
+        (6, "etc1", 64, payload(64)),
+        (7, "etc2", 65, payload(65)),
     ]
     .into_iter()
     .map(|(id, name, format, data)| ngui::texture(id, name.as_bytes(), format, (1, 1), data))
@@ -118,7 +121,13 @@ fn run_case(input: Vec<u8>, want: Code) -> Scratch {
     spec["spool"]["dir"] = json!(scratch.join("spool"));
     spec["sink"]["root"] = json!(scratch.join("sink"));
     spec["outputs"]["sprites"] = json!({"key": "sprites/{name}.png"});
-    spec["outputs"]["formats"] = json!(["DXT1Crunched", "DXT5Crunched", "RGBA32"]);
+    spec["outputs"]["formats"] = json!([
+        "DXT1Crunched",
+        "DXT5Crunched",
+        "ETC_RGB4Crunched",
+        "ETC2_RGBA8Crunched",
+        "RGBA32"
+    ]);
     let prepared = phase1::prepare(common::accepted(&spec)).unwrap();
     let service = Service::start(
         fs::File::create(scratch.join("progress")).unwrap(),
@@ -155,30 +164,32 @@ fn pre_2017_3_crunched_textures_export() {
     let scratch = run_case(input("2017.2.0f1", false), Code::Complete);
     assert!(scratch.join("sink/a/dxt1.png").exists());
     assert!(scratch.join("sink/a/dxt5.png").exists());
+    assert!(scratch.join("sink/a/etc1.png").exists());
+    assert!(scratch.join("sink/a/etc2.png").exists());
     assert_eq!(skips(&scratch), [] as [Value; 0]);
 }
 
 #[test]
-fn unity_2017_3_and_later_crunched_textures_skip_as_unsupported() {
+fn unity_2017_3_and_later_crunched_textures_export() {
     for version in ["2017.3.0f1", "2022.3.0f1"] {
         let scratch = run_case(input(version, false), Code::Complete);
-        assert!(!scratch.join("sink/a/dxt1.png").exists());
-        assert!(!scratch.join("sink/a/dxt5.png").exists());
-        let rows = skips(&scratch);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["reason"], "unsupported_format(DXT1Crunched)");
-        assert_eq!(rows[1]["reason"], "unsupported_format(DXT5Crunched)");
+        for name in ["dxt1", "dxt5", "etc1", "etc2"] {
+            assert!(scratch.join(format!("sink/a/{name}.png")).exists());
+        }
+        assert_eq!(skips(&scratch), [] as [Value; 0]);
     }
 }
 
 #[test]
-fn malformed_legacy_crunch_skips_the_objects_and_continues_the_batch() {
-    let scratch = run_case(input("2017.2.0f1", true), Code::CompleteWithSkips);
-    let rows = skips(&scratch);
-    assert_eq!(rows.len(), 2);
-    for row in rows {
-        assert_eq!(row["reason"], "decode_error");
-        assert_eq!(row["detail"], "crunch");
+fn malformed_crunch_skips_the_objects_and_continues_the_batch() {
+    for version in ["2017.2.0f1", "2017.3.0f1"] {
+        let scratch = run_case(input(version, true), Code::CompleteWithSkips);
+        let rows = skips(&scratch);
+        assert_eq!(rows.len(), 4);
+        for row in rows {
+            assert_eq!(row["reason"], "decode_error");
+            assert_eq!(row["detail"], "crunch");
+        }
     }
 }
 
@@ -186,10 +197,9 @@ fn malformed_legacy_crunch_skips_the_objects_and_continues_the_batch() {
 #[test]
 fn sprites_use_each_referenced_sheets_version_including_alpha() {
     use ngui::SpriteSpec;
-    for (texture_version, sprite_version, exported) in [
-        ("2017.2.0f1", "2022.3.0f1", true),
-        ("2017.3.0f1", "2017.2.0f1", false),
-    ] {
+    for (texture_version, sprite_version) in
+        [("2017.2.0f1", "2022.3.0f1"), ("2017.3.0f1", "2017.2.0f1")]
+    {
         let sprites = file(
             sprite_version,
             &["archive:/CAB-crunch/CAB-crunch"],
@@ -206,22 +216,72 @@ fn sprites_use_each_referenced_sheets_version_including_alpha() {
         ]);
         let scratch = run_case(bundle, Code::Complete);
         for name in ["color", "alpha"] {
-            assert_eq!(
-                scratch.join(format!("sink/sprites/{name}.png")).exists(),
-                exported
-            );
+            assert!(scratch.join(format!("sink/sprites/{name}.png")).exists());
         }
+        assert_eq!(skips(&scratch), [] as [Value; 0]);
+    }
+}
+
+#[test]
+fn malformed_packed_versions_skip_textures_and_both_sprite_sheets() {
+    use ngui::SpriteSpec;
+    // The file parses, but 1536 spills into the packed build-type byte (6).
+    let sprites = file(
+        "2022.3.0f1",
+        &["archive:/CAB-crunch/CAB-crunch"],
+        &[
+            SpriteSpec::rect("color", [0.0, 0.0, 1.0, 1.0], (1, 1)).object(4),
+            SpriteSpec::rect("alpha", [0.0, 0.0, 1.0, 1.0], (1, 3))
+                .alpha((1, 2))
+                .object(5),
+        ],
+    );
+    let bundle = unityrs_testkit::env::bundle(&[
+        ("CAB-sprites", sprites),
+        ("CAB-crunch", texture_file("5.0.0a1536", false)),
+    ]);
+    let scratch = run_case(bundle, Code::CompleteWithSkips);
+    let rows = skips(&scratch);
+    assert_eq!(rows.len(), 6);
+    for row in rows {
+        assert_eq!(row["reason"], "decode_error");
+        assert_eq!(row["detail"], "version");
+    }
+    for name in ["dxt1", "dxt5", "etc1", "etc2"] {
+        assert!(!scratch.join(format!("sink/a/{name}.png")).exists());
+    }
+    for name in ["color", "alpha"] {
+        assert!(!scratch.join(format!("sink/sprites/{name}.png")).exists());
+    }
+}
+
+#[test]
+fn missing_data_precedes_malformed_versions_in_batch_textures_and_sprite_sheets() {
+    use ngui::SpriteSpec;
+    for format in [28, 29, 64, 65, 4] {
+        let bundle = unityrs_testkit::env::bundle(&[(
+            "CAB-crunch",
+            file(
+                "5.0.0a1536",
+                &[],
+                &[
+                    ngui::texture(1, b"missing", format, (1, 1), vec![]),
+                    ngui::texture(2, b"plain", 4, (1, 1), vec![255; 4]),
+                    SpriteSpec::rect("color", [0.0, 0.0, 1.0, 1.0], (0, 1)).object(3),
+                    SpriteSpec::rect("alpha", [0.0, 0.0, 1.0, 1.0], (0, 2))
+                        .alpha((0, 1))
+                        .object(4),
+                    SpriteSpec::rect("plain", [0.0, 0.0, 1.0, 1.0], (0, 2)).object(5),
+                ],
+            ),
+        )]);
+        let scratch = run_case(bundle, Code::CompleteWithSkips);
+        assert!(scratch.join("sink/sprites/plain.png").exists());
         let rows = skips(&scratch);
-        if exported {
-            assert_eq!(rows, [] as [Value; 0]);
-        } else {
-            assert_eq!(rows.len(), 4);
-            assert!(rows.iter().all(|r| {
-                r["reason"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("unsupported_format(")
-            }));
+        assert_eq!(rows.len(), 3, "format {format}");
+        for row in rows {
+            assert_eq!(row["reason"], "decode_error");
+            assert_eq!(row["detail"], "no_image_data");
         }
     }
 }

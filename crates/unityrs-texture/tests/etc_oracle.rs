@@ -240,7 +240,9 @@ fn every_etc_and_eac_decode_is_the_oracle_image_or_error() {
     assert_eq!(tier_c, TIER_C);
     let all: BTreeSet<&str> = Format::ALL
         .iter()
-        .filter(|f| f.name().starts_with("ETC") || f.name().starts_with("EAC"))
+        .filter(|f| {
+            !f.is_crunched() && (f.name().starts_with("ETC") || f.name().starts_with("EAC"))
+        })
         .map(|f| f.name())
         .collect();
     assert_eq!(all.len(), 8);

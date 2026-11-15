@@ -183,6 +183,10 @@ fn no_decoded_format_makes_a_sheet_an_inputs_failure() {
         "../../unityrs-texture/tests/fixtures/crunch_native.json"
     ))
     .unwrap();
+    let unity_crunch: serde_json::Value = serde_json::from_str(include_str!(
+        "../../unityrs-texture/tests/fixtures/unitycrunch_native.json"
+    ))
+    .unwrap();
     let skip_or_ok = |r: Result<Sheet<'_>, SpriteError>, f: Format, how: &str| match r {
         Ok(_) => true,
         Err(e) => {
@@ -194,10 +198,18 @@ fn no_decoded_format_makes_a_sheet_an_inputs_failure() {
             false
         }
     };
-    for f in Format::ALL {
-        // CRN needs a valid stream rather than fixed-size blocks or raw bytes.
+    for f in Format::ALL
+        .into_iter()
+        .chain([Format::UnityDxt1Crunched, Format::UnityDxt5Crunched])
+    {
+        // CRN needs a valid stream, unlike the fixed-size block/raw formats.
         let crn = f.is_crunched().then(|| {
-            let case = crunch["cases"]
+            let fixture = if f.is_unity_crunched() {
+                &unity_crunch
+            } else {
+                &crunch
+            };
+            let case = fixture["cases"]
                 .as_array()
                 .unwrap()
                 .iter()

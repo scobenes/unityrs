@@ -1,5 +1,4 @@
 //! The owned handler result preserves every component and its Python type.
-use std::sync::Arc;
 
 use serde_json::Value as J;
 use unityrs_core::limits::{Limits, Meter};
@@ -44,7 +43,7 @@ fn ownership_moves_every_array_and_charge_without_copying() {
             })
             .collect();
         let tree = Tree::compile(
-            Arc::new(NodeList::trusted(rows).unwrap()),
+            NodeList::trusted(rows).unwrap().into_shared().unwrap(),
             &Limits::default(),
         )
         .unwrap();

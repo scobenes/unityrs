@@ -461,9 +461,11 @@ pub fn write_dump(
     dump_one: &DumpOne<'_>,
 ) -> Result<Written, RunError> {
     let io = |e: std::io::Error| RunError::Failed(format!("writing the dump: {e}"));
-    w.write_all(header_line_unbounded(opts.levels, PRODUCER, &opts.unbounded).as_bytes())
-        .and_then(|()| w.write_all(b"\n"))
-        .map_err(io)?;
+    if !opts.mesh {
+        w.write_all(header_line_unbounded(opts.levels, PRODUCER, &opts.unbounded).as_bytes())
+            .and_then(|()| w.write_all(b"\n"))
+            .map_err(io)?;
+    }
     let (mut files, mut objects) = (0u64, 0u64);
     let workers = AtomicUsize::new(0);
     let work = |input: &Input| -> Dumped {
@@ -471,11 +473,21 @@ pub fn write_dump(
         let ctx = &opts.context;
         let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
         let mut d = match read_on(&input.name, &input.path, ctx, Arc::clone(&meter)) {
+            Ok(ReadInput::Bytes { data, meter }) if opts.mesh => {
+                meter
+                    .count_decode(data.len() as u64)
+                    .map_err(|_| "mesh input hash refused")?;
+                let sha = crate::json::sha256(&data);
+                let size = data.len() as u64;
+                crate::mesh::dump_on(&input.name, data, &input.path, opts, sha, size, &meter)
+                    .map_err(|_| "mesh input/resource/limit failure (details suppressed)")?
+            }
             Ok(ReadInput::Bytes { data, meter }) => dump_one(&input.name, data, &meter),
+            Ok(ReadInput::Refused(_)) if opts.mesh => return Err("mesh input refused".into()),
             Ok(ReadInput::Refused(d)) => d,
             Err(e) => return Err(format!("{}: {e}", String::from_utf8_lossy(&input.name))),
         };
-        d.decode_work = meter.decoded();
+        d.decode_work = d.decode_work.saturating_add(meter.decoded());
         Ok(d)
     };
     let stack = worker_stack(&opts.context.limits);
@@ -495,9 +507,11 @@ pub fn write_dump(
             None => Ok(()),
         }
     })?;
-    w.write_all(end_line(files, objects).as_bytes())
-        .and_then(|()| w.write_all(b"\n"))
-        .map_err(io)?;
+    if !opts.mesh {
+        w.write_all(end_line(files, objects).as_bytes())
+            .and_then(|()| w.write_all(b"\n"))
+            .map_err(io)?;
+    }
     Ok(Written {
         files,
         objects,
