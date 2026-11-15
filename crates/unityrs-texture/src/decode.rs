@@ -199,6 +199,9 @@ pub enum DecodeError {
     /// Reserved or illegal content in a specification-defined HDR block.
     #[error(transparent)]
     Hdr(#[from] crate::HdrError),
+    /// An unsupported platform layout or a size that cannot be represented.
+    #[error(transparent)]
+    Platform(#[from] crate::PlatformError),
     /// A Tier U layout: `ARGBFloat`, or YUY2 with an odd width.
     #[error("unsupported texture layout: {format:?} at width {width}")]
     Unsupported {
@@ -596,6 +599,7 @@ fn decode_with(
     signed_bc6h: bool,
 ) -> Result<Image, DecodeError> {
     let plan = plan(format, data.len(), width, height)?;
+    meter.count_decode(plan.output_bytes)?;
     let (Ok(out_len), Ok(w), Ok(h)) = (
         usize::try_from(plan.output_bytes),
         usize::try_from(plan.width),

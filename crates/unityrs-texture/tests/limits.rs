@@ -10,8 +10,8 @@ use unityrs_core::budget::{Reservation, Unbounded};
 use unityrs_core::limits::{ChargeError, Meter, heap_cost};
 use unityrs_testkit::Rng;
 use unityrs_texture::{
-    DecodeError, Format, Image, MAX_PIXELS, Mode, Plan, Selection, Skip, SkippedPlatform,
-    TextureFields, bcn_length, decode, plan, select,
+    DecodeError, Format, Image, MAX_PIXELS, Mode, Plan, Selection, Skip, TextureFields, bcn_length,
+    decode, plan, select,
 };
 
 /// Data enough for any texture within the bound: 1 GiB.
@@ -406,11 +406,11 @@ fn skips_follow_unitypy_order() {
     // Then the platform.
     assert_eq!(
         select(&fields(25, 4, 38, Some(swizzled))),
-        Selection::Skip(Skip::UnsupportedPlatform(SkippedPlatform::Switch))
+        Selection::Export(Format::Bc7)
     );
     assert_eq!(
         select(&fields(10, 4, 11, None)),
-        Selection::Skip(Skip::UnsupportedPlatform(SkippedPlatform::Xbox360))
+        Selection::Export(Format::Dxt1)
     );
     assert_eq!(
         select(&fields(25, 4, 11, None)),

@@ -41,6 +41,12 @@
 //!   it runs), its pixel loop run under [`contain()`] so a panic is an
 //!   error ([`DecodeError::Panicked`]).
 //!
+//! [`plan_in`] and [`decode_in`] add platform fields: Switch GOB deswizzling
+//! (including RGB24/BGR24 promotion), Xbox byte pairs before crunch, and the
+//! crop after decoding. [`array`] maps `GraphicsFormat` values, resolves streamed
+//! data and decodes slices, applying PARITY section 19.2's B/C corrections
+//! and platform refusals. [`pad_image`] repeats edge pixels for encoder callers.
+//!
 //! **Tier B/C raw formats.** The twenty-two raw formats of `PARITY.md`
 //! sections 17.1, 19.1 and 19.2 use independent closed forms in `tierb`,
 //! with no Pillow conversion. `tests/tierb_oracle.rs` pins UnityPy's actual
@@ -132,6 +138,7 @@
     )
 )]
 
+pub mod array;
 mod astc;
 mod atc;
 mod bc6h;
@@ -144,6 +151,8 @@ pub mod fetch;
 mod format;
 mod formats;
 mod hdr;
+mod image;
+pub mod platform;
 mod pvrtc;
 mod raw;
 mod select;
@@ -159,6 +168,8 @@ pub use decode::{
 pub use format::{Format, Mode, TEXTURE_FORMATS, texture_format_name};
 pub use formats::Formats;
 pub use hdr::HdrError;
+pub use image::{image_from_pixels, pad_image};
+pub use platform::{PlatformError, decode_in, decode_in_as, plan_in, plan_in_as};
 
 /// Decode one BC6H block to row-major binary16 RGB bit patterns, using
 /// Khronos Data Format Specification 1.3 section 20.2. Reserved modes are

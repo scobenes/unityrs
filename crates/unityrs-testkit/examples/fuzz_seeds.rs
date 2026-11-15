@@ -56,6 +56,8 @@ mod depth;
 mod hdr;
 #[path = "fuzz_seeds/image_writers.rs"]
 mod image_writers;
+#[path = "fuzz_seeds/platform.rs"]
+mod platform;
 #[path = "fuzz_seeds/shader.rs"]
 mod shader;
 #[path = "fuzz_seeds/tierb.rs"]
@@ -427,6 +429,7 @@ fn texture(s: &mut Seeds) -> std::io::Result<()> {
             s.add("texture", &format!("f{format}-7x9-{tag}"), &case.encode())?;
         }
     }
+    platform::seeds(s)?;
     texture_blocks(s)
 }
 
@@ -558,10 +561,10 @@ fn meshdecode(s: &mut Seeds) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The targets whose seeds a writer of their own makes, in the order
-/// `write` has always run them (the trees they add come before the depth
-/// cases').
+/// The targets whose seeds a writer of their own makes. The trees these
+/// writers add come before the depth cases'.
 fn module_seeds(s: &mut Seeds) -> std::io::Result<()> {
+    webp::add(s)?;
     zip::seeds(s)?;
     web::seeds(s)?;
     fsb5::write(s)?;
@@ -574,7 +577,18 @@ fn module_seeds(s: &mut Seeds) -> std::io::Result<()> {
     tierb::write(s)?;
     hdr::write(s)?;
     crunch::write(s)?;
-    meshdecode(s)
+    meshdecode(s)?;
+    scene_seeds(s)
+}
+
+/// Scene collection and OBJ export share each generated scene case.
+fn scene_seeds(s: &mut Seeds) -> std::io::Result<()> {
+    for (name, case) in unityrs_testkit::fuzz::scene_cases() {
+        for target in ["scene_collect", "obj_text"] {
+            s.add(target, &name, &case.encode())?;
+        }
+    }
+    Ok(())
 }
 
 /// Every target's seeds, in a folder of `dir` each, and how many. Crate-wide:
@@ -589,7 +603,6 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
         trees: BTreeSet::new(),
         nodes: Vec::new(),
     };
-    webp::add(&mut s)?;
     let outputs = unityrs_testkit::mutate::builder_outputs();
     for (name, bytes) in &outputs {
         s.file(name, bytes, 0)?;
@@ -620,11 +633,6 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
         s.add("unitycn", name, bytes)?;
     }
     module_seeds(&mut s)?;
-    for (name, case) in unityrs_testkit::fuzz::scene_cases() {
-        for target in ["scene_collect", "obj_text"] {
-            s.add(target, &name, &case.encode())?;
-        }
-    }
     for len in [2, 3, 257, 258, 259, 262, 32768, 65536, 65537, 131_333] {
         s.add("zlib_match", &format!("zero-{len}"), &vec![0; len])?;
         let periodic: Vec<_> = (0..len).map(|i| (i % 17).to_le_bytes()[0]).collect();

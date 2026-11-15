@@ -339,6 +339,7 @@ pub fn decode(e: &DecodeError) -> Class {
         DecodeError::DecompressionBomb { .. } => "decompression_bomb",
         DecodeError::Crunch(_) => "crunch",
         DecodeError::Hdr(_) => "malformed",
+        DecodeError::Platform(_) | DecodeError::PvrtcBlockCount => "read",
         DecodeError::TooLarge { .. } => {
             return Class::Skip(Reason::plain(format!(
                 "limit(texture_pixels, {MAX_PIXELS})"

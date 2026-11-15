@@ -135,7 +135,7 @@ P1B = ["BC7", "DXT1", "DXT5", "RGB24", "RGBA32"]
 # Their status: unityrs-texture decodes them, as crates/unityrs-texture/tests/oracle.rs checks against what
 # tools/fixtures/texture.py records (section 17's text); their Switch and Xbox 360 gates are P3a (and `set_image`,
 # section 18, P3b's).
-P1B_STATUS = "pinned P0; verified P1b (decoding); impl P3a"
+P1B_STATUS = "pinned P0; verified P1b (decoding); verified P3a (platform gates)"
 # The formats P3 decodes, and their status: the ETC and EAC formats (crates/unityrs-texture/tests/etc_oracle.rs
 # replays what tools/fixtures/texture.py records from tools/fixtures/texture_etc.py's cases), the Tier C ones' as
 # section 19.1's reference; the rest of Pillow's raw and bcn formats (crates/unityrs-texture/tests/raw_oracle.rs,
@@ -152,10 +152,10 @@ P3_CLOSED = (set(references.TIER_B) - {"BC6H"}) | set(references.TIER_C)
 P3_REFUSED = ["ARGBFloat"]
 P3_PVRTC_ATC = ["ATC_RGB4", "ATC_RGBA8", "PVRTC_RGB2", "PVRTC_RGB4", "PVRTC_RGBA2", "PVRTC_RGBA4"]
 P3 = sorted(P3_ETC + P3_PILLOW + P3_ASTC + P3_ASTC_HDR + ["BC6H"] + P3_PVRTC_ATC + list(P3_CLOSED) + P3_REFUSED)
-P3_CLOSED_STATUS = "pinned P0; verified P3 (closed-form decoding); impl P3a"
-P3_STATUS = "pinned P0; verified P3 (decoding); impl P3a"
+P3_CLOSED_STATUS = "pinned P0; verified P3 (closed-form decoding); verified P3a (platform gates)"
+P3_STATUS = "pinned P0; verified P3 (decoding); verified P3a (platform gates)"
 P3_TIER_C = ["EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGBA1", *P3_ASTC_HDR]
-P3_TIER_C_STATUS = "pinned P0; verified P3 (decoding, as section 19.1's reference); impl P3a"
+P3_TIER_C_STATUS = "pinned P0; verified P3 (decoding, as section 19.1's reference); verified P3a (platform gates)"
 
 
 def status_of(name):
@@ -166,12 +166,17 @@ def status_of(name):
         return "pinned P0; verified P3 (refusal)"
     if name in P3_CLOSED:
         return P3_CLOSED_STATUS
+    # HDR decoding is verified; its platform gates have not yet been verified separately.
+    if name == "BC6H":
+        return "pinned P0; verified P3 (decoding); impl P3a"
+    if name in P3_ASTC_HDR:
+        return "pinned P0; verified P3 (decoding, as section 19.1's reference); impl P3a"
     if name in P3_TIER_C:
         return P3_TIER_C_STATUS
     if name in ("DXT1Crunched", "DXT5Crunched"):
-        return "pinned P0; impl P3 (legacy and Unity fork decoding); impl P3a (platform gates)"
+        return "pinned P0; impl P3 (legacy and Unity fork decoding); verified P3a (platform gates)"
     if name in ("ETC_RGB4Crunched", "ETC2_RGBA8Crunched"):
-        return "pinned P0; impl P3 (Unity fork decoding); impl P3a (platform gates)"
+        return "pinned P0; impl P3 (Unity fork decoding); verified P3a (platform gates)"
     if name in P3:
         return P3_STATUS
     return "pinned P0; impl P3a"
