@@ -73,7 +73,7 @@ pub struct Started {
     pub counter: Arc<Counter>,
     pub run: PathBuf,
     root: File,
-    lock: File,
+    lock: crate::sys::FlockLease,
 }
 impl Started {
     #[must_use]
@@ -82,7 +82,7 @@ impl Started {
     }
     #[must_use]
     pub fn lock(&self) -> &File {
-        &self.lock
+        self.lock.file()
     }
 }
 /// The locked descriptor `held` must be the directory `canonical` names,
@@ -161,7 +161,7 @@ pub fn start(
     {
         return Err(Error::plain(Class::NotDedicated, "lock"));
     }
-    crate::sys::lock_exclusive(&lock).map_err(|e| {
+    let lock = crate::sys::lock_exclusive(lock).map_err(|e| {
         Error::io(
             if e.kind() == io::ErrorKind::WouldBlock {
                 Class::Locked

@@ -252,6 +252,75 @@ fn spool_lock_child() {
     );
 }
 
+#[cfg(feature = "test-hooks")]
+#[test]
+fn spool_lock_is_released_while_an_unrelated_child_is_before_exec() {
+    use std::io::{Read, Write};
+    struct ForkAtSpace {
+        socket: unityrs_batch::sys::testing::Rendezvous,
+        acquired: std::sync::mpsc::Sender<()>,
+        free: u64,
+    }
+    impl FileSystem for ForkAtSpace {
+        fn in_memory(&self, _: &fs::File) -> io::Result<bool> {
+            Ok(false)
+        }
+        fn available(&self, _: &fs::File) -> io::Result<u64> {
+            // Startup already owns the lock. Let the other thread fork,
+            // then wait until the child confirms it is before exec.
+            self.acquired.send(()).unwrap();
+            let mut ready = [0];
+            self.socket.stream().read_exact(&mut ready)?;
+            assert_eq!(ready, [1]);
+            Ok(self.free)
+        }
+    }
+    let () = guard::finishes("spool lock inherited across fork", || {
+        // Both a returned lease and a startup error must release the lock.
+        for free in [10, 0] {
+            child::scene(|scene| {
+                let scratch = Scratch::new("local-lock-fork");
+                let sink = Scratch::new("local-lock-fork-sink");
+                let spec = parse(&job(scratch.path(), sink.path()));
+                let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+                cmd.args(["--exact", "spool_lock_child"]);
+                let socket =
+                    unityrs_batch::sys::testing::hold_before_exec(&mut cmd, guard::DEADLOCK_GUARD)?;
+                let (acquired, held) = std::sync::mpsc::channel();
+                let fs = ForkAtSpace {
+                    socket,
+                    acquired,
+                    free,
+                };
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let local = start::supported(&spec).unwrap();
+                    let first = spool::start(&local, &fs, &|| false).map(drop);
+                    // The child inherited the locked description and cannot
+                    // exec until we reply. CLOEXEC cannot close its copy yet.
+                    let next = spool::start(&local, &space(), &|| false);
+                    fs.socket.stream().write_all(&[1]).unwrap();
+                    tx.send((first, next)).unwrap();
+                });
+                guard::wait(&held, "startup owns the spool lock");
+                let inode = fs::metadata(scratch.join("lock"))?.ino();
+                let live = child::live(scene, &mut cmd, false)?;
+                assert!(scene.wait(live)?.success());
+                // Reap before asserting so even a failure leaves no held child.
+                let (first, next) = guard::recv(&rx, "pre-exec spool child");
+                if free == 0 {
+                    assert_eq!(first.unwrap_err().class, Class::NoSpace);
+                } else {
+                    first.unwrap();
+                }
+                assert_eq!(next.unwrap().lock().metadata()?.ino(), inode);
+                Ok(())
+            })
+            .unwrap();
+        }
+    });
+}
+
 struct ReplaceSpool<'a> {
     path: &'a Path,
     moved: &'a Path,

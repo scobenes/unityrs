@@ -155,7 +155,7 @@ pub fn export<'a>(
         fallback: None,
     }))
 }
-fn read(obj: &ObjectRef, env: &Environment) -> Result<Parsed, Error> {
+pub(crate) fn read(obj: &ObjectRef, env: &Environment) -> Result<Parsed, Error> {
     let Some(tree) = env.object_tree(obj, None)? else {
         return Err(ParseError::NoTypeTree {
             class_id: obj.class_id(),
@@ -236,7 +236,7 @@ fn semantic(error: &ParseError) -> bool {
         };
     }
 }
-fn attr<'a>(parsed: &'a Parsed, key: &[u8]) -> Result<&'a Value, Error> {
+pub(crate) fn attr<'a>(parsed: &'a Parsed, key: &[u8]) -> Result<&'a Value, Error> {
     parsed
         .value()
         .as_dict()

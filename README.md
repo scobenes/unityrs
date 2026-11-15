@@ -36,3 +36,10 @@ Crunch Library Copyright (c) 2010-2016 Richard Geldreich, Jr.
 
 unityrs is not affiliated with or endorsed by Unity Technologies. "Unity" is a
 trademark of Unity Technologies.
+
+The glTF material collector converts saved sRGB colours to linear factors and
+textures to each slot's encoding, unpacks Unity normal maps (+Y), repacks
+metallic/gloss and occlusion channels, preserves sampler settings and base ST,
+and represents HDR emission with emissive strength. See the
+[material mapping rules](crates/unityrs-gltf/README.md#materials) for supported
+shaders, counted omissions, colour spaces and resource-refusal boundaries.

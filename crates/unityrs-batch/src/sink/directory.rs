@@ -9,7 +9,7 @@ use std::{fs::File, path::Path, sync::Arc};
 
 pub struct Directory {
     root: Root,
-    lock: File,
+    lock: crate::sys::FlockLease,
     run: File,
     run_id: Name,
 }
@@ -46,7 +46,7 @@ impl Directory {
         {
             return Err(Error::plain(Class::SinkRootUnusable, "fstat"));
         }
-        root.fs().lock(&lock).map_err(|e| {
+        let lock = root.fs().lock(lock).map_err(|e| {
             if e.kind() == std::io::ErrorKind::WouldBlock {
                 Error::plain(Class::OutputLocked, "flock")
             } else {
@@ -165,7 +165,7 @@ impl Directory {
     pub fn syncfs(&self) -> Result<(), Error> {
         self.root
             .fs()
-            .syncfs(&self.lock)
+            .syncfs(self.lock.file())
             .map_err(|e| Error::io(Context::Output, "syncfs", &e))
     }
 }

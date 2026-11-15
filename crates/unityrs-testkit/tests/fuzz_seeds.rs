@@ -4,7 +4,7 @@
 //! charged buffer at the memory bound as soon as the work bound's; every
 //! `texture` and `astc` seed as a `TextureCase`, the `astc` seeds of each of
 //! the twelve ASTC LDR formats; and every `meshdecode` seed as a
-//! `MeshCase`.
+//! `MeshCase`, plus Shader program blobs as `ShaderCase`.
 
 #[path = "../examples/fuzz_seeds.rs"]
 #[allow(dead_code, reason = "the command's `main`, which this test never runs")]
@@ -20,10 +20,12 @@ use unityrs_testkit::scratch::Scratch;
 fn every_value_seed_is_written_at_each_memory_bound() {
     let dir = Scratch::new("fuzz-seeds");
     seeds::write(&dir).expect("the seeds are written");
+    fsb5_seeds_cover_formats_versions_and_hostile_headers(&dir);
     texture_seeds_are_cases(&dir);
     astc_seeds_are_cases(&dir);
     crunch_seeds_are_cases(&dir);
     mesh_seeds_are_cases(&dir);
+    shader_seeds_are_cases(&dir);
     for target in ["boost_read", "python_read", "write_after_read"] {
         let (mut small, mut large) = (Vec::new(), Vec::new());
         for entry in std::fs::read_dir(dir.join(target)).expect("the target's folder") {
@@ -67,6 +69,135 @@ fn crunch_seeds_are_cases(dir: &Path) {
     assert_eq!(formats, [28, 29].into());
     assert_eq!(meters, (0..4).collect());
     assert_eq!(valid.len(), 8);
+}
+
+/// The shader seeds reach the entry-table width and subprogram header
+/// boundaries, with both normal and deliberately small memory budgets.
+fn shader_seeds_are_cases(dir: &Path) {
+    let (mut versions, mut meters, mut programs, mut counts) = (
+        BTreeSet::new(),
+        BTreeSet::new(),
+        BTreeSet::new(),
+        BTreeSet::new(),
+    );
+    let mut trees = 0;
+    let mut script_types = BTreeSet::new();
+    let mut complete = BTreeSet::new();
+    let mut kinds = BTreeSet::new();
+    for entry in std::fs::read_dir(dir.join("shader")).expect("the target's folder") {
+        let entry = entry.expect("an entry");
+        let bytes = std::fs::read(entry.path()).expect("a seed");
+        if entry.file_name().to_string_lossy().contains("-tree-") {
+            let case = TreeCase::decode(&bytes);
+            assert_eq!(case.encode(), bytes, "a seed that is not a tree case");
+            assert_eq!(case.rows[0].ty, b"Shader");
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .contains("-tree-complete-")
+            {
+                complete.insert(entry.file_name().to_string_lossy().into_owned());
+                complete_shader_seed_parses(&case);
+            }
+            for row in &case.rows {
+                if row.name == b"m_Script" {
+                    script_types.insert(row.ty.clone());
+                }
+            }
+            trees += 1;
+            continue;
+        }
+        let case = unityrs_testkit::fuzz::ShaderCase::decode(&bytes);
+        assert_eq!(case.encode(), bytes, "a seed that is not a case");
+        versions.insert(case.version);
+        meters.insert(case.meter);
+        if let Some(count) = case.blob.get(..4) {
+            counts.insert(i32::from_le_bytes(count.try_into().expect("four bytes")));
+        }
+        if case.blob.get(..4) == Some(1i32.to_le_bytes().as_slice()) {
+            let offset = if case.version >= (2019, 3) { 16 } else { 12 };
+            if let Some(v) = case.blob.get(offset..offset + 4) {
+                programs.insert(i32::from_le_bytes(v.try_into().expect("four bytes")));
+            }
+            if let Some(v) = case.blob.get(offset + 4..offset + 8) {
+                kinds.insert(i32::from_le_bytes(v.try_into().expect("four bytes")));
+            }
+        }
+    }
+    assert!(versions.is_superset(&[(5, 3), (2019, 2), (2019, 3), (2021, 1)].into()));
+    assert_eq!(meters, [0, 1, 16, 64].into());
+    assert!(counts.is_superset(&[-1, 0, 1, 2, i32::MAX].into()));
+    assert!(programs.is_superset(&[201_509_030, 201_608_170, 201_806_140, 202_012_090].into()));
+    assert_eq!(trees, 32);
+    assert_eq!(complete.len(), 12);
+    assert!(kinds.is_superset(&[1, 23, 24].into()));
+    assert_eq!(
+        script_types,
+        [
+            b"TypelessData".to_vec(),
+            b"string".to_vec(),
+            b"int".to_vec(),
+            b"vector".to_vec()
+        ]
+        .into()
+    );
+}
+
+fn complete_shader_seed_parses(case: &TreeCase) {
+    use std::sync::Arc;
+    use unityrs_core::{
+        Bytes, RawStr,
+        limits::{Meter, MeteredVec},
+        stream::Endian,
+        typetree::{NodeList, NodeRow, Tree},
+        walk::{ReadCtx, ReadOptions, RefTypes, boost},
+    };
+    let meter = Meter::unlimited();
+    let mut rows = MeteredVec::new(&meter);
+    for row in &case.rows {
+        rows.push(
+            NodeRow::new(
+                i32::from(row.level),
+                RawStr::from(row.ty.clone()),
+                RawStr::from(row.name.clone()),
+            )
+            .with_meta_flag(row.meta_flag),
+        )
+        .unwrap();
+    }
+    let options = ReadOptions::default();
+    let tree = Tree::compile(
+        Arc::new(NodeList::from_rows(rows).unwrap()),
+        &options.limits,
+    )
+    .unwrap();
+    let parsed = boost::read(
+        &Bytes::from(case.data.clone()),
+        &tree,
+        &ReadCtx {
+            endian: Endian::Little,
+            ref_types: RefTypes::List(&[]),
+            options: &options,
+            meter: &meter,
+        },
+    )
+    .unwrap();
+    assert_eq!(parsed.bytes_read, i64::try_from(case.data.len()).unwrap());
+    assert!(parsed.get(&[b"m_ParsedForm"]).unwrap().as_dict().is_some());
+    let packed = match parsed.get(&[b"compressedBlob"]).unwrap() {
+        unityrs_core::Value::Bytes(b)
+        | unityrs_core::Value::Prims(unityrs_core::PrimArray::U8(b)) => b,
+        other => panic!("not shader bytes: {other:?}"),
+    };
+    assert!(!packed.is_empty());
+    assert!(parsed.get(&[b"platforms"]).is_some());
+    for name in [
+        b"offsets".as_slice(),
+        b"compressedLengths",
+        b"decompressedLengths",
+    ] {
+        assert!(parsed.get(&[name]).is_some());
+    }
 }
 
 /// Every `astc` seed is a `TextureCase` as written, of an ASTC LDR format,
@@ -116,7 +247,7 @@ fn texture_seeds_are_cases(dir: &Path) {
         }
     }
     assert!(
-        formats.is_superset(&[3, 4, 10, 12, 25].into()),
+        formats.is_superset(&[3, 4, 10, 12, 25, 30, 31, 32, 33, 35, 36].into()),
         "{formats:?}"
     );
     assert_eq!(meters, [0, 1].into());
@@ -160,5 +291,28 @@ fn mesh_seeds_are_cases(dir: &Path) {
     assert!(
         per_meter.iter().all(|m| *m == per_meter[0]),
         "each meter at each case"
+    );
+}
+
+fn fsb5_seeds_cover_formats_versions_and_hostile_headers(dir: &Path) {
+    let mut formats = BTreeSet::new();
+    let mut count = 0;
+    let mut hostile_count = false;
+    for entry in std::fs::read_dir(dir.join("fsb5")).expect("the fsb5 target's folder") {
+        let bytes = std::fs::read(entry.expect("an entry").path()).expect("a seed");
+        count += 1;
+        if bytes.starts_with(b"FSB5") && bytes.len() >= 28 {
+            let word = |at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+            hostile_count |= word(8) == u32::MAX;
+            if word(4) <= 1 && word(8) == 1 && (1..=5).contains(&word(24)) {
+                formats.insert((word(4), word(24)));
+            }
+        }
+    }
+    assert_eq!(count, 54);
+    assert!(hostile_count);
+    assert_eq!(
+        formats,
+        (0..=1).flat_map(|v| (1..=5).map(move |m| (v, m))).collect()
     );
 }

@@ -45,13 +45,42 @@ pub enum File {
     Serialized(Arc<SerializedFile>),
     /// A bundle.
     Bundle(Arc<BundleFile>),
-    /// A `WebFile` (P3).
+    /// A WebFile.
     Web(Arc<WebFile>),
     /// What UnityPy keeps as a reader: resources, name-rule files, zip entries.
     Raw(Arc<RawFile>),
 }
 
 impl File {
+    /// A container's ordered files dict, or an empty slice for a leaf.
+    #[must_use]
+    pub fn container_files(&self) -> &[FileSlot] {
+        match self {
+            Self::Bundle(b) => b.files(),
+            Self::Web(w) => w.files(),
+            _ => &[],
+        }
+    }
+    /// All container rows in original order, including duplicate names.
+    #[must_use]
+    pub fn container_directory(&self) -> &[DirEntry] {
+        match self {
+            Self::Bundle(b) => b.directory(),
+            Self::Web(w) => w.directory(),
+            _ => &[],
+        }
+    }
+    /// Parse a container row. Leaf files have no rows.
+    pub fn container_entry(&self, i: usize) -> Result<File, Error> {
+        match self {
+            Self::Bundle(b) => b.entry(i),
+            Self::Web(w) => w.entry(i),
+            _ => Err(Error::Malformed {
+                what: "container entry",
+                detail: "leaf file".into(),
+            }),
+        }
+    }
     /// The meter of the input this file belongs to.
     #[must_use]
     pub fn meter(&self) -> &Arc<Meter> {
@@ -194,7 +223,10 @@ pub enum ParentKind {
         dir_index: usize,
     },
     /// A `WebFile`, which gives no version.
-    Web,
+    Web {
+        /// The WebFile whose files dict is scanned for siblings.
+        web: Weak<WebFile>,
+    },
 }
 
 /// `parse_file`: builds the file `ty` says, under the name rule
@@ -216,7 +248,7 @@ pub fn parse_file(
 /// [`ReaderKind::Stream`] for a top-level file loaded from a path
 /// (`environment.py:136-139`; [`crate::env::Source::Path`]), whose
 /// `SerializedFile`, bundle header or kept reader follows them. A
-/// container's entries are memory whatever its reader. A `WebFile` is P3.
+/// container's entries are memory whatever its reader. WebFile members use memory readers after inflation.
 pub fn parse_file_with_reader(
     name: RawStr,
     data: Bytes,
@@ -270,7 +302,15 @@ pub(crate) fn parse_file_at_depth(
             reader,
             source_depth,
         )?),
-        ParsedAs::WebFile => File::Web(WebFile::open(name, data, parent, meter, ctx)?),
+        ParsedAs::WebFile => File::Web(WebFile::open_at_depth(
+            name,
+            data,
+            parent,
+            meter,
+            ctx,
+            reader,
+            source_depth,
+        )?),
         ParsedAs::Zip => return Err(Error::Unsupported(Unsupported::Zip)),
         ParsedAs::Raw | ParsedAs::Error => {
             File::Raw(RawFile::with_reader(name, data, ty, meter, reader)?)

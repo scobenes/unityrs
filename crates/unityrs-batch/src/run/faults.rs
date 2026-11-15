@@ -211,7 +211,7 @@ impl crate::sink::fs::FileSystem for Files {
     fn rename(&self, parent: &File, from: &CStr, to: &CStr) -> io::Result<()> {
         self.call("sink.rename", || SinkHost.rename(parent, from, to))
     }
-    fn lock(&self, file: &File) -> io::Result<()> {
+    fn lock(&self, file: File) -> io::Result<crate::sys::FlockLease> {
         self.call("sink.lock", || SinkHost.lock(file))
     }
     fn write(&self, file: &File, bytes: &[u8]) -> io::Result<usize> {

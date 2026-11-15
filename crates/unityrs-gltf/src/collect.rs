@@ -17,8 +17,8 @@ use unityrs_core::{
 use unityrs_scene::{Component, Graph, PPtrTarget, RendererInfo, SkinInfo};
 mod attachment;
 mod batch;
-mod builtin;
-mod diagnostics;
+pub(crate) mod builtin;
+pub(crate) mod diagnostics;
 mod geometry;
 mod morph;
 mod selection;
@@ -35,8 +35,9 @@ struct Binding {
     skin_attributes: Option<[usize; 2]>,
     selected: MeteredVec<usize>,
     mesh: Option<usize>,
+    materials: MeteredVec<Option<usize>>,
 }
-/// Collect one graph into the editable model. Materials are unbound until PR 7.
+/// Collect one graph with `UnlitExtras`, preserving allowlisted properties.
 /// All allocation/work refusals propagate, including those of source decoding.
 /// Missing skeleton references leave a reported empty node rather than
 /// inventing transforms or changing palette order.
@@ -45,6 +46,17 @@ pub fn collect(
     env: &Environment,
     graph: &Graph,
     profile: &Profile,
+    meter: &Arc<Meter>,
+) -> Result<Scene> {
+    collect_with_mapper(env, graph, profile, &crate::UnlitExtras, meter)
+}
+/// Collect using an injected material mapping policy. All caches are per unit.
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
+pub fn collect_with_mapper(
+    env: &Environment,
+    graph: &Graph,
+    profile: &Profile,
+    mapper: &dyn crate::MaterialMapper,
     meter: &Arc<Meter>,
 ) -> Result<Scene> {
     let mut scene = Scene::new(meter);
@@ -145,6 +157,7 @@ pub fn collect(
     }
     let mut sources: MeteredVec<Cached> = MeteredVec::new(meter);
     let mut bindings: MeteredVec<Binding> = MeteredVec::new(meter);
+    let mut material_state = crate::materials::State::new(meter);
     for (i, n) in graph.nodes().iter().enumerate() {
         if !selection.as_slice().get(i).is_some_and(|s| s.render) {
             continue;
@@ -210,6 +223,21 @@ pub fn collect(
                                 }
                                 Err(error) => return Err(error),
                             };
+                            let submesh = crate::materials::first_submesh(r, meter)?;
+                            let (material, omitted) = material_state.binding(
+                                env, &mut scene, profile, mapper, r, submesh, false, id, meter,
+                            )?;
+                            if omitted {
+                                scene.meshes.truncate(mesh);
+                                continue;
+                            }
+                            scene
+                                .meshes
+                                .as_mut_slice()
+                                .get_mut(mesh)
+                                .and_then(|m| m.primitives.as_mut_slice().first_mut())
+                                .ok_or_else(|| invalid("procedural primitive"))?
+                                .material = material;
                             let attachment =
                                 attachment::node(&mut scene, id, n, selection::batched(r), meter)?;
                             let node = scene
@@ -347,6 +375,33 @@ pub fn collect(
                 Err(error) => return Err(error),
             };
             let batched = selection::batched(r);
+            if batched
+                && profile.static_batch == StaticBatch::KeepCombined
+                && let Some(root) = combined_root
+            {
+                if selection.as_slice().get(i).is_some_and(|s| s.active) {
+                    let extras = &mut scene
+                        .nodes
+                        .as_mut_slice()
+                        .get_mut(root)
+                        .ok_or_else(|| invalid("combined root"))?
+                        .extras;
+                    meter.count_decode(extras.len() as u64 * 8)?;
+                    if let Some(index) = extras
+                        .as_slice()
+                        .iter()
+                        .position(|(key, _)| key.as_bytes() == b"hidden")
+                    {
+                        extras
+                            .as_mut_slice()
+                            .get_mut(index..)
+                            .ok_or_else(|| invalid("extra index"))?
+                            .rotate_left(1);
+                        extras.truncate(extras.len().saturating_sub(1));
+                    }
+                }
+                continue;
+            }
             let selected = if batched && profile.static_batch == StaticBatch::KeepCombined {
                 batch::selected(
                     env,
@@ -426,6 +481,66 @@ pub fn collect(
                     }
                 }
             }
+            let mut materials = MeteredVec::new(meter);
+            let mut retained = MeteredVec::new(meter);
+            meter.count_decode(
+                (selected.len() as u64).saturating_mul(g.attributes.len() as u64 + 1),
+            )?;
+            for &submesh in selected.as_slice() {
+                let (renderer, material_node) =
+                    if batched && profile.static_batch == StaticBatch::KeepCombined {
+                        batch::material_renderer(
+                            env,
+                            graph,
+                            selection.as_slice(),
+                            ids.as_slice(),
+                            object,
+                            g.source.submeshes.len(),
+                            submesh,
+                            profile,
+                            meter,
+                        )?
+                        .unwrap_or((r, id))
+                    } else {
+                        (r, id)
+                    };
+                let uv = g
+                    .attributes
+                    .as_slice()
+                    .iter()
+                    .any(|(a, _)| *a == crate::Attribute::TexCoord(0));
+                let (material, omitted) = material_state.binding(
+                    env,
+                    &mut scene,
+                    profile,
+                    mapper,
+                    renderer,
+                    submesh,
+                    uv,
+                    material_node,
+                    meter,
+                )?;
+                if !omitted {
+                    if let Some(m) = material.and_then(|i| scene.materials.as_slice().get(i))
+                        && !m.vertex_colors
+                        && g.attributes
+                            .as_slice()
+                            .iter()
+                            .any(|(a, _)| *a == crate::Attribute::Color)
+                    {
+                        diagnostics::record(
+                            &mut scene,
+                            material_node,
+                            "vertex_colors_ignored",
+                            1,
+                            meter,
+                        )?;
+                    }
+                    retained.push(submesh)?;
+                    materials.push(material)?;
+                }
+            }
+            let selected = retained;
             let skin_attributes = built_skin.as_ref().and_then(|s| s.attributes);
             meter
                 .count_decode((bindings.len() as u64).saturating_mul(selected.len() as u64 + 2))?;
@@ -434,6 +549,7 @@ pub fn collect(
                     && b.skin == has_skin
                     && b.skin_attributes == skin_attributes
                     && b.selected.as_slice() == selected.as_slice()
+                    && b.materials.as_slice() == materials.as_slice()
             });
             let mesh = if let Some(b) = binding {
                 bindings
@@ -448,6 +564,7 @@ pub fn collect(
                     selected.as_slice(),
                     has_skin,
                     skin_attributes,
+                    materials.as_slice(),
                     meter,
                 )?;
                 bindings.push(Binding {
@@ -455,6 +572,7 @@ pub fn collect(
                     skin: has_skin,
                     skin_attributes,
                     selected,
+                    materials,
                     mesh,
                 })?;
                 mesh
@@ -462,33 +580,6 @@ pub fn collect(
             let Some(mesh) = mesh else {
                 continue;
             };
-            if batched
-                && profile.static_batch == StaticBatch::KeepCombined
-                && let Some(root) = combined_root
-            {
-                if selection.as_slice().get(i).is_some_and(|s| s.active) {
-                    let extras = &mut scene
-                        .nodes
-                        .as_mut_slice()
-                        .get_mut(root)
-                        .ok_or_else(|| invalid("combined root"))?
-                        .extras;
-                    meter.count_decode(extras.len() as u64 * 8)?;
-                    if let Some(index) = extras
-                        .as_slice()
-                        .iter()
-                        .position(|(key, _)| key.as_bytes() == b"hidden")
-                    {
-                        extras
-                            .as_mut_slice()
-                            .get_mut(index..)
-                            .ok_or_else(|| invalid("extra index"))?
-                            .rotate_left(1);
-                        extras.truncate(extras.len().saturating_sub(1));
-                    }
-                }
-                continue;
-            }
             let attachment = attachment::node(&mut scene, id, n, has_skin || batched, meter)?;
             let skin_id = built_skin.map(|s| s.id);
             let node = scene
@@ -569,10 +660,10 @@ pub fn collect(
     }
     Ok(scene)
 }
-fn same(a: &ObjectRef, b: &ObjectRef) -> bool {
+pub(crate) fn same(a: &ObjectRef, b: &ObjectRef) -> bool {
     Arc::ptr_eq(a.file(), b.file()) && a.path_id() == b.path_id()
 }
-fn extra(extras: &mut Extras, meter: &Arc<Meter>, key: &str, value: Text) -> Result<()> {
+pub(crate) fn extra(extras: &mut Extras, meter: &Arc<Meter>, key: &str, value: Text) -> Result<()> {
     meter.count_decode(extras.len() as u64 * key.len() as u64)?;
     if extras
         .as_slice()
@@ -587,7 +678,7 @@ fn extra(extras: &mut Extras, meter: &Arc<Meter>, key: &str, value: Text) -> Res
         .sort_unstable_by(|(a, _), (b, _)| a.as_bytes().cmp(b.as_bytes()));
     Ok(())
 }
-fn raw_text(meter: &Arc<Meter>, mut bytes: &[u8]) -> Result<Text> {
+pub(crate) fn raw_text(meter: &Arc<Meter>, mut bytes: &[u8]) -> Result<Text> {
     meter.count_decode(bytes.len() as u64 * 3)?;
     let mut out = MeteredVec::new(meter);
     while !bytes.is_empty() {
@@ -608,12 +699,12 @@ fn raw_text(meter: &Arc<Meter>, mut bytes: &[u8]) -> Result<Text> {
     }
     Ok(Text(out))
 }
-fn number(meter: &Arc<Meter>, n: impl fmt::Display) -> Result<Text> {
+pub(crate) fn number(meter: &Arc<Meter>, n: impl fmt::Display) -> Result<Text> {
     let mut t = Text(MeteredVec::new(meter));
     append_fmt(&mut t, meter, format_args!("{n}"))?;
     Ok(t)
 }
-fn append_fmt(t: &mut Text, meter: &Arc<Meter>, args: fmt::Arguments<'_>) -> Result<()> {
+pub(crate) fn append_fmt(t: &mut Text, meter: &Arc<Meter>, args: fmt::Arguments<'_>) -> Result<()> {
     struct Sink<'a> {
         t: &'a mut Text,
         meter: &'a Meter,

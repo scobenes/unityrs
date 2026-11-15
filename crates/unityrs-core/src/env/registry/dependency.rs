@@ -72,7 +72,7 @@ impl Open {
     /// An open of `file` on `meter`.
     pub(crate) fn of(file: &File, meter: Arc<Meter>) -> Self {
         Self {
-            file: WeakFile::of(file),
+            file: Some(WeakFile::of(file)),
             meter,
         }
     }
@@ -137,16 +137,17 @@ pub(crate) enum WeakFile {
     Bundle(Weak<BundleFile>),
     /// A raw file.
     Raw(Weak<RawFile>),
+    Web(Weak<crate::files::WebFile>),
 }
 
 impl WeakFile {
-    pub(crate) fn of(file: &File) -> Option<Self> {
-        Some(match file {
+    pub(crate) fn of(file: &File) -> Self {
+        match file {
             File::Serialized(f) => Self::Serialized(Arc::downgrade(f)),
             File::Bundle(f) => Self::Bundle(Arc::downgrade(f)),
             File::Raw(f) => Self::Raw(Arc::downgrade(f)),
-            File::Web(_) => return None,
-        })
+            File::Web(f) => Self::Web(Arc::downgrade(f)),
+        }
     }
 
     fn upgrade(&self) -> Option<File> {
@@ -154,6 +155,7 @@ impl WeakFile {
             Self::Serialized(w) => w.upgrade().map(File::Serialized),
             Self::Bundle(w) => w.upgrade().map(File::Bundle),
             Self::Raw(w) => w.upgrade().map(File::Raw),
+            Self::Web(w) => w.upgrade().map(File::Web),
         }
     }
 }

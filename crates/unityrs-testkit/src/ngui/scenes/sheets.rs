@@ -9,6 +9,7 @@ use super::super::{
 use super::{Built, CutOptions, NULL, SCRIPT, SceneBundle, by_name, one, plain, rgba, scene};
 use crate::env::{bundle, res_bytes, web_file};
 use crate::ngui::V;
+use crate::web::unsupported_name_length;
 
 /// Sheets whose answers are skips, with textures exported: an `Alpha8`
 /// sheet (`unsupported_format(Alpha8)`) and a zero-height one
@@ -237,13 +238,14 @@ pub fn repeated_rows() -> Built {
 /// `bad_pointer`.
 ///
 /// WebFile rows, each a key, top-level or inside a reached container, its
-/// entries never registered; version 1's core refuses to open one
+/// entries never registered: each has a first name length of -2, which
+/// the core refuses
 /// (`decode_error`, `unsupported`). The dependency's raw `w2.resS` is
 /// followed by a top-level bundle holding a WebFile at `w2.resS`, which the
 /// reach keys above it, so `wv`'s read fails; so does `wt`'s, whose stream
 /// names a top-level WebFile row. `wi`'s names `in2.resS`, inside that
 /// nested WebFile, which is never registered: `outside_view(<path>)`, where
-/// UnityPy's registration would read it. The input holds no top-level WebFile row:
+/// the unmodified WebFile would register it. The input holds no top-level WebFile row:
 /// one fails it (`entry_error`, section 3). A pointer of `CAB-d22` through
 /// its external names its bundle's WebFile row `w4.resS`, a sibling:
 /// `unsupported`. The SerializedFile `CAB-dw` is followed by a top-level
@@ -304,7 +306,10 @@ pub fn fallback_rows() -> Built {
     // opens only its top-level rows).
     let holder = bundle(&[
         ("n.resS", x22(0x83)),
-        ("pad5.resS", web_file(&[("in5.resS", x22(0x99))])),
+        (
+            "pad5.resS",
+            unsupported_name_length(&[("in5.resS", x22(0x99))]),
+        ),
     ]);
     Ok(scene(
         vec![
@@ -371,15 +376,27 @@ fn fallback_dependency() -> Result<SceneBundle, BuildError> {
             ("w2.resS", x22(0x90)),
             (
                 "wrap2",
-                bundle(&[("w2.resS", web_file(&[("in2.resS", x22(0x91))]))]),
+                bundle(&[(
+                    "w2.resS",
+                    unsupported_name_length(&[("in2.resS", x22(0x91))]),
+                )]),
             ),
-            ("w4.resS", web_file(&[("in4.resS", x22(0x92))])),
+            (
+                "w4.resS",
+                unsupported_name_length(&[("in4.resS", x22(0x92))]),
+            ),
             ("CAB-dw", held("wx")?),
-            ("sub/CAB-dw", web_file(&[("pad3.resS", x22(0x93))])),
+            (
+                "sub/CAB-dw",
+                unsupported_name_length(&[("pad3.resS", x22(0x93))]),
+            ),
             ("CAB-dz", held("zx")?),
             (
                 "wrap3",
-                bundle(&[("CAB-dz", web_file(&[("pad4.resS", x22(0x98))]))]),
+                bundle(&[(
+                    "CAB-dz",
+                    unsupported_name_length(&[("pad4.resS", x22(0x98))]),
+                )]),
             ),
         ],
         &[],
@@ -480,8 +497,8 @@ pub fn failed_sheet_rows() -> Built {
 /// Two hops into a WebFile sibling (section 5 step 1): the atlas's
 /// `material` points into the dependency's `CAB-dv`, whose `_MainTex`
 /// `m_Texture` points through `CAB-dv`'s external at its own bundle's
-/// WebFile row `wv.resS`, which version 1's core refuses to open
-/// (`decode_error`, `unsupported`, 4.3). That error is the material path's,
+/// WebFile row `wv.resS`, which is a container rather than an object file
+/// (`bad_pointer`, 4.3). That error is the material path's,
 /// so it gives no name and records nothing, and step 2 takes the texture
 /// named as the atlas, `hop`, not `decoy`, the name the WebFile's entry
 /// holds at the pointer's path id.

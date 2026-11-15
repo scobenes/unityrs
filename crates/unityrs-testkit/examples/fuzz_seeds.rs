@@ -9,8 +9,9 @@
 //! blocks of every output, textures of every size class the decoders tell
 //! apart, ASTC blocks of every kind `unityrs-texture`'s oracle fixture
 //! crafts (`tools/fixtures/texture_astc.py`), legacy CRN streams built by
-//! `tools/fixtures/texture_crunch.py`, and every mesh and sprite case `unityrs-meshdecode`'s oracle
-//! fixture records (`tools/fixtures/meshdecode.py`'s synthetic values).
+//! `tools/fixtures/texture_crunch.py`, every mesh and sprite case recorded
+//! by `tools/fixtures/meshdecode.py`, and synthetic Shader program blobs
+//! across their header-version boundaries and converter field shapes.
 //! Nothing comes from a corpus. One folder per target:
 //!
 //! ```text
@@ -23,6 +24,9 @@
 //!
 //! The core splits what the builders made (a bundle into its files, a file
 //! into its objects); the inputs are the builders' alone.
+
+#[path = "fuzz_seeds/pvrtc_atc.rs"]
+mod pvrtc_atc;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -45,11 +49,15 @@ use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_
 
 #[path = "fuzz_seeds/crunch.rs"]
 mod crunch;
+#[path = "fuzz_seeds/shader.rs"]
+mod shader;
+#[path = "fuzz_seeds/web.rs"]
+mod web;
 #[path = "fuzz_seeds/zip.rs"]
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 15] = [
+const TARGETS: [&str; 19] = [
     "detect",
     "bundle",
     "serialized",
@@ -65,6 +73,10 @@ const TARGETS: [&str; 15] = [
     "zlib_match",
     "unitycn",
     "zip",
+    "webfile",
+    "unityweb",
+    "fsb5",
+    "shader",
 ];
 
 /// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
@@ -123,6 +135,9 @@ const MESH_CASES: &str = concat!(
 /// 64 bytes (refusing the first array), 16 KiB and 256 KiB (most of the
 /// fixture's arrays fit, the largest do not).
 pub(crate) const MESH_METERS: [u8; 4] = [0, 1, 16, 64];
+
+#[path = "fuzz_seeds/fsb5.rs"]
+mod fsb5;
 
 struct Seeds {
     dir: PathBuf,
@@ -701,7 +716,11 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
         s.add("unitycn", name, bytes)?;
     }
     zip::seeds(&mut s)?;
+    web::seeds(&mut s)?;
+    fsb5::write(&mut s)?;
+    shader::seeds(&mut s)?;
     texture(&mut s)?;
+    pvrtc_atc::write(&mut s)?;
     astc(&mut s)?;
     crunch::write(&mut s)?;
     meshdecode(&mut s)?;

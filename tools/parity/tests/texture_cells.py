@@ -5,10 +5,15 @@ nothing here reads PARITY.md. With them: the matrix's columns, the tier and phas
 its result (`RESULT_NOTES`, `RAISE_REASONS`). ORACLE is True in the oracle image (UnityPy 1.25.2).
 """
 
+import contextlib
+import importlib
 import inspect
 import re
 import sys
+import unittest
+from functools import lru_cache
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 HERE = Path(__file__).resolve().parents[1]
@@ -19,6 +24,7 @@ from texture_cases import PIXEL_CASES, H, W  # noqa: E402
 
 import inventory  # noqa: E402
 import references  # noqa: E402
+import child  # noqa: E402
 
 try:
     import texture2ddecoder
@@ -31,6 +37,73 @@ try:
     ORACLE = UnityPy.__version__ == inventory.PINNED_VERSION
 except ImportError:  # pragma: no cover - outside the oracle image
     ORACLE = False
+
+
+ASTC_BACKEND = "astc_encoder._encoder_avx2"
+
+
+def _astc_namespace():
+    """The reference build's classes with the package's enums, as in tools/fixtures/texture_astc.py."""
+    import astc_encoder
+
+    backend = importlib.import_module(ASTC_BACKEND)
+    classes = ("ASTCConfig", "ASTCContext", "ASTCError", "ASTCImage", "ASTCSwizzle")
+    enums = ("ASTCConfigFlags", "ASTCProfile", "ASTCType")
+    return SimpleNamespace(
+        **{name: getattr(backend, name) for name in classes},
+        **{name: getattr(astc_encoder, name) for name in enums},
+    )
+
+
+@contextlib.contextmanager
+def decoding_with(namespace):
+    """Select a build only for these decodes; contexts from either build must not survive the scope."""
+    saved = Texture2DConverter.astc_encoder
+    Texture2DConverter.astc_encoder = namespace
+    Texture2DConverter._get_astc_context.cache_clear()
+    try:
+        yield
+    finally:
+        Texture2DConverter.astc_encoder = saved
+        Texture2DConverter._get_astc_context.cache_clear()
+
+
+@lru_cache(maxsize=1)
+def reference_astc_backend():
+    """Probe import AND execution outside this process: unsupported instructions can end it with SIGILL.
+
+    Do not trust archspec's advertised CPU flags: the reference build can run under an emulator even when
+    auto-selection chooses SSE4.1. Report the build used for the backend-dependent pixel comparisons.
+    """
+    script = (
+        "import resource\n"
+        "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n"
+        "import texture_cells as c\n"
+        "with c.decoding_with(c._astc_namespace()):\n"
+        "    c.Texture2DConverter.astc(bytes(16), 4, 4, (4, 4)).tobytes()\n"
+    )
+    probe = child.run(
+        [sys.executable, "-B", "-c", script], cwd=HERE / "tests", capture_output=True, text=True
+    )
+    if probe.returncode:
+        detail = probe.stderr.strip().splitlines()
+        reason = f"needs reference ASTC backend {ASTC_BACKEND}: import/decode probe exited {probe.returncode}"
+        if detail:
+            reason += f" ({detail[-1]})"
+        return None, reason
+    namespace = _astc_namespace()
+    report = f"ASTC pixel oracle backend: {ASTC_BACKEND} (import and decode probe passed)"
+    print(report, file=sys.stderr)
+    return namespace, report
+
+
+@contextlib.contextmanager
+def reference_astc():
+    namespace, report = reference_astc_backend()
+    if namespace is None:
+        raise unittest.SkipTest(report)
+    with decoding_with(namespace):
+        yield
 
 
 COLUMNS = [
@@ -66,19 +139,21 @@ P1B_STATUS = "pinned P0; verified P1b (decoding); impl P3a"
 # The formats P3 decodes, and their status: the ETC and EAC formats (crates/unityrs-texture/tests/etc_oracle.rs
 # replays what tools/fixtures/texture.py records from tools/fixtures/texture_etc.py's cases), the Tier C ones' as
 # section 19.1's reference; the rest of Pillow's raw and bcn formats (crates/unityrs-texture/tests/raw_oracle.rs,
-# from tools/fixtures/texture_raw.py's cases); and the twelve ASTC LDR formats (crates/unityrs-texture/tests/
-# astc_oracle.rs, from tools/fixtures/texture_astc.py's cases).
+# from tools/fixtures/texture_raw.py's cases); the twelve ASTC LDR formats (crates/unityrs-texture/tests/
+# astc_oracle.rs, from tools/fixtures/texture_astc.py's cases); and the four PVRTC and two ATC formats
+# (crates/unityrs-texture/tests/pvrtc_atc_oracle.rs, from tools/fixtures/texture_pvrtc_atc.py's cases).
 P3_ETC = ["EAC_R", "EAC_RG", "EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGB", "ETC2_RGBA1", "ETC2_RGBA8", "ETC_RGB4"]
 P3_PILLOW = ["ARGB32", "ARGB4444", "Alpha8", "BC4", "BC5", "BGR24", "BGRA32", "DXT3", "R8", "RGB565", "RGBA4444"]
 P3_ASTC = [f"ASTC_{kind}_{n}x{n}" for kind in ("RGB", "RGBA") for n in (4, 5, 6, 8, 10, 12)]
-P3 = sorted(P3_ETC + P3_PILLOW + P3_ASTC)
+P3_PVRTC_ATC = ["ATC_RGB4", "ATC_RGBA8", "PVRTC_RGB2", "PVRTC_RGB4", "PVRTC_RGBA2", "PVRTC_RGBA4"]
+P3 = sorted(P3_ETC + P3_PILLOW + P3_ASTC + P3_PVRTC_ATC)
 P3_STATUS = "pinned P0; verified P3 (decoding); impl P3a"
 P3_TIER_C = ["EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGBA1"]
 P3_TIER_C_STATUS = "pinned P0; verified P3 (decoding, as section 19.1's reference); impl P3a"
 
 
 def status_of(name):
-    """A matrix row's status (section 17's text): the five P1b formats', the thirty-one P3 ones', or every other's."""
+    """A matrix row's status (section 17's text): the five P1b formats', the thirty-seven P3 ones', or every other's."""
     if name in P1B:
         return P1B_STATUS
     if name in P3_TIER_C:

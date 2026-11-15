@@ -12,6 +12,7 @@
 //!   engine's validation checks a spec's templates and keys with.
 //! - [`simple`]: metered single-object `TextAsset`, Font, MonoBehaviour JSON
 //!   (or raw fallback), and Tier X `VideoClip` resource payloads.
+//! - [`shader::export`]: Tier A Shader text with metered platform-blob decoding.
 //! - [`pyjson`]: `CPython` 3.11's `json.dumps(value, indent=2)` of a typetree
 //!   value, byte for byte (E24).
 //!
@@ -44,9 +45,11 @@
     )
 )]
 
+pub mod audio;
 pub mod ngui;
 pub mod pyjson;
 mod pyjson_numbers;
+pub mod shader;
 pub mod simple;
 #[cfg(feature = "test-counters")]
 pub mod testing;

@@ -21,8 +21,8 @@ spec's, each rule cited where it is applied:
 are the SerializedFile values of its bundle's `files` (section 3). Two known divergences are out of scope, where
 the engine fails the input and UnityPy goes on: a view member or input that UnityPy does not parse as a bundle,
 which the engine fails at its peek or at selection (`not_a_bundle`, or the open's code); and an input with a
-top-level WebFile row, shadowed or not, which it fails at selection (`entry_error`: selection opens each of the
-input's top-level directory rows, and version 1's core refuses to open a WebFile, section 3). The reference does not
+top-level refused WebFile row, shadowed or not, which it fails at selection (`entry_error`: selection opens each of the
+input's top-level directory rows, and a name length below -1 is Tier U, section 3). The reference does not
 go on either: it raises `ngui_read.Divergence`, which propagates from `cut` unclassified, so any harness running the
 reference sees an exception, not a record. No fixture scene or corpus input raises it.
 
@@ -53,7 +53,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from UnityPy.enums import ClassIDType
-from UnityPy.files import SerializedFile, WebFile
+from UnityPy.files import SerializedFile
 
 import ngui_read as rd
 
@@ -272,7 +272,7 @@ def cut(input_id: str, view: dict[str, bytes], opts: Options | None = None) -> R
     if opts.sheet_scope != "own_files_by_name":
         raise ValueError(f"sheet scope {opts.sheet_scope!r}: version 1 has only own_files_by_name")
     bundle = rd.load(view, input_id)
-    web = next((path for path, f in rd.rows(bundle) if isinstance(f, WebFile)), None)
+    web = next((path for path, f in rd.rows(bundle) if isinstance(f, rd.UnsupportedWebFile)), None)
     if web is not None:
         raise rd.Divergence(f"{input_id}: a top-level WebFile row {web!r}, which fails the input (entry_error)")
     result = Result(input_id)
