@@ -1711,6 +1711,7 @@ dependencies = [
 name = "unityrs-texture"
 version = "0.0.1"
 dependencies = [
+ "cc",
  "serde_json",
  "sha2 0.11.1",
  "thiserror",

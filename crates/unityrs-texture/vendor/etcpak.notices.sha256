@@ -1,0 +1,5 @@
+# Separate notices: these are not source distribution archive members.
+# LICENSE-ETCPAK: https://raw.githubusercontent.com/wolfpld/etcpak/4b68aad232c15fa15202ae0f51b1531909e668c8/LICENSE.txt
+# LICENSE-BC7ENC: MIT option from the pinned sdist bc7enc.cpp dual notice.
+23f38de01d3858340519a45857e24d8a3a5a904ce956ce55f481a2c2f567a5d7  LICENSE-ETCPAK
+d604a823f282ebcba0ba4c98000238a630a51d41a2ddca3734861f85edc5f193  LICENSE-BC7ENC

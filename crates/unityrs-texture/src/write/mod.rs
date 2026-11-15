@@ -1,8 +1,8 @@
 // Ported from UnityPy 1.25.2 (MIT): export/Texture2DConverter.py and classes/legacy_patch/Texture2D.py. See LICENSE-UNITYPY.
 //! Raw texture writes, format promotion and mip chains. The converter is
 //! `export/Texture2DConverter.py:118-234`; field edits and mip termination are
-//! `classes/legacy_patch/Texture2D.py:14-60`. Encoder-backed writes are deferred
-//! with a typed error, even when decoding that format is supported.
+//! `classes/legacy_patch/Texture2D.py:14-60`. The `encode` feature supplies
+//! etcpak and astcenc; without it compressed writes return a typed refusal.
 use std::sync::Arc;
 use unityrs_core::Bytes;
 use unityrs_core::budget::DecodeBuf;
@@ -11,6 +11,10 @@ use unityrs_core::limits::{Charge, ChargeError, Meter, heap_cost};
 use unityrs_imageio::writers::resample::{self, Filter};
 use unityrs_imageio::{Buffer, Charger, Image};
 
+#[cfg(feature = "encode")]
+mod encoders;
+#[cfg(feature = "encode")]
+mod ffi;
 mod lab;
 mod object;
 mod source;
@@ -21,9 +25,12 @@ pub use source::Source;
 /// Errors leave the installed object data unchanged.
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
-    /// B3b supplies the optional encoders.
+    /// This build does not include the optional encoders.
     #[error("encoder unavailable for TextureFormat {0}")]
     EncoderUnavailable(i32),
+    /// A vendored encoder refused a checked request; no bytes are installed.
+    #[error("texture encoder failed with code {0}")]
+    Encoder(i32),
     /// A named Tier U refusal.
     #[error("unsupported set_image: {0}")]
     Unsupported(&'static str),
@@ -160,7 +167,7 @@ pub fn image_to_texture2d(
         });
     }
     source.check_convertible()?;
-    if encoder {
+    if encoder && !cfg!(feature = "encode") {
         return Err(WriteError::EncoderUnavailable(format));
     }
     if switch && format == 3 {
@@ -250,6 +257,12 @@ fn write_level(
         (image.width(), image.height()),
         crate::platform::SwitchLayout::padded_size,
     );
+    #[cfg(feature = "encode")]
+    let (width, height) = if encoders::is_encoded(format) {
+        encoders::padded_size(format, width, height)?
+    } else {
+        (width, height)
+    };
     let len = u64::from(width) * u64::from(height) * channels as u64;
     meter.count_decode(len)?;
     let mut linear = DecodeBuf::new(meter, len, len, LimitKind::BlockOutput)?;
@@ -297,11 +310,29 @@ fn write_level(
             }
         }
     }
+    #[cfg(feature = "encode")]
+    let compressed = if encoders::is_encoded(format) {
+        Some(encoders::encode(
+            linear.as_slice(),
+            width,
+            height,
+            format,
+            meter,
+        )?)
+    } else {
+        None
+    };
+    #[cfg(feature = "encode")]
+    let data = compressed
+        .as_ref()
+        .map_or(linear.as_slice(), |v| v.as_slice());
+    #[cfg(not(feature = "encode"))]
+    let data = linear.as_slice();
     if let Some(layout) = layout {
-        let swizzled = crate::platform::swizzle(linear.as_slice(), &layout, meter)?;
+        let swizzled = crate::platform::swizzle(data, &layout, meter)?;
         out.extend_from_slice(swizzled.as_slice())?;
     } else {
-        out.extend_from_slice(linear.as_slice())?;
+        out.extend_from_slice(data)?;
     }
     Ok(())
 }

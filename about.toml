@@ -183,6 +183,16 @@ path = "LICENSE-ASTCENC"
 license = "Apache-2.0"
 checksum = "8c1470ba845552d8585169e9a819a9d7c59783469a3b6b6aefa7280a67ea1973"
 
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-ETCPAK"
+license = "BSD-3-Clause"
+checksum = "23f38de01d3858340519a45857e24d8a3a5a904ce956ce55f481a2c2f567a5d7"
+
+[[unityrs-texture.clarify.files]]
+path = "LICENSE-BC7ENC"
+license = "MIT"
+checksum = "d604a823f282ebcba0ba4c98000238a630a51d41a2ddca3734861f85edc5f193"
+
 # Compiled trust anchors only; never an ambient licence exception.
 [webpki-roots]
 accepted = ["CDLA-Permissive-2.0"]

@@ -1,0 +1,16 @@
+# Source distribution: https://files.pythonhosted.org/packages/c1/e3/461896dd46c5e946b9581d8d089d1e7697141ae5ae80ba7a29bdcc6f2a31/etcpak-0.9.14.tar.gz
+39c3a7f03960a654cedc452d0124a21ef02ab31e325d481032d96bf6eb429314  etcpak-0.9.14.tar.gz
+ccfa7a30039a7d47d89419e9030ae53ee7cb865f94829c3326973b5627b8be28  etcpak-0.9.14/src/etcpak/Dither.cpp
+731f74b3b15fa15ecd9bfc0bd4220a2b1fd3b66152ea200304f7d728a5e171b4  etcpak-0.9.14/src/etcpak/Dither.hpp
+7a1b318b27670c71d78d593373802d106fe658d643951ac7836a553537c033ea  etcpak-0.9.14/src/etcpak/ForceInline.hpp
+6bffd0fedf9ca1cc621750e94e5e69bd332c76309c0181ce689a708a3ef4ea3b  etcpak-0.9.14/src/etcpak/Math.hpp
+1be53784d85d2b0e2846e7a1c2ed7c66f46a2523f266316582ca0d92c4ee37d8  etcpak-0.9.14/src/etcpak/ProcessCommon.hpp
+85d7a5b62faae52d334038cf82236d389a71f6a121d48ad38a3253e7872f50ac  etcpak-0.9.14/src/etcpak/ProcessDxtc.cpp
+cdc2248a389303a93ce2abb516a6c41f8e528a96749df0afe038984d557b4f72  etcpak-0.9.14/src/etcpak/ProcessDxtc.hpp
+289cd8979fd8f4c01c4789aba2ee56052892887b03ad200a335c3e04be4d1d3c  etcpak-0.9.14/src/etcpak/ProcessRGB.cpp
+c291ca8fa1478ff02b5a28645eae6a493a5351bc33416764236a86074568dce2  etcpak-0.9.14/src/etcpak/ProcessRGB.hpp
+630b96a4136b483f924e25871ce39c7bbb3eae259942f5ae0c7cd391458fc351  etcpak-0.9.14/src/etcpak/Tables.cpp
+878658d2008d1d20aebac573180a9e66ae5d7964b9ec5f4afe2d4b9647ec6dd7  etcpak-0.9.14/src/etcpak/Tables.hpp
+8adbe77c4a33c500395fa2802b2c144128e4704c349c02b914bee3d195ad9d42  etcpak-0.9.14/src/etcpak/Vector.hpp
+270acfb5f3ce7a0a5f1f7e52f489c49a8abfec7c777e1c69ec505934383c586f  etcpak-0.9.14/src/etcpak/bc7enc.cpp
+7f8c9402edcc5cc9b52517bff416d92a96f3589e291ef294b3a756f537368acb  etcpak-0.9.14/src/etcpak/bc7enc.h

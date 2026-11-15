@@ -1,4 +1,4 @@
-//! Bounded raw texture writes over sizes, modes, formats, mips and platforms.
+//! Bounded raw and native encoded writes over sizes, modes, mips and platforms.
 use std::sync::Arc;
 use unityrs_core::budget::{Reservation, Unbounded};
 use unityrs_core::limits::Meter;
@@ -114,6 +114,11 @@ mod tests {
                 for platform in 0..3u8 {
                     for memory in 0..4u8 {
                         let mut input = Vec::new();
+                        // Native encoders have dedicated small scenes below;
+                        // keep the broad mode/platform matrix inexpensive.
+                        if matches!(fmt, 10 | 12 | 25..=29 | 34 | 45..=60 | 64..=71) {
+                            continue;
+                        }
                         input.extend_from_slice(&17u32.to_le_bytes());
                         input.extend_from_slice(&19u32.to_le_bytes());
                         input.extend_from_slice(&fmt.to_le_bytes());
@@ -124,6 +129,22 @@ mod tests {
                         super::check(&input);
                     }
                 }
+            }
+        }
+    }
+    #[test]
+    fn native_encoders_release_charges_and_repeat_their_bytes() {
+        for fmt in [
+            10i32, 12, 25, 26, 27, 34, 45, 47, 48, 49, 50, 51, 52, 53, 54, 59, 60, 66, 71,
+        ] {
+            for memory in [0, 1, 3] {
+                let mut input = Vec::new();
+                input.extend_from_slice(&4u32.to_le_bytes());
+                input.extend_from_slice(&4u32.to_le_bytes());
+                input.extend_from_slice(&fmt.to_le_bytes());
+                input.extend_from_slice(&1i32.to_le_bytes());
+                input.extend_from_slice(&[7, 0, 0, 0, memory, 2, 73, 0, 255, 128]);
+                super::check(&input);
             }
         }
     }

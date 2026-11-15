@@ -49,7 +49,8 @@
 //!
 //! [`write`] converts Pillow image storage to raw texture bytes, generates
 //! exact BICUBIC mips, pads and swizzles Switch writes, and installs object
-//! edits through `SerializedFile` save. Nonempty encoder-backed targets return
+//! edits through `SerializedFile` save. The `encode` feature enables the pinned
+//! etcpak and astcenc encoders; otherwise nonempty compressed writes return
 //! [`write::WriteError::EncoderUnavailable`].
 //!
 //! **Tier B/C raw formats.** The twenty-two raw formats of `PARITY.md`
@@ -119,7 +120,8 @@
 //! decode's pixel work is linear in its output. Crunch's header-derived
 //! palette and model setup also counts against the meter's work allowance.
 
-#![forbid(unsafe_code)]
+// Only write::ffi may opt in, at the synchronous encoder boundary.
+#![deny(unsafe_code)]
 // No panics on a texture's contents (plan section 3.15). Tests may opt out.
 #![cfg_attr(
     not(test),

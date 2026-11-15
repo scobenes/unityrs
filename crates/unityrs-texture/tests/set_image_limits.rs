@@ -91,10 +91,14 @@ fn failures_preserve_previously_installed_object_bytes() {
     .unwrap();
     let object = file.object(1).unwrap();
     let image = Source::new(1, 1, "RGBA", &[1, 2, 3, 4], None).unwrap();
-    assert!(matches!(
-        set_image(&object, &image, Some(10), 1),
-        Err(WriteError::EncoderUnavailable(10))
-    ));
+    let result = set_image(&object, &image, Some(10), 1);
+    if cfg!(feature = "encode") {
+        // Encoding succeeds, then the incomplete object schema refuses the
+        // field edit. The earlier object bytes still cannot be installed.
+        assert!(matches!(result, Err(WriteError::Invalid(_))));
+    } else {
+        assert!(matches!(result, Err(WriteError::EncoderUnavailable(10))));
+    }
     assert!(!file.is_changed());
     object.set_raw_data(b"previous edit").unwrap();
     // This fails only after encoding, while editing a missing required field.
