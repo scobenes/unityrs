@@ -458,6 +458,10 @@ jobs:
           python tools/fixtures/files.py --check
           python tools/fixtures/serialized_save.py --check
           python tools/fixtures/bundle_save.py --check
+          python tools/fixtures/webfile_save.py --check
+          python tools/fixtures/writeable_cab.py --check
+          python tools/fixtures/head_save_serialized.py --check
+          python tools/fixtures/head_save_bundle.py --check
           python tools/fixtures/head_read.py --check
           python tools/fixtures/unitycn.py --check
           python tools/fixtures/loading.py --check
@@ -616,7 +620,7 @@ jobs:
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=599
+          tools/parity/tests=601
           tools/perf/tests=10
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6

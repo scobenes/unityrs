@@ -17,9 +17,11 @@ use super::parse::Parser;
 type Hash = ShortArray<16>;
 
 pub(super) struct Handler {
-    hash: Hash,
+    pub(super) hash: Hash,
     nodes: Option<crate::typetree::SharedNodes>,
-    refs: MeteredVec<Hash>,
+    pub(super) refs: MeteredVec<Hash>,
+    pub(super) version: i32,
+    pub(super) original_nodes: Option<crate::typetree::SharedNodes>,
 }
 
 fn invalid(detail: &'static str) -> Error {
@@ -60,11 +62,13 @@ impl Parser<'_> {
         let hash = self.r.read_short_array();
         let size = self.r.read_u32()?;
         let mut refs = MeteredVec::new(self.meter);
+        let mut embedded_version = 0;
         let nodes = if size >= 8 {
             if self.r.read_bytes_short(4) != b"mhtt" {
                 return Err(invalid("Invalid type tree blob magic"));
             }
-            let version = u32::try_from(self.r.read_i32()?).unwrap_or(0);
+            embedded_version = self.r.read_i32()?;
+            let version = u32::try_from(embedded_version).unwrap_or(0);
             let mut rows = crate::typetree::parse::parse_blob(
                 &mut self.r,
                 self.data,
@@ -83,7 +87,13 @@ impl Parser<'_> {
         } else {
             None
         };
-        Ok(Handler { hash, nodes, refs })
+        Ok(Handler {
+            hash,
+            original_nodes: nodes.clone(),
+            nodes,
+            refs,
+            version: embedded_version,
+        })
     }
 }
 

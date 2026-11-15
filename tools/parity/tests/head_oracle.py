@@ -11,7 +11,8 @@ the HEAD-tier save and synthetic reading rules need, byte for byte as the commit
 its relative imports take 1.25.2's modules, except that HEAD's BundleFile imports HEAD's CompressionHelper. Of the
 modules they import, 417d595 has 1.25.2's `config.py`, `enums/BundleFile.py`, `files/File.py`,
 `helpers/ArchiveStorageManager.py`, `helpers/UnityVersion.py` and `streams/EndianBinaryReader.py` unchanged; its
-`streams/EndianBinaryWriter.py` adds a `tell` method, which neither file calls, and its `enums/__init__.py` no
+`streams/EndianBinaryWriter.py` adds a `tell` method, unused by the bundle writer; the SerializedFile envelope
+writer tests adapt it to the installed writer's Position. Its `enums/__init__.py` no
 longer re-exports `CommonString`, which neither writer file uses.
 `load()` keeps 1.25.2 entry dispatch for existing writer tests; `readers()`
 selects HEAD's SerializedFile and TypeTreeNode plus TypeTreeHelper for H1's

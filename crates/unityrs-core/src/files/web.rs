@@ -16,15 +16,18 @@ use crate::once::{CellError, get_or_publish_result};
 use crate::stream::{Endian, Reader, ReaderKind};
 use crate::typetree::parse::string_to_null;
 mod inflate;
+mod write;
 use crate::files::{DirEntry, Parent};
 use crate::limits::{Charge, Meter};
 use crate::options::FileContext;
 use crate::raw::RawStr;
+pub use write::WebSaveOptions;
 
 /// How a `WebFile` is packed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum WebPacker {
     /// Plain.
+    #[default]
     None,
     /// gzip.
     Gzip,
@@ -34,6 +37,7 @@ pub enum WebPacker {
 
 /// A `WebFile`.
 pub struct WebFile {
+    pub(crate) writable: super::cab::WritableCabs,
     pub(super) changed: std::sync::atomic::AtomicBool,
     name: RawStr,
     signature: RawStr,
@@ -146,6 +150,7 @@ impl WebFile {
         let files = super::bundle::open::keep(files, &mut charge)?;
         let entries = super::bundle::open::keep(entries, &mut charge)?;
         Ok(Arc::new_cyclic(|this| Self {
+            writable: crate::files::cab::WritableCabs::new(meter),
             changed: std::sync::atomic::AtomicBool::new(false),
             name,
             signature,
@@ -163,7 +168,8 @@ impl WebFile {
         }))
     }
 
-    /// UnityPy's files dict: first key position, last row value.
+    /// Loaded files dict: first key position, last row value. Newly created
+    /// resource writers are in [`Self::writeable_cabs`] and follow it on save.
     #[must_use]
     pub fn files(&self) -> &[FileSlot] {
         &self.files

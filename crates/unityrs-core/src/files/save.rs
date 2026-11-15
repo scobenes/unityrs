@@ -34,8 +34,11 @@ pub struct SaveOptions {
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SaveError {
-    /// Serialized files above format 22, bundles above format 8, and the
-    /// named HEAD HC packer require the HEAD-tier writer.
+    /// A writable CAB key already names a loaded reader.
+    #[error("this CAB already exists and is not a writer")]
+    CabExists,
+    /// Serialized formats above 26 and bundle formats above 9 are outside
+    /// the pinned HEAD writer's supported formats.
     #[error("HEAD-tier writes are not implemented")]
     HeadTierWritesNotImplemented,
     /// A file kind or layout whose writer is outside this implementation.

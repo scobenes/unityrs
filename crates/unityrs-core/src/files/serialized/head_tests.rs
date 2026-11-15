@@ -41,6 +41,8 @@ fn nested(meter: &Arc<Meter>, depth: u64) -> MeteredVec<Handler> {
     refs.push(key(1)).unwrap();
     handlers
         .push(Handler {
+            version: 19,
+            original_nodes: None,
             hash: key(0),
             nodes: Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
             refs,
@@ -50,6 +52,8 @@ fn nested(meter: &Arc<Meter>, depth: u64) -> MeteredVec<Handler> {
     rows.push(NodeRow::new(0, "Empty", "Base")).unwrap();
     handlers
         .push(Handler {
+            version: 19,
+            original_nodes: None,
             hash: key(1),
             nodes: Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
             refs: MeteredVec::new(meter),
@@ -146,6 +150,8 @@ fn a_shared_placeholder_mutation_invalidates_ordinary_wrappers_and_all_list_owne
     rows.push(NodeRow::new(1, "int", "value")).unwrap();
     handlers
         .push(Handler {
+            version: 19,
+            original_nodes: None,
             hash: key(2),
             nodes: Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
             refs: MeteredVec::new(&meter),
@@ -153,6 +159,8 @@ fn a_shared_placeholder_mutation_invalidates_ordinary_wrappers_and_all_list_owne
         .unwrap();
     handlers
         .push(Handler {
+            version: 19,
+            original_nodes: None,
             hash: key(3),
             nodes: None,
             refs: MeteredVec::new(&meter),
@@ -248,6 +256,8 @@ fn chain(meter: &Arc<Meter>, links: u64) -> MeteredVec<Handler> {
         rows.push(child).unwrap();
         handlers
             .push(Handler {
+                version: 19,
+                original_nodes: None,
                 hash: key(i),
                 nodes: Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
                 refs,
@@ -363,6 +373,8 @@ fn snapshot_caching_preserves_heads_mutation_order() {
             }
             handlers
                 .push(Handler {
+                    version: 19,
+                    original_nodes: None,
                     hash: key(h),
                     nodes: Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
                     refs,
@@ -471,6 +483,8 @@ fn unused_shared_handlers_spend_decode_work() {
     for i in 0..100_000 {
         handlers
             .push(Handler {
+                version: 19,
+                original_nodes: None,
                 hash: key(i),
                 nodes: None,
                 refs: MeteredVec::new(&meter),
@@ -557,6 +571,8 @@ fn shared_expansion_charges_each_materialised_child() {
             }
             handlers
                 .push(Handler {
+                    version: 19,
+                    original_nodes: None,
                     hash: Hash::from([i; 16]),
                     nodes: Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
                     refs,

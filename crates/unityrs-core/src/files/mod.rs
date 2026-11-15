@@ -16,6 +16,8 @@
 //! Owner: package C.
 
 pub mod bundle;
+pub(crate) mod cab;
+pub use cab::WriteableCab;
 mod changed;
 pub mod save;
 pub mod serialized;
@@ -34,7 +36,7 @@ pub use bundle::{
 pub use serialized::{
     External, ObjectInfo, ScriptRef, SerializedFile, SerializedHeader, SerializedType,
 };
-pub use web::{WebFile, WebPacker};
+pub use web::{WebFile, WebPacker, WebSaveOptions};
 
 use crate::detect::{FileType, ParsedAs, parsed_as};
 use crate::error::{Error, LimitError, LimitKind, Unsupported};
@@ -57,7 +59,8 @@ pub enum File {
 }
 
 impl File {
-    /// A container's ordered files dict, or an empty slice for a leaf.
+    /// A container's loaded ordered files dict, or an empty slice for a leaf.
+    /// New resource writers are exposed by the container's `writeable_cabs`.
     #[must_use]
     pub fn container_files(&self) -> &[FileSlot] {
         match self {
