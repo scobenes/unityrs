@@ -308,7 +308,32 @@ fn extension_selection_replays_original_files() {
         }
         count += 1;
     }
-    assert_eq!(count, 56);
+    assert_eq!(count, 62);
+}
+
+#[test]
+fn webp_dispatch_replays_every_recorded_original() {
+    let fixture = fixture();
+    let mut count = 0;
+    for case in fixture["cases"].as_array().unwrap() {
+        if case["format"] != "WEBP" || case.get("len").is_none() {
+            continue;
+        }
+        let mode = Mode::from_name(case["mode"].as_str().unwrap()).unwrap();
+        let px = pixels(case, mode);
+        let palette = palette();
+        let image = image(case, mode, &px, &palette);
+        let name = case["name"].as_str().unwrap();
+        let extension = &name[name.rfind('.').unwrap()..];
+        match save_by_extension(&image, extension, name, &mut Unmetered).unwrap() {
+            Outcome::Original(out) => {
+                assert_eq!(file_mismatch(out.bytes(), case), None, "{case}");
+            }
+            out => panic!("{case}: unexpected {out:?}"),
+        }
+        count += 1;
+    }
+    assert_eq!(count, 29);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 """Pillow 9.5.0 / libwebp 1.3.0 still-image oracle (PARITY 15.8, L5b).
 
-Synthetic extractor modes; odd extents, alpha boundaries, defaults and quality
-95. Rust rebuilds the pixels and replays every digest and small whole file.
+Synthetic extractor and opaque palette modes; odd extents, alpha boundaries,
+defaults and quality 95. Rust rebuilds pixels and palettes and replays every file.
 No metadata, animation or lossless option is involved. --check writes nothing.
 """
 from __future__ import annotations
@@ -16,7 +16,11 @@ import PIL
 from PIL import Image, features
 
 OUT = Path(__file__).resolve().parents[2] / "crates/unityrs-imageio/tests/fixtures/webp.json"
-MODES = {"L": 1, "LA": 2, "RGB": 3, "RGBA": 4}
+MODES = {"L": 1, "LA": 2, "RGB": 3, "RGBA": 4, "P": 1}
+
+
+def palette():
+    return bytes((i * 19 + (i // 3) * 7) % 256 for i in range(768))
 
 
 def pixels(mode, width, height, kind):
@@ -30,6 +34,8 @@ def pixels(mode, width, height, kind):
                 value = 73 + c * 37
             elif kind == "gradient":
                 value = (i % width * 7 + i // width * 13 + c * 53) & 255
+            elif kind == "indices":
+                value = i % 256
             if c == MODES[mode] - 1 and mode in ("LA", "RGBA"):
                 if kind == "opaque":
                     value = 255
@@ -46,6 +52,8 @@ def record():
     assert features.version("webp") == "1.3.0", features.version("webp")
     rows = []
     for mode in MODES:
+        if mode == "P":
+            continue
         for width, height in [(1, 1), (3, 5), (15, 17), (17, 15), (31, 33), (257, 129), (16383, 1), (1, 16383)]:
             for kind in ("flat", "gradient", "random", "alpha", "opaque", "transparent"):
                 raw = pixels(mode, width, height, kind)
@@ -57,6 +65,25 @@ def record():
                     data = fp.getvalue()
                     rows.append(dict(mode=mode, width=width, height=height, kind=kind,
                                      quality=quality, exact=exact, pixels_sha256=hashlib.sha256(raw).hexdigest(),
+                                     length=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                                     head=data[:32].hex(), hex=data.hex() if len(data) <= 256 else None))
+    # WebPImagePlugin._save converts P through the palette to RGB unless
+    # transparency metadata is present (Pillow 9.5.0, lines 332-338).
+    # The Rust image model has no transparency metadata or RGBA palettes.
+    for implicit in (False, True):
+        for width, height in [(1, 1), (3, 5), (16, 16), (257, 1)]:
+            for kind in ("flat", "gradient", "indices"):
+                raw = pixels("P", width, height, kind)
+                im = Image.frombytes("P", (width, height), raw)
+                if not implicit:
+                    im.putpalette(palette())
+                for quality, exact in [(80, False), (95, False), (80, True)]:
+                    fp = io.BytesIO()
+                    im.save(fp, "WEBP", quality=quality, exact=exact)
+                    data = fp.getvalue()
+                    rows.append(dict(mode="P", width=width, height=height, kind=kind,
+                                     implicit_palette=implicit, quality=quality, exact=exact,
+                                     pixels_sha256=hashlib.sha256(raw).hexdigest(),
                                      length=len(data), sha256=hashlib.sha256(data).hexdigest(),
                                      head=data[:32].hex(), hex=data.hex() if len(data) <= 256 else None))
     refusals = []
