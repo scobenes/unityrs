@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 use unityrs_core::File;
 
-#[pyclass(frozen, module = "unityrs._native")]
+#[pyclass(frozen, weakref, module = "unityrs._native")]
 pub(crate) struct NativeFile {
     pub(crate) inner: File,
 }
@@ -16,6 +16,17 @@ impl NativeFile {
 }
 #[pymethods]
 impl NativeFile {
+    fn tree_traversal(&self) -> PyResult<crate::traversal::TreeTraversal> {
+        let File::Serialized(file) = &self.inner else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "not a serialized file",
+            ));
+        };
+        Ok(crate::traversal::TreeTraversal::on(
+            file.meter(),
+            file.context().limits.max_tree_depth,
+        ))
+    }
     #[getter]
     fn identity(&self, py: Python<'_>) -> usize {
         py.detach(|| match &self.inner {

@@ -5,7 +5,8 @@ from .._native import TreeTraversal
 def guard_for(node=None, limits=None, budget=None, guard=None):
     if guard is not None:
         return guard
-    source = getattr(node, "_tree_source", None)
+    source_ref = getattr(node, "_tree_source", None)
+    source = source_ref() if source_ref is not None else None
     if source is not None and limits is None and budget is None:
         return source.tree_traversal()
     return TreeTraversal(limits, budget)

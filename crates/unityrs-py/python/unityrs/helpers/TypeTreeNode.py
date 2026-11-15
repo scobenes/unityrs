@@ -18,7 +18,27 @@ TYPETREENODE_KEYS = [
 _CONSTRUCTOR_KEYS = tuple(TYPETREENODE_KEYS)
 SYSTEM_GLOBAL_LOCK = Lock()
 NAME_PEEK_NODE_CACHE = {}
+_NAME_PEEK_MAX_ENTRIES = 4096
+_NAME_PEEK_MAX_NODES = 1048576
+_NAME_PEEK_RETAINED_NODES = 0
 COMMONSTRING_CACHE = {}
+
+
+def _peek_node_count(root, available):
+    # Count conservatively per edge, including the new root. Iterator frames
+    # avoid copying wide child lists; cycles and DAGs stop at the allowance.
+    count = 0
+    stack = [iter((root,))]
+    while stack:
+        node = next(stack[-1], None)
+        if node is None:
+            stack.pop()
+            continue
+        if count == available:
+            return None
+        count += 1
+        stack.append(iter(node.m_Children))
+    return count
 
 
 def clean_name(name: str) -> str:
@@ -229,6 +249,7 @@ class TypeTreeNode(TypeTreeNodeC):
         return root
 
     def get_name_peek_node(self, *, limits=None, budget=None):
+        global _NAME_PEEK_RETAINED_NODES
         guard = guard_for(self, limits, budget)
         charge_node(guard, 0, self.m_Type, self.m_Name)
         with SYSTEM_GLOBAL_LOCK:
@@ -247,7 +268,12 @@ class TypeTreeNode(TypeTreeNodeC):
                     if source is not None:
                         result[0]._tree_source = source
                     break
-            NAME_PEEK_NODE_CACHE[key] = result
+            if len(NAME_PEEK_NODE_CACHE) < _NAME_PEEK_MAX_ENTRIES:
+                count = (0 if result is None else _peek_node_count(
+                    result[0], max(0, _NAME_PEEK_MAX_NODES - _NAME_PEEK_RETAINED_NODES)))
+                if count is not None:
+                    NAME_PEEK_NODE_CACHE[key] = result
+                    _NAME_PEEK_RETAINED_NODES += count
             return result
 
     def dump(self, writer, version, *, limits=None, budget=None, _guard=None):

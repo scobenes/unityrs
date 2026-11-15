@@ -2,6 +2,7 @@
 """Python graph wrappers; each owns its native handle and strong parent links."""
 
 import os
+import weakref
 from types import SimpleNamespace
 from .enums import ClassIDType, BuildTarget
 from .helpers.UnityVersion import UnityVersion
@@ -245,7 +246,7 @@ class ObjectReader:
                         children_list = []
                         new_children[list_identity] = children_list
                     node.m_Children = children_list
-                node._tree_source = self._native
+                node._tree_source = weakref.ref(self.assets_file._native)
                 nodes.append(node)
                 edges.append(children if fill else ())
             for node, children in zip(nodes, edges):

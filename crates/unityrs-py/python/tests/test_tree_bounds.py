@@ -4,6 +4,7 @@ import sys
 import threading
 import tracemalloc
 import unittest
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
@@ -148,14 +149,16 @@ assert growth < 8192, f"mutable text copied before refusal: {growth} KiB"
     def test_peek_prefix_inherits_object_limits(self):
         root = dag(0)
         root.m_Name = "bounded-peek-source"
-        root._tree_source = object_with_int(unityrs.Limits(max_tree_depth=3))._native
+        obj = object_with_int(unityrs.Limits(max_tree_depth=3))
+        root._tree_source = weakref.ref(obj.assets_file._native)
         root.m_Children = [dag(4), TypeTreeNode(1, "string", "m_Name", -1, 1)]
         prefix, _ = root.get_name_peek_node()
         with self.assertRaises(MemoryError):
             prefix.dump_structure()
 
     def test_equality_uses_inherited_limits_and_rejects_cycles(self):
-        source = object_with_int(unityrs.Limits(max_tree_depth=3))._native
+        obj = object_with_int(unityrs.Limits(max_tree_depth=3))
+        source = weakref.ref(obj.assets_file._native)
         left, right = dag(4), dag(4)
         left._tree_source = right._tree_source = source
         with self.assertRaises(MemoryError):
