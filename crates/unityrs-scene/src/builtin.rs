@@ -14,6 +14,24 @@ pub enum BuiltinFile {
     DefaultResources,
     BuiltinExtra,
 }
+impl BuiltinFile {
+    /// Recognise the `ntpath` basename and ASCII case, shared with exporters.
+    #[must_use]
+    pub fn from_path(path: &[u8]) -> Option<Self> {
+        let base = unityrs_core::pystr::ntpath_basename(path);
+        [Self::DefaultResources, Self::BuiltinExtra]
+            .into_iter()
+            .find(|file| base.eq_ignore_ascii_case(file.name().as_bytes()))
+    }
+    /// Canonical resource name for lookup and metadata.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DefaultResources => "unity default resources",
+            Self::BuiltinExtra => "unity_builtin_extra",
+        }
+    }
+}
 /// Known built-in ids; unknown ids in these files are still recognised.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuiltinKind {
@@ -24,6 +42,21 @@ pub enum BuiltinKind {
     Plane,
     Quad,
     DefaultMaterial,
+}
+impl BuiltinKind {
+    /// Unity's conventional built-in name; ids remain provisional.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Cube => "Cube",
+            Self::Cylinder => "Cylinder",
+            Self::Sphere => "Sphere",
+            Self::Capsule => "Capsule",
+            Self::Plane => "Plane",
+            Self::Quad => "Quad",
+            Self::DefaultMaterial => "Default-Material",
+        }
+    }
 }
 /// A built-in pointer, with its original external path and id.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,17 +83,7 @@ pub fn recognize(
         return Ok(None);
     };
     meter.count_decode((ext.path.len() as u64).saturating_mul(3))?;
-    let base = ext
-        .path
-        .as_bytes()
-        .rsplit(|b| matches!(b, b'/' | b'\\'))
-        .next()
-        .unwrap_or_default();
-    let file = if base.eq_ignore_ascii_case(b"unity default resources") {
-        BuiltinFile::DefaultResources
-    } else if base.eq_ignore_ascii_case(b"unity_builtin_extra") {
-        BuiltinFile::BuiltinExtra
-    } else {
+    let Some(file) = BuiltinFile::from_path(ext.path.as_bytes()) else {
         return Ok(None);
     };
     let kind = match (file, ptr.path_id) {
@@ -83,3 +106,37 @@ pub fn recognize(
 const _: () = crate::send_sync::<BuiltinFile>();
 const _: () = crate::send_sync::<BuiltinKind>();
 const _: () = crate::send_sync::<BuiltinRef>();
+
+#[cfg(test)]
+mod tests {
+    use super::BuiltinFile;
+
+    // Basenames checked with ntpath.basename in unityrs-dev (UnityPy 1.25.2).
+    #[test]
+    fn drive_relative_resource_names_are_recognized() {
+        for (path, expected) in [
+            (
+                b"C:unity default resources".as_slice(),
+                BuiltinFile::DefaultResources,
+            ),
+            (b"c:UNITY_BUILTIN_EXTRA", BuiltinFile::BuiltinExtra),
+        ] {
+            assert_eq!(BuiltinFile::from_path(path), Some(expected), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn unc_share_roots_are_not_resource_basenames() {
+        // Both share roots have an empty basename; a file below a share does not.
+        for path in [
+            b"//server/unity default resources".as_slice(),
+            b"\\\\server\\unity_builtin_extra",
+        ] {
+            assert_eq!(BuiltinFile::from_path(path), None, "{path:?}");
+        }
+        assert_eq!(
+            BuiltinFile::from_path(b"//server/share/unity default resources"),
+            Some(BuiltinFile::DefaultResources)
+        );
+    }
+}
