@@ -399,6 +399,8 @@ jobs:
       # The test fails, never skips, once the job has set UNITYRS_ORACLE_TPK.
       - name: G7, the TPK provider against UnityPy's Tpk.py
         run: python tools/fixtures/tpk.py --check
+      - name: K1, synthetic provider APIs and stripped L2 and L2b against the image TPK
+        run: python tools/fixtures/providers.py --check
       # Core's other recorded oracle fixtures, replayed by cargo test without
       # Python: each script regenerates its fixtures in memory and fails
       # naming any that drifted from it (files.py and env.py build their

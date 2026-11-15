@@ -118,12 +118,13 @@ impl Reader<'_, '_> {
 
     /// A read past the end (`EOFError`, or a `ValueError` "... out of
     /// bounds"): kind `out_of_bounds` either way (`dump_records.error_kind`).
-    fn eof(&self, need: usize) -> ReadError {
+    fn eof(&self, need: usize, exception: &'static str) -> ReadError {
         self.fail(
             ReadErrorKind::OutOfBounds,
             ReadDetail::BoostEof {
                 method: self.method,
                 need: u64::try_from(need).unwrap_or(u64::MAX),
+                exception,
             },
         )
     }
@@ -134,20 +135,21 @@ impl Reader<'_, '_> {
     /// after an alignment past the end fails at its length, as UnityPyBoost's
     /// `_read_length` and then `ptr + n > end` do, `TypeTreeHelper.cpp:269`,
     /// `:296`; review round 16).
-    fn bound(&self, n: usize) -> Result<usize, ReadError> {
+    fn bound(&self, n: usize, exception: &'static str) -> Result<usize, ReadError> {
         match self.pos.checked_add(n) {
             Some(end) if end <= self.bytes.len() => Ok(end),
-            _ => Err(self.eof(n)),
+            _ => Err(self.eof(n, exception)),
         }
     }
 
     fn fixed<const N: usize>(&mut self) -> Result<[u8; N], ReadError> {
-        let end = self.bound(N)?;
+        let exception = if N == 1 { "ValueError" } else { "EOFError" };
+        let end = self.bound(N, exception)?;
         let b = self
             .bytes
             .get(self.pos..end)
             .and_then(|s| <[u8; N]>::try_from(s).ok())
-            .ok_or_else(|| self.eof(N))?;
+            .ok_or_else(|| self.eof(N, exception))?;
         self.pos = end;
         Ok(b)
     }
@@ -162,12 +164,12 @@ impl Reader<'_, '_> {
     /// negative length fails before the cursor moves.
     fn length(&mut self) -> Result<usize, ReadError> {
         self.method = "read_length";
-        let end = self.bound(4)?;
+        let end = self.bound(4, "EOFError")?;
         let b = self
             .bytes
             .get(self.pos..end)
             .and_then(|s| <[u8; 4]>::try_from(s).ok())
-            .ok_or_else(|| self.eof(4))?;
+            .ok_or_else(|| self.eof(4, "EOFError"))?;
         let n = num!(self.big, i32, b);
         let Ok(len) = usize::try_from(n) else {
             return Err(self.fail(
@@ -247,7 +249,7 @@ impl Reader<'_, '_> {
             Shape::Str => {
                 let len = self.length()?;
                 self.method = "read_str";
-                let end = self.bound(len)?;
+                let end = self.bound(len, "EOFError")?;
                 let s = RawStr::from_shared(self.data.slice(self.pos..end));
                 self.pos = end;
                 self.align4();
@@ -257,7 +259,7 @@ impl Reader<'_, '_> {
             Shape::Bytes => {
                 let len = self.length()?;
                 self.method = "read_bytes";
-                let end = self.bound(len)?;
+                let end = self.bound(len, "ValueError")?;
                 let b = self.data.slice(self.pos..end);
                 self.pos = end;
                 Out::Plain(Value::Bytes(b))
@@ -358,7 +360,7 @@ impl Reader<'_, '_> {
         self.method = read_method(ei.kind, true);
         let out = match ei.kind {
             Kind::U8 => {
-                let end = self.bound(count)?;
+                let end = self.bound(count, "ValueError")?;
                 self.work.run(as_u64(count), self.at())?;
                 let b = self.data.slice(self.pos..end);
                 self.pos = end;
@@ -393,8 +395,11 @@ impl Reader<'_, '_> {
         conv: impl Fn([u8; N]) -> T,
         wrap: fn(MeteredVec<T>) -> PrimRun,
     ) -> Result<Out, ReadError> {
-        let total = count.checked_mul(N).ok_or_else(|| self.eof(usize::MAX))?;
-        let end = self.bound(total)?;
+        let exception = if N == 1 { "ValueError" } else { "EOFError" };
+        let total = count
+            .checked_mul(N)
+            .ok_or_else(|| self.eof(usize::MAX, exception))?;
+        let end = self.bound(total, exception)?;
         let at = self.at();
         self.work.run(as_u64(total), at)?;
         let mut items: MeteredVec<T> = self.builder.vec();

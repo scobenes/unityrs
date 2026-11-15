@@ -1996,7 +1996,7 @@ positions.
 |---|---|---|---|
 | `unityrs-core` | `budget/mod.rs` | `charged_bytes`: `Bytes::from_owner`'s owner box, reached by `DecodeBuf::into_bytes` and charged `RawStr` construction/concatenation | All |
 | `unityrs-core` | `files/mod.rs` | `RawFile::with_reader`: RawFile `Arc` | All |
-| `unityrs-core` | `files/bundle/open.rs` | `BundleFile::open_at_depth`, reached through `open_with_reader`: parsed-container `Arc::new_cyclic` | All |
+| `unityrs-core` | `files/bundle/open.rs` | `BundleFile::open_with_reader` → `open_at_depth`: parsed-container `Arc::new_cyclic` | All |
 | `unityrs-core` | `files/bundle/runs.rs` | `BundleFile::read_span_pinned` → `cached`: std's lazily boxed mutex | Darwin only |
 | `unityrs-core` | `files/bundle/index/mod.rs` | `RunIndex::publish`: run-index `BTreeMap` | All |
 | `unityrs-core` | `env/mod.rs` | `Environment::new`: Environment and dependency-cache `Arc`s | All |
@@ -2007,11 +2007,16 @@ positions.
 | `unityrs-core` | `env/registry/lru/mod.rs`, `env/held.rs` | `DepCache::touch_paid` → `held::lock`: std's lazily boxed mutex | Darwin only |
 | `unityrs-core` | `limits/meter.rs` | `Meter::with_decode_work`, reached through `new` and `for_input`: account and meter `Arc`s; `Meter::reopen`: meter `Arc`; `Meter::unlimited`, reached through `NodeList::trusted`: unbounded-budget `Arc` and meter construction | All |
 | `unityrs-core` | `typetree/rows.rs` | `NodeRow::new`: head-row type/name text copies; `NodeList::trusted`: head-tree meter construction | All |
-| `unityrs-core` | `typetree/tree.rs` | `Tree::compile_inner`: compiled Tree `Arc` | All |
+| `unityrs-core` | `typetree/tree/mod.rs` | `Tree::compile_inner`: compiled Tree `Arc` | All |
 | `unityrs-export` | `ngui/read.rs` | `Reader::new` → `head_rows`: row `Vec`s and text copies via `NodeRow::new`, and compiled `Tree` `Arc`s and their meters (the `NodeList` `Arc` is fallible, through `NodeList::into_shared`) | All |
 | `unityrs-export` | `ngui/plan.rs`, `ngui/keys.rs` | `Attempt::plan`: template clones through derived `Template::clone` (piece `Vec`) and `Piece::clone` (text `Vec`s) | All |
 | `unityrs-export` | `ngui/classify.rs` | `Reason::plain`, `Reason::decode_error`, `text`, `with_argument`: owned reason/detail strings; `limit`, `decode`, `render`: formatted limits; `panicked`, `entry_error`: owned reason/detail construction. Their `budget`, `charge`, `tree`, `parse`, `deref`, `error`, `resource`, `outside_view`, `outside_view_cab`, `internal` and `mesh` wrappers reach these constructors | All |
 | `unityrs-export` | `ngui/register.rs` | `dependency_failed`: formatted dependency wrapper; `container`: container reclassification; `open`, `opened`, `own`, `internal`, `peeked`, `Peeked::member`, `Peeked::finish`, `same_open`: reason construction through classify's constructors and these wrappers | All |
+
+The `NodeList` shared owner is charged once in `NodeList::from_preorder`,
+which serves both stored-row trees and `TypeTreeNode::node_list` snapshots.
+`NodeList::into_shared` allocates it fallibly; neither path needs an abort
+exclusion.
 
 The executable exclusion inventory is
 `crates/unityrs-batch/tests/controller_support/refusals.rs`. Its keys are the
