@@ -4,6 +4,10 @@ use unityrs_core::budget::{Reservation, Unbounded};
 use unityrs_core::limits::Meter;
 use unityrs_texture::write::{Options, Source, image_to_texture2d};
 
+// astcenc's block descriptor alone needs 14,740,592 bytes. Keep refusal
+// policies, but let the sufficient policy reach compression for every footprint.
+const MEMORY_LIMITS: [u64; 4] = [0, 128, 4096, 32 << 20];
+
 const MODES: [&str; 23] = [
     "1", "L", "LA", "La", "P", "PA", "RGB", "RGBA", "RGBX", "RGBa", "LAB", "CMYK", "YCbCr", "HSV",
     "I", "F", "I;16", "I;16L", "I;16B", "I;16N", "BGR;15", "BGR;16", "BGR;24",
@@ -96,17 +100,30 @@ pub fn check(input: &[u8]) {
             platform_blob: Some(&blob),
             flip: byte(input, 18) & 1 == 0,
         };
-        let limit = match byte(input, 20) % 4 {
-            0 => 0,
-            1 => 128,
-            2 => 4096,
-            _ => 8 << 20,
-        };
+        let limit = MEMORY_LIMITS[usize::from(byte(input, 20) % 4)];
         assert_eq!(run(&source, options, limit), run(&source, options, limit));
     }
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sufficient_budget_reaches_astc_compression() {
+        for format in [48, 53, 54, 59] {
+            for (width, height) in [(1, 1), (4, 4), (13, 11)] {
+                let pixels = vec![73; width as usize * height as usize * 4];
+                let source = super::Source::new(width, height, "RGBA", &pixels, None).unwrap();
+                let result = super::run(
+                    &source,
+                    super::Options::new(format),
+                    super::MEMORY_LIMITS[3],
+                );
+                assert!(
+                    result.is_ok(),
+                    "format {format}, {width}x{height}: {result:?}"
+                );
+            }
+        }
+    }
     #[test]
     fn all_formats_modes_and_platforms_with_small_and_normal_budgets() {
         for fmt in 0..=83i32 {

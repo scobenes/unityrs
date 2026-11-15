@@ -123,3 +123,31 @@ fn concurrent_astc_footprints_keep_their_own_quality_presets() {
         }
     });
 }
+
+#[test]
+fn large_astc_12x12_is_refused_under_work_limit_that_admits_dxt1() {
+    use unityrs_core::error::LimitKind;
+    use unityrs_core::limits::ChargeError;
+
+    let pixels = vec![73; 1200 * 1200 * 4];
+    let source = Source::new(1200, 1200, "RGBA", &pixels, None).unwrap();
+    for format in [10, 53, 59] {
+        let meter =
+            Meter::with_decode_work(64 << 20, 128 << 20, Arc::new(Unbounded), Reservation::Input);
+        let result = image_to_texture2d(&source, Options::new(format), &meter);
+        if format == 10 {
+            assert!(result.is_ok(), "{result:?}");
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(WriteError::Charge(ChargeError::Limit(ref error)))
+                        if error.kind() == LimitKind::DecodeWork
+                ),
+                "format {format} should refuse decode work"
+            );
+        }
+        drop(result);
+        assert_eq!(meter.used(), 0);
+    }
+}
