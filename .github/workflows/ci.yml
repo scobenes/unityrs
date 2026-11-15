@@ -207,7 +207,7 @@ jobs:
               -print_final_stats=1 > "$RUNNER_TEMP/fuzz-$1.log" 2>&1
           }
           failed=""
-          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc crunch meshdecode zlib_match unitycn zip" "webfile unityweb"; do
+          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc crunch meshdecode zlib_match unitycn zip" "webfile unityweb" "fsb5"; do
             pids=""
             for t in $batch; do
               run "$t" &
@@ -217,7 +217,7 @@ jobs:
               wait "${p#*:}" || failed="$failed ${p%%:*}"
             done
           done
-          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture astc crunch meshdecode zlib_match unitycn zip webfile unityweb; do
+          for t in detect bundle serialized typetree boost_read python_read write_after_read lz4 texture astc crunch meshdecode zlib_match unitycn zip webfile unityweb fsb5; do
             echo "== $t"
             grep -E '^(stat::|#[0-9]+ +DONE)' "$RUNNER_TEMP/fuzz-$t.log" || true
           done
@@ -437,6 +437,7 @@ jobs:
           python tools/fixtures/mesh_export.py --check
           python tools/fixtures/obj_export.py --check
           python tools/fixtures/simple_export.py --check
+          python tools/fixtures/audio.py --check
           python tools/fixtures/pyfmt.py --check
           python tools/fixtures/ngui.py --check
           python tools/fixtures/sprites.py --check

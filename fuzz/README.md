@@ -33,6 +33,7 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `astc` | `unityrs_texture::decode` of an ASTC LDR texture (the case's format taken as one of the twelve), under the memory bound or a meter of the decode's peak charge, its output and its tables, less 1, the charge or plus 1: the decode's answer its `plan`'s (but a refusal of a charge past the meter's limit), the image the plan's size, mode and charge, the meter back at 0 after it, so the tables are returned, and each block's texels in the image those of the block decoded alone as a one-block texture (every block of an image of up to 32, and of a larger one the first 32 and those the right and bottom edges cut): the assembly, the cut and the flip | `unityrs_testkit::fuzz::TextureCase`: format, size, platform, meter, platform blob, data |
 | `crunch` | legacy CRN DXT1 and DXT5 decode with dimensions bounded to -4 through 128 and data capped at 64 KiB, under the memory bound or the conservative planned peak charge and its neighbours: output size, mode and retained charge match the plan, malformed-stream errors repeat deterministically, and every meter returns to zero | `unityrs_testkit::fuzz::TextureCase`: format taken as 28 or 29, size, meter and CRN stream |
 | `meshdecode` | `walk::boost::read` of a Mesh's or a Sprite's value, then `unityrs_meshdecode::MeshHandler::process` (with or without a resource reader, either byte order, any version), `get_triangles` twice and `process` again, run last once the first's outputs drop, under the case's limits and, when the case's meter is not 0, again under a meter of `meter² × 64` bytes with the same work bound: the second `get_triangles` and the second `process` must answer as the first (but a refusal of the work it adds), the smaller meter's answer must be the first's (but a refusal of a charge past its limit), and each meter back at 0 once the outputs drop | `unityrs_testkit::fuzz::MeshCase`: flags, meter, version, resource, then a `TreeCase` |
+| `fsb5` | `unityrs_audio::plan` and `decode`: bounded parsing, PCM and float WAV lengths, repeatability and charge release | raw audio bytes |
 
 Every run is bounded by the limits in `src/lib.rs`: 128 MiB of memory, of
 input and of one block's output (`MEMORY`), and 8 MiB of decode work and of
@@ -82,6 +83,9 @@ by `tools/fixtures/texture_crunch.py`, including multi-mip streams; decoding
 uses mip zero. Unity 2017.3+ Crunch and ETC Crunch remain pending.
 The `zlib_match` seeds are the builders' outputs (capped at 4 MiB), plus
 zero and periodic inputs around match and window boundaries.
+The `fsb5` seeds use `unityrs_testkit::fsb5`: passthrough audio, all supported
+PCM widths at both bank versions, rates, names, extra chunks, empty/short
+subsounds, deferred codecs and hostile headers (54 synthetic inputs).
 
 ## Running
 

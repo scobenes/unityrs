@@ -10,6 +10,7 @@
 
 pub mod astc;
 pub mod crunch;
+pub mod fsb5;
 pub mod lz4;
 pub mod meshdecode;
 #[cfg(test)]

@@ -1394,6 +1394,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
+name = "unityrs-audio"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "thiserror",
+ "unityrs-core",
+ "unityrs-testkit",
+]
+
+[[package]]
 name = "unityrs-batch"
 version = "0.0.1"
 dependencies = [
@@ -1486,6 +1496,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "thiserror",
+ "unityrs-audio",
  "unityrs-core",
  "unityrs-imageio",
  "unityrs-meshdecode",

@@ -59,6 +59,7 @@ jobs:
           - zip
           - webfile
           - unityweb
+          - fsb5
     env:
       TARGET: ${{ matrix.target }}
     steps:
