@@ -6,6 +6,8 @@
 //! integer entries use the corresponding UNorm/SNorm channel counts (B/C),
 //! as PARITY section 19.2 specifies. Signed byte conversion is the closed
 //! form in section 17.1; no 16-bit decoder is used for those stored bytes.
+//! The six ASTC HDR graphics formats use the corresponding HDR decoders
+//! despite the pinned UnityPy map omitting them (Tier B).
 use crate::{DecodeError, Format, Image, Plan};
 use std::sync::Arc;
 use unityrs_core::limits::{ChargeError, Meter, MeteredVec, heap_cost};
@@ -124,8 +126,10 @@ pub fn unitypy_texture_format(value: i32) -> Result<i32, ArrayError> {
     Ok(format)
 }
 
-/// Corrected mapping for the eight 8-bit integer graphics formats, otherwise
-/// the original map. The correction's targets are `enums/GraphicsFormat.py:184-191`.
+/// Corrected mapping for the eight 8-bit integer graphics formats and six
+/// ASTC HDR graphics formats, otherwise the original map. The byte correction's
+/// targets are `enums/GraphicsFormat.py:184-191`; ASTC HDR adds the corresponding
+/// HDR `TextureFormat` values omitted by UnityPy's map (PARITY section 19.2).
 pub fn texture_format(value: i32) -> Result<i32, ArrayError> {
     match value {
         13 => Ok(63),
@@ -133,6 +137,7 @@ pub fn texture_format(value: i32) -> Result<i32, ArrayError> {
         15 => Ok(3),
         16 => Ok(4),
         17..=20 => Ok(75 + value - 17),
+        145..=150 => Ok(66 + value - 145),
         _ => unitypy_texture_format(value),
     }
 }

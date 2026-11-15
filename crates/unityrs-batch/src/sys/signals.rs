@@ -10,6 +10,13 @@ use std::{
 };
 static PROCESS: AtomicPtr<Process> = AtomicPtr::new(std::ptr::null_mut());
 static INIT: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "test-hooks")]
+static ABORT: super::lifecycle::ExitPoint = super::lifecycle::ExitPoint::new();
+/// Arm the handler's post-reset test hold before the controller starts.
+#[cfg(feature = "test-hooks")]
+pub fn arm_abort(wait: Option<std::ffi::CString>, trace: Option<i32>) {
+    ABORT.arm(wait, trace);
+}
 /// The parent-death signal's number. libc's `SIGRTMIN()` is a function call
 /// that is not on the async-signal-safe list, so it runs once, here, before
 /// any handler is installed (install calls this first); the handler only
@@ -123,6 +130,8 @@ extern "C" fn handler(n: i32) {
     if let Some(process) = unsafe { pointer.as_ref() } {
         if n == libc::SIGABRT {
             process.sockets.reset();
+            #[cfg(feature = "test-hooks")]
+            ABORT.reached(b"abort_handler reached\n");
             if INIT.load(SeqCst) {
                 // SAFETY: init must use explicit exit status for SIGABRT.
                 unsafe { libc::_exit(134) }

@@ -31,6 +31,16 @@ fn xbox_applies_its_swap_table_to_every_plain_format_including_closed_forms() {
         let mut data: Vec<_> = (0..=base.input_bytes)
             .map(|n| u8::try_from(n % 251).unwrap())
             .collect();
+        for block in data.as_chunks_mut::<16>().0 {
+            if format.is_astc_hdr() {
+                // Legal FP16 void blocks with varied half-float channels.
+                block[..8].fill(255);
+                block[0] = 0xfc;
+            } else if format == Format::Bc6h {
+                // Force mode 0: arbitrary prefixes include reserved modes.
+                block[0] &= 0xfc;
+            }
+        }
         let expected = decode(
             format,
             &data,

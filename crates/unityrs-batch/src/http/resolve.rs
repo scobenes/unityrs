@@ -59,6 +59,8 @@ pub(crate) async fn lookup(
         .or_else(|| permit.begin(Operation::Lookup))
         .ok_or(Error::Busy)?;
     let source = source.clone();
+    #[cfg(feature = "test-hooks")]
+    let trace = crate::execution::trace::task(pool, "lookup");
     crate::execution::blocking(pool, move || {
         let result = {
             let source = source;
@@ -69,6 +71,8 @@ pub(crate) async fn lookup(
         // All Rust host storage ends before the slot is made available again.
         drop(name);
         drop(charge);
+        #[cfg(feature = "test-hooks")]
+        drop(trace);
         drop(token);
         result
     })

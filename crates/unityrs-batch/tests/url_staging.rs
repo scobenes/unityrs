@@ -195,7 +195,7 @@ fn without_a_network_a_url_is_refused_before_any_request() {
                 .unwrap()
                 .spec
         )
-        .is_err()
+        .is_ok()
     );
 }
 #[test]

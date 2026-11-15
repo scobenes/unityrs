@@ -36,6 +36,8 @@ pub(super) mod block_mode;
 pub(crate) mod context;
 pub(super) mod decimation;
 pub(super) mod endpoint;
+pub(crate) mod hdr;
+pub(super) mod hdr_endpoint;
 pub(super) mod ise;
 pub(super) mod partition;
 mod tables;

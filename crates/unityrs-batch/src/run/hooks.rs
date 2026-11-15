@@ -7,7 +7,8 @@
 //! `start_count`, `init`, `files` and `host_root` ([`super::faults`]), and
 //! `cutoff_in` (`UNITYRS_TEST_CUTOFF_IN`, milliseconds): step 6 reads the
 //! wall clock as the deadline less the grace less that, so the deadline's
-//! cutoff falls that long after step 6 however long startup took.
+//! cutoff falls that long after step 6 however long startup took. With
+//! `UNITYRS_TEST_CUTOFF_ARM`, a FIFO byte starts the delay instead.
 //! `skip_host_checks` and `tally` are the library API's alone; `resolve`
 //! and `extra_roots` are read by URL activation, `zip_offset` by archive
 //! activation.
@@ -18,12 +19,14 @@
 //! <errno>`, and `<point> reached` before each `wait` hold. The
 //! `handover` report: one `stopped <input id>` line per input the finisher
 //! writes `stopped`, then `culprit input <id>` or `culprit bundle <id>`.
+#[path = "hooks_network.rs"]
+mod network;
 use super::process::Thread;
 use crate::{
     control::Culprit, controller, lifetime::Stop, phase1::Facts, publish, spec::model::Spec,
 };
+pub use network::{Resolve, extra_roots};
 use std::{
-    ffi::OsString,
     fs::File,
     io::Write,
     os::unix::fs::OpenOptionsExt,
@@ -61,9 +64,13 @@ pub struct TestHooks {
     pub tally: Option<Tally>,
     /// The deadline's cutoff this long after step 6 (milliseconds).
     pub cutoff_in: Option<u64>,
-    /// `UNITYRS_TEST_RESOLVE` and `UNITYRS_TEST_EXTRA_ROOTS`, as read.
-    pub resolve: Option<OsString>,
-    pub extra_roots: Option<PathBuf>,
+    /// `UNITYRS_TEST_CUTOFF_ARM`: with `cutoff_in`, arm that delay only
+    /// after a byte arrives on this FIFO, acknowledging an origin request.
+    pub cutoff_arm: Option<PathBuf>,
+    /// `UNITYRS_TEST_RESOLVE`: parsed answers; absent means system DNS.
+    pub resolve: Option<Resolve>,
+    /// `UNITYRS_TEST_EXTRA_ROOTS`: certificates loaded at startup.
+    pub extra_roots: Vec<rustls::pki_types::CertificateDer<'static>>,
     pub zip_offset: Option<u64>,
 }
 /// The `tally` hook's two calls.
@@ -113,6 +120,19 @@ pub enum Point {
     Stdin,
     /// `exit_now`, after its resets: `spin` and `wait` only.
     ExitNow,
+    /// SIGABRT's handler, after resets and before its final abort: only
+    /// `spin` or `wait`, with an async-signal-safe hold.
+    AbortHandler,
+    /// A socket's late publication and its checks around connect, for
+    /// deterministic races with the lifecycle's closing flag.
+    SocketPublish,
+    SocketConnect,
+    SocketConnected,
+    /// The same socket seams, restricted to one request permit's table
+    /// entry so an earlier active connection does not take a late hold.
+    SocketPublishPermit(usize),
+    SocketConnectPermit(usize),
+    SocketConnectedPermit(usize),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -135,9 +155,15 @@ impl TestHooks {
         let mut hooks = Self {
             trace: var("UNITYRS_TEST_TRACE").map(PathBuf::from),
             handover: var("UNITYRS_TEST_HANDOVER").map(PathBuf::from),
+            cutoff_arm: var("UNITYRS_TEST_CUTOFF_ARM").map(PathBuf::from),
             init: var("UNITYRS_TEST_INIT").is_some(),
-            resolve: var("UNITYRS_TEST_RESOLVE"),
-            extra_roots: var("UNITYRS_TEST_EXTRA_ROOTS").map(PathBuf::from),
+            resolve: text("UNITYRS_TEST_RESOLVE")?
+                .map(|value| Resolve::parse(&value))
+                .transpose()?,
+            extra_roots: var("UNITYRS_TEST_EXTRA_ROOTS")
+                .map(|path| extra_roots(path.as_ref()))
+                .transpose()?
+                .unwrap_or_default(),
             ..Self::default()
         };
         if let Some(name) = text("UNITYRS_TEST_SPAWN")? {
@@ -209,6 +235,11 @@ fn points(list: &str) -> Option<Vec<(Point, Action)>> {
                 "lifecycle" => Point::Lifecycle,
                 "stdin" => Point::Stdin,
                 "exit_now" if action != Action::Panic => Point::ExitNow,
+                "abort_handler" if action != Action::Panic => Point::AbortHandler,
+                "socket_publish" => Point::SocketPublish,
+                "socket_connect" => Point::SocketConnect,
+                "socket_connected" => Point::SocketConnected,
+                _ if point.starts_with("socket_") => socket_point(point)?,
                 _ => {
                     if let Some(id) = named("stage:") {
                         Point::Stage(id)
@@ -228,6 +259,22 @@ fn points(list: &str) -> Option<Vec<(Point, Action)>> {
             Some((point, action))
         })
         .collect()
+}
+fn socket_point(point: &str) -> Option<Point> {
+    let (label, index) = point.split_once(':')?;
+    if index.is_empty() || !index.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let index = index.parse::<usize>().ok()?;
+    if index >= crate::sys::reset::SOCKET_CAPACITY {
+        return None;
+    }
+    Some(match label {
+        "socket_publish" => Point::SocketPublishPermit(index),
+        "socket_connect" => Point::SocketConnectPermit(index),
+        "socket_connected" => Point::SocketConnectedPermit(index),
+        _ => return None,
+    })
 }
 /// The `trace` log: each line one `write` of its whole text, appended.
 pub struct Log(File);
@@ -263,6 +310,75 @@ pub struct Points {
     armed: Vec<(Point, Action, String, AtomicBool)>,
     log: Option<Arc<Log>>,
 }
+/// Install the socket callbacks before the controller starts. The process
+/// retains its armed points through exit; callbacks run outside reset.
+pub(super) fn arm_sockets(points: Arc<Points>) {
+    static POINTS: std::sync::OnceLock<Arc<Points>> = std::sync::OnceLock::new();
+    fn at(point: crate::sys::reset::SocketPoint, index: usize) {
+        use crate::sys::reset::SocketPoint;
+        if let Some(points) = POINTS.get() {
+            let (point, target, label) = match point {
+                SocketPoint::BeforePublish => (
+                    Point::SocketPublish,
+                    Point::SocketPublishPermit(index),
+                    "socket_publish",
+                ),
+                SocketPoint::BeforeConnect => (
+                    Point::SocketConnect,
+                    Point::SocketConnectPermit(index),
+                    "socket_connect",
+                ),
+                SocketPoint::AfterConnect => (
+                    Point::SocketConnected,
+                    Point::SocketConnectedPermit(index),
+                    "socket_connected",
+                ),
+                SocketPoint::ClosingRejected => {
+                    points.trace(format_args!("socket rejected"));
+                    return;
+                }
+            };
+            if points.fire(&point) {
+                points.trace(format_args!("{label} released"));
+            }
+            if points.fire(&target) {
+                points.trace(format_args!("{label}:{index} released"));
+            }
+        }
+    }
+    let _ = POINTS.set(points);
+    crate::sys::reset::arm_socket_points(at);
+}
+/// Arm the async-signal-safe SIGABRT hold at step 7. Its path storage is
+/// allocated fallibly before a controller can open any socket.
+pub(super) fn arm_abort(hooks: &TestHooks, trace: Option<i32>) -> Result<(), Refused> {
+    let Some((_, action)) = hooks.point.iter().find(|(p, _)| *p == Point::AbortHandler) else {
+        return Ok(());
+    };
+    let wait = match action {
+        Action::Wait(path) => {
+            let bytes = path.as_os_str().as_encoded_bytes();
+            let length = bytes
+                .len()
+                .checked_add(1)
+                .ok_or(Refused("UNITYRS_TEST_POINT"))?;
+            let mut owned = Vec::new();
+            owned
+                .try_reserve_exact(length)
+                .map_err(|_| Refused("UNITYRS_TEST_POINT"))?;
+            owned.extend_from_slice(bytes);
+            owned.push(0);
+            Some(
+                std::ffi::CString::from_vec_with_nul(owned)
+                    .map_err(|_| Refused("UNITYRS_TEST_POINT"))?,
+            )
+        }
+        Action::Spin => None,
+        Action::Panic => return Err(Refused("UNITYRS_TEST_POINT")),
+    };
+    crate::sys::signals::arm_abort(wait, trace);
+    Ok(())
+}
 impl Points {
     pub(super) fn new(hooks: &TestHooks, spec: Arc<Spec>, log: Option<Arc<Log>>) -> Self {
         let armed = hooks
@@ -284,10 +400,15 @@ impl Points {
     ///
     /// When its action is `panic`: the hook's purpose.
     pub fn at(&self, point: &Point) {
+        self.fire(point);
+    }
+    fn fire(&self, point: &Point) -> bool {
+        let mut reached = false;
         for (armed, action, name, fired) in &self.armed {
             if armed != point || fired.swap(true, SeqCst) {
                 continue;
             }
+            reached = true;
             match action {
                 #[allow(clippy::panic)] // The `panic` action's whole purpose.
                 Action::Panic => panic!("test hook: {name}"),
@@ -304,6 +425,7 @@ impl Points {
                 }
             }
         }
+        reached
     }
     fn named(&self, make: fn(String) -> Point, bundle: u32) {
         if !self.armed.is_empty() {
@@ -324,6 +446,13 @@ fn name(point: &Point) -> String {
         Point::Commit(id) => format!("commit:{id}"),
         Point::Renamed(id) => format!("renamed:{id}"),
         Point::End(id) => format!("end:{id}"),
+        Point::SocketPublish => "socket_publish".into(),
+        Point::SocketConnect => "socket_connect".into(),
+        Point::SocketConnected => "socket_connected".into(),
+        Point::SocketPublishPermit(index) => format!("socket_publish:{index}"),
+        Point::SocketConnectPermit(index) => format!("socket_connect:{index}"),
+        Point::SocketConnectedPermit(index) => format!("socket_connected:{index}"),
+        Point::AbortHandler => "abort_handler".into(),
         Point::Poll => "poll".into(),
         Point::Transfer => "transfer".into(),
         Point::Drained => "drained".into(),
@@ -425,5 +554,57 @@ pub(super) fn lifecycle_mark() {
             (tally.mark)();
         }
         points.at(&Point::Lifecycle);
+    }
+}
+
+#[cfg(test)]
+mod parser_tests {
+    use super::*;
+
+    #[test]
+    fn handler_points_refuse_panic_and_accept_only_wait_or_spin() {
+        assert!(points("abort_handler=panic").is_none());
+        assert!(points("exit_now=panic").is_none());
+        assert_eq!(
+            points("abort_handler=spin,abort_handler=wait:release"),
+            Some(vec![
+                (Point::AbortHandler, Action::Spin),
+                (Point::AbortHandler, Action::Wait(PathBuf::from("release"))),
+            ]),
+        );
+        for (label, point) in [
+            ("socket_publish", Point::SocketPublish),
+            ("socket_connect", Point::SocketConnect),
+            ("socket_connected", Point::SocketConnected),
+        ] {
+            assert_eq!(
+                points(&format!("{label}=spin")),
+                Some(vec![(point, Action::Spin)])
+            );
+        }
+    }
+
+    #[test]
+    fn socket_points_accept_only_in_range_decimal_permit_indexes() {
+        for (label, point) in [
+            ("socket_publish", Point::SocketPublishPermit(0)),
+            ("socket_connect", Point::SocketConnectPermit(0)),
+            ("socket_connected", Point::SocketConnectedPermit(0)),
+        ] {
+            assert_eq!(
+                points(&format!("{label}:0=spin")),
+                Some(vec![(point, Action::Spin)])
+            );
+            for index in ["", "-1", "+1", "a", "1:2", "514", "18446744073709551616"] {
+                assert!(points(&format!("{label}:{index}=spin")).is_none());
+            }
+        }
+        assert_eq!(
+            points("socket_publish:513=wait:release"),
+            Some(vec![(
+                Point::SocketPublishPermit(513),
+                Action::Wait(PathBuf::from("release"))
+            )]),
+        );
     }
 }
