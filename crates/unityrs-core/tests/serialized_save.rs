@@ -82,6 +82,63 @@ fn unhex(text: &str) -> Vec<u8> {
 }
 
 #[test]
+fn head_tier_save_refuses_before_output_or_charges() {
+    use unityrs_core::budget::{Reservation, Unbounded};
+    use unityrs_core::files::{SaveError, SaveLayout};
+    use unityrs_core::stream::ReaderKind;
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/head_read.json")).unwrap();
+    let mut formats = std::collections::BTreeSet::new();
+    for case in fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|case| case["kind"] == "serialized" && case["result"].get("error").is_none())
+    {
+        let meter =
+            Meter::with_decode_work(1 << 24, 1 << 24, Arc::new(Unbounded), Reservation::Input);
+        let file = SerializedFile::parse_with_reader(
+            RawStr::from_static(b"CAB-head-save"),
+            Bytes::from(unhex(case["hex"].as_str().unwrap())),
+            None,
+            &meter,
+            &Arc::new(FileContext::unitypy()),
+            if case["stream"] == true {
+                ReaderKind::Stream
+            } else {
+                ReaderKind::Memory
+            },
+        )
+        .unwrap();
+        formats.insert(file.header().version);
+        for exhausted in [false, true] {
+            let held = exhausted.then(|| {
+                meter.count_decode((1 << 24) - meter.decoded()).unwrap();
+                meter.charge(meter.limit() - meter.used()).unwrap()
+            });
+            let before = (meter.used(), meter.granted(), meter.decoded());
+            for layout in [SaveLayout::Semantic, SaveLayout::UnityPy] {
+                let error = file.save(SaveOptions { layout }).unwrap_err();
+                assert_eq!(error, SaveError::HeadTierWritesNotImplemented);
+                assert!(
+                    error
+                        .to_string()
+                        .contains("HEAD-tier writes are not implemented")
+                );
+                assert_eq!(
+                    (meter.used(), meter.granted(), meter.decoded()),
+                    before,
+                    "{}: refusal must not build or charge output",
+                    case["name"]
+                );
+            }
+            drop(held);
+        }
+    }
+    assert_eq!(formats, [23, 24, 25, 26].into());
+}
+
+#[test]
 fn save_fixture_interns_bytes_below_the_size_bound() {
     let text = include_str!("fixtures/serialized_save.json");
     assert!(
@@ -153,6 +210,7 @@ fn replay_unitypy_file_saves_and_corrected_tier_c_saves() {
     assert_eq!(cases.len(), 374);
     let mut actual_saves = 0;
     let mut actual_errors = 0;
+    let mut formats = std::collections::BTreeSet::new();
     for case in cases {
         let mut ctx = FileContext::unitypy();
         ctx.serialized_file_parse_typetree = case["parse_trees"].as_bool().unwrap();
@@ -166,6 +224,8 @@ fn replay_unitypy_file_saves_and_corrected_tier_c_saves() {
             &ctx,
         )
         .unwrap();
+        assert!(file.header().version <= 22, "oracle covers B1 formats");
+        formats.insert(file.header().version);
         let name = case["name"].as_str().unwrap();
         let object = file.object(9).unwrap();
         let original = unhex(case["original"].as_str().unwrap());
@@ -241,6 +301,7 @@ fn replay_unitypy_file_saves_and_corrected_tier_c_saves() {
         }
     }
     assert_eq!((actual_saves, actual_errors), (293, 81));
+    assert_eq!(formats, (1..=22).collect());
 }
 
 #[test]

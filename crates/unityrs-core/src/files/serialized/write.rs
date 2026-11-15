@@ -17,10 +17,15 @@ impl SerializedFile {
     ///
     /// Old trees, required pre-v13 trees, and pre-v9's data offset are
     /// corrected under both layouts (Tier C writing). Otherwise `UnityPy`
-    /// matches UnityPy 1.25.2's uncompressed save.
+    /// matches UnityPy 1.25.2's uncompressed save through format 22.
+    /// Formats above 22 refuse before building or charging any output:
+    /// HEAD-tier writes are not implemented.
     pub fn save(&self, options: SaveOptions) -> Result<Bytes, SaveError> {
         let h = &self.header;
         let v = h.version;
+        if v > 22 {
+            return Err(SaveError::HeadTierWritesNotImplemented);
+        }
         let mut meta = Writer::metadata(self.meter(), h.endian, options.layout)?;
         let mut data = Writer::new(self.meter(), h.endian)?;
         if v >= 7 {

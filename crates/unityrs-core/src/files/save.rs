@@ -34,6 +34,9 @@ pub struct SaveOptions {
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SaveError {
+    /// SerializedFile formats above 22 require the HEAD-tier writer.
+    #[error("HEAD-tier writes are not implemented")]
+    HeadTierWritesNotImplemented,
     /// The input's meter refused work, or its meter, budget or allocator
     /// refused storage.
     #[error(transparent)]
