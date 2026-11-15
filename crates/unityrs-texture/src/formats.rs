@@ -127,6 +127,18 @@ mod tests {
     }
 
     #[test]
+    fn all_formats_iterate_in_texture_format_order() {
+        let values: Vec<_> = Formats::DECODED
+            .iter()
+            .map(Format::texture_format)
+            .collect();
+        assert!(
+            values.windows(2).all(|pair| pair[0] < pair[1]),
+            "{values:?}"
+        );
+    }
+
+    #[test]
     fn a_name_is_decoded_known_or_unknown() {
         assert_eq!(Formats::decoded("RGB565"), Ok(Format::Rgb565));
         assert_eq!(Formats::decoded("ETC2_RGBA8"), Ok(Format::Etc2Rgba8));

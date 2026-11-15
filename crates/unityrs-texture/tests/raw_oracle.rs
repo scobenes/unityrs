@@ -260,9 +260,19 @@ fn every_format_is_replayed_by_an_oracle_fixture() {
                 || name.starts_with("ETC")
                 || name.starts_with("EAC")
                 || name.starts_with("ASTC")
-                || format.is_crunched(),
+                || format.is_crunched()
+                || crate_tierb(format),
             "{name}"
         );
     }
-    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 2);
+    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 2 + 22);
+}
+
+fn crate_tierb(format: Format) -> bool {
+    let doc: J = serde_json::from_str(include_str!("fixtures/tierb.json")).unwrap();
+    doc["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["format"].as_i64() == Some(i64::from(format.texture_format())))
 }

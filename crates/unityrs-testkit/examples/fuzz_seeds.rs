@@ -45,6 +45,8 @@ use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_
 
 #[path = "fuzz_seeds/crunch.rs"]
 mod crunch;
+#[path = "fuzz_seeds/tierb.rs"]
+mod tierb;
 #[path = "fuzz_seeds/zip.rs"]
 mod zip;
 
@@ -703,6 +705,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     zip::seeds(&mut s)?;
     texture(&mut s)?;
     astc(&mut s)?;
+    tierb::write(&mut s)?;
     crunch::write(&mut s)?;
     meshdecode(&mut s)?;
     for len in [2, 3, 257, 258, 259, 262, 32768, 65536, 65537, 131_333] {

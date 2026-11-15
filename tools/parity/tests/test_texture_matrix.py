@@ -124,7 +124,13 @@ class ThisParityFile(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(cells[2], references.TIER_B[name])
                 self.assertTrue(cells[3].strip() and cells[3] != "—")
-                self.assertEqual(cells[4], "planned: divergence test against `references.decode`")
+                if name == "BC6H":
+                    self.assertEqual(cells[4], "planned: divergence test against `references.decode`")
+                    self.assertEqual(cells[5], "planned (P3a)")
+                else:
+                    self.assertEqual(cells[4], f"`crates/unityrs-texture/tests/tierb_oracle.rs` {name.lower()}; "
+                                     "`tierb_values.rs` hand-computed values")
+                    self.assertEqual(cells[5], "verified P3 (decoding)")
         self.assertEqual(
             sorted(references.UNSUPPORTED),
             [
@@ -137,7 +143,7 @@ class ThisParityFile(unittest.TestCase):
     def test_p1b_formats_are_the_five_design_names(self):
         p1b = sorted(name for name, row in self.rows.items() if row["status"] == P1B_STATUS)
         self.assertEqual(p1b, P1B)
-        # And the ETC and EAC formats, the rest of Pillow's and the ASTC LDR formats are the thirty-one P3 has verified.
+        # The ETC/EAC, Pillow, ASTC LDR and closed-form decoders, plus ARGBFloat's refusal, are verified P3.
         p3 = sorted(name for name, row in self.rows.items() if "verified P3" in row["status"])
         self.assertEqual(p3, P3)
 

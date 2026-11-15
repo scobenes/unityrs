@@ -111,6 +111,13 @@ _PIXEL_FORMATS = {
 TIER_B = {name: mode for name, (_, _, mode) in _PIXEL_FORMATS.items()}
 TIER_B.update(RGB9e5Float="RGB", YUY2="RGB", BC6H="RGB")
 
+# Tier C raw corrections use the same closed forms, without changing the Tier B inventory.
+TIER_C = {"RGBAHalf": "RGBA", "RGB48": "RGB"}
+_PIXEL_FORMATS.update(
+    RGBAHalf=("<4e", _float_channels, "RGBA"),
+    RGB48=("<3H", _integer_channels(16, False), "RGB"),
+)
+
 # BC6H, unsigned: the Khronos Data Format Specification 1.3, section 20.2. Table 121, by mode number:
 # (transformed endpoints, partition bits, endpoint bits, delta bits of red, green and blue).
 BC6H_MODES = {
@@ -291,7 +298,7 @@ def decode(name: str, data: bytes, width: int, height: int) -> tuple[str, list[t
     """(mode, pixels) for a `width` x `height` texture of the Tier B format `name`, flipped as UnityPy flips."""
     if name in UNSUPPORTED:
         raise NotImplementedError(f"{name}: {UNSUPPORTED[name]}")
-    mode = TIER_B[name]
+    mode = TIER_B.get(name) or TIER_C[name]
     needed = needed_bytes(name, width, height)
     if len(data) < needed:
         raise ValueError(f"not enough image data: {name} {width}x{height} needs {needed} bytes, got {len(data)}")
