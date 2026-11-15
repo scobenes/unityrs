@@ -1,0 +1,10 @@
+# python-lz4 4.4.4 sdist: https://files.pythonhosted.org/packages/c6/5a/945f5086326d569f14c84ac6f7fcc3229f0b9b1e8cc536b951fd53dfb9e1/lz4-4.4.4.tar.gz
+# Its lz4libs/{lz4.c,lz4.h,lz4hc.c,lz4hc.h} match pristine liblz4 v1.9.4/lib byte for byte.
+# LICENSE is v1.9.4/lib/LICENSE (the sdist omits that file).
+# https://github.com/lz4/lz4/tree/v1.9.4/lib
+070fd0627ec4393011251a094e08ed9fdcc78cb4e7ab28f507638eee4e39abda  lz4-4.4.4.tar.gz
+b6a85fd8f9be0fedb568abd1338719b23b999583ccda6f3404d5ae11e4ce7b8e  lz4-1.9.4/lz4.c
+c1614ecf7ada7b0be1acb560d4239595f96fbb7aa6a79a7c40cb358753830be6  lz4-1.9.4/lz4.h
+bca2cf3a014b21919da4fa92db5adbfbfc9aee2f0938107885a3a8f49a750aa8  lz4-1.9.4/lz4hc.c
+6bc1efeb79571807da2ca084809de1760e0cd87064e40eccf9624d95088dce7d  lz4-1.9.4/lz4hc.h
+8b58c446121a109ccf32edc094bba3010a3d85e4ee3702950db55e4d3e87736c  lz4-1.9.4/LICENSE

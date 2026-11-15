@@ -75,7 +75,12 @@ pub(crate) fn path(name: &[u8]) -> Result<&Path, Error> {
 
 /// The parts form one bounded source. A missing zero is skipped; the first
 /// later gap stops the walk, at most 999 parts (`environment.py:91-98`).
-pub(crate) fn read(base: &[u8], limits: &Limits, meter: &Arc<Meter>) -> Result<Bytes, Error> {
+pub(crate) fn read(
+    base: &[u8],
+    root: Option<&Path>,
+    limits: &Limits,
+    meter: &Arc<Meter>,
+) -> Result<Bytes, Error> {
     let mut out = DecodeBuf::new(meter, 0, limits.max_input_bytes, LimitKind::InputBytes)?;
     for i in 0..999 {
         let name = part(base, i, meter)?;
@@ -86,6 +91,13 @@ pub(crate) fn read(base: &[u8], limits: &Limits, meter: &Arc<Meter>) -> Result<B
         match std::fs::metadata(p) {
             Ok(meta) => {
                 super::within_input_bytes((out.len() as u64).saturating_add(meta.len()), limits)?;
+                let confined;
+                let p = if let Some(root) = root {
+                    confined = super::paths::confined_path(p, root)?;
+                    confined.as_path()
+                } else {
+                    p
+                };
                 let mut file = std::fs::File::open(p)?;
                 let mut buf = [0; 8192];
                 loop {
@@ -110,6 +122,7 @@ pub(crate) fn read(base: &[u8], limits: &Limits, meter: &Arc<Meter>) -> Result<B
 
 pub(crate) fn read_source_path(
     p: &Path,
+    root: Option<&Path>,
     limits: &Limits,
     meter: &Arc<Meter>,
 ) -> Result<(Bytes, crate::stream::ReaderKind), Error> {
@@ -117,21 +130,30 @@ pub(crate) fn read_source_path(
     let first = part(name, 0, meter)?;
     if let Some(base) = base(name) {
         Ok((
-            read(base, limits, meter)?,
+            read(base, root, limits, meter)?,
             crate::stream::ReaderKind::Memory,
         ))
     } else if !p.exists() && path(first.as_bytes())?.exists() {
         // These are literal os.path.exists checks, not fs.exists
         // (environment.py:119-125).
         Ok((
-            read(name, limits, meter)?,
+            read(name, root, limits, meter)?,
             crate::stream::ReaderKind::Memory,
         ))
     } else {
         // Once the literal gate succeeds, str paths use fsspec's fs.open
         // (environment.py:136-137), which normalises the physical path.
+        let local = super::paths::local_path(p, meter)?;
+        let physical = local.path()?;
+        let confined;
+        let physical = if let Some(root) = root {
+            confined = super::paths::confined_path(physical, root)?;
+            confined.as_path()
+        } else {
+            physical
+        };
         Ok((
-            super::read_path(super::paths::local_path(p, meter)?.path()?, limits, meter)?,
+            super::read_path(physical, limits, meter)?,
             crate::stream::ReaderKind::Stream,
         ))
     }

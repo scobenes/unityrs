@@ -20,6 +20,8 @@ pub enum Code {
     PublishMismatch = 4,
     CredentialsExpired = 5,
     ArchiveTooLarge = 6,
+    /// Signed bytes acknowledged with a nonstandard store `ETag`; verify size.
+    WrittenBySize = 7,
 }
 impl Code {
     fn decode(n: u8, archive: bool) -> Result<Self, Error> {
@@ -31,6 +33,7 @@ impl Code {
             4 => Ok(Self::PublishMismatch),
             5 => Ok(Self::CredentialsExpired),
             6 if archive => Ok(Self::ArchiveTooLarge),
+            7 => Ok(Self::WrittenBySize),
             _ => Err(Error::internal()),
         }
     }
@@ -38,7 +41,7 @@ impl Code {
     pub const fn status(self) -> &'static str {
         match self {
             Self::NotWritten => "not_written",
-            Self::Written => "written",
+            Self::Written | Self::WrittenBySize => "written",
             Self::Present => "present",
             _ => "failed",
         }
@@ -46,12 +49,16 @@ impl Code {
     #[must_use]
     pub const fn reason(self) -> Option<&'static str> {
         match self {
-            Self::NotWritten | Self::Written | Self::Present => None,
+            Self::NotWritten | Self::Written | Self::WrittenBySize | Self::Present => None,
             Self::PublishFailed => Some("publish_failed"),
             Self::PublishMismatch => Some("publish_mismatch"),
             Self::CredentialsExpired => Some("credentials_expired"),
             Self::ArchiveTooLarge => Some("archive_too_large"),
         }
+    }
+    #[must_use]
+    pub const fn published(self) -> bool {
+        matches!(self, Self::Written | Self::WrittenBySize | Self::Present)
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,7 +87,7 @@ impl Archive {
         md5: [u8; 16],
         etag: Option<&str>,
     ) -> Result<Self, Error> {
-        if !matches!(code, Code::Written | Code::Present) {
+        if !code.published() {
             return Err(Error::internal());
         }
         let mut out = Self {
@@ -90,7 +97,11 @@ impl Archive {
             ..Self::default()
         };
         if let Some(text) = etag {
-            if text.len() > 100 || text.bytes().any(|b| b == b'"' || b == 0) {
+            if text.len() > 100
+                || text
+                    .bytes()
+                    .any(|b| b == 0 || (b == b'"' && code != Code::WrittenBySize))
+            {
                 return Err(Error::internal());
             }
             out.etag
@@ -132,7 +143,7 @@ impl Archive {
 pub fn encode(record: &Archive) -> Result<[u8; 128], Error> {
     let mut bytes = [0; 128];
     *bytes.first_mut().ok_or_else(Error::internal)? = record.code as u8;
-    if matches!(record.code, Code::Written | Code::Present) {
+    if record.code.published() {
         *bytes.get_mut(1).ok_or_else(Error::internal)? = record.etag_length;
         bytes
             .get_mut(2..10)
@@ -183,7 +194,7 @@ pub fn read_archive(file: Option<&dyn Random>, index: u64) -> Result<Archive, Er
         return Ok(Archive::default());
     }
     let code = Code::decode(*bytes.first().ok_or_else(Error::internal)?, true)?;
-    if !matches!(code, Code::Written | Code::Present) {
+    if !code.published() {
         return if code == Code::NotWritten {
             Ok(Archive::default())
         } else {
@@ -339,7 +350,7 @@ impl Outcomes {
             return Err(Error::internal());
         }
         let offset = index.checked_mul(128).ok_or_else(Error::internal)?;
-        if !matches!(value.code, Code::Written | Code::Present) {
+        if !value.code.published() {
             self.archives.write(offset, &[value.code as u8])?;
             return Ok(());
         }

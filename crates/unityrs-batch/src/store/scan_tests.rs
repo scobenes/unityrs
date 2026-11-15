@@ -1,5 +1,48 @@
 use super::*;
 
+#[test]
+fn pagination_consistency_survives_every_chunk_boundary_and_xml_text_form() {
+    for (fields, valid) in [
+        ("<IsTruncated>true</IsTruncated>", false),
+        (
+            "<IsTruncated>false</IsTruncated><NextContinuationToken>x</NextContinuationToken>",
+            false,
+        ),
+        (
+            "<NextContinuationToken>x</NextContinuationToken><IsTruncated>true</IsTruncated>",
+            true,
+        ),
+        (
+            "<IsTruncated> &#x74;ru<!--split-->e </IsTruncated><NextContinuationToken>x</NextContinuationToken>",
+            true,
+        ),
+        ("<IsTruncated><![CDATA[false]]></IsTruncated>", true),
+        (
+            "<IsTruncated>1</IsTruncated><NextContinuationToken>x</NextContinuationToken>",
+            true,
+        ),
+        ("<IsTruncated>0</IsTruncated>", true),
+        ("<IsTruncated>tr ue</IsTruncated>", false),
+        (
+            "<IsTruncated>false</IsTruncated><IsTruncated>true</IsTruncated>",
+            false,
+        ),
+        ("<IsTruncated><x/>true</IsTruncated>", false),
+    ] {
+        let page = format!("<ListBucketResult>{fields}</ListBucketResult>");
+        for size in 1..=page.len() {
+            let mut scan = TagScan::new(1000);
+            let accepted = page
+                .as_bytes()
+                .chunks(size)
+                .try_for_each(|b| scan.feed(b))
+                .is_ok()
+                && scan.pagination_valid();
+            assert_eq!(accepted, valid, "{fields} in chunks of {size}");
+        }
+    }
+}
+
 fn scan(page: &[u8]) -> Result<(), Breach> {
     TagScan::new(1_000).feed(page)
 }

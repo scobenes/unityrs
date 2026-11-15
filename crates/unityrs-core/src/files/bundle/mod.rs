@@ -152,6 +152,10 @@ mod index;
 mod legacy;
 pub(super) mod open;
 mod runs;
+mod write;
+mod write_legacy;
+
+pub use write::{BundlePacker, BundleSaveOptions};
 
 pub use counts::BundleCounts;
 use counts::DecodeCounts;
@@ -241,6 +245,7 @@ pub struct FileSlot {
 
 /// A bundle: header and directory parsed, data decoded on demand.
 pub struct BundleFile {
+    pub(crate) writable: super::cab::WritableCabs,
     pub(super) changed: std::sync::atomic::AtomicBool,
     name: RawStr,
     source: Bytes,
@@ -353,7 +358,8 @@ impl BundleFile {
         &self.directory
     }
 
-    /// UnityPy's `files` dict, in order.
+    /// Loaded `files` dict, in order. Newly created resource writers are in
+    /// [`Self::writeable_cabs`] and follow these entries when saved.
     #[must_use]
     pub fn files(&self) -> &[FileSlot] {
         &self.files

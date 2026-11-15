@@ -69,6 +69,8 @@ pub struct Record {
     /// The transport's failure before a status.
     pub detail: Option<Detail>,
     pub body: Option<BodyFault>,
+    /// A LIST body's flag, retained until its parsed token is checked.
+    pub(crate) list_truncated: Option<bool>,
     pub fault: Option<Fault>,
     /// Requests the try's `object_store` call made.
     pub calls: u8,

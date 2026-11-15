@@ -15,7 +15,12 @@ pub const PREFIXES_MAX: u32 = 1_000;
 pub const AFTER_MAX: u32 = 64;
 /// The deepest nesting.
 pub const DEPTH_MAX: u8 = 8;
-const NAME: usize = 16;
+const NAME: usize = 24;
+#[derive(Clone, Copy, Debug)]
+enum ListRoot {
+    Expected,
+    Other,
+}
 
 /// A page breaks a limit: its try fails as a 2xx the call returns as an
 /// error (`BATCH_SPEC.md` 1.6).
@@ -43,19 +48,21 @@ enum State {
     Broken,
 }
 
-/// The tag scan's state: counters, a quote byte and a 16-byte name buffer.
+/// The tag scan's state: counters, pagination fields and a 24-byte name buffer.
 /// An empty element `<x/>` counts as a start tag and adds no depth; a
 /// quoted attribute value may hold `>`; a text run is the character data
 /// between two tags, CDATA included, which comments, declarations and
 /// processing instructions do not end, as quick-xml merges it.
 #[derive(Clone, Debug)]
 pub struct TagScan {
+    pagination: super::pagination::Pagination,
     state: State,
     max_keys: u32,
     markup: u32,
     run: u32,
     depth: u8,
     starts: u32,
+    list_root: ListRoot,
     contents: u32,
     prefixes: u32,
     after: u32,
@@ -78,12 +85,14 @@ impl TagScan {
     #[must_use]
     pub const fn new(max_keys: u32) -> Self {
         Self {
+            pagination: super::pagination::Pagination::new(),
             state: State::Text,
             max_keys,
             markup: 0,
             run: 0,
             depth: 0,
             starts: 0,
+            list_root: ListRoot::Other,
             contents: 0,
             prefixes: 0,
             after: 0,
@@ -110,6 +119,15 @@ impl TagScan {
         }
         Ok(())
     }
+    pub(crate) const fn list_root(&self) -> bool {
+        matches!(self.list_root, ListRoot::Expected)
+    }
+    pub(crate) fn pagination_valid(&self) -> bool {
+        self.pagination.valid()
+    }
+    pub(crate) const fn truncated(&self) -> Option<bool> {
+        self.pagination.truncated()
+    }
 
     fn byte(&mut self, b: u8) -> Result<(), Breach> {
         if self.state == State::Text {
@@ -118,6 +136,7 @@ impl TagScan {
                 self.markup = 1;
             } else {
                 self.run = grow(self.run)?;
+                self.pagination.text(b, false)?;
             }
             return Ok(());
         }
@@ -160,6 +179,12 @@ impl TagScan {
             State::Cdata => {
                 // A CDATA section's text belongs to the run around it.
                 self.run = grow(self.run)?;
+                if b != b']' && !(b == b'>' && self.tail >= 2) {
+                    if self.tail != 0 && self.pagination.capturing {
+                        return Err(Breach);
+                    }
+                    self.pagination.text(b, true)?;
+                }
                 self.terminator(b, b']');
             }
             State::Declaration => match b {
@@ -277,11 +302,34 @@ impl TagScan {
     /// A start tag (or an empty element) ends.
     fn open(&mut self) -> Result<(), Breach> {
         self.state = State::Text;
+        if self.starts == 0 {
+            self.list_root = if self.named(b"ListBucketResult") {
+                ListRoot::Expected
+            } else {
+                ListRoot::Other
+            };
+        }
         self.starts += 1;
         if self.starts > STARTS_MAX {
             return Err(Breach);
         }
         let empty = self.slash;
+        if self.pagination.capturing {
+            return Err(Breach);
+        }
+        if self.depth == 1 {
+            if self.named(b"IsTruncated") {
+                self.pagination.start()?;
+                if empty {
+                    self.pagination.end()?;
+                }
+            } else if self.named(b"NextContinuationToken") {
+                if self.pagination.token {
+                    return Err(Breach);
+                }
+                self.pagination.token = true;
+            }
+        }
         if !empty {
             self.depth += 1;
             if self.depth > DEPTH_MAX {
@@ -317,6 +365,9 @@ impl TagScan {
         self.state = State::Text;
         if self.depth == 0 {
             return Err(Breach);
+        }
+        if self.depth == 2 && self.pagination.capturing {
+            self.pagination.end()?;
         }
         if self.inside == Some(self.depth) {
             self.inside = None;

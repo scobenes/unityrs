@@ -60,7 +60,7 @@ fn legacy_blob_owner_matches_the_heap_and_exact_memory_boundary() {
     let shared = list.into_shared().unwrap();
     let requested = REQUESTED.with(|r| r.replace(None).unwrap());
     assert_eq!(owner_cost, heap_cost(requested as u64));
-    assert_eq!(owner_cost, 176, "owner requested {requested} bytes");
+    assert_eq!(requested, size_of::<NodeList>() + size_of::<usize>());
     drop(shared);
     assert_eq!(meter.used(), 0);
 

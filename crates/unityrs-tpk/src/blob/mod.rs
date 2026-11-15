@@ -22,7 +22,7 @@ use crate::{TpkError, TpkProvider};
 
 /// A type-tree blob as UnityPy's `TpkTypeTreeBlob(stream)` reads it
 /// (`Tpk.py:232-240`); what it reads and nothing uses (the creation time,
-/// the common strings' version information, a node's type flags, a class's
+/// a node's type flags, a class's
 /// name, base, flags and editor root) is read and not kept.
 pub(crate) struct TypeTreeBlob {
     /// `Versions` (`read_versions`, `:467-469`), each the integer UnityPy
@@ -32,6 +32,8 @@ pub(crate) struct TypeTreeBlob {
     pub(crate) classes: ClassInformation,
     /// `CommonString.StringBufferIndices` (`:421-423`).
     pub(crate) common_indices: MeteredVec<u16>,
+    /// `CommonString.VersionInformation`, retained for the helpers API.
+    pub(crate) common_versions: MeteredVec<(u64, u8)>,
     /// `NodeBuffer` (`:239`).
     pub(crate) nodes: NodeBuffer,
     /// `StringBuffer` (`:240`), each string charged and shared by the rows
@@ -51,13 +53,14 @@ impl TypeTreeBlob {
         let count = s.i32("the version count")?;
         let versions = read_versions(s, count, meter)?;
         let classes = ClassInformation::read(s, meter)?;
-        let common_indices = strings::read_common_string(s, meter)?;
+        let (common_versions, common_indices) = strings::read_common_string(s, meter)?;
         let nodes = NodeBuffer::read(s, meter)?;
         let strings = strings::read_string_buffer(s, meter)?;
         Ok(Self {
             versions,
             classes,
             common_indices,
+            common_versions,
             nodes,
             strings,
         })

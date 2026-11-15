@@ -396,3 +396,27 @@ pub fn credentials(
         .unwrap()
         .into_provider()
 }
+
+/// Scripted IO yields before every read/write for cancellation sweeps.
+pub fn yielding(replies: Vec<Reply>) -> Harness {
+    let mut h = Harness::new([]);
+    let mut script = Script::new(replies);
+    script.yield_io = true;
+    let url = endpoint();
+    let settings = Settings {
+        bucket: "bucket",
+        region: "us-east-1",
+        endpoint: Some(&url),
+        path_style: true,
+    };
+    let connector = Connector::new(script.clone(), client::origin(&settings).unwrap(), SECOND);
+    h.store = client::build(
+        &settings,
+        None,
+        &credentials("AKIDEXAMPLE", "secret", None),
+        &connector,
+    )
+    .unwrap();
+    h.script = script;
+    h
+}

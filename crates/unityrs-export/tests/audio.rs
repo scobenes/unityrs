@@ -309,3 +309,255 @@ fn vorbis_audio_clip_uses_the_callers_runtime_provider() {
     drop(headers);
     assert_eq!(m.used(), 0);
 }
+
+// Only the independent encoder fixture's own setup packet enters this table.
+fn vorbis_fixture() -> (Vec<u8>, Vec<u8>) {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../unityrs-audio/tests/fixtures/vorbis.json"
+    ))
+    .unwrap();
+    let case = &fixture["cases"][1];
+    let setup = hex(case["setup"].as_str().unwrap());
+    let mut table = b"VST1".to_vec();
+    for n in [
+        1u32,
+        u32::try_from(case["crc"].as_u64().unwrap()).unwrap(),
+        u32::try_from(setup.len()).unwrap(),
+    ] {
+        table.extend_from_slice(&n.to_le_bytes());
+    }
+    table.extend(setup);
+    (hex(case["bank"].as_str().unwrap()), table)
+}
+
+#[derive(Default)]
+struct Extracted(std::collections::BTreeMap<Vec<u8>, Vec<u8>>);
+impl unityrs_export::extractor::Sink for Extracted {
+    fn directory(&mut self, _: &[u8]) -> Result<(), unityrs_export::extractor::Error> {
+        Ok(())
+    }
+    fn file(&mut self, path: &[u8], bytes: &[u8]) -> Result<(), unityrs_export::extractor::Error> {
+        self.0.insert(path.to_vec(), bytes.to_vec());
+        Ok(())
+    }
+}
+
+#[test]
+#[cfg(feature = "vorbis")]
+fn extractor_vorbis_opt_in_writes_decoder_wav_and_none_records_failure_then_continues() {
+    use unityrs_export::extractor::{self, Options};
+
+    let (bank, table) = vorbis_fixture();
+    let (env, _) = load(st(
+        "AudioClip",
+        vec![
+            ("m_Name", s("clip")),
+            ("m_AudioData", V::Bytes(bank.clone())),
+        ],
+    ));
+    env.load(Source::Bytes {
+        name: RawStr::from("text.assets"),
+        data: Bytes::from(
+            file(
+                Layout::Unity2022,
+                &[],
+                &[Object::new(
+                    2,
+                    49,
+                    st(
+                        "TextAsset",
+                        vec![("m_Name", s("after")), ("m_Script", s("continued"))],
+                    ),
+                )],
+            )
+            .unwrap(),
+        ),
+    })
+    .unwrap();
+    let m = Meter::unlimited();
+    let headers = unityrs_export::VorbisHeaders::from_bytes(&table, &m).unwrap();
+    let plan = unityrs_audio::plan(&bank, true, &m).unwrap();
+    let decoded = unityrs_audio::decode_with_vorbis(&plan, b"clip", Some(&headers), &m).unwrap();
+    for vorbis in [None, Some(&headers)] {
+        let mut files = Extracted::default();
+        let report = extractor::extract_assets(
+            &env,
+            &Options {
+                use_container: false,
+                vorbis,
+                ..Options::default()
+            },
+            &mut files,
+            &m,
+        )
+        .unwrap();
+        assert_eq!(files.0[b"after.txt".as_slice()], b"continued");
+        if vorbis.is_some() {
+            assert!(report.failures.is_empty());
+            assert_eq!(report.written.len(), 2);
+            assert_eq!(
+                files.0[b"clip.wav".as_slice()],
+                decoded.as_slice()[0].bytes.as_slice()
+            );
+        } else {
+            assert_eq!(report.written.len(), 1);
+            assert_eq!(report.failures.len(), 1);
+            assert_eq!(report.failures.as_slice()[0].object.path_id(), 1);
+            assert!(matches!(
+                report.failures.as_slice()[0].error,
+                extractor::Error::Audio(unityrs_export::audio::Error::Audio(
+                    unityrs_audio::Error::VorbisHeadersRequired
+                ))
+            ));
+            assert!(!files.0.contains_key(b"clip.wav".as_slice()));
+        }
+    }
+    drop((decoded, plan, headers));
+    assert_eq!(m.used(), 0);
+}
+
+#[test]
+#[cfg(not(feature = "vorbis"))]
+fn extractor_without_vorbis_feature_keeps_supplied_table_a_typed_failure() {
+    use unityrs_export::extractor::{self, Options};
+
+    let (bank, table) = vorbis_fixture();
+    let (env, _) = load(st(
+        "AudioClip",
+        vec![("m_Name", s("clip")), ("m_AudioData", V::Bytes(bank))],
+    ));
+    let m = Meter::unlimited();
+    let headers = unityrs_export::VorbisHeaders::from_bytes(&table, &m).unwrap();
+    let mut files = Extracted::default();
+    let report = extractor::extract_assets(
+        &env,
+        &Options {
+            use_container: false,
+            vorbis: Some(&headers),
+            ..Options::default()
+        },
+        &mut files,
+        &m,
+    )
+    .unwrap();
+    assert!(files.0.is_empty());
+    assert!(report.written.is_empty());
+    assert_eq!(report.failures.len(), 1);
+    assert!(matches!(
+        report.failures.as_slice()[0].error,
+        extractor::Error::Audio(unityrs_export::audio::Error::Audio(
+            unityrs_audio::Error::Unsupported { codec: 15 }
+        ))
+    ));
+    drop((report, headers));
+    assert_eq!(m.used(), 0);
+}
+
+#[test]
+#[cfg(feature = "vorbis")]
+fn gameobject_crawl_forwards_vorbis_but_keeps_unitypy_export_options() {
+    use unityrs_export::extractor::{self, AssetFilter, Options};
+    use unityrs_testkit::ngui::pptr;
+
+    struct GameObjectsOnly;
+    impl AssetFilter for GameObjectsOnly {
+        fn accepts(&self, obj: &unityrs_core::ObjectRef, _: Option<&unityrs_core::Parsed>) -> bool {
+            obj.class_id() == 1
+        }
+    }
+
+    let (bank, table) = vorbis_fixture();
+    let clip = st(
+        "AudioClip",
+        vec![
+            ("m_Name", s("clip")),
+            ("m_AudioData", V::Bytes(bank.clone())),
+        ],
+    );
+    let input = file(
+        Layout::Unity2022,
+        &[],
+        &[
+            Object::new(
+                1,
+                1,
+                st(
+                    "GameObject",
+                    vec![
+                        ("m_Name", s("root")),
+                        (
+                            "m_Component",
+                            vector(
+                                pptr("AudioSource", (0, 0)),
+                                vec![pptr("AudioSource", (0, 2))],
+                            ),
+                        ),
+                    ],
+                ),
+            ),
+            Object::new(
+                2,
+                82,
+                st(
+                    "AudioSource",
+                    vec![
+                        ("m_GameObject", pptr("GameObject", (0, 1))),
+                        ("m_audioClip", pptr("AudioClip", (0, 3))),
+                    ],
+                ),
+            ),
+            Object::new(3, 83, clip),
+        ],
+    )
+    .unwrap();
+    let env = Environment::new(EnvOptions::unitypy());
+    env.load(Source::Bytes {
+        name: RawStr::from("scene.assets"),
+        data: Bytes::from(input),
+    })
+    .unwrap();
+    let m = Meter::unlimited();
+    let headers = unityrs_export::VorbisHeaders::from_bytes(&table, &m).unwrap();
+    let plan = unityrs_audio::plan(&bank, true, &m).unwrap();
+    let decoded = unityrs_audio::decode_with_vorbis(&plan, b"clip", Some(&headers), &m).unwrap();
+    for vorbis in [None, Some(&headers)] {
+        let mut files = Extracted::default();
+        let report = extractor::extract_assets(
+            &env,
+            &Options {
+                use_container: false,
+                export_unknown_as_typetree: true,
+                asset_filter: Some(&GameObjectsOnly),
+                vorbis,
+                ..Options::default()
+            },
+            &mut files,
+            &m,
+        )
+        .unwrap();
+        if vorbis.is_some() {
+            assert!(report.failures.is_empty(), "{:?}", report.failures);
+            // Crawl exports ignore the outer filter, skip unknown AudioSource,
+            // and always append the referenced object's path id.
+            assert_eq!(report.written.len(), 1);
+            assert_eq!(files.0.len(), 1);
+            assert_eq!(
+                files.0[b"root/clip_3.wav".as_slice()],
+                decoded.as_slice()[0].bytes.as_slice()
+            );
+        } else {
+            assert!(files.0.is_empty());
+            assert!(report.written.is_empty());
+            assert_eq!(report.failures.len(), 1);
+            assert_eq!(report.failures.as_slice()[0].object.path_id(), 3);
+            assert!(matches!(
+                report.failures.as_slice()[0].error,
+                extractor::Error::Audio(unityrs_export::audio::Error::Audio(
+                    unityrs_audio::Error::VorbisHeadersRequired
+                ))
+            ));
+        }
+    }
+    drop((decoded, plan, headers));
+    assert_eq!(m.used(), 0);
+}

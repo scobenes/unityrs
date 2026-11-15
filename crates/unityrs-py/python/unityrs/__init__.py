@@ -2,14 +2,16 @@
 """UnityPy-compatible file and dict reading through the Rust core.
 
 Core operations release the GIL. Budget callbacks never enter Python: Budget
-holds Rust atomic counters. Budgets bound retained Rust memory and conversion
-staging. The caller's existing Python input buffers and returned Python values
-remain owned by Python and are outside this budget. ``fork()`` is safe only when no core
+holds Rust atomic counters. Budgets bound retained Rust memory, conversion
+staging and object reconstruction through handoff. The caller's existing Python
+input buffers and returned Python values remain owned by Python and are outside
+this budget. ``fork()`` is safe only when no core
 call is in flight in another thread. Use multiprocessing's spawn or forkserver,
 or fork before reading. No child-side lock reset is installed.
 
-Object mode, generated classes, helper classes and exports belong to later
-binding releases. This scaffold has no UnityPy or Pillow runtime dependency.
+Mutable helpers, enums, versions and loader config accompany dict and object mode.
+ObjectReader and unityrs.classes provide runtime classes generated from an external
+TPK (or the installed UnityPy resource). No Pillow dependency.
 """
 
 import ntpath
@@ -21,6 +23,8 @@ import weakref
 from functools import wraps
 
 from ._native import Budget, Limits, LimitError, TypeTreeError, NativeEnvironment
+from . import config, enums
+from .helpers import _tpk
 from .files import BundleFile, EndianBinaryReader, EndianBinaryReader_Stream, File, ObjectReader, SerializedFile, WebFile
 
 __version__ = "0.0.1"
@@ -49,7 +53,7 @@ class Environment:
     def __init__(self, *args, path=None, limits=None, budget=None):
         self._lock = threading.RLock()
         self._limits = limits if limits is not None else Limits()
-        self._native = NativeEnvironment(limits, budget)
+        self._native = NativeEnvironment(limits, budget, _tpk.provider())
         self.path = os.getcwd() if path is None else os.fspath(path)
         self.files = {}
         self.cabs = {}
@@ -65,7 +69,7 @@ class Environment:
                     self.path = ntpath.dirname(source) or "."
                 elif os.path.isdir(source):
                     self.path = source
-                self._native.load_path(source, True, False)
+                config._load(self._native, self._native.load_path, source, True, False)
                 self._sync()
             else:
                 self.load_file(source)
@@ -126,7 +130,7 @@ class Environment:
                 self._cab_synced[key] = identity
 
     @_locked
-    def load_file(self, file, parent=None, name=None, is_dependency=False):
+    def load_file(self, file, parent=None, name=None, is_dependency=False, *, _root=None):
         # environment.py:100-160. Paths keep their original key even when
         # their physical lookup is relative to Environment.path.
         parent = parent or self
@@ -141,7 +145,7 @@ class Environment:
             if match:
                 key = re.sub(r"\.split\d+.*$", "", key)
                 self._keys[match.group(1)] = key
-            native = self._native.load_path(physical, False, is_dependency)
+            native = config._load(self._native, self._native.load_path, physical, False, is_dependency, _root)
             self._sync()
             if native is None:
                 return None
@@ -162,7 +166,7 @@ class Environment:
                 if not isinstance(file, (bytes, bytearray, memoryview)):
                     raise TypeError("Unsupported file source")
                 data = file
-            native = self._native.load_bytes(bytes(data), native_key.encode("utf-8", "surrogateescape"), is_dependency, stream)
+            native = config._load(self._native, self._native.load_bytes, bytes(data), native_key.encode("utf-8", "surrogateescape"), is_dependency, stream)
             self._sync()
             if native is None:
                 return None
@@ -237,16 +241,16 @@ class Environment:
                 if base in seen:
                     continue
                 seen.add(base)
-            self._native.load_files(name)
+            config._load(self._native, self._native.load_files, name)
             self._sync()
 
     @_locked
     def load_zip_file(self, value):
         if isinstance(value, (str, os.PathLike)):
-            self._native.load_zip_path(os.fspath(value))
+            config._load(self._native, self._native.load_zip_path, os.fspath(value))
         else:
             data = self._read_stream(value) if hasattr(value, "read") else value
-            self._native.load_zip_bytes(bytes(data))
+            config._load(self._native, self._native.load_zip_bytes, bytes(data))
         self._sync()
 
     def load_assets(self, assets, open_f):
@@ -271,36 +275,56 @@ class Environment:
                 with open(name, "rb") as stream:
                     self.files[ntpath.basename(name)] = self.load_file(stream, name=name)
 
+    @_locked
     def find_file(self, name, is_dependency=True):
         found = self.get_cab(name)
         if found is not None:
             return found
+        root = os.path.realpath(self.path)
+        def inside(path):
+            resolved = os.path.realpath(path)
+            try:
+                if os.path.commonpath((root, resolved)) == root:
+                    return resolved
+            except ValueError:
+                # Different Windows drives have no common path.
+                return None
+            # realpath can retain the supplied casing on case-insensitive
+            # filesystems. Use ancestor identities rather than lowercasing:
+            # differently cased siblings remain distinct on other filesystems.
+            ancestor = resolved
+            while True:
+                try:
+                    if os.path.samefile(root, ancestor):
+                        return resolved
+                except OSError:
+                    pass
+                parent = os.path.dirname(ancestor)
+                if parent == ancestor:
+                    return None
+                ancestor = parent
         direct = os.path.join(self.path, name)
-        if os.path.isfile(direct):
-            return self.load_file(direct, is_dependency=is_dependency)
+        if inside(direct) is not None and os.path.isfile(direct):
+            return self.load_file(direct, is_dependency=is_dependency, _root=root)
         if not hasattr(self, "local_files"):
-            self.local_files = []
-            def walk(path):
-                entries = list(os.scandir(path))
-                for entry in entries:
-                    if not entry.is_dir(follow_symlinks=False):
-                        self.local_files.append(os.path.abspath(entry.path))
-                for entry in entries:
-                    if entry.is_dir(follow_symlinks=False):
-                        walk(entry.path)
-            walk(self.path)
+            from ._search import files
+            self.local_files = files(self.path)
         for path in self.local_files:
             if path == name or path.endswith(name):
-                return self.load_file(path, is_dependency=is_dependency)
+                candidate = inside(path)
+                if candidate is not None:
+                    return self.load_file(path, is_dependency=is_dependency, _root=root)
         for path in self.local_files:
             simple = os.path.join(os.path.dirname(path), ntpath.basename(path).lower())
             if simple.endswith(name):
-                return self.load_file(simple, is_dependency=is_dependency)
+                candidate = inside(simple)
+                if candidate is not None:
+                    return self.load_file(simple, is_dependency=is_dependency, _root=root)
         raise FileNotFoundError(f"File {name} not found in {self.path}")
 
     @_locked
     def load_folder(self, path):
-        self._native.load_folder(os.fspath(path))
+        config._load(self._native, self._native.load_folder, os.fspath(path))
         self._sync()
 
     def get(self, key, default=None):

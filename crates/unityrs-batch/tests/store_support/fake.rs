@@ -38,6 +38,9 @@ pub enum Operation {
     Complete,
     Abort,
 }
+fn list_identity(prefix: &str, token: Option<&str>) -> String {
+    format!("{}:{prefix}:{}", prefix.len(), token.unwrap_or_default())
+}
 
 /// Composable, per-operation/per-key/per-try faults. Body delays occur after
 /// the head or the selected body offset; read faults act on request DATA.
@@ -57,6 +60,16 @@ pub struct Fault {
     pub commit_delay: Option<Duration>,
     pub etag: Option<String>,
     pub upload_id: Option<String>,
+    pub list_page_size: Option<usize>,
+    pub list_reverse: bool,
+    pub list_token: Option<String>,
+    pub list_pagination: Option<ListPagination>,
+}
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum ListPagination {
+    TruncatedWithoutToken,
+    TokenOnFinalPage,
+    NilTokenOnTruncatedPage,
 }
 impl Fault {
     pub fn error(status: u16, code: &str) -> Self {
@@ -253,6 +266,15 @@ impl Fake {
             .unwrap()
             .faults
             .insert((operation, key.into(), try_ordinal), fault);
+    }
+    /// Independent retry ordinals for each (prefix, continuation token) page.
+    pub fn schedule_list(&self, prefix: &str, token: Option<&str>, ordinal: u32, fault: Fault) {
+        self.schedule(
+            Operation::List,
+            &list_identity(prefix, token),
+            ordinal,
+            fault,
+        );
     }
     pub fn logs(&self) -> Vec<Log> {
         self.state.lock().unwrap().logs.clone()
@@ -538,15 +560,23 @@ fn begin(
     connection: u64,
     accepted: Instant,
 ) -> (Fault, usize) {
+    let identity = if input.operation == Operation::List {
+        list_identity(
+            input.query.get("prefix").map_or("", String::as_str),
+            input.query.get("continuation-token").map(String::as_str),
+        )
+    } else {
+        input.key.clone()
+    };
     let ordinal = state
         .ordinals
-        .entry((input.operation, input.key.clone()))
+        .entry((input.operation, identity.clone()))
         .or_default();
     *ordinal += 1;
     let ordinal = *ordinal;
     let fault = state
         .faults
-        .remove(&(input.operation, input.key.clone(), ordinal))
+        .remove(&(input.operation, identity, ordinal))
         .unwrap_or_default();
     let index = state.logs.len();
     state.logs.push(Log {
@@ -613,7 +643,11 @@ async fn read_body(
 }
 
 fn ordinary_answer(state: &mut State, input: &fake_ops::Input, fault: &Fault) -> Answer {
-    let mut answer = fake_ops::apply(state, input);
+    let mut answer = if input.operation == Operation::List {
+        fake_ops::list(state, input, fault)
+    } else {
+        fake_ops::apply(state, input)
+    };
     if let Some(id) = &fault.upload_id {
         let old = format!("upload-{}", state.upload_sequence);
         if input.operation == Operation::Create {

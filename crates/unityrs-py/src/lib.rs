@@ -8,22 +8,36 @@
 )]
 
 use pyo3::prelude::*;
+mod class_tpk;
+mod construction;
 mod environment;
 mod errors;
 mod files;
 mod object;
+mod object_nodes;
 mod python;
+#[cfg(test)]
+mod row_copy_test;
 mod settings;
+mod tpk;
+mod traversal;
+mod tree;
 mod value;
 mod worker;
 
 #[pymodule(name = "_native")]
 fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(class_tpk::class_tpk_lz4, m)?)?;
     m.add_class::<environment::NativeEnvironment>()?;
     m.add_class::<files::NativeFile>()?;
     m.add_class::<object::NativeObject>()?;
     m.add_class::<settings::Budget>()?;
     m.add_class::<settings::Limits>()?;
+    m.add_class::<tpk::NativeTpk>()?;
+    m.add_class::<traversal::TreeTraversal>()?;
+    #[cfg(test)]
+    m.add_class::<row_copy_test::RowCopyBarrier>()?;
+    m.add_function(wrap_pyfunction!(tpk::mit_common_strings, m)?)?;
     m.add(
         "_class_ids",
         m.py().detach(|| {

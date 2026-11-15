@@ -19,7 +19,12 @@ fn reply() -> Reply {
 
 #[test]
 fn single_put_sets_type_compares_etag_and_keeps_one_request_per_try() {
-    let mut h = Harness::new([Reply::error(503, "SlowDown"), reply()]);
+    // The store returns our MD5 digest (of "abc") in upper case: a hex
+    // digest compares case-insensitively, where an opaque tag compares exactly.
+    let mut h = Harness::new([
+        Reply::error(503, "SlowDown"),
+        Reply::status(200, "ETag: \"900150983CD24FB0D6963F7D28E17F72\"\r\n", b""),
+    ]);
     h.policy.attempts = 2;
     let account = Account::new(32 << 20);
     let payload = put::Payload::read(&account, 3, &mut &b"png"[..]).unwrap();
@@ -35,13 +40,16 @@ fn single_put_sets_type_compares_etag_and_keeps_one_request_per_try() {
             &Path::parse("out/a.png").unwrap(),
             payload,
             "image/png",
-            b"abc",
+            b"900150983cd24fb0d6963f7d28e17f72",
         )
         .await
     })
     .unwrap();
     assert!(!result.verify_by_size);
-    assert_eq!(result.etag.as_bytes(), b"\"ABC\"");
+    assert_eq!(
+        result.etag.as_bytes(),
+        b"\"900150983CD24FB0D6963F7D28E17F72\""
+    );
     assert_eq!(h.script.seen.count(), 2);
     assert_eq!(h.unsettled(), 1);
     assert_eq!(

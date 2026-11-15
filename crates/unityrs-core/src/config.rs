@@ -8,6 +8,47 @@ use crate::limits::{ChargeError, Meter, MeteredVec};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
+
+/// Binding settings captured before entering a load. Existing files retain
+/// their parsed versions and tree flags when a subsequent load updates these.
+#[derive(Debug)]
+pub struct RuntimeConfig {
+    values: RwLock<(Option<RawStr>, bool)>,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self::unitypy()
+    }
+}
+
+impl RuntimeConfig {
+    /// Initial UnityPy configuration.
+    #[must_use]
+    pub fn unitypy() -> Self {
+        Self {
+            values: RwLock::new((None, true)),
+        }
+    }
+
+    /// Replace both settings atomically before a binding's next load.
+    pub fn set(&self, fallback: Option<RawStr>, parse_typetree: bool) {
+        *self
+            .values
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (fallback, parse_typetree);
+    }
+
+    /// Snapshot the fallback and post-read typetree flag.
+    #[must_use]
+    pub fn snapshot(&self) -> (Option<RawStr>, bool) {
+        self.values
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
 
 /// UnityPy's warning category and message, borrowed without allocating.
 #[derive(Debug)]
@@ -96,6 +137,20 @@ impl FallbackWarnings {
 pub trait FallbackWarningSink: Send + Sync + fmt::Debug {
     /// Emit the configured fallback's warning, respecting the sink's filter.
     fn warn(&self, value: &RawStr) -> Result<(), ChargeError>;
+
+    /// Python rereads its mutable setting after the warning handler returns.
+    /// Native emitters preserve the original value; bindings may return the
+    /// value a reentrant warning handler installed instead.
+    fn warn_value(&self, value: &RawStr) -> Result<RawStr, ChargeError> {
+        self.warn(value)?;
+        Ok(value.clone())
+    }
+
+    /// Bindings keep separate warning registries for BundleFile and
+    /// SerializedFile, where UnityPy resolves their fallback versions.
+    fn warn_value_at(&self, value: &RawStr, _bundle: bool) -> Result<RawStr, ChargeError> {
+        self.warn_value(value)
+    }
 }
 
 /// One `once` registry shared across files and call sites. The callback runs
@@ -150,6 +205,7 @@ pub fn get_fallback_version<'a>(
 }
 
 const _: () = {
+    crate::send_sync::<RuntimeConfig>();
     crate::send_sync::<UnityVersionFallbackWarning<'static>>();
     crate::send_sync::<UnityVersionFallbackError>();
     crate::send_sync::<FallbackWarnings>();

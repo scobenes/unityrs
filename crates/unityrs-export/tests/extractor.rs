@@ -77,6 +77,7 @@ fn extractor_tree_replays_the_l9_oracle() {
             append_path_id: o["append_path_id"].as_bool().unwrap_or(false),
             export_unknown_as_typetree: o["export_unknown_as_typetree"].as_bool().unwrap_or(false),
             asset_filter: (!filter.0.is_empty()).then_some(&filter as &dyn AssetFilter),
+            ..Options::default()
         };
         let mut files = Files::default();
         let report = extractor::extract_assets(&env, &options, &mut files, &m)

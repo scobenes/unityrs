@@ -33,6 +33,9 @@ pub struct Options<'a> {
     pub append_path_id: bool,
     pub export_unknown_as_typetree: bool,
     pub asset_filter: Option<&'a dyn AssetFilter>,
+    /// The caller's runtime setup-header table. `None` keeps Vorbis samples
+    /// a typed failure. Batch never sets this option or calls the extractor.
+    pub vorbis: Option<&'a unityrs_audio::VorbisHeaders>,
 }
 impl Default for Options<'_> {
     fn default() -> Self {
@@ -42,6 +45,7 @@ impl Default for Options<'_> {
             append_path_id: false,
             export_unknown_as_typetree: false,
             asset_filter: None,
+            vorbis: None,
         }
     }
 }
@@ -327,7 +331,7 @@ fn one(
     };
     match obj.class_id() {
         1 => {
-            crawl::export(env, obj, stem, sink, meter, report)?;
+            crawl::export(env, obj, stem, options, sink, meter, report)?;
             return Ok(());
         }
         28 | 213 => {
@@ -354,7 +358,7 @@ fn one(
             return Ok(());
         }
         83 => {
-            let samples = audio::export(obj, env, true, meter)?;
+            let samples = audio::export_with_vorbis(obj, env, true, options.vorbis, meter)?;
             if samples.len() == 1 {
                 if let Some(sample) = samples.as_slice().first() {
                     write(

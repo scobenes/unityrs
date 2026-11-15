@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 use unityrs_core::File;
 
-#[pyclass(frozen, module = "unityrs._native")]
+#[pyclass(frozen, weakref, module = "unityrs._native")]
 pub(crate) struct NativeFile {
     pub(crate) inner: File,
 }
@@ -16,6 +16,17 @@ impl NativeFile {
 }
 #[pymethods]
 impl NativeFile {
+    fn tree_traversal(&self) -> PyResult<crate::traversal::TreeTraversal> {
+        let File::Serialized(file) = &self.inner else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "not a serialized file",
+            ));
+        };
+        Ok(crate::traversal::TreeTraversal::on(
+            file.meter(),
+            file.context().limits.max_tree_depth,
+        ))
+    }
     #[getter]
     fn identity(&self, py: Python<'_>) -> usize {
         py.detach(|| match &self.inner {
@@ -54,6 +65,14 @@ impl NativeFile {
             if let File::Serialized(f) = &self.inner {
                 p::field(
                     &d,
+                    "resolved_version",
+                    &match f.version() {
+                        Some(v) => p::string(v.version.raw().as_bytes())?,
+                        None => p::none(),
+                    },
+                )?;
+                p::field(
+                    &d,
                     "unity_version",
                     &match f.unity_version() {
                         Some(s) => p::string(s.as_bytes())?,
@@ -88,6 +107,24 @@ impl NativeFile {
                 p::field(&d, "version", &p::uint(h.format.into())?)?;
             }
             Ok(d)
+        })
+    }
+    fn externals(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        py.detach(|| {
+            let mut charge = unityrs_core::limits::Charge::zero(self.inner.meter());
+            charge.grow(64).map_err(errors::charge)?;
+            let out = p::list()?;
+            if let File::Serialized(file) = &self.inner {
+                for external in file.externals() {
+                    charge
+                        .grow(512 + (external.path.as_bytes().len() as u64).saturating_mul(8))
+                        .map_err(errors::charge)?;
+                    let row = p::dict()?;
+                    p::field(&row, "path", &p::string(external.path.as_bytes())?)?;
+                    p::push(&out, &row)?;
+                }
+            }
+            Ok(out)
         })
     }
     fn entries(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {

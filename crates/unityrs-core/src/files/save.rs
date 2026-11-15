@@ -34,9 +34,27 @@ pub struct SaveOptions {
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SaveError {
-    /// SerializedFile formats above 22 require the HEAD-tier writer.
+    /// A writable CAB key already names a loaded reader.
+    #[error("this CAB already exists and is not a writer")]
+    CabExists,
+    /// Serialized formats above 26 and bundle formats above 9 are outside
+    /// the pinned HEAD writer's supported formats.
     #[error("HEAD-tier writes are not implemented")]
     HeadTierWritesNotImplemented,
+    /// A file kind or layout whose writer is outside this implementation.
+    #[error("save is not implemented for {0}")]
+    Unsupported(&'static str),
+    /// A codec without a UnityPy compression function.
+    #[error("compression is not implemented for {0:?}")]
+    UnsupportedCodec(crate::codec::Codec),
+    /// The encoder refused the input or could not finish its stream.
+    #[error("{codec:?} compression failed: {detail}")]
+    Compress {
+        /// The selected compression algorithm.
+        codec: crate::codec::Codec,
+        /// A fixed diagnostic (no unmetered error allocation).
+        detail: &'static str,
+    },
     /// The input's meter refused work, or its meter, budget or allocator
     /// refused storage.
     #[error(transparent)]
