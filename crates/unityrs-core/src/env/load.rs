@@ -21,7 +21,7 @@ use crate::raw::RawStr;
 /// it), or a dependency's (slots that reopen it), registered one at a time
 /// or staged, every one charged before any is published (the registry's
 /// module docs, "A failed dependency load").
-enum Target<'a> {
+pub(super) enum Target<'a> {
     Caller,
     Dependency(&'a Arc<Dependency>),
     Staged(&'a Arc<Dependency>, &'a mut Stage),
@@ -145,7 +145,7 @@ impl Environment {
     /// `files` entry takes ([`Self::list`]).
     ///
     /// [`registry`]: super::registry
-    fn register_file(
+    pub(super) fn register_file(
         &self,
         name: &RawStr,
         file: &File,

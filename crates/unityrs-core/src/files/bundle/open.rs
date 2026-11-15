@@ -17,7 +17,7 @@ use crate::codec::unitycn::UnityCnDecryptor;
 use crate::counters::Origin;
 use crate::detect::raw_by_name;
 use crate::error::{Error, Unsupported};
-use crate::files::{File, Parent};
+use crate::files::Parent;
 use crate::limits::{Charge, Meter, MeteredVec, heap_cost};
 use crate::once::ResultCell;
 use crate::options::FileContext;
@@ -444,10 +444,13 @@ fn legacy_layout(data: &Bytes, kind: ReaderKind) -> Result<bool, Error> {
     Ok(r.read_u32()? != 6)
 }
 
-fn entry_cells(n: usize, meter: &Arc<Meter>) -> Result<MeteredVec<ResultCell<File, Error>>, Error> {
+fn entry_cells(
+    n: usize,
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<super::super::teardown::FileCell>, Error> {
     let mut cells = MeteredVec::new(meter);
     for _ in 0..n {
-        cells.push(ResultCell::new())?;
+        cells.push(super::super::teardown::FileCell::new())?;
     }
     Ok(cells)
 }
