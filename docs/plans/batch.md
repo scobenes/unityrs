@@ -689,7 +689,7 @@ no unmeasured per-input table is introduced after extraction.
 **Publish**, in phase 7.
 - **Resume** (E43). With `resume` set, the object store's LIST of the output prefix (keys in ascending UTF-8 byte order) is merged with the winners file, one LIST page in memory at a time, beside the scheduler (Transfers, below). The merge never waits on the scheduler or on a hashing pass: it keeps the `ETag` and size listed for each of the spec's archives (`C_base`, 5.3), and the scheduler takes a winner or an archive only once the merge has passed its key (W19). A winner whose key is listed with its expected ETag (its MD5; a file's over 16 MiB: the multipart ETag its record carries, 2.8; an archive's: its multipart ETag at 16 MiB parts, `BATCH_SPEC.md` section 8) is `present` and not PUT. An archive's expected ETag, or in a directory its MD5, needs its bytes: resume computes it in a first pass over the archive's stream, without uploading, when the scheduler takes that archive. That pass and a directory destination's hash (E43) are **hashing passes**, each reading the stop flag before each buffer and returning when it is set, as 2.5's local copy does: each holds a `download_concurrency` permit and its buffers' `heap_cost` (an archive's: its stream's buffers, below) reserved from the phase budget, each waited for as a transfer's is (below); so at most `download_concurrency` central directories are live at once. A hashing pass returns its result to the controller and ends, returning both. The scheduler goes on to later keys meanwhile, and takes the transfer of a key whose pass found no match ahead of any later key once a permit and its reservation are free (Transfers, below). A listed location not above the one before it is skipped when its size is 0: `Path::parse` lists a folder marker `k/` as `k` (`src/path/mod.rs`), which no output can be, since none is empty. Any other LIST page out of order, or a LIST that fails, degrades to "PUT everything" with the warning `resume_list_failed`. In a directory, each winner's destination is checked as E43 says.
 - **A LIST** goes through `PaginatedListStore::list_paginated` with `max_keys` 1000, the prefix as given, and each call first reserves 40 MiB from the phase budget, waited for as a transfer's is (below), and holds it until the merge drops the page: `object_store` reads a page's body whole and parses it with `quick_xml::de::from_reader` (`src/aws/client.rs`), whose `overlapped-lists` feature keeps, with no limit, every event it skips while it fills a list (quick-xml 0.41's `src/de/mod.rs`). A page of 1,000 keys of at most 1,024 bytes, each byte escaped to at most 6, with its other fields, is under 7 MiB of body, the connector's cap for it, and the connector's scan bounds what else a page holds (below). At those bounds, each growing `realloc` counted at its peak (2.7), a page's parse holds: its body, under 14 MiB, since `collect_bytes` grows a chunked body by doubling (`src/util.rs`) and the `Bytes` keeps that capacity; its owned copies, under 16.5 MiB, each tag's bytes, name, text run or kept string at most twice the body bytes it copies (a merged run's doubling, an empty element's name in its start and its end), in at most 4 x 16,064 + 3,002 allocations of at most 32 bytes' `heap_cost` overhead each; its skipped events, under 4 MiB, 98,304 slots of 40 bytes at the queue's last doubling; and its structs and reader buffers, under 1 MiB. That is under 36 MiB, so 40 MiB is reserved. Collecting the body peaks lower, under 23 MiB at its last doubling, and the body is freed when `from_reader` returns, before the keys become `Path`s. A reservation refused with nothing running, or a page whose continuation token is over 1 KiB, fails that LIST, by the reason the LIST has (`resume_list_failed`, `verify_list_failed`).
-- **Transfers.** A transfer reserves its buffer from the phase budget once, at its start: `heap_cost(size)` for a single-part PUT (files up to 16 MiB), or one 16 MiB part for a multipart upload, whose parts go one at a time. It holds that reservation until it ends. A multipart transfer reserves its part-ID vector at its part count when it starts (`C_net`, 5.3), and drops its part buffer before `complete_multipart`, so the reservation covers the part list's copies and the request's XML that `object_store` builds (about 3 MB at 10,000 parts, `src/client/s3.rs`). The scheduler takes winners in key order, then archives in key order, and, under resume once it has checked the merge's position, starts a transfer when a `download_concurrency` permit is free and its reservation is granted; otherwise it waits for a running transfer, hashing pass or LIST to end. Nothing waits for a permit or a reservation while it holds one: the scheduler takes the two together or neither, and a LIST reserves only once the merge has dropped the page before. A transfer's or hashing pass's reservation refused with none running is a run failure `internal`: each is at most 16 MiB plus an archive's stream buffers, below `I`. An archive over 10,000 parts (156.25 GiB) is `failed` (`archive_too_large`) without an upload: phase 6's member list gives its size.
+- **Transfers.** A transfer reserves its buffer from the phase budget once, at its start: `heap_cost(size)` for a single-part PUT (files up to 16 MiB), or the larger of `heap_cost(16 MiB)` and the derived completion bound below for a multipart upload, whose parts go one at a time. It holds that reservation until it ends. A multipart transfer reserves its part-ID vector at its part count when it starts (`C_net`, 5.3), and drops its part buffer before `complete_multipart`, then charges the completion bound before copying IDs or asking `object_store` to build XML (`src/client/s3.rs`); escaped ETags and overlapping serialization buffers are included (allocation inventory below). The scheduler takes winners in key order, then archives in key order, and, under resume once it has checked the merge's position, starts a transfer when a `download_concurrency` permit is free and its reservation is granted; otherwise it waits for a running transfer, hashing pass or LIST to end. Nothing waits for a permit or a reservation while it holds one: the scheduler takes the two together or neither, and a LIST reserves only once the merge has dropped the page before. A transfer's or hashing pass's reservation refused with none running is a run failure `internal`: the payload/completion envelope is below 40 MiB, plus an archive's stream buffers, below `I`. An archive over 10,000 parts (156.25 GiB) is `failed` (`archive_too_large`) without an upload: phase 6's member list gives its size.
 - **Outcomes.** Phase 7 starts by claiming, as any file is (2.8), and zero-writing from the controller's 64 KiB zero buffer (5.3) the spool files `winners/outcomes` (one byte per winner, at its index in the winners file) and `winners/archive_outcomes` (one 128-byte record per archive; at most 256, `BATCH_SPEC.md` 1.1) (`BATCH_SPEC.md` 6.1, which lists the codes and reads a missing or short file as 0, `not_written`, past its end). An outcome `pwrite` error stops the run: `spool_full` on `ENOSPC` or `EDQUOT`, otherwise `host_io`. The controller writes `present` at a winner's or an archive's index with `pwrite`, for either sink, in the poll in which it learns that resume found the bytes: from the merge, for a winner in an object store, else from a hashing pass's result. A transfer writes `written` or one of the `failed` codes (with an archive's size, MD5 and ETag) with `pwrite`, in the same poll in which its last response arrives, so every outcome the controller saw is in the files when it hands over; a directory transfer writes its own, under the commit lock (below). A byte left 0 is `not_written`, a transfer a stop left in flight among them. Each index has one writer, and every write happens before the hand-over, so the finisher never reads a record in the middle of its write. The zero-writes stay on the controller for simplicity, not because the finisher needs them: `BATCH_SPEC.md` 6.1 reads a missing or short file as 0, `not_written`. Nothing else holds per-key state.
 - **Verification** (object store). After the last transfer the controller LISTs the output prefix again and merges it with the winners file and the archives, as resume does. Every key marked `written` or `present` must be listed with the ETag this attempt expects, or its outcome becomes `mismatch` (status `failed`, reason `publish_mismatch`). A key whose ETag is not an MD5 (`etag_not_md5`) is compared by size, and the head counts it in `verified_by_size`, a weaker guarantee (`BATCH_SPEC.md` 7.2). A LIST that fails or comes out of order changes no outcome, and the head says `verified: false` with the warning `verify_list_failed`; one a stop interrupts says `verified: false`, with no warning. Every try of this attempt's PUT of a key carries the same bytes, so only another writer can cause a mismatch: an earlier attempt's late request, or a writer outside the run. What verification and the caller's duties guarantee together is `BATCH_SPEC.md` 7.2.
 - **The directory sink** holds the root's lock (`BATCH_SPEC.md` 7.2) for the process's life, writes each file as a temp file named `.unityrs-tmp-<run_id>-<n>` beside its destination (`<n>` a fixed `0` for the head and each row file, a winner's index in the winners file, and the winners' count plus an archive's index), opens paths beneath the root and within its mount (E62), and runs `syncfs` after the row files and before the final head (2.11), on the root lock's descriptor, held since preflight: one opened later would miss a writeback error another process's `syncfs` already saw. Each transfer starts its file's writeback with `sync_file_range(SYNC_FILE_RANGE_WRITE)` after its write, and after every 64 MiB of a streamed archive, so that `syncfs` waits mostly on I/O already under way. Preflight refuses it on a Linux kernel older than 5.8, read from `uname`'s release (`kernel_too_old`), whose `syncfs` reports no writeback error. It refuses a root that folds letter case or Unicode normalization (`sink_root_unusable`, detail `case_insensitive` or `normalization_insensitive`), by `BATCH_SPEC.md` 7.2's probe of two pairs of names in the root and in the run's own metadata directory, made after the head's fence and removed before the `running` head: keys are compared as bytes, and folding them would make a run's outputs depend on its sink. A directory below the root with a case folding of its own is unsupported, unprobed. A transfer's last step is its **commit**, made under the sink's **commit lock**: read the stop flag, and when it is clear rename the temp file over its destination and `pwrite` the outcome. At its hand-over the controller takes the commit lock, then sends the one-shot to the finisher (2.11), and keeps the lock, parked. So every rename has its outcome in the files the finisher reads, or never happens: the directory sink's commit boundary. The exception is an outcome `pwrite` that fails after its rename: the run stops (`spool_full` or `host_io`, above), and the key reads `not_written` though it is present, which `BATCH_SPEC.md` 7.4's "`not_written` for every other" covers. No key segment may start with `.unityrs-tmp-` (`BATCH_SPEC.md` 2.3), so a leftover temp file is never taken for an output, and the caller may delete it (E62).
@@ -701,6 +701,72 @@ no unmeasured per-input table is introduced after extraction.
   - **`unsettled_tries`** (`BATCH_SPEC.md` 7.3), on which the caller's no-wait rule rests, is an atomic each try that `BATCH_SPEC.md` 7.3 counts (the finisher's row-file tries among them) increments at its start and decrements when 1.6's table settles it, so a try a stop froze stays counted; the final head reads it.
   - **The clients.** `MultipartStore::create_multipart` takes no options (`src/aws/mod.rs`), so a multipart upload's Content-Type is its client's default. The controller has one store client per multipart Content-Type, `image/png`, `application/json` and `application/zip`, each built at preflight with `with_default_content_type`; single PUTs set theirs per request. They share one connector.
   - Each multipart upload id is appended to the journal after its create and before its first part, and removed only after a successful complete or abort (E64; `BATCH_SPEC.md` 6.1). When the append fails, a run failure (`host_io` or `spool_full`, 2.7), the transfer aborts the upload once by its id, which is not a committing try (2.11), and ends. Only the controller's transfers use multipart: the finisher writes single PUTs (2.11).
+
+**Object-store library operations (B11b).** `store::{put,multipart,head,rows}`
+keep B11a's per-try classification and permit custody, with a required live
+request deadline around lookup waits, backoff and each operation. `head::Fence`
+retains the last admitted precondition and write history outside cancellation;
+read-backs do not replace that history (spec 7.4's first two rows). Startup
+abort recovery is a streamed, serial library operation, within every positive
+`download_concurrency`; the controller and finisher dispatch remain separate
+integration work. Journal append acknowledges only after data and directory
+sync, including a retry after an earlier append failed while creating its file.
+
+Allocation inventory: payload vectors and part-ID copies reserve fallibly;
+part IDs use a dedicated 2 MiB account per transfer slot, already in `C_net`
+(5.3), alongside the connection permit's existing 4 MiB. Completion releases
+the payload and charges its derived phase bound over ID copies and the
+client's XML construction. For `n <= 10,000` and `E = 100` bytes per part ID
+(the existing caps in 2.9; spec 1.6 and section 8), let
+`B = 51 + n * (5E + 51 + 5 + 72)`. Partial XML text escaping expands at most
+fivefold (`&amp;`); 51 bytes wrap the root, and each part has 51 markup bytes,
+at most five part-number digits and up to 72 optional checksum markup bytes
+if an ID parses as the dependency's metadata. This conservatively also covers
+unquoted IDs accepted by the existing length check. At the caps,
+`B = 6,280,051` bytes; quoted ETags containing 98 ampersands alone produce
+5,468,945 bytes of XML.
+
+`quick-xml` 0.41.0 buffers a struct's children in a growing string before
+copying them into the output string. Children have capacity below `2B`;
+output growth can overlap its old block below `B` and new block below `2B`.
+The completion charge is therefore
+`2 * heap_cost(2B) + heap_cost(B) + heap_cost(24n) + heap_cost(80n)
++ n * (heap_cost(E) + 3 * heap_cost(2E)) + 64 KiB` on 64-bit targets.
+The tables cover copied `PartId`s and `object_store` 0.14.2's `MultipartPart`s;
+the strings cover the input and three possible decoded metadata fields,
+including their doubling capacities and individual allocation rounding.
+64 KiB covers the one-part serializer and bounded metadata parser scratch.
+At 10,000 parts the charge is **39,878,144 bytes (38.03 MiB)**, below the
+40 MiB phase working set, so the caps need no reduction. Admission uses the
+larger payload/completion bound from the start; completion charges its bound
+before body construction. The separate 2 MiB original part table and 4 MiB
+request allowance remain in `C_net`. Any failure after create, including a
+completion reservation refusal or an invalid part/completion state, attempts
+abort within the existing request deadline; acknowledged abort retires the
+journal entry, and failed abort retains it for recovery.
+
+The counted allocation gate uses maximum key, upload-ID and signing sizes
+with 10,000 quoted 100-byte ETags containing 98 ampersands, and asserts the
+measured peak is within the completion charge itself. Native aarch64 measured
+27,141,344 bytes and Linux aarch64 27,141,104 bytes (the previous 16 MiB
+completion charge was insufficient).
+
+`Bytes::from_owner`'s small sharing allocation and
+`object_store::Attributes`' Content-Type map use the dependencies' allocation
+APIs inside the existing request allowance, as do B11a's signing and request
+builders; these APIs do not expose allocation failure. Spec 9.1's infallible
+allocation failure rule applies. Conditional precondition strings use fallible
+reservation on every try, with no engine-side `String::clone`. Row chunking
+moves its charged buffer to the destination, then allocates a replacement only
+once that request releases it, keeping the 24 MiB finisher working set.
+
+The standalone third-party conformance job runs a checksum-pinned Apache-2.0
+server through the testkit child lifecycle. Its temporary IAM fixture supplies
+valid synthetic session credentials. Conditional writes, multipart ETags,
+paginated UTF-8 key ordering, folder markers, session signatures and both
+addressing modes are exercised independently of the in-process fake. Owner
+providers remain ignored, environment-driven probes; enablement stays gated.
+
 
 **Publication and outcomes ledger (B7b).** The completed handoff stays live
 while the two outcomes files are zero-written. Publication adds no payload
@@ -1639,7 +1705,7 @@ allocation failure. With no active work, a valid envelope that cannot be
 admitted is `internal`; allocator refusals on pool threads are audited as
 `host_memory`. Frozen phase work and finisher storage still respect 5.1.
 
-The per-drive publication/row assembly envelope is
+The directory publication/row assembly envelope is
 `2 MiB + heap_cost(16 MiB) = 18,878,464` bytes. One MiB is charged fixed overhead
 for transient paths and adapters; less than another MiB covers the simultaneous
 charged cursor, parser and row buffers. Publication allocates one fallible, charged 16 MiB buffer per concurrent drive,
