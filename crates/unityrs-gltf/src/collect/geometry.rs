@@ -4,6 +4,7 @@ use crate::{Accessor, Attribute, Data, Kind, Mesh, Primitive};
 use unityrs_meshdecode::VertexArray;
 pub(super) struct Geometry {
     pub source: unityrs_mesh::Mesh,
+    pub padded_rows: u64,
     pub attributes: MeteredVec<(Attribute, usize)>,
     pub targets: MeteredVec<[Option<usize>; 3]>,
     pub indices: MeteredVec<Option<usize>>,
@@ -30,11 +31,11 @@ fn attribute(
     a: &VertexArray,
     kind: Kind,
     count: usize,
-    normalise: bool,
     meter: &Arc<Meter>,
 ) -> Result<usize> {
     let width = kind.width();
-    if a.dimension() < width || a.is_empty() {
+    let padded = matches!(kind, Kind::Joints | Kind::Weights) && matches!(a.dimension(), 1 | 2);
+    if (a.dimension() < width && !padded) || a.is_empty() {
         return Err(invalid("vertex attribute width/count"));
     }
     if a.len() != count {
@@ -50,10 +51,13 @@ fn attribute(
     }
     for row in 0..a.len() {
         for col in 0..width {
-            let mut v = a
-                .component(row, col)
-                .ok_or_else(|| invalid("partial vertex row"))?
-                .as_f64();
+            let mut v = if padded && col >= a.dimension() {
+                0.
+            } else {
+                a.component(row, col)
+                    .ok_or_else(|| invalid("partial vertex row"))?
+                    .as_f64()
+            };
             if kind == Kind::Joints {
                 if !v.is_finite() || v < 0. || v > f64::from(u16::MAX) || v.fract() != 0. {
                     return Err(invalid("joint index"));
@@ -68,13 +72,6 @@ fn attribute(
                 }
                 if col == 1 && kind == Kind::TexCoord {
                     v = 1. - v;
-                }
-                // Compressed attributes can be finite f64 values outside f32's
-                // range. Check the emitted UV value before the writer sees it.
-                #[allow(clippy::cast_possible_truncation)]
-                let invalid_uv = kind == Kind::TexCoord && !(v as f32).is_finite();
-                if normalise && (invalid_uv || (kind == Kind::Color && !(0. ..=1.).contains(&v))) {
-                    return Err(invalid("invalid vertex attribute"));
                 }
                 floats.push(v)?;
             }
@@ -115,42 +112,66 @@ pub(super) fn build(
             continue;
         }
         if let Some(a) = a {
-            attrs.push((
-                semantic,
-                attribute(scene, a, kind, count, normalise, meter)?,
-            ))?;
+            attrs.push((semantic, attribute(scene, a, kind, count, meter)?))?;
         }
     }
     // glTF demands contiguous UV sets. Missing sets before a present one are
-    // explicit zero UVs, tagged through unity_uv_set on the mesh metadata.
+    // explicit zero UVs. Track them so a repair uses only real surviving sets.
     let last = (0..8).rfind(|&i| p.uv(i).is_some());
     for i in 0..last.map_or(0, |i| i + 1) {
         let id = if let Some(a) = p.uv(i) {
-            attribute(scene, a, Kind::TexCoord, count, normalise, meter)?
+            attribute(scene, a, Kind::TexCoord, count, meter)?
         } else {
             meter.count_decode(count as u64 * 16)?;
             let mut v = MeteredVec::with_capacity(meter, count * 2)?;
             for _ in 0..count {
                 v.extend_from_slice(&[0., 0.])?;
             }
-            accessor(scene, Kind::TexCoord, count, Data::Float(v), None)?
+            let id = accessor(scene, Kind::TexCoord, count, Data::Float(v), None)?;
+            scene.collected_uv_fillers.push(id)?;
+            id
         };
         attrs.push((
             Attribute::TexCoord(u8::try_from(i).map_err(|_| invalid("UV set"))?),
             id,
         ))?;
     }
+    if p.bone_weights().is_some_and(|w| {
+        matches!(w.dimension(), 1 | 2)
+            && p.bone_indices()
+                .is_none_or(|j| j.dimension() != w.dimension())
+    }) {
+        return Err(invalid("skin attribute width mismatch"));
+    }
+    let padded_rows = match p.bone_indices() {
+        Some(joints) if matches!(joints.dimension(), 1 | 2) => {
+            if p.bone_weights()
+                .is_some_and(|w| w.dimension() != joints.dimension())
+                || (joints.dimension() == 2 && p.bone_weights().is_none())
+            {
+                return Err(invalid("skin attribute width mismatch"));
+            }
+            count as u64
+        }
+        _ => 0,
+    };
     for (semantic, kind, a) in [
         (Attribute::Color, Kind::Color, p.colors()),
         (Attribute::Joints, Kind::Joints, p.bone_indices()),
         (Attribute::Weights, Kind::Weights, p.bone_weights()),
     ] {
         if let Some(a) = a {
-            attrs.push((
-                semantic,
-                attribute(scene, a, kind, count, normalise, meter)?,
-            ))?;
+            attrs.push((semantic, attribute(scene, a, kind, count, meter)?))?;
         }
+    }
+    if p.bone_indices().is_some_and(|a| a.dimension() == 1) && p.bone_weights().is_none() {
+        meter.count_decode(count as u64 * 4)?;
+        let mut weights = MeteredVec::with_capacity(meter, count * 4)?;
+        for _ in 0..count {
+            weights.extend_from_slice(&[1., 0., 0., 0.])?;
+        }
+        let id = accessor(scene, Kind::Weights, count, Data::Float(weights), None)?;
+        attrs.push((Attribute::Weights, id))?;
     }
     let targets = super::morph::build(
         scene,
@@ -209,6 +230,7 @@ pub(super) fn build(
     let inverse_bind = super::skin::inverse_bind(scene, &source, meter)?;
     Ok(Geometry {
         source,
+        padded_rows,
         inverse_bind,
         attributes: attrs,
         targets,

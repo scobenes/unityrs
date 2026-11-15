@@ -1,7 +1,13 @@
 """Checks independent of the Rust writer, with deliberately broken payloads."""
+import contextlib
+import io
+import json
 import struct
+import sys
 import unittest
+from unittest.mock import patch
 from tools.parity import gltf_check as g
+from tools.parity import scratch
 
 
 def fixture(normals=True, reversed_winding=False):
@@ -23,7 +29,122 @@ def fixture(normals=True, reversed_winding=False):
     return doc, data
 
 
+def repeated_triangles(agree, disagree):
+    doc, data = fixture()
+    ids = [2, 1, 0] * agree + [0, 1, 2] * disagree
+    doc['accessors'][2]['count'] = len(ids)
+    doc['bufferViews'][2]['byteLength'] = len(ids) * 2
+    return doc, data[:72] + struct.pack('<' + 'H' * len(ids), *ids)
+
+
+def attribute_fixture(attributes):
+    """Pack literal output rows; expectations never come from the checker."""
+    doc = {'bufferViews': [], 'accessors': []}
+    binary = b''
+    ids = {}
+    for semantic, rows in attributes.items():
+        width = len(rows[0])
+        code = 'H' if semantic == 'JOINTS_0' else 'f'
+        binary += bytes(-len(binary) % 4)
+        data = struct.pack('<' + code * (len(rows) * width),
+                           *(v for row in rows for v in row))
+        ids[semantic] = len(doc['accessors'])
+        doc['bufferViews'].append({'byteOffset': len(binary), 'byteLength': len(data)})
+        doc['accessors'].append({'bufferView': len(doc['bufferViews']) - 1,
+                                 'componentType': 5123 if code == 'H' else 5126,
+                                 'type': 'VEC' + str(width), 'count': len(rows)})
+        binary += data
+    doc['meshes'] = [{'primitives': [{'attributes': ids}]}]
+    return doc, binary
+
+
 class Checks(unittest.TestCase):
+    def check_attributes(self, source, output, normalise=True):
+        return g.check_accessors(*attribute_fixture(output),
+                                 [{'mesh': 0, 'primitive': 0, 'attributes': source,
+                                   'complete_texcoords': True}],
+                                 normalise=normalise)
+
+    def test_partial_uv_expectations_leave_unspecified_sets_unexamined(self):
+        output = {'TEXCOORD_0': [[.5, .75]], 'TEXCOORD_1': [[.25, .5]]}
+        for semantic, source in (('TEXCOORD_0', [[.5, .25]]),
+                                  ('TEXCOORD_1', [[.25, .5]])):
+            self.assertEqual(g.check_accessors(
+                *attribute_fixture(output),
+                [{'mesh': 0, 'primitive': 0, 'attributes': {semantic: source}}]), 1)
+        # Repair needs the whole source UV family, even with the default
+        # comparison settings. A bad set left in the output must fail.
+        expected = [{'mesh': 0, 'primitive': 0, 'attributes': {
+            'TEXCOORD_0': [[float('nan'), .25]]}}]
+        with self.assertRaises(AssertionError):
+            g.check_accessors(*attribute_fixture({'TEXCOORD_0': [[float('nan'), .75]]}),
+                              expected)
+
+    def test_colors_clamp_before_f32_rounding_including_custom_colors(self):
+        for semantic in ('COLOR_0', '_COLOR_0'):
+            source = {semantic: [[-2., .5, 1e300, 2.]]}
+            self.assertEqual(self.check_attributes(source, {semantic: [[0., .5, 1., 1.]]}), 1)
+            with self.assertRaises(AssertionError):
+                self.check_attributes(source, {semantic: [[-2., .5, float('inf'), 2.]]})
+            self.assertEqual(self.check_attributes(
+                source, {semantic: [[-2., .5, float('inf'), 2.]]}, normalise=False), 1)
+
+    def test_nonfinite_colors_are_omitted_only_in_normalised_mode(self):
+        for semantic in ('COLOR_0', '_COLOR_0'):
+            for value in (float('nan'), float('inf'), -float('inf')):
+                source = {semantic: [[value, 0., 0., 1.]]}
+                self.assertEqual(self.check_attributes(source, {}), 1)
+                with self.assertRaises(AssertionError):
+                    self.check_attributes(source, source)
+                self.assertEqual(self.check_attributes(source, source, normalise=False), 1)
+
+    def test_invalid_uv_sets_are_dropped_and_survivors_compacted(self):
+        for invalid in (float('nan'), float('inf'), 1e300):
+            source = {'TEXCOORD_0': [[invalid, .25]],
+                      'TEXCOORD_2': [[.25, .5]], 'TEXCOORD_7': [[.5, .75]]}
+            output = {'TEXCOORD_0': [[.25, .5]], 'TEXCOORD_1': [[.5, .25]]}
+            self.assertEqual(self.check_attributes(source, output), 1)
+            with self.assertRaises(AssertionError):
+                self.check_attributes(source, {'TEXCOORD_2': [[.25, .5]],
+                                               'TEXCOORD_7': [[.5, .25]]})
+            with self.assertRaises(AssertionError):
+                self.check_attributes(source, dict(output, TEXCOORD_2=[[0., 0.]]))
+            self.assertEqual(self.check_attributes({'TEXCOORD_0': [[invalid, .25]]}, {}), 1)
+
+    def test_uv_gaps_are_zero_filled_without_an_invalid_set_even_in_raw_mode(self):
+        source = {'TEXCOORD_2': [[.5, .25]]}
+        output = {'TEXCOORD_0': [[0., 0.]], 'TEXCOORD_1': [[0., 0.]],
+                  'TEXCOORD_2': [[.5, .75]]}
+        for normalise in (True, False):
+            self.assertEqual(self.check_attributes(source, output, normalise), 1)
+            with self.assertRaises(AssertionError):
+                self.check_attributes(source, {'TEXCOORD_0': [[.5, .75]]}, normalise)
+        raw = {'TEXCOORD_0': [[float('inf'), .75]], 'TEXCOORD_1': [[0., 0.]],
+               'TEXCOORD_2': [[.5, .75]]}
+        self.assertEqual(self.check_attributes(dict(source, TEXCOORD_0=[[1e300, .25]]),
+                                              raw, normalise=False), 1)
+
+    def test_short_skin_rows_are_padded_before_weight_and_joint_repairs(self):
+        source = {'JOINTS_0': [[3, 4], [5, 6]], 'WEIGHTS_0': [[2., 2.], [-1., 0.]]}
+        output = {'JOINTS_0': [[3, 4, 0, 0], [0, 0, 0, 0]],
+                  'WEIGHTS_0': [[.5, .5, 0., 0.], [1., 0., 0., 0.]]}
+        self.assertEqual(self.check_attributes(source, output), 1)
+        raw = {'JOINTS_0': [[3, 4, 0, 0], [5, 6, 0, 0]],
+               'WEIGHTS_0': [[2., 2., 0., 0.], [-1., 0., 0., 0.]]}
+        self.assertEqual(self.check_attributes(source, raw, normalise=False), 1)
+        for normalise, actual in ((True, output), (False, raw)):
+            broken = dict(actual, JOINTS_0=[[3, 4, 1, 0], actual['JOINTS_0'][1]])
+            with self.assertRaises(AssertionError):
+                self.check_attributes(source, broken, normalise)
+        for normalise in (True, False):
+            self.assertEqual(self.check_attributes(
+                {'JOINTS_0': [[3]]}, {'JOINTS_0': [[3, 0, 0, 0]],
+                                      'WEIGHTS_0': [[1., 0., 0., 0.]]}, normalise), 1)
+            with self.assertRaises(AssertionError):
+                self.check_attributes({'JOINTS_0': [[3]]},
+                                      {'JOINTS_0': [[3, 0, 0, 0]],
+                                       'WEIGHTS_0': [[0., 0., 0., 0.]]}, normalise)
+
     def test_orientation_pass(self):
         self.assertEqual(g.orientation(*fixture())[0]['status'],'pass')
 
@@ -38,6 +159,68 @@ class Checks(unittest.TestCase):
         doc, data = fixture()
         data = bytes(36) + data[36:]
         self.assertEqual(g.orientation(doc,data)[0]['status'],'N/A')
+
+    def test_empty_primitive_with_normals_is_na(self):
+        doc, data = fixture()
+        for item in doc['accessors']:
+            item['count'] = 0
+        self.assertEqual(g.orientation(doc, data), [dict(
+            mesh=0, primitive=0, eligible=0, agree=0,
+            agreement_fraction=None, status='N/A')])
+
+    def test_reporting_keeps_multiple_failures_and_na(self):
+        doc, data = fixture(reversed_winding=True)
+        bad = doc['meshes'][0]['primitives'][0]
+        doc['meshes'] = [{'primitives': [bad, bad]},
+                         {'primitives': [{'attributes': {'POSITION': 0}}]}]
+        self.assertEqual(g.orientation(doc, data, strict=False), [
+            dict(mesh=0, primitive=0, eligible=1, agree=0,
+                 agreement_fraction=0., status='fail'),
+            dict(mesh=0, primitive=1, eligible=1, agree=0,
+                 agreement_fraction=0., status='fail'),
+            dict(mesh=1, primitive=0, eligible=0, agree=0,
+                 agreement_fraction=None, status='N/A')])
+
+    def test_orientation_threshold_includes_exactly_ninety_nine_percent(self):
+        result = g.orientation(*repeated_triangles(99, 1))[0]
+        self.assertEqual((result['status'], result['agreement_fraction']), ('pass', .99))
+        with self.assertRaises(AssertionError):
+            g.orientation(*repeated_triangles(98, 2))
+        result = g.orientation(*repeated_triangles(98, 2), strict=False)[0]
+        self.assertEqual((result['status'], result['agreement_fraction']), ('fail', .98))
+
+    def test_area_threshold_and_nonpositive_dot_do_not_count_as_agreement(self):
+        doc, data = fixture()
+        # Bounds diagonal squared rounds to 1; f32 rounding puts this area
+        # just below the 1e-12 cutoff, and the next case just above it.
+        tiny = struct.pack('<9f', 0., 0., 0., 1., 0., 0., 0., 2e-12, 0.)
+        self.assertEqual(g.orientation(doc, tiny + data[36:])[0]['status'], 'N/A')
+        tiny = struct.pack('<9f', 0., 0., 0., 1., 0., 0., 0., 2.001e-12, 0.)
+        self.assertEqual(g.orientation(doc, tiny + data[36:], strict=False)[0]['eligible'], 1)
+        orthogonal = data[:36] + struct.pack('<9f', *([1., 0., 0.] * 3)) + data[72:]
+        result = g.orientation(doc, orthogonal, strict=False)[0]
+        self.assertEqual((result['eligible'], result['agreement_fraction'], result['status']),
+                         (1, 0., 'fail'))
+
+    def test_reporting_cli_counts_failures_without_disabling_default_gate(self):
+        doc, data = fixture(reversed_winding=True)
+        doc['meshes'][0]['primitives'] *= 2
+        doc['meshes'][0]['primitives'].append({'attributes': {'POSITION': 0}})
+        encoded = json.dumps(doc).encode()
+        encoded += b' ' * (-len(encoded) % 4)
+        data += bytes(-len(data) % 4)
+        payload = (struct.pack('<I4s', len(encoded), b'JSON') + encoded
+                   + struct.pack('<I4s', len(data), b'BIN\0') + data)
+        path = scratch.for_case(self).joinpath('orientation.glb')
+        path.write_bytes(b'glTF' + struct.pack('<II', 2, 12 + len(payload)) + payload)
+        out = io.StringIO()
+        with patch.object(sys, 'argv', ['gltf_check.py', str(path), '--report']), contextlib.redirect_stdout(out):
+            g.main()
+        report = json.loads(out.getvalue())
+        self.assertEqual(report['orientation_summary'], {'pass': 0, 'fail': 2, 'not_applicable': 1})
+        self.assertEqual(len(report['orientation']), 3)
+        with patch.object(sys, 'argv', ['gltf_check.py', str(path)]), self.assertRaises(AssertionError):
+            g.main()
 
     def test_accessor_values(self):
         doc, data = fixture()
