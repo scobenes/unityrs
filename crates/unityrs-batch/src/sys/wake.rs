@@ -42,6 +42,19 @@ impl RegisteredWake {
         guard.clear_ready();
         Ok(())
     }
+    /// [`Self::wait`] for a hand-written poll: `Ready` once per readiness,
+    /// after the drain and clear. Poll again until `Pending`, which leaves
+    /// `cx`'s waker registered for the next notify.
+    pub fn poll_wait(&self, cx: &mut std::task::Context<'_>) -> std::task::Poll<io::Result<()>> {
+        let mut guard = match self.0.poll_read_ready(cx) {
+            std::task::Poll::Ready(Ok(guard)) => guard,
+            std::task::Poll::Ready(Err(e)) => return std::task::Poll::Ready(Err(e)),
+            std::task::Poll::Pending => return std::task::Poll::Pending,
+        };
+        let drained = self.0.get_ref().0.drain();
+        guard.clear_ready();
+        std::task::Poll::Ready(drained)
+    }
 }
 /// Nonblocking wake descriptor. Linux uses `eventfd`; the portable test host
 /// uses a nonblocking socket pair with the same coalescing wake semantics.

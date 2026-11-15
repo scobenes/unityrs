@@ -12,7 +12,7 @@ use super::Environment;
 use super::held::{self, Held};
 use super::watch::{Table, Under};
 use crate::error::Error;
-use crate::files::{BundleFile, File, SerializedFile};
+use crate::files::{File, SerializedFile};
 use crate::limits::{Charge, HASH_TABLE_SHARES, Meter};
 use crate::object::ObjectRef;
 use crate::pystr::py_lower;
@@ -24,7 +24,7 @@ use crate::raw::RawStr;
 pub struct Objects<'a> {
     env: &'a Environment,
     after: Option<u64>,
-    bundles: Vec<(Arc<BundleFile>, usize)>,
+    bundles: Vec<(File, usize)>,
     current: Option<(Arc<SerializedFile>, usize)>,
 }
 
@@ -36,8 +36,8 @@ impl Objects<'_> {
     fn enter(&mut self, file: File) {
         match file {
             File::Serialized(sf) => self.current = Some((sf, 0)),
-            File::Bundle(b) => self.bundles.push((b, 0)),
-            File::Raw(_) | File::Web(_) => {}
+            f @ (File::Bundle(_) | File::Web(_)) => self.bundles.push((f, 0)),
+            File::Raw(_) => {}
         }
     }
 }
@@ -58,13 +58,13 @@ impl Iterator for Objects<'_> {
                 self.current = None;
             }
             if let Some((b, j)) = self.bundles.last_mut() {
-                let Some(dir_index) = b.files().get(*j).map(|s| s.dir_index) else {
+                let Some(dir_index) = b.container_files().get(*j).map(|s| s.dir_index) else {
                     self.bundles.pop();
                     continue;
                 };
                 *j += 1;
                 let b = b.clone();
-                match b.entry(dir_index) {
+                match b.container_entry(dir_index) {
                     Ok(f) => self.enter(f),
                     Err(e) => return Some(Err(e)),
                 }

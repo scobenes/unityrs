@@ -1,4 +1,5 @@
-//! Bounded one-request HTTP/1.1 transport. URL execution remains refused.
+//! Bounded one-request HTTP/1.1 transport. A library run given a network
+//! stages URLs through it; `start::supported` and the CLI still refuse them.
 //! Redirects, retries, body timers and spool writes belong to staging.
 mod addresses;
 mod classify;
@@ -10,7 +11,6 @@ pub mod request;
 pub mod resolve;
 mod response;
 pub mod shared;
-pub mod socket;
 mod tls;
 
 #[cfg(test)]
@@ -33,8 +33,10 @@ pub struct Service {
     connector: connect::Connector,
 }
 impl Service {
-    /// Startup only; its fixed allocations are in `C_base`.
-    pub fn new(pool: Handle, table: Arc<dyn socket::SocketTable>) -> Result<Self, Error> {
+    /// Startup only; its fixed allocations are in `C_base`. `table` is the
+    /// process's socket table (`sys::reset`), whose exit reset reaches every
+    /// socket this service connects; each request uses its permit's entry.
+    pub fn new(pool: Handle, table: Arc<crate::sys::reset::SocketTable>) -> Result<Self, Error> {
         Ok(Self {
             connector: connect::Connector {
                 pool,
@@ -90,6 +92,10 @@ impl Service {
         let mut envelope = permit
             .charge(LIBRARY_ENVELOPE - resolve::LOOKUP_ENVELOPE)
             .ok_or(Error::Memory)?;
+        // The driver's storage before any socket: once one connects, no
+        // fallible step of the engine's can drop (reset) it. A failing
+        // stage keeps it open to its run's end (`stage/slot.rs`).
+        let storage = crate::alloc::try_box_uninit().map_err(|_| Error::Memory)?;
         let io = self
             .connector
             .connect(permit, url, timeout, token, &mut envelope)
@@ -97,7 +103,7 @@ impl Service {
         if let Some(connected) = connected {
             connected.store(true, std::sync::atomic::Ordering::Release);
         }
-        response::exchange_charged(io, envelope, request).await
+        response::exchange_charged(io, envelope, request, storage).await
     }
     /// Only the test build can replace DNS or add trust anchors. This consumes
     /// the service before it can be shared; no live configuration is mutated.

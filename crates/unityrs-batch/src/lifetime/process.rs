@@ -10,14 +10,16 @@ use crate::{
 /// host retains it until _exit; installation never borrows a stack pointer.
 pub struct Process {
     pub state: State,
-    pub sockets: SocketTable,
+    /// Shared with the HTTP services that create its sockets; a reset
+    /// borrows it, never touching the count.
+    pub sockets: std::sync::Arc<SocketTable>,
     pub pipe: Pipe,
 }
 impl Process {
     pub fn prepare() -> std::io::Result<Self> {
         Ok(Self {
             state: State::new(),
-            sockets: SocketTable::new(),
+            sockets: std::sync::Arc::new(SocketTable::new()),
             pipe: Pipe::new()?,
         })
     }

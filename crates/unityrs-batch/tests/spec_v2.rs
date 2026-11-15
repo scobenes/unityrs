@@ -46,7 +46,13 @@ fn formats_name_any_decoded_format_in_any_order() {
             "DXT1Crunched",
             "DXT5Crunched",
             "ETC_RGB4Crunched",
-            "ETC2_RGBA8Crunched"
+            "ETC2_RGBA8Crunched",
+            "PVRTC_RGB2",
+            "PVRTC_RGBA2",
+            "PVRTC_RGB4",
+            "PVRTC_RGBA4",
+            "ATC_RGB4",
+            "ATC_RGBA8"
         ]);
     }))
     .spec;
@@ -59,7 +65,13 @@ fn formats_name_any_decoded_format_in_any_order() {
         .with(Format::Dxt1Crunched)
         .with(Format::Dxt5Crunched)
         .with(Format::EtcRgb4Crunched)
-        .with(Format::Etc2Rgba8Crunched);
+        .with(Format::Etc2Rgba8Crunched)
+        .with(Format::PvrtcRgb2)
+        .with(Format::PvrtcRgba2)
+        .with(Format::PvrtcRgb4)
+        .with(Format::PvrtcRgba4)
+        .with(Format::AtcRgb4)
+        .with(Format::AtcRgba8);
     assert_eq!(s.outputs.formats, want);
     // Every format this binary decodes is accepted, all at once.
     let all: Vec<_> = Format::ALL.iter().map(|f| f.name()).collect();
@@ -77,10 +89,10 @@ fn each_refusal_formats_adds() {
     // One of UnityPy's names that this binary does not decode: `range`
     // too (the stricter rule), never a skip at run time.
     assert_eq!(
-        formats(json!(["DXT1", "PVRTC_RGB2"])),
+        formats(json!(["DXT1", "ETC_RGB4_3DS"])),
         "range /outputs/formats/1"
     );
-    assert_eq!(formats(json!(["ATC_RGB4"])), "range /outputs/formats/0");
+    assert_eq!(formats(json!(["BC6H"])), "range /outputs/formats/0");
     assert_eq!(formats(json!(["ASTC_HDR_4x4"])), "range /outputs/formats/0");
     // A repeat, at the later item; none at all.
     assert_eq!(

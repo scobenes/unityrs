@@ -5,10 +5,7 @@ use http_support::{
     run,
     tls::{Peer, Table},
 };
-use std::{
-    sync::{Arc, atomic::Ordering},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use unityrs_batch::http::{self, Detail, Payload, permit::PermitPool};
 use unityrs_testkit::guard::DEADLOCK_GUARD;
 
@@ -63,8 +60,8 @@ fn compiled_roots_reject_a_private_ca_and_test_roots_only_enter_through_the_hook
         } else {
             assert!(observation.is_err());
         }
-        assert_eq!(table.added.load(Ordering::Acquire), 1);
-        assert_eq!(table.removed.load(Ordering::Acquire), 1);
+        assert_eq!(table.added(), 1);
+        assert_eq!(table.removed(), 1);
     }
 }
 
@@ -86,20 +83,22 @@ fn dropping_an_unread_response_resets_and_unregisters_its_only_socket() {
             .await
             .ok()
             .unwrap();
-        assert_eq!(table.removed.load(Ordering::Acquire), 0);
+        assert_eq!(table.removed(), 0);
         drop(response);
-        assert_eq!(table.removed.load(Ordering::Acquire), 1);
+        assert_eq!(table.removed(), 1);
     });
     assert!(peer.finish().unwrap().reset);
 }
 
 #[test]
-fn registration_precedes_the_closing_load_and_no_connect_follows_it() {
+fn publication_precedes_the_closing_load_and_no_connect_follows_it() {
     let _serial = http_support::tls::lock();
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let table = Arc::new(Table::default());
-    table.close_on_register.store(true, Ordering::Release);
+    // The exit's reset sets closing first. The socket is published, then
+    // sees closing and is released unconnected.
+    table.sockets.reset();
     let pool = PermitPool::new(1).unwrap();
     let mut permit = pool.acquire().unwrap();
     run(async {
@@ -120,7 +119,7 @@ fn registration_precedes_the_closing_load_and_no_connect_follows_it() {
         listener.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
     );
-    assert_eq!(table.removed.load(Ordering::Acquire), 1);
+    assert_eq!((table.added(), table.removed()), (1, 1));
 }
 
 #[test]
@@ -139,13 +138,10 @@ fn resolver_errors_and_a_connection_timer_are_connect_failures() {
     let pool = PermitPool::new(1).unwrap();
     let mut permit = pool.acquire().unwrap();
     run(async {
-        let service = Service::new(
-            tokio::runtime::Handle::current(),
-            Arc::new(Table::default()),
-        )
-        .unwrap()
-        .with_test_hooks(Arc::new(Refuse), &[])
-        .unwrap();
+        let service = Service::new(tokio::runtime::Handle::current(), Table::default().sockets)
+            .unwrap()
+            .with_test_hooks(Arc::new(Refuse), &[])
+            .unwrap();
         let url = url::Url::parse("http://localhost/").unwrap();
         let error = service
             .request(&mut permit, &url, http_support::get(), DEADLOCK_GUARD)
@@ -195,7 +191,7 @@ fn timed_out_blocking_lookup_keeps_its_slot_while_another_permit_progresses() {
         .unwrap();
     let pool = PermitPool::new(2).unwrap();
     let mut slow = pool.acquire().unwrap();
-    let service = Service::new(runtime.handle().clone(), Arc::new(Table::default()))
+    let service = Service::new(runtime.handle().clone(), Table::default().sockets)
         .unwrap()
         .with_test_hooks(resolver, &[])
         .unwrap();
@@ -257,8 +253,8 @@ fn at_most_sixteen_addresses_connect_and_failed_sockets_are_removed() {
             .unwrap();
         assert_eq!(error.detail(), Some(Detail::Connect));
     });
-    assert_eq!(table.added.load(Ordering::Acquire), 16);
-    assert_eq!(table.removed.load(Ordering::Acquire), 16);
+    assert_eq!(table.added(), 16);
+    assert_eq!(table.removed(), 16);
     assert_eq!(
         listener.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
@@ -400,8 +396,8 @@ fn assert_cleanup(
     permit: unityrs_batch::http::permit::RequestPermit,
     sockets: usize,
 ) {
-    assert_eq!(table.added.load(Ordering::Acquire), sockets);
-    assert_eq!(table.removed.load(Ordering::Acquire), sockets);
+    assert_eq!(table.added(), sockets);
+    assert_eq!(table.removed(), sockets);
     assert_eq!(permit.charged(), 0);
     drop(permit);
     assert_eq!(pool.snapshot().outstanding, 0);

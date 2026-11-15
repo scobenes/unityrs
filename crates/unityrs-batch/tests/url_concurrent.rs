@@ -53,8 +53,26 @@ fn pair_files_observed<A: Transport<Response = ReplyBody>, B: Transport<Response
     b: &B,
     fs1: Arc<dyn unityrs_batch::spool::FileSystem>,
     fs2: Arc<dyn unityrs_batch::spool::FileSystem>,
-    mut after_poll: impl FnMut(&std::task::Waker),
+    after_poll: impl FnMut(&std::task::Waker),
 ) -> (StageEnd, StageEnd) {
+    let (end1, end2) = drive_pair(first, second, (a, b), (fs1, fs2), false, after_poll);
+    (end1, end2.unwrap())
+}
+/// Both stages to their ends; or, with `freezes`, the first to its end and
+/// the second until it has requested the run's stop: a stage whose poll saw
+/// a refusal requests `host_memory` at once and then freezes at its next
+/// network wait, as a stopped stage does, never to end.
+fn drive_pair<A: Transport<Response = ReplyBody>, B: Transport<Response = ReplyBody>>(
+    first: &Scene,
+    second: &Scene,
+    (a, b): (&A, &B),
+    (fs1, fs2): (
+        Arc<dyn unityrs_batch::spool::FileSystem>,
+        Arc<dyn unityrs_batch::spool::FileSystem>,
+    ),
+    freezes: bool,
+    mut after_poll: impl FnMut(&std::task::Waker),
+) -> (StageEnd, Option<StageEnd>) {
     let v1 = stage_support::from_bundles(std::slice::from_ref(&first.bundle), &[]);
     let v2 = stage_support::from_bundles(std::slice::from_ref(&second.bundle), &[]);
     let permits = PermitPool::new(2).unwrap();
@@ -111,8 +129,9 @@ fn pair_files_observed<A: Transport<Response = ReplyBody>, B: Transport<Response
                 {
                     end2 = Some(end);
                 }
-                if end1.is_some() && end2.is_some() {
-                    Poll::Ready((end1.take().unwrap(), end2.take().unwrap()))
+                let frozen = freezes && !second.stop.failures.lock().unwrap().is_empty();
+                if end1.is_some() && (end2.is_some() || frozen) {
+                    Poll::Ready((end1.take().unwrap(), end2.take()))
                 } else {
                     Poll::Pending
                 }
@@ -275,20 +294,30 @@ fn another_stages_refusal_does_not_taint_a_success() {
     let mut second = Scene::new(vec![Reply::ok(b"refused")]);
     second.time = first.time.clone();
     second.peer.time = first.time.clone();
-    let (clean, refused) = pair(&first, &second, &first.peer, &Refusing(&second.peer));
+    let (clean, refused) = drive_pair(
+        &first,
+        &second,
+        (&first.peer, &Refusing(&second.peer)),
+        (Arc::new(Host), Arc::new(Host)),
+        true,
+        |_| {},
+    );
     assert_eq!(clean.failure, None);
     assert_eq!(clean.facts.unwrap().size, 5);
     assert_eq!(clean.claimed_bytes, 4096);
     assert_eq!(first.peer.live.load(Ordering::Acquire), 0);
     assert!(first.stop.failures.lock().unwrap().is_empty());
+    // The refused stage requested `host_memory` from the poll that saw the
+    // refusal, then froze at its next network wait: it has no end of its
+    // own, and the run's stop is that failure.
+    assert!(refused.is_none());
+    let failures = second.stop.failures.lock().unwrap();
     assert_eq!(
-        refused.failure,
-        Some(unityrs_batch::stage::Failure::Run(
-            unityrs_batch::job::RunFailure::new(unityrs_batch::attempt::ReasonCode::HostMemory)
+        failures.first().map(|f| f.0),
+        Some(unityrs_batch::job::RunFailure::new(
+            unityrs_batch::attempt::ReasonCode::HostMemory
         ))
     );
-    assert!(refused.facts.is_none());
-    assert_eq!(refused.claimed_bytes, 4096);
 }
 
 #[test]

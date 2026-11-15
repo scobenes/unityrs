@@ -122,8 +122,8 @@
 //!   ([`crate::limits::Limits::max_block_output`]) and the input's meter
 //!   follow the actual bytes, never the declared ones.
 //!
-//! UnityWeb/UnityRaw: format 6 takes the UnityFS layout (P1); every other
-//! format is [`crate::Unsupported::WebRawLayout`] until P3. `UnityArchive` is
+//! UnityWeb/UnityRaw: format 6 takes the UnityFS layout. Other formats take
+//! `read_web_raw`, with the legacy payload decoded once at open. `UnityArchive` is
 //! [`crate::Unsupported::UnityArchive`], as UnityPy raises (`files/BundleFile.py:41-42`).
 //!
 //! Owner: package C.
@@ -149,7 +149,8 @@ mod ahead;
 mod counts;
 mod decode;
 mod index;
-mod open;
+mod legacy;
+pub(super) mod open;
 mod runs;
 
 pub use counts::BundleCounts;
@@ -161,7 +162,7 @@ use decode::BlockContext;
 pub enum LayoutKind {
     /// `read_fs`: UnityFS, and UnityWeb/UnityRaw at format 6.
     Fs,
-    /// `read_web_raw`: UnityWeb/UnityRaw at other formats (P3).
+    /// `read_web_raw`: UnityWeb/UnityRaw at other formats.
     WebRaw,
 }
 
@@ -242,6 +243,7 @@ pub struct FileSlot {
 pub struct BundleFile {
     name: RawStr,
     source: Bytes,
+    legacy_data: Option<Bytes>,
     header: BundleHeader,
     blocks: Box<[BlockInfo]>,
     directory: Box<[DirEntry]>,
@@ -431,8 +433,10 @@ impl BundleFile {
         self.read_span(0, u64::MAX, SpanRow::WHOLE)?;
         // UnityPy files/File.py:76-90
         for i in 0..self.directory.len() {
-            if let File::Bundle(b) = self.entry(i)? {
-                b.load_all().map_err(|e| self.entry_error(i, e))?;
+            match self.entry(i)? {
+                File::Bundle(b) => b.load_all().map_err(|e| self.entry_error(i, e))?,
+                File::Web(w) => w.load_all().map_err(|e| self.entry_error(i, e))?,
+                _ => {}
             }
         }
         Ok(())

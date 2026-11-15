@@ -129,7 +129,6 @@ fn service_connect_and_tls_faults_cross_staging_retry_reset_and_fact_cleanup() {
     }
 }
 fn service_fault(kind: &str, attempts: u32) {
-    use std::sync::atomic::Ordering;
     let (peers, resolver, notice) = fault_endpoints(kind, attempts);
     let table = Arc::new(Table::default());
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -143,10 +142,11 @@ fn service_fault(kind: &str, attempts: u32) {
             http_support::tls::ROOT.to_vec(),
         )]
     };
-    let service = unityrs_batch::http::Service::new(runtime.handle().clone(), table.clone())
-        .unwrap()
-        .with_test_hooks(resolver.clone(), &roots)
-        .unwrap();
+    let service =
+        unityrs_batch::http::Service::new(runtime.handle().clone(), table.sockets.clone())
+            .unwrap()
+            .with_test_hooks(resolver.clone(), &roots)
+            .unwrap();
     let mut scene = url_support::Scene::new(vec![]);
     scene.bundle["url"] = json!(if matches!(kind, "resolve" | "refused") {
         "http://localhost/x"
@@ -209,8 +209,8 @@ fn service_fault(kind: &str, attempts: u32) {
     } else {
         attempts as usize
     };
-    assert_eq!(table.added.load(Ordering::Acquire), sockets);
-    assert_eq!(table.removed.load(Ordering::Acquire), sockets);
+    assert_eq!(table.added(), sockets);
+    assert_eq!(table.removed(), sockets);
     for peer in peers {
         let result = peer.finish();
         if matches!(kind, "untrusted" | "wrong-name" | "expired") {

@@ -247,8 +247,10 @@ fn every_raw_and_bcn_decode_is_the_oracle_image_or_error() {
 
 /// Every format the crate decodes is one of the five, the eleven here, an
 /// ETC or EAC format (`tests/etc_oracle.rs`) or an ASTC LDR format
-/// (`tests/astc_oracle.rs`): the oracle's four fixtures together replay
-/// every one.
+/// (`tests/astc_oracle.rs`), or PVRTC/ATC (`tests/pvrtc_atc_oracle.rs`):
+/// the oracle's five fixtures together replay the 42 plain formats.
+/// Four crunched Unity values use `tests/crunch_oracle.rs` and
+/// `tests/unitycrunch_oracle.rs`; their pixel replay requires `crunch.json`.
 #[test]
 fn every_format_is_replayed_by_an_oracle_fixture() {
     let ours: BTreeSet<&str> = FORMATS.iter().map(|(f, _)| f.name()).collect();
@@ -260,9 +262,11 @@ fn every_format_is_replayed_by_an_oracle_fixture() {
                 || name.starts_with("ETC")
                 || name.starts_with("EAC")
                 || name.starts_with("ASTC")
+                || name.starts_with("PVRTC")
+                || name.starts_with("ATC")
                 || format.is_crunched(),
             "{name}"
         );
     }
-    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 4);
+    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 6 + 4);
 }

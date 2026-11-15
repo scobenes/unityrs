@@ -4,6 +4,7 @@
 //! in [`Parked`] until the finisher has returned, as the process host parks
 //! them until `_exit`. Cooperative quiescence is for tests alone.
 mod errors;
+mod network;
 mod phases;
 use crate::{
     control::{Control, Culprit},
@@ -19,6 +20,9 @@ use crate::{
     sys::{Shared, Slot, Wake},
 };
 pub use errors::Error;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use network::Hooks;
+pub use network::Network;
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicUsize, Ordering},
@@ -80,6 +84,8 @@ pub struct Options {
     pub parked_drops: Option<Arc<AtomicUsize>>,
     /// The spool's filesystem after startup; the host's when `None`.
     pub spool: Option<Arc<dyn spool::FileSystem>>,
+    /// Stages URL bundles; without it a URL is refused.
+    pub network: Option<Network>,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -90,12 +96,22 @@ impl Default for Options {
             observer: Arc::new(NoObserver),
             parked_drops: None,
             spool: None,
+            network: None,
         }
     }
 }
 /// What the controller keeps past its hand-over: its Execution (and so the
 /// pool's runtime), its slots and residue, publication's owner. Dropped
 /// only once the finisher has returned.
+///
+/// With a [`Network`], the slots hold each frozen URL stage's unfinished
+/// future: its request permit, its socket, its destination file and any
+/// chunk write it moved onto the pool. The Execution drops first and shuts
+/// its runtime down in the background, so a write still on the pool keeps
+/// its own descriptor and data until it returns; the owners' drop then
+/// resets each frozen connection. A library caller's peer so sees its
+/// connection end after the finisher, where the process host ends it at
+/// `_exit`.
 #[derive(Default)]
 struct Parked {
     execution: Option<Execution>,
@@ -192,7 +208,7 @@ pub fn drive_with(
     ),
     options: &Options,
 ) -> Result<ResultEnd, Error> {
-    start::supported(&prepared.spec).map_err(|_| Error::usage())?;
+    start::supported_with(&prepared.spec, options.network.is_some()).map_err(|_| Error::usage())?;
     let fin = Account::observed(crate::bound::C_FIN, Some(progress.phase()));
     let started_at = crate::sys::utc_now().map_err(|_| Error::host_io())?;
     let started_at = std::str::from_utf8(&started_at).map_err(|_| Error::internal())?;
@@ -265,7 +281,9 @@ impl Body<'_> {
     /// head; every later end is a hand-over.
     #[allow(clippy::too_many_lines)] // 2.11's order, start to hand-over, in one place.
     fn run(&self, prepared: PreparedRun, parked: &mut Parked) -> Result<HandOver, Error> {
-        let local = start::supported(&prepared.spec).map_err(|_| Error::usage())?;
+        let network = self.options.network.as_ref();
+        let local =
+            start::supported_with(&prepared.spec, network.is_some()).map_err(|_| Error::usage())?;
         // The host reads a named key at preflight ([`unitycn_key`]).
         if local.spec().unitycn_key.is_some() && prepared.memory.key.is_none() {
             return Err(Error::internal());
@@ -279,9 +297,22 @@ impl Body<'_> {
             s.memory.inflight_limit = prepared.spec.max_inflight_uncompressed_bytes;
             s.spool.size = prepared.spec.spool.size_bytes;
         });
+        let values = network
+            .map(|n| network::values(n, &prepared.spec))
+            .transpose()?;
         let execution = Execution::prepare(&prepared).map_err(|_| Error::spawn())?;
         let _ = control.wake.set(execution.wake());
         let execution = parked.execution.insert(execution);
+        let staging = match (network, values) {
+            (Some(n), Some(values)) => Some(network::staging(
+                n,
+                values,
+                execution,
+                control.clone(),
+                &prepared,
+            )?),
+            _ => None,
+        };
         let directory = phases::preflight(&local, self.sink_fs.clone(), self.fin)?;
         progress.update(|s| s.phase = Phase::Start);
         let started = match start::spool::start(&local, self.spool_fs, &|| control.stopped()) {
@@ -308,12 +339,13 @@ impl Body<'_> {
         )
         .map_err(|_| Error::host_io())?
         .retained(started.clone(), directory.clone());
-        let mut controller = Controller::new(
-            prepared,
-            spool,
-            control.clone(),
-            self.options.controller_hooks.clone(),
-        )
+        let hooks = self.options.controller_hooks.clone();
+        let mut controller = match staging {
+            Some(staging) => {
+                Controller::networked(prepared, spool, control.clone(), hooks, staging)
+            }
+            None => Controller::new(prepared, spool, control.clone(), hooks),
+        }
         .map_err(|_| Error::internal())?;
         controller.progress(progress.clone());
         execution.bind(&controller).map_err(|_| Error::internal())?;

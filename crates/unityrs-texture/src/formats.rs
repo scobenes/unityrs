@@ -111,7 +111,7 @@ mod tests {
     }
 
     /// A name is decoded exactly when it names one of [`Format::ALL`],
-    /// whatever that list holds (ASTC's twelve since T2b).
+    /// including PVRTC/ATC and all four crunched Unity values.
     #[test]
     fn the_decoded_names_are_format_all() {
         for (value, name) in crate::TEXTURE_FORMATS {
@@ -124,7 +124,15 @@ mod tests {
                 }
             }
         }
+        assert_eq!(Format::ALL.len(), 46);
         assert_eq!(Formats::DECODED.iter().count(), Format::ALL.len());
+        assert!(
+            Format::ALL
+                .windows(2)
+                .all(|pair| { pair[0].texture_format() < pair[1].texture_format() })
+        );
+        assert!(Formats::DECODED.contains(Format::UnityDxt1Crunched));
+        assert!(Formats::DECODED.contains(Format::UnityDxt5Crunched));
         assert_eq!(Formats::decoded("ASTC_RGBA_8x8"), Ok(Format::AstcRgba8x8));
     }
 
@@ -132,8 +140,21 @@ mod tests {
     fn a_name_is_decoded_known_or_unknown() {
         assert_eq!(Formats::decoded("RGB565"), Ok(Format::Rgb565));
         assert_eq!(Formats::decoded("ETC2_RGBA8"), Ok(Format::Etc2Rgba8));
+        for f in [
+            Format::PvrtcRgb2,
+            Format::PvrtcRgba2,
+            Format::PvrtcRgb4,
+            Format::PvrtcRgba4,
+            Format::AtcRgb4,
+            Format::AtcRgba8,
+            Format::Dxt1Crunched,
+            Format::Dxt5Crunched,
+            Format::EtcRgb4Crunched,
+            Format::Etc2Rgba8Crunched,
+        ] {
+            assert_eq!(Formats::decoded(f.name()), Ok(f));
+        }
         // UnityPy names it; this crate does not decode it.
-        assert_eq!(Formats::decoded("PVRTC_RGB2"), Err(true));
         assert_eq!(Formats::decoded("ARGBFloat"), Err(true));
         // Names are UnityPy's, case and all.
         assert_eq!(Formats::decoded("rgb565"), Err(false));

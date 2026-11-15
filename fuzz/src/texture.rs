@@ -4,11 +4,13 @@
 //! (`docs/plans/extract.md` E15, E18, E59, E66), under the memory bound
 //! ([`crate::MEMORY`]) or a meter of about the decode's charge.
 //!
-//! A format outside the forty Unity values the crate decodes (the five version 1
-//! exports, the rest of Pillow's raw and `bcn` formats, the ETC and EAC
-//! formats, the ASTC LDR formats and the four crunched formats) decodes as one of them, so every
-//! input reaches a decoder. Besides a panic (libFuzzer's hook aborts at it,
-//! before the decoder's containment can catch it), a finding is: a
+//! A format outside the forty-two byte-independent formats the crate decodes
+//! (the five version 1 exports, the rest of Pillow's raw and `bcn` formats,
+//! the ETC and EAC formats, the ASTC LDR formats, PVRTC and ATC) decodes as
+//! one of them, and all CRN variants as plain DXT/ETC formats (the `crunch`
+//! target checks CRN streams), so every input reaches a decoder. Besides a
+//! panic (libFuzzer's hook aborts at it, before the decoder's containment can
+//! catch it), a finding is: a
 //! selection that exports a format the texture does not have; a decode
 //! whose answer is not its plan's, but for the meter's refusal of a charge
 //! past its limit (the peak charge, `Plan::peak_charge`: an ASTC format's

@@ -77,7 +77,7 @@ pub fn shape() -> Class {
 pub fn parent_bundle(kind: Option<&ParentKind>) -> Option<Arc<BundleFile>> {
     match kind? {
         ParentKind::Bundle { bundle, .. } => bundle.upgrade(),
-        ParentKind::Web => None,
+        ParentKind::Web { .. } => None,
     }
 }
 
