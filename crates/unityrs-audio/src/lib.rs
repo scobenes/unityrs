@@ -1,10 +1,12 @@
 // Ported from UnityPy 1.25.2 (MIT): export/AudioClipConverter.py and enums/Audio.py. See THIRD_PARTY_LICENSES.
 // Ported from fmod_toolkit 0.1.3 (MIT): fmod.py subsound filenames. See THIRD_PARTY_LICENSES.
-//! `AudioClip` dispatch and FSB5 PCM/ADPCM exports, with no FMOD dependency.
+//! `AudioClip` dispatch and FSB5 PCM/ADPCM/Vorbis exports, with no FMOD dependency.
 //!
 //! [`plan`] validates the real bank boundaries and bounds WAV output before
 //! decoding. Its metadata, every output name and payload are metered and
-//! allocated fallibly. Plans borrow the input, preventing decode against a
+//! allocated fallibly. Vorbis uses an explicit runtime setup provider; lewton
+//! alone allocates infallibly, so audio stays off batch. Plans borrow the input,
+//! preventing decode against a
 //! different bank. Work is charged before traversal or output writes.
 //!
 //! UnityPy's magic dispatch is export/AudioClipConverter.py:35-49. Contrary
@@ -16,7 +18,7 @@
 //! Integer PCM is copied, float defaults to numpy's saturated int16 rule.
 //! WAVs shorter than four data bytes are Tier C (`fmod_toolkit` raises).
 //! A bank with an empty first subsound is Tier U and refused. Other codecs
-//! are typed unsupported errors, deferred to A3 or optional future work.
+//! are typed unsupported errors, deferred to optional future work.
 #![forbid(unsafe_code)]
 #![cfg_attr(
     not(test),
@@ -31,11 +33,14 @@
 
 mod adpcm;
 mod fsb5;
+mod vorbis;
+mod vorbis_headers;
 mod wav;
 
 pub use fsb5::{Header, Subsound};
 use std::sync::Arc;
 use unityrs_core::limits::{ChargeError, Meter, MeteredVec};
+pub use vorbis_headers::VorbisHeaders;
 
 /// A malformed bank field, a deliberate format refusal, or resource exhaustion.
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +63,16 @@ pub enum Error {
     EmptyFirstSubsound,
     #[error("FSB5 channel count {channels} exceeds FMOD's maximum of 32")]
     TooManyChannels { channels: u16 },
+    #[error("Vorbis requires setup headers loaded from a caller-supplied path")]
+    VorbisHeadersRequired,
+    #[error("cannot read the caller-supplied Vorbis setup table: {0}")]
+    VorbisHeadersIo(std::io::Error),
+    #[error("Vorbis setup header is absent for CRC {crc:#010x}")]
+    VorbisSetupMissing { crc: u32 },
+    #[error("unsupported Vorbis subsound with fewer than four WAV data bytes (Tier U)")]
+    VorbisShortSubsound,
+    #[error("Vorbis decoder panicked on malformed data")]
+    VorbisPanicked,
     #[error("audio output exceeds WAV's signed 32-bit fields or address space")]
     OutputSize,
     #[error(transparent)]
@@ -178,6 +193,21 @@ pub fn decode(
     name: &[u8],
     meter: &Arc<Meter>,
 ) -> Result<MeteredVec<Sample>, Error> {
+    decode_with_vorbis(plan, name, None, meter)
+}
+
+/// Decode with an explicit runtime Vorbis setup provider. WAV output is
+/// charged before lewton is entered. Lewton's internal allocations are
+/// infallible and unmetered (P3 decision 19); never use this on a batch path.
+pub fn decode_with_vorbis(
+    plan: &Plan<'_>,
+    name: &[u8],
+    headers: Option<&VorbisHeaders>,
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<Sample>, Error> {
+    if plan.header().is_some_and(|h| h.mode == 15) && headers.is_none() {
+        return Err(Error::VorbisHeadersRequired);
+    }
     let count = match &plan.kind {
         Kind::Pass { .. } => 1,
         Kind::Bank { subsounds, .. } => subsounds.len(),
@@ -198,7 +228,7 @@ pub fn decode(
         Kind::Bank { header, subsounds } => {
             for (i, sub) in subsounds.as_slice().iter().enumerate() {
                 let filename = filename(name, i, b".wav", meter)?;
-                let bytes = wav::decode(sub, header.mode, plan.convert_float, meter)?;
+                let bytes = wav::decode(sub, header.mode, plan.convert_float, headers, meter)?;
                 files.push(Sample {
                     name: filename,
                     bytes,

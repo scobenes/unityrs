@@ -74,32 +74,52 @@ fn every_allocation_is_charged_first_and_fallible() {
             let p = unityrs_audio::plan(&data, true, &m)?;
             unityrs_audio::decode(&p, b"clip", &m)
         };
-        BASE_HELD.store(HELD.load(Ordering::Relaxed), Ordering::Relaxed);
-        BASE.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
-        OVER.store(0, Ordering::Relaxed);
-        CALLS.store(0, Ordering::Relaxed);
-        FAIL_AT.store(usize::MAX, Ordering::Relaxed);
-        ARMED.store(true, Ordering::Relaxed);
-        let files = run();
-        ARMED.store(false, Ordering::Relaxed);
-        let calls = CALLS.load(Ordering::Relaxed);
-        assert_eq!(OVER.load(Ordering::Relaxed), 0);
-        drop(files.unwrap());
-        assert_eq!(m.used(), 0);
-        for at in 0..calls {
-            CALLS.store(0, Ordering::Relaxed);
-            FAIL_AT.store(at, Ordering::Relaxed);
-            ARMED.store(true, Ordering::Relaxed);
-            let result = run();
-            ARMED.store(false, Ordering::Relaxed);
-            assert!(result.is_err(), "allocation {at}");
-            drop(result);
-            assert_eq!(m.used(), 0);
-            assert_eq!(
-                HELD.load(Ordering::Relaxed),
-                BASE_HELD.load(Ordering::Relaxed)
-            );
-        }
+        sweep(run, &m);
     }
+    let mut table = b"VST1".to_vec();
+    for n in [1u32, 42, 20000] {
+        table.extend_from_slice(&n.to_le_bytes());
+    }
+    table.extend_from_slice(b"\x05vorbis");
+    table.resize(20016, 0);
+    let dir = unityrs_testkit::scratch::Scratch::new("vorbis-charges");
+    let path = dir.path().join("own-table");
+    std::fs::write(&path, &table).unwrap();
+    let m = Meter::new(
+        u64::MAX,
+        Arc::new(Budget(Arc::new(Home))),
+        Reservation::Input,
+    );
+    sweep(|| unityrs_audio::VorbisHeaders::from_bytes(&table, &m), &m);
+    sweep(|| unityrs_audio::VorbisHeaders::load(&path, &m), &m);
     counted::stop_counting_this_thread();
+}
+
+fn sweep<T>(run: impl Fn() -> Result<T, unityrs_audio::Error>, m: &Arc<Meter>) {
+    BASE_HELD.store(HELD.load(Ordering::Relaxed), Ordering::Relaxed);
+    BASE.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+    OVER.store(0, Ordering::Relaxed);
+    CALLS.store(0, Ordering::Relaxed);
+    FAIL_AT.store(usize::MAX, Ordering::Relaxed);
+    ARMED.store(true, Ordering::Relaxed);
+    let files = run();
+    ARMED.store(false, Ordering::Relaxed);
+    let calls = CALLS.load(Ordering::Relaxed);
+    assert_eq!(OVER.load(Ordering::Relaxed), 0);
+    drop(files.unwrap());
+    assert_eq!(m.used(), 0);
+    for at in 0..calls {
+        CALLS.store(0, Ordering::Relaxed);
+        FAIL_AT.store(at, Ordering::Relaxed);
+        ARMED.store(true, Ordering::Relaxed);
+        let result = run();
+        ARMED.store(false, Ordering::Relaxed);
+        assert!(result.is_err(), "allocation {at}");
+        drop(result);
+        assert_eq!(m.used(), 0);
+        assert_eq!(
+            HELD.load(Ordering::Relaxed),
+            BASE_HELD.load(Ordering::Relaxed)
+        );
+    }
 }
