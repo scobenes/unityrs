@@ -177,7 +177,8 @@ def cross(a, b):
     return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]
 
 
-def orientation(doc, binary):
+def orientation(doc, binary, strict=True):
+    """Return per-primitive agreement; strict fixture mode enforces the 99% gate."""
     results = []
     for mi, mesh in enumerate(doc.get("meshes", [])):
         for pi, p in enumerate(mesh["primitives"]):
@@ -186,7 +187,7 @@ def orientation(doc, binary):
             if "NORMAL" in attrs:
                 positions = accessor(doc, binary, attrs["POSITION"])
                 normals = accessor(doc, binary, attrs["NORMAL"])
-                diagonal2 = sum((max(v[c] for v in positions)-min(v[c] for v in positions))**2 for c in range(3))
+                diagonal2 = sum((max(v[c] for v in positions)-min(v[c] for v in positions))**2 for c in range(3)) if positions else 0
                 indices = [v[0] for v in accessor(doc, binary, p["indices"])] if "indices" in p else list(range(len(positions)))
                 for i in range(0, len(indices), 3):
                     a, b, c = indices[i:i+3]
@@ -197,9 +198,11 @@ def orientation(doc, binary):
                     eligible += 1
                     mean = [sum(normals[j][k] for j in (a,b,c))/3 for k in range(3)]
                     agree += sum(x*y for x,y in zip(winding, mean)) > 0
-            status = "N/A" if eligible == 0 else "pass" if agree/eligible >= 0.99 else "fail"
-            results.append(dict(mesh=mi, primitive=pi, eligible=eligible, agree=agree, status=status))
-            if status == "fail":
+            fraction = agree / eligible if eligible else None
+            status = "N/A" if eligible == 0 else "pass" if fraction >= 0.99 else "fail"
+            results.append(dict(mesh=mi, primitive=pi, eligible=eligible, agree=agree,
+                                agreement_fraction=fraction, status=status))
+            if strict and status == "fail":
                 raise AssertionError(f"orientation mesh {mi} primitive {pi}: {agree}/{eligible}")
     return results
 
@@ -209,10 +212,16 @@ def main():
     parser.add_argument("glb", type=Path)
     parser.add_argument("--expected", type=Path)
     parser.add_argument("--raw", action="store_true")
+    parser.add_argument("--report", action="store_true",
+                        help="report all orientation outcomes without enforcing the orientation gate")
     args = parser.parse_args()
     doc, binary = read_glb(args.glb)
     compared = check_accessors(doc, binary, json.loads(args.expected.read_text(encoding="utf-8")), not args.raw) if args.expected else 0
-    print(json.dumps(dict(compared=compared, orientation=orientation(doc,binary)), ensure_ascii=False))
+    results = orientation(doc, binary, strict=not args.report)
+    summary = {key: sum(row['status'] == status for row in results)
+               for key, status in [('pass', 'pass'), ('fail', 'fail'), ('not_applicable', 'N/A')]}
+    print(json.dumps(dict(compared=compared, orientation=results,
+                         orientation_summary=summary), ensure_ascii=False))
 
 
 if __name__ == "__main__":

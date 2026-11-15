@@ -5,7 +5,7 @@ use std::{ffi::OsStr, os::unix::ffi::OsStrExt, path::Path};
 use unityrs_core::limits::Limits;
 
 pub(super) const USAGE: &str = "usage: unityrs gltf INPUT... (--scene FILE | --path-id ID | --prefab PATH) -o OUTPUT.glb\n\
-  --scene FILE           select one SerializedFile by name (levelN or BuildPlayer-* CAB)\n\
+  --scene FILE           select a SerializedFile by name or exactly one SceneAsset at a container path\n\
   --path-id ID           select one GameObject prefab root or SceneAsset's owning file\n\
   --prefab PATH          select one GameObject container entry by its exact path\n\
   --profile FILE         strict profile_version: 1 JSON (default policy otherwise)\n\

@@ -84,6 +84,19 @@ pub(crate) fn document(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
         j.raw(":")?;
         j.number(value)?;
     }
+    for (key, count) in [
+        ("color_components", r.color_components),
+        ("dropped_color_attributes", r.dropped_color_attributes),
+        ("dropped_texcoord_attributes", r.dropped_texcoord_attributes),
+        ("dropped_texture_references", r.dropped_texture_references),
+    ] {
+        if count != 0 {
+            j.raw(",")?;
+            j.string(key.as_bytes())?;
+            j.raw(":")?;
+            j.number(count)?;
+        }
+    }
     if r.rotation_components != 0 {
         j.raw(",\"rotation_components\":")?;
         j.number(r.rotation_components)?;
@@ -114,6 +127,8 @@ pub(crate) fn document(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
             crate::Reason::NonFinitePosition => b"non_finite_position",
             crate::Reason::InvalidNormal => b"invalid_normal",
             crate::Reason::InvalidTangent => b"invalid_tangent",
+            crate::Reason::InvalidColor => b"invalid_color",
+            crate::Reason::InvalidTexCoord => b"invalid_texcoord",
         })?;
         j.raw("}")?;
     }
@@ -184,7 +199,7 @@ pub(crate) fn document(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
         }
         j.raw("]")?;
     }
-    crate::material_schema::materials(s, j)?;
+    crate::material_schema::materials(s, l, j)?;
     crate::material_schema::extensions(s, j)?;
     if !s.images.is_empty() {
         j.raw(",\"images\":[")?;
@@ -336,16 +351,26 @@ fn meshes(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
             pc = true;
             j.raw("{\"attributes\":{")?;
             let mut ac = false;
+            let mut uv = 0u16;
             for &(kind, id) in p.attributes.as_slice() {
-                if (kind == Attribute::Normal && !pl.normal)
-                    || (kind == Attribute::Tangent && !pl.tangent)
-                {
+                if !crate::attribute_policy::keep(l, *pl, kind, id) {
                     continue;
                 }
                 if ac {
                     j.raw(",")?;
                 }
                 ac = true;
+                let kind = if matches!(kind, Attribute::TexCoord(_)) {
+                    let remapped = Attribute::TexCoord(
+                        u8::try_from(uv).map_err(|_| invalid("UV set overflow"))?,
+                    );
+                    uv = uv
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("UV set overflow"))?;
+                    remapped
+                } else {
+                    kind
+                };
                 semantic(j, kind)?;
                 j.raw(":")?;
                 j.number(aid(l, id)?)?;
@@ -355,7 +380,7 @@ fn meshes(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
                 j.raw(",\"indices\":")?;
                 j.number(aid(l, id)?)?;
             }
-            if let Some(id) = p.material {
+            if let Some(id) = pl.material {
                 j.raw(",\"material\":")?;
                 j.number(id)?;
             }

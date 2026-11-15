@@ -79,6 +79,11 @@ fn scene_roots_follow_object_table_and_prefab_selects_one_root() {
     let report: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
     assert!(report["peak_charged_bytes"].as_u64().unwrap() > 0);
+    for phase in ["input_peak_charged_bytes", "export_peak_charged_bytes"] {
+        let phase_peak = report[phase].as_u64().expect("phase peak is reported");
+        assert!(phase_peak > 0, "{phase}");
+        assert!(phase_peak <= report["peak_charged_bytes"].as_u64().unwrap());
+    }
     let result = run(&[
         input.as_os_str(),
         "--path-id".as_ref(),
