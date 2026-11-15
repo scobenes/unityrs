@@ -12,7 +12,7 @@ use crate::detect::{DetectError, check_entry_type};
 use crate::error::{Error, Unsupported};
 use crate::files::{File, FileSlot, ParentKind, parse_file};
 use crate::limits::{GrantScope, MeteredVec, heap_cost};
-use crate::once::{CellError, ResultCell, get_or_publish_result};
+use crate::once::{CellError, get_or_publish_result};
 use crate::stream::{Endian, Reader, ReaderKind};
 use crate::typetree::parse::string_to_null;
 mod inflate;
@@ -40,14 +40,21 @@ pub struct WebFile {
     directory: Box<[DirEntry]>,
     data: Bytes,
     files: Box<[FileSlot]>,
-    entries: Box<[ResultCell<File, Error>]>,
+    pub(super) entries: Box<[super::teardown::FileCell]>,
     reader: ReaderKind,
     source_depth: u32,
     this: std::sync::Weak<Self>,
     parent: Option<Parent>,
-    /// The handle, its directory and its inflated data, charged to the input.
-    charge: Charge,
     ctx: Arc<FileContext>,
+    /// The handle, its directory and its inflated data, charged to the input.
+    /// Last so all the storage it covers is freed before its refund.
+    pub(super) charge: Charge,
+}
+
+impl Drop for WebFile {
+    fn drop(&mut self) {
+        super::teardown::drain(&mut self.entries, &self.charge);
+    }
 }
 
 impl std::fmt::Debug for WebFile {
@@ -132,7 +139,7 @@ impl WebFile {
         let files = super::bundle::open::files_dict(&directory, meter)?;
         let mut entries = MeteredVec::new(meter);
         for _ in 0..directory.len() {
-            entries.push(ResultCell::new())?;
+            entries.push(super::teardown::FileCell::new())?;
         }
         let directory = super::bundle::open::keep(directory, &mut charge)?;
         let files = super::bundle::open::keep(files, &mut charge)?;

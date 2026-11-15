@@ -14,6 +14,8 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `dump_records.py` | the oracle's records of one input (its file and object records, or its crash record), which `unitypy_dump.py` runs in a process per input |
 | `compare.py` | diffs two dumps; summarises by level, class and field path |
 | `g3b.py` | G3b's verdict (`docs/plans/core.md` section 6): every file under `--inputs` in both dumps, and each mutated input the dumps differ on, with its reason checked (a limit, the non-UTF-8 crash, a count UnityPy allocates before it reads; never a unityrs crash); needs the oracle stack |
+| `binding_cases.py` | Y1 synthetic API observations, including exact Python types, traversal, local paths and stream origins; shared by the recorder, Rust replay and binding suite |
+| `bindings/` | Explicit installed-wheel comparison suite (`python -m unittest bindings.test_y1`); requires `unityrs` and UnityPy 1.25.2, and never skips |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |
 | `child.py` | how every Python test and tool here runs a child process: a child the system killed (SIGKILL) is run again, up to `KILLED_RUNS` runs, any other ending comes back at once, and each run gets a scratch folder its parent removes (standard library only) |
 | `scratch.py` | where every Python test and tool here writes outside its memory: scratch folders removed whatever happens, a test's with its cleanups, a child's with its run, a dead process's at the next sweep (standard library only) |
