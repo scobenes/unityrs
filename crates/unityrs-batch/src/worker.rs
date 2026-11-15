@@ -68,6 +68,18 @@ pub fn worker_stack(limits: &Limits) -> usize {
         .saturating_mul(2)
         .saturating_add(levels.saturating_mul(LEVEL))
 }
+/// A job's panic line, after the stop: the host writes it after its
+/// hand-over (2.4), naming the input or the peek's bundle.
+fn panicked(context: &Context, kind: JobKind, id: u32) {
+    let name = usize::try_from(id)
+        .ok()
+        .and_then(|i| context.spec.bundle(i))
+        .map_or("", |b| b.id());
+    match kind {
+        JobKind::Attempt => crate::diagnostic::pending::panic(format_args!("input {name}: ")),
+        JobKind::Peek => crate::diagnostic::pending::panic(format_args!("bundle {name}: ")),
+    }
+}
 pub(crate) fn run(
     context: &std::sync::OnceLock<Context>,
     receive: &Mutex<Receiver<Dispatch>>,
@@ -99,6 +111,9 @@ pub(crate) fn run(
             context.hooks.point(Point::BeforeSend(kind, id));
             Ok::<_, ()>(end)
         }));
+        if result.is_err() {
+            panicked(context, kind, id);
+        }
         let end = match result {
             Ok(Ok(end)) if crate::alloc::refusals() == before => end,
             _ => failed(
@@ -157,6 +172,7 @@ pub(crate) fn run(
         }))
         .is_err()
         {
+            crate::diagnostic::pending::panic(format_args!("a worker's end: "));
             context.control.request_stop(
                 RunFailure::new(attempt::ReasonCode::Internal),
                 Culprit::None,

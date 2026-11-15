@@ -54,12 +54,15 @@ jobs:
           - astc
           - crunch
           - meshdecode
+          - scene_collect
+          - obj_text
           - zlib_match
           - unitycn
           - zip
           - webfile
           - unityweb
           - fsb5
+          - image_writers
           - shader
     env:
       TARGET: ${{ matrix.target }}

@@ -249,10 +249,11 @@ pub fn parse(e: &ParseError) -> Class {
             ReadDetail::Limit(l) | ReadDetail::Tree(TreeError::Limit(l)) => limit(l),
             ReadDetail::Charge(c) | ReadDetail::Tree(TreeError::Charge(c)) => charge(c),
             ReadDetail::Eof { .. }
+            | ReadDetail::BoostEof { .. }
             | ReadDetail::NegativeLength(_)
             | ReadDetail::ArrayChildren
             | ReadDetail::PairChildren
-            | ReadDetail::NoRefTypes
+            | ReadDetail::NoRefTypes { .. }
             | ReadDetail::RefTypeNotFound
             | ReadDetail::RefTypeNoTree
             | ReadDetail::Python(_)
@@ -544,6 +545,13 @@ mod tests {
         );
         assert_eq!(
             parse(&read(ReadDetail::Eof { need: 4 })),
+            skip("decode_error", Some("read"))
+        );
+        assert_eq!(
+            parse(&read(ReadDetail::BoostEof {
+                method: "read_i32",
+                need: 4,
+            })),
             skip("decode_error", Some("read"))
         );
         let depth = LimitError::refused(LimitKind::ValueDepth, 600, 512);

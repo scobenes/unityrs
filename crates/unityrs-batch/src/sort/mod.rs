@@ -138,6 +138,7 @@ pub fn sort(
         }))
         .is_err()
     {
+        crate::diagnostic::pending::panic(format_args!("the sort's stop: "));
         return Err(Error::internal());
     }
     result

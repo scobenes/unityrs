@@ -69,6 +69,19 @@ fn every_term_is_5_3_s() {
     );
 }
 
+/// The stdin watch's thread adds its 2 MiB stack under `stop_on_stdin_eof`.
+#[test]
+fn the_stdin_watch_s_stack_is_counted() {
+    let inputs = r#","inputs":[{"id":"a","path":"/a"}]"#;
+    let plain = spec(&format!("{inputs}{DIRECTORY}"));
+    let watched = spec(&format!(r#"{inputs},"stop_on_stdin_eof":true{DIRECTORY}"#));
+    let measured = Measured { kept: 0, peak: 0 };
+    let a = memory_bound(&plain, measured, 0, &PROVISIONAL);
+    let b = memory_bound(&watched, measured, 0, &PROVISIONAL);
+    assert_eq!(b.c_thr, a.c_thr + THREAD_STACK);
+    assert_eq!(b.total(), a.total() + THREAD_STACK);
+}
+
 /// `C_parse` is what phase 1's peak passes `C_spec + I + C_fin` by.
 #[test]
 fn c_parse_is_the_peak_past_what_the_rest_holds() {

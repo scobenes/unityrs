@@ -6,7 +6,7 @@
 //! integer entries use the corresponding UNorm/SNorm channel counts (B/C),
 //! as PARITY section 19.2 specifies. Signed byte conversion is the closed
 //! form in section 17.1; no 16-bit decoder is used for those stored bytes.
-use crate::{DecodeError, Format, Image, Mode, Plan};
+use crate::{DecodeError, Format, Image, Plan};
 use std::sync::Arc;
 use unityrs_core::limits::{ChargeError, Meter, MeteredVec, heap_cost};
 mod object;
@@ -151,47 +151,12 @@ pub struct ArrayPlan {
 }
 const _: () = crate::send_sync::<ArrayPlan>();
 
-fn byte_channels(format: i32) -> Option<(usize, bool)> {
-    match format {
-        62 => Some((2, false)),
-        75..=78 => Some((usize::try_from(format - 74).ok()?, true)),
-        _ => None,
-    }
-}
-
 fn slice_plan(format: i32, len: usize, w: i32, h: i32) -> Result<Plan, ArrayError> {
     // UnityPy export/Texture2DConverter.py:254-320 returns empty RGBA
     // before checking data or looking up a decoder. Mapping and slicing
     // still precede this in classes/legacy_patch/Texture2DArray.py:12-43.
     if w == 0 || h == 0 {
         return Ok(crate::plan(Format::Rgba32, len, w, h)?);
-    }
-    if let Some((channels, _)) = byte_channels(format) {
-        // Reuse the shared size and pixel bounds without requiring T7's
-        // enum additions. This is only the specified 8-bit closed form.
-        let mode = if channels == 4 { Mode::Rgba } else { Mode::Rgb };
-        let target = if channels == 4 {
-            Format::Rgba32
-        } else {
-            Format::Rgb24
-        };
-        if len == 0 {
-            return Err(DecodeError::NoImageData.into());
-        }
-        let p = crate::plan(target, usize::MAX, w, h)?;
-        let needed = u64::from(p.width) * u64::from(p.height) * channels as u64;
-        if (len as u64) < needed {
-            return Err(DecodeError::NotEnoughData {
-                needed,
-                got: len as u64,
-            }
-            .into());
-        }
-        return Ok(Plan {
-            mode,
-            input_bytes: needed,
-            ..p
-        });
     }
     let f = Format::from_texture_format(format).ok_or(ArrayError::UnsupportedFormat(format))?;
     Ok(crate::plan(f, len, w, h)?)
@@ -265,8 +230,6 @@ pub fn decode(
             // The same pre-decoder shortcut as slice_plan, including formats
             // without a linked decoder (Texture2DConverter.py:254-320).
             crate::decode(Format::Rgba32, input, fields.width, fields.height, meter)?
-        } else if let Some((channels, signed)) = byte_channels(format) {
-            byte_image(channels, signed, input, p.image, meter)?
         } else {
             let f =
                 Format::from_texture_format(format).ok_or(ArrayError::UnsupportedFormat(format))?;
@@ -275,32 +238,4 @@ pub fn decode(
         images.push(img)?;
     }
     Ok(images)
-}
-
-fn byte_image(
-    channels: usize,
-    signed: bool,
-    data: &[u8],
-    p: Plan,
-    meter: &Arc<Meter>,
-) -> Result<Image, ArrayError> {
-    meter.count_decode(p.output_bytes)?;
-    let n = usize::try_from(p.output_bytes).map_err(|_| ArrayError::Layout)?;
-    let mut out = MeteredVec::with_capacity(meter, n)?;
-    let stride = p.width as usize * channels;
-    for y in (0..p.height as usize).rev() {
-        let row = data
-            .get(y * stride..(y + 1) * stride)
-            .ok_or(ArrayError::Layout)?;
-        for pixel in row.chunks_exact(channels) {
-            for &b in pixel {
-                out.push(if signed { b ^ 128 } else { b })?;
-            }
-            for _ in channels..3 {
-                out.push(0)?;
-            }
-        }
-    }
-    let (pixels, charge) = out.into_parts();
-    Ok(Image::from_parts(p.mode, p.width, p.height, pixels, charge))
 }

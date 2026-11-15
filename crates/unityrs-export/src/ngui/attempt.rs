@@ -496,11 +496,7 @@ impl<'a> Attempt<'a> {
     /// format, or the skip.
     pub fn selection(&self, i: usize, t: &Texture) -> Result<Format, Class> {
         let obj = self.texs.as_slice().get(i).map(|x| &x.obj);
-        let platform = obj
-            .and_then(|obj| obj.file().target_platform())
-            .unwrap_or(UNKNOWN_PLATFORM);
-        let unity_version = obj.map_or((u16::MAX, u16::MAX), read::unity_version);
-        read::answer(t, platform, self.options.formats, unity_version)
+        read::object_answer(t, obj, self.options.formats)
     }
 
     /// Texture `i`'s answer at the plan: its decoded mode, or the skip (its

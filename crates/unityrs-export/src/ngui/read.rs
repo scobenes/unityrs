@@ -1,4 +1,4 @@
-// Ported from UnityPy 1.25.2 (MIT): the names a Sprite's or a Texture2D's attribute cannot be set under (UnityPyBoost/TypeTreeHelper.cpp's parse_class, classes/legacy_patch/Sprite.py, classes/legacy_patch/Texture2D.py and classes/Object.py), for SETTERLESS. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): the names a Sprite's or a Texture2D's attribute cannot be set under (UnityPyBoost/TypeTreeHelper.cpp's parse_class, classes/legacy_patch/Sprite.py, classes/legacy_patch/Texture2D.py and classes/Object.py), for SETTERLESS; crunched texture version indexing (export/Texture2DConverter.py and helpers/UnityVersion.py). See THIRD_PARTY_LICENSES.
 //! The cutter's reads (`docs/BATCH_SPEC.md` 4.4 steps 1 and 2, section 5):
 //! a MonoBehaviour's head, a peeked name, a texture's fields, an atlas's
 //! material name, each as the shape the cutter reads or a [`Class`].
@@ -190,7 +190,8 @@ impl Reader {
         }
         let tree = |wide| {
             let list = NodeList::trusted(head_rows(wide)).map_err(internal)?;
-            Tree::compile(Arc::new(list), &Limits::default()).map_err(internal)
+            Tree::compile(list.into_shared().map_err(internal)?, &Limits::default())
+                .map_err(internal)
         };
         Ok(Self {
             wide: tree(true)?,
@@ -334,8 +335,10 @@ fn peek_tree(
     })?;
     let peek = seam.probe(|| NodeList::from_rows(kept).map_err(|e| classify::tree(&e)))?;
     let limits = &file.context().limits;
-    let compiled =
-        seam.probe(|| Tree::compile(Arc::new(peek), limits).map_err(|e| classify::tree(&e)))?;
+    let compiled = seam.probe(|| {
+        Tree::compile(peek.into_shared().map_err(|e| classify::tree(&e))?, limits)
+            .map_err(|e| classify::tree(&e))
+    })?;
     Ok(Some(compiled))
 }
 
@@ -477,14 +480,20 @@ pub fn answer(
     formats(t, platform, allowed, unity_version)
 }
 
-/// Selection uses the resolved version of the texture's own file, including
-/// a dependency's. Without a usable version, never assume legacy crunch.
-pub(crate) fn unity_version(obj: &ObjectRef) -> (u16, u16) {
-    obj.file()
-        .version()
-        .and_then(|v| v.version.as_tuple().ok())
-        .map_or((u16::MAX, u16::MAX), |(major, minor, ..)| (major, minor))
+/// Select without indexing the version; data retrieval must precede that read.
+pub(crate) fn object_answer(
+    t: &Texture,
+    obj: Option<&ObjectRef>,
+    allowed: Formats,
+) -> Result<Format, Class> {
+    let platform = obj
+        .and_then(|o| o.file().target_platform())
+        .unwrap_or(super::attempt::UNKNOWN_PLATFORM);
+    answer(t, platform, allowed, (u16::MAX, u16::MAX))
 }
+
+mod crunch;
+pub(super) use crunch::data_format;
 
 /// Section 3's answers 2 and 3 for `t`, whose sides are not 0, on
 /// `platform`: [`answer`] past its first.

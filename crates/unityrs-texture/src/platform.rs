@@ -178,6 +178,7 @@ fn effective(format: i32) -> i32 {
 fn prepared(
     t: &TextureFields<'_>,
     len: usize,
+    selected: Option<Format>,
 ) -> Result<(Format, Plan, Option<SwitchLayout>), DecodeError> {
     // Empty sides precede even format/platform checks in the converter.
     if t.width == 0 || t.height == 0 {
@@ -186,6 +187,16 @@ fn prepared(
             crate::plan(Format::Rgba32, len, 0, 0)?,
             None,
         ));
+    }
+    if t.texture_format == 6 || (t.texture_format == 21 && t.width % 2 != 0) {
+        return Err(DecodeError::Unsupported {
+            format: if t.texture_format == 6 {
+                Format::ArgbFloat
+            } else {
+                Format::Yuy2
+            },
+            width: t.width,
+        });
     }
     if len == 0 {
         return Err(DecodeError::NoImageData);
@@ -207,7 +218,10 @@ fn prepared(
     } else {
         None
     };
-    let format = Format::from_texture_format(value).ok_or(PlatformError::TextureFormat(value))?;
+    let format = selected
+        .filter(|f| f.texture_format() == value)
+        .or_else(|| Format::from_texture_format(value))
+        .ok_or(PlatformError::TextureFormat(value))?;
     let (w, h) = layout.map_or((t.width, t.height), |l| {
         (
             i32::try_from(l.width).unwrap_or(i32::MAX),
@@ -229,7 +243,25 @@ fn prepared(
 /// Platform-aware counterpart of [`crate::plan`]. Scratch includes the
 /// transformed input, padded image, final crop and decoder tables while live.
 pub fn plan_in(t: &TextureFields<'_>, data_len: usize) -> Result<Plan, DecodeError> {
-    let (_, mut p, layout) = prepared(t, data_len)?;
+    platform_plan(t, data_len, None)
+}
+
+/// Platform-aware planning retaining the decoder chosen by [`crate::select_in`].
+/// In particular, Unity and legacy DXT Crunch share a numeric format value.
+pub fn plan_in_as(
+    format: Format,
+    t: &TextureFields<'_>,
+    data_len: usize,
+) -> Result<Plan, DecodeError> {
+    platform_plan(t, data_len, Some(format))
+}
+
+fn platform_plan(
+    t: &TextureFields<'_>,
+    data_len: usize,
+    selected: Option<Format>,
+) -> Result<Plan, DecodeError> {
+    let (_, mut p, layout) = prepared(t, data_len, selected)?;
     if p.output_bytes == 0 {
         return Ok(p);
     }
@@ -266,8 +298,28 @@ pub fn decode_in(
     data: &[u8],
     meter: &Arc<Meter>,
 ) -> Result<Image, DecodeError> {
-    let p = plan_in(t, data.len())?;
-    let (format, base, layout) = prepared(t, data.len())?;
+    platform_decode(t, data, meter, None)
+}
+
+/// Apply platform transforms while retaining a selected Crunch fork.
+/// Switch RGB24/BGR24 promotion still chooses the four-channel decoder.
+pub fn decode_in_as(
+    format: Format,
+    t: &TextureFields<'_>,
+    data: &[u8],
+    meter: &Arc<Meter>,
+) -> Result<Image, DecodeError> {
+    platform_decode(t, data, meter, Some(format))
+}
+
+fn platform_decode(
+    t: &TextureFields<'_>,
+    data: &[u8],
+    meter: &Arc<Meter>,
+    selected: Option<Format>,
+) -> Result<Image, DecodeError> {
+    let p = platform_plan(t, data.len(), selected)?;
+    let (format, base, layout) = prepared(t, data.len(), selected)?;
     if p.output_bytes == 0 {
         return crate::decode(format, data, 0, 0, meter);
     }

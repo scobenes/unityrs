@@ -48,7 +48,17 @@ fn formats_name_any_decoded_format_in_any_order() {
             "ATC_RGBA8",
             "ASTC_RGB_6x6",
             "DXT1Crunched",
-            "DXT5Crunched"
+            "DXT5Crunched",
+            "ETC_RGB4Crunched",
+            "ETC2_RGBA8Crunched",
+            "PVRTC_RGBA2",
+            "PVRTC_RGB4",
+            "RHalf",
+            "RGBAFloat",
+            "RGB48",
+            "RGBAHalf",
+            "YUY2",
+            "RGBA64_SIGNED"
         ]);
     }))
     .spec;
@@ -63,10 +73,21 @@ fn formats_name_any_decoded_format_in_any_order() {
         .with(Format::AtcRgba8)
         .with(Format::AstcRgb6x6)
         .with(Format::Dxt1Crunched)
-        .with(Format::Dxt5Crunched);
+        .with(Format::Dxt5Crunched)
+        .with(Format::EtcRgb4Crunched)
+        .with(Format::Etc2Rgba8Crunched)
+        .with(Format::PvrtcRgba2)
+        .with(Format::PvrtcRgb4)
+        .with(Format::RHalf)
+        .with(Format::RgbaFloat)
+        .with(Format::Rgb48)
+        .with(Format::RgbaHalf)
+        .with(Format::Yuy2)
+        .with(Format::Rgba64Signed);
     assert_eq!(s.outputs.formats, want);
     // Every format this binary decodes is accepted, all at once.
     let all: Vec<_> = Format::ALL.iter().map(|f| f.name()).collect();
+    assert_eq!(all.len(), 68);
     let s = accepted(&v2(|v| v["outputs"]["formats"] = json!(all))).spec;
     assert_eq!(s.outputs.formats, Formats::DECODED);
 }
@@ -84,10 +105,7 @@ fn each_refusal_formats_adds() {
         formats(json!(["DXT1", "ETC_RGB4_3DS"])),
         "range /outputs/formats/1"
     );
-    assert_eq!(
-        formats(json!(["ETC_RGB4Crunched"])),
-        "range /outputs/formats/0"
-    );
+    assert_eq!(formats(json!(["BC6H"])), "range /outputs/formats/0");
     assert_eq!(formats(json!(["ASTC_HDR_4x4"])), "range /outputs/formats/0");
     // A repeat, at the later item; none at all.
     assert_eq!(

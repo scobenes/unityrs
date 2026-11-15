@@ -77,7 +77,9 @@ pub(super) fn write(
         platform,
         platform_blob: blob,
     };
-    let image = unityrs_texture::decode_in(&fields, data, meter)?;
+    let format = selected_format(object, &fields, data)?;
+    let image = unityrs_texture::decode_in_as(format, &fields, data, meter)?;
+
     let mode = match image.mode() {
         unityrs_texture::Mode::L => unityrs_imageio::Mode::L,
         unityrs_texture::Mode::Rgb => unityrs_imageio::Mode::Rgb,
@@ -104,4 +106,123 @@ pub(super) fn write(
     sink.file(name.as_bytes(), ".png", &mut |out| {
         out.write_bytes(png.bytes())
     })
+}
+
+// Preserve the owning file's Crunch fork without indexing versions for plain
+// formats or empty images, which return before that branch in the converter.
+fn selected_format(
+    object: &ObjectRef,
+    fields: &unityrs_texture::TextureFields<'_>,
+    data: &[u8],
+) -> Result<unityrs_texture::Format, MeshError> {
+    use unityrs_texture::{Format, Formats, Selection};
+    if fields.width == 0 || fields.height == 0 {
+        return Ok(Format::Rgba32);
+    }
+    let format = Format::from_texture_format(fields.texture_format)
+        .or_else(|| (fields.texture_format == 6).then_some(Format::ArgbFloat))
+        .ok_or_else(|| {
+            if data.is_empty() {
+                unityrs_texture::DecodeError::NoImageData.into()
+            } else {
+                MeshError::Field("unsupported texture")
+            }
+        })?;
+    if !format.is_crunched() || data.is_empty() {
+        return Ok(format);
+    }
+    let version = object
+        .file()
+        .version()
+        .map(|v| {
+            v.version
+                .as_tuple()
+                .map(|(major, minor, ..)| (major, minor))
+        })
+        .transpose()
+        .map_err(unityrs_core::Error::from)?
+        .unwrap_or((u16::MAX, u16::MAX));
+    match unityrs_texture::select_in(fields, Formats::DECODED, version) {
+        Selection::Export(format) => Ok(format),
+        Selection::Skip(_) => Err(MeshError::Field("unsupported texture")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unityrs_core::{Bytes, File, version::UnityVersion};
+
+    #[test]
+    fn obj_crunch_uses_the_file_version_after_empty_checks_only() {
+        for version in ["2017.2.0f1", "2017.3.0f1", "5.0.0a1536"] {
+            let mut options = unityrs_core::env::EnvOptions::unitypy();
+            Arc::make_mut(&mut options.context).version.force_serialized =
+                Some(UnityVersion::parse(&RawStr::from(version)).unwrap());
+            let env = Environment::new(options);
+            let data = unityrs_testkit::ngui::file(
+                &[],
+                &[unityrs_testkit::ngui::texture(
+                    1,
+                    b"synthetic",
+                    4,
+                    (1, 1),
+                    vec![0; 4],
+                )],
+                true,
+            )
+            .unwrap();
+            let File::Serialized(file) = env
+                .load(unityrs_core::env::Source::Bytes {
+                    name: RawStr::from("synthetic.assets"),
+                    data: Bytes::from(data),
+                })
+                .unwrap()
+            else {
+                panic!("serialized file")
+            };
+            let object = file.object(1).unwrap();
+            let mut fields = unityrs_texture::TextureFields {
+                texture_format: 4,
+                width: 1,
+                height: 1,
+                platform: 13,
+                platform_blob: None,
+            };
+            assert_eq!(
+                selected_format(&object, &fields, &[1]).unwrap(),
+                unityrs_texture::Format::Rgba32
+            );
+            fields.texture_format = 28;
+            let empty_format = selected_format(&object, &fields, &[]).unwrap();
+            assert!(matches!(
+                unityrs_texture::decode_in_as(empty_format, &fields, &[], &Meter::unlimited()),
+                Err(unityrs_texture::DecodeError::NoImageData)
+            ));
+            let selected = selected_format(&object, &fields, &[1]);
+            match version {
+                "2017.2.0f1" => {
+                    assert_eq!(selected.unwrap(), unityrs_texture::Format::Dxt1Crunched);
+                }
+                "2017.3.0f1" => assert_eq!(
+                    selected.unwrap(),
+                    unityrs_texture::Format::UnityDxt1Crunched
+                ),
+                _ => assert!(selected.is_err()),
+            }
+            for value in [6, 21] {
+                fields.texture_format = value;
+                let format = selected_format(&object, &fields, &[]).unwrap();
+                assert!(matches!(
+                    unityrs_texture::decode_in_as(format, &fields, &[], &Meter::unlimited()),
+                    Err(unityrs_texture::DecodeError::Unsupported { .. })
+                ));
+            }
+            fields.width = 0;
+            assert_eq!(
+                selected_format(&object, &fields, &[]).unwrap(),
+                unityrs_texture::Format::Rgba32
+            );
+        }
+    }
 }

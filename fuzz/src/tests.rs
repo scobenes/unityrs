@@ -19,11 +19,21 @@ fn crunch_check_runs_synthetic_streams_and_their_truncations_at_every_meter() {
         "../../crates/unityrs-texture/tests/fixtures/crunch_native.json"
     ))
     .expect("the synthetic fixture");
-    for c in fixture["cases"].as_array().expect("cases").iter().chain(
-        fixture["truncated_cases"]
-            .as_array()
-            .expect("truncated cases"),
-    ) {
+    let unity: serde_json::Value = serde_json::from_str(include_str!(
+        "../../crates/unityrs-texture/tests/fixtures/unitycrunch_native.json"
+    ))
+    .expect("Unity fork fixture");
+    for c in fixture["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .chain(
+            fixture["truncated_cases"]
+                .as_array()
+                .expect("truncated cases"),
+        )
+        .chain(unity["cases"].as_array().expect("Unity cases"))
+    {
         let hex = c["data"]["hex"].as_str().expect("stream hex");
         let data: Vec<_> = hex
             .as_bytes()
@@ -37,7 +47,12 @@ fn crunch_check_runs_synthetic_streams_and_their_truncations_at_every_meter() {
         for meter in 0..4 {
             for len in [0, 1, 15, 61, data.len().saturating_sub(1), data.len()] {
                 let case = TextureCase {
-                    format: i32::try_from(c["format"].as_i64().expect("format")).expect("i32"),
+                    format: i32::try_from(c["format"].as_i64().expect("format")).expect("i32")
+                        + if c["unity"] == true && matches!(c["format"].as_i64(), Some(28 | 29)) {
+                            100
+                        } else {
+                            0
+                        },
                     width: i32::try_from(c["width"].as_i64().expect("width")).expect("i32"),
                     height: i32::try_from(c["height"].as_i64().expect("height")).expect("i32"),
                     platform: 19,
@@ -172,6 +187,43 @@ fn the_texture_check_takes_each_answer_under_each_meter() {
         // An image (refused under the charge less 1), short data, past the
         // bound, Pillow's raw width cap, a side of 0, empty data.
         crate::texture::check(&case(4, 2, 2, meter, vec![7; 16]));
+        // Every Tier B/C raw format reaches its pixel loop or the meter's
+        // refusal, plus short data and both Tier U layout refusals.
+        for (format, bytes) in [
+            (9, 2),
+            (15, 2),
+            (16, 4),
+            (17, 8),
+            (18, 4),
+            (19, 8),
+            (20, 16),
+            (21, 2),
+            (22, 4),
+            (23, 12),
+            (62, 2),
+            (72, 4),
+            (73, 6),
+            (74, 8),
+            (75, 1),
+            (76, 2),
+            (77, 3),
+            (78, 4),
+            (79, 2),
+            (80, 4),
+            (81, 6),
+            (82, 8),
+        ] {
+            for len in [0, bytes * 4 - 1, bytes * 4, bytes * 4 + 1] {
+                crate::texture::check(&case(format, 2, 2, meter, vec![7; len]));
+            }
+        }
+        // Versioned DXT selection and every crunched value still reach the
+        // plain decoder here; CRN streams have their own target.
+        for format in [28, 29, 64, 65] {
+            crate::texture::check(&case(format, 4, 4, meter, vec![7; 16]));
+        }
+        crate::texture::check(&case(6, 2, 2, meter, vec![7; 64]));
+        crate::texture::check(&case(21, 3, 2, meter, vec![7; 12]));
         crate::texture::check(&case(25, 5, 3, meter, vec![1; 31]));
         crate::texture::check(&case(10, 16385, 16384, meter, vec![1; 3]));
         crate::texture::check(&case(4, 67_108_857, 1, meter, vec![1]));
@@ -436,4 +488,25 @@ fn pvrtc_atc_texture_inputs_match_their_plans_under_each_meter() {
             }
         }
     }
+}
+
+#[test]
+fn scene_and_obj_checks_run_every_synthetic_seed_and_truncations() {
+    let mut scenes = 0;
+    let mut objs = 0;
+    for (_, case) in unityrs_testkit::fuzz::scene_cases() {
+        let bytes = case.encode();
+        scenes += usize::from(crate::scene_collect::check(&bytes));
+        objs += usize::from(crate::obj_text::check(&bytes));
+        if case.meter == 0 {
+            for cut in [0, 1, 3, bytes.len() / 2, bytes.len() - 1] {
+                crate::scene_collect::check(&bytes[..cut]);
+                crate::obj_text::check(&bytes[..cut]);
+            }
+        }
+    }
+    assert!(
+        scenes >= 100 && objs >= 100,
+        "targets must reach successful exports: scenes={scenes}, objs={objs}"
+    );
 }

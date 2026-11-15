@@ -97,7 +97,7 @@ rounded payload bits, including NaN and infinity, and may fail validation;
 JSON itself remains valid. Morph deltas are never unit-normalized.
 
 The model already uses glTF coordinates and UVs. `collect` performs the Unity
-conversion described below. Material mapping is described below; the CLI is PR 8.
+conversion described below. Material mapping is described below.
 
 Writer tests use hand-built scenes; collector tests use `testkit::scene3d`. The committed empty, triangle and skinned
 sparse-morph GLBs are byte goldens; `UNITYRS_GLTF_UPDATE_GOLDENS=1 cargo test
@@ -123,6 +123,27 @@ Other invalid inputs are refused before emission, and the raw-mode fixture must
 fail validation.
 The validator is a CI tool, never a library dependency or release artifact.
 
+
+Select an export unit with `unityrs_scene::Unit::Scene(file)` for a complete
+scene file (`levelN` or a scene bundle's `BuildPlayer-<name>` CAB), or
+`unit_from_object(&object)` for a prefab GameObject or a SceneAsset marker
+(class 1032). A SceneAsset selects its owning file without parsing its payload.
+`unit_from_container(&env, &file, &row)` dereferences one container entry,
+returning a prefab for a GameObject, a scene for a SceneAsset, and `None` for
+other classes. Each prefab entry is its own unit, including entries targeting
+the same root. Broken selected pointers return their error. Call
+`unit.graph(&env, &GraphOptions::default(), &meter)` before collecting.
+
+A scene unit includes all root Transforms/RectTransforms with null fathers in
+that file, in `SerializedFile::objects()` order rather than signed path-id
+order. A prefab unit includes only its chosen GameObject subtree; its parent
+outside that subtree is not imported. Child order follows `m_Children`.
+Load the scene's `.sharedAssets` and other dependency files into the same
+Environment (or supply a `CabResolver`) for cross-file references; dependency
+files' independent roots do not join the selected scene. `scene_roots` selects
+exact root names or paths; `exclusions` removes exact node names or paths and
+their descendants during collection. The root-order policy and built-in ids
+still await Editor-fixture confirmation.
 
 `collect(&env, &graph, &profile, &meter)` returns a `Scene`; write it with
 `write_glb(&scene, &profile.options(), &meter, &mut sink)`. Pass `&CorePbr` to
@@ -252,13 +273,19 @@ Parsing uses charged fallible owners and has no input-sized serde allocation.
 | `normalise` | boolean; false may produce spec-invalid BIN values | true |
 | `clip_states` | empty array; nonempty arrays require P2b | `[]` |
 
-Built-in placeholders retain the numeric id in `unity_builtin`. `resolve`
-requests the supplied resource through the Environment and diagnoses a missing
-file/object. `procedural` supports approximate Cube, Quad and Plane geometry,
+Built-in placeholders retain a sorted, unique array of structured identities in
+`extras.unity_builtin`, for example
+`[{"file":"unity default resources","id":10210,"name":"Quad"}]`.
+`file` is the canonical resource basename; unknown ids retain `file` and `id`
+with `name:null`. The editable model stores these in `Node::builtins`.
+`resolve` uses the same basename and case recognition as built-in detection,
+accepting both `/` and `\`, then requests the supplied
+resource through the Environment and its existing `CabResolver`; a missing
+file/object is diagnosed. Placeholder mode never resolves a built-in, even
+when its resource is already loaded. `procedural` supports approximate Cube, Quad and Plane geometry,
 tagged `approximate`; unsupported built-ins and procedural skinned renderers
 leave a reported empty renderer. Malformed resolved resources degrade only
 their renderer; resource, meter, limit and allocation refusals propagate.
-Repeated `unity_builtin` markers contain a sorted, unique set of numeric ids.
 No Editor resource geometry is shipped. Metadata strings remain independently
 charged. Invalid UTF-8 source names use replacement characters in glTF JSON.
 

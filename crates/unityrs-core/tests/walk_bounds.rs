@@ -54,7 +54,7 @@ fn unhex(s: &str) -> Vec<u8> {
 }
 
 /// `[[level, type, name, meta], ...]` as a node list.
-fn nodes(rows: &Json) -> Arc<NodeList> {
+fn nodes(rows: &Json) -> unityrs_core::typetree::SharedNodes {
     let rows = rows
         .as_array()
         .unwrap()
@@ -65,7 +65,7 @@ fn nodes(rows: &Json) -> Arc<NodeList> {
                 .with_meta_flag(i32::try_from(r[3].as_i64().unwrap()).unwrap())
         })
         .collect();
-    Arc::new(NodeList::trusted(rows).unwrap())
+    NodeList::trusted(rows).unwrap().into_shared().unwrap()
 }
 
 /// A case's ref types as a list: `null` (no file) and `"absent"` read as
@@ -316,7 +316,7 @@ fn a_repeated_name_can_write_more_values_than_its_read() {
         rows.push(NodeRow::new(3, "int", "data"));
     }
     let tree = Tree::compile(
-        Arc::new(NodeList::trusted(rows).unwrap()),
+        NodeList::trusted(rows).unwrap().into_shared().unwrap(),
         &Limits::default(),
     )
     .unwrap();

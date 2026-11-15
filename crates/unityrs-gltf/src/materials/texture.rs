@@ -73,8 +73,8 @@ fn decode(
             .and_then(|v| v.version.as_tuple().ok())
             .map_or((u16::MAX, u16::MAX), |(major, minor, ..)| (major, minor)),
     );
-    match selected {
-        unityrs_texture::Selection::Export(_) => {}
+    let format = match selected {
+        unityrs_texture::Selection::Export(f) => f,
         unityrs_texture::Selection::Skip(unityrs_texture::Skip::UnsupportedFormat(_)) => {
             return Err(GltfError::Invalid("undecodable_texture"));
         }
@@ -84,7 +84,7 @@ fn decode(
         unityrs_texture::Selection::Skip(_) => {
             return Err(GltfError::Invalid("unsupported_texture_platform"));
         }
-    }
+    };
     let empty = Bytes::new();
     let inline = match input::optional(&p, root, b"image_data", meter)? {
         Some(Value::Bytes(b)) => b,
@@ -127,8 +127,9 @@ fn decode(
         })?;
     // Source/header plausibility (including lengths) precedes any output charge.
     // Only resource/meter/allocator refusals escape; static decode bounds are data.
-    unityrs_texture::plan_in(&fields, data.len()).map_err(decode_error)?;
-    let image = unityrs_texture::decode_in(&fields, &data, meter).map_err(decode_error)?;
+    unityrs_texture::plan_in_as(format, &fields, data.len()).map_err(decode_error)?;
+    let image =
+        unityrs_texture::decode_in_as(format, &fields, &data, meter).map_err(decode_error)?;
     Ok(image)
 }
 

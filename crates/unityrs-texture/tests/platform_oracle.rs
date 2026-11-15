@@ -84,15 +84,64 @@ fn switch_padding_crop_promotions_xbox_swap_and_crunch_order_replay() {
         let meter = Meter::unlimited();
         let planned = plan_in(&fields, data.len());
         let got = decode_in(&fields, &data, &meter);
+        if matches!(fields.texture_format, 9 | 62) && !c["block"].is_null() {
+            // T7 corrects the raw conversion after T6 deswizzles it. Keep
+            // UnityPy's recorded exception, and independently read the high
+            // byte (R16) or both stored bytes (RG16), crop, then flip.
+            assert!(c["raises"].is_string(), "{id}");
+            let exponent = u32::from_le_bytes(blob.as_ref().unwrap()[8..12].try_into().unwrap());
+            let layout = platform::switch_layout(
+                fields.texture_format,
+                fields.width,
+                fields.height,
+                exponent,
+            )
+            .unwrap();
+            let linear = platform::deswizzle(&data, &layout, &meter).unwrap();
+            let mut expected = Vec::new();
+            let stride = layout.padded_size().0 as usize * 2;
+            for y in (0..usize::try_from(fields.height).unwrap()).rev() {
+                for x in 0..usize::try_from(fields.width).unwrap() {
+                    let p = &linear.as_slice()[y * stride + x * 2..][..2];
+                    let pixel = if fields.texture_format == 9 {
+                        [p[1], 0, 0]
+                    } else {
+                        [p[0], p[1], 0]
+                    };
+                    expected.extend_from_slice(&pixel);
+                }
+            }
+            drop(linear);
+            let got = got.unwrap_or_else(|e| panic!("{id}: {e}"));
+            let p = planned.unwrap();
+            assert_eq!(got.mode(), Mode::Rgb, "{id}");
+            assert_eq!(got.pixels(), expected, "{id}");
+            assert_eq!(
+                (got.width(), got.height()),
+                (fields.width.unsigned_abs(), fields.height.unsigned_abs())
+            );
+            assert_eq!(meter.used(), p.charge());
+            drop(got);
+            assert_eq!(meter.used(), 0);
+            images += 1;
+            continue;
+        }
         if c["mode"].is_null() {
             let error = got.err().unwrap_or_else(|| panic!("{id}: decoded"));
-            let expected = unityrs_texture::DecodeError::Platform(if c["block"].is_null() {
-                unityrs_texture::PlatformError::SwitchFormat(fields.texture_format)
+            let expected = if fields.texture_format == 6 {
+                unityrs_texture::DecodeError::Unsupported {
+                    format: unityrs_texture::Format::ArgbFloat,
+                    width: fields.width,
+                }
             } else {
-                // These four table formats await their own decoder tasks.
-                assert!([6, 9, 24, 62].contains(&fields.texture_format), "{id}");
-                unityrs_texture::PlatformError::TextureFormat(fields.texture_format)
-            });
+                unityrs_texture::DecodeError::Platform(if c["block"].is_null() {
+                    unityrs_texture::PlatformError::SwitchFormat(fields.texture_format)
+                } else {
+                    // BC6H still awaits its decoder task.
+                    assert_eq!(fields.texture_format, 24, "{id}");
+                    unityrs_texture::PlatformError::TextureFormat(fields.texture_format)
+                })
+            };
             assert_eq!(error, expected, "{id}");
             assert_eq!(planned.unwrap_err(), expected, "{id}");
             refusals += 1;
@@ -108,7 +157,7 @@ fn switch_padding_crop_promotions_xbox_swap_and_crunch_order_replay() {
         }
         assert_eq!(meter.used(), 0, "{id}");
     }
-    assert_eq!((images, refusals), (123, 59));
+    assert_eq!((images, refusals), (129, 53));
 }
 
 #[test]

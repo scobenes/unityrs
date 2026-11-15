@@ -156,7 +156,10 @@ impl LocalCopy {
                 None
             }
             Ok(Err(failure)) => Some(failure),
-            Err(_) => Some(internal()),
+            Err(_) => {
+                crate::diagnostic::pending::panic(format_args!("a local copy: "));
+                Some(internal())
+            }
         };
         if crate::alloc::refusals() != before {
             reduce(&mut end, RunFailure::new(ReasonCode::HostMemory));
@@ -254,7 +257,10 @@ impl LocalFinish {
             self.end.failure = match result {
                 Ok(Ok(())) => None,
                 Ok(Err(failure)) => Some(failure),
-                Err(_) => Some(internal()),
+                Err(_) => {
+                    crate::diagnostic::pending::panic(format_args!("a local copy's finish: "));
+                    Some(internal())
+                }
             };
         }
         let mut end = self.end;
@@ -273,6 +279,7 @@ impl LocalFinish {
             }
         }));
         if cleanup.is_err() {
+            crate::diagnostic::pending::panic(format_args!("a local copy's cleanup: "));
             reduce(&mut end, RunFailure::new(ReasonCode::Internal));
         }
         if crate::alloc::refusals() != before {
@@ -289,6 +296,7 @@ impl LocalFinish {
         if matches!(end.failure, Some(Failure::Run(_)))
             && catch_unwind(AssertUnwindSafe(|| hooks.request_stop(&end))).is_err()
         {
+            crate::diagnostic::pending::panic(format_args!("a local copy's stop: "));
             reduce(&mut end, RunFailure::new(ReasonCode::Internal));
         }
         end

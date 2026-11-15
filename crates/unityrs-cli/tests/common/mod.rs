@@ -95,7 +95,7 @@ pub fn refusal_line(ms: u64, rss: u64, detail: &str) -> String {
         status: None,
         code: Code::BadSpec,
         reason: Some("bad_spec"),
-        detail: Some(detail.into()),
+        detail: Some(detail.to_owned().into()),
     }))
 }
 

@@ -19,10 +19,12 @@
 //!
 //! Legacy `DXT1Crunched` and `DXT5Crunched` are also supported through the
 //! `crunch` module and existing BC1/BC3 decoders. [`select_in`] and
-//! [`select_crunch`] take the Unity version explicitly and refuse Unity's
-//! fork (T4b). Version 2 may allow-list both names; version 1 keeps its five.
-//! Their native builder fixtures pass; the optional UnityPy pixel replay
-//! awaits recording.
+//! [`select_crunch`] take the Unity version and choose legacy or Unity fork
+//! DXT; crunched ETC always uses the Unity fork and existing ETC decoders.
+//! Version 2 may allow-list Unity's four crunched names; version 1 keeps
+//! its five formats. Native builder fixtures and the pinned UnityPy pixel
+//! fixture cover both forks (`tests/crunch_oracle.rs` and
+//! `tests/unitycrunch_oracle.rs`).
 //!
 //! - [`select()`]: a texture's fields to [`Selection::Export`] with its
 //!   [`Format`], or [`Selection::Skip`] with the [`Skip`] reason the manifest
@@ -44,6 +46,14 @@
 //! crop after decoding. [`array`] maps `GraphicsFormat` values, resolves streamed
 //! data and decodes slices, applying PARITY section 19.2's B/C corrections
 //! and platform refusals. [`pad_image`] repeats edge pixels for encoder callers.
+//!
+//! **Tier B/C raw formats.** The twenty-two raw formats of `PARITY.md`
+//! sections 17.1, 19.1 and 19.2 use independent closed forms in `tierb`,
+//! with no Pillow conversion. `tests/tierb_oracle.rs` pins UnityPy's actual
+//! images/exceptions beside those references. Nonempty `ARGBFloat` and
+//! odd-width YUY2 layouts are refused by selection and planning; zero
+//! sides retain the empty image behavior. These decoders charge only
+//! their output and need no scratch allocation.
 //!
 //! **How each format matches UnityPy.** UnityPy decodes the five, and the
 //! eleven of P3's Pillow formats, with Pillow (`CONV_TABLE`,
@@ -136,6 +146,7 @@ mod pvrtc;
 mod raw;
 mod select;
 pub mod sprite;
+mod tierb;
 
 pub use contain::{MESSAGE_BYTES, NON_STRING_PAYLOAD, Payload, contain};
 pub use crunch::CrunchError;
@@ -143,10 +154,10 @@ pub use decode::{DecodeError, Image, MAX_CROP_PIXELS, MAX_PIXELS, Plan, bcn_leng
 pub use format::{Format, Mode, TEXTURE_FORMATS, texture_format_name};
 pub use formats::Formats;
 pub use image::{image_from_pixels, pad_image};
-pub use platform::{PlatformError, decode_in, plan_in};
+pub use platform::{PlatformError, decode_in, decode_in_as, plan_in, plan_in_as};
 pub use select::{
-    SWITCH, Selection, Skip, SkippedPlatform, TextureFields, UnsupportedUnityCrunch,
-    XBOX_SWAP_FORMATS, XBOX360, is_switch_swizzled, select, select_crunch, select_in,
+    SWITCH, Selection, Skip, SkippedPlatform, TextureFields, XBOX_SWAP_FORMATS, XBOX360,
+    is_switch_swizzled, select, select_crunch, select_in,
 };
 
 /// Asserts at compile time that `T` is `Send + Sync` (plan section 3.16).

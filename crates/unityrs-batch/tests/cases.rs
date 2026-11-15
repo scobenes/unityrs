@@ -296,6 +296,32 @@ fn a_leap_second_only_at_23_59_60_utc() {
     }
 }
 
+/// A deadline whose offset carries it out of years 0000 to 9999 in UTC is
+/// `format`: the head writes it in UTC (7.3).
+#[test]
+fn a_deadline_must_fall_in_years_0000_to_9999_in_utc() {
+    for ok in [
+        "9999-12-31T23:59:59Z",
+        "9999-12-31T23:59:59.999999999Z",
+        "9999-12-31T23:59:59+00:01",
+        "0000-01-01T00:00:00Z",
+        "0000-01-01T00:00:00-00:01",
+    ] {
+        accepted(&with(|v| v["deadline"] = json!(ok)));
+    }
+    for bad in [
+        "9999-12-31T23:59:59-00:01",
+        "9999-12-31T23:59:60Z",
+        "0000-01-01T00:00:00+00:01",
+    ] {
+        assert_eq!(
+            refused(&with(|v| v["deadline"] = json!(bad))),
+            "format /deadline",
+            "{bad}"
+        );
+    }
+}
+
 // Ids (C6).
 
 #[test]
@@ -541,7 +567,7 @@ fn the_validator_refuses_and_differs_only_as_item_4_lists() {
     // Accepted by the validator, refused by the parser, as text (a token
     // such as `-0` does not survive a `Value`).
     let t = |v: Value| v.to_string();
-    let cases: [(String, Difference); 13] = [
+    let cases: [(String, Difference); 14] = [
         // Integer tokens (N1): the parser judges the token, the validator
         // the value.
         (
@@ -570,6 +596,10 @@ fn the_validator_refuses_and_differs_only_as_item_4_lists() {
         ),
         (
             t(with(|v| v["deadline"] = json!("2016-12-31T23:59:60+01:00"))),
+            Difference::Format,
+        ),
+        (
+            t(with(|v| v["deadline"] = json!("9999-12-31T23:59:59-00:01"))),
             Difference::Format,
         ),
         // A URL's scheme, its host as written, an endpoint's path, query

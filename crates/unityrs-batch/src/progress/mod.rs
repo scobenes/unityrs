@@ -138,7 +138,9 @@ pub struct Exit {
     /// The reason that set the code, where section 10 names one.
     pub reason: Option<&'static str>,
     /// Its detail: cut to [`MAX_DETAIL_BYTES`] as written when rendered.
-    pub detail: Option<String>,
+    /// A stop's fixed detail is borrowed, never copied: the finisher's
+    /// `exit` line allocates nothing for it.
+    pub detail: Option<std::borrow::Cow<'static, str>>,
 }
 
 impl Snapshot {

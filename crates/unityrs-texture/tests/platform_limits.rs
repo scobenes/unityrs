@@ -78,6 +78,7 @@ fn supported_platforms_select_and_switch_without_a_texel_block_refuses() {
         let allowed = Formats::NONE.with(format);
         let fields = TextureFields {
             texture_format: format.texture_format(),
+            width: 4,
             ..texture(&blob)
         };
         let expected = if platform::switch_block(match fields.texture_format {
@@ -180,6 +181,24 @@ fn arrays_bound_depth_step_size_output_and_work() {
     let meter = Meter::with_decode_work(u64::MAX, 1, Arc::new(Unbounded), Reservation::Input);
     assert!(array::decode(&fields, &data, None, &meter).is_err());
     assert_eq!(meter.used(), 0);
+}
+
+#[test]
+fn corrected_array_byte_formats_use_closed_form_bounds_instead_of_pillow_caps() {
+    for graphics_format in [14, 18] {
+        let fields = ArrayFields {
+            graphics_format,
+            width: 100_000_000,
+            height: 1,
+            depth: 1,
+            data_size: 200_000_000,
+            platform: 13,
+        };
+        let p = array::plan(&fields, 200_000_000).unwrap();
+        assert_eq!(p.image.input_bytes, 200_000_000);
+        assert_eq!(p.image.output_bytes, 300_000_000);
+        assert_eq!(p.image.scratch, 0);
+    }
 }
 
 #[test]

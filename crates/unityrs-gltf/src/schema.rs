@@ -13,17 +13,48 @@ pub(crate) fn name(j: &mut Json<'_>, n: Option<&Text>) -> Result<()> {
 pub(crate) fn extras(j: &mut Json<'_>, e: &Extras) -> Result<()> {
     if !e.is_empty() {
         j.raw(",\"extras\":{")?;
-        for (i, (k, v)) in e.as_slice().iter().enumerate() {
-            if i > 0 {
-                j.raw(",")?;
-            }
-            j.string(k.as_bytes())?;
-            j.raw(":")?;
-            j.string(v.as_bytes())?;
-        }
+        extra_fields(j, e)?;
         j.raw("}")?;
     }
     Ok(())
+}
+fn extra_fields(j: &mut Json<'_>, e: &Extras) -> Result<()> {
+    for (i, (k, v)) in e.as_slice().iter().enumerate() {
+        if i > 0 {
+            j.raw(",")?;
+        }
+        j.string(k.as_bytes())?;
+        j.raw(":")?;
+        j.string(v.as_bytes())?;
+    }
+    Ok(())
+}
+fn node_extras(j: &mut Json<'_>, n: &crate::Node) -> Result<()> {
+    if n.builtins.is_empty() {
+        return extras(j, &n.extras);
+    }
+    j.raw(",\"extras\":{")?;
+    extra_fields(j, &n.extras)?;
+    if !n.extras.is_empty() {
+        j.raw(",")?;
+    }
+    j.raw("\"unity_builtin\":[")?;
+    for (i, identity) in n.builtins.as_slice().iter().enumerate() {
+        if i > 0 {
+            j.raw(",")?;
+        }
+        j.raw("{\"file\":")?;
+        j.string(identity.file.as_bytes())?;
+        j.raw(",\"id\":")?;
+        j.number(identity.id)?;
+        j.raw(",\"name\":")?;
+        match identity.name {
+            Some(name) => j.string(name.as_bytes())?,
+            None => j.raw("null")?,
+        }
+        j.raw("}")?;
+    }
+    j.raw("]}")
 }
 fn aid(l: &Layout, id: usize) -> Result<usize> {
     l.accessors
@@ -256,7 +287,7 @@ fn nodes(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
             j.indices(n.children.as_slice())?;
         }
         name(j, n.name.as_ref())?;
-        extras(j, &n.extras)?;
+        node_extras(j, n)?;
         j.raw("}")?;
     }
     j.raw("]")

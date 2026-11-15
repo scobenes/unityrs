@@ -225,7 +225,12 @@ fn racing_first_requests_walk_a_root_at_most_once_per_thread() {
         .map(|t| t.join().unwrap())
         .collect();
     let raced = provider.meter.granted() - before;
-    assert!(lists.iter().all(|l| Arc::ptr_eq(l, &lists[0])), "one list");
+    assert!(
+        lists
+            .iter()
+            .all(|l| unityrs_core::typetree::SharedNodes::ptr_eq(l, &lists[0])),
+        "one list"
+    );
     assert!(
         (one..=THREADS * one).contains(&raced),
         "{raced} bytes granted, {} walks' worth",

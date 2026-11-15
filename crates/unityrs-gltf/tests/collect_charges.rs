@@ -438,3 +438,121 @@ fn successful_suffixed_resolver_load_refusals() {
     );
     counted::stop_counting_this_thread();
 }
+
+#[test]
+fn builtin_cache_and_procedural_buffers_refuse_each_allocation_and_reservation() {
+    let _serial = SERIAL.lock().unwrap();
+    counted::count_this_thread();
+    counted::others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
+    let budget = Arc::new(Budget {
+        home: Arc::new(Home),
+        calls: AtomicUsize::new(0),
+        refuse: AtomicUsize::new(usize::MAX),
+    });
+    let mut options = EnvOptions::unitypy();
+    let mut context = (*options.context).clone();
+    context.budget = budget.clone();
+    options.context = Arc::new(context);
+    let (env, graph) = builtin_refusal_fixture(options);
+    let m = Meter::new(u64::MAX, budget.clone(), Reservation::Input);
+    for mode in [Builtin::Resolve, Builtin::Procedural] {
+        let mut profile = Profile::new(&m);
+        profile.builtin = mode;
+        let attempt = || -> Result<(), GltfError> {
+            let scene = collect(&env, &graph, &profile, &m)?;
+            write_glb(&scene, &profile.options(), &m, &mut std::io::sink())?;
+            Ok(())
+        };
+        FAIL_AT.store(usize::MAX, Ordering::Relaxed);
+        attempt().unwrap();
+        let held = HELD.load(Ordering::Relaxed);
+        BASE.store(
+            LIVE.load(Ordering::Relaxed)
+                .saturating_sub(usize::try_from(held).unwrap()),
+            Ordering::Relaxed,
+        );
+        OVER.store(0, Ordering::Relaxed);
+        CALLS.store(0, Ordering::Relaxed);
+        ARMED.store(true, Ordering::Relaxed);
+        let result = attempt();
+        ARMED.store(false, Ordering::Relaxed);
+        result.unwrap();
+        let calls = CALLS.load(Ordering::Relaxed);
+        assert!(calls > 30);
+        assert_eq!(OVER.load(Ordering::Relaxed), 0);
+        for at in 0..calls {
+            FAIL_AT.store(at, Ordering::Relaxed);
+            CALLS.store(0, Ordering::Relaxed);
+            ARMED.store(true, Ordering::Relaxed);
+            let result = attempt();
+            ARMED.store(false, Ordering::Relaxed);
+            assert!(result.is_err(), "{mode:?} allocation {at}");
+            assert_eq!(m.used(), 0);
+            assert_eq!(HELD.load(Ordering::Relaxed), held);
+        }
+        FAIL_AT.store(usize::MAX, Ordering::Relaxed);
+        budget.calls.store(0, Ordering::Relaxed);
+        attempt().unwrap();
+        let charges = budget.calls.load(Ordering::Relaxed);
+        for at in 0..charges {
+            budget.calls.store(0, Ordering::Relaxed);
+            budget.refuse.store(at, Ordering::Relaxed);
+            let result = attempt();
+            budget.refuse.store(usize::MAX, Ordering::Relaxed);
+            assert!(result.is_err(), "{mode:?} reservation {at}");
+            assert_eq!(m.used(), 0);
+            assert_eq!(HELD.load(Ordering::Relaxed), held);
+        }
+    }
+    drop(graph);
+    drop(env);
+    assert_eq!(HELD.load(Ordering::Relaxed), 0);
+    counted::stop_counting_this_thread();
+}
+
+fn builtin_refusal_fixture(options: EnvOptions) -> (Environment, Graph) {
+    use unityrs_core::{Bytes, RawStr, env::Source, files::File};
+    use unityrs_scene::{GraphOptions, Unit};
+    use unityrs_testkit::{ngui::Object, scene3d as s};
+    let env = Environment::new(options);
+    let mut objects = collect_support::objects(false, false);
+    objects[2] = Object::new(
+        3,
+        1,
+        s::game_object(b"child", &[(0, 4), (0, 5), (0, 6), (0, 10)]),
+    );
+    objects[4] = Object::new(5, 33, s::mesh_filter((0, 3), (1, 10210)));
+    objects.push(Object::new(10, 23, s::mesh_renderer((0, 3), &[], (0, 0))));
+    let File::Serialized(file) = env
+        .load(Source::Bytes {
+            name: RawStr::from_static(b"level0"),
+            data: Bytes::from(
+                s::file(
+                    s::Layout::Unity2022,
+                    &["Library/unity default resources"],
+                    &objects,
+                )
+                .unwrap(),
+            ),
+        })
+        .unwrap()
+    else {
+        panic!("fixture")
+    };
+    let mesh = s::mesh::mesh(
+        10210,
+        b"quad",
+        &[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+        &[0, 1, 2],
+        s::mesh::MeshVersion::V2022,
+    );
+    env.load(Source::Bytes {
+        name: RawStr::from_static(b"unity default resources"),
+        data: Bytes::from(s::file(s::Layout::Unity2022, &[], &[mesh]).unwrap()),
+    })
+    .unwrap();
+    let graph = Unit::Scene(file)
+        .graph(&env, &GraphOptions::default(), &Meter::unlimited())
+        .unwrap();
+    (env, graph)
+}

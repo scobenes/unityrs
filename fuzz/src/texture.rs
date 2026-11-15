@@ -1,14 +1,15 @@
 //! The `texture` target's check: a texture's fields and data
 //! (`unityrs_testkit::fuzz::TextureCase`) through `unityrs-texture`'s
-//! `select` and `decode_in`, as the batch engine runs them
+//! `select` and `decode_in_as`, as the batch engine runs them
 //! (`docs/plans/extract.md` E15, E18, E59, E66), under the memory bound
 //! ([`crate::MEMORY`]) or a meter of about the decode's charge.
 //!
-//! A format outside the forty-two byte-independent formats the crate decodes
-//! (the five version 1 exports, the rest of Pillow's raw and `bcn` formats,
-//! the ETC and EAC formats, the ASTC LDR formats, PVRTC and ATC) decodes as
-//! one of them, and the two CRN formats as plain DXT1 or DXT5 (the `crunch`
-//! target checks CRN streams), so every input reaches a decoder. Besides a panic (libFuzzer's hook aborts at it,
+//! The sixty-four byte-independent formats include Pillow raw and `bcn`,
+//! ETC/EAC, ASTC LDR, PVRTC/ATC and Tier B/C raw closed forms. ARGBFloat
+//! and odd-width YUY2 exercise the Tier U refusals. Other unknown formats
+//! map to a decoded format, and all CRN variants to plain DXT/ETC formats
+//! (the `crunch` target checks CRN streams). Besides a panic (libFuzzer's
+//! hook aborts at it,
 //! before the decoder's containment can catch it), a finding is: a
 //! selection that exports a format the texture does not have; a decode
 //! whose answer is not its plan's, but for the meter's refusal of a charge
@@ -22,8 +23,8 @@ use unityrs_core::budget::{Reservation, Unbounded};
 use unityrs_core::limits::{ChargeError, Meter};
 use unityrs_testkit::fuzz::TextureCase;
 use unityrs_texture::{
-    DecodeError, Format, Plan, Selection, TextureFields, array, decode_in, plan_in, platform,
-    select,
+    DecodeError, Format, Formats, Plan, Selection, TextureFields, array, decode_in_as, plan_in_as,
+    platform, select, select_in,
 };
 
 use crate::MEMORY;
@@ -56,30 +57,42 @@ pub fn check(input: &[u8]) {
             assert_eq!(meter.used(), 0, "deswizzle leaked its charge");
         }
     }
-    let selected = select(&TextureFields {
+    let fields = TextureFields {
         texture_format: case.format,
         width: case.width,
         height: case.height,
         platform: case.platform,
         platform_blob: case.blob.as_deref(),
-    });
-    if let Selection::Export(f) = selected {
-        assert_eq!(
-            Some(f),
-            Format::from_texture_format(case.format),
-            "exported as another format"
-        );
+    };
+    for selected in [
+        select(&fields),
+        select_in(&fields, Formats::DECODED, (2021, 3)),
+    ] {
+        if let Selection::Export(f) = selected {
+            assert_eq!(
+                f.texture_format(),
+                case.format,
+                "exported as another format"
+            );
+        }
     }
     let len = i32::try_from(Format::ALL.len()).unwrap_or(1);
     let any = usize::try_from(case.format.rem_euclid(len)).unwrap_or(0);
-    let format = Format::from_texture_format(case.format)
-        .or_else(|| Format::ALL.get(any).copied())
-        .unwrap_or(Format::Rgba32);
-    // Keep plan equality byte-independent; the crunch target validates CRN
-    // streams. Platform transforms still run on the mapped plain blocks.
+    let format = if case.format == 6 {
+        Some(Format::ArgbFloat)
+    } else {
+        Format::from_texture_format(case.format)
+    }
+    .or_else(|| Format::ALL.get(any).copied())
+    .unwrap_or(Format::Rgba32);
+    // Crunch's length-only plan cannot validate a CRN stream; its own
+    // target checks those later malformed-stream errors. Keep this
+    // target's byte-independent plan equality on the plain decoders.
     let format = match format {
-        Format::Dxt1Crunched => Format::Dxt1,
-        Format::Dxt5Crunched => Format::Dxt5,
+        Format::Dxt1Crunched | Format::UnityDxt1Crunched => Format::Dxt1,
+        Format::Dxt5Crunched | Format::UnityDxt5Crunched => Format::Dxt5,
+        Format::EtcRgb4Crunched => Format::EtcRgb4,
+        Format::Etc2Rgba8Crunched => Format::Etc2Rgba8,
         other => other,
     };
     let fields = TextureFields {
@@ -89,7 +102,7 @@ pub fn check(input: &[u8]) {
         platform: case.platform,
         platform_blob: case.blob.as_deref(),
     };
-    let planned = plan_in(&fields, case.data.len());
+    let planned = plan_in_as(format, &fields, case.data.len());
     let charge = planned.as_ref().map_or(0, Plan::peak_charge);
     // The memory bound, or the peak charge less 1, the charge, or plus 1.
     let limit = match case.meter & 3 {
@@ -97,7 +110,7 @@ pub fn check(input: &[u8]) {
         m => (charge + u64::from(m)).saturating_sub(2),
     };
     let meter = Meter::new(limit, Arc::new(Unbounded), Reservation::Input);
-    match (decode_in(&fields, &case.data, &meter), planned) {
+    match (decode_in_as(format, &fields, &case.data, &meter), planned) {
         (Ok(image), Ok(p)) => {
             assert_eq!(
                 u64::try_from(image.pixels().len()).ok(),

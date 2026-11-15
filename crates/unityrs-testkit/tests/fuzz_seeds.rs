@@ -19,12 +19,17 @@ use unityrs_testkit::scratch::Scratch;
 #[test]
 fn every_value_seed_is_written_at_each_memory_bound() {
     let dir = Scratch::new("fuzz-seeds");
-    seeds::write(&dir).expect("the seeds are written");
+    // One count per target (`TARGETS` sets the array's length): each wrote seeds.
+    let counts = seeds::write(&dir).expect("the seeds are written");
+    assert!(counts.iter().all(|n| *n > 0), "{counts:?}");
     fsb5_seeds_cover_formats_versions_and_hostile_headers(&dir);
+    image_writer_seeds_cover_the_harness_layout(&dir);
+    head_seeds_reach_the_new_readers(&dir);
     texture_seeds_are_cases(&dir);
     astc_seeds_are_cases(&dir);
     crunch_seeds_are_cases(&dir);
     mesh_seeds_are_cases(&dir);
+    scene_seeds_are_cases(&dir);
     shader_seeds_are_cases(&dir);
     for target in ["boost_read", "python_read", "write_after_read"] {
         let (mut small, mut large) = (Vec::new(), Vec::new());
@@ -51,7 +56,8 @@ fn every_value_seed_is_written_at_each_memory_bound() {
     }
 }
 
-/// Valid CRN headers for both base formats are retained at every meter;
+/// Valid CRN headers for legacy DXT, Unity DXT (128/129 in the harness),
+/// and Unity ETC are retained at every meter;
 /// malformed seeds remain canonical cases too.
 fn crunch_seeds_are_cases(dir: &Path) {
     let (mut formats, mut meters, mut valid) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
@@ -59,16 +65,16 @@ fn crunch_seeds_are_cases(dir: &Path) {
         let bytes = std::fs::read(entry.expect("an entry").path()).expect("a seed");
         let case = TextureCase::decode(&bytes);
         assert_eq!(case.encode(), bytes, "a seed that is not a case");
-        assert!([28, 29].contains(&case.format));
+        assert!([28, 29, 64, 65, 128, 129].contains(&case.format));
         formats.insert(case.format);
         meters.insert(case.meter);
         if case.data.starts_with(b"Hx") && case.data.len() >= 62 {
             valid.insert((case.format, case.meter));
         }
     }
-    assert_eq!(formats, [28, 29].into());
+    assert_eq!(formats, [28, 29, 64, 65, 128, 129].into());
     assert_eq!(meters, (0..4).collect());
-    assert_eq!(valid.len(), 8);
+    assert_eq!(valid.len(), 24);
 }
 
 /// The shader seeds reach the entry-table width and subprogram header
@@ -144,7 +150,6 @@ fn shader_seeds_are_cases(dir: &Path) {
 }
 
 fn complete_shader_seed_parses(case: &TreeCase) {
-    use std::sync::Arc;
     use unityrs_core::{
         Bytes, RawStr,
         limits::{Meter, MeteredVec},
@@ -167,7 +172,7 @@ fn complete_shader_seed_parses(case: &TreeCase) {
     }
     let options = ReadOptions::default();
     let tree = Tree::compile(
-        Arc::new(NodeList::from_rows(rows).unwrap()),
+        NodeList::from_rows(rows).unwrap().into_shared().unwrap(),
         &options.limits,
     )
     .unwrap();
@@ -223,26 +228,31 @@ fn astc_seeds_are_cases(dir: &Path) {
 /// not. (Run from the test above, so the seeds are written once.)
 fn texture_seeds_are_cases(dir: &Path) {
     let (mut formats, mut meters) = (BTreeSet::new(), BTreeSet::new());
+    let mut tierb = BTreeSet::new();
+    let mut odd_yuy2 = false;
+    let (mut pvrtc_atc_count, mut tierb_count) = (0, 0);
     let (mut bc7_modes, mut dxt1, mut dxt5) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
-    let mut pvrtc_atc_seeds = 0;
     let mut platform_seeds = 0;
     let mut complete_switch = false;
     for entry in std::fs::read_dir(dir.join("texture")).expect("the target's folder") {
         let entry = entry.expect("an entry");
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        pvrtc_atc_count += usize::from(name.contains("-pvrtc-atc-"));
+        tierb_count += usize::from(name.contains("-tierb-"));
+        platform_seeds += usize::from(name.contains("platform-"));
         let bytes = std::fs::read(entry.path()).expect("a seed");
         let case = TextureCase::decode(&bytes);
-        if entry.file_name().to_string_lossy().contains("platform-") {
-            platform_seeds += 1;
-        }
-        if entry.file_name().to_string_lossy().contains("-pvrtc-atc-") {
-            pvrtc_atc_seeds += 1;
-        }
         complete_switch |= case.platform == 38
             && case.data.len() >= 1024
             && case.blob.as_ref().is_some_and(|b| b.get(8) == Some(&1));
         assert_eq!(case.encode(), bytes, "a seed that is not a case");
         formats.insert(case.format);
         meters.insert(case.meter);
+        if case.width == 8 && case.height == 8 && case.meter == 0 {
+            tierb.insert(case.format);
+        }
+        odd_yuy2 |= case.format == 21 && case.width % 2 != 0;
         if (case.width, case.height, case.meter) != (4, 4, 0) {
             continue;
         }
@@ -263,11 +273,22 @@ fn texture_seeds_are_cases(dir: &Path) {
         formats.is_superset(&[3, 4, 10, 12, 25, 30, 31, 32, 33, 35, 36].into()),
         "{formats:?}"
     );
+    assert!(
+        tierb.is_superset(
+            &[
+                9, 15, 16, 17, 18, 19, 20, 21, 22, 23, 62, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
+                82
+            ]
+            .into()
+        )
+    );
+    assert!(formats.contains(&6) && odd_yuy2);
+    assert_eq!(pvrtc_atc_count, 576);
+    assert_eq!(tierb_count, 1182);
     assert_eq!(meters, [0, 1].into());
     assert_eq!(bc7_modes, (0..=8).collect(), "BC7 modes");
     assert_eq!(dxt1, [false, true].into(), "DXT1 c0 > c1");
     assert_eq!(dxt5, [false, true].into(), "DXT5 a0 > a1");
-    assert_eq!(pvrtc_atc_seeds, 576);
     assert_eq!(platform_seeds, 182 * 2 + 7 + 111);
     assert!(complete_switch, "no complete swizzled GOB seed");
 }
@@ -347,4 +368,169 @@ fn fsb5_seeds_cover_formats_versions_and_hostile_headers(dir: &Path) {
             .flat_map(|v| [1, 2, 3, 4, 5, 7, 16].map(move |m| (v, m)))
             .collect()
     );
+}
+
+/// Check the serialized controls, including every format/mode/palette's raw
+/// dimensions and pixel-count neighbours. These are consumed without a decoder
+/// by the harness, so a shifted header could silently lose a whole writer.
+fn image_writer_seeds_cover_the_harness_layout(dir: &Path) {
+    let mut sizes = BTreeSet::new();
+    let mut pixel_lengths = BTreeSet::new();
+    let mut policies = BTreeSet::new();
+    let mut budgets = BTreeSet::new();
+    let mut filenames = BTreeSet::new();
+    let mut headers = BTreeSet::new();
+    let mut count = 0;
+    for entry in std::fs::read_dir(dir.join("image_writers")).expect("the writer target's folder") {
+        let bytes = std::fs::read(entry.expect("an entry").path()).expect("a writer seed");
+        count += 1;
+        if bytes.len() < 13 {
+            assert!(bytes.iter().all(|&b| b == 0));
+            headers.insert(bytes.len());
+            continue;
+        }
+        let word = |at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let (width, height) = (word(0), word(4));
+        let (mode, format, policy, budget, filename) =
+            (bytes[8], bytes[9], bytes[10], bytes[11], bytes[12]);
+        assert!(mode < 5 && format < 19);
+        assert!(budget < 4 && filename < 4);
+        assert!(bytes.len() <= 13 + 768, "seed pixel sources stay small");
+        let palette = policy & 4 != 0;
+        assert!(!palette || mode == 4);
+        assert!([0, 1, 2, 4, 5, 12].contains(&policy));
+        let key = (format, mode, palette);
+        policies.insert((key, policy % 3));
+        budgets.insert((key, budget));
+        filenames.insert((key, filename));
+        if policy % 3 == 0 {
+            sizes.insert((key, width, height));
+            if (width, height) == (2, 1) {
+                pixel_lengths.insert((key, bytes.len() - 13));
+            }
+        }
+    }
+    let expected_sizes = [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
+        (2, 1),
+        (3, 2),
+        (15, 1),
+        (16, 1),
+        (17, 1),
+        (255, 1),
+        (256, 1),
+        (65534, 1),
+        (65535, 1),
+        (65536, 1),
+        (i32::MAX as u32, 1),
+        (u32::MAX, 1),
+        (u32::MAX, u32::MAX),
+        (256, 256),
+        (1, 65536),
+    ];
+    for format in 0..19 {
+        for (mode, channels) in (0_u8..).zip([1, 2, 3, 4, 1]) {
+            for palette in [false, true].into_iter().filter(|p| !p || mode == 4) {
+                let key = (format, mode, palette);
+                for (width, height) in expected_sizes {
+                    assert!(
+                        sizes.contains(&(key, width, height)),
+                        "{key:?} {width}x{height}"
+                    );
+                }
+                for len in [2 * channels - 1, 2 * channels, 2 * channels + 1] {
+                    assert!(
+                        pixel_lengths.contains(&(key, len)),
+                        "{key:?} pixel count {len}"
+                    );
+                }
+                for policy in 0..3 {
+                    assert!(policies.contains(&(key, policy)), "{key:?} policy {policy}");
+                }
+                for selector in 0..4 {
+                    assert!(
+                        budgets.contains(&(key, selector)),
+                        "{key:?} budget {selector}"
+                    );
+                    assert!(
+                        filenames.contains(&(key, selector)),
+                        "{key:?} filename {selector}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(headers, (0..13).collect());
+    assert_eq!(count, 2749);
+}
+
+fn head_seeds_reach_the_new_readers(dir: &Path) {
+    let mut versions = BTreeSet::new();
+    for target in ["serialized", "bundle"] {
+        let mut count = 0;
+        for entry in std::fs::read_dir(dir.join(target)).unwrap() {
+            let path = entry.unwrap().path();
+            if !path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("-head-")
+            {
+                continue;
+            }
+            count += 1;
+            let bytes = std::fs::read(path).unwrap();
+            if target == "serialized" {
+                versions.insert(u32::from_be_bytes(bytes[8..12].try_into().unwrap()));
+            } else {
+                assert_eq!(u32::from_be_bytes(bytes[8..12].try_into().unwrap()), 9);
+            }
+        }
+        // Bundle seeds include the three explicit-offset empty-block cases.
+        assert_eq!(count, if target == "serialized" { 50 } else { 23 });
+    }
+    assert_eq!(versions, (23..=26).collect());
+}
+
+#[test]
+fn scene_case_round_trips_and_truncations_are_total() {
+    use unityrs_testkit::fuzz::SceneCase;
+    let case = SceneCase {
+        meter: 64,
+        flags: 3,
+        profile: br#"{"profile_version":1}"#.to_vec(),
+        data: vec![1, 2, 3, 4],
+    };
+    let bytes = case.encode();
+    assert_eq!(SceneCase::decode(&bytes), case);
+    for len in 0..bytes.len() {
+        let cut = SceneCase::decode(&bytes[..len]);
+        assert!(cut.profile.len() <= case.profile.len());
+        assert!(cut.data.len() <= case.data.len());
+    }
+}
+
+fn scene_seeds_are_cases(dir: &Path) {
+    use unityrs_testkit::fuzz::SceneCase;
+    let mut targets = Vec::new();
+    for target in ["scene_collect", "obj_text"] {
+        let mut cases = Vec::new();
+        for entry in std::fs::read_dir(dir.join(target)).expect("3D target seeds") {
+            let entry = entry.unwrap();
+            let bytes = std::fs::read(entry.path()).unwrap();
+            let case = SceneCase::decode(&bytes);
+            assert_eq!(case.encode(), bytes);
+            assert_ne!(case.data, [] as [u8; 0]);
+            cases.push((entry.file_name(), case));
+        }
+        cases.sort_by(|a, b| a.0.cmp(&b.0));
+        assert!(cases.len() >= 100);
+        let meters: BTreeSet<_> = cases.iter().map(|(_, c)| c.meter).collect();
+        assert_eq!(meters, [0, 1, 16, 64].into());
+        targets.push(cases);
+    }
+    assert_eq!(targets[0], targets[1]);
 }

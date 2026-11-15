@@ -68,6 +68,49 @@ fn xbox_material_images_swap_pairs_before_decoding() {
 }
 
 #[test]
+fn material_images_keep_the_unity_crunch_fork_on_desktop_and_xbox() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../unityrs-texture/tests/fixtures/unitycrunch_native.json"
+    ))
+    .unwrap();
+    for (value, plain) in [(28, 10), (29, 12), (64, 34), (65, 47)] {
+        let case = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["format"] == value && c["width"] == 1 && c["height"] == 1)
+            .unwrap();
+        let unhex = |s: &str| -> Vec<u8> {
+            (0..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+                .collect()
+        };
+        let mut objects = h::simple();
+        objects[9] = ngui::texture(
+            12,
+            b"asymmetric",
+            plain,
+            (1, 1),
+            unhex(case["levels"][0]["blocks"].as_str().unwrap()),
+        );
+        let expected = collect_on(&objects, 13);
+        for platform in [13, 11] {
+            let mut data = unhex(case["data"]["hex"].as_str().unwrap());
+            if platform == 11 && matches!(value, 28 | 29) {
+                for pair in data.as_chunks_mut::<2>().0 {
+                    pair.swap(0, 1);
+                }
+            }
+            objects[9] = ngui::texture(12, b"asymmetric", value, (1, 1), data);
+            let scene = collect_on(&objects, platform);
+            assert_eq!(scene.images.len(), 1, "format {value}, platform {platform}");
+            assert_eq!(h::embedded_image(&scene), h::embedded_image(&expected));
+        }
+    }
+}
+
+#[test]
 fn malformed_platform_and_pvrtc_layouts_omit_the_slot() {
     let mut objects = h::texture_case(4, vec![0; 1024]);
     s::set(&mut objects[9].value, "m_PlatformBlob", switch_blob(32));

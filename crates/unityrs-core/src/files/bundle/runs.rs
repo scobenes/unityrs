@@ -409,13 +409,16 @@ impl BundleFile {
             if Codec::from_flags(u32::from(b.flags_u16())) != Codec::None {
                 return Ok(None);
             }
+            if r.is_empty() {
+                continue;
+            }
             at = match at {
                 None => Some(r.clone()),
-                Some(a) if a.end == r.start || r.is_empty() => Some(a.start..a.end.max(r.end)),
+                Some(a) if a.end == r.start => Some(a.start..r.end),
                 Some(_) => return Ok(None),
             };
         }
-        Ok(at.map(|r| self.source.slice(r)))
+        Ok(Some(at.map_or_else(Bytes::new, |r| self.source.slice(r))))
     }
 
     /// Publishes `bytes` as the run of blocks `first..end` (from joined
