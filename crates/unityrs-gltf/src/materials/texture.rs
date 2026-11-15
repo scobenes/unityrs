@@ -293,7 +293,8 @@ fn decode_error(e: unityrs_texture::DecodeError) -> GltfError {
             GltfError::Invalid("texture_too_large")
         }
         E::NoImageData => GltfError::Invalid("missing_texture"),
-        E::NegativeSize { .. }
+        E::Hdr(_)
+        | E::NegativeSize { .. }
         | E::NotEnoughData { .. }
         | E::Panicked { .. }
         | E::PvrtcBlockCount

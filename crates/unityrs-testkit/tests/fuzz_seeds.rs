@@ -3,7 +3,7 @@
 //! clear and set), so a run from the seeds reaches the code that grows a
 //! charged buffer at the memory bound as soon as the work bound's; every
 //! `texture` and `astc` seed as a `TextureCase`, the `astc` seeds of each of
-//! the twelve ASTC LDR formats; and every `meshdecode` seed as a
+//! all eighteen ASTC LDR/HDR formats; and every `meshdecode` seed as a
 //! `MeshCase`, plus Shader program blobs as `ShaderCase`.
 
 #[path = "../examples/fuzz_seeds.rs"]
@@ -39,6 +39,8 @@ fn every_value_seed_is_written_at_each_memory_bound() {
     head_seeds_reach_the_new_readers(&dir);
     texture_seeds_are_cases(&dir);
     astc_seeds_are_cases(&dir);
+    hdr_seeds_retain_fixture_blocks_and_reserved_modes(&dir);
+    hdr_array_seeds_cover_graphics_formats_and_slice_layout(&dir);
     crunch_seeds_are_cases(&dir);
     mesh_seeds_are_cases(&dir);
     scene_seeds_are_cases(&dir);
@@ -229,20 +231,146 @@ fn complete_shader_seed_parses(case: &TreeCase) {
     }
 }
 
-/// Every `astc` seed is a `TextureCase` as written, of an ASTC LDR format,
-/// and each of the twelve has seeds of whole blocks.
+/// Every `astc` seed is a `TextureCase` as written, of an ASTC format,
+/// and all eighteen have seeds of whole blocks.
 fn astc_seeds_are_cases(dir: &Path) {
     let mut formats = BTreeSet::new();
     for entry in std::fs::read_dir(dir.join("astc")).expect("the target's folder") {
         let bytes = std::fs::read(entry.expect("an entry").path()).expect("a seed");
         let case = TextureCase::decode(&bytes);
         assert_eq!(case.encode(), bytes, "a seed that is not a case");
-        assert!((48..60).contains(&case.format), "{}", case.format);
+        assert!(
+            (48..60).contains(&case.format) || (66..72).contains(&case.format),
+            "{}",
+            case.format
+        );
         if case.data.len().is_multiple_of(16) && !case.data.is_empty() {
             formats.insert(case.format);
         }
     }
-    assert_eq!(formats, (48..60).collect());
+    assert_eq!(formats, (48..60).chain(66..72).collect());
+}
+
+fn hdr_seeds_retain_fixture_blocks_and_reserved_modes(dir: &Path) {
+    let mut texture = BTreeSet::new();
+    let mut astc = BTreeSet::new();
+    let mut reserved = BTreeSet::new();
+    for (target, seeds) in [("texture", &mut texture), ("astc", &mut astc)] {
+        for entry in std::fs::read_dir(dir.join(target)).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some((_, label)) = name.split_once("-hdr-") else {
+                continue;
+            };
+            let bytes = std::fs::read(entry.path()).unwrap();
+            let case = TextureCase::decode(&bytes);
+            assert_eq!(case.encode(), bytes);
+            assert_eq!((case.platform, case.blob.as_deref()), (19, None));
+            if label.starts_with("bc6h-reserved-") {
+                assert_eq!(target, "texture");
+                assert_eq!((case.format, case.width, case.height), (24, 4, 4));
+                assert_eq!(case.data.len(), 16);
+                assert!(case.data[1..].iter().all(|&b| b == 0));
+                reserved.insert((case.data[0], case.meter));
+            } else {
+                seeds.insert(label.to_owned());
+            }
+        }
+    }
+    let mut expected_texture = BTreeSet::new();
+    let mut expected_astc = BTreeSet::new();
+    for (name, fixture) in [
+        (
+            "bc6h",
+            include_str!("../../unityrs-texture/tests/fixtures/bc6h.json"),
+        ),
+        (
+            "astc_hdr",
+            include_str!("../../unityrs-texture/tests/fixtures/astc_hdr.json"),
+        ),
+    ] {
+        let doc: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        for block in doc["blocks"].as_array().unwrap() {
+            for meter in [0, 1] {
+                let label = format!("{name}-{}-m{meter}", block["id"].as_str().unwrap());
+                expected_texture.insert(label.clone());
+                if name == "astc_hdr" {
+                    expected_astc.insert(label);
+                }
+            }
+        }
+    }
+    assert_eq!(texture, expected_texture);
+    assert_eq!(astc, expected_astc);
+    assert_eq!(
+        reserved,
+        [19, 23, 27, 31]
+            .into_iter()
+            .flat_map(|mode| [0, 1].map(move |meter| (mode, meter)))
+            .collect()
+    );
+}
+
+/// These cases must reach array decoding with `GraphicsFormat` IDs, two
+/// distinct slice tops, ignored malformed mip tails, and platform refusals.
+fn hdr_array_seeds_cover_graphics_formats_and_slice_layout(dir: &Path) {
+    let mut cases = BTreeSet::new();
+    for entry in std::fs::read_dir(dir.join("texture")).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some((_, label)) = name.split_once("-array-astc-") else {
+            continue;
+        };
+        let bytes = std::fs::read(entry.path()).unwrap();
+        let case = TextureCase::decode(&bytes);
+        assert_eq!(case.encode(), bytes);
+        let side = match case.format {
+            145 => 4,
+            146 => 5,
+            147 => 6,
+            148 => 8,
+            149 => 10,
+            150 => 12,
+            other => panic!("unexpected array GraphicsFormat {other}"),
+        };
+        assert_eq!((case.width, case.height), (side, side));
+        assert_eq!(
+            case.blob.as_deref(),
+            Some([2, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0].as_slice())
+        );
+        assert_eq!(case.data.len(), 64);
+        assert!(case.data[16..32].iter().all(|&b| b == 0));
+        assert!(case.data[48..64].iter().all(|&b| b == 0));
+        assert_eq!(
+            &case.data[32..40],
+            &[0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+        );
+        assert_eq!(&case.data[40..48], &[0, 0, 0, 0x34, 0, 0x38, 0, 0x3c]);
+        let malformed = label.contains("malformed");
+        if malformed {
+            assert!(case.data[..16].iter().all(|&b| b == 0));
+        } else {
+            assert_eq!(&case.data[..8], &case.data[32..40]);
+            assert_eq!(&case.data[8..16], &[0, 0x3c, 0, 0x38, 0, 0x34, 0, 0x3c]);
+        }
+        assert!(cases.insert((case.format, case.platform, case.meter, malformed)));
+    }
+    let expected = (145..=150)
+        .flat_map(|format| {
+            [
+                (19, 0, false),
+                (19, 1, false),
+                (19, 0, true),
+                (13, 0, false),
+                (38, 0, false),
+                (11, 0, false),
+            ]
+            .map(move |(platform, meter, malformed)| (format, platform, meter, malformed))
+        })
+        .collect();
+    assert_eq!(cases, expected);
 }
 
 /// Every `texture` seed is a `TextureCase` as written, and the seeds hold
@@ -254,6 +382,7 @@ fn texture_seeds_are_cases(dir: &Path) {
     let (mut formats, mut meters) = (BTreeSet::new(), BTreeSet::new());
     let mut tierb = BTreeSet::new();
     let mut odd_yuy2 = false;
+    let mut unknown_lengths = BTreeSet::new();
     let (mut pvrtc_atc_count, mut tierb_count) = (0, 0);
     let (mut bc7_modes, mut dxt1, mut dxt5) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     let mut platform_seeds = 0;
@@ -273,6 +402,10 @@ fn texture_seeds_are_cases(dir: &Path) {
         assert_eq!(case.encode(), bytes, "a seed that is not a case");
         formats.insert(case.format);
         meters.insert(case.meter);
+        // ALL[1000 mod 75] is BC5: two 16-byte blocks at 3x5.
+        if case.format == 1000 && (case.width, case.height) == (3, 5) {
+            unknown_lengths.insert(case.data.len());
+        }
         if case.width == 8 && case.height == 8 && case.meter == 0 {
             tierb.insert(case.format);
         }
@@ -307,6 +440,8 @@ fn texture_seeds_are_cases(dir: &Path) {
         )
     );
     assert!(formats.contains(&6) && odd_yuy2);
+    assert!(formats.is_superset(&[24, 66, 67, 68, 69, 70, 71].into()));
+    assert_eq!(unknown_lengths, [31, 32, 33].into());
     assert_eq!(pvrtc_atc_count, 576);
     assert_eq!(tierb_count, 1182);
     assert_eq!(meters, [0, 1].into());
