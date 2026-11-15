@@ -24,6 +24,9 @@
 //! The core splits what the builders made (a bundle into its files, a file
 //! into its objects); the inputs are the builders' alone.
 
+#[path = "fuzz_seeds/pvrtc_atc.rs"]
+mod pvrtc_atc;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -45,11 +48,13 @@ use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_
 
 #[path = "fuzz_seeds/crunch.rs"]
 mod crunch;
+#[path = "fuzz_seeds/web.rs"]
+mod web;
 #[path = "fuzz_seeds/zip.rs"]
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 15] = [
+const TARGETS: [&str; 18] = [
     "detect",
     "bundle",
     "serialized",
@@ -65,6 +70,9 @@ const TARGETS: [&str; 15] = [
     "zlib_match",
     "unitycn",
     "zip",
+    "webfile",
+    "unityweb",
+    "fsb5",
 ];
 
 /// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
@@ -123,6 +131,9 @@ const MESH_CASES: &str = concat!(
 /// 64 bytes (refusing the first array), 16 KiB and 256 KiB (most of the
 /// fixture's arrays fit, the largest do not).
 pub(crate) const MESH_METERS: [u8; 4] = [0, 1, 16, 64];
+
+#[path = "fuzz_seeds/fsb5.rs"]
+mod fsb5;
 
 struct Seeds {
     dir: PathBuf,
@@ -701,7 +712,10 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
         s.add("unitycn", name, bytes)?;
     }
     zip::seeds(&mut s)?;
+    web::seeds(&mut s)?;
+    fsb5::write(&mut s)?;
     texture(&mut s)?;
+    pvrtc_atc::write(&mut s)?;
     astc(&mut s)?;
     crunch::write(&mut s)?;
     meshdecode(&mut s)?;

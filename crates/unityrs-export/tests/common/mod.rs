@@ -605,14 +605,7 @@ pub fn refused_then_at(s: &AtlasScene, input: &str, at: u64) -> (Sites, Result<R
 }
 
 fn two_refusals(s: &AtlasScene, input: &str, refuse: Refuse) -> (Sites, Result<Ran, Failure>) {
-    let refuse = Arc::new(refuse);
-    let engine = Engine {
-        refusals: Some(refuse.refusals.clone()),
-        dropping: true,
-        ..Engine::default()
-    };
-    let meter = Meter::new(u64::MAX, refuse.clone(), Reservation::Input);
-    let got = run_in(s, input, FileContext::default(), &meter, &engine);
+    let (refuse, got) = two_refusals_run(s, input, refuse);
     let [a, b] = refuse.stacks.lock().unwrap().clone().map(|s| core_call(&s));
     let sites = [
         refuse.site.lock().unwrap().map(|s| (s, a)),
@@ -621,23 +614,100 @@ fn two_refusals(s: &AtlasScene, input: &str, refuse: Refuse) -> (Sites, Result<R
     (sites, got)
 }
 
-/// The core call a stack is in: the frame just inside the cutter's
-/// innermost (a call the cutter made, which its probe takes on its own, or
-/// a charge it made itself; a free function prints with no path), up to
-/// any generic arguments, which run on after a space or `,` once `<` and
-/// `>` are taken out ([`site`]).
-pub fn core_call(stack: &str) -> String {
-    let frames: Vec<&str> = stack
+fn two_refusals_run(
+    s: &AtlasScene,
+    input: &str,
+    refuse: Refuse,
+) -> (Arc<Refuse>, Result<Ran, Failure>) {
+    let refuse = Arc::new(refuse);
+    let engine = Engine {
+        refusals: Some(refuse.refusals.clone()),
+        dropping: true,
+        ..Engine::default()
+    };
+    let meter = Meter::new(u64::MAX, refuse.clone(), Reservation::Input);
+    let got = run_in(s, input, FileContext::default(), &meter, &engine);
+    (refuse, got)
+}
+
+/// The pairs [`absorbed_at`] saw (operation, core call, the next one's core
+/// call), each with the first `at` it was seen at.
+pub type Seen = std::collections::BTreeMap<(&'static str, String, String), u64>;
+
+/// For a failure's message: `seen`, then the frames of each of `site`'s
+/// pairs as this platform named them ([`absorbed_frames_at`]).
+pub fn seen_with_frames(s: &AtlasScene, input: &str, seen: &Seen, site: &str) -> String {
+    let frames: Vec<_> = seen
+        .iter()
+        .filter(|(k, _)| k.0 == site)
+        .map(|(_, &at)| absorbed_frames_at(s, input, at))
+        .collect();
+    format!("{seen:?}\n{}", frames.join("\n==\n"))
+}
+
+/// [`absorbed_at`]'s two stacks as the platform named their frames, each
+/// from its innermost `unityrs_` frame out to two past the cutter's
+/// innermost (the frames [`core_call`] reads), at most 24.
+fn absorbed_frames_at(s: &AtlasScene, input: &str, at: u64) -> String {
+    let (refuse, _) = two_refusals_run(s, input, Refuse::absorbed(at));
+    let stacks = refuse.stacks.lock().unwrap().clone();
+    let window = |stack: &String| {
+        let frames = frame_names(stack);
+        let first = frames
+            .iter()
+            .position(|f| f.starts_with("unityrs_"))
+            .unwrap_or(0);
+        let cutter = frames
+            .iter()
+            .skip(first)
+            .position(|f| is_cutter(f))
+            .map_or(frames.len(), |c| first + c);
+        frames[first..frames.len().min(cutter + 3)]
+            .iter()
+            .take(24)
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    stacks.iter().map(window).collect::<Vec<_>>().join("\n--\n")
+}
+
+/// A stack's frame names, innermost first (a numbered line's text).
+fn frame_names(stack: &str) -> Vec<&str> {
+    stack
         .lines()
         .filter_map(|l| {
             let (n, rest) = l.trim_start().split_once(": ")?;
             n.parse::<u32>().is_ok().then_some(rest)
         })
-        .collect();
+        .collect()
+}
+
+/// Whether a frame is the cutter's: its own code or its shared texture fetch.
+fn is_cutter(frame: &str) -> bool {
+    frame.starts_with("unityrs_export::") || frame.starts_with("unityrs_texture::fetch::")
+}
+
+/// The core call a stack is in: the frame just inside the cutter's
+/// innermost, including its shared texture-fetch implementation (a call
+/// the cutter made, which its probe takes on its own, or a charge it made
+/// itself; a free function prints with no path), up to any generic
+/// arguments, which run on after a space or `,` once `<` and `>` are taken
+/// out ([`site`]). A closure inlined into the cutter's frame prints bare,
+/// as `{closure#N}` and its generic arguments with no path (where a build
+/// inlines it, as CI's does for the fetch's closures), so the call is the
+/// first frame inside it that is not one.
+pub fn core_call(stack: &str) -> String {
+    let frames = frame_names(stack);
     let call = frames
         .iter()
-        .position(|f| f.starts_with("unityrs_export::"))
-        .and_then(|cutter| frames.get(cutter.checked_sub(1)?))
+        .position(|f| is_cutter(f))
+        .and_then(|cutter| {
+            frames[..cutter]
+                .iter()
+                .rev()
+                .find(|f| !f.starts_with("{closure#"))
+        })
         .copied()
         .unwrap_or("other");
     call.split(|c: char| c.is_whitespace() || c == ',')

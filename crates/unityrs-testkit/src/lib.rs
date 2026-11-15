@@ -34,6 +34,7 @@ pub mod child;
 pub mod counted;
 pub mod depth;
 pub mod env;
+pub mod fsb5;
 pub mod fuzz;
 pub mod guard;
 pub mod ledger;
@@ -47,6 +48,7 @@ pub mod search;
 pub mod serialized;
 pub mod stack;
 pub mod waits;
+pub mod web;
 pub mod writer;
 pub mod zip;
 

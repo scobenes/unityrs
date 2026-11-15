@@ -12,7 +12,8 @@ rust-version.workspace = true
 # unpackers, in src/raw.rs, the width cap of src/decode.c's
 # _setimage, and the decompression-bomb check of src/PIL/Image.py's crop),
 # whose notice is its LICENSE-PILLOW; texture2ddecoder 1.0.5's ETC and EAC
-# decoders (MIT: src/Texture2DDecoder/etc.cpp, in src/etc.rs), whose notices
+# decoders and its PVRTC/ATC decoders (MIT: src/Texture2DDecoder, in
+# src/etc.rs, src/pvrtc.rs and src/atc.rs), whose notices
 # are its LICENSE-TEXTURE2DDECODER and those of the code it carries,
 # AssetStudio's and mikunyan's, LICENSE-ASSETSTUDIO and LICENSE-MIKUNYAN;
 # and, for the sprite renderer

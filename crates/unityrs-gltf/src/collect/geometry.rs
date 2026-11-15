@@ -221,13 +221,14 @@ pub(super) fn mesh(
     selected: &[usize],
     skin: bool,
     skin_attributes: Option<[usize; 2]>,
+    materials: &[Option<usize>],
     meter: &Arc<Meter>,
 ) -> Result<Option<usize>> {
     // Both per-renderer ranges and keep-combined unions were checked against
     // this immutable geometry. A range failure here is an internal invariant.
     let mut primitives = MeteredVec::new(meter);
     meter.count_decode(selected.len() as u64)?;
-    for &i in selected {
+    for (slot, &i) in selected.iter().enumerate() {
         let Some(indices) = g
             .indices
             .as_slice()
@@ -239,6 +240,10 @@ pub(super) fn mesh(
         };
         let mut attributes = MeteredVec::new(meter);
         meter.count_decode(g.attributes.len() as u64)?;
+        let material = materials.get(slot).copied().flatten();
+        let ignore_colors = material
+            .and_then(|id| scene.materials.as_slice().get(id))
+            .is_some_and(|m| !m.vertex_colors);
         for &(kind, id) in g.attributes.as_slice() {
             if !skin && matches!(kind, Attribute::Joints | Attribute::Weights) {
                 continue;
@@ -248,12 +253,17 @@ pub(super) fn mesh(
                 (Attribute::Weights, Some([_, w])) => w,
                 _ => id,
             };
+            let kind = if kind == Attribute::Color && ignore_colors {
+                Attribute::CustomColor
+            } else {
+                kind
+            };
             attributes.push((kind, id))?;
         }
         primitives.push(Primitive {
             attributes,
             indices: Some(indices),
-            material: None,
+            material,
             targets: crate::array(meter, g.targets.as_slice())?,
             extras: MeteredVec::new(meter),
         })?;

@@ -20,6 +20,7 @@ use unityrs_testkit::scratch::Scratch;
 fn every_value_seed_is_written_at_each_memory_bound() {
     let dir = Scratch::new("fuzz-seeds");
     seeds::write(&dir).expect("the seeds are written");
+    fsb5_seeds_cover_formats_versions_and_hostile_headers(&dir);
     texture_seeds_are_cases(&dir);
     astc_seeds_are_cases(&dir);
     crunch_seeds_are_cases(&dir);
@@ -116,7 +117,7 @@ fn texture_seeds_are_cases(dir: &Path) {
         }
     }
     assert!(
-        formats.is_superset(&[3, 4, 10, 12, 25].into()),
+        formats.is_superset(&[3, 4, 10, 12, 25, 30, 31, 32, 33, 35, 36].into()),
         "{formats:?}"
     );
     assert_eq!(meters, [0, 1].into());
@@ -160,5 +161,28 @@ fn mesh_seeds_are_cases(dir: &Path) {
     assert!(
         per_meter.iter().all(|m| *m == per_meter[0]),
         "each meter at each case"
+    );
+}
+
+fn fsb5_seeds_cover_formats_versions_and_hostile_headers(dir: &Path) {
+    let mut formats = BTreeSet::new();
+    let mut count = 0;
+    let mut hostile_count = false;
+    for entry in std::fs::read_dir(dir.join("fsb5")).expect("the fsb5 target's folder") {
+        let bytes = std::fs::read(entry.expect("an entry").path()).expect("a seed");
+        count += 1;
+        if bytes.starts_with(b"FSB5") && bytes.len() >= 28 {
+            let word = |at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+            hostile_count |= word(8) == u32::MAX;
+            if word(4) <= 1 && word(8) == 1 && (1..=5).contains(&word(24)) {
+                formats.insert((word(4), word(24)));
+            }
+        }
+    }
+    assert_eq!(count, 54);
+    assert!(hostile_count);
+    assert_eq!(
+        formats,
+        (0..=1).flat_map(|v| (1..=5).map(move |m| (v, m))).collect()
     );
 }

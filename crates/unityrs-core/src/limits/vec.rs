@@ -236,6 +236,17 @@ impl<T> MeteredVec<T> {
         self.vec.pop()
     }
 
+    /// Transfer a buffer and its existing charge without allocating or copying.
+    /// Used by charged encoders. Any capacity not covered by the supplied
+    /// charge is booked before accepting ownership, as with `from_vec`.
+    pub fn from_charged_parts(vec: Vec<T>, mut charge: Charge) -> Result<Self, ChargeError> {
+        let cost = heap_cost(bytes_of::<T>(vec.capacity()));
+        if cost > charge.bytes() {
+            charge.grow(cost - charge.bytes())?;
+        }
+        Ok(Self { vec, charge })
+    }
+
     /// The elements.
     #[must_use]
     pub fn as_slice(&self) -> &[T] {

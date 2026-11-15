@@ -91,10 +91,7 @@ pub(super) fn bundle_l1(b: &BundleFile, held: &mut Charge) -> Result<BundleL1, C
         format: h.format,
         version_player: h.version_player.clone(),
         version_engine: h.version_engine.clone(),
-        engine_version_packed: match &h.engine_version {
-            Some(Ok(v)) => Some(packed(v.version.packed(), held)?),
-            _ => None,
-        },
+        engine_version_packed: bundle_packed(b, held)?,
         flags: h.data_flags,
         flags_class: h.flags_class,
         block_alignment: h.block_alignment,
@@ -105,6 +102,26 @@ pub(super) fn bundle_l1(b: &BundleFile, held: &mut Charge) -> Result<BundleL1, C
         blocks,
         directory: dir_rows(b.directory(), held)?,
     })
+}
+
+// The canonical oracle calls parse_version even where loading did not
+// (legacy Web/Raw): files/BundleFile.py:523-536.
+fn bundle_packed(b: &BundleFile, held: &mut Charge) -> Result<Option<Packed>, ChargeError> {
+    match &b.header().engine_version {
+        Some(Ok(v)) => Ok(Some(packed(v.version.packed(), held)?)),
+        Some(Err(_)) => Ok(None),
+        None => match unityrs_core::version::resolve_bundle(
+            &b.header().version_engine,
+            &b.context().version,
+            held,
+        ) {
+            Ok(v) => Ok(Some(packed(v.version.packed(), held)?)),
+            Err(Error::Limit(l)) => Err(ChargeError::Limit(l)),
+            Err(Error::Budget(b)) => Err(ChargeError::Budget(b)),
+            Err(Error::Allocator(a)) => Err(ChargeError::Allocator(a)),
+            Err(_) => Ok(None),
+        },
+    }
 }
 
 fn dir_rows(dir: &[DirEntry], held: &mut Charge) -> Result<Vec<DirRow>, ChargeError> {

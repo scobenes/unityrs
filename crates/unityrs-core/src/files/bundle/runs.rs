@@ -174,6 +174,9 @@ impl BundleFile {
     /// last block, unknown blocks decoded with their output discarded. The
     /// joined total; once every block is known, one lookup.
     pub(super) fn measure_all(&self) -> Result<u64, Error> {
+        if let Some(data) = &self.legacy_data {
+            return Ok(data.len() as u64);
+        }
         let n = self.blocks.len();
         for k in self.ends.known()..n {
             let (len, scratch) = self.measure(k)?;
@@ -206,6 +209,19 @@ impl BundleFile {
         hi: u64,
         row: SpanRow,
     ) -> Result<(Bytes, u64), Error> {
+        if let Some(data) = &self.legacy_data {
+            let start = usize::try_from(lo).unwrap_or(usize::MAX).min(data.len());
+            let end = usize::try_from(hi)
+                .unwrap_or(usize::MAX)
+                .clamp(start, data.len());
+            let pinned = if self.header.signature.as_bytes() == b"UnityRaw" {
+                self.pinned()
+            } else {
+                data.len() as u64
+            };
+            return Ok((data.slice(start..end), pinned));
+        }
+
         crate::counters::span_read(&self.origin, row);
         let Some((first, first_at, buf)) = self.first_block(lo, hi)? else {
             return Ok((Bytes::new(), 0));
