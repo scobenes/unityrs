@@ -190,6 +190,12 @@ fn builtin_placeholders_report_each_renderer_in_report_and_asset_extras() {
             {"node": 1, "reason": "builtin_placeholder", "count": 1}
         ])
     );
-    assert_eq!(json["nodes"][1]["extras"]["unity_builtin"], "10207;10210");
+    assert_eq!(
+        json["nodes"][1]["extras"]["unity_builtin"],
+        serde_json::json!([
+            {"file": "unity default resources", "id": 10207, "name": "Sphere"},
+            {"file": "unity default resources", "id": 10210, "name": "Quad"}
+        ])
+    );
     h::validator_clean(&scene);
 }

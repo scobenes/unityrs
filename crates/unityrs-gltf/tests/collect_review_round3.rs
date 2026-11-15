@@ -498,7 +498,13 @@ fn repeated_builtin_renderers_keep_separate_attachments_and_aggregate_markers() 
         let mut profile = Profile::new(&meter);
         profile.builtin = mode;
         let scene = collect(&env, &graph, &profile, &meter).unwrap();
-        assert_eq!(extra(&scene, 1, "unity_builtin"), b"10207;10210");
+        assert_eq!(
+            document(&scene, &profile).0["nodes"][1]["extras"]["unity_builtin"],
+            serde_json::json!([
+                {"file": "unity default resources", "id": 10207, "name": "Sphere"},
+                {"file": "unity default resources", "id": 10210, "name": "Quad"}
+            ])
+        );
         let attachments = scene
             .nodes
             .as_slice()

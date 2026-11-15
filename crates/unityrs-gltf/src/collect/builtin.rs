@@ -1,7 +1,7 @@
 //! Opt-in approximate primitives; no Editor resource data is embedded.
-use super::{Arc, Meter, MeteredVec, Result, Scene, extra, invalid, number};
-use crate::{Accessor, Attribute, Data, Kind, Mesh, Primitive};
-use unityrs_scene::builtin::BuiltinKind;
+use super::{Arc, Meter, MeteredVec, Result, Scene, extra, invalid};
+use crate::{Accessor, Attribute, BuiltinIdentity, Data, Kind, Mesh, Primitive};
+use unityrs_scene::builtin::{BuiltinFile, BuiltinKind, BuiltinRef};
 pub(super) fn procedural(
     scene: &mut Scene,
     kind: Option<BuiltinKind>,
@@ -86,31 +86,75 @@ pub(super) fn procedural(
     })?;
     Ok(id)
 }
-pub(super) fn mark(scene: &mut Scene, id: usize, path_id: i64, meter: &Arc<Meter>) -> Result<()> {
-    super::diagnostics::merge(
-        &mut scene
-            .nodes
-            .as_mut_slice()
-            .get_mut(id)
-            .ok_or_else(|| invalid("builtin node"))?
-            .extras,
-        meter,
-        "unity_builtin",
-        number(meter, path_id)?.as_bytes(),
-    )
+pub(super) fn mark(
+    scene: &mut Scene,
+    id: usize,
+    builtin: &BuiltinRef,
+    meter: &Arc<Meter>,
+) -> Result<()> {
+    let identities = &mut scene
+        .nodes
+        .as_mut_slice()
+        .get_mut(id)
+        .ok_or_else(|| invalid("builtin node"))?
+        .builtins;
+    let identity = BuiltinIdentity {
+        file: builtin.file.name(),
+        id: builtin.path_id,
+        name: builtin.kind.map(BuiltinKind::name),
+    };
+    meter.count_decode(identities.len() as u64 * 64 + 1)?;
+    let Err(at) = identities.as_slice().binary_search(&identity) else {
+        return Ok(());
+    };
+    identities.push(identity)?;
+    identities
+        .as_mut_slice()
+        .get_mut(at..)
+        .ok_or_else(|| invalid("builtin identity insertion"))?
+        .rotate_right(1);
+    Ok(())
 }
 
-pub(crate) fn resolve(
-    env: &unityrs_core::env::Environment,
-    builtin: &unityrs_scene::builtin::BuiltinRef,
-    meter: &Arc<Meter>,
-) -> Result<unityrs_core::ObjectRef> {
-    let file = env
-        .find_file(&builtin.path, true, meter)
-        .map_err(|e| super::GltfError::Mesh(unityrs_mesh::MeshError::Core(e)))?;
-    let Some(unityrs_core::files::File::Serialized(file)) = file else {
-        return Err(invalid("builtin resource unresolved"));
-    };
-    file.object(builtin.path_id)
-        .ok_or_else(|| invalid("builtin object unresolved"))
+/// Resolved resource files are retained only for this collection. In
+/// particular, arbitrary resolver source names must not reload the same file
+/// per renderer or be promoted to permanent registry aliases.
+pub(crate) struct Cache {
+    files: MeteredVec<(BuiltinFile, Arc<unityrs_core::files::SerializedFile>)>,
 }
+impl Cache {
+    pub(crate) fn new(meter: &Arc<Meter>) -> Self {
+        Self {
+            files: MeteredVec::new(meter),
+        }
+    }
+    pub(crate) fn resolve(
+        &mut self,
+        env: &unityrs_core::env::Environment,
+        builtin: &BuiltinRef,
+        meter: &Arc<Meter>,
+    ) -> Result<unityrs_core::ObjectRef> {
+        meter.count_decode(builtin.path.len() as u64 + self.files.len() as u64 + 1)?;
+        let key = BuiltinFile::from_path(builtin.path.as_bytes())
+            .ok_or_else(|| invalid("builtin resource name"))?;
+        if let Some((_, file)) = self.files.as_slice().iter().find(|(old, _)| *old == key) {
+            return file
+                .object(builtin.path_id)
+                .ok_or_else(|| invalid("builtin object unresolved"));
+        }
+        let file = env
+            .find_file(
+                &unityrs_core::RawStr::from_static(key.name().as_bytes()),
+                true,
+                meter,
+            )
+            .map_err(|e| super::GltfError::Mesh(unityrs_mesh::MeshError::Core(e)))?;
+        let Some(unityrs_core::files::File::Serialized(file)) = file else {
+            return Err(invalid("builtin resource unresolved"));
+        };
+        let object = file.object(builtin.path_id);
+        self.files.push((key, file))?;
+        object.ok_or_else(|| invalid("builtin object unresolved"))
+    }
+}
+const _: () = crate::send_sync::<Cache>();

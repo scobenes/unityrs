@@ -169,12 +169,13 @@ fn builtins_placeholder_procedural_and_resolve_are_explicit() {
     let mut p = Profile::new(&m);
     let placeholder = collect(&env, &g, &p, &m).unwrap();
     assert!(placeholder.meshes.is_empty());
-    assert!(
-        placeholder.nodes.as_slice()[1]
-            .extras
-            .as_slice()
-            .iter()
-            .any(|(k, _)| k.as_bytes() == b"unity_builtin")
+    assert_eq!(
+        placeholder.nodes.as_slice()[1].builtins.as_slice(),
+        &[BuiltinIdentity {
+            file: "unity default resources",
+            id: 10210,
+            name: Some("Quad")
+        }]
     );
     p.builtin = Builtin::Procedural;
     let scene = collect(&env, &g, &p, &m).unwrap();

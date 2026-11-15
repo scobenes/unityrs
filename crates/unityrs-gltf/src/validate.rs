@@ -231,6 +231,24 @@ pub(crate) fn model(s: &Scene, opts: crate::Options, meter: &Arc<Meter>) -> Resu
     for n in s.nodes.as_slice() {
         meter.count_decode(32 + n.weights.len() as u64)?;
         extras(&n.extras, meter)?;
+        let mut previous = None;
+        for identity in n.builtins.as_slice() {
+            meter.count_decode(
+                (identity.file.len() + identity.name.map_or(0, str::len) + 16) as u64,
+            )?;
+            if previous.is_some_and(|p| p >= identity) {
+                return Err(invalid("builtin identity order"));
+            }
+            previous = Some(identity);
+        }
+        if !n.builtins.is_empty() {
+            for (key, _) in n.extras.as_slice() {
+                meter.count_decode(key.as_bytes().len() as u64 + 1)?;
+                if key.as_bytes() == b"unity_builtin" {
+                    return Err(invalid("reserved unity_builtin extra"));
+                }
+            }
+        }
         if n.mesh.is_some_and(|i| i >= s.meshes.len()) || n.skin.is_some_and(|i| i >= s.skins.len())
         {
             return Err(invalid("node mesh/skin index"));

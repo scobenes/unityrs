@@ -27,6 +27,7 @@ fn every_value_seed_is_written_at_each_memory_bound() {
     astc_seeds_are_cases(&dir);
     crunch_seeds_are_cases(&dir);
     mesh_seeds_are_cases(&dir);
+    scene_seeds_are_cases(&dir);
     shader_seeds_are_cases(&dir);
     for target in ["boost_read", "python_read", "write_after_read"] {
         let (mut small, mut large) = (Vec::new(), Vec::new());
@@ -356,4 +357,44 @@ fn fsb5_seeds_cover_formats_versions_and_hostile_headers(dir: &Path) {
             .flat_map(|v| [1, 2, 3, 4, 5, 7, 16].map(move |m| (v, m)))
             .collect()
     );
+}
+
+#[test]
+fn scene_case_round_trips_and_truncations_are_total() {
+    use unityrs_testkit::fuzz::SceneCase;
+    let case = SceneCase {
+        meter: 64,
+        flags: 3,
+        profile: br#"{"profile_version":1}"#.to_vec(),
+        data: vec![1, 2, 3, 4],
+    };
+    let bytes = case.encode();
+    assert_eq!(SceneCase::decode(&bytes), case);
+    for len in 0..bytes.len() {
+        let cut = SceneCase::decode(&bytes[..len]);
+        assert!(cut.profile.len() <= case.profile.len());
+        assert!(cut.data.len() <= case.data.len());
+    }
+}
+
+fn scene_seeds_are_cases(dir: &Path) {
+    use unityrs_testkit::fuzz::SceneCase;
+    let mut targets = Vec::new();
+    for target in ["scene_collect", "obj_text"] {
+        let mut cases = Vec::new();
+        for entry in std::fs::read_dir(dir.join(target)).expect("3D target seeds") {
+            let entry = entry.unwrap();
+            let bytes = std::fs::read(entry.path()).unwrap();
+            let case = SceneCase::decode(&bytes);
+            assert_eq!(case.encode(), bytes);
+            assert_ne!(case.data, [] as [u8; 0]);
+            cases.push((entry.file_name(), case));
+        }
+        cases.sort_by(|a, b| a.0.cmp(&b.0));
+        assert!(cases.len() >= 100);
+        let meters: BTreeSet<_> = cases.iter().map(|(_, c)| c.meter).collect();
+        assert_eq!(meters, [0, 1, 16, 64].into());
+        targets.push(cases);
+    }
+    assert_eq!(targets[0], targets[1]);
 }
