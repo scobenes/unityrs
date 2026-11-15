@@ -192,7 +192,7 @@ def main():
     # One case per line: fixtures remain reviewable and below the size gate.
     body = '{"reference":"UnityPy 1.25.2","data":[\n'
     body += ",\n".join(json.dumps(value) for value in data) + '],"cases":[\n'
-    body += ",\n".join(json.dumps(case, ensure_ascii=True, separators=(",", ":")) for case in records)
+    body += ",\n".join(json.dumps(case, separators=(",", ":")) for case in records)
     body += '],"blobs":[\n' + ",\n".join(json.dumps(case, separators=(",", ":")) for case in trees) + "]}\n"
     path = ROOT / "crates/unityrs-core/tests/fixtures/serialized_save.json"
     if args.check:
