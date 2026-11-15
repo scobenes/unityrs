@@ -46,11 +46,20 @@ required-features = ["test-hooks"]
 name = "batch_host_lines"
 required-features = ["test-hooks"]
 
+[[test]]
+name = "batch_url_hooks"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "batch_url_lifetime"
+required-features = ["test-hooks"]
+
 [dev-dependencies]
 # The core's synthetic UnityCN encryptor, which the batch run harness
 # (`unityrs-batch/tests/run_support`) builds the encrypted golden with.
 aes = "=0.8.4"
 serde_json = "=1.0.154"
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 unityrs-testkit = { path = "../unityrs-testkit" }
 
 [lints]

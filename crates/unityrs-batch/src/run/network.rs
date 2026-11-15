@@ -20,7 +20,7 @@ use crate::{
 use std::sync::Arc;
 
 /// What stages a library run's URL bundles. Without one, a URL is refused,
-/// as `start::supported` refuses it for the CLI until URL activation.
+/// while the process host prepares its own transport and staging.
 ///
 /// The run builds the engine's own service: the system resolver, compiled
 /// roots, a socket table of its own and the controller's `download_concurrency`

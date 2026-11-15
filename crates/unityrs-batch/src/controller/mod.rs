@@ -70,6 +70,9 @@ pub enum Point {
 pub trait Hooks: unityrs_export::ngui::Hooks + Send + Sync {
     fn event(&self, _event: Event) {}
     fn point(&self, _point: Point) {}
+    /// After every stage was received and every blocking operation returned.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn network_idle(&self, _permits: crate::http::permit::Snapshot) {}
 }
 pub struct NoHooks;
 impl unityrs_export::ngui::Hooks for NoHooks {}

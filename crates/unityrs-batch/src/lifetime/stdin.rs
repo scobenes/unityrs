@@ -48,6 +48,11 @@ impl<'a> StdinWatch<'a> {
             line: [0; LINE_BYTES],
         })
     }
+    /// Step 6 refreshes the borrowed masker after resolving header values;
+    /// fd 0 was already checked at step 4. No thread has started yet.
+    pub(crate) fn secrets(&mut self, secrets: Secrets<'a>) {
+        self.secrets = secrets;
+    }
     /// Returns once the watch has ended: at EOF, after requesting the
     /// `stdin_eof` stop; or, ended without EOF, after storing the warning and
     /// writing its one stderr line, with no stop.

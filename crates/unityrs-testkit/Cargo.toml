@@ -30,6 +30,10 @@ unityrs-core = { path = "../unityrs-core", optional = true }
 [features]
 test-counters = ["dep:unityrs-core", "unityrs-core/test-counters"]
 
+[[example]]
+name = "serve_dir"
+test = true
+
 # `examples/fuzz_seeds.rs` only, which splits what the builders made (a
 # bundle into its files, a file into its objects) to write the fuzz targets'
 # seeds. A dev-dependency: the library never depends on the core but under

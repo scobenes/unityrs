@@ -8,6 +8,31 @@ use std::{
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_rustls::client::TlsStream;
 
+/// Test-only replacement for plain socket reads. Scripts can retain a
+/// short OS read until a complete scheduled piece is available, so parser
+/// boundaries and stop points do not depend on TCP packet timing.
+#[cfg(feature = "test-hooks")]
+pub struct PlainReadHooks {
+    pub connected: fn(),
+    pub read: fn(&RegisteredSocket, &mut Context<'_>, &mut ReadBuf<'_>) -> Poll<io::Result<()>>,
+}
+#[cfg(feature = "test-hooks")]
+static READ_HOOKS: std::sync::OnceLock<PlainReadHooks> = std::sync::OnceLock::new();
+#[cfg(feature = "test-hooks")]
+/// Installs a process-wide script before any connection is made.
+///
+/// # Panics
+/// Panics if a script was already installed.
+pub fn arm_plain_reads(hooks: PlainReadHooks) {
+    assert!(READ_HOOKS.set(hooks).is_ok(), "plain reads already armed");
+}
+#[cfg(feature = "test-hooks")]
+pub(super) fn plain_connected() {
+    if let Some(hooks) = READ_HOOKS.get() {
+        (hooks.connected)();
+    }
+}
+
 /// The socket's owner is the table's opaque [`RegisteredSocket`]: its
 /// shutdown is a no-op, so neither a FIN nor TLS `close_notify` precedes
 /// the RST its zero-linger drop (or the exit's reset) sends.
@@ -22,7 +47,13 @@ impl AsyncRead for Stream {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         match self.get_mut() {
-            Self::Plain(stream) => Pin::new(stream).poll_read(cx, buf),
+            Self::Plain(stream) => {
+                #[cfg(feature = "test-hooks")]
+                if let Some(hooks) = READ_HOOKS.get() {
+                    return (hooks.read)(stream, cx, buf);
+                }
+                Pin::new(stream).poll_read(cx, buf)
+            }
             Self::Tls(stream) => Pin::new(stream.as_mut()).poll_read(cx, buf),
         }
     }

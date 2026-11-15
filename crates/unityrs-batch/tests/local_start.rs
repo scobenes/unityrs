@@ -68,31 +68,29 @@ fn directory_archives_are_in_the_execution_subset() {
     assert!(start::supported(&parse(&v)).is_ok());
 }
 #[test]
+fn urls_including_unused_dependencies_are_in_the_execution_subset() {
+    let mut v = job(Path::new("/spool"), Path::new("/sink"));
+    v["inputs"] = json!([{"id":"a","url":"http://127.0.0.1/a"}]);
+    v["dependencies"] = json!([{"id":"unused","url":"https://example.invalid/a"}]);
+    assert!(start::supported(&parse(&v)).is_ok());
+}
+#[test]
 fn unsupported_execution_fields_are_typed_and_mutate_nothing() {
-    for kind in [Unsupported::UrlSource, Unsupported::ObjectStore] {
-        let scratch = Scratch::new("local-refusal");
-        let sink = Scratch::new("local-refusal-sink");
-        old(scratch.path());
-        let mut v = job(scratch.path(), sink.path());
-        match kind {
-            Unsupported::UrlSource => {
-                v["dependencies"] = json!([{"id":"unused","url":"https://example.invalid/a"}]);
-            }
-            Unsupported::ObjectStore => {
-                v["sink"] =
-                    json!({"kind":"object_store","bucket":"bucket","region":"region","prefix":""});
-                v["deadline"] = json!("2099-01-01T00:00:00Z");
-            }
-        }
-        let spec = parse(&v);
-        assert_eq!(start::supported(&spec).err(), Some(kind));
-        assert_eq!(
-            fs::read(scratch.join("runs/old/attempts/0/payload")).unwrap(),
-            b"old"
-        );
-        assert!(!scratch.join("lock").exists());
-        assert!(!sink.join("_unityrs").exists());
-    }
+    let kind = Unsupported::ObjectStore;
+    let scratch = Scratch::new("local-refusal");
+    let sink = Scratch::new("local-refusal-sink");
+    old(scratch.path());
+    let mut v = job(scratch.path(), sink.path());
+    v["sink"] = json!({"kind":"object_store","bucket":"bucket","region":"region","prefix":""});
+    v["deadline"] = json!("2099-01-01T00:00:00Z");
+    let spec = parse(&v);
+    assert_eq!(start::supported(&spec).err(), Some(kind));
+    assert_eq!(
+        fs::read(scratch.join("runs/old/attempts/0/payload")).unwrap(),
+        b"old"
+    );
+    assert!(!scratch.join("lock").exists());
+    assert!(!sink.join("_unityrs").exists());
 }
 /// The lifetime fields are the process host's, accepted by the subset.
 #[test]
