@@ -1,0 +1,273 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/ShaderConverter.py, UnityPy/classes/legacy_patch/Shader.py. See THIRD_PARTY_LICENSES.
+//! Tier A Shader export, through the `m_SubPrograms` layout. The 5.3–5.4
+//! blob path is a typed refusal; player programs and newer layouts belong
+//! to the separate Tier C extension. No batch output kind is added.
+//! Entry point: export/ShaderConverter.py:41-89;
+//! classes/legacy_patch/Shader.py:4-7.
+mod blob;
+mod convert;
+mod output;
+mod sort;
+mod view;
+pub use blob::Program;
+use output::Output;
+use std::sync::Arc;
+use unityrs_core::{
+    Bytes, ObjectRef, Parsed, PrimArray, Value,
+    budget::DecodeBuf,
+    codec::{Codec, Lz4, decode_block},
+    env::Environment,
+    error::LimitKind,
+    limits::{ChargeError, Meter, MeteredVec},
+    walk::ParseError,
+};
+use view::View;
+
+pub const HEADER: &str = "//////////////////////////////////////////\n//\n// NOTE: This is *not* a valid shader file\n//\n///////////////////////////////////////////\n";
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("no Shader exporter for class {0}")]
+    UnsupportedClass(i32),
+    #[error("unsupported Shader layout: {0}")]
+    Refusal(&'static str),
+    #[error("missing or invalid Shader field {0}")]
+    Field(&'static str),
+    #[error("{0}")]
+    PythonType(&'static str),
+    #[error("unsupported operand type(s) for +: '{left}' and '{right}'")]
+    AddType {
+        left: &'static str,
+        right: &'static str,
+    },
+    #[error("can only concatenate {container} (not \"{other}\") to {container}")]
+    ConcatType {
+        container: &'static str,
+        other: &'static str,
+    },
+    #[error("'{0}' object cannot be interpreted as an integer")]
+    IntegerType(&'static str),
+    #[error("'UnknownObject' object has no attribute '{0}'")]
+    Attribute(&'static str),
+    #[error("{0}")]
+    PropertyType(i64),
+    #[error("{0} is not a valid ShaderGpuProgramType")]
+    ProgramType(i32),
+    #[error("")]
+    NotImplemented,
+    #[error("fixed-width field outside Shader blob")]
+    Struct,
+    #[error("Input source data size too small")]
+    Lz4Prefix,
+    #[error("Invalid size: 0x{0}")]
+    Lz4HeaderSize(u32),
+    #[error("Decompressor wrote {actual} bytes, but {expected} bytes expected from header")]
+    Lz4HeaderLength { actual: usize, expected: u32 },
+    #[error("signed integer is greater than maximum or less than minimum")]
+    Lz4Size,
+    #[error("list index out of range")]
+    Index,
+    #[error("String not terminated")]
+    Unterminated,
+    #[error("invalid UTF-8 in Shader code")]
+    Utf8,
+    #[error("string argument without an encoding")]
+    StringBytes,
+    #[error("cannot convert 'NoneType' object to bytes")]
+    NoneBytes,
+    #[error("typetree read {actual} bytes, expected {expected}")]
+    CheckRead { expected: u32, actual: i64 },
+    #[error(transparent)]
+    Parse(#[from] ParseError),
+    #[error(transparent)]
+    Core(#[from] unityrs_core::Error),
+    #[error(transparent)]
+    Charge(#[from] ChargeError),
+}
+impl Error {
+    /// The Python exception represented by a reference failure.
+    pub fn exception(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::PropertyType(_)
+            | Self::ProgramType(_)
+            | Self::Lz4Prefix
+            | Self::Lz4HeaderSize(_) => "ValueError",
+            Self::Lz4HeaderLength { .. } => "LZ4BlockError",
+            Self::Lz4Size => "OverflowError",
+            Self::NotImplemented => "NotImplementedError",
+            Self::Struct => "error",
+            Self::Index => "IndexError",
+            Self::Unterminated => "Exception",
+            Self::Utf8 => "UnicodeDecodeError",
+            Self::StringBytes
+            | Self::NoneBytes
+            | Self::PythonType(_)
+            | Self::AddType { .. }
+            | Self::ConcatType { .. }
+            | Self::IntegerType(_) => "TypeError",
+            Self::Attribute(_) => "AttributeError",
+            _ => return None,
+        })
+    }
+}
+/// Export one Shader into a fallibly grown buffer charged to `meter`.
+/// The object's typetree reads retain the source meter, as E1's do.
+pub fn export(
+    obj: &ObjectRef,
+    env: &Environment,
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<u8>, Error> {
+    if obj.class_id() != 48 {
+        return Err(Error::UnsupportedClass(obj.class_id()));
+    }
+    let tree = env.object_tree(obj, None)?.ok_or(ParseError::NoTypeTree {
+        class_id: 48,
+        why: obj.why_no_tree(),
+    })?;
+    let parsed = obj.read_typetree(Some(&tree.tree), false)?;
+    if parsed.bytes_read != i64::from(obj.info().byte_size) {
+        return Err(Error::CheckRead {
+            expected: obj.info().byte_size,
+            actual: parsed.bytes_read,
+        });
+    }
+    let version = obj
+        .file()
+        .version()
+        .ok_or(Error::Field("version"))?
+        .version
+        .as_tuple()
+        .map_err(|_| Error::Field("version"))?;
+    export_with_cap(
+        &parsed,
+        (u32::from(version.0), u32::from(version.1)),
+        meter,
+        obj.file().context().limits.max_block_output,
+    )
+}
+/// Convert an already read tree. Useful for callers with a supplied typetree,
+/// and for bounded fuzzing of arbitrary field shapes.
+pub fn export_parsed(
+    parsed: &Parsed,
+    version: (u32, u32),
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<u8>, Error> {
+    export_with_cap(
+        parsed,
+        version,
+        meter,
+        unityrs_core::limits::Limits::default().max_block_output,
+    )
+}
+fn export_with_cap(
+    parsed: &Parsed,
+    version: (u32, u32),
+    meter: &Arc<Meter>,
+    max_block_output: u64,
+) -> Result<MeteredVec<u8>, Error> {
+    let root = View {
+        parsed,
+        value: parsed.value(),
+        meter,
+    };
+    if let Some(old) = root.optional("m_SubProgramBlob")?
+        && !old.empty()
+    {
+        return Err(Error::Refusal("5.3-5.4 m_SubProgramBlob (Tier U; E3)"));
+    }
+    let mut out = Output::new(meter);
+    out.text(HEADER)?;
+    if let Some(blob) = root.optional("compressedBlob")?
+        && !blob.empty()
+    {
+        let platforms = root.field("platforms")?.seq()?;
+        let bytes = bytes(blob.value, meter)?;
+        let mut programs = MeteredVec::new(meter);
+        // UnityPy's short-circuit guards precede get_entry and offsets:
+        // export/ShaderConverter.py:70-87 (get_entry: export/ShaderConverter.py:64-68).
+        for i in 0..platforms.len() {
+            meter.count_decode(1)?;
+            let compressed = root.field("compressedLengths")?.seq()?;
+            if i >= compressed.len() {
+                break;
+            }
+            let decompressed = root.field("decompressedLengths")?.seq()?;
+            if i >= decompressed.len() {
+                break;
+            }
+            let length = compressed.entry(i)?;
+            let size = decompressed.entry(i)?;
+            let offset = root.field("offsets")?.seq()?.entry(i)?;
+            let range = offset.slice(length, bytes.len())?;
+            let mut input = bytes.slice(range);
+            let size = size.integer(view::ArrayUse::Decompressed)?;
+            // python-lz4's negative-size mode reads a stored LE size prefix.
+            // The core codec takes the resulting nonnegative maximum.
+            i32::try_from(size).map_err(|_| Error::Lz4Size)?;
+            let prefixed = size < 0;
+            let size = if prefixed {
+                let prefix: [u8; 4] = input
+                    .get(..4)
+                    .ok_or(Error::Lz4Prefix)?
+                    .try_into()
+                    .map_err(|_| Error::Lz4Prefix)?;
+                let size = u32::from_le_bytes(prefix);
+                if size > i32::MAX.unsigned_abs() {
+                    return Err(Error::Lz4HeaderSize(size));
+                }
+                input = input.slice(4..);
+                size
+            } else {
+                u32::try_from(size).map_err(|_| Error::Lz4Size)?
+            };
+            // Both LZ4 passes may scan the complete input, even on failure.
+            meter.count_decode((input.len() as u64).saturating_mul(2))?;
+            let mut buf = DecodeBuf::new(meter, 0, max_block_output, LimitKind::BlockOutput)?;
+            decode_block(Codec::Lz4, &Lz4, &input, size, &mut buf, max_block_output)?;
+            if prefixed && buf.len() as u64 != u64::from(size) {
+                return Err(Error::Lz4HeaderLength {
+                    actual: buf.len(),
+                    expected: size,
+                });
+            }
+            programs.push(Program::decoded(buf, version, meter)?)?;
+        }
+        convert::shader(
+            root.field("m_ParsedForm")?,
+            platforms,
+            programs.as_slice(),
+            &mut out,
+            meter,
+        )?;
+    } else {
+        let script = root.optional("m_Script")?.ok_or(Error::NoneBytes)?;
+        let script = bytes(script.value, meter)?;
+        meter.count_decode(script.len() as u64)?;
+        std::str::from_utf8(&script).map_err(|_| Error::Utf8)?;
+        out.text(&script)?;
+    }
+    Ok(out.bytes)
+}
+/// Validate a platform's table and every subprogram without producing text.
+pub fn validate_blob(blob: &[u8], version: (u32, u32), meter: &Arc<Meter>) -> Result<(), Error> {
+    Program::parse(blob, version, meter).map(|_| ())
+}
+fn bytes(v: &Value, _meter: &Arc<Meter>) -> Result<Bytes, Error> {
+    match v {
+        Value::Bytes(b) | Value::Prims(PrimArray::U8(b)) => Ok(b.clone()),
+        Value::Str(_) => Err(Error::StringBytes),
+        _ => Err(Error::Field("byte array")),
+    }
+}
+fn compressed_range(len: usize, offset: i128, size: i128) -> std::ops::Range<usize> {
+    let norm = |n: i128| {
+        usize::try_from(if n < 0 {
+            (len as i128 + n).max(0)
+        } else {
+            n.min(len as i128)
+        })
+        .unwrap_or(0)
+    };
+    let start = norm(offset);
+    let end = norm(offset + size).max(start);
+    start..end
+}

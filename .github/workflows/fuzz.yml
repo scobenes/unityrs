@@ -60,6 +60,7 @@ jobs:
           - webfile
           - unityweb
           - fsb5
+          - shader
     env:
       TARGET: ${{ matrix.target }}
     steps:
