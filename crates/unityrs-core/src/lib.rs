@@ -150,6 +150,9 @@ const _: () = {
     send_sync::<files::serialized::SerializedType>();
     send_sync::<files::web::WebPacker>();
     send_sync::<files::web::WebFile>();
+    send_sync::<files::save::SaveLayout>();
+    send_sync::<files::save::SaveOptions>();
+    send_sync::<files::save::SaveError>();
     // limits, object, options, provider, raw, stream
     send_sync::<limits::ChargeError>();
     send_sync::<limits::Limits>();

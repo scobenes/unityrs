@@ -45,6 +45,9 @@ pub struct FileContext {
     /// Read the first AssetBundle object while a `SerializedFile` loads, and
     /// fail the file when it fails, as UnityPy does (`SerializedFile.py:316-324`).
     pub eager_asset_bundle: bool,
+    /// UnityPy config: parse trees at load, but omit them on save from v13.
+    /// Below v13 save retains the mandatory trees (Tier C writing).
+    pub serialized_file_parse_typetree: bool,
 }
 
 impl FileContext {
@@ -71,6 +74,7 @@ impl FileContext {
             budget: Arc::new(Unbounded),
             limits: Limits::default(),
             eager_asset_bundle: true,
+            serialized_file_parse_typetree: true,
         }
     }
 

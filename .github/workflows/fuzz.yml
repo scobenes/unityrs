@@ -45,6 +45,7 @@ jobs:
           - detect
           - bundle
           - serialized
+          - serialized_save
           - typetree
           - boost_read
           - python_read
