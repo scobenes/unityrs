@@ -25,7 +25,9 @@ use super::plan::{AtlasPlan, Planned, SpritePlan, TexturePlan, png_mode, too_wid
 use super::read::{Texture, field};
 use super::seam::Seam;
 use super::table;
-use super::{Failure, MemberPath, Output, OutputKind, Picture, SkipOutput, resource};
+use super::{
+    Failure, ImageEncoding, MemberPath, Output, OutputKind, Picture, SkipOutput, resource,
+};
 use crate::pyjson::{self, Count, Sink, WriteError};
 
 /// The imageio charger over the input's meter: each request at its
@@ -51,7 +53,7 @@ fn md5(bytes: &[u8]) -> [u8; 16] {
     out
 }
 
-/// A made file: its bytes, their charge and, for a PNG, its picture.
+/// A made file: its bytes, their charge and, for an image, its picture.
 pub(super) type File = (Vec<u8>, Charge, Option<Picture>);
 
 /// The image of texture `t` of `file`, past section 3's answers 1 to 3
@@ -95,7 +97,7 @@ pub(super) fn decoded(
     })
 }
 
-/// An image's pixels, to be written as a PNG.
+/// Source pixels, to be written in the selected image encoding.
 pub(super) struct Pixels<'p> {
     pub mode: Mode,
     pub width: u32,
@@ -118,27 +120,47 @@ fn encoded(e: EncodeError<ChargeError>) -> Class {
     }
 }
 
-/// A PNG of `p`, its bytes and charge, and its picture.
+/// The selected encoding of `p`, its bytes, charge and source-pixel picture.
 pub(super) fn png(
     p: &Pixels<'_>,
     meter: &Arc<Meter>,
-    fast: bool,
+    encoding: ImageEncoding,
 ) -> Result<(Vec<u8>, Charge, Picture), Class> {
     let image = unityrs_imageio::Image::new(p.width, p.height, png_mode(p.mode), p.data)
         .map_err(|e| encoded(EncodeError::Image(e)))?;
-    let result = if fast {
-        unityrs_imageio::encode_fast(&image, &mut Metered(meter))
-    } else {
-        unityrs_imageio::encode(&image, &mut Metered(meter))
+    let (bytes, charge) = match encoding {
+        ImageEncoding::Png => unityrs_imageio::encode(&image, &mut Metered(meter))
+            .map_err(encoded)?
+            .into_parts(),
+        ImageEncoding::PngFast => unityrs_imageio::encode_fast(&image, &mut Metered(meter))
+            .map_err(encoded)?
+            .into_parts(),
+        ImageEncoding::Webp { quality } => unityrs_imageio::encode_webp(
+            &image,
+            unityrs_imageio::WebpOptions {
+                quality: f32::from(quality),
+                ..Default::default()
+            },
+            &mut Metered(meter),
+        )
+        .map_err(|e| match e {
+            unityrs_imageio::WebpError::Refused { refusal, .. } => classify::charge(&refusal),
+            unityrs_imageio::WebpError::Memory => table::host_memory(),
+            unityrs_imageio::WebpError::Dimensions { .. } => {
+                Class::Skip(Reason::decode_error("pillow_value_error"))
+            }
+            _ => Class::Run(Reason::plain("internal")),
+        })?
+        .into_parts(),
     };
-    let encoded = result.map_err(encoded)?;
+
     let picture = Picture {
         mode: png_mode(p.mode).name(),
         width: p.width,
         height: p.height,
         visible_hash: visible_hash(&image),
     };
-    let (bytes, charge) = encoded.into_parts();
+
     Ok((bytes, charge, picture))
 }
 
@@ -443,7 +465,7 @@ impl Attempt<'_> {
         };
         let meter = self.seam.meter;
         self.seam
-            .probe(|| png(&p, meter, self.options.png_fast).map(|(b, c, pic)| (b, c, Some(pic))))
+            .probe(|| png(&p, meter, self.options.image).map(|(b, c, pic)| (b, c, Some(pic))))
     }
 
     fn export_sheet(
@@ -559,7 +581,7 @@ impl Attempt<'_> {
                     height: u32::try_from(s.height).unwrap_or(u32::MAX),
                     data: &pixels,
                 };
-                seam.probe(|| png(&p, seam.meter, self.options.png_fast))
+                seam.probe(|| png(&p, seam.meter, self.options.image))
             });
             match made {
                 Ok((bytes, charge, pic)) => {

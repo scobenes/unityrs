@@ -11,7 +11,7 @@ use super::{Py, Reader};
 use crate::limits::MeteredVec;
 use crate::typetree::{Kind, NodeId, Tree};
 use crate::value::{ListIx, PrimArray, PrimRun, Value};
-use crate::walk::{Out, ReadDetail, ReadError, charge_error, f32_bits, grow_step, int, uint};
+use crate::walk::{Out, ReadError, charge_error, f32_bits, grow_step, int, uint};
 
 /// `struct` formats of `read_array_struct` (`EndianBinaryReader.py:170-198`).
 #[derive(Clone, Copy)]
@@ -283,8 +283,8 @@ impl Reader<'_, '_> {
         } else if kind == Kind::Pair {
             // `TypeTreeHelper.py:282-293`: both children before the loop; each read without
             // its own flag when its type is in `FUNCTION_READ_MAP`.
-            let a = Self::child(t, node, 0, ReadDetail::PairChildren).map_err(|e| self.raise(e))?;
-            let b = Self::child(t, node, 1, ReadDetail::PairChildren).map_err(|e| self.raise(e))?;
+            let a = Self::child(t, node, 0).map_err(|e| self.raise(e))?;
+            let b = Self::child(t, node, 1).map_err(|e| self.raise(e))?;
             let min = t.info(node).map_or(0, |i| i.min_size);
             self.comprehension(count, min, |r| {
                 let first = r.direct(t, lx, a)?;
@@ -297,8 +297,7 @@ impl Reader<'_, '_> {
         } else if let Some(arr) = Self::array_child(t, node) {
             // `TypeTreeHelper.py:306-313`: the element's `Array` element is indexed before the loop.
             align |= t.info(arr).is_some_and(|i| i.align);
-            let sub =
-                Self::child(t, arr, 1, ReadDetail::ArrayChildren).map_err(|e| self.raise(e))?;
+            let sub = Self::child(t, arr, 1).map_err(|e| self.raise(e))?;
             if t.info(sub).is_some_and(|i| i.align) {
                 self.comprehension(count, 4, |r| {
                     let inner = r.read_int()?;

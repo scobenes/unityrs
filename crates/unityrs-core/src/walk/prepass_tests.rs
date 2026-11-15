@@ -86,7 +86,7 @@ fn failing_read(reader: &str, tree: &Arc<Tree>) -> (u64, u64, u64) {
     assert!(
         matches!(
             e.detail,
-            ReadDetail::Eof { need: 4 } | ReadDetail::BoostEof { need: 4, .. }
+            ReadDetail::Eof { need: 4, .. } | ReadDetail::BoostEof { need: 4, .. }
         ),
         "{reader}: {e:?}"
     );

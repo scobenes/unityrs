@@ -570,12 +570,22 @@ impl<'a> View<'a> {
 
     /// A `PPtr` value: a `PPtr<...>` node read as `{m_FileID, m_PathID}`.
     pub(crate) fn pptr(&self, node: Node<'a>) -> Result<PPtr, Error> {
-        let file_id = self
-            .attr(node, b"m_FileID")?
-            .value
-            .as_i64()
-            .and_then(|i| i32::try_from(i).ok());
-        let path_id = self.attr(node, b"m_PathID")?.value.as_i64();
+        // Object mode must have constructed a PPtr before its deref method
+        // exists. Python's scalar constructor ignores extra fields; Boost's
+        // slotted constructor rejects them and returns an UnknownObject.
+        if !self.list.type_name(node.id).starts_with(b"PPtr<")
+            || (self.parsed.read_by() == crate::value::ReadBy::Boost
+                && self.pptr_object(node).is_none())
+        {
+            return Err(malformed("the script pointer has no dereference method"));
+        }
+        let id = |v: &Value| match v {
+            Value::Bool(b) => Some(i64::from(*b)),
+            Value::F32(_) | Value::F64(_) if v.as_f64() == Some(0.0) => Some(0),
+            _ => v.as_i64(),
+        };
+        let file_id = id(self.attr(node, b"m_FileID")?.value).and_then(|i| i32::try_from(i).ok());
+        let path_id = id(self.attr(node, b"m_PathID")?.value);
         match (file_id, path_id) {
             (Some(file_id), Some(path_id)) => Ok(PPtr { file_id, path_id }),
             _ => Err(malformed("a pointer is not (int32, int64)")),
