@@ -892,6 +892,38 @@ Authorized rename and outcome writes have no intervening stop check. A rename
 error, including perform-then-fail, leaves the outcome unknown. Archive
 execution remains refused by capability validation.
 
+**Whole store runs.** The closed `sink::Sink` selects directory pool work or
+store futures through startup, publication and the finisher. Store publication
+keeps a fixed owning future slab outside the controller's unwind boundary;
+no transfer is spawned. Admission waits for a slot's quarantined lookup before
+taking phase room or submitting payload work. Loose winners drain before
+archives. Both use one PUT through 16 MiB and sequential multipart above it;
+archive pulls run on the existing blocking pool, one outstanding per slot,
+with central scratch retired before acknowledgment or a resume miss's reopen.
+
+Resume and verification use the bounded key-order merges above, before and
+after transfers respectively. Outcome 7 keeps a loose key's returned tag in
+`store_tags`, a charged disk sidecar of `101 * winners` bytes (spec 6.1), and
+an archive's in its existing outcome record. The hand-over retains verification
+figures and warnings; the final encoder samples unsettled row requests last.
+A stopped running-head future retains its fence history and last precondition
+for spec 7.4's second row. Finisher head and row adapters use the independent
+finisher runtime from its ordinary thread. Requests read B9's live budgets
+through pending I/O and stop retrying after a stop; head reconciliation keeps
+its one-second floor. The finisher selects any idle lookup token from its
+`download_concurrency + 1` prepared slots. Its journal backend closes without
+waiting on a mutation lock, then streams aborts, preserving allocator and
+internal failures as run failures.
+Startup reads old journals before cleanup. The CLI still refuses store sinks
+unless a build with `test-hooks` explicitly sets `UNITYRS_TEST_STORE=1`.
+
+`store_runs` exercises empty and nonempty whole runs, small ZIP PUTs, opaque
+tags, LIST degradation, verification mismatches, stops and head supersession.
+Its scale scene kills loose and archive multipart uploads, then resumes local
+and URL sources, with URL cases also using the process host's two runtimes
+under `test-hooks`. B12c still owns the final combined memory calibration;
+owner-store consistency and publish timing remain outside these fake scenes.
+
 ### 2.10 Why D holds
 
 Concurrent publication reads the same sealed winner order and assigns outcome
@@ -2074,6 +2106,76 @@ positions.
 | `unityrs-export` | `ngui/classify.rs` | `Reason::plain`, `Reason::decode_error`, `text`, `with_argument`: owned reason/detail strings; `limit`, `decode`, `render`: formatted limits; `panicked`, `entry_error`: owned reason/detail construction. Their `budget`, `charge`, `tree`, `parse`, `deref`, `error`, `resource`, `outside_view`, `outside_view_cab`, `internal` and `mesh` wrappers reach these constructors | All |
 | `unityrs-export` | `ngui/register.rs` | `dependency_failed`: formatted dependency wrapper; `container`: container reclassification; `open`, `opened`, `own`, `internal`, `peeked`, `Peeked::member`, `Peeked::finish`, `same_open`: reason construction through classify's constructors and these wrappers | All |
 
+Store integration adds these two exact third-party call entries to the same
+inventory. With the whole-store census below it has 123 entries total:
+121 All and 2 Darwin. Engine buffers, key copies,
+future boxes and file adapters still reserve fallibly before allocating.
+The existing core/export sweep's 17 All function entries below are unchanged;
+the `store` entries identify the additional calls separately.
+The existing wake-drop entry now names `sys::shared::Shared::drop`, which
+owns the shared registered wake; it still requires Tokio's exact deregister
+frame and the wake's `AsyncFd` drop callee. Its scope and count are unchanged.
+
+| crate | module | function and allocation | platform |
+|---|---|---|---|
+| `unityrs-batch` | `publish/store/transfer.rs` | `run` calls `object_store::path::Path::parse`: dependency-owned key segments and normalized path; exact dependency frame and callee required | All |
+| `unityrs-batch` | `sink/store/journal.rs` | `JournalBackend::abort` calls `object_store::path::Path::parse`: dependency-owned abort key; exact dependency frame and callee required | All |
+
+The whole-store census adds 75 further All entries. Their exact allocating
+frames, owning functions and immediate dependency callees are in
+`controller_support/store_allocations.rs`, `store_multipart_allocations.rs`
+and `store_parsing_allocations.rs`, joined by `refusals::inventory()`. These
+are dependency APIs without fallible storage constructors; their bounded
+storage belongs to the existing network and phase envelopes. A refusal is
+the documented A13 abort, never an admitted engine allocation. The groups
+below count individual allocating-frame entries, not allocation ordinals.
+
+| dependency allocation group | entries | why listed |
+|---|---:|---|
+| `object_store` operation futures, request building, signing, payloads, paths and result conversion | 25 | the public operation APIs own their infallible allocations |
+| quick-xml, serde and query encoding | 29 | dependency-owned XML/query parsing and serialization expose no fallible storage |
+| bytes owners, buffers and copies | 6 | shared-owner construction and dependency copies expose no fallible constructor |
+| chrono signing-date formatting | 4 | the signer owns the formatted date storage |
+| HTTP header maps and URI formatting | 4 | map reservation reports size limits, not allocator refusal; URI formatting owns its text |
+| URL parsing | 2 | the parser and host parser expose no fallible storage |
+| attribute map storage | 1 | dependency-owned collection storage exposes no fallible insertion path |
+| Tokio response deregistration | 1 | the dependency's reactor owns the deregistration queue |
+| Tokio cooperative deferred-wake queue | 1 | each `block_on` creates an infallible wake queue; startup cannot prime a later context |
+| HTTP response body box | 1 | the dependency's body constructor boxes its body infallibly |
+| hyper queued body buffers | 1 | hyper owns its vectored body queue |
+
+`controller_alloc` runs three serialized whole-store scopes, armed at
+publication admission through `run::drive_with`'s finisher and teardown:
+`store` publishes a loose PNG and archive by single PUT; `store-resume`
+first publishes them unarmed, then sweeps resume's LIST/merge and archive
+hashing without re-upload; `store-multipart` publishes both above 16 MiB
+through create, parts and complete. Each scope verifies the result by LIST,
+writes the finisher's store rows and head, and retires a seeded, durably
+journaled upload in the finisher. The fake S3 runs on an exempt thread.
+Successful census runs assert the actual operations and sizes. Handled
+refusals require `host_memory`/74, zero retained charges after teardown,
+no open upload or remaining journal identity, an acknowledged exit line,
+and the specified head and all referenced row chunks. Normal-finisher
+failures keep a null `stop_reason`; a taken controller stop names
+`host_memory`. A failed final write leaves the acknowledged `running` head.
+The keyed census refuses every occurrence, then settles unseen stacks as
+the URL scopes do; every listed entry must be reached somewhere in its
+named scopes. Admission exhausts the remaining cooperative budget before
+the next real operation, so Tokio's deferred-wake queue is exercised even
+when socket pacing would otherwise avoid it. The multipart fixture is
+generated once outside the child
+runs, and uses fast PNG encoding to keep the scale sweep bounded in time.
+
+The sweep also fixes three engine allocation paths: connector and
+credential-provider futures use fallible boxes with zero-sized error
+fallbacks; create-response storage is charged and allocated before the
+request, then filled from raw frames without another engine allocation
+before the upload id is known. Journal reader failure terminates enumeration
+instead of repeating a failure sentinel forever. A transient cleanup
+allocation refusal gets one retry within the original abort deadline,
+while still deciding the run as `host_memory`; repeated refusal leaves the
+durable identity for startup recovery.
+
 The `NodeList` shared owner is charged once in `NodeList::from_preorder`,
 which serves both stored-row trees and `TypeTreeNode::node_list` snapshots.
 `NodeList::into_shared` allocates it fallibly; neither path needs an abort
@@ -2083,7 +2185,9 @@ The executable exclusion inventory is
 `crates/unityrs-batch/tests/controller_support/refusals.rs`. Its keys are the
 **innermost owning `unityrs_core::` or `unityrs_export::` functions** on the
 allocating backtrace, including inline frames. Closure numbers, generic
-arguments, allocation sizes and ordinals are not keys. A std generic function
+arguments, allocation sizes and ordinals are not keys. Dependency callees may
+also name the exact method without its type arguments; `Timeout<T>::poll`
+remains distinct from every other method. A std generic function
 that mentions a core/export type does not own that allocation. The test
 rejects an innermost batch/CLI function even when a core/export ancestor is
 listed, and rejects an unsymbolized abort. `Cargo.toml` defines

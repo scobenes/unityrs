@@ -6,11 +6,12 @@ use super::{
     put::{self, Request},
 };
 use crate::phase::Account;
+use crate::sys::Lock;
 use object_store::{
     ObjectMeta,
     list::{PaginatedListOptions, PaginatedListStore},
 };
-use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use unityrs_core::limits::Charge;
 
 pub const RESERVATION: u64 = 40 * 1024 * 1024;
@@ -75,18 +76,18 @@ impl Page<'_> {
         &self.objects
     }
 }
-struct Lease<'a>(&'a Cell<bool>);
+struct Lease<'a>(&'a AtomicBool);
 impl Drop for Lease<'_> {
     fn drop(&mut self) {
-        self.0.set(false);
+        self.0.store(false, Ordering::Release);
     }
 }
 /// Fixed state, with no heap allocation. A borrowed lease rejects overlapping
 /// pages on the controller's current-thread runtime and survives cancellation.
 pub struct Listing {
     prefix: Text,
-    position: Cell<Position>,
-    held: Cell<bool>,
+    position: Lock<Position>,
+    held: AtomicBool,
 }
 #[derive(Clone, Copy)]
 struct Position {
@@ -99,24 +100,26 @@ impl Listing {
     pub fn new(prefix: &str) -> Result<Self, Error> {
         Ok(Self {
             prefix: Text::new(prefix).ok_or(Error::Failed)?,
-            position: Cell::new(Position {
+            position: Lock::new(Position {
                 token: None,
                 previous: None,
                 ended: false,
                 failed: false,
             }),
-            held: Cell::new(false),
+            held: AtomicBool::new(false),
         })
     }
+    #[allow(clippy::too_many_lines)] // Lease admission and answer validation share one page boundary.
     pub async fn page(
         &self,
         request: &Request<'_>,
         account: &Account,
     ) -> Result<Option<Page<'_>>, Error> {
-        if self.held.get() {
+        if self.held.swap(true, Ordering::AcqRel) {
             return Err(Error::PageHeld);
         }
-        let mut position = self.position.get();
+        let lease = Lease(&self.held);
+        let mut position = *self.position.lock();
         if position.failed {
             return Err(Error::Failed);
         }
@@ -139,8 +142,6 @@ impl Listing {
             .map_err(|e| Error::Phase(e.into()))?;
         let prefix = self.prefix.text()?;
         let token = position.token.as_ref().map(Text::text).transpose()?;
-        self.held.set(true);
-        let lease = Lease(&self.held);
         let done = request
             .run(Kind::ListPage, |_| async {
                 let mut page_token = None;
@@ -190,7 +191,7 @@ impl Listing {
             Ok(page) => page,
             Err(e) => {
                 position.failed = e != Error::Stopped;
-                self.position.set(position);
+                *self.position.lock() = position;
                 return Err(e);
             }
         };
@@ -200,12 +201,12 @@ impl Listing {
         let mut objects = page.result.objects;
         if let Err(e) = self.ordered(&mut position, &mut objects) {
             position.failed = true;
-            self.position.set(position);
+            *self.position.lock() = position;
             return Err(e);
         }
         position.token = page.page_token.as_deref().and_then(Text::new);
         position.ended = position.token.is_none();
-        self.position.set(position);
+        *self.position.lock() = position;
         Ok(Some(Page {
             objects,
             _charge: charge,

@@ -18,7 +18,10 @@ struct Slot {
     /// plus its position. One table entry per permit, never shared.
     index: usize,
     state: AtomicU64,
+    #[cfg(not(feature = "test-hooks"))]
     bytes: AtomicU64,
+    #[cfg(feature = "test-hooks")]
+    bytes: Arc<AtomicU64>,
     waiter: Mutex<Option<Waker>>,
     /// The pool's waiter, shared by every slot: whatever frees a slot or
     /// ends an operation (a permit's, a token's or a charge's drop) wakes
@@ -79,7 +82,10 @@ impl PermitPool {
             slots.push(Arc::new(Slot {
                 index,
                 state: AtomicU64::new(0),
+                #[cfg(not(feature = "test-hooks"))]
                 bytes: AtomicU64::new(0),
+                #[cfg(feature = "test-hooks")]
+                bytes: Arc::new(AtomicU64::new(0)),
                 waiter: Mutex::new(None),
                 pool: waiter.clone(),
             }));
@@ -152,7 +158,22 @@ impl Operation {
 pub struct RequestPermit {
     slot: Arc<Slot>,
 }
+/// Test-only observation that keeps a counter alive without retaining a charge.
+#[cfg(feature = "test-hooks")]
+#[derive(Clone)]
+pub struct ChargeProbe(Arc<AtomicU64>);
+#[cfg(feature = "test-hooks")]
+impl ChargeProbe {
+    #[must_use]
+    pub fn used(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+}
 impl RequestPermit {
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn charge_probe(&self) -> ChargeProbe {
+        ChargeProbe(self.slot.bytes.clone())
+    }
     /// This permit's socket-table entry.
     #[must_use]
     pub fn index(&self) -> usize {

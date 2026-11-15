@@ -177,6 +177,9 @@ impl Write<'_> {
     ) -> Result<Etag, Error> {
         let mut next = fence.last();
         for rewrite in 0..=4 {
+            if rewrite != 0 && !request.reconcile_open() {
+                return Err(self.failure(Error::SinkUnreachable));
+            }
             let precondition = next;
             let observer = fence.observer(precondition);
             let kind = Kind::HeadWrite {
@@ -213,6 +216,9 @@ impl Write<'_> {
                 }
                 Some(Action::ReadBack) if self.conditional => (),
                 _ => return Err(self.failure(Error::SinkUnreachable)),
+            }
+            if !request.reconcile_open() {
+                return Err(self.failure(Error::SinkUnreachable));
             }
             let head = match read(request, self.key, self.run_id, buffer).await {
                 Ok(head) => head,

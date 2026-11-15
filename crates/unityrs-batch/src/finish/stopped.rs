@@ -61,6 +61,20 @@ pub fn run(h: &HandOver, taken: Option<Stop>, fin: &mut Finisher<'_>) -> Finishe
     // Steps 1 and 2 do nothing when the spool's lock was never taken.
     if h.spool.is_some() {
         finished.settled = budget::settle(fin.backend, fin.budget, fin.clock);
+        if let Some(crate::sink::Sink::Store(store)) = &h.sink {
+            store.figures.lock().abort_failed += finished.settled.abort_failed;
+        }
+        if let Some(failure) = fin.backend.failure() {
+            let code = reduce(failure.code(), taken);
+            let by_stop = taken.filter(|s| s.reason.code() == code);
+            finished.end = ResultEnd {
+                code,
+                status: h.running.then_some("running"),
+                reason: Some(by_stop.map_or(failure.name(), |s| s.reason.name())),
+                detail: by_stop.and_then(|s| s.detail).map(SpoolDetail::name),
+            };
+            return finished;
+        }
     }
     match h.cause {
         FinishCause::Terminal(t) => {
@@ -119,7 +133,7 @@ fn normal(h: &HandOver, fin: &mut Finisher<'_>) -> Result<ResultEnd, RunFailure>
         return Err(internal());
     };
     let facts = h.facts.as_deref().ok_or_else(internal)?;
-    let directory = h.directory.as_deref().ok_or_else(internal)?;
+    let directory = h.sink.as_ref().ok_or_else(internal)?;
     let inputs =
         Committed::received(&owned.done, &facts.inputs, &*owned.fs, &|| false).map_err(failure)?;
     let cx = manifest::rows::Context {
@@ -136,7 +150,7 @@ fn normal(h: &HandOver, fin: &mut Finisher<'_>) -> Result<ResultEnd, RunFailure>
         stopped: &|| false,
         taken_at: h.at,
     };
-    let mut rows = rows(facts, directory);
+    let mut rows = rows(facts, directory, fin.account, fin.budget);
     let mut time = [0; 20];
     Ok(normal_into(
         &cx,
@@ -151,14 +165,53 @@ fn normal(h: &HandOver, fin: &mut Finisher<'_>) -> Result<ResultEnd, RunFailure>
         ended_at(&mut time),
     ))
 }
+enum Rows<'a> {
+    Directory(manifest::chunks::Directory<'a>),
+    Store(crate::sink::store::finish::Adapter<'a>),
+}
+impl budget::Rows for Rows<'_> {
+    fn put(
+        &mut self,
+        family: manifest::Family,
+        chunk: u64,
+        bytes: &[u8],
+        deadline: Option<crate::lifetime::Boot>,
+    ) -> Result<(), manifest::WriteError> {
+        match self {
+            Self::Directory(d) => budget::Rows::put(d, family, chunk, bytes, deadline),
+            Self::Store(s) => budget::Rows::put(s, family, chunk, bytes, deadline),
+        }
+    }
+    fn put_owned(
+        &mut self,
+        family: manifest::Family,
+        chunk: u64,
+        bytes: crate::phase::Buffer<u8>,
+        deadline: Option<crate::lifetime::Boot>,
+    ) -> Result<Option<crate::phase::Buffer<u8>>, manifest::WriteError> {
+        match self {
+            Self::Directory(d) => budget::Rows::put_owned(d, family, chunk, bytes, deadline),
+            Self::Store(s) => budget::Rows::put_owned(s, family, chunk, bytes, deadline),
+        }
+    }
+}
 fn rows<'a>(
     facts: &'a Facts,
-    directory: &'a crate::sink::directory::Directory,
-) -> manifest::chunks::Directory<'a> {
-    manifest::chunks::Directory {
-        directory,
-        run_id: &facts.spec.run_id,
-        attempt: facts.spec.attempt,
+    sink: &'a crate::sink::Sink,
+    account: &'a Account,
+    budget: Budget<'a>,
+) -> Rows<'a> {
+    match sink {
+        crate::sink::Sink::Directory(directory) => Rows::Directory(manifest::chunks::Directory {
+            directory,
+            run_id: &facts.spec.run_id,
+            attempt: facts.spec.attempt,
+        }),
+        crate::sink::Sink::Store(store) => Rows::Store(crate::sink::store::finish::Adapter {
+            store,
+            account,
+            budget,
+        }),
     }
 }
 /// 7.4's rows for a stop after the `running` head: the received families,
@@ -172,7 +225,7 @@ fn stopped(
     reconcile: &mut Option<Reconcile>,
 ) -> Result<ResultEnd, RunFailure> {
     let facts = h.facts.as_deref().ok_or_else(internal)?;
-    let directory = h.directory.as_deref().ok_or_else(internal)?;
+    let directory = h.sink.as_ref().ok_or_else(internal)?;
     let spool = h.spool.as_ref().ok_or_else(internal)?;
     if let Some(input) = h.pending {
         *reconcile = Some(Reconcile::Unknown(input, None));
@@ -221,7 +274,7 @@ fn stopped(
         stopped: &|| false,
         taken_at: h.at,
     };
-    let mut rows = rows(facts, directory);
+    let mut rows = rows(facts, directory, fin.account, fin.budget);
     let mut time = [0; 20];
     Ok(conclude(
         &cx,

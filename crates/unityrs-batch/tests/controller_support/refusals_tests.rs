@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn dependency_methods_ignore_type_arguments_but_keep_the_exact_method() {
+    let entry = Exclusion {
+        scopes: &["store"],
+        functions: &["unityrs_batch::store::put::Request::run_observed"],
+        platform: Platform::All,
+        frame: Some("tokio::runtime::scheduler::defer::Defer>::defer"),
+        via: &["tokio::time::timeout::Timeout::poll"],
+        name: "deferred wake through a timeout poll",
+    };
+    for argument in [
+        "u8",
+        "alloc::vec::Vec<alloc::string::String>",
+        "<unityrs_batch::store::attempt::Tries>::run_observed<object_store::list::PaginatedListResult, <unityrs_batch::store::list::Listing>::page::{closure#0}::{closure#1}, <unityrs_batch::store::list::Listing>::page::{closure#0}::{closure#1}::{closure#0}>::{closure#0}",
+    ] {
+        let trace = format!(
+            "REFUSED_ALLOCATION site=1 size=64\n\
+            0: <unityrs_batch::alloc::Counting<controller_alloc::Refuse> as core::alloc::global::GlobalAlloc>::alloc\n\
+            1: <tokio::runtime::scheduler::defer::Defer>::defer\n\
+            2: <tokio::time::timeout::Timeout<{argument}> as core::future::future::Future>::poll\n\
+            3: <unityrs_batch::store::put::Request>::run_observed\n\
+            END_REFUSED_ALLOCATION"
+        );
+        assert!(entry.admits(innermost(&trace).as_deref(), &trace));
+        let other = trace.replace("::poll\n", "::new\n");
+        assert!(!entry.admits(innermost(&other).as_deref(), &other));
+    }
+}
+
+#[test]
 fn the_innermost_owner_cannot_be_hidden_by_an_allowed_ancestor() {
     let trace = "REFUSED_ALLOCATION site=99 size=64\n\
         0: <controller_alloc::Refuse as unityrs_batch::alloc::Hook>::refuses\n\
@@ -75,8 +104,7 @@ fn a_listed_allocator_called_by_ours_is_unlisted() {
         )
     };
     let admitted = |trace: &str| {
-        INVENTORY
-            .iter()
+        inventory()
             .filter(|e| e.applies("url"))
             .find(|e| e.admits(innermost(trace).as_deref(), trace))
             .map(|e| e.name)

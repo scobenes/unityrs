@@ -1,5 +1,26 @@
 //! Descriptor-rooted directory safety. No output inventory is retained.
 pub mod directory;
+pub mod store;
+
+#[derive(Clone)]
+pub enum Sink {
+    Directory(std::sync::Arc<directory::Directory>),
+    Store(crate::sys::Shared<store::Store>),
+}
+impl From<std::sync::Arc<directory::Directory>> for Sink {
+    fn from(value: std::sync::Arc<directory::Directory>) -> Self {
+        Self::Directory(value)
+    }
+}
+impl Sink {
+    pub fn directory(&self) -> Result<&directory::Directory, crate::phase::Error> {
+        match self {
+            Self::Directory(d) => Ok(d),
+            Self::Store(_) => Err(crate::phase::Error::internal()),
+        }
+    }
+}
+
 pub mod fs;
 pub mod path;
 mod probe;
@@ -15,6 +36,10 @@ pub enum Context {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
     SinkRootUnusable,
+    SinkUnreachable,
+    BucketMissing,
+    PreviousAttemptLive,
+    CredentialsExpired,
     KernelTooOld,
     MountCheckUnavailable,
     MountCrossing,

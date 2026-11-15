@@ -102,6 +102,8 @@ struct State {
 /// connector borrows for its one call behind a guard that gives it back
 /// even when the timer drops the call.
 pub struct TrySlot {
+    #[cfg(feature = "test-hooks")]
+    probe: crate::http::permit::ChargeProbe,
     connected: AtomicBool,
     state: Mutex<State>,
 }
@@ -111,6 +113,8 @@ impl TrySlot {
     #[must_use]
     pub fn new(permit: RequestPermit, kind: Kind) -> Arc<Self> {
         Arc::new(Self {
+            #[cfg(feature = "test-hooks")]
+            probe: permit.charge_probe(),
             connected: AtomicBool::new(false),
             state: Mutex::new(State {
                 kind,
@@ -124,6 +128,10 @@ impl TrySlot {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn charge_probe(&self) -> crate::http::permit::ChargeProbe {
+        self.probe.clone()
+    }
     /// Starts a try of `kind` with an empty record.
     fn begin(&self, kind: Kind) {
         self.connected.store(false, Ordering::Release);
@@ -134,7 +142,7 @@ impl TrySlot {
     }
     /// Ready once the permit's lookup token is home: no earlier try's
     /// lookup still holds it (`batch.md` 2.5).
-    fn poll_lookup(&self, cx: &mut Context<'_>) -> Poll<Result<(), Fault>> {
+    pub(crate) fn poll_lookup(&self, cx: &mut Context<'_>) -> Poll<Result<(), Fault>> {
         let state = self.lock();
         if state.token.is_some() {
             return Poll::Ready(Ok(()));
@@ -335,7 +343,7 @@ pub struct Tries<'a> {
 
 /// Allocation-free retained request bookkeeping. A started try which never
 /// reaches `ended` was abandoned; reads never update a write's observer.
-pub trait Observer {
+pub trait Observer: Sync {
     fn started(&self) {}
     fn ended(&self, _record: &Record, _verdict: Verdict) {}
 }

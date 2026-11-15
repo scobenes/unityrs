@@ -70,7 +70,10 @@ enum State {
 pub struct Stream<'a> {
     cx: Context<'a>,
     input: Input<'a>,
-    members: Option<member::Reader<'a>>,
+    pull: Pull,
+}
+pub(crate) struct Pull {
+    members: Option<member::Reader<'static>>,
     central: Central,
     header: Buffer<u8>,
     position: usize,
@@ -115,41 +118,57 @@ fn build<'a>(
     origin: u64,
     stopped: &dyn Fn() -> bool,
 ) -> Result<Stream<'a>, Error> {
-    check(stopped)?;
-    if eligibility(input.members, false, input.size) != Eligibility::Eligible
-        || input.key.is_empty()
-        || input.key.len() > 1024
-        || input.index >= 256
-    {
-        return Err(Error::internal());
-    }
-    let adapters = cx.meter.charge(cx.workspace.adapter_charge()?)?;
-    let members = member::Reader::open(cx.workspace, input.list, cx.meter, stopped)?;
-    let central = Central::new(cx.workspace, cx.meter, stopped)?;
-    let header = Buffer::new(cx.meter, 4096)?;
-    Ok(Stream {
-        cx,
-        input,
-        members: Some(members),
-        central,
-        header,
-        position: 0,
-        payload: None,
-        layout,
-        end: None,
-        seen: 0,
-        origin,
-        digest: Incremental::default(),
-        state: State::Members,
-        failed: false,
-        _adapters: adapters,
-    })
+    let pull = Pull::build(&cx, input, layout, origin, stopped)?;
+    Ok(Stream { cx, input, pull })
 }
-impl Stream<'_> {
+impl Pull {
+    pub(crate) fn build(
+        cx: &Context<'_>,
+        input: Input<'_>,
+        layout: Layout,
+        origin: u64,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Self, Error> {
+        check(stopped)?;
+        if eligibility(input.members, false, input.size) != Eligibility::Eligible
+            || input.key.is_empty()
+            || input.key.len() > 1024
+            || input.index >= 256
+        {
+            return Err(Error::internal());
+        }
+        let adapters = cx.meter.charge(cx.workspace.adapter_charge()?)?;
+        let members = member::Reader::open(cx.workspace, input.list, cx.meter, stopped)?;
+        let central = Central::new(cx.workspace, cx.meter, stopped)?;
+        let header = Buffer::new(cx.meter, 4096)?;
+        Ok(Self {
+            members: Some(members),
+            central,
+            header,
+            position: 0,
+            payload: None,
+            layout,
+            end: None,
+            seen: 0,
+            origin,
+            digest: Incremental::default(),
+            state: State::Members,
+            failed: false,
+            _adapters: adapters,
+        })
+    }
+}
+impl Pull {
     /// Return at most 64 KiB into caller-owned memory. An empty output buffer
     /// returns zero without advancing; only `finish` certifies exhaustion.
     /// Any read failure poisons the stream and retains central claims.
-    pub fn read(&mut self, out: &mut [u8], stopped: &dyn Fn() -> bool) -> Result<usize, Error> {
+    pub(crate) fn read(
+        &mut self,
+        cx: &Context<'_>,
+        input: Input<'_>,
+        out: &mut [u8],
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<usize, Error> {
         if self.failed {
             return Err(Error::internal());
         }
@@ -159,14 +178,25 @@ impl Stream<'_> {
         let n = if limit == 0 {
             0
         } else {
-            self.pull(out.get_mut(..limit).ok_or_else(Error::internal)?, stopped)?
+            self.pull(
+                cx,
+                input,
+                out.get_mut(..limit).ok_or_else(Error::internal)?,
+                stopped,
+            )?
         };
         self.digest
             .update(out.get(..n).ok_or_else(Error::internal)?)?;
         self.failed = false;
         Ok(n)
     }
-    fn pull(&mut self, out: &mut [u8], stopped: &dyn Fn() -> bool) -> Result<usize, Error> {
+    fn pull(
+        &mut self,
+        cx: &Context<'_>,
+        input: Input<'_>,
+        out: &mut [u8],
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<usize, Error> {
         loop {
             check(stopped)?;
             if self.position < self.header.len() {
@@ -182,16 +212,16 @@ impl Stream<'_> {
                 return Ok(n);
             }
             if let Some(payload) = &mut self.payload {
-                let n = payload.read(out, &self.cx, stopped)?;
+                let n = payload.read(out, cx, stopped)?;
                 if n > 0 {
                     return Ok(n);
                 }
                 drop(self.payload.take());
             }
             match self.state {
-                State::Members => self.member(stopped)?,
+                State::Members => self.member(cx, input, stopped)?,
                 State::Central => {
-                    let n = self.central.read(out, self.cx.hooks, stopped)?;
+                    let n = self.central.read(out, cx.hooks, stopped)?;
                     if n > 0 {
                         return Ok(n);
                     }
@@ -206,18 +236,23 @@ impl Stream<'_> {
             }
         }
     }
-    fn member(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Error> {
-        boundary(self.cx.hooks, Point::Member, stopped)?;
+    fn member(
+        &mut self,
+        cx: &Context<'_>,
+        input: Input<'_>,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<(), Error> {
+        boundary(cx.hooks, Point::Member, stopped)?;
         let next = self
             .members
             .as_mut()
             .ok_or_else(Error::internal)?
             .next(stopped)?;
         if let Some(m) = next {
-            if m.archive != self.input.key
-                || m.index != self.input.index
+            if m.archive != input.key
+                || m.index != input.index
                 || m.reason.is_some()
-                || self.seen >= self.input.members
+                || self.seen >= input.members
             {
                 return Err(Error::internal());
             }
@@ -225,16 +260,16 @@ impl Stream<'_> {
                 u64::try_from(m.path.len()).map_err(|_| Error::internal())?,
                 m.size,
             )?;
-            if self.layout.finish()?.size > self.input.size {
+            if self.layout.finish()?.size > input.size {
                 return Err(Error::internal());
             }
             headers::central(&mut self.header, m.path, m.size, m.crc32, entry)?;
-            self.central.append(&self.header, self.cx.hooks, stopped)?;
+            self.central.append(&self.header, cx.hooks, stopped)?;
             headers::local(&mut self.header, m.path, m.size, m.crc32, entry)?;
             self.position = 0;
             check(stopped)?;
             self.payload = Some(Payload {
-                read: self.cx.payloads.open(m.source, m.plan_index)?,
+                read: cx.payloads.open(m.source, m.plan_index)?,
                 remaining: m.size,
                 crc: crc32fast::Hasher::new(),
                 md5: Md5::new(),
@@ -244,9 +279,9 @@ impl Stream<'_> {
             self.seen += 1;
         } else {
             let end = self.layout.finish()?;
-            if self.seen != self.input.members
+            if self.seen != input.members
                 || end.count != self.seen
-                || end.size != self.input.size
+                || end.size != input.size
                 || self.digest.size().checked_add(self.origin) != Some(end.central_offset)
             {
                 return Err(Error::internal());
@@ -254,8 +289,7 @@ impl Stream<'_> {
             drop(self.members.take());
             self.header.clear();
             self.position = 0;
-            self.central
-                .replay(end.central_size, self.cx.hooks, stopped)?;
+            self.central.replay(end.central_size, cx.hooks, stopped)?;
             self.end = Some(end);
             self.state = State::Central;
         }
@@ -263,22 +297,35 @@ impl Stream<'_> {
     }
     /// No summary until complete exhaustion, final size verification and
     /// successful explicit retirement. Failure/stop/drop performs no cleanup.
-    pub fn finish(self, stopped: &dyn Fn() -> bool) -> Result<Summary, Error> {
+    pub(crate) fn finish(
+        self,
+        cx: &Context<'_>,
+        input: Input<'_>,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Summary, Error> {
         check(stopped)?;
         if self.failed
             || !matches!(self.state, State::Done)
-            || self.digest.size().checked_add(self.origin) != Some(self.input.size)
+            || self.digest.size().checked_add(self.origin) != Some(input.size)
         {
             return Err(Error::internal());
         }
-        self.central.retire(self.cx.hooks, stopped)?;
-        boundary(self.cx.hooks, Point::Complete, stopped)?;
+        self.central.retire(cx.hooks, stopped)?;
+        boundary(cx.hooks, Point::Complete, stopped)?;
         let hashes = self.digest.finish();
         Ok(Summary {
-            size: self.input.size,
+            size: input.size,
             emitted_size: hashes.size,
             md5: hashes.md5,
             etag: hashes.etag,
         })
+    }
+}
+impl Stream<'_> {
+    pub fn read(&mut self, out: &mut [u8], stopped: &dyn Fn() -> bool) -> Result<usize, Error> {
+        self.pull.read(&self.cx, self.input, out, stopped)
+    }
+    pub fn finish(self, stopped: &dyn Fn() -> bool) -> Result<Summary, Error> {
+        self.pull.finish(&self.cx, self.input, stopped)
     }
 }

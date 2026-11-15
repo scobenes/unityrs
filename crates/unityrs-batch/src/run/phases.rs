@@ -60,7 +60,7 @@ pub(super) fn select(
     account: &Arc<Account>,
     control: &Arc<super::Lifetime>,
     execution: &Execution,
-    directory: &Arc<Directory>,
+    directory: &crate::sink::Sink,
     fs: &Arc<dyn spool::FileSystem>,
 ) -> Option<(Workspace, winners::Handoff)> {
     let result = (|| -> Result<_, phase::Error> {

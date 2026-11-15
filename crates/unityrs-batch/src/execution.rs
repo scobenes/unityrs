@@ -363,7 +363,7 @@ fn pool_size(spec: &Spec) -> Result<usize, SetupError> {
 /// Start every blocking thread before the head, then widen tokio's queue to
 /// the pool's size while every thread is held, so a later submission neither
 /// starts a thread nor grows the queue. Shares one absolute second.
-fn prewarm(pool: &tokio::runtime::Handle, threads: usize) -> io::Result<()> {
+pub(crate) fn prewarm(pool: &tokio::runtime::Handle, threads: usize) -> io::Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     let held = Arc::new((Mutex::new((0_usize, false)), Condvar::new()));
     let ran = Arc::new(AtomicUsize::new(0));

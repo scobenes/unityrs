@@ -13,6 +13,11 @@ mod run_support;
 mod sites;
 mod stage_support;
 #[cfg(feature = "test-hooks")]
+#[path = "controller_support/store_scopes.rs"]
+mod store_scopes;
+#[cfg(feature = "test-hooks")]
+mod store_support;
+#[cfg(feature = "test-hooks")]
 #[path = "controller_support/url_schedule.rs"]
 mod url_schedule;
 #[cfg(feature = "test-hooks")]
@@ -115,7 +120,7 @@ fn scopes() -> impl Iterator<Item = &'static str> {
 const URL_SCOPES: &[&str] = url_scopes::SCOPES;
 fn timed(kind: &str) -> bool {
     #[cfg(feature = "test-hooks")]
-    return url_scopes::timed(kind);
+    return url_scopes::timed(kind) || store_scopes::SCOPES.contains(&kind);
     #[cfg(not(feature = "test-hooks"))]
     {
         let _ = kind;
@@ -155,6 +160,14 @@ fn every_scheduled_url_variant_refuses_all_its_own_sites() {
     let _serial = sweeping();
     sweep(url_schedule::SCOPES.iter().copied());
 }
+#[cfg(feature = "test-hooks")]
+#[test]
+#[cfg_attr(debug_assertions, ignore = "scale: run in release")]
+fn every_store_run_allocation_is_fallible_after_publication_admission() {
+    let _serial = sweeping();
+    let _fixture = store_scopes::fixture();
+    sweep(store_scopes::SCOPES.iter().copied());
+}
 /// One sweep at a time: a url scope's reads follow its machine's load.
 /// The deadlock guard is each child's ([`refusal_child`]), not a sweep's: a
 /// sweep runs a child for every site, so its length grows with the sites
@@ -175,6 +188,7 @@ fn sweep(kinds: impl Iterator<Item = &'static str>) {
     let mut reached_anywhere = std::collections::BTreeSet::new();
     let mut deferred = std::collections::BTreeMap::new();
     for kind in kinds {
+        let started = std::time::Instant::now();
         let output = refusal_child(kind, 0, None);
         assert!(
             output.status.success(),
@@ -204,11 +218,14 @@ fn sweep(kinds: impl Iterator<Item = &'static str>) {
             );
             continue;
         }
-        let expected = refusals::INVENTORY
-            .iter()
+        let expected = refusals::inventory()
             .filter(|e| e.applies(kind))
             .collect::<Vec<_>>();
         let targets = targets(kind, sites, &stdout);
+        println!(
+            "CONTROLLER_CENSUS kind={kind} allocations={sites} keys={}",
+            sites::census(kind, &stdout).len()
+        );
         let mut tally = Tally::default();
         // The keys whose allocation some child refused.
         let mut covered = std::collections::BTreeSet::new();
@@ -251,6 +268,10 @@ fn sweep(kinds: impl Iterator<Item = &'static str>) {
         println!(
             "CONTROLLER_RESULT kind={kind} sites={sites} fallible={fallible} excluded={excluded} functions={} unreached={unreached} failures={failures}",
             reached.len()
+        );
+        println!(
+            "CONTROLLER_TIMING kind={kind} elapsed_ms={}",
+            started.elapsed().as_millis()
         );
     }
     for entry in deferred.into_values() {
@@ -356,10 +377,12 @@ fn unreached_site(kind: &str, site: usize, output: &std::process::Output) -> boo
 /// Each target in its own child, a few at once: every child has its own
 /// scratch (and a url scope's, its own origin), so they share nothing but
 /// the machine.
-fn children(kind: &str, targets: &[Target]) -> Vec<(Target, std::process::Output)> {
+fn children<'a>(
+    kind: &'a str,
+    targets: &'a [Target],
+) -> impl Iterator<Item = (Target, std::process::Output)> + 'a {
     let at_once = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
-    let mut outputs = Vec::with_capacity(targets.len());
-    for batch in targets.chunks(at_once) {
+    targets.chunks(at_once).flat_map(move |batch| {
         std::thread::scope(|scope| {
             let running: Vec<_> = batch
                 .iter()
@@ -372,10 +395,12 @@ fn children(kind: &str, targets: &[Target]) -> Vec<(Target, std::process::Output
                     })
                 })
                 .collect();
-            outputs.extend(running.into_iter().map(|child| child.join().unwrap()));
-        });
-    }
-    outputs
+            running
+                .into_iter()
+                .map(|child| child.join().unwrap())
+                .collect::<Vec<_>>()
+        })
+    })
 }
 /// More new keys than one scope's timing can vary.
 const SETTLE: usize = 256;
@@ -422,6 +447,10 @@ fn refusal_child(kind: &str, site: usize, aim: Option<(&str, String)>) -> std::p
     if let Some((name, value)) = aim {
         command.env(name, value);
     }
+    #[cfg(feature = "test-hooks")]
+    if kind.starts_with("store") {
+        store_scopes::command(&mut command);
+    }
     guard::finishes(
         &format!("the refusal child of kind {kind}, site {site}"),
         move || child::output(&mut command).unwrap(),
@@ -448,7 +477,7 @@ fn controller_refusal_child() {
         return;
     }
     #[cfg(feature = "test-hooks")]
-    if selected.starts_with("url") {
+    if selected.starts_with("url") || selected.starts_with("store") {
         let aim = std::env::var("UNITYRS_CONTROLLER_AIM").ok();
         let covered = std::env::var("UNITYRS_CONTROLLER_COVERED").ok();
         assert_eq!(
@@ -457,7 +486,11 @@ fn controller_refusal_child() {
             "a url child's aim"
         );
         sites::aim(aim.as_deref(), covered.as_deref());
-        url_scopes::child(&selected, site);
+        if selected.starts_with("store") {
+            store_scopes::child(&selected, site);
+        } else {
+            url_scopes::child(&selected, site);
+        }
         return;
     }
     for kind in scopes() {

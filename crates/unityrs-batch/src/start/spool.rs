@@ -115,6 +115,14 @@ pub fn start(
     fs: &dyn FileSystem,
     stopped: &dyn Fn() -> bool,
 ) -> Result<Started, Error> {
+    start_recover(local, fs, stopped, &|_, _| {})
+}
+pub(crate) fn start_recover(
+    local: &Local<'_>,
+    fs: &dyn FileSystem,
+    stopped: &dyn Fn() -> bool,
+    recover: &dyn Fn(&File, &Path),
+) -> Result<Started, Error> {
     let spec = local.spec;
     crate::sink::path::valid_run(&spec.run_id)
         .map_err(|_| Error::plain(Class::Unusable, "run_id"))?;
@@ -130,11 +138,14 @@ pub fn start(
     {
         return Err(Error::plain(Class::InMemory, "fstatfs"));
     }
-    let canonical_sink = crate::sys::canonical(local.root())
-        .map_err(|e| Error::io(Class::SinkRootUnusable, "realpath", &e))?;
-    if canonical_spool.starts_with(&canonical_sink) || canonical_sink.starts_with(&canonical_spool)
-    {
-        return Err(Error::plain(Class::OverlapsSink, "realpath"));
+    if matches!(spec.sink, crate::spec::model::Sink::Directory { .. }) {
+        let canonical_sink = crate::sys::canonical(local.root())
+            .map_err(|e| Error::io(Class::SinkRootUnusable, "realpath", &e))?;
+        if canonical_spool.starts_with(&canonical_sink)
+            || canonical_sink.starts_with(&canonical_spool)
+        {
+            return Err(Error::plain(Class::OverlapsSink, "realpath"));
+        }
     }
     // Dedicate before creating the permanent lock: a first-use crash may leave
     // a lone marker, which is safe to restart. A lone lock is never adopted.
@@ -179,6 +190,9 @@ pub fn start(
     let has_runs = dedicated(&root)?;
     if stopped() {
         return Err(Error::plain(Class::Stopped, "cleanup"));
+    }
+    if has_runs {
+        recover(&root, &canonical_spool);
     }
     match if has_runs {
         fs.cleanup(&root, stopped)

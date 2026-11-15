@@ -4,7 +4,7 @@ use super::{
     classify::{Action, Verdict},
     etag::Etag,
 };
-use std::cell::Cell;
+use crate::sys::Lock;
 #[allow(clippy::struct_excessive_bools)] // Independent facts from spec 7.4, not exclusive states.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct History {
@@ -24,17 +24,17 @@ impl History {
 }
 /// One per logical write, retained outside cancellation. Initialize the final
 /// write's fence from running's acknowledged `ETag` or its last precondition.
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct Fence {
-    last: Cell<Option<Etag>>,
-    history: Cell<History>,
+    last: Lock<Option<Etag>>,
+    history: Lock<History>,
 }
 impl Fence {
     #[must_use]
     pub const fn new(initial: Option<Etag>) -> Self {
         Self {
-            last: Cell::new(initial),
-            history: Cell::new(History {
+            last: Lock::new(initial),
+            history: Lock::new(History {
                 attempted: false,
                 succeeded: false,
                 in_flight: false,
@@ -45,11 +45,15 @@ impl Fence {
     }
     #[must_use]
     pub fn last(&self) -> Option<Etag> {
-        self.last.get()
+        *self.last.lock()
     }
     #[must_use]
     pub fn history(&self) -> History {
-        self.history.get()
+        *self.history.lock()
+    }
+    pub(crate) fn initialize(&self, initial: Option<Etag>) {
+        *self.last.lock() = initial;
+        *self.history.lock() = History::default();
     }
     pub(super) fn observer(&self, precondition: Option<Etag>) -> WriteObserver<'_> {
         WriteObserver {
@@ -58,9 +62,9 @@ impl Fence {
         }
     }
     pub(super) fn acknowledge(&self) {
-        let mut history = self.history.get();
+        let mut history = *self.history.lock();
         history.succeeded = true;
-        self.history.set(history);
+        *self.history.lock() = history;
     }
 }
 pub(super) struct WriteObserver<'a> {
@@ -69,18 +73,27 @@ pub(super) struct WriteObserver<'a> {
 }
 impl Observer for WriteObserver<'_> {
     fn started(&self) {
-        self.fence.last.set(self.precondition);
-        let mut history = self.fence.history.get();
+        *self.fence.last.lock() = self.precondition;
+        let mut history = *self.fence.history.lock();
         history.attempted = true;
         history.in_flight = true;
-        self.fence.history.set(history);
+        *self.fence.history.lock() = history;
     }
     fn ended(&self, record: &Record, verdict: Verdict) {
-        let mut history = self.fence.history.get();
+        let mut history = *self.fence.history.lock();
         history.in_flight = false;
         history.unsettled |= !verdict.settled;
         history.retryable_4xx |= matches!(record.status, Some(408 | 429));
         history.succeeded |= verdict.action == Action::Success;
-        self.fence.history.set(history);
+        *self.fence.history.lock() = history;
+    }
+}
+
+impl Clone for Fence {
+    fn clone(&self) -> Self {
+        Self {
+            last: Lock::new(self.last()),
+            history: Lock::new(self.history()),
+        }
     }
 }

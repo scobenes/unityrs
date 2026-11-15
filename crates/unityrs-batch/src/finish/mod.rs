@@ -94,9 +94,25 @@ pub fn running(
             identity,
             None,
             None,
+            None,
         )?;
         directory.write_head(json.end()?, true).map_err(sink_error)
     })
+}
+pub(crate) fn running_bytes(
+    prepared: &dyn Header,
+    account: &Account,
+    identity: &Identity<'_>,
+) -> Result<crate::winners::json::Json, Error> {
+    encode::head(
+        prepared.spec(),
+        prepared.spec_sha256(),
+        account,
+        identity,
+        None,
+        None,
+        None,
+    )
 }
 /// A hand-over's code against the stop the finisher took (9.1): a 7 yields
 /// to a more severe stop, a 74 only to 70, a 69 to none. Equal to taking
@@ -130,10 +146,60 @@ pub fn normal(
         Some(ended_at),
     ))
 }
+pub trait Head {
+    fn write(
+        &self,
+        bytes: &[u8],
+        account: &Account,
+        budget: budget::Budget<'_>,
+    ) -> Result<(), crate::sink::Error>;
+    fn sync(&self) -> Result<(), crate::sink::Error>;
+    fn figures(&self) -> Option<(crate::sink::store::Figures, u64)> {
+        None
+    }
+}
+impl Head for Directory {
+    fn write(
+        &self,
+        bytes: &[u8],
+        _: &Account,
+        _: budget::Budget<'_>,
+    ) -> Result<(), crate::sink::Error> {
+        self.write_head(bytes, false)
+    }
+    fn sync(&self) -> Result<(), crate::sink::Error> {
+        self.syncfs()
+    }
+}
+impl Head for crate::sink::Sink {
+    fn write(
+        &self,
+        bytes: &[u8],
+        account: &Account,
+        budget: budget::Budget<'_>,
+    ) -> Result<(), crate::sink::Error> {
+        match self {
+            Self::Directory(d) => d.write_head(bytes, false),
+            Self::Store(s) => s.final_head(bytes, account, budget),
+        }
+    }
+    fn sync(&self) -> Result<(), crate::sink::Error> {
+        match self {
+            Self::Directory(d) => d.syncfs(),
+            Self::Store(_) => Ok(()),
+        }
+    }
+    fn figures(&self) -> Option<(crate::sink::store::Figures, u64)> {
+        match self {
+            Self::Store(s) => Some((s.figures(), s.unsettled())),
+            Self::Directory(_) => None,
+        }
+    }
+}
 fn normal_into(
     cx: &manifest::rows::Context<'_>,
     destination: &mut budget::Budgeted<'_>,
-    directory: &Directory,
+    directory: &dyn Head,
     identity: &Identity<'_>,
     ended_at: Option<&str>,
 ) -> ResultEnd {
@@ -170,7 +236,7 @@ struct Ending {
 fn conclude(
     cx: &manifest::rows::Context<'_>,
     destination: &mut budget::Budgeted<'_>,
-    directory: &Directory,
+    directory: &dyn Head,
     identity: &Identity<'_>,
     ended_at: Option<&str>,
     ending: Ending,
@@ -194,7 +260,7 @@ fn conclude(
     if report.publication_failed {
         code = code.worst(Code::Incomplete);
     }
-    if directory.syncfs().is_err() {
+    if directory.sync().is_err() {
         report.sync_failed();
     }
     if let Some(failure) = report.failure {
@@ -218,6 +284,7 @@ fn conclude(
         _ => (report.failure.map(RunFailure::name), None),
     };
     let status = code.status();
+    let mut superseded = false;
     let published = cx.account.publication(|| {
         let mut json = encode::head(
             &cx.facts.spec,
@@ -231,8 +298,14 @@ fn conclude(
                 stop: shown,
             }),
             ended_at,
+            directory.figures(),
         )?;
-        directory.write_head(json.end()?, false).map_err(sink_error)
+        directory
+            .write(json.end()?, cx.account, destination.budget)
+            .map_err(|e| {
+                superseded = e.class == crate::sink::Class::Superseded;
+                sink_error(e)
+            })
     });
     match published {
         Ok(()) => ResultEnd {
@@ -244,13 +317,16 @@ fn conclude(
         Err(error) => {
             let failure_code = match error {
                 Error::Run(f) => f.code(),
+                Error::Stopped if superseded => Code::Superseded,
                 Error::Stopped => Code::Incomplete,
             };
             // Ordinary final-head filesystem failures contribute 4; allocation
             // and internal failures keep their stronger classification.
-            let final_code = code.worst(Code::Incomplete).worst(failure_code);
+            let final_code = code.worst(failure_code);
             let (reason, detail) = if final_code == code {
                 (reason, detail)
+            } else if final_code == Code::Superseded {
+                (Some("superseded"), None)
             } else if final_code == Code::Incomplete {
                 (Some("publish_failed"), None)
             } else {
@@ -261,7 +337,7 @@ fn conclude(
             };
             ResultEnd {
                 code: final_code,
-                status: Some("running"),
+                status: if superseded { None } else { Some("running") },
                 reason,
                 detail,
             }
@@ -270,7 +346,9 @@ fn conclude(
 }
 fn sink_error(e: crate::sink::Error) -> Error {
     match e.class {
-        crate::sink::Class::PublishFailed => Error::Stopped,
+        crate::sink::Class::PublishFailed
+        | crate::sink::Class::Superseded
+        | crate::sink::Class::SinkUnreachable => Error::Stopped,
         crate::sink::Class::HostMemory => Error::memory(),
         crate::sink::Class::InvalidPath => Error::internal(),
         _ => Error::Run(RunFailure::new(crate::attempt::ReasonCode::HostIo)),

@@ -23,6 +23,7 @@ pub(super) fn head(
     identity: &Identity<'_>,
     final_head: Option<&Final<'_>>,
     ended_at: Option<&str>,
+    store: Option<(crate::sink::store::Figures, u64)>,
 ) -> Result<Json, Error> {
     let mut json = Json::new(account)?;
     json.start("run_id", &spec.run_id)?;
@@ -70,9 +71,13 @@ pub(super) fn head(
         .transpose()?;
     json.text("deadline", deadline)?;
     json.text("ended_at", ended_at)?;
-    json.text("verified", None)?;
-    json.value("verified_by_size", 0)?;
-    json.value("unsettled_tries", 0)?;
+    let (figures, unsettled) = store.unwrap_or_default();
+    match figures.verified {
+        Some(v) => json.value("verified", v)?,
+        None => json.text("verified", None)?,
+    }
+    json.value("verified_by_size", figures.verified_by_size)?;
+    json.value("unsettled_tries", unsettled)?;
     let empty = manifest::Report::default();
     let report = final_head.map_or(&empty, |f| f.report);
     counts(&mut json, &report.counts)?;
@@ -80,11 +85,11 @@ pub(super) fn head(
     json.object("warnings")?;
     let warnings = identity.warnings.read();
     for (warning, count) in [
-        ("resume_list_failed", 0),
-        ("verify_list_failed", 0),
-        ("etag_not_md5", 0),
+        ("resume_list_failed", figures.resume_list_failed),
+        ("verify_list_failed", figures.verify_list_failed),
+        ("etag_not_md5", figures.etag_not_md5),
         ("stderr_dropped", warnings.stderr_dropped),
-        ("abort_failed", 0),
+        ("abort_failed", figures.abort_failed),
         ("stdin_watch_ended", u64::from(warnings.stdin_watch_ended)),
     ] {
         json.value(warning, count)?;

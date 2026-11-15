@@ -98,6 +98,11 @@ pub(super) fn staging(
         control,
         cutoff: BootClock::cutoff(network.cutoff),
     });
+    let [stop, end] = wakes;
+    let wakes = [
+        crate::sys::Shared::new(stop).map_err(|_| Error::memory())?,
+        crate::sys::Shared::new(end).map_err(|_| Error::memory())?,
+    ];
     Ok(Staging {
         launch: Arc::new(Urls {
             parsed: prepared.urls.clone(),

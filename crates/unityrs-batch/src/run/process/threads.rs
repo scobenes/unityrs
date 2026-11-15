@@ -132,7 +132,13 @@ pub(super) fn controller(
     };
     let mut parked = Parked::default();
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        body.body(prepared, &mut parked, Some(execution), staging)
+        body.body(
+            prepared,
+            &mut parked,
+            Some(execution),
+            staging,
+            Some(host.store_services(running.policy.cutoff)?),
+        )
     }));
     // Its own panic's line, queued before the finisher is released.
     if ran.is_err() {
@@ -243,6 +249,7 @@ pub(super) fn finisher(
                     bound: host.bound,
                     progress: &sender,
                     warnings: super::SAMPLED,
+                    wake: Some(registered),
                 },
             );
             exit_inputs = Some(super::super::exit_inputs(

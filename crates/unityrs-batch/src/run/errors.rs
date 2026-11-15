@@ -96,6 +96,10 @@ impl From<crate::spool::Error> for Error {
 }
 pub(super) fn sink(e: sink::Error) -> Error {
     let reason = match e.class {
+        sink::Class::SinkUnreachable => "sink_unreachable",
+        sink::Class::BucketMissing => "bucket_missing",
+        sink::Class::PreviousAttemptLive => "previous_attempt_live",
+        sink::Class::CredentialsExpired => "credentials_expired",
         sink::Class::SinkRootUnusable => "sink_root_unusable",
         sink::Class::KernelTooOld => "kernel_too_old",
         sink::Class::MountCheckUnavailable => "mount_check_unavailable",

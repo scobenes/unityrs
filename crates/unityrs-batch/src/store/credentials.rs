@@ -68,6 +68,12 @@ impl Credentials {
     /// strings move into it, uncopied.
     #[must_use]
     pub fn into_provider(self) -> AwsCredentialProvider {
+        self.into_shared_provider()
+    }
+    /// Concrete provider retained by a process host so its masker borrows the
+    /// exact credential storage every client shares.
+    #[must_use]
+    pub fn into_shared_provider(self) -> Arc<Provider> {
         Arc::new(Provider {
             credential: Arc::new(AwsCredential {
                 key_id: self.key_id.0,
@@ -83,6 +89,16 @@ impl Credentials {
 /// `Debug` prints lengths alone, and so does every client's that holds it.
 pub struct Provider {
     credential: Arc<AwsCredential>,
+}
+impl Provider {
+    #[must_use]
+    pub fn values(&self) -> [&str; 3] {
+        [
+            &self.credential.key_id,
+            &self.credential.secret_key,
+            self.credential.token.as_deref().unwrap_or_default(),
+        ]
+    }
 }
 impl fmt::Debug for Provider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -108,7 +124,21 @@ impl CredentialProvider for Provider {
         Self: 'async_trait,
     {
         let credential = Arc::clone(&self.credential);
-        Box::pin(async move { Ok(credential) })
+        if let Ok(future) = crate::alloc::try_box(async move { Ok(credential) }) {
+            Box::into_pin(future)
+        } else {
+            if let Some(slot) = super::attempt::TrySlot::current() {
+                slot.fail(super::attempt::Fault::Memory);
+            }
+            // A capture-free future and a unit error source are both
+            // zero-sized: the required trait boxes need no allocation.
+            Box::pin(std::future::poll_fn(|_| {
+                std::task::Poll::Ready(Err(object_store::Error::Generic {
+                    store: "batch",
+                    source: Box::new(super::connector::Refused),
+                }))
+            }))
+        }
     }
 }
 

@@ -26,6 +26,7 @@ mod complete;
 pub mod connector;
 pub mod credentials;
 pub mod etag;
+mod finishing;
 pub mod head;
 mod head_fence;
 pub mod list;

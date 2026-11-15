@@ -53,6 +53,51 @@ impl AsRef<[u8]> for Owned {
     }
 }
 
+/// A successful create's id must remain readable without another engine
+/// allocation: refusal after the request could otherwise orphan its upload.
+pub(super) fn create_storage(permit: &crate::http::permit::RequestPermit) -> Result<Owned, Fault> {
+    let size = usize::try_from(super::SMALL_CAP).map_err(|_| Fault::Internal)?;
+    let charge = permit
+        .charge(unityrs_core::limits::heap_cost(size as u64))
+        .ok_or(Fault::Memory)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).map_err(|_| Fault::Memory)?;
+    Ok(Owned {
+        bytes,
+        _charge: Some(charge),
+    })
+}
+pub(super) async fn created<I: AsyncRead + AsyncWrite + Unpin>(
+    slot: &TrySlot,
+    mut storage: Owned,
+    response: &mut Response<I>,
+) -> HttpResponseBody {
+    let mut code = CodeScan::default();
+    loop {
+        match std::future::poll_fn(|cx| response.poll_frame(cx)).await {
+            Ok(Some(frame)) => {
+                let Ok(data) = frame.into_data() else {
+                    continue;
+                };
+                if data.len() as u64 + storage.bytes.len() as u64 > super::SMALL_CAP {
+                    slot.update(|r| r.body = Some(BodyFault::OverCap));
+                    return HttpResponseBody::new(Refusing);
+                }
+                code.feed(&data);
+                storage.bytes.extend_from_slice(&data);
+            }
+            Ok(None) => {
+                slot.update(|r| r.code = code.code());
+                return HttpResponseBody::from(Bytes::from_owner(storage));
+            }
+            Err(error) => {
+                body_failed(slot, error);
+                return HttpResponseBody::new(Refusing);
+            }
+        }
+    }
+}
+
 /// A body that fails at its first read: a 2xx the call returns as an
 /// error, holding nothing `object_store` could render.
 pub(super) struct Refusing;

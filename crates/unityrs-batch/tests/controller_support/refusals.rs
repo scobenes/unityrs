@@ -2,6 +2,21 @@
 //! ordinals and sizes. Each entry must still abort in every named scope on
 //! its platform. Every other refusal must return `host_memory`/74.
 
+#[path = "store_allocations.rs"]
+mod store_allocations;
+#[path = "store_multipart_allocations.rs"]
+mod store_multipart_allocations;
+#[path = "store_parsing_allocations.rs"]
+mod store_parsing_allocations;
+
+pub fn inventory() -> impl Iterator<Item = &'static Exclusion> {
+    INVENTORY
+        .iter()
+        .chain(store_allocations::INVENTORY)
+        .chain(store_parsing_allocations::INVENTORY)
+        .chain(store_multipart_allocations::INVENTORY)
+}
+
 #[derive(Clone, Copy)]
 pub enum Platform {
     All,
@@ -50,6 +65,22 @@ impl Exclusion {
 }
 
 pub const INVENTORY: &[Exclusion] = &[
+    Exclusion {
+        scopes: STORE,
+        functions: &["unityrs_batch::publish::store::transfer::run"],
+        platform: Platform::All,
+        frame: Some("object_store::path"),
+        via: &["object_store::path::Path"],
+        name: "object-store transfer key parse",
+    },
+    Exclusion {
+        scopes: STORE,
+        functions: &["unityrs_batch::sink::store::journal::JournalBackend::abort"],
+        platform: Platform::All,
+        frame: Some("object_store::path"),
+        via: &["object_store::path::Path"],
+        name: "object-store finisher abort key parse",
+    },
     Exclusion {
         scopes: &["peek", "attempt", "complete"],
         functions: &["unityrs_core::budget::charged_bytes"],
@@ -234,7 +265,18 @@ pub const INVENTORY: &[Exclusion] = &[
     // later try or hop. Its values are copied into fallible storage first;
     // its names are phase 1's, whose clones count a reference.
     Exclusion {
-        scopes: REQUEST,
+        scopes: &[
+            "url",
+            "url-retry",
+            "url-redirect",
+            "url-drip",
+            "url-stop",
+            "url-https",
+            "url-cut",
+            "url-noreply",
+            "url-https-cut",
+            "url-fail",
+        ],
         functions: &["unityrs_batch::stage::headers::prepare"],
         platform: Platform::All,
         frame: Some("http::header::map::HeaderMap"),
@@ -405,15 +447,18 @@ pub const INVENTORY: &[Exclusion] = &[
     // the abort (A13) changes no outcome.
     Exclusion {
         scopes: &["url-fail"],
-        functions: &["unityrs_batch::run::drive_with"],
+        functions: &["unityrs_batch::sys::shared::Shared::drop"],
         platform: Platform::All,
         frame: Some("RegistrationSet>::deregister"),
         via: &["AsyncFd<unityrs_batch::sys::wake::WakeOwner> as core::ops::drop::Drop>::drop"],
         name: "tokio deregistration push at the wake owner's drop",
     },
     Exclusion {
-        scopes: &["url-fail"],
-        functions: &["unityrs_batch::execution::Execution::drop"],
+        scopes: &["url-fail", "store", "store-resume", "store-multipart"],
+        functions: &[
+            "unityrs_batch::execution::Execution::drop",
+            "unityrs_batch::sink::store::Runtime::drop",
+        ],
         platform: Platform::All,
         frame: Some("RegistrationSet>::shutdown"),
         via: &["<tokio::runtime::runtime::Runtime as core::ops::drop::Drop>::drop"],
@@ -489,6 +534,7 @@ const SPAWNING: &[&str] = &[
     "url-https-cut",
     "url-fail",
 ];
+const STORE: &[&str] = &["store", "store-resume", "store-multipart"];
 const SPAWN_BLOCKING: &str = "<tokio::runtime::handle::Handle>::spawn_blocking";
 const EXCHANGE: &str = "unityrs_batch::http::response::exchange_charged";
 const POLL_FRAME: &str = "unityrs_batch::http::response::Response::poll_frame";
@@ -498,6 +544,9 @@ const DRIVER: &str = "<hyper::client::conn::http1::Connection<hyper_util::rt::to
 const TLS_HANDSHAKE: &str = "<tokio_rustls::client::Connect<unityrs_batch::sys::reset::RegisteredSocket> as core::future::future::Future>::poll";
 /// Every networked scope (`url_scopes.rs`).
 const URL: &[&str] = &[
+    "store",
+    "store-resume",
+    "store-multipart",
     "url",
     "url-retry",
     "url-redirect",
@@ -510,6 +559,9 @@ const URL: &[&str] = &[
 ];
 /// The scopes whose request is sent, the failing input's among them.
 const REQUEST: &[&str] = &[
+    "store",
+    "store-resume",
+    "store-multipart",
     "url",
     "url-retry",
     "url-redirect",
@@ -536,7 +588,12 @@ impl Exclusion {
             && match self.frame {
                 Some(frame) => {
                     allocating(trace).is_some_and(|f| f.contains(frame))
-                        && callee(trace).is_some_and(|c| self.via.iter().any(|v| c.contains(v)))
+                        && callee(trace).is_some_and(|c| {
+                            let key = symbol_key(&c);
+                            self.via
+                                .iter()
+                                .any(|v| c.contains(v) || key.as_deref() == Some(*v))
+                        })
                 }
                 None => self
                     .functions
@@ -657,6 +714,20 @@ pub fn callee(stderr: &str) -> Option<String> {
 }
 
 fn function_key(symbol: &str) -> Option<String> {
+    let key = symbol_key(symbol)?;
+    [
+        "unityrs_core::",
+        "unityrs_export::",
+        "unityrs_batch::",
+        "unityrs_cli::",
+        "unityrs::",
+    ]
+    .iter()
+    .any(|prefix| key.starts_with(prefix))
+    .then_some(key)
+}
+
+fn symbol_key(symbol: &str) -> Option<String> {
     let symbol = if let Some(inner) = symbol.strip_prefix('<') {
         let mut depth = 1;
         let end = inner.char_indices().find_map(|(i, c)| {
@@ -672,18 +743,6 @@ fn function_key(symbol: &str) -> Option<String> {
     } else {
         symbol.to_owned()
     };
-    if ![
-        "unityrs_core::",
-        "unityrs_export::",
-        "unityrs_batch::",
-        "unityrs_cli::",
-        "unityrs::",
-    ]
-    .iter()
-    .any(|prefix| symbol.starts_with(prefix))
-    {
-        return None;
-    }
     // Monomorphizations and closure numbers are not distinct functions.
     let mut depth = 0;
     let mut key = String::new();

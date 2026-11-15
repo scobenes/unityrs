@@ -19,6 +19,15 @@ pub fn supported(spec: &Spec) -> Result<Local<'_>, Unsupported> {
     };
     Ok(Local { spec, root })
 }
+pub(crate) fn execution(spec: &Spec) -> Local<'_> {
+    Local {
+        spec,
+        root: match &spec.sink {
+            Sink::Directory { root } => root,
+            Sink::ObjectStore(_) => "",
+        },
+    }
+}
 /// An execution-subset proof, obtainable only via [`supported`].
 pub struct Local<'a> {
     pub(crate) spec: &'a Spec,

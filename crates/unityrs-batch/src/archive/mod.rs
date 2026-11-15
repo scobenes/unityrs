@@ -12,6 +12,7 @@ use crate::{
     spool::workspace::{Sealed, Workspace},
 };
 use std::sync::Arc;
+pub(crate) use stream::Pull;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use stream::open_at;
 pub use stream::{Stream, open};
