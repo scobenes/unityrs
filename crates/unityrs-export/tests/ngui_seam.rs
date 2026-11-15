@@ -26,7 +26,7 @@ use unityrs_testkit::ngui::{
 mod common;
 use common::{
     Engine, Event, Ran, absorbed_at, big_sheet, big_sheet_named, options, refused_at, refused_in,
-    refused_then_at, run_in, run_with, view_of,
+    refused_then_at, run_in, run_with, seen_with_frames, view_of,
 };
 
 fn scene(name: &str) -> AtlasScene {
@@ -399,12 +399,14 @@ fn a_refusal_after_one_the_core_absorbed_is_host_memory() {
     // uncounted, in the next core call of one operation. A probe begun
     // before the first would see the count move and read the second as the
     // budget's; one probe per core call reads it as `host_memory`. Over the
-    // resource's own-chain calls (each candidate's `joined` and each
-    // `simplify_name`) and X's own open (its bytes' charge, then its parse),
+    // resource's own-chain calls (each candidate's `joined_vec` and
+    // `simplify_name_vec`) and X's own open (its bytes' charge, then its parse),
     // each seen. (A row's `entry` then its `entry_range` cannot both
     // reserve in one read: `the_resource_reads_entry_reserves_nothing`.)
+    // CR10 keeps both candidate-name allocations in charged Vecs; row-name
+    // comparisons now borrow their bytes and allocate nothing.
     let s = scene("streamed_sheets");
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = std::collections::BTreeMap::new();
     for at in 0.. {
         assert!(at < 1 << 16);
         let ([first, then], got) = absorbed_at(&s, "x.bundle", at);
@@ -424,26 +426,23 @@ fn a_refusal_after_one_the_core_absorbed_is_host_memory() {
             r.reason, "host_memory",
             "{at} ({site}: {call}, then {then_call})"
         );
-        seen.insert((site, call, then_call));
+        seen.entry((site, call, then_call)).or_insert(at);
     }
-    let sites: std::collections::BTreeSet<_> = seen.iter().map(|s| s.0).collect();
+    let sites: std::collections::BTreeSet<_> = seen.keys().map(|s| s.0).collect();
     assert_eq!(sites, ["open", "resource"].into(), "{seen:?}");
     let pair = |site: &str, call: &str, then: &str| {
-        seen.iter()
+        seen.keys()
             .any(|(s, c, t)| *s == site && c.ends_with(call) && t.ends_with(then))
     };
-    assert!(
-        pair("resource", "simplify_name", "Candidate::joined"),
-        "{seen:?}"
-    );
-    assert!(
-        pair("resource", "Candidate::joined", "simplify_name"),
-        "{seen:?}"
-    );
-    assert!(
-        pair("open", "Meter::charge", "parse_file_with_reader"),
-        "{seen:?}"
-    );
+    for (site, call, then) in [
+        ("resource", "simplify_name_vec", "Candidate::joined_vec"),
+        ("resource", "Candidate::joined_vec", "simplify_name_vec"),
+        ("open", "Meter::charge", "parse_file_with_reader"),
+    ] {
+        // A failure shows the site's frames as this platform named them.
+        let frames = || seen_with_frames(&s, "x.bundle", &seen, site);
+        assert!(pair(site, call, then), "{call}, then {then}: {}", frames());
+    }
 }
 
 #[test]

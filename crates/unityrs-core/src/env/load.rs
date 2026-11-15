@@ -12,7 +12,7 @@ use super::registry::{DepCache, Dependency, Open, Stage, open_source, with_room}
 use super::{Cab, Environment, LoadMode, RawCab, Source, source_name};
 use crate::budget::Reservation;
 use crate::counters::LoadId;
-use crate::error::{Error, Unsupported};
+use crate::error::Error;
 use crate::files::{BundleFile, File};
 use crate::limits::{Charge, Meter};
 use crate::raw::RawStr;
@@ -198,7 +198,7 @@ impl Environment {
                     Ok(())
                 }
             },
-            File::Web(_) => Err(Error::Unsupported(Unsupported::WebFile)),
+            File::Web(w) => self.register_web(w, target, load, &mut Vec::new()),
         };
         registered.map(|()| load)
     }
@@ -263,7 +263,7 @@ impl Environment {
                         });
                         self.register_cab(&d.path, cab, b.meter(), target, load, path)
                     }
-                    File::Web(_) => Ok(()),
+                    File::Web(w) => self.register_web(&w, target, load, path),
                 }
             });
             path.pop();
@@ -272,6 +272,37 @@ impl Environment {
             }
         }
         all
+    }
+
+    // files/File.py:76-90: WebFile members register just like bundle members.
+    fn register_web(
+        &self,
+        w: &Arc<crate::files::WebFile>,
+        target: &mut Target<'_>,
+        load: u64,
+        path: &mut Vec<usize>,
+    ) -> Result<(), Error> {
+        for (i, d) in w.directory().iter().enumerate() {
+            path.push(i);
+            let result = w.entry(i).and_then(|f| match f {
+                File::Bundle(b) => self.register_eager(&b, target, load, path),
+                File::Web(w) => self.register_web(&w, target, load, path),
+                File::Serialized(sf) => {
+                    self.register_cab(&d.path, Cab::Serialized(sf), w.meter(), target, load, path)
+                }
+                File::Raw(raw) => self.register_cab(
+                    &d.path,
+                    Cab::Raw(RawCab::File(raw)),
+                    w.meter(),
+                    target,
+                    load,
+                    path,
+                ),
+            });
+            path.pop();
+            result?;
+        }
+        Ok(())
     }
 
     /// Loads `source` as a dependency, as `find_file` loads one through the

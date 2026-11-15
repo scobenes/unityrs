@@ -256,12 +256,15 @@ pub enum Unsupported {
     /// A compression type no codec is registered for (`files/BundleFile.py:515-521`).
     #[error("compression type {0}")]
     Codec(u8),
-    /// UnityWeb and UnityRaw outside format 6: P3.
+    /// Legacy compatibility variant; UnityWeb/UnityRaw layouts are now supported.
     #[error("the UnityWeb/UnityRaw layout")]
     WebRawLayout,
-    /// `WebFile` (`UnityWebData`, `TuanjieWebData`): P3.
+    /// Legacy compatibility variant; WebFile containers are now supported.
     #[error("WebFile")]
     WebFile,
+    /// Tier U: a WebFile entry name length below -1 can rewind forever.
+    #[error("WebFile entry name length below -1")]
+    WebFileNameLength,
     /// Legacy custom-decryptor refusal. The built-in UnityCN loader instead
     /// returns [`Error::UnityCnKeyMissing`] for a missing load-local key.
     #[error("an encrypted bundle without a decryptor")]

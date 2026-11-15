@@ -77,13 +77,10 @@ use crate::files::{BundleFile, File};
 use crate::limits::{GrantScope, Limits, Meter};
 use crate::once::CellError;
 
-/// The bytes of an entry read to tell a bundle. `check_file_type` calls the
-/// entry one by the NUL-terminated string in its first 20 bytes, which it
-/// reads alike from these 21 and from the whole entry (`py_string_to_null`
-/// stops at the 20th byte without a NUL only when a 21st follows), and a
-/// prefix this short never reaches the gzip test, the only one that reads
-/// the `Limits` it is given.
-const PEEK: u64 = 21;
+/// The detection prefix: enough for the 20-byte bundle signature and for
+/// WebFile's brotli probe, whose marker at 0x20 is tested only at length 128.
+/// Gzip detection needs the whole stream and uses the metered fallback below.
+const PEEK: u64 = 128;
 
 /// Whether entry `i` of `b` is a bundle, from its first [`PEEK`] bytes
 /// (their blocks decoded, as any read decodes them). A read that fails other
@@ -91,7 +88,16 @@ const PEEK: u64 = 21;
 /// nothing to register, and its reads fail with the error.
 fn is_bundle_entry(b: &BundleFile, i: usize) -> Result<bool, Error> {
     match b.entry_range(i, 0..PEEK) {
-        Ok(head) => bundle_detected(check_file_type(&head, &Limits::default())),
+        Ok(head) => {
+            if head.starts_with(&[31, 139]) {
+                return bundle_detected(crate::detect::check_entry_type(
+                    &b.entry_bytes(i)?,
+                    &b.context().limits,
+                    b.meter(),
+                ));
+            }
+            bundle_detected(check_file_type(&head, &Limits::default()))
+        }
         Err(e) if e.is_transient() => Err(e),
         Err(_) => Ok(false),
     }
@@ -100,7 +106,7 @@ fn is_bundle_entry(b: &BundleFile, i: usize) -> Result<bool, Error> {
 // Detection errors caused by input mean there is no nested bundle to register.
 fn bundle_detected(detected: Result<FileType, DetectError>) -> Result<bool, Error> {
     match detected {
-        Ok(ty) => Ok(ty == FileType::BundleFile),
+        Ok(ty) => Ok(matches!(ty, FileType::BundleFile | FileType::WebFile)),
         Err(e @ DetectError::Allocator(_)) => Err(e.into()),
         Err(_) => Ok(false),
     }
@@ -217,7 +223,7 @@ enum Reached {
 /// What a lazy slot's entry is ([`Registry::lazy_container`]).
 enum Entry {
     /// A nested container, parsed.
-    Container(Arc<BundleFile>),
+    Container(File),
     /// No container: nothing to register.
     Nothing,
     /// An evicted dependency's entry, not opened again.
@@ -293,7 +299,8 @@ impl Registry {
                 Entry::Evicted => return Ok(Reached::Evicted),
             },
         };
-        let Some(nested) = nested.or(parsed.as_ref()) else {
+        let supplied = nested.map(|b| File::Bundle(b.clone()));
+        let Some(nested) = supplied.as_ref().or(parsed.as_ref()) else {
             slot.mark_reached();
             return Ok(Reached::Done);
         };
@@ -341,7 +348,7 @@ impl Registry {
             return Ok(Entry::Nothing);
         }
         match bundle.entry(i) {
-            Ok(File::Bundle(nested)) => {
+            Ok(nested @ (File::Bundle(_) | File::Web(_))) => {
                 self.count(slot);
                 Ok(Entry::Container(nested))
             }
@@ -359,12 +366,7 @@ impl Registry {
     /// bundle's. As a lazy computation of that input (module docs, "Work"):
     /// past its work allowance nothing is registered, and what a
     /// registration the meter refused was granted counts as work.
-    fn register_counted(
-        &self,
-        slot: &Slot,
-        nested: &Arc<BundleFile>,
-        position: u64,
-    ) -> Result<(), Error> {
+    fn register_counted(&self, slot: &Slot, nested: &File, position: u64) -> Result<(), Error> {
         let dep = match &slot.kind {
             SlotKind::Dependency { dep } => Some(&**dep),
             SlotKind::Entry { .. } | SlotKind::Ready(_) => None,
@@ -401,6 +403,26 @@ impl Registry {
         }
     }
 
+    pub(crate) fn reach_web(
+        &self,
+        slot: &Arc<Slot>,
+        web: &Arc<crate::files::WebFile>,
+    ) -> Result<(), Error> {
+        if !slot.unreached() {
+            return Ok(());
+        }
+        let file = File::Web(web.clone());
+        let mut at = slot.position();
+        self.register_counted(slot, &file, at)?;
+        while let Err(lower) = slot.close_at(at) {
+            at = lower;
+            self.register_counted(slot, &file, at)?;
+        }
+        slot.mark_reached();
+        self.settle().ok();
+        Ok(())
+    }
+
     /// Registers every entry of `nested`, at `path` and below, as an eager
     /// load does: a bundle entry's own entries in its place, every other
     /// entry as a slot of the kind `dep` says, known to be no container,
@@ -409,13 +431,13 @@ impl Registry {
     /// (a)). Bounded by [`Limits::max_container_depth`], as the parse is.
     fn register_tree(
         &self,
-        nested: &Arc<BundleFile>,
+        nested: &File,
         dep: Option<&Arc<Dependency>>,
         loads: Loads,
         path: &mut Vec<usize>,
         meter: &Arc<Meter>,
     ) -> Result<(), Failed> {
-        for (j, d) in nested.directory().iter().enumerate() {
+        for (j, d) in nested.container_directory().iter().enumerate() {
             path.push(j);
             let r = self.register_tree_entry(nested, j, &d.path, dep, loads, path, meter);
             path.pop();
@@ -428,7 +450,7 @@ impl Registry {
     #[allow(clippy::too_many_arguments)]
     fn register_tree_entry(
         &self,
-        nested: &Arc<BundleFile>,
+        nested: &File,
         j: usize,
         name: &crate::raw::RawStr,
         dep: Option<&Arc<Dependency>>,
@@ -436,9 +458,14 @@ impl Registry {
         path: &mut Vec<usize>,
         meter: &Arc<Meter>,
     ) -> Result<(), Failed> {
-        if is_bundle_entry(nested, j).map_err(Failed::Read)? {
-            match nested.entry(j) {
-                Ok(File::Bundle(inner)) => {
+        let inspect = match nested {
+            File::Bundle(b) => is_bundle_entry(b, j).map_err(Failed::Read)?,
+            File::Web(_) => true,
+            _ => false,
+        };
+        if inspect {
+            match nested.container_entry(j) {
+                Ok(inner @ (File::Bundle(_) | File::Web(_))) => {
                     self.parsed.fetch_add(1, Ordering::Relaxed);
                     return self.register_tree(&inner, dep, loads, path, meter);
                 }
@@ -450,9 +477,17 @@ impl Registry {
             Some(dep) => SlotKind::Dependency {
                 dep: DepSlot::new(dep),
             },
-            None => SlotKind::Entry {
-                bundle: nested.clone(),
-                dir_index: j,
+            None => match nested {
+                File::Bundle(b) => SlotKind::Entry {
+                    bundle: b.clone(),
+                    dir_index: j,
+                },
+                File::Web(w) => match w.entry(j).map_err(Failed::Read)? {
+                    File::Serialized(sf) => SlotKind::Ready(Cab::Serialized(sf)),
+                    File::Raw(raw) => SlotKind::Ready(Cab::Raw(RawCab::File(raw))),
+                    _ => return Ok(()),
+                },
+                _ => return Ok(()),
             },
         };
         self.insert(name, kind, loads, path, meter, By::Reach, false)

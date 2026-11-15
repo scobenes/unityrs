@@ -441,3 +441,19 @@ fn a_vector_that_meets_its_bound_asks_a_few_dozen_times() {
         );
     }
 }
+
+#[test]
+fn an_already_charged_vector_transfers_without_reallocating() {
+    let meter = Meter::unlimited();
+    let mut original = MeteredVec::with_capacity(&meter, 16).unwrap();
+    original.extend_from_slice(&[1u8, 2, 3]).unwrap();
+    let pointer = original.as_slice().as_ptr();
+    let before = meter.used();
+    let (bytes, charge) = original.into_parts();
+    let transferred = MeteredVec::from_charged_parts(bytes, charge).unwrap();
+    assert_eq!(transferred.as_slice(), &[1, 2, 3]);
+    assert_eq!(transferred.as_slice().as_ptr(), pointer);
+    assert_eq!(meter.used(), before);
+    drop(transferred);
+    assert_eq!(meter.used(), 0);
+}
