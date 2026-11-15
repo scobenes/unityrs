@@ -254,10 +254,10 @@ fn blob(shape: V, item: impl Fn(usize) -> V) -> V {
 
 /// Platform blobs and byte-swapped formats, with textures exported: on a
 /// Switch file, a blob of bytes whose GOB count (bytes 8 to 12) is 1
-/// (`unsupported_platform(switch)`, the texture and its atlas), one whose
+/// (a truncated padded level, refused for the texture and its atlas), one whose
 /// count is 0 (exported), one of 11 `SInt32`s, shorter than the 12 bytes
 /// the check reads (exported); on an Xbox 360 file, a DXT1 texture
-/// (`unsupported_platform(xbox360)`) and an RGBA32 one (exported). A Switch
+/// (swapped and exported) and an RGBA32 one (exported). A Switch
 /// blob whose bytes 8 to 12 are not all bytes is not here: the reference
 /// raises out of its cut there (UnityPy's `int.from_bytes`), so the rule
 /// the spec names for it is the cutter's unit test's.
