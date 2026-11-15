@@ -25,6 +25,28 @@ pub struct Identity<'a> {
     pub memory_bound: u64,
     pub spool_peak: u64,
     pub vm_hwm: u64,
+    pub warnings: Warnings,
+}
+/// The head's process warnings (7.3's `warnings`), read when the head is
+/// built: a library run has none.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Warnings {
+    /// Stderr lines the bounded writer dropped (`stderr_dropped`).
+    pub stderr_dropped: u64,
+    /// Whether the stdin watch ended without an EOF (`stdin_watch_ended`).
+    pub stdin_watch_ended: bool,
+    /// The process host's live counters, sampled as each head is encoded,
+    /// the `running` head and the final one, so a drop or the stdin
+    /// watch's end before either is in it; none, the two fields above as
+    /// they are.
+    pub sample: Option<fn() -> Warnings>,
+}
+impl Warnings {
+    /// The warnings as a head encoded now records them.
+    #[must_use]
+    pub fn read(&self) -> Self {
+        self.sample.map_or(*self, |sample| sample())
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResultEnd {

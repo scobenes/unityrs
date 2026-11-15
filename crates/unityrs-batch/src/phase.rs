@@ -65,9 +65,15 @@ pub fn check(stopped: &dyn Fn() -> bool) -> Result<(), Error> {
 /// Run on the thread performing the blocking work, including pool callbacks.
 /// Thread-local refusals cannot be audited by the receiving controller alone.
 pub fn on_pool<T>(body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+    on_pool_named("a phase-6 task", body)
+}
+/// [`on_pool`], a caught panic's stderr line naming `kind` (2.11).
+pub fn on_pool_named<T>(kind: &str, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     let before = crate::alloc::refusals();
-    let mut result =
-        catch_unwind(AssertUnwindSafe(body)).unwrap_or_else(|_| Err(Error::internal()));
+    let mut result = catch_unwind(AssertUnwindSafe(body)).unwrap_or_else(|_| {
+        crate::diagnostic::pending::panic(format_args!("{kind}: "));
+        Err(Error::internal())
+    });
     let mut failure = match result.as_ref().err() {
         Some(Error::Run(f)) => Some(*f),
         _ => None,

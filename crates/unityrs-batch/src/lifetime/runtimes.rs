@@ -46,6 +46,16 @@ impl Runtimes {
     /// closed before return; late tasks cannot repair a failed startup. No
     /// task can finish and free a thread until all target tasks start.
     pub fn prewarm(&self) -> io::Result<()> {
+        self.prewarm_with(0)
+    }
+    /// [`Self::prewarm`] with its first `idle` start tasks adding nothing to
+    /// the count (the `start_count` test hook): the count then falls short.
+    #[cfg(feature = "test-hooks")]
+    pub fn prewarm_short(&self, idle: usize) -> io::Result<()> {
+        self.prewarm_with(idle)
+    }
+    fn prewarm_with(&self, idle: usize) -> io::Result<()> {
+        let mut idle = idle;
         let target = 2 * self.per_runtime;
         let count = Arc::new((
             Mutex::new(Count {
@@ -58,13 +68,15 @@ impl Runtimes {
         for runtime in [&self.controller, &self.finisher] {
             for _ in 0..self.per_runtime {
                 let task_count = count.clone();
+                let adds = idle == 0;
+                idle = idle.saturating_sub(1);
                 if catch_unwind(AssertUnwindSafe(|| {
                     runtime.spawn_blocking(move || {
                         let (lock, changed) = &*task_count;
                         let mut state = lock
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if !state.closed && Instant::now() < deadline {
+                        if adds && !state.closed && Instant::now() < deadline {
                             state.started += 1;
                             changed.notify_all();
                         }
