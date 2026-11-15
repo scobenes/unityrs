@@ -13,6 +13,44 @@ use unityrs_testkit::fuzz::{MeshCase, Row, TextureCase, TreeCase, lz4_case};
 
 use crate::Case;
 
+#[test]
+fn crunch_check_runs_synthetic_streams_and_their_truncations_at_every_meter() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../crates/unityrs-texture/tests/fixtures/crunch_native.json"
+    ))
+    .expect("the synthetic fixture");
+    for c in fixture["cases"].as_array().expect("cases").iter().chain(
+        fixture["truncated_cases"]
+            .as_array()
+            .expect("truncated cases"),
+    ) {
+        let hex = c["data"]["hex"].as_str().expect("stream hex");
+        let data: Vec<_> = hex
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|h| {
+                u8::from_str_radix(std::str::from_utf8(h).expect("hex"), 16).expect("hex byte")
+            })
+            .collect();
+        for meter in 0..4 {
+            for len in [0, 1, 15, 61, data.len().saturating_sub(1), data.len()] {
+                let case = TextureCase {
+                    format: i32::try_from(c["format"].as_i64().expect("format")).expect("i32"),
+                    width: i32::try_from(c["width"].as_i64().expect("width")).expect("i32"),
+                    height: i32::try_from(c["height"].as_i64().expect("height")).expect("i32"),
+                    platform: 19,
+                    meter,
+                    blob: None,
+                    data: data[..len.min(data.len())].to_vec(),
+                };
+                crate::crunch::check(&case.encode());
+            }
+        }
+    }
+}
+
 /// The bound a read stopped at, if a bound stopped it.
 fn bound(e: &ReadError) -> Option<LimitKind> {
     match &e.detail {
@@ -312,4 +350,30 @@ fn the_meshdecode_check_takes_every_handler_fixture_case_under_each_meter() {
         "done {done}, errors {errors}, refused {refused}, triangles refused {triangles_refused}, same {same}"
     );
     assert!(answers(&[]).is_none());
+}
+
+/// PVRTC wrap, small sizes, non-power-of-two grids, ATC cut edges and
+/// both meter boundaries, using the same texture target as other formats.
+#[test]
+fn pvrtc_atc_texture_inputs_match_their_plans_under_each_meter() {
+    for format in [30, 31, 32, 33, 35, 36] {
+        for meter in 0..4 {
+            for (width, height) in [(1, 1), (31, 15), (16, 32), (32, 8), (7, 9), (12, 12)] {
+                let mut rng = unityrs_testkit::Rng::new(0x0050_5652_5443);
+                let data = (0..64).flat_map(|_| rng.next_u64().to_le_bytes()).collect();
+                crate::texture::check(
+                    &TextureCase {
+                        format,
+                        width,
+                        height,
+                        platform: 19,
+                        meter,
+                        blob: None,
+                        data,
+                    }
+                    .encode(),
+                );
+            }
+        }
+    }
 }

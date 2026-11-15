@@ -494,8 +494,8 @@ class Cutter(unittest.TestCase):
         # (0x89), not the dependency's `q.resource` (0x8C) a lookup that reaches it only then would read.
         # `am`, `an`: their materials' files are masked by containers (the same bundle's, at another path of the
         # key, and a later dependency's), so no name; the textures `mx` and `nx` those materials name are plain.
-        # `aw`, `az`: masked by WebFile rows (top-level, and inside a reached bundle), which version 1's core
-        # refuses to open, so no name either; `wx` and `zx` are plain.
+        # `aw`, `az`: masked by WebFile rows (top-level, and inside a reached bundle), whose first name lengths
+        # are -2, which the core refuses, so no name either; `wx` and `zx` are plain.
         self.assertEqual(
             outputs(r),
             [(kind, key.format(n), f"{n}.png") for n in ("nn", "am", "an", "wq", "qq", "aw", "az")
@@ -510,10 +510,10 @@ class Cutter(unittest.TestCase):
              texture_skip("CAB-x22", 18, "decode_error", "malformed"),
              atlas_skip("CAB-x22", 19, "decode_error", "malformed")]
             # `wv`: a WebFile inside a reached bundle keys `w2.ress` above the raw row; `wt`: a top-level WebFile
-            # row. Version 1's core refuses to open each: `unsupported`.
+            # row. Each has a refused name length below -1: `unsupported`.
             + [s for p in (20, 22) for s in (texture_skip("CAB-x22", p, "decode_error", "unsupported"),
                                              atlas_skip("CAB-x22", p + 1, "decode_error", "unsupported"))]
-            # `wi`: `in2.resS`, an entry of that nested WebFile, is never registered, where UnityPy's is (0x91).
+            # `wi`: `in2.resS` inside that WebFile is never registered: its first name length is below -1.
             + [texture_skip("CAB-x22", 30, "outside_view(archive:/CAB-x22/in2.resS)"),
                atlas_skip("CAB-x22", 31, "outside_view(archive:/CAB-x22/in2.resS)")],
         )  # fmt: skip

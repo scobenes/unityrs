@@ -70,7 +70,7 @@ from PIL import Image
 from UnityPy.classes import GUID, PPtr, Sprite, SpriteAtlasData
 from UnityPy.enums import ClassIDType
 from UnityPy.export import SpriteHelper
-from UnityPy.files import SerializedFile, WebFile
+from UnityPy.files import SerializedFile
 from UnityPy.helpers.TypeTreeNode import TypeTreeNode
 
 import ngui_cutter as nc
@@ -332,7 +332,7 @@ def rendered(p: Planned):
 def cut(input_id: str, view: dict[str, bytes], key: str, prefix: str = "") -> nc.Result:
     """The `sprites` kind on one input over its view."""
     bundle = rd.load(view, input_id)
-    web = next((path for path, f in rd.rows(bundle) if isinstance(f, WebFile)), None)
+    web = next((path for path, f in rd.rows(bundle) if isinstance(f, rd.UnsupportedWebFile)), None)
     if web is not None:
         raise rd.Divergence(f"{input_id}: a top-level WebFile row {web!r}, which fails the input (entry_error)")
     result = nc.Result(input_id)

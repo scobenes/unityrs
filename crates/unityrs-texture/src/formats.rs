@@ -1,7 +1,8 @@
 //! A set of [`Format`]s: the formats a batch spec lets [`crate::select_in`]
 //! export (`docs/BATCH_SPEC.md` 1.5 and section 3). Version 1 exports
 //! [`Formats::V1`], the five of `docs/plans/extract.md` E15; version 2 names
-//! its own, any of the formats this crate decodes.
+//! its own, any of the formats this crate decodes. Legacy crunched DXT names
+//! are accepted; selection also requires a Unity version before 2017.3.
 
 use std::fmt;
 
@@ -130,7 +131,7 @@ mod tests {
         assert_eq!(Formats::decoded("RGB565"), Ok(Format::Rgb565));
         assert_eq!(Formats::decoded("ETC2_RGBA8"), Ok(Format::Etc2Rgba8));
         // UnityPy names it; this crate does not decode it.
-        assert_eq!(Formats::decoded("PVRTC_RGB2"), Err(true));
+        assert_eq!(Formats::decoded("PVRTC_RGB2"), Ok(Format::PvrtcRgb2));
         assert_eq!(Formats::decoded("ARGBFloat"), Err(true));
         // Names are UnityPy's, case and all.
         assert_eq!(Formats::decoded("rgb565"), Err(false));

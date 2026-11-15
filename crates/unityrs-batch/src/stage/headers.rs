@@ -2,7 +2,7 @@
 //! caller and shared in `C_hdr`; this layer never reads the process environment.
 use crate::{
     http::{Error, Payload},
-    spec::model::{BundleRef, HeaderValue},
+    spec::model::{BundleRef, HeaderValue, Spec},
 };
 use hyper::{
     Request,
@@ -12,6 +12,62 @@ use url::Url;
 
 pub trait Values {
     fn get(&self, name: &str) -> Option<&str>;
+    /// The header name as phase 1 parsed it ([`Names`]); [`prepare`]
+    /// parses any name this lacks.
+    fn name(&self, _name: &str) -> Option<&HeaderName> {
+        None
+    }
+}
+/// Each distinct header name a spec's bundles send, parsed once in phase 1
+/// (`PreparedRun`), by its spelling in the spec. A custom name's storage is
+/// a `Bytes` that its first clone moves to shared, counted storage (an
+/// allocation, and an infallible one): that clone is taken here, so each
+/// request's clone only counts a reference.
+#[derive(Default)]
+pub struct Names(Box<[(Box<str>, HeaderName)]>);
+impl Names {
+    pub(crate) fn from_spec(spec: &Spec) -> Self {
+        // Every spelling once, sorted and deduplicated in one pass rather
+        // than kept sorted by insertion: a spec may repeat a name on each
+        // of many bundles.
+        let mut spellings: Vec<&str> = spec
+            .bundles()
+            .flat_map(|bundle| bundle.headers().map(|(name, _)| name))
+            .collect();
+        spellings.sort_unstable();
+        spellings.dedup();
+        let names = spellings
+            .into_iter()
+            .filter_map(|name| {
+                // An invalid name is left to `prepare`, which refuses it.
+                let parsed = HeaderName::from_bytes(name.as_bytes()).ok()?;
+                let shared = parsed.clone();
+                drop(parsed);
+                Some((Box::from(name), shared))
+            })
+            .collect();
+        Self(names)
+    }
+    fn get(&self, name: &str) -> Option<&HeaderName> {
+        self.0
+            .binary_search_by(|(n, _)| (**n).cmp(name))
+            .ok()
+            .and_then(|at| self.0.get(at))
+            .map(|(_, parsed)| parsed)
+    }
+}
+/// A run's header inputs: preflight's values and phase 1's names.
+pub(crate) struct Prepared<'a, V> {
+    pub values: &'a V,
+    pub names: &'a Names,
+}
+impl<V: Values> Values for Prepared<'_, V> {
+    fn get(&self, name: &str) -> Option<&str> {
+        self.values.get(name)
+    }
+    fn name(&self, name: &str) -> Option<&HeaderName> {
+        self.names.get(name)
+    }
 }
 impl Values for () {
     fn get(&self, _: &str) -> Option<&str> {
@@ -40,8 +96,12 @@ pub(crate) fn prepare(
             .try_reserve_exact(text.len())
             .map_err(|_| Error::Memory)?;
         bytes.extend_from_slice(text.as_bytes());
+        let name = match values.name(name) {
+            Some(parsed) => parsed.clone(),
+            None => HeaderName::from_bytes(name.as_bytes()).map_err(|_| Error::InvalidRequest)?,
+        };
         headers.insert(
-            HeaderName::from_bytes(name.as_bytes()).map_err(|_| Error::InvalidRequest)?,
+            name,
             Value::from_maybe_shared(hyper::body::Bytes::from(bytes))
                 .map_err(|_| Error::InvalidRequest)?,
         );

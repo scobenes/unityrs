@@ -14,7 +14,7 @@
 //! bytes allow. [`resource_candidates`] copies nothing: each [`Candidate`]
 //! is a slice of the path and a static suffix. A lookup that needs the whole
 //! name (the registry's lowered key, a resolver's argument) builds it with
-//! [`Candidate::joined`], charged to the asking file's meter while it lives,
+//! [`Candidate::joined_vec`], charged to the asking file's meter while it lives,
 //! one candidate at a time.
 //!
 //! Owner: package D ([`Candidate`] and its methods: the scaffold).
@@ -29,7 +29,7 @@ use crate::raw::RawStr;
 pub const SUFFIXES: [&[u8]; 4] = [b"", b".resource", b".assets.resS", b".resS"];
 
 /// One candidate name: a slice of the resource path followed by a suffix,
-/// built only when a lookup needs it whole ([`Self::joined`]).
+/// built in a charged vector when a lookup needs it whole ([`Self::joined_vec`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     /// A slice of the resource path (no copy): its `basename` for the first
@@ -50,6 +50,18 @@ impl Candidate {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// The whole lookup name in charged, fallibly allocated storage, without
+    /// a shared `Bytes` owner. Borrow it for registry and resolver lookups.
+    pub fn joined_vec(
+        &self,
+        meter: &Arc<Meter>,
+    ) -> Result<crate::limits::MeteredVec<u8>, ChargeError> {
+        let mut out = crate::limits::MeteredVec::with_capacity(meter, self.len())?;
+        out.extend_from_slice(self.stem.as_bytes())?;
+        out.extend_from_slice(self.suffix)?;
+        Ok(out)
     }
 
     /// The whole name: the stem itself when there is no suffix (no copy),
@@ -78,7 +90,7 @@ pub fn resource_candidates(res_path: &RawStr) -> [Candidate; 4] {
         if sub.is_empty() {
             RawStr::default()
         } else {
-            RawStr::from_shared(res_path.clone().into_bytes().slice_ref(sub))
+            res_path.slice_ref(sub)
         }
     };
     let (basename, name) = (slice(basename), slice(name));
@@ -141,6 +153,23 @@ mod tests {
         let full = Meter::new(OWNER_COST, Arc::new(Unbounded), Reservation::Input);
         assert!(res.joined(&full).is_err());
         assert_eq!(full.used(), 0);
+    }
+
+    #[test]
+    fn transient_candidate_names_hold_only_fallible_charged_vector_storage() {
+        let m = Meter::new(1 << 20, Arc::new(Unbounded), Reservation::Input);
+        let candidate = Candidate {
+            stem: RawStr::from_static(b"CAB-test"),
+            suffix: b".resS",
+        };
+        let name = candidate.joined_vec(&m).unwrap();
+        assert_eq!(name.as_slice(), b"CAB-test.resS");
+        assert_eq!(m.used(), heap_cost(13));
+        drop(name);
+        assert_eq!(m.used(), 0);
+        let refused = Meter::new(0, Arc::new(Unbounded), Reservation::Input);
+        assert!(candidate.joined_vec(&refused).is_err());
+        assert_eq!(refused.used(), 0);
     }
 
     #[test]

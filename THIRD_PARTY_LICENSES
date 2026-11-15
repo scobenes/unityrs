@@ -8,8 +8,8 @@ when it is stale).
 It has two parts. The first holds the notices of code ported or vendored into
 unityrs from other projects (UnityPy and UnityPyBoost, liblz4, CPython's
 standard library, Pillow, texture2ddecoder with the AssetStudio and mikunyan
-code it carries, Arm astcenc, zlib, OpenBLAS under BSD-3-Clause and its
-GotoBLAS2 code under BSD-2-Clause-Views), and the provenance of bundled
+code it carries, the legacy Crunch decoder, Arm astcenc, zlib, OpenBLAS
+under BSD-3-Clause and its GotoBLAS2 code under BSD-2-Clause-Views), and the provenance of bundled
 data; the notice of a new port is added to about.hbs, its licence to its
 crate's, and the notice to the crate's own files (a LICENSE-* file, and a
 NOTICE-* file for a text of ours its licence asks for), so that the crate's
@@ -24,6 +24,46 @@ compiles (twice: the vendored LICENSE, and its LICENSE-ZLIB, the same text).
 ================================================================================
 Ported code
 ================================================================================
+
+--------------------------------------------------------------------------------
+Crunch legacy decoder in texture2ddecoder 1.0.5
+https://github.com/K0lb3/texture2ddecoder
+Licence: LicenseRef-Crunch.
+
+unityrs-texture ports the legacy CRN decoder from
+src/Texture2DDecoder/crunch/crn_decomp.h to Rust. The port bounds header,
+bitstream, palette and Huffman reads and charges temporary allocations.
+Only one-face DXT1 and DXT5 streams are supported. The source carries
+Richard Geldreich's modified Zlib notice, including its required public
+credit; it does not carry the standard Zlib licence.
+
+Crunch Library Copyright (c) 2010-2016 Richard Geldreich, Jr.
+
+crunch/crnlib uses a modified ZLIB license. Specifically, it's the same as zlib except that
+public credits for using the library are *required*.
+
+Copyright (c) 2010-2016 Richard Geldreich, Jr. All rights reserved.
+
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+claim that you wrote the original software.
+
+2. If you use this software in a product, this acknowledgment in the product
+documentation or credits is required:
+
+"Crunch Library Copyright (c) 2010-2016 Richard Geldreich, Jr."
+
+3. Altered source versions must be plainly marked as such, and must not be
+misrepresented as being the original software.
+
+4. This notice may not be removed or altered from any source distribution.
 
 --------------------------------------------------------------------------------
 Arm astcenc commit 631fb04
@@ -2387,6 +2427,27 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 
 Used by:
+- alloc-no-stdlib 2.0.4 (https://github.com/dropbox/rust-alloc-no-stdlib)
+- brotli-decompressor 5.0.0 (https://github.com/dropbox/rust-brotli-decompressor)
+
+Copyright (c) 2016 Dropbox, Inc.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+--------------------------------------------------------------------------------
+BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
+
+Used by:
 - subtle 2.6.1 (https://github.com/dalek-cryptography/subtle)
 
 Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved.
@@ -4710,6 +4771,41 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+--------------------------------------------------------------------------------
+MIT License (MIT)
+
+Used by:
+- triomphe 0.1.17 (https://github.com/Manishearth/triomphe)
+
+MIT License
+
+Copyright (c) 2019 Manish Goregaokar
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
 
 
 --------------------------------------------------------------------------------

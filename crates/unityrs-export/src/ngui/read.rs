@@ -77,7 +77,7 @@ pub fn shape() -> Class {
 pub fn parent_bundle(kind: Option<&ParentKind>) -> Option<Arc<BundleFile>> {
     match kind? {
         ParentKind::Bundle { bundle, .. } => bundle.upgrade(),
-        ParentKind::Web => None,
+        ParentKind::Web { .. } => None,
     }
 }
 
@@ -339,69 +339,8 @@ fn peek_tree(
     Ok(Some(compiled))
 }
 
-/// `m_StreamData`: a resource's path and span, the integers as read (any
-/// integer node, signed or not, of any width: 4.4 step 2). They matter only
-/// when the stream is read (section 3's answer 4, [`Stream::span`]).
-#[derive(Clone, Debug)]
-pub struct Stream {
-    /// `path`, as read.
-    pub path: RawStr,
-    /// `offset`.
-    pub offset: i128,
-    /// `size`.
-    pub size: i128,
-}
-
-/// Where a stream's bytes are in the resource it names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Span {
-    /// `offset..offset + size`, each within `u64`: the core's read, short
-    /// at the resource's end as a Python slice is.
-    Range(u64, u64),
-    /// Any other: the memoryview reader's `read(size)` at `offset`
-    /// (UnityPy's `EndianBinaryReader` over a memoryview, the core's
-    /// `stream::py_read`), Python's slice `data[start:stop]` of the whole
-    /// resource ([`python_slice`]); a size of -1 reads to the end, `stop`
-    /// [`i128::MAX`].
-    Slice(i128, i128),
-}
-
-impl Stream {
-    /// The span `read(size)` at `offset` gives (section 3's answer 4; review
-    /// round 2's C1): 0 is empty, -1 runs to the end, else the slice.
-    #[must_use]
-    pub fn span(&self) -> Span {
-        if self.size == 0 {
-            return Span::Range(0, 0);
-        }
-        if self.size == -1 {
-            return Span::Slice(self.offset, i128::MAX);
-        }
-        let end = self.offset.checked_add(self.size);
-        match (
-            u64::try_from(self.offset),
-            u64::try_from(self.size),
-            end.and_then(|e| u64::try_from(e).ok()),
-        ) {
-            (Ok(o), Ok(n), Some(_)) => Span::Range(o, n),
-            _ => Span::Slice(self.offset, end.unwrap_or(i128::MAX)),
-        }
-    }
-}
-
-/// Python's `data[start:stop]` over `len` bytes, as a range: a negative
-/// index counts from the end, and each is clamped to `0..=len`; a stop
-/// before the start is empty.
-#[must_use]
-pub fn python_slice(len: usize, start: i128, stop: i128) -> std::ops::Range<usize> {
-    let n = i128::try_from(len).unwrap_or(i128::MAX);
-    let at = |i: i128| {
-        let i = if i < 0 { i.saturating_add(n) } else { i };
-        usize::try_from(i.clamp(0, n)).unwrap_or(len)
-    };
-    let (a, b) = (at(start), at(stop));
-    a..b.max(a)
-}
+/// Shared streamed texture spans and Python slicing.
+pub use unityrs_texture::fetch::{Span, Stream, python_slice};
 
 /// `m_PlatformBlob`, any list (4.4 step 2): what `is_switch_swizzled` reads
 /// of it, its length and its elements 8 to 12 as bytes, and no copy.
@@ -501,16 +440,35 @@ impl Texture {
 /// of `allowed` (the spec's, `docs/BATCH_SPEC.md` 1.5): its format, or the
 /// skip. A format outside `i32` is `unsupported_format(<decimal>)`; a Switch
 /// blob is read as bytes ([`Blob`], [`BLOB_ELEMENT`]).
-pub fn answer(t: &Texture, platform: i32, allowed: Formats) -> Result<Format, Class> {
+pub fn answer(
+    t: &Texture,
+    platform: i32,
+    allowed: Formats,
+    unity_version: (u16, u16),
+) -> Result<Format, Class> {
     if t.width == 0 || t.height == 0 {
         return Err(Class::Skip(Reason::plain(Skip::EmptyImage.to_string())));
     }
-    formats(t, platform, allowed)
+    formats(t, platform, allowed, unity_version)
+}
+
+/// Selection uses the resolved version of the texture's own file, including
+/// a dependency's. Without a usable version, never assume legacy crunch.
+pub(crate) fn unity_version(obj: &ObjectRef) -> (u16, u16) {
+    obj.file()
+        .version()
+        .and_then(|v| v.version.as_tuple().ok())
+        .map_or((u16::MAX, u16::MAX), |(major, minor, ..)| (major, minor))
 }
 
 /// Section 3's answers 2 and 3 for `t`, whose sides are not 0, on
 /// `platform`: [`answer`] past its first.
-pub(crate) fn formats(t: &Texture, platform: i32, allowed: Formats) -> Result<Format, Class> {
+pub(crate) fn formats(
+    t: &Texture,
+    platform: i32,
+    allowed: Formats,
+    unity_version: (u16, u16),
+) -> Result<Format, Class> {
     let Ok(format) = i32::try_from(t.format) else {
         return Err(Class::Skip(Reason::plain(format!(
             "unsupported_format({})",
@@ -523,9 +481,6 @@ pub(crate) fn formats(t: &Texture, platform: i32, allowed: Formats) -> Result<Fo
             Some(g) => {
                 gobs[8..].copy_from_slice(&g);
                 Some(&gobs[..])
-            }
-            None if Format::from_texture_format(format).is_some_and(|f| allowed.contains(f)) => {
-                return Err(Class::Skip(Reason::decode_error(BLOB_ELEMENT)));
             }
             None => None,
         },
@@ -541,7 +496,15 @@ pub(crate) fn formats(t: &Texture, platform: i32, allowed: Formats) -> Result<Fo
             platform_blob: blob,
         },
         allowed,
+        unity_version,
     ) {
+        Selection::Export(_)
+            if platform == SWITCH
+                && t.platform_blob
+                    .is_some_and(|b| b.len >= 12 && b.gobs.is_none()) =>
+        {
+            Err(Class::Skip(Reason::decode_error(BLOB_ELEMENT)))
+        }
         Selection::Export(f) => Ok(f),
         Selection::Skip(s) => Err(Class::Skip(Reason::plain(s.to_string()))),
     }

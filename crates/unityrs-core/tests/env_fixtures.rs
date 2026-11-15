@@ -27,7 +27,7 @@ use unityrs_core::RawStr;
 use unityrs_core::env::{EnvOptions, LoadMode};
 use unityrs_core::limits::Meter;
 use unityrs_core::pystr::{
-    is_split_path, ntpath_basename, ntpath_splitext, py_lower, simplify_name,
+    is_split_path, ntpath_basename, ntpath_splitext, py_lower, simplify_name, simplify_name_vec,
 };
 use unityrs_testkit::env::{dependency_scenes, find_scenes, listings, race_scenes, scenes};
 
@@ -516,6 +516,8 @@ fn ntpath_is_pythons() {
         assert_eq!(json!([text(root), text(ext)]), r[2], "splitext {p:?}");
         let simple =
             simplify_name(&RawStr::new(p.as_bytes().to_vec()), &Meter::unlimited()).unwrap();
+        let borrowed = simplify_name_vec(p.as_bytes(), &Meter::unlimited()).unwrap();
+        assert_eq!(borrowed.as_slice(), simple.as_bytes());
         assert_eq!(
             text(simple.as_bytes()),
             r[3].as_str().unwrap(),

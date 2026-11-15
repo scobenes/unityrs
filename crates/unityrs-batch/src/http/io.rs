@@ -1,70 +1,19 @@
 //! Socket and TLS IO with one concrete hyper connection type.
-use super::socket::Registered;
+use crate::sys::reset::RegisteredSocket;
 use std::{
     io,
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::TcpStream,
-};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_rustls::client::TlsStream;
 
+/// The socket's owner is the table's opaque [`RegisteredSocket`]: its
+/// shutdown is a no-op, so neither a FIN nor TLS `close_notify` precedes
+/// the RST its zero-linger drop (or the exit's reset) sends.
 pub enum Stream {
-    Plain(Registered<TcpStream>),
-    Tls(Box<TlsStream<Registered<TcpStream>>>),
-}
-impl<T: AsyncRead + Unpin> AsyncRead for Registered<T> {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        match self.get_mut().value.as_mut() {
-            Some(value) => Pin::new(value).poll_read(cx, buf),
-            None => Poll::Ready(Err(io::ErrorKind::NotConnected.into())),
-        }
-    }
-}
-impl<T: AsyncWrite + Unpin> AsyncWrite for Registered<T> {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        match self.get_mut().value.as_mut() {
-            Some(value) => Pin::new(value).poll_write(cx, buf),
-            None => Poll::Ready(Err(io::ErrorKind::NotConnected.into())),
-        }
-    }
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match self.get_mut().value.as_mut() {
-            Some(value) => Pin::new(value).poll_flush(cx),
-            None => Poll::Ready(Err(io::ErrorKind::NotConnected.into())),
-        }
-    }
-    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
-        // Hyper shuts down completed connections before dropping its IO. A TCP
-        // half-close would send FIN before zero-linger Drop could send RST.
-        self.get_mut().close();
-        Poll::Ready(Ok(()))
-    }
-    fn is_write_vectored(&self) -> bool {
-        self.value
-            .as_ref()
-            .is_some_and(AsyncWrite::is_write_vectored)
-    }
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[io::IoSlice<'_>],
-    ) -> Poll<io::Result<usize>> {
-        match self.get_mut().value.as_mut() {
-            Some(value) => Pin::new(value).poll_write_vectored(cx, bufs),
-            None => Poll::Ready(Err(io::ErrorKind::NotConnected.into())),
-        }
-    }
+    Plain(RegisteredSocket),
+    Tls(Box<TlsStream<RegisteredSocket>>),
 }
 impl AsyncRead for Stream {
     fn poll_read(

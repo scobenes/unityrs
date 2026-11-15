@@ -107,6 +107,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "crunch"
+path = "fuzz_targets/crunch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "meshdecode"
 path = "fuzz_targets/meshdecode.rs"
 test = false
@@ -137,6 +144,20 @@ bench = false
 [[bin]]
 name = "fsb5"
 path = "fuzz_targets/fsb5.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webfile"
+path = "fuzz_targets/webfile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "unityweb"
+path = "fuzz_targets/unityweb.rs"
 test = false
 doc = false
 bench = false

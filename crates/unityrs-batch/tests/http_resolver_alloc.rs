@@ -50,7 +50,7 @@ fn refused_name_buffer_is_memory_and_releases_the_permit_charge() {
     let pool = PermitPool::new(1).unwrap();
     let mut permit = pool.acquire().unwrap();
     let answers = Arc::new(Oversized(TestResolverAnswers::new(16).unwrap()));
-    let service = Service::new(runtime.handle().clone(), Arc::new(Table::default()))
+    let service = Service::new(runtime.handle().clone(), Table::default().sockets)
         .unwrap()
         .with_test_hooks(answers, &[])
         .unwrap();
@@ -88,7 +88,7 @@ fn oversized_answer_list_stays_within_the_lookup_envelope() {
             .unwrap();
         let pool = PermitPool::new(1).unwrap();
         let mut permit = pool.acquire().unwrap();
-        let service = Service::new(runtime.handle().clone(), Arc::new(Table::default()))
+        let service = Service::new(runtime.handle().clone(), Table::default().sockets)
             .unwrap()
             .with_test_hooks(answers.clone(), &[])
             .unwrap();

@@ -34,6 +34,14 @@ pub struct PreparedRun {
     pub walker: Walker,
     pub active: Vec<ActiveSlot>,
     pub stages_active: Vec<StageSlot>,
+    /// Each URL bundle's parsed URL, by bundle index, parsed here in phase
+    /// 1 (so measured with it) and never again: a stage's first hop reads
+    /// it, so no URL is parsed after the running head. Empty for a run of
+    /// local paths.
+    pub(crate) urls: Arc<[(u32, url::Url)]>,
+    /// Each distinct header name the bundles send, parsed here too, so a
+    /// request's map clones a name and parses none.
+    pub(crate) header_names: Arc<crate::stage::headers::Names>,
     /// Phase-1 storage for the dispatch snapshot the split copies out of
     /// `active`, so freezing the facts allocates nothing.
     slots: Vec<Option<Dispatched>>,
@@ -197,9 +205,23 @@ pub struct ActiveSlot {
     pub directory: Option<Shared<Directory>>,
     pub peek_file: Option<Shared<crate::sys::Lock<Option<OwnedFile>>>>,
 }
+/// One of `download_concurrency` stages: a local copy's pool task, or a
+/// URL stage's owning future (`stage::slot`). A networked run's local copy
+/// holds a request permit too, so each permit has at most one blocking task
+/// outstanding. A stopped run parks a slot as it is: an unfinished future is
+/// never dropped or awaited, and an end held unreceived stays here.
 #[derive(Default)]
 pub struct StageSlot {
     pub(crate) task: Option<crate::execution::Task<(crate::stage::local::LocalFinish, OwnedFile)>>,
+    pub(crate) run: Option<crate::stage::slot::Run>,
+    pub(crate) permit: Option<crate::http::permit::RequestPermit>,
+    /// A URL end that came back stopped while the stop word was clear (its
+    /// cutoff passed first): never received; the stop follows.
+    pub(crate) held: Option<crate::stage::slot::Ended>,
+    /// A received run failure's stage and permit (`Ended::residual`), its
+    /// connection perhaps still open: parked here, never dropped before the
+    /// finisher.
+    pub(crate) residual: Option<crate::stage::slot::Residual>,
     pub bundle: Option<u32>,
     pub file: Option<OwnedFile>,
 }
@@ -293,6 +315,13 @@ pub fn prepare(validated: spec::Validated) -> Result<PreparedRun, PreparationErr
         stages_active: (0..spec.download_concurrency)
             .map(|_| StageSlot::default())
             .collect(),
+        urls: (0..n)
+            .filter_map(|i| {
+                let text = spec.bundle(i)?.url()?;
+                Some((u32::try_from(i).ok()?, url::Url::parse(text).ok()?))
+            })
+            .collect(),
+        header_names: Arc::new(crate::stage::headers::Names::from_spec(&spec)),
         slots: Vec::with_capacity(spec.threads as usize),
         spec: Arc::new(spec),
         graph: Arc::new(graph),

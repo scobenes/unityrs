@@ -176,10 +176,13 @@ fn a_bcn_length_past_2_gib_is_read_as_its_low_32_bits() {
 /// length is a `size_t`, read whole; and UnityPy's crop bound holds.
 #[test]
 fn texture2ddecoders_formats_refuse_what_it_reads_past() {
-    let etc = Format::ALL
-        .iter()
-        .copied()
-        .filter(|f| f.library() == Library::Texture2DDecoder);
+    let etc = Format::ALL.iter().copied().filter(|f| {
+        // These assertions are ETC/EAC-specific: PVRTC restricts the
+        // block grid, and ATC has no UnityPy padding/crop.
+        f.library() == Library::Texture2DDecoder
+            && f.pvrtc_2bpp().is_none()
+            && f.block_size().is_some()
+    });
     for format in etc {
         let block = usize::try_from(format.block_bytes().unwrap()).unwrap();
         // 7 x 9 is 2 x 3 blocks.

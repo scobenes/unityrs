@@ -275,8 +275,8 @@ fn maximal_staging_request_and_strongest_tls_with_ocsp_fit_both_envelopes() {
         assert_eq!(permits.snapshot().outstanding, 0);
         drop(permit);
         assert_eq!(permits.snapshot().occupied, 0);
-        assert_eq!(table.added.load(std::sync::atomic::Ordering::Acquire), 1);
-        assert_eq!(table.removed.load(std::sync::atomic::Ordering::Acquire), 1);
+        assert_eq!(table.added(), 1);
+        assert_eq!(table.removed(), 1);
     }
     let measured = count::finish();
     let library = count::library_peak();

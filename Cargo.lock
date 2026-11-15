@@ -36,6 +36,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc-no-stdlib"
+version = "2.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -134,6 +140,15 @@ name = "borrow-or-share"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c92f10cf6eb8897e9ca8c8b1803574acb5e148fd94bde828b52304407946f02d"
+
+[[package]]
+name = "brotli-decompressor"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "874bb8112abecc98cbd6d81ea4fa7e94fb9449648c93cc89aa40c81c24d7de03"
+dependencies = [
+ "alloc-no-stdlib",
+]
 
 [[package]]
 name = "bumpalo"
@@ -1355,6 +1370,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "triomphe"
+version = "0.1.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d15f4f5898bcfc5d8a8e45ed30b2f108d710c1a2e5489dbf80e078f707181bc"
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1441,12 +1462,14 @@ name = "unityrs-core"
 version = "0.0.1"
 dependencies = [
  "aes",
+ "brotli-decompressor",
  "bytes",
  "flate2",
  "liblzma",
  "lz4_flex",
  "serde_json",
  "thiserror",
+ "triomphe",
  "unityrs-testkit",
 ]
 
@@ -1487,10 +1510,12 @@ version = "0.0.1"
 dependencies = [
  "serde_json",
  "unityrs-core",
+ "unityrs-imageio",
  "unityrs-mesh",
  "unityrs-meshdecode",
  "unityrs-scene",
  "unityrs-testkit",
+ "unityrs-texture",
 ]
 
 [[package]]

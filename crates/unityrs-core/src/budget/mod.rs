@@ -392,6 +392,7 @@ pub struct DecodeBuf {
     seg_epoch: u64,
     /// Work counted ahead ([`Self::prepay`]) that no write has used yet.
     prepaid: u64,
+    count_writes: bool,
 }
 
 impl fmt::Debug for DecodeBuf {
@@ -426,9 +427,17 @@ impl DecodeBuf {
             ahead: 0,
             seg_epoch: 0,
             prepaid: 0,
+            count_writes: cap_kind == LimitKind::BlockOutput,
         };
         let initial = usize::try_from(initial.min(cap)).unwrap_or(usize::MAX);
         grow_charged(&mut out.buf, &mut out.charge, initial, initial)?;
+        Ok(out)
+    }
+
+    /// An inflation buffer whose writes also count as decode work.
+    pub(crate) fn inflated(meter: &Arc<Meter>, cap: u64) -> Result<Self, ChargeError> {
+        let mut out = Self::new(meter, 0, cap, LimitKind::Inflate)?;
+        out.count_writes = true;
         Ok(out)
     }
 
@@ -440,6 +449,7 @@ impl DecodeBuf {
         self.seg_start = self.buf.len();
         self.seg_cap = cap;
         self.seg_kind = cap_kind;
+        self.count_writes = cap_kind == LimitKind::BlockOutput;
         self.seg_declared = declared;
         self.seg_epoch = self.seg_epoch.wrapping_add(1);
     }
@@ -562,7 +572,7 @@ impl DecodeBuf {
     /// Work already counted ahead ([`Self::prepay`]) pays for the bytes
     /// first, and is used only by a write that is made.
     fn room_to_write(&mut self, n: usize) -> Result<(), ChargeError> {
-        let work = if self.seg_kind == LimitKind::BlockOutput {
+        let work = if self.count_writes {
             u64::try_from(n).unwrap_or(u64::MAX)
         } else {
             0
