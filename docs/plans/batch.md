@@ -823,6 +823,17 @@ stderr services, the runtimes and hard exit, and may reorder or wrap those
 components. B7's temporary normal-run subset is stated in `BATCH_SPEC.md`
 section 10; it does not implement this whole lifetime sequence.
 
+The process host retains the permanent spool lock and the directory sink's
+`_unityrs/lock` until `_exit`; it never releases and re-acquires them between
+phases. The reusable library can drop either lease and start again in the same
+process. Both use an owned flock lease that explicitly unlocks before closing,
+including on startup or preflight errors after acquisition: a concurrent
+fork inherits the open file description even with `O_CLOEXEC`, and closing
+only the parent's descriptor would leave the lock held until the child execs
+or exits. This does not shorten any retained lease: outstanding work keeps
+its shared owner through the finisher, as described below. Neither lock inode
+is ever deleted, and acquisition remains nonblocking.
+
 B9a supplies the process stop word, checked timing, stable wake registrations,
 opaque resettable sockets, signals, lifecycle and bounded diagnostics as library
 primitives. Lifetime CLI fields remain refused until B9b owns the complete
