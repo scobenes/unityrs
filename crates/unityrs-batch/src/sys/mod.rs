@@ -336,9 +336,28 @@ fn errno() -> *mut libc::c_int {
     }
 }
 /// Exclusive nonblocking lock. The inode must never be unlinked.
-pub fn lock_exclusive(file: &File) -> io::Result<()> {
+pub fn lock_exclusive(file: File) -> io::Result<FlockLease> {
     // SAFETY: live descriptor and scalar flock flags; no borrowed memory.
-    cvt(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) })
+    cvt(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) })?;
+    Ok(FlockLease(file))
+}
+
+/// An exclusive lease releases the shared description's lock before closing it:
+/// close alone leaves the lock held by a concurrently forked child until exec.
+pub struct FlockLease(File);
+impl FlockLease {
+    #[must_use]
+    pub fn file(&self) -> &File {
+        &self.0
+    }
+}
+impl Drop for FlockLease {
+    fn drop(&mut self) {
+        // SAFETY: the owned descriptor is live throughout Drop; LOCK_UN
+        // releases this description's lock, including inherited copies.
+        let _ =
+            retry_interrupted(|| cvt(unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) }));
+    }
 }
 fn cvt(rc: i32) -> io::Result<()> {
     if rc == -1 {

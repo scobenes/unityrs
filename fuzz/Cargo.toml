@@ -20,6 +20,7 @@ libfuzzer-sys = "=0.4.13"
 # (the target checks `LZ4_versionNumber` at its first input).
 lz4-sys = "=1.10.0"
 unityrs-core = { path = "../crates/unityrs-core" }
+unityrs-export = { path = "../crates/unityrs-export" }
 unityrs-imageio = { path = "../crates/unityrs-imageio", features = ["test-reference"] }
 unityrs-meshdecode = { path = "../crates/unityrs-meshdecode" }
 unityrs-testkit = { path = "../crates/unityrs-testkit" }
@@ -165,6 +166,13 @@ bench = false
 [[bin]]
 name = "serialized_save"
 path = "fuzz_targets/serialized_save.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shader"
+path = "fuzz_targets/shader.rs"
 test = false
 doc = false
 bench = false

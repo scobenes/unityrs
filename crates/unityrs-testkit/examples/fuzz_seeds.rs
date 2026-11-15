@@ -9,8 +9,9 @@
 //! blocks of every output, textures of every size class the decoders tell
 //! apart, ASTC blocks of every kind `unityrs-texture`'s oracle fixture
 //! crafts (`tools/fixtures/texture_astc.py`), legacy CRN streams built by
-//! `tools/fixtures/texture_crunch.py`, and every mesh and sprite case `unityrs-meshdecode`'s oracle
-//! fixture records (`tools/fixtures/meshdecode.py`'s synthetic values).
+//! `tools/fixtures/texture_crunch.py`, every mesh and sprite case recorded
+//! by `tools/fixtures/meshdecode.py`, and synthetic Shader program blobs
+//! across their header-version boundaries and converter field shapes.
 //! Nothing comes from a corpus. One folder per target:
 //!
 //! ```text
@@ -48,13 +49,15 @@ use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_
 
 #[path = "fuzz_seeds/crunch.rs"]
 mod crunch;
+#[path = "fuzz_seeds/shader.rs"]
+mod shader;
 #[path = "fuzz_seeds/web.rs"]
 mod web;
 #[path = "fuzz_seeds/zip.rs"]
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 19] = [
+const TARGETS: [&str; 20] = [
     "detect",
     "bundle",
     "serialized",
@@ -74,6 +77,7 @@ const TARGETS: [&str; 19] = [
     "webfile",
     "unityweb",
     "fsb5",
+    "shader",
 ];
 
 /// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
@@ -716,6 +720,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     zip::seeds(&mut s)?;
     web::seeds(&mut s)?;
     fsb5::write(&mut s)?;
+    shader::seeds(&mut s)?;
     texture(&mut s)?;
     pvrtc_atc::write(&mut s)?;
     astc(&mut s)?;
