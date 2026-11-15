@@ -7,7 +7,10 @@ use crate::{
     settings::{Budget, Limits},
 };
 use pyo3::{prelude::*, pybacked::PyBackedBytes};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 use unityrs_core::{
     FileContext, RawStr,
     env::{EnvOptions, Environment, Source},
@@ -16,14 +19,77 @@ use unityrs_core::{
 #[pyclass(frozen, module = "unityrs._native")]
 pub(crate) struct NativeEnvironment {
     pub(crate) inner: Environment,
+    config: Arc<unityrs_core::config::RuntimeConfig>,
+    fallback_warnings: Arc<FallbackWarning>,
+}
+
+#[derive(Debug, Default)]
+struct FallbackWarning {
+    error: Mutex<Option<PyErr>>,
+    config: Arc<unityrs_core::config::RuntimeConfig>,
+}
+impl unityrs_core::config::FallbackWarningSink for FallbackWarning {
+    fn warn(&self, value: &RawStr) -> Result<(), unityrs_core::limits::ChargeError> {
+        self.warn_value(value).map(|_| ())
+    }
+
+    fn warn_value(&self, value: &RawStr) -> Result<RawStr, unityrs_core::limits::ChargeError> {
+        self.warn_value_at(value, false)
+    }
+
+    fn warn_value_at(
+        &self,
+        value: &RawStr,
+        bundle: bool,
+    ) -> Result<RawStr, unityrs_core::limits::ChargeError> {
+        // Version resolution runs before registry publication and outside
+        // core locks; lazy ResultCell computations likewise run unlocked.
+        // Relay onto the original caller thread so its Python RLock remains
+        // reentrant. Never hold our pending-error mutex during the warning.
+        let result = crate::worker::python_warning(value, bundle);
+        match result {
+            Ok((value, parse_typetree)) => {
+                self.config.set(Some(value.clone()), parse_typetree);
+                Ok(value)
+            }
+            Err(error) => {
+                *self
+                    .error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+                // Private transient sentinel: stop parsing before publication.
+                // config._load's finally retrieves the original Python exception.
+                Err(unityrs_core::budget::AllocError {
+                    requested: 0,
+                    what: unityrs_core::budget::Reservation::Input,
+                }
+                .into())
+            }
+        }
+    }
 }
 #[pymethods]
 impl NativeEnvironment {
     #[new]
-    #[pyo3(signature = (limits=None, budget=None))]
-    fn new(py: Python<'_>, limits: Option<&Limits>, budget: Option<&Budget>) -> Self {
+    #[pyo3(signature = (limits=None, budget=None, tpk=None))]
+    fn new(
+        py: Python<'_>,
+        limits: Option<&Limits>,
+        budget: Option<&Budget>,
+        tpk: Option<&crate::tpk::NativeTpk>,
+    ) -> PyResult<Self> {
         py.detach(|| {
             let mut context = FileContext::unitypy();
+            let config = Arc::new(unityrs_core::config::RuntimeConfig::unitypy());
+            let fallback_warnings = Arc::new(FallbackWarning {
+                error: Mutex::new(None),
+                config: config.clone(),
+            });
+            context.runtime_config = Some(config.clone());
+            context.version.fallback_warnings = Some(fallback_warnings.clone());
+            if let Some(tpk) = tpk {
+                context.providers = tpk.chain()?;
+            }
             if let Some(limits) = limits {
                 context.limits = limits.inner;
             }
@@ -32,10 +98,30 @@ impl NativeEnvironment {
             }
             let mut options = EnvOptions::unitypy();
             options.context = Arc::new(context);
-            Self {
+            Ok(Self {
                 inner: Environment::new(options),
-            }
+                config,
+                fallback_warnings,
+            })
         })
+    }
+    fn configure(&self, py: Python<'_>, fallback: Option<PyBackedBytes>, parse_typetree: bool) {
+        py.detach(|| {
+            self.config.set(
+                fallback.map(|data| RawStr::from(unityrs_core::Bytes::from_owner(data))),
+                parse_typetree,
+            );
+        });
+    }
+    fn take_fallback_warnings(&self, py: Python<'_>) -> PyResult<u64> {
+        let error = py.detach(|| {
+            self.fallback_warnings
+                .error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        });
+        error.map_or(Ok(0), Err)
     }
     fn load_bytes(
         &self,

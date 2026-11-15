@@ -175,7 +175,7 @@ pub fn parse_old(
     meter: &Arc<Meter>,
     limits: &Limits,
 ) -> Result<MeteredVec<NodeRow>, Error> {
-    let _ = limits;
+    let mut bounds = crate::limits::TreeTraversal::new(meter, limits.max_tree_depth);
     let mut rows: MeteredVec<NodeRow> = MeteredVec::new(meter);
     // UnityPy helpers/TypeTreeNode.py:83-109: `(parent level, children left)`
     // for every node whose children are still being read, the hidden root
@@ -189,6 +189,11 @@ pub fn parse_old(
             top.1 = count - 1;
         }
         let level = parent_level.saturating_add(1);
+        bounds.step(
+            u64::try_from(level).unwrap_or(u64::MAX).saturating_add(1),
+            0,
+            1,
+        )?;
         let ty = string_to_null(r, data, meter)?;
         let name = string_to_null(r, data, meter)?;
         let byte_size = r.read_i32()?;
@@ -276,7 +281,7 @@ pub fn parse_blob(
     limits: &Limits,
     common: Option<&CommonStrings>,
 ) -> Result<MeteredVec<NodeRow>, Error> {
-    let _ = limits;
+    let mut bounds = crate::limits::TreeTraversal::new(meter, limits.max_tree_depth);
     // UnityPy helpers/TypeTreeNode.py:113-118
     let node_count = r.read_i32()?;
     let buffer_size = r.read_i32()?;
@@ -300,7 +305,7 @@ pub fn parse_blob(
     let buffer = shared(data, buf_range).into_bytes();
     let endian = r.endian();
     // Growth follows the rows present, never `node_count`.
-    let mut rows: MeteredVec<NodeRow> = MeteredVec::with_capacity(meter, rows_data.len() / size)?;
+    let mut rows: MeteredVec<NodeRow> = MeteredVec::new(meter);
     let mut strings = BlobStrings {
         buffer: &buffer,
         nuls: None,
@@ -309,6 +314,7 @@ pub fn parse_blob(
         last_unknown: None,
     };
     for row in rows_data.chunks_exact(size) {
+        bounds.step(0, 0, 1)?;
         let b = BlobRow { row, endian };
         let version = i16::from_le_bytes(b.bytes(0));
         let level = row.get(2).copied().unwrap_or(0);
@@ -522,7 +528,11 @@ mod tests {
             let data = Bytes::from(unityrs_testkit::blob::no_nul_blob(rows, 65_536));
             let (got, meter) = parse(&data, &Limits::default());
             assert_eq!(got.unwrap(), rows);
-            assert_eq!(meter.decoded(), 65_536, "{rows} rows: the buffer, once");
+            assert_eq!(
+                meter.decoded(),
+                65_536 + rows as u64,
+                "{rows} rows: one buffer pass and each row"
+            );
         }
         let limits = Limits {
             max_decode_work: 65_535,
@@ -532,7 +542,7 @@ mod tests {
         let (got, _) = parse(&data, &limits);
         assert!(
             matches!(got, Err(Error::Limit(l)) if l.kind() == LimitKind::DecodeWork
-                && l.value() == 65_536 && l.max() == 65_535),
+                && l.value() == 65_537 && l.max() == 65_535),
             "{got:?}"
         );
     }

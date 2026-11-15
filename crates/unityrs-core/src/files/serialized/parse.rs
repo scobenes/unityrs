@@ -62,7 +62,8 @@ impl SerializedFile {
                 Some(ParentKind::Bundle { version_engine, .. }) => Some(version_engine),
                 _ => None,
             };
-            let resolved = resolve_serialized(&own, parent_engine, &ctx.version, &mut charge)?;
+            let resolved =
+                resolve_serialized(&own, parent_engine, &ctx.version_policy(), &mut charge)?;
             (Some(own), Some(resolved))
         } else {
             (None, None)
@@ -100,6 +101,10 @@ impl SerializedFile {
             p.read_shared(&mut types, ref_types.as_mut())?;
         }
         let ref_types = ref_types.map(|t| keep(t, &mut charge)).transpose()?;
+        // files/SerializedFile.py:310-311: disable only after all trees were read.
+        if !ctx.parse_typetree_enabled() {
+            p.enable_type_tree = false;
+        }
         // :313-314
         let user_information = if format >= 5 {
             Some(string_to_null(&mut p.r, &data, meter)?)

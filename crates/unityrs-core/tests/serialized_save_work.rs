@@ -97,18 +97,19 @@ fn file_save_counts_object_bytes_padding_and_embedded_old_tree() {
     let mut spec = one_object(49, vec![NodeSpec::new(0, "aa", "aa")], vec![7; 3]);
     spec.format = 1;
     spec.objects[0].type_id = 49;
-    // Reader searches two three-byte C strings and indexes their bytes (8).
+    // Reader searches two three-byte C strings and indexes their bytes (8),
+    // and its metered tree traversal counts the one node (1).
     // Save writes metadata (66),
     // padded data (8), and final file (91), for another 165 bytes.
-    for bound in [178, 179] {
+    for bound in [179, 180] {
         let meter = meter(bound);
         let file = file(&spec, &meter);
-        assert_eq!(meter.decoded(), 14);
+        assert_eq!(meter.decoded(), 15);
         let before = meter.used();
         let result = file.save(SaveOptions::default());
-        if bound == 179 {
+        if bound == 180 {
             assert_eq!(result.unwrap().len(), 91);
-            assert_eq!(meter.decoded(), 179);
+            assert_eq!(meter.decoded(), 180);
         } else {
             refused(result, bound);
         }

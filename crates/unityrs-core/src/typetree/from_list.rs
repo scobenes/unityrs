@@ -69,7 +69,7 @@ impl FromListError {
     #[must_use]
     pub fn python_kind(&self) -> &'static str {
         match self {
-            Self::Required => "ValueError",
+            Self::Required | Self::Tree(TreeError::Cycle(_)) => "ValueError",
             Self::MissingArgument { .. } | Self::DuplicateArgument(_) => "TypeError",
             Self::Tree(
                 TreeError::Empty | TreeError::LevelUnderflow { .. } | TreeError::UnknownNode(_),
@@ -122,7 +122,9 @@ impl TypeTreeNode {
         children: &[Arc<Self>],
         meter: &Arc<Meter>,
     ) -> Result<Self, TreeError> {
-        meter.count_decode(
+        crate::limits::TreeTraversal::new(meter, u32::MAX).step(
+            0,
+            0,
             1_u64
                 .saturating_add(u64::try_from(row.ty.len()).unwrap_or(u64::MAX))
                 .saturating_add(u64::try_from(row.name.len()).unwrap_or(u64::MAX)),
@@ -238,13 +240,14 @@ impl TypeTreeNode {
     /// Construct dictionaries with the defaults decided by the first alone.
     /// Existing nodes use [`Self::from_nodes`] and [`Self::relink`].
     pub fn from_list(dicts: &[NodeDict], meter: &Arc<Meter>) -> Result<Self, FromListError> {
+        let mut bounds = crate::limits::TreeTraversal::new(meter, u32::MAX);
         let first = dicts.first().ok_or(TreeError::Empty)?;
         if first.level.is_none() || first.ty.is_none() || first.name.is_none() {
             return Err(FromListError::Required);
         }
         let mut rows = MeteredVec::with_capacity(meter, dicts.len())?;
         for d in dicts {
-            meter.count_decode(1)?;
+            bounds.step(0, 0, 1)?;
             // Python merges **kwargs before invoking the constructor: duplicate
             // defaults take precedence over missing required arguments.
             for (name, defaulted, supplied) in [
@@ -374,31 +377,71 @@ impl TypeTreeNode {
         Ok(())
     }
 
-    /// Current traversal as arena identities, including duplicates. Depth and
-    /// work are bounded before growth. Suitable for [`Self::relink_nodes`].
-    pub fn traversal(&self, limits: &Limits) -> Result<MeteredVec<usize>, TreeError> {
+    /// Visit one edge at a time with a charged path and active-identity table.
+    /// Repeated DAG edges are visited independently; cycles never expand.
+    fn visit(
+        &self,
+        limits: &Limits,
+        mut output: impl FnMut(usize, u32) -> Result<u32, TreeError>,
+    ) -> Result<(), TreeError> {
         let meter = self.rows.charge().meter();
-        let mut rows = MeteredVec::new(meter);
+        let mut bounds = crate::limits::TreeTraversal::new(meter, limits.max_tree_depth);
+        let mut active = MeteredVec::with_capacity(meter, self.rows.len())?;
+        for _ in 0..self.rows.len() {
+            bounds.step(0, 0, 1)?;
+            active.push(false)?;
+        }
+        // (identity, parent's output index, next edge, own output index).
         let mut stack = MeteredVec::new(meter);
-        stack.push((self.root, 1_u32))?;
-        while let Some((i, depth)) = stack.pop() {
-            if depth > limits.max_tree_depth {
-                return Err(crate::LimitError::refused(
-                    crate::LimitKind::TreeDepth,
-                    u64::from(depth),
-                    u64::from(limits.max_tree_depth),
-                )
-                .into());
-            }
-            meter.count_decode(1)?;
-            rows.push(i)?;
-            if let Some(children) = self.children.as_slice().get(i) {
-                for &child in children.as_slice().iter().rev() {
-                    meter.count_decode(1)?;
-                    stack.push((child, depth.saturating_add(1)))?;
+        stack.push((self.root, u32::MAX, None::<usize>, 0u32))?;
+        while let Some((id, parent, next, index)) = stack.as_slice().last().copied() {
+            let depth = u64::try_from(stack.len()).unwrap_or(u64::MAX);
+            bounds.step(depth, 0, 1)?;
+            let children = self
+                .children
+                .as_slice()
+                .get(id)
+                .ok_or(TreeError::UnknownNode(id))?;
+            if let Some(next) = next {
+                if let Some(&child) = children.as_slice().get(next) {
+                    bounds.step(depth.saturating_add(1), 0, 1)?;
+                    if let Some(frame) = stack.as_mut_slice().last_mut() {
+                        frame.2 = Some(next + 1);
+                    }
+                    stack.push((child, index, None, 0))?;
+                } else {
+                    if let Some(mark) = active.as_mut_slice().get_mut(id) {
+                        *mark = false;
+                    }
+                    stack.pop();
+                }
+            } else {
+                let mark = active
+                    .as_mut_slice()
+                    .get_mut(id)
+                    .ok_or(TreeError::UnknownNode(id))?;
+                if *mark {
+                    return Err(TreeError::Cycle(id));
+                }
+                *mark = true;
+                let index = output(id, parent)?;
+                if let Some(frame) = stack.as_mut_slice().last_mut() {
+                    frame.2 = Some(0);
+                    frame.3 = index;
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Current preorder identities, including repeated edges, with bounded
+    /// depth, work and memory. Suitable for [`Self::relink_nodes`].
+    pub fn traversal(&self, limits: &Limits) -> Result<MeteredVec<usize>, TreeError> {
+        let mut rows = MeteredVec::new(self.rows.charge().meter());
+        self.visit(limits, |id, _| {
+            rows.push(id)?;
+            Ok(0)
+        })?;
         Ok(rows)
     }
 
@@ -407,18 +450,7 @@ impl TypeTreeNode {
         let meter = self.rows.charge().meter();
         let mut rows = MeteredVec::new(meter);
         let mut parents = MeteredVec::new(meter);
-        let mut stack = MeteredVec::new(meter);
-        stack.push((self.root, u32::MAX, 1_u32))?;
-        while let Some((i, parent, depth)) = stack.pop() {
-            if depth > limits.max_tree_depth {
-                return Err(crate::LimitError::refused(
-                    crate::LimitKind::TreeDepth,
-                    u64::from(depth),
-                    u64::from(limits.max_tree_depth),
-                )
-                .into());
-            }
-            meter.count_decode(1)?;
+        self.visit(limits, |i, parent| {
             let index =
                 u32::try_from(rows.len()).map_err(|_| TreeError::TooManyNodes(rows.len()))?;
             let row = self
@@ -433,16 +465,8 @@ impl TypeTreeNode {
             )?;
             rows.push(row.copy_charged(meter)?)?;
             parents.push(parent)?;
-            let children = self
-                .children
-                .as_slice()
-                .get(i)
-                .ok_or(TreeError::UnknownNode(i))?;
-            for &child in children.as_slice().iter().rev() {
-                meter.count_decode(1)?;
-                stack.push((child, index, depth.saturating_add(1)))?;
-            }
-        }
+            Ok(index)
+        })?;
         // Count the linear adjacency-table passes before building them.
         meter.count_decode(
             u64::try_from(rows.len())

@@ -245,7 +245,7 @@ struct Owners;
 impl unityrs_testkit::counted::Tally for Owners {
     fn refuses(&self, size: usize) -> bool {
         let node = std::mem::size_of::<unityrs_core::typetree::NodeList>();
-        if size != node + 8 && size != node + 16 {
+        if size != node + std::mem::size_of::<usize>() {
             return false;
         }
         OWNER_FAILURE
@@ -255,6 +255,9 @@ impl unityrs_testkit::counted::Tally for Owners {
                 n == 1
             })
             .unwrap_or(false)
+    }
+    fn refuses_realloc(&self, _: usize) -> bool {
+        false // Shared owners are fresh allocations; vector growth is unrelated.
     }
     fn grew(&self, _: usize, _: bool) {}
     fn shrank(&self, _: usize) {}

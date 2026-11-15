@@ -16,7 +16,12 @@ mod files;
 mod object;
 mod object_nodes;
 mod python;
+#[cfg(test)]
+mod row_copy_test;
 mod settings;
+mod tpk;
+mod traversal;
+mod tree;
 mod value;
 mod worker;
 
@@ -28,6 +33,11 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<object::NativeObject>()?;
     m.add_class::<settings::Budget>()?;
     m.add_class::<settings::Limits>()?;
+    m.add_class::<tpk::NativeTpk>()?;
+    m.add_class::<traversal::TreeTraversal>()?;
+    #[cfg(test)]
+    m.add_class::<row_copy_test::RowCopyBarrier>()?;
+    m.add_function(wrap_pyfunction!(tpk::mit_common_strings, m)?)?;
     m.add(
         "_class_ids",
         m.py().detach(|| {

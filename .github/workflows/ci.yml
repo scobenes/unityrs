@@ -712,6 +712,7 @@ jobs:
       - name: Check the API oracle fixtures
         run: python tools/fixtures/py_bindings.py --check
       - name: Test the installed wheel
-        run: python scripts/unittest-suites crates/unityrs-py/python/tests=19
+        run: python scripts/unittest-suites crates/unityrs-py/python/tests=56
       - name: Compare the binding with UnityPy
-        run: python scripts/unittest-suites tools/parity/bindings=48
+        working-directory: tools/parity
+        run: python ../../scripts/unittest-suites bindings=61

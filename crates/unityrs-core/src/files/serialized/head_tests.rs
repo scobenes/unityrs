@@ -396,7 +396,7 @@ fn snapshot_caching_preserves_heads_mutation_order() {
 }
 
 #[test]
-fn a_mutation_created_cycle_hits_the_depth_limit_before_flattening() {
+fn a_mutation_created_cycle_is_rejected_before_flattening() {
     let mut ctx = FileContext::unitypy();
     ctx.limits.max_tree_depth = 16;
     ctx.limits.max_decode_work = 1000;
@@ -410,7 +410,7 @@ fn a_mutation_created_cycle_hits_the_depth_limit_before_flattening() {
         .replace(child, arena.entry(root).unwrap().children)
         .unwrap();
     let error = arena.check_heights(1, &meter, &ctx.limits).unwrap_err();
-    assert!(matches!(error, Error::Limit(ref l) if l.kind() == LimitKind::TreeDepth));
+    assert!(matches!(error, Error::Malformed { ref detail, .. } if detail.contains("cycle")));
     assert!(meter.decoded() < 1000);
     drop((arena, handlers));
     assert_eq!(meter.used(), 0);
