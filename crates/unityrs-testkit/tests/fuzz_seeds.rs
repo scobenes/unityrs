@@ -20,6 +20,7 @@ use unityrs_testkit::scratch::Scratch;
 fn every_value_seed_is_written_at_each_memory_bound() {
     let dir = Scratch::new("fuzz-seeds");
     seeds::write(&dir).expect("the seeds are written");
+    fsb5_seeds_cover_formats_versions_and_hostile_headers(&dir);
     texture_seeds_are_cases(&dir);
     astc_seeds_are_cases(&dir);
     crunch_seeds_are_cases(&dir);
@@ -93,6 +94,7 @@ fn astc_seeds_are_cases(dir: &Path) {
 fn texture_seeds_are_cases(dir: &Path) {
     let (mut formats, mut meters) = (BTreeSet::new(), BTreeSet::new());
     let (mut bc7_modes, mut dxt1, mut dxt5) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+    let mut pvrtc_atc_seeds = 0;
     let mut platform_seeds = 0;
     let mut complete_switch = false;
     for entry in std::fs::read_dir(dir.join("texture")).expect("the target's folder") {
@@ -101,6 +103,9 @@ fn texture_seeds_are_cases(dir: &Path) {
         let case = TextureCase::decode(&bytes);
         if entry.file_name().to_string_lossy().contains("platform-") {
             platform_seeds += 1;
+        }
+        if entry.file_name().to_string_lossy().contains("-pvrtc-atc-") {
+            pvrtc_atc_seeds += 1;
         }
         complete_switch |= case.platform == 38
             && case.data.len() >= 1024
@@ -125,13 +130,14 @@ fn texture_seeds_are_cases(dir: &Path) {
         }
     }
     assert!(
-        formats.is_superset(&[3, 4, 10, 12, 25].into()),
+        formats.is_superset(&[3, 4, 10, 12, 25, 30, 31, 32, 33, 35, 36].into()),
         "{formats:?}"
     );
     assert_eq!(meters, [0, 1].into());
     assert_eq!(bc7_modes, (0..=8).collect(), "BC7 modes");
     assert_eq!(dxt1, [false, true].into(), "DXT1 c0 > c1");
     assert_eq!(dxt5, [false, true].into(), "DXT5 a0 > a1");
+    assert_eq!(pvrtc_atc_seeds, 576);
     assert_eq!(platform_seeds, 182 * 2 + 7 + 111);
     assert!(complete_switch, "no complete swizzled GOB seed");
 }
@@ -171,5 +177,28 @@ fn mesh_seeds_are_cases(dir: &Path) {
     assert!(
         per_meter.iter().all(|m| *m == per_meter[0]),
         "each meter at each case"
+    );
+}
+
+fn fsb5_seeds_cover_formats_versions_and_hostile_headers(dir: &Path) {
+    let mut formats = BTreeSet::new();
+    let mut count = 0;
+    let mut hostile_count = false;
+    for entry in std::fs::read_dir(dir.join("fsb5")).expect("the fsb5 target's folder") {
+        let bytes = std::fs::read(entry.expect("an entry").path()).expect("a seed");
+        count += 1;
+        if bytes.starts_with(b"FSB5") && bytes.len() >= 28 {
+            let word = |at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+            hostile_count |= word(8) == u32::MAX;
+            if word(4) <= 1 && word(8) == 1 && (1..=5).contains(&word(24)) {
+                formats.insert((word(4), word(24)));
+            }
+        }
+    }
+    assert_eq!(count, 54);
+    assert!(hostile_count);
+    assert_eq!(
+        formats,
+        (0..=1).flat_map(|v| (1..=5).map(move |m| (v, m))).collect()
     );
 }

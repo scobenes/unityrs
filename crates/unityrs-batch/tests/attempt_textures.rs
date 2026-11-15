@@ -230,6 +230,27 @@ fn x1_platform_images_flow_through_the_shared_decoder() {
     check_files(&scratch, &jobs);
 }
 
+#[test]
+fn a_malformed_pvrtc_grid_skips_one_texture_and_exports_the_next() {
+    let scene = simple(&[
+        texture(1, b"invalid-grid", 32, (12, 12), vec![0; 72]),
+        texture(2, b"next", 4, (1, 1), vec![1, 2, 3, 4]),
+    ]);
+    let mut harness = Harness::new(&scene, "x");
+    harness.options.formats = unityrs_export::ngui::Formats::DECODED;
+    let end = harness.run(limits(), &NoHooks);
+    clear(&end);
+    assert_eq!(end.state, State::Done, "{end:?}");
+    assert_eq!(end.outputs, 1);
+    let rows = harness.rows();
+    let skip = rows.iter().find(|r| r["type"] == "skip").unwrap();
+    assert_eq!(skip["reason"], "decode_error");
+    assert_eq!(skip["detail"], "read");
+    let output = rows.iter().find(|r| r["type"] == "candidate").unwrap();
+    assert_eq!(output["key"], "next.png");
+    assert!(harness.output(output).starts_with(b"\x89PNG\r\n\x1a\n"));
+}
+
 #[cfg(feature = "test-hooks")]
 #[test]
 fn injected_decoder_panic_is_contained_and_next_output_succeeds() {

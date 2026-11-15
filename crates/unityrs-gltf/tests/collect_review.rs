@@ -457,7 +457,15 @@ fn invalid_geometry_or_batch_range_does_not_fail_other_renderers() {
                 .iter()
                 .any(|(k, _)| k.as_bytes() == b"unresolved_renderer")
         );
-        assert_eq!(scene.collection_issues.len(), 1);
+        assert_eq!(
+            scene
+                .collection_issues
+                .as_slice()
+                .iter()
+                .filter(|i| i.node == 1)
+                .count(),
+            1
+        );
         h::validator_clean(&scene);
     }
 }

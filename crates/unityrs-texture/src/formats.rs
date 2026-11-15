@@ -109,7 +109,7 @@ mod tests {
     }
 
     /// A name is decoded exactly when it names one of [`Format::ALL`],
-    /// whatever that list holds (ASTC's twelve since T2b).
+    /// including legacy crunched DXT, PVRTC and ATC.
     #[test]
     fn the_decoded_names_are_format_all() {
         for (value, name) in crate::TEXTURE_FORMATS {
@@ -122,7 +122,12 @@ mod tests {
                 }
             }
         }
-        assert_eq!(Formats::DECODED.iter().count(), Format::ALL.len());
+        assert_eq!(Formats::DECODED.iter().count(), 44);
+        let values: Vec<_> = Formats::DECODED
+            .iter()
+            .map(Format::texture_format)
+            .collect();
+        assert!(values.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(Formats::decoded("ASTC_RGBA_8x8"), Ok(Format::AstcRgba8x8));
     }
 
@@ -130,8 +135,8 @@ mod tests {
     fn a_name_is_decoded_known_or_unknown() {
         assert_eq!(Formats::decoded("RGB565"), Ok(Format::Rgb565));
         assert_eq!(Formats::decoded("ETC2_RGBA8"), Ok(Format::Etc2Rgba8));
+        assert_eq!(Formats::decoded("PVRTC_RGB2"), Ok(Format::PvrtcRgb2));
         // UnityPy names it; this crate does not decode it.
-        assert_eq!(Formats::decoded("PVRTC_RGB2"), Err(true));
         assert_eq!(Formats::decoded("ARGBFloat"), Err(true));
         // Names are UnityPy's, case and all.
         assert_eq!(Formats::decoded("rgb565"), Err(false));

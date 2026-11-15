@@ -1,13 +1,14 @@
 //! The `texture` target's check: a texture's fields and data
 //! (`unityrs_testkit::fuzz::TextureCase`) through `unityrs-texture`'s
-//! `select` and `decode`, as the batch engine runs them
+//! `select` and `decode_in`, as the batch engine runs them
 //! (`docs/plans/extract.md` E15, E18, E59, E66), under the memory bound
 //! ([`crate::MEMORY`]) or a meter of about the decode's charge.
 //!
-//! A format outside the thirty-six the crate decodes (the five version 1
-//! exports, the rest of Pillow's raw and `bcn` formats, the ETC and EAC
-//! formats, and the ASTC LDR formats) decodes as one of them, so every
-//! input reaches a decoder. Besides a panic (libFuzzer's hook aborts at it,
+//! A format outside the forty-two byte-independent formats the crate decodes
+//! (the five version 1 exports, the rest of Pillow's raw and `bcn` formats,
+//! the ETC and EAC formats, the ASTC LDR formats, PVRTC and ATC) decodes as
+//! one of them, and the two CRN formats as plain DXT1 or DXT5 (the `crunch`
+//! target checks CRN streams), so every input reaches a decoder. Besides a panic (libFuzzer's hook aborts at it,
 //! before the decoder's containment can catch it), a finding is: a
 //! selection that exports a format the texture does not have; a decode
 //! whose answer is not its plan's, but for the meter's refusal of a charge
@@ -74,6 +75,13 @@ pub fn check(input: &[u8]) {
     let format = Format::from_texture_format(case.format)
         .or_else(|| Format::ALL.get(any).copied())
         .unwrap_or(Format::Rgba32);
+    // Keep plan equality byte-independent; the crunch target validates CRN
+    // streams. Platform transforms still run on the mapped plain blocks.
+    let format = match format {
+        Format::Dxt1Crunched => Format::Dxt1,
+        Format::Dxt5Crunched => Format::Dxt5,
+        other => other,
+    };
     let fields = TextureFields {
         texture_format: format.texture_format(),
         width: case.width,
@@ -105,8 +113,6 @@ pub fn check(input: &[u8]) {
         (Err(DecodeError::Charge(ChargeError::Limit(_))), Ok(p)) => {
             assert!(limit < p.peak_charge(), "refused within the charge");
         }
-        // A length-only crunch plan can succeed before content validation.
-        (Err(DecodeError::Crunch(_)), Ok(_)) if format.is_crunched() => {}
         (got, planned) => assert_eq!(
             got.map(|_| ()),
             planned.map(|_| ()),

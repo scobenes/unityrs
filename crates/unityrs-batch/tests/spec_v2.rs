@@ -42,6 +42,10 @@ fn formats_name_any_decoded_format_in_any_order() {
             "RGB565",
             "DXT1",
             "ETC2_RGBA8",
+            "PVRTC_RGB2",
+            "PVRTC_RGBA4",
+            "ATC_RGB4",
+            "ATC_RGBA8",
             "ASTC_RGB_6x6",
             "DXT1Crunched",
             "DXT5Crunched"
@@ -53,6 +57,10 @@ fn formats_name_any_decoded_format_in_any_order() {
         .with(Format::Rgb565)
         .with(Format::Dxt1)
         .with(Format::Etc2Rgba8)
+        .with(Format::PvrtcRgb2)
+        .with(Format::PvrtcRgba4)
+        .with(Format::AtcRgb4)
+        .with(Format::AtcRgba8)
         .with(Format::AstcRgb6x6)
         .with(Format::Dxt1Crunched)
         .with(Format::Dxt5Crunched);
@@ -73,7 +81,7 @@ fn each_refusal_formats_adds() {
     // One of UnityPy's names that this binary does not decode: `range`
     // too (the stricter rule), never a skip at run time.
     assert_eq!(
-        formats(json!(["DXT1", "PVRTC_RGB2"])),
+        formats(json!(["DXT1", "ETC_RGB4_3DS"])),
         "range /outputs/formats/1"
     );
     assert_eq!(

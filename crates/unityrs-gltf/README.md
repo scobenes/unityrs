@@ -2,9 +2,10 @@
 
 The crate supplies an editable glTF-space model, `collect`, a strict
 `Profile`, `layout`, and `write_glb`. Collection uses core, scene, mesh and
-meshdecode; it does not depend on the CLI or a material mapper. Material slots currently serialize their name, extras and glTF defaults.
-Images are already-encoded PNG/JPEG owners; no image encoding dependency or
-second encoding is needed. A bounded metadata walker mirrors Khronos
+meshdecode, texture and imageio; it does not depend on the CLI.
+`collect` uses `UnlitExtras`; `collect_with_mapper` accepts an injected
+`MaterialMapper`, including `CorePbr`. Images are charged PNG/JPEG owners.
+Collected Texture2Ds are decoded and encoded once per source identity. A bounded metadata walker mirrors Khronos
 glTF-Validator 2.0.0-dev.3.10 in both modes, without allocating or decoding
 pixels. PNG chunks before IDAT must fit, including the CRC slots; a complete
 13-byte IHDR must precede IDAT. CRC values and IHDR field values are not
@@ -96,7 +97,7 @@ rounded payload bits, including NaN and infinity, and may fail validation;
 JSON itself remains valid. Morph deltas are never unit-normalized.
 
 The model already uses glTF coordinates and UVs. `collect` performs the Unity
-conversion described below. Material mapping is PR 7; the CLI is PR 8.
+conversion described below. Material mapping is described below; the CLI is PR 8.
 
 Writer tests use hand-built scenes; collector tests use `testkit::scene3d`. The committed empty, triangle and skinned
 sparse-morph GLBs are byte goldens; `UNITYRS_GLTF_UPDATE_GOLDENS=1 cargo test
@@ -124,9 +125,9 @@ The validator is a CI tool, never a library dependency or release artifact.
 
 
 `collect(&env, &graph, &profile, &meter)` returns a `Scene`; write it with
-`write_glb(&scene, &profile.options(), &meter, &mut sink)`. No material is bound
-in this PR, so primitives use glTF's default material. Shader rules and material
-allowlists are typed and retained for PR 7's mapper.
+`write_glb(&scene, &profile.options(), &meter, &mut sink)`. Pass `&CorePbr` to
+`collect_with_mapper` for core PBR mapping. A missing material keeps the
+primitive with glTF's default material and a counted diagnostic.
 
 Collection mirrors X on positions, normals, tangent xyz and morph deltas,
 reverses every triangle from (a,b,c) to (c,b,a), flips every UV to (u,1-v),
@@ -238,9 +239,9 @@ Parsing uses charged fallible owners and has no input-sized serde allocation.
 | `profile_version` | integer, exactly 1 | required |
 | `root_naming` | `name`, `path_id` (GameObject id for root names) | `name` |
 | `layer_skips` | array of integer Unity layers, 0–31 | `[]` |
-| `shader_rules` | object with `drawable`, `additive`, `skip`, each an array of string name patterns; reserved for PR 7 | empty lists |
+| `shader_rules` | object with `drawable`, `additive`, `skip`, each an array of bytewise glob name patterns (`*` and `?`) | empty lists |
 | `inactive` | `skip`, `include`, `include_hidden` | `skip` |
-| `material_property_allowlist` | array of strings; reserved for PR 7 | `[]` |
+| `material_property_allowlist` | array of exact saved-property names | `[]` |
 | `scene_roots` | array of exact root names or slash-separated paths; an empty list selects every root | `[]` |
 | `exclusions` | array of exact node names or slash-separated paths | `[]` |
 | `builtin` | `placeholder`, `resolve`, `procedural` | `placeholder` |
@@ -266,5 +267,167 @@ checks Unity-space expected arrays after f32 conversion, and checks orientation.
 At least 99% of eligible triangles must agree with the mean vertex normal;
 area must exceed 1e-12 times the squared POSITION-bounds diagonal. No normals or
 no eligible triangles is reported as N/A. CI runs its Python self-tests and
-Rust collect→GLB checks, including replay of pinned L6 position arrays. Material
-and normal-map/image fixtures join in PR 7; Editor semantic rows remain planned.
+Rust collect→GLB checks, including replay of pinned L6 position arrays. Material and normal-map/image fixtures check the mappings and image orientation;
+Editor semantic rows remain planned.
+
+
+## Materials
+
+Material mapping keeps base colour factors and shader metadata. `UnlitExtras`
+emits `KHR_materials_unlit` and saves every present allowlisted colour, float,
+integer and texture property as a string extra. Texture extras retain the PPtr,
+scale and offset. A repeated saved key takes its last value, including a null
+texture. FastPropertyName keys use their `name`. Empty allowlists copy no saved
+properties. Mapping reasons remain visible regardless of `extras_naming`.
+
+`CorePbr` recognizes `Standard`, `Standard (Specular setup)` and
+`Universal Render Pipeline/Lit`. Standard prefers `_Color`/`_MainTex`/`_Glossiness`;
+URP prefers `_BaseColor`/`_BaseMap`/`_Smoothness`, with aliases as fallback.
+Null texture pointers fall through to populated aliases. Scalar metallic defaults
+to zero, smoothness to 0.5; roughness is `1 - smoothness`.
+
+Saved `_Color`, `_BaseColor` and `_EmissionColor` RGB values are sRGB encoded.
+Factors use the exact EOTF: `c / 12.92` for `c <= 0.04045`, otherwise
+`((c + 0.055) / 1.055)^2.4`. Alpha remains linear and unchanged. Texture
+`m_ColorSpace` is 0 for linear, 1 for sRGB. Base-colour and emissive images are
+encoded as sRGB for glTF; all other slots are linear. When source and slot
+encodings differ, RGB is converted with that EOTF or its exact inverse, rounded
+to the nearest 8-bit value; alpha is unchanged. An absent flag assumes the
+slot's native encoding. Image cache identity includes source file/path id,
+conversion usage (including opacity-alpha override), smoothness channel/scale,
+metallic override and any albedo-alpha
+source, so incompatible slot conversions cannot share pixels.
+
+Normal maps use Unity's `UnpackNormalmapRGorAG`: `x = (R*A)*2-1`, `y = G*2-1`,
+`z = sqrt(max(0,1-x*x-y*y))`, then re-encode XYZ to linear RGB. This handles
+DXT5nm, BC5 and RGB maps (implicit alpha 1). Unity and glTF both use +Y tangent
+normals: green's direction stays unchanged; the V flip is paired with tangent w.
+Standard scales XY by `_BumpScale`/`_NormalScale` before reconstructing Z,
+then bakes the resulting direction into RGB with `normalTexture.scale` 1.
+The baked scale participates in the image cache identity. URP reconstructs Z
+before scaling XY, matching glTF's `normalTexture.scale`, so its scale stays
+in that field.
+
+A `_MetallicGlossMap` becomes a linear metallicRoughness image: B is map R,
+G is `1 - map.A * _GlossMapScale` (URP uses `_Smoothness`). With
+`_SmoothnessTextureChannel == 1`, albedo alpha supplies smoothness instead
+(default white alpha 1 when the base texture is null, dangling or undecodable;
+failures are still counted and the valid metallic channel is retained).
+URP enables this channel only for opaque surfaces, even if the saved selector
+survives a switch to transparent. When enabled, the exported base-colour image
+has alpha 1: opacity comes only from the material colour alpha.
+Both factors are 1 when this map is present. Packing uses a grid of
+max(width) × max(height) across both sources, sampling each with its own wrap
+and filter. The output uses the metallic map's sampler. Different source wrap
+modes cannot both be preserved outside [0,1]; `packed_sampler_conflict` counts
+this loss. Packing and filtering a product into one image still approximates
+continuous sampling between texel centres. Standard Specular setup
+and URP `_WorkflowMode == 0` record `specular_workflow`, keep metallic 0 and
+roughness from gloss, and preserve `_SpecColor`/`_SpecGlossMap` as raw extras;
+no metallic approximation of the specular colour is attempted.
+Occlusion copies source G to output R in a separately cached linear image and
+uses `_OcclusionStrength` as `strength`.
+
+Emission is enabled only by the exact `_EMISSION` keyword in `m_ShaderKeywords`
+or the 2021+ `m_ValidKeywords` array. After colour linearization, HDR emission
+is divided by its largest component when above 1; that maximum becomes
+`KHR_materials_emissive_strength.emissiveStrength`, declared in `extensionsUsed`.
+Components are never individually clipped to 1. Nonfinite values use defaults
+with `invalid_material_value`; bounded factors are clamped with
+`material_value_clamped`.
+
+Standard `_Mode` 0 selects OPAQUE, 1 MASK, 2/3 BLEND. URP `_Surface == 1`
+selects BLEND; otherwise `_AlphaClip == 1` selects MASK, otherwise OPAQUE.
+Transparent URP with `_AlphaClip == 1` exports BLEND and counts
+`alpha_clip_dropped`, preserving `_Cutoff` (default 0.5) in material extras;
+glTF cannot combine BLEND with a cutoff.
+`_Cutoff` is only the threshold (default 0.5), and a queue override does not
+change either shader's coverage mode. `_Cull == 0` is double-sided.
+Case-sensitive shader rules keep their precedence: `skip` omits the submesh,
+`additive` selects BLEND and permits PBR, and `drawable` permits custom PBR.
+Unknown or missing/malformed shaders fall back to unlit with `unknown_shader`.
+Built-in Unlit/Texture, Unlit/Transparent and Unlit/Transparent Cutout use a
+white factor, ignoring stale saved `_Color` while preserving it in extras.
+Unlit/Color continues to use `_Color`.
+
+ST comes from `m_Scale`/`m_Offset`, with explicit `_MainTex_ST`/`_BaseMap_ST`
+overrides. Standard and URP Lit share the base ST across normal, occlusion,
+emission and metallic slots, even when the base texture is null; custom shaders
+retain per-slot ST. `KHR_texture_transform` keeps scale `(sx,sy)` and sets offset
+`(ox,1-sy-oy)` after `v = 1-v`, including negative scale. All slots use
+TEXCOORD_0; missing UVs omit maps with `missing_texture_uv`. Materials used on
+both UV-bearing and UV-less geometry get separate bindings.
+
+Samplers are shared per `(wrap U, wrap V, filter)`: Repeat 10497, Clamp 33071,
+Mirror 33648. MirrorOnce exports as Mirror with counted `mirror_once`.
+Point uses NEAREST (NEAREST_MIPMAP_NEAREST with source mips); Bilinear uses
+LINEAR (LINEAR_MIPMAP_NEAREST with mips); Trilinear uses LINEAR_MIPMAP_LINEAR.
+The exporter embeds mip 0; viewers generate the mip chain when needed.
+Legacy `m_WrapMode` is supported when per-axis wrap fields are absent.
+
+Vertex colours under Standard, Standard (Specular setup), URP Lit, URP Simple
+Lit, URP Unlit, Unlit/Texture, Unlit/Color, Unlit/Transparent and
+Unlit/Transparent Cutout are retained as `_COLOR_0`, with a counted
+`vertex_colors_ignored` per affected primitive. These shaders do not consume
+vertex colours. Known consumers (for example Sprites/Default) and unknown
+shaders keep COLOR_0: an unknown shader provides no evidence for suppressing it.
+Accessor storage still shares across materials with different colour semantics.
+
+Modern batched submesh i uses `m_Materials[i-firstSubMesh]`. Legacy
+`m_Materials[k]` pairs with `m_SubsetIndices[k]`, including permutations:
+subsets [2,0,1] and materials [A,B,C] map submesh 2 to A. Under `keep_combined`,
+the first selected renderer owning a submesh supplies its binding. Submeshes
+beyond the material list remain as default-material geometry with
+`submesh_without_material`, matching UnityPy's exporter retention; Unity itself
+does not draw these submeshes. Null/unresolved material pointers instead count
+`missing_material`. Procedural builtins apply the same binding policy.
+
+Texture fetching is shared with NGUI: inline bytes, own bundle rows (inner to
+outer, candidate order, last matching row first), then Environment resources.
+Transient candidate names and normalized lookup keys use charged fallible Vecs
+and borrowed lookup APIs, avoiding `Bytes::from_owner` for lookup work (CR10).
+Successful resolver loads promote their existing name vector into a fallible
+shared owner (`triomphe`); computed names and their slices retain charges
+without an infallible `Bytes` owner allocation.
+The enabled `streamed_texture_host_allocation_refusals` sweeps host refusals as
+well as budget refusals, including suffixed candidate names.
+
+Every format in `Formats::DECODED` is eligible. Unsupported formats/platforms,
+missing or malformed data omit only the affected slot with a counted reason.
+Selection uses the texture's own file version. Planning and decoding use its
+platform fields too: Switch GOB deswizzling, RGB promotion and crop, and Xbox
+byte swapping before unpacking. `tests/material_platform.rs` checks the
+embedded pixels and malformed-layout omissions.
+Before any output allocation/work charge, the decode plan checks data length,
+signed dimensions, padded pixel count, raw row width and crop bounds. A header
+beyond 2^28 padded pixels or the decoder's static row/crop caps is implausible
+source data (`texture_too_large`), even with only five data bytes. Empty data
+counts `missing_texture`; short/invalid data counts `texture_malformed`.
+These static bounds are not runtime resource refusals. After a valid plan, a
+meter/work/allocator refusal during decode, conversion or PNG encoding fails
+the unit and retains its provenance; fetching/parsing resource refusals also
+propagate. One renderer's, material's or texture's malformed data never fails
+the unit. Malformed materials roll back their newly embedded resources.
+
+Shader references: [UnityStandardInput.cginc](https://github.com/TwoTailsGames/Unity-Built-in-Shaders/blob/master/CGIncludes/UnityStandardInput.cginc),
+[UnityCG.cginc](https://github.com/TwoTailsGames/Unity-Built-in-Shaders/blob/master/CGIncludes/UnityCG.cginc),
+[Standard normal scaling](https://github.com/TwoTailsGames/Unity-Built-in-Shaders/blob/master/CGIncludes/UnityStandardUtils.cginc),
+[URP normal scaling](https://github.com/Unity-Technologies/Graphics/blob/master/Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl),
+[URP metallic/specular sampling](https://github.com/Unity-Technologies/Graphics/blob/master/Packages/com.unity.render-pipelines.universal/Shaders/Utils/MetallicSpecGloss.hlsl),
+[URP base UVs](https://github.com/Unity-Technologies/Graphics/blob/master/Packages/com.unity.render-pipelines.universal/Shaders/LitForwardPass.hlsl),
+and the [glTF material specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#materials).
+
+PNGs use the existing imageio encoder. The output allocation and its charge
+transfer directly into the image table; decoded pixels and conversion scratch drop before the next
+texture. Images are named `{texture name or property key}.png`. There is no
+whole-BIN staging or uncharged image copy. Source caches retain mapping reasons
+and replay them once for each affected renderer, including later cache hits.
+Reasons appear in collection reports, asset extras and node extras; material
+extras also hold mapping skips when a material exists.
+
+The synthetic material tests cover collect → GLB → the pinned validator,
+independent PNG unfiltering and pixels, ST lookup after the V flip, normal-map
+tangent handedness, alias precedence, shader rules, missing/malformed sources,
+cross-file identity and sharing, batch offsets and per-allocation refusals.
+Validator-dependent checks print a skip when the executable is not configured;
+CI requires it. Editor-built Standard/URP semantic verification remains pending.

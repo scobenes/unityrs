@@ -105,6 +105,7 @@ pub fn rich(m: &Arc<Meter>) -> Result<Scene, GltfError> {
         s.materials.push(Material {
             name: Some(text(m, if id == 0 { "first" } else { "second" })?),
             extras: MeteredVec::new(m),
+            ..Material::new(m)
         })?;
         let mut p = primitive(m)?;
         p.attributes = array(
@@ -160,7 +161,10 @@ pub fn rich(m: &Arc<Meter>) -> Result<Scene, GltfError> {
         mime: Mime::Png,
         bytes: array(m, include_bytes!("../goldens/pixel.png"))?,
     })?;
-    s.textures.push(Texture { image: 0 })?;
+    s.textures.push(Texture {
+        image: 0,
+        sampler: None,
+    })?;
     s.extras.push((text(m, "source")?, text(m, "synthetic")?))?;
     Ok(s)
 }

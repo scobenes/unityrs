@@ -1,4 +1,5 @@
 //! All indices refer to the corresponding scene table, never to layout IDs.
+use crate::Material;
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
 
@@ -38,6 +39,7 @@ pub struct Scene {
     pub materials: MeteredVec<Material>,
     pub images: MeteredVec<Image>,
     pub textures: MeteredVec<Texture>,
+    pub samplers: MeteredVec<Sampler>,
     pub extras: Extras,
     pub collection_issues: MeteredVec<CollectionIssue>,
     /// (Collected weight accessor, original weight accessor) pairs. Analysis
@@ -59,6 +61,7 @@ impl Scene {
             materials: MeteredVec::new(meter),
             images: MeteredVec::new(meter),
             textures: MeteredVec::new(meter),
+            samplers: MeteredVec::new(meter),
             extras: MeteredVec::new(meter),
             collection_issues: MeteredVec::new(meter),
             collected_weight_sources: MeteredVec::new(meter),
@@ -113,6 +116,7 @@ pub enum Attribute {
     Tangent,
     TexCoord(u8),
     Color,
+    CustomColor,
     Joints,
     Weights,
 }
@@ -124,7 +128,7 @@ impl Attribute {
             Self::Normal => Kind::Normal,
             Self::Tangent => Kind::Tangent,
             Self::TexCoord(_) => Kind::TexCoord,
-            Self::Color => Kind::Color,
+            Self::Color | Self::CustomColor => Kind::Color,
             Self::Joints => Kind::Joints,
             Self::Weights => Kind::Weights,
         }
@@ -255,13 +259,6 @@ pub struct Skin {
     pub skeleton: Option<usize>,
 }
 const _: () = crate::send_sync::<Skin>();
-/// Opaque material slot for the later material mapper; writes name and extras.
-#[derive(Debug)]
-pub struct Material {
-    pub name: Option<Text>,
-    pub extras: Extras,
-}
-const _: () = crate::send_sync::<Material>();
 /// Already-encoded image. Its charged bytes stay alive through layout and write.
 #[derive(Debug)]
 pub struct Image {
@@ -277,12 +274,22 @@ pub enum Mime {
     Jpeg,
 }
 const _: () = crate::send_sync::<Mime>();
-/// Texture slot using glTF's default sampler.
+/// Texture slot with an optional explicit sampler.
 #[derive(Debug)]
 pub struct Texture {
     pub image: usize,
+    pub sampler: Option<usize>,
 }
 const _: () = crate::send_sync::<Texture>();
+/// glTF sampler constants, shared by identical source wrap/filter settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sampler {
+    pub wrap_s: u32,
+    pub wrap_t: u32,
+    pub mag_filter: u32,
+    pub min_filter: u32,
+}
+const _: () = crate::send_sync::<Sampler>();
 /// Writer policy. Raw mode can produce validator errors, while keeping JSON valid.
 #[derive(Debug, Clone, Copy)]
 pub struct Options {

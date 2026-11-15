@@ -7,24 +7,24 @@ each with the object UnityPy's reader made of it (`File.read_files`, files/File.
 assigns): UnityPy's `files` dict keeps one object per path, a repeated path's last in its first row's place, and 4.3
 walks the rows. From the rows it builds 4.3's registry, as the core keeps it: each top-level bundle in load order,
 each row in directory order under its registry key (`simplify_name`), a top-level row's own name a key at its place,
-a bundle's entries after it (Lazy difference (b)). Inside a reached bundle every row but a bundle is a key, whatever
-its kind, a WebFile among them; a bundle there is no key and its entries are registered; no WebFile's entries are
+a container's entries after it (Lazy difference (b)). Inside a reached container every row but a supported
+container is a key, a refused WebFile among them; a supported container's entries are registered
 (the core's reach, crates/unityrs-core/src/env/registry/reach.rs). A key's value is its last registration. Then it
-is sealed: `find_file` answers from that registry, a bundle's key not found (the core's `NotFound`) and a WebFile's
-`decode_error`, `unsupported` (version 1's core refuses to open a WebFile), and UnityPy's lookups past its registry
+is sealed: `find_file` answers from that registry, a container's key not found (the core's `NotFound`) and a refused WebFile's
+`decode_error`, `unsupported` (the first name length is below -1, Tier U), and UnityPy's lookups past its registry
 (`find_file`'s check of `<path>/<name>`, which with an empty `path` is the host's root, and the files `load_file`
 finds relative to the working directory, which `load_dependencies` asks for) are replaced by a miss, and its
 filesystem by one that refuses every call. So a name the view does not register is not found, whatever is on the
 host; a CAB whose key a later bundle row takes is not found either, where UnityPy's `get_cab`, which gives a bundle
-no key, would answer with it; and one a later WebFile row takes fails `unsupported`.
+no key, would answer with it; and one a later refused WebFile row takes fails `unsupported`.
 
 **Pointers** are dereferenced by UnityPy's `PPtr.deref` (classes/PPtr.py:43-90), which looks in the reading file's
 own bundle, then `find_file`, the registry above. Its failures are batch.md 2.7's `DerefError`s. A null pointer,
 an `m_FileID` whose index `m_FileID - 1` is past the externals or below their start (a negative index counts from
 the end, as Python's list and the core's `external_index` do), a missing object, a raw or bundle row of the
-reading file's own bundle and a raw row the registry answers are `bad_pointer`; a bundle the registry answers, and a
-CAB the view does not register, are `outside_view(<cab>)`; a WebFile row, of the reading file's own bundle or the
-registry's, is `decode_error`, `unsupported` (version 1's core refuses to open one).
+reading file's own bundle and a raw row the registry answers are `bad_pointer`; a container the registry answers,
+and a CAB the view does not register, are `outside_view(<cab>)`; a refused WebFile row, of the reading file's own
+bundle or the registry's, is `decode_error`, `unsupported` (the first name length is below -1, Tier U).
 
 **Object reads** go through UnityPy (UnityPyBoost's reader, or UnityPy's own for an object of no bytes): a read
 that runs out or meets a value of the wrong shape is a `ParseError`'s `Read`, `decode_error` with the code `read`.
@@ -51,11 +51,12 @@ no answer depends on the order objects are read in.
 **A sheet's data** (section 5) is its `image_data`, else the `m_StreamData` resource that 4.3's own-chain procedure
 finds: the spec's lookup, written here over the rows kept at the load and UnityPy's candidate names
 (helpers/ResourceReader.py:10-33), reading the row with UnityPy's own `_get_resource_data`; the view's registry, built
-from the rows, only when no own row answers, each candidate in order answered by its key's value, a bundle passing
-to the next candidate and a WebFile failing the read, `decode_error`, `unsupported` (the core's `resource_try`,
+from the rows, only when no own row answers, each candidate in order answered by its key's value, a supported
+container passing to the next candidate and a refused WebFile failing the read, `decode_error`, `unsupported`
+(the core's `resource_try`,
 crates/unityrs-core/src/env/resource_data.rs), where UnityPy's `get_cab`, which gives a bundle no key, would answer
-with an earlier row. The own chain meets no WebFile row: the input's own rows are the only ones it walks, and an
-input with one is out of scope (`Divergence`). The bytes go to UnityPy's
+with an earlier row. The own chain meets no refused WebFile row: an input with one at top level is out of scope
+(`Divergence`). The bytes go to UnityPy's
 `parse_image_data`, as `Texture2D.image` gives them to it, so the image is UnityPy's and Pillow's, after section 3's
 answers 5 to 10 in their order. Answer 11, the PNG encoder's width cap, is the texture output's own (`encoder_refusal`,
 asked where a texture's PNG would be made), not the image's: a sheet too wide to write is still cut.
@@ -74,7 +75,7 @@ from UnityPy.enums import BuildTarget, ClassIDType, TextureFormat
 from UnityPy.environment import simplify_name
 from UnityPy.export import Texture2DConverter
 from UnityPy.files import BundleFile, File, SerializedFile, WebFile
-from UnityPy.helpers import TextureSwizzler
+from UnityPy.helpers import ImportHelper, TextureSwizzler
 from UnityPy.helpers.ResourceReader import _get_resource_data
 from UnityPy.helpers.TypeTreeHelper import FUNCTION_READ_MAP
 from UnityPy.helpers.TypeTreeNode import TypeTreeNode
@@ -117,8 +118,8 @@ class Divergence(Exception):
     """A case the reference knowingly does not model, where the engine and UnityPy part: not a `Failure`, so it
     propagates from `cut` unclassified, and any harness running the reference sees an exception, not a record. Two
     cases raise it: a view member or input that UnityPy does not parse as a `BundleFile` (`load`), which the engine
-    fails at its peek or at selection (`not_a_bundle`, or the open's code: a WebFile's `unsupported`), where UnityPy
-    goes on; and an input with a top-level WebFile row (`ngui_cutter.cut`)."""
+    fails at its peek or at selection (`not_a_bundle`, or the open's code), where UnityPy goes on; and an input
+    with a top-level refused WebFile row (`ngui_cutter.cut`)."""
 
 
 class _Sealed:
@@ -153,12 +154,35 @@ def _recording(read_files):
     return wrapper
 
 
+class UnsupportedWebFile(File):
+    """Keep a Tier U row opaque: a name length below -1 can rewind UnityPy's directory loop forever."""
+
+
+def _refusing(parse_file):
+    """Defer the core's Tier U WebFile refusal to the row's use, as its lazy entry parser does.
+
+    The fixture builder corrupts the first name length in an otherwise plain WebFile. Inspect only that
+    field, before UnityPy can rewind (files/WebFile.py:45-56); every supported row still uses UnityPy.
+    """
+    def wrapper(reader, parent, name, typ=None, is_dependency=False):
+        data = reader.bytes
+        if (data.startswith(b"UnityWebData1.0\0") and len(data) >= 32
+                and struct.unpack_from("<i", data, 16)[0] > 20
+                and struct.unpack_from("<i", data, 28)[0] < -1):
+            return UnsupportedWebFile(parent=parent, name=name, is_dependency=is_dependency)
+        return parse_file(reader, parent, name, typ=typ, is_dependency=is_dependency)
+
+    return wrapper
+
+
 def load(view: dict[str, bytes], input_id: str):
     """The input's bundle, in an Environment of its view, its containers' rows kept, sealed; `Divergence` for a
     view member or the input that UnityPy does not parse as a bundle."""
     env = UnityPy.Environment(path="")
     original = File.read_files
+    parse_file = ImportHelper.parse_file
     File.read_files = _recording(original)
+    ImportHelper.parse_file = _refusing(parse_file)
     loaded = []
     try:
         for bid in sorted((b for b in view if b != input_id), key=bytewise):
@@ -167,6 +191,7 @@ def load(view: dict[str, bytes], input_id: str):
         loaded.append((input_id, bundle))
     finally:
         File.read_files = original
+        ImportHelper.parse_file = parse_file
     for bid, f in loaded:
         if not isinstance(f, BundleFile):
             raise Divergence(f"{bid}: UnityPy gives a {type(f).__name__}, which the engine fails (not a bundle)")
@@ -184,16 +209,16 @@ def rows(container) -> list:
 
 def registry(loaded) -> dict:
     """4.3's registry of the loaded top-level bundles, in load order: every row by its registry key, a key's value
-    its last registration (the core's greatest rank). A top-level row's own name is a key, a bundle's entries
-    registered after it; inside a reached bundle every row but a bundle is a key, a WebFile among them, and a bundle
-    there is no key, its entries registered. No WebFile's entries are registered."""
+    its last registration (the core's greatest rank). A top-level row's own name is a key, a container's entries
+    registered after it; inside a reached container every row but a supported container is a key, a refused WebFile
+    among them. Supported bundles and WebFiles are traversed; refused WebFiles remain opaque."""
     keys = {}
 
     def walk(bundle, top: bool):
         for path, f in rows(bundle):
-            if top or not isinstance(f, BundleFile):
+            if top or not isinstance(f, (BundleFile, WebFile)):
                 keys[simplify_name(path)] = f
-            if isinstance(f, BundleFile):
+            if isinstance(f, (BundleFile, WebFile)):
                 walk(f, False)
 
     for f in loaded:
@@ -203,12 +228,12 @@ def registry(loaded) -> dict:
 
 
 def found(env, name: str):
-    """`find_file`, sealed to 4.3's registry: its key's value; None for a bundle (the core's `NotFound`); a WebFile's
-    failure (`unsupported`: version 1's core refuses to open one)."""
+    """`find_file`, sealed to 4.3's registry: its key's value; None for a container (the core's `NotFound`);
+    a refused WebFile's failure (`unsupported`: first name length below -1)."""
     f = getattr(env, REGISTRY).get(simplify_name(name))
-    if isinstance(f, WebFile):
+    if isinstance(f, UnsupportedWebFile):
         raise Failure("decode_error", "unsupported")
-    return None if isinstance(f, BundleFile) else f
+    return None if isinstance(f, (BundleFile, WebFile)) else f
 
 
 def typed(obj):
@@ -305,12 +330,12 @@ def sibling(file_id: int, assets_file):
 
 
 def deref(file_id: int, path_id: int, assets_file):
-    """The object a pointer of `assets_file` names, or its `DerefError` as a `Failure`: a WebFile sibling, as a
-    WebFile the registry answers (`found`), `decode_error`, `unsupported`."""
+    """The object a pointer of `assets_file` names, or its `DerefError` as a `Failure`: a refused WebFile sibling,
+    as a refused WebFile the registry answers (`found`), `decode_error`, `unsupported`."""
     n = len(assets_file.externals)
     if path_id == 0 or (file_id != 0 and not -n <= file_id - 1 < n):
         raise Failure("bad_pointer")  # Null, FileIdBelowStart, FileIdPastEnd
-    if isinstance(sibling(file_id, assets_file), WebFile):
+    if isinstance(sibling(file_id, assets_file), UnsupportedWebFile):
         raise Failure("decode_error", "unsupported")
     try:
         return PPtr(m_FileID=file_id, m_PathID=path_id, assetsfile=assets_file).deref()
@@ -472,23 +497,23 @@ def candidates(path: str) -> list[str]:
 
 def _row(f, offset: int, size: int) -> bytes | None:
     """A matched row: a raw one's bytes, a SerializedFile's failure (`decode_error`, `malformed`: the core's
-    `not_a_reader`), a WebFile's (`decode_error`, `unsupported`: version 1's core refuses to open one), a bundle's
+    `not_a_reader`), a refused WebFile's (`decode_error`, `unsupported`: first name length below -1), a container's
     None."""
     if isinstance(f, SerializedFile):
         raise Failure("decode_error", "malformed")
-    if isinstance(f, WebFile):
+    if isinstance(f, UnsupportedWebFile):
         raise Failure("decode_error", "unsupported")
-    if isinstance(f, BundleFile):
+    if isinstance(f, (BundleFile, WebFile)):
         return None
     return bytes(_get_resource_data(f, offset, size))
 
 
 def resource(sf: SerializedFile, path: str, offset: int, size: int) -> bytes:
     """4.3's own-chain procedure: for each candidate in order, the containers that hold `sf`, innermost first,
-    each one's matching top-level directory rows (by registry key) last to first, a bundle row passed over; then
-    the view's registry (`batch.md` 2.6 step 8), each candidate in order by its key's value, a bundle passing to the
-    next candidate and a WebFile failing the read (`decode_error`, `unsupported`); else `outside_view(<the path as
-    read>)`."""
+    each one's matching top-level directory rows (by registry key) last to first, a supported container passed
+    over; then the view's registry (`batch.md` 2.6 step 8), each candidate in order by its key's value, a supported
+    container passing to the next candidate and a refused WebFile failing the read (`decode_error`,
+    `unsupported`); else `outside_view(<the path as read>)`."""
     for name in candidates(path):
         key = simplify_name(name)
         container = sf.parent

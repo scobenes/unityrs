@@ -6,7 +6,7 @@
 //! `:282`), so its `str` can hold any bytes, and the canonical dump writes a
 //! name that is not valid UTF-8 as hex (`docs/CANONICAL_DUMP.md` section 4.2).
 //!
-//! **Zero-copy.** A `RawStr` is a [`Bytes`]: a string read from a file is a
+//! **Zero-copy.** An input `RawStr` borrows [`Bytes`]: a string read from a file is a
 //! slice of the file's buffer ([`RawStr::from_shared`]), never a copy, so a
 //! typetree's node names (each row naming an offset in one string buffer),
 //! metadata strings and `Value::Str` cost a handle each, whatever their
@@ -26,24 +26,39 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use crate::budget::charged_bytes;
-use crate::limits::{ChargeError, Meter, heap_cost, reserve_exact};
+use crate::budget::OWNER_COST;
+use crate::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost, reserve_exact};
 
-/// Bytes UnityPy holds as a `str`. Valid UTF-8 or not.
-#[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RawStr(Bytes);
+/// Bytes UnityPy holds as a `str`. Valid UTF-8 or not; computed strings use
+/// fallible shared storage, while input strings borrow their `Bytes`.
+#[derive(Clone)]
+pub struct RawStr(Storage);
+
+#[derive(Clone)]
+enum Storage {
+    Bytes(Bytes),
+    Computed {
+        owner: triomphe::Arc<Computed>,
+        start: usize,
+        end: usize,
+    },
+}
+struct Computed {
+    bytes: Vec<u8>,
+    _charge: Charge,
+}
 
 impl RawStr {
     /// Wraps bytes (a `Vec`, a boxed slice, a static slice or a shared buffer).
     #[must_use]
     pub fn new(bytes: impl Into<Bytes>) -> Self {
-        Self(bytes.into())
+        Self(Storage::Bytes(bytes.into()))
     }
 
     /// A slice of a file's shared buffer, kept without a copy.
     #[must_use]
     pub fn from_shared(bytes: Bytes) -> Self {
-        Self(bytes)
+        Self(Storage::Bytes(bytes))
     }
 
     /// A string the core computes from an input (a decimal common-string
@@ -71,94 +86,167 @@ impl RawStr {
         for p in parts {
             buf.extend_from_slice(p);
         }
-        Ok(Self(charged_bytes(buf, charge)?))
+        Self::from_metered(MeteredVec::from_charged_parts(buf, charge)?, meter)
+    }
+
+    /// Keep computed bytes and their charge in a fallibly allocated shared
+    /// owner. Cloning or slicing the resulting name never allocates.
+    pub(crate) fn from_metered(
+        bytes: MeteredVec<u8>,
+        meter: &Arc<Meter>,
+    ) -> Result<Self, ChargeError> {
+        let (bytes, mut charge) = bytes.into_parts();
+        let end = bytes.len();
+        charge.grow(OWNER_COST)?;
+        let owner = triomphe::Arc::try_new(Computed {
+            bytes,
+            _charge: charge,
+        })
+        .map_err(|_| ChargeError::Allocator(meter.allocator_refused(OWNER_COST)))?;
+        Ok(Self(Storage::Computed {
+            owner,
+            start: 0,
+            end,
+        }))
+    }
+
+    /// A borrowed subrange of this name, preserving either shared owner.
+    pub(crate) fn slice_ref(&self, sub: &[u8]) -> Self {
+        let start = (sub.as_ptr() as usize).saturating_sub(self.as_bytes().as_ptr() as usize);
+        let end = start.saturating_add(sub.len());
+        match &self.0 {
+            Storage::Bytes(bytes) => Self::from_shared(bytes.slice(start..end)),
+            Storage::Computed {
+                owner, start: base, ..
+            } => Self(Storage::Computed {
+                owner: owner.clone(),
+                start: base + start,
+                end: base + end,
+            }),
+        }
     }
 
     /// A static string (a common string, a constant name).
     #[must_use]
     pub const fn from_static(bytes: &'static [u8]) -> Self {
-        Self(Bytes::from_static(bytes))
+        Self(Storage::Bytes(Bytes::from_static(bytes)))
     }
 
     /// The bytes, as read.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        &self.0
+        match &self.0 {
+            Storage::Bytes(bytes) => bytes,
+            Storage::Computed { owner, start, end } => {
+                owner.bytes.get(*start..*end).unwrap_or_default()
+            }
+        }
     }
 
     /// The string when the bytes are strict UTF-8 (overlong forms and encoded
     /// surrogates are invalid, as `CANONICAL_DUMP.md` section 3 defines it).
     #[must_use]
     pub fn to_str(&self) -> Option<&str> {
-        std::str::from_utf8(&self.0).ok()
+        std::str::from_utf8(self.as_bytes()).ok()
     }
 
     /// Length in bytes.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.as_bytes().len()
     }
 
     /// Whether the string is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.as_bytes().is_empty()
     }
 
-    /// The shared bytes, consuming the string.
+    /// The shared bytes, consuming the string. Computed strings need a
+    /// `Bytes` owner adapter here; name lookups and slices avoid that adapter.
     #[must_use]
     pub fn into_bytes(self) -> Bytes {
-        self.0
+        match self.0 {
+            Storage::Bytes(bytes) => bytes,
+            computed @ Storage::Computed { .. } => Bytes::from_owner(Self(computed)),
+        }
+    }
+}
+
+impl Default for RawStr {
+    fn default() -> Self {
+        Self::from_static(b"")
+    }
+}
+impl PartialEq for RawStr {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+impl Eq for RawStr {}
+impl std::hash::Hash for RawStr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_bytes().hash(state);
+    }
+}
+impl PartialOrd for RawStr {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for RawStr {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_bytes().cmp(other.as_bytes())
     }
 }
 
 impl fmt::Debug for RawStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "\"{}\"", self.0.escape_ascii())
+        write!(f, "\"{}\"", self.as_bytes().escape_ascii())
     }
 }
 
 impl fmt::Display for RawStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.escape_ascii())
+        write!(f, "{}", self.as_bytes().escape_ascii())
     }
 }
 
 impl AsRef<[u8]> for RawStr {
     fn as_ref(&self) -> &[u8] {
-        &self.0
+        self.as_bytes()
     }
 }
 
 impl Borrow<[u8]> for RawStr {
     fn borrow(&self) -> &[u8] {
-        &self.0
+        self.as_bytes()
     }
 }
 
 impl From<&[u8]> for RawStr {
     /// Copies: a borrowed slice has no shared buffer to keep.
     fn from(b: &[u8]) -> Self {
-        Self(Bytes::copy_from_slice(b))
+        Self::from_shared(Bytes::copy_from_slice(b))
     }
 }
 
 impl From<Vec<u8>> for RawStr {
     fn from(b: Vec<u8>) -> Self {
-        Self(Bytes::from(b))
+        Self::from_shared(Bytes::from(b))
     }
 }
 
 impl From<&str> for RawStr {
     /// Copies (use [`RawStr::from_static`] for a constant).
     fn from(s: &str) -> Self {
-        Self(Bytes::copy_from_slice(s.as_bytes()))
+        Self::from_shared(Bytes::copy_from_slice(s.as_bytes()))
     }
 }
 
 impl From<Bytes> for RawStr {
     fn from(b: Bytes) -> Self {
-        Self(b)
+        Self::from_shared(b)
     }
 }
 
