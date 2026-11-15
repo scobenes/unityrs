@@ -43,7 +43,7 @@ allow = ["PSF-2.0"]
 
 [[licenses.clarify]]
 crate = "unityrs-texture"
-expression = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0"
+expression = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0 AND LicenseRef-Crunch"
 license-files = [
     { path = "LICENSE-MIT", hash = 0xb9a65ddd },
     { path = "LICENSE-APACHE", hash = 0xb5518783 },
@@ -57,11 +57,12 @@ license-files = [
     { path = "LICENSE-OPENBLAS-DSCAL", hash = 0x31711fb2 },
     { path = "LICENSE-OPENBLAS-UT", hash = 0x443007d2 },
     { path = "LICENSE-ASTCENC", hash = 0xb06ccc7a },
+    { path = "LICENSE-CRUNCH", hash = 0x049cfc10 },
 ]
 
 [[licenses.exceptions]]
 crate = "unityrs-texture"
-allow = ["BSD-2-Clause-Views"]
+allow = ["BSD-2-Clause-Views", "LicenseRef-Crunch"]
 
 # The fuzz crate's own: libfuzzer-sys builds LLVM's libFuzzer, which is
 # NCSA (University of Illinois/NCSA Open Source License), a permissive
@@ -83,3 +84,10 @@ yanked = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+# WebFile brotli: BSD-3-Clause/MIT; select the shipped BSD notice,
+# equal to about.toml. alloc-no-stdlib uses BSD-3-Clause too.
+[[licenses.clarify]]
+crate = "brotli-decompressor"
+expression = "BSD-3-Clause"
+license-files = [{ path = "LICENSE", hash = 0x1a60a92d }]

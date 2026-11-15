@@ -10,13 +10,15 @@ deny.toml (cargo-deny, which gates the dependency graph) to the same licences,
 so that nothing cargo-about would list is a licence cargo-deny never checks:
 - about.toml's `targets` and deny.toml's `[graph] targets` select the same platforms;
 - about.toml's `accepted` is deny.toml's `[licenses] allow`, in the same order;
-- each crate's `accepted` in about.toml is the `allow` of deny.toml's exception
+- each crate's `accepted` in about.toml is the SPDX-only `allow` of deny.toml's exception
   for that crate, and every exception there has its `accepted` here;
 - each crate's `clarify` in about.toml has a clarification in deny.toml with
-  the same expression and the same files, and the other way round. Each tool
+  the same SPDX expression and files, and the other way round. Each tool
   checks its own hashes of those files (sha256 and xxHash32);
 - a workspace member's clarification has the member's Cargo.toml `license`
-  as its expression, so that the two cannot drift apart;
+  minus its registered LicenseRef ids as its expression; every policy entry
+  rejects unknown ids, and LicenseRef-Crunch belongs only to unityrs-texture.
+  cargo-deny's clarification retains the full expression and files;
 - fuzz/deny.toml (the fuzz crate's workspace, which CI's licenses job checks
   with it) allows what deny.toml allows, in the same order, and for each crate
   both Cargo.lock and fuzz/Cargo.lock hold, has the clarifications and
@@ -30,10 +32,14 @@ files); given two, it checks only those two files against each other.
 placeholders (`<year>`, `<copyright holders>`, `<owner>`): cargo-about uses the
 template when a crate ships no licence file, and a notice with a placeholder
 names no one. It also fails when the text of a workspace member's `LICENSE-*`
-file is not in its Crates part: cargo-about lists a licence file only when it recognises
-the licence in it, and otherwise falls back to the template, or to nothing,
+file is not in its Crates part (or Ported code for a named LicenseRef):
+cargo-about lists a licence file only when it recognises the licence in it,
+and otherwise falls back to the template, or to nothing,
 without a warning (a PSF agreement with a paragraph of ours before it is not
 recognised).
+Cargo-about 0.9.2 mislabels all clarification files under a LicenseRef id,
+so about.toml omits custom ids and files; about.hbs carries their full text
+in Ported code instead. Cargo.toml and cargo-deny retain the custom licences.
 
 `ports` holds the ported code to its notices. A ported file names each source
 in a header line at its top (`// Ported from <source> (<SPDX id>): ...`, or
@@ -62,7 +68,8 @@ nothing) and running to the next marker or the section's end. And:
   then say what is packed;
 - each licence of a workspace member beyond the repository's own (MIT,
   Apache-2.0) is a section's, whose notices the crate has as those files, so
-  cargo-about lists the member with that text, not the SPDX template (which,
+  cargo-about lists the member with that text (custom licences reach Ported
+  code instead), not the SPDX template (which,
   for PSF-2.0, names no holder of ours to refuse; `notices` checks that it
   did).
 
@@ -113,6 +120,9 @@ SPDX_TOKEN = re.compile(r"\s*(?:(?P<paren>[()])|(?P<word>[A-Za-z0-9.+:-]+)|(?P<o
 OPERATORS = ("AND", "OR", "WITH")
 RULE = "-" * 80
 OWN_LICENCES = frozenset(("MIT", "Apache-2.0"))
+# Named custom licences and their files. Never exempt an arbitrary LicenseRef
+# from cargo-about: 0.9.2 mislabels the other clarification files under it.
+LICENSE_REFS = {"LicenseRef-Crunch": ("unityrs-texture", "LICENSE-CRUNCH")}
 PLACEHOLDER = re.compile(r"<(?:year|copyright holders?|owner|name of author)>")
 
 
@@ -122,8 +132,45 @@ def _crate_name(entry: dict) -> str | None:
     return spec.split("@")[0].split(":")[0] if isinstance(spec, str) else None
 
 
-def config_problems(about: dict, deny: dict) -> list[str]:
+def _registered_refs(crate: str | None) -> set[str]:
+    return {key for key, (owner, _) in LICENSE_REFS.items() if owner == crate}
+
+
+def _license_ref_problems(expression: str, crate: str | None, where: str) -> list[str]:
+    """Validate custom ids wherever policy names licences, including dependencies."""
+    try:
+        ids = {part for item in spdx_ids(spdx_parse(expression)) for part in item.split(" WITH ")}
+    except ValueError as error:
+        return [f"{where}: license expression {expression!r} does not parse: {error}"]
     problems = []
+    for key in sorted(i for i in ids if i.startswith("LicenseRef-")):
+        if key not in LICENSE_REFS:
+            problems.append(f"{where}: unknown LicenseRef id {key!r}")
+        elif crate != LICENSE_REFS[key][0]:
+            problems.append(f"{where}: {key} is registered only for {LICENSE_REFS[key][0]}")
+    return problems
+
+
+def _deny_ref_problems(deny: dict, where: str) -> list[str]:
+    licenses = deny.get("licenses", {})
+    problems = []
+    for kind in ("allow", "deny"):
+        for expression in licenses.get(kind, []):
+            problems += _license_ref_problems(expression, None, f"{where} licenses.{kind}")
+    for entry in licenses.get("clarify", []):
+        name = _crate_name(entry)
+        problems += _license_ref_problems(entry.get("expression", ""), name, f"{where} {name} clarification")
+    for entry in licenses.get("exceptions", []):
+        name = _crate_name(entry)
+        for expression in entry.get("allow", []):
+            problems += _license_ref_problems(expression, name, f"{where} {name} exception")
+    return problems
+
+
+def config_problems(about: dict, deny: dict) -> list[str]:
+    problems = _deny_ref_problems(deny, "deny.toml")
+    for expression in about.get("accepted", []):
+        problems += _license_ref_problems(expression, None, "about.toml accepted")
     about_targets = set(about.get("targets", []))
     deny_targets = {t["triple"] for t in deny.get("graph", {}).get("targets", [])}
     if about_targets != deny_targets:
@@ -140,9 +187,24 @@ def config_problems(about: dict, deny: dict) -> list[str]:
 
     crates = {k: v for k, v in about.items() if k not in ABOUT_GLOBAL and isinstance(v, dict)}
 
+    for name, crate in crates.items():
+        for expression in crate.get("accepted", []):
+            problems += _license_ref_problems(expression, name, f"about.toml {name} accepted")
+        if "clarify" in crate:
+            problems += _license_ref_problems(
+                crate["clarify"].get("license", ""), name, f"about.toml {name} clarification"
+            )
+            for file in crate["clarify"].get("files", []):
+                if "license" in file:
+                    problems += _license_ref_problems(
+                        file["license"], name, f"about.toml {name} clarification file {file.get('path')}"
+                    )
+
     exceptions = {}
     for e in licenses.get("exceptions", []):
-        exceptions.setdefault(_crate_name(e), []).append(sorted(e.get("allow", [])))
+        exceptions.setdefault(_crate_name(e), []).append(
+            sorted(i for i in e.get("allow", []) if i not in _registered_refs(_crate_name(e)))
+        )
     for name in sorted(set(exceptions) | {n for n, c in crates.items() if "accepted" in c}):
         here = sorted(crates.get(name, {}).get("accepted", []))
         there = exceptions.get(name, [])
@@ -154,8 +216,25 @@ def config_problems(about: dict, deny: dict) -> list[str]:
 
     clarified = {}
     for c in licenses.get("clarify", []):
-        files = sorted(f.get("path") for f in c.get("license-files", []))
-        clarified.setdefault(_crate_name(c), []).append((c.get("expression"), files))
+        expression = c.get("expression", "")
+        custom_ids = spdx_ids(spdx_parse(expression)) & _registered_refs(_crate_name(c))
+        custom_files = {LICENSE_REFS[i][1] for i in custom_ids}
+        allowed_custom = {
+            i
+            for e in licenses.get("exceptions", [])
+            if _crate_name(e) == _crate_name(c)
+            for i in e.get("allow", [])
+            if i in _registered_refs(_crate_name(e))
+        }
+        if allowed_custom != custom_ids:
+            problems.append(
+                f"{_crate_name(c)}: deny.toml's exception must allow exactly {sorted(custom_ids)} custom ids"
+            )
+        paths = {f.get("path") for f in c.get("license-files", [])}
+        for missing in sorted(custom_files - paths):
+            problems.append(f"{_crate_name(c)}: deny.toml's clarification must retain {missing}")
+        files = sorted(f.get("path") for f in c.get("license-files", []) if f.get("path") not in custom_files)
+        clarified.setdefault(_crate_name(c), []).append((spdx_without_license_refs(expression, _crate_name(c)), files))
     for name in sorted(set(clarified) | {n for n, c in crates.items() if "clarify" in c}):
         clarify = crates.get(name, {}).get("clarify")
         here = [(clarify.get("license"), sorted(f.get("path") for f in clarify.get("files", [])))] if clarify else []
@@ -178,7 +257,7 @@ def _entries(deny: dict, kind: str) -> dict[str | None, list[str]]:
 
 def fuzz_problems(deny: dict, fuzz: dict, shared: set[str]) -> list[str]:
     """fuzz/deny.toml against deny.toml: the allow list, and the entries of each crate both workspaces build."""
-    problems = []
+    problems = _deny_ref_problems(fuzz, "fuzz/deny.toml")
     allow, fuzz_allow = deny.get("licenses", {}).get("allow"), fuzz.get("licenses", {}).get("allow")
     if fuzz_allow != allow:
         problems.append(
@@ -205,18 +284,28 @@ def bans_problems(deny: dict, bans: dict) -> list[str]:
     return problems
 
 
-def member_problems(about: dict, root: Path) -> list[str]:
+def member_problems(about: dict, root: Path, deny: dict | None = None) -> list[str]:
     """Each workspace member's clarification in about.toml against the member's Cargo.toml `license`."""
     problems = []
-    for name, entry in sorted(about.items()):
-        clarify = entry.get("clarify") if isinstance(entry, dict) and name not in ABOUT_GLOBAL else None
-        if clarify is None or not (root / "crates" / name / "Cargo.toml").is_file():
+    for cargo in sorted((root / "crates").glob("*/Cargo.toml")):
+        name = cargo.parent.name
+        expression = _crate_licence(root, name)
+        try:
+            spdx_parse(expression)
+        except ValueError as e:
+            problems.append(f"{name}: its Cargo.toml license does not parse: {e}")
             continue
-        if clarify.get("license") != _crate_licence(root, name):
+        problems += _license_ref_problems(expression, name, f"{name} Cargo.toml license")
+        clarify = about.get(name, {}).get("clarify")
+        if clarify is not None and clarify.get("license") != spdx_without_license_refs(expression, name):
             problems.append(
                 f"{name}: about.toml clarifies it as {clarify.get('license')!r}, but its Cargo.toml license is "
-                f"{_crate_licence(root, name)!r}; give the clarification the crate's own expression"
+                f"{expression!r}; give the clarification the crate's own expression minus LicenseRef ids"
             )
+        if deny is not None:
+            for c in deny.get("licenses", {}).get("clarify", []):
+                if _crate_name(c) == name and c.get("expression") != expression:
+                    problems.append(f"{name}: deny.toml's clarification must retain its full Cargo.toml license")
     return problems
 
 
@@ -240,6 +329,9 @@ def notice_problems(text: str, root: Path | None = None) -> list[str]:
             return [*problems, "no Crates part (a line 'Crates' between two rules of '=')"]
         crates_text = text.split(crates_part, 1)[1]
         listed = _words(crates_text)
+        before_crates = text.split(crates_part, 1)[0]
+        ported_part = "\n".join(("=" * 80, "Ported code", "=" * 80, ""))
+        ported = _words(before_crates.split(ported_part, 1)[1]) if ported_part in before_crates else ""
         # The part's overview: "Licences:", then a line "- <name> (<SPDX id>)" for each licence it lists.
         block = re.search(r"^Licences:\n((?:- .*\n)*)", crates_text, re.M)
         overview = set(re.findall(r"^- .+ \(([A-Za-z0-9.+-]+)\)$", block[1] if block else "", re.M))
@@ -251,7 +343,16 @@ def notice_problems(text: str, root: Path | None = None) -> list[str]:
                         "not among the licences listed under Crates, so no text of it reaches THIRD_PARTY_LICENSES"
                     )
         for path in sorted((root / "crates").glob("*/LICENSE-*")):
-            if (path.parent / "Cargo.toml").is_file() and _words(path.read_text(encoding="utf-8")) not in listed:
+            if not (path.parent / "Cargo.toml").is_file():
+                continue
+            ids = spdx_ids(spdx_parse(_crate_licence(root, path.parent.name)))
+            custom = any(LICENSE_REFS[i] == (path.parent.name, path.name) for i in ids & LICENSE_REFS.keys())
+            if custom and _words(path.read_text(encoding="utf-8")) not in ported:
+                problems.append(
+                    f"crates/{path.parent.name}/{path.name}: its text is not in full in Ported code; "
+                    "cargo-about 0.9.2 cannot render LicenseRef clarifications, so about.hbs must carry it"
+                )
+            elif not custom and _words(path.read_text(encoding="utf-8")) not in listed:
                 problems.append(
                     f"crates/{path.parent.name}/{path.name}: its text is not among the licences listed under "
                     "Crates; cargo-about did not recognise the licence in it, so it listed the SPDX template or "
@@ -396,6 +497,31 @@ def spdx_ids(tree: tuple) -> set[str]:
     return {tree[1]} if tree[0] == "ID" else spdx_ids(tree[1]) | spdx_ids(tree[2])
 
 
+def spdx_without_license_refs(expression: str, crate: str | None = None) -> str:
+    """Prune only registered ids belonging to this crate, preserving SPDX grouping."""
+    tree = spdx_parse(expression)
+    registered = _registered_refs(crate)
+    if not spdx_ids(tree) & registered:
+        return expression
+
+    def prune(node):
+        if node[0] == "ID":
+            return None if node[1] in registered else node
+        left, right = prune(node[1]), prune(node[2])
+        return (node[0], left, right) if left and right else left or right
+
+    def render(node, parent_precedence=0):
+        if node is None:
+            return ""
+        if node[0] == "ID":
+            return node[1]
+        precedence = 2 if node[0] == "AND" else 1
+        text = f"{render(node[1], precedence)} {node[0]} {render(node[2], precedence)}"
+        return f"({text})" if precedence < parent_precedence else text
+
+    return render(prune(tree))
+
+
 def _manifest(root: Path, crate: str) -> dict:
     with open(root / "crates" / crate / "Cargo.toml", "rb") as fh:
         return tomllib.load(fh)["package"]
@@ -458,6 +584,19 @@ def port_problems(root: Path) -> list[str]:
                 f"about.hbs: {section.title!r} has no notice: end it with a line "
                 "`{{!-- notice: LICENSE-<NAME> --}}` and then the text its licence asks every copy to keep"
             )
+
+    # LicenseRef-Crunch is the custom modified-zlib text, not SPDX's
+    # zlib-acknowledgement. Its quoted requirement is not itself a product
+    # credit: require the standalone line in the rendered notice and README.
+    credit = "Crunch Library Copyright (c) 2010-2016 Richard Geldreich, Jr."
+    for section in sections:
+        if section.licence == "LicenseRef-Crunch":
+            overview = section.text.split("{{!-- notice:", 1)[0]
+            if credit not in overview.splitlines():
+                problems.append("about.hbs: missing required Crunch credit before the licence text")
+            readme = root / "README.md"
+            if not readme.is_file() or credit not in readme.read_text().splitlines():
+                problems.append("README.md: missing required Crunch credit")
 
     crates = sorted(cargo.parent.name for cargo in (root / "crates").glob("*/Cargo.toml"))
     expressions = {}
@@ -557,7 +696,9 @@ def main(argv=None) -> int:
             with open(ROOT / "deny-bans.toml", "rb") as fh:
                 bans = tomllib.load(fh)
             shared = lock_names(ROOT / "Cargo.lock") & lock_names(ROOT / "fuzz" / "Cargo.lock")
-            problems += fuzz_problems(deny, fuzz, shared) + member_problems(about, ROOT) + bans_problems(deny, bans)
+            problems += (
+                fuzz_problems(deny, fuzz, shared) + member_problems(about, ROOT, deny) + bans_problems(deny, bans)
+            )
     elif args[:1] == ["notices"] and len(args) in (2, 3):
         root = Path(args[2]) if len(args) == 3 else ROOT
         problems = notice_problems(Path(args[1]).read_text(encoding="utf-8"), root)

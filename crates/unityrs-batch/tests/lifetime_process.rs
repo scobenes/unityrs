@@ -102,7 +102,7 @@ fn process_child() {
         return;
     }
     if case.starts_with("reset_") {
-        let table = sys::reset::SocketTable::new();
+        let table = std::sync::Arc::new(sys::reset::SocketTable::new());
         let socket = table.socket(0, false).unwrap();
         let fd = std::os::fd::AsRawFd::as_raw_fd(&socket);
         assert!(sys::test_zero_linger(fd).unwrap());

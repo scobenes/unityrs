@@ -259,9 +259,10 @@ fn every_format_is_replayed_by_an_oracle_fixture() {
                 || ours.contains(name)
                 || name.starts_with("ETC")
                 || name.starts_with("EAC")
-                || name.starts_with("ASTC"),
+                || name.starts_with("ASTC")
+                || format.is_crunched(),
             "{name}"
         );
     }
-    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12);
+    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 2);
 }

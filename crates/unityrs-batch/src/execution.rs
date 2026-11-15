@@ -95,7 +95,9 @@ impl Execution {
     /// blocking threads start here, before destructive spool cleanup.
     pub fn prepare(p: &crate::phase1::PreparedRun) -> Result<Self, SetupError> {
         let threads = pool_size(&p.spec)?;
+        // IO and time: a networked run's URL stages run on this runtime.
         let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .max_blocking_threads(threads)
             .thread_stack_size(2 << 20)
             // Never retire a prewarmed thread: a respawn would allocate.
@@ -183,6 +185,16 @@ impl Execution {
     pub(crate) fn matches(&self, spec: &Arc<Spec>) -> bool {
         Arc::ptr_eq(&self.spec, spec)
     }
+    /// The runtime a networked run's staging is driven on, when this
+    /// Execution owns it. The host lends only a handle; its controller
+    /// thread drives its own runtime (B10c-2).
+    pub(crate) fn runtime(&self) -> Option<&tokio::runtime::Runtime> {
+        self.runtime.as_ref()
+    }
+    /// The controller pool's handle: its blocking threads and its reactor.
+    pub(crate) fn handle(&self) -> &tokio::runtime::Handle {
+        &self.pool
+    }
     #[must_use]
     pub fn wake(&self) -> Arc<Wake> {
         self.wake.clone()
@@ -268,6 +280,21 @@ impl Execution {
         drop(self.runtime.take());
         Ok(())
     }
+}
+/// A request's blocking operation, a lookup or a chunk write, on its
+/// runtime's blocking pool: the admitted entry beside [`Execution::spawn`].
+/// Its task cell is tokio's infallible allocation (A13's admitted frame);
+/// the bound is the request's: each permit has one operation token, so at
+/// most one such task, and the permit gate keeps a networked run's local
+/// copies and these within `download_concurrency` and the spare.
+#[inline(never)]
+pub(crate) fn blocking<T: Send + 'static>(
+    pool: &tokio::runtime::Handle,
+    job: impl FnOnce() -> T + Send + 'static,
+) -> tokio::task::JoinHandle<T> {
+    // Kept a frame of its own (no tail call), so a refused task cell names
+    // this entry, as `Execution::spawn`'s names that one.
+    std::hint::black_box(pool.spawn_blocking(job))
 }
 impl Drop for Execution {
     fn drop(&mut self) {

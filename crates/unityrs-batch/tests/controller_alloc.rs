@@ -1,11 +1,20 @@
 mod common;
 mod controller_support;
+#[cfg(feature = "test-hooks")]
+mod http_support;
 mod publication_support;
 #[path = "controller_support/refusals.rs"]
 mod refusals;
 #[cfg(feature = "test-hooks")]
 mod run_support;
+// Without the hooks there is no url scope, so nothing aims a child.
+#[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
+#[path = "controller_support/sites.rs"]
+mod sites;
 mod stage_support;
+#[cfg(feature = "test-hooks")]
+#[path = "controller_support/url_scopes.rs"]
+mod url_scopes;
 use std::os::unix::process::ExitStatusExt;
 use std::{
     cell::Cell,
@@ -32,17 +41,30 @@ use unityrs_testkit::{child, guard};
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static SITE: AtomicUsize = AtomicUsize::new(0);
 static SEEN: AtomicUsize = AtomicUsize::new(0);
-thread_local! { static TRACING: Cell<bool> = const { Cell::new(false) }; }
+thread_local! {
+    static TRACING: Cell<bool> = const { Cell::new(false) };
+    /// A test peer's thread (the `url` scope's origin): never refused.
+    static EXEMPT: Cell<bool> = const { Cell::new(false) };
+}
 struct Refuse;
 impl Hook for Refuse {
     fn refuses(&self, bytes: usize) -> bool {
-        if TRACING.with(Cell::get) || !ACTIVE.load(Ordering::SeqCst) {
+        if TRACING.with(Cell::get) || EXEMPT.with(Cell::get) || !ACTIVE.load(Ordering::SeqCst) {
             return false;
         }
-        let site = SEEN.fetch_add(1, Ordering::SeqCst) + 1;
-        if site != SITE.load(Ordering::SeqCst) {
+        let ordinal = SEEN.fetch_add(1, Ordering::SeqCst) + 1;
+        let refused = if sites::keyed() {
+            TRACING.with(|t| t.set(true));
+            let refused = sites::refuses();
+            TRACING.with(|t| t.set(false));
+            refused
+        } else {
+            ordinal == SITE.load(Ordering::SeqCst)
+        };
+        if !refused {
             return false;
         }
+        let site = SITE.load(Ordering::SeqCst);
         TRACING.with(|t| t.set(true));
         eprintln!(
             "REFUSED_ALLOCATION site={site} size={bytes}\n{}END_REFUSED_ALLOCATION",
@@ -86,109 +108,295 @@ fn scopes() -> impl Iterator<Item = &'static str> {
     // admission: winners and archive transfers, then the normal finisher.
     .chain(cfg!(feature = "test-hooks").then_some("archive"))
 }
+#[cfg(feature = "test-hooks")]
+const URL_SCOPES: &[&str] = url_scopes::SCOPES;
+fn timed(kind: &str) -> bool {
+    #[cfg(feature = "test-hooks")]
+    return url_scopes::timed(kind);
+    #[cfg(not(feature = "test-hooks"))]
+    {
+        let _ = kind;
+        false
+    }
+}
+#[cfg(not(feature = "test-hooks"))]
+const URL_SCOPES: &[&str] = &[];
 #[test]
 #[cfg_attr(debug_assertions, ignore = "scale: run in release")]
 fn every_controller_allocation_is_fallible_after_the_running_head() {
-    let () = guard::finishes("controller refusal sweep", || {
-        let mut passed = true;
-        for kind in scopes() {
-            let output = refusal_child(kind, 0);
+    let _serial = sweeping();
+    let () = guard::finishes("controller refusal sweep", || sweep(scopes()));
+}
+/// A networked library run's staging: two URLs and a local copy, armed at
+/// the first dispatch through staging's end (or the run's teardown), in
+/// each of its scenes (`controller_support/url_scopes.rs`). Its own test,
+/// so its own guard.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "scale: run in release")]
+fn every_url_staging_allocation_is_fallible_after_the_first_dispatch() {
+    let _serial = sweeping();
+    let () = guard::finishes("url staging refusal sweep", || {
+        sweep(URL_SCOPES.iter().copied());
+    });
+}
+/// One sweep at a time: a url scope's reads follow its machine's load, and
+/// each guard times its own sweep, not a wait for the other.
+fn sweeping() -> std::sync::MutexGuard<'static, ()> {
+    static SWEEP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SWEEP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+/// Each scope's sites, one child a site, against the inventory.
+fn sweep(kinds: impl Iterator<Item = &'static str>) {
+    let mut passed = true;
+    // Every scope's reached entries, and the entries a timed scope leaves
+    // to them: each must be reached in some scope it names.
+    let mut reached_anywhere = std::collections::BTreeSet::new();
+    let mut deferred = std::collections::BTreeMap::new();
+    for kind in kinds {
+        let output = refusal_child(kind, 0, None);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let sites: usize = stdout
+            .lines()
+            .find_map(|s| s.strip_prefix(&format!("CONTROLLER_SITES kind={kind} sites=")))
+            .unwrap()
+            .parse()
+            .unwrap();
+        if kind.starts_with("progress") {
+            assert_eq!(
+                sites, 0,
+                "progress writer must never allocate after startup"
+            );
+            let output = refusal_child(kind, 1, None);
             assert!(
                 output.status.success(),
                 "{}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            let stdout = String::from_utf8(output.stdout).unwrap();
-            let sites: usize = stdout
-                .lines()
-                .find_map(|s| s.strip_prefix(&format!("CONTROLLER_SITES kind={kind} sites=")))
-                .unwrap()
-                .parse()
-                .unwrap();
-            if kind.starts_with("progress") {
-                assert_eq!(
-                    sites, 0,
-                    "progress writer must never allocate after startup"
-                );
-                let output = refusal_child(kind, 1);
-                assert!(
-                    output.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                println!(
-                    "CONTROLLER_RESULT kind={kind} sites=0 fallible=0 excluded=0 functions=0 failures=0"
-                );
+            println!(
+                "CONTROLLER_RESULT kind={kind} sites=0 fallible=0 excluded=0 functions=0 unreached=0 failures=0"
+            );
+            continue;
+        }
+        let expected = refusals::INVENTORY
+            .iter()
+            .filter(|e| e.applies(kind))
+            .collect::<Vec<_>>();
+        let targets = targets(kind, sites, &stdout);
+        let mut tally = Tally::default();
+        // The keys whose allocation some child refused.
+        let mut covered = std::collections::BTreeSet::new();
+        for ((site, aim), output) in children(kind, &targets) {
+            if tally.add(kind, site, &output, &expected) {
+                covered.extend(aim.map(|(key, _)| key));
+            }
+        }
+        let mut sites = targets.len();
+        if timed(kind) {
+            sites += settle(kind, sites, covered, &expected, &mut tally);
+        }
+        let Tally {
+            reached,
+            excluded,
+            mut failures,
+            unreached,
+        } = tally;
+        let fallible = sites.saturating_sub(excluded + failures + unreached);
+        for entry in &expected {
+            // A timed scope's reach follows its peer's timing and the
+            // machine's load: a fixed scope holds each entry to staleness,
+            // and a timed one its own entries (the failing run's
+            // teardown), leaving the rest to the sweep's other scopes.
+            if reached.contains(entry.name) {
                 continue;
             }
-            let expected = refusals::INVENTORY
-                .iter()
-                .filter(|e| e.applies(kind))
-                .collect::<Vec<_>>();
-            let mut reached = std::collections::BTreeSet::new();
-            let mut excluded = 0;
-            let mut failures = 0;
-            for site in 1..=sites {
-                let output = refusal_child(kind, site);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if output.status.signal() == Some(libc::SIGABRT) {
-                    // Resolve the first owning function, never an ancestor or a
-                    // core/export type mentioned in a std generic argument.
-                    let function = refusals::innermost(&stderr);
-                    if let Some(entry) = expected
-                        .iter()
-                        .find(|e| e.admits(function.as_deref(), &stderr))
-                    {
-                        reached.insert(entry.function);
-                        excluded += 1;
-                        println!(
-                            "CR10_EXCLUDED kind={kind} site={site} function={} name={}",
-                            entry.function, entry.name
-                        );
-                        continue;
-                    }
-                    failures += 1;
-                    eprintln!(
-                        "UNLISTED_ABORT kind={kind} site={site} function={function:?} status={}\n{stderr}",
-                        output.status
-                    );
-                } else if !output.status.success()
-                    || !stderr.contains(&format!("REFUSED_ALLOCATION site={site} size="))
-                {
-                    failures += 1;
-                    eprintln!(
-                        "UNHANDLED_REFUSAL kind={kind} site={site} status={}\n{stderr}",
-                        output.status
-                    );
-                }
+            if !timed(kind) || entry.scopes == [kind] {
+                failures += 1;
+                eprintln!(
+                    "STALE_CR10 kind={kind} functions={:?} name={}",
+                    entry.functions, entry.name
+                );
+            } else {
+                deferred.insert(entry.name, *entry);
             }
-            let fallible = sites - excluded - failures;
-            for entry in &expected {
-                if !reached.contains(entry.function) {
-                    failures += 1;
-                    eprintln!("STALE_CR10 kind={kind} function={}", entry.function);
-                }
-            }
-            passed &= failures == 0;
-            println!(
-                "CONTROLLER_RESULT kind={kind} sites={sites} fallible={fallible} excluded={excluded} functions={} failures={failures}",
-                reached.len()
+        }
+        reached_anywhere.extend(reached.iter().copied());
+        passed &= failures == 0;
+        println!(
+            "CONTROLLER_RESULT kind={kind} sites={sites} fallible={fallible} excluded={excluded} functions={} unreached={unreached} failures={failures}",
+            reached.len()
+        );
+    }
+    for entry in deferred.into_values() {
+        if !reached_anywhere.contains(entry.name) {
+            passed = false;
+            eprintln!(
+                "STALE_CR10 kind=any functions={:?} name={}",
+                entry.functions, entry.name
             );
         }
-        assert!(
-            passed,
-            "a post-head controller allocation did not report host_memory"
-        );
-    });
+    }
+    assert!(
+        passed,
+        "a post-head controller allocation did not report host_memory"
+    );
 }
-fn refusal_child(kind: &str, site: usize) -> std::process::Output {
-    child::output(
-        Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "controller_refusal_child", "--nocapture"])
-            .env("UNITYRS_CONTROLLER_REFUSALS", kind)
-            .env("UNITYRS_CONTROLLER_SITE", site.to_string()),
-    )
-    .unwrap()
+/// One scope's children, classified: the entries their aborts reached,
+/// and how many were excluded, failed or unreached.
+#[derive(Default)]
+struct Tally {
+    reached: std::collections::BTreeSet<&'static str>,
+    excluded: usize,
+    failures: usize,
+    unreached: usize,
+}
+impl Tally {
+    /// Classifies `site`'s child: whether it met its site.
+    fn add(
+        &mut self,
+        kind: &str,
+        site: usize,
+        output: &std::process::Output,
+        expected: &[&'static refusals::Exclusion],
+    ) -> bool {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if unreached_site(kind, site, output) {
+            self.unreached += 1;
+            return false;
+        }
+        if output.status.signal() == Some(libc::SIGABRT) {
+            // Resolve the first owning function, never an ancestor or a
+            // core/export type mentioned in a std generic argument.
+            let function = refusals::innermost(&stderr);
+            if let Some(entry) = expected
+                .iter()
+                .find(|e| e.admits(function.as_deref(), &stderr))
+            {
+                self.reached.insert(entry.name);
+                self.excluded += 1;
+                println!(
+                    "CR10_EXCLUDED kind={kind} site={site} function={} name={}",
+                    function.as_deref().unwrap_or_default(),
+                    entry.name
+                );
+                return true;
+            }
+            self.failures += 1;
+            eprintln!(
+                "UNLISTED_ABORT kind={kind} site={site} function={function:?} allocating={:?} callee={:?} status={}\n{stderr}",
+                refusals::allocating(&stderr),
+                refusals::callee(&stderr),
+                output.status
+            );
+        } else if !output.status.success()
+            || !stderr.contains(&format!("REFUSED_ALLOCATION site={site} size="))
+        {
+            self.failures += 1;
+            eprintln!(
+                "UNHANDLED_REFUSAL kind={kind} site={site} status={}\n{stderr}",
+                output.status
+            );
+        }
+        true
+    }
+}
+/// A child's site, numbered from 1, and for a url scope the key and the
+/// occurrence it refuses (`controller_support/sites.rs`).
+type Target = (usize, Option<(u64, usize)>);
+/// A scope's children: each ordinal its census child counted, or, for a
+/// url scope, each occurrence of each key its census child listed.
+fn targets(kind: &str, sites: usize, stdout: &str) -> Vec<Target> {
+    if !timed(kind) {
+        return (1..=sites).map(|site| (site, None)).collect();
+    }
+    sites::census(kind, stdout)
+        .into_iter()
+        .flat_map(|(key, count)| (1..=count).map(move |nth| (key, nth)))
+        .zip(1..)
+        .map(|(aim, site)| (site, Some(aim)))
+        .collect()
+}
+/// A url scope's child that met no allocation it was aimed at.
+fn unreached_site(kind: &str, site: usize, output: &std::process::Output) -> bool {
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .contains(&format!("CONTROLLER_UNREACHED kind={kind} site={site}\n"))
+}
+/// Each target in its own child, a few at once: every child has its own
+/// scratch (and a url scope's, its own origin), so they share nothing but
+/// the machine.
+fn children(kind: &str, targets: &[Target]) -> Vec<(Target, std::process::Output)> {
+    let at_once = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
+    let mut outputs = Vec::with_capacity(targets.len());
+    for batch in targets.chunks(at_once) {
+        std::thread::scope(|scope| {
+            let running: Vec<_> = batch
+                .iter()
+                .map(|&(site, aim)| {
+                    scope.spawn(move || {
+                        (
+                            (site, aim),
+                            refusal_child(kind, site, aim.map(sites::aimed)),
+                        )
+                    })
+                })
+                .collect();
+            outputs.extend(running.into_iter().map(|child| child.join().unwrap()));
+        });
+    }
+    outputs
+}
+/// More new keys than one scope's timing can vary.
+const SETTLE: usize = 256;
+/// A url scope settles (`controller_support/sites.rs`): one child at a
+/// time refuses the first allocation whose key is not `covered`, which
+/// that key then joins, until a child meets none. Its refusing children,
+/// numbered after `last`.
+fn settle(
+    kind: &str,
+    last: usize,
+    mut covered: std::collections::BTreeSet<u64>,
+    expected: &[&'static refusals::Exclusion],
+    tally: &mut Tally,
+) -> usize {
+    for refused in 0..SETTLE {
+        let site = last + refused + 1;
+        let output = refusal_child(kind, site, Some(sites::beyond(&covered)));
+        if unreached_site(kind, site, &output) {
+            println!(
+                "CONTROLLER_SETTLED kind={kind} new={refused} covered={}",
+                covered.len()
+            );
+            return refused;
+        }
+        tally.add(kind, site, &output, expected);
+        // A child that failed before its refusal: counted, and the
+        // scope cannot settle.
+        let Some(key) = sites::refused(&String::from_utf8_lossy(&output.stderr)) else {
+            return refused + 1;
+        };
+        covered.insert(key);
+    }
+    tally.failures += 1;
+    eprintln!("UNSETTLED kind={kind}: {SETTLE} children each met a key no child had refused");
+    SETTLE
+}
+fn refusal_child(kind: &str, site: usize, aim: Option<(&str, String)>) -> std::process::Output {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", "controller_refusal_child", "--nocapture"])
+        .env("UNITYRS_CONTROLLER_REFUSALS", kind)
+        .env("UNITYRS_CONTROLLER_SITE", site.to_string());
+    if let Some((name, value)) = aim {
+        command.env(name, value);
+    }
+    child::output(&mut command).unwrap()
 }
 #[test]
 fn controller_refusal_child() {
@@ -208,6 +416,19 @@ fn controller_refusal_child() {
     #[cfg(feature = "test-hooks")]
     if selected == "archive" {
         archive_child(site);
+        return;
+    }
+    #[cfg(feature = "test-hooks")]
+    if selected.starts_with("url") {
+        let aim = std::env::var("UNITYRS_CONTROLLER_AIM").ok();
+        let covered = std::env::var("UNITYRS_CONTROLLER_COVERED").ok();
+        assert_eq!(
+            aim.is_some() || covered.is_some(),
+            site > 0,
+            "a url child's aim"
+        );
+        sites::aim(aim.as_deref(), covered.as_deref());
+        url_scopes::child(&selected, site);
         return;
     }
     for kind in scopes() {

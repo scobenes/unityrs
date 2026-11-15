@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use super::resource_data::top_bundle;
+use super::resource_data::top_container;
 use super::{DerefError, Environment};
 use crate::container::View;
 use crate::object::ObjectRef;
@@ -62,7 +62,7 @@ impl Environment {
         obj: &ObjectRef,
         nodes: Option<&Arc<Tree>>,
     ) -> Result<Option<TreeRef>, ParseError> {
-        let _top = top_bundle(obj.file());
+        let _top = top_container(obj.file());
         let found = self.room(|| obj.tree(nodes))?;
         let Some(class_tree) = found else {
             return Ok(None);

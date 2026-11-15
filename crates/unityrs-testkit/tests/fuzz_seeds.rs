@@ -23,6 +23,7 @@ fn every_value_seed_is_written_at_each_memory_bound() {
     fsb5_seeds_cover_formats_versions_and_hostile_headers(&dir);
     texture_seeds_are_cases(&dir);
     astc_seeds_are_cases(&dir);
+    crunch_seeds_are_cases(&dir);
     mesh_seeds_are_cases(&dir);
     for target in ["boost_read", "python_read", "write_after_read"] {
         let (mut small, mut large) = (Vec::new(), Vec::new());
@@ -47,6 +48,26 @@ fn every_value_seed_is_written_at_each_memory_bound() {
             large.len()
         );
     }
+}
+
+/// Valid CRN headers for both base formats are retained at every meter;
+/// malformed seeds remain canonical cases too.
+fn crunch_seeds_are_cases(dir: &Path) {
+    let (mut formats, mut meters, mut valid) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+    for entry in std::fs::read_dir(dir.join("crunch")).expect("the target's folder") {
+        let bytes = std::fs::read(entry.expect("an entry").path()).expect("a seed");
+        let case = TextureCase::decode(&bytes);
+        assert_eq!(case.encode(), bytes, "a seed that is not a case");
+        assert!([28, 29].contains(&case.format));
+        formats.insert(case.format);
+        meters.insert(case.meter);
+        if case.data.starts_with(b"Hx") && case.data.len() >= 62 {
+            valid.insert((case.format, case.meter));
+        }
+    }
+    assert_eq!(formats, [28, 29].into());
+    assert_eq!(meters, (0..4).collect());
+    assert_eq!(valid.len(), 8);
 }
 
 /// Every `astc` seed is a `TextureCase` as written, of an ASTC LDR format,

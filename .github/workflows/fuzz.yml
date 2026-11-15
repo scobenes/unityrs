@@ -52,10 +52,13 @@ jobs:
           - lz4
           - texture
           - astc
+          - crunch
           - meshdecode
           - zlib_match
           - unitycn
           - zip
+          - webfile
+          - unityweb
           - fsb5
     env:
       TARGET: ${{ matrix.target }}

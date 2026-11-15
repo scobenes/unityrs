@@ -13,6 +13,9 @@ use std::time::Instant;
 
 impl Controller {
     pub(super) fn stage(&mut self, execution: &mut Execution) -> Result<(), super::Halt> {
+        if self.network.is_some() {
+            return self.stage_network(execution);
+        }
         let mut next = 0;
         loop {
             self.check()?;
@@ -45,29 +48,7 @@ impl Controller {
                 {
                     // Stop freezes even completed-but-unreceived pool work.
                     self.check()?;
-                    let task = self
-                        .prepared
-                        .stages_active
-                        .get_mut(slot)
-                        .and_then(|s| s.task.take())
-                        .ok_or(())?;
-                    let (finish, mut file) =
-                        execution.finish(&task).map_err(|()| self.internal())?;
-                    let bundle = self
-                        .prepared
-                        .stages_active
-                        .get_mut(slot)
-                        .and_then(|s| s.bundle.take())
-                        .ok_or(())?;
-                    let hooks = StageHooks {
-                        hooks: &*self.hooks,
-                        bundle,
-                    };
-                    let end = finish.finish(&mut file, &|| self.control.stopped(), &hooks);
-                    if end.bundle != bundle {
-                        return Err(self.internal());
-                    }
-                    self.stage_end(end, Some(file))?;
+                    self.receive_local(execution, slot)?;
                     completed = true;
                 }
                 active |= self
@@ -87,7 +68,47 @@ impl Controller {
             }
         }
     }
-    fn launch_stage(
+    /// Receive a finished local copy: its finish runs here, on the
+    /// controller (re-stat, digest, seal), then its end.
+    pub(super) fn receive_local(
+        &mut self,
+        execution: &Execution,
+        slot: usize,
+    ) -> Result<(), super::Halt> {
+        let task = self
+            .prepared
+            .stages_active
+            .get_mut(slot)
+            .and_then(|s| s.task.take())
+            .ok_or(())?;
+        let (finish, mut file) = execution.finish(&task).map_err(|()| self.internal())?;
+        let bundle = self
+            .prepared
+            .stages_active
+            .get_mut(slot)
+            .and_then(|s| s.bundle.take())
+            .ok_or(())?;
+        let hooks = StageHooks {
+            hooks: &*self.hooks,
+            bundle,
+        };
+        let end = finish.finish(&mut file, &|| self.control.stopped(), &hooks);
+        if end.bundle != bundle {
+            return Err(self.internal());
+        }
+        // A networked run's copy held a request permit; it returns now.
+        self.prepared.stages_active.get_mut(slot).ok_or(())?.permit = None;
+        self.stage_end(end, Some(file))
+    }
+    /// A fresh destination for `bundle`, `in/i<n>` or `in/d<n>`.
+    pub(super) fn destination(&mut self, bundle: u32) -> Result<OwnedFile, super::Halt> {
+        let directory = self.spool.input().map_err(|e| self.io(e))?;
+        let path = stage::try_path(&directory, bundle, self.prepared.spec.input_count(), false)
+            .map_err(|e| self.io(e))?;
+        OwnedFile::create(path, self.spool.counter.clone(), self.spool.fs.clone())
+            .map_err(|e| self.io(e))
+    }
+    pub(super) fn launch_stage(
         &mut self,
         execution: &Execution,
         slot: usize,
@@ -107,13 +128,7 @@ impl Controller {
                 None,
             )?,
             Ok(copy) => {
-                let directory = self.spool.input().map_err(|e| self.io(e))?;
-                let path =
-                    stage::try_path(&directory, bundle, self.prepared.spec.input_count(), false)
-                        .map_err(|e| self.io(e))?;
-                let mut file =
-                    OwnedFile::create(path, self.spool.counter.clone(), self.spool.fs.clone())
-                        .map_err(|e| self.io(e))?;
+                let mut file = self.destination(bundle)?;
                 let control = self.control.clone();
                 let hooks = self.hooks.clone();
                 let lease = self.spool.clone();
@@ -135,7 +150,11 @@ impl Controller {
         }
         Ok(())
     }
-    fn stage_end(&mut self, end: StageEnd, file: Option<OwnedFile>) -> Result<(), super::Halt> {
+    pub(super) fn stage_end(
+        &mut self,
+        end: StageEnd,
+        file: Option<OwnedFile>,
+    ) -> Result<(), super::Halt> {
         let state = self
             .prepared
             .bundles

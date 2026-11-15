@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(target_os = "linux")]
-fn tcp_state(socket: &Socket<'_>) -> u8 {
+fn tcp_state(socket: &Socket) -> u8 {
     let mut info = [0_u8; 256];
     let mut length = 256;
     // SAFETY: initialized writable TCP_INFO buffer and its exact capacity;
@@ -25,7 +25,7 @@ fn syn_sent_disconnect_retains_the_fd_and_reports_hup() {
     // SAFETY: live owned listener. A backlog of zero allows one established
     // unaccepted peer; the next loopback SYN remains in SYN_SENT.
     super::super::cvt(unsafe { libc::listen(listener.as_raw_fd(), 0) }).unwrap();
-    let table = SocketTable::new();
+    let table = std::sync::Arc::new(SocketTable::new());
     let filler = table.socket(0, false).unwrap();
     let _ = filler.connect(listener.local_addr().unwrap());
     let limit = std::time::Instant::now() + DEADLOCK_GUARD;
@@ -59,7 +59,7 @@ fn syn_sent_disconnect_retains_the_fd_and_reports_hup() {
 }
 #[test]
 fn permit_exclusivity_generation_exhaustion_and_ordinary_release() {
-    let table = SocketTable::new();
+    let table = std::sync::Arc::new(SocketTable::new());
     assert!(table.socket(SOCKET_CAPACITY, false).is_err());
     let socket = table.socket(0, false).unwrap();
     let fd = socket.as_raw_fd();
@@ -86,7 +86,7 @@ fn ordinary_close_also_resets_and_clears_before_reuse() {
     use std::io::Read;
     use unityrs_testkit::guard::DEADLOCK_GUARD;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let table = SocketTable::new();
+    let table = std::sync::Arc::new(SocketTable::new());
     let socket = table.socket(0, false).unwrap();
     let result = socket.connect(listener.local_addr().unwrap());
     assert!(result.is_ok() || result.is_err_and(|e| e.raw_os_error() == Some(libc::EINPROGRESS)));
@@ -106,7 +106,7 @@ fn reset_racing_release_cannot_disconnect_an_unrelated_reused_description() {
     use unityrs_testkit::guard::DEADLOCK_GUARD;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     for _ in 0..32 {
-        let table = SocketTable::new();
+        let table = std::sync::Arc::new(SocketTable::new());
         let socket = table.socket(0, false).unwrap();
         let step = AtomicUsize::new(0);
         let (mut unrelated, mut peer) = std::thread::scope(|scope| {
@@ -134,7 +134,7 @@ fn reset_racing_release_cannot_disconnect_an_unrelated_reused_description() {
 #[test]
 #[cfg(target_os = "linux")]
 fn a_never_connected_socket_is_not_reported_disconnected() {
-    let table = SocketTable::new();
+    let table = std::sync::Arc::new(SocketTable::new());
     let socket = table.socket(0, false).unwrap();
     // TCP CLOSE polls POLLHUP, yet nothing reset or refused this socket.
     assert!(!socket.disconnected().unwrap());
@@ -146,7 +146,7 @@ fn a_registered_socket_connects_and_moves_bytes_both_ways() {
     use std::io::{Read, Write};
     use unityrs_testkit::guard::DEADLOCK_GUARD;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let table = SocketTable::new();
+    let table = std::sync::Arc::new(SocketTable::new());
     let socket = table.socket(0, false).unwrap();
     let result = socket.connect(listener.local_addr().unwrap());
     assert!(result.is_ok() || result.is_err_and(|e| e.raw_os_error() == Some(libc::EINPROGRESS)));

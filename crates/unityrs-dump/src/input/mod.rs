@@ -256,6 +256,9 @@ impl Records {
 /// order, nested bundles included (`files/File.py:76-90`, called from each
 /// `BundleFile.__init__`); the first failure fails the input.
 pub fn load_deep(file: &File) -> Result<(), Error> {
+    if let File::Web(w) = file {
+        w.load_all()?;
+    }
     if let File::Bundle(b) = file {
         b.load_all()?;
         for i in 0..b.directory().len() {
@@ -273,11 +276,9 @@ pub fn load_deep(file: &File) -> Result<(), Error> {
 /// each again, or anew where it is not kept (a meter refusal), so the
 /// dump's own pass decides the records.
 pub fn prepass_reverse(file: &File) {
-    if let File::Bundle(b) = file {
-        for i in (0..b.directory().len()).rev() {
-            if let Ok(entry) = b.entry(i) {
-                prepass_reverse(&entry);
-            }
+    for i in (0..file.container_directory().len()).rev() {
+        if let Ok(entry) = file.container_entry(i) {
+            prepass_reverse(&entry);
         }
     }
 }
@@ -336,8 +337,24 @@ impl Writer<'_> {
                 }
                 Ok(())
             }
-            // A WebFile's entries: P3 (core refuses WebFiles in P1, plan section 1).
-            File::Web(_) | File::Raw(_) => Ok(()),
+            File::Web(w) => {
+                for slot in w.files() {
+                    let bytes = w.entry_bytes(slot.dir_index)?;
+                    let child = w.entry(slot.dir_index)?;
+                    let l0 = L0 {
+                        ty: Some(child.file_type()),
+                        parsed_as: parsed_as_of(&child),
+                        size: bytes.len() as u64,
+                        sha256: hashed(self.meter, &bytes)?,
+                    };
+                    let depth = self.path.len();
+                    self.path.push(slot.name.clone())?;
+                    self.emit(&child, l0)?;
+                    self.path.truncate(depth);
+                }
+                Ok(())
+            }
+            File::Raw(_) => Ok(()),
         }
     }
 
