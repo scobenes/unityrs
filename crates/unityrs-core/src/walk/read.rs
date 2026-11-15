@@ -76,6 +76,29 @@ pub(crate) fn read_typetree_with_mode(
     check_read: bool,
     (kind, head, object_mode): (ReaderKind, bool, bool),
 ) -> Result<Parsed, ParseError> {
+    read_with_fields(
+        file,
+        byte_start,
+        byte_size,
+        tree,
+        ctx,
+        check_read,
+        (kind, head, object_mode),
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_with_fields(
+    file: &Bytes,
+    byte_start: i128,
+    byte_size: u32,
+    tree: &Arc<Tree>,
+    ctx: &ReadCtx<'_>,
+    check_read: bool,
+    (kind, head, object_mode): (ReaderKind, bool, bool),
+    progress: Option<&mut super::FieldProgress>,
+) -> Result<Parsed, ParseError> {
     // UnityPy files/ObjectReader.py:214-215, :251: `reset()`.
     let start = kind.seek(byte_start).map_err(|e| stream_refused(0, e))?;
     // UnityPy TypeTreeHelper.py:146-153: `byte_size and read_typetree_boost`.
@@ -85,9 +108,9 @@ pub(crate) fn read_typetree_with_mode(
         let (range, _) = kind
             .read(file.len(), start, i64::from(byte_size))
             .map_err(|e| stream_refused(0, e))?;
-        boost::read(&file.slice(range), tree, ctx)?
+        boost::read_with_fields(&file.slice(range), tree, ctx, progress)?
     } else {
-        python::read_with_mode(file, start, tree, ctx, kind, (head, object_mode))?
+        python::read_with_fields(file, start, tree, ctx, kind, (head, object_mode), progress)?
     };
     // UnityPy TypeTreeHelper.py:155-156.
     if check_read && parsed.bytes_read != i64::from(byte_size) {

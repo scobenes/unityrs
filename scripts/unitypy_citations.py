@@ -169,6 +169,7 @@ PACKAGE = "b90eea2a46d82210de1e188c3351e9fa5e0aa5c7365c926aae07de5f6fcac397"
 HEAD = "417d595"
 HEAD_DIR = "tools/parity/tests/head_417d595/"
 HEAD_FILES = {
+    "tools/TpkClassGenerator.py": ("TpkClassGenerator.py", "2536644e856d1b9d85da0171ff93ff83924f8ffd"),
     "files/SerializedFile.py": ("SerializedFile.py", "309dd1062b5dbd309cdf428c5977b67df96eab4e"),
     "helpers/TypeTreeNode.py": ("TypeTreeNode.py", "3f4c82a4f4f0abba9eb983761fc4d3b5ab053104"),
     "helpers/TypeTreeHelper.py": ("TypeTreeHelper.py", "7eb916eb6da8606bf2cde2afdf8e7dcaf9de117d"),

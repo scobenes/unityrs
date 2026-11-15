@@ -15,8 +15,9 @@ modules they import, 417d595 has 1.25.2's `config.py`, `enums/BundleFile.py`, `f
 longer re-exports `CommonString`, which neither writer file uses.
 `load()` keeps 1.25.2 entry dispatch for existing writer tests; `readers()`
 selects HEAD's SerializedFile and TypeTreeNode plus TypeTreeHelper for H1's
-stored-tree fixtures. All five sources are blob-pinned; no other HEAD file
-is needed by these local-string fixtures.
+stored-tree fixtures. All five reader/writer sources are blob-pinned. The sixth pinned source,
+`tools/TpkClassGenerator.py`, is retained for Y2 generation provenance; this
+loader does not execute it.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ HEAD_DIR = Path(__file__).resolve().parent / "head_417d595"
 HEAD_COMMIT = "417d59522a998fdee9a9c2b29fe35f3063222457"
 # file -> (its path in the UnityPy repository, its git blob id at HEAD_COMMIT)
 HEAD_BLOBS = {
+    "TpkClassGenerator.py": ("UnityPy/tools/TpkClassGenerator.py", "2536644e856d1b9d85da0171ff93ff83924f8ffd"),
     "CompressionHelper.py": ("UnityPy/helpers/CompressionHelper.py", "922df19a5cb83a1913725da376a942606ad3fc62"),
     "BundleFile.py": ("UnityPy/files/BundleFile.py", "e589be5f5cabedeb24ab20c15ea98ed8a1885320"),
     "SerializedFile.py": ("UnityPy/files/SerializedFile.py", "309dd1062b5dbd309cdf428c5977b67df96eab4e"),

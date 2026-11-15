@@ -18,6 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 mod local;
+pub(super) use local::confined_path;
 pub(super) use local::local_path;
 mod state;
 use state::Seen;
@@ -49,7 +50,7 @@ impl Environment {
         // The str-path gate uses literal os.path.exists, including split0
         // fallback (environment.py:110-137). Only the eventual fs.open and
         // split joining normalise; the caller's spelling remains the key.
-        if let Source::Path(p) = &source
+        if let Source::Path(p) | Source::ConfinedPath { path: p, .. } = &source
             && split::base(p.as_os_str().as_encoded_bytes()).is_none()
             && !p.exists()
         {
@@ -59,10 +60,12 @@ impl Environment {
             }
         }
         let raw = match &source {
-            Source::Path(p) => p.as_os_str().as_encoded_bytes(),
+            Source::Path(p) | Source::ConfinedPath { path: p, .. } => {
+                p.as_os_str().as_encoded_bytes()
+            }
             Source::Bytes { name, .. } | Source::Fetch { name, .. } => name.as_bytes(),
         };
-        let raw = if matches!(source, Source::Path(_)) {
+        let raw = if matches!(source, Source::Path(_) | Source::ConfinedPath { .. }) {
             split::base(raw).unwrap_or(raw)
         } else {
             raw
@@ -80,14 +83,19 @@ impl Environment {
     )]
     pub fn load_zip_file(&self, source: Source) -> Result<(), Error> {
         let meter = self.input_meter();
-        let data = if let Source::Path(path) = &source {
+        let data = if let Source::Path(path) | Source::ConfinedPath { path, .. } = &source {
             // Both fs.exists and fs.open normalise (environment.py:163-164).
             // This explicit entry point never joins split-looking paths.
-            super::read_path(
-                local_path(path, &meter)?.path()?,
-                &self.ctx().limits,
-                &meter,
-            )?
+            let local = local_path(path, &meter)?;
+            let physical = local.path()?;
+            let confined;
+            let physical = if let Source::ConfinedPath { root, .. } = &source {
+                confined = local::confined_path(physical, root)?;
+                confined.as_path()
+            } else {
+                physical
+            };
+            super::read_path(physical, &self.ctx().limits, &meter)?
         } else {
             super::registry::read_source(&source, &meter, self.ctx())?.0
         };
