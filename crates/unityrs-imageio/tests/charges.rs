@@ -34,6 +34,8 @@ static HELD: AtomicUsize = AtomicUsize::new(0);
 /// How far the heap above [`BASE`] ever passed [`HELD`].
 static OVER: AtomicUsize = AtomicUsize::new(0);
 /// A request size the allocator refuses on the counted thread (0: none).
+static AT: AtomicUsize = AtomicUsize::new(0);
+static REFUSE_AT: AtomicUsize = AtomicUsize::new(0);
 static REFUSE: AtomicUsize = AtomicUsize::new(0);
 /// The size of the blocks [`OUTPUTS`] counts: the output's plan (0: none).
 static OUTPUT: AtomicUsize = AtomicUsize::new(0);
@@ -48,7 +50,12 @@ impl Tally for Watching {
     fn refuses(&self, size: usize) -> bool {
         // The allocator asks on every thread; libtest's main thread, which
         // allocates beside the test, must never see a refusal.
-        counted() && size != 0 && size == REFUSE.load(Ordering::Relaxed)
+        if !counted() {
+            return false;
+        }
+        let at = AT.fetch_add(1, Ordering::Relaxed) + 1;
+        at == REFUSE_AT.load(Ordering::Relaxed)
+            || (size != 0 && size == REFUSE.load(Ordering::Relaxed))
     }
     fn refuses_realloc(&self, new_size: usize) -> bool {
         if counted() {
@@ -176,25 +183,41 @@ fn expected(plan: &Plan) -> Vec<(Buffer, Vec<usize>)> {
 fn the_encoder_pays_before_it_allocates() {
     count_this_thread();
     others_are_not_counted(|| LIVE.load(Ordering::Relaxed));
-    every_block_is_charged_before_it_is_allocated();
-    a_refused_charge_allocates_nothing_more();
+    for fast in [false, true] {
+        every_block_is_charged_before_it_is_allocated(fast);
+        a_refused_charge_allocates_nothing_more(fast);
+    }
+    fast_refuses_every_allocation();
     a_refused_allocation_is_an_error();
 }
 
-fn every_block_is_charged_before_it_is_allocated() {
-    for (width, height, mode) in [
-        (1, 1, Mode::L),
-        (300, 200, Mode::Rgba),
-        (20000, 3, Mode::Rgb),
-        (7, 9000, Mode::La),
+fn every_block_is_charged_before_it_is_allocated(fast: bool) {
+    for (width, height, mode, explicit_palette) in [
+        (1, 1, Mode::L, false),
+        (300, 200, Mode::Rgba, false),
+        (20000, 3, Mode::Rgb, false),
+        (7, 9000, Mode::La, false),
+        (257, 127, Mode::P, false),
+        (257, 127, Mode::P, true),
     ] {
         let pixels = noise(width, height, mode);
-        let image = Image::new(width, height, mode, &pixels).unwrap();
-        let plan = plan(width, height, mode).unwrap();
+        let palette = std::array::from_fn(|i| i.to_le_bytes()[0]);
+        let image = if explicit_palette {
+            Image::with_palette(width, height, &pixels, &palette)
+        } else {
+            Image::new(width, height, mode, &pixels)
+        }
+        .unwrap();
+        let plan = unityrs_imageio::plan_image(&image).unwrap();
         let mut charger = Recording::new(None);
         OUTPUT.store(plan.output, Ordering::Relaxed);
         start();
-        let png = encode(&image, &mut charger).unwrap();
+        let png = if fast {
+            unityrs_imageio::encode_fast(&image, &mut charger)
+        } else {
+            encode(&image, &mut charger)
+        }
+        .unwrap();
         let made = (
             OUTPUTS.load(Ordering::Relaxed),
             REALLOCS.load(Ordering::Relaxed),
@@ -235,7 +258,7 @@ fn every_block_is_charged_before_it_is_allocated() {
     }
 }
 
-fn a_refused_charge_allocates_nothing_more() {
+fn a_refused_charge_allocates_nothing_more(fast: bool) {
     let (width, height, mode) = (300, 200, Mode::Rgba);
     let pixels = noise(width, height, mode);
     let image = Image::new(width, height, mode, &pixels).unwrap();
@@ -244,7 +267,12 @@ fn a_refused_charge_allocates_nothing_more() {
     for (at, (buffer, _)) in all.iter().enumerate() {
         let mut charger = Recording::new(Some(*buffer));
         start();
-        let e = encode(&image, &mut charger).unwrap_err();
+        let e = if fast {
+            unityrs_imageio::encode_fast(&image, &mut charger)
+        } else {
+            encode(&image, &mut charger)
+        }
+        .unwrap_err();
         let after = settled();
         assert!(
             matches!(e, EncodeError::Refused { buffer: b, refusal: "refused" } if b == *buffer),
@@ -335,4 +363,31 @@ fn the_plan_refuses_what_pillow_refuses() {
     assert_eq!(p.filtered, 3010);
     assert_eq!(p.idat_size, 65536);
     assert_eq!(plan(20000, 1, Mode::L).unwrap().idat_size, 80000);
+}
+
+fn fast_refuses_every_allocation() {
+    let pixels = noise(300, 200, Mode::Rgba);
+    let image = Image::new(300, 200, Mode::Rgba, &pixels).unwrap();
+    let mut charger = Recording::new(None);
+    start();
+    AT.store(0, Ordering::Relaxed);
+    let png = unityrs_imageio::encode_fast(&image, &mut charger).unwrap();
+    let allocations = AT.load(Ordering::Relaxed);
+    assert_eq!(allocations, 11, "five zlib blocks, output, five rows");
+    drop(png);
+    assert_eq!(settled(), (0, 0, 0));
+    for at in 1..=allocations {
+        let mut charger = Recording::new(None);
+        start();
+        AT.store(0, Ordering::Relaxed);
+        REFUSE_AT.store(at, Ordering::Relaxed);
+        let result = unityrs_imageio::encode_fast(&image, &mut charger);
+        REFUSE_AT.store(0, Ordering::Relaxed);
+        let e = result.unwrap_err();
+        assert!(
+            matches!(e, EncodeError::ZlibMemory | EncodeError::Alloc { .. }),
+            "allocation {at}: {e:?}"
+        );
+        assert_eq!(settled(), (0, 0, 0), "allocation {at}: (over, held, live)");
+    }
 }

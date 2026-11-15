@@ -61,6 +61,7 @@ jobs:
           - unityweb
           - fsb5
           - image_writers
+          - shader
     env:
       TARGET: ${{ matrix.target }}
     steps:

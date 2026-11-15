@@ -162,6 +162,26 @@ pub fn encode<C: Charger>(
     image: &Image<'_>,
     charger: &mut C,
 ) -> Result<Png<C::Charge>, EncodeError<C::Refusal>> {
+    encode_with(image, charger, false)
+}
+
+/// Encodes a lossless PNG at zlib level 1 with a fixed Sub filter. This
+/// skips adaptive filter scoring and uses zlib's fast match search. Bytes
+/// differ from Pillow's defaults; hidden RGB is preserved. Palette images
+/// use the same palette depth and index packing as [`encode`]. Uses the
+/// same charge plan and fallible allocator path, with no additional allocations.
+pub fn encode_fast<C: Charger>(
+    image: &Image<'_>,
+    charger: &mut C,
+) -> Result<Png<C::Charge>, EncodeError<C::Refusal>> {
+    encode_with(image, charger, true)
+}
+
+fn encode_with<C: Charger>(
+    image: &Image<'_>,
+    charger: &mut C,
+    fast: bool,
+) -> Result<Png<C::Charge>, EncodeError<C::Refusal>> {
     let plan = charge::plan_image(image)?;
     let palette_bits = if image.mode() != crate::Mode::P {
         0
@@ -175,7 +195,11 @@ pub fn encode<C: Charger>(
     // Each charge is declared before what it pays for, so it drops after it.
     let _state_charge = charge(charger, Buffer::DeflateState, &plan.deflate_state)?;
     let mut z = pin!(Deflater::new());
-    match z.as_mut().init_palette(image.mode() == crate::Mode::P) {
+    match if fast {
+        z.as_mut().init_fast()
+    } else {
+        z.as_mut().init_palette(image.mode() == crate::Mode::P)
+    } {
         Z_OK => {}
         Z_MEM_ERROR if z.over_allowance() => {
             return Err(zlib_failure(ZlibFailure::StateOverAllowance));
@@ -199,6 +223,7 @@ pub fn encode<C: Charger>(
         *buffer = zeroed(Buffer::Rows, len)?;
     }
     let mut rows = Rows::new(buffers, image.mode().channels());
+    rows.fast = fast;
 
     let mut w = Writer {
         out: &mut out,
@@ -338,9 +363,9 @@ fn encode_call<R>(
             } else {
                 rows.current_pixels().copy_from_slice(row);
             }
-            // ZipEncode.c applies adaptive filtering only to ZIP_PNG;
-            // ZIP_PNG_PALETTE leaves every row's selector at zero.
-            let chosen = if palette_bits != 0 {
+            // At Pillow's defaults ZIP_PNG_PALETTE leaves every selector
+            // at zero. Fast PNG applies Sub to the packed row in all modes.
+            let chosen = if palette_bits != 0 && !rows.fast {
                 crate::filter::Chosen::None
             } else {
                 rows.choose()

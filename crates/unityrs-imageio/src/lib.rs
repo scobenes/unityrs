@@ -12,6 +12,14 @@
 //!   distances from zero, the earlier on a tie); deflated by zlib 1.2.13 at
 //!   level 6, windowBits 15, memLevel 9, `Z_FILTERED`. The PNG writer is
 //!   `src/png.rs`, the filter `src/filter.rs`.
+//!   Palette mode `P` adds PLTE and uses unfiltered rows with zlib's default
+//!   strategy: 8-bit indices with an explicit palette, or packed 1-bit
+//!   indices with Pillow's implicit one-entry palette.
+//! - [`encode_fast`] opts into zlib level 1 and a fixed Sub filter, with
+//!   the same windowBits 15, memLevel 9 and `Z_FILTERED`, charge plan and
+//!   fallible allocations. It preserves hidden RGB and uses the same
+//!   palette depth and packing as [`encode`], trading compression ratio
+//!   for speed; default byte parity is unchanged.
 //! - [`visible_hash`] is E20's hash: SHA-256 over `"{width}x{height}:"` and
 //!   the RGBA bytes, alpha-0 pixels cleared, other modes converted as
 //!   Pillow's `convert("RGBA")` converts them.
@@ -65,7 +73,7 @@ mod zlib;
 pub use charge::{Buffer, Charger, DEFLATE_STATE_REQUESTS, Plan, Unmetered, plan, plan_image};
 pub use hash::visible_hash;
 pub use image::{Image, ImageError, Mode};
-pub use png::{EncodeError, Png, ZlibFailure, encode};
+pub use png::{EncodeError, Png, ZlibFailure, encode, encode_fast};
 pub use zlib::zlib_version;
 
 /// Test/fuzz support comparing the derived deflate with pristine zlib.

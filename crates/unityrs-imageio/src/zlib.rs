@@ -217,12 +217,22 @@ impl Deflater {
     /// `deflateInit2` at Pillow's settings; zlib's return code.
     #[cfg(test)]
     pub(crate) fn init(self: Pin<&mut Self>) -> c_int {
-        self.init_palette(false)
+        self.init_settings(LEVEL, STRATEGY)
     }
 
     /// Palette PNGs select `Z_DEFAULT_STRATEGY` (`ZipEncode.c`), other PNGs
     /// `Z_FILTERED`. Both allocate exactly the same deflate state.
     pub(crate) fn init_palette(self: Pin<&mut Self>, palette: bool) -> c_int {
+        self.init_settings(LEVEL, if palette { 0 } else { STRATEGY })
+    }
+
+    /// Fast PNG changes only the level; window, memory and strategy stay
+    /// the same, so the charged state and deflateBound remain valid.
+    pub(crate) fn init_fast(self: Pin<&mut Self>) -> c_int {
+        self.init_settings(1, STRATEGY)
+    }
+
+    fn init_settings(self: Pin<&mut Self>, level: c_int, strategy: c_int) -> c_int {
         // SAFETY: nothing is moved out of the pinned value; its fields are
         // only written in place.
         let this = unsafe { self.get_unchecked_mut() };
@@ -238,11 +248,11 @@ impl Deflater {
         let code = unsafe {
             z_deflateInit2_(
                 &raw mut this.stream,
-                LEVEL,
+                level,
                 Z_DEFLATED,
                 WINDOW_BITS,
                 MEM_LEVEL,
-                if palette { 0 } else { STRATEGY },
+                strategy,
                 c"1.2.13".as_ptr(),
                 size,
             )

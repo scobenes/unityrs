@@ -36,6 +36,8 @@ pub(crate) struct Rows {
     paeth: Vec<u8>,
     /// Bytes a pixel.
     bpp: usize,
+    /// Fixed Sub filtering for the opt-in fast encoder.
+    pub(crate) fast: bool,
 }
 
 /// The row a filter choice left to deflate.
@@ -71,6 +73,7 @@ impl Rows {
             sub,
             paeth,
             bpp,
+            fast: false,
         }
     }
 
@@ -99,6 +102,22 @@ impl Rows {
     /// tries (`ZipEncode.c:180-272`).
     pub(crate) fn choose(&mut self) -> Chosen {
         let bpp = self.bpp;
+        if self.fast {
+            // PNG Sub: subtract the same channel of the preceding pixel;
+            // the first pixel has a zero predictor. No scoring or Paeth.
+            let (head, tail) = split(&mut self.sub, bpp);
+            for (out, &x) in head.iter_mut().zip(self.current.iter().skip(1)) {
+                *out = x;
+            }
+            for ((out, &x), &left) in tail
+                .iter_mut()
+                .zip(self.current.iter().skip(1 + bpp))
+                .zip(self.current.iter().skip(1))
+            {
+                *out = x.wrapping_sub(left);
+            }
+            return Chosen::Sub;
+        }
         let row = || self.current.iter().skip(1);
         // 0. No filter.
         let mut sum = row().fold(0_i32, |s, &v| s.wrapping_add(distance(v)));

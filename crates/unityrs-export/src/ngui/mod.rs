@@ -74,6 +74,9 @@ pub struct Options {
     /// (`outputs.formats`, `docs/BATCH_SPEC.md` 1.5 and section 3):
     /// [`Formats::V1`] for a version 1 spec.
     pub formats: Formats,
+    /// Use zlib level 1 and a fixed Sub filter for every PNG, preserving
+    /// pixel bytes with the default encoder's memory bound (`outputs.image`).
+    pub png_fast: bool,
 }
 
 /// A bundle of the view: its spec id and its bytes.

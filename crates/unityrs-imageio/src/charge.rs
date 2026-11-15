@@ -1,6 +1,9 @@
 //! How the encoder's memory is charged before it is allocated
 //! (`docs/plans/extract.md` E59, `docs/plans/batch.md` 2.6 step 10).
 //!
+//! Both default and fast PNG use this same plan; changing only zlib level
+//! and row filter changes neither the state slots nor the output bound.
+//!
 //! Every block the encoder takes in proportion to the image, and zlib's
 //! deflate state, is first offered to the caller's [`Charger`] as the
 //! requests it will make of Rust's global allocator, one [`Buffer`] at a
