@@ -124,7 +124,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(Format::ALL.len(), 68);
+        assert_eq!(Format::ALL.len(), 75);
         assert_eq!(Formats::DECODED.iter().count(), Format::ALL.len());
         assert!(
             Format::ALL

@@ -150,11 +150,23 @@ fn sizes_do_not_wrap() {
 fn the_output_is_charged_before_it_is_allocated() {
     let data = vec![7u8; 16 * 64 * 64];
     for format in Format::ALL.into_iter().filter(|f| !f.is_crunched()) {
+        let hdr_data;
+        let data = if format.is_astc_hdr() {
+            // Valid FP16 void blocks: the general byte pattern also tests
+            // illegal modes, which HDR refuses after its size-only plan.
+            let mut block = [0; 16];
+            block[..8].fill(255);
+            block[0] = 0xfc;
+            hdr_data = block.repeat(64 * 64);
+            &hdr_data
+        } else {
+            &data
+        };
         let p = plan(format, data.len(), 64, 64).unwrap();
         // One byte short of the charge (and of an ASTC format's tables
         // beside it): refused, nothing allocated.
         let meter = Meter::new(p.peak_charge() - 1, Arc::new(Unbounded), Reservation::Input);
-        let got = decode(format, &data, 64, 64, &meter);
+        let got = decode(format, data, 64, 64, &meter);
         assert!(
             matches!(got, Err(DecodeError::Charge(ChargeError::Limit(_)))),
             "{format:?}: {got:?}"
@@ -163,7 +175,7 @@ fn the_output_is_charged_before_it_is_allocated() {
         // Exactly the charge: decoded, the output's held while the image
         // lives, the tables' returned.
         let meter = Meter::new(p.peak_charge(), Arc::new(Unbounded), Reservation::Input);
-        let image = decode(format, &data, 64, 64, &meter).unwrap();
+        let image = decode(format, data, 64, 64, &meter).unwrap();
         assert_eq!(meter.used(), p.charge());
         let (pixels, charge) = image.into_parts();
         assert_eq!(u64::try_from(pixels.len()).unwrap(), p.output_bytes);
@@ -336,6 +348,9 @@ fn no_panic_on_any_input() {
             }
             (Err(DecodeError::Panicked { payload }), _) => panic!("{what}: {payload}"),
             (Err(DecodeError::Crunch(_)), Ok(_)) if format.is_crunched() => {}
+            (Err(DecodeError::Hdr(_)), Ok(_)) => {
+                assert!(format.is_astc_hdr() || format == Format::Bc6h, "{what}");
+            }
             (Err(DecodeError::Charge(ChargeError::Limit(_))), Ok(_)) => {
                 assert!(limit.is_some_and(|l| l < charge), "{what}");
             }

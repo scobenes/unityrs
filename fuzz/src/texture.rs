@@ -4,15 +4,16 @@
 //! (`docs/plans/extract.md` E15, E18, E59, E66), under the memory bound
 //! ([`crate::MEMORY`]) or a meter of about the decode's charge.
 //!
-//! The sixty-four byte-independent formats include Pillow raw and `bcn`,
-//! ETC/EAC, ASTC LDR, PVRTC/ATC and Tier B/C raw closed forms. ARGBFloat
+//! The byte-independent formats include Pillow raw and `bcn`,
+//! ETC/EAC, ASTC LDR/HDR, BC6H, PVRTC/ATC and Tier B/C raw closed forms. ARGBFloat
 //! and odd-width YUY2 exercise the Tier U refusals. Other unknown formats
 //! map to a decoded format, and all CRN variants to plain DXT/ETC formats
 //! (the `crunch` target checks CRN streams). Besides a panic (libFuzzer's
 //! hook aborts at it,
 //! before the decoder's containment can catch it), a finding is: a
 //! selection that exports a format the texture does not have; a decode
-//! whose answer is not its plan's, but for the meter's refusal of a charge
+//! whose answer is not its plan's, but for a typed HDR content error or
+//! the meter's refusal of a charge
 //! past its limit (the peak charge, `Plan::peak_charge`: an ASTC format's
 //! tables beside the image); an image whose size, mode or charge is not the plan's;
 //! and a meter not back at 0 once the image drops.
@@ -23,8 +24,8 @@ use unityrs_core::budget::{Reservation, Unbounded};
 use unityrs_core::limits::{ChargeError, Meter};
 use unityrs_testkit::fuzz::TextureCase;
 use unityrs_texture::{
-    DecodeError, Format, Formats, Plan, Selection, TextureFields, array, decode_in_as, plan_in_as,
-    platform, select, select_in,
+    DecodeError, Format, Formats, Plan, Selection, TextureFields, array, decode_bc6h_signed,
+    decode_in_as, plan, plan_in_as, platform, select, select_in,
 };
 
 use crate::MEMORY;
@@ -102,37 +103,56 @@ pub fn check(input: &[u8]) {
         platform: case.platform,
         platform_blob: case.blob.as_deref(),
     };
-    let planned = plan_in_as(format, &fields, case.data.len());
-    let charge = planned.as_ref().map_or(0, Plan::peak_charge);
-    // The memory bound, or the peak charge less 1, the charge, or plus 1.
-    let limit = match case.meter & 3 {
-        0 => MEMORY,
-        m => (charge + u64::from(m)).saturating_sub(2),
-    };
-    let meter = Meter::new(limit, Arc::new(Unbounded), Reservation::Input);
-    match (decode_in_as(format, &fields, &case.data, &meter), planned) {
-        (Ok(image), Ok(p)) => {
-            assert_eq!(
-                u64::try_from(image.pixels().len()).ok(),
-                Some(p.output_bytes)
-            );
-            assert_eq!(
-                (image.width(), image.height(), image.mode()),
-                (p.width, p.height, p.mode)
-            );
-            assert_eq!(image.charge().bytes(), p.charge());
-            assert_eq!(meter.used(), p.charge());
+    // Signed BC6H is a raw-block API; the first pass retains the platform
+    // transforms and refusals used by the batch engine.
+    for signed in [false, true]
+        .into_iter()
+        .take(if format == Format::Bc6h { 2 } else { 1 })
+    {
+        let planned = if signed {
+            plan(format, case.data.len(), case.width, case.height)
+        } else {
+            plan_in_as(format, &fields, case.data.len())
+        };
+        let charge = planned.as_ref().map_or(0, Plan::peak_charge);
+        // The memory bound, or the peak charge less 1, the charge, or plus 1.
+        let limit = match case.meter & 3 {
+            0 => MEMORY,
+            m => (charge + u64::from(m)).saturating_sub(2),
+        };
+        let meter = Meter::new(limit, Arc::new(Unbounded), Reservation::Input);
+        let decoded = if signed {
+            decode_bc6h_signed(&case.data, case.width, case.height, &meter)
+        } else {
+            decode_in_as(format, &fields, &case.data, &meter)
+        };
+        match (decoded, planned) {
+            (Ok(image), Ok(p)) => {
+                assert_eq!(
+                    u64::try_from(image.pixels().len()).ok(),
+                    Some(p.output_bytes)
+                );
+                assert_eq!(
+                    (image.width(), image.height(), image.mode()),
+                    (p.width, p.height, p.mode)
+                );
+                assert_eq!(image.charge().bytes(), p.charge());
+                assert_eq!(meter.used(), p.charge());
+            }
+            (Err(DecodeError::Charge(ChargeError::Limit(_))), Ok(p)) => {
+                assert!(limit < p.peak_charge(), "refused within the charge");
+            }
+            (Err(DecodeError::Hdr(_)), Ok(_)) => {
+                assert!(format.is_astc_hdr() || format == Format::Bc6h);
+            }
+            (got, planned) => assert_eq!(
+                got.map(|_| ()),
+                planned.map(|_| ()),
+                "the decode's answer is not its plan's"
+            ),
         }
-        (Err(DecodeError::Charge(ChargeError::Limit(_))), Ok(p)) => {
-            assert!(limit < p.peak_charge(), "refused within the charge");
-        }
-        (got, planned) => assert_eq!(
-            got.map(|_| ()),
-            planned.map(|_| ()),
-            "the decode's answer is not its plan's"
-        ),
+        assert_eq!(meter.used(), 0, "the meter is not back at 0");
     }
-    assert_eq!(meter.used(), 0, "the meter is not back at 0");
     // The same mutated dimensions/platform also reach array layout and its
     // independent platform refusals. Depth and declared data size can both
     // be hostile, independent of the available slice bytes.

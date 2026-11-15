@@ -52,6 +52,8 @@ mod astc;
 mod crunch;
 #[path = "fuzz_seeds/depth.rs"]
 mod depth;
+#[path = "fuzz_seeds/hdr.rs"]
+mod hdr;
 #[path = "fuzz_seeds/image_writers.rs"]
 mod image_writers;
 #[path = "fuzz_seeds/platform.rs"]
@@ -332,19 +334,19 @@ fn specs(nodes: &NodeList) -> Vec<NodeSpec> {
 }
 
 /// The baseline seed formats as the texture target decodes them. The sole
-/// unknown value, 1000, selects ALL[1000 mod 68] = `ASTC_RGBA_5x5` in the combined
+/// unknown value, 1000, selects ALL[1000 mod 75] = `BC5` in the combined
 /// registry. Additional format families have their own seed writers.
 fn texture_decoded_as(format: i32) -> i32 {
     match format {
         3 | 4 | 10 | 12 | 25 | 34 => format,
-        _ => 55,
+        _ => 27,
     }
 }
 
 /// What mip 0 of a `width` x `height` texture of `format` holds, decoded
 /// as the check decodes it: 4x4 blocks of 8 bytes (DXT1, ETC1) or 16 (DXT5,
-/// BC7), or 5x5 blocks of 16 bytes (ASTC), else 3 bytes a pixel (RGB24) or 4 (RGBA32); 0 for a side of 0 or
-/// below.
+/// BC7, BC5), else 3 bytes a pixel (RGB24) or 4 (RGBA32); 0 for a side
+/// of 0 or below.
 fn texture_need(format: i32, width: i32, height: i32) -> u64 {
     let (Ok(w), Ok(h)) = (u64::try_from(width), u64::try_from(height)) else {
         return 0;
@@ -352,8 +354,7 @@ fn texture_need(format: i32, width: i32, height: i32) -> u64 {
     let blocks = w.div_ceil(4) * h.div_ceil(4);
     match texture_decoded_as(format) {
         10 | 34 => blocks * 8,
-        12 | 25 => blocks * 16,
-        55 => w.div_ceil(5) * h.div_ceil(5) * 16,
+        12 | 25 | 27 => blocks * 16,
         3 => w * h * 3,
         _ => w * h * 4,
     }
@@ -560,10 +561,10 @@ fn meshdecode(s: &mut Seeds) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The targets whose seeds a writer of their own makes, in the order
-/// `write` has always run them (the trees they add come before the depth
-/// cases').
+/// The targets whose seeds a writer of their own makes. The trees these
+/// writers add come before the depth cases'.
 fn module_seeds(s: &mut Seeds) -> std::io::Result<()> {
+    webp::add(s)?;
     zip::seeds(s)?;
     web::seeds(s)?;
     fsb5::write(s)?;
@@ -574,8 +575,20 @@ fn module_seeds(s: &mut Seeds) -> std::io::Result<()> {
     pvrtc_atc::write(s)?;
     astc::write(s)?;
     tierb::write(s)?;
+    hdr::write(s)?;
     crunch::write(s)?;
-    meshdecode(s)
+    meshdecode(s)?;
+    scene_seeds(s)
+}
+
+/// Scene collection and OBJ export share each generated scene case.
+fn scene_seeds(s: &mut Seeds) -> std::io::Result<()> {
+    for (name, case) in unityrs_testkit::fuzz::scene_cases() {
+        for target in ["scene_collect", "obj_text"] {
+            s.add(target, &name, &case.encode())?;
+        }
+    }
+    Ok(())
 }
 
 /// Every target's seeds, in a folder of `dir` each, and how many. Crate-wide:
@@ -590,7 +603,6 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
         trees: BTreeSet::new(),
         nodes: Vec::new(),
     };
-    webp::add(&mut s)?;
     let outputs = unityrs_testkit::mutate::builder_outputs();
     for (name, bytes) in &outputs {
         s.file(name, bytes, 0)?;
@@ -621,11 +633,6 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
         s.add("unitycn", name, bytes)?;
     }
     module_seeds(&mut s)?;
-    for (name, case) in unityrs_testkit::fuzz::scene_cases() {
-        for target in ["scene_collect", "obj_text"] {
-            s.add(target, &name, &case.encode())?;
-        }
-    }
     for len in [2, 3, 257, 258, 259, 262, 32768, 65536, 65537, 131_333] {
         s.add("zlib_match", &format!("zero-{len}"), &vec![0; len])?;
         let periodic: Vec<_> = (0..len).map(|i| (i % 17).to_le_bytes()[0]).collect();
