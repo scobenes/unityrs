@@ -1,4 +1,4 @@
-//! Synthetic legacy Crunch seed generation, including malformed streams.
+//! Synthetic legacy and Unity fork Crunch seeds, including malformed streams.
 
 use super::Seeds;
 use unityrs_testkit::fuzz::TextureCase;
@@ -9,19 +9,35 @@ const CRUNCH_CASES: &str = concat!(
     "/../unityrs-texture/tests/fixtures/crunch_native.json"
 );
 
-/// Legacy Crunch seeds retain whole valid CRN streams at all meter modes,
+/// Legacy and Unity fork seeds retain whole valid CRN streams at all meter modes,
 /// alongside truncations and a broken signature, so mutations start within
 /// each header, Huffman, palette and mip-zero path as well as its errors.
 pub(super) fn write(s: &mut Seeds) -> std::io::Result<()> {
     let text = std::fs::read_to_string(CRUNCH_CASES)?;
     let body: serde_json::Value = serde_json::from_str(&text).map_err(std::io::Error::other)?;
     let bad = || std::io::Error::other("crunch_native.json: a case is not as the script writes it");
-    for c in body["cases"].as_array().ok_or_else(bad)? {
+    let unity: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../unityrs-texture/tests/fixtures/unitycrunch_native.json"
+    ))?)
+    .map_err(std::io::Error::other)?;
+    for c in body["cases"]
+        .as_array()
+        .ok_or_else(bad)?
+        .iter()
+        .chain(unity["cases"].as_array().ok_or_else(bad)?)
+    {
         let id = c["id"].as_str().ok_or_else(bad)?;
         let format = c["format"]
             .as_i64()
             .and_then(|v| i32::try_from(v).ok())
             .ok_or_else(bad)?;
+        let format = format
+            + if c["unity"] == true && matches!(format, 28 | 29) {
+                100
+            } else {
+                0
+            };
         let side = |key: &str| {
             c[key]
                 .as_i64()

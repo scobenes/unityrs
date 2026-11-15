@@ -12,6 +12,7 @@ fn builder_streams_unpack_to_their_known_blocks_at_every_level() {
         .chain(fixture["truncated_cases"].as_array().unwrap())
         .chain(fixture["data_size_cases"].as_array().unwrap())
         .chain(fixture["edge_block_cases"].as_array().unwrap())
+        .chain(fixture["descriptor_cases"].as_array().into_iter().flatten())
     {
         let bytes = unhex(case["data"]["hex"].as_str().unwrap());
         let header = super::header::Header::parse(&bytes).unwrap();
@@ -117,7 +118,7 @@ fn palette_entries_are_validated_where_the_reference_fetches_them() {
 }
 
 #[test]
-fn crunch_selection_requires_a_legacy_version_and_keeps_platform_gates() {
+fn crunch_selection_uses_the_version_and_keeps_platform_gates() {
     use crate::{Format, Selection, Skip, SkippedPlatform, TextureFields};
     let mut fields = TextureFields {
         texture_format: 28,
@@ -127,34 +128,59 @@ fn crunch_selection_requires_a_legacy_version_and_keeps_platform_gates() {
         platform_blob: None,
     };
     assert_eq!(
-        crate::select_crunch(&fields, (2017, 2)).unwrap(),
+        crate::select_crunch(&fields, (2017, 2)),
         Selection::Export(Format::Dxt1Crunched)
     );
-    assert!(crate::select_crunch(&fields, (2017, 3)).is_err());
-    assert!(crate::select_crunch(&fields, (2020, 1)).is_err());
+    for version in [(2017, 3), (2020, 1)] {
+        assert_eq!(
+            crate::select_crunch(&fields, version),
+            Selection::Export(Format::UnityDxt1Crunched)
+        );
+    }
     fields.texture_format = 29;
     assert_eq!(
-        crate::select_crunch(&fields, (5, 6)).unwrap(),
+        crate::select_crunch(&fields, (5, 6)),
         Selection::Export(Format::Dxt5Crunched)
     );
     fields.platform = crate::XBOX360;
     assert_eq!(
-        crate::select_crunch(&fields, (5, 6)).unwrap(),
+        crate::select_crunch(&fields, (5, 6)),
         Selection::Skip(Skip::UnsupportedPlatform(SkippedPlatform::Xbox360))
     );
     fields.platform = crate::SWITCH;
     fields.platform_blob = Some(&[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
     assert_eq!(
-        crate::select_crunch(&fields, (5, 6)).unwrap(),
+        crate::select_crunch(&fields, (5, 6)),
         Selection::Skip(Skip::UnsupportedPlatform(SkippedPlatform::Switch))
     );
-    for value in [64, 65] {
+    fields.platform = 19;
+    fields.platform_blob = None;
+    fields.texture_format = 29;
+    assert_eq!(
+        crate::select_crunch(&fields, (2017, 3)),
+        Selection::Export(Format::UnityDxt5Crunched)
+    );
+    for (value, format) in [
+        (64, Format::EtcRgb4Crunched),
+        (65, Format::Etc2Rgba8Crunched),
+    ] {
         fields.texture_format = value;
-        assert!(crate::select_crunch(&fields, (5, 6)).is_err());
+        for version in [(5, 6), (2017, 3), (2020, 1)] {
+            assert_eq!(
+                crate::select_crunch(&fields, version),
+                Selection::Export(format)
+            );
+        }
+        fields.platform = crate::XBOX360;
+        assert_eq!(
+            crate::select_crunch(&fields, (5, 6)),
+            Selection::Export(format)
+        );
+        fields.platform = 19;
     }
     fields.width = 0;
     assert_eq!(
-        crate::select_crunch(&fields, (2020, 1)).unwrap(),
+        crate::select_crunch(&fields, (2020, 1)),
         Selection::Skip(Skip::EmptyImage)
     );
 }
@@ -169,17 +195,29 @@ fn allow_list_selection_checks_crunch_version_before_platform() {
         platform: crate::XBOX360,
         platform_blob: None,
     };
-    for format in [Format::Dxt1Crunched, Format::Dxt5Crunched] {
-        fields.texture_format = format.texture_format();
-        let allowed = Formats::NONE.with(format);
-        for version in [(5, 6), (2017, 2), (2017, 3), (2022, 3)] {
+    for (legacy, modern) in [
+        (Format::Dxt1Crunched, Format::UnityDxt1Crunched),
+        (Format::Dxt5Crunched, Format::UnityDxt5Crunched),
+        (Format::EtcRgb4Crunched, Format::EtcRgb4Crunched),
+        (Format::Etc2Rgba8Crunched, Format::Etc2Rgba8Crunched),
+    ] {
+        fields.texture_format = legacy.texture_format();
+        let allowed = Formats::NONE.with(legacy);
+        for version in [
+            (5, 6),
+            (2017, 2),
+            (2017, 3),
+            (2022, 3),
+            (u16::MAX, u16::MAX),
+        ] {
             fields.platform = 19;
-            let want = if version < (2017, 3) {
-                Selection::Export(format)
-            } else {
-                Selection::Skip(Skip::UnsupportedFormat(fields.texture_format))
-            };
+            let want = Selection::Export(if version < (2017, 3) { legacy } else { modern });
             assert_eq!(select_in(&fields, allowed, version), want);
+            assert_eq!(select_in(&fields, Formats::DECODED, version), want);
+            assert_eq!(
+                select_in(&fields, Formats::NONE.with(modern), version),
+                want
+            );
             assert_eq!(
                 select_in(&fields, Formats::NONE, version),
                 Selection::Skip(Skip::UnsupportedFormat(fields.texture_format))
@@ -191,29 +229,29 @@ fn allow_list_selection_checks_crunch_version_before_platform() {
             fields.platform = crate::XBOX360;
             assert_eq!(
                 select_in(&fields, allowed, version),
-                if version < (2017, 3) {
+                if fields.texture_format < 30 {
                     Selection::Skip(Skip::UnsupportedPlatform(SkippedPlatform::Xbox360))
                 } else {
                     want
                 }
             );
-        }
-    }
-    for format in [28, 29, 64, 65] {
-        fields.texture_format = format;
-        for version in [(2017, 2), (2017, 3)] {
-            fields.width = 1;
-            if format >= 64 {
-                assert_eq!(
-                    select_in(&fields, Formats::DECODED, version),
-                    Selection::Skip(Skip::UnsupportedFormat(format))
-                );
-            }
+            fields.platform = crate::SWITCH;
+            fields.platform_blob = Some(&[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
+            assert_eq!(
+                select_in(&fields, allowed, version),
+                Selection::Skip(Skip::UnsupportedPlatform(SkippedPlatform::Switch))
+            );
+            assert_eq!(
+                select_in(&fields, Formats::NONE, version),
+                Selection::Skip(Skip::UnsupportedFormat(fields.texture_format))
+            );
             fields.width = 0;
             assert_eq!(
-                select_in(&fields, Formats::DECODED, version),
+                select_in(&fields, Formats::NONE, version),
                 Selection::Skip(Skip::EmptyImage)
             );
+            fields.width = 1;
+            fields.platform_blob = None;
         }
     }
 }
@@ -627,4 +665,31 @@ fn model_alphabet_work_is_refused_before_expanding_lengths() {
         Err(super::CrunchError::Charge(ChargeError::Limit(l))) if l.kind() == LimitKind::DecodeWork)
     );
     assert_eq!(meter.used(), 0);
+}
+
+#[test]
+fn legacy_unused_alpha_selectors_are_neither_decoded_nor_charged() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/crunch_native.json")).unwrap();
+    let case = fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["format"] == 28)
+        .unwrap();
+    let mut data = unhex(case["data"]["hex"].as_str().unwrap());
+    let size = (
+        usize::try_from(case["width"].as_u64().unwrap()).unwrap(),
+        usize::try_from(case["height"].as_u64().unwrap()).unwrap(),
+    );
+    let baseline = Meter::unlimited();
+    let expected = super::unpack(&data, false, size, 0, &baseline).unwrap();
+    // Both ignored descriptors may name no bytes in the input. The selector
+    // count is nonzero; only the alpha endpoint count gates its use.
+    data[49..57].copy_from_slice(&[255, 255, 255, 0, 0, 0, 0, 0]);
+    data[57..65].copy_from_slice(&[255, 255, 255, 0, 0, 0, 0, 1]);
+    let meter = Meter::unlimited();
+    let got = super::unpack(&data, false, size, 0, &meter).unwrap();
+    assert_eq!(got.as_slice(), expected.as_slice());
+    assert_eq!(meter.decoded(), baseline.decoded());
 }

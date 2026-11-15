@@ -20,6 +20,7 @@ mod changed;
 pub mod save;
 pub mod serialized;
 pub use save::{SaveError, SaveLayout, SaveOptions};
+mod teardown;
 pub mod web;
 
 use std::sync::{Arc, Weak};

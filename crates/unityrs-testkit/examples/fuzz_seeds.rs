@@ -329,18 +329,18 @@ fn specs(nodes: &NodeList) -> Vec<NodeSpec> {
 }
 
 /// The baseline seed formats as the texture target decodes them. The sole
-/// unknown value, 1000, selects ALL[1000 mod 66] = DXT5 in the combined
+/// unknown value, 1000, selects ALL[1000 mod 68] = `ASTC_RGBA_5x5` in the combined
 /// registry. Additional format families have their own seed writers.
 fn texture_decoded_as(format: i32) -> i32 {
     match format {
         3 | 4 | 10 | 12 | 25 | 34 => format,
-        _ => 12,
+        _ => 55,
     }
 }
 
 /// What mip 0 of a `width` x `height` texture of `format` holds, decoded
 /// as the check decodes it: 4x4 blocks of 8 bytes (DXT1, ETC1) or 16 (DXT5,
-/// BC7), else 3 bytes a pixel (RGB24) or 4 (RGBA32); 0 for a side of 0 or
+/// BC7), or 5x5 blocks of 16 bytes (ASTC), else 3 bytes a pixel (RGB24) or 4 (RGBA32); 0 for a side of 0 or
 /// below.
 fn texture_need(format: i32, width: i32, height: i32) -> u64 {
     let (Ok(w), Ok(h)) = (u64::try_from(width), u64::try_from(height)) else {
@@ -350,6 +350,7 @@ fn texture_need(format: i32, width: i32, height: i32) -> u64 {
     match texture_decoded_as(format) {
         10 | 34 => blocks * 8,
         12 | 25 => blocks * 16,
+        55 => w.div_ceil(5) * h.div_ceil(5) * 16,
         3 => w * h * 3,
         _ => w * h * 4,
     }

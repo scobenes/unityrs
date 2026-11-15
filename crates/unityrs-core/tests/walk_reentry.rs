@@ -187,7 +187,10 @@ fn gives(r: &Result<Parsed, ReadError>, want: &Json) -> Result<(), String> {
     let class = want["err"].as_str().unwrap();
     if kind(e.kind) == want["kind"]
         && matches!(class, "EOFError" | "error")
-        && matches!(e.detail, ReadDetail::Eof { .. })
+        && matches!(
+            e.detail,
+            ReadDetail::Eof { .. } | ReadDetail::BoostEof { .. }
+        )
     {
         Ok(())
     } else {

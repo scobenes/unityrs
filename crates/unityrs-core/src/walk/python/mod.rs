@@ -591,7 +591,13 @@ impl Reader<'_, '_> {
             e => self.raise(e),
         })?;
         if !matches!(self.ref_types, RefTypes::List(l) if !l.is_empty()) {
-            return Err(self.fail(ReadErrorKind::RefType, ReadDetail::NoRefTypes));
+            return Err(self.fail(
+                ReadErrorKind::RefType,
+                ReadDetail::NoRefTypes {
+                    reader: ReadBy::Python,
+                    absent: matches!(self.ref_types, RefTypes::Absent),
+                },
+            ));
         }
         if matches!(cls, Value::Str(s) if s.is_empty()) {
             return Ok(None);

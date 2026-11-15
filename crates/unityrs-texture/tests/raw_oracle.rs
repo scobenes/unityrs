@@ -248,8 +248,10 @@ fn every_raw_and_bcn_decode_is_the_oracle_image_or_error() {
 /// Every format the crate decodes is one of the five, the eleven here, an
 /// ETC or EAC format (`tests/etc_oracle.rs`) or an ASTC LDR format
 /// (`tests/astc_oracle.rs`), PVRTC/ATC (`tests/pvrtc_atc_oracle.rs`),
-/// or a closed-form raw format (`tests/tierb_oracle.rs`), with legacy CRN
-/// covered by `tests/crunch_oracle.rs`: together the fixtures replay every one.
+/// or a closed-form raw format (`tests/tierb_oracle.rs`): together the
+/// fixtures replay the 64 plain formats. Four crunched Unity values use
+/// `tests/crunch_oracle.rs` and `tests/unitycrunch_oracle.rs`; their pixel
+/// replay requires `crunch.json`.
 #[test]
 fn every_format_is_replayed_by_an_oracle_fixture() {
     let ours: BTreeSet<&str> = FORMATS.iter().map(|(f, _)| f.name()).collect();
@@ -268,7 +270,7 @@ fn every_format_is_replayed_by_an_oracle_fixture() {
             "{name}"
         );
     }
-    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 6 + 2 + 22);
+    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 6 + 4 + 22);
 }
 
 fn crate_tierb(format: Format) -> bool {

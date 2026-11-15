@@ -40,6 +40,10 @@ fn native() -> J {
 fn synthetic_legacy_crunch_decodes_as_its_known_bc_blocks() {
     let doc = native();
     assert_eq!(doc["schema"], 1);
+    let descriptors = doc["descriptor_cases"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     let cases: Vec<_> = doc["cases"]
         .as_array()
         .unwrap()
@@ -47,8 +51,9 @@ fn synthetic_legacy_crunch_decodes_as_its_known_bc_blocks() {
         .chain(doc["truncated_cases"].as_array().unwrap())
         .chain(doc["data_size_cases"].as_array().unwrap())
         .chain(doc["edge_block_cases"].as_array().unwrap())
+        .chain(descriptors)
         .collect();
-    assert_eq!(cases.len(), 23);
+    assert_eq!(cases.len(), 23 + descriptors.len());
     for case in cases {
         let id = case["id"].as_str().unwrap();
         let format = Format::from_texture_format(number(&case["format"])).unwrap();
@@ -99,7 +104,12 @@ fn every_legacy_crunch_decode_is_the_oracle_image() {
     let mut expected_cases: Vec<_> = native["cases"].as_array().unwrap().iter().collect();
     let mut cases: Vec<_> = doc["cases"].as_array().unwrap().iter().collect();
     assert_eq!(cases.len(), expected_cases.len());
-    for group in ["truncated_cases", "data_size_cases", "edge_block_cases"] {
+    for group in [
+        "truncated_cases",
+        "data_size_cases",
+        "edge_block_cases",
+        "descriptor_cases",
+    ] {
         if let Some(extra) = doc[group].as_array() {
             let expected = native[group].as_array().unwrap();
             assert_eq!(extra.len(), expected.len(), "{group}");

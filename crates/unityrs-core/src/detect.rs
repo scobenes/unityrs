@@ -88,6 +88,18 @@ pub enum DetectError {
     /// A `1f 8b` file whose stream does not decompress in full.
     #[error("gzip: {0}")]
     Gzip(Arc<str>),
+    /// CRC mismatch, retaining the canonical core message and its original
+    /// allocation. Consumers that expose `CPython`'s exception can render the
+    /// two checksums without lengthening the cached core message.
+    #[error("gzip: {detail}")]
+    GzipCrc {
+        /// The same message as a legacy gzip CRC failure.
+        detail: Arc<str>,
+        /// Checksum stored in the gzip trailer.
+        expected: u32,
+        /// Checksum computed from the decompressed member.
+        actual: u32,
+    },
     /// The gzip stream inflates past [`Limits::max_inflate`]: a
     /// [`LimitKind::Inflate`] refusal, whose value is what the stream had
     /// inflated to when it was refused, so its text is every limit
@@ -482,7 +494,11 @@ fn member_trailer(data: &[u8], pos: &mut usize, crc: &Crc) -> Result<(), DetectE
             .map_or(0, u32::from_le_bytes)
     };
     if word(0) != crc.sum() {
-        return Err(gzip_error("BadGzipFile: CRC check failed"));
+        return Err(DetectError::GzipCrc {
+            detail: "BadGzipFile: CRC check failed".into(),
+            expected: word(0),
+            actual: crc.sum(),
+        });
     }
     if word(4) != crc.amount() {
         return Err(gzip_error("BadGzipFile: Incorrect length of data produced"));

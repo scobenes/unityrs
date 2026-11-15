@@ -87,10 +87,11 @@ impl SceneError {
                     ReadDetail::Charge(_) | ReadDetail::Limit(_) => true,
                     ReadDetail::Tree(t) => tree(t),
                     ReadDetail::Eof { .. }
+                    | ReadDetail::BoostEof { .. }
                     | ReadDetail::NegativeLength(_)
                     | ReadDetail::ArrayChildren
                     | ReadDetail::PairChildren
-                    | ReadDetail::NoRefTypes
+                    | ReadDetail::NoRefTypes { .. }
                     | ReadDetail::RefTypeNotFound
                     | ReadDetail::RefTypeNoTree
                     | ReadDetail::Python(_)
@@ -114,7 +115,9 @@ impl SceneError {
                     DetectError::InflateLimit(_)
                     | DetectError::Work(_)
                     | DetectError::Allocator(_) => true,
-                    DetectError::Unterminated | DetectError::Gzip(_) => false,
+                    DetectError::Unterminated
+                    | DetectError::Gzip(_)
+                    | DetectError::GzipCrc { .. } => false,
                     _ => true,
                 },
                 Error::Tree(t) => tree(t),
