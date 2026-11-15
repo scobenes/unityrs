@@ -207,3 +207,10 @@ path = "fuzz_targets/shader.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "set_image"
+path = "fuzz_targets/set_image.rs"
+test = false
+doc = false
+bench = false

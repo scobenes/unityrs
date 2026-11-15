@@ -5,7 +5,7 @@
 mod dispatch;
 mod icons;
 mod raster;
-mod resample;
+pub mod resample;
 mod sink;
 mod structured;
 use crate::{Buffer, Charger, EncodeError, Image};

@@ -114,6 +114,11 @@ accepted = ["BSD-2-Clause-Views"]
 license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0 AND Zlib"
 
 [[unityrs-texture.clarify.files]]
+path = "LICENSE-LCMS"
+license = "MIT"
+checksum = "16e73b9194bb1529349d03a864af0986a187a3dcb4fa850b865029d5cee48f1e"
+
+[[unityrs-texture.clarify.files]]
 path = "LICENSE-UNITYCRUNCH"
 license = "Zlib"
 checksum = "c58e9248cc52c8e6ad2013d879b51fe1936dbda72d56aaa0b904f1387d401a87"

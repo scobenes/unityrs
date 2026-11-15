@@ -57,6 +57,10 @@ fn switch_gob_constants_and_all_29_texel_blocks_replay_the_oracle() {
         assert_eq!(serde_json::json!(layout.block()), c["block"]);
         let linear = platform::deswizzle(&bytes(&c["data"]), &layout, &meter).unwrap();
         assert_eq!(digest(linear.as_slice()), c["linear_sha256"], "{}", c["id"]);
+        {
+            let swizzled = platform::swizzle(linear.as_slice(), &layout, &meter).unwrap();
+            assert_eq!(swizzled.as_slice(), bytes(&c["data"]), "{}", c["id"]);
+        }
         drop(linear);
         assert_eq!(meter.used(), 0);
     }

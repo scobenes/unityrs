@@ -33,6 +33,9 @@ rust-version.workspace = true
 # crunch/crn_decomp.h. Its actual notice is Richard Geldreich's modified
 # Zlib licence with required public credit (LicenseRef-Crunch), preserved
 # in LICENSE-CRUNCH; it is not the standard Zlib licence.
+# Raw writes (src/write/) additionally use Pillow conversion and the shared
+# imageio resampler; lab.rs ports Little CMS 2.15 interpolation (MIT), with
+# the pinned Pillow colour table and LICENSE-LCMS shipped in the package.
 # Unity fork unpacking ports unitycrunch/crn_decomp.h (standard Zlib),
 # preserved in LICENSE-UNITYCRUNCH.
 license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0 AND LicenseRef-Crunch AND Zlib"
@@ -43,6 +46,8 @@ authors.workspace = true
 # The meter every output buffer is charged to before it is allocated
 # (docs/plans/extract.md E59).
 unityrs-core = { path = "../unityrs-core" }
+# Shared Pillow fixed-point resampling; no additional third-party dependency.
+unityrs-imageio = { path = "../unityrs-imageio" }
 # A tight sprite's mesh (MeshHandler.process, get_triangles), which the
 # sprite renderer reads (src/sprite.rs).
 unityrs-meshdecode = { path = "../unityrs-meshdecode" }

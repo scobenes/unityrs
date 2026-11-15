@@ -156,7 +156,7 @@ P3_TIER_C = ["EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGBA1"]
 P3_TIER_C_STATUS = "pinned P0; verified P3 (decoding, as section 19.1's reference); verified P3a (platform gates)"
 
 
-def status_of(name):
+def _decoding_status_of(name):
     """A matrix row's status (section 17's text): the five P1b formats', the verified P3 formats', or every other's."""
     if name in P1B:
         return P1B_STATUS
@@ -173,6 +173,18 @@ def status_of(name):
     if name in P3:
         return P3_STATUS
     return "pinned P0; impl P3a"
+
+
+def status_of(name):
+    """Decode coverage above, plus B3a's oracle-replayed raw write targets."""
+    status = _decoding_status_of(name)
+    encoders = {
+        "DXT1", "DXT1Crunched", "DXT5", "DXT5Crunched", "BC4", "BC5", "BC7",
+        "ETC_RGB4", "ETC_RGB4Crunched", "ETC_RGB4_3DS", "ETC2_RGB",
+        "ETC2_RGBA1", "ETC2_RGBA8", "ETC2_RGBA8Crunched",
+    }
+    # crates/unityrs-texture/tests/set_image.rs replays all 46 raw targets.
+    return status if name.startswith("ASTC") or name in encoders else status + "; verified P3b (raw writes)"
 
 VERSION = (2021, 3, 1, 3)  # the matrix's 2021.3.1f3
 # A platform blob that makes TextureSwizzler.is_switch_swizzled hold: 1 << 1 = 2 GOBs per block.
