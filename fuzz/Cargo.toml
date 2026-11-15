@@ -22,6 +22,9 @@ lz4-sys = "=1.10.0"
 unityrs-core = { path = "../crates/unityrs-core" }
 unityrs-export = { path = "../crates/unityrs-export" }
 unityrs-imageio = { path = "../crates/unityrs-imageio", features = ["test-reference"] }
+unityrs-gltf = { path = "../crates/unityrs-gltf" }
+unityrs-mesh = { path = "../crates/unityrs-mesh" }
+unityrs-scene = { path = "../crates/unityrs-scene" }
 unityrs-meshdecode = { path = "../crates/unityrs-meshdecode" }
 unityrs-testkit = { path = "../crates/unityrs-testkit" }
 unityrs-texture = { path = "../crates/unityrs-texture" }
@@ -166,6 +169,20 @@ bench = false
 [[bin]]
 name = "serialized_save"
 path = "fuzz_targets/serialized_save.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scene_collect"
+path = "fuzz_targets/scene_collect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "obj_text"
+path = "fuzz_targets/obj_text.rs"
 test = false
 doc = false
 bench = false
