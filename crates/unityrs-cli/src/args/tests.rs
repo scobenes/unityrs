@@ -433,3 +433,11 @@ fn repr_quotes_as_python() {
     assert_eq!(py_repr(b"a\\b\n\x01\x7f"), "'a\\\\b\\n\\x01\\x7f'");
     assert_eq!(py_repr(b"\xffz"), "'\\udcffz'");
 }
+
+#[test]
+fn mesh_mode_is_explicit_and_rejects_hidden_canonical_modifiers() {
+    assert!(!dump(&["in", "-o", "out"]).mesh);
+    assert!(dump(&["in", "-o", "out", "--mesh"]).mesh);
+    assert!(error(&["in", "-o", "out", "--mesh", "--unbounded", "InputMemory"]).contains("--mesh"));
+    assert!(error(&["in", "-o", "out", "--mesh", "--reverse-prepass"]).contains("--mesh"));
+}

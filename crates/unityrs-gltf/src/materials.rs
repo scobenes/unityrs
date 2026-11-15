@@ -44,6 +44,7 @@ struct CachedTexture {
     reason: Option<&'static str>,
 }
 pub(crate) struct State {
+    pub(crate) builtins: crate::collect::builtin::Cache,
     materials: MeteredVec<Cached>,
     shaders: MeteredVec<Shader>,
     textures: MeteredVec<CachedTexture>,
@@ -51,6 +52,7 @@ pub(crate) struct State {
 impl State {
     pub(crate) fn new(meter: &Arc<Meter>) -> Self {
         Self {
+            builtins: crate::collect::builtin::Cache::new(meter),
             materials: MeteredVec::new(meter),
             shaders: MeteredVec::new(meter),
             textures: MeteredVec::new(meter),
@@ -130,7 +132,7 @@ impl State {
         let object = match target {
             Some(PPtrTarget::Object(o)) => o,
             Some(PPtrTarget::Builtin(b)) if profile.builtin == crate::Builtin::Resolve => {
-                resolved = match crate::collect::builtin::resolve(env, b, meter) {
+                resolved = match self.builtins.resolve(env, b, meter) {
                     Ok(o) => o,
                     Err(e) if recoverable(&e) => {
                         diagnostics::record(scene, node, "missing_material", 1, meter)?;

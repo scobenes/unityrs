@@ -4,7 +4,8 @@
 `docs/plans/core.md` section 6, and section 8's R9 (the LZ4 decoder against
 liblz4); for `unityrs-texture`'s decoders and selection
 (`docs/plans/extract.md` E15, E18, E59, E66); and for `unityrs-meshdecode`'s
-vertex-data unpack and triangles (E16, E59). Any panic, timeout over 10 s,
+vertex-data unpack and triangles (E16, E59); and for scene/prefab collection,
+GLB writing and OBJ/MTL text (`docs/plans/static3d.md` section 4.3). Any panic, timeout over 10 s,
 or allocation over 2 GiB is a bug.
 The `shader` target exercises `unityrs-export`'s shader program parser and
 converter over arbitrary typetree values.
@@ -36,6 +37,8 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `astc` | `unityrs_texture::decode` of an ASTC LDR texture (the case's format taken as one of the twelve), under the memory bound or a meter of the decode's peak charge, its output and its tables, less 1, the charge or plus 1: the decode's answer its `plan`'s (but a refusal of a charge past the meter's limit), the image the plan's size, mode and charge, the meter back at 0 after it, so the tables are returned, and each block's texels in the image those of the block decoded alone as a one-block texture (every block of an image of up to 32, and of a larger one the first 32 and those the right and bottom edges cut): the assembly, the cut and the flip | `unityrs_testkit::fuzz::TextureCase`: format, size, platform, meter, platform blob, data |
 | `crunch` | legacy CRN DXT1 and DXT5 decode with dimensions bounded to -4 through 128 and data capped at 64 KiB, under the memory bound or the conservative planned peak charge and its neighbours: output size, mode and retained charge match the plan, malformed-stream errors repeat deterministically, and every meter returns to zero | `unityrs_testkit::fuzz::TextureCase`: format taken as 28 or 29, size, meter and CRN stream |
 | `meshdecode` | `walk::boost::read` of a Mesh's or a Sprite's value, then `unityrs_meshdecode::MeshHandler::process` (with or without a resource reader, either byte order, any version), `get_triangles` twice and `process` again, run last once the first's outputs drop, under the case's limits and, when the case's meter is not 0, again under a meter of `meter² × 64` bytes with the same work bound: the second `get_triangles` and the second `process` must answer as the first (but a refusal of the work it adds), the smaller meter's answer must be the first's (but a refusal of a charge past its limit), and each meter back at 0 once the outputs drop | `unityrs_testkit::fuzz::MeshCase`: flags, meter, version, resource, then a `TreeCase` |
+| `scene_collect` | graph construction for the complete scene or the last GameObject in object-table order as a prefab, strict profile parsing, collect with UnlitExtras or CorePbr, then streaming GLB writing twice; fresh exports must repeat their outcome, smaller-meter exports must produce identical bytes or a named memory/work refusal, and operation meters return to zero | `unityrs_testkit::fuzz::SceneCase`: meter byte, policy flags, u16 profile length, JSON profile, serialized scene bytes |
+| `obj_text` | raw mesh OBJ plus corrected renderer OBJ/MTL/texture export to a streaming digest; repeated fresh exports must match, smaller-meter exports must match or name their memory/work refusal, and operation meters return to zero | `SceneCase`, sharing the synthetic scene seeds |
 | `fsb5` | `unityrs_audio::plan` and `decode`: bounded parsing, PCM and float WAV lengths, repeatability and charge release | raw audio bytes |
 | `shader` | `shader::Program::parse` and every entry's export through `shader::render_all`, twice on fresh meters with the same memory and work bounds: the verdict and attempted entry count must repeat and temporary memory charges must return to zero; rendering errors must not hide later entries; then `walk::boost::read` and `shader::export_parsed` over the same input as an arbitrary tree value, under the case's memory and work limits, with conversion charges released | both interpretations: `unityrs_testkit::fuzz::ShaderCase` (Unity major/minor version, meter, program blob) and `TreeCase`; input capped at 8 MiB |
 
@@ -87,6 +90,17 @@ The `crunch` seeds retain every synthetic legacy DXT1 and DXT5 CRN stream in
 plus truncated streams and corrupt signatures. The streams are generated
 by `tools/fixtures/texture_crunch.py`, including multi-mip streams; decoding
 uses mip zero. Unity 2017.3+ Crunch and ETC Crunch remain pending.
+The `scene_collect` and `obj_text` targets share 288 generated scenes each:
+2019.4, 2022.3 and 6000.x embedded layouts, scene and prefab selection,
+default and CorePbr material mapping, static batching, fixed-weight skins,
+sparse morphs, an asymmetric texture, root-table ordering, inactive roots,
+non-finite transforms, cyclic and dangling links, negative file ids, and an
+invalid UTF-8 mesh name. Every case is generated at meters 0, 1, 16 and 64.
+`SceneCase` flags select a prefab (bit 0) and CorePbr (bit 1); an empty
+profile means defaults. A nonzero meter also runs at `meter² × 64` bytes.
+Source loading keeps the normal input/work bounds; graph, collect and
+output operations use the selected meter. GLB and OBJ output is hashed as
+it streams, without retaining a complete output buffer.
 The `shader` seeds are synthetic program blobs on either side of the
 2019.3 entry-table change and each subprogram-header boundary, with empty
 and textual code, global and local keywords, repeated entries, truncated
@@ -99,8 +113,9 @@ typed converter fields, at both value memory bounds.
 The `zlib_match` seeds are the builders' outputs (capped at 4 MiB), plus
 zero and periodic inputs around match and window boundaries.
 The `fsb5` seeds use `unityrs_testkit::fsb5`: passthrough audio, all supported
-PCM widths at both bank versions, rates, names, extra chunks, empty/short
-subsounds, deferred codecs and hostile headers (54 synthetic inputs).
+PCM widths, IMA ADPCM and FADPCM at both bank versions, rates, names, extra
+chunks, empty/short subsounds, deferred codecs and hostile headers
+(83 synthetic inputs, including ADPCM coefficient and shift edges).
 
 ## Running
 

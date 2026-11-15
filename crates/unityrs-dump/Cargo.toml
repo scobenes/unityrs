@@ -17,6 +17,8 @@ publish = false
 
 [dependencies]
 unityrs-core = { path = "../unityrs-core" }
+unityrs-mesh = { path = "../unityrs-mesh" }
+unityrs-meshdecode = { path = "../unityrs-meshdecode" }
 # `--tpk`: the oracle image's TPK as the context's typetree provider.
 unityrs-tpk = { path = "../unityrs-tpk" }
 # The raw-bytes rule's summaries (CANONICAL_DUMP section 3).

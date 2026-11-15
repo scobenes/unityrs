@@ -5,6 +5,7 @@
 //!     [--allow-index-mismatch] [--name GLOB]... [--sample N] [--limit N]
 //!     [--levels L0,L1,L2,L3] [-j N] [--stats PATH] [-q] [--tpk PATH] [--reverse-prepass]
 //!     [--unbounded KIND[,KIND...]]
+//! unityrs gltf INPUT... (--scene FILE | --path-id ID | --prefab PATH) -o OUT.glb [options]
 //! unityrs values CASES.json
 //! unityrs batch --check JOB.json | --schema | JOB.json
 //! unityrs --version
@@ -44,6 +45,7 @@
 
 mod args;
 mod batch;
+mod gltf;
 mod obj;
 
 use std::ffi::OsStr;
@@ -69,8 +71,9 @@ mod test_alloc;
 #[global_allocator]
 static ALLOCATOR: Counting = Counting::new();
 
-const USAGE: &str = "usage: unityrs {dump,values,batch,obj} ...\n\n\
+const USAGE: &str = "usage: unityrs {dump,values,batch,obj,gltf} ...\n\n\
   unityrs dump INPUT... -o OUT.jsonl[.gz] [options]   the canonical dump (dump -h)\n\
+  unityrs gltf INPUT... --scene FILE -o OUTPUT.glb      scene/prefab export (gltf -h)\n\
   unityrs obj INPUT --path-id ID -o OUTPUT              OBJ/MTL export (obj -h)\n\
   unityrs values CASES.json                           the value-case protocol\n\
   unityrs batch --check JOB.json | --schema           the batch engine\n\
@@ -90,6 +93,7 @@ fn run_options(a: args::DumpArgs) -> Result<RunOptions, String> {
         // `run_jobs`: `workers = max(1, workers)`.
         jobs: usize::try_from(a.jobs.max(1)).unwrap_or(usize::MAX),
         lazy_reverse: a.lazy_reverse,
+        mesh: a.mesh,
         ..DumpOptions::default()
     };
     // Before `--tpk`, whose provider is opened under the context's limits.
@@ -201,6 +205,7 @@ fn main() -> ExitCode {
     match argv.first().map(Vec::as_slice) {
         Some(b"dump") => dump(rest),
         Some(b"obj") => obj::main(rest),
+        Some(b"gltf") => gltf::main(rest),
         Some(b"batch") => engine(main_start, |c| batch::main(c, rest)),
         Some(b"--version") => engine(main_start, |c| batch::version(c, rest)),
         Some(b"values") => match rest {
@@ -223,7 +228,7 @@ fn main() -> ExitCode {
             USAGE,
             "unityrs",
             &format!(
-                "argument command: invalid choice: {} (choose from 'dump', 'values', 'batch', 'obj')",
+                "argument command: invalid choice: {} (choose from 'dump', 'values', 'batch', 'obj', 'gltf')",
                 args::py_repr(other)
             ),
         ),
