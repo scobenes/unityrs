@@ -57,11 +57,13 @@ jobs:
           - scene_collect
           - obj_text
           - zlib_match
+          - webp
           - unitycn
           - zip
           - webfile
           - unityweb
           - fsb5
+          - image_writers
           - shader
     env:
       TARGET: ${{ matrix.target }}

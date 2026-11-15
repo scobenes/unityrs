@@ -618,7 +618,7 @@ fn raw_duplicate_palette_keeps_signed_weights() {
     write_glb(&scene, &profile.options(), &meter, &mut Vec::new()).unwrap();
 }
 #[test]
-fn nonfinite_uv_or_morph_data_degrades_only_its_renderer() {
+fn nonfinite_uv_drops_its_attribute_while_invalid_morph_degrades_its_renderer() {
     for morph in [false, true] {
         let mut objects = h::objects(false, false);
         if morph {
@@ -652,8 +652,27 @@ fn nonfinite_uv_or_morph_data_degrades_only_its_renderer() {
         let (env, graph) = h::graph(&objects);
         let meter = h::meter();
         let scene = collect(&env, &graph, &Profile::new(&meter), &meter).unwrap();
-        assert!(scene.nodes.as_slice().iter().all(|n| n.mesh.is_none()));
-        assert_eq!(scene.collection_issues.len(), 1);
+        if morph {
+            assert!(scene.nodes.as_slice().iter().all(|n| n.mesh.is_none()));
+            assert_eq!(scene.collection_issues.len(), 1);
+        } else {
+            assert!(scene.nodes.as_slice().iter().any(|n| n.mesh.is_some()));
+            let report = write_glb(
+                &scene,
+                &Profile::new(&meter).options(),
+                &meter,
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(report.dropped_texcoord_attributes, 2);
+            assert!(
+                report
+                    .issues
+                    .as_slice()
+                    .iter()
+                    .all(|i| i.reason == unityrs_gltf::Reason::InvalidTexCoord)
+            );
+        }
         h::validator_clean(&scene);
     }
 }

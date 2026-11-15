@@ -90,30 +90,46 @@ fn info(j: &mut Json<'_>, t: TextureInfo, extra: Option<(&str, f64)>) -> Result<
     }
     j.raw("}")
 }
-pub(crate) fn materials(s: &Scene, j: &mut Json<'_>) -> Result<()> {
+pub(crate) fn materials(s: &Scene, l: &crate::Layout, j: &mut Json<'_>) -> Result<()> {
     if s.materials.is_empty() {
         return Ok(());
     }
     j.raw(",\"materials\":[")?;
-    for (i, m) in s.materials.as_slice().iter().enumerate() {
+    for i in 0..s.materials.len() + l.textureless_materials.len() {
+        let textureless = i >= s.materials.len();
+        let id = if textureless {
+            *l.textureless_materials
+                .as_slice()
+                .get(i - s.materials.len())
+                .ok_or_else(|| invalid("material variant"))?
+        } else {
+            i
+        };
+        let m = s
+            .materials
+            .as_slice()
+            .get(id)
+            .ok_or_else(|| invalid("material source"))?;
+        let textures = if textureless { [None; 5] } else { m.textures() };
+        let [base, metallic, normal, occlusion, emissive] = textures;
         if i > 0 {
             j.raw(",")?;
         }
         j.raw("{\"doubleSided\":")?;
         j.raw(if m.double_sided { "true" } else { "false" })?;
         if m.base_color != [1.; 4]
-            || m.base_color_texture.is_some()
-            || m.metallic_roughness_texture.is_some()
+            || base.is_some()
+            || metallic.is_some()
             || m.metallic != 1.
             || m.roughness != 1.
         {
             j.raw(",\"pbrMetallicRoughness\":{\"baseColorFactor\":")?;
             j.floats(&m.base_color)?;
-            if let Some(t) = m.base_color_texture {
+            if let Some(t) = base {
                 j.raw(",\"baseColorTexture\":")?;
                 info(j, t, None)?;
             }
-            if let Some(t) = m.metallic_roughness_texture {
+            if let Some(t) = metallic {
                 j.raw(",\"metallicRoughnessTexture\":")?;
                 info(j, t, None)?;
             }
@@ -124,17 +140,13 @@ pub(crate) fn materials(s: &Scene, j: &mut Json<'_>) -> Result<()> {
             j.raw("}")?;
         }
         for (key, t, value) in [
-            (
-                "normalTexture",
-                m.normal_texture,
-                Some(("scale", m.normal_scale)),
-            ),
+            ("normalTexture", normal, Some(("scale", m.normal_scale))),
             (
                 "occlusionTexture",
-                m.occlusion_texture,
+                occlusion,
                 Some(("strength", m.occlusion_strength)),
             ),
-            ("emissiveTexture", m.emissive_texture, None),
+            ("emissiveTexture", emissive, None),
         ] {
             if let Some(t) = t {
                 j.raw(",")?;

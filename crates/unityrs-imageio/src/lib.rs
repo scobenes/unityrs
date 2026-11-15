@@ -1,5 +1,8 @@
-//! PNG files byte-identical to Pillow 9.5.0's, and the visible-pixel hash
+//! Image files byte-identical to Pillow 9.5.0's, and the visible-pixel hash
 //! (`docs/plans/extract.md` E19, E20, E59; `docs/DESIGN.md` section 4).
+//! [`writers`] also provides BMP/DIB, TGA, PPM, PCX, SGI, IM, raw TIFF,
+//! DDS, ICO, ICNS and EPS, their typed refusals, and the extractor's PNG
+//! fallback policy. `tools/fixtures/image_writers.py` records their oracle.
 //!
 //! - [`encode`] writes an image of mode `L`, `LA`, `RGB` or `RGBA` as
 //!   Pillow 9.5.0's `Image.save(fp, "PNG")` writes it at its defaults, byte
@@ -9,10 +12,17 @@
 //!   distances from zero, the earlier on a tie); deflated by zlib 1.2.13 at
 //!   level 6, windowBits 15, memLevel 9, `Z_FILTERED`. The PNG writer is
 //!   `src/png.rs`, the filter `src/filter.rs`.
+//!   Palette mode `P` adds PLTE and uses unfiltered rows with zlib's default
+//!   strategy: 8-bit indices with an explicit palette, or packed 1-bit
+//!   indices with Pillow's implicit one-entry palette.
+//! - [`encode_webp`] writes Pillow 9.5.0's still-image WebP bytes through
+//!   libwebp 1.3.0 with upstream failure-path fixes, generic C on every target, with bounded fallible
+//!   allocation. [`webp_plan`] gives its measured and enforced allowance.
 //! - [`encode_fast`] opts into zlib level 1 and a fixed Sub filter, with
 //!   the same windowBits 15, memLevel 9 and `Z_FILTERED`, charge plan and
-//!   fallible allocations. Its PNG preserves every pixel byte while
-//!   trading compression ratio for speed; default byte parity is unchanged.
+//!   fallible allocations. It preserves hidden RGB and uses the same
+//!   palette depth and packing as [`encode`], trading compression ratio
+//!   for speed; default byte parity is unchanged.
 //! - [`visible_hash`] is E20's hash: SHA-256 over `"{width}x{height}:"` and
 //!   the RGBA bytes, alpha-0 pixels cleared, other modes converted as
 //!   Pillow's `convert("RGBA")` converts them.
@@ -27,7 +37,7 @@
 //!   enables a C zlib of flate2's.
 //! - Every buffer sized by the image, and zlib's deflate state, is offered
 //!   to the caller's [`Charger`] before it is allocated ([`charge`] module
-//!   docs; [`plan`] gives the same figures ahead of time), and allocated
+//!   docs; [`plan_image`] gives the same figures ahead of time), and allocated
 //!   fallibly: a refusal is an error, never an abort.
 //!
 //! The tests replay oracle fixtures that `tools/fixtures/imageio.py`
@@ -36,7 +46,8 @@
 //!
 //! Untrusted sizes and bytes never panic: clippy denies `unwrap`, `expect`,
 //! `panic` and indexing outside tests, as in the core (`docs/plans/core.md`
-//! 3.15). `unsafe` is confined to the zlib bindings (`src/zlib.rs`) and the
+//! 3.15). WebP unsafe is confined to `src/webp_ffi.rs`; PNG unsafe to the
+//! zlib bindings (`src/zlib.rs`) and the
 //! two calls of [`encode`] that hand zlib its input and output.
 
 #![deny(unsafe_code)]
@@ -60,9 +71,18 @@ mod image;
 #[cfg(test)]
 mod memory_tests;
 mod png;
+mod webp;
+mod webp_ffi;
+pub mod writers;
 mod zlib;
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub use webp::test_encode_webp_lossless;
+pub use webp::{
+    Webp, WebpError, WebpOptions, WebpPlan, encode_webp, webp_plan, webp_plan_with_options,
+};
 
-pub use charge::{Buffer, Charger, DEFLATE_STATE_REQUESTS, Plan, Unmetered, plan};
+pub use charge::{Buffer, Charger, DEFLATE_STATE_REQUESTS, Plan, Unmetered, plan, plan_image};
 pub use hash::visible_hash;
 pub use image::{Image, ImageError, Mode};
 pub use png::{EncodeError, Png, ZlibFailure, encode, encode_fast};
@@ -86,3 +106,8 @@ const _: () = send_sync::<Unmetered>();
 const _: () = send_sync::<Png<()>>();
 const _: () = send_sync::<EncodeError<std::convert::Infallible>>();
 const _: () = send_sync::<ZlibFailure>();
+
+const _: () = send_sync::<WebpOptions>();
+const _: () = send_sync::<WebpPlan>();
+const _: () = send_sync::<Webp<()>>();
+const _: () = send_sync::<WebpError<std::convert::Infallible>>();

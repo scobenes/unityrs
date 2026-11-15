@@ -32,7 +32,7 @@ files); given two, it checks only those two files against each other.
 placeholders (`<year>`, `<copyright holders>`, `<owner>`): cargo-about uses the
 template when a crate ships no licence file, and a notice with a placeholder
 names no one. It also fails when the text of a workspace member's `LICENSE-*`
-file is not in its Crates part (or Ported code for a named LicenseRef):
+file is not in its Crates part (or Ported code for a named LicenseRef), or a\nNOTICE-* file (including a vendored PATENTS grant) is missing from Ported code:
 cargo-about lists a licence file only when it recognises the licence in it,
 and otherwise falls back to the template, or to nothing,
 without a warning (a PSF agreement with a paragraph of ours before it is not
@@ -342,8 +342,12 @@ def notice_problems(text: str, root: Path | None = None) -> list[str]:
                         f"{path.relative_to(root).as_posix()}: generated from {h.source} under {h.spdx}, which is "
                         "not among the licences listed under Crates, so no text of it reaches THIRD_PARTY_LICENSES"
                     )
-        for path in sorted((root / "crates").glob("*/LICENSE-*")):
+        for path in sorted([*(root / "crates").glob("*/LICENSE-*"), *(root / "crates").glob("*/NOTICE-*")]):
             if not (path.parent / "Cargo.toml").is_file():
+                continue
+            if path.name.startswith("NOTICE-"):
+                if _words(path.read_text(encoding="utf-8")) not in ported:
+                    problems.append(f"{path.relative_to(root).as_posix()}: its text is not in full in Ported code")
                 continue
             ids = spdx_ids(spdx_parse(_crate_licence(root, path.parent.name)))
             custom = any(LICENSE_REFS[i] == (path.parent.name, path.name) for i in ids & LICENSE_REFS.keys())

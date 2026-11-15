@@ -20,6 +20,7 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | target | what it runs | input |
 |---|---|---|
 | `detect` | `detect::check_file_type` (the gzip check bounded by `max_inflate`) | any bytes |
+| `webp` | libwebp 1.3.0 encoder, metered and fallible; hostile dimensions and quality/method | 12-byte header (LE u32 width/height, mode, quality, method, exact), then at most 1 MiB of pixels |
 | `zlib_match` | derived deflate against pristine zlib 1.2.13, with 257-byte input and 509-byte output windows (`test-reference`) | any bytes, capped at 4 MiB |
 | `bundle` | `BundleFile::open` plus `load_all` (every block decoded, every entry parsed, nested bundles loaded), by the memory and the stream reader's rules | any bytes |
 | `zip` | central-directory/ZIP64 parsing, CRC-checked stored/deflate reads, and `Environment::load_zip_file` with nested frames, split joins and cached duplicate reads | arbitrary ZIP bytes; stored, deflate, split, empty and nested duplicate testkit seeds |
@@ -39,9 +40,11 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `scene_collect` | graph construction for the complete scene or the last GameObject in object-table order as a prefab, strict profile parsing, collect with UnlitExtras or CorePbr, then streaming GLB writing twice; fresh exports must repeat their outcome, smaller-meter exports must produce identical bytes or a named memory/work refusal, and operation meters return to zero | `unityrs_testkit::fuzz::SceneCase`: meter byte, policy flags, u16 profile length, JSON profile, serialized scene bytes |
 | `obj_text` | raw mesh OBJ plus corrected renderer OBJ/MTL/texture export to a streaming digest; repeated fresh exports must match, smaller-meter exports must match or name their memory/work refusal, and operation meters return to zero | `SceneCase`, sharing the synthetic scene seeds |
 | `fsb5` | `unityrs_audio::plan` and `decode`: bounded parsing, PCM and float WAV lengths, repeatability and charge release | raw audio bytes |
+| `image_writers` | `Image::new` and palette validation, then default image writers: deterministic output and typed refusals, charged output and released charges; at most 65,536 source pixels and 4 MiB per writer run; ICNS uses a zero allocation budget to bound its mandatory resize | width/height u32 LE, mode, format, dimension policy, budget selector, filename selector, then repeating pixel/palette bytes |
 | `shader` | `shader::Program::parse` and every entry's export through `shader::render_all`, twice on fresh meters with the same memory and work bounds: the verdict and attempted entry count must repeat and temporary memory charges must return to zero; rendering errors must not hide later entries; then `walk::boost::read` and `shader::export_parsed` over the same input as an arbitrary tree value, under the case's memory and work limits, with conversion charges released | both interpretations: `unityrs_testkit::fuzz::ShaderCase` (Unity major/minor version, meter, program blob) and `TreeCase`; input capped at 8 MiB |
 
-Every run is bounded by the limits in `src/lib.rs`: 128 MiB of memory, of
+Except for `image_writers`' tighter bounds above, runs use the limits in
+`src/lib.rs`: 128 MiB of memory, of
 input and of one block's output (`MEMORY`), and 8 MiB of decode work and of
 inflate (`WORK`). A value read never reaches 128 MiB within the work bound,
 so a `TreeCase` with `SMALL_MEMORY` set bounds its memory at 8 MiB instead
@@ -112,12 +115,22 @@ offsets, each under meters 0, 1, 16 and 64 (the usual memory bound,
 Additional shader seeds are `TreeCase` values with UTF-8 and invalid UTF-8
 script bytes, string and integer scripts, and arbitrary missing or wrongly
 typed converter fields, at both value memory bounds.
+Complete converter seeds retain the Tier A cases and add player subprograms,
+separate parameter records, 6000.3 segmented tables, and big-endian 5.3/5.4
+blobs with valid and unfillable replacements.
 The `zlib_match` seeds are the builders' outputs (capped at 4 MiB), plus
 zero and periodic inputs around match and window boundaries.
 The `fsb5` seeds use `unityrs_testkit::fsb5`: passthrough audio, all supported
 PCM widths, IMA ADPCM and FADPCM at both bank versions, rates, names, extra
 chunks, empty/short subsounds, deferred codecs and hostile headers
 (83 synthetic inputs, including ADPCM coefficient and shift edges).
+The `image_writers` seeds cover all 19 format selectors and five image modes,
+explicit and absent palettes, empty, odd and maximum bounded image sizes,
+16-bit dimension boundaries, signed/unsigned maxima, exact/short/long pixel
+buffers, all dimension policies, allocation budgets and filename selectors.
+Small supported images reach successful writes; incompatible modes, deferred
+formats, malformed dimensions and the small budgets reach refusals. Pixel
+sources stay at most 768 bytes and ICNS always refuses allocation before resizing.
 
 ## Running
 
@@ -160,6 +173,9 @@ at step 1.
 - `.github/workflows/ci.yml`'s `fuzz-build`: on every push, every target
   built and run for 30 seconds from the seeds, the harness's own tests
   (`cargo test --lib`), and `cargo fmt --check` over this crate.
+  The smoke lists and nightly matrix include all 22 targets, including
+  `image_writers`, `scene_collect`, `obj_text` and `shader`, run from their
+  generated seeds.
 
 ## Licences
 
