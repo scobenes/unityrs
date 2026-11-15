@@ -157,9 +157,10 @@ impl Requirements {
             maps: spec.max_inflight_uncompressed_bytes / (128 * 1024) + 8_192,
             files: 4 * t + 16 * dc + 72,
             // The engine's threads (2.7): workers, the main, controller,
-            // progress, finisher and lifecycle threads, the early writer,
-            // both runtimes' `dc + 1` pool threads, and the stdin watch's
-            // own thread under `stop_on_stdin_eof`.
+            // progress, finisher and lifecycle threads, both runtimes'
+            // `dc + 1` pool threads, and the optional stdin watch. A terminal
+            // early writer substitutes for an absent controller; successful
+            // startup warnings run on main after the controller starts.
             threads: t + 7 + 2 * dc + u64::from(spec.stop_on_stdin_eof),
         })
     }

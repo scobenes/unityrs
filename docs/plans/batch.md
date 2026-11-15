@@ -1901,7 +1901,9 @@ to the sink, so the disk ledger stays `6S + 2A`, including outcomes.
 
 The constants compiled in (`c_base`, `m_thread`, `m_pool`, `m_dispatch`, `m_end`, `c_env`) are **provisional** estimates until `extract.md` X12 measures them, and the bound built from them with them (`BATCH_SPEC.md` section 10's `memory_bound`). The calibration is certified for 4 KiB pages only (`heap_cost` rounds a mapped chunk to a 4 KiB page): on another page size `--check` and a run label the bound uncertified on stderr and go on (`BATCH_SPEC.md` section 10).
 
-B9a resource inventory, within the existing floors (no term raised):
+Integrated directory/HTTP resource inventory, within the existing floors (no
+term raised); [the ownership ledger](../memory/resources.md) records the owning
+modules, retained/frozen owners, named slopes and the pending store coverage:
 
 | resource | lifetime inventory and allowance |
 |---|---|
@@ -1916,6 +1918,31 @@ FIFO drainage, deliberate kills and cleanup of its child groups before reaping.
 Nested scene children inherit the supervisor's group so an interrupted wrapper
 cannot strand a separate engine group. Parent-death tests use an isolated
 subreaper supervisor; they do not change the test runner's reaping policy.
+
+Successful startup warnings run on main after the controller starts; they neither add
+a detached early-writer stack to the complete topology nor block progress.
+Terminal early diagnostics include any pending warning in the same bounded
+operation, with each line retaining its own write attempt. Both HTTP permit
+tables are allocated after phase 1 and follow the existing `m_pool` slope;
+they are not a count-dependent part of fixed `c_base`. Linux staged paths are
+rooted at the retained spool descriptor, so resolving a short spool alias to a
+long canonical path cannot multiply that length across every private view.
+The library-only `sort_options` test hook reduces phase-6 run cuts/fan-in to
+force multiple merge generations inside the counted process. It has no
+environment-variable form and is absent from the shipping graph. The separate
+phase-6 production-capacity gates retain their 32 MiB runs and 40 MiB audit.
+
+`tests/memory_gate.rs` is the integrated X12 directory/HTTP process gate:
+both runtimes and every engine thread feed the coherent ledger, with live
+account grants/returns observed independently of progress. Fresh local scenes
+cover stops in phases 1–7, held lookup/body, frozen-attempt/publication overlap
+through finishing, every decoded texture format, the whole-process golden
+export matrix and independent count-growth checks with multiple sort generations.
+`tools/memory/regenerate.py` validates aggregate-only records and deterministically
+selects measured coefficients; its `--check` compares without writing. See
+[the schema and procedure](../memory/README.md). None of these gates freezes
+the provisional constants: store integration, the full native calibration
+matrix and final acceptance remain pending.
 
 B7c's normal-run preflight also provisionally uses `--check`'s 6 MiB
 environment-block allowance. B12 must measure the inherited block for normal

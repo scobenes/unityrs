@@ -26,6 +26,8 @@ pub mod reset;
 pub mod signals;
 pub(crate) mod stderr;
 #[cfg(any(test, feature = "test-hooks"))]
+pub use stderr::{StderrRetryHooks, stderr_retry_hooks};
+#[cfg(any(test, feature = "test-hooks"))]
 pub mod testing;
 
 // Match std's large-file ABI on 32-bit Linux as well as 64-bit hosts.

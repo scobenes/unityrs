@@ -29,6 +29,9 @@ static LEDGER: Ledger = Ledger::new(heap_cost);
 static SERIAL: Mutex<()> = Mutex::new(());
 struct Watching;
 impl Tally for Watching {
+    fn shrunk(&self, old: usize, new: usize) {
+        LEDGER.shrunk(old, new);
+    }
     fn growing(&self, n: usize) {
         LEDGER.growing(n);
     }

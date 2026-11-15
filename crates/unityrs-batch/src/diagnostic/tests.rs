@@ -1,4 +1,80 @@
 use super::*;
+
+#[cfg(target_os = "linux")]
+#[test]
+fn startup_warning_retry_child() {
+    if std::env::var_os("UNITYRS_DIAGNOSTIC_WARNING_CHILD").is_none() {
+        return;
+    }
+    let writer = Writer::prepare().unwrap();
+    let credentials = OnceLock::new();
+    let secrets = Secrets {
+        values: &[],
+        credentials: &credentials,
+    };
+    let mut buffer = [0; LINE_BYTES];
+    let started = std::time::Instant::now();
+    let wait = crate::progress::early::OWN_WAIT;
+    writer
+        .pending_line()
+        .within("warning\n", &secrets, &mut buffer, wait);
+    assert!(started.elapsed() >= wait, "gave up before the retry budget");
+    assert_eq!(writer.dropped(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn startup_warning_returns_at_its_budget_even_without_a_finisher_to_exit() {
+    use std::io::{ErrorKind, Write};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::process::{Command, Stdio};
+    use unityrs_testkit::child;
+
+    child::scene(|scene| {
+        let (_read, write) = std::io::pipe()?;
+        let mut fill = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(format!("/proc/self/fd/{}", write.as_raw_fd()))?;
+        for bytes in [&[b'x'; 4096][..], b"x"] {
+            loop {
+                match fill.write(bytes) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        drop(fill);
+        let mut cmd = Command::new(std::env::current_exe()?);
+        cmd.args([
+            "--exact",
+            "diagnostic::tests::startup_warning_retry_child",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("UNITYRS_DIAGNOSTIC_WARNING_CHILD", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(write));
+        let started = std::time::Instant::now();
+        let child = child::live(scene, &mut cmd, false)?;
+        drop(cmd);
+        // Scene::wait uses DEADLOCK_GUARD; this assertion checks the
+        // production budget plus process startup/teardown slack.
+        let status = scene.wait(child)?;
+        let budget = crate::progress::early::OWN_WAIT;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= budget,
+            "the child did not exercise the retry budget"
+        );
+        assert!(elapsed < budget + budget * 9 / 10, "{elapsed:?}");
+        assert!(status.success(), "{status}");
+        Ok(())
+    })
+    .unwrap();
+}
 #[test]
 fn masks_short_overlapping_and_cross_boundary_secrets_before_cut() {
     let credentials = OnceLock::new();
