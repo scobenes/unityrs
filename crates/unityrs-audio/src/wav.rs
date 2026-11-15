@@ -3,14 +3,14 @@
 //! The pinned oracle has numpy: multiply in float32, clip, truncate to i16.
 //! NaN converts to zero; infinities saturate. The no-numpy branch's different
 //! thresholds are outside the pinned stack. No FMOD code is used.
-use crate::{Error, Subsound};
+use crate::{Error, Subsound, adpcm};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
 
 pub(crate) fn width(mode: u32) -> Result<u8, Error> {
     match mode {
         1 => Ok(1),
-        2 => Ok(2),
+        2 | 7 | 16 => Ok(2),
         3 => Ok(3),
         4 | 5 => Ok(4),
         codec => Err(Error::Unsupported { codec }),
@@ -52,7 +52,13 @@ pub(crate) fn decode(
         .frequency
         .checked_mul(u32::from(block))
         .ok_or(Error::OutputSize)?;
-    meter.count_decode((sub.data.len() as u64).max(sub.wav_bytes as u64))?;
+    let compressed = adpcm::layout(mode, sub.channels).is_some();
+    let work = if compressed {
+        sub.wav_bytes as u64
+    } else {
+        (sub.data.len() as u64).max(sub.wav_bytes as u64)
+    };
+    meter.count_decode(work)?;
     let mut out = MeteredVec::with_capacity(meter, sub.wav_bytes)?;
     out.extend_from_slice(b"RIFF")?;
     out.extend_from_slice(&(length + 36).to_le_bytes())?;
@@ -67,7 +73,20 @@ pub(crate) fn decode(
     out.extend_from_slice(&bits.to_le_bytes())?;
     out.extend_from_slice(b"data")?;
     out.extend_from_slice(&length.to_le_bytes())?;
-    if mode == 5 && convert {
+    if compressed {
+        // One charged WAV buffer: decode in place, leaving missing blocks zero.
+        let zeros = [0; 4096];
+        while out.len() < sub.wav_bytes {
+            let n = (sub.wav_bytes - out.len()).min(zeros.len());
+            out.extend_from_slice(zeros.get(..n).ok_or(Error::OutputSize)?)?;
+        }
+        adpcm::decode(
+            sub,
+            mode,
+            out.as_mut_slice().get_mut(44..).ok_or(Error::OutputSize)?,
+            meter,
+        )?;
+    } else if mode == 5 && convert {
         for chunk in sub.data.as_chunks::<4>().0 {
             let value = f32::from_le_bytes(*chunk);
             #[allow(clippy::cast_possible_truncation)]

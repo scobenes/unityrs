@@ -33,6 +33,25 @@ fn replay_pinned_audio_exports() {
         }
         let p = plan(&data, true, &m);
         match case["rust"].as_str().unwrap() {
+            "channels" => {
+                assert!(
+                    matches!(p, Err(Error::TooManyChannels { channels })
+                    if u64::from(channels) == case["channels"].as_u64().unwrap()),
+                    "{label}: {p:?}"
+                );
+                assert_eq!(m.granted(), 0, "{label}");
+                assert_eq!(case["oracle"]["error"], "FmodError", "{label}");
+                let error = if label.starts_with("refused_pcm") {
+                    "VERSION"
+                } else {
+                    "TOOMANYCHANNELS"
+                };
+                assert_eq!(
+                    case["oracle"]["message"], error,
+                    "{label}: {}",
+                    case["oracle"]
+                );
+            }
             "unsupported" => assert!(
                 matches!(
                     p,
@@ -68,6 +87,27 @@ fn replay_pinned_audio_exports() {
             other => panic!("unknown replay expectation {other}"),
         }
         assert_eq!(m.used(), 0, "{label}");
+    }
+    for codec in [
+        "refused_pcm1",
+        "pcm16",
+        "refused_pcm3",
+        "refused_pcm4",
+        "refused_pcm5",
+        "ima",
+        "fadpcm",
+    ] {
+        for channels in [32, 33, 64] {
+            let label = format!("{codec}_c{channels}_limit");
+            assert!(
+                fixture["cases"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|c| c["case"] == label),
+                "missing {label}"
+            );
+        }
     }
     assert!(exact >= 25, "oracle accepted too few cases: {exact}");
 }
