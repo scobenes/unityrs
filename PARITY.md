@@ -211,6 +211,36 @@ Lines are in `files/BundleFile.py`.
 | `ResourceReader.get_resource_data` | looks up the CAB by basename, then `{name}.resource`, `{name}.assets.resS`, `{name}.resS`, in the Environment's one registry (`Environment.register_cab`), not in the asking file's own bundle, so when two bundles hold a CAB of the same name the later one's `.resS` supplies the data for both (section 19.2); on a miss calls `SerializedFile.load_dependencies` with those names (which loads the file's externals as non-dependencies, section 7.2) and looks again; raises `FileNotFoundError` (`helpers/ResourceReader.py:10-32`). `load_dependencies` swallows only `FileNotFoundError` (`files/SerializedFile.py:345-349`), so a name the loader cannot open otherwise escapes: with no CAB `""` registered, an empty name is joined to `Environment.path`, a directory, and raises `IsADirectoryError`. Once a zip with a directory entry has registered CAB `""` (section 3, `Environment.load_zip_file`), the lookup finds that empty reader first, and an empty name reads `b""` | A; C for same-named CABs | L5 | `test_rows_environment.py` same_named_cabs_share_one_registry_entry; `test_rows_textures.py` an_empty_texture_follows_an_empty_stream_path (the names in order, the miss, the empty name); `crates/unityrs-core/tests/env_fixtures.rs` same_named_cabs_resolve_as_unitypys_under_every_option_set (P1's side: Tier A); planned: `.resS` texture fixture | pinned P0; verified P1 as UnityPy (Tier A); Tier C not implemented (section 19.2) |
 | `.resS` read | `reader.Position = offset; read_bytes(size)` on the CAB (`helpers/ResourceReader.py:36-38`); a range past the end returns the bytes that exist, with no error (section 13) | A | L5 | `test_rows_containers.py` reads_past_the_end_return_short_data; `crates/unityrs-core/tests/env/resources.rs` a_resource_range_past_the_end_reads_the_bytes_that_exist; `crates/unityrs-core/tests/env_fixtures.rs` eager_runs_every_scene_as_unitypy_does (each scene's reads); planned: `.resS` texture fixture | pinned P0; verified P1 |
 
+Texture fetching across WebFile parents: UnityPy registers raw and serialized
+members of both container kinds through `files/File.py:76-90` (WebFile calls
+it at `files/WebFile.py:56`). Registration replaces the simplified-name key
+(`environment.py:263-264`); resource lookup uses only that registry
+(`helpers/ResourceReader.py:10-33`). A shadow registered after the container
+wins for a WebFile, a WebFile inside a bundle, and a bundle inside a WebFile,
+including a resource held only by the outer container. Registered before the
+container, the shadow loses to the member registered later.
+`Texture2D.get_image_data` calls that same helper
+(`classes/legacy_patch/Texture2D.py:63-75`); the export path is
+`tools/extractor.py:271-281`, `classes/legacy_patch/Texture2D.py:8-11`, then
+`export/Texture2DConverter.py:237-251`.
+
+The texture fetcher's own-bundle-first rule is the deliberate Tier C policy
+of `docs/plans/core.md` Q12, `docs/plans/extract.md` E12 and
+`docs/plans/batch.md` 2.6 step 8, recorded in section 19.2's same-named CABs
+row. Its analogy is `classes/PPtr.py:75-85`, not ResourceReader. Keep the
+existing contiguous bundle search: a WebFile parent ends that search and
+falls back to the registry, preserving UnityPy's shadow result. Extending
+it through WebFiles would introduce another divergence. A bundle inside a
+WebFile still prefers its own resource as the existing Tier C exception;
+when only the outer WebFile holds the resource, it uses the registry.
+`tools/fixtures/web.py --check` records twelve cases (both shadow load orders,
+the three nestings, a bundle control and outer-only nested resources) in
+`crates/unityrs-texture/tests/fixtures/fetch.json`.
+`crates/unityrs-texture/tests/fetch_oracle.rs` replays every ResourceReader
+and Texture2D outcome in eager and lazy modes, distinguishes the existing
+Tier C results, and checks the fetcher's Environment hook counts. No lookup,
+charging or hook behavior changes.
+
 C2 implements plain and brotli WebFiles at Tier A and gzip at Tier B, using
 its uncompressed bytes as the reference. A member name length of -1 reads the
 remaining bytes (Tier A); below -1 is explicitly refused as
