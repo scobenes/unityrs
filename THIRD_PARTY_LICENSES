@@ -3734,32 +3734,6 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- memoffset 0.9.1 (https://github.com/Gilnaa/memoffset)
-
-Copyright (c) 2017 Gilad Naaman
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
---------------------------------------------------------------------------------
-MIT License (MIT)
-
-Used by:
 - stable_deref_trait 1.2.1 (https://github.com/storyyeller/stable_deref_trait)
 
 Copyright (c) 2017 Robert Grosse
@@ -4742,12 +4716,12 @@ THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- pyo3-build-config 0.27.2 (https://github.com/pyo3/pyo3)
-- pyo3-ffi 0.27.2 (https://github.com/pyo3/pyo3)
-- pyo3-macros-backend 0.27.2 (https://github.com/pyo3/pyo3)
-- pyo3-macros 0.27.2 (https://github.com/pyo3/pyo3)
-- pyo3 0.27.2 (https://github.com/pyo3/pyo3)
-- pyo3 0.27.2 (https://github.com/pyo3/pyo3)
+- pyo3-build-config 0.29.3 (https://github.com/pyo3/pyo3)
+- pyo3-ffi 0.29.3 (https://github.com/pyo3/pyo3)
+- pyo3-macros-backend 0.29.3 (https://github.com/pyo3/pyo3)
+- pyo3-macros 0.29.3 (https://github.com/pyo3/pyo3)
+- pyo3 0.29.3 (https://github.com/pyo3/pyo3)
+- pyo3 0.29.3 (https://github.com/pyo3/pyo3)
 
 Copyright (c) 2023-present PyO3 Project and Contributors.  https://github.com/PyO3
 
@@ -5402,7 +5376,6 @@ Used by:
 - async-trait 0.1.92 (https://github.com/dtolnay/async-trait)
 - atomic-waker 1.1.2 (https://github.com/smol-rs/atomic-waker)
 - displaydoc 0.2.7 (https://github.com/yaahc/displaydoc)
-- indoc 2.0.8 (https://github.com/dtolnay/indoc)
 - itoa 1.0.18 (https://github.com/dtolnay/itoa)
 - once_cell 1.21.4 (https://github.com/matklad/once_cell)
 - pin-project-lite 0.2.17 (https://github.com/taiki-e/pin-project-lite)
@@ -5410,7 +5383,6 @@ Used by:
 - quote 1.0.47 (https://github.com/dtolnay/quote)
 - ref-cast-impl 1.0.27 (https://github.com/dtolnay/ref-cast)
 - ref-cast 1.0.27 (https://github.com/dtolnay/ref-cast)
-- rustversion 1.0.23 (https://github.com/dtolnay/rustversion)
 - serde 1.0.229 (https://github.com/serde-rs/serde)
 - serde_core 1.0.229 (https://github.com/serde-rs/serde)
 - serde_derive 1.0.229 (https://github.com/serde-rs/serde)
@@ -5420,7 +5392,6 @@ Used by:
 - thiserror-impl 2.0.21 (https://github.com/dtolnay/thiserror)
 - thiserror 2.0.21 (https://github.com/dtolnay/thiserror)
 - unicode-ident 1.0.27 (https://github.com/dtolnay/unicode-ident)
-- unindent 0.2.4 (https://github.com/dtolnay/indoc)
 - zerocopy 0.7.35 (https://github.com/google/zerocopy)
 - zmij 1.0.23 (https://github.com/dtolnay/zmij)
 

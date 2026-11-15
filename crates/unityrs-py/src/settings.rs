@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 use unityrs_core::{budget::Counting, limits::Limits as CoreLimits};
 
-#[pyclass(frozen, module = "unityrs")]
+#[pyclass(frozen, skip_from_py_object, module = "unityrs")]
 #[derive(Clone)]
 pub(crate) struct Budget {
     pub(crate) inner: Arc<Counting>,
@@ -25,7 +25,7 @@ impl Budget {
     }
 }
 
-#[pyclass(frozen, module = "unityrs")]
+#[pyclass(frozen, skip_from_py_object, module = "unityrs")]
 #[derive(Clone)]
 pub(crate) struct Limits {
     pub(crate) inner: CoreLimits,
