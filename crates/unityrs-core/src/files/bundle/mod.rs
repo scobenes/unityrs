@@ -241,6 +241,7 @@ pub struct FileSlot {
 
 /// A bundle: header and directory parsed, data decoded on demand.
 pub struct BundleFile {
+    pub(super) changed: std::sync::atomic::AtomicBool,
     name: RawStr,
     source: Bytes,
     legacy_data: Option<Bytes>,

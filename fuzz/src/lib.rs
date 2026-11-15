@@ -23,6 +23,7 @@ pub mod meshdecode;
 pub mod obj_text;
 mod scene;
 pub mod scene_collect;
+pub mod serialized_save;
 pub mod shader;
 #[cfg(test)]
 mod tests;

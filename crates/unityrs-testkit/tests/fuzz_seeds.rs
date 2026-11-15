@@ -22,6 +22,19 @@ fn every_value_seed_is_written_at_each_memory_bound() {
     // One count per target (`TARGETS` sets the array's length): each wrote seeds.
     let counts = seeds::write(&dir).expect("the seeds are written");
     assert!(counts.iter().all(|n| *n > 0), "{counts:?}");
+    let read_seeds = std::fs::read_dir(dir.join("serialized")).unwrap().count();
+    let save_seeds = std::fs::read_dir(dir.join("serialized_save"))
+        .unwrap()
+        .count();
+    assert!(read_seeds > 0);
+    assert_eq!(read_seeds, save_seeds);
+    for entry in std::fs::read_dir(dir.join("serialized")).unwrap() {
+        let entry = entry.unwrap();
+        assert_eq!(
+            std::fs::read(entry.path()).unwrap(),
+            std::fs::read(dir.join("serialized_save").join(entry.file_name())).unwrap()
+        );
+    }
     let extraction: Vec<_> = std::fs::read_dir(dir.join("extractor_paths"))
         .unwrap()
         .map(|e| std::fs::read(e.unwrap().path()).unwrap())

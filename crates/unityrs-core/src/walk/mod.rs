@@ -71,9 +71,11 @@
 
 pub mod boost;
 mod dict;
+mod fields;
 pub mod python;
 mod read;
-pub(crate) use read::read_typetree_with_mode;
+pub use fields::FieldProgress;
+pub(crate) use read::read_with_fields;
 pub use read::{read_typetree, read_typetree_with_reader};
 mod work;
 pub mod write;

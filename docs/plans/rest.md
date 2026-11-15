@@ -147,7 +147,7 @@ A port of `AudioClipConverter.py`'s dispatch: Ogg, RIFF and m4a pass through; th
 
 ### 2.8 Write-back (`unityrs-core`, `unityrs-texture`, P3b)
 
-**SerializedFile save.** Headers for v ≥ 9 and v < 9, `SerializedType.write`, blob trees; Tier C (writing) for pre-v10 and v11 trees, `SERIALIZED_FILE_PARSE_TYPETREE` and `PARITY.md` section 19.1's `dump_blob` offset 0; `mark_changed` and `set_raw_data`. L4: semantic equality and idempotence, and a UnityPy-layout mode byte-equal to `save(packer='none')`. About 1.4k lines.
+**SerializedFile save.** Formats 1–22: headers for v ≥ 9 and v < 9, `SerializedType.write`, blob trees; Tier C (writing) for pre-v10 and v11 trees, `SERIALIZED_FILE_PARSE_TYPETREE` and `PARITY.md` section 19.1's `dump_blob` offset 0; `mark_changed` and `set_raw_data`. L4: semantic equality and idempotence, and a UnityPy-layout mode byte-equal to `save(packer='none')`. B1 refuses formats above 22 with a typed save error before building or charging output, in both layouts (Tier C writing); HEAD-tier writing belongs to B2b. About 1.4k lines.
 
 **Bundle save and packers.** `save` and `save_fs`, `chunk_based_compress`, `compress_lzma` through liblzma's encoder (already linked); LZ4HC byte-equal at liblz4 HC level 9 (decision 17); `WebFile.save` with gzip and brotli, equal after decompression; `get_writeable_cab`; section 3's Tier C (writing) rows; and the HEAD tier's `lz4hc` and format-9 writes, against HEAD's vendored writer files. About 1.3k lines for bundle save and the packers, 900 for WebFile save, writeable CABs and the HEAD writes.
 
@@ -161,7 +161,7 @@ The provider is P1's. P3b adds a stripped-file L2 fixture read with the oracle i
 
 ### 2.10 HEAD tier (P3b)
 
-SerializedFile v23's per-type node info, v26's shared subtrees, and bundle format 9's 64-bit block offsets, read as HEAD `417d595` reads them, tested on synthetic files against HEAD's reader files vendored beside `tools/parity/tests/head_417d595/` (MIT). The status stays a target until decision 15's fixtures exist. Writing sits in the bundle-save PR (2.8). About 1.0k lines.
+SerializedFile v23's per-type node info, v26's shared subtrees, and bundle format 9's 64-bit block offsets, read as HEAD `417d595` reads them, tested on synthetic files against HEAD's reader files vendored beside `tools/parity/tests/head_417d595/` (MIT). The status stays a target until decision 15's fixtures exist. Writing sits in B2b (2.8), including SerializedFile formats above 22; B1 refuses those saves in both layouts. About 1.0k lines.
 
 ### 2.11 The Python API (`unityrs-py`, P3c)
 
@@ -203,9 +203,9 @@ About 400-1,500 non-test lines each. Each depends on the PRs it names; the first
 | K1 | TPK and providers | P3b | the stripped fixture, the L2b diff, `from_list`, the MonoBehaviour generator hook, `get_fallback_version` | 800 | — |
 | W2 | Pillow's writers | P3b | BMP, DIB, TGA, PPM, PCX, SGI, IM, TIFF, DDS, ICO, ICNS, EPS, and the Tier C PNG fallbacks; decision 7's refusals | 1,400 | — |
 | **Wave 4: write-back, HEAD, the extractor** | | | | | |
-| B1 | SerializedFile save | P3b | headers, types, blobs, Tier C trees, `dump_blob`, `mark_changed` | 1,400 | — |
+| B1 | SerializedFile save | P3b | formats 1–22: headers, types, blobs, Tier C trees, `dump_blob`, `mark_changed`; typed refusal above 22 | 1,400 | — |
 | B2a | bundle save | P3b | `save` and `save_fs`, the packers, vendored LZ4HC, Tier C rows | 1,300 | B1 |
-| B2b | WebFile save, writeable CABs, HEAD writes | P3b | `WebFile.save`, `get_writeable_cab`, `lz4hc` and format 9 against HEAD's writer | 900 | B2a, C2 |
+| B2b | WebFile save, writeable CABs, HEAD writes | P3b | `WebFile.save`, `get_writeable_cab`, SerializedFile formats 23+ (node info and shared subtrees), `lz4hc` and format 9 against HEAD's writer | 900 | B2a, C2 |
 | B3a | `set_image`, core | P3b | `image_to_texture2d`, BICUBIC, padding, the swizzle, section 18.1's modes, Tier C and U | 1,200 | B1, T6 |
 | B3b | encoders | P3b | the `encode` feature: vendored etcpak and astcenc's encoder; the probe (decision 16); BC7 Tier C | 700 | B3a |
 | H1 | HEAD reading | P3b | SerializedFile v23 and v26, bundle format 9; HEAD's reader vendored for tests | 1,000 | — |

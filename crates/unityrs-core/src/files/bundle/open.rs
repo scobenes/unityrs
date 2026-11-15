@@ -150,6 +150,7 @@ impl BundleFile {
         charge.absorb(c);
         let runs = RunIndex::mutex(&mut charge)?;
         Ok(Arc::new_cyclic(|this| Self {
+            changed: std::sync::atomic::AtomicBool::new(false),
             name,
             source: data,
             legacy_data: None,
