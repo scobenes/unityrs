@@ -162,13 +162,37 @@ pub fn encode<C: Charger>(
     image: &Image<'_>,
     charger: &mut C,
 ) -> Result<Png<C::Charge>, EncodeError<C::Refusal>> {
+    encode_with(image, charger, false)
+}
+
+/// Encodes a lossless PNG at zlib level 1 with a fixed Sub filter. This
+/// skips adaptive filter scoring and uses zlib's fast match search. Bytes
+/// differ from Pillow's defaults; all pixel bytes, including hidden RGB,
+/// are preserved. Uses the same charge plan and fallible allocator path
+/// as [`encode`], with no additional allocations.
+pub fn encode_fast<C: Charger>(
+    image: &Image<'_>,
+    charger: &mut C,
+) -> Result<Png<C::Charge>, EncodeError<C::Refusal>> {
+    encode_with(image, charger, true)
+}
+
+fn encode_with<C: Charger>(
+    image: &Image<'_>,
+    charger: &mut C,
+    fast: bool,
+) -> Result<Png<C::Charge>, EncodeError<C::Refusal>> {
     let plan = charge::plan(image.width(), image.height(), image.mode())?;
     let bound = charge::deflate_bound(plan.filtered).ok_or(zlib_failure(ZlibFailure::Bound))?;
 
     // Each charge is declared before what it pays for, so it drops after it.
     let _state_charge = charge(charger, Buffer::DeflateState, &plan.deflate_state)?;
     let mut z = pin!(Deflater::new());
-    match z.as_mut().init() {
+    match if fast {
+        z.as_mut().init_fast()
+    } else {
+        z.as_mut().init()
+    } {
         Z_OK => {}
         Z_MEM_ERROR if z.over_allowance() => {
             return Err(zlib_failure(ZlibFailure::StateOverAllowance));
@@ -192,6 +216,7 @@ pub fn encode<C: Charger>(
         *buffer = zeroed(Buffer::Rows, len)?;
     }
     let mut rows = Rows::new(buffers, image.mode().channels());
+    rows.fast = fast;
 
     let mut w = Writer {
         out: &mut out,

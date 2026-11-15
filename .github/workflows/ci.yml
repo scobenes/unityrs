@@ -17,6 +17,22 @@ env:
 # (dereferencing an annotated tag through git/tags/SHA). Every job has a
 # timeout, so a hung step fails in minutes instead of GitHub's six hours.
 jobs:
+  store-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Fetch the checksum-pinned standalone S3 server
+        run: sh scripts/store-conformance-server "$RUNNER_TEMP/store-server"
+      - name: Independent server conformance (missing binary fails)
+        env:
+          UNITYRS_STORE_SERVER: ${{ runner.temp }}/store-server/versitygw
+        run: cargo test -p unityrs-batch --features test-hooks --test store_conformance third_party_server_conformance -- --ignored
+
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -86,6 +102,12 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Test, sealed attempt test hooks
         run: cargo test -p unityrs-batch --features test-hooks
+      # The process host's scenes through the binary (docs/plans/batch.md
+      # 2.11, tests/batch_lifetime.rs), its hooks read from their variables.
+      - name: Clippy, the binary's test hooks
+        run: cargo clippy -p unityrs-cli --all-targets --features test-hooks -- -D warnings
+      - name: Test, the binary's test hooks
+        run: cargo test -p unityrs-cli --features test-hooks
 
   # The batch engine's scale cases (production-sized and million-record
   # phase-6 runs, plus archive count, memory and digest boundaries, and
@@ -428,6 +450,7 @@ jobs:
           python tools/fixtures/folders.py --check
           python tools/fixtures/no_tree.py --check
           python tools/fixtures/texture.py --check
+          python tools/fixtures/texture_tierb.py --check
           python tools/fixtures/texture_astc.py --check
           python tools/fixtures/texture_pvrtc_atc.py --check
           python tools/fixtures/texture_crunch.py --native crates/unityrs-texture/tests/fixtures/crunch_native.json --check

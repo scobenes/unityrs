@@ -2,6 +2,7 @@
 //! returns claims on drop. Only successful explicit deletion or owned retry reset returns space.
 mod claims;
 mod files;
+pub mod journal;
 mod owned_file;
 pub(crate) mod path;
 pub mod random;

@@ -1,4 +1,4 @@
-//! The object-store sink's client side (`docs/plans/batch.md` 2.9,
+//! The object-store sink's client and library operations (`docs/plans/batch.md` 2.9,
 //! `docs/BATCH_SPEC.md` 1.6, `docs/plans/extract.md` E37), on `object_store`
 //! 0.14.2 (`aws-base` and `ring`: no `reqwest`, no aws-lc-rs) wired to the
 //! engine's own HTTP service. Nothing here executes a
@@ -11,7 +11,13 @@
 //!   backoff and the unsettled count.
 //! - [`classify`]: 1.6's table as a pure function.
 //! - [`credentials`]: the environment's credentials, checked at preflight.
+//! - [`put`], [`multipart`]: charged transfers, durable upload identities,
+//!   abort cleanup and retried-complete recovery.
+//! - [`head`]: bucket proof, bounded reads and retained conditional fences.
+//! - [`rows`]: the synchronous owned-chunk destination and safe code vocabulary.
+//! - [`abort`]: deadline-bound aborts and streamed old-journal recovery.
 //! - [`etag`]: `ETag`s as the engine keeps and compares them.
+pub mod abort;
 pub mod attempt;
 mod body;
 pub mod classify;
@@ -20,6 +26,11 @@ mod complete;
 pub mod connector;
 pub mod credentials;
 pub mod etag;
+pub mod head;
+mod head_fence;
+pub mod multipart;
+pub mod put;
+pub mod rows;
 pub mod scan;
 
 const KIB: u64 = 1_024;

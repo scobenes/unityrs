@@ -140,6 +140,7 @@ impl Tail {
                 memory_bound: 0,
                 spool_peak: 0,
                 vm_hwm: 0,
+                warnings: unityrs_batch::finish::Warnings::default(),
             },
         )
         .unwrap();

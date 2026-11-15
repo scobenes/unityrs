@@ -133,7 +133,7 @@
           "uniqueItems": true,
           "default": ["RGB24", "RGBA32", "DXT1", "DXT5", "BC7"]
         },
-        "image": {"type": "string", "enum": ["png"], "default": "png", "description": "png_fast and webp are reserved for later releases (1.5)."}
+        "image": {"type": "string", "enum": ["png", "png_fast"], "default": "png", "description": "png is Pillow byte parity; png_fast is lossless level-1 PNG with fixed Sub filtering. WebP is reserved (1.5)."}
       },
       "required": [],
       "additionalProperties": false

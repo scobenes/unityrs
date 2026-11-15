@@ -247,8 +247,8 @@ class DocTiers(unittest.TestCase):
                 "FSB5 PCM8, PCM16, PCM24, PCM32": f"Tol; {short} data bytes; {bank}",
                 "FSB5 PCM float": f"Tol; {short} WAV data bytes; {bank}",
                 "FSB5 Vorbis": f"Tol; {bank} and for a subsound of fewer than 4 WAV data bytes",
-                "FSB5 IMA ADPCM": f"Tol; {short} WAV data bytes; {bank}",
-                "FSB5 FADPCM": f"Tol; {short} WAV data bytes; {bank}",
+                "FSB5 IMA ADPCM": f"Tol (threshold: exact PCM16 samples and WAV bytes, 0 LSB); {short} WAV data bytes; {bank}",
+                "FSB5 FADPCM": f"Tol (threshold: exact PCM16 samples and WAV bytes, 0 LSB); {short} WAV data bytes; {bank}",
                 "FSB5 MPEG": f"Tol; C for a later subsound of no samples, where fmod_toolkit raises; {bank} and for a "
                 "subsound of one sample",
                 "FSB5 Opus": f"Tol; {bank} and for a subsound of fewer than 4 WAV data bytes",
