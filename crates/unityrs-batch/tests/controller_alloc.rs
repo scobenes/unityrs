@@ -125,22 +125,23 @@ const URL_SCOPES: &[&str] = &[];
 #[cfg_attr(debug_assertions, ignore = "scale: run in release")]
 fn every_controller_allocation_is_fallible_after_the_running_head() {
     let _serial = sweeping();
-    let () = guard::finishes("controller refusal sweep", || sweep(scopes()));
+    sweep(scopes());
 }
 /// A networked library run's staging: two URLs and a local copy, armed at
 /// the first dispatch through staging's end (or the run's teardown), in
-/// each of its scenes (`controller_support/url_scopes.rs`). Its own test,
-/// so its own guard.
+/// each of its scenes (`controller_support/url_scopes.rs`). Its own test.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "scale: run in release")]
 fn every_url_staging_allocation_is_fallible_after_the_first_dispatch() {
     let _serial = sweeping();
-    let () = guard::finishes("url staging refusal sweep", || {
-        sweep(URL_SCOPES.iter().copied());
-    });
+    sweep(URL_SCOPES.iter().copied());
 }
-/// One sweep at a time: a url scope's reads follow its machine's load, and
-/// each guard times its own sweep, not a wait for the other.
+/// One sweep at a time: a url scope's reads follow its machine's load.
+/// The deadlock guard is each child's ([`refusal_child`]), not a sweep's: a
+/// sweep runs a child for every site, so its length grows with the sites
+/// and with the machine's load, while one child answers at once unless it
+/// hangs (a whole sweep under one guard failed a run on a slow machine with
+/// no hang, every scope it reached clean).
 fn sweeping() -> std::sync::MutexGuard<'static, ()> {
     static SWEEP: std::sync::Mutex<()> = std::sync::Mutex::new(());
     SWEEP
@@ -387,6 +388,7 @@ fn settle(
     eprintln!("UNSETTLED kind={kind}: {SETTLE} children each met a key no child had refused");
     SETTLE
 }
+/// One site's child, under its own deadlock guard (see [`sweeping`]).
 fn refusal_child(kind: &str, site: usize, aim: Option<(&str, String)>) -> std::process::Output {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
@@ -396,7 +398,10 @@ fn refusal_child(kind: &str, site: usize, aim: Option<(&str, String)>) -> std::p
     if let Some((name, value)) = aim {
         command.env(name, value);
     }
-    child::output(&mut command).unwrap()
+    guard::finishes(
+        &format!("the refusal child of kind {kind}, site {site}"),
+        move || child::output(&mut command).unwrap(),
+    )
 }
 #[test]
 fn controller_refusal_child() {
