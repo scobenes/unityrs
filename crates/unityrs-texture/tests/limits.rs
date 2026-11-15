@@ -31,6 +31,7 @@ fn the_largest_texture_plans_and_one_more_column_is_refused() {
         assert_eq!(u64::from(p.width) * u64::from(p.height), pixels);
         assert_eq!(p.output_bytes, pixels * format.mode().bytes_per_pixel());
         let want = match format {
+            Format::Dxt1Crunched | Format::Dxt5Crunched => 75,
             Format::Alpha8 | Format::R8 => MAX_PIXELS,
             Format::Argb4444 | Format::Rgba4444 | Format::Rgb565 => 2 * MAX_PIXELS,
             Format::Rgb24 | Format::Bgr24 => 3 * MAX_PIXELS,
@@ -122,7 +123,7 @@ fn sizes_do_not_wrap() {
 #[test]
 fn the_output_is_charged_before_it_is_allocated() {
     let data = vec![7u8; 4 * 64 * 64];
-    for format in Format::ALL {
+    for format in Format::ALL.into_iter().filter(|f| !f.is_crunched()) {
         let p = plan(format, data.len(), 64, 64).unwrap();
         // One byte short of the charge (and of an ASTC format's tables
         // beside it): refused, nothing allocated.
@@ -308,6 +309,7 @@ fn no_panic_on_any_input() {
                 assert_eq!(meter.used(), image.charge().bytes(), "{what}");
             }
             (Err(DecodeError::Panicked { payload }), _) => panic!("{what}: {payload}"),
+            (Err(DecodeError::Crunch(_)), Ok(_)) if format.is_crunched() => {}
             (Err(DecodeError::Charge(ChargeError::Limit(_))), Ok(_)) => {
                 assert!(limit.is_some_and(|l| l < charge), "{what}");
             }

@@ -41,7 +41,7 @@ pub(super) fn sheet_answers(t: &Texture, obj: &ObjectRef, allowed: Formats) -> R
         return Ok(());
     }
     let platform = obj.file().target_platform().unwrap_or(UNKNOWN_PLATFORM);
-    read::formats(t, platform, allowed).map(|_| ())
+    read::formats(t, platform, allowed, read::unity_version(obj)).map(|_| ())
 }
 
 impl Attempt<'_> {

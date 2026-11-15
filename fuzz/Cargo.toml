@@ -106,6 +106,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "crunch"
+path = "fuzz_targets/crunch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "meshdecode"
 path = "fuzz_targets/meshdecode.rs"
 test = false

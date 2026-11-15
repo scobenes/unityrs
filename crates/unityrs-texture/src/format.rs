@@ -137,6 +137,10 @@ pub enum Format {
     Bc4,
     /// `BC5` (27): Pillow's `bcn` 5 into `RGB`.
     Bc5,
+    /// `DXT1Crunched` (28): legacy CRN, then Pillow BC1; below Unity 2017.3.
+    Dxt1Crunched,
+    /// `DXT5Crunched` (29): legacy CRN, then Pillow BC3; below Unity 2017.3.
+    Dxt5Crunched,
     /// `ETC_RGB4` (34): texture2ddecoder's ETC1 into `RGBA`.
     EtcRgb4,
     /// `EAC_R` (41): texture2ddecoder's EAC R into `RGBA`.
@@ -216,7 +220,7 @@ pub(crate) enum Library {
 
 impl Format {
     /// Every format, in `TextureFormat` order.
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 38] = [
         Self::Alpha8,
         Self::Argb4444,
         Self::Rgb24,
@@ -232,6 +236,8 @@ impl Format {
         Self::Bc7,
         Self::Bc4,
         Self::Bc5,
+        Self::Dxt1Crunched,
+        Self::Dxt5Crunched,
         Self::EtcRgb4,
         Self::EacR,
         Self::EacRSigned,
@@ -278,6 +284,8 @@ impl Format {
             25 => Some(Self::Bc7),
             26 => Some(Self::Bc4),
             27 => Some(Self::Bc5),
+            28 => Some(Self::Dxt1Crunched),
+            29 => Some(Self::Dxt5Crunched),
             34 => Some(Self::EtcRgb4),
             41 => Some(Self::EacR),
             42 => Some(Self::EacRSigned),
@@ -322,6 +330,8 @@ impl Format {
             Self::Bc7 => 25,
             Self::Bc4 => 26,
             Self::Bc5 => 27,
+            Self::Dxt1Crunched => 28,
+            Self::Dxt5Crunched => 29,
             Self::EtcRgb4 => 34,
             Self::EacR => 41,
             Self::EacRSigned => 42,
@@ -365,6 +375,8 @@ impl Format {
             Self::Bc7 => "BC7",
             Self::Bc4 => "BC4",
             Self::Bc5 => "BC5",
+            Self::Dxt1Crunched => "DXT1Crunched",
+            Self::Dxt5Crunched => "DXT5Crunched",
             Self::EtcRgb4 => "ETC_RGB4",
             Self::EacR => "EAC_R",
             Self::EacRSigned => "EAC_R_SIGNED",
@@ -424,6 +436,7 @@ impl Format {
     pub const fn block_bytes(self) -> Option<u64> {
         match self {
             Self::Dxt1
+            | Self::Dxt1Crunched
             | Self::Bc4
             | Self::EtcRgb4
             | Self::EacR
@@ -432,6 +445,7 @@ impl Format {
             | Self::Etc2Rgba1 => Some(8),
             Self::Dxt3
             | Self::Dxt5
+            | Self::Dxt5Crunched
             | Self::Bc7
             | Self::Bc5
             | Self::EacRg
@@ -503,12 +517,24 @@ impl Format {
         }
     }
 
+    /// Whether this format expects legacy CRN rather than plain blocks.
+    /// Unity 2017.3+ and ETC crunched formats require the T4b decoder.
+    #[must_use]
+    pub const fn is_crunched(self) -> bool {
+        matches!(self, Self::Dxt1Crunched | Self::Dxt5Crunched)
+    }
+
     /// The library that decodes it for UnityPy (`CONV_TABLE`).
     pub(crate) const fn library(self) -> Library {
         match self {
-            Self::Dxt1 | Self::Dxt3 | Self::Dxt5 | Self::Bc4 | Self::Bc5 | Self::Bc7 => {
-                Library::PillowBcn
-            }
+            Self::Dxt1
+            | Self::Dxt3
+            | Self::Dxt5
+            | Self::Dxt1Crunched
+            | Self::Dxt5Crunched
+            | Self::Bc4
+            | Self::Bc5
+            | Self::Bc7 => Library::PillowBcn,
             Self::EtcRgb4
             | Self::EacR
             | Self::EacRSigned

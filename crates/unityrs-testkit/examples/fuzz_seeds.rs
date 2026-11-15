@@ -8,7 +8,8 @@
 //! both ways round, the deep values of `unityrs_testkit::depth`, LZ4
 //! blocks of every output, textures of every size class the decoders tell
 //! apart, ASTC blocks of every kind `unityrs-texture`'s oracle fixture
-//! crafts (`tools/fixtures/texture_astc.py`), and every mesh and sprite case `unityrs-meshdecode`'s oracle
+//! crafts (`tools/fixtures/texture_astc.py`), legacy CRN streams built by
+//! `tools/fixtures/texture_crunch.py`, and every mesh and sprite case `unityrs-meshdecode`'s oracle
 //! fixture records (`tools/fixtures/meshdecode.py`'s synthetic values).
 //! Nothing comes from a corpus. One folder per target:
 //!
@@ -42,13 +43,15 @@ use unityrs_testkit::bundle::{TestCodec, compress};
 use unityrs_testkit::depth::{Depth, Wrap, Z_ROWS};
 use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_case, lz4_case};
 
+#[path = "fuzz_seeds/crunch.rs"]
+mod crunch;
 #[path = "fuzz_seeds/web.rs"]
 mod web;
 #[path = "fuzz_seeds/zip.rs"]
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 16] = [
+const TARGETS: [&str; 17] = [
     "detect",
     "bundle",
     "serialized",
@@ -59,6 +62,7 @@ const TARGETS: [&str; 16] = [
     "lz4",
     "texture",
     "astc",
+    "crunch",
     "meshdecode",
     "zlib_match",
     "unitycn",
@@ -704,6 +708,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     web::seeds(&mut s)?;
     texture(&mut s)?;
     astc(&mut s)?;
+    crunch::write(&mut s)?;
     meshdecode(&mut s)?;
     for len in [2, 3, 257, 258, 259, 262, 32768, 65536, 65537, 131_333] {
         s.add("zlib_match", &format!("zero-{len}"), &vec![0; len])?;
