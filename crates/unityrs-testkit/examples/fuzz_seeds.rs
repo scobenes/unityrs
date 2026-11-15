@@ -24,6 +24,9 @@
 //! The core splits what the builders made (a bundle into its files, a file
 //! into its objects); the inputs are the builders' alone.
 
+#[path = "fuzz_seeds/pvrtc_atc.rs"]
+mod pvrtc_atc;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -47,11 +50,13 @@ use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_
 mod crunch;
 #[path = "fuzz_seeds/tierb.rs"]
 mod tierb;
+#[path = "fuzz_seeds/web.rs"]
+mod web;
 #[path = "fuzz_seeds/zip.rs"]
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 15] = [
+const TARGETS: [&str; 18] = [
     "detect",
     "bundle",
     "serialized",
@@ -67,10 +72,13 @@ const TARGETS: [&str; 15] = [
     "zlib_match",
     "unitycn",
     "zip",
+    "webfile",
+    "unityweb",
+    "fsb5",
 ];
 
-/// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
-/// RGBA32, DXT1, DXT5, BC7), a named one it skips (`ETC_RGB4`) and a value
+/// The baseline `texture` seeds' formats: the five V1 exports (RGB24,
+/// RGBA32, DXT1, DXT5, BC7), one V1 skips (`ETC_RGB4`) and a value
 /// with no name.
 const TEXTURE_FORMATS: [i32; 7] = [3, 4, 10, 12, 25, 34, 1000];
 
@@ -125,6 +133,9 @@ const MESH_CASES: &str = concat!(
 /// 64 bytes (refusing the first array), 16 KiB and 256 KiB (most of the
 /// fixture's arrays fit, the largest do not).
 pub(crate) const MESH_METERS: [u8; 4] = [0, 1, 16, 64];
+
+#[path = "fuzz_seeds/fsb5.rs"]
+mod fsb5;
 
 struct Seeds {
     dir: PathBuf,
@@ -358,24 +369,18 @@ fn depth_cases() -> Vec<(String, TreeCase)> {
     out
 }
 
-/// The format the `texture` target's check decodes `format` as
-/// (`fuzz/src/texture.rs`): itself when it is one of the five, else the
-/// five's `format mod 5`th, in `TextureFormat` order.
+/// The baseline seed formats as the texture target decodes them. The sole
+/// unknown value, 1000, selects ALL[1000 mod 66] = DXT5 in the combined
+/// registry. Additional format families have their own seed writers.
 fn texture_decoded_as(format: i32) -> i32 {
     match format {
-        3 | 4 | 10 | 12 | 25 => format,
-        _ => match format.rem_euclid(5) {
-            0 => 3,
-            1 => 4,
-            2 => 10,
-            3 => 12,
-            _ => 25,
-        },
+        3 | 4 | 10 | 12 | 25 | 34 => format,
+        _ => 12,
     }
 }
 
 /// What mip 0 of a `width` x `height` texture of `format` holds, decoded
-/// as the check decodes it: 4x4 blocks of 8 bytes (DXT1) or 16 (DXT5,
+/// as the check decodes it: 4x4 blocks of 8 bytes (DXT1, ETC1) or 16 (DXT5,
 /// BC7), else 3 bytes a pixel (RGB24) or 4 (RGBA32); 0 for a side of 0 or
 /// below.
 fn texture_need(format: i32, width: i32, height: i32) -> u64 {
@@ -384,7 +389,7 @@ fn texture_need(format: i32, width: i32, height: i32) -> u64 {
     };
     let blocks = w.div_ceil(4) * h.div_ceil(4);
     match texture_decoded_as(format) {
-        10 => blocks * 8,
+        10 | 34 => blocks * 8,
         12 | 25 => blocks * 16,
         3 => w * h * 3,
         _ => w * h * 4,
@@ -703,7 +708,10 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
         s.add("unitycn", name, bytes)?;
     }
     zip::seeds(&mut s)?;
+    web::seeds(&mut s)?;
+    fsb5::write(&mut s)?;
     texture(&mut s)?;
+    pvrtc_atc::write(&mut s)?;
     astc(&mut s)?;
     tierb::write(&mut s)?;
     crunch::write(&mut s)?;

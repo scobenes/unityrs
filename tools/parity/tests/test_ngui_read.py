@@ -29,7 +29,7 @@ if ORACLE:
     from PIL import Image
     from UnityPy.enums import TextureFormat
     from UnityPy.export import Texture2DConverter
-    from UnityPy.files import BundleFile, SerializedFile, WebFile
+    from UnityPy.files import BundleFile, SerializedFile
     from UnityPy.helpers import TypeTreeNode as TypeTreeNodeModule
 
     import ngui_cutter
@@ -393,9 +393,9 @@ class UnityPyDeparts(unittest.TestCase):
         with self.assertRaises(rd.Failure) as caught:
             rd.deref(5, 1, by_id[24].assets_file)  # the fifth external: the dependency's raw `w.resS`
         self.assertEqual(caught.exception.reason, "bad_pointer")
-        # A WebFile row is a key, top-level or inside a reached bundle, its entries never registered; version 1's core
-        # refuses to open one, so a pointer through it is `unsupported`, and `aw`, `az` get no name.
-        self.assertIsInstance(keys["w2.ress"], WebFile)
+        # A refused WebFile row is a key, top-level or inside a reached bundle, its entries never registered.
+        # Its first name length is -2: a pointer through it is `unsupported`, and `aw`, `az` get no name.
+        self.assertIsInstance(keys["w2.ress"], rd.UnsupportedWebFile)
         self.assertNotIn("in2.ress", keys)
         for file_id, atlas in ((3, 24), (4, 25)):
             with self.subTest(file_id=file_id):
@@ -408,33 +408,33 @@ class UnityPyDeparts(unittest.TestCase):
         # the check's presence, not that siblings answer before the registry: `w4.ress`'s registry value is the
         # same row, and no scene has an external whose sibling and registry value differ.
         d22 = keys["cab-d22"]
-        self.assertIsInstance(rd.sibling(1, d22), WebFile)
+        self.assertIsInstance(rd.sibling(1, d22), rd.UnsupportedWebFile)
         with self.assertRaises(rd.Failure) as caught:
             rd.deref(1, 1, d22)
         self.assertEqual((caught.exception.reason, caught.exception.detail), ("decode_error", "unsupported"))
-        # No WebFile's entries are registered: `in2.resS`, inside the nested WebFile at `w2.resS`, is no key, where
-        # UnityPy's registration holds it (0x91).
-        self.assertEqual(bytes(rd._get_resource_data(env.get_cab("in2.resS"), 0, 1)), b"\x91")
+        # A refused WebFile stays opaque: neither registry contains its inner `in2.resS`.
+        self.assertIsNone(env.get_cab("in2.resS"))
         wi = by_id[30]
         with self.assertRaises(rd.Failure) as caught:
             rd.decode(wi.read(), wi)
         self.assertEqual(caught.exception.reason, "outside_view(archive:/CAB-x22/in2.resS)")
 
     def test_an_input_with_a_webfile_row_is_out_of_scope(self):
-        """Section 3: an input with a top-level WebFile row fails (`entry_error`), where UnityPy parses the WebFile
-        and goes on; the reference raises `Divergence`, never a classified answer. `fallback_rows`' `d.bundle`, cut
-        as an input, has two (`w4.resS`, `sub/CAB-dw`)."""
+        """A top-level WebFile with first name length -2 fails the input (`entry_error`).
+        The reference keeps the refused row opaque and raises `Divergence`, never a classified answer.
+        `fallback_rows`' `d.bundle`, cut as an input, has two (`w4.resS`, `sub/CAB-dw`).
+        """
         scene = ngui_scenes.scenes()["fallback_rows"]
         with self.assertRaises(rd.Divergence):
             ngui_cutter.cut("d.bundle", scene.view("d.bundle"), scene.options)
 
     def test_a_view_member_or_input_not_a_bundle_is_out_of_scope(self):
-        """A view member or input UnityPy parses as no `BundleFile`, which the engine fails at its peek (a WebFile's
-        `unsupported`), where UnityPy goes on: `Divergence`. The WebFile is `fallback_rows`' own row `w4.resS`, as
-        UnityPy's `WebFile.save` writes it."""
-        scene = ngui_scenes.scenes()["fallback_rows"]
+        """A supported WebFile is still no batch BundleFile (`not_a_bundle`): `Divergence`.
+        Use `webfile_sibling`'s valid row, saved by UnityPy, independently of the refused examples.
+        """
+        scene = ngui_scenes.scenes()["webfile_sibling"]
         d = rd.load(scene.view("d.bundle"), "d.bundle")
-        web = next(f for path, f in rd.rows(d) if path == "w4.resS").save()
+        web = next(f for path, f in rd.rows(d) if path == "wv.resS").save()
         for view, x in (({**scene.view("x.bundle"), "w.bundle": web}, "x.bundle"), ({"w.bundle": web}, "w.bundle")):
             with self.subTest(input=x), self.assertRaises(rd.Divergence):
                 ngui_cutter.cut(x, view, scene.options)

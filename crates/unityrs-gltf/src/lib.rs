@@ -20,7 +20,8 @@
 //! positions refuse their primitives; invalid normals drop NORMAL and TANGENT.
 //! Raw mode preserves f32 bits in BIN and may fail validation. [`collect`]
 //! converts Unity coordinates and UVs into this model using a typed [`Profile`].
-//! Material mapping is separate work. Per-instance morph weights live on nodes.
+//! Material mapping uses [`UnlitExtras`] or an injected [`MaterialMapper`],
+//! including [`CorePbr`]. Per-instance morph weights live on nodes.
 #![forbid(unsafe_code)]
 #![cfg_attr(
     not(test),
@@ -34,11 +35,16 @@
 )]
 
 mod collect;
-pub use collect::collect;
+pub use collect::{collect, collect_with_mapper};
 mod image;
 mod json;
 mod layout;
+mod material_model;
+mod material_schema;
 mod model;
+pub use material_model::*;
+mod materials;
+pub use materials::{CorePbr, MapCx, MaterialInput, MaterialMapper, TextureInput, UnlitExtras};
 mod normalise;
 mod profile;
 pub use profile::*;

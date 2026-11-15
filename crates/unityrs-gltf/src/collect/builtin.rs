@@ -100,7 +100,7 @@ pub(super) fn mark(scene: &mut Scene, id: usize, path_id: i64, meter: &Arc<Meter
     )
 }
 
-pub(super) fn resolve(
+pub(crate) fn resolve(
     env: &unityrs_core::env::Environment,
     builtin: &unityrs_scene::builtin::BuiltinRef,
     meter: &Arc<Meter>,

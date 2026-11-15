@@ -4,10 +4,12 @@
 //! (`docs/plans/extract.md` E15, E18, E59, E66), under the memory bound
 //! ([`crate::MEMORY`]) or a meter of about the decode's charge.
 //!
-//! The Tier B/C raw formats use their independent closed forms. ARGBFloat
-//! and odd-width YUY2 exercise the Tier U refusals. A format outside the
-//! formats the crate names decodes as one of them, so every
-//! input reaches a decoder. Besides a panic (libFuzzer's hook aborts at it,
+//! The sixty-four byte-independent formats include Pillow raw and `bcn`,
+//! ETC/EAC, ASTC LDR, PVRTC/ATC and Tier B/C raw closed forms. ARGBFloat
+//! and odd-width YUY2 exercise the Tier U refusals. Other unknown formats
+//! map to a decoded format, and the two CRN formats to plain DXT1 or DXT5
+//! (the `crunch` target checks CRN streams). Besides a panic (libFuzzer's
+//! hook aborts at it,
 //! before the decoder's containment can catch it), a finding is: a
 //! selection that exports a format the texture does not have; a decode
 //! whose answer is not its plan's, but for the meter's refusal of a charge

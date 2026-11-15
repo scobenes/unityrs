@@ -96,8 +96,31 @@ fn repeated_repairs_sum_node_extras_and_keep_each_report_record() {
         doc["asset"]["extras"]["collection_issues"]
             .as_array()
             .unwrap()
-            .len(),
+            .iter()
+            .filter(|issue| issue["reason"] != "submesh_without_material")
+            .count(),
         2
+    );
+    let missing_materials: Vec<_> = doc["asset"]["extras"]["collection_issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|issue| issue["reason"] == "submesh_without_material")
+        .collect();
+    assert_eq!(missing_materials.len(), 4);
+    assert!(
+        missing_materials
+            .iter()
+            .all(|issue| issue["node"] == issues[0].node && issue["count"] == 1)
+    );
+    assert_eq!(
+        report
+            .collection_issues
+            .as_slice()
+            .iter()
+            .filter(|issue| issue.reason == "submesh_without_material")
+            .count(),
+        4
     );
     let extras = scene.nodes.as_slice()[issues[0].node].extras.as_slice();
     assert!(

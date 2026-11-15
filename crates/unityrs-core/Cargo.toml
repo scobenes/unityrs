@@ -24,6 +24,8 @@ aes = "=0.8.4"
 # Zero-copy buffers: the input, each decoded block run, every entry, every
 # SerializedFile and every TypelessData value share one allocation.
 bytes = "=1.12.1"
+# Fallible shared owners for computed names; std Arc::try_new is unstable.
+triomphe = { version = "=0.1.17", default-features = false, features = ["std"] }
 thiserror = "=2.0.21"
 # Block codecs (docs/spikes/lzma.md: liblzma static, pinned). LZ4 has no
 # dependency: `codec/lz4.rs` ports liblz4 1.9.4's decoder (plan section 3.6).
@@ -35,6 +37,7 @@ liblzma = { version = "=0.4.9", features = ["static"] }
 # default features, so no other backend is built; zlib-rs allocates through
 # the global allocator (flate2 asks for its `rust-allocator`).
 flate2 = { version = "=1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+brotli-decompressor = { version = "=5.0.0", default-features = false }
 
 # Test-only (docs/plans/batch.md section 6, CR8): the `testing` module's
 # refusal counters, span-read tables and growth invocation marks. The

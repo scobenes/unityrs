@@ -68,13 +68,15 @@ P1B_STATUS = "pinned P0; verified P1b (decoding); impl P3a"
 # section 19.1's reference; the rest of Pillow's raw and bcn formats (crates/unityrs-texture/tests/raw_oracle.rs,
 # from tools/fixtures/texture_raw.py's cases); and the twelve ASTC LDR formats (crates/unityrs-texture/tests/
 # astc_oracle.rs, from tools/fixtures/texture_astc.py's cases); and the raw closed forms
-# (crates/unityrs-texture/tests/tierb_oracle.rs, from tools/fixtures/texture_tierb.py).
+# (crates/unityrs-texture/tests/tierb_oracle.rs, from tools/fixtures/texture_tierb.py); and PVRTC/ATC
+# (crates/unityrs-texture/tests/pvrtc_atc_oracle.rs, from tools/fixtures/texture_pvrtc_atc.py).
 P3_ETC = ["EAC_R", "EAC_RG", "EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGB", "ETC2_RGBA1", "ETC2_RGBA8", "ETC_RGB4"]
 P3_PILLOW = ["ARGB32", "ARGB4444", "Alpha8", "BC4", "BC5", "BGR24", "BGRA32", "DXT3", "R8", "RGB565", "RGBA4444"]
 P3_ASTC = [f"ASTC_{kind}_{n}x{n}" for kind in ("RGB", "RGBA") for n in (4, 5, 6, 8, 10, 12)]
 P3_CLOSED = (set(references.TIER_B) - {"BC6H"}) | set(references.TIER_C)
 P3_REFUSED = ["ARGBFloat"]
-P3 = sorted(P3_ETC + P3_PILLOW + P3_ASTC + list(P3_CLOSED) + P3_REFUSED)
+P3_PVRTC_ATC = ["ATC_RGB4", "ATC_RGBA8", "PVRTC_RGB2", "PVRTC_RGB4", "PVRTC_RGBA2", "PVRTC_RGBA4"]
+P3 = sorted(P3_ETC + P3_PILLOW + P3_ASTC + P3_PVRTC_ATC + list(P3_CLOSED) + P3_REFUSED)
 P3_CLOSED_STATUS = "pinned P0; verified P3 (closed-form decoding); impl P3a"
 P3_STATUS = "pinned P0; verified P3 (decoding); impl P3a"
 P3_TIER_C = ["EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGBA1"]

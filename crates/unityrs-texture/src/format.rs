@@ -5,113 +5,50 @@
 //! engine exports five ([`Format::exported`]), and the image modes they
 //! decode to ([`Mode`]).
 
-/// UnityPy 1.25.2's `TextureFormat` members, value and name, in its order
-/// (`enums/TextureFormat.py:4-82`). Values 37 to 40 are unassigned.
-pub const TEXTURE_FORMATS: [(i32, &str); 78] = [
-    (1, "Alpha8"),
-    (2, "ARGB4444"),
-    (3, "RGB24"),
-    (4, "RGBA32"),
-    (5, "ARGB32"),
-    (6, "ARGBFloat"),
-    (7, "RGB565"),
-    (8, "BGR24"),
-    (9, "R16"),
-    (10, "DXT1"),
-    (11, "DXT3"),
-    (12, "DXT5"),
-    (13, "RGBA4444"),
-    (14, "BGRA32"),
-    (15, "RHalf"),
-    (16, "RGHalf"),
-    (17, "RGBAHalf"),
-    (18, "RFloat"),
-    (19, "RGFloat"),
-    (20, "RGBAFloat"),
-    (21, "YUY2"),
-    (22, "RGB9e5Float"),
-    (23, "RGBFloat"),
-    (24, "BC6H"),
-    (25, "BC7"),
-    (26, "BC4"),
-    (27, "BC5"),
-    (28, "DXT1Crunched"),
-    (29, "DXT5Crunched"),
-    (30, "PVRTC_RGB2"),
-    (31, "PVRTC_RGBA2"),
-    (32, "PVRTC_RGB4"),
-    (33, "PVRTC_RGBA4"),
-    (34, "ETC_RGB4"),
-    (35, "ATC_RGB4"),
-    (36, "ATC_RGBA8"),
-    (41, "EAC_R"),
-    (42, "EAC_R_SIGNED"),
-    (43, "EAC_RG"),
-    (44, "EAC_RG_SIGNED"),
-    (45, "ETC2_RGB"),
-    (46, "ETC2_RGBA1"),
-    (47, "ETC2_RGBA8"),
-    (48, "ASTC_RGB_4x4"),
-    (49, "ASTC_RGB_5x5"),
-    (50, "ASTC_RGB_6x6"),
-    (51, "ASTC_RGB_8x8"),
-    (52, "ASTC_RGB_10x10"),
-    (53, "ASTC_RGB_12x12"),
-    (54, "ASTC_RGBA_4x4"),
-    (55, "ASTC_RGBA_5x5"),
-    (56, "ASTC_RGBA_6x6"),
-    (57, "ASTC_RGBA_8x8"),
-    (58, "ASTC_RGBA_10x10"),
-    (59, "ASTC_RGBA_12x12"),
-    (60, "ETC_RGB4_3DS"),
-    (61, "ETC_RGBA8_3DS"),
-    (62, "RG16"),
-    (63, "R8"),
-    (64, "ETC_RGB4Crunched"),
-    (65, "ETC2_RGBA8Crunched"),
-    (66, "ASTC_HDR_4x4"),
-    (67, "ASTC_HDR_5x5"),
-    (68, "ASTC_HDR_6x6"),
-    (69, "ASTC_HDR_8x8"),
-    (70, "ASTC_HDR_10x10"),
-    (71, "ASTC_HDR_12x12"),
-    (72, "RG32"),
-    (73, "RGB48"),
-    (74, "RGBA64"),
-    (75, "R8_SIGNED"),
-    (76, "RG16_SIGNED"),
-    (77, "RGB24_SIGNED"),
-    (78, "RGBA32_SIGNED"),
-    (79, "R16_SIGNED"),
-    (80, "RG32_SIGNED"),
-    (81, "RGB48_SIGNED"),
-    (82, "RGBA64_SIGNED"),
-];
-
-/// UnityPy 1.25.2's name for a `TextureFormat` value, or `None` for a value
-/// its enum lacks (where `TextureFormat(value)` raises `ValueError`).
-#[must_use]
-pub fn texture_format_name(value: i32) -> Option<&'static str> {
-    TEXTURE_FORMATS
-        .iter()
-        .find(|(v, _)| *v == value)
-        .map(|(_, name)| *name)
-}
+mod names;
+pub use names::{TEXTURE_FORMATS, texture_format_name};
 
 /// The formats this crate decodes: the five of `docs/plans/extract.md` E15
 /// and the rest of the formats UnityPy decodes with Pillow's raw and `bcn`
 /// decoders (`raw`'s and `bcn`'s module docs), the eight ETC and EAC
 /// formats texture2ddecoder decodes for it (`etc`'s module docs), and the
 /// twelve ASTC LDR formats astcenc decodes for it (`astc`'s module docs),
+/// the four PVRTC and two ATC formats (`pvrtc` and `atc`),
 /// and twenty-two raw formats using independent closed forms (`tierb`).
 /// `ArgbFloat` is a refusal-only sentinel, excluded from `ALL`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Format {
+    /// `Alpha8` (1): Pillow's raw `A` into `RGBA`.
+    Alpha8,
+    /// `ARGB4444` (2): Pillow's raw `RGBA;4B` into `RGBA`, its bands
+    /// reordered (2, 1, 0, 3).
+    Argb4444,
+    /// `RGB24` (3): Pillow's raw `RGB` into `RGB`.
+    Rgb24,
+    /// `RGBA32` (4): Pillow's raw `RGBA` into `RGBA`.
+    Rgba32,
+    /// `ARGB32` (5): Pillow's raw `ARGB` into `RGBA`.
+    Argb32,
     /// `ARGBFloat` (6): refusal only; not in `ALL` or `Formats::DECODED`.
     /// Its channel order is unknown (PARITY.md section 17.1, Tier U).
     ArgbFloat,
+    /// `RGB565` (7): Pillow's raw `BGR;16` into `RGB`.
+    Rgb565,
+    /// `BGR24` (8): Pillow's raw `BGR` into `RGB`.
+    Bgr24,
     /// `R16` (9): closed form of PARITY.md sections 17.1 and 19.
     R16,
+    /// `DXT1` (10): Pillow's `bcn` 1 (BC1) into `RGBA`.
+    Dxt1,
+    /// `DXT3` (11): Pillow's `bcn` 2 (BC2) into `RGBA`.
+    Dxt3,
+    /// `DXT5` (12): Pillow's `bcn` 3 (BC3) into `RGBA`.
+    Dxt5,
+    /// `RGBA4444` (13): Pillow's raw `RGBA;4B` into `RGBA`, its bands
+    /// reordered (3, 2, 1, 0).
+    Rgba4444,
+    /// `BGRA32` (14): Pillow's raw `BGRA` into `RGBA`.
+    Bgra32,
     /// `RHalf` (15): closed form of PARITY.md sections 17.1 and 19.
     RHalf,
     /// `RGHalf` (16): closed form of PARITY.md sections 17.1 and 19.
@@ -130,57 +67,6 @@ pub enum Format {
     Rgb9e5Float,
     /// `RGBFloat` (23): closed form of PARITY.md sections 17.1 and 19.
     RgbFloat,
-    /// `RG16` (62): closed form of PARITY.md sections 17.1 and 19.
-    Rg16,
-    /// `RG32` (72): closed form of PARITY.md sections 17.1 and 19.
-    Rg32,
-    /// `RGB48` (73): closed form of PARITY.md sections 17.1 and 19.
-    Rgb48,
-    /// `RGBA64` (74): closed form of PARITY.md sections 17.1 and 19.
-    Rgba64,
-    /// `R8_SIGNED` (75): closed form of PARITY.md sections 17.1 and 19.
-    R8Signed,
-    /// `RG16_SIGNED` (76): closed form of PARITY.md sections 17.1 and 19.
-    Rg16Signed,
-    /// `RGB24_SIGNED` (77): closed form of PARITY.md sections 17.1 and 19.
-    Rgb24Signed,
-    /// `RGBA32_SIGNED` (78): closed form of PARITY.md sections 17.1 and 19.
-    Rgba32Signed,
-    /// `R16_SIGNED` (79): closed form of PARITY.md sections 17.1 and 19.
-    R16Signed,
-    /// `RG32_SIGNED` (80): closed form of PARITY.md sections 17.1 and 19.
-    Rg32Signed,
-    /// `RGB48_SIGNED` (81): closed form of PARITY.md sections 17.1 and 19.
-    Rgb48Signed,
-    /// `RGBA64_SIGNED` (82): closed form of PARITY.md sections 17.1 and 19.
-    Rgba64Signed,
-
-    /// `Alpha8` (1): Pillow's raw `A` into `RGBA`.
-    Alpha8,
-    /// `ARGB4444` (2): Pillow's raw `RGBA;4B` into `RGBA`, its bands
-    /// reordered (2, 1, 0, 3).
-    Argb4444,
-    /// `RGB24` (3): Pillow's raw `RGB` into `RGB`.
-    Rgb24,
-    /// `RGBA32` (4): Pillow's raw `RGBA` into `RGBA`.
-    Rgba32,
-    /// `ARGB32` (5): Pillow's raw `ARGB` into `RGBA`.
-    Argb32,
-    /// `RGB565` (7): Pillow's raw `BGR;16` into `RGB`.
-    Rgb565,
-    /// `BGR24` (8): Pillow's raw `BGR` into `RGB`.
-    Bgr24,
-    /// `DXT1` (10): Pillow's `bcn` 1 (BC1) into `RGBA`.
-    Dxt1,
-    /// `DXT3` (11): Pillow's `bcn` 2 (BC2) into `RGBA`.
-    Dxt3,
-    /// `DXT5` (12): Pillow's `bcn` 3 (BC3) into `RGBA`.
-    Dxt5,
-    /// `RGBA4444` (13): Pillow's raw `RGBA;4B` into `RGBA`, its bands
-    /// reordered (3, 2, 1, 0).
-    Rgba4444,
-    /// `BGRA32` (14): Pillow's raw `BGRA` into `RGBA`.
-    Bgra32,
     /// `BC7` (25): Pillow's `bcn` 7 into `RGBA`.
     Bc7,
     /// `BC4` (26): Pillow's `bcn` 4 into `L`.
@@ -191,8 +77,20 @@ pub enum Format {
     Dxt1Crunched,
     /// `DXT5Crunched` (29): legacy CRN, then Pillow BC3; below Unity 2017.3.
     Dxt5Crunched,
+    /// `PVRTC_RGB2` (30): texture2ddecoder into `RGBA`.
+    PvrtcRgb2,
+    /// `PVRTC_RGBA2` (31): texture2ddecoder into `RGBA`.
+    PvrtcRgba2,
+    /// `PVRTC_RGB4` (32): texture2ddecoder into `RGBA`.
+    PvrtcRgb4,
+    /// `PVRTC_RGBA4` (33): texture2ddecoder into `RGBA`.
+    PvrtcRgba4,
     /// `ETC_RGB4` (34): texture2ddecoder's ETC1 into `RGBA`.
     EtcRgb4,
+    /// `ATC_RGB4` (35): texture2ddecoder into `RGBA`.
+    AtcRgb4,
+    /// `ATC_RGBA8` (36): texture2ddecoder into `RGBA`.
+    AtcRgba8,
     /// `EAC_R` (41): texture2ddecoder's EAC R into `RGBA`.
     EacR,
     /// `EAC_R_SIGNED` (42): texture2ddecoder's signed EAC R into `RGBA`.
@@ -209,8 +107,6 @@ pub enum Format {
     Etc2Rgba1,
     /// `ETC2_RGBA8` (47): texture2ddecoder's ETC2 A8 into `RGBA`.
     Etc2Rgba8,
-    /// `R8` (63): Pillow's raw `R` into `RGB`.
-    R8,
     /// `ASTC_RGB_4x4` (48): astcenc's LDR decode of 4x4 blocks into
     /// `RGBA` (the `astc` module).
     AstcRgb4x4,
@@ -247,6 +143,32 @@ pub enum Format {
     /// `ASTC_RGBA_12x12` (59): astcenc's LDR decode of 12x12 blocks into
     /// `RGBA` (the `astc` module).
     AstcRgba12x12,
+    /// `RG16` (62): closed form of PARITY.md sections 17.1 and 19.
+    Rg16,
+    /// `R8` (63): Pillow's raw `R` into `RGB`.
+    R8,
+    /// `RG32` (72): closed form of PARITY.md sections 17.1 and 19.
+    Rg32,
+    /// `RGB48` (73): closed form of PARITY.md sections 17.1 and 19.
+    Rgb48,
+    /// `RGBA64` (74): closed form of PARITY.md sections 17.1 and 19.
+    Rgba64,
+    /// `R8_SIGNED` (75): closed form of PARITY.md sections 17.1 and 19.
+    R8Signed,
+    /// `RG16_SIGNED` (76): closed form of PARITY.md sections 17.1 and 19.
+    Rg16Signed,
+    /// `RGB24_SIGNED` (77): closed form of PARITY.md sections 17.1 and 19.
+    Rgb24Signed,
+    /// `RGBA32_SIGNED` (78): closed form of PARITY.md sections 17.1 and 19.
+    Rgba32Signed,
+    /// `R16_SIGNED` (79): closed form of PARITY.md sections 17.1 and 19.
+    R16Signed,
+    /// `RG32_SIGNED` (80): closed form of PARITY.md sections 17.1 and 19.
+    Rg32Signed,
+    /// `RGB48_SIGNED` (81): closed form of PARITY.md sections 17.1 and 19.
+    Rgb48Signed,
+    /// `RGBA64_SIGNED` (82): closed form of PARITY.md sections 17.1 and 19.
+    Rgba64Signed,
 }
 
 const _: () = crate::send_sync::<Format>();
@@ -272,7 +194,7 @@ pub(crate) enum Library {
 
 impl Format {
     /// Every format, in `TextureFormat` order.
-    pub const ALL: [Self; 60] = [
+    pub const ALL: [Self; 66] = [
         Self::Alpha8,
         Self::Argb4444,
         Self::Rgb24,
@@ -300,7 +222,13 @@ impl Format {
         Self::Bc5,
         Self::Dxt1Crunched,
         Self::Dxt5Crunched,
+        Self::PvrtcRgb2,
+        Self::PvrtcRgba2,
+        Self::PvrtcRgb4,
+        Self::PvrtcRgba4,
         Self::EtcRgb4,
+        Self::AtcRgb4,
+        Self::AtcRgba8,
         Self::EacR,
         Self::EacRSigned,
         Self::EacRg,
@@ -383,6 +311,12 @@ impl Format {
             27 => Some(Self::Bc5),
             28 => Some(Self::Dxt1Crunched),
             29 => Some(Self::Dxt5Crunched),
+            30 => Some(Self::PvrtcRgb2),
+            31 => Some(Self::PvrtcRgba2),
+            32 => Some(Self::PvrtcRgb4),
+            33 => Some(Self::PvrtcRgba4),
+            35 => Some(Self::AtcRgb4),
+            36 => Some(Self::AtcRgba8),
             34 => Some(Self::EtcRgb4),
             41 => Some(Self::EacR),
             42 => Some(Self::EacRSigned),
@@ -453,6 +387,12 @@ impl Format {
             Self::Bc5 => 27,
             Self::Dxt1Crunched => 28,
             Self::Dxt5Crunched => 29,
+            Self::PvrtcRgb2 => 30,
+            Self::PvrtcRgba2 => 31,
+            Self::PvrtcRgb4 => 32,
+            Self::PvrtcRgba4 => 33,
+            Self::AtcRgb4 => 35,
+            Self::AtcRgba8 => 36,
             Self::EtcRgb4 => 34,
             Self::EacR => 41,
             Self::EacRSigned => 42,
@@ -522,6 +462,12 @@ impl Format {
             Self::Bc5 => "BC5",
             Self::Dxt1Crunched => "DXT1Crunched",
             Self::Dxt5Crunched => "DXT5Crunched",
+            Self::PvrtcRgb2 => "PVRTC_RGB2",
+            Self::PvrtcRgba2 => "PVRTC_RGBA2",
+            Self::PvrtcRgb4 => "PVRTC_RGB4",
+            Self::PvrtcRgba4 => "PVRTC_RGBA4",
+            Self::AtcRgb4 => "ATC_RGB4",
+            Self::AtcRgba8 => "ATC_RGBA8",
             Self::EtcRgb4 => "ETC_RGB4",
             Self::EacR => "EAC_R",
             Self::EacRSigned => "EAC_R_SIGNED",
@@ -581,7 +527,8 @@ impl Format {
     }
 
     /// The bytes one block holds, for a block format: 8 for DXT1, BC4,
-    /// `ETC_RGB4`, `EAC_R`, `EAC_R_SIGNED`, `ETC2_RGB` and `ETC2_RGBA1`, 16
+    /// PVRTC, `ATC_RGB4`, `ETC_RGB4`, `EAC_R`, `EAC_R_SIGNED`, `ETC2_RGB`
+    /// and `ETC2_RGBA1`, 16
     /// for the rest, the ASTC formats' included (`calculate_astc_compressed_size`,
     /// `export/Texture2DConverter.py:390-397`); `None` for the raw formats,
     /// which UnityPy does not pad ([`Self::block_size`]).
@@ -591,12 +538,18 @@ impl Format {
             Self::Dxt1
             | Self::Dxt1Crunched
             | Self::Bc4
+            | Self::PvrtcRgb2
+            | Self::PvrtcRgba2
+            | Self::PvrtcRgb4
+            | Self::PvrtcRgba4
+            | Self::AtcRgb4
             | Self::EtcRgb4
             | Self::EacR
             | Self::EacRSigned
             | Self::Etc2Rgb
             | Self::Etc2Rgba1 => Some(8),
-            Self::Dxt3
+            Self::AtcRgba8
+            | Self::Dxt3
             | Self::Dxt5
             | Self::Dxt5Crunched
             | Self::Bc7
@@ -656,10 +609,14 @@ impl Format {
     /// (`get_compressed_image_size`, `export/Texture2DConverter.py:36-50`,
     /// with `TEXTURE_FORMAT_BLOCK_SIZE_TABLE`, `:22-33`: an ASTC name's
     /// own `WxH`, 4x4 for names starting `DXT`, `BC`, `ETC` or `EAC`);
-    /// `None` for the raw formats, which it does not pad.
+    /// PVRTC uses 8x4 at 2bpp and 4x4 at 4bpp.
+    /// `None` for raw formats and ATC, which UnityPy does not pad (ATC
+    /// still stores 4x4 blocks: [`Self::block_bytes`]).
     #[must_use]
     pub const fn block_size(self) -> Option<(u8, u8)> {
         match self {
+            Self::AtcRgb4 | Self::AtcRgba8 => None,
+            Self::PvrtcRgb2 | Self::PvrtcRgba2 => Some((8, 4)),
             Self::AstcRgb4x4 | Self::AstcRgba4x4 => Some((4, 4)),
             Self::AstcRgb5x5 | Self::AstcRgba5x5 => Some((5, 5)),
             Self::AstcRgb6x6 | Self::AstcRgba6x6 => Some((6, 6)),
@@ -693,6 +650,15 @@ impl Format {
         }
     }
 
+    /// The PVRTC modulation footprint, or `None` for another decoder.
+    pub(crate) const fn pvrtc_2bpp(self) -> Option<bool> {
+        match self {
+            Self::PvrtcRgb2 | Self::PvrtcRgba2 => Some(true),
+            Self::PvrtcRgb4 | Self::PvrtcRgba4 => Some(false),
+            _ => None,
+        }
+    }
+
     /// Whether this format expects legacy CRN rather than plain blocks.
     /// Unity 2017.3+ and ETC crunched formats require the T4b decoder.
     #[must_use]
@@ -714,7 +680,13 @@ impl Format {
             | Self::Bc4
             | Self::Bc5
             | Self::Bc7 => Library::PillowBcn,
-            Self::EtcRgb4
+            Self::PvrtcRgb2
+            | Self::PvrtcRgba2
+            | Self::PvrtcRgb4
+            | Self::PvrtcRgba4
+            | Self::AtcRgb4
+            | Self::AtcRgba8
+            | Self::EtcRgb4
             | Self::EacR
             | Self::EacRSigned
             | Self::EacRg

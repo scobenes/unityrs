@@ -1,4 +1,4 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's texture export for the formats it decodes with Pillow's raw and bcn decoders (Alpha8, ARGB4444, RGB24, RGBA32, ARGB32, RGB565, BGR24, DXT1, DXT3, DXT5, RGBA4444, BGRA32, BC7, BC4, BC5 and R8), the ETC and EAC formats and the ASTC LDR formats, with Pillow 9.5.0's, texture2ddecoder 1.0.5's and astc-encoder-py 0.1.12's decoders as it calls them. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/export/Texture2DConverter.py's texture export for the formats it decodes with Pillow's raw and bcn decoders (Alpha8, ARGB4444, RGB24, RGBA32, ARGB32, RGB565, BGR24, DXT1, DXT3, DXT5, RGBA4444, BGRA32, BC7, BC4, BC5 and R8), the ETC and EAC formats, the ASTC LDR formats, PVRTC and ATC, with Pillow 9.5.0's, texture2ddecoder 1.0.5's and astc-encoder-py 0.1.12's decoders as it calls them. See THIRD_PARTY_LICENSES.
 //! `Texture2D` decoding for the batch engine (`docs/plans/extract.md` E15,
 //! E18, E59, E66): the five formats P1b exports, BC7, DXT1, DXT5, RGBA32 and
 //! RGB24; of P3, the rest of the formats UnityPy decodes with Pillow's raw
@@ -7,7 +7,8 @@
 //! (`ETC_RGB4`, `ETC2_RGB`, `ETC2_RGBA1`, `ETC2_RGBA8`, `EAC_R`,
 //! `EAC_R_SIGNED`, `EAC_RG` and `EAC_RG_SIGNED`), and the twelve ASTC LDR
 //! formats (`ASTC_RGB_NxN` and `ASTC_RGBA_NxN`, N of 4, 5, 6, 8, 10 and
-//! 12), decoded to the pixels UnityPy 1.25.2 with Pillow 9.5.0,
+//! 12), the four PVRTC formats and the two ATC formats, decoded to the
+//! pixels UnityPy 1.25.2 with Pillow 9.5.0,
 //! texture2ddecoder 1.0.5 and astc-encoder-py 0.1.12 gives
 //! (`Texture2D.image`, `export/Texture2DConverter.py:237-320`), bit for bit,
 //! but for `ETC2_RGBA1`'s transparent pixels and a signed EAC base of -128
@@ -87,6 +88,13 @@
 //! mode class, partition count, dual-plane channel, endpoint mode, void
 //! extent and error block.
 //!
+//! PVRTC and ATC port texture2ddecoder 1.0.5 (`pvrtc` and `atc` modules).
+//! The four PVRTC names retain encoded alpha, use Morton order with wrapped
+//! endpoint/modulation neighbors, and pad only to the block footprint;
+//! ATC retains the original dimensions and uses interpolated alpha for
+//! `ATC_RGBA8`. See `PARITY.md` section 17 for the reference quirks and the
+//! coordinator-generated oracle replay (`tests/pvrtc_atc_oracle.rs`).
+//!
 //! **No panics, bounded work** (`docs/plans/core.md` section 3.15): indexing,
 //! `unwrap` and the like are denied outside tests; sizes are computed in
 //! `u64` from the `i32` sides; a texture past [`MAX_PIXELS`] (16384 x
@@ -114,13 +122,16 @@
 )]
 
 mod astc;
+mod atc;
 mod bcn;
 mod contain;
 mod crunch;
 mod decode;
 mod etc;
+pub mod fetch;
 mod format;
 mod formats;
+mod pvrtc;
 mod raw;
 mod select;
 pub mod sprite;

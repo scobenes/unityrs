@@ -142,9 +142,12 @@ mod tests {
     fn a_name_is_decoded_known_or_unknown() {
         assert_eq!(Formats::decoded("RGB565"), Ok(Format::Rgb565));
         assert_eq!(Formats::decoded("ETC2_RGBA8"), Ok(Format::Etc2Rgba8));
-        // UnityPy names it; this crate does not decode it.
-        assert_eq!(Formats::decoded("PVRTC_RGB2"), Err(true));
+        assert_eq!(Formats::decoded("PVRTC_RGB2"), Ok(Format::PvrtcRgb2));
+        assert_eq!(Formats::decoded("RHalf"), Ok(Format::RHalf));
+        assert_eq!(Formats::decoded("RGB48"), Ok(Format::Rgb48));
+        // UnityPy names these; this crate does not decode them.
         assert_eq!(Formats::decoded("ARGBFloat"), Err(true));
+        assert_eq!(Formats::decoded("ETC_RGB4_3DS"), Err(true));
         // Names are UnityPy's, case and all.
         assert_eq!(Formats::decoded("rgb565"), Err(false));
         assert_eq!(Formats::decoded("Unknown"), Err(false));

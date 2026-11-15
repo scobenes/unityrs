@@ -85,3 +85,72 @@ pub(super) fn selected(
     }
     Ok(out)
 }
+
+/// Bind a combined submesh to the first selected renderer that owns it.
+/// This follows the same traversal and range policy as the geometry union.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn material_renderer<'a>(
+    env: &super::Environment,
+    graph: &'a Graph,
+    selected: &[selection::Selected],
+    ids: &[Option<usize>],
+    object: &ObjectRef,
+    count: usize,
+    submesh: usize,
+    profile: &Profile,
+    meter: &Arc<Meter>,
+) -> Result<Option<(&'a unityrs_scene::RendererInfo, usize)>> {
+    for (i, node) in graph.nodes().iter().enumerate() {
+        meter.count_decode(node.components.len() as u64 + 1)?;
+        if !selected.get(i).is_some_and(|s| s.render) {
+            continue;
+        }
+        for c in node.components.as_slice() {
+            meter.count_decode(node.components.len() as u64 + 1)?;
+            let Component::MeshRenderer(r) = c else {
+                continue;
+            };
+            if !r.enabled
+                || !selection::batched(r)
+                || !selection::renderer(graph, &r.object, profile, meter)?
+            {
+                continue;
+            }
+            let source = node.components.as_slice().iter().find_map(|c| match c {
+                Component::MeshFilter { mesh, .. } => mesh.as_ref(),
+                _ => None,
+            });
+            let resolved;
+            let source = match source {
+                Some(PPtrTarget::Object(o)) => o,
+                Some(PPtrTarget::Builtin(b)) if profile.builtin == crate::Builtin::Resolve => {
+                    resolved = match builtin::resolve(env, b, meter) {
+                        Ok(o) => o,
+                        Err(super::GltfError::Invalid(_)) => continue,
+                        Err(super::GltfError::Mesh(e))
+                            if diagnostics::mesh_reason(&e).is_some() =>
+                        {
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    &resolved
+                }
+                _ => continue,
+            };
+            if !same(source, object) {
+                continue;
+            }
+            let ranges = match selection::submeshes(count, r, meter) {
+                Ok(v) => v,
+                Err(super::GltfError::Invalid(_)) => continue,
+                Err(e) => return Err(e),
+            };
+            meter.count_decode(ranges.len() as u64)?;
+            if ranges.as_slice().contains(&submesh) {
+                return Ok(ids.get(i).copied().flatten().map(|id| (r, id)));
+            }
+        }
+    }
+    Ok(None)
+}

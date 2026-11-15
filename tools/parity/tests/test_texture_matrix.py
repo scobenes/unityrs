@@ -128,8 +128,14 @@ class ThisParityFile(unittest.TestCase):
                     self.assertEqual(cells[4], "planned: divergence test against `references.decode`")
                     self.assertEqual(cells[5], "planned (P3a)")
                 else:
+                    if name in {"RHalf", "RGHalf", "RFloat", "RGFloat", "RGBFloat", "RGBAFloat"}:
+                        values_test = "floats_use_f64_and_round_half_up_with_ieee_specials"
+                    elif name in {"RGB9e5Float", "YUY2"}:
+                        values_test = "shared_exponent_and_bt601_have_the_stated_channel_order"
+                    else:
+                        values_test = "integers_reduce_high_bytes_and_offset_signed_channels"
                     self.assertEqual(cells[4], f"`crates/unityrs-texture/tests/tierb_oracle.rs` {name.lower()}; "
-                                     "`tierb_values.rs` hand-computed values")
+                                     f"`crates/unityrs-texture/tests/tierb_values.rs` {values_test}")
                     self.assertEqual(cells[5], "verified P3 (decoding)")
         self.assertEqual(
             sorted(references.UNSUPPORTED),
@@ -143,7 +149,7 @@ class ThisParityFile(unittest.TestCase):
     def test_p1b_formats_are_the_five_design_names(self):
         p1b = sorted(name for name, row in self.rows.items() if row["status"] == P1B_STATUS)
         self.assertEqual(p1b, P1B)
-        # The ETC/EAC, Pillow, ASTC LDR and closed-form decoders, plus ARGBFloat's refusal, are verified P3.
+        # ETC/EAC, Pillow, ASTC LDR, PVRTC/ATC and closed forms, plus ARGBFloat's refusal, are verified P3.
         p3 = sorted(name for name, row in self.rows.items() if "verified P3" in row["status"])
         self.assertEqual(p3, P3)
 

@@ -77,7 +77,7 @@ pub fn shape() -> Class {
 pub fn parent_bundle(kind: Option<&ParentKind>) -> Option<Arc<BundleFile>> {
     match kind? {
         ParentKind::Bundle { bundle, .. } => bundle.upgrade(),
-        ParentKind::Web => None,
+        ParentKind::Web { .. } => None,
     }
 }
 
@@ -339,69 +339,8 @@ fn peek_tree(
     Ok(Some(compiled))
 }
 
-/// `m_StreamData`: a resource's path and span, the integers as read (any
-/// integer node, signed or not, of any width: 4.4 step 2). They matter only
-/// when the stream is read (section 3's answer 4, [`Stream::span`]).
-#[derive(Clone, Debug)]
-pub struct Stream {
-    /// `path`, as read.
-    pub path: RawStr,
-    /// `offset`.
-    pub offset: i128,
-    /// `size`.
-    pub size: i128,
-}
-
-/// Where a stream's bytes are in the resource it names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Span {
-    /// `offset..offset + size`, each within `u64`: the core's read, short
-    /// at the resource's end as a Python slice is.
-    Range(u64, u64),
-    /// Any other: the memoryview reader's `read(size)` at `offset`
-    /// (UnityPy's `EndianBinaryReader` over a memoryview, the core's
-    /// `stream::py_read`), Python's slice `data[start:stop]` of the whole
-    /// resource ([`python_slice`]); a size of -1 reads to the end, `stop`
-    /// [`i128::MAX`].
-    Slice(i128, i128),
-}
-
-impl Stream {
-    /// The span `read(size)` at `offset` gives (section 3's answer 4; review
-    /// round 2's C1): 0 is empty, -1 runs to the end, else the slice.
-    #[must_use]
-    pub fn span(&self) -> Span {
-        if self.size == 0 {
-            return Span::Range(0, 0);
-        }
-        if self.size == -1 {
-            return Span::Slice(self.offset, i128::MAX);
-        }
-        let end = self.offset.checked_add(self.size);
-        match (
-            u64::try_from(self.offset),
-            u64::try_from(self.size),
-            end.and_then(|e| u64::try_from(e).ok()),
-        ) {
-            (Ok(o), Ok(n), Some(_)) => Span::Range(o, n),
-            _ => Span::Slice(self.offset, end.unwrap_or(i128::MAX)),
-        }
-    }
-}
-
-/// Python's `data[start:stop]` over `len` bytes, as a range: a negative
-/// index counts from the end, and each is clamped to `0..=len`; a stop
-/// before the start is empty.
-#[must_use]
-pub fn python_slice(len: usize, start: i128, stop: i128) -> std::ops::Range<usize> {
-    let n = i128::try_from(len).unwrap_or(i128::MAX);
-    let at = |i: i128| {
-        let i = if i < 0 { i.saturating_add(n) } else { i };
-        usize::try_from(i.clamp(0, n)).unwrap_or(len)
-    };
-    let (a, b) = (at(start), at(stop));
-    a..b.max(a)
-}
+/// Shared streamed texture spans and Python slicing.
+pub use unityrs_texture::fetch::{Span, Stream, python_slice};
 
 /// `m_PlatformBlob`, any list (4.4 step 2): what `is_switch_swizzled` reads
 /// of it, its length and its elements 8 to 12 as bytes, and no copy.
