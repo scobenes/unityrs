@@ -1,7 +1,8 @@
 //! A set of [`Format`]s: the formats a batch spec lets [`crate::select_in`]
 //! export (`docs/BATCH_SPEC.md` 1.5 and section 3). Version 1 exports
 //! [`Formats::V1`], the five of `docs/plans/extract.md` E15; version 2 names
-//! its own, any of the formats this crate decodes.
+//! its own, any of the formats this crate decodes. Legacy crunched DXT names
+//! are accepted; selection also requires a Unity version before 2017.3.
 
 use std::fmt;
 

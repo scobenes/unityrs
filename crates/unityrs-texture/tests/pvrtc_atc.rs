@@ -32,7 +32,10 @@ fn six_formats_decode_small_images_and_join_only_explicit_batch_lists() {
             select(&fields),
             Selection::Skip(Skip::UnsupportedFormat(value))
         );
-        assert_eq!(select_in(&fields, Formats::DECODED), Selection::Export(f));
+        assert_eq!(
+            select_in(&fields, Formats::DECODED, (0, 0)),
+            Selection::Export(f)
+        );
         assert_eq!(Formats::decoded(f.name()), Ok(f));
         for limit in [p.charge() - 1, p.charge()] {
             let meter = Meter::new(limit, Arc::new(Unbounded), Reservation::Input);

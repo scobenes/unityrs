@@ -17,17 +17,25 @@
 //! orientation (flipped top to bottom), and which textures are exported or
 //! skipped.
 //!
+//! Legacy `DXT1Crunched` and `DXT5Crunched` are also supported through the
+//! `crunch` module and existing BC1/BC3 decoders. [`select_in`] and
+//! [`select_crunch`] take the Unity version explicitly and refuse Unity's
+//! fork (T4b). Version 2 may allow-list both names; version 1 keeps its five.
+//! Their native builder fixtures pass; the optional UnityPy pixel replay
+//! awaits recording.
+//!
 //! - [`select()`]: a texture's fields to [`Selection::Export`] with its
 //!   [`Format`], or [`Selection::Skip`] with the [`Skip`] reason the manifest
 //!   records (`docs/BATCH_SPEC.md` section 3). Pure; it reads no data.
 //! - [`plan()`]: what decoding a format at a size from data of a given
-//!   length needs (mip 0's bytes) and gives (the image's mode, size and
+//!   length needs (mip 0's bytes, or crunch's minimum header) and gives (the image's mode, size and
 //!   bytes, and what it charges), or the error the decode would return,
-//!   before any data is read, so the engine can count the work and the
+//!   before any data is read. Crunch can also return a content error after
+//!   planning succeeds. This lets the engine count the work and the
 //!   memory first.
 //! - [`decode()`]: a texture's data (mip 0 first; the rest is ignored, as
 //!   Pillow ignores it) to an [`Image`], its pixels charged to the caller's
-//!   meter before they are allocated (and an ASTC format's tables, while
+//!   meter before they are allocated (and ASTC tables or crunch scratch, while
 //!   it runs), its pixel loop run under [`contain()`] so a panic is an
 //!   error ([`DecodeError::Panicked`]).
 //!
@@ -87,7 +95,8 @@
 //! one bound UnityPy does not have (`PARITY.md` section 19.3), while
 //! Pillow's own limits below it, its raw decoder's width cap and its crop's
 //! decompression-bomb check, are matched (`decode`'s module docs); a
-//! decode's work is linear in its output.
+//! decode's pixel work is linear in its output. Crunch's header-derived
+//! palette and model setup also counts against the meter's work allowance.
 
 #![forbid(unsafe_code)]
 // No panics on a texture's contents (plan section 3.15). Tests may opt out.
@@ -108,6 +117,7 @@ mod astc;
 mod atc;
 mod bcn;
 mod contain;
+mod crunch;
 mod decode;
 mod etc;
 mod format;
@@ -118,12 +128,13 @@ mod select;
 pub mod sprite;
 
 pub use contain::{MESSAGE_BYTES, NON_STRING_PAYLOAD, Payload, contain};
+pub use crunch::CrunchError;
 pub use decode::{DecodeError, Image, MAX_CROP_PIXELS, MAX_PIXELS, Plan, bcn_length, decode, plan};
 pub use format::{Format, Mode, TEXTURE_FORMATS, texture_format_name};
 pub use formats::Formats;
 pub use select::{
-    SWITCH, Selection, Skip, SkippedPlatform, TextureFields, XBOX_SWAP_FORMATS, XBOX360,
-    is_switch_swizzled, select, select_in,
+    SWITCH, Selection, Skip, SkippedPlatform, TextureFields, UnsupportedUnityCrunch,
+    XBOX_SWAP_FORMATS, XBOX360, is_switch_swizzled, select, select_crunch, select_in,
 };
 
 /// Asserts at compile time that `T` is `Send + Sync` (plan section 3.16).

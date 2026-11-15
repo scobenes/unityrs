@@ -13,6 +13,44 @@ use unityrs_testkit::fuzz::{MeshCase, Row, TextureCase, TreeCase, lz4_case};
 
 use crate::Case;
 
+#[test]
+fn crunch_check_runs_synthetic_streams_and_their_truncations_at_every_meter() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../crates/unityrs-texture/tests/fixtures/crunch_native.json"
+    ))
+    .expect("the synthetic fixture");
+    for c in fixture["cases"].as_array().expect("cases").iter().chain(
+        fixture["truncated_cases"]
+            .as_array()
+            .expect("truncated cases"),
+    ) {
+        let hex = c["data"]["hex"].as_str().expect("stream hex");
+        let data: Vec<_> = hex
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|h| {
+                u8::from_str_radix(std::str::from_utf8(h).expect("hex"), 16).expect("hex byte")
+            })
+            .collect();
+        for meter in 0..4 {
+            for len in [0, 1, 15, 61, data.len().saturating_sub(1), data.len()] {
+                let case = TextureCase {
+                    format: i32::try_from(c["format"].as_i64().expect("format")).expect("i32"),
+                    width: i32::try_from(c["width"].as_i64().expect("width")).expect("i32"),
+                    height: i32::try_from(c["height"].as_i64().expect("height")).expect("i32"),
+                    platform: 19,
+                    meter,
+                    blob: None,
+                    data: data[..len.min(data.len())].to_vec(),
+                };
+                crate::crunch::check(&case.encode());
+            }
+        }
+    }
+}
+
 /// The bound a read stopped at, if a bound stopped it.
 fn bound(e: &ReadError) -> Option<LimitKind> {
     match &e.detail {

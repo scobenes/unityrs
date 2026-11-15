@@ -29,7 +29,11 @@ rust-version.workspace = true
 # The ASTC LDR decoder (src/astc/) ports Arm astcenc at commit 631fb04,
 # the revision astc-encoder-py 0.1.12 bundles (Apache-2.0), whose notice is
 # LICENSE-ASTCENC.
-license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0"
+# The legacy Crunch decoder (src/crunch/) ports texture2ddecoder 1.0.5's
+# crunch/crn_decomp.h. Its actual notice is Richard Geldreich's modified
+# Zlib licence with required public credit (LicenseRef-Crunch), preserved
+# in LICENSE-CRUNCH; it is not the standard Zlib licence.
+license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0 AND LicenseRef-Crunch"
 repository.workspace = true
 authors.workspace = true
 

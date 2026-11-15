@@ -262,9 +262,10 @@ fn every_format_is_replayed_by_an_oracle_fixture() {
                 || name.starts_with("EAC")
                 || name.starts_with("ASTC")
                 || name.starts_with("PVRTC")
-                || name.starts_with("ATC"),
+                || name.starts_with("ATC")
+                || format.is_crunched(),
             "{name}"
         );
     }
-    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 6);
+    assert_eq!(Format::ALL.len(), 5 + 11 + 8 + 12 + 6 + 2);
 }
