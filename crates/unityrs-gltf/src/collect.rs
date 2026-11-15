@@ -192,7 +192,7 @@ pub fn collect_with_mapper(
             let object = match target {
                 Some(PPtrTarget::Object(o)) => o,
                 Some(PPtrTarget::Builtin(b)) => {
-                    builtin::mark(&mut scene, id, b.path_id, meter)?;
+                    builtin::mark(&mut scene, id, b, meter)?;
                     match profile.builtin {
                         crate::Builtin::Placeholder => {
                             diagnostics::record(&mut scene, id, "builtin_placeholder", 1, meter)?;
@@ -255,7 +255,7 @@ pub fn collect_with_mapper(
                             continue;
                         }
                         crate::Builtin::Resolve => {
-                            resolved = match builtin::resolve(env, b, meter) {
+                            resolved = match material_state.builtins.resolve(env, b, meter) {
                                 Ok(object) => object,
                                 Err(error) => {
                                     let reason = match &error {
@@ -405,6 +405,7 @@ pub fn collect_with_mapper(
             let selected = if batched && profile.static_batch == StaticBatch::KeepCombined {
                 batch::selected(
                     env,
+                    &mut material_state.builtins,
                     graph,
                     selection.as_slice(),
                     object,
@@ -491,6 +492,7 @@ pub fn collect_with_mapper(
                     if batched && profile.static_batch == StaticBatch::KeepCombined {
                         batch::material_renderer(
                             env,
+                            &mut material_state.builtins,
                             graph,
                             selection.as_slice(),
                             ids.as_slice(),
