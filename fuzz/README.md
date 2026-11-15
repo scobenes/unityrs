@@ -28,6 +28,7 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `unityweb` | legacy headers, signed level skip, LZMA and directories, memory and stream readers | UnityWeb/UnityRaw formats 1–6 |
 | `unitycn` | UnityCN header table construction and in-place token walk, including the virtual trailing zero and Tier U refusal; a valid synthetic signature keeps arbitrary nibble tables reachable | any bytes: the first 16 also mutate the encrypted table vector, and the first 8 select the block index |
 | `serialized` | `SerializedFile::parse`, then every object's `parse_as_dict(true)` (UnityPyBoost's reader or the pure-Python one, by the object's size), by both readers' rules | any bytes |
+| `serialized_save` | load, save, reload: same objects and raw bytes; the next save is identical; typed resource refusals are allowed | any bytes (the serialized seeds) |
 | `typetree` | `parse_blob` (format 10 and from 12) or `parse_old`, as the format says, then `NodeList::from_rows` and `Tree::compile` | `unityrs_testkit::fuzz::blob_case`: format, endian, stored tree |
 | `boost_read` | `walk::boost::read` | `unityrs_testkit::fuzz::TreeCase`: rows, ref types, value bytes |
 | `python_read` | `walk::python::read_with_reader`, from the case's start, by the memory or the stream reader's rules | `TreeCase` |
@@ -42,8 +43,9 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `fsb5` | `unityrs_audio::plan` and `decode`: bounded parsing, PCM and float WAV lengths, repeatability and charge release | raw audio bytes |
 | `image_writers` | `Image::new` and palette validation, then default image writers: deterministic output and typed refusals, charged output and released charges; at most 65,536 source pixels and 4 MiB per writer run; ICNS uses a zero allocation budget to bound its mandatory resize | width/height u32 LE, mode, format, dimension policy, budget selector, filename selector, then repeating pixel/palette bytes |
 | `shader` | `shader::Program::parse` and every entry's export through `shader::render_all`, twice on fresh meters with the same memory and work bounds: the verdict and attempted entry count must repeat and temporary memory charges must return to zero; rendering errors must not hide later entries; then `walk::boost::read` and `shader::export_parsed` over the same input as an arbitrary tree value, under the case's memory and work limits, with conversion charges released | both interpretations: `unityrs_testkit::fuzz::ShaderCase` (Unity major/minor version, meter, program blob) and `TreeCase`; input capped at 8 MiB |
+| `extractor_paths` | deterministic path validation, slicing and splitext; bounded Environment loading and `extract_assets` in both container modes into an in-memory sink, asserting every emitted path is confined and all extraction charges return to zero; 8 MiB input/load memory, 64 KiB extraction memory and 1 MiB extraction work | arbitrary byte paths and every generated serialized seed, including bundle members |
 
-Except for `image_writers`' tighter bounds above, runs use the limits in
+Except for `image_writers`' and `extractor_paths`' tighter bounds above, runs use the limits in
 `src/lib.rs`: 128 MiB of memory, of
 input and of one block's output (`MEMORY`), and 8 MiB of decode work and of
 inflate (`WORK`). A value read never reaches 128 MiB within the work bound,
@@ -179,8 +181,8 @@ at step 1.
 - `.github/workflows/ci.yml`'s `fuzz-build`: on every push, every target
   built and run for 30 seconds from the seeds, the harness's own tests
   (`cargo test --lib`), and `cargo fmt --check` over this crate.
-  The smoke lists and nightly matrix include all 23 targets, including
-  `image_writers`, `scene_collect`, `obj_text` and `shader`, run from their
+  The smoke lists and nightly matrix include all 25 targets, including
+  `image_writers`, `scene_collect`, `obj_text`, `shader` and `extractor_paths`, run from their
   generated seeds.
 
 ## Licences

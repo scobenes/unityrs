@@ -365,6 +365,10 @@ class ExportRows(unittest.TestCase):
             )
 
     # Sections 14.2, 15.7, 19.2: the extractor, from a file and function by function.
+    # L9 replay: crates/unityrs-export/tests/extractor.rs
+    # extractor_tree_replays_the_l9_oracle and crates/unityrs-cli/tests/extract.rs
+    # extract_cli_replays_the_l9_oracle; tools/fixtures/extractor.py records
+    # the original partial trees and the explicit PARITY 19.2 corrections.
     def test_extractor_tree(self):
         from UnityPy.classes import PPtr
 

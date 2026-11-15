@@ -16,11 +16,13 @@ pub(super) fn write(seeds: &mut Seeds) -> std::io::Result<()> {
             .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex byte"))
             .collect();
         let target = case["kind"].as_str().expect("HEAD target");
-        seeds.add(
-            target,
-            &format!("head-{}", case["name"].as_str().expect("case name")),
-            &data,
-        )?;
+        let name = format!("head-{}", case["name"].as_str().expect("case name"));
+        seeds.add(target, &name, &data)?;
+        // Every SerializedFile seed is also the save target's and extraction's.
+        if target == "serialized" {
+            seeds.add("serialized_save", &name, &data)?;
+            super::extractor_paths::file(seeds, &name, &data)?;
+        }
     }
     Ok(())
 }

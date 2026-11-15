@@ -45,6 +45,7 @@
 
 mod args;
 mod batch;
+mod extract;
 mod gltf;
 mod obj;
 
@@ -71,10 +72,11 @@ mod test_alloc;
 #[global_allocator]
 static ALLOCATOR: Counting = Counting::new();
 
-const USAGE: &str = "usage: unityrs {dump,values,batch,obj,gltf} ...\n\n\
+const USAGE: &str = "usage: unityrs {dump,values,batch,obj,gltf,extract} ...\n\n\
   unityrs dump INPUT... -o OUT.jsonl[.gz] [options]   the canonical dump (dump -h)\n\
   unityrs gltf INPUT... --scene FILE -o OUTPUT.glb      scene/prefab export (gltf -h)\n\
   unityrs obj INPUT --path-id ID -o OUTPUT              OBJ/MTL export (obj -h)\n\
+  unityrs extract INPUT... -o DIR [options]            extractor tree (extract -h)\n\
   unityrs values CASES.json                           the value-case protocol\n\
   unityrs batch --check JOB.json | --schema           the batch engine\n\
   unityrs --version                                   the version and spec version";
@@ -204,6 +206,7 @@ fn main() -> ExitCode {
     let rest = argv.get(1..).unwrap_or_default();
     match argv.first().map(Vec::as_slice) {
         Some(b"dump") => dump(rest),
+        Some(b"extract") => extract::main(rest),
         Some(b"obj") => obj::main(rest),
         Some(b"gltf") => gltf::main(rest),
         Some(b"batch") => engine(main_start, |c| batch::main(c, rest)),
@@ -228,7 +231,7 @@ fn main() -> ExitCode {
             USAGE,
             "unityrs",
             &format!(
-                "argument command: invalid choice: {} (choose from 'dump', 'values', 'batch', 'obj', 'gltf')",
+                "argument command: invalid choice: {} (choose from 'dump', 'values', 'batch', 'obj', 'gltf', 'extract')",
                 args::py_repr(other)
             ),
         ),

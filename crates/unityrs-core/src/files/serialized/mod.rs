@@ -74,8 +74,10 @@ use crate::value::Parsed;
 use crate::version::ResolvedVersion;
 use crate::walk::RefTypes;
 
+mod changed;
 mod head;
 mod parse;
+mod write;
 
 /// The header, as read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -242,6 +244,8 @@ pub struct ScriptRef {
 /// A parsed `SerializedFile`: metadata and object table. Values are read on
 /// demand through [`ObjectRef`].
 pub struct SerializedFile {
+    changed: std::sync::atomic::AtomicBool,
+    edits: std::sync::Mutex<crate::limits::MeteredVec<(u32, Bytes)>>,
     name: RawStr,
     data: Bytes,
     header: SerializedHeader,
@@ -495,6 +499,8 @@ impl SerializedFile {
         let meter = Meter::unlimited();
         let order = (0..u32::try_from(rows.len()).unwrap()).collect();
         Arc::new(Self {
+            changed: std::sync::atomic::AtomicBool::new(false),
+            edits: std::sync::Mutex::new(crate::limits::MeteredVec::new(&meter)),
             name: RawStr::from_static(b"CAB-test"),
             data: Bytes::new(),
             header: SerializedHeader {

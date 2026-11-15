@@ -11,6 +11,33 @@
 use crate::{Error, RawStr, env::split, limits::Meter};
 use std::{path::Path, sync::Arc};
 
+/// Resolve the physical spelling immediately before opening it. Compare
+/// ancestor identities on Unix: canonicalize may preserve a caller's casing
+/// on a case-insensitive filesystem mounted by a case-sensitive OS.
+pub(in crate::env) fn confined_path(path: &Path, root: &Path) -> Result<std::path::PathBuf, Error> {
+    let resolved = std::fs::canonicalize(path)?;
+    let root = std::fs::canonicalize(root)?;
+    if resolved.starts_with(&root) {
+        return Ok(resolved);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let root_meta = std::fs::metadata(&root)?;
+        for ancestor in resolved.ancestors() {
+            let meta = std::fs::metadata(ancestor)?;
+            if meta.dev() == root_meta.dev() && meta.ino() == root_meta.ino() {
+                return Ok(resolved);
+            }
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "file lies outside environment root",
+    )
+    .into())
+}
+
 pub(in crate::env) enum LocalPath<'a> {
     Borrowed(&'a Path),
     Expanded(RawStr),

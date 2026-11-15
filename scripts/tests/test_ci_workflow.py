@@ -153,6 +153,22 @@ class WorkflowTests(unittest.TestCase):
         job = workflow["jobs"]["gltf"]
         self.assertEqual(str(job.get("env", {}).get("UNITYRS_GLTF_VALIDATOR_REQUIRED")), "1")
 
+    def test_fuzz_targets_are_in_both_ci_loops_and_the_nightly_matrix(self):
+        import tomllib
+        root = WORKFLOWS.parents[1]
+        targets = {b["name"] for b in tomllib.loads((root / "fuzz/Cargo.toml").read_text())["bin"]}
+        ci = (WORKFLOWS / "ci.yml").read_text()
+        batches = next(line for line in ci.splitlines() if "for batch in " in line)
+        logs = next(line for line in ci.splitlines() if "for t in detect " in line)
+        nightly = yaml.safe_load((WORKFLOWS / "fuzz.yml").read_text())
+        matrices = [job["strategy"]["matrix"]["target"] for job in nightly["jobs"].values()
+                    if "strategy" in job and "target" in job["strategy"]["matrix"]]
+        self.assertEqual(len(matrices), 1)
+        self.assertEqual(set(matrices[0]), targets)
+        for target in targets:
+            self.assertRegex(batches, rf"\b{target}\b")
+            self.assertRegex(logs, rf"\b{target}\b")
+
     def test_the_rules_catch_what_they_are_for(self):
         sha = "11d5960a326750d5838078e36cf38b85af677262"
         good = f"jobs:\n  a:\n    timeout-minutes: 5\n    steps:\n      - uses: actions/checkout@{sha} # v4.4.0\n"

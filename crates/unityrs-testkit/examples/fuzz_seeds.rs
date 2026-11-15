@@ -52,6 +52,8 @@ mod astc;
 mod crunch;
 #[path = "fuzz_seeds/depth.rs"]
 mod depth;
+#[path = "fuzz_seeds/extractor_paths.rs"]
+mod extractor_paths;
 #[path = "fuzz_seeds/hdr.rs"]
 mod hdr;
 #[path = "fuzz_seeds/image_writers.rs"]
@@ -70,10 +72,11 @@ mod webp;
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 23] = [
+const TARGETS: [&str; 25] = [
     "detect",
     "bundle",
     "serialized",
+    "serialized_save",
     "typetree",
     "boost_read",
     "python_read",
@@ -94,6 +97,7 @@ const TARGETS: [&str; 23] = [
     "scene_collect",
     "obj_text",
     "shader",
+    "extractor_paths",
 ];
 
 /// The baseline `texture` seeds' formats: the five V1 exports (RGB24,
@@ -236,6 +240,8 @@ impl Seeds {
             // SerializedFile for one, and the target parses whatever it gets.
             Ok(FileType::AssetsFile | FileType::ResourceFile) => {
                 self.add("serialized", name, bytes)?;
+                self.add("serialized_save", name, bytes)?;
+                extractor_paths::file(self, name, bytes)?;
                 if let Ok(f) = SerializedFile::parse(RawStr::from(name), data, None, &meter, &ctx) {
                     self.objects(name, &f)?;
                 }
@@ -571,6 +577,7 @@ fn module_seeds(s: &mut Seeds) -> std::io::Result<()> {
     image_writers::write(s)?;
     head::write(s)?;
     shader::seeds(s)?;
+    extractor_paths::write(s)?;
     texture(s)?;
     pvrtc_atc::write(s)?;
     astc::write(s)?;
