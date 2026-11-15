@@ -9,7 +9,7 @@
 //! PARITY.md section 19.2); otherwise source errors retain their provenance.
 use crate::simple;
 use std::sync::Arc;
-use unityrs_audio::Sample;
+use unityrs_audio::{Sample, VorbisHeaders};
 use unityrs_core::{
     ObjectRef, PrimArray, Value,
     env::Environment,
@@ -34,6 +34,18 @@ pub fn export(
     convert_float: bool,
     meter: &Arc<Meter>,
 ) -> Result<MeteredVec<Sample>, Error> {
+    export_with_vorbis(obj, env, convert_float, None, meter)
+}
+
+/// Export using runtime Vorbis setup headers supplied by the caller. Enable
+/// the `vorbis` feature for the decoder; batch never enables or calls it.
+pub fn export_with_vorbis(
+    obj: &ObjectRef,
+    env: &Environment,
+    convert_float: bool,
+    headers: Option<&VorbisHeaders>,
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<Sample>, Error> {
     if obj.class_id() != 83 {
         return Err(simple::Error::UnsupportedClass(obj.class_id()).into());
     }
@@ -52,7 +64,12 @@ pub fn export(
         .transpose()?;
     if let Some(data) = inline.as_ref().filter(|d| !d.bytes().is_empty()) {
         let plan = unityrs_audio::plan(data.bytes(), convert_float, meter)?;
-        return Ok(unityrs_audio::decode(&plan, name.as_bytes(), meter)?);
+        return Ok(unityrs_audio::decode_with_vorbis(
+            &plan,
+            name.as_bytes(),
+            headers,
+            meter,
+        )?);
     }
     let resource = parsed
         .attr(dict, b"m_Resource")
@@ -79,7 +96,12 @@ pub fn export(
         .resource(obj.file(), path, offset, size)
         .map_err(simple::Error::from)?;
     let plan = unityrs_audio::plan(&data, convert_float, meter)?;
-    Ok(unityrs_audio::decode(&plan, name.as_bytes(), meter)?)
+    Ok(unityrs_audio::decode_with_vorbis(
+        &plan,
+        name.as_bytes(),
+        headers,
+        meter,
+    )?)
 }
 enum Inline<'a> {
     Borrowed(&'a [u8]),

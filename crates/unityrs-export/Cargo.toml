@@ -20,7 +20,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-unityrs-audio = { path = "../unityrs-audio" }
+unityrs-audio = { path = "../unityrs-audio", default-features = false }
 unityrs-mesh = { path = "../unityrs-mesh" }
 unityrs-core = { path = "../unityrs-core" }
 # The sheets' decoders and E66's texture selection.
@@ -42,6 +42,8 @@ md5 = { package = "md-5", version = "=0.11.0", default-features = false }
 # join's late names, for tests/tag_walk.rs and tests/late_names.rs); CI's
 # feature step enables it.
 [features]
+# Explicit opt-in for library/CLI/Python callers; never enabled by batch.
+vorbis = ["unityrs-audio/vorbis"]
 test-hooks = []
 test-counters = ["unityrs-core/test-counters"]
 

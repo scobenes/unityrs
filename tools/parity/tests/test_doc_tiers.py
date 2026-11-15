@@ -231,14 +231,14 @@ class DocTiers(unittest.TestCase):
         self.assertEqual(
             {row: tier for row, (tier, _) in tiers.items()},
             {
-                "FSB5 PCM8, PCM16, PCM24, PCM32": f"Tol; {short} data bytes; {bank}",
-                "FSB5 PCM float": f"Tol; {short} WAV data bytes; {bank}",
-                "FSB5 Vorbis": f"Tol; {bank} and for a subsound of fewer than 4 WAV data bytes",
+                "FSB5 PCM8, PCM16, PCM24, PCM32": f"Tol (threshold: exact samples and WAV bytes, 0 LSB); {short} data bytes; {bank}",
+                "FSB5 PCM float": f"Tol (threshold: exact samples and WAV bytes, 0 LSB); {short} WAV data bytes; {bank}",
+                "FSB5 Vorbis": f"Tol (threshold: same sample count, per-channel SNR ≥90 dB and peak error ≤2 LSB int16 against FMOD); {bank} and for a subsound of fewer than 4 WAV data bytes",
                 "FSB5 IMA ADPCM": f"Tol (threshold: exact PCM16 samples and WAV bytes, 0 LSB); {short} WAV data bytes; {bank}",
                 "FSB5 FADPCM": f"Tol (threshold: exact PCM16 samples and WAV bytes, 0 LSB); {short} WAV data bytes; {bank}",
-                "FSB5 MPEG": f"Tol; C for a later subsound of no samples, where fmod_toolkit raises; {bank} and for a "
+                "FSB5 MPEG": f"Tol (threshold, optional target: same sample count, per-channel SNR ≥90 dB, peak error ≤2 LSB int16 against FMOD); C for a later subsound of no samples, where fmod_toolkit raises; {bank} and for a "
                 "subsound of one sample",
-                "FSB5 Opus": f"Tol; {bank} and for a subsound of fewer than 4 WAV data bytes",
+                "FSB5 Opus": f"Tol (threshold, optional target: same sample count, per-channel SNR ≥90 dB, peak error ≤2 LSB int16 against FMOD); {bank} and for a subsound of fewer than 4 WAV data bytes",
             },
         )
         for row, (_, unityrs) in tiers.items():
