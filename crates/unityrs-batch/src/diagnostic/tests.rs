@@ -289,3 +289,34 @@ fn a_discard_as_the_holder_looks_last_lands_in_its_count_line() {
     );
     assert_eq!(ring.unwritten(), 1);
 }
+
+#[test]
+fn formatted_secrets_cross_writes_and_are_masked_before_capture() {
+    use std::fmt;
+    struct Pieces<'a>(&'a str, usize);
+    impl fmt::Display for Pieces<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            for chunk in self.0.as_bytes().chunks(self.1) {
+                f.write_str(std::str::from_utf8(chunk).unwrap())?;
+            }
+            Ok(())
+        }
+    }
+    let long = "s".repeat(1024);
+    let credentials = OnceLock::new();
+    let secrets = Secrets {
+        values: &[&long, "abc", "bcd", "bc", "abcdef"],
+        credentials: &credentials,
+    };
+    for width in [1, 2, 17, 1024] {
+        let input = format!("safe {long} abcd abcdeX safe");
+        let mut out = [0; 32];
+        let (n, cut) = secrets.format(format_args!("{}", Pieces(&input, width)), &mut out);
+        assert!(!cut);
+        assert_eq!(&out[..n], b"safe *** *** ***eX safe");
+    }
+    let mut out = [0; 8];
+    let (n, cut) = secrets.format(format_args!("safe {long} tail"), &mut out);
+    assert!(cut);
+    assert_eq!(&out[..n], b"safe ***");
+}

@@ -259,6 +259,9 @@ impl Hooks for Arm {
         }
     }
     fn point(&self, point: Point) {
+        if matches!(point, Point::StagePoll(_)) {
+            super::url_schedule::poll();
+        }
         if self.stop
             && matches!(point, Point::StagePoll(_))
             && self.polls.fetch_add(1, SeqCst) == STOP_AT
@@ -314,7 +317,9 @@ fn serve(
     };
     let mut urls = [0, 1].map(|n| format!("http://{address}/b{n}?sig=a"));
     match scope {
-        "url" => {}
+        "url" | "url-head-split" | "url-body-split" | "url-stop-before" | "url-stop-inside"
+        | "url-stop-after" => {}
+        "url-cut-read" => http = retries(),
         "url-retry" => {
             http = retries();
             script("/b0", vec![Reply::Status("503 X")]);
@@ -422,6 +427,9 @@ pub fn child(scope: &str, site: usize) {
     )
     .unwrap();
     let lifetime = Arc::new(Lifetime::default());
+    if super::url_schedule::contains(scope) {
+        super::url_schedule::arm(scope, bodies.each_ref().map(Vec::len), lifetime.clone());
+    }
     let roots = tls
         .as_ref()
         .map(|_| {
@@ -468,11 +476,14 @@ pub fn child(scope: &str, site: usize) {
     // met its aim (a settled one's among them).
     if site == 0 || !super::sites::met() {
         let expected = match scope {
-            "url-stop" => Code::Stopped,
+            "url-stop" | "url-stop-before" | "url-stop-inside" | "url-stop-after" => Code::Stopped,
             "url-fail" => Code::Incomplete,
             _ => Code::Complete,
         };
         assert_eq!(end.code, expected, "{end:?}");
+        if super::url_schedule::contains(scope) {
+            super::url_schedule::check(scope);
+        }
     }
     if site == 0 {
         assert!(seen > 0);

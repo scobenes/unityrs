@@ -192,14 +192,15 @@ fn a_bad_command_line_exits_78_usage() {
 fn an_unsupported_run_is_refused_78_and_its_spec_checked_first() {
     let dir = Scratch::new("cli-batch-run");
     enterable(&dir);
-    let p = write_job(
-        &dir,
-        &job(INPUTS).replace("\"path\":\"/a\"", "\"url\":\"https://example.invalid/a\""),
-    );
+    let mut spec: serde_json::Value = serde_json::from_str(&job(INPUTS)).unwrap();
+    spec["sink"] =
+        serde_json::json!({"kind":"object_store","bucket":"bucket","region":"region","prefix":""});
+    spec["deadline"] = serde_json::json!("2099-01-01T00:00:00Z");
+    let p = write_job(&dir, &spec.to_string());
     let o = unityrs(&["batch", p.to_str().unwrap()]);
     assert_refused(&o, "usage");
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("temporary normal-run subset"), "{err}");
+    assert!(err.contains("directory sink"), "{err}");
     let p = write_job(
         &dir,
         &job(INPUTS).replace(r#""threads":2"#, r#""threads":0"#),

@@ -108,6 +108,7 @@ impl Host {
 }
 /// The controller's thread: the body, its hand-over to the finisher, then
 /// its park with the owners (2.4's hand-over, 2.11's *Panics*).
+#[allow(clippy::too_many_arguments)] // The prebuilt process staging joins the existing owners.
 pub(super) fn controller(
     host: &'static Host,
     running: &'static Running,
@@ -115,6 +116,7 @@ pub(super) fn controller(
     execution: Execution,
     options: &Options,
     files: Files,
+    staging: Option<crate::controller::Staging>,
 ) -> ! {
     let sender = running.service.sender();
     let started_at = std::str::from_utf8(&running.started_at).unwrap_or_default();
@@ -130,7 +132,7 @@ pub(super) fn controller(
     };
     let mut parked = Parked::default();
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        body.body(prepared, &mut parked, Some(execution))
+        body.body(prepared, &mut parked, Some(execution), staging)
     }));
     // Its own panic's line, queued before the finisher is released.
     if ran.is_err() {

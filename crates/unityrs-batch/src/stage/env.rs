@@ -66,24 +66,61 @@ impl headers::Values for Values {
     }
 }
 impl Values {
+    /// Reserve both masker buffers during measured phase 1. Two URL
+    /// components and every header per bundle bound either list, even
+    /// when one variable occurs in many bundles. Empty slots are unused.
+    pub(crate) fn mask_storage(spec: &Spec) -> Result<[Vec<&'static str>; 2], Error<'_>> {
+        let count = spec.bundles().try_fold(0_usize, |count, bundle| {
+            count
+                .checked_add(bundle.headers().count())
+                .and_then(|n| n.checked_add(if bundle.url().is_some() { 2 } else { 0 }))
+                .ok_or(Error::Memory)
+        })?;
+        let mut buffers = [Vec::new(), Vec::new()];
+        for buffer in &mut buffers {
+            buffer.try_reserve_exact(count)?;
+        }
+        Ok(buffers)
+    }
     /// Every variable the spec's headers name, read once each, in document
     /// order, so the first refusal is the first variable that fails.
     pub fn resolve<'a>(spec: &'a Spec, environment: &dyn Environment) -> Result<Self, Error<'a>> {
         let mut values = Self::default();
+        values.resolve_into(spec, environment)?;
+        Ok(values)
+    }
+    /// Preserve values already read when a later variable fails, so the
+    /// process can still mask them in its preflight diagnostic.
+    pub(crate) fn resolve_into<'a>(
+        &mut self,
+        spec: &'a Spec,
+        environment: &dyn Environment,
+    ) -> Result<(), Error<'a>> {
         for bundle in spec.bundles() {
             for (_, value) in bundle.headers() {
                 let HeaderValue::Env(name) = value else {
                     continue;
                 };
-                let Err(at) = values.entries.binary_search_by(|(n, _)| (**n).cmp(name)) else {
+                let Err(at) = self.entries.binary_search_by(|(n, _)| (**n).cmp(name)) else {
                     continue;
                 };
                 let value = read(environment, name).map_err(|r| Error::Refused(r, name))?;
-                values.entries.try_reserve(1)?;
-                values.entries.insert(at, (copy(name)?, copy(&value)?));
+                self.entries.try_reserve(1)?;
+                self.entries.insert(at, (copy(name)?, copy(&value)?));
             }
         }
-        Ok(values)
+        Ok(())
+    }
+    /// Phase 1's URL and literal-header masker inputs, before any
+    /// environment read. The empty table contributes no borrowed values.
+    pub(crate) fn unresolved_secrets<'a>(
+        spec: &'a Spec,
+        out: &mut Vec<&'a str>,
+    ) -> Result<(), Error<'a>> {
+        static EMPTY: Values = Values {
+            entries: Vec::new(),
+        };
+        EMPTY.secrets(spec, out)
     }
     /// Distinct variables read.
     #[must_use]
@@ -97,7 +134,7 @@ impl Values {
     /// The masker's list (2.11): each URL's query and userinfo as written,
     /// every literal header value and every resolved one. Empty parts are
     /// left out; the masker skips them anyway. A library run has no masker
-    /// and calls none of this; B10c-2 feeds the list to the process's.
+    /// and calls none of this; the process host feeds its masker this list.
     pub fn secrets<'a>(&'a self, spec: &'a Spec, out: &mut Vec<&'a str>) -> Result<(), Error<'a>> {
         for bundle in spec.bundles() {
             if let Some(url) = bundle.url() {
@@ -162,6 +199,54 @@ fn userinfo(url: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeated_headers_fit_measured_masker_storage_without_later_growth() {
+        use serde_json::json;
+        struct Environment;
+        impl super::Environment for Environment {
+            fn var(&self, _: &str) -> Option<OsString> {
+                Some("resolved secret".into())
+            }
+        }
+        let inputs: Vec<_> = (0..1_000)
+            .map(|n| {
+                json!({
+                    "id":format!("input-{n}"), "url":"http://127.0.0.1/file?query-secret",
+                    "headers":{"X-Literal":"literal secret", "X-Env":{"env":"TOKEN"}}
+                })
+            })
+            .collect();
+        let raw = json!({"spec_version":1,"run_id":"r","attempt":1,"threads":1,
+            "download_concurrency":1,"max_inflight_uncompressed_bytes":67_108_864,
+            "max_decoded_bytes":1_048_576,"dep_cache_bytes":1_048_576,
+            "spool":{"dir":"/spool","size_bytes":1_073_741_824,"reserve_bytes":0},
+            "inputs":inputs,"outputs":{"textures":{"key":"{input}/{name}.png"}},
+            "sink":{"kind":"directory","root":"/sink"}});
+        let spec = Box::leak(Box::new(
+            crate::spec::parse(serde_json::to_vec(&raw).unwrap())
+                .unwrap()
+                .spec,
+        ));
+        let values = Box::leak(Box::new(Values::resolve(spec, &Environment).unwrap()));
+        let (buffers, measured) = crate::alloc::measured(|| Values::mask_storage(spec).unwrap());
+        assert_eq!(
+            measured.kept,
+            2 * unityrs_core::limits::heap_cost(4_000 * 16)
+        );
+        let [mut known, mut resolved] = buffers;
+        let ((), filled) = crate::alloc::measured(|| {
+            Values::unresolved_secrets(spec, &mut known).unwrap();
+            values.secrets(spec, &mut resolved).unwrap();
+        });
+        assert_eq!(known.len(), 2_000);
+        assert_eq!(resolved.len(), 3_000);
+        assert_eq!(filled.kept, 0);
+        assert_eq!(filled.peak, 0);
+        crate::test_alloc::REFUSE.with(|r| r.set(1));
+        let refused = Values::mask_storage(spec);
+        crate::test_alloc::REFUSE.with(|r| r.set(0));
+        assert_eq!(refused.err(), Some(Error::Memory));
+    }
     #[test]
     fn query_and_userinfo_are_taken_as_written() {
         assert_eq!(query("http://h/p?a=1&b=2#f"), Some("a=1&b=2"));

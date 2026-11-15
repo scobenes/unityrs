@@ -60,6 +60,15 @@
 //! sides retain the empty image behavior. These decoders charge only
 //! their output and need no scratch allocation.
 //!
+//! **BC6H and ASTC HDR.** BC6H implements Khronos Data Format Specification
+//! 1.3 section 20.2; ASTC HDR ports the full HDR profile of the same
+//! astcenc revision as LDR. Both produce binary16 values before applying
+//! PARITY section 17.1's f64 clamp and rounding rule. `tests/bc6h_oracle.rs`
+//! and `tests/astc_hdr_oracle.rs` replay the references beside UnityPy's
+//! failures or incorrect LDR-profile results (Tier B and Tier C).
+//! [`decode_bc6h_signed`] exposes the signed form; Unity's format selects
+//! unsigned. Reserved or illegal HDR encodings return [`HdrError`].
+//!
 //! **How each format matches UnityPy.** UnityPy decodes the five, and the
 //! eleven of P3's Pillow formats, with Pillow (`CONV_TABLE`,
 //! `export/Texture2DConverter.py:488-566`), so each of their decoders here is
@@ -137,6 +146,7 @@
 pub mod array;
 mod astc;
 mod atc;
+mod bc6h;
 mod bcn;
 mod contain;
 mod crunch;
@@ -145,6 +155,7 @@ mod etc;
 pub mod fetch;
 mod format;
 mod formats;
+mod hdr;
 mod image;
 pub mod platform;
 mod pvrtc;
@@ -156,11 +167,22 @@ pub mod write;
 
 pub use contain::{MESSAGE_BYTES, NON_STRING_PAYLOAD, Payload, contain};
 pub use crunch::CrunchError;
-pub use decode::{DecodeError, Image, MAX_CROP_PIXELS, MAX_PIXELS, Plan, bcn_length, decode, plan};
+pub use decode::{
+    DecodeError, Image, MAX_CROP_PIXELS, MAX_PIXELS, Plan, bcn_length, decode, decode_bc6h_signed,
+    plan,
+};
 pub use format::{Format, Mode, TEXTURE_FORMATS, texture_format_name};
 pub use formats::Formats;
+pub use hdr::HdrError;
 pub use image::{image_from_pixels, pad_image};
 pub use platform::{PlatformError, decode_in, decode_in_as, plan_in, plan_in_as};
+
+/// Decode one BC6H block to row-major binary16 RGB bit patterns, using
+/// Khronos Data Format Specification 1.3 section 20.2. Reserved modes are
+/// refused. `signed` selects the signed encoding, including negative zero.
+pub fn decode_bc6h_block(data: &[u8; 16], signed: bool) -> Result<[[u16; 3]; 16], HdrError> {
+    bc6h::block(data, signed).ok_or(HdrError::ReservedMode)
+}
 pub use select::{
     SWITCH, Selection, Skip, SkippedPlatform, TextureFields, XBOX_SWAP_FORMATS, XBOX360,
     is_switch_swizzled, select, select_crunch, select_in,

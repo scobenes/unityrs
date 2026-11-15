@@ -82,6 +82,11 @@ fn half(bits: u16) -> f64 {
     }
 }
 
+/// PARITY section 17.1's shared conversion after a decoder yields binary16.
+pub(crate) fn half_byte(bits: u16) -> u8 {
+    float(half(bits))
+}
+
 /// Clamp, multiply and round half up in f64. Casting the bounded integral
 /// result is exact; NaN maps explicitly to zero.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

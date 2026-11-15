@@ -73,6 +73,10 @@ required-features = ["test-hooks"]
 name = "host_tally"
 required-features = ["test-hooks"]
 
+[[test]]
+name = "url_runs_scale"
+required-features = ["test-hooks"]
+
 [dev-dependencies]
 # Parser fixtures collect response DATA; production polls its bounded body.
 http-body-util = { version = "=0.1.5", default-features = false }

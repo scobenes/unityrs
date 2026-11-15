@@ -142,17 +142,19 @@ P1B_STATUS = "pinned P0; verified P1b (decoding); verified P3a (platform gates)"
 # from tools/fixtures/texture_raw.py's cases); and the twelve ASTC LDR formats (crates/unityrs-texture/tests/
 # astc_oracle.rs, from tools/fixtures/texture_astc.py's cases); and the raw closed forms
 # (crates/unityrs-texture/tests/tierb_oracle.rs, from tools/fixtures/texture_tierb.py); and PVRTC/ATC
-# (crates/unityrs-texture/tests/pvrtc_atc_oracle.rs, from tools/fixtures/texture_pvrtc_atc.py).
+# (crates/unityrs-texture/tests/pvrtc_atc_oracle.rs, from tools/fixtures/texture_pvrtc_atc.py); and HDR
+# (tests/bc6h_oracle.rs and astc_hdr_oracle.rs, from texture_bc6h.py and texture_hdr.py).
 P3_ETC = ["EAC_R", "EAC_RG", "EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGB", "ETC2_RGBA1", "ETC2_RGBA8", "ETC_RGB4"]
 P3_PILLOW = ["ARGB32", "ARGB4444", "Alpha8", "BC4", "BC5", "BGR24", "BGRA32", "DXT3", "R8", "RGB565", "RGBA4444"]
 P3_ASTC = [f"ASTC_{kind}_{n}x{n}" for kind in ("RGB", "RGBA") for n in (4, 5, 6, 8, 10, 12)]
+P3_ASTC_HDR = [f"ASTC_HDR_{n}x{n}" for n in (4, 5, 6, 8, 10, 12)]
 P3_CLOSED = (set(references.TIER_B) - {"BC6H"}) | set(references.TIER_C)
 P3_REFUSED = ["ARGBFloat"]
 P3_PVRTC_ATC = ["ATC_RGB4", "ATC_RGBA8", "PVRTC_RGB2", "PVRTC_RGB4", "PVRTC_RGBA2", "PVRTC_RGBA4"]
-P3 = sorted(P3_ETC + P3_PILLOW + P3_ASTC + P3_PVRTC_ATC + list(P3_CLOSED) + P3_REFUSED)
+P3 = sorted(P3_ETC + P3_PILLOW + P3_ASTC + P3_ASTC_HDR + ["BC6H"] + P3_PVRTC_ATC + list(P3_CLOSED) + P3_REFUSED)
 P3_CLOSED_STATUS = "pinned P0; verified P3 (closed-form decoding); verified P3a (platform gates)"
 P3_STATUS = "pinned P0; verified P3 (decoding); verified P3a (platform gates)"
-P3_TIER_C = ["EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGBA1"]
+P3_TIER_C = ["EAC_RG_SIGNED", "EAC_R_SIGNED", "ETC2_RGBA1", *P3_ASTC_HDR]
 P3_TIER_C_STATUS = "pinned P0; verified P3 (decoding, as section 19.1's reference); verified P3a (platform gates)"
 
 
@@ -164,6 +166,11 @@ def _decoding_status_of(name):
         return "pinned P0; verified P3 (refusal)"
     if name in P3_CLOSED:
         return P3_CLOSED_STATUS
+    # HDR decoding is verified; its platform gates have not yet been verified separately.
+    if name == "BC6H":
+        return "pinned P0; verified P3 (decoding); impl P3a"
+    if name in P3_ASTC_HDR:
+        return "pinned P0; verified P3 (decoding, as section 19.1's reference); impl P3a"
     if name in P3_TIER_C:
         return P3_TIER_C_STATUS
     if name in ("DXT1Crunched", "DXT5Crunched"):

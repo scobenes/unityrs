@@ -127,6 +127,8 @@ impl Connector {
         secure: Option<Secure>,
     ) -> Result<Stream, Error> {
         let Some(Secure { name, storage }) = secure else {
+            #[cfg(feature = "test-hooks")]
+            super::io::plain_connected();
             return Ok(Stream::Plain(stream));
         };
         let stream = TlsConnector::from(self.tls.clone())

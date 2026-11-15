@@ -81,6 +81,7 @@ unityrs is the alternative, built around three things:
   - a gzip-compressed WebFile, which UnityPy detects and then fails to parse;
   - a streamed Texture2DArray, whose slices all raise;
   - a Texture2DArray in one of the seven 8-bit integer formats that UnityPy maps to a 16-bit texture format that raises;
+  - a Texture2DArray in one of the six ASTC HDR graphics formats (`RGBA_ASTC4X4_UFloat` through `RGBA_ASTC12X12_UFloat`, 145 through 150), which UnityPy omits from its graphics-to-texture map and raises on. unityrs maps them to the six `ASTC_HDR_NxN` formats (66 through 71), decoded against the full HDR reference in `PARITY.md` section 19.1;
   - `GameObject.m_Components` on an empty list or the old pair form, and the component accessors (`m_Transform` and the others), which raise because they read it;
   - `Texture2D.image` of an empty 0×0 texture, where no CAB `""` is registered (a zip's directory entry registers one, and UnityPy then returns the empty image too);
   - an empty AudioClip, whose empty resource path UnityPy fetches (where a zip's directory entry has registered CAB `""`, it reads no bytes and FMOD raises);
