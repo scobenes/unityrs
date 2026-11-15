@@ -5,7 +5,7 @@
 //! stored bytes are. No data block is decoded.
 
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use bytes::Bytes;
 
@@ -75,9 +75,7 @@ impl BundleFile {
         if legacy_layout(&data, reader)? {
             return super::legacy::open(name, data, parent, meter, ctx, reader, source_depth);
         }
-        let mut charge = meter.charge(heap_cost(
-            u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
-        ))?;
+        let mut charge = meter.charge(heap_cost((size_of::<Self>() + 16) as u64))?;
         let mut r = Reader::with_kind(&data, Endian::Big, reader);
         let FsHeader {
             signature,
@@ -154,6 +152,7 @@ impl BundleFile {
         let stored = keep(stored, &mut charge)?;
         let (ends, c) = Ends::new(blocks.len(), meter)?;
         charge.absorb(c);
+        let runs = RunIndex::mutex(&mut charge)?;
         Ok(Arc::new_cyclic(|this| Self {
             changed: std::sync::atomic::AtomicBool::new(false),
             name,
@@ -167,7 +166,7 @@ impl BundleFile {
             source_depth,
             lengths,
             ends,
-            runs: Mutex::new(RunIndex::new(meter)),
+            runs,
             counts: DecodeCounts::default(),
             entries,
             twins,

@@ -55,14 +55,15 @@ fn decode(
     };
     // GlTF accepts every currently decoded format, independent of batch's V1
     // allowlist. Unsupported platforms are data omissions too.
+    let fields = unityrs_texture::TextureFields {
+        texture_format: fmt,
+        width,
+        height,
+        platform: object.file().target_platform().unwrap_or(0),
+        platform_blob: blob,
+    };
     let selected = unityrs_texture::select_in(
-        &unityrs_texture::TextureFields {
-            texture_format: fmt,
-            width,
-            height,
-            platform: object.file().target_platform().unwrap_or(0),
-            platform_blob: blob,
-        },
+        &fields,
         unityrs_texture::Formats::DECODED,
         // Crunch's decoder follows the texture's own file's version; without
         // a usable one, never assume legacy crunch (as the NGUI reader does).
@@ -126,10 +127,9 @@ fn decode(
         })?;
     // Source/header plausibility (including lengths) precedes any output charge.
     // Only resource/meter/allocator refusals escape; static decode bounds are data.
-    let plan = unityrs_texture::plan(format, data.len(), width, height).map_err(decode_error)?;
-    meter.count_decode(plan.output_bytes)?;
+    unityrs_texture::plan_in_as(format, &fields, data.len()).map_err(decode_error)?;
     let image =
-        unityrs_texture::decode(format, &data, width, height, meter).map_err(decode_error)?;
+        unityrs_texture::decode_in_as(format, &fields, &data, meter).map_err(decode_error)?;
     Ok(image)
 }
 
@@ -293,9 +293,12 @@ fn decode_error(e: unityrs_texture::DecodeError) -> GltfError {
             GltfError::Invalid("texture_too_large")
         }
         E::NoImageData => GltfError::Invalid("missing_texture"),
-        E::NegativeSize { .. } | E::NotEnoughData { .. } | E::Panicked { .. } => {
-            GltfError::Invalid("texture_malformed")
-        }
+        E::NegativeSize { .. }
+        | E::NotEnoughData { .. }
+        | E::Panicked { .. }
+        | E::PvrtcBlockCount
+        | E::Platform(_)
+        | E::Crunch(_) => GltfError::Invalid("texture_malformed"),
         _ => GltfError::Mesh(unityrs_mesh::MeshError::Texture(e)),
     }
 }

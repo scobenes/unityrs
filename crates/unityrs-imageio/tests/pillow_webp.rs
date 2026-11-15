@@ -23,6 +23,8 @@ fn pixels(mode: Mode, width: u32, height: u32, kind: &str) -> Vec<u8> {
                 value = (73 + c * 37) as u8;
             } else if kind == "gradient" {
                 value = ((i % width * 7 + i / width * 13 + c as u32 * 53) & 255) as u8;
+            } else if kind == "indices" {
+                value = i as u8;
             }
             if c == mode.channels() - 1 && matches!(mode, Mode::La | Mode::Rgba) {
                 value = match kind {
@@ -42,14 +44,20 @@ fn pixels(mode: Mode, width: u32, height: u32, kind: &str) -> Vec<u8> {
 fn webps_equal_pillows_still_image_bytes() {
     let fixture: Value = serde_json::from_str(include_str!("fixtures/webp.json")).unwrap();
     let rows = fixture["cases"].as_array().unwrap();
-    assert_eq!(rows.len(), 576);
+    assert_eq!(rows.len(), 648);
     for row in rows {
         let mode = Mode::from_name(row["mode"].as_str().unwrap()).unwrap();
         let width = row["width"].as_u64().unwrap() as u32;
         let height = row["height"].as_u64().unwrap() as u32;
         let raw = pixels(mode, width, height, row["kind"].as_str().unwrap());
         assert_eq!(hex(&Sha256::digest(&raw)), row["pixels_sha256"]);
-        let image = Image::new(width, height, mode, &raw).unwrap();
+        let palette = std::array::from_fn(|i| (i * 19 + i / 3 * 7) as u8);
+        let image = if mode == Mode::P && row["implicit_palette"] != true {
+            Image::with_palette(width, height, &raw, &palette)
+        } else {
+            Image::new(width, height, mode, &raw)
+        }
+        .unwrap();
         let options = WebpOptions {
             quality: row["quality"].as_f64().unwrap() as f32,
             exact: row["exact"].as_bool().unwrap(),

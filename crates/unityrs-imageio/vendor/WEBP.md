@@ -24,7 +24,7 @@ the patches and derived sources are outside that directory.
 
 Both patches reproduce upstream source changes released in **libwebp 1.3.1**,
 with provenance headers and unchanged hunk contents. They affect allocation
-failure handling only; the 576-image Pillow replay remains unchanged.
+failure handling only; the original 576-image Pillow replay remains unchanged.
 
 - `patches/0001-alpha-initialize-bitwriter.patch`: James Zern's
   [a486d800b60d0af4cc0836bf7ed8f21e12974129](https://github.com/webmproject/libwebp/commit/a486d800b60d0af4cc0836bf7ed8f21e12974129),
@@ -53,15 +53,20 @@ initialization is enabled, but encoding uses Pillow's default thread_level=0.
 No encoding worker can allocate outside the calling thread's allowance.
 
 Pillow 9.5.0's `src/PIL/WebPImagePlugin.py` `_save` and
-`src/_webp.c` `WebPEncode_wrapper` are the reference. L becomes RGB and LA
-becomes RGBA, preserving alpha. The picture imports packed RGB/RGBA with
+`src/_webp.c` `WebPEncode_wrapper` are the reference. L/P become RGB and LA
+becomes RGBA, preserving alpha. P selects each indexed RGB triple from its
+explicit 256-entry palette, or uses the implicit grey ramp (Pillow 9.5.0,
+`src/libImaging/Convert.c:1128-1137`, `src/libImaging/Palette.c:24-51`).
+`src/PIL/WebPImagePlugin.py:319-357` converts transparent P to RGBA instead;
+Image carries no transparency metadata or RGBA palettes, so those are out of
+scope. The picture imports packed RGB/RGBA with
 use_argb=1 (the shim imports RGBA through byte reads into the aligned ARGB
 picture, avoiding libwebp's unaligned uint32_t input load), then encodes lossy at quality 80, method 4, exact false by default.
 Alpha quality remains 100, compression 1 and filtering 1. No metadata is
 present on extractor images; their emitted RIFF already equals Pillow's
 subsequent no-metadata mux assembly. `pillow_webp.rs` checks whole bytes or
-length plus SHA-256 for 576 Pillow files, at quality 80 and 95 and exact
-false/true. Five dimension refusals and five option refusals also pin
+length plus SHA-256 for 648 Pillow files (72 explicit/implicit palette files),
+at quality 80 and 95 and exact false/true. Five dimension refusals and five option refusals also pin
 Pillow's validation order (configuration before picture dimensions).
 This is a still-image interface; animation, metadata and production lossless
 output are outside W1. The `test-hooks` feature exposes a hidden lossless
@@ -75,7 +80,7 @@ Before any allocation, `webp_plan` offers two requests to the caller:
 - workspace: **2 MiB + 256 bytes per input pixel**;
 - output: **1 MiB + 8 bytes per input pixel**, a single fallible Vec allocation.
 
-The first includes L/LA conversion (at most four bytes per pixel), C payloads,
+The first includes L/LA/P conversion (at most four bytes per pixel), C payloads,
 16-byte allocation headers, and an extra 48 bytes per live C block for heap
 rounding/metadata. Every C allocation checks this remaining allowance before
 calling Rust's global allocator. Conversion capacity is subtracted before
@@ -91,7 +96,7 @@ checked arithmetic; sides outside 1..=16383 are refused before charging.
 complete requested heap, including mode conversion and the output, under the
 testkit counting global allocator. It tests every mode at 1x1, 15x17,
 257x129, 1024x1024, 16383x1 and 1x16383, using deterministic noise. Native
-arm64 measurements (bytes, quality 80/method 4):
+arm64 measurements of the original four extractor modes (bytes, quality 80/method 4):
 
 | extent | largest peak across modes | output capacity | workspace peak upper bound after subtracting output |
 |---|---:|---:|---:|
@@ -111,9 +116,10 @@ bound. The output's eight bytes per pixel plus 1 MiB is also enforced.
 The same test checks charge refusals allocate nothing, checks that no
 allocation ever exceeds held charges, and checks every buffer is freed before
 its charge. `every_allocation_refusal_is_clean` sweeps every allocation
-ordinal of a successful encode for six small inputs: 31x33 RGBA gradient,
+ordinal of a successful encode for eight small inputs: 31x33 RGBA gradient,
 17x17 RGBA noise, 15x17 RGBA alpha endpoints, 17x17 RGB palette,
-15x17 LA gradient and 15x17 L noise. Each runs lossy methods 0 through 6
+15x17 LA gradient, 15x17 L noise, 31x33 explicit P and 17x17 implicit P.
+Each runs lossy methods 0 through 6
 at quality 80; with `--features test-hooks`, every case also runs lossless.
 Each refusal must be reached, return `Memory`, leave zero live heap bytes
 above baseline and zero held charge, and free buffers before releasing their
@@ -123,13 +129,18 @@ at quality 0/95 and quality 100 with exact=true. It is gated out of debug
 runs and runs in CI's existing scale job with `--profile sweep` and
 `--features test-hooks`.
 
-Measured container sweeps (sweep time, excluding compilation): the default
-matrix with test hooks covers **84 configurations and 7,549 refusals**, taking
+Measured container sweeps before W1c's two palette inputs were added (sweep
+time, excluding compilation): the default matrix with test hooks covered
+**84 configurations and 7,549 refusals**, taking
 32.55 s on arm64 and 46.70 s on amd64. The release quality-boundary matrix
 covers **252 configurations and 24,038 refusals**, taking 24.82 s on arm64
 and 24.66 s on amd64.
 All return `Memory` with zero remaining live bytes and held charges; no
 additional failure-path defects were found in these matrices.
+The current matrix includes both P paths at every allocation ordinal;
+`webp_dispatch_propagates_resource_failures_without_png_fallback` also checks
+both palettes through the default writer, including refused charges and
+conversion allocations, without attempting a PNG on resource failure.
 
 Library callers selecting method 5 or 6 use `webp_plan_with_options` and a
 **32 MiB + 256 bytes/pixel** workspace. The batch option always uses method

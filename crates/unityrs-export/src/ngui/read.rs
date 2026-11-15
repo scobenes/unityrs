@@ -427,6 +427,31 @@ pub struct Texture {
 }
 
 impl Texture {
+    /// Shared decoder fields, with the blob's checked bytes held on the stack.
+    pub(crate) fn fields<'a>(
+        &self,
+        format: i32,
+        platform: i32,
+        blob: &'a mut [u8; 12],
+    ) -> TextureFields<'a> {
+        let platform_blob = self
+            .platform_blob
+            .filter(|b| b.len >= 12)
+            .and_then(|b| b.gobs)
+            .map(|g| {
+                blob.fill(0);
+                blob[8..].copy_from_slice(&g);
+                blob.as_slice()
+            });
+        let (width, height) = self.sides();
+        TextureFields {
+            texture_format: format,
+            width,
+            height,
+            platform,
+            platform_blob,
+        }
+    }
     /// The sides as the decoder takes them: a side outside `i32` is clamped
     /// to it, which keeps section 3's order (a negative side is answer 6,
     /// a side past `i32::MAX` more pixels than answer 7's bound).
@@ -484,26 +509,9 @@ pub(crate) fn formats(
             t.format
         ))));
     };
-    let mut gobs = [0u8; 12];
-    let blob = match t.platform_blob {
-        Some(b) if platform == SWITCH && b.len >= 12 => match b.gobs {
-            Some(g) => {
-                gobs[8..].copy_from_slice(&g);
-                Some(&gobs[..])
-            }
-            None => None,
-        },
-        _ => None,
-    };
-    let (width, height) = t.sides();
+    let mut blob = [0u8; 12];
     match select_in(
-        &TextureFields {
-            texture_format: format,
-            width,
-            height,
-            platform,
-            platform_blob: blob,
-        },
+        &t.fields(format, platform, &mut blob),
         allowed,
         unity_version,
     ) {

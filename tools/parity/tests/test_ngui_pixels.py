@@ -122,6 +122,7 @@ def table():
         ("platform_blobs", "x.bundle"): {
             "flat.png": cut(sheet(0xD1, 1, 1)), "short.png": cut(sheet(0xD3, 1, 1)),
             "xb_rgba.png": cut(sheet(0xD5, 1, 1)),
+            "xb_dxt1.png": cut({"size": (4, 4), "rgb": False, "color": (0, 0, 0, 255)}),
         },
         ("list_pairs", "x.bundle"): {"lp/s.png": cut(sheet(0xE1, 1, 1), (0, 0, 1, 1))},
         ("bad_script_pointer", "x.bundle"): {"ok/s.png": cut(sheet(0xE8, 1, 1), (0, 0, 1, 1))},
@@ -154,6 +155,8 @@ def expected(s, rect):
     """The image `rect` cuts from sheet `s` (its whole for None): mode, size and pixels, zero past the edge."""
     (w, h), rgb = s["size"], s["rgb"]
     x0, y0, cw, ch = rect or (0, 0, w, h)
+    if "color" in s:
+        return ("RGBA", (cw, ch), [s["color"]] * (cw * ch))
     zero = (0,) * (3 if rgb else 4)
     pixels = [px(s["base"], x, y, rgb) if 0 <= x < w and 0 <= y < h else zero
               for y in range(y0, y0 + ch) for x in range(x0, x0 + cw)]  # fmt: skip
