@@ -3,22 +3,7 @@
 
 import os
 from types import SimpleNamespace
-from enum import IntEnum
-from ._native import _class_ids
-
-class _ExtendableEnum(IntEnum):
-    @classmethod
-    def _missing_(cls, value):
-        if isinstance(value, int):
-            member = int.__new__(cls, value)
-            member._name_ = f"Unknown ({value})"
-            member._value_ = value
-            return cls._value2member_map_.setdefault(value, member)
-        return None
-
-
-ClassIDType = _ExtendableEnum("ClassIDType", _class_ids)
-
+from .enums.ClassIDType import ClassIDType
 
 class File:
     def _init(self, native, metadata, parent, environment, dependency):
@@ -33,6 +18,7 @@ class File:
         self.files = {}
         if isinstance(self, SerializedFile):
             self.header = SimpleNamespace(**self.header)
+            self.externals = [SimpleNamespace(**entry) for entry in native.externals()]
             self._cache = {}
             self.objects = {}
             for obj in native.objects():
@@ -137,11 +123,6 @@ class EndianBinaryReader_Memoryview:
 
     read_bytes = read
 
-    def __getattr__(self, name):
-        # UnityPy's raw readers return None for an unknown delegated attribute.
-        return None
-
-
 class ObjectReader:
     def __init__(self, native, assets_file):
         self._native = native
@@ -162,12 +143,30 @@ class ObjectReader:
     def get_raw_data(self):
         return self._native.raw_data()
 
-    def read_typetree(self, nodes=None, wrap=False, check_read=True):
+    def read_typetree(self, nodes=None, wrap=False, check_read=True, *, as_dict=None):
         if nodes is not None:
             raise ValueError("explicit typetree nodes require the helpers API")
-        if wrap:
-            raise NotImplementedError("object mode belongs to the classes API")
-        return self._native.parse(check_read)
+        if as_dict is not None:
+            wrap = not as_dict
+        if not wrap:
+            return self._native.parse(check_read)
+        from ._object import build
+        data, lists, references, bytes_read, completed, error, charge = self._native.object_data()
+        result = build(data, lists, self.assets_file, self.byte_size > 0, references, completed, error, charge)
+        if check_read and bytes_read != self.byte_size:
+            raise ValueError(f"Expected to read {self.byte_size} bytes, but only read {bytes_read} bytes")
+        result.set_object_reader(self)
+        return result
+
+    def read(self, check_read=True):
+        return self.read_typetree(wrap=True, check_read=check_read)
+
+    def parse_as_object(self, node=None, check_read=True):
+        return self.read_typetree(nodes=node, wrap=True, check_read=check_read)
+
+    def get_class(self):
+        from .classes.ClassIDTypeToClassMap import ClassIDTypeToClassMap
+        return ClassIDTypeToClassMap.get(self.type)
 
     def parse_as_dict(self, node=None, check_read=True):
         return self.read_typetree(nodes=node, check_read=check_read)

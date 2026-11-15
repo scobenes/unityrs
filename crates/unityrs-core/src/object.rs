@@ -25,7 +25,7 @@ use crate::files::{ObjectInfo, SerializedFile, SerializedType};
 use crate::provider::{NoTree, TreeRef, TreeRequest, TreeSource};
 use crate::typetree::Tree;
 use crate::value::Parsed;
-use crate::walk::{ParseError, ReadCtx, WriteCtx, WriteError, WriteRules, read_typetree_with_mode};
+use crate::walk::{ParseError, ReadCtx, WriteCtx, WriteError, WriteRules};
 
 /// One object of a `SerializedFile`: the file and the index of its row
 /// (module docs).
@@ -220,9 +220,10 @@ impl ObjectRef {
         self.read_typetree_mode(nodes, check_read, false)
     }
 
-    /// The fallback reads with `wrap=True`; retain its exception categories
-    /// while storing the result in the core's dict value model.
-    pub(crate) fn read_typetree_object(
+    /// Read object-mode values into the dict model, retaining the Python
+    /// reader's pointer and referenced-type validation. The binding constructs
+    /// Python classes from these values; the core fallback also uses this mode.
+    pub fn read_typetree_object(
         &self,
         nodes: Option<&Arc<Tree>>,
         check_read: bool,
@@ -230,11 +231,29 @@ impl ObjectRef {
         self.read_typetree_mode(nodes, check_read, true)
     }
 
+    /// Read each child's node and value without collapsing duplicate names.
+    /// A later reader error is returned with the completed construction prefix.
+    pub fn read_object_fields(&self) -> Result<(Parsed, crate::walk::FieldProgress), ParseError> {
+        let mut progress = crate::walk::FieldProgress::default();
+        let parsed = self.read_fields_mode(None, false, true, Some(&mut progress))?;
+        Ok((parsed, progress))
+    }
+
     fn read_typetree_mode(
         &self,
         nodes: Option<&Arc<Tree>>,
         check_read: bool,
         object_mode: bool,
+    ) -> Result<Parsed, ParseError> {
+        self.read_fields_mode(nodes, check_read, object_mode, None)
+    }
+
+    fn read_fields_mode(
+        &self,
+        nodes: Option<&Arc<Tree>>,
+        check_read: bool,
+        object_mode: bool,
+        progress: Option<&mut crate::walk::FieldProgress>,
     ) -> Result<Parsed, ParseError> {
         // UnityPy files/ObjectReader.py:244-262
         let Some(tree) = self.tree(nodes)? else {
@@ -252,7 +271,7 @@ impl ObjectRef {
             meter: file.meter(),
         };
         let info = self.info();
-        let mut read = read_typetree_with_mode(
+        let mut read = crate::walk::read_with_fields(
             file.data(),
             info.byte_start,
             info.byte_size,
@@ -260,6 +279,7 @@ impl ObjectRef {
             &ctx,
             check_read,
             (file.reader_kind(), file.header().version >= 23, object_mode),
+            progress,
         );
         // A value kept past the file's handles keeps alive the buffer its
         // slices are of: copied out of a run much larger than they are
