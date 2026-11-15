@@ -314,3 +314,161 @@ fn the_fixture_covers_every_mode_kind_and_chunk_size() {
     );
     assert_eq!(used[3], 0);
 }
+
+/// Inflate and reverse PNG filters independently of the writer. Check framing
+/// and CRCs too, including multi-IDAT files and transparent pixel RGB values.
+fn decoded(bytes: &[u8], width: usize, height: usize, bpp: usize) -> Vec<u8> {
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    let parts = chunks(bytes);
+    assert_eq!(parts.first().unwrap().0, *b"IHDR");
+    assert_eq!(parts.last().unwrap().0, *b"IEND");
+    let mut at = 8;
+    let mut compressed = Vec::new();
+    for (kind, data) in parts {
+        let mut crc = flate2::Crc::new();
+        crc.update(&kind);
+        crc.update(data);
+        let end = at + 8 + data.len();
+        assert_eq!(
+            crc.sum(),
+            u32::from_be_bytes(bytes[end..end + 4].try_into().unwrap())
+        );
+        at = end + 4;
+        if kind == *b"IDAT" {
+            compressed.extend_from_slice(data);
+        }
+    }
+    assert_eq!(at, bytes.len());
+    let mut raw = Vec::new();
+    flate2::read::ZlibDecoder::new(&compressed[..])
+        .read_to_end(&mut raw)
+        .unwrap();
+    let stride = width * bpp;
+    assert_eq!(raw.len(), height * (stride + 1));
+    let mut out = vec![0u8; height * stride];
+    for y in 0..height {
+        let filter = raw[y * (stride + 1)];
+        for x in 0..stride {
+            let a = if x >= bpp {
+                out[y * stride + x - bpp]
+            } else {
+                0
+            };
+            let b = if y > 0 { out[(y - 1) * stride + x] } else { 0 };
+            let c = if y > 0 && x >= bpp {
+                out[(y - 1) * stride + x - bpp]
+            } else {
+                0
+            };
+            let pred = match filter {
+                0 => 0,
+                1 => a,
+                2 => b,
+                3 => a.midpoint(b),
+                4 => {
+                    let p = i16::from(a) + i16::from(b) - i16::from(c);
+                    let (pa, pb, pc) = (
+                        (p - i16::from(a)).abs(),
+                        (p - i16::from(b)).abs(),
+                        (p - i16::from(c)).abs(),
+                    );
+                    if pa <= pb && pa <= pc {
+                        a
+                    } else if pb <= pc {
+                        b
+                    } else {
+                        c
+                    }
+                }
+                _ => panic!("invalid filter {filter}"),
+            };
+            out[y * stride + x] = raw[y * (stride + 1) + 1 + x].wrapping_add(pred);
+        }
+    }
+    out
+}
+
+#[test]
+#[cfg(feature = "test-reference")]
+fn fast_png_idat_matches_zlib_1_2_13_level_1_filtered_sub_rows() {
+    // Structured data distinguishes level 1 from level 6 and Huffman-only
+    // compression; repeated rows distinguish Sub from adaptive filtering.
+    // Random RGBA data also forces concatenation of multiple IDAT chunks.
+    for (kind, mode) in [
+        ("gradient", Mode::L),
+        ("sparse", Mode::La),
+        ("stripes", Mode::Rgb),
+        ("random", Mode::Rgba),
+    ] {
+        let (width, height) = (257, 127);
+        let data = pixels(kind, mode, width, height, 0x1234_5678, 0);
+        let bpp = mode.channels();
+        let stride = width as usize * bpp;
+        // Construct Sub scanlines independently of the encoder's Rows.
+        let mut filtered = Vec::new();
+        for row in data.chunks_exact(stride) {
+            filtered.push(1);
+            for (x, &value) in row.iter().enumerate() {
+                let left = if x < bpp { 0 } else { row[x - bpp] };
+                filtered.push(value.wrapping_sub(left));
+            }
+        }
+        let expected =
+            unityrs_imageio::test_reference::deflate_fast_png(&filtered, stride + 1, 65536);
+        let image = Image::new(width, height, mode, &data).unwrap();
+        let png = unityrs_imageio::encode_fast(&image, &mut Unmetered).unwrap();
+        let idats: Vec<_> = chunks(png.bytes())
+            .into_iter()
+            .filter_map(|(kind, data)| (kind == *b"IDAT").then_some(data))
+            .collect();
+        if kind == "random" {
+            assert!(idats.len() > 1, "fixture must exercise multiple IDATs");
+        }
+        let actual = idats.concat();
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "{mode}-{width}x{height}-{kind}: concatenated IDAT length"
+        );
+        // Compare every byte, reporting only the first mismatch.
+        assert_eq!(
+            actual.iter().zip(&expected).position(|(a, b)| a != b),
+            None,
+            "{mode}-{width}x{height}-{kind}: concatenated IDAT bytes"
+        );
+    }
+}
+
+#[test]
+fn fast_png_decodes_to_the_same_oracle_pixels_as_default() {
+    let fixture = fixture();
+    for case in fixture["cases"].as_array().unwrap() {
+        let mode = Mode::from_name(case["mode"].as_str().unwrap()).unwrap();
+        let width = u32::try_from(case["width"].as_u64().unwrap()).unwrap();
+        let height = u32::try_from(case["height"].as_u64().unwrap()).unwrap();
+        let data = pixels(
+            case["kind"].as_str().unwrap(),
+            mode,
+            width,
+            height,
+            case["seed"].as_u64().unwrap(),
+            usize::try_from(case["prefix"].as_u64().unwrap_or(0)).unwrap(),
+        );
+        let image = Image::new(width, height, mode, &data).unwrap();
+        let fast = unityrs_imageio::encode_fast(&image, &mut Unmetered).unwrap();
+        let default = encode(&image, &mut Unmetered).unwrap();
+        let decode =
+            |bytes: &[u8]| decoded(bytes, width as usize, height as usize, mode.channels());
+        let got = decode(fast.bytes());
+        assert_eq!(got, decode(default.bytes()), "{}", case["id"]);
+        assert_eq!(got, data, "{}", case["id"]);
+        assert_eq!(
+            hex(&Sha256::digest(&got)),
+            case["pixels_sha256"].as_str().unwrap()
+        );
+        assert_eq!(
+            visible_hash(&Image::new(width, height, mode, &got).unwrap()),
+            visible_hash(&image)
+        );
+    }
+}

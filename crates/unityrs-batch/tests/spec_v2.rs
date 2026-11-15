@@ -94,9 +94,13 @@ fn each_refusal_formats_adds() {
 }
 
 #[test]
-fn image_is_png_and_the_reserved_values_are_refused() {
+fn image_accepts_fast_png_and_refuses_reserved_values() {
     let image = |value: Value| refused(&v2(|v| v["outputs"]["image"] = value));
-    for reserved in ["png_fast", "webp", "PNG", ""] {
+    let s = accepted(&v2(|v| v["outputs"]["image"] = json!("png_fast"))).spec;
+    assert_eq!(s.outputs.image.name(), "png_fast");
+    let prepared = unityrs_batch::attempt::Prepared::from_spec(&s).unwrap();
+    assert!(prepared.options.png_fast);
+    for reserved in ["webp", "PNG", ""] {
         assert_eq!(image(json!(reserved)), "range /outputs/image", "{reserved}");
     }
     assert_eq!(
@@ -146,7 +150,7 @@ fn version_1_refuses_version_2s_members_as_before() {
         "unknown_field /outputs/formats"
     );
     assert_eq!(
-        refused(&with(|v| v["outputs"]["image"] = json!("png"))),
+        refused(&with(|v| v["outputs"]["image"] = json!("png_fast"))),
         "unknown_field /outputs/image"
     );
 }

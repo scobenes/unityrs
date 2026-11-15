@@ -7,7 +7,7 @@ import sys
 import zlib
 
 
-def pixels(data):
+def pixels(data, filter_type=None):
     width, height, depth, color = struct.unpack('>IIBB', data[16:26])
     assert depth == 8 and color in (2, 6)
     channels = 3 if color == 2 else 4
@@ -38,6 +38,8 @@ def pixels(data):
     stride = width * channels
     expected = height * (1 + stride)
     assert len(raw) == expected, f'PNG scanline length: expected {expected}, got {len(raw)}'
+    if filter_type is not None:
+        assert all(raw[y * (stride + 1)] == filter_type for y in range(height)), 'wrong PNG filter'
     out = bytearray()
     for y in range(height):
         row = raw[y * (stride + 1):(y + 1) * (stride + 1)]
@@ -73,7 +75,7 @@ if __name__ == '__main__':
         if 'text' in want:
             assert data.decode('utf-8') == want['text'], job
         if 'mode' in want:
-            image, size, mode = pixels(data)
+            image, size, mode = pixels(data, want.get('filter'))
             assert size == want['size'] and mode == want['mode'], job
             if want.get('visible_hash'):
                 visible = bytearray()
