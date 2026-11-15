@@ -446,6 +446,51 @@ fn spool_alias_is_canonicalized_before_the_no_follow_open() {
     let spec = parse(&job(&alias, sink.path()));
     let local = start::supported(&spec).unwrap();
     let started = spool::start(&local, &space(), &|| false).unwrap();
-    assert_eq!(started.run, fs::canonicalize(real).unwrap().join("runs/r"));
+    let actual = fs::metadata(&started.run).unwrap();
+    let expected = fs::metadata(real.join("runs/r")).unwrap();
+    assert_eq!(
+        (actual.dev(), actual.ino()),
+        (expected.dev(), expected.ino())
+    );
     assert!(started.run.join("in").is_dir());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_long_canonical_spool_keeps_view_paths_bounded_and_pins_the_root() {
+    let scratch = Scratch::new("local-long-spool-alias");
+    let sink = Scratch::new("local-long-spool-alias-sink");
+    let mut real = scratch.path().to_path_buf();
+    for n in 0..8 {
+        real.push(format!("{n}{}", "x".repeat(190)));
+    }
+    fs::create_dir_all(&real).unwrap();
+    let alias = scratch.join("alias");
+    symlink(&real, &alias).unwrap();
+    let mut raw = job(&alias, sink.path());
+    let run_id = "r".repeat(64);
+    raw["run_id"] = json!(run_id);
+    let spec = parse(&raw);
+    let local = start::supported(&spec).unwrap();
+    let started = spool::start(&local, &space(), &|| false).unwrap();
+    assert!(fs::canonicalize(&alias).unwrap().as_os_str().len() > 1_024);
+    // The 64-byte run id and a full u32 generated index still leave a
+    // short path for each worker's view, regardless of canonical depth.
+    let staged = unityrs_batch::stage::path(&started.run.join("in"), u32::MAX, 1, false);
+    assert!(staged.as_os_str().len() <= 128, "view path: {staged:?}");
+    fs::write(&staged, b"pinned staged bytes").unwrap();
+    let basename = staged.file_name().unwrap();
+    let physical = real.join("runs").join(&run_id).join("in").join(basename);
+    assert_eq!(fs::read(&physical).unwrap(), b"pinned staged bytes");
+    let renamed = real.with_file_name("renamed-spool");
+    fs::rename(&real, &renamed).unwrap();
+    assert!(!alias.exists());
+    assert_eq!(fs::read(&staged).unwrap(), b"pinned staged bytes");
+    let actual = fs::metadata(&staged).unwrap();
+    let expected =
+        fs::metadata(renamed.join("runs").join(&run_id).join("in").join(basename)).unwrap();
+    assert_eq!(
+        (actual.dev(), actual.ino()),
+        (expected.dev(), expected.ino())
+    );
 }

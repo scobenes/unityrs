@@ -27,18 +27,19 @@ impl Runtimes {
         }
         let threads =
             usize::try_from(download_concurrency + 1).map_err(|_| io::ErrorKind::InvalidInput)?;
-        let build = || {
+        let build = |name| {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .max_blocking_threads(threads)
                 .on_thread_start(on_start)
+                .thread_name(name)
                 .thread_stack_size(2 << 20)
                 .thread_keep_alive(Duration::MAX)
                 .build()
         };
         Ok(Self {
-            controller: build()?,
-            finisher: build()?,
+            controller: build("batch-controller-pool")?,
+            finisher: build("batch-finisher-pool")?,
             per_runtime: threads,
         })
     }

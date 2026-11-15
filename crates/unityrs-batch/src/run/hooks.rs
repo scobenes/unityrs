@@ -19,6 +19,8 @@
 //! <errno>`, and `<point> reached` before each `wait` hold. The
 //! `handover` report: one `stopped <input id>` line per input the finisher
 //! writes `stopped`, then `culprit input <id>` or `culprit bundle <id>`.
+#[path = "hooks_memory.rs"]
+pub mod memory;
 #[path = "hooks_network.rs"]
 mod network;
 use super::process::Thread;
@@ -72,6 +74,8 @@ pub struct TestHooks {
     /// `UNITYRS_TEST_EXTRA_ROOTS`: certificates loaded at startup.
     pub extra_roots: Vec<rustls::pki_types::CertificateDer<'static>>,
     pub zip_offset: Option<u64>,
+    /// Library-only phase-6 run cuts; validation retains production maxima.
+    pub sort_options: Option<crate::sort::Options>,
 }
 /// The `tally` hook's two calls.
 #[derive(Clone, Copy)]
@@ -306,6 +310,7 @@ impl Log {
 /// The points armed for one run, resolved against its spec, and the
 /// `trace` log: the controller's, publication's and the body's hooks.
 pub struct Points {
+    sort_options: Option<crate::sort::Options>,
     spec: Arc<Spec>,
     armed: Vec<(Point, Action, String, AtomicBool)>,
     log: Option<Arc<Log>>,
@@ -386,7 +391,12 @@ impl Points {
             .iter()
             .map(|(p, a)| (p.clone(), a.clone(), name(p), AtomicBool::new(false)))
             .collect();
-        Self { spec, armed, log }
+        Self {
+            spec,
+            armed,
+            log,
+            sort_options: hooks.sort_options,
+        }
     }
     fn id(&self, bundle: u32) -> &str {
         usize::try_from(bundle)
@@ -503,6 +513,9 @@ impl publish::Hooks for Points {
     }
 }
 impl super::Observer for Points {
+    fn sort_options(&self) -> crate::sort::Options {
+        self.sort_options.unwrap_or_default()
+    }
     fn seam(&self, seam: super::Seam) {
         if seam == super::Seam::Verified {
             self.at(&Point::Verified);

@@ -23,6 +23,11 @@ use unityrs_testkit::counted::{Tally, count_this_thread, counted};
 struct Fed<T: Tally>(T);
 
 impl<T: Tally> Hook for Fed<T> {
+    fn shrunk(&self, old: usize, new: usize) {
+        if counted() {
+            self.0.shrunk(old, new);
+        }
+    }
     fn refuses(&self, size: usize) -> bool {
         self.0.refuses(size)
     }

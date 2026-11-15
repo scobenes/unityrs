@@ -26,8 +26,9 @@ fn transport_setup(error: http::Error) -> Error {
     }
 }
 
-/// Startup storage in `C_base`; retained to process exit even though the
-/// directory finisher currently needs no HTTP requests.
+/// Startup storage retained to process exit even though the directory
+/// finisher currently needs no HTTP requests. Services/configuration belong
+/// to fixed `C_base`; both request tables follow the `m_pool` slope.
 pub(super) struct Resources {
     controller: Arc<http::Service>,
     _finisher: http::Service,
