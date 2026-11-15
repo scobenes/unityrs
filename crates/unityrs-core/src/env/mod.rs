@@ -284,6 +284,14 @@ pub enum Source {
     /// caller who wants a mapping passes [`Source::Bytes`] or
     /// [`Source::Fetch`], whose bytes are the caller's.)
     Path(PathBuf),
+    /// A local path whose physical file and split companions must remain
+    /// beneath `root`. The restriction is retained if a dependency reopens.
+    ConfinedPath {
+        /// The original path spelling, also used as its key.
+        path: PathBuf,
+        /// The directory allowed to contain every opened file.
+        root: PathBuf,
+    },
     /// Bytes fetched on demand: refused above the bound from the size the
     /// fetcher states ([`Fetch::size_hint`]) before it is fetched, and from
     /// the length of the bytes it returns.
@@ -542,7 +550,7 @@ enum Found {
 fn source_name(source: &Source) -> RawStr {
     match source {
         Source::Bytes { name, .. } | Source::Fetch { name, .. } => name.clone(),
-        Source::Path(p) => {
+        Source::Path(p) | Source::ConfinedPath { path: p, .. } => {
             let name = p.as_os_str().as_encoded_bytes();
             RawStr::from(split::base(name).unwrap_or(name))
         }

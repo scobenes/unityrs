@@ -53,6 +53,7 @@ use bytes::Bytes;
 use crate::budget::DecodeBuf;
 use crate::error::{Error, LimitError, LimitKind};
 
+pub mod encode;
 mod lz4;
 mod lzma;
 mod stored;

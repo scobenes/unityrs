@@ -47,8 +47,11 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # unityrs-py's tests embed Python and replay the oracle's observations
+      # (UnityPy's TPK, Python 3.11's messages): the python-wheel job runs them
+      # in that environment.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude unityrs-py
       # G6 (docs/plans/core.md section 6): no stub is left in any crate.
       - name: No stub is left (G6)
         run: sh scripts/stub-check.sh
@@ -240,7 +243,7 @@ jobs:
               -print_final_stats=1 > "$RUNNER_TEMP/fuzz-$1.log" 2>&1
           }
           failed=""
-          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc crunch meshdecode zlib_match webp unitycn zip" "webfile unityweb" "fsb5 image_writers set_image" "serialized_save" "scene_collect obj_text" "shader extractor_paths"; do
+          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc crunch meshdecode zlib_match webp unitycn zip" "webfile unityweb" "fsb5 image_writers set_image" "serialized_save bundle_save" "scene_collect obj_text" "shader extractor_paths"; do
             pids=""
             for t in $batch; do
               run "$t" &
@@ -250,7 +253,7 @@ jobs:
               wait "${p#*:}" || failed="$failed ${p%%:*}"
             done
           done
-          for t in detect bundle serialized serialized_save typetree boost_read python_read write_after_read lz4 texture astc crunch meshdecode zlib_match webp unitycn zip webfile unityweb fsb5 image_writers set_image scene_collect obj_text shader extractor_paths; do
+          for t in detect bundle bundle_save serialized serialized_save typetree boost_read python_read write_after_read lz4 texture astc crunch meshdecode zlib_match webp unitycn zip webfile unityweb fsb5 image_writers set_image scene_collect obj_text shader extractor_paths; do
             echo "== $t"
             grep -E '^(stat::|#[0-9]+ +DONE)' "$RUNNER_TEMP/fuzz-$t.log" || true
           done
@@ -455,6 +458,7 @@ jobs:
           python tools/fixtures/files.py --check
           python tools/fixtures/serialized_save.py --check
           python tools/fixtures/set_image.py --check
+          python tools/fixtures/bundle_save.py --check
           python tools/fixtures/head_read.py --check
           python tools/fixtures/unitycn.py --check
           python tools/fixtures/loading.py --check
@@ -709,7 +713,6 @@ jobs:
       - name: Check the API oracle fixtures
         run: python tools/fixtures/py_bindings.py --check
       - name: Test the installed wheel
-        run: python -m unittest discover -s crates/unityrs-py/python/tests
+        run: python scripts/unittest-suites crates/unityrs-py/python/tests=19
       - name: Compare the binding with UnityPy
-        working-directory: tools/parity
-        run: python -m unittest bindings.test_y1
+        run: python scripts/unittest-suites tools/parity/bindings=48

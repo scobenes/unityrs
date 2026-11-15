@@ -48,6 +48,8 @@ use unityrs_testkit::fuzz::{MeshCase, RefType, Row, TextureCase, TreeCase, blob_
 
 #[path = "fuzz_seeds/astc.rs"]
 mod astc;
+#[path = "fuzz_seeds/bundle_save.rs"]
+mod bundle_save;
 #[path = "fuzz_seeds/crunch.rs"]
 mod crunch;
 #[path = "fuzz_seeds/depth.rs"]
@@ -74,9 +76,10 @@ mod webp;
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 26] = [
+const TARGETS: [&str; 27] = [
     "detect",
     "bundle",
+    "bundle_save",
     "serialized",
     "serialized_save",
     "typetree",
@@ -229,6 +232,7 @@ impl Seeds {
         match check_file_type(bytes, &ctx.limits) {
             Ok(FileType::BundleFile) => {
                 self.add("bundle", name, bytes)?;
+                self.add("bundle_save", name, bytes)?;
                 let Ok(b) = BundleFile::open(RawStr::from(name), data, None, &meter, &ctx) else {
                     return Ok(());
                 };
@@ -580,6 +584,7 @@ fn module_seeds(s: &mut Seeds) -> std::io::Result<()> {
     image_writers::write(s)?;
     set_image::write(s)?;
     head::write(s)?;
+    bundle_save::write(s)?;
     shader::seeds(s)?;
     extractor_paths::write(s)?;
     texture(s)?;

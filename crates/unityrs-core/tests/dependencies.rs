@@ -240,10 +240,27 @@ const C_FUNCTIONS: [(&str, &str); 6] = [
 /// The C functions a crate compiles from vendored source, which link
 /// whatever the glibc: zlib 1.2.13's, which unityrs-imageio's `build.rs`
 /// compiles under `Z_PREFIX`, each declared by the `z_` name that
-/// `zconf.h` gives it there, and libwebp 1.3.0's, reached through the one
-/// entry point of unityrs-imageio's own shim (`webp-shim.c`); each only in
-/// the file named.
-const VENDORED_C_FUNCTIONS: [(&str, &str); 10] = [
+/// `zconf.h` gives it there; libwebp 1.3.0's, reached through the one
+/// entry point of unityrs-imageio's own shim (`webp-shim.c`); and liblz4
+/// 1.9.4's, renamed by the compression bridge's build script. Each is
+/// declared only in the file named.
+const VENDORED_C_FUNCTIONS: [(&str, &str); 14] = [
+    (
+        "unityrs_LZ4_versionNumber",
+        "unityrs-compress-sys/src/lib.rs",
+    ),
+    (
+        "unityrs_LZ4_sizeofStateHC",
+        "unityrs-compress-sys/src/lib.rs",
+    ),
+    (
+        "unityrs_LZ4_compressBound",
+        "unityrs-compress-sys/src/lib.rs",
+    ),
+    (
+        "unityrs_LZ4_compress_HC_extStateHC",
+        "unityrs-compress-sys/src/lib.rs",
+    ),
     // The pristine zlib 1.2.13 reference under the `test-reference`
     // feature, its entry points renamed (`zlib-match/reference.c`).
     (
@@ -362,6 +379,74 @@ fn an_extern_block_is_read_for_its_declarations_only() {
     assert_eq!(c_functions(&code), ["a", "b", "C", "D", "e"]);
 }
 
+/// The pinned sources that name each vendored function: zlib's `zconf.h`
+/// renames it under `Z_PREFIX` (`#  define deflate  z_deflate`); the
+/// test-only pristine reference renames its entry points itself (`#define
+/// deflate unityrs_zref_deflate`); the WebP shim defines its own, each at the
+/// start of a line (`int unityrs_webp_encode(...`); liblz4's headers declare
+/// the bare names the compression bridge's build script renames (its
+/// archive/link tests also check the compiled namespace and the pristine
+/// source manifest on ELF and Mach-O).
+struct VendoredSources {
+    zconf: String,
+    reference: String,
+    shim: String,
+    lz4_headers: [String; 2],
+}
+
+impl VendoredSources {
+    fn load(crates: &Path) -> Self {
+        let read = |path: &str| std::fs::read_to_string(crates.join(path)).unwrap();
+        Self {
+            zconf: read("unityrs-imageio/vendor/zlib-1.2.13/zconf.h"),
+            reference: read("unityrs-imageio/zlib-match/reference.c"),
+            shim: read("unityrs-imageio/webp-shim.c"),
+            lz4_headers: ["lz4.h", "lz4hc.h"].map(|header| {
+                read(&format!("unityrs-compress-sys/vendor/lz4-1.9.4/{header}"))
+                    .split_whitespace()
+                    .collect()
+            }),
+        }
+    }
+
+    fn declare(&self, name: &str) -> bool {
+        if let Some(bare) = name
+            .strip_prefix("unityrs_")
+            .filter(|n| n.starts_with("LZ4_"))
+        {
+            return self
+                .lz4_headers
+                .iter()
+                .any(|header| header.contains(&format!("{bare}(")));
+        }
+        if name.starts_with("unityrs_webp_") {
+            return self.shim.lines().any(|l| {
+                l.split_once('(')
+                    .and_then(|(head, _)| head.split_whitespace().last())
+                    .is_some_and(|f| f == name)
+                    && !l.starts_with(char::is_whitespace)
+            });
+        }
+        let words = |text: &str, n: usize| -> Vec<Vec<String>> {
+            text.lines()
+                .map(|l| l.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
+                .filter(|w| w.len() == n)
+                .collect()
+        };
+        match name.strip_prefix("unityrs_zref_") {
+            Some(bare) => words(&self.reference, 3)
+                .iter()
+                .any(|w| w[0] == "#define" && w[1] == bare && w[2] == name),
+            None => words(&self.zconf, 4).iter().any(|w| {
+                w[0] == "#"
+                    && w[1] == "define"
+                    && Some(w[2].as_str()) == name.strip_prefix("z_")
+                    && w[3] == name
+            }),
+        }
+    }
+}
+
 /// Review round 13: `tests/lzma_decoder_heap.rs` declared `mallinfo2`,
 /// which glibc has only since 2.33, so `cargo test` failed to link on an
 /// older glibc. Every C function a file under `crates/` declares is in
@@ -419,52 +504,18 @@ fn every_c_function_a_crate_declares_links_on_every_glibc_it_builds_on() {
             "C_FUNCTIONS lists {name}, which no file declares"
         );
     }
-    // Each vendored function is declared, and is one zlib's `zconf.h`
-    // renames to it under `Z_PREFIX` (`#  define deflate  z_deflate`).
-    let zconf =
-        std::fs::read_to_string(crates.join("unityrs-imageio/vendor/zlib-1.2.13/zconf.h")).unwrap();
-    let renames: Vec<Vec<&str>> = zconf
-        .lines()
-        .map(|l| l.split_whitespace().collect::<Vec<_>>())
-        .filter(|w| w.len() == 4 && w[0] == "#" && w[1] == "define")
-        .collect();
-    // The test-only pristine reference renames its entry points itself
-    // (`#define deflate unityrs_zref_deflate`).
-    let reference =
-        std::fs::read_to_string(crates.join("unityrs-imageio/zlib-match/reference.c")).unwrap();
-    let reference: Vec<Vec<&str>> = reference
-        .lines()
-        .map(|l| l.split_whitespace().collect::<Vec<_>>())
-        .filter(|w| w.len() == 3 && w[0] == "#define")
-        .collect();
-    // The WebP shim defines its entry points itself, each at the start of
-    // a line (`int unityrs_webp_encode(...`).
-    let shim = std::fs::read_to_string(crates.join("unityrs-imageio/webp-shim.c")).unwrap();
+    let pinned = VendoredSources::load(&crates);
     for (name, _) in VENDORED_C_FUNCTIONS {
         assert!(
             declared.contains_key(name),
             "VENDORED_C_FUNCTIONS lists {name}, which no file declares"
         );
-        let found = if name.starts_with("unityrs_webp_") {
-            shim.lines().any(|l| {
-                l.split_once('(')
-                    .and_then(|(head, _)| head.split_whitespace().last())
-                    .is_some_and(|f| f == name)
-                    && !l.starts_with(char::is_whitespace)
-            })
-        } else {
-            match name.strip_prefix("unityrs_zref_") {
-                Some(bare) => reference.iter().any(|w| w[1] == bare && w[2] == name),
-                None => renames
-                    .iter()
-                    .any(|w| Some(w[2]) == name.strip_prefix("z_") && w[3] == name),
-            }
-        };
+        let found = pinned.declare(name);
         assert!(
             found,
             "{name} is no function zconf.h renames under Z_PREFIX, nor one \
              zlib-match/reference.c renames for the test-only reference, nor \
-             one webp-shim.c defines"
+             one webp-shim.c defines, nor one the pinned liblz4 headers declare"
         );
     }
 }

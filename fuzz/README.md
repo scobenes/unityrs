@@ -23,6 +23,7 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `webp` | libwebp 1.3.0 encoder, metered and fallible; hostile dimensions and quality/method | 12-byte header (LE u32 width/height, mode, quality, method, exact), then at most 1 MiB of pixels |
 | `zlib_match` | derived deflate against pristine zlib 1.2.13, with 257-byte input and 509-byte output windows (`test-reference`) | any bytes, capped at 4 MiB |
 | `bundle` | `BundleFile::open` plus `load_all` (every block decoded, every entry parsed, nested bundles loaded), by the memory and the stream reader's rules | any bytes |
+| `bundle_save` | load, save, reload: same files, flags and saved child content; the next save is identical; runs uncompressed plus an input-selected LZ4, tuple HC or LZMA packer; typed refusals are allowed | any bytes (the bundle seeds, HEAD refusals and legacy signatures included) |
 | `zip` | central-directory/ZIP64 parsing, CRC-checked stored/deflate reads, and `Environment::load_zip_file` with nested frames, split joins and cached duplicate reads | arbitrary ZIP bytes; stored, deflate, split, empty and nested duplicate testkit seeds |
 | `webfile` | signed WebFile table parsing, nested member loading and bounded gzip/brotli inflation | plain, gzip, brotli, nested duplicates and hostile name lengths |
 | `unityweb` | legacy headers, signed level skip, LZMA and directories, memory and stream readers | UnityWeb/UnityRaw formats 1–6 |
@@ -182,7 +183,7 @@ at step 1.
 - `.github/workflows/ci.yml`'s `fuzz-build`: on every push, every target
   built and run for 30 seconds from the seeds, the harness's own tests
   (`cargo test --lib`), and `cargo fmt --check` over this crate.
-  The smoke lists and nightly matrix include all 26 targets, including
+  The smoke lists and nightly matrix include all 27 targets, including
   `image_writers`, `set_image`, `scene_collect`, `obj_text`, `shader` and `extractor_paths`, run from their
   generated seeds.
 

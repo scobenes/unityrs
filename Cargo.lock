@@ -1534,6 +1534,7 @@ dependencies = [
  "libc",
  "md-5",
  "object_store",
+ "proc-macro2",
  "quick-xml",
  "rustls",
  "serde",
@@ -1580,6 +1581,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs-compress-sys"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "liblzma-sys",
+ "sha2 0.11.1",
+ "unityrs-testkit",
+]
+
+[[package]]
 name = "unityrs-core"
 version = "0.0.1"
 dependencies = [
@@ -1592,6 +1603,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "triomphe",
+ "unityrs-compress-sys",
  "unityrs-testkit",
 ]
 

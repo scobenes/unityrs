@@ -152,6 +152,10 @@ mod index;
 mod legacy;
 pub(super) mod open;
 mod runs;
+mod write;
+mod write_legacy;
+
+pub use write::{BundlePacker, BundleSaveOptions};
 
 pub use counts::BundleCounts;
 use counts::DecodeCounts;

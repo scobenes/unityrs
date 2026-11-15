@@ -35,6 +35,17 @@ fn every_value_seed_is_written_at_each_memory_bound() {
             std::fs::read(dir.join("serialized_save").join(entry.file_name())).unwrap()
         );
     }
+    let bundle_seeds = std::fs::read_dir(dir.join("bundle")).unwrap().count();
+    let bundle_save_seeds = std::fs::read_dir(dir.join("bundle_save")).unwrap().count();
+    assert!(bundle_seeds > 0);
+    assert!(bundle_save_seeds >= bundle_seeds);
+    let saved_inputs: BTreeSet<_> = std::fs::read_dir(dir.join("bundle_save"))
+        .unwrap()
+        .map(|entry| std::fs::read(entry.unwrap().path()).unwrap())
+        .collect();
+    for entry in std::fs::read_dir(dir.join("bundle")).unwrap() {
+        assert!(saved_inputs.contains(&std::fs::read(entry.unwrap().path()).unwrap()));
+    }
     let extraction: Vec<_> = std::fs::read_dir(dir.join("extractor_paths"))
         .unwrap()
         .map(|e| std::fs::read(e.unwrap().path()).unwrap())

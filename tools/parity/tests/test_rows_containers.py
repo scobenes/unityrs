@@ -137,11 +137,14 @@ class Rows(unittest.TestCase):
         )
         grown_kib = int(child.run([sys.executable, "-B", "-c", probe], capture_output=True, check=True).stdout)
         self.assertLess(grown_kib, 64 << 10)
-        # And a stored size the process cannot reserve (an address space capped at 1 GiB) is `MemoryError`, a block
-        # that decodes and one that does not alike: the reservation comes first.
+        # And a stored size the process cannot reserve (1 GiB more address space than it already holds) is
+        # `MemoryError`, a block that decodes and one that does not alike: the reservation comes first.
+        # Emulators can hold more than 1 GiB before this probe starts; an absolute cap below that stops the
+        # emulator itself allocating, rather than measuring python-lz4's reservation.
         probe = (
             "import resource, lz4.block\n"
-            "resource.setrlimit(resource.RLIMIT_AS, (1 << 30, resource.getrlimit(resource.RLIMIT_AS)[1]))\n"
+            "held = int(open('/proc/self/statm').read().split()[0]) * resource.getpagesize()\n"
+            "resource.setrlimit(resource.RLIMIT_AS, (held + (1 << 30), resource.getrlimit(resource.RLIMIT_AS)[1]))\n"
             "for block in (lz4.block.compress(b'a', store_size=False), b'\\xff'):\n"
             "    try:\n"
             "        lz4.block.decompress(block, (1 << 31) - 1)\n"
