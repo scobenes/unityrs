@@ -54,7 +54,7 @@ mod web;
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 17] = [
+const TARGETS: [&str; 18] = [
     "detect",
     "bundle",
     "serialized",
@@ -72,6 +72,7 @@ const TARGETS: [&str; 17] = [
     "zip",
     "webfile",
     "unityweb",
+    "fsb5",
 ];
 
 /// The `texture` seeds' formats: the five `unityrs-texture` decodes (RGB24,
@@ -130,6 +131,9 @@ const MESH_CASES: &str = concat!(
 /// 64 bytes (refusing the first array), 16 KiB and 256 KiB (most of the
 /// fixture's arrays fit, the largest do not).
 pub(crate) const MESH_METERS: [u8; 4] = [0, 1, 16, 64];
+
+#[path = "fuzz_seeds/fsb5.rs"]
+mod fsb5;
 
 struct Seeds {
     dir: PathBuf,
@@ -709,6 +713,7 @@ pub(crate) fn write(dir: &Path) -> std::io::Result<[usize; TARGETS.len()]> {
     }
     zip::seeds(&mut s)?;
     web::seeds(&mut s)?;
+    fsb5::write(&mut s)?;
     texture(&mut s)?;
     pvrtc_atc::write(&mut s)?;
     astc(&mut s)?;

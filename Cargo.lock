@@ -1370,6 +1370,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "triomphe"
+version = "0.1.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d15f4f5898bcfc5d8a8e45ed30b2f108d710c1a2e5489dbf80e078f707181bc"
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1386,6 +1392,16 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "unityrs-audio"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "thiserror",
+ "unityrs-core",
+ "unityrs-testkit",
+]
 
 [[package]]
 name = "unityrs-batch"
@@ -1453,6 +1469,7 @@ dependencies = [
  "lz4_flex",
  "serde_json",
  "thiserror",
+ "triomphe",
  "unityrs-testkit",
 ]
 
@@ -1479,6 +1496,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "thiserror",
+ "unityrs-audio",
  "unityrs-core",
  "unityrs-imageio",
  "unityrs-meshdecode",
@@ -1492,10 +1510,12 @@ version = "0.0.1"
 dependencies = [
  "serde_json",
  "unityrs-core",
+ "unityrs-imageio",
  "unityrs-mesh",
  "unityrs-meshdecode",
  "unityrs-scene",
  "unityrs-testkit",
+ "unityrs-texture",
 ]
 
 [[package]]

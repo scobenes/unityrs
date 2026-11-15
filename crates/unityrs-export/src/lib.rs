@@ -44,6 +44,7 @@
     )
 )]
 
+pub mod audio;
 pub mod ngui;
 pub mod pyjson;
 mod pyjson_numbers;

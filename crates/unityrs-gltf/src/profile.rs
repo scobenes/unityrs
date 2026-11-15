@@ -42,7 +42,7 @@ pub enum ExtrasNaming {
     None,
 }
 const _: () = crate::send_sync::<ExtrasNaming>();
-/// Shader name glob lists, consumed by the material pass in PR 7.
+/// Shader name bytewise glob lists: skip wins, then additive and drawable.
 #[derive(Debug)]
 pub struct ShaderRules {
     pub drawable: MeteredVec<Text>,

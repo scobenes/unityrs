@@ -47,6 +47,14 @@ fn document(scene: &Scene, profile: &Profile) -> (serde_json::Value, Report) {
         report,
     )
 }
+fn geometry_issues(issues: &[CollectionIssue], missing_materials: usize) -> Vec<&CollectionIssue> {
+    let (materials, geometry): (Vec<&CollectionIssue>, Vec<&CollectionIssue>) = issues
+        .iter()
+        .partition(|issue| issue.reason == "submesh_without_material");
+    assert_eq!(materials.len(), missing_materials);
+    assert!(materials.iter().all(|issue| issue.count == 1));
+    geometry
+}
 fn add_healthy(objects: &mut Vec<Object>) {
     objects[0] = Object::new(
         1,
@@ -144,7 +152,10 @@ fn repeated_degradations_aggregate_markers_and_keep_every_report_record() {
                     extra(&scene, 1, reason),
                     if different { b"1" } else { b"2" }
                 );
-                assert_eq!(scene.collection_issues.len(), 2);
+                assert_eq!(
+                    geometry_issues(scene.collection_issues.as_slice(), 2).len(),
+                    2
+                );
                 assert_eq!(
                     scene
                         .nodes
@@ -156,16 +167,19 @@ fn repeated_degradations_aggregate_markers_and_keep_every_report_record() {
                 );
                 assert_eq!(scene.nodes.as_slice()[1].weights.as_slice(), [0.75]);
                 let (json, report) = document(&scene, &profile);
-                assert_eq!(report.collection_issues.len(), 2);
+                let repairs = geometry_issues(report.collection_issues.as_slice(), 2);
+                assert_eq!(repairs.len(), 2);
                 assert_eq!(
                     json["asset"]["extras"]["collection_issues"]
                         .as_array()
                         .unwrap()
-                        .len(),
+                        .iter()
+                        .filter(|issue| issue["reason"] != "submesh_without_material")
+                        .count(),
                     2
                 );
                 assert_eq!(
-                    report.collection_issues.as_slice()[0].reason,
+                    repairs[0].reason,
                     if reverse && different { other } else { reason }
                 );
                 h::validator_clean(&scene);
@@ -250,7 +264,7 @@ fn multiple_morph_only_and_downgraded_renderers_keep_transforms_and_weights() {
             }
             let (_, report) = document(&scene, &profile);
             assert_eq!(
-                report.collection_issues.len(),
+                geometry_issues(report.collection_issues.as_slice(), 6).len(),
                 if downgrade { 3 } else { 0 }
             );
             if downgrade {
@@ -297,19 +311,19 @@ fn compressed_optional_attribute_count_mismatches_degrade_only_the_bad_renderer(
             let mut profile = Profile::new(&meter);
             profile.normalise = normalise;
             let scene = collect(&env, &graph, &profile, &meter).unwrap();
-            assert_eq!(scene.collection_issues.len(), 2, "{attribute}");
-            assert_eq!(
-                scene.collection_issues.as_slice()[0].reason,
-                "attribute count",
-                "{attribute}"
-            );
+            let repairs = geometry_issues(scene.collection_issues.as_slice(), 1);
+            assert_eq!(repairs.len(), 2, "{attribute}");
+            assert_eq!(repairs[0].reason, "attribute count", "{attribute}");
             assert!(scene.nodes.as_slice()[1].mesh.is_none());
             assert!(scene.nodes.as_slice()[0].mesh.is_some());
             assert_eq!(scene.accessors.len(), 2, "failed geometry rolled back");
             assert_eq!(extra(&scene, 1, "attribute count"), b"2");
             let (json, report) = document(&scene, &profile);
             assert_eq!(json["meshes"].as_array().unwrap().len(), 1);
-            assert_eq!(report.collection_issues.len(), 2);
+            assert_eq!(
+                geometry_issues(report.collection_issues.as_slice(), 1).len(),
+                2
+            );
             h::validator_clean(&scene);
         }
     }
@@ -369,11 +383,9 @@ fn finite_compressed_uvs_overflowing_f32_degrade_before_writing() {
     let scene = collect(&env, &graph, &profile, &meter).unwrap();
     assert!(scene.nodes.as_slice()[0].mesh.is_some());
     assert!(scene.nodes.as_slice()[1].mesh.is_none());
-    assert_eq!(scene.collection_issues.len(), 1);
-    assert_eq!(
-        scene.collection_issues.as_slice()[0].reason,
-        "invalid vertex attribute"
-    );
+    let repairs = geometry_issues(scene.collection_issues.as_slice(), 1);
+    assert_eq!(repairs.len(), 1);
+    assert_eq!(repairs[0].reason, "invalid vertex attribute");
     document(&scene, &profile);
     h::validator_clean(&scene);
 }
@@ -453,7 +465,10 @@ fn builtin_data_failures_leave_the_healthy_renderer_exportable() {
             expected.as_bytes(),
             "{case}"
         );
-        assert_eq!(scene.collection_issues.len(), 1);
+        assert_eq!(
+            geometry_issues(scene.collection_issues.as_slice(), 1).len(),
+            1
+        );
         document(&scene, &profile);
         h::validator_clean(&scene);
     }
@@ -497,7 +512,11 @@ fn repeated_builtin_renderers_keep_separate_attachments_and_aggregate_markers() 
             assert_eq!(scene.nodes.as_slice()[child].translation, [0.; 3]);
         }
         assert_eq!(
-            scene.collection_issues.len(),
+            geometry_issues(
+                scene.collection_issues.as_slice(),
+                if mode == Builtin::Procedural { 2 } else { 0 }
+            )
+            .len(),
             match mode {
                 Builtin::Procedural => 1,
                 Builtin::Placeholder | Builtin::Resolve => 3,
@@ -593,11 +612,9 @@ fn builtin_resolution_recovers_nested_malformed_resource_data() {
         let scene = collect(&env, &graph, &profile, &meter).unwrap();
         assert!(scene.nodes.as_slice()[0].mesh.is_some());
         assert!(scene.nodes.as_slice()[1].mesh.is_none());
-        assert_eq!(scene.collection_issues.len(), 1);
-        assert_eq!(
-            scene.collection_issues.as_slice()[0].reason,
-            "mesh_resource_failed"
-        );
+        let repairs = geometry_issues(scene.collection_issues.as_slice(), 1);
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].reason, "mesh_resource_failed");
         document(&scene, &profile);
         h::validator_clean(&scene);
     }

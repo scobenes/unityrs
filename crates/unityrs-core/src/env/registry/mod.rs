@@ -191,7 +191,6 @@ use super::watch::{Table, Under, Watches};
 use crate::error::Error;
 use crate::files::{BundleFile, File};
 use crate::limits::{Charge, HASH_TABLE_SHARES, Meter, heap_cost};
-use crate::pystr::simplify_name;
 use crate::raw::RawStr;
 
 /// One key: the slot of greatest rank, the key's position (the least rank
@@ -363,20 +362,28 @@ impl Registry {
     }
 
     /// The slot under `simplify_name(name)`, the key built charged to `meter`
-    /// (no copy when `name` is already simplified) and dropped on return,
+    /// in a transient fallible vector and dropped on return,
     /// after the dropped lazy slots are reached ([`Self::settle`]).
     pub(crate) fn slot(
         &self,
         name: &RawStr,
         meter: &Arc<Meter>,
     ) -> Result<Option<Arc<Slot>>, Error> {
-        // A refusal leaves it for the next call (`settle`).
+        self.slot_bytes(name.as_bytes(), meter)
+    }
+
+    /// Borrowed transient lookup name; no infallible shared-owner allocation.
+    pub(crate) fn slot_bytes(
+        &self,
+        name: &[u8],
+        meter: &Arc<Meter>,
+    ) -> Result<Option<Arc<Slot>>, Error> {
         self.settle().ok();
-        let key = simplify_name(name, meter)?;
+        let key = crate::pystr::simplify_name_vec(name, meter)?;
         Ok(self
             .read()
             .slots
-            .get(key.as_bytes())
+            .get(key.as_slice())
             .map(|e| e.slot.clone()))
     }
 
