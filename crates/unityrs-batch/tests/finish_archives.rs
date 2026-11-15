@@ -26,7 +26,7 @@ fn finish_scene(scene: &Scene, archive_codes: [outcomes::Code; 2]) -> serde_json
     for (index, code) in archive_codes.into_iter().enumerate() {
         let value = match code {
             outcomes::Code::NotWritten => continue,
-            outcomes::Code::Written | outcomes::Code::Present => {
+            outcomes::Code::Written | outcomes::Code::WrittenBySize | outcomes::Code::Present => {
                 outcomes::Archive::success(code, 10, [0; 16], None).unwrap()
             }
             _ => outcomes::Archive::failed(code).unwrap(),
@@ -102,10 +102,13 @@ fn empty_archives_have_no_publication_failure() {
 
 #[test]
 fn written_and_present_archives_do_not_raise_the_code() {
-    let scene = Scene::new(&["key"], true, 4096);
-    let head = finish_scene(&scene, [outcomes::Code::Written, outcomes::Code::Present]);
-    assert_eq!(head["exit_code"], 0);
-    assert_eq!(head["counts"]["archives_present"], 1);
+    for written in [outcomes::Code::Written, outcomes::Code::WrittenBySize] {
+        let scene = Scene::new(&["key"], true, 4096);
+        let head = finish_scene(&scene, [written, outcomes::Code::Present]);
+        assert_eq!(head["exit_code"], 0);
+        assert_eq!(head["counts"]["archives_present"], 1);
+        assert_eq!(head["counts"]["archives_written"], 1);
+    }
 }
 
 #[test]

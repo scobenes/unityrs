@@ -110,6 +110,20 @@ fn exact_layout_and_metadata_first_status_last() {
     assert_eq!(out.archive(0).unwrap().code, Code::NotWritten);
 }
 #[test]
+fn size_verified_writes_round_trip_as_written_without_changing_the_public_reason() {
+    let record = Archive::success(Code::WrittenBySize, 42, [1; 16], Some("opaque")).unwrap();
+    let mem = Shared::default();
+    *mem.bytes.lock().unwrap() = outcomes::encode(&record).unwrap().to_vec();
+    assert_eq!(outcomes::read_archive(Some(&mem), 0).unwrap(), record);
+    *mem.bytes.lock().unwrap() = vec![7];
+    assert_eq!(
+        outcomes::read_loose(Some(&mem), 0).unwrap(),
+        Code::WrittenBySize
+    );
+    assert_eq!(Code::WrittenBySize.status(), "written");
+    assert_eq!(Code::WrittenBySize.reason(), None);
+}
+#[test]
 fn every_short_archive_is_unknown_and_corruption_is_not_silenced() {
     let mem = Shared::default();
     let record = Archive::success(Code::Present, 42, [1; 16], None).unwrap();
@@ -128,11 +142,25 @@ fn every_short_archive_is_unknown_and_corruption_is_not_silenced() {
     );
     assert!(outcomes::read_archive(Some(&mem), u64::MAX).is_err());
     *mem.bytes.lock().unwrap() = full.to_vec();
-    mem.bytes.lock().unwrap()[0] = 7;
+    mem.bytes.lock().unwrap()[0] = 8;
     assert!(outcomes::read_archive(Some(&mem), 0).is_err());
     assert_eq!(outcomes::read_loose(None, 0).unwrap(), Code::NotWritten);
     *mem.bytes.lock().unwrap() = vec![6];
     assert!(outcomes::read_loose(Some(&mem), 0).is_err());
+}
+
+#[test]
+fn outcome_seven_keeps_the_returned_etag_with_quotes_up_to_one_hundred_bytes() {
+    for tag in ["\"ABC-2\"".to_owned(), format!("\"{}\"", "A".repeat(98))] {
+        let record = Archive::success(Code::WrittenBySize, 42, [1; 16], Some(&tag)).unwrap();
+        let mem = Shared::default();
+        *mem.bytes.lock().unwrap() = outcomes::encode(&record).unwrap().to_vec();
+        let read = outcomes::read_archive(Some(&mem), 0).unwrap();
+        assert_eq!(read.etag().unwrap(), Some(tag.as_str()));
+    }
+    assert!(Archive::success(Code::WrittenBySize, 42, [1; 16], Some(&"A".repeat(101))).is_err());
+    let absent = Archive::success(Code::WrittenBySize, 42, [1; 16], None).unwrap();
+    assert_eq!(absent.etag().unwrap(), None);
 }
 
 #[test]

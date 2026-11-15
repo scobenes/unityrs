@@ -45,7 +45,8 @@ fn chunk_rows_preserve_flags_and_store_only_growing_chunks() {
         BlockInfo {
             uncompressed: 1,
             compressed: 1,
-            flags: 0x240
+            flags: 0x240,
+            offset: None,
         }
     );
     assert_eq!(result.data.last(), Some(&7));
@@ -62,7 +63,8 @@ fn empty_payload_rows_and_unsupported_codecs_follow_the_packer() {
         &[BlockInfo {
             uncompressed: 0,
             compressed: 0,
-            flags: 0x240
+            flags: 0x240,
+            offset: None,
         }]
     );
     for flags in [1, 2, 3] {

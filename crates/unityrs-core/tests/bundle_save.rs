@@ -39,6 +39,7 @@ fn fs_formats_and_packers_reload_and_save_identically() {
             BundlePacker::None,
             BundlePacker::Original,
             BundlePacker::Lz4,
+            BundlePacker::Lz4Hc,
             BundlePacker::Lzma,
             BundlePacker::Flags {
                 data: 0x2c3,
@@ -76,13 +77,13 @@ fn missing_directory_bit_and_unknown_codec_are_typed_refusals() {
 }
 
 #[test]
-fn head_bundle_and_named_head_hc_refuse_before_output() {
+fn formats_above_head_refuse_before_output_or_work_charges() {
     let meter = Meter::unlimited();
     // A no-block input can also be read by the HEAD reader without offsets.
     let empty = BundleSpec {
-        format: 9,
+        format: 10,
         entries: vec![],
-        ..spec(9)
+        ..spec(10)
     };
     let bytes = build(&empty);
     let b = load(Bytes::from(bytes), &meter);
@@ -94,14 +95,12 @@ fn head_bundle_and_named_head_hc_refuse_before_output() {
     );
     assert_eq!(meter.used(), used);
     assert_eq!(meter.decoded(), work);
-    let b = load(Bytes::from(build(&spec(8))), &meter);
     assert_eq!(
-        b.save(BundleSaveOptions {
-            packer: BundlePacker::Lz4Hc,
-            ..BundleSaveOptions::default()
-        }),
+        b.save_fs(0x40, 0x40, SaveOptions::default()),
         Err(SaveError::HeadTierWritesNotImplemented)
     );
+    assert_eq!(meter.used(), used);
+    assert_eq!(meter.decoded(), work);
 }
 
 #[test]
@@ -131,7 +130,7 @@ fn memory_refusal_releases_writer_temporaries() {
 }
 
 #[test]
-fn held_head_serialized_file_surfaces_b1_typed_refusal() {
+fn held_head_serialized_file_saves_and_reloads() {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/head_read.json")).unwrap();
     let case = fixture["cases"]
@@ -160,10 +159,13 @@ fn held_head_serialized_file_surfaces_b1_typed_refusal() {
         b.entry(0).unwrap(),
         unityrs_core::files::File::Serialized(_)
     ));
-    assert_eq!(
-        b.save(BundleSaveOptions::default()),
-        Err(SaveError::HeadTierWritesNotImplemented)
-    );
+    let saved = b.save(BundleSaveOptions::default()).unwrap();
+    let back = load(saved.clone(), &Meter::unlimited());
+    assert!(matches!(
+        back.entry(0).unwrap(),
+        unityrs_core::files::File::Serialized(_)
+    ));
+    assert_eq!(back.save(BundleSaveOptions::default()).unwrap(), saved);
 }
 
 #[test]

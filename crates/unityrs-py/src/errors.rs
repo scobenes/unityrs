@@ -5,7 +5,7 @@ use pyo3::{
     exceptions::{
         PyAssertionError, PyAttributeError, PyEOFError, PyException, PyFileNotFoundError,
         PyIndexError, PyIsADirectoryError, PyKeyError, PyMemoryError, PyNotImplementedError,
-        PyOSError, PyOverflowError, PyPermissionError, PyTypeError, PyValueError,
+        PyOSError, PyOverflowError, PyPermissionError, PyRecursionError, PyTypeError, PyValueError,
     },
     prelude::*,
 };
@@ -48,33 +48,7 @@ pub(crate) fn core(error: Error) -> PyErr {
             )
             .into(),
         ),
-        Error::Detect(DetectError::Gzip(detail)) => Python::attach(|py| {
-            let text = detail.split_once(": ").map_or(detail.as_ref(), |(_, s)| s);
-            let text = if detail.starts_with("zlib.error:") {
-                format!(
-                    "Error -3 while decompressing data: {}",
-                    text.strip_prefix("deflate decompression error: ")
-                        .unwrap_or(text)
-                )
-            } else {
-                message(&text)
-            };
-            let (module, name) = if detail.starts_with("EOFError:") {
-                return PyEOFError::new_err(text);
-            } else if detail.starts_with("zlib.error:") {
-                ("zlib", "error")
-            } else {
-                ("gzip", "BadGzipFile")
-            };
-            match py
-                .import(module)
-                .and_then(|m| m.getattr(name))
-                .and_then(|c| c.cast_into::<pyo3::types::PyType>().map_err(Into::into))
-            {
-                Ok(cls) => PyErr::from_type(cls, (text,)),
-                Err(error) => error,
-            }
-        }),
+        Error::Detect(DetectError::Gzip(detail)) => gzip(&detail),
         Error::OutOfBounds { .. } => {
             Python::attach(
                 |py| match py.import("struct").and_then(|m| m.getattr("error")) {
@@ -98,8 +72,94 @@ pub(crate) fn core(error: Error) -> PyErr {
         }
         Error::NotFound(_) => PyFileNotFoundError::new_err(message(&error)),
         Error::TypeIndex { .. } => PyIndexError::new_err(message(&error)),
+        Error::Tree(
+            unityrs_core::typetree::TreeError::Empty
+            | unityrs_core::typetree::TreeError::LevelUnderflow { .. },
+        ) => PyIndexError::new_err("list index out of range"),
+        Error::Malformed {
+            what: "HEAD typetree",
+            ref detail,
+        } if detail.as_ref() == "shared subtree hash not found" => {
+            PyKeyError::new_err(message(&error))
+        }
+        Error::Malformed {
+            what: "HEAD typetree",
+            ref detail,
+        } if detail.as_ref() == "shared hash index out of range" => {
+            PyIndexError::new_err("list index out of range")
+        }
+        Error::Malformed {
+            what: "HEAD typetree",
+            ref detail,
+        } if detail.as_ref() == "cyclic shared subtree" => {
+            PyRecursionError::new_err("maximum recursion depth exceeded")
+        }
+        Error::Version(unityrs_core::version::VersionError::NoFallback) => Python::attach(|py| {
+            match py
+                .import("unityrs.exceptions")
+                .and_then(|m| m.getattr("UnityVersionFallbackError"))
+            {
+                Ok(cls) => match cls.cast_into::<pyo3::types::PyType>() {
+                    Ok(cls) => PyErr::from_type(cls, (message(&error),)),
+                    Err(error) => error.into(),
+                },
+                Err(error) => error,
+            }
+        }),
+        Error::Version(unityrs_core::version::VersionError::NoMatch(ref raw)) => {
+            invalid_version(raw.as_bytes())
+        }
         _ => PyValueError::new_err(message(&error)),
     }
+}
+
+fn invalid_version(raw: &[u8]) -> PyErr {
+    let prefix = b"Invalid version string: ";
+    let mut bytes = Vec::new();
+    let Some(len) = prefix.len().checked_add(raw.len()) else {
+        return PyMemoryError::new_err("version error message is too large");
+    };
+    if bytes.try_reserve_exact(len).is_err() {
+        return PyMemoryError::new_err("version error message allocation refused");
+    }
+    bytes.extend_from_slice(prefix);
+    bytes.extend_from_slice(raw);
+    match crate::python::string(&bytes) {
+        Ok(message) => {
+            Python::attach(|py| PyErr::from_type(py.get_type::<PyValueError>(), (message,)))
+        }
+        Err(error) => error,
+    }
+}
+
+fn gzip(detail: &str) -> PyErr {
+    Python::attach(|py| {
+        let text = detail.split_once(": ").map_or(detail, |(_, s)| s);
+        let text = if detail.starts_with("zlib.error:") {
+            format!(
+                "Error -3 while decompressing data: {}",
+                text.strip_prefix("deflate decompression error: ")
+                    .unwrap_or(text)
+            )
+        } else {
+            message(&text)
+        };
+        let (module, name) = if detail.starts_with("EOFError:") {
+            return PyEOFError::new_err(text);
+        } else if detail.starts_with("zlib.error:") {
+            ("zlib", "error")
+        } else {
+            ("gzip", "BadGzipFile")
+        };
+        match py
+            .import(module)
+            .and_then(|m| m.getattr(name))
+            .and_then(|c| c.cast_into::<pyo3::types::PyType>().map_err(Into::into))
+        {
+            Ok(cls) => PyErr::from_type(cls, (text,)),
+            Err(error) => error,
+        }
+    })
 }
 
 #[allow(
@@ -202,7 +262,7 @@ pub(crate) fn stream(name: &str) -> PyErr {
 }
 
 // Exception rendering must not turn an allocation refusal into an abort.
-fn message(value: &impl std::fmt::Display) -> String {
+pub(crate) fn message(value: &impl std::fmt::Display) -> String {
     use std::fmt::Write;
     struct Buffer(String);
     impl Write for Buffer {

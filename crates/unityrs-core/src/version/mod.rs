@@ -328,7 +328,7 @@ pub fn resolve_bundle(
         Ok(dropped) => charge.release(dropped.heap_charge()),
         Err(_) => {}
     }
-    fallback(policy, charge)
+    fallback(policy, charge, true)
 }
 
 /// A forced version, its heap charged before the copy.
@@ -342,13 +342,18 @@ fn forced(v: &UnityVersion, charge: &mut Charge) -> Result<ResolvedVersion, Erro
 
 /// `UnityVersion.from_str(config.get_fallback_version())` (`config.py:25-32`):
 /// no fallback raises; a fallback that does not match raises too.
-fn fallback(policy: &VersionPolicy, charge: &mut Charge) -> Result<ResolvedVersion, Error> {
+fn fallback(
+    policy: &VersionPolicy,
+    charge: &mut Charge,
+    bundle: bool,
+) -> Result<ResolvedVersion, Error> {
     let s = policy.fallback.as_ref().ok_or(VersionError::NoFallback)?;
-    if let Some(warnings) = &policy.fallback_warnings {
-        warnings.warn(s)?;
-    }
+    let s = policy.fallback_warnings.as_ref().map_or_else(
+        || Ok(s.clone()),
+        |warnings| warnings.warn_value_at(s, bundle),
+    )?;
     Ok(ResolvedVersion {
-        version: UnityVersion::parse_charged(s, charge)??,
+        version: UnityVersion::parse_charged(&s, charge)??,
         source: VersionSource::Fallback,
     })
 }
@@ -379,7 +384,7 @@ pub fn resolve_serialized(
             (s, source) = (parent, VersionSource::ParentBundle);
         }
         if unusable(s) {
-            return fallback(policy, charge);
+            return fallback(policy, charge, false);
         }
     }
     Ok(ResolvedVersion {

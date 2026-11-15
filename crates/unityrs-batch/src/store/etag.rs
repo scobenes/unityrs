@@ -1,6 +1,7 @@
 //! `ETag`s as the engine keeps and compares them: the bytes as
 //! the store returned them, at most 100 (`docs/plans/batch.md` 2.9), compared
-//! with one surrounding pair of quotes stripped and hex digits in any case.
+//! with one surrounding pair of quotes stripped. MD5 and multipart hex forms
+//! compare without case; opaque tags compare exactly.
 
 /// The longest `ETag` the engine keeps; a longer one fails its try as a 2xx
 /// the call returns as an error (`docs/BATCH_SPEC.md` 1.6).
@@ -29,8 +30,7 @@ impl Etag {
     pub fn as_bytes(&self) -> &[u8] {
         self.bytes.get(..usize::from(self.len)).unwrap_or_default()
     }
-    /// Whether it names `expected` (a digest's lowercase hex, or a
-    /// multipart `ETag`'s `<hex>-<parts>`), by [`matches`].
+    /// Whether it names `expected`, by [`matches`].
     #[must_use]
     pub fn matches(&self, expected: &[u8]) -> bool {
         matches(self.as_bytes(), expected)
@@ -55,10 +55,25 @@ pub fn normalize(raw: &[u8]) -> &[u8] {
 }
 
 /// Whether a returned `raw` `ETag` names `expected`: quotes stripped once,
-/// then equal but for ASCII case.
+/// then equal but for ASCII case only for MD5 hex or multipart `<hex>-<count>`
+/// forms. All other tags compare exactly.
 #[must_use]
 pub fn matches(raw: &[u8], expected: &[u8]) -> bool {
-    normalize(raw).eq_ignore_ascii_case(normalize(expected))
+    let raw = normalize(raw);
+    let expected = normalize(expected);
+    raw == expected || (is_digest(raw) && is_digest(expected) && raw.eq_ignore_ascii_case(expected))
+}
+
+fn is_digest(tag: &[u8]) -> bool {
+    if let Some(dash) = tag.iter().position(|&b| b == b'-') {
+        let (hex, suffix) = tag.split_at(dash);
+        !hex.is_empty()
+            && hex.iter().all(u8::is_ascii_hexdigit)
+            && suffix.len() > 1
+            && suffix.iter().skip(1).all(u8::is_ascii_digit)
+    } else {
+        tag.len() == 32 && tag.iter().all(u8::is_ascii_hexdigit)
+    }
 }
 
 #[cfg(test)]
@@ -92,8 +107,48 @@ mod tests {
         assert!(Etag::new(&[b'a'; ETAG_MAX + 1]).is_none());
         let quoted = Etag::new(b"\"ABC\"").unwrap();
         assert_eq!(quoted.as_bytes(), b"\"ABC\"");
-        assert!(quoted.matches(b"abc"));
+        assert!(quoted.matches(b"ABC"));
+        assert!(!quoted.matches(b"abc"));
         assert_eq!(format!("{quoted:?}"), "Etag(5 bytes)");
         assert_eq!(Etag::new(b"").unwrap().as_bytes(), b"");
+    }
+
+    #[test]
+    fn only_digest_forms_ignore_case_in_both_directions() {
+        for (left, right, expected) in [
+            (
+                "\"9B2CF535F27731C974343645A3985328\"",
+                "9b2cf535f27731c974343645a3985328",
+                true,
+            ),
+            (
+                "\"D41D8CD98F00B204E9800998ECF8427E-3\"",
+                "d41d8cd98f00b204e9800998ecf8427e-3",
+                true,
+            ),
+            ("\"ABCDEF-2\"", "abcdef-2", true),
+            ("\"ABCDEF-2\"", "abcdef-3", false),
+            ("\"opaque-G\"", "\"opaque-g\"", false),
+            ("\"opaque-G\"", "opaque-G", true),
+            ("\"ABC\"", "abc", false),
+            (
+                "9B2CF535F27731C974343645A398532G",
+                "9b2cf535f27731c974343645a398532g",
+                false,
+            ),
+            ("ABCDEF-", "abcdef-", false),
+            ("ABCDEF-two", "abcdef-two", false),
+            ("ABCDEF-2-3", "abcdef-2-3", false),
+            ("-2", "-2", true),
+            ("\"\"ABCDEF-2\"\"", "\"abcdef-2\"", false),
+        ] {
+            for (raw, expected_tag) in [(left, right), (right, left)] {
+                assert_eq!(
+                    matches(raw.as_bytes(), expected_tag.as_bytes()),
+                    expected,
+                    "{raw} / {expected_tag}"
+                );
+            }
+        }
     }
 }

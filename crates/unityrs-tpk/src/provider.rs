@@ -110,6 +110,13 @@ const _: () = assert!(
 );
 
 impl TpkProvider {
+    /// Version/count entries used by the Python helper's optional version
+    /// argument (`helpers/Tpk.py:428-429`). Entries remain in stored order.
+    #[must_use]
+    pub fn common_string_versions(&self) -> &[(u64, u8)] {
+        self.blob.common_versions.as_slice()
+    }
+
     /// The most rows one class tree may have. UnityPy's own TPK's largest
     /// has 3,849 (`tools/fixtures/tpk.py --survey`); a tree past this is an
     /// error, which bounds the walk of a node that lists an ancestor.

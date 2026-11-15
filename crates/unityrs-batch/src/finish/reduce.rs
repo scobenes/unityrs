@@ -1,6 +1,5 @@
 use crate::{
     manifest::rows::{Context, Selected},
-    outcomes,
     phase::Error,
     reason::Code,
     stage::{DataFailure, Failure},
@@ -59,10 +58,7 @@ pub(super) fn normal(cx: &Context<'_>) -> Result<Code, Error> {
     if !sel.handoff.publication_blocked {
         for index in 0..sel.handoff.counts.winners {
             crate::phase::check(cx.stopped)?;
-            if !matches!(
-                sel.outcomes.loose(index)?,
-                outcomes::Code::Written | outcomes::Code::Present
-            ) {
+            if !sel.outcomes.loose(index)?.published() {
                 code = code.worst(Code::Incomplete);
             }
         }
@@ -104,10 +100,11 @@ fn archives(cx: &Context<'_>, sel: Selected<'_>) -> Result<Code, Error> {
             return Err(Error::internal());
         }
         if row.status == "not_written"
-            && !matches!(
-                sel.outcomes.archive(u64::from(archive.index))?.code,
-                outcomes::Code::Written | outcomes::Code::Present
-            )
+            && !sel
+                .outcomes
+                .archive(u64::from(archive.index))?
+                .code
+                .published()
         {
             code = code.worst(Code::Incomplete);
         }

@@ -246,6 +246,9 @@ pub struct ScriptRef {
 pub struct SerializedFile {
     changed: std::sync::atomic::AtomicBool,
     edits: std::sync::Mutex<crate::limits::MeteredVec<(u32, Bytes)>>,
+    head_handlers: crate::limits::MeteredVec<head::Handler>,
+    head_roots: usize,
+    pub(super) pending_externals: std::sync::Mutex<crate::limits::MeteredVec<External>>,
     name: RawStr,
     data: Bytes,
     header: SerializedHeader,
@@ -501,6 +504,9 @@ impl SerializedFile {
         Arc::new(Self {
             changed: std::sync::atomic::AtomicBool::new(false),
             edits: std::sync::Mutex::new(crate::limits::MeteredVec::new(&meter)),
+            head_handlers: crate::limits::MeteredVec::new(&meter),
+            head_roots: 0,
+            pending_externals: std::sync::Mutex::new(crate::limits::MeteredVec::new(&meter)),
             name: RawStr::from_static(b"CAB-test"),
             data: Bytes::new(),
             header: SerializedHeader {

@@ -21,7 +21,7 @@ use std::sync::Arc;
 #[allow(clippy::too_many_arguments)]
 #[expect(
     clippy::too_many_lines,
-    reason = "format-gated legacy header and charged container construction"
+    reason = "format-gated legacy header, legacy fields and charged container construction"
 )]
 pub(super) fn open(
     name: RawStr,
@@ -114,6 +114,7 @@ pub(super) fn open(
         blocks_info: None,
     };
     Ok(Arc::new_cyclic(|this| BundleFile {
+        writable: crate::files::cab::WritableCabs::new(meter),
         changed: std::sync::atomic::AtomicBool::new(false),
         name,
         source,
