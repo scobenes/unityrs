@@ -1,0 +1,21 @@
+[package]
+name = "unityrs-audio"
+description = "Bounded AudioClip dispatch, FSB5 parsing and PCM WAV export."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# UnityPy's dispatch/table and fmod_toolkit's WAV rules (both MIT).
+license = "(MIT OR Apache-2.0) AND MIT"
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+unityrs-core = { path = "../unityrs-core" }
+thiserror = "=2.0.21"
+
+[dev-dependencies]
+unityrs-testkit = { path = "../unityrs-testkit" }
+serde_json = "=1.0.154"
+
+[lints]
+workspace = true

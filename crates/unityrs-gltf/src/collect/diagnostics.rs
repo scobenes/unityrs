@@ -1,6 +1,6 @@
 //! Renderer decisions survive writing in both the report and asset extras.
 use super::{Arc, Extras, Meter, MeteredVec, Result, Scene, Text, extra, invalid, number};
-pub(super) fn record(
+pub(crate) fn record(
     scene: &mut Scene,
     node: usize,
     reason: &'static str,
@@ -43,7 +43,7 @@ pub(super) fn record(
     }
     Ok(())
 }
-pub(super) fn degrade(
+pub(crate) fn degrade(
     scene: &mut Scene,
     node: usize,
     reason: &'static str,
@@ -51,7 +51,7 @@ pub(super) fn degrade(
 ) -> Result<()> {
     renderer(scene, node, reason, "unresolved_skin", meter)
 }
-pub(super) fn renderer(
+pub(crate) fn renderer(
     scene: &mut Scene,
     node: usize,
     reason: &'static str,
@@ -74,7 +74,7 @@ pub(super) fn renderer(
 
 /// Repeated markers form a sorted, unique semicolon-separated set. Per-renderer
 /// records and per-reason counts remain separate, including repeated reasons.
-pub(super) fn merge(
+pub(crate) fn merge(
     extras: &mut Extras,
     meter: &Arc<Meter>,
     key: &str,
@@ -113,7 +113,7 @@ pub(super) fn merge(
 }
 
 /// Bad source data may be skipped; resource refusals keep their provenance.
-pub(super) fn mesh_reason(error: &unityrs_mesh::MeshError) -> Option<&'static str> {
+pub(crate) fn mesh_reason(error: &unityrs_mesh::MeshError) -> Option<&'static str> {
     use unityrs_mesh::MeshError;
     match error {
         MeshError::NotMesh => Some("source_not_mesh"),
@@ -128,7 +128,7 @@ pub(super) fn mesh_reason(error: &unityrs_mesh::MeshError) -> Option<&'static st
 
 // Only audited data errors are recoverable. Unknown variants, all limits,
 // budgets, providers and allocator failures retain their original errors.
-fn parse_data(error: &unityrs_core::walk::ParseError) -> bool {
+pub(crate) fn parse_data(error: &unityrs_core::walk::ParseError) -> bool {
     use unityrs_core::walk::{ParseError, ReadDetail};
     match error {
         ParseError::NoTypeTree { .. } | ParseError::CheckRead { .. } => true,
@@ -150,7 +150,7 @@ fn parse_data(error: &unityrs_core::walk::ParseError) -> bool {
         _ => false,
     }
 }
-fn core_data(error: &unityrs_core::Error) -> bool {
+pub(crate) fn core_data(error: &unityrs_core::Error) -> bool {
     use unityrs_core::Error;
     match error {
         Error::OutOfBounds { .. }
@@ -182,7 +182,7 @@ fn tree_data(error: &unityrs_core::typetree::TreeError) -> bool {
     use unityrs_core::typetree::TreeError;
     matches!(error, TreeError::Empty | TreeError::LevelUnderflow { .. })
 }
-fn deref_data(error: &unityrs_core::env::DerefError) -> bool {
+pub(crate) fn deref_data(error: &unityrs_core::env::DerefError) -> bool {
     use unityrs_core::env::DerefError;
     match error {
         DerefError::Null

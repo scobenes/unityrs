@@ -122,6 +122,7 @@ mod contain;
 mod crunch;
 mod decode;
 mod etc;
+pub mod fetch;
 mod format;
 mod formats;
 mod pvrtc;

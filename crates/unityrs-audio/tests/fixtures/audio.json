@@ -1,0 +1,1086 @@
+{
+  "reference": "UnityPy 1.25.2 / fmod_toolkit 0.1.3",
+  "level": "L8",
+  "cases": [
+    {
+      "case": "ogg",
+      "data": "4f67675373796e746865746963",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.ogg": "4f67675373796e746865746963"
+        }
+      }
+    },
+    {
+      "case": "riff",
+      "data": "5249464673796e746865746963",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "5249464673796e746865746963"
+        }
+      }
+    },
+    {
+      "case": "m4a",
+      "data": "00000010667479704d34412073796e746865746963",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.m4a": "00000010667479704d34412073796e746865746963"
+        }
+      }
+    },
+    {
+      "case": "riff_before_m4a",
+      "data": "5249464666747970",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "5249464666747970"
+        }
+      }
+    },
+    {
+      "case": "legacy_ogg",
+      "data": "4f6767536c6567616379",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": null,
+      "legacy_type": 14,
+      "extension": ".audioclip",
+      "oracle": {
+        "files": {
+          "clip.ogg": "4f6767536c6567616379"
+        }
+      }
+    },
+    {
+      "case": "legacy_non_passthrough",
+      "data": "464f524d73796e746865746963",
+      "name": "clip",
+      "rust": "unsupported",
+      "tier_c": false,
+      "compression": null,
+      "legacy_type": 2,
+      "extension": ".audioclip",
+      "oracle": {
+        "error": "FmodError",
+        "message": "FORMAT"
+      }
+    },
+    {
+      "case": "pcm16_c1_r0",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000000000000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000100a00f0000401f0000020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c1_r1",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000000200000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000100401f0000803e0000020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c1_r2",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000000400000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000100f82a0000f0550000020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c1_r3",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000000600000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000100e02e0000c05d0000020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c1_r4",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000000800000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000100803e0000007d0000020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c1_r5",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000000a00000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d742010000000010001002256000044ac0000020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c1_r6",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000000c00000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000100c05d000080bb0000020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c1_r7",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000000e00000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000100007d000000fa0000020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c1_r8",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000001000000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d7420100000000100010044ac000088580100020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c1_r9",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000001200000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d7420100000000100010080bb000000770100020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c1_r10",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000001400000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d742010000000010001000077010000ee0200020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c2_r0",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000002000000010000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000200a00f0000803e0000040010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c2_r1",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000002200000010000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000200401f0000007d0000040010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c2_r2",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000002400000010000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000200f82a0000e0ab0000040010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c2_r3",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000002600000010000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000200e02e000080bb0000040010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c2_r4",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000002800000010000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000200803e000000fa0000040010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c2_r5",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000002a00000010000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d742010000000010002002256000088580100040010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c2_r6",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000002c00000010000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000200c05d000000770100040010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c2_r7",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000002e00000010000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000200007d000000f40100040010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c2_r8",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000003000000010000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d7420100000000100020044ac000010b10200040010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c2_r9",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000003200000010000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d7420100000000100020080bb000000ee0200040010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "pcm16_c2_r10",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000003400000010000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d742010000000010002000077010000dc0500040010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "version0",
+      "data": "465342350000000001000000080000000000000010000000020000000000000000000000000000000000000000000000000000000000000000000000000000001000000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "VERSION"
+      }
+    },
+    {
+      "case": "named_multi",
+      "data": "4653423501000000020000001000000015000000280000000200000000000000000000000000000000000000000000000000000000000000000000001000000020000000b200000008000000080000000e0000006669727374007365636f6e6400008000c0ffff00000100d2040040ff7f00000000000000000000000000000000008000c0ffff0000",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d7420100000000100010044ac000088580100020010006461746110000000008000c0ffff00000100d2040040ff7f",
+          "clip-1.wav": "524946462c00000057415645666d7420100000000100020080bb000000ee0200040010006461746108000000008000c0ffff0000"
+        }
+      }
+    },
+    {
+      "case": "overrides",
+      "data": "465342350100000001000000150000000000000010000000020000000000000000000000000000000000000000000000000000000000000000000000010000002000000003000002010800000439300000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d742010000000010001003930000072600000020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "frequency_override_44100",
+      "data": "46534235010000000100000010000000000000001000000002000000000000000000000000000000000000000000000000000000000000000000000011000000200000000800000444ac0000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d7420100000000100010044ac000088580100020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "frequency_override_16777215",
+      "data": "465342350100000001000000100000000000000010000000020000000000000000000000000000000000000000000000000000000000000000000000110000002000000008000004ffffff00008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d74201000000001000100ffffff00feffff01020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "frequency_override_16777216",
+      "data": "46534235010000000100000010000000000000001000000002000000000000000000000000000000000000000000000000000000000000000000000011000000200000000800000400000001008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d742010000000010001000000000100000002020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "frequency_override_16777217",
+      "data": "46534235010000000100000010000000000000001000000002000000000000000000000000000000000000000000000000000000000000000000000011000000200000000800000401000001008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d742010000000010001000000000100000002020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "frequency_override_16777219",
+      "data": "46534235010000000100000010000000000000001000000002000000000000000000000000000000000000000000000000000000000000000000000011000000200000000800000403000001008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d742010000000010001000400000108000002020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "short_mono",
+      "data": "46534235010000000100000008000000000000000200000002000000000000000000000000000000000000000000000000000000000000000000000010000000040000000080",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": true,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "error",
+        "message": "pack_into requires a buffer of at least 44 bytes for packing 8 bytes at offset 36 (actual buffer size is 42)"
+      }
+    },
+    {
+      "case": "later_empty",
+      "data": "46534235010000000200000010000000000000002000000002000000000000000000000000000000000000000000000000000000000000000000000010000000200000009000000000000000008000c0ffff00000100d2040040ff7f00000000000000000000000000000000",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": true,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "error",
+        "message": "pack_into requires a buffer of at least 44 bytes for packing 8 bytes at offset 36 (actual buffer size is 40)"
+      }
+    },
+    {
+      "case": "empty_first",
+      "data": "46534235010000000200000010000000000000001000000002000000000000000000000000000000000000000000000000000000000000000000000010000000000000001000000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "emptyfirst",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "PLUGIN"
+      }
+    },
+    {
+      "case": "refused_pcm1",
+      "data": "4653423501000000010000000800000000000000180000000100000000000000000000000000000000000000000000000000000000000000000000001000000060000000000000000000000000000000000000000000000000000000",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "VERSION"
+      }
+    },
+    {
+      "case": "refused_pcm3",
+      "data": "4653423501000000010000000800000000000000180000000300000000000000000000000000000000000000000000000000000000000000000000001000000020000000000000000000000000000000000000000000000000000000",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "VERSION"
+      }
+    },
+    {
+      "case": "refused_pcm4",
+      "data": "4653423501000000010000000800000000000000180000000400000000000000000000000000000000000000000000000000000000000000000000001000000018000000000000000000000000000000000000000000000000000000",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "VERSION"
+      }
+    },
+    {
+      "case": "refused_pcm5",
+      "data": "4653423501000000010000000800000000000000180000000500000000000000000000000000000000000000000000000000000000000000000000001000000018000000000000000000000000000000000000000000000000000000",
+      "name": "clip",
+      "rust": "ok",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "VERSION"
+      }
+    },
+    {
+      "case": "deferred_codec7",
+      "data": "465342350100000001000000080000000000000040000000070000000000000000000000000000000000000000000000000000000000000000000000100000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "name": "clip",
+      "rust": "unsupported",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946466400000057415645666d7420100000000100010044ac00008858010002001000646174614000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      }
+    },
+    {
+      "case": "deferred_codec11",
+      "data": "4653423501000000010000000800000000000000400000000b0000000000000000000000000000000000000000000000000000000000000000000000100000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "name": "clip",
+      "rust": "unsupported",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "FILE BAD"
+      }
+    },
+    {
+      "case": "deferred_codec15",
+      "data": "4653423501000000010000000800000000000000400000000f0000000000000000000000000000000000000000000000000000000000000000000000100000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "name": "clip",
+      "rust": "unsupported",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "VERSION"
+      }
+    },
+    {
+      "case": "deferred_codec16",
+      "data": "465342350100000001000000080000000000000040000000100000000000000000000000000000000000000000000000000000000000000000000000100000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "name": "clip",
+      "rust": "unsupported",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "FILE BAD"
+      }
+    },
+    {
+      "case": "deferred_codec17",
+      "data": "465342350100000001000000080000000000000040000000110000000000000000000000000000000000000000000000000000000000000000000000100000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "name": "clip",
+      "rust": "unsupported",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "UNSUPPORTED"
+      }
+    },
+    {
+      "case": "hostile_count",
+      "data": "4653423501000000ffffffff0800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000001000000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "error",
+      "tier_c": false,
+      "compression": 0,
+      "oracle": {
+        "process_exit": -11
+      }
+    },
+    {
+      "case": "hostile_headers",
+      "data": "465342350100000001000000ffffffff00000000100000000200000000000000000000000000000000000000000000000000000000000000000000001000000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "error",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "INVALID PARAM"
+      }
+    },
+    {
+      "case": "hostile_names",
+      "data": "46534235010000000100000008000000ffffffff100000000200000000000000000000000000000000000000000000000000000000000000000000001000000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "error",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "INVALID PARAM"
+      }
+    },
+    {
+      "case": "hostile_data",
+      "data": "4653423501000000010000000800000000000000ffffffff0200000000000000000000000000000000000000000000000000000000000000000000001000000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "error",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d7420100000000100010044ac000088580100020010006461746110000000008000c0ffff00000100d2040040ff7f"
+        }
+      }
+    },
+    {
+      "case": "hostile_version",
+      "data": "4653423509000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000001000000020000000008000c0ffff00000100d2040040ff7f",
+      "name": "clip",
+      "rust": "error",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "VERSION"
+      }
+    },
+    {
+      "case": "truncated",
+      "data": "4653423501000000010000000800000000000000100000000200000000000000000000000000000000000000000000000000000000000000000000001000000020000000008000c0ffff00000100d2040040ff",
+      "name": "clip",
+      "rust": "error",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "files": {
+          "clip.wav": "524946463400000057415645666d7420100000000100010044ac000088580100020010006461746110000000008000c0ffff00000100d2040040ff00"
+        }
+      }
+    },
+    {
+      "case": "bad_name",
+      "data": "465342350100000001000000080000000b0000001000000002000000000000000000000000000000000000000000000000000000000000000000000010000000200000000400000062726f6b656e",
+      "name": "clip",
+      "rust": "error",
+      "tier_c": false,
+      "compression": 0,
+      "extension": ".fsb",
+      "oracle": {
+        "error": "FmodError",
+        "message": "FORMAT"
+      }
+    }
+  ],
+  "extensions": [
+    {
+      "case": "AudioCompressionFormat.PCM",
+      "compression": 0,
+      "extension": ".fsb"
+    },
+    {
+      "case": "AudioCompressionFormat.Vorbis",
+      "compression": 1,
+      "extension": ".fsb"
+    },
+    {
+      "case": "AudioCompressionFormat.ADPCM",
+      "compression": 2,
+      "extension": ".fsb"
+    },
+    {
+      "case": "AudioCompressionFormat.MP3",
+      "compression": 3,
+      "extension": ".fsb"
+    },
+    {
+      "case": "AudioCompressionFormat.VAG",
+      "compression": 4,
+      "extension": ".vag"
+    },
+    {
+      "case": "AudioCompressionFormat.HEVAG",
+      "compression": 5,
+      "extension": ".vag"
+    },
+    {
+      "case": "AudioCompressionFormat.XMA",
+      "compression": 6,
+      "extension": ".wav"
+    },
+    {
+      "case": "AudioCompressionFormat.AAC",
+      "compression": 7,
+      "extension": ".m4a"
+    },
+    {
+      "case": "AudioCompressionFormat.GCADPCM",
+      "compression": 8,
+      "extension": ".fsb"
+    },
+    {
+      "case": "AudioCompressionFormat.ATRAC9",
+      "compression": 9,
+      "extension": ".at9"
+    },
+    {
+      "case": "AudioType.UNKNOWN",
+      "compression": 0,
+      "extension": ".fsb"
+    },
+    {
+      "case": "AudioType.ACC",
+      "compression": 1,
+      "extension": ".fsb"
+    },
+    {
+      "case": "AudioType.AIFF",
+      "compression": 2,
+      "extension": ".fsb"
+    },
+    {
+      "case": "AudioType.IT",
+      "compression": 10,
+      "extension": ".it"
+    },
+    {
+      "case": "AudioType.MOD",
+      "compression": 12,
+      "extension": ".mod"
+    },
+    {
+      "case": "AudioType.MPEG",
+      "compression": 13,
+      "extension": ".mp3"
+    },
+    {
+      "case": "AudioType.OGGVORBIS",
+      "compression": 14,
+      "extension": ".ogg"
+    },
+    {
+      "case": "AudioType.S3M",
+      "compression": 17,
+      "extension": ".s3m"
+    },
+    {
+      "case": "AudioType.WAV",
+      "compression": 20,
+      "extension": ".wav"
+    },
+    {
+      "case": "AudioType.XM",
+      "compression": 21,
+      "extension": ".xm"
+    },
+    {
+      "case": "AudioType.XMA",
+      "compression": 22,
+      "extension": ".wav"
+    },
+    {
+      "case": "AudioType.VAG",
+      "compression": 23,
+      "extension": ".vag"
+    },
+    {
+      "case": "AudioType.AUDIOQUEUE",
+      "compression": 24,
+      "extension": ".fsb"
+    },
+    {
+      "case": "none",
+      "compression": null,
+      "extension": ".audioclip"
+    },
+    {
+      "case": "negative",
+      "compression": -1,
+      "extension": ".audioclip"
+    },
+    {
+      "case": "unknown",
+      "compression": 999,
+      "extension": ".audioclip"
+    }
+  ],
+  "sources": [
+    {
+      "kind": "source",
+      "case": "inline_precedes_resource",
+      "name": "clip",
+      "data": "4f676753696e6c696e65",
+      "resource": {
+        "source": "audio.resS",
+        "offset": 3,
+        "size": 8
+      },
+      "resources": {
+        "audio.resS": "7072655249464664617461706f7374"
+      },
+      "rust": "ok",
+      "oracle": {
+        "files": {
+          "clip.ogg": "4f676753696e6c696e65"
+        }
+      }
+    },
+    {
+      "kind": "source",
+      "case": "inline_precedes_missing_resource",
+      "name": "clip",
+      "data": "4f676753696e6c696e65",
+      "resource": {
+        "source": "missing.resS",
+        "offset": 3,
+        "size": 8
+      },
+      "resources": {
+        "audio.resS": "7072655249464664617461706f7374"
+      },
+      "rust": "ok",
+      "oracle": {
+        "files": {
+          "clip.ogg": "4f676753696e6c696e65"
+        }
+      }
+    },
+    {
+      "kind": "source",
+      "case": "legacy_array_precedes_resource",
+      "name": "clip",
+      "data": "4f676753696e6c696e65",
+      "resource": {
+        "source": "audio.resS",
+        "offset": 3,
+        "size": 8
+      },
+      "resources": {
+        "audio.resS": "7072655249464664617461706f7374"
+      },
+      "rust": "ok",
+      "legacy_array": true,
+      "oracle": {
+        "files": {
+          "clip.ogg": "4f676753696e6c696e65"
+        }
+      }
+    },
+    {
+      "kind": "source",
+      "case": "empty_inline_streamed_range",
+      "name": "clip",
+      "data": "",
+      "resource": {
+        "source": "audio.resS",
+        "offset": 3,
+        "size": 8
+      },
+      "resources": {
+        "audio.resS": "7072655249464664617461706f7374"
+      },
+      "rust": "ok",
+      "oracle": {
+        "files": {
+          "clip.wav": "5249464664617461"
+        }
+      }
+    },
+    {
+      "kind": "source",
+      "case": "absent_inline_streamed_range",
+      "name": "clip",
+      "data": null,
+      "resource": {
+        "source": "audio.resS",
+        "offset": 3,
+        "size": 8
+      },
+      "resources": {
+        "audio.resS": "7072655249464664617461706f7374"
+      },
+      "rust": "ok",
+      "oracle": {
+        "files": {
+          "clip.wav": "5249464664617461"
+        }
+      }
+    },
+    {
+      "kind": "source",
+      "case": "streamed_ogg_range",
+      "name": "clip",
+      "data": "",
+      "resource": {
+        "source": "audio.resS",
+        "offset": 3,
+        "size": 8
+      },
+      "resources": {
+        "audio.resS": "7072654f67675364617461706f7374"
+      },
+      "rust": "ok",
+      "oracle": {
+        "files": {
+          "clip.ogg": "4f67675364617461"
+        }
+      }
+    },
+    {
+      "kind": "source",
+      "case": "missing_resource",
+      "name": "clip",
+      "data": "",
+      "resource": {
+        "source": "missing.resS",
+        "offset": 3,
+        "size": 8
+      },
+      "resources": {
+        "audio.resS": "7072655249464664617461706f7374"
+      },
+      "rust": "missing",
+      "oracle": {
+        "error": "FileNotFoundError",
+        "message": "Resource file missing.resS not found"
+      }
+    },
+    {
+      "kind": "source",
+      "case": "neither_source",
+      "name": "clip",
+      "data": "",
+      "resource": null,
+      "resources": {
+        "audio.resS": "7072655249464664617461706f7374"
+      },
+      "rust": "neither",
+      "oracle": {
+        "error": "ValueError",
+        "message": "AudioClip with neither m_AudioData nor m_Resource"
+      }
+    },
+    {
+      "kind": "source",
+      "case": "empty_existing_resource",
+      "name": "clip",
+      "data": "",
+      "resource": {
+        "source": "audio.resS",
+        "offset": 0,
+        "size": 0
+      },
+      "resources": {
+        "audio.resS": "7072655249464664617461706f7374"
+      },
+      "rust": "empty",
+      "oracle": {
+        "error": "FmodError",
+        "message": "INVALID PARAM"
+      }
+    },
+    {
+      "kind": "source",
+      "case": "empty_missing_resource",
+      "name": "clip",
+      "data": "",
+      "resource": {
+        "source": "missing.resS",
+        "offset": 0,
+        "size": 0
+      },
+      "resources": {
+        "audio.resS": "7072655249464664617461706f7374"
+      },
+      "rust": "empty",
+      "oracle": {
+        "error": "FileNotFoundError",
+        "message": "Resource file missing.resS not found"
+      }
+    }
+  ]
+}

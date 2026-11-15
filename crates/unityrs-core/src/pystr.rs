@@ -47,9 +47,7 @@
 
 use std::sync::Arc;
 
-use crate::budget::DecodeBuf;
-use crate::error::LimitKind;
-use crate::limits::{ChargeError, Meter};
+use crate::limits::{ChargeError, Meter, MeteredVec};
 use crate::raw::RawStr;
 use crate::tables::{is_case_ignorable, is_sigma_cased, lower_exception, nd_digit};
 
@@ -125,12 +123,7 @@ fn lower_within(whole: &RawStr, sub: &[u8], meter: &Arc<Meter>) -> Result<RawStr
     if same && len == sub.len() {
         return Ok(slice_of(whole, sub));
     }
-    let mut out = DecodeBuf::new(
-        meter,
-        u64::try_from(len).unwrap_or(u64::MAX),
-        u64::MAX,
-        LimitKind::InputMemory,
-    )?;
+    let mut out = MeteredVec::with_capacity(meter, len)?;
     let mut failed = None;
     lower_pieces(sub, |piece| match out.extend_from_slice(piece) {
         Ok(()) => true,
@@ -142,7 +135,7 @@ fn lower_within(whole: &RawStr, sub: &[u8], meter: &Arc<Meter>) -> Result<RawStr
     if let Some(e) = failed {
         return Err(e);
     }
-    Ok(RawStr::from_shared(out.into_bytes()?))
+    RawStr::from_metered(out, meter)
 }
 
 /// `sub` as a zero-copy slice of `whole` (`sub` lies inside it).
@@ -150,7 +143,7 @@ fn slice_of(whole: &RawStr, sub: &[u8]) -> RawStr {
     if sub.is_empty() {
         return RawStr::default();
     }
-    RawStr::from_shared(whole.clone().into_bytes().slice_ref(sub))
+    whole.slice_ref(sub)
 }
 
 /// `str.lower()` on surrogate-escaped bytes, charged to `meter`.
@@ -249,6 +242,33 @@ pub fn ntpath_splitext(p: &[u8]) -> (&[u8], &[u8]) {
         }
     }
     (p, &[])
+}
+
+/// A transient CAB lookup key. Keeps computed bytes in a fallibly allocated,
+/// charged vector instead of constructing a `Bytes` shared owner (CR10).
+pub fn simplify_name_vec(
+    name: &[u8],
+    meter: &Arc<Meter>,
+) -> Result<crate::limits::MeteredVec<u8>, ChargeError> {
+    let name = ntpath_basename(name);
+    let mut len = 0usize;
+    lower_pieces(name, |piece| {
+        len = len.saturating_add(piece.len());
+        true
+    });
+    let mut out = crate::limits::MeteredVec::with_capacity(meter, len)?;
+    let mut error = None;
+    lower_pieces(name, |piece| match out.extend_from_slice(piece) {
+        Ok(()) => true,
+        Err(e) => {
+            error = Some(e);
+            false
+        }
+    });
+    match error {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
 }
 
 /// `simplify_name`: `ntpath.basename(name).lower()`, the CAB registry's key,

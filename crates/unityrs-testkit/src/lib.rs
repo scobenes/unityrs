@@ -34,6 +34,7 @@ pub mod child;
 pub mod counted;
 pub mod depth;
 pub mod env;
+pub mod fsb5;
 pub mod fuzz;
 pub mod guard;
 pub mod ledger;

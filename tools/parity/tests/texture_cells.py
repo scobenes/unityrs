@@ -5,10 +5,15 @@ nothing here reads PARITY.md. With them: the matrix's columns, the tier and phas
 its result (`RESULT_NOTES`, `RAISE_REASONS`). ORACLE is True in the oracle image (UnityPy 1.25.2).
 """
 
+import contextlib
+import importlib
 import inspect
 import re
 import sys
+import unittest
+from functools import lru_cache
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 HERE = Path(__file__).resolve().parents[1]
@@ -19,6 +24,7 @@ from texture_cases import PIXEL_CASES, H, W  # noqa: E402
 
 import inventory  # noqa: E402
 import references  # noqa: E402
+import child  # noqa: E402
 
 try:
     import texture2ddecoder
@@ -31,6 +37,73 @@ try:
     ORACLE = UnityPy.__version__ == inventory.PINNED_VERSION
 except ImportError:  # pragma: no cover - outside the oracle image
     ORACLE = False
+
+
+ASTC_BACKEND = "astc_encoder._encoder_avx2"
+
+
+def _astc_namespace():
+    """The reference build's classes with the package's enums, as in tools/fixtures/texture_astc.py."""
+    import astc_encoder
+
+    backend = importlib.import_module(ASTC_BACKEND)
+    classes = ("ASTCConfig", "ASTCContext", "ASTCError", "ASTCImage", "ASTCSwizzle")
+    enums = ("ASTCConfigFlags", "ASTCProfile", "ASTCType")
+    return SimpleNamespace(
+        **{name: getattr(backend, name) for name in classes},
+        **{name: getattr(astc_encoder, name) for name in enums},
+    )
+
+
+@contextlib.contextmanager
+def decoding_with(namespace):
+    """Select a build only for these decodes; contexts from either build must not survive the scope."""
+    saved = Texture2DConverter.astc_encoder
+    Texture2DConverter.astc_encoder = namespace
+    Texture2DConverter._get_astc_context.cache_clear()
+    try:
+        yield
+    finally:
+        Texture2DConverter.astc_encoder = saved
+        Texture2DConverter._get_astc_context.cache_clear()
+
+
+@lru_cache(maxsize=1)
+def reference_astc_backend():
+    """Probe import AND execution outside this process: unsupported instructions can end it with SIGILL.
+
+    Do not trust archspec's advertised CPU flags: the reference build can run under an emulator even when
+    auto-selection chooses SSE4.1. Report the build used for the backend-dependent pixel comparisons.
+    """
+    script = (
+        "import resource\n"
+        "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n"
+        "import texture_cells as c\n"
+        "with c.decoding_with(c._astc_namespace()):\n"
+        "    c.Texture2DConverter.astc(bytes(16), 4, 4, (4, 4)).tobytes()\n"
+    )
+    probe = child.run(
+        [sys.executable, "-B", "-c", script], cwd=HERE / "tests", capture_output=True, text=True
+    )
+    if probe.returncode:
+        detail = probe.stderr.strip().splitlines()
+        reason = f"needs reference ASTC backend {ASTC_BACKEND}: import/decode probe exited {probe.returncode}"
+        if detail:
+            reason += f" ({detail[-1]})"
+        return None, reason
+    namespace = _astc_namespace()
+    report = f"ASTC pixel oracle backend: {ASTC_BACKEND} (import and decode probe passed)"
+    print(report, file=sys.stderr)
+    return namespace, report
+
+
+@contextlib.contextmanager
+def reference_astc():
+    namespace, report = reference_astc_backend()
+    if namespace is None:
+        raise unittest.SkipTest(report)
+    with decoding_with(namespace):
+        yield
 
 
 COLUMNS = [

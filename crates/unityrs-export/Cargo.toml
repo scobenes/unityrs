@@ -20,6 +20,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+unityrs-audio = { path = "../unityrs-audio" }
 unityrs-core = { path = "../unityrs-core" }
 # The sheets' decoders and E66's texture selection.
 unityrs-texture = { path = "../unityrs-texture" }
