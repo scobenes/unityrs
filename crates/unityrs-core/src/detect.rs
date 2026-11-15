@@ -397,10 +397,23 @@ fn gzip_inflate(
     open: Option<&Meter>,
     mut sink: impl FnMut(&[u8]),
 ) -> Result<u64, DetectError> {
+    let mut scratch = vec![0; SCRATCH];
+    gzip_inflate_to(data, max_inflate, open, &mut scratch, |out| {
+        sink(out);
+        Ok(())
+    })
+}
+
+pub(crate) fn gzip_inflate_to<E: From<DetectError>>(
+    data: &[u8],
+    max_inflate: u64,
+    open: Option<&Meter>,
+    scratch: &mut [u8],
+    mut sink: impl FnMut(&[u8]) -> Result<(), E>,
+) -> Result<u64, E> {
     if let Some(l) = open.and_then(Meter::work_refused) {
-        return Err(DetectError::Work(l));
+        return Err(DetectError::Work(l).into());
     }
-    let mut scratch = vec![0u8; SCRATCH];
     let mut pos = 0usize;
     let mut total = 0u64;
     loop {
@@ -411,7 +424,7 @@ fn gzip_inflate(
             return Ok(total);
         }
         if !rest.starts_with(&GZIP_MAGIC) {
-            return Err(gzip_error("BadGzipFile: Not a gzipped file"));
+            return Err(gzip_error("BadGzipFile: Not a gzipped file").into());
         }
         member_header(data, &mut pos, open)?;
         // The member's raw deflate stream.
@@ -424,7 +437,7 @@ fn gzip_inflate(
             let status = z
                 .decompress(
                     input.get(at..).unwrap_or_default(),
-                    &mut scratch,
+                    scratch,
                     FlushDecompress::None,
                 )
                 .map_err(|e| DetectError::Gzip(format!("zlib.error: {e}").into()));
@@ -441,14 +454,14 @@ fn gzip_inflate(
             crc.update(out);
             total = total.saturating_add(made_bytes);
             if total > max_inflate {
-                return Err(inflate_limit(total, max_inflate));
+                return Err(inflate_limit(total, max_inflate).into());
             }
-            sink(out);
+            sink(out)?;
             if status == Status::StreamEnd {
                 break;
             }
             if z.total_in() == in_before && made == 0 {
-                return Err(gzip_error(EOF_MESSAGE));
+                return Err(gzip_error(EOF_MESSAGE).into());
             }
         }
         pos = pos.saturating_add(usize::try_from(z.total_in()).unwrap_or(usize::MAX));

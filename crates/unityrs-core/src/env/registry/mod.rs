@@ -498,11 +498,17 @@ impl Registry {
         let mut at: Option<(Arc<BundleFile>, usize)> = None;
         let path = slot.rank.path();
         for &i in path {
-            let File::Bundle(b) = file else {
-                return Ok(None);
-            };
-            file = b.entry(i)?;
-            at = Some((b, i));
+            match file {
+                File::Bundle(b) => {
+                    file = b.entry(i)?;
+                    at = Some((b, i));
+                }
+                File::Web(w) => {
+                    file = w.entry(i)?;
+                    at = None;
+                }
+                _ => return Ok(None),
+            }
         }
         if !path.is_empty() {
             self.count(slot);
@@ -541,7 +547,10 @@ impl Registry {
                 self.reach(slot, Some(&nested))?;
                 return Ok(None);
             }
-            File::Web(_) => None,
+            File::Web(w) => {
+                self.reach_web(slot, &w)?;
+                return Ok(None);
+            }
         };
         slot.mark_reached();
         Ok(cab)

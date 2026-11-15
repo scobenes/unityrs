@@ -57,6 +57,8 @@ jobs:
           - zlib_match
           - unitycn
           - zip
+          - webfile
+          - unityweb
     env:
       TARGET: ${{ matrix.target }}
     steps:

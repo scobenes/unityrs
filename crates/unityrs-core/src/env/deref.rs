@@ -8,7 +8,7 @@ use super::container_index::Siblings;
 use super::listing::FileMatch;
 use super::load::Asked;
 use super::registry::from_callers;
-use super::resource_data::top_bundle;
+use super::resource_data::top_container;
 use super::{Cab, DerefError, Environment, Found, HeldCab, PPtr, RawCab, pptr};
 use crate::error::{Error, NotFound};
 use crate::files::{File, ParentKind, SerializedFile};
@@ -187,7 +187,7 @@ impl Environment {
         if pptr.file_id == 0 {
             return object_in(from, pptr.path_id);
         }
-        let _top = top_bundle(from);
+        let _top = top_container(from);
         // Nothing after a resolver's load charges anything, so a retry never
         // loads again what the first run loaded.
         self.room(|| {
@@ -246,15 +246,27 @@ impl Environment {
                             let f = bundle.entry(i)?;
                             // Named as a sibling, a nested container is
                             // reached, as a `get` of its name would reach it.
-                            if let File::Bundle(nested) = &f {
-                                self.reach_sibling(from, &bundle, i, nested)?;
+                            if matches!(f, File::Bundle(_) | File::Web(_)) {
+                                self.reach_sibling(from, &bundle, i, &f)?;
                             }
                             Some((f, Reached::Sibling))
                         }
                         None => None,
                     }
                 }
-                ParentKind::Web => None,
+                ParentKind::Web { web } => {
+                    let web = web.upgrade().ok_or_else(|| DerefError::ContainerDropped {
+                        name: parent.name.clone(),
+                    })?;
+                    let hit = web
+                        .files()
+                        .iter()
+                        .find(|s| lower_eq(s.name.as_bytes(), clean.as_bytes()));
+                    match hit {
+                        Some(slot) => Some((web.entry(slot.dir_index)?, Reached::Sibling)),
+                        None => None,
+                    }
+                }
             },
             None => match self.files_match(&clean) {
                 Some(FileMatch::File(f)) => Some((f, Reached::Lookup)),

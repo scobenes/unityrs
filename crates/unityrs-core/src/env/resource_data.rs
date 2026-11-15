@@ -99,7 +99,7 @@ impl Environment {
         offset: u64,
         size: u64,
     ) -> Result<Bytes, Error> {
-        let _top = top_bundle(from);
+        let _top = top_container(from);
         // UnityPy helpers/ResourceReader.py:11-33
         let candidates = resource_candidates(path);
         let first = self.room(|| {
@@ -166,7 +166,10 @@ impl Environment {
                         self.inner.registry.reach(&slot, Some(&nested))?;
                         continue;
                     }
-                    File::Web(_) => continue,
+                    File::Web(w) => {
+                        self.inner.registry.reach_web(&slot, &w)?;
+                        continue;
+                    }
                 }
             }
             if let Some(cab) = self.inner.registry.resolve(&slot)? {
@@ -191,20 +194,28 @@ impl Environment {
         if self.inner.options.load != LoadMode::Lazy {
             return Ok(());
         }
-        let Some(mut top) = parent_bundle(from.parent()) else {
+        let Some(mut top) = parent_container(from.parent()) else {
             return Ok(());
         };
         let mut below = None;
-        while let Some(up) = parent_bundle(top.parent()) {
+        while let Some(up) = parent_container(container_parent(&top)) {
             below = Some(std::mem::replace(&mut top, up));
         }
         let Some(nested) = below else {
             return Ok(());
         };
-        let Some(slot) = self.inner.registry.slot(nested.name(), nested.meter())? else {
+        let name = match &nested {
+            File::Bundle(b) => b.name(),
+            File::Web(w) => w.name(),
+            _ => return Ok(()),
+        };
+        let Some(slot) = self.inner.registry.slot(name, nested.meter())? else {
             return Ok(());
         };
-        self.reach_entry(&top, &slot, &nested)
+        match top {
+            File::Bundle(b) => self.reach_entry(&b, &slot, &nested),
+            _ => Ok(()),
+        }
     }
 
     /// A pointer reached `nested`, `from`'s sibling at `dir_index` of its
@@ -217,7 +228,7 @@ impl Environment {
         from: &SerializedFile,
         bundle: &Arc<BundleFile>,
         dir_index: usize,
-        nested: &Arc<BundleFile>,
+        nested: &File,
     ) -> Result<(), Error> {
         if self.inner.options.load != LoadMode::Lazy {
             return Ok(());
@@ -241,18 +252,24 @@ impl Environment {
         &self,
         bundle: &Arc<BundleFile>,
         slot: &Arc<Slot>,
-        nested: &Arc<BundleFile>,
+        nested: &File,
     ) -> Result<(), Error> {
         let Some((i, through)) = entry_of(bundle, slot) else {
             return Ok(());
         };
-        if !matches!(bundle.entry(i), Ok(File::Bundle(b)) if Arc::ptr_eq(&b, nested)) {
+        let same = match (bundle.entry(i)?, nested) {
+            (File::Bundle(a), File::Bundle(b)) => Arc::ptr_eq(&a, b),
+            (File::Web(a), File::Web(b)) => Arc::ptr_eq(&a, b),
+            _ => false,
+        };
+        if !same {
             return Ok(());
         }
         let reg = &self.inner.registry;
-        match through {
-            Through::Own => reg.reach(slot, Some(nested)),
-            Through::Slot => reg.reach(slot, None),
+        match (through, nested) {
+            (Through::Own, File::Bundle(b)) => reg.reach(slot, Some(b)),
+            (Through::Own, File::Web(w)) => reg.reach_web(slot, w),
+            _ => reg.reach(slot, None),
         }
     }
 }
@@ -261,19 +278,32 @@ impl Environment {
 /// container's container, and so on up. A call that reads from `from` holds
 /// it, so an eviction while it runs (its own retry's, another thread's)
 /// drops only the LRU's handle, and the chain the call reads through stays.
-pub(super) fn top_bundle(from: &SerializedFile) -> Option<Arc<BundleFile>> {
-    let mut top = parent_bundle(from.parent())?;
-    while let Some(up) = parent_bundle(top.parent()) {
+pub(super) fn top_container(from: &SerializedFile) -> Option<File> {
+    let mut top = parent_container(from.parent())?;
+    while let Some(up) = parent_container(container_parent(&top)) {
         top = up;
     }
     Some(top)
+}
+fn container_parent(file: &File) -> Option<&Parent> {
+    match file {
+        File::Bundle(b) => b.parent(),
+        File::Web(w) => w.parent(),
+        _ => None,
+    }
+}
+fn parent_container(parent: Option<&Parent>) -> Option<File> {
+    match &parent?.kind {
+        ParentKind::Bundle { bundle, .. } => bundle.upgrade().map(File::Bundle),
+        ParentKind::Web { web } => web.upgrade().map(File::Web),
+    }
 }
 
 /// The bundle a parent link names, while it is alive.
 fn parent_bundle(parent: Option<&Parent>) -> Option<Arc<BundleFile>> {
     match &parent?.kind {
         ParentKind::Bundle { bundle, .. } => bundle.upgrade(),
-        ParentKind::Web => None,
+        ParentKind::Web { .. } => None,
     }
 }
 

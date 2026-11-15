@@ -67,6 +67,9 @@ impl BundleFile {
         reader: ReaderKind,
         source_depth: u32,
     ) -> Result<Arc<Self>, Error> {
+        if legacy_layout(&data, reader)? {
+            return super::legacy::open(name, data, parent, meter, ctx, reader, source_depth);
+        }
         let mut charge = meter.charge(heap_cost(
             u64::try_from(std::mem::size_of::<Self>() + 16).unwrap_or(u64::MAX),
         ))?;
@@ -121,10 +124,7 @@ impl BundleFile {
         // :173-184: the blocks, read in order from here.
         let (stored, lengths) = stored_blocks(&mut blocks, &mut r, meter, ctx)?;
         let files = files_dict(&directory, meter)?;
-        let mut entries: MeteredVec<ResultCell<File, Error>> = MeteredVec::new(meter);
-        for _ in 0..directory.len() {
-            entries.push(ResultCell::new())?;
-        }
+        let entries = entry_cells(directory.len(), meter)?;
         let header = BundleHeader {
             signature,
             format,
@@ -152,6 +152,7 @@ impl BundleFile {
         Ok(Arc::new_cyclic(|this| Self {
             name,
             source: data,
+            legacy_data: None,
             header,
             blocks,
             directory,
@@ -358,7 +359,7 @@ fn read_blocks_info(
 
 /// UnityPy's `files` dict over the directory: each path at its first
 /// position, holding its last entry. Computed by sorting.
-fn files_dict(
+pub(crate) fn files_dict(
     dir: &MeteredVec<DirEntry>,
     meter: &Arc<Meter>,
 ) -> Result<MeteredVec<FileSlot>, Error> {
@@ -400,7 +401,7 @@ fn files_dict(
 /// in directory order, whose offset, size and name rule
 /// ([`crate::detect::raw_by_name`]) are the row's own, or the row itself.
 /// Computed by sorting the rows' keys, the scratch charged.
-fn twins(rows: &[DirEntry], meter: &Arc<Meter>) -> Result<MeteredVec<u32>, Error> {
+pub(super) fn twins(rows: &[DirEntry], meter: &Arc<Meter>) -> Result<MeteredVec<u32>, Error> {
     let mut keys: MeteredVec<(i64, i64, bool, u32)> = MeteredVec::with_capacity(meter, rows.len())?;
     let mut twins: MeteredVec<u32> = MeteredVec::with_capacity(meter, rows.len())?;
     for (i, d) in rows.iter().enumerate() {
@@ -428,8 +429,25 @@ fn twins(rows: &[DirEntry], meter: &Arc<Meter>) -> Result<MeteredVec<u32>, Error
 }
 
 /// A table as the bundle keeps it, its charge moved into the bundle's.
-fn keep<T>(table: MeteredVec<T>, charge: &mut Charge) -> Result<Box<[T]>, Error> {
+pub(crate) fn keep<T>(table: MeteredVec<T>, charge: &mut Charge) -> Result<Box<[T]>, Error> {
     let (b, c) = table.into_boxed_slice()?;
     charge.absorb(c);
     Ok(b)
+}
+
+fn legacy_layout(data: &Bytes, kind: ReaderKind) -> Result<bool, Error> {
+    if !(data.starts_with(b"UnityWeb\0") || data.starts_with(b"UnityRaw\0")) {
+        return Ok(false);
+    }
+    let mut r = Reader::with_kind(data, Endian::Big, kind);
+    r.set_position(9)?;
+    Ok(r.read_u32()? != 6)
+}
+
+fn entry_cells(n: usize, meter: &Arc<Meter>) -> Result<MeteredVec<ResultCell<File, Error>>, Error> {
+    let mut cells = MeteredVec::new(meter);
+    for _ in 0..n {
+        cells.push(ResultCell::new())?;
+    }
+    Ok(cells)
 }
