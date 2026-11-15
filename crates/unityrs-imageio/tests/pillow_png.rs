@@ -261,7 +261,7 @@ fn idat(case: &Value) -> Vec<u64> {
 fn the_fixture_covers_every_mode_kind_and_chunk_size() {
     let fixture = fixture();
     let cases = fixture["cases"].as_array().unwrap();
-    for mode in Mode::ALL {
+    for mode in Mode::EXTRACTOR {
         let of_mode: Vec<&Value> = cases.iter().filter(|c| c["mode"] == mode.name()).collect();
         // Several IDAT chunks, of the encoder buffer's size but the last: at
         // widths past 16384 (4 x width bytes) and below it (65,536).
@@ -436,6 +436,49 @@ fn fast_png_idat_matches_zlib_1_2_13_level_1_filtered_sub_rows() {
             None,
             "{mode}-{width}x{height}-{kind}: concatenated IDAT bytes"
         );
+    }
+}
+
+#[test]
+#[cfg(feature = "test-reference")]
+fn fast_palette_png_uses_level_one_sub_rows_for_both_palette_depths() {
+    // Literal scanlines cover both 8-bit indices and odd-width packed bits.
+    // Comparing against pristine zlib catches a lost fast level or filter
+    // when the palette path is combined with the fast encoder.
+    let pixels = [0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 7, 6, 5, 4, 3, 2, 1, 0];
+    let palette = std::array::from_fn(|i| i.to_le_bytes()[0]);
+    let explicit = Image::with_palette(9, 2, &pixels, &palette).unwrap();
+    let implicit = Image::new(9, 2, Mode::P, &pixels).unwrap();
+    for (image, depth, filtered, packed) in [
+        (
+            explicit,
+            8,
+            [
+                1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 8, 255, 255, 255, 255, 255, 255, 255, 255,
+            ]
+            .as_slice(),
+            pixels.as_slice(),
+        ),
+        (
+            implicit,
+            1,
+            [1, 0x7f, 1, 1, 0xff, 1].as_slice(),
+            [0x7f, 0x80, 0xff, 0].as_slice(),
+        ),
+    ] {
+        let png = unityrs_imageio::encode_fast(&image, &mut Unmetered).unwrap();
+        let parts = chunks(png.bytes());
+        assert_eq!(parts[0].1[8..10], [depth, 3]);
+        assert_eq!(parts[1].0, *b"PLTE");
+        assert_eq!(parts[1].1, image.palette().map_or(&[0; 3][..], |p| &p[..]));
+        let compressed = parts
+            .iter()
+            .filter_map(|(kind, data)| (*kind == *b"IDAT").then_some(*data))
+            .collect::<Vec<_>>()
+            .concat();
+        let expected = unityrs_imageio::test_reference::deflate_fast_png(filtered, 10, 65536);
+        assert_eq!(compressed, expected, "palette depth {depth}");
+        assert_eq!(decoded(png.bytes(), packed.len() / 2, 2, 1), packed);
     }
 }
 

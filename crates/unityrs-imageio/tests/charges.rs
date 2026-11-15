@@ -192,15 +192,23 @@ fn the_encoder_pays_before_it_allocates() {
 }
 
 fn every_block_is_charged_before_it_is_allocated(fast: bool) {
-    for (width, height, mode) in [
-        (1, 1, Mode::L),
-        (300, 200, Mode::Rgba),
-        (20000, 3, Mode::Rgb),
-        (7, 9000, Mode::La),
+    for (width, height, mode, explicit_palette) in [
+        (1, 1, Mode::L, false),
+        (300, 200, Mode::Rgba, false),
+        (20000, 3, Mode::Rgb, false),
+        (7, 9000, Mode::La, false),
+        (257, 127, Mode::P, false),
+        (257, 127, Mode::P, true),
     ] {
         let pixels = noise(width, height, mode);
-        let image = Image::new(width, height, mode, &pixels).unwrap();
-        let plan = plan(width, height, mode).unwrap();
+        let palette = std::array::from_fn(|i| i.to_le_bytes()[0]);
+        let image = if explicit_palette {
+            Image::with_palette(width, height, &pixels, &palette)
+        } else {
+            Image::new(width, height, mode, &pixels)
+        }
+        .unwrap();
+        let plan = unityrs_imageio::plan_image(&image).unwrap();
         let mut charger = Recording::new(None);
         OUTPUT.store(plan.output, Ordering::Relaxed);
         start();
