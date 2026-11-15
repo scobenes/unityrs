@@ -188,11 +188,11 @@ pub const INVENTORY: &[Exclusion] = &[
     },
     Exclusion {
         scopes: &["attempt", "complete"],
-        functions: &["unityrs_core::files::bundle::BundleFile::cached"],
+        functions: &["unityrs_core::files::bundle::index::RunIndex::mutex"],
         platform: Platform::Darwin,
         frame: None,
         via: &[],
-        name: "Darwin lazy mutex box in read_span_pinned",
+        name: "Darwin lazy mutex box, charged and initialized in RunIndex::mutex",
     },
     Exclusion {
         scopes: &["attempt", "complete"],

@@ -1,6 +1,6 @@
 [package]
 name = "unityrs-audio"
-description = "Bounded AudioClip dispatch, FSB5 parsing and PCM/ADPCM WAV export."
+description = "AudioClip dispatch, FSB5 parsing and PCM/ADPCM/Vorbis WAV export."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,13 @@ authors.workspace = true
 [dependencies]
 unityrs-core = { path = "../unityrs-core" }
 thiserror = "=2.0.21"
+# Packet API avoids an intermediate Ogg allocation; decision 19 keeps audio
+# outside batch because lewton's internal allocations are infallible.
+lewton = { version = "=0.10.2", default-features = false, optional = true }
+
+[features]
+default = ["vorbis"]
+vorbis = ["dep:lewton"]
 
 [dev-dependencies]
 unityrs-testkit = { path = "../unityrs-testkit" }

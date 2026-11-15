@@ -1,0 +1,8 @@
+# Test-only encoder and independent decoder, outside the pinned UnityPy stack.
+# Install with --no-deps into a separate --target directory. The oracle already
+# supplies numpy and cffi. This wheel bundles libsndfile 1.2.2 / libvorbis;
+# no native audio library is shipped with unityrs.
+--require-hashes
+--only-binary :all:
+soundfile==0.13.1 \
+    --hash=sha256:03267c4e493315294834a0870f31dbb3b28a95561b80b134f0bd3cf2d5f0e618

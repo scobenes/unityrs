@@ -352,7 +352,7 @@ fn builtin_graph(objects: &[Object], options: EnvOptions) -> (Environment, Graph
 }
 
 #[test]
-fn finite_compressed_uvs_overflowing_f32_degrade_before_writing() {
+fn finite_compressed_uvs_overflowing_f32_drop_only_the_uv_set() {
     let mut objects = h::objects(false, false);
     let mut compressed = m::compressed();
     for (name, count, range, start, bits, data) in [
@@ -382,10 +382,18 @@ fn finite_compressed_uvs_overflowing_f32_degrade_before_writing() {
     let profile = Profile::new(&meter);
     let scene = collect(&env, &graph, &profile, &meter).unwrap();
     assert!(scene.nodes.as_slice()[0].mesh.is_some());
-    assert!(scene.nodes.as_slice()[1].mesh.is_none());
-    let repairs = geometry_issues(scene.collection_issues.as_slice(), 1);
-    assert_eq!(repairs.len(), 1);
-    assert_eq!(repairs[0].reason, "invalid vertex attribute");
+    assert!(scene.nodes.as_slice()[1].mesh.is_some());
+    assert!(geometry_issues(scene.collection_issues.as_slice(), 3).is_empty());
+    let report =
+        unityrs_gltf::write_glb(&scene, &profile.options(), &meter, &mut Vec::new()).unwrap();
+    assert_eq!(report.dropped_texcoord_attributes, 2);
+    assert!(
+        report
+            .issues
+            .as_slice()
+            .iter()
+            .all(|i| i.reason == unityrs_gltf::Reason::InvalidTexCoord)
+    );
     document(&scene, &profile);
     h::validator_clean(&scene);
 }

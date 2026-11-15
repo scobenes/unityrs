@@ -41,7 +41,7 @@ pub enum Format {
     Pdf,
     /// Deferred JPEG2000 writer.
     Jpeg2000,
-    /// Separate W1 writer.
+    /// Lossy WebP with Pillow's defaults.
     Webp,
 }
 impl Format {

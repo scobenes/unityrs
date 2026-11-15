@@ -2000,7 +2000,7 @@ positions.
 | `unityrs-core` | `budget/mod.rs` | `charged_bytes`: `Bytes::from_owner`'s owner box, reached by `DecodeBuf::into_bytes` and charged `RawStr` construction/concatenation | All |
 | `unityrs-core` | `files/mod.rs` | `RawFile::with_reader`: RawFile `Arc` | All |
 | `unityrs-core` | `files/bundle/open.rs` | `BundleFile::open_with_reader` → `open_at_depth`: parsed-container `Arc::new_cyclic` | All |
-| `unityrs-core` | `files/bundle/runs.rs` | `BundleFile::read_span_pinned` → `cached`: std's lazily boxed mutex | Darwin only |
+| `unityrs-core` | `files/bundle/index/mod.rs` | `RunIndex::mutex`, reached through bundle construction: std's lazily boxed mutex, charged to the bundle and initialized there | Darwin only |
 | `unityrs-core` | `files/bundle/index/mod.rs` | `RunIndex::publish`: run-index `BTreeMap` | All |
 | `unityrs-core` | `env/mod.rs` | `Environment::new`: Environment and dependency-cache `Arc`s | All |
 | `unityrs-core` | `env/mod.rs` | `Environment::read_path`: std Unix long-path `OpenOptions` storage through `File::open` | All, on long paths |
@@ -2060,7 +2060,7 @@ allocator refusals notify the audit, or explicitly document returned-only
 allocator provenance there. The reach and export bundle probes must return
 allocator detection errors even when ordinary malformed detections mean no bundle.
 
-Darwin additionally expects `BundleFile::cached` and `env::held::lock`.
+Darwin additionally expects `RunIndex::mutex` and `env::held::lock`.
 The inventory tags those two mutex allocations as Darwin-only; Linux does
 not expect them. Entries state their exercised scopes (`peek`, `attempt`,
 `complete`); `stage` and `failure` have no exclusions. All five controller

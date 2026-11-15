@@ -61,7 +61,7 @@ class TestColumn(unittest.TestCase):
                 "the_gpu_program_index_rule_is_int_in_base_10",
                 "a_failure_to_write_is_tier_c_writing",
                 "every_tier_has_a_design_rule",
-                "tol_metrics_are_stated_or_said_to_be_planned",
+                "tol_metrics_are_stated_for_each_audio_codec",
                 "module_level_data_is_tier_a_for_loop_variables",
                 "a_non_local_miss_keeps_the_split_exception",
                 "non_local_rows_state_only_the_tested_cases",
@@ -619,39 +619,36 @@ class TestColumn(unittest.TestCase):
         three_d = r"\n\*\*3D \(beyond UnityPy\)\.\*\* [^\n]*`PARITY\.md` section 24 files these rows under tier X"
         self.assertRegex(design.split("## 3. Parity", 1)[1].split("\n## 4.", 1)[0], three_d)
 
-    def test_tol_metrics_are_stated_or_said_to_be_planned(self):
-        """Tol definitions distinguish measured ADPCM thresholds from pending codec metrics."""
+    def test_tol_metrics_are_stated_for_each_audio_codec(self):
+        """Every FSB5 Tol row names its threshold; FMOD Vorbis remains a target."""
         root = HERE.parent.parent
         parity = (root / "PARITY.md").read_text(encoding="utf-8")
         design = (root / "docs" / "DESIGN.md").read_text(encoding="utf-8")
-        tol = []
+        codecs = []
         for header, rows in inventory.tables(parity):
             if "tier" in header and header[0] != "tier":
-                tol += [cells for cells in rows if re.search(r"\bTol\b", cells[header.index("tier")])]
-        self.assertGreaterEqual(len(tol), 8)
-        stated = [cells for cells in tol if "threshold" in " ".join(cells)]
-        definitions = [
-            next(line for line in parity.splitlines() if line.startswith("| Tol | ")),
-            next(line for line in design.splitlines() if line.startswith("- **Tolerance:**")),
-        ]
-        # The phase each Tol row's unityrs side lands in, by path: every Tol row is audio's now.
-        phases = {}
-        for cells in tol:
-            path = "the Sprite affine path" if "Sprite" in cells[0] else "audio"
-            phases.setdefault(path, set()).update(re.findall(r"\bimpl (P\d[a-c]?)\b", cells[-1]))
-        self.assertEqual(phases, {"audio": {"P3b"}})
-        when = "(P3b for audio)"
-        if len(stated) < len(tol):
-            for text in definitions:
-                with self.subTest(text[:40]):
-                    self.assertIn(f"when unityrs's side lands {when}", text)
-                    if stated:
-                        self.assertIn("IMA ADPCM and FADPCM", text)
-                        self.assertIn("exact", text)
-                        self.assertIn("remaining thresholds are planned", text)
-                    else:
-                        self.assertRegex(text, r"\b(?:no row states them|none is stated) yet\b")
-                    self.assertNotRegex(text, r"(?i)\b(?:has|within) a stated metric\b")
+                codecs += [(cells[0], cells[header.index("tier")], cells[-1]) for cells in rows
+                           if re.search(r"\bTol\b", cells[header.index("tier")])]
+        self.assertGreaterEqual(len(codecs), 8)
+        self.assertEqual(sum(name.startswith("FSB5") for name, _, _ in codecs), 7)
+        self.assertEqual({p for _, _, s in codecs for p in re.findall(r"\bimpl (P\d[a-c]?)\b", s)}, {"P3b"})
+        self.assertTrue(all("Sprite" not in name for name, _, _ in codecs))
+        for codec, tier, _ in codecs:
+            with self.subTest(codec):
+                self.assertIn("threshold", tier)
+                if any(name in codec for name in ["Vorbis", "MPEG", "Opus"]):
+                    self.assertIn("same sample count", tier)
+                    self.assertIn("per-channel SNR ≥90 dB", tier)
+                    self.assertIn("≤2 LSB int16 against FMOD", tier)
+                else:
+                    self.assertIn("exact", tier)
+                    self.assertIn("0 LSB", tier)
+        for text in [next(line for line in parity.splitlines() if line.startswith("| Tol | ")),
+                     next(line for line in design.splitlines() if line.startswith("- **Tolerance:**"))]:
+            self.assertIn("IMA ADPCM and FADPCM", text)
+            self.assertIn("Vorbis", text)
+            self.assertIn("per-channel SNR ≥90 dB", text)
+            self.assertIn("≤2 LSB int16", text)
 
     def test_module_level_data_is_tier_a_for_loop_variables(self):
         """DESIGN.md section 3's Tier A rule for module-level data covers the variables a module-level loop leaves
