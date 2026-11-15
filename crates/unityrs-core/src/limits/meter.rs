@@ -318,7 +318,6 @@ impl Meter {
         let permit = self.reserve(bytes)?;
         Ok(Charge {
             meter: self.clone(),
-            bytes,
             permit,
             more: Vec::new(),
         })
@@ -506,7 +505,8 @@ impl Drop for GrantScope {
 #[must_use = "a charge returns its bytes when dropped"]
 pub struct Charge {
     meter: Arc<Meter>,
-    bytes: u64,
+    // The permit holds this meter's byte count as well as its homes. Keeping
+    // one count leaves room for the inline phase home without growing Charge.
     permit: Permit,
     /// Absorbed charges of other meters, one per meter.
     more: Vec<Charge>,
@@ -528,7 +528,6 @@ impl Charge {
     pub fn zero(meter: &Arc<Meter>) -> Self {
         Self {
             meter: meter.clone(),
-            bytes: 0,
             permit: Permit::detached(0),
             more: Vec::new(),
         }
@@ -539,7 +538,7 @@ impl Charge {
     pub fn bytes(&self) -> u64 {
         self.more
             .iter()
-            .fold(self.bytes, |n, c| n.saturating_add(c.bytes()))
+            .fold(self.permit.bytes(), |n, c| n.saturating_add(c.bytes()))
     }
 
     /// The meter this charge is on.
@@ -552,17 +551,16 @@ impl Charge {
     pub fn grow(&mut self, bytes: u64) -> Result<(), ChargeError> {
         let permit = self.meter.reserve(bytes)?;
         self.permit.absorb(permit);
-        self.bytes = self.bytes.saturating_add(bytes);
         Ok(())
     }
 
     /// Returns up to `bytes` of this meter's part now (what a buffer no
     /// longer holds).
     pub fn release(&mut self, bytes: u64) {
-        let n = bytes.min(self.bytes);
-        self.bytes -= n;
+        let held = self.permit.bytes();
+        let n = bytes.min(held);
         self.meter.refund(n);
-        self.permit.shrink_to(self.bytes);
+        self.permit.shrink_to(held - n);
     }
 
     /// Takes `other` in: its bytes are returned when this charge drops. A
@@ -573,11 +571,9 @@ impl Charge {
             self.absorb(c);
         }
         if Arc::ptr_eq(&self.meter, &other.meter) {
-            self.bytes = self.bytes.saturating_add(other.bytes);
-            other.bytes = 0;
             self.permit
                 .absorb(std::mem::replace(&mut other.permit, Permit::detached(0)));
-        } else if other.bytes > 0 {
+        } else if other.permit.bytes() > 0 {
             match self
                 .more
                 .iter_mut()
@@ -602,6 +598,6 @@ impl Charge {
 impl Drop for Charge {
     fn drop(&mut self) {
         // The permit drops after this, returning the budget's side.
-        self.meter.refund(self.bytes);
+        self.meter.refund(self.permit.bytes());
     }
 }

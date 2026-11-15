@@ -320,7 +320,7 @@ pub fn collect_with_mapper(
             {
                 i
             } else {
-                let mesh = match unityrs_mesh::read_mesh(object, env, meter) {
+                let mesh = match unityrs_mesh::read_mesh_for_gltf(object, env, meter) {
                     Ok(mesh) => mesh,
                     Err(error) => {
                         if let Some(reason) = diagnostics::mesh_reason(&error) {
@@ -337,10 +337,12 @@ pub fn collect_with_mapper(
                     }
                 };
                 let accessors = scene.accessors.len();
+                let uv_fillers = scene.collected_uv_fillers.len();
                 let geometry = match geometry::build(&mut scene, mesh, profile.normalise, meter) {
                     Ok(geometry) => geometry,
                     Err(GltfError::Invalid(reason)) => {
                         scene.accessors.truncate(accessors);
+                        scene.collected_uv_fillers.truncate(uv_fillers);
                         diagnostics::renderer(
                             &mut scene,
                             id,
@@ -352,6 +354,15 @@ pub fn collect_with_mapper(
                     }
                     Err(error) => return Err(error),
                 };
+                if geometry.padded_rows > 0 {
+                    diagnostics::record(
+                        &mut scene,
+                        id,
+                        "padded_skin_rows",
+                        geometry.padded_rows,
+                        meter,
+                    )?;
+                }
                 let i = sources.len();
                 sources.push(Cached {
                     object: object.clone(),
@@ -432,8 +443,16 @@ pub fn collect_with_mapper(
             let mut built_skin = None;
             if has_skin {
                 let s = skin.ok_or_else(|| invalid("skin renderer"))?;
-                if g.source.processed.bone_weights().is_none()
-                    || g.source.processed.bone_indices().is_none()
+                if !g
+                    .attributes
+                    .as_slice()
+                    .iter()
+                    .any(|(a, _)| *a == crate::Attribute::Weights)
+                    || !g
+                        .attributes
+                        .as_slice()
+                        .iter()
+                        .any(|(a, _)| *a == crate::Attribute::Joints)
                 {
                     has_skin = false;
                     diagnostics::record(&mut scene, id, "missing_skin_attributes", 1, meter)?;
