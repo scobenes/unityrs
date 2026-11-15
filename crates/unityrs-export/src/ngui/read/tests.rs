@@ -17,8 +17,32 @@ use unityrs_testkit::serialized::{self, SerializedSpec, TypeSpec};
 
 use unityrs_texture::Formats;
 
-use super::{Blob, Span, Stream, Texture, answer, field, head_rows, integer, pptr, python_slice};
+use super::{Blob, Span, Stream, Texture, field, head_rows, integer, pptr, python_slice};
 use crate::ngui::classify::{Class, Reason};
+
+fn answer(t: &Texture, platform: i32, allowed: Formats) -> Result<unityrs_texture::Format, Class> {
+    super::answer(t, platform, allowed, (2022, 3))
+}
+
+#[test]
+fn modern_crunch_is_unsupported_before_a_malformed_switch_blob_is_read() {
+    let mut t = tex(1, 1, 28);
+    t.platform_blob = Some(Blob {
+        len: 12,
+        gobs: None,
+    });
+    let allowed = Formats::NONE.with(unityrs_texture::Format::Dxt1Crunched);
+    assert_eq!(
+        super::answer(&t, 38, allowed, (2017, 2)),
+        Err(Class::Skip(Reason::decode_error(super::BLOB_ELEMENT)))
+    );
+    assert_eq!(
+        super::answer(&t, 38, allowed, (2017, 3)),
+        Err(Class::Skip(Reason::plain(
+            "unsupported_format(DXT1Crunched)"
+        )))
+    );
+}
 
 #[test]
 fn the_head_rows_set_only_the_align_bit() {

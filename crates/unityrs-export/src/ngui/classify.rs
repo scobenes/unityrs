@@ -336,6 +336,7 @@ pub fn decode(e: &DecodeError) -> Class {
         DecodeError::PillowMemoryError { .. } => "pillow_memory_error",
         DecodeError::NotEnoughData { .. } => "not_enough_data",
         DecodeError::DecompressionBomb { .. } => "decompression_bomb",
+        DecodeError::Crunch(_) => "crunch",
         DecodeError::TooLarge { .. } => {
             return Class::Skip(Reason::plain(format!(
                 "limit(texture_pixels, {MAX_PIXELS})"
@@ -590,6 +591,12 @@ mod tests {
             }),
             skip("decode_error", Some("negative_size"))
         );
+    }
+
+    #[test]
+    fn malformed_crunch_is_an_object_decode_skip() {
+        let e = DecodeError::Crunch(unityrs_texture::CrunchError::Header("signature"));
+        assert_eq!(super::decode(&e), skip("decode_error", Some("crunch")));
     }
 
     #[test]
