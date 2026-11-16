@@ -192,10 +192,13 @@ jobs:
 
   # The whole-store CR10 census and refusal sweep (PUT, multipart, resume,
   # verification and finish): thousands of children, so a job of its own
-  # beside scale rather than sharing its runner.
+  # beside scale rather than sharing its runner. Its scopes stay in one test:
+  # an exclusion one store scope leaves to another is checked across all
+  # three, so splitting them across jobs would lose that check. About an
+  # hour on a 4-core runner; --nocapture shows each scope's progress lines.
   scale-store:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -206,7 +209,7 @@ jobs:
         run: >-
           cargo test --locked --profile sweep -p unityrs-batch --features test-hooks
           --test controller_alloc every_store_run_allocation_is_fallible_after_publication_admission
-          -- --exact --include-ignored
+          -- --exact --include-ignored --nocapture
 
   licenses:
     runs-on: ubuntu-latest
