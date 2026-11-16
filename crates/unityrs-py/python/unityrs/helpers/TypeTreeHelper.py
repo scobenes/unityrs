@@ -11,6 +11,9 @@ from ._bounded_tree import guard_for, walk, text_bound
 from .._native import standalone_tree_read
 
 
+_BOUNDED_READ_DEFAULTS = {ty: FUNCTION_READ_MAP[ty] for ty in ('string', 'TypelessData')}
+
+
 @define(slots=True)
 class TypeTreeConfig:
     as_dict: bool
@@ -153,23 +156,27 @@ def _primitive(node, reader, guard, array_size=None):
     if array_size is not None:
         guard.step(0, 256 + max(array_size, 0) * 128, max(array_size, 0))
         return FUNCTION_READ_MAP_ARRAY[ty](reader, array_size)
-    if ty in ('string', 'TypelessData'):
-        length = reader.read_int()
-        if ty == 'string':
-            if not 0 < length <= reader.Length - reader.Position:
-                return ''
-            guard.step(0, 256 + length * 5, length)
-            value = reader.read_bytes(length).decode('utf8', 'surrogateescape')
-            reader.align_stream()
-            return value
-        bound = max(length, reader.Length - reader.Position) if length < 0 else length
-        guard.step(0, 256 + max(bound, 0) * 4, max(bound, 0))
-        start = reader.Position
-        value = reader.read(length)
-        if reader.Position < start:
-            guard.discard()
-        return value
+    if ty in _BOUNDED_READ_DEFAULTS and FUNCTION_READ_MAP[ty] is _BOUNDED_READ_DEFAULTS[ty]:
+        return _bounded_primitive(ty, reader, guard)
     return FUNCTION_READ_MAP[ty](reader)
+
+
+def _bounded_primitive(ty, reader, guard):
+    length = reader.read_int()
+    if ty == 'string':
+        if not 0 < length <= reader.Length - reader.Position:
+            return ''
+        guard.step(0, 256 + length * 5, length)
+        value = reader.read_bytes(length).decode('utf8', 'surrogateescape')
+        reader.align_stream()
+        return value
+    bound = max(length, reader.Length - reader.Position) if length < 0 else length
+    guard.step(0, 256 + max(bound, 0) * 4, max(bound, 0))
+    start = reader.Position
+    value = reader.read(length)
+    if reader.Position < start:
+        guard.discard()
+    return value
 
 
 def _read(node, reader, config, guard, array_size=None, depth=1):
@@ -194,7 +201,7 @@ def _read(node, reader, config, guard, array_size=None, depth=1):
             for _ in range(array_size):
                 before = reader.Position, guard.discards
                 if ty == 'string':
-                    item = _primitive(node, reader, guard)
+                    item = _bounded_primitive(ty, reader, guard)
                 elif ty == 'TypelessData':
                     # HEAD repairs the aligned byte-array call for later files.
                     if getattr(getattr(config.assetsfile, 'header', None), 'version', 0) >= 23:

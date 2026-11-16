@@ -28,7 +28,25 @@ def ConvertSerializedShader(m_Shader):
         "platforms", "compressedLengths", "decompressedLengths", "offsets", "m_ParsedForm")}
     fields["compressedBlob"] = snapshot_bytes(m_Shader.compressedBlob, guard)
     if not fields["compressedBlob"]:
-        return ConvertSerializedShaderParsedForm(m_Shader.m_ParsedForm, m_Shader.platforms, [])
+        from ..helpers import CompressionHelper
+        from ..streams import EndianBinaryReader
+        programs = []
+        def entry(values, i):
+            value = values[i]
+            return value[0] if isinstance(value, list) else value
+        for i in range(len(fields["platforms"])):
+            guard.step(0, 256, 1)
+            if i >= len(fields["compressedLengths"]) or i >= len(fields["decompressedLengths"]):
+                break
+            size = entry(fields["compressedLengths"], i)
+            decoded_size = entry(fields["decompressedLengths"], i)
+            offset = entry(fields["offsets"], i)
+            data = fields["compressedBlob"][offset:offset + size]
+            # Even an empty slice must reach the decoder. Its builtin rejects
+            # it before allocating output, retaining the oracle's error order.
+            decoded = CompressionHelper.decompress_lz4(data, decoded_size)
+            programs.append(ShaderProgram(EndianBinaryReader(decoded, '<'), m_Shader.object_reader.version))
+        return ConvertSerializedShaderParsedForm(m_Shader.m_ParsedForm, m_Shader.platforms, programs)
     version = tuple(m_Shader.object_reader.version[:2]) if (m_Shader.platforms and
               m_Shader.compressedLengths and m_Shader.decompressedLengths) else (0, 0)
     return _native.export_shader(fields, version, _reader(m_Shader))[len(HEADER):]

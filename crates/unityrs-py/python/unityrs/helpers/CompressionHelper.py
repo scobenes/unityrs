@@ -64,7 +64,14 @@ def decompress_lz4(data: ByteString, uncompressed_size: int) -> bytes:  # LZ4M/L
     :return: uncompressed data
     :rtype: bytes
     """
-    if uncompressed_size < 0:
+    from operator import index
+    uncompressed_size = index(uncompressed_size)
+    if uncompressed_size < -(1 << 31):
+        raise OverflowError('signed integer is less than minimum')
+    if uncompressed_size >= 1 << 31:
+        raise OverflowError('signed integer is greater than maximum')
+    from_header = uncompressed_size < 0
+    if from_header:
         from .._buffers import snapshot_bytes
         guard = _native.TreeTraversal()
         data = snapshot_bytes(data, guard)
@@ -72,8 +79,14 @@ def decompress_lz4(data: ByteString, uncompressed_size: int) -> bytes:  # LZ4M/L
         if len(data) < 4:
             raise ValueError('Input source data size too small')
         uncompressed_size = struct.unpack('<I', data[:4])[0]
+        if uncompressed_size >= 1 << 31:
+            raise ValueError(f'Invalid size: 0x{uncompressed_size}')
         data = data[4:]
-    return _native.codec(data, 2, False, uncompressed_size)
+    result = _native.codec(data, 2, False, uncompressed_size)
+    if from_header and len(result) != uncompressed_size:
+        raise _native.LZ4BlockError(
+            f'Decompressor wrote {len(result)} bytes, but {uncompressed_size} bytes expected from header')
+    return result
 
 
 def compress_lz4(data: ByteString) -> bytes:  # LZ4M/LZ4HC

@@ -121,7 +121,9 @@ RESIDUE = [("binding_y6_loader", "observe_" + name) for name in
 ]
 
 
-INTERNALS = [("binding_y6b_codecs", "observe_" + name) for name in
+INTERNALS = [("binding_y6b_review", "observe_" + name) for name in
+             ("schema_failure_cursor", "truncated_object_cursor", "tree_live_callbacks",
+              "shader_empty_blob", "lz4_signed_sizes")] + [("binding_y6b_codecs", "observe_" + name) for name in
              ("codec_failures", "codec_callbacks", "codec_compression", "reader_redirect", "reader_failures")] + [
     ("binding_y6b_tree", "observe_" + name) for name in
     ("tree_defaults", "tree_values", "tree_boost", "tree_arrays", "tree_failures", "tree_write_failures",
