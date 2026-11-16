@@ -18,6 +18,11 @@ extension-module = ["pyo3/extension-module"]
 [dependencies]
 unityrs-core = { path = "../unityrs-core" }
 unityrs-tpk = { path = "../unityrs-tpk" }
+unityrs-texture = { path = "../unityrs-texture", features = ["encode"] }
+unityrs-export = { path = "../unityrs-export" }
+unityrs-audio = { path = "../unityrs-audio" }
+unityrs-mesh = { path = "../unityrs-mesh" }
+unityrs-meshdecode = { path = "../unityrs-meshdecode" }
 # Required Python ABI boundary; MIT OR Apache-2.0, already accepted globally.
 pyo3 = { version = "=0.29.3", features = ["abi3-py310", "auto-initialize"] }
 

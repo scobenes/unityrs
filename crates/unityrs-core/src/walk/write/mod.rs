@@ -83,13 +83,46 @@ pub fn write(
     ctx: &WriteCtx<'_>,
     out: &mut DecodeBuf,
 ) -> Result<(), WriteError> {
+    write_at(parsed, tree, ctx, out, out.len())
+}
+
+/// Append an object while aligning relative to a caller's stream origin.
+/// UnityPy's supplied writer aligns its complete stream, including any prefix
+/// (`streams/EndianBinaryWriter.py:88-97`). An origin past the current output
+/// refuses before writing. [`write`] retains object-relative alignment.
+pub fn write_at(
+    parsed: &Parsed,
+    tree: &Tree,
+    ctx: &WriteCtx<'_>,
+    out: &mut DecodeBuf,
+    alignment_origin: usize,
+) -> Result<(), WriteError> {
+    write_at_with_lengths(parsed, tree, ctx, out, alignment_origin, &|_| None)
+}
+
+/// Append a Python writer snapshot whose protocol lengths may differ from
+/// storage sizes. Overrides affect only length prefixes; all retained bytes
+/// and yielded elements still count toward work and output limits.
+pub fn write_at_with_lengths(
+    parsed: &Parsed,
+    tree: &Tree,
+    ctx: &WriteCtx<'_>,
+    out: &mut DecodeBuf,
+    alignment_origin: usize,
+    lengths: &dyn Fn(&Value) -> Option<usize>,
+) -> Result<(), WriteError> {
+    if alignment_origin > out.len() {
+        return Err(WriteError::OutOfRange {
+            node: RawStr::from_static(b"writer alignment origin"),
+        });
+    }
     let meter = out.meter().clone();
     let open = OpenWork::start(&meter).map_err(WriteError::Limit)?;
-    let base = out.len();
     let mut w = Writer {
         parsed,
+        lengths,
         out,
-        base,
+        base: alignment_origin,
         big: ctx.endian == crate::stream::Endian::Big,
         mirror: match ctx.rules {
             WriteRules::UnityPy => None,
@@ -116,9 +149,9 @@ pub fn write(
 
 struct Writer<'a, 'o> {
     parsed: &'a Parsed,
+    lengths: &'o dyn Fn(&Value) -> Option<usize>,
     out: &'o mut DecodeBuf,
-    /// Where this object's bytes start in `out` (`align_stream` aligns the
-    /// writer's own stream, which starts at the object).
+    /// Alignment origin of the caller's stream within `out`.
     base: usize,
     big: bool,
     /// The reader whose rules [`WriteRules::MirrorReader`] writes by (the
@@ -158,6 +191,15 @@ enum Data {
 }
 
 impl<'a> Writer<'a, '_> {
+    fn logical_len(&self, value: Obj<'_>) -> Option<usize> {
+        if let Obj::V(value) = value
+            && let Some(len) = (self.lengths)(value)
+        {
+            return Some(len);
+        }
+        Self::len(value)
+    }
+
     fn name(tree: &Tree, node: NodeId) -> RawStr {
         tree.list()
             .row(node)
@@ -211,7 +253,7 @@ impl<'a> Writer<'a, '_> {
     }
 
     /// `align_stream` (`EndianBinaryWriter.py:94-97`): zeros to a multiple
-    /// of 4 from the object's start.
+    /// of 4 from the selected stream origin.
     fn align(&mut self) -> Result<(), WriteError> {
         let pos = self.out.len().saturating_sub(self.base);
         let pad = (4 - pos % 4) % 4;
@@ -332,7 +374,12 @@ impl<'a> Writer<'a, '_> {
     /// body).
     fn string(&mut self, tree: &Tree, node: NodeId, o: Obj<'a>) -> Result<(), WriteError> {
         let s = Self::as_str(o).ok_or_else(|| Self::mismatch(tree, node, "str"))?;
-        self.write_int(s.len(), tree, node)?;
+        let len = match o {
+            Obj::V(value) => (self.lengths)(value),
+            _ => None,
+        }
+        .unwrap_or(s.len());
+        self.write_int(len, tree, node)?;
         self.put_counted(s)?;
         if s.is_empty() && self.mirror == Some(ReadBy::Python) {
             return Ok(());
@@ -346,7 +393,12 @@ impl<'a> Writer<'a, '_> {
         let Obj::V(Value::Bytes(b)) = o else {
             return Err(Self::mismatch(tree, node, "bytes"));
         };
-        self.write_int(b.len(), tree, node)?;
+        let len = match o {
+            Obj::V(value) => (self.lengths)(value),
+            _ => None,
+        }
+        .unwrap_or(b.len());
+        self.write_int(len, tree, node)?;
         self.put_counted(b)
     }
 
@@ -392,7 +444,9 @@ impl<'a> Writer<'a, '_> {
             // `:429-435`, W5.
             align |= tree.info(array).is_some_and(|i| i.align);
             self.str_work(o)?;
-            let n = Self::len(o).ok_or_else(|| Self::mismatch(tree, node, "a sized iterable"))?;
+            let n = self
+                .logical_len(o)
+                .ok_or_else(|| Self::mismatch(tree, node, "a sized iterable"))?;
             self.write_int(n, tree, node)?;
             let elem = tree
                 .list()

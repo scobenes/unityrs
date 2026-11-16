@@ -2,7 +2,7 @@
 //! Legacy directory and header (`files/BundleFile.py:395-487`). The version
 //! guard is removed for Tier C writing; formats 4+ retain their hash and CRC.
 use super::write::{add, aligned};
-use super::{BundleFile, LayoutKind};
+use super::{BundleFile, BundleHeader, LayoutKind};
 use crate::codec::{Codec, encode};
 use crate::files::save::{SaveError, SaveLayout, SaveOptions, Writer, narrow, required};
 use crate::stream::Endian;
@@ -13,16 +13,48 @@ impl BundleFile {
     /// directory padded to four bytes. UnityWeb uses a size-prefixed raw
     /// LZMA1 stream. Format 6 belongs to `save_fs` instead.
     pub fn save_web_raw(&self, options: SaveOptions) -> Result<Bytes, SaveError> {
-        self.save_version()?;
-        if self.header.layout != LayoutKind::WebRaw {
+        self.save_web_raw_impl(options, None, &self.header)
+    }
+
+    /// Save legacy layout using caller-owned, metered serialized child snapshots.
+    pub fn save_web_raw_with_entries(
+        &self,
+        options: SaveOptions,
+        entries: &[(crate::RawStr, u32, Bytes)],
+    ) -> Result<Bytes, SaveError> {
+        self.save_web_raw_impl(options, Some(entries), &self.header)
+    }
+
+    /// Save a charged legacy directory and current caller-owned header.
+    pub fn save_web_raw_with_snapshot(
+        &self,
+        options: SaveOptions,
+        entries: &[(crate::RawStr, u32, Bytes)],
+        header: &BundleHeader,
+    ) -> Result<Bytes, SaveError> {
+        self.save_web_raw_impl(options, Some(entries), header)
+    }
+
+    pub(super) fn save_web_raw_impl(
+        &self,
+        options: SaveOptions,
+        entries: Option<&[(crate::RawStr, u32, Bytes)]>,
+        header: &BundleHeader,
+    ) -> Result<Bytes, SaveError> {
+        Self::save_version(header)?;
+        if header.layout != LayoutKind::WebRaw {
             return Err(SaveError::Unsupported("legacy layout on an FS bundle"));
         }
         let mut directory_size = 4usize;
-        let cabs = self.writeable_cabs()?;
+        let cabs = if entries.is_some() {
+            crate::limits::MeteredVec::new(self.meter())
+        } else {
+            self.writeable_cabs()?
+        };
         for cab in cabs.as_slice() {
             cab.validate_name(options.layout, false)?;
         }
-        for slot in &self.files {
+        for slot in self.files.iter().filter(|_| entries.is_none()) {
             self.meter().count_decode(8)?;
             let nul = usize::from(
                 options.layout != SaveLayout::Semantic
@@ -37,11 +69,24 @@ impl BundleFile {
             );
             directory_size = add(directory_size, add(cab.name().len(), 8 + nul)?)?;
         }
+        if let Some(entries) = entries {
+            for (name, _, _) in entries {
+                self.meter().count_decode(8)?;
+                let nul = usize::from(
+                    options.layout != SaveLayout::Semantic
+                        || name.len() != crate::stream::STRING_TO_NULL_WINDOW,
+                );
+                directory_size = add(directory_size, add(name.len(), 8 + nul)?)?;
+            }
+        }
         directory_size = aligned(directory_size, 4)?;
         let mut directory = Writer::metadata(self.meter(), Endian::Big, options.layout)?;
         let mut payload = Writer::new(self.meter(), Endian::Big)?;
-        directory.count(add(self.files.len(), cabs.len())?)?;
-        for slot in &self.files {
+        directory.count(entries.map_or_else(
+            || add(self.files.len(), cabs.len()),
+            |entries| Ok(entries.len()),
+        )?)?;
+        for slot in self.files.iter().filter(|_| entries.is_none()) {
             self.meter().count_decode(8)?;
             let bytes = self.save_child(slot.dir_index, options)?;
             directory.cstr(slot.name.as_bytes())?;
@@ -51,6 +96,18 @@ impl BundleFile {
             )?)?;
             directory.u32(narrow(bytes.len(), "legacy entry size")?)?;
             payload.bytes(&bytes)?;
+        }
+        if let Some(entries) = entries {
+            for (name, _, bytes) in entries {
+                self.meter().count_decode(8)?;
+                directory.cstr(name.as_bytes())?;
+                directory.u32(narrow(
+                    add(directory_size, payload.len())?,
+                    "legacy entry offset",
+                )?)?;
+                directory.u32(narrow(bytes.len(), "legacy entry size")?)?;
+                payload.bytes(bytes)?;
+            }
         }
         for cab in cabs.as_slice() {
             let bytes = cab.save()?;
@@ -67,8 +124,18 @@ impl BundleFile {
         // there is no unterminated string at the end of this directory.
         directory.bytes(payload.slice())?;
         drop(payload);
+        self.save_legacy_content(options, directory_size, directory, header)
+    }
+
+    fn save_legacy_content(
+        &self,
+        options: SaveOptions,
+        directory_size: usize,
+        directory: Writer,
+        header: &BundleHeader,
+    ) -> Result<Bytes, SaveError> {
         let uncompressed_size = directory.len();
-        let data = if self.header.signature.as_bytes() == b"UnityWeb" {
+        let data = if header.signature.as_bytes() == b"UnityWeb" {
             let compressed = encode::compress(directory.slice(), Codec::Lzma, self.meter())?;
             let mut prefixed = Writer::new(self.meter(), Endian::Little)?;
             prefixed.bytes(required(compressed.get(..5), "LZMA properties")?)?;
@@ -78,8 +145,8 @@ impl BundleFile {
         } else {
             directory.finish()?
         };
-        let mut out = self.save_header(options)?;
-        let version = self.header.format;
+        let mut out = self.save_header(options, header)?;
+        let version = header.format;
         let extra = 24
             + usize::from(version >= 2) * 4
             + usize::from(version >= 3) * 4
@@ -87,8 +154,8 @@ impl BundleFile {
         let header_size = aligned(add(out.len(), extra)?, 4)?;
         let total = narrow(add(header_size, data.len())?, "legacy bundle size")?;
         if version >= 4 {
-            out.bytes(&required(self.header.hash, "legacy hash")?)?;
-            out.u32(required(self.header.crc, "legacy CRC")?)?;
+            out.bytes(&required(header.hash, "legacy hash")?)?;
+            out.u32(required(header.crc, "legacy CRC")?)?;
         }
         out.u32(total)?;
         out.u32(narrow(header_size, "legacy header size")?)?;

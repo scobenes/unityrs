@@ -19,7 +19,7 @@ def object_with_int(limits=None):
     return unityrs.Environment(data, limits=limits).objects[0]
 
 
-def test_row_copy_releases_gil_between_python_extractions():
+def test_row_copy_releases_gil_between_python_extractions(save=False):
     """Invoked by the Rust test harness, which supplies the cfg(test) barrier."""
     import threading
     from unityrs import _native
@@ -55,7 +55,10 @@ def test_row_copy_releases_gil_between_python_extractions():
     interval = sys.getswitchinterval()
     sys.setswitchinterval(30)
     try:
-        assert obj._native.parse_nodes(True, rows()) == {"value": 7}
+        if save:
+            assert obj._native.save_typetree({"value": 13}, rows(), 8192) == struct.pack("<i", 13)
+        else:
+            assert obj._native.parse_nodes(True, rows()) == {"value": 7}
     finally:
         sys.setswitchinterval(interval)
         thread.join()

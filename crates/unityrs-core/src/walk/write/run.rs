@@ -168,7 +168,9 @@ impl<'a> Writer<'a, '_> {
                 return w.class(tree, node, o, false);
             };
             w.str_work(o)?;
-            let n = Self::len(o).ok_or_else(|| Self::mismatch(tree, node, "a sized iterable"))?;
+            let n = w
+                .logical_len(o)
+                .ok_or_else(|| Self::mismatch(tree, node, "a sized iterable"))?;
             w.write_int(n, tree, node)?;
             let sub = tree
                 .list()

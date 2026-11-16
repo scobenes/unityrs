@@ -90,6 +90,13 @@ pub trait Observer: Send + Sync {
     fn taken(&self, _: Option<Stop>) {}
     /// After the finisher, while the parked owners are still alive.
     fn finished(&self, _: &finish::Finished) {}
+    /// Test-only teardown schedule. Completed workers and stage owners retire
+    /// first; the callback can drive the still-live reactor before the real
+    /// registered wakes and runtime are dropped. Production never installs it.
+    #[cfg(feature = "test-hooks")]
+    fn test_before_wake_drop(&self) -> Option<fn(&tokio::runtime::Runtime)> {
+        None
+    }
 }
 /// The library body's own seams, between the controller's and publication's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -287,6 +294,20 @@ pub fn drive_with(
         store.head_run.lock().take();
     }
     drop(handover);
+    #[cfg(feature = "test-hooks")]
+    if let Some(before_wakes) = options.observer.test_before_wake_drop() {
+        if let Some(execution) = parked.execution.as_mut() {
+            execution
+                .test_retire_workers()
+                .map_err(|_| Error::internal())?;
+        }
+        drop(parked.owners.take());
+        drop(parked.owned.take());
+        if let Some(runtime) = parked.execution.as_ref().and_then(Execution::runtime) {
+            before_wakes(runtime);
+        }
+        drop(parked.residue.take());
+    }
     // The owners outlive the finisher, as the process host's do until _exit.
     drop(parked);
     Ok(finished.end)

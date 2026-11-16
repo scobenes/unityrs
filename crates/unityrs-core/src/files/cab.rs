@@ -39,7 +39,9 @@ impl std::fmt::Debug for WriteableCab {
 }
 
 impl WriteableCab {
-    fn new(
+    /// Create an empty writer owned by a caller-managed file mapping.
+    /// The caller supplies resource metadata from its current mapping.
+    pub fn new(
         name: RawStr,
         flags: u32,
         endian: Endian,
@@ -103,6 +105,27 @@ impl WriteableCab {
         let at = super::save::narrow(data.len(), "CAB offset")?;
         data.bytes(bytes)?;
         Ok(at)
+    }
+    /// Write at a caller-selected cursor, retaining the tail and zero-filling
+    /// any gap. A refused growth or work charge leaves the bytes unchanged.
+    pub fn write_at(&self, offset: u64, bytes: &[u8]) -> Result<(), SaveError> {
+        let offset = super::save::narrow(offset, "CAB offset")?;
+        lock(&self.0.data).write_at(offset, bytes)
+    }
+    /// Current payload length without materializing a snapshot.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        lock(&self.0.data).len()
+    }
+    /// Whether the resource contains no bytes.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Write zero padding at a selected cursor, charging before growth.
+    pub fn write_zeroes_at(&self, offset: u64, count: usize) -> Result<(), SaveError> {
+        let offset = super::save::narrow(offset, "CAB offset")?;
+        lock(&self.0.data).write_zeroes_at(offset, count)
     }
     /// Write a signed integer using the inherited endian.
     pub fn write_i32(&self, value: i32) -> Result<(), SaveError> {

@@ -1,7 +1,7 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/helpers/Tpk.py. See THIRD_PARTY_LICENSES.
 //! Reuse the core's metered LZ4 decoder for caller-supplied generator TPKs.
 use crate::{errors, python as p};
-use pyo3::{prelude::*, pybacked::PyBackedBytes};
+use pyo3::prelude::*;
 use unityrs_core::{
     Bytes, LimitKind,
     budget::DecodeBuf,
@@ -12,17 +12,20 @@ use unityrs_core::{
 #[pyfunction]
 pub(crate) fn class_tpk_lz4(
     py: Python<'_>,
-    data: PyBackedBytes,
+    data: &Bound<'_, PyAny>,
     decoded: u32,
 ) -> PyResult<Py<PyAny>> {
+    const CAP: u64 = 256 << 20;
+    let meter = Meter::unlimited();
+    let _view_charge = meter.charge(256).map_err(errors::charge)?;
+    let view = pyo3::types::PyMemoryView::from(data)?;
+    if view.getattr("nbytes")?.extract::<u64>()? > CAP || u64::from(decoded) > CAP {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "TPK exceeds 256 MiB",
+        ));
+    }
+    let data = crate::buffer_snapshot::BufferSnapshot::new(data, &meter)?;
     py.detach(|| {
-        const CAP: u64 = 256 << 20;
-        if data.len() as u64 > CAP || u64::from(decoded) > CAP {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "TPK exceeds 256 MiB",
-            ));
-        }
-        let meter = Meter::unlimited();
         let input = Bytes::from_owner(data);
         let mut out =
             DecodeBuf::new(&meter, 0, CAP, LimitKind::BlockOutput).map_err(errors::charge)?;

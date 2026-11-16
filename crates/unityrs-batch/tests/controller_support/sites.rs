@@ -17,6 +17,9 @@ use std::sync::{
     Mutex, PoisonError,
     atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering::SeqCst},
 };
+#[path = "site_diagnostics.rs"]
+mod diagnostics;
+pub use diagnostics::{census_only, diagnose};
 
 /// Return addresses a key reads, from the hook's own frames down.
 const DEPTH: usize = 64;
@@ -50,7 +53,7 @@ fn walk(frames: &mut [*mut libc::c_void; DEPTH]) -> usize {
 /// address), hashed (FNV-1a). Neither `backtrace` nor `dladdr` allocates
 /// through Rust's allocator; the caller's tracing flag passes any
 /// allocation they make.
-fn key() -> u64 {
+fn key() -> (u64, [*mut libc::c_void; DEPTH], usize) {
     let mut frames = [std::ptr::null_mut(); DEPTH];
     let filled = walk(&mut frames);
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -68,7 +71,7 @@ fn key() -> u64 {
             hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
         }
     }
-    hash
+    (hash, frames, filled)
 }
 
 /// Keys a url scope's child, before its arm, from its environment: aimed
@@ -115,7 +118,7 @@ pub fn keyed() -> bool {
 /// whether this is the one the child refuses. The census counts it
 /// instead.
 pub fn refuses() -> bool {
-    let key = key();
+    let (key, frames, filled) = key();
     match MODE.load(SeqCst) {
         AIMED => key == TARGET.load(SeqCst) && MET.fetch_add(1, SeqCst) + 1 == NTH.load(SeqCst),
         BEYOND => {
@@ -124,14 +127,17 @@ pub fn refuses() -> bool {
                 && MET.compare_exchange(0, 1, SeqCst, SeqCst).is_ok();
             if refused {
                 eprintln!("CONTROLLER_BEYOND key={key:016x}");
+                diagnostics::record(key, &frames[..filled]);
             }
             refused
         }
         _ => {
             let mut counts = COUNTS.lock().unwrap_or_else(PoisonError::into_inner);
-            match counts.iter_mut().find(|(k, _)| *k == key) {
-                Some((_, count)) => *count += 1,
-                None => counts.push((key, 1)),
+            if let Some((_, count)) = counts.iter_mut().find(|(k, _)| *k == key) {
+                *count += 1;
+            } else {
+                counts.push((key, 1));
+                diagnostics::record(key, &frames[..filled]);
             }
             false
         }

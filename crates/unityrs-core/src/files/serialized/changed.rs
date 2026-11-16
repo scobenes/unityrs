@@ -21,6 +21,21 @@ impl SerializedFile {
         self.changed.store(true, Ordering::Release);
     }
 
+    pub(crate) fn clear_raw_data(&self, index: u32) {
+        let mut edits = self
+            .edits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Ok(at) = edits.as_slice().binary_search_by_key(&index, |(i, _)| *i)
+            && let Some(tail) = edits.as_mut_slice().get_mut(at..)
+        {
+            tail.rotate_left(1);
+            edits.pop();
+        }
+        drop(edits);
+        self.mark_changed();
+    }
+
     pub(crate) fn set_raw_data(&self, index: u32, data: &[u8]) -> Result<(), SaveError> {
         if self.object_infos.get(index as usize).is_none() {
             return Err(SaveError::Missing("object row"));

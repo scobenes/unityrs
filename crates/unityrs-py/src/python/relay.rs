@@ -1,7 +1,7 @@
 //! Synchronous warning callbacks run on the original Python caller thread.
 //! The relay is stack-owned by a scoped worker; it allocates no channel,
 //! closure or request buffer. No relay lock is held across Python code.
-use pyo3::{prelude::*, pybacked::PyBackedBytes};
+use pyo3::{prelude::*, pybacked::PyBackedBytes, types::PyBytes};
 use std::{
     cell::Cell,
     sync::{Condvar, Mutex},
@@ -95,11 +95,14 @@ impl Relay {
 
 fn emit(value: &RawStr, bundle: bool) -> PyResult<(RawStr, bool)> {
     Python::attach(|py| {
-        let (bytes, parse_typetree): (PyBackedBytes, bool) = py
+        // This private protocol returns immutable encoded bytes. Extract the
+        // exact owner, never PyBackedBytes' infallible mutable-buffer copy.
+        let (bytes, parse_typetree): (Py<PyBytes>, bool) = py
             .import("unityrs.config")?
             .getattr("_warn_fallback")?
             .call1((super::string(value.as_bytes())?, bundle))?
             .extract()?;
+        let bytes = PyBackedBytes::from(bytes.into_bound(py));
         Ok((
             RawStr::from(unityrs_core::Bytes::from_owner(bytes)),
             parse_typetree,

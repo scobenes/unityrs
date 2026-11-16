@@ -2259,6 +2259,56 @@ when socket pacing would otherwise avoid it. The multipart fixture is
 generated once outside the child
 runs, and uses fast PNG encoding to keep the scale sweep bounded in time.
 
+The store sweep also fixes its blocking-completion schedule, without changing
+the stack hash or weakening occurrence coverage. The publication scheduler
+polls transfers both after admission and on later turns. An already completed
+payload-open or chunk task could continue in the admission poll; otherwise
+the same request allocations ran from the later poll's distinct return
+address. The test-only `execution::schedule` hook makes payload open, chunk
+and reopen tasks yield once before observing their result. Every child thus
+continues those tasks from the same poll site, independently of worker speed.
+URL staging already has one transfer poll site; its explicit read schedules
+remain separate from this store payload schedule.
+
+Teardown has its own deterministic custody schedule
+(`controller_support/store_schedule.rs`). The exempt observer retains the
+store until retiring workers release their references, then the sweep thread
+drops it while allocation refusal is still armed. An idle finisher reactor
+registration, including its primed Darwin waiters mutex, remains alive through
+that drop. Tokio's existing inventoried shutdown collection must therefore
+run, instead of depending on whether the last real socket was purged or a
+worker happened to drop the last owner. Only the test descriptors are dropped
+after disarming. Both schedules use state transitions, with the testkit's
+deadlock guard bounding the wait for retiring owners. No exclusion is added.
+
+On Linux, `UNITYRS_CONTROLLER_STACKS=1` enables exact key diagnostics. The
+child records each census stack and every newly refused settling stack behind
+the allocator's tracing pass-through. The parent uses binutils `addr2line`
+against each frame's owning image to print symbol names for census-only keys
+and every settling key, with the closest census stack for comparison.
+Symbolization never enters the counted child allocator.
+
+The through-teardown `url-fail` scope also controls reactor retirement.
+Tokio's IO turn takes its pending-release vector, including the capacity;
+whether the last socket was purged therefore used to decide whether dropping
+the real registered wakes grew that vector. Its opt-in observer now retires
+completed workers and stage/socket owners after the finisher, runs one exempt
+current-thread reactor yield, then drops the real residue wakes and runtime
+while refusal remains armed. The exempt yield runs only harness work: engine
+URL futures are manually polled and are no longer runnable. This holds the
+existing wake-deregistration and runtime-shutdown entries to staleness in
+every child without adding an exclusion or accepting a missing entry.
+
+The Linux `sweep`-profile census with these schedules, including counted
+teardown, is below. The executable exclusion inventory remains 128 entries
+(119 All and 9 Darwin); neither the hash algorithm nor the exclusions changed.
+
+| scope | census allocations | census keys |
+|---|---:|---:|
+| `store` | 1,456 | 835 |
+| `store-resume` | 1,776 | 820 |
+| `store-multipart` | 2,377 | 1,446 |
+
 The sweep also fixes three engine allocation paths: connector and
 credential-provider futures use fallible boxes with zero-sized error
 fallbacks; create-response storage is charged and allocated before the

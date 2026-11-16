@@ -8,6 +8,8 @@ use crate::{
     sys::Wake,
     worker::{self, Dispatch},
 };
+#[cfg(feature = "test-hooks")]
+pub mod schedule;
 pub(crate) mod startup;
 use std::{
     io,
@@ -319,13 +321,23 @@ impl Execution {
     /// Explicit test/host quiescence, after all held work has been released.
     /// This can wait; it must never be called on the stop/handover path.
     pub fn quiesce(&mut self) -> Result<(), SetupError> {
+        self.retire_workers()?;
+        // An owned runtime's drop waits for released pool work, including
+        // late results still owned by the controller's measured slots.
+        drop(self.runtime.take());
+        Ok(())
+    }
+    /// Test-only retirement after the finisher, retaining the reactor while
+    /// the harness drops parked IO owners in a deterministic order.
+    #[cfg(feature = "test-hooks")]
+    pub fn test_retire_workers(&mut self) -> Result<(), SetupError> {
+        self.retire_workers()
+    }
+    fn retire_workers(&mut self) -> Result<(), SetupError> {
         self.dispatch.take();
         for worker in self.workers.drain(..) {
             worker.join().map_err(|_| SetupError::Execution)?;
         }
-        // An owned runtime's drop waits for released pool work, including
-        // late results still owned by the controller's measured slots.
-        drop(self.runtime.take());
         Ok(())
     }
 }

@@ -38,15 +38,18 @@ pub(super) fn export(
     let mut buf = DecodeBuf::new(meter, 0, cap, LimitKind::BlockOutput)?;
     decode_block(Codec::Lz4, &Lz4, &input, size, &mut buf, cap)?;
     let program = Program::legacy(buf, meter).map_err(map)?;
-    let script = root.field("m_Script")?;
-    let script = match script.value {
-        Value::Str(s) => s.as_bytes(),
-        _ => return Err(Error::Field("m_Script")),
+    let script = root.optional("m_Script")?.ok_or(Error::NoneBytes)?;
+    let converted;
+    let script = if let Value::Str(s) = script.value {
+        s.as_bytes()
+    } else {
+        converted = bytes(script.value, meter)?;
+        converted.as_ref()
     };
     // UTF-8, marker/line searches, whitespace trimming and decimal syntax.
     // Each digit also searches the fixed Unicode Nd table (at most 7 steps).
     meter.count_decode((script.len() as u64).saturating_mul(16))?;
-    let mut rest = std::str::from_utf8(script).map_err(|_| Error::Utf8)?;
+    let mut rest = std::str::from_utf8(script).map_err(|_| super::utf8_error(script, meter))?;
     let mut out = Output::new(meter);
     out.text(super::HEADER)?;
     while let Some(start) = rest.find(MARKER) {
