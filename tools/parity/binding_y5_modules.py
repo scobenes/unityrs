@@ -168,7 +168,25 @@ def observe_export_modules(package):
     }
 
 
-def observe_texture_extension(package):
+def observe_untextured_material(package):
+    """Empty texture properties exercise the oracle's supported material path."""
+    from binding_y4_exports import _new
+    classes = _module(package, "classes")
+    exporter = _module(package, "export.MeshRendererExporter")
+    rows = []
+    for name, floats in (
+        ("plain", []),
+        ("polished", [("_Shininess", 7.5), ("_Transparency", 0.25)]),
+    ):
+        material = _new(classes.Material, m_Name=name,
+                        m_Shader=classes.PPtr(m_FileID=0, m_PathID=0),
+                        m_SavedProperties=_new(classes.UnityPropertySheet, m_TexEnvs=[],
+                            m_Colors=[], m_Floats=floats))
+        rows.append(exporter.export_material(material))
+    return rows
+
+
+def observe_texture_extension(package, platform=0, platform_blob=None):
     from PIL import Image
     module = _module(package, "export.Texture2DConverter")
     key = package.enums.TextureFormat.RGBA32
@@ -179,7 +197,7 @@ def observe_texture_extension(package):
         return Image.new("RGBA", (width, height), (11, 22, 33, 44))
     try:
         module.CONV_TABLE[key] = (conversion, ("custom",))
-        image = module.parse_image_data(bytes(16), 2, 2, key, (2020, 3, 0, 0), 0)
+        image = module.parse_image_data(bytes(16), 2, 2, key, (2020, 3, 0, 0), platform, platform_blob)
         return [calls, image.tobytes().hex()]
     finally:
         module.CONV_TABLE[key] = previous

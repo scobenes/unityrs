@@ -43,16 +43,16 @@ def export_obj(
     instance = obj.parse_as_object()
     if asset_filter and not asset_filter(instance):
         return []
-    text(guard, fp)
+    fp = _paths.destination(fp, guard)
     if append_name:
         name = getattr(instance, "m_Name", obj.type.name)
-        name = _paths.relative(name, guard)
+        name = _paths.leaf(name, guard, allow_empty=True)
         guard.step(0, (len(fp) + len(name)) * 8 + 256, 1)
         fp = os.path.join(fp, name)
     fp, extension = os.path.splitext(fp)
     if append_path_id:
         guard.step(0, len(fp) * 8 + 512, 1)
-        identity = _paths.relative(f"{obj.m_PathID}", guard)
+        identity = _paths.leaf(f"{obj.m_PathID}", guard)
         fp = f"{fp}_{identity}"
     return export_func(instance, fp, extension)
 
@@ -112,6 +112,7 @@ def extract_assets(
     return exported
 
 
+@_paths.exporter
 def exportTextAsset(obj: Union[TextAsset, ObjectReader], fp: str,
                     extension: str = ".txt") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
@@ -125,6 +126,7 @@ def exportTextAsset(obj: Union[TextAsset, ObjectReader], fp: str,
     return [(obj.assets_file, obj.object_reader.path_id)]
 
 
+@_paths.exporter
 def exportFont(obj: Union[Font, ObjectReader], fp: str,
                extension: str = "") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
@@ -138,6 +140,7 @@ def exportFont(obj: Union[Font, ObjectReader], fp: str,
     return [(obj.assets_file, obj.object_reader.path_id)]
 
 
+@_paths.exporter
 def exportMesh(obj: Union[Mesh, ObjectReader], fp: str, extension=".obj") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
         obj = obj.parse_as_object()
@@ -151,6 +154,7 @@ def exportMesh(obj: Union[Mesh, ObjectReader], fp: str, extension=".obj") -> Lis
     return [(obj.assets_file, obj.object_reader.path_id)]
 
 
+@_paths.exporter
 def exportShader(obj: Union[Shader, ObjectReader], fp: str, extension=".txt") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
         obj = obj.parse_as_object()
@@ -164,6 +168,7 @@ def exportShader(obj: Union[Shader, ObjectReader], fp: str, extension=".txt") ->
     return [(obj.assets_file, obj.object_reader.path_id)]
 
 
+@_paths.exporter
 def exportMonoBehaviour(obj: Union[MonoBehaviour, ObjectReader], fp: str,
                         extension: str = "") -> List[Tuple[SerializedFile, int]]:
     reader = obj.object_reader if isinstance(obj, MonoBehaviour) else obj
@@ -183,6 +188,7 @@ def exportMonoBehaviour(obj: Union[MonoBehaviour, ObjectReader], fp: str,
     return [(obj.assets_file, obj.path_id)]
 
 
+@_paths.exporter
 def exportAudioClip(obj: Union[AudioClip, ObjectReader], fp: str,
                     extension: str = "") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
@@ -199,7 +205,7 @@ def exportAudioClip(obj: Union[AudioClip, ObjectReader], fp: str,
         pending = []
         for name, clip_data in samples.items():
             guard.step(0, 128, 1)
-            pending.append((_paths.relative(name, guard), clip_data))
+            pending.append((_paths.leaf(name, guard), clip_data))
         _paths.mkdir(fp, guard)
         for name, clip_data in pending:
             text(guard, name)
@@ -208,6 +214,7 @@ def exportAudioClip(obj: Union[AudioClip, ObjectReader], fp: str,
     return [(obj.assets_file, obj.path_id)]
 
 
+@_paths.exporter
 def exportSprite(obj: Union[Sprite, ObjectReader], fp: str,
                  extension: str = ".png") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
@@ -225,6 +232,7 @@ def exportSprite(obj: Union[Sprite, ObjectReader], fp: str,
     return exported
 
 
+@_paths.exporter
 def exportTexture2D(obj: Union[Texture2D, ObjectReader], fp: str,
                     extension: str = ".png") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
@@ -236,6 +244,7 @@ def exportTexture2D(obj: Union[Texture2D, ObjectReader], fp: str,
     return [(obj.assets_file, obj.object_reader.path_id)]
 
 
+@_paths.exporter
 def exportGameObject(obj: Union[GameObject, ObjectReader], fp: str,
                      extension: str = "") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
@@ -243,6 +252,15 @@ def exportGameObject(obj: Union[GameObject, ObjectReader], fp: str,
     guard = guard_for(obj)
     exported = [(obj.assets_file, obj.object_reader.path_id)]
     refs = crawl_obj(obj)
+    # Preflight every referenced object's name, including material names,
+    # before creating the graph's directory or publishing any earlier export.
+    for ref_id, ref in refs.items():
+        if (ref.assets_file, ref_id) in exported:
+            continue
+        reader = ref.deref() if isinstance(ref, PPtr) else ref
+        name = reader.peek_name() if isinstance(reader, ObjectReader) else getattr(reader, "m_Name", None)
+        if name is not None:
+            _paths.leaf(name, guard, allow_empty=True)
     if refs:
         _paths.mkdir(fp, guard)
     for ref_id, ref in refs.items():

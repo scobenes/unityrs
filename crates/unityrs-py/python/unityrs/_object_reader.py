@@ -16,11 +16,11 @@ class ObjectFileReader(EndianBinaryReader):
 
     def __init__(self, native):
         self._native = native
-        self.Length, endian, self._stream_kind = native.serialized_reader_info()
-        self._position = 0
+        self.Length, endian, self._stream_kind, initial_position = native.serialized_reader_info()
         self._array_staging = None
         self.stream = self
         super().__init__(None, endian=endian)
+        self._position = initial_position
 
     @property
     def Position(self):

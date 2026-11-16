@@ -16,7 +16,7 @@ impl NativeFile {
 }
 #[pymethods]
 impl NativeFile {
-    fn serialized_reader_info(&self, py: Python<'_>) -> PyResult<(usize, char, bool)> {
+    fn serialized_reader_info(&self, py: Python<'_>) -> PyResult<(usize, char, bool, i128)> {
         py.detach(|| {
             let File::Serialized(file) = &self.inner else {
                 return Err(pyo3::exceptions::PyAttributeError::new_err(
@@ -31,6 +31,7 @@ impl NativeFile {
                     '>'
                 },
                 file.reader_kind() == unityrs_core::stream::ReaderKind::Stream,
+                file.reader_position(),
             ))
         })
     }

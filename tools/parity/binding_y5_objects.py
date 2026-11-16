@@ -94,11 +94,16 @@ def _base_math(module, reader):
 def observe_forwarding(module):
     file = _load(module, _asset())
     obj = file.objects[1]
+    initial = [file.reader.Position, obj.Position]
+    initial_read = obj.read_bytes(4).hex()
+    after_initial_read = [file.reader.Position, obj.Position]
     obj.reset()
     start = obj.Position
     value = obj.read_int()
     data = obj.get_raw_data()
-    result = {'endian': obj.endian, 'value': value, 'delta': obj.Position - start,
+    result = {'initial_position': initial, 'initial_read': initial_read,
+              'after_initial_read': after_initial_read,
+              'endian': obj.endian, 'value': value, 'delta': obj.Position - start,
               'raw': data.hex(), 'after_raw': obj.Position - start,
               'missing': obj.get('no_such_attribute', 123), 'has_missing': hasattr(obj, 'no_such_attribute'),
               'version': [obj.version2, int(obj.platform)],
@@ -114,6 +119,9 @@ def observe_forwarding(module):
     unknown = _load(module, S.serialized_file([S.Type(1234567, S.Node('Y5Unknown', 'Base'))],
                                              [S.Obj(1, 0, b'')])).objects[1]
     result['unknown_class'] = unknown.get_class()
+    eager = _load(module, _container_asset('same', 1))
+    result['eager_initial_position'] = [eager.reader.Position, eager.objects[9].Position]
+    result['eager_initial_read'] = eager.reader.read(4).hex()
     return result
 
 

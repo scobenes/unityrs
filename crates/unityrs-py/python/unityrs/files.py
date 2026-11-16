@@ -151,16 +151,18 @@ def _writer_text(value, guard):
 class SerializedFile(File):
     @property
     def reader(self):
-        if '_reader' not in self.__dict__:
-            from ._object_reader import ObjectFileReader
-            guard = self._native.tree_traversal()
-            guard.step(0, 2048, 1)
-            self._reader = ObjectFileReader(self._native)
-        return self._reader
+        with (self.environment._lock if self.environment is not None else nullcontext()):
+            if '_reader' not in self.__dict__:
+                from ._object_reader import ObjectFileReader
+                guard = self._native.tree_traversal()
+                guard.step(0, 2048, 1)
+                self._reader = ObjectFileReader(self._native)
+            return self._reader
 
     @reader.setter
     def reader(self, value):
-        self._reader = value
+        with (self.environment._lock if self.environment is not None else nullcontext()):
+            self._reader = value
 
     @property
     def container(self):

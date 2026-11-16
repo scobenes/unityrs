@@ -76,3 +76,36 @@ class Tools(unittest.TestCase):
         env = unityrs.Environment()
         self.assertEqual(len(env.container), 0)
         self.assertIsNone(env.typetree_generator)
+
+    def test_direct_extension_escape_is_refused_before_creating(self):
+        from unityrs.tools import exportTextAsset
+        with scratch.folder("wheel-direct-path-") as folder:
+            (folder / "out").mkdir()
+            (folder / "out/name").mkdir()
+            obj = unityrs.Environment(self.text()).objects[0]
+            with self.assertRaises(ValueError):
+                exportTextAsset(obj, str(folder / "out/name"), "/../../outside")
+            self.assertEqual(sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*")),
+                             ["out", "out/name"])
+
+    def test_direct_destination_format_override_is_not_called(self):
+        from unityrs.tools import exportTextAsset
+        class Destination(str):
+            def __format__(self, spec):
+                raise AssertionError("caller formatting must not run")
+        with scratch.folder("wheel-direct-format-") as folder:
+            obj = unityrs.Environment(self.text()).objects[0]
+            exportTextAsset(obj, Destination(str(folder / "name")))
+            self.assertEqual((folder / "name.txt").read_bytes(), b"body")
+
+    def test_missing_destination_is_ignored_after_filters_and_dispatch(self):
+        from binding_y5_review import observe_destination_order
+        observation = observe_destination_order(unityrs)
+        for key, value in observation.items():
+            self.assertEqual(value, False if key.endswith("_exists") else {"value": ["list", []]})
+
+    def test_failed_image_keeps_existing_file_and_removes_temporary(self):
+        from binding_y5_review import observe_failed_image
+        observation = observe_failed_image(unityrs)
+        self.assertTrue(observation["preserved"])
+        self.assertEqual(observation["leaves"], ["image.png"])

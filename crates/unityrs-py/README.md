@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=70
+python scripts/unittest-suites crates/unityrs-py/python/tests=79
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=198
+python ../../scripts/unittest-suites bindings=212
 ```
 
-The recorder writes 143 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups and 29 tools/module/loader groups),
+The recorder writes 146 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups and 32 tools/module/loader groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 70 tests and the oracle comparison has 198; CI enforces both
+The wheel suite has 79 tests and the oracle comparison has 212; CI enforces both
 minimum counts. Warning handlers run on the calling Python thread before a
 fallback load is published, including handlers that re-enter the environment.
 
@@ -190,7 +190,22 @@ The tools surface exposes `export_obj`, `extract_assets`, `exportTextAsset`,
 The facade uses the existing bounded class exporters. E4's native extractor has
 intentional corrections to the oracle's graph and naming behavior; the Python
 facade retains the recorded oracle behavior while using confined destination
-writes. Hostile names and existing symlink directories are refused.
+writes. All nine direct exporters anchor the destination before formatting,
+normalize destination and extension subclasses to exact strings, and validate
+appended leaf names and extensions before creating output. Hostile names and
+existing symlink directories are refused, including audio sample names and
+GameObject mesh/material names. Destination opening follows filters and dispatch;
+ignored or filtered objects do not require an existing destination. Shared file
+readers start at the actual post-load cursor, including eager AssetBundle reads,
+and the environment lock covers their construction and publication.
+
+Failed image exports retain the previous file and remove their temporary sibling.
+This is a documented safety divergence: Pillow can leave a partial destination
+in UnityPy (33 bytes for a zero-height RGBA PNG). The oracle observation and our
+preserved file both replay. The deferred material adapter refuses textured
+materials with `NotImplementedError` naming `export_material` until Y6a; untextured
+materials replay. Replaced `CONV_TABLE` converters similarly refuse Switch-swizzled
+and crunch inputs with a named refusal until Y6b supplies their preprocessing.
 
 | behavior | UnityPy 1.25.2 source | PARITY.md rows |
 |---|---|---|

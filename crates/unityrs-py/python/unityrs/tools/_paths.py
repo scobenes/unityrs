@@ -2,11 +2,57 @@
 import contextlib
 import contextvars
 import os
+from functools import wraps
 
 from .._output import OutputDirectory, output_name
-from ._bounded import text
+from ._bounded import guard_for, text
 
 _root = contextvars.ContextVar("unityrs_extractor_root", default=None)
+
+
+def leaf(value, guard, *, allow_empty=False):
+    text(guard, value)
+    if allow_empty and isinstance(value, str) and str.__len__(value) == 0:
+        return ""
+    return output_name(value, guard=guard)
+
+
+def destination(value, guard):
+    value = os.fspath(value)
+    text(guard, value)
+    if not isinstance(value, str):
+        raise ValueError("asset destination must be a string")
+    return str.__getitem__(value, slice(None))
+
+
+def exporter(function):
+    """Anchor the caller's destination before processing any appended text.
+
+    The root opens lazily on the first write, after filters and dispatch. Both
+    destination and suffix are exact strings before the exporter can format
+    them; only caller-selected destination directories may contain separators.
+    """
+    @wraps(function)
+    def confined(obj, fp, *args, **kwargs):
+        guard = guard_for(obj)
+        fp = destination(fp, guard)
+        parent, name = os.path.split(fp)
+        # An empty object name can still produce a safe leaf such as .txt.
+        # file() validates the complete name after the exporter adds its suffix.
+        leaf(name, guard, allow_empty=True)
+        extension = args[0] if args else kwargs.get("extension", "")
+        extension = leaf(extension, guard, allow_empty=True)
+        if args:
+            args = (extension, *args[1:])
+        elif "extension" in kwargs:
+            kwargs["extension"] = extension
+        if _root.get() is not None:
+            return function(obj, fp, *args, **kwargs)
+        parent = parent or "."
+        fp = os.path.join(parent, name)
+        with root(parent, guard, create=False):
+            return function(obj, fp, *args, **kwargs)
+    return confined
 
 
 def relative(value, guard):
@@ -56,14 +102,15 @@ def _walk(path, guard, create=False, parent=None):
 
 @contextlib.contextmanager
 def root(directory, guard, create):
-    directory = os.fspath(directory)
-    fd = _walk(directory, guard, create)
-    token = _root.set((directory, fd))
+    directory = destination(directory, guard)
+    held = [directory, None, create]
+    token = _root.set(held)
     try:
         yield
     finally:
         _root.reset(token)
-        os.close(fd)
+        if held[1] is not None:
+            os.close(held[1])
 
 
 def _location(path, guard):
@@ -72,14 +119,17 @@ def _location(path, guard):
     if held is None:
         parent, leaf = os.path.split(path)
         return parent or ".", leaf, None
-    directory, fd = held
+    directory, fd, create = held
     prefix = directory.rstrip("/") + "/"
     if path == directory:
-        return "", "", fd
-    if not path.startswith(prefix):
-        raise ValueError("unsafe asset output name")
-    path = path[len(prefix):]
-    relative(path, guard)
+        path = ""
+    else:
+        if not path.startswith(prefix):
+            raise ValueError("unsafe asset output name")
+        path = path[len(prefix):]
+        relative(path, guard)
+    if fd is None:
+        held[1] = fd = _walk(directory, guard, create)
     parent, leaf = os.path.split(path)
     return parent, leaf, fd
 

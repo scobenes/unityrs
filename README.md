@@ -117,7 +117,14 @@ if the rename happened after extraction. A directory moved outside the `-o`
 pathname can therefore receive subsequent writes through its held descriptor;
 this does not grant access to a directory the renamer could not write to.
 Interrupted runs may leave
-`.unityrs-extract-*.tmp` files, safe to delete. Python exposure is Y5.
+`.unityrs-extract-*.tmp` files, safe to delete. The Python tools facade exposes
+the nine exporters and extraction helpers with the same destination confinement.
+It validates names and extensions before creating output, opens destinations only
+when dispatch and filters reach an export, and preserves existing files on failed
+image exports through atomic publication. Its 212 oracle comparisons and 79 wheel
+tests include hostile path, shared-reader cursor and concurrency regressions.
+Textured material adapters and replacement texture converters requiring Switch
+or crunch preprocessing have named refusals pending Y6a/Y6b.
 
 ## Licence
 

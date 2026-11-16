@@ -82,13 +82,14 @@ TOOLS = [("binding_y5_loader", "observe_" + name) for name in
     ("binding_y5_modules", "observe_" + name) for name in
     ("reexports", "streams", "module_tables", "primitive_maps", "compression",
      "texture_converter", "converter_helpers", "export_modules", "texture_extension", "decrypt_key",
-     "encrypted_load", "generator", "generator_cache")
-]
+     "encrypted_load", "generator", "generator_cache", "untextured_material")
+] + [("binding_y5_review", "observe_" + name) for name in ("destination_order", "failed_image")]
 
 
 def helper_records():
     import importlib
     references = {
+        ("binding_y5_review", "observe_failed_image"): "PARITY.md 19.3: failed image exports preserve existing files with atomic publication",
         ("binding_y5_objects", "observe_iteration"): "PARITY.md 19.2: file iteration follows nested containers and yields requested objects",
         ("binding_y4_images", "observe_set_image"): "PARITY.md 18.1: convert unsupported packer modes to RGBA",
         ("binding_y4_images", "observe_image_formats"): "PARITY.md 18.1: convert unsupported packer modes to RGBA",
