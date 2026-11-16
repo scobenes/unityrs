@@ -3,8 +3,8 @@
 use unityrs_core::limits::{Limits, heap_cost};
 
 use super::{
-    C_FIN, CHECK_ENV_BLOCK, CONTAINER_LEVEL_STACK, PANIC_SLOT, PROVISIONAL, THREAD_STACK,
-    WORKER_STATE, c_hdr, memory_bound,
+    C_FIN, CHECK_ENV_BLOCK, CONTAINER_LEVEL_STACK, PANIC_SLOT, SELECTED as PROVISIONAL,
+    THREAD_STACK, WORKER_STATE, c_hdr, memory_bound,
 };
 use crate::alloc::Measured;
 use crate::spec::model::Spec;
@@ -25,6 +25,40 @@ fn spec(extra: &str) -> Spec {
 }
 
 const DIRECTORY: &str = r#","sink":{"kind":"directory","root":"/out"}"#;
+
+#[test]
+fn compiled_selection_is_used_with_saturating_terms() {
+    let s = spec(&format!(
+        r#","inputs":[{{"id":"a","path":"/a"}}]{DIRECTORY}"#
+    ));
+    let max = super::Constants {
+        c_base: u64::MAX,
+        m_thread: u64::MAX,
+        m_pool: u64::MAX,
+        m_dispatch: u64::MAX,
+        m_end: u64::MAX,
+        c_env: u64::MAX,
+        c_net: u64::MAX,
+    };
+    let b = memory_bound(
+        &s,
+        Measured {
+            kept: u64::MAX,
+            peak: u64::MAX,
+        },
+        u64::MAX,
+        &max,
+    );
+    assert_eq!(b.c_thr, u64::MAX);
+    assert_eq!(b.c_env, u64::MAX);
+    assert_eq!(b.c_net, u64::MAX);
+    assert_eq!(b.c_spec, u64::MAX);
+    assert_eq!(b.c_parse, 0);
+    assert_eq!(b.c_base, u64::MAX);
+    assert_eq!(b.total(), u64::MAX);
+    let selected = memory_bound(&s, Measured::default(), CHECK_ENV_BLOCK, &super::SELECTED);
+    assert!(selected.total() >= s.max_inflight_uncompressed_bytes);
+}
 
 #[test]
 fn every_term_is_5_3_s() {
@@ -151,7 +185,13 @@ fn c_hdr_counts_the_unitycn_key_at_its_cap() {
 #[test]
 fn only_4_kib_pages_are_certified() {
     use super::Certification;
-    assert_eq!(Certification::of(Some(4096)), Certification::Provisional);
+    let certified = if super::CALIBRATED {
+        Certification::Certified
+    } else {
+        Certification::Provisional
+    };
+    assert_eq!(Certification::of(Some(4096)), certified);
+    assert_eq!(Certification::Certified.note("unityrs batch"), None);
     assert_eq!(Certification::Provisional.note("unityrs batch"), None);
     for page in [Some(16_384), Some(65_536), Some(8192), Some(0), None] {
         let c = Certification::of(page);

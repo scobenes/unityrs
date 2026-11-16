@@ -19,7 +19,7 @@ use std::{
 };
 use unityrs_batch::{
     alloc::{self, Counting},
-    bound::{self, PROVISIONAL},
+    bound::{self, SELECTED as PROVISIONAL},
     phase1,
     progress::{Phase, clock::Clock},
     run::{
@@ -33,91 +33,7 @@ use unityrs_testkit::{child, guard::DEADLOCK_GUARD};
 #[global_allocator]
 static ALLOC: Counting<memory_support::Bridge> = Counting(memory_support::Bridge);
 
-fn phase(n: u64) -> Phase {
-    [
-        Phase::Validate,
-        Phase::Preflight,
-        Phase::Start,
-        Phase::Stage,
-        Phase::Extract,
-        Phase::Winners,
-        Phase::Publish,
-        Phase::Finish,
-    ][usize::try_from(n).unwrap()]
-}
-
-#[test]
-fn memory_child() {
-    let Some(job) = std::env::var_os("X12_JOB") else {
-        return;
-    };
-    let root = Path::new(&job).parent().unwrap();
-    // Synthetic answer-table storage is outside the counted engine window.
-    let resolver = std::env::var("X12_RESOLVE")
-        .ok()
-        .map(|text| unityrs_batch::run::hooks::Resolve::parse(&text).unwrap());
-    let tls = std::env::var("X12_TLS").ok().map(|address| {
-        (
-            unityrs_batch::run::hooks::Resolve::parse(&format!("localhost={address}")).unwrap(),
-            vec![rustls::pki_types::CertificateDer::from(tls::ROOT.to_vec())],
-        )
-    });
-    let config = memory_support::Config {
-        hold: std::env::var("X12_HOLD")
-            .ok()
-            .map(|n| phase(n.parse().unwrap())),
-        ready: fs::OpenOptions::new()
-            .append(true)
-            .open(root.join("ready"))
-            .unwrap(),
-        release: root.join("release"),
-        report: fs::OpenOptions::new()
-            .append(true)
-            .open(root.join("report"))
-            .unwrap(),
-        inject: std::env::var_os("X12_INJECT").is_some(),
-        freeze: std::env::var_os("X12_FREEZE").is_some(),
-        freeze_attempt: std::env::var_os("X12_ATTEMPT").is_some(),
-    };
-    memory_support::start(config);
-    let clock = Clock::process(Instant::now());
-    let mut startup = process::Startup::prepare().unwrap();
-    startup.hooks().skip_host_checks = true;
-    startup.hooks().sort_options = Some(unityrs_batch::sort::Options {
-        run_bytes: 4096,
-        run_records: 16,
-        fan_in: 2,
-    });
-    if let Some(resolver) = resolver {
-        startup.hooks().resolve = Some(resolver);
-    }
-    if let Some((resolver, roots)) = tls {
-        startup.hooks().resolve = Some(resolver);
-        startup.hooks().extra_roots = roots;
-    }
-    startup.hooks().tally = Some(Tally {
-        register: memory_support::register,
-        mark: memory_support::mark,
-    });
-    startup.hooks().files = Some(unityrs_batch::run::hooks::FileSystems {
-        spool: std::sync::Arc::new(unityrs_batch::start::spool::Host),
-        sink: std::sync::Arc::new(memory_support::Sink),
-        started: std::sync::Arc::new(memory_support::Spool),
-    });
-    memory::at(memory::Point::Phase(Phase::Validate));
-    let (prepared, measured) = alloc::measured(|| {
-        phase1::prepare(spec::parse(spec::read::read_job(Path::new(&job)).unwrap()).unwrap())
-            .unwrap()
-    });
-    let bound = bound::memory_bound(
-        &prepared.spec,
-        measured,
-        bound::CHECK_ENV_BLOCK,
-        &PROVISIONAL,
-    );
-    memory_support::selected(bound, prepared.spec.threads, measured.peak);
-    process::run(startup, clock, prepared, bound.total(), None)
-}
+include!("memory_support/engine.rs");
 
 #[derive(Debug)]
 struct Report(Vec<i64>);
@@ -680,4 +596,22 @@ fn sequential_hostnames_and_retries_leave_no_completed_request_history() {
         kept.iter().max().unwrap() - kept.iter().min().unwrap() <= 16 << 10,
         "completed-request history grew: {kept:?}"
     );
+}
+
+#[test]
+fn directory_base_measurement_keeps_all_conservative_overlap_visible() {
+    let mut case = run_support::cases()
+        .into_iter()
+        .find(|c| c["name"] == "archives-textures")
+        .unwrap();
+    case["spec"]["inputs"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id":"failed", "path":"/missing-synthetic-source"}));
+    case["exit_code"] = json!(4);
+    case["missing_sources"] = json!(["failed"]);
+    let r = run(&case, false, 1, 1, None, false);
+    // Zero deductions: no cap, unseen native charge, padded coefficient or
+    // incompatible peak can manufacture headroom in this conservative base.
+    println!("\nB12_COEFFICIENT c_base {}", r.0[2]);
 }

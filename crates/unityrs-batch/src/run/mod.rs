@@ -426,6 +426,13 @@ impl Body<'_> {
             s.memory.inflight_limit = prepared.spec.max_inflight_uncompressed_bytes;
             s.spool.size = prepared.spec.spool.size_bytes;
         });
+        // A stop already observed at validation/preflight must not begin a
+        // store proof. Its cancelled request would otherwise look like an
+        // unreachable sink and replace the stop with a startup failure.
+        if control.stopped() {
+            parked.handover = Some(HandOver::new(FinishCause::Stop, Phase::Preflight));
+            return Ok(());
+        }
         let values = if staging.is_none() {
             network
                 .map(|n| network::values(n, &prepared.spec))

@@ -17,14 +17,17 @@ gen = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gen)
 
 
-def record(target='x86_64-unknown-linux-gnu', profile='debug', sink='directory'):
+def record(target='x86_64-unknown-linux-gnu', profile='debug', sink='directory', kind='synthetic'):
     return {
-        'target': target, 'profile': profile, 'sink': sink,
+        'target': target, 'profile': profile, 'sink': sink, 'kind': kind,
         'provenance': {
             'revision': '1' * 40, 'lockfile_sha256': '2' * 64,
             'rustc': [1, 90, 0], 'glibc': [2, 39], 'kernel': [6, 8, 0],
             'native_libraries_sha256': '3' * 64, 'features': 'test-hooks',
+            'native_flags_sha256': '5' * 64,
+            'native_compilers': {'c': [13, 3, 0], 'cxx': [13, 3, 0]},
             'allocator': 'system-glibc', 'native': True, 'page_size': 4096,
+            'clean': True,
             'mmap_threshold': 131072, 'arena_extra': 2,
         },
         'coverage': {scene: True for scene in gen.SCENES},
@@ -35,7 +38,7 @@ def record(target='x86_64-unknown-linux-gnu', profile='debug', sink='directory')
             'base_workers': 1, 'base_download_concurrency': 1,
             'held_charges_only': True, 'live_deductions_only': True,
             'raw_incremental_coefficients': True, 'native_only_charges_excluded': True,
-            'instrumentation_excluded': True, 'coherent_observations': True,
+            'observer_allocation_free': True, 'coherent_observations': True,
             'peer_excluded': True, 'parent_startup_included': True,
         },
     }
@@ -46,6 +49,8 @@ def document(final=False):
     if final:
         records = [record(t, p, s) for t in gen.TARGETS
                    for p in gen.PROFILES for s in gen.SINKS]
+        records.extend(record(gen.TARGETS[1], p, s, 'whole-run')
+                       for p in gen.PROFILES for s in gen.SINKS)
     return {'schema_version': 1, 'status': 'final' if final else 'provisional-b12b',
             'records': records}
 
