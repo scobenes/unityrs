@@ -23,6 +23,12 @@
 //! - `-std=gnu99`: zlib 1.2.13 defines its functions in the K&R style,
 //!   which C23 removed; Clang rejects them in C23 mode. CI's build of the
 //!   release tarball, for Pillow's side, uses the same standard.
+//! - `fdopen` defined as itself on Apple targets: where `TARGET_OS_MAC` is
+//!   defined before `zutil.h`'s platform check (Xcode 26's SDK defines it
+//!   by then), zlib 1.2.13 defines `fdopen(fd,mode)` as `NULL`, unless
+//!   `fdopen` is already a macro, and the `stdio.h` that `gzguts.h`
+//!   includes next no longer compiles. None of the compiled files calls
+//!   `fdopen` (zlib 1.3.1 drops the definition).
 //! - Optimised whatever the profile: deflate's bytes do not depend on it,
 //!   and the debug build's tests deflate megabytes.
 //! - The compiled deflate.c is an altered source version, derived in
@@ -108,6 +114,9 @@ fn main() {
         .opt_level(3)
         .flag_if_supported("-std=gnu99")
         .flag_if_supported("-fvisibility=hidden");
+    if env::var("CARGO_CFG_TARGET_VENDOR").as_deref() == Ok("apple") {
+        build.define("fdopen", Some("fdopen"));
+    }
     for file in SOURCES {
         build.file(if file == "deflate.c" {
             deflate.clone()
