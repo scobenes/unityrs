@@ -1,17 +1,91 @@
-//! Synchronous warning callbacks run on the original Python caller thread.
+//! Synchronous configuration callbacks run on the original Python caller thread.
 //! The relay is stack-owned by a scoped worker; it allocates no channel,
 //! closure or request buffer. No relay lock is held across Python code.
 use pyo3::{prelude::*, pybacked::PyBackedBytes, types::PyBytes};
 use std::{
     cell::Cell,
-    sync::{Condvar, Mutex},
+    sync::{Arc, Condvar, Mutex},
 };
 use unityrs_core::RawStr;
+use unityrs_core::limits::Meter;
+
+enum Request {
+    Warning(RawStr, bool),
+    DecryptKey(Arc<Meter>),
+    Python(PythonRequest),
+}
+
+enum Response {
+    Warning(RawStr, bool),
+    DecryptKey(Option<[u8; 16]>),
+    Python,
+}
+
+/// A stack-owned operation whose worker waits for dispatch before continuing.
+struct PythonRequest {
+    data: *mut (),
+    invoke: unsafe fn(*mut ()),
+}
+
+// SAFETY: attach accepts only Send operations/results. The pointed-to task
+// stays alive and exclusively owned by dispatch until request returns.
+unsafe impl Send for PythonRequest {}
+
+/// Attach on the original caller, including result allocation and error paths.
+/// Besides explicit protocols, `CPython` allocations can run GC finalizers.
+pub(crate) fn attach<T: Send>(operation: impl for<'py> FnOnce(Python<'py>) -> T + Send) -> T {
+    struct Task<F, T> {
+        operation: Option<F>,
+        result: std::mem::MaybeUninit<std::thread::Result<T>>,
+    }
+    unsafe fn invoke<F, T>(data: *mut ())
+    where
+        F: for<'py> FnOnce(Python<'py>) -> T + Send,
+        T: Send,
+    {
+        // SAFETY: attach supplies this exact Task type and waits synchronously.
+        let task = unsafe { &mut *data.cast::<Task<F, T>>() };
+        if let Some(operation) = task.operation.take() {
+            task.result
+                .write(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || Python::attach(operation),
+                )));
+        }
+    }
+    fn run<F, T>(operation: F) -> T
+    where
+        F: for<'py> FnOnce(Python<'py>) -> T + Send,
+        T: Send,
+    {
+        let mut task = Task {
+            operation: Some(operation),
+            result: std::mem::MaybeUninit::uninit(),
+        };
+        let request = PythonRequest {
+            data: std::ptr::from_mut(&mut task).cast(),
+            invoke: invoke::<F, T>,
+        };
+        // The relay response is infallible for Python requests. A callback
+        // panic is returned to the worker, so dispatch cannot strand it.
+        let _ = self::request(Request::Python(request));
+        // SAFETY: request returns only after invoke has run exactly once,
+        // writing the result even when the operation unwinds.
+        match unsafe { task.result.assume_init() } {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+    if CURRENT.get().is_null() {
+        Python::attach(operation)
+    } else {
+        run(operation)
+    }
+}
 
 #[derive(Default)]
 struct State {
-    request: Option<(RawStr, bool)>,
-    response: Option<PyResult<(RawStr, bool)>>,
+    request: Option<Request>,
+    response: Option<PyResult<Response>>,
     done: bool,
 }
 
@@ -61,11 +135,11 @@ impl Relay {
                     .wait(state)
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
-            let Some((value, bundle)) = state.request.take() else {
+            let Some(request) = state.request.take() else {
                 return;
             };
             drop(state);
-            let answer = emit(&value, bundle);
+            let answer = emit(request);
             self.state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -74,12 +148,12 @@ impl Relay {
         }
     }
 
-    fn request(&self, value: &RawStr, bundle: bool) -> PyResult<(RawStr, bool)> {
+    fn request(&self, request: Request) -> PyResult<Response> {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.request = Some((value.clone(), bundle));
+        state.request = Some(request);
         self.changed.notify_all();
         loop {
             if let Some(answer) = state.response.take() {
@@ -93,8 +167,35 @@ impl Relay {
     }
 }
 
-fn emit(value: &RawStr, bundle: bool) -> PyResult<(RawStr, bool)> {
+fn emit(request: Request) -> PyResult<Response> {
+    let request = match request {
+        Request::Python(request) => {
+            // SAFETY: attach keeps the task live while its worker waits;
+            // dispatch holds no locks and invokes it exactly once.
+            unsafe { (request.invoke)(request.data) };
+            return Ok(Response::Python);
+        }
+        request => request,
+    };
     Python::attach(|py| {
+        let Request::Warning(value, bundle) = request else {
+            let Request::DecryptKey(meter) = request else {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "invalid relay request",
+                ));
+            };
+            let key = py
+                .import("unityrs.helpers.ArchiveStorageManager")?
+                .getattr("DECRYPT_KEY")?;
+            if key.is_none() {
+                return Ok(Response::DecryptKey(None));
+            }
+            let snapshot = crate::buffer_snapshot::BufferSnapshot::new(&key, &meter)?;
+            let key = <[u8; 16]>::try_from(snapshot.as_ref()).map_err(|_| {
+                pyo3::exceptions::PyValueError::new_err("AssetBundle Key length is wrong")
+            })?;
+            return Ok(Response::DecryptKey(Some(key)));
+        };
         // This private protocol returns immutable encoded bytes. Extract the
         // exact owner, never PyBackedBytes' infallible mutable-buffer copy.
         let (bytes, parse_typetree): (Py<PyBytes>, bool) = py
@@ -103,22 +204,44 @@ fn emit(value: &RawStr, bundle: bool) -> PyResult<(RawStr, bool)> {
             .call1((super::string(value.as_bytes())?, bundle))?
             .extract()?;
         let bytes = PyBackedBytes::from(bytes.into_bound(py));
-        Ok((
+        Ok(Response::Warning(
             RawStr::from(unityrs_core::Bytes::from_owner(bytes)),
             parse_typetree,
         ))
     })
 }
 
-pub(crate) fn warning(value: &RawStr, bundle: bool) -> PyResult<(RawStr, bool)> {
+fn request(request: Request) -> PyResult<Response> {
     CURRENT.with(|slot| {
         let pointer = slot.get();
         if pointer.is_null() {
-            return emit(value, bundle);
+            return emit(request);
         }
         // SAFETY: enter installs only its borrowed, stack-owned Relay. Its
         // guard restores the prior pointer before that borrow ends, also on
         // unwinding. The scoped worker cannot outlive the caller's Relay.
-        unsafe { &*pointer }.request(value, bundle)
+        unsafe { &*pointer }.request(request)
     })
 }
+
+pub(crate) fn warning(value: &RawStr, bundle: bool) -> PyResult<(RawStr, bool)> {
+    match request(Request::Warning(value.clone(), bundle))? {
+        Response::Warning(value, bundle) => Ok((value, bundle)),
+        Response::DecryptKey(_) | Response::Python => Err(
+            pyo3::exceptions::PyRuntimeError::new_err("invalid relay response"),
+        ),
+    }
+}
+
+pub(crate) fn decrypt_key(meter: &Arc<Meter>) -> PyResult<Option<[u8; 16]>> {
+    match request(Request::DecryptKey(meter.clone()))? {
+        Response::DecryptKey(key) => Ok(key),
+        Response::Warning(..) | Response::Python => Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "invalid relay response",
+        )),
+    }
+}
+
+#[cfg(test)]
+#[path = "relay_tests.rs"]
+mod tests;

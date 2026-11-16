@@ -6,9 +6,10 @@
 use super::{WebFile, WebPacker};
 use crate::files::save::{SaveError, SaveLayout, SaveOptions, Writer, narrow};
 use crate::files::{BundlePacker, BundleSaveOptions, File};
-use crate::limits::MeteredVec;
+use crate::limits::{Meter, MeteredVec};
 use crate::stream::Endian;
 use bytes::Bytes;
+use std::sync::Arc;
 
 /// WebFile save layout and compression. The default writes plain bytes and
 /// `UnityWebData1.0`, as UnityPy does, independently of the input's settings.
@@ -134,7 +135,7 @@ impl WebFile {
         match options.packer {
             WebPacker::None => out.finish(),
             WebPacker::Gzip => gzip(out.slice(), self),
-            WebPacker::Brotli => brotli(out.slice(), self),
+            WebPacker::Brotli => brotli(out.slice(), self.meter()),
         }
     }
 }
@@ -176,8 +177,8 @@ fn gzip(data: &[u8], web: &WebFile) -> Result<Bytes, SaveError> {
 // 36 bytes, then nonfinal uncompressed 16-bit-length metablocks, and ISLAST
 // with ISLASTEMPTY. Metadata puts Unity's detector marker at byte 32 without
 // changing decompressed data. All bit headers fit fixed stack arrays.
-fn brotli(data: &[u8], web: &WebFile) -> Result<Bytes, SaveError> {
-    let mut out = Writer::new(web.meter(), Endian::Little)?;
+pub(super) fn brotli(data: &[u8], meter: &Arc<Meter>) -> Result<Bytes, SaveError> {
+    let mut out = Writer::new(meter, Endian::Little)?;
     let mut metadata = [0; 38];
     metadata[..2].copy_from_slice(&[0xac, 0x11]);
     metadata[32..].copy_from_slice(b"brotli");

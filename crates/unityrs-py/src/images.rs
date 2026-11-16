@@ -103,7 +103,7 @@ fn meter(reader: Option<&NativeObject>) -> Arc<Meter> {
 }
 
 fn exception(class: &str, message: String) -> PyErr {
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         let cls = if matches!(class, "DecompressionBombError" | "UFuncTypeError") {
             let module = if class == "DecompressionBombError" {
                 "PIL.Image"

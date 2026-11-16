@@ -73,10 +73,45 @@ EXPORTS = [
         "observe_streamed_lifetime", "observe_cab_protocol", "observe_deferred_replacements")
 ]
 
+TOOLS = [("binding_y5_loader", "observe_" + name) for name in
+         ("paths", "filesystem", "streams", "splits", "lookup")] + [
+    ("binding_y5_objects", "observe_" + name) for name in
+    ("patch", "forwarding", "gameobject", "containers", "iteration", "generators")
+] + [("binding_y5_tools", "observe_tools_" + name) for name in
+     ("dispatch", "files", "objects", "crawl", "extract")] + [
+    ("binding_y5_modules", "observe_" + name) for name in
+    ("reexports", "streams", "module_tables", "primitive_maps", "compression",
+     "texture_converter", "converter_helpers", "export_modules", "texture_extension", "decrypt_key",
+     "encrypted_load", "generator", "generator_cache", "untextured_material")
+] + [("binding_y5_review", "observe_" + name) for name in ("destination_order", "failed_image")] + [
+    ("binding_y5_round2", "observe_" + name) for name in ("primitive_string_budget", "deferred_key")
+] + [
+    ("binding_y5_round3", "observe_" + name) for name in
+    ("generator_reentry", "negative_readers", "negative_string_budget", "array_maps")
+] + [
+    ("binding_y5_round4", "observe_" + name) for name in
+    ("container_identity", "root_spellings", "none_extensions")
+] + [("binding_y5_round5", "observe_" + name) for name in
+     ("repeated_roots", "falsy_extensions", "runtime_keys")] + [
+    ("binding_y5_round6", "observe_" + name) for name in
+    ("parse_registration", "scalar_extensions", "skipped_destination_conversion")
+] + [
+    ("binding_y5_round7", "observe_" + name) for name in
+    ("unused_destinations", "source_error_order", "empty_root")
+] + [
+    ("binding_y5_round8", "observe_" + name) for name in ("array_reads", "aggregate_bytes")
+]
+
 
 def helper_records():
     import importlib
     references = {
+        ("binding_y5_objects", "observe_gameobject"): "PARITY.md 19.2: empty components and actual legacy PPtrs follow the supplied component list",
+        ("binding_y5_round2", "observe_primitive_string_budget"): "PARITY.md 19.3: primitive map strings dispatch through the bounded reader",
+        ("binding_y5_round3", "observe_negative_string_budget"): "PARITY.md 19.3: negative string reads retain decoding staging for the remaining input span",
+        ("binding_y5_round8", "observe_aggregate_bytes"): "PARITY.md 19.3: retain byte spans in every enclosing array until handoff",
+        ("binding_y5_review", "observe_failed_image"): "PARITY.md 19.3: failed image exports preserve existing files with atomic publication",
+        ("binding_y5_objects", "observe_iteration"): "PARITY.md 19.2: file iteration follows nested containers and yields requested objects",
         ("binding_y4_images", "observe_set_image"): "PARITY.md 18.1: convert unsupported packer modes to RGBA",
         ("binding_y4_images", "observe_image_formats"): "PARITY.md 18.1: convert unsupported packer modes to RGBA",
         ("binding_y4_images", "observe_textures"): "PARITY.md 19.2: zero-size textures yield empty RGBA before fetching data",
@@ -100,7 +135,7 @@ def helper_records():
     ):
         references["binding_y4_round5", name] = "PARITY.md 19.3: " + reason
     records = []
-    for observer, function in HELPERS + EXPORTS:
+    for observer, function in HELPERS + EXPORTS + TOOLS:
         call = getattr(importlib.import_module(observer), function)
         observed = call(UnityPy)
         record = {"name": f"{observer}.{function}", "observer": observer,
@@ -120,10 +155,22 @@ def main():
     args = parser.parse_args()
     if UnityPy.__version__ != "1.25.2":
         raise RuntimeError("requires UnityPy 1.25.2")
-    records = [{"name": name, "hex": data.hex(), "expected": B.observe(UnityPy, data)} for name, data in B.cases()]
+    records = []
+    for name, data in B.cases():
+        original = B.observe(UnityPy, data)
+        expected = B.observe(UnityPy, data, corrected=True)
+        record = {"name": name, "hex": data.hex(), "expected": expected}
+        if original != expected:
+            record.update(oracle=original, reference="PARITY.md 19.2: file iteration follows nested containers and yields requested objects")
+        records.append(record)
     with scratch.folder("unityrs-py-api-") as root:
         data = next(data for name, data in B.cases() if name == "text")
-        records.append({"name": "paths", "hex": data.hex(), "expected": B.observe_paths(UnityPy, data, root)})
+        original = B.observe_paths(UnityPy, data, root)
+        expected = B.observe_paths(UnityPy, data, root, corrected=True)
+        record = {"name": "paths", "hex": data.hex(), "expected": expected}
+        if original != expected:
+            record.update(oracle=original, reference="PARITY.md 19.2: file iteration follows nested containers and yields requested objects")
+        records.append(record)
     records.extend(helper_records())
     encoded = "[\n" + ",\n".join(json.dumps(r, separators=(",", ":")) for r in records) + "\n]\n"
     out = ROOT / "crates/unityrs-py/tests/fixtures/api.json"

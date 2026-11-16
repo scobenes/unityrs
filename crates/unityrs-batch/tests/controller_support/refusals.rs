@@ -681,13 +681,7 @@ pub fn allocating(stderr: &str) -> Option<String> {
                 && !symbol.contains("{closure");
             continue;
         }
-        // std's library code, and the `#[global_allocator]` shim (`__rustc::
-        // __rust_alloc`), which its test file's location names.
-        if symbol.starts_with("__rustc::")
-            || lines.peek().is_some_and(|source| {
-                source.trim().starts_with("at ") && source.contains("/rustc/")
-            })
-        {
+        if library_frame(symbol, lines.peek().copied()) {
             continue;
         }
         return Some(symbol.to_owned());
@@ -720,7 +714,7 @@ pub fn callee(stderr: &str) -> Option<String> {
             .peek()
             .map(|s| s.trim())
             .filter(|s| s.starts_with("at "));
-        if symbol.starts_with("__rustc::") || source.is_some_and(|s| s.contains("/rustc/")) {
+        if library_frame(symbol, source) {
             continue;
         }
         let ours = function_key(symbol).is_some()
@@ -731,6 +725,17 @@ pub fn callee(stderr: &str) -> Option<String> {
         last = Some(symbol.to_owned());
     }
     None
+}
+
+/// Prebuilt std frames can have a symbol but no source location (notably
+/// `core::fmt::write` on Linux `x86_64`). Direct crate paths still identify them,
+/// as well as the global allocator shim. Qualified trait implementations use
+/// their source: a dependency can implement a trait for an `alloc` type.
+fn library_frame(symbol: &str, source: Option<&str>) -> bool {
+    ["__rustc::", "core::", "alloc::", "std::"]
+        .iter()
+        .any(|prefix| symbol.starts_with(prefix))
+        || source.is_some_and(|s| s.trim().starts_with("at ") && s.contains("/rustc/"))
 }
 
 fn function_key(symbol: &str) -> Option<String> {
