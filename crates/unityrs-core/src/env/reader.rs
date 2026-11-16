@@ -5,7 +5,7 @@ use super::{Environment, load::Target};
 use crate::{
     Bytes, Error, File, RawStr,
     budget::Reservation,
-    detect::{FileType, check_file_type_with_reader},
+    detect::{FileType, detect_at_position},
     files::parse_file_with_reader,
     limits::Meter,
     stream::ReaderKind,
@@ -90,10 +90,23 @@ impl Environment {
         reader: ReaderKind,
         is_dependency: bool,
     ) -> Result<Option<File>, Error> {
+        self.load_reader_at_position(name, data, reader, is_dependency, 0)
+    }
+
+    /// [`Self::load_reader`] detecting from the caller's original position
+    /// before detection resets the reader for construction.
+    pub fn load_reader_at_position(
+        &self,
+        name: RawStr,
+        data: Bytes,
+        reader: ReaderKind,
+        is_dependency: bool,
+        position: i128,
+    ) -> Result<Option<File>, Error> {
         let ctx = self.ctx();
         super::within_input_bytes(data.len() as u64, &ctx.limits)?;
         let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
-        let ty = check_file_type_with_reader(&data, &ctx.limits, reader)?;
+        let ty = detect_at_position(&data, &ctx.limits, None, reader, position)?;
         if ty == FileType::Zip {
             self.load_zip_data(data, &meter)?;
             self.list_zip_none(name, &meter)?;
@@ -112,6 +125,7 @@ impl Environment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::check_file_type_with_reader;
     #[test]
     fn forced_web_bypasses_detection_without_listing_a_root_file() {
         let env = Environment::new(super::super::EnvOptions::unitypy());

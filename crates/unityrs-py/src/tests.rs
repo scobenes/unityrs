@@ -199,7 +199,37 @@ fn replays_unitypy_tools_observations() -> PyResult<()> {
 
 #[test]
 fn replays_unitypy_residue_observations() -> PyResult<()> {
-    replay_groups("binding_y6_", 32)
+    replay_groups("binding_y6_", 35)
+}
+
+#[test]
+fn parser_bounds_match_struct_negative_offset_checks() -> PyResult<()> {
+    let _serial = serial();
+    Python::attach(|py| {
+        let meter = unityrs_core::limits::Meter::unlimited();
+        for length in [0, 1, 3, 99] {
+            let data = vec![0u8; length];
+            for pos in [-765, -100, -99, -4, -3, -1, 96, 99, 100] {
+                let reference = py.import("struct")?.getattr("unpack_from")?.call1((
+                    ">I",
+                    PyBytes::new(py, &data),
+                    pos,
+                ));
+                let Err(reference) = reference else { continue };
+                let mut reader =
+                    unityrs_core::stream::Reader::new(&data, unityrs_core::stream::Endian::Big);
+                reader.set_position(pos).unwrap();
+                let error =
+                    crate::errors::file_parse(reader.read_u32().unwrap_err(), &data, false, &meter);
+                assert!(error.get_type(py).is(reference.get_type(py)));
+                assert_eq!(
+                    error.value(py).str()?.to_str()?,
+                    reference.value(py).str()?.to_str()?
+                );
+            }
+        }
+        Ok(())
+    })
 }
 
 #[test]

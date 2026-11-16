@@ -18,6 +18,15 @@ use unityrs_core::{
 // and publishes any successful child CABs, then raises on the caller thread.
 type ParsedFile = (Option<NativeFile>, i128, Option<char>, Option<PyErr>);
 
+fn reader_kind(kind: u8) -> unityrs_core::stream::ReaderKind {
+    use unityrs_core::stream::ReaderKind;
+    match kind {
+        0 => ReaderKind::Memory,
+        2 => ReaderKind::BytesIo,
+        _ => ReaderKind::Stream,
+    }
+}
+
 #[pyclass(frozen, module = "unityrs._native")]
 pub(crate) struct NativeEnvironment {
     pub(crate) inner: Environment,
@@ -201,13 +210,16 @@ impl NativeEnvironment {
         });
         error.map_or(Ok(0), Err)
     }
+    #[pyo3(signature = (data, name, dependency, stream, position=0))]
+    #[allow(clippy::too_many_arguments)]
     fn load_bytes(
         &self,
         py: Python<'_>,
         data: &Bound<'_, PyAny>,
         name: &Bound<'_, PyAny>,
         dependency: bool,
-        stream: bool,
+        stream: u8,
+        position: i128,
     ) -> PyResult<Option<NativeFile>> {
         let meter = self.input_meter();
         let data = crate::buffer_snapshot::BufferSnapshot::source(
@@ -234,18 +246,15 @@ impl NativeEnvironment {
                     // Retain the caller's immutable Python buffer without a Rust
                     // input-sized copy or an independent input meter. Core tables and
                     // decoded buffers are all charged to the load's single meter.
-                    let reader = if stream {
-                        unityrs_core::stream::ReaderKind::Stream
-                    } else {
-                        unityrs_core::stream::ReaderKind::Memory
-                    };
+                    let reader = reader_kind(stream);
                     let file = self
                         .inner
-                        .load_reader(
+                        .load_reader_at_position(
                             RawStr::from(unityrs_core::Bytes::from_owner(name)),
                             unityrs_core::Bytes::from_owner(data),
                             reader,
                             dependency,
+                            position,
                         )
                         .map_err(Failure::core)?;
                     Ok(file.map(NativeFile::new))
@@ -261,7 +270,7 @@ impl NativeEnvironment {
         data: &Bound<'_, PyAny>,
         name: &Bound<'_, PyAny>,
         typ: u8,
-        stream: bool,
+        stream: u8,
         parent: Option<&NativeFile>,
     ) -> PyResult<ParsedFile> {
         use unityrs_core::detect::FileType;
@@ -292,11 +301,7 @@ impl NativeEnvironment {
                         .parse_reader_with_state(
                             &RawStr::from(unityrs_core::Bytes::from_owner(name)),
                             data.clone(),
-                            if stream {
-                                unityrs_core::stream::ReaderKind::Stream
-                            } else {
-                                unityrs_core::stream::ReaderKind::Memory
-                            },
+                            reader_kind(stream),
                             ty,
                             parent.map(|file| &file.inner),
                             &mut constructor_endian,
@@ -324,7 +329,7 @@ impl NativeEnvironment {
                     Some(
                         self.take_fallback_warnings(py)
                             .err()
-                            .unwrap_or_else(|| error.file_parse(&data, stream, &meter)),
+                            .unwrap_or_else(|| error.file_parse(&data, stream != 0, &meter)),
                     ),
                 ));
             }

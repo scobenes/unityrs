@@ -202,6 +202,58 @@ def observe_nested_bundle_signatures(module):
     return result
 
 
+def observe_positioned_detection(module):
+    payload = B.S.web_file([(b"child", b"raw")])
+    result = []
+    for stream in (False, True):
+        for position in (2, len(payload) + 1):
+            reader = module.streams.EndianBinaryReader(io.BytesIO(payload) if stream else payload)
+            reader.Position = position
+            env = module.Environment()
+            try:
+                loaded = env.load_file(reader, name="positioned")
+                result.append([loaded is reader, reader.Position, reader.endian,
+                               env.files["positioned"] is loaded, env.get_cab("positioned") is reader])
+            except Exception as error:
+                result.append([type(error).__name__, str(error), reader.Position,
+                               reader.endian, list(env.files), list(env.cabs)])
+    return result
+
+
+def observe_negative_member_readers(module):
+    payload = bytearray(B.S.web_file([(b"child", b"raw")]))
+    struct.pack_into("<i", payload, 24, -2)
+    result = []
+    # BufferedReader retains the buffered-file negative-size refusal, while
+    # BytesIO reads to EOF for every negative size.
+    for buffered in (False, True):
+        source = io.BytesIO(payload)
+        if buffered:
+            source = io.BufferedReader(source)
+        reader = module.streams.EndianBinaryReader(source)
+        env = module.Environment()
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                file = module.helpers.ImportHelper.parse_file(
+                    reader, env, "forced", module.enums.FileType.WebFile)
+                value = [file.files["child"].bytes.hex(), env.get_cab("child") is file.files["child"]]
+            except Exception as error:
+                value = [type(error).__name__, str(error)]
+        result.append([value, reader.Position, reader.endian, list(env.cabs)])
+    return result
+
+
+def observe_negative_bundle_offsets(module):
+    from binding_y4_save import _legacy
+    result = []
+    for levels in (-100, -5, -4):
+        payload = bytearray(_legacy(3))
+        struct.pack_into(">i", payload, 39, levels)
+        failure = _record(module, bytes(payload), module.enums.FileType.BundleFile)
+        result.append([failure.get("error"), failure.get("message")])
+    return result
+
+
 def exception_reentry(module):
     """A real module override re-enters the lock held by the parser caller."""
     import struct

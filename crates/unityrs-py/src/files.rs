@@ -49,7 +49,7 @@ impl NativeFile {
                 } else {
                     '>'
                 },
-                file.reader_kind() == unityrs_core::stream::ReaderKind::Stream,
+                file.reader_kind() != unityrs_core::stream::ReaderKind::Memory,
             ))
         })
     }
@@ -190,10 +190,10 @@ impl NativeFile {
                 File::Bundle(f) => ("BundleFile", f.name()),
                 File::Web(f) => ("WebFile", f.name()),
                 File::Raw(f) => (
-                    if f.reader_kind() == unityrs_core::stream::ReaderKind::Stream {
-                        "EndianBinaryReader_Stream"
-                    } else {
+                    if f.reader_kind() == unityrs_core::stream::ReaderKind::Memory {
                         "EndianBinaryReader"
+                    } else {
+                        "EndianBinaryReader_Stream"
                     },
                     &f.name,
                 ),

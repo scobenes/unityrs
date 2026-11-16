@@ -49,6 +49,15 @@ class ForcedReview(unittest.TestCase):
     def test_nested_bundle_errors_keep_child_signature(self):
         self.compare("observe_nested_bundle_signatures")
 
+    def test_detection_uses_original_reader_cursor(self):
+        self.compare("observe_positioned_detection")
+
+    def test_negative_members_distinguish_bytesio_and_buffered_files(self):
+        self.compare("observe_negative_member_readers")
+
+    def test_negative_bundle_offsets_match_unpack_from(self):
+        self.compare("observe_negative_bundle_offsets")
+
     def test_exception_lookup_reenters_on_caller(self):
         for module in ("UnityPy", "unityrs"):
             child.run([sys.executable, "-c",

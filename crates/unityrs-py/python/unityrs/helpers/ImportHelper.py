@@ -151,6 +151,7 @@ def parse_file(
         owner = environment if environment is not None else Environment()
         with owner._lock:
             stream = isinstance(reader, EndianBinaryReader_Streamable)
+            stream = 2 if stream and isinstance(reader.stream, io.BytesIO) else int(stream)
             if isinstance(getattr(reader, "view", None), memoryview):
                 data = reader.view
             else:

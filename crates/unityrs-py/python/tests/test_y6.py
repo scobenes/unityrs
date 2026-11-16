@@ -25,6 +25,24 @@ class ReadOnly:
 
 
 class Residue(unittest.TestCase):
+    def test_detection_starts_at_original_cursor_before_reset(self):
+        self.assertEqual(review.observe_positioned_detection(unityrs),
+                         [[True, 0, '>', True, True],
+                          ['Exception', 'String not terminated', 41, '>', [], []],
+                          [True, 0, '>', True, True],
+                          ['ValueError', "Unterminated string: [b'']", 41, '>', [], []]])
+
+    def test_negative_member_size_keeps_bytesio_read_to_end(self):
+        self.assertEqual(review.observe_negative_member_readers(unityrs), [
+            [['726177', True], 40, '<', ['child']],
+            [['ValueError', 'read length must be non-negative or -1'], 0, '<', []]])
+
+    def test_negative_bundle_offset_reports_original_out_of_range_offset(self):
+        self.assertEqual(review.observe_negative_bundle_offsets(unityrs), [
+            ['error', 'offset -765 out of range for 99-byte buffer'],
+            ['error', 'not enough data to unpack 4 bytes at offset -1'],
+            [None, None]])
+
     def test_explicit_reader_receives_final_cursor_and_endian(self):
         assets = next(data for name, data in B.cases() if name == 'text')
         for payload, position, endian in ((b'raw', 2, '>'), (b'A' * 20, 0, '>'),

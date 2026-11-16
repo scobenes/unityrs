@@ -14,6 +14,7 @@ ObjectReader and unityrs.classes provide runtime classes generated from an exter
 TPK (or the installed UnityPy resource). No Pillow dependency.
 """
 
+import io
 import ntpath
 import os
 import re
@@ -241,7 +242,11 @@ class Environment:
             del name_guard
             from .streams.EndianBinaryReader import EndianBinaryReader_Streamable as ExplicitStream
             stream_kind = stream and (not explicit_reader or isinstance(file, ExplicitStream))
-            native = config._load(self._native, self._native.load_bytes, data, encoded_name, is_dependency, stream_kind)
+            source = file.stream if explicit_reader and stream_kind else file
+            stream_kind = 2 if stream_kind and isinstance(source, io.BytesIO) else int(stream_kind)
+            position = file.Position if explicit_reader else 0
+            native = config._load(self._native, self._native.load_bytes, data, encoded_name,
+                                  is_dependency, stream_kind, position)
             self._sync()
             if native is None:
                 return None

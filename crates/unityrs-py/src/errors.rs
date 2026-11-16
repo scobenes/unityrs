@@ -50,6 +50,24 @@ pub(crate) fn file_parse(
             "Unknown Bundle signature: {}",
         );
     }
+    if let Error::Malformed {
+        what: unityrs_core::stream::STREAM_READER,
+        detail,
+    } = &error
+    {
+        use unityrs_core::stream::StreamRefusal;
+        for refusal in [
+            StreamRefusal::NegativePosition,
+            StreamRefusal::PositionTooLarge,
+            StreamRefusal::NegativeRead,
+            StreamRefusal::ReadTooLarge,
+            StreamRefusal::ReadSizeOverflow,
+        ] {
+            if detail.as_ref() == refusal.message() {
+                return exception(refusal.exception(), message(detail));
+            }
+        }
+    }
     let template = match &error {
         Error::Malformed {
             what: "WebFile",
@@ -77,7 +95,7 @@ pub(crate) fn file_parse(
             pos,
             need,
             length,
-            reader == unityrs_core::stream::ReaderKind::Stream,
+            reader != unityrs_core::stream::ReaderKind::Memory,
             meter,
         );
     }
@@ -106,7 +124,16 @@ fn file_parse_bounds(
     };
     let text = if stream || need == 1 {
         message(&format_args!("unpack requires a buffer of {need} bytes"))
+    } else if pos < 0 && pos.saturating_add(i128::from(need)) > 0 {
+        message(&format_args!(
+            "not enough data to unpack {need} bytes at offset {pos}"
+        ))
+    } else if pos < 0 && pos < -(length as i128) {
+        message(&format_args!(
+            "offset {pos} out of range for {length}-byte buffer"
+        ))
     } else {
+        let pos = if pos < 0 { pos + length as i128 } else { pos };
         let end = pos.saturating_add(i128::from(need));
         message(&format_args!(
             "unpack_from requires a buffer of at least {end} bytes for unpacking {need} bytes at offset {pos} (actual buffer size is {length})"
@@ -210,6 +237,9 @@ pub(crate) fn core(error: Error) -> PyErr {
         Error::Entry { source, .. } => core((*source).clone()),
         Error::AssetBundle(source) => parse((*source).clone()),
         Error::Detect(DetectError::Unterminated) => PyException::new_err("String not terminated"),
+        Error::Detect(DetectError::UnterminatedStream) => {
+            PyValueError::new_err("Unterminated string: [b'']")
+        }
         Error::Detect(DetectError::InflateLimit(_) | DetectError::Work(_)) | Error::Limit(_) => {
             LimitError::new_err(message(&error))
         }
