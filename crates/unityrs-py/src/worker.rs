@@ -22,7 +22,8 @@ pub(crate) fn load_stack(limits: &unityrs_core::limits::Limits) -> usize {
 }
 
 /// Return native data (including unconverted errors). Callers translate and
-/// build Python objects after this joins; warnings alone use the caller relay.
+/// build Python objects after this joins; Python operations needed during work
+/// use the caller relay, including warnings, allocations and finalizers.
 pub(crate) fn run<T: Send>(stack: usize, f: impl FnOnce() -> T + Send) -> PyResult<T> {
     let relay = crate::python::relay::Relay::default();
     std::thread::scope(|scope| {

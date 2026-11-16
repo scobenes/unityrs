@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=90
+python scripts/unittest-suites crates/unityrs-py/python/tests=123
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=245
+python ../../scripts/unittest-suites bindings=314
 ```
 
-The recorder writes 179 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups, 29 tools/module/loader groups and 36 Y6a groups),
+The recorder writes 200 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups, 50 tools/module/loader groups and 36 Y6a groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,10 +40,11 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 90 tests and the oracle comparison has 245; CI enforces both
-minimum counts. Exception translation and Python handoff run on the calling
-thread after the native worker joins. Warning handlers run on that thread before
-a fallback load is published, including handlers that re-enter the environment.
+The wheel suite has 123 tests and the oracle comparison has 314; CI enforces both
+minimum counts. Exception translation and object-value handoff run on the calling
+thread after the native worker joins. Other worker sites relay Python callbacks,
+allocations and finalizers to that caller. Warning handlers run on that thread
+before a fallback load is published, including handlers that re-enter the environment.
 
 ```python
 import unityrs
@@ -193,7 +194,56 @@ The tools surface exposes `export_obj`, `extract_assets`, `exportTextAsset`,
 The facade uses the existing bounded class exporters. E4's native extractor has
 intentional corrections to the oracle's graph and naming behavior; the Python
 facade retains the recorded oracle behavior while using confined destination
-writes. Hostile names and existing symlink directories are refused.
+writes. All public tools paths and names, class export arguments, environment save
+arguments and asset-derived output names become exact strings before use. The
+hostile-subclass matrix compares exact-string results and the surrounding
+filesystem, including empty directories. Audio sample names retain scalar
+formatting for `None` and integers, checked against the oracle. All nine direct exporters anchor the
+destination before formatting and validate appended leaf names and extensions
+before creating output. Hostile names and
+existing symlink directories are refused, including audio sample names and
+GameObject mesh/material names. Destination opening follows filters and dispatch;
+ignored or filtered objects do not require an existing destination. Shared file
+readers start at the actual post-load cursor, including eager AssetBundle reads,
+and the environment lock covers their construction and publication. The same
+reentrant lock covers lookup, construction and publication of file containers,
+ObjectReader readers and decoded sprite textures. Concurrent first container
+access shares one mutable helper. Container extraction accepts equivalent roots
+such as `out`, `out/`, `out//`, `./out//`, `./out` and an absolute directory without
+weakening the descriptor walk. Passing any falsy extension (including `None`,
+`False`, `0` and `""`), positionally or by keyword, preserves the defaults or
+ignored argument in eight direct exporters; Sprite retains
+Pillow's unknown-extension error. Effective output names remain validated.
+Truthy scalar extensions retain each exporter's formatting or ignored-argument
+handling, including integers, booleans, floats, complex numbers and bytes.
+The resulting output leaf is validated before writing. `export_obj` converts
+the destination after dispatch and the parsed-object filter, so unsupported or
+filtered objects accept `fp=None` and return `[]` as in UnityPy.
+`extract_assets` loads and sorts the source before converting a destination.
+Empty inputs and rejected objects leave `dst=None` or an unused PathLike
+untouched; source-loading errors precede destination errors. Non-container
+extraction also waits for dispatch and the parsed-object filter. An empty
+destination exports into the current directory, with relative-name validation
+and held-directory confinement intact. These cases compare with UnityPy in
+scratch directories and replay through `binding_y5_round7`.
+Standalone `ImportHelper.parse_file` parses without loader registration;
+container constructors retain their native child CAB registration, including
+streamed-resource lookup through duplicate nested container entries.
+Oracle comparisons check `Environment.files` and `cabs` before and after,
+including replacement names and a later load. All three behaviors are recorded
+and replayed through `binding_y5_round6`.
+Y6a's recorded forced-parser cases verify memory-reader `read(None)`, BytesIO
+`read(-2)`, and publication of earlier child CABs when a later container child
+fails. Successful and partial constructors retain the reader kind, cursor and
+endian; these close Y5's standalone parsing follow-ups in PARITY section 22.
+
+Failed image exports retain the previous file and remove their temporary sibling.
+This is a documented safety divergence: Pillow can leave a partial destination
+in UnityPy (33 bytes for a zero-height RGBA PNG). The oracle observation and our
+preserved file both replay. Standalone material exports resolve current texture
+names through Y6a’s bounded adapter; textured and untextured materials replay.
+Replaced `CONV_TABLE` converters similarly refuse Switch-swizzled
+and crunch inputs with a named refusal until Y6b supplies their preprocessing.
 
 | behavior | UnityPy 1.25.2 source | PARITY.md rows |
 |---|---|---|
@@ -207,6 +257,32 @@ writes. Hostile names and existing symlink directories are refused.
 
 The tools observations replay through `replays_unitypy_tools_observations`.
 Recordings contain synthetic values and output bytes, never runtime TPK schemas.
+Array-map recordings call every alias with empty and nonempty arrays, both
+endians and both reader kinds, recording values and final cursors.
+Generated MonoBehaviour rows compile on the caller before starting a worker.
+Worker output allocation, exception lookup and formatting, and shared traversal
+access relay to that caller; queued Python decrefs drain there too. Reentrancy
+regressions cover node getters, GC callbacks, resource-error callbacks, snapshots,
+configuration callbacks and buffer finalizers under the deadlock guard.
+BytesIO reader policy is installed before synchronization publishes its wrapper,
+including when a callback creates the lazy reader during synchronization. A
+reader already created by a nested load receives the same policy.
+Primitive string maps dispatch through the owning reader's decoding guard;
+budget regressions cover the one-byte refusal boundary and every tuple-producing array-map
+alias. Negative string sizes reserve the remaining input span through decoding;
+negative and None-size byte, string and array reads also compare with the oracle.
+Empty GameObject component lists return no components, and legacy
+`(classID, PPtr)` entries return their actual pointers. These documented Tier B
+corrections replay beside the original oracle exceptions. Global decryption
+keys are converted on the calling Python thread only when an encrypted bundle
+needs them; list-valued keys accepted by the setter leave ordinary loads usable.
+The oracle comparisons also check truncated-envelope error ordering, encrypted
+key rejection and a successful retry after installing a valid key. Key staging
+shares the active input's memory and work limits; repeated attempts do not
+accumulate key-conversion work across inputs. Installing runtime configuration
+without an explicit key override preserves a key set on the core file context;
+explicit runtime keys take precedence. The synthetic core regression and binding
+key comparisons cover these settings.
 Font, TextAsset, MonoBehaviour and VideoClip have no class `export()` in 1.25.2;
 their file exporters belong to the tools surface.
 
@@ -267,7 +343,8 @@ a member size of -2 reads to EOF only for `BytesIO`, retaining its final cursor
 and child CAB. Negative legacy-bundle offsets follow `struct.unpack_from`'s
 normalization and range messages. These three observations are oracle-compared
 and replayed in `binding_y6_review`; native bounds tests also compare directly
-with `struct.unpack_from`. The Rust binding suite has 34 tests.
+with `struct.unpack_from`. The Rust binding suite has 37 tests, including guarded
+caller-thread finalization and callback-unwind regressions.
 
 Renderer PNG writes preserve every `m_TexEnvs` entry in source order, including
 duplicate property names and filename collisions; MTL references use the last

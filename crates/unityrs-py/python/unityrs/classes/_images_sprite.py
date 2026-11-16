@@ -1,6 +1,8 @@
 # Ported from UnityPy 1.25.2 (MIT): classes/legacy_patch/Sprite.py and export/SpriteHelper.py. See LICENSE-UNITYPY and THIRD_PARTY_LICENSES.
 """Sprite atlas selection and cache, export/SpriteHelper.py:44-127."""
 
+from contextlib import nullcontext
+
 from .. import _native
 from ..enums import ClassIDType
 from ._images import _guard, _reader, get_image
@@ -38,18 +40,21 @@ def get_sprite_image(self):
     assert self.assets_file, "Sprite assets file is not set!"
     cache = self.assets_file._cache
     key = (texture.path_id, alpha.path_id) if alpha else texture.path_id
-    if key not in cache:
-        original = get_image(texture.deref_parse_as_object())
-        guard.step(0, original.width * original.height * 8 + 1024, original.width * original.height)
-        original = original.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-        if alpha:
-            alpha_image = get_image(alpha.deref_parse_as_object())
-            guard.step(0, alpha_image.width * alpha_image.height * 8 + 1024,
-                       alpha_image.width * alpha_image.height)
-            alpha_image = alpha_image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-            original = Image.merge("RGBA", (*original.split()[:3], alpha_image.split()[0]))
-        cache[key] = original
-    original = cache[key]
+    environment = getattr(self.assets_file, 'environment', None)
+    owner = getattr(self.assets_file, '_sync_owner', environment)
+    with (owner._lock if owner is not None else nullcontext()):
+        if key not in cache:
+            original = get_image(texture.deref_parse_as_object())
+            guard.step(0, original.width * original.height * 8 + 1024, original.width * original.height)
+            original = original.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+            if alpha:
+                alpha_image = get_image(alpha.deref_parse_as_object())
+                guard.step(0, alpha_image.width * alpha_image.height * 8 + 1024,
+                           alpha_image.width * alpha_image.height)
+                alpha_image = alpha_image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+                original = Image.merge("RGBA", (*original.split()[:3], alpha_image.split()[0]))
+            cache[key] = original
+        original = cache[key]
     # Sheet reads flipped texture rows. Its stored image is the reverse of
     # UnityPy's cached unflipped image, including user cache replacements.
     guard.step(0, original.width * original.height * 16 + 1024, original.width * original.height)

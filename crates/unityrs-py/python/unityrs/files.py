@@ -8,6 +8,7 @@ from collections import namedtuple
 from types import SimpleNamespace
 from .enums import ClassIDType, BuildTarget
 from .helpers.UnityVersion import UnityVersion
+from ._output import exact_string
 
 # files/File.py:13; files/__init__.py:1-14: the public legacy directory row.
 DirectoryInfo = namedtuple('DirectoryInfo', 'path offset size')
@@ -137,6 +138,8 @@ class File:
 def _save_text(value, guard):
     if value is None:
         return None
+    if isinstance(value, (str, os.PathLike)):
+        value = exact_string(value)
     size = str.__len__(value) if isinstance(value, str) else len(value)
     guard.step(0, size * 4 + 64, 0)
     return value.encode("utf-8", "surrogateescape")
@@ -153,33 +156,38 @@ def _writer_text(value, guard):
 class SerializedFile(File):
     @property
     def reader(self):
-        if '_reader' not in self.__dict__:
-            from ._object_reader import ObjectFileReader
-            guard = self._native.tree_traversal()
-            guard.step(0, 2048, 1)
-            self._reader = ObjectFileReader(self._native)
-        return self._reader
+        with self._sync_owner._lock:
+            if '_reader' not in self.__dict__:
+                from ._object_reader import ObjectFileReader
+                guard = self._native.tree_traversal()
+                guard.step(0, 2048, 1)
+                self._reader = ObjectFileReader(self._native, self.__dict__.get('_bytes_io_reader', False))
+            return self._reader
 
     @reader.setter
     def reader(self, value):
-        self._reader = value
+        with self._sync_owner._lock:
+            self._reader = value
 
     @property
     def container(self):
         # files/SerializedFile.py:235-328: only the first AssetBundle matters.
-        if '_container' not in self.__dict__:
-            from .helpers.ContainerHelper import ContainerHelper
-            guard = self._native.tree_traversal()
-            guard.step(0, 512, 1)
-            bundle = next((obj for obj in self.objects.values() if obj.type == ClassIDType.AssetBundle), None)
-            value = bundle.read() if bundle is not None else []
-            if bundle is not None:
-                for path, _ in value.m_Container:
-                    guard.step(0, 1024 + str.__len__(path) * 4, 1)
-            self._container = ContainerHelper(value)
-        return self._container
+        with self._sync_owner._lock:
+            if '_container' not in self.__dict__:
+                from .helpers.ContainerHelper import ContainerHelper
+                guard = self._native.tree_traversal()
+                guard.step(0, 512, 1)
+                bundle = next((obj for obj in self.objects.values() if obj.type == ClassIDType.AssetBundle), None)
+                value = bundle.read() if bundle is not None else []
+                if bundle is not None:
+                    for path, _ in value.m_Container:
+                        guard.step(0, 1024 + str.__len__(path) * 4, 1)
+                self._container = ContainerHelper(value)
+            return self._container
 
     def save(self, packer=None):
+        if isinstance(packer, (str, os.PathLike)):
+            packer = exact_string(packer)
         with self._sync_owner._lock:
             guard = self._native.tree_traversal()
             count = len(self.objects)
@@ -247,6 +255,8 @@ class BundleFile(File):
         return rows
 
     def save(self, packer=None):
+        if isinstance(packer, (str, os.PathLike)):
+            packer = exact_string(packer)
         with self._sync_owner._lock:
             if (self.signature == "UnityFS" and packer
                     and packer not in ("none", "original", "lz4", "lzma", "lz4hc")
@@ -337,6 +347,9 @@ class BundleFile(File):
 
 class WebFile(File):
     def save(self, files=None, packer="none", signature="UnityWebData1.0"):
+        if isinstance(packer, (str, os.PathLike)):
+            packer = exact_string(packer)
+        signature = exact_string(signature)
         with self._sync_owner._lock:
             guard = self._native.tree_traversal()
             guard.step(0, 256, 1)
@@ -633,13 +646,15 @@ class ObjectReader:
 
     @property
     def reader(self):
-        if '_reader' not in self.__dict__:
-            self._reader = self.assets_file.reader
-        return self._reader
+        with self.assets_file._sync_owner._lock:
+            if '_reader' not in self.__dict__:
+                self._reader = self.assets_file.reader
+            return self._reader
 
     @reader.setter
     def reader(self, value):
-        self._reader = value
+        with self.assets_file._sync_owner._lock:
+            self._reader = value
 
     @property
     def Position(self):

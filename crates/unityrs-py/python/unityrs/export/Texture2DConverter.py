@@ -117,6 +117,14 @@ def _parse_image_data(image_data, width, height, texture_format, version, platfo
     if selected != _DEFAULT_CONV_TABLE.get(texture_format):
         from .._buffers import snapshot_bytes
         guard = _native.TreeTraversal() if _guard is None else _guard
+        if "Crunched" in texture_format.name:
+            raise NotImplementedError(f"unsupported CONV_TABLE replacement: crunch texture {texture_format.name}")
+        if platform == BuildTarget.Switch and platform_blob is not None:
+            blob = snapshot_bytes(platform_blob, guard)
+            # A nonzero exponent means more than one GOB per block. Avoid
+            # constructing 1 << exponent just to decide whether to refuse.
+            if len(blob) >= 12 and any(blob[8:12]):
+                raise NotImplementedError("unsupported CONV_TABLE replacement: Switch-swizzled texture")
         image_data = snapshot_bytes(image_data, guard)
         func, args = selected
         padded_width, padded_height = get_compressed_image_size(width, height, texture_format)

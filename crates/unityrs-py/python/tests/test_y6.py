@@ -86,6 +86,18 @@ class Residue(unittest.TestCase):
             for value in getattr(review, "observe_detached_" + name)(unityrs):
                 self.assertNotIn("error", value)
                 self.assertTrue(all(value["detached"]))
+        data = next(data for name, data in B.cases() if name == "text")
+        file = unityrs.helpers.ImportHelper.parse_file(
+            unityrs.streams.EndianBinaryReader(data), None, "detached",
+            unityrs.enums.FileType.AssetsFile)
+        obj = file.objects[7]
+        self.assertIs(obj.reader, file.reader)
+        obj.reader = file.reader
+        obj.reset()
+        self.assertEqual(obj.Position, obj.byte_start)
+        from binding_y5_round4 import check_object_reader_publication, check_sprite_cache_publication
+        check_object_reader_publication(unityrs, detached=True)
+        check_sprite_cache_publication(unityrs, detached=True)
 
     def test_exception_lookup_reenters_on_calling_thread(self):
         code = "import unityrs; from binding_y6_review import exception_reentry; exception_reentry(unityrs)"

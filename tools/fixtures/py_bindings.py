@@ -82,7 +82,22 @@ TOOLS = [("binding_y5_loader", "observe_" + name) for name in
     ("binding_y5_modules", "observe_" + name) for name in
     ("reexports", "streams", "module_tables", "primitive_maps", "compression",
      "texture_converter", "converter_helpers", "export_modules", "texture_extension", "decrypt_key",
-     "encrypted_load", "generator", "generator_cache")
+     "encrypted_load", "generator", "generator_cache", "untextured_material")
+] + [("binding_y5_review", "observe_" + name) for name in ("destination_order", "failed_image")] + [
+    ("binding_y5_round2", "observe_" + name) for name in ("primitive_string_budget", "deferred_key")
+] + [
+    ("binding_y5_round3", "observe_" + name) for name in
+    ("generator_reentry", "negative_readers", "negative_string_budget", "array_maps")
+] + [
+    ("binding_y5_round4", "observe_" + name) for name in
+    ("container_identity", "root_spellings", "none_extensions")
+] + [("binding_y5_round5", "observe_" + name) for name in
+     ("repeated_roots", "falsy_extensions", "runtime_keys")] + [
+    ("binding_y5_round6", "observe_" + name) for name in
+    ("parse_registration", "scalar_extensions", "skipped_destination_conversion")
+] + [
+    ("binding_y5_round7", "observe_" + name) for name in
+    ("unused_destinations", "source_error_order", "empty_root")
 ]
 
 RESIDUE = [("binding_y6_loader", "observe_" + name) for name in
@@ -107,6 +122,10 @@ RESIDUE = [("binding_y6_loader", "observe_" + name) for name in
 def helper_records():
     import importlib
     references = {
+        ("binding_y5_objects", "observe_gameobject"): "PARITY.md 19.2: empty components and actual legacy PPtrs follow the supplied component list",
+        ("binding_y5_round2", "observe_primitive_string_budget"): "PARITY.md 19.3: primitive map strings dispatch through the bounded reader",
+        ("binding_y5_round3", "observe_negative_string_budget"): "PARITY.md 19.3: negative string reads retain decoding staging for the remaining input span",
+        ("binding_y5_review", "observe_failed_image"): "PARITY.md 19.3: failed image exports preserve existing files with atomic publication",
         ("binding_y5_loader", "observe_filesystem"): "PARITY.md 19.2: custom filesystem reads use the same file opened as a stream",
         ("binding_y5_loader", "observe_streams"): "PARITY.md 19.2: non-string names retain keys and register textual CAB names; read-only streams load their bytes",
         ("binding_y6_loader", "observe_buffers"): "PARITY.md 19.2: mutable nameless buffers and read-only streams load their bytes reference",

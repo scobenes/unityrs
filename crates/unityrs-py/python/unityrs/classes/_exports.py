@@ -4,7 +4,7 @@ import os
 
 from .. import _native
 from ..enums import AUDIO_TYPE_EXTEMSION
-from .._output import OutputDirectory, output_name
+from .._output import OutputDirectory, output_name, exact_string
 from ._images import _guard
 from .._buffers import snapshot_bytes as _bytes
 
@@ -50,7 +50,10 @@ def _audio_samples(self, convert_pcm_float=True):
     guard.step(0, len(data) + 256, 0)
     if isinstance(self.m_Name, str):
         guard.step(0, str.__len__(self.m_Name) * 4 + 256, 0)
-    name = f"{self.m_Name}"
+    # Normalize string payloads before formatting, retaining scalar-name
+    # formatting for values such as None and integers.
+    name = self.m_Name
+    name = exact_string(name) if isinstance(name, (str, os.PathLike)) else exact_string(f"{name}")
     guard.step(0, len(name) * 4 + 256, len(name))
     from .. import config
     source = getattr(config, "AUDIO_VORBIS_HEADERS", os.environ.get("UNITYRS_VORBIS_HEADERS"))
@@ -100,6 +103,7 @@ def _mesh_obj(value, material_names=None):
         guard.step(0, 256, 1)
         names = []
         for name in material_names:
+            name = exact_string(name) if isinstance(name, (str, os.PathLike)) else name
             name = name or ""
             guard.step(0, 128 + (str.__len__(name) * 4 if isinstance(name, str) else 0), 1)
             names.append(name.encode("utf-8", "surrogateescape"))
@@ -109,6 +113,7 @@ def _mesh_obj(value, material_names=None):
 
 def _mesh_export(self, format="obj"):
     # export/MeshExporter.py:11-14.
+    format = exact_string(format) if isinstance(format, (str, os.PathLike)) else format
     if format == "obj":
         return _mesh_obj(self)
     if isinstance(format, str):
@@ -156,6 +161,7 @@ def _material_texture_names(material, guard, *, include_writes=False):
             continue
         if not isinstance(key, str):
             key = key.name
+        key = exact_string(key)
         guard.step(0, str.__len__(key) * 4 + 256, 1)
         properties[key] = texture_env
         if include_writes:
@@ -182,6 +188,7 @@ def _material_texture_names(material, guard, *, include_writes=False):
 def _renderer_export(self, export_dir):
     # export/MeshRendererExporter.py:48-103. Resolution uses current class
     # attributes; geometry/material values enter the existing native writers.
+    export_dir = exact_string(export_dir)
     env = self.object_reader.assets_file.environment
     guard = _guard(self)
     fs = getattr(env, "fs", _LocalFS)

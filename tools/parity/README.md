@@ -38,12 +38,19 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `binding_y5_modules.py` | Package re-exports, streams, codec tables and decryption-key entry points |
 | `binding_y5_objects.py` | File containers, reader patching and forwarding, GameObject components and generator hooks |
 | `binding_y5_tools.py` | Extractor dispatch, individual exporters, graph helpers and extraction trees |
+| `binding_y5_review.py` | Lazy destination opening and failed-image atomic publication beside the oracle's partial output |
+| `binding_y5_round2.py` | Primitive string decoding budgets and deferred decryption-key conversion, including encrypted rejection and retry |
+| `binding_y5_round3.py` | Generated-node and worker callback reentrancy, negative/None reader sizes and budgets, and every primitive array-map value and cursor |
+| `binding_y5_round4.py` | Concurrent container identity, reader and sprite cache publication, equivalent extraction roots and every direct exporter's None extension behavior |
+| `binding_y5_round5.py` | Exact-string and hostile-subclass matrices, repeated root separators, falsy exporter extensions and runtime decryption keys |
+| `binding_y5_round6.py` | Standalone parse registration, truthy scalar extensions for every exporter, and destination conversion after dispatch and filters |
+| `binding_y5_round7.py` | Unused extraction destinations, source-error ordering and empty current-directory roots, with name confinement |
 | `binding_y6_loader.py` | Loader edge observations and paired corrected path, buffer and pointer references |
 | `binding_y6_objects.py` | Referenced arrays, isolated non-class names, synthetic Transform and damaged preloads |
 | `binding_y6_exports.py` | Standalone material texture names, renderer duplicate-property PNG write order and filename collision pixels against the corrected oracle, and optional PCM float conversion |
 | `binding_y6_parse.py` | Forced file-type parsing, raw reader identity and mismatch failures |
 | `binding_y6_review.py` | Detached saves and mutations, successful and partial constructor reader state, explicit-reader detection from the original cursor, load cursor/endian and identity, oversized stream members, negative member sizes for BytesIO and buffered files, partial CAB publication, negative-offset bounds and rejected bundle signatures, compressed-reader failures and caller-thread exception lookup |
-| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=245`); requires `unityrs` and UnityPy 1.25.2, and never skips |
+| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=314`); requires `unityrs` and UnityPy 1.25.2, and never skips |
 | `encoder_probe.py` | B3b's encoder ISA probe (decision 16): replays the native builds of the vendored etcpak, bc7enc and astcenc against the pinned amd64 wheels' raw output, frozen in `crates/unityrs-texture/tests/fixtures/encoder_isa.json` (`--check`, `--oracle`); runs only in the development containers |
 | `encoder_probe.cpp` | `encoder_probe.py`'s native side: the vendored encoders' entry points, compiled with each recorded set of flags and run on framed inputs |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |

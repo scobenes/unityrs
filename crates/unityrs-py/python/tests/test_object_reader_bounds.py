@@ -11,6 +11,80 @@ import unityrs
 
 
 class ObjectReaderBounds(unittest.TestCase):
+    def test_negative_string_size_charges_remaining_span_at_boundary(self):
+        from binding_y5_round2 import string_asset
+        for size in (-1, -2):
+            budget = unityrs.Budget(1_000_000)
+            obj = unityrs.Environment(string_asset(65_536), budget=budget).objects[0]
+            reader = obj.reader
+            reader.Position = reader.Length - 65_536
+            start = reader.Position
+            baseline = budget.used
+            # -1 reads the remaining span; any negative size does so for a
+            # stream. The memory reader's other negative slices stay bounded.
+            held = obj._native.tree_traversal()
+            held.step(0, budget.limit - budget.used - (256 + 5 * 65_536 - 1), 0)
+            retained = budget.used
+            try:
+                with self.assertRaises(MemoryError):
+                    reader.read_string(size)
+                self.assertEqual(reader.Position, start)
+                self.assertEqual(budget.used, retained)
+            finally:
+                del held
+            self.assertEqual(budget.used, baseline)
+            self.assertEqual(reader.read_string(-1), '\udcff' * 65_536)
+
+    def test_primitive_string_map_refuses_at_decoding_budget_boundary(self):
+        from binding_y5_round2 import string_asset
+        from unityrs.helpers.TypeTreeHelper import FUNCTION_READ_MAP
+        budget = unityrs.Budget(1_000_000)
+        obj = unityrs.Environment(string_asset(65_536), budget=budget).objects[0]
+        reader = obj.reader
+        for target in (obj, reader):
+            for read in (lambda target: target.read_aligned_string(), FUNCTION_READ_MAP['string']):
+                with self.subTest(target=type(target).__name__, read=read):
+                    obj.reset()
+                    start = obj.Position
+                    baseline = budget.used
+                    held = obj._native.tree_traversal()
+                    # One byte below the decoding guard, with enough space for
+                    # the raw byte read that formerly bypassed it.
+                    held.step(0, budget.limit - budget.used - (256 + 5 * 65_536 - 1), 0)
+                    retained = budget.used
+                    try:
+                        with self.assertRaises(MemoryError):
+                            read(target)
+                        self.assertEqual(obj.Position, start + 4)
+                        self.assertEqual(budget.used, retained)
+                    finally:
+                        del held
+                    self.assertEqual(budget.used, baseline)
+                    obj.reset()
+                    self.assertEqual(read(target), '\udcff' * 65_536)
+
+    def test_primitive_array_maps_keep_native_staging_guards(self):
+        from unityrs.helpers.TypeTreeHelper import FUNCTION_READ_MAP_ARRAY
+        tree = S.Node('Y5ArrayBudget', 'Base', [S.Node('int', 'count')])
+        data = S.serialized_file([S.Type(49, tree)],
+                                 [S.Obj(1, 0, struct.pack('<i', 4096) + bytes(4096 * 8))])
+        budget = unityrs.Budget(1_000_000)
+        obj = unityrs.Environment(data, budget=budget).objects[0]
+        for name, read in FUNCTION_READ_MAP_ARRAY.items():
+            if name == 'SInt8':
+                continue  # Raw bytes have no tuple conversion staging.
+            with self.subTest(name=name):
+                obj.reset()
+                held = obj._native.tree_traversal()
+                held.step(0, budget.limit - budget.used - 50_000, 0)
+                retained = budget.used
+                try:
+                    with self.assertRaises(MemoryError):
+                        read(obj)
+                    self.assertEqual(budget.used, retained)
+                finally:
+                    del held
+
     def test_automatic_preload_index_charges_insertions(self):
         from unityrs.helpers.ContainerHelper import ContainerHelper
         tree = S.Node('Y5PreloadBudget', 'Base', [S.Node('int', 'value')])

@@ -126,6 +126,7 @@ def observe_tools_objects(module):
             ("append", file.objects[1], {"append_name": True, "append_path_id": True}),
             ("pointer", C.PPtr(m_FileID=0, m_PathID=1, assetsfile=file), {"append_name": True}),
             ("empty", file.objects[4], {"append_name": True, "append_path_id": True}),
+            ("empty_no_id", file.objects[4], {"append_name": True}),
             ("filtered", file.objects[1], {"asset_filter": lambda obj: False}),
             ("unknown", file.objects[3], {}),
             ("unknown_tree", file.objects[3], {"export_unknown_as_typetree": True}),

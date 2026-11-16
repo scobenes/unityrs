@@ -11,6 +11,7 @@ tools/extractor.py:327-358 and tools/extractor.py:361-368.
 """
 import json
 import os
+from contextlib import ExitStack, nullcontext
 from io import BytesIO
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
@@ -43,18 +44,22 @@ def export_obj(
     instance = obj.parse_as_object()
     if asset_filter and not asset_filter(instance):
         return []
-    text(guard, fp)
-    if append_name:
-        name = getattr(instance, "m_Name", obj.type.name)
-        name = _paths.relative(name, guard)
-        guard.step(0, (len(fp) + len(name)) * 8 + 256, 1)
-        fp = os.path.join(fp, name)
-    fp, extension = os.path.splitext(fp)
-    if append_path_id:
-        guard.step(0, len(fp) * 8 + 512, 1)
-        identity = _paths.relative(f"{obj.m_PathID}", guard)
-        fp = f"{fp}_{identity}"
-    return export_func(instance, fp, extension)
+    fp = _paths.destination(fp, guard)
+    # Non-container extraction first uses its root here, after both filters
+    # and dispatch. Preserve an enclosing held root for graph exports.
+    context = _paths.root(fp, guard, create=False, reuse=True) if append_name else nullcontext(fp)
+    with context as fp:
+        if append_name:
+            name = getattr(instance, "m_Name", obj.type.name)
+            name = _paths.leaf(name, guard, allow_empty=True)
+            guard.step(0, (len(fp) + len(name)) * 8 + 256, 1)
+            fp = os.path.join(fp, name)
+        fp, extension = os.path.splitext(fp)
+        if append_path_id:
+            guard.step(0, len(fp) * 8 + 512, 1)
+            identity = _paths.leaf(f"{obj.m_PathID}", guard)
+            fp = f"{fp}_{identity}"
+        return export_func(instance, fp, extension)
 
 
 def extract_assets(
@@ -63,6 +68,8 @@ def extract_assets(
     append_path_id: bool = False, export_unknown_as_typetree: bool = False,
     asset_filter: Optional[Callable[[Object], bool]] = None,
 ) -> List[Tuple[SerializedFile, int]]:
+    if isinstance(src, (str, os.PathLike)):
+        src = _paths.exact_string(src)
     env = UnityPy.load(src)
     guard = TreeTraversal(getattr(env, "_limits", None), getattr(env, "_budget", None))
     guard.step(0, 512 + len(EXPORT_TYPES) * 128, len(EXPORT_TYPES))
@@ -75,7 +82,6 @@ def extract_assets(
         except (IndexError, ValueError):
             return 999
 
-    dst = os.fspath(dst)
     values = env.container if use_container else env.objects
     guard.step(0, len(values) * 512 + 256, len(values))
     if use_container:
@@ -85,18 +91,21 @@ def extract_assets(
     # Empty sources do not open the destination in the original extractor.
     if not values:
         return exported
-    with _paths.root(dst, guard, create=use_container):
+    with ExitStack() as stack:
+        container_root = None
         for entry in values:
             obj_path, obj = entry if use_container else (None, entry)
             if asset_filter is not None and not asset_filter(obj):
                 continue
             if use_container:
+                if container_root is None:
+                    container_root = stack.enter_context(_paths.root(dst, guard, create=True))
                 obj_path = _paths.relative(obj_path, guard)
-                guard.step(0, len(obj_path) * 512 + len(dst) * 8 + 256, len(obj_path))
+                guard.step(0, len(obj_path) * 512 + len(container_root) * 8 + 256, len(obj_path))
                 parts = [x for x in obj_path.split("/")[ignore_first_container_dirs:] if x]
                 if not parts:
                     raise ValueError("unsafe asset output name")
-                obj_dest = os.path.join(dst, *parts)
+                obj_dest = os.path.join(container_root, *parts)
                 _paths.mkdir(os.path.dirname(obj_dest), guard)
             else:
                 guard.step(0, 0, len(exported))
@@ -112,6 +121,7 @@ def extract_assets(
     return exported
 
 
+@_paths.exporter
 def exportTextAsset(obj: Union[TextAsset, ObjectReader], fp: str,
                     extension: str = ".txt") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
@@ -125,6 +135,7 @@ def exportTextAsset(obj: Union[TextAsset, ObjectReader], fp: str,
     return [(obj.assets_file, obj.object_reader.path_id)]
 
 
+@_paths.exporter
 def exportFont(obj: Union[Font, ObjectReader], fp: str,
                extension: str = "") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
@@ -138,6 +149,7 @@ def exportFont(obj: Union[Font, ObjectReader], fp: str,
     return [(obj.assets_file, obj.object_reader.path_id)]
 
 
+@_paths.exporter
 def exportMesh(obj: Union[Mesh, ObjectReader], fp: str, extension=".obj") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
         obj = obj.parse_as_object()
@@ -151,6 +163,7 @@ def exportMesh(obj: Union[Mesh, ObjectReader], fp: str, extension=".obj") -> Lis
     return [(obj.assets_file, obj.object_reader.path_id)]
 
 
+@_paths.exporter
 def exportShader(obj: Union[Shader, ObjectReader], fp: str, extension=".txt") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
         obj = obj.parse_as_object()
@@ -164,6 +177,7 @@ def exportShader(obj: Union[Shader, ObjectReader], fp: str, extension=".txt") ->
     return [(obj.assets_file, obj.object_reader.path_id)]
 
 
+@_paths.exporter
 def exportMonoBehaviour(obj: Union[MonoBehaviour, ObjectReader], fp: str,
                         extension: str = "") -> List[Tuple[SerializedFile, int]]:
     reader = obj.object_reader if isinstance(obj, MonoBehaviour) else obj
@@ -183,6 +197,7 @@ def exportMonoBehaviour(obj: Union[MonoBehaviour, ObjectReader], fp: str,
     return [(obj.assets_file, obj.path_id)]
 
 
+@_paths.exporter
 def exportAudioClip(obj: Union[AudioClip, ObjectReader], fp: str,
                     extension: str = "") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
@@ -199,7 +214,7 @@ def exportAudioClip(obj: Union[AudioClip, ObjectReader], fp: str,
         pending = []
         for name, clip_data in samples.items():
             guard.step(0, 128, 1)
-            pending.append((_paths.relative(name, guard), clip_data))
+            pending.append((_paths.leaf(name, guard), clip_data))
         _paths.mkdir(fp, guard)
         for name, clip_data in pending:
             text(guard, name)
@@ -208,6 +223,7 @@ def exportAudioClip(obj: Union[AudioClip, ObjectReader], fp: str,
     return [(obj.assets_file, obj.path_id)]
 
 
+@_paths.exporter
 def exportSprite(obj: Union[Sprite, ObjectReader], fp: str,
                  extension: str = ".png") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
@@ -225,6 +241,7 @@ def exportSprite(obj: Union[Sprite, ObjectReader], fp: str,
     return exported
 
 
+@_paths.exporter
 def exportTexture2D(obj: Union[Texture2D, ObjectReader], fp: str,
                     extension: str = ".png") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
@@ -236,6 +253,7 @@ def exportTexture2D(obj: Union[Texture2D, ObjectReader], fp: str,
     return [(obj.assets_file, obj.object_reader.path_id)]
 
 
+@_paths.exporter
 def exportGameObject(obj: Union[GameObject, ObjectReader], fp: str,
                      extension: str = "") -> List[Tuple[SerializedFile, int]]:
     if isinstance(obj, ObjectReader):
@@ -243,6 +261,15 @@ def exportGameObject(obj: Union[GameObject, ObjectReader], fp: str,
     guard = guard_for(obj)
     exported = [(obj.assets_file, obj.object_reader.path_id)]
     refs = crawl_obj(obj)
+    # Preflight every referenced object's name, including material names,
+    # before creating the graph's directory or publishing any earlier export.
+    for ref_id, ref in refs.items():
+        if (ref.assets_file, ref_id) in exported:
+            continue
+        reader = ref.deref() if isinstance(ref, PPtr) else ref
+        name = reader.peek_name() if isinstance(reader, ObjectReader) else getattr(reader, "m_Name", None)
+        if name is not None:
+            _paths.leaf(name, guard, allow_empty=True)
     if refs:
         _paths.mkdir(fp, guard)
     for ref_id, ref in refs.items():

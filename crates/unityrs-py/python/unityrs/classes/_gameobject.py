@@ -4,9 +4,9 @@ from ..enums import ClassIDType
 
 
 def _components(self):
-    if self.m_Component is None:
+    if not self.m_Component:
         return []
-    # The empty-list IndexError and the old tuple spelling are public behavior.
+    # Legacy entries contain the component PPtr itself.
     old = isinstance(self.m_Component[0], tuple)
     reader = self.object_reader
     guard = reader._native.tree_traversal() if reader is not None else None
@@ -16,7 +16,7 @@ def _components(self):
             guard.step(0, 64, 1)
         if old:
             _, component = entry
-            result.append(component.m_GameObject)
+            result.append(component)
         else:
             result.append(entry.component)
     return result

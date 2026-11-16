@@ -211,7 +211,7 @@ fn signature_error(
 
 pub(crate) fn resource(error: Error, path: &unityrs_core::RawStr) -> PyErr {
     if matches!(error, Error::NotFound(_)) {
-        Python::attach(|py| {
+        crate::python::relay::attach(|py| {
             let name = py
                 .import("ntpath")?
                 .getattr("basename")?
@@ -255,18 +255,16 @@ pub(crate) fn core(error: Error) -> PyErr {
             .into(),
         ),
         Error::Detect(DetectError::Gzip(detail)) => gzip(&detail),
-        Error::OutOfBounds { .. } => {
-            Python::attach(
-                |py| match py.import("struct").and_then(|m| m.getattr("error")) {
-                    Ok(cls) => PyErr::from_type(
-                        cls.cast_into()
-                            .unwrap_or_else(|_| py.get_type::<PyEOFError>()),
-                        (message(&error),),
-                    ),
-                    Err(e) => e,
-                },
-            )
-        }
+        Error::OutOfBounds { .. } => crate::python::relay::attach(|py| {
+            match py.import("struct").and_then(|m| m.getattr("error")) {
+                Ok(cls) => PyErr::from_type(
+                    cls.cast_into()
+                        .unwrap_or_else(|_| py.get_type::<PyEOFError>()),
+                    (message(&error),),
+                ),
+                Err(e) => e,
+            }
+        }),
         Error::Io(e) => {
             let message = message(&e.0);
             match e.0.kind() {
@@ -300,18 +298,20 @@ pub(crate) fn core(error: Error) -> PyErr {
         } if detail.as_ref() == "cyclic shared subtree" => {
             PyRecursionError::new_err("maximum recursion depth exceeded")
         }
-        Error::Version(unityrs_core::version::VersionError::NoFallback) => Python::attach(|py| {
-            match py
-                .import("unityrs.exceptions")
-                .and_then(|m| m.getattr("UnityVersionFallbackError"))
-            {
-                Ok(cls) => match cls.cast_into::<pyo3::types::PyType>() {
-                    Ok(cls) => PyErr::from_type(cls, (message(&error),)),
-                    Err(error) => error.into(),
-                },
-                Err(error) => error,
-            }
-        }),
+        Error::Version(unityrs_core::version::VersionError::NoFallback) => {
+            crate::python::relay::attach(|py| {
+                match py
+                    .import("unityrs.exceptions")
+                    .and_then(|m| m.getattr("UnityVersionFallbackError"))
+                {
+                    Ok(cls) => match cls.cast_into::<pyo3::types::PyType>() {
+                        Ok(cls) => PyErr::from_type(cls, (message(&error),)),
+                        Err(error) => error.into(),
+                    },
+                    Err(error) => error,
+                }
+            })
+        }
         Error::Version(unityrs_core::version::VersionError::NoMatch(ref raw)) => {
             invalid_version(raw.as_bytes())
         }
@@ -331,15 +331,15 @@ fn invalid_version(raw: &[u8]) -> PyErr {
     bytes.extend_from_slice(prefix);
     bytes.extend_from_slice(raw);
     match crate::python::string(&bytes) {
-        Ok(message) => {
-            Python::attach(|py| PyErr::from_type(py.get_type::<PyValueError>(), (message,)))
-        }
+        Ok(message) => crate::python::relay::attach(|py| {
+            PyErr::from_type(py.get_type::<PyValueError>(), (message,))
+        }),
         Err(error) => error,
     }
 }
 
 fn gzip(detail: &str) -> PyErr {
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         let text = detail.split_once(": ").map_or(detail, |(_, s)| s);
         let text = if detail.starts_with("zlib.error:") {
             message(&format_args!(
@@ -415,7 +415,7 @@ pub(crate) fn parse_reader(error: &ParseError, boost: bool) -> PyErr {
                 exception: kind,
                 ..
             } => exception(kind, format!("{method} out of bounds")),
-            ReadDetail::Eof { need, .. } => Python::attach(|py| {
+            ReadDetail::Eof { need, .. } => crate::python::relay::attach(|py| {
                 match py
                     .import("struct")
                     .and_then(|m| m.getattr("error"))

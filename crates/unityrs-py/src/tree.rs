@@ -48,6 +48,13 @@ pub(crate) fn rows_to_python(
     list: &unityrs_core::typetree::NodeList,
     traversal: &mut TreeTraversal,
 ) -> PyResult<Py<PyAny>> {
+    crate::python::relay::attach(|py| py.detach(|| rows_to_python_detached(list, traversal)))
+}
+
+fn rows_to_python_detached(
+    list: &unityrs_core::typetree::NodeList,
+    traversal: &mut TreeTraversal,
+) -> PyResult<Py<PyAny>> {
     let out = p::list()?;
     for (index, row) in list.rows().iter().enumerate() {
         let id = unityrs_core::typetree::NodeId(u32::try_from(index)?);

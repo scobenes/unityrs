@@ -117,7 +117,37 @@ if the rename happened after extraction. A directory moved outside the `-o`
 pathname can therefore receive subsequent writes through its held descriptor;
 this does not grant access to a directory the renamer could not write to.
 Interrupted runs may leave
-`.unityrs-extract-*.tmp` files, safe to delete. Python exposure is Y5.
+`.unityrs-extract-*.tmp` files, safe to delete. The Python tools facade exposes
+the nine exporters and extraction helpers with the same destination confinement.
+It validates names and extensions before creating output, opens destinations only
+when dispatch and filters reach an export, and preserves existing files on failed
+image exports through atomic publication. Its 267 oracle comparisons and 103 wheel
+tests include hostile path, shared-reader cursor and concurrency regressions,
+primitive-map decoding budgets, empty and legacy GameObject components, and
+decryption-key conversion deferred until encrypted bundle processing. Generated
+node getters, result allocation, error callbacks and finalization run on the
+calling thread; negative string reads reserve decoding storage for the remaining
+input span. Array-map recordings include values and cursors for every alias.
+Concurrent first access shares file containers, readers and decoded sprite
+textures under the environment lock. Container extraction accepts equivalent
+destination spellings, including repeated trailing slashes. Public tool paths,
+class export arguments and asset-derived output names become exact strings before
+use; hostile subclass regressions check the surrounding filesystem too. Direct
+exporters preserve defaults or ignored arguments for all falsy extensions,
+retain scalar extension formatting, and validate effective output names.
+Empty sources, unsupported objects and filtered objects skip unused destination
+conversion; source-loading errors take precedence. Non-container extraction
+accepts an empty destination as the current directory while validating names.
+These cases have oracle comparisons and recorded replay. Standalone
+SerializedFile parsing leaves the environment's file and CAB mappings unchanged.
+Y6a’s recorded forced-parsing cases close PARITY section 22’s stream semantics
+(memory-reader `read(None)` and BytesIO `read(-2)`) and earlier-child CAB retention
+after a later container failure, with reader identity, cursor and endian checks.
+Runtime configuration retains a context's
+decryption key unless it supplies an override.
+Standalone textured materials resolve current texture names through Y6a’s bounded
+adapter. Replacement texture converters requiring Switch or crunch preprocessing
+have named refusals pending Y6b.
 
 ## Licence
 

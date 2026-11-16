@@ -367,6 +367,11 @@ impl SerializedFile {
         self.reader
     }
 
+    /// The shared reader's position after loading metadata and the eager container.
+    pub fn reader_position(&self) -> i128 {
+        self.constructor_position
+    }
+
     /// The header.
     pub fn header(&self) -> &SerializedHeader {
         &self.header

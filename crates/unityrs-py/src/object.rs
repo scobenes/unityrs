@@ -154,7 +154,7 @@ impl NativeObject {
         &self,
         py: Python<'_>,
         check_read: bool,
-        rows: Py<PyAny>,
+        rows: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
         self.parse_with_position(py, check_read, Some(rows))
             .and_then(|result| result.bind(py).get_item(0).map(Bound::unbind))
@@ -164,12 +164,12 @@ impl NativeObject {
         &self,
         py: Python<'_>,
         check_read: bool,
-        rows: Option<Py<PyAny>>,
+        rows: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        let tree = py.detach(|| {
-            rows.map(|rows| crate::tree::compile_rows(&self.inner, &rows))
-                .transpose()
-        })?;
+        // Row iteration can invoke caller code while its environment lock is held.
+        let tree = rows
+            .map(|rows| crate::tree::compile_rows(&self.inner, rows.as_unbound()))
+            .transpose()?;
         let meter = self.inner.file().meter();
         let native = py.detach(|| {
             crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
@@ -244,12 +244,11 @@ impl NativeObject {
         })
     }
     #[pyo3(signature = (rows=None))]
-    fn object_data(&self, py: Python<'_>, rows: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
+    fn object_data(&self, py: Python<'_>, rows: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
+        let tree = rows
+            .map(|rows| crate::tree::compile_rows(&self.inner, rows.as_unbound()))
+            .transpose()?;
         py.detach(move || {
-            let tree = rows
-                .as_ref()
-                .map(|rows| crate::tree::compile_rows(&self.inner, rows))
-                .transpose()?;
             let meter = self.inner.file().meter();
             let native =
                 crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
