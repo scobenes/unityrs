@@ -134,6 +134,14 @@ def _save_text(value, guard):
     return value.encode("utf-8", "surrogateescape")
 
 
+def _writer_text(value, guard):
+    # UnityPy's writer calls `value.encode(...)` (streams/EndianBinaryWriter.py:84-92),
+    # so a value without one, None or an int, raises its AttributeError there.
+    encode = value.encode
+    guard.step(0, (str.__len__(value) if isinstance(value, str) else 0) * 4 + 64, 0)
+    return encode("utf8", "surrogateescape")
+
+
 class SerializedFile(File):
     def save(self, packer=None):
         with self.environment._lock:
@@ -363,12 +371,12 @@ class _CabWriter:
 
     def write_string_to_null(self, value):
         guard = self._native.tree_traversal()
-        self.write(_save_text(value, guard))
+        self.write(_writer_text(value, guard))
         self.write(b"\0")
 
     def write_aligned_string(self, value):
         guard = self._native.tree_traversal()
-        encoded = _save_text(value, guard)
+        encoded = _writer_text(value, guard)
         self.write_int(len(encoded))
         self.write(encoded)
         self.align_stream(4)

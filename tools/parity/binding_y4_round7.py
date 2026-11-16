@@ -70,7 +70,9 @@ def observe_cab_protocol(module):
                     cab.write_array(cab.write_short, [11, -12], False)]
         cab.Position = 0
         cab.write_long(42)
-        errors = [_attempt(lambda: cab.write_u_int(-1)), _attempt(lambda: cab.write_float("bad"))]
+        errors = [_attempt(lambda: cab.write_u_int(-1)), _attempt(lambda: cab.write_float("bad")),
+                  _attempt(lambda: cab.write_string_to_null(None)), _attempt(lambda: cab.write_string_to_null(3)),
+                  _attempt(lambda: cab.write_aligned_string(None)), _attempt(lambda: cab.write_aligned_string(b"x"))]
         result[endian] = [returns, cab.bytes.hex(), cab.Position, cab.Length, errors]
     bundle = _load(module, S.fs_bundle([(b"raw.resS", b"hello", 0)]))
     cab = bundle.get_writeable_cab()
