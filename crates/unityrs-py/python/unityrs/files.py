@@ -167,17 +167,18 @@ class SerializedFile(File):
     @property
     def container(self):
         # files/SerializedFile.py:235-328: only the first AssetBundle matters.
-        if '_container' not in self.__dict__:
-            from .helpers.ContainerHelper import ContainerHelper
-            guard = self._native.tree_traversal()
-            guard.step(0, 512, 1)
-            bundle = next((obj for obj in self.objects.values() if obj.type == ClassIDType.AssetBundle), None)
-            value = bundle.read() if bundle is not None else []
-            if bundle is not None:
-                for path, _ in value.m_Container:
-                    guard.step(0, 1024 + str.__len__(path) * 4, 1)
-            self._container = ContainerHelper(value)
-        return self._container
+        with (self.environment._lock if self.environment is not None else nullcontext()):
+            if '_container' not in self.__dict__:
+                from .helpers.ContainerHelper import ContainerHelper
+                guard = self._native.tree_traversal()
+                guard.step(0, 512, 1)
+                bundle = next((obj for obj in self.objects.values() if obj.type == ClassIDType.AssetBundle), None)
+                value = bundle.read() if bundle is not None else []
+                if bundle is not None:
+                    for path, _ in value.m_Container:
+                        guard.step(0, 1024 + str.__len__(path) * 4, 1)
+                self._container = ContainerHelper(value)
+            return self._container
 
     def save(self, packer=None):
         with self.environment._lock:
@@ -633,13 +634,15 @@ class ObjectReader:
 
     @property
     def reader(self):
-        if '_reader' not in self.__dict__:
-            self._reader = self.assets_file.reader
-        return self._reader
+        with (self.assets_file.environment._lock if self.assets_file.environment is not None else nullcontext()):
+            if '_reader' not in self.__dict__:
+                self._reader = self.assets_file.reader
+            return self._reader
 
     @reader.setter
     def reader(self, value):
-        self._reader = value
+        with (self.assets_file.environment._lock if self.assets_file.environment is not None else nullcontext()):
+            self._reader = value
 
     @property
     def Position(self):

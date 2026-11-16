@@ -109,3 +109,38 @@ class Tools(unittest.TestCase):
         observation = observe_failed_image(unityrs)
         self.assertTrue(observation["preserved"])
         self.assertEqual(observation["leaves"], ["image.png"])
+
+    def test_concurrent_container_access_shares_mutations(self):
+        from binding_y5_round4 import observe_container_identity
+        self.assertEqual(observe_container_identity(unityrs), [1, ['shared'] * 4, True])
+
+    def test_container_extraction_root_spellings_write_root_and_nested_assets(self):
+        from binding_y5_round4 import observe_root_spellings
+        for name, (outcome, tree) in observe_root_spellings(unityrs).items():
+            with self.subTest(root=name):
+                self.assertIn('value', outcome)
+                self.assertEqual({bytes.fromhex(key).decode(): bytes.fromhex(value)
+                                  for key, value in tree.items()},
+                                 {'root.txt': b'hello\xff', 'nested/child.txt': b'hello\xff'})
+
+    def test_none_extension_defaults_and_ignored_arguments(self):
+        from binding_y5_round4 import observe_none_extensions
+        suffixes = {'TextAsset': '.txt', 'Font': '.otf', 'Mesh': '.obj', 'Shader': '.txt',
+                    'MonoBehaviour': '.json', 'AudioClip': '.wav', 'Texture2D': '.png'}
+        for name, rows in observe_none_extensions(unityrs).items():
+            for outcome, tree in rows:
+                with self.subTest(exporter=name):
+                    if name == 'Sprite':
+                        self.assertEqual(outcome, {'error': 'ValueError', 'message': 'unknown file extension: '})
+                    else:
+                        self.assertIn('value', outcome)
+                    self.assertEqual([bytes.fromhex(key).decode() for key in tree],
+                                     ['output' + suffixes[name]] if name in suffixes else [])
+
+    def test_object_reader_cache_publication_holds_environment_lock(self):
+        from binding_y5_round4 import check_object_reader_publication
+        check_object_reader_publication(unityrs)
+
+    def test_sprite_cache_decodes_once_on_concurrent_access(self):
+        from binding_y5_round4 import check_sprite_cache_publication
+        check_sprite_cache_publication(unityrs)

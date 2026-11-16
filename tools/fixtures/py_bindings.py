@@ -88,6 +88,9 @@ TOOLS = [("binding_y5_loader", "observe_" + name) for name in
 ] + [
     ("binding_y5_round3", "observe_" + name) for name in
     ("generator_reentry", "negative_readers", "negative_string_budget", "array_maps")
+] + [
+    ("binding_y5_round4", "observe_" + name) for name in
+    ("container_identity", "root_spellings", "none_extensions")
 ]
 
 

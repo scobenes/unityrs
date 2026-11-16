@@ -29,8 +29,10 @@ def exporter(function):
     """Anchor the caller's destination before processing any appended text.
 
     The root opens lazily on the first write, after filters and dispatch. Both
-    destination and suffix are exact strings before the exporter can format
-    them; only caller-selected destination directories may contain separators.
+    destination and supplied string suffix are exact strings before formatting;
+    None reaches the exporter's default or ignored-argument handling. The
+    effective output leaf is validated at the write. Only caller-selected
+    destination directories may contain separators.
     """
     @wraps(function)
     def confined(obj, fp, *args, **kwargs):
@@ -41,7 +43,8 @@ def exporter(function):
         # file() validates the complete name after the exporter adds its suffix.
         leaf(name, guard, allow_empty=True)
         extension = args[0] if args else kwargs.get("extension", "")
-        extension = leaf(extension, guard, allow_empty=True)
+        if extension is not None:
+            extension = leaf(extension, guard, allow_empty=True)
         if args:
             args = (extension, *args[1:])
         elif "extension" in kwargs:
@@ -103,6 +106,9 @@ def _walk(path, guard, create=False, parent=None):
 @contextlib.contextmanager
 def root(directory, guard, create):
     directory = destination(directory, guard)
+    # dirname(join('out/', 'asset')) is 'out'. Keep the held root in that
+    # equivalent spelling without resolving any descriptor-walk components.
+    directory = directory.rstrip('/') or directory
     held = [directory, None, create]
     token = _root.set(held)
     try:
