@@ -125,7 +125,7 @@ def observe_forwarding(module):
     return result
 
 
-def observe_gameobject(module):
+def observe_gameobject(module, corrected=False):
     C = importlib.import_module(module.__name__ + '.classes')
     kinds = [('Animator', 95), ('Animation', 111), ('Transform', 4), ('MeshRenderer', 23),
              ('SkinnedMeshRenderer', 137), ('MeshFilter', 33)]
@@ -133,16 +133,30 @@ def observe_gameobject(module):
     file = _load(module, S.serialized_file(types, [S.Obj(i + 1, i, b'') for i in range(len(types))]))
     pointers = [C.PPtr(m_FileID=0, m_PathID=i + 1, assetsfile=file) for i in range(len(types))]
     obj = _new(C.GameObject, m_Component=None)
+    def components():
+        if corrected and module.__name__ == 'UnityPy':
+            return [entry[1] if isinstance(entry, tuple) else entry.component
+                    for entry in (obj.m_Component or [])]
+        return obj.m_Components
+
+    def accessors():
+        if corrected and module.__name__ == 'UnityPy':
+            return [next((p.path_id for p in components() if p.type == kind), None)
+                    for _, kind in kinds]
+        return [getattr(obj, 'm_' + kind).path_id if getattr(obj, 'm_' + kind) is not None
+                else None for kind, _ in kinds]
+
     result = {'none': obj.m_Components, 'none_transform': obj.m_Transform}
     obj.m_Component = []
-    result['empty'] = _attempt(lambda: obj.m_Components)
+    result['empty'] = _attempt(components)
+    result['empty_accessors'] = _attempt(accessors)
     for name, values in (
         ('new', [SimpleNamespace(component=p) for p in pointers]),
-        ('old', [(i, SimpleNamespace(m_GameObject=p)) for i, p in enumerate(pointers)]),
+        ('old', [(kind, p) for (_, kind), p in zip(kinds, pointers)]),
     ):
         obj.m_Component = values
-        result[name] = [p.path_id for p in obj.m_Components]
-        result[name + '_accessors'] = [getattr(obj, 'm_' + kind).path_id for kind, _ in kinds]
+        result[name] = _attempt(lambda: [p.path_id for p in components()])
+        result[name + '_accessors'] = _attempt(accessors)
     obj.m_Component = [SimpleNamespace(component=pointers[0])]
     result['missing'] = obj.m_Transform
     obj.m_Component = [SimpleNamespace(component=C.PPtr(m_FileID=0, m_PathID=0, assetsfile=file))]

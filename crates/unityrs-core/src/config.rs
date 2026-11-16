@@ -16,6 +16,13 @@ use std::sync::RwLock;
 pub struct RuntimeConfig {
     values: RwLock<(Option<RawStr>, bool)>,
     decrypt_key: RwLock<Option<[u8; 16]>>,
+    decrypt_key_source: RwLock<Option<Arc<dyn DecryptKeySource>>>,
+}
+
+/// A binding resolves its mutable global only when an encrypted bundle needs it.
+pub trait DecryptKeySource: Send + Sync + fmt::Debug {
+    /// Convert the current key, without holding a runtime configuration lock.
+    fn key(&self, meter: &Arc<Meter>) -> Result<Option<[u8; 16]>, ChargeError>;
 }
 
 impl Default for RuntimeConfig {
@@ -31,6 +38,7 @@ impl RuntimeConfig {
         Self {
             values: RwLock::new((None, true)),
             decrypt_key: RwLock::new(None),
+            decrypt_key_source: RwLock::new(None),
         }
     }
 
@@ -59,7 +67,28 @@ impl RuntimeConfig {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = key;
     }
 
-    /// Copy the key without retaining a lock while decoding a bundle.
+    /// Install a lazy binding resolver for subsequent encrypted loads.
+    pub fn set_decrypt_key_source(&self, source: Arc<dyn DecryptKeySource>) {
+        *self
+            .decrypt_key_source
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source);
+    }
+
+    /// Resolve the key on the active input's meter, outside configuration locks.
+    pub fn resolve_decrypt_key(&self, meter: &Arc<Meter>) -> Result<Option<[u8; 16]>, ChargeError> {
+        let source = self
+            .decrypt_key_source
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(source) = source {
+            return source.key(meter);
+        }
+        Ok(self.decrypt_key())
+    }
+
+    /// Copy the configured native key without retaining a lock while decoding.
     #[must_use]
     pub fn decrypt_key(&self) -> Option<[u8; 16]> {
         *self

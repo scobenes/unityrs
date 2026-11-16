@@ -304,13 +304,15 @@ fn read_fs_header(
             }
             None
         } else {
-            Some(UnityCnDecryptor::read(
-                r,
+            Some(UnityCnDecryptor::read_with_key(r, || {
                 ctx.runtime_config
                     .as_ref()
-                    .map_or(ctx.assetbundle_decrypt_key, |config| config.decrypt_key())
-                    .as_ref(),
-            )?)
+                    .map_or(Ok(ctx.assetbundle_decrypt_key), |config| {
+                        config
+                            .resolve_decrypt_key(charge.meter())
+                            .map_err(Error::from)
+                    })
+            })?)
         }
     } else {
         None

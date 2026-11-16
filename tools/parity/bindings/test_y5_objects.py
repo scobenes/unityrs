@@ -19,7 +19,8 @@ class FinalObjectRows(unittest.TestCase):
         self.compare(cases.observe_forwarding)
 
     def test_gameobject_component_spellings_and_accessors(self):
-        self.compare(cases.observe_gameobject)
+        self.assertEqual(cases.observe_gameobject(unityrs),
+                         cases.observe_gameobject(UnityPy, corrected=True))
 
     def test_file_container_union_and_own_object_paths(self):
         self.compare(cases.observe_containers)

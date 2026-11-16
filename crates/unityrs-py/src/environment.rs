@@ -22,8 +22,32 @@ pub(crate) struct NativeEnvironment {
 
 #[derive(Debug, Default)]
 struct FallbackWarning {
-    error: Mutex<Option<PyErr>>,
+    error: Arc<Mutex<Option<PyErr>>>,
     config: Arc<unityrs_core::config::RuntimeConfig>,
+}
+
+#[derive(Debug)]
+struct DeferredKey {
+    error: Arc<Mutex<Option<PyErr>>>,
+}
+
+impl unityrs_core::config::DecryptKeySource for DeferredKey {
+    fn key(
+        &self,
+        meter: &Arc<unityrs_core::limits::Meter>,
+    ) -> Result<Option<[u8; 16]>, unityrs_core::limits::ChargeError> {
+        crate::python::relay::decrypt_key(meter).map_err(|error| {
+            *self
+                .error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+            unityrs_core::budget::AllocError {
+                requested: 0,
+                what: unityrs_core::budget::Reservation::Input,
+            }
+            .into()
+        })
+    }
 }
 impl unityrs_core::config::FallbackWarningSink for FallbackWarning {
     fn warn(&self, value: &RawStr) -> Result<(), unityrs_core::limits::ChargeError> {
@@ -134,7 +158,7 @@ impl NativeEnvironment {
             let mut context = FileContext::unitypy();
             let config = Arc::new(unityrs_core::config::RuntimeConfig::unitypy());
             let fallback_warnings = Arc::new(FallbackWarning {
-                error: Mutex::new(None),
+                error: Arc::new(Mutex::new(None)),
                 config: config.clone(),
             });
             context.runtime_config = Some(config.clone());
@@ -148,6 +172,9 @@ impl NativeEnvironment {
             if let Some(budget) = budget {
                 context.budget = budget.inner.clone();
             }
+            config.set_decrypt_key_source(Arc::new(DeferredKey {
+                error: fallback_warnings.error.clone(),
+            }));
             let mut options = EnvOptions::unitypy();
             options.context = Arc::new(context);
             Ok(Self {
@@ -157,28 +184,18 @@ impl NativeEnvironment {
             })
         })
     }
-    #[pyo3(signature = (fallback, parse_typetree, decrypt_key=None))]
+    #[pyo3(signature = (fallback, parse_typetree))]
     fn configure(
         &self,
         py: Python<'_>,
         fallback: Option<&Bound<'_, PyAny>>,
         parse_typetree: bool,
-        decrypt_key: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
         let meter = self.input_meter();
         let fallback = fallback
             .map(|v| crate::buffer_snapshot::BufferSnapshot::source(v, &meter, u64::MAX))
             .transpose()?;
-        let decrypt_key = decrypt_key
-            .map(|value| {
-                let snapshot = crate::buffer_snapshot::BufferSnapshot::new(value, &meter)?;
-                <[u8; 16]>::try_from(snapshot.as_ref()).map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err("AssetBundle Key length is wrong")
-                })
-            })
-            .transpose()?;
         py.detach(|| {
-            self.config.set_decrypt_key(decrypt_key);
             self.config.set(
                 fallback.map(|data| RawStr::from(unityrs_core::Bytes::from_owner(data))),
                 parse_typetree,

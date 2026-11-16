@@ -83,12 +83,16 @@ TOOLS = [("binding_y5_loader", "observe_" + name) for name in
     ("reexports", "streams", "module_tables", "primitive_maps", "compression",
      "texture_converter", "converter_helpers", "export_modules", "texture_extension", "decrypt_key",
      "encrypted_load", "generator", "generator_cache", "untextured_material")
-] + [("binding_y5_review", "observe_" + name) for name in ("destination_order", "failed_image")]
+] + [("binding_y5_review", "observe_" + name) for name in ("destination_order", "failed_image")] + [
+    ("binding_y5_round2", "observe_" + name) for name in ("primitive_string_budget", "deferred_key")
+]
 
 
 def helper_records():
     import importlib
     references = {
+        ("binding_y5_objects", "observe_gameobject"): "PARITY.md 19.2: empty components and actual legacy PPtrs follow the supplied component list",
+        ("binding_y5_round2", "observe_primitive_string_budget"): "PARITY.md 19.3: primitive map strings dispatch through the bounded reader",
         ("binding_y5_review", "observe_failed_image"): "PARITY.md 19.3: failed image exports preserve existing files with atomic publication",
         ("binding_y5_objects", "observe_iteration"): "PARITY.md 19.2: file iteration follows nested containers and yields requested objects",
         ("binding_y4_images", "observe_set_image"): "PARITY.md 18.1: convert unsupported packer modes to RGBA",
