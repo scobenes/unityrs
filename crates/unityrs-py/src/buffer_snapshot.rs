@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn mutable_strided_and_multidimensional_snapshots_are_immutable() -> PyResult<()> {
         let _serial = crate::tests::serial();
-        Python::attach(|py| {
+        crate::python::relay::attach(|py| {
             for expression in [
                 c"memoryview(data)",
                 c"memoryview(data)[::2]",
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn snapshot_refuses_nbytes_before_copying_and_releases_charge() -> PyResult<()> {
         let _serial = crate::tests::serial();
-        Python::attach(|py| {
+        crate::python::relay::attach(|py| {
             let input = py.eval(
                 c"memoryview(bytearray(2_000_000)).cast('B', (1, 2_000_000))",
                 None,

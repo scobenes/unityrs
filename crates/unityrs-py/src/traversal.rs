@@ -24,7 +24,7 @@ impl TreeTraversal {
     }
 
     pub(crate) fn shared_step(guard: &Py<Self>, memory: u64, work: u64) -> PyResult<()> {
-        Python::attach(|py| guard.try_borrow_mut(py)?.expand(0, memory, work))
+        crate::python::relay::attach(|py| guard.try_borrow_mut(py)?.expand(0, memory, work))
     }
 
     pub(crate) fn on(meter: &Arc<Meter>, depth_limit: u32) -> Self {

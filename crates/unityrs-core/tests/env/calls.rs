@@ -93,7 +93,17 @@ const CALLS: &[(&str, Pool, &[&str])] = &[
     ("Environment::load_file", Pool::Inner, &[SETTLE]),
     ("Environment::load_zip_file", Pool::Inner, &[SETTLE]),
     ("Environment::load_reader", Pool::Inner, &[SETTLE]),
+    (
+        "Environment::load_reader_at_position",
+        Pool::Inner,
+        &[SETTLE],
+    ),
     ("Environment::parse_reader", Pool::Inner, &[SETTLE]),
+    (
+        "Environment::parse_reader_with_state",
+        Pool::Inner,
+        &[SETTLE],
+    ),
     ("Environment::load_path", Pool::Inner, &[SETTLE]),
     ("Environment::load_files", Pool::Inner, &[SETTLE]),
     ("Environment::load_folder", Pool::Inner, &[SETTLE]),
@@ -366,12 +376,26 @@ enum Dropper {
     Load,
     LoadFile,
     LoadReader,
+    LoadReaderAtPosition,
     ParseReader,
+    ParseReaderWithState,
     LoadZip,
     LoadPath,
     LoadFiles,
     LoadFolder,
     Register,
+}
+
+fn load_owned_reader(env: &Environment, how: Dropper, name: &[u8], bytes: &[u8]) {
+    let name = RawStr::from(name);
+    let data = Bytes::copy_from_slice(bytes);
+    let reader = unityrs_core::stream::ReaderKind::Memory;
+    let loaded = if matches!(how, Dropper::LoadReader) {
+        env.load_reader(name, data, reader, false)
+    } else {
+        env.load_reader_at_position(name, data, reader, false, 0)
+    };
+    drop(loaded.unwrap());
 }
 
 /// Scene `nested_dropped_evicted` under `LoadMode::Lazy`, with a cache
@@ -388,7 +412,9 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
         Dropper::Load
         | Dropper::LoadFile
         | Dropper::LoadReader
+        | Dropper::LoadReaderAtPosition
         | Dropper::ParseReader
+        | Dropper::ParseReaderWithState
         | Dropper::LoadZip
         | Dropper::LoadPath
         | Dropper::LoadFiles
@@ -408,17 +434,9 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
         None => match how {
             Dropper::Load => drop(env.load(source(&d, 3)).unwrap()),
             Dropper::LoadFile => drop(env.load_file(source(&d, 3)).unwrap()),
-            Dropper::LoadReader => {
+            Dropper::LoadReader | Dropper::LoadReaderAtPosition => {
                 let (name, bytes) = &d.scene.files[3];
-                drop(
-                    env.load_reader(
-                        RawStr::from(name.as_slice()),
-                        Bytes::copy_from_slice(bytes),
-                        unityrs_core::stream::ReaderKind::Memory,
-                        false,
-                    )
-                    .unwrap(),
-                );
+                load_owned_reader(&env, how, name, bytes);
             }
             Dropper::ParseReader => {
                 let (name, bytes) = &d.scene.files[3];
@@ -429,6 +447,20 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
                         unityrs_core::stream::ReaderKind::Memory,
                         unityrs_core::detect::FileType::BundleFile,
                         None,
+                    )
+                    .unwrap(),
+                );
+            }
+            Dropper::ParseReaderWithState => {
+                let (name, bytes) = &d.scene.files[3];
+                drop(
+                    env.parse_reader_with_state(
+                        &RawStr::from(name.as_slice()),
+                        Bytes::copy_from_slice(bytes),
+                        unityrs_core::stream::ReaderKind::Memory,
+                        unityrs_core::detect::FileType::BundleFile,
+                        None,
+                        &mut None,
                     )
                     .unwrap(),
                 );
@@ -482,7 +514,9 @@ fn a_registration_that_drops_a_dependencys_container_makes_room_to_reach_it() {
         Dropper::Load,
         Dropper::LoadFile,
         Dropper::LoadReader,
+        Dropper::LoadReaderAtPosition,
         Dropper::ParseReader,
+        Dropper::ParseReaderWithState,
         Dropper::LoadZip,
         Dropper::LoadPath,
         Dropper::LoadFiles,

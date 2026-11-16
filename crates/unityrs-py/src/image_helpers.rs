@@ -130,7 +130,7 @@ fn _texture_preprocess(
                 Ok(out)
             },
         )
-    })
+    })?
 }
 
 fn array(input: &Bound<'_, PyAny>, meter: &Arc<Meter>) -> PyResult<VertexArray> {
@@ -237,7 +237,7 @@ fn _sprite_geometry(
                 images::output(&result, &meter)
             },
         )
-    })
+    })?
 }
 
 #[pyfunction]
@@ -287,7 +287,7 @@ fn _sprite_copy_triangle(
                 images::output(&output, &meter)
             },
         )
-    })
+    })?
 }
 
 #[pyfunction]
@@ -323,5 +323,5 @@ fn _astc_codec(
                 }
             },
         )
-    })
+    })?
 }

@@ -161,6 +161,7 @@ const _: () = {
     send_sync::<dyn once::CellError>();
     send_sync::<object::ObjectRef>();
     send_sync::<options::FileContext>();
+    send_sync::<dyn config::DecryptKeySource>();
     send_sync::<provider::TreeSource>();
     send_sync::<provider::ProviderChain>();
     send_sync::<provider::ProviderError>();

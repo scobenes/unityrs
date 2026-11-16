@@ -1,5 +1,6 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/export/AudioClipConverter.py, UnityPy/export/ShaderConverter.py. See LICENSE-UNITYPY and THIRD_PARTY_LICENSES.
 //! Current-value exporters; no operation rereads the original object payload.
+use crate::worker_error::Failure;
 use crate::{environment::NativeEnvironment, errors, object::NativeObject, python as p};
 use pyo3::{
     exceptions::{PyException, PyNotImplementedError, PyValueError},
@@ -13,7 +14,7 @@ use unityrs_core::{
 };
 
 #[path = "exports_mesh.rs"]
-mod mesh;
+pub(crate) mod mesh;
 
 pub(crate) fn context(reader: Option<&NativeObject>) -> (Limits, Arc<Meter>) {
     if let Some(reader) = reader {
@@ -45,20 +46,20 @@ fn export_audio(
     let path = vorbis_path
         .map(|path| crate::path_snapshot::snapshot(path, &meter))
         .transpose()?;
-    py.detach(move || {
+    let native = py.detach(|| {
         crate::worker::run(limits.stack_needed(), || {
             // export/AudioClipConverter.py:13-49. The facade handles current
             // inline/resource selection before this magic dispatch and decoder.
             let plan =
-                unityrs_audio::plan(&data, convert_pcm_float, &meter).map_err(audio_error)?;
+                unityrs_audio::plan(&data, convert_pcm_float, &meter).map_err(Failure::Audio)?;
             let headers = if plan.header().is_some_and(|header| header.mode == 15) {
                 if let Some(bytes) = vorbis_headers.as_ref() {
                     Some(
                         unityrs_audio::VorbisHeaders::from_bytes(bytes, &meter)
-                            .map_err(audio_error)?,
+                            .map_err(Failure::Audio)?,
                     )
                 } else if let Some((path, _charge)) = path.as_ref() {
-                    Some(unityrs_audio::VorbisHeaders::load(path, &meter).map_err(audio_error)?)
+                    Some(unityrs_audio::VorbisHeaders::load(path, &meter).map_err(Failure::Audio)?)
                 } else {
                     None
                 }
@@ -66,28 +67,28 @@ fn export_audio(
                 None
             };
             let files = unityrs_audio::decode_with_vorbis(&plan, &name, headers.as_ref(), &meter)
-                .map_err(audio_error)?;
-            let mut handoff = unityrs_core::limits::Charge::zero(&meter);
-            handoff.grow(256).map_err(errors::charge)?;
-            let result = p::dict()?;
-            for file in files.as_slice() {
-                handoff
-                    .grow(
-                        256 + (file.name.len() as u64).saturating_mul(4) + file.bytes.len() as u64,
-                    )
-                    .map_err(errors::charge)?;
-                p::set(
-                    &result,
-                    &p::string(file.name.as_slice())?,
-                    &p::bytes(file.bytes.as_slice())?,
-                )?;
-            }
-            Ok(result)
+                .map_err(Failure::Audio)?;
+            Ok::<_, Failure>(files)
         })
-    })
+    })?;
+    let native = crate::worker_error::finish(native)?;
+    let mut handoff = unityrs_core::limits::Charge::zero(&meter);
+    handoff.grow(256).map_err(errors::charge)?;
+    let result = p::dict()?;
+    for file in native.as_slice() {
+        handoff
+            .grow(256 + (file.name.len() as u64).saturating_mul(4) + file.bytes.len() as u64)
+            .map_err(errors::charge)?;
+        p::set(
+            &result,
+            &p::string(file.name.as_slice())?,
+            &p::bytes(file.bytes.as_slice())?,
+        )?;
+    }
+    Ok(result)
 }
 
-fn audio_error(error: unityrs_audio::Error) -> PyErr {
+pub(crate) fn audio_error(error: unityrs_audio::Error) -> PyErr {
     match error {
         unityrs_audio::Error::Charge(error) => errors::charge(error),
         // Unsupported codecs stay explicit gaps; FMOD is never bundled.
@@ -112,7 +113,7 @@ fn export_shader(
 ) -> PyResult<Py<PyAny>> {
     let (limits, meter) = context(reader);
     let snapshot = crate::value_input::shader_snapshot(input.as_unbound(), &meter, &limits)?;
-    py.detach(move || {
+    let native = py.detach(|| {
         crate::worker::run(limits.stack_needed(), || {
             let parsed = snapshot.build()?;
             let bytes = unityrs_export::shader::export_with_cap(
@@ -121,13 +122,15 @@ fn export_shader(
                 &meter,
                 limits.max_block_output,
             )
-            .map_err(|error| shader_error(error, &meter))?;
-            let _handoff = meter
-                .charge((bytes.len() as u64).saturating_mul(4))
-                .map_err(errors::charge)?;
-            p::string(bytes.as_slice())
+            .map_err(|error| Failure::Shader(error, meter.clone()))?;
+            Ok::<_, Failure>(bytes)
         })
-    })
+    })?;
+    let native = crate::worker_error::finish(native)?;
+    let _handoff = meter
+        .charge((native.len() as u64).saturating_mul(4))
+        .map_err(errors::charge)?;
+    p::string(native.as_slice())
 }
 
 pub(crate) fn shader_error(error: unityrs_export::shader::Error, meter: &Arc<Meter>) -> PyErr {
@@ -146,16 +149,12 @@ pub(crate) fn shader_error(error: unityrs_export::shader::Error, meter: &Arc<Met
                 return errors::charge(error);
             }
             match p::bytes(data.as_ref()) {
-                Ok(bytes) => {
-                    Python::attach(
-                        |py| match bytes.bind(py).call_method1("decode", ("utf8",)) {
-                            Err(error) => error,
-                            Ok(_) => {
-                                PyValueError::new_err("invalid UTF-8 error contained valid bytes")
-                            }
-                        },
-                    )
-                }
+                Ok(bytes) => crate::python::relay::attach(|py| {
+                    match bytes.bind(py).call_method1("decode", ("utf8",)) {
+                        Err(error) => error,
+                        Ok(_) => PyValueError::new_err("invalid UTF-8 error contained valid bytes"),
+                    }
+                }),
                 Err(error) => error,
             }
         }
@@ -167,8 +166,11 @@ pub(crate) fn shader_error(error: unityrs_export::shader::Error, meter: &Arc<Met
 }
 
 pub(super) fn named_error(name: &str, message: String) -> PyErr {
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         let class = match name {
+            "brotli.error" => py
+                .import("unityrs.helpers.CompressionHelper")
+                .and_then(|m| m.getattr("_BrotliError")),
             "error" => py.import("struct").and_then(|m| m.getattr("error")),
             "LZ4BlockError" => py
                 .import("unityrs._native")
@@ -203,7 +205,7 @@ mod tests {
     #[test]
     fn raw_float_wav_bytes_and_default_conversion() -> PyResult<()> {
         let _serial = crate::tests::serial();
-        Python::attach(|py| {
+        crate::python::relay::attach(|py| {
             let module = PyModule::new(py, "export_adapter_test")?;
             register(&module)?;
             let scope = PyDict::new(py);

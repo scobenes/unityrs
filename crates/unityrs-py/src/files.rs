@@ -22,7 +22,26 @@ impl NativeFile {
     ) -> PyResult<(Py<PyAny>, crate::traversal::TreeTraversal)> {
         py.detach(|| crate::reference_types::snapshot(self))
     }
-    fn serialized_reader_info(&self, py: Python<'_>) -> PyResult<(usize, char, bool)> {
+    fn constructor_reader_state(&self, py: Python<'_>) -> (i128, Option<char>) {
+        py.detach(|| match &self.inner {
+            File::Serialized(file) => (
+                file.constructor_position(),
+                Some(
+                    if file.header().endian == unityrs_core::stream::Endian::Little {
+                        '<'
+                    } else {
+                        '>'
+                    },
+                ),
+            ),
+            File::Bundle(file) => (file.constructor_position(), None),
+            File::Web(file) if file.packer() == unityrs_core::files::WebPacker::None => {
+                (file.constructor_position(), Some('<'))
+            }
+            _ => (0, None),
+        })
+    }
+    fn serialized_reader_info(&self, py: Python<'_>) -> PyResult<(usize, char, bool, i128)> {
         py.detach(|| {
             let File::Serialized(file) = &self.inner else {
                 return Err(pyo3::exceptions::PyAttributeError::new_err(
@@ -36,7 +55,8 @@ impl NativeFile {
                 } else {
                     '>'
                 },
-                file.reader_kind() == unityrs_core::stream::ReaderKind::Stream,
+                file.reader_kind() != unityrs_core::stream::ReaderKind::Memory,
+                file.constructor_position(),
             ))
         })
     }
@@ -177,10 +197,10 @@ impl NativeFile {
                 File::Bundle(f) => ("BundleFile", f.name()),
                 File::Web(f) => ("WebFile", f.name()),
                 File::Raw(f) => (
-                    if f.reader_kind() == unityrs_core::stream::ReaderKind::Stream {
-                        "EndianBinaryReader_Stream"
-                    } else {
+                    if f.reader_kind() == unityrs_core::stream::ReaderKind::Memory {
                         "EndianBinaryReader"
+                    } else {
+                        "EndianBinaryReader_Stream"
                     },
                     &f.name,
                 ),
@@ -320,7 +340,9 @@ impl NativeFile {
                     .map_err(errors::core)?;
                 let row = p::list()?;
                 p::push(&row, &p::string(slot.name.as_bytes())?)?;
-                let f = Python::attach(|py| Py::new(py, NativeFile::new(file)).map(Py::into_any))?;
+                let f = crate::python::relay::attach(|py| {
+                    Py::new(py, NativeFile::new(file)).map(Py::into_any)
+                })?;
                 p::push(&row, &f)?;
                 p::push(&result, &row)?;
             }
@@ -335,7 +357,7 @@ impl NativeFile {
             if let File::Serialized(f) = &self.inner {
                 for inner in f.objects() {
                     staging.grow(128).map_err(errors::charge)?;
-                    let obj = Python::attach(|py| {
+                    let obj = crate::python::relay::attach(|py| {
                         Py::new(py, NativeObject::new(inner)).map(Py::into_any)
                     })?;
                     p::push(&result, &obj)?;

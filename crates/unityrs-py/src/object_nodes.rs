@@ -4,12 +4,15 @@
 use crate::{errors, python as p};
 use pyo3::prelude::*;
 use std::collections::HashMap;
-use unityrs_core::{Parsed, limits::Charge, typetree::NodeId};
+use unityrs_core::{limits::Charge, typetree::NodeId};
 
-pub(crate) fn convert(parsed: &Parsed, charge: &mut Charge) -> PyResult<Py<PyAny>> {
+pub(crate) fn convert(
+    node_lists: &[unityrs_core::typetree::SharedNodes],
+    charge: &mut Charge,
+) -> PyResult<Py<PyAny>> {
     charge.grow(64).map_err(errors::charge)?;
     let lists = p::list()?;
-    for list in parsed.lists() {
+    for list in node_lists {
         charge.grow(64).map_err(errors::charge)?;
         let rows = p::list()?;
         for (index, row) in list.rows().iter().enumerate() {
@@ -73,7 +76,7 @@ pub(crate) fn convert(parsed: &Parsed, charge: &mut Charge) -> PyResult<Py<PyAny
 }
 
 pub(crate) fn references(
-    parsed: &Parsed,
+    node_lists: &[unityrs_core::typetree::SharedNodes],
     refs: Option<&[unityrs_core::files::serialized::SerializedType]>,
     charge: &mut Charge,
 ) -> PyResult<Py<PyAny>> {
@@ -83,17 +86,17 @@ pub(crate) fn references(
     // Index the used lists once: scanning them for every reference costs
     // refs * lists even when no reference ultimately contributes a record.
     charge
-        .grow(64 + (parsed.lists().len() as u64).saturating_mul(128))
+        .grow(64 + (node_lists.len() as u64).saturating_mul(128))
         .map_err(errors::charge)?;
     charge
         .meter()
-        .count_decode((refs.len() as u64 + parsed.lists().len() as u64).saturating_mul(64))
+        .count_decode((refs.len() as u64 + node_lists.len() as u64).saturating_mul(64))
         .map_err(errors::charge)?;
     let mut indices = HashMap::new();
     indices
-        .try_reserve(parsed.lists().len())
+        .try_reserve(node_lists.len())
         .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("reference list index allocation"))?;
-    for (index, list) in parsed.lists().iter().enumerate() {
+    for (index, list) in node_lists.iter().enumerate() {
         indices.insert(std::ptr::from_ref(&**list) as usize, index);
     }
     for reference in refs {

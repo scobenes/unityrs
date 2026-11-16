@@ -21,7 +21,10 @@ pub(crate) fn load_stack(limits: &unityrs_core::limits::Limits) -> usize {
     )
 }
 
-pub(crate) fn run<T: Send>(stack: usize, f: impl FnOnce() -> PyResult<T> + Send) -> PyResult<T> {
+/// Return native data (including unconverted errors). Callers translate and
+/// build Python objects after this joins; Python operations needed during work
+/// use the caller relay, including warnings, allocations and finalizers.
+pub(crate) fn run<T: Send>(stack: usize, f: impl FnOnce() -> T + Send) -> PyResult<T> {
     let relay = crate::python::relay::Relay::default();
     std::thread::scope(|scope| {
         let thread = std::thread::Builder::new()
@@ -34,7 +37,7 @@ pub(crate) fn run<T: Send>(stack: usize, f: impl FnOnce() -> PyResult<T> + Send)
             .map_err(|_| PyRuntimeError::new_err("core worker failed"))?;
         match relay.take_error() {
             Some(error) => Err(error),
-            None => result,
+            None => Ok(result),
         }
     })
 }

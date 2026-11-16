@@ -52,7 +52,7 @@ pub(crate) struct Call {
 }
 
 pub(crate) fn invoke(call: &Call) -> PyResult<crate::python::relay::Response> {
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         let mut staging = Charge::zero(&call.meter);
         staging
             .grow(

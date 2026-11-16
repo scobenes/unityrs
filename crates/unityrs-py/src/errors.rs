@@ -26,11 +26,14 @@ pub(crate) fn charge(error: unityrs_core::limits::ChargeError) -> PyErr {
 /// Reader exceptions at the direct helper boundary. The core retains a named
 /// short-read error; Python exposes the reader's original exception text.
 pub(crate) fn file_parse(
-    error: Error,
+    mut error: Error,
     data: &[u8],
     stream: bool,
     meter: &std::sync::Arc<unityrs_core::limits::Meter>,
 ) -> PyErr {
+    while let Error::Entry { source, .. } = error {
+        error = (*source).clone();
+    }
     if let Error::WebSignature(signature) = &error {
         return signature_error(
             signature.as_bytes(),
@@ -39,11 +42,33 @@ pub(crate) fn file_parse(
             "Invalid WebFile signature: {!r}. Expected 'UnityWebData' or 'TuanjieWebData'.",
         );
     }
+    if let Error::BundleSignature(signature) = &error {
+        return signature_error(
+            signature.as_bytes(),
+            meter,
+            true,
+            "Unknown Bundle signature: {}",
+        );
+    }
+    if let Error::Malformed {
+        what: unityrs_core::stream::STREAM_READER,
+        detail,
+    } = &error
+    {
+        use unityrs_core::stream::StreamRefusal;
+        for refusal in [
+            StreamRefusal::NegativePosition,
+            StreamRefusal::PositionTooLarge,
+            StreamRefusal::NegativeRead,
+            StreamRefusal::ReadTooLarge,
+            StreamRefusal::ReadSizeOverflow,
+        ] {
+            if detail.as_ref() == refusal.message() {
+                return exception(refusal.exception(), message(detail));
+            }
+        }
+    }
     let template = match &error {
-        Error::Malformed {
-            what: "bundle signature",
-            ..
-        } => Some((true, "Unknown Bundle signature: {}")),
         Error::Malformed {
             what: "WebFile",
             detail,
@@ -57,44 +82,75 @@ pub(crate) fn file_parse(
         return file_signature(data, stream, meter, bundle, template);
     }
     if let Error::OutOfBounds {
-        what, pos, need, ..
+        what,
+        pos,
+        need,
+        reader,
+        length,
+        ..
     } = error
     {
-        let length = data.len();
-        if what == "string to null" {
-            return if stream {
-                PyValueError::new_err("Unterminated string: [b'']")
-            } else {
-                PyException::new_err("String not terminated")
-            };
-        }
-        // Fixed-width numeric fields bound this message well below 512 bytes.
-        let _staging = match meter.charge(512) {
-            Ok(charge) => charge,
-            Err(error) => return charge(error),
-        };
-        let text = if stream || need == 1 {
-            message(&format_args!("unpack requires a buffer of {need} bytes"))
-        } else {
-            let end = pos.saturating_add(i128::from(need));
-            message(&format_args!(
-                "unpack_from requires a buffer of at least {end} bytes for unpacking {need} bytes at offset {pos} (actual buffer size is {length})"
-            ))
-        };
-        return Python::attach(|py| {
-            match py
-                .import("struct")
-                .and_then(|module| module.getattr("error"))
-            {
-                Ok(class) => match class.cast_into::<pyo3::types::PyType>() {
-                    Ok(class) => PyErr::from_type(class, (text,)),
-                    Err(error) => error.into(),
-                },
-                Err(error) => error,
-            }
-        });
+        return file_parse_bounds(
+            what,
+            pos,
+            need,
+            length,
+            reader != unityrs_core::stream::ReaderKind::Memory,
+            meter,
+        );
     }
     core(error)
+}
+
+fn file_parse_bounds(
+    what: &'static str,
+    pos: i128,
+    need: u64,
+    length: usize,
+    stream: bool,
+    meter: &std::sync::Arc<unityrs_core::limits::Meter>,
+) -> PyErr {
+    if what == "string to null" {
+        return if stream {
+            PyValueError::new_err("Unterminated string: [b'']")
+        } else {
+            PyException::new_err("String not terminated")
+        };
+    }
+    // Fixed-width numeric fields bound this message well below 512 bytes.
+    let _staging = match meter.charge(512) {
+        Ok(charge) => charge,
+        Err(error) => return charge(error),
+    };
+    let text = if stream || need == 1 {
+        message(&format_args!("unpack requires a buffer of {need} bytes"))
+    } else if pos < 0 && pos.saturating_add(i128::from(need)) > 0 {
+        message(&format_args!(
+            "not enough data to unpack {need} bytes at offset {pos}"
+        ))
+    } else if pos < 0 && pos < -(length as i128) {
+        message(&format_args!(
+            "offset {pos} out of range for {length}-byte buffer"
+        ))
+    } else {
+        let pos = if pos < 0 { pos + length as i128 } else { pos };
+        let end = pos.saturating_add(i128::from(need));
+        message(&format_args!(
+            "unpack_from requires a buffer of at least {end} bytes for unpacking {need} bytes at offset {pos} (actual buffer size is {length})"
+        ))
+    };
+    crate::python::relay::attach(|py| {
+        match py
+            .import("struct")
+            .and_then(|module| module.getattr("error"))
+        {
+            Ok(class) => match class.cast_into::<pyo3::types::PyType>() {
+                Ok(class) => PyErr::from_type(class, (text,)),
+                Err(error) => error.into(),
+            },
+            Err(error) => error,
+        }
+    })
 }
 
 fn file_signature(
@@ -137,7 +193,7 @@ fn signature_error(
         Ok(charge) => charge,
         Err(error) => return charge(error),
     };
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         let rendered = (|| {
             let signature = crate::python::string(signature)?;
             let text =
@@ -155,7 +211,7 @@ fn signature_error(
 
 pub(crate) fn resource(error: Error, path: &unityrs_core::RawStr) -> PyErr {
     if matches!(error, Error::NotFound(_)) {
-        Python::attach(|py| {
+        crate::python::relay::attach(|py| {
             let name = py
                 .import("ntpath")?
                 .getattr("basename")?
@@ -181,6 +237,9 @@ pub(crate) fn core(error: Error) -> PyErr {
         Error::Entry { source, .. } => core((*source).clone()),
         Error::AssetBundle(source) => parse((*source).clone()),
         Error::Detect(DetectError::Unterminated) => PyException::new_err("String not terminated"),
+        Error::Detect(DetectError::UnterminatedStream) => {
+            PyValueError::new_err("Unterminated string: [b'']")
+        }
         Error::Detect(DetectError::InflateLimit(_) | DetectError::Work(_)) | Error::Limit(_) => {
             LimitError::new_err(message(&error))
         }
@@ -196,18 +255,16 @@ pub(crate) fn core(error: Error) -> PyErr {
             .into(),
         ),
         Error::Detect(DetectError::Gzip(detail)) => gzip(&detail),
-        Error::OutOfBounds { .. } => {
-            Python::attach(
-                |py| match py.import("struct").and_then(|m| m.getattr("error")) {
-                    Ok(cls) => PyErr::from_type(
-                        cls.cast_into()
-                            .unwrap_or_else(|_| py.get_type::<PyEOFError>()),
-                        (message(&error),),
-                    ),
-                    Err(e) => e,
-                },
-            )
-        }
+        Error::OutOfBounds { .. } => crate::python::relay::attach(|py| {
+            match py.import("struct").and_then(|m| m.getattr("error")) {
+                Ok(cls) => PyErr::from_type(
+                    cls.cast_into()
+                        .unwrap_or_else(|_| py.get_type::<PyEOFError>()),
+                    (message(&error),),
+                ),
+                Err(e) => e,
+            }
+        }),
         Error::Io(e) => {
             let message = message(&e.0);
             match e.0.kind() {
@@ -241,18 +298,20 @@ pub(crate) fn core(error: Error) -> PyErr {
         } if detail.as_ref() == "cyclic shared subtree" => {
             PyRecursionError::new_err("maximum recursion depth exceeded")
         }
-        Error::Version(unityrs_core::version::VersionError::NoFallback) => Python::attach(|py| {
-            match py
-                .import("unityrs.exceptions")
-                .and_then(|m| m.getattr("UnityVersionFallbackError"))
-            {
-                Ok(cls) => match cls.cast_into::<pyo3::types::PyType>() {
-                    Ok(cls) => PyErr::from_type(cls, (message(&error),)),
-                    Err(error) => error.into(),
-                },
-                Err(error) => error,
-            }
-        }),
+        Error::Version(unityrs_core::version::VersionError::NoFallback) => {
+            crate::python::relay::attach(|py| {
+                match py
+                    .import("unityrs.exceptions")
+                    .and_then(|m| m.getattr("UnityVersionFallbackError"))
+                {
+                    Ok(cls) => match cls.cast_into::<pyo3::types::PyType>() {
+                        Ok(cls) => PyErr::from_type(cls, (message(&error),)),
+                        Err(error) => error.into(),
+                    },
+                    Err(error) => error,
+                }
+            })
+        }
         Error::Version(unityrs_core::version::VersionError::NoMatch(ref raw)) => {
             invalid_version(raw.as_bytes())
         }
@@ -272,15 +331,15 @@ fn invalid_version(raw: &[u8]) -> PyErr {
     bytes.extend_from_slice(prefix);
     bytes.extend_from_slice(raw);
     match crate::python::string(&bytes) {
-        Ok(message) => {
-            Python::attach(|py| PyErr::from_type(py.get_type::<PyValueError>(), (message,)))
-        }
+        Ok(message) => crate::python::relay::attach(|py| {
+            PyErr::from_type(py.get_type::<PyValueError>(), (message,))
+        }),
         Err(error) => error,
     }
 }
 
 fn gzip(detail: &str) -> PyErr {
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         let text = detail.split_once(": ").map_or(detail, |(_, s)| s);
         let text = if detail.starts_with("zlib.error:") {
             message(&format_args!(
@@ -366,7 +425,7 @@ pub(crate) fn parse_reader(error: &ParseError, boost: bool) -> PyErr {
                 exception: kind,
                 ..
             } => exception(kind, format!("{method} out of bounds")),
-            ReadDetail::Eof { need, .. } => Python::attach(|py| {
+            ReadDetail::Eof { need, .. } => crate::python::relay::attach(|py| {
                 match py
                     .import("struct")
                     .and_then(|m| m.getattr("error"))

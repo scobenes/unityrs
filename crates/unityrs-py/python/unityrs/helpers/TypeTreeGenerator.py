@@ -3,6 +3,7 @@ import os
 from typing import Dict, List, Tuple
 
 from .TypeTreeNode import TypeTreeNode
+from .._output import exact_string
 
 try:
     from TypeTreeGeneratorAPI import TypeTreeGenerator as TypeTreeGeneratorBase  # pyright: ignore[reportAssignmentType]
@@ -41,11 +42,13 @@ class TypeTreeGenerator(TypeTreeGeneratorBase):
         return super().load_il2cpp(il2cpp, metadata)
 
     def get_nodes(self, assembly: str, fullname: str):
+        assembly, fullname = exact_string(assembly), exact_string(fullname)
         if self._backend is not None:
             return self._backend.get_nodes(assembly, fullname)
         return super().get_nodes(assembly, fullname)
 
     def load_local_game(self, root_dir: str):
+        root_dir = exact_string(root_dir)
         root_files = os.listdir(root_dir)
         data_dir = os.path.join(root_dir, next(f for f in root_files if f.endswith("_Data")))
         if "GameAssembly.dll" in root_files:
@@ -60,6 +63,7 @@ class TypeTreeGenerator(TypeTreeGeneratorBase):
             self.load_local_dll_folder(os.path.join(data_dir, "Managed"))
 
     def load_local_dll_folder(self, dll_dir: str):
+        dll_dir = exact_string(dll_dir)
         for f in os.listdir(dll_dir):
             if not f.endswith(".dll"):
                 continue
@@ -69,6 +73,7 @@ class TypeTreeGenerator(TypeTreeGeneratorBase):
                 self.load_dll(data)
 
     def get_nodes_up(self, assembly: str, fullname: str) -> TypeTreeNode:
+        assembly, fullname = exact_string(assembly), exact_string(fullname)
         key = (assembly, fullname)
         if key in self.cache:
             return self.cache[key]

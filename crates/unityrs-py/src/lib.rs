@@ -38,11 +38,14 @@ mod text_snapshot;
 mod tpk;
 mod traversal;
 mod tree;
+#[cfg(test)]
 mod value;
 mod value_input;
 #[cfg(test)]
 mod value_input_tests;
+mod value_plan;
 mod worker;
+mod worker_error;
 
 #[pymodule(name = "_native")]
 fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {

@@ -79,7 +79,9 @@ fn snapshot(
     limits: &Limits,
     tree: Option<&Tree>,
 ) -> PyResult<unityrs_core::Parsed> {
-    snapshot_input(input, meter, limits, tree, false, &[], false)?.build()
+    snapshot_input(input, meter, limits, tree, false, &[], false)?
+        .build()
+        .map_err(Into::into)
 }
 
 pub(crate) fn material_snapshot(
@@ -115,7 +117,7 @@ fn snapshot_input(
     refs: &[unityrs_core::files::SerializedType],
     keep_none: bool,
 ) -> PyResult<Snapshot> {
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         py.detach(|| {
             snapshot_input_native(
                 input,
@@ -242,7 +244,7 @@ impl Fields {
             crate::python::push(&pair, &crate::python::string(key.as_bytes())?)?;
             crate::python::push(&rows, &pair)?;
         }
-        self.schema = Some(Python::attach(|py| {
+        self.schema = Some(crate::python::relay::attach(|py| {
             rows.bind(py).try_iter().map(Bound::unbind)
         })?);
         self.raw_names = true;
@@ -330,7 +332,7 @@ impl State<'_> {
         Ok(id)
     }
     fn inspect(&mut self, input: &Py<PyAny>) -> PyResult<(RawStr, Inspect)> {
-        Python::attach(|py| {
+        crate::python::relay::attach(|py| {
             let value = input.bind(py);
             if self.keep_none && value.is_none() {
                 // Parsed has no null variant. Preserve explicit Python None
@@ -459,7 +461,7 @@ fn buffer_value(
 }
 
 fn next_item(iter: &Elements, index: usize) -> PyResult<Option<Py<PyAny>>> {
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         let Elements::Iter(iter) = iter else {
             let Elements::Pair(input) = iter else {
                 return Ok(None);
@@ -515,7 +517,7 @@ fn scalar_for_shape(
     let ty = tree.list().type_name(node);
     let kind = py_kind_of(ty);
     if matches!(kind, Kind::Str | Kind::Bytes) {
-        let value = Python::attach(|py| {
+        let value = crate::python::relay::attach(|py| {
             let input = input.bind(py);
             if kind == Kind::Str {
                 // Charge the encoder's bound before invoking Python. Calling
@@ -565,7 +567,7 @@ fn scalar_for_shape(
     };
     staging.grow(256).map_err(errors::charge)?;
     staging.meter().count_decode(8).map_err(errors::charge)?;
-    let value = Python::attach(|py| {
+    let value = crate::python::relay::attach(|py| {
         // Match the writer's Python protocols and struct.error before any
         // narrowing into Rust integers. This also handles arbitrary __bool__,
         // __index__, and __float__ implementations on the caller's thread.
@@ -626,7 +628,7 @@ fn none_for_shape(
         | Kind::S64
         | Kind::U64
         | Kind::F32
-        | Kind::F64 => Python::attach(|py| {
+        | Kind::F64 => crate::python::relay::attach(|py| {
             let format = if matches!(py_kind_of(ty), Kind::F32 | Kind::F64) {
                 "f"
             } else {
@@ -638,7 +640,7 @@ fn none_for_shape(
                 "None is not a numeric writer value",
             ))
         }),
-        Kind::Str => Python::attach(|py| {
+        Kind::Str => crate::python::relay::attach(|py| {
             input.bind(py).getattr("encode")?;
             Err(pyo3::exceptions::PyTypeError::new_err(
                 "None is not a string writer value",

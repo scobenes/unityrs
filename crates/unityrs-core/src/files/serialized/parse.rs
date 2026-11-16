@@ -38,10 +38,6 @@ impl SerializedFile {
     /// [`Self::parse`] by the rules of the reader UnityPy would read `data`
     /// with ([`ReaderKind::Stream`] for a top-level file loaded from a path),
     /// which its objects' reads follow too.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "format-gated metadata and charged file construction"
-    )]
     pub fn parse_with_reader(
         name: RawStr,
         data: Bytes,
@@ -49,6 +45,23 @@ impl SerializedFile {
         meter: &Arc<Meter>,
         ctx: &Arc<FileContext>,
         reader: ReaderKind,
+    ) -> Result<Arc<Self>, Error> {
+        Self::parse_with_state(name, data, parent, meter, ctx, reader, &mut None)
+    }
+
+    /// Parse while retaining the caller reader's endian assignment on failure.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "format-gated metadata and charged file construction"
+    )]
+    pub(crate) fn parse_with_state(
+        name: RawStr,
+        data: Bytes,
+        parent: Option<Parent>,
+        meter: &Arc<Meter>,
+        ctx: &Arc<FileContext>,
+        reader: ReaderKind,
+        endian: &mut Option<Endian>,
     ) -> Result<Arc<Self>, Error> {
         // The handle itself, in its `Arc`.
         let mut charge = meter.charge(heap_cost(
@@ -58,6 +71,7 @@ impl SerializedFile {
         let header = p.header()?;
         p.version = header.version;
         p.r.set_endian(header.endian);
+        *endian = Some(header.endian);
         let format = header.version;
         // UnityPy files/SerializedFile.py:271-273, :351-360
         let (unity_version, version) = if format >= 7 {
@@ -119,6 +133,20 @@ impl SerializedFile {
         let enable_type_tree = p.enable_type_tree && ctx.serialized_file_parse_typetree;
         charge.absorb(p.kept);
         let (object_order, by_path) = dict_order(&object_infos, meter)?;
+        // Eager AssetBundle reading uses the same input reader and check_read
+        // requires consuming its complete object payload on success.
+        let container_end = ctx
+            .eager_asset_bundle
+            .then(|| {
+                object_order
+                    .as_slice()
+                    .iter()
+                    .filter_map(|index| object_infos.as_slice().get(*index as usize))
+                    .find(|object| object.class_id == ASSET_BUNDLE)
+                    .map(|object| object.byte_start + i128::from(object.byte_size))
+            })
+            .flatten();
+        let constructor_position = container_end.unwrap_or(p.r.position());
         let types = keep(types, &mut charge)?;
         let object_infos = keep(object_infos, &mut charge)?;
         let script_types = keep(script_types, &mut charge)?;
@@ -154,18 +182,13 @@ impl SerializedFile {
             container: ResultCell::new(),
             parent,
             reader,
+            constructor_position,
             charge,
             ctx: ctx.clone(),
         });
         // :316-324: the first AssetBundle in dict order is read at load; a
         // failure fails the parse, whose grants the bundle counts.
-        if ctx.eager_asset_bundle
-            && file
-                .object_order
-                .iter()
-                .filter_map(|i| file.object_infos.get(usize::try_from(*i).ok()?))
-                .any(|o| o.class_id == ASSET_BUNDLE)
-        {
+        if container_end.is_some() {
             file.container_at_load()?;
         }
         Ok(file)

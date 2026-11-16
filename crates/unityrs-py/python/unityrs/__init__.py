@@ -14,6 +14,7 @@ ObjectReader and unityrs.classes provide runtime classes generated from an exter
 TPK (or the installed UnityPy resource). No Pillow dependency.
 """
 
+import io
 import ntpath
 import os
 import re
@@ -46,6 +47,11 @@ def _key(file, name):
 
 
 def _name_text(name):
+    if isinstance(name, str):
+        return str.__str__(name)
+    if isinstance(name, os.PathLike):
+        from ._output import exact_string
+        return exact_string(name)
     return os.fsdecode(name) if isinstance(name, bytes) else str(name)
 
 
@@ -241,15 +247,33 @@ class Environment:
             del name_guard
             from .streams.EndianBinaryReader import EndianBinaryReader_Streamable as ExplicitStream
             stream_kind = stream and (not explicit_reader or isinstance(file, ExplicitStream))
-            native = config._load(self._native, self._native.load_bytes, data, encoded_name, is_dependency, stream_kind)
+            source = file.stream if explicit_reader and stream_kind else file
+            stream_kind = 2 if stream_kind and isinstance(source, io.BytesIO) else int(stream_kind)
+            position = file.Position if explicit_reader else 0
+            native = config._load(self._native, self._native.load_bytes, data, encoded_name,
+                                  is_dependency, stream_kind, position)
             self._sync()
             if native is None:
                 return None
             result = self._wrap(native, parent, is_dependency)
+            if isinstance(result, SerializedFile):
+                result._bytes_io_reader = isinstance(source, io.BytesIO)
+                # A reentrant load can already have published the lazy reader.
+                reader = result.__dict__.get('_reader')
+                if reader is not None:
+                    from ._object_reader import ObjectFileReader
+                    if isinstance(reader, ObjectFileReader):
+                        reader._bytes_io = result._bytes_io_reader
             if explicit_reader:
+                # Detection resets readers of at least 20 bytes. Constructors
+                # then advance that same reader, including its endian change.
+                position, endian = native.constructor_reader_state()
+                if len(data) >= 20:
+                    file.Position = position
+                if endian is not None:
+                    file.endian = endian
                 if isinstance(result, SerializedFile):
                     result.reader = file
-                    file.endian = result._native.serialized_reader_info()[1]
                 elif isinstance(result, EndianBinaryReader):
                     result = file
                     self.cabs[simplify_name(native_key)] = result
@@ -521,7 +545,10 @@ class Environment:
     def save(self, pack="none", out_path="output"):
         # Preserve safe relative-name basename collisions and no mkdir, while
         # validating the original asset path before discarding its prefix.
-        from ._output import OutputDirectory, output_name
+        from ._output import OutputDirectory, output_name, exact_string
+        out_path = exact_string(out_path)
+        if isinstance(pack, (str, os.PathLike)):
+            pack = exact_string(pack)
         guard = TreeTraversal(self._limits, self._budget)
         guard.step(0, 256, 1)
         pending = []

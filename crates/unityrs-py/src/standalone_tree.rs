@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 use unityrs_core::{
     budget::{Reservation, Unbounded},
-    limits::{Charge, Meter, MeteredVec},
+    limits::{Meter, MeteredVec},
 };
 
 #[pyfunction]
@@ -104,7 +104,7 @@ pub(crate) fn standalone_tree_read(
             };
             parse(&input, &tree, &ctx, references.as_ref(), as_dict)
         })
-    })
+    })?
 }
 
 fn parse(
@@ -168,28 +168,28 @@ fn convert(
     as_dict: bool,
     meter: &Arc<Meter>,
 ) -> PyResult<Py<PyAny>> {
-    let mut charge = Charge::zero(meter);
-    charge.grow(512).map_err(errors::charge)?;
+    let mut plan = p::plan::Plan::new(meter);
+    plan.charge.grow(512).map_err(errors::charge)?;
+    plan.root = crate::value_plan::convert(parsed, meter, &mut plan, !as_dict)?;
+    let (value, mut charge) = plan.handoff()?;
     let result = p::list()?;
-    let value = if as_dict {
-        crate::value::convert_charged(parsed, meter, &mut charge)?
-    } else {
-        crate::value::convert_fields(parsed, meter, &mut charge)?
-    };
     p::push(&result, &value)?;
-    p::push(&result, &crate::object_nodes::convert(parsed, &mut charge)?)?;
     p::push(
         &result,
-        &crate::object_nodes::references(parsed, refs, &mut charge)?,
+        &crate::object_nodes::convert(parsed.lists(), &mut charge)?,
+    )?;
+    p::push(
+        &result,
+        &crate::object_nodes::references(parsed.lists(), refs, &mut charge)?,
     )?;
     p::push(&result, &p::int(parsed.bytes_read)?)?;
     p::push(&result, &p::uint(progress.completed as u64)?)?;
     let error = progress.error.map_or_else(p::none, |error| {
         let error = errors::parse_reader(&error.into(), true);
-        Python::attach(|py| error.value(py).clone().into_any().unbind())
+        crate::python::relay::attach(|py| error.value(py).clone().into_any().unbind())
     });
     p::push(&result, &error)?;
-    let construction = Python::attach(|py| {
+    let construction = crate::python::relay::attach(|py| {
         Py::new(py, crate::construction::Construction { charge }).map(Py::into_any)
     })?;
     p::push(&result, &construction)?;

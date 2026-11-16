@@ -88,7 +88,7 @@ pub(crate) fn shader_stage(
                 .map_err(errors::charge)?;
             p::string(bytes.as_slice())
         })
-    })
+    })?
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn standalone_aes_known_vector_and_mutated_table_bytes() -> PyResult<()> {
         let _serial = crate::tests::serial();
-        Python::attach(|py| {
+        crate::python::relay::attach(|py| {
             let vector = PyBytes::new(
                 py,
                 &[

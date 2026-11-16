@@ -4,6 +4,12 @@ from ..streams import EndianBinaryReader, EndianBinaryWriter
 
 kAlignBytes = 0x4000
 
+
+def _read_aligned_string(reader):
+    # Preserve the owning file reader's decoding staging guard.
+    return reader.read_aligned_string()
+
+
 FUNCTION_READ_MAP = {
     "SInt8": EndianBinaryReader.read_byte,
     "UInt8": EndianBinaryReader.read_u_byte,
@@ -25,7 +31,7 @@ FUNCTION_READ_MAP = {
     "float": EndianBinaryReader.read_float,
     "double": EndianBinaryReader.read_double,
     "bool": EndianBinaryReader.read_boolean,
-    "string": EndianBinaryReader.read_aligned_string,
+    "string": _read_aligned_string,
     "TypelessData": EndianBinaryReader.read_byte_array,
 }
 

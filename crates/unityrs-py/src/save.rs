@@ -2,6 +2,7 @@
 //! Save bindings: files/File.py:92-121, files/File.py:145-148,
 //! files/BundleFile.py:188-393, files/WebFile.py:58-112,
 //! files/ObjectReader.py:181-184. Core writes run on a detached worker.
+use crate::worker_error::Failure;
 use crate::{errors, files::NativeFile, object::NativeObject, python as p};
 use pyo3::{
     exceptions::{PyNotImplementedError, PyTypeError, PyValueError},
@@ -128,9 +129,9 @@ pub(crate) fn file_save(
         File::Web(f) => web_packer(value, f.packer(), file.inner.meter())?,
         _ => (WebPacker::None, Charge::zero(file.inner.meter())),
     };
-    py.detach(move || {
+    let native = py.detach(|| {
         let ctx = context(&file.inner)
-            .ok_or_else(|| PyTypeError::new_err("raw readers have no save method"))?;
+            .ok_or_else(|| Failure::Static("TypeError", "raw readers have no save method"))?;
         crate::worker::run(crate::worker::load_stack(&ctx.limits), || {
             let layout = SaveLayout::UnityPy;
             let bytes = match &file.inner {
@@ -151,18 +152,23 @@ pub(crate) fn file_save(
                     signature,
                 ),
                 File::Raw(_) => {
-                    return Err(PyTypeError::new_err("raw readers have no save method"));
+                    return Err(Failure::Static(
+                        "TypeError",
+                        "raw readers have no save method",
+                    ));
                 }
             }
-            .map_err(error)?;
-            let _copy = file
-                .inner
-                .meter()
-                .charge(unityrs_core::limits::heap_cost(bytes.len() as u64))
-                .map_err(errors::charge)?;
-            p::bytes(&bytes)
+            .map_err(Failure::save)?;
+            Ok::<_, Failure>(bytes)
         })
-    })
+    })?;
+    let native = crate::worker_error::finish(native)?;
+    let _copy = file
+        .inner
+        .meter()
+        .charge(unityrs_core::limits::heap_cost(native.len() as u64))
+        .map_err(errors::charge)?;
+    p::bytes(&native)
 }
 
 pub(crate) fn file_is_changed(py: Python<'_>, file: &NativeFile) -> bool {
@@ -455,18 +461,18 @@ pub(crate) fn save_web_entries(
             ))
             .map_err(errors::charge)?;
     }
-    py.detach(move || {
+    let native = py.detach(|| {
         crate::worker::run(crate::worker::load_stack(&web.context().limits), || {
             let meter = file.inner.meter();
             let mut header = signature
                 .len()
                 .checked_add(5)
-                .ok_or_else(|| PyValueError::new_err("WebFile size"))?;
+                .ok_or_else(|| Failure::Static("ValueError", "WebFile size"))?;
             for (name, _) in entries.as_slice() {
                 header = header
                     .checked_add(12)
                     .and_then(|n| n.checked_add(name.as_ref().len()))
-                    .ok_or_else(|| PyValueError::new_err("WebFile size"))?;
+                    .ok_or_else(|| Failure::Static("ValueError", "WebFile size"))?;
             }
             let mut out = buffer(meter)?;
             append(&mut out, &signature)?;
@@ -480,7 +486,7 @@ pub(crate) fn save_web_entries(
                 append(&mut out, name.as_ref())?;
                 offset = offset
                     .checked_add(data.as_ref().len())
-                    .ok_or_else(|| PyValueError::new_err("WebFile size"))?;
+                    .ok_or_else(|| Failure::Static("ValueError", "WebFile size"))?;
                 web_i32(offset)?;
             }
             for (_, data) in entries.as_slice() {
@@ -488,34 +494,39 @@ pub(crate) fn save_web_entries(
             }
             let bytes = web_compress(out, pack, meter)?
                 .into_bytes()
-                .map_err(errors::charge)?;
-            let _copy = meter
-                .charge(unityrs_core::limits::heap_cost(bytes.len() as u64))
-                .map_err(errors::charge)?;
-            p::bytes(&bytes)
+                .map_err(Failure::charge)?;
+            Ok::<_, Failure>(bytes)
         })
-    })
+    })?;
+    let native = crate::worker_error::finish(native)?;
+    let _copy = meter
+        .charge(unityrs_core::limits::heap_cost(native.len() as u64))
+        .map_err(errors::charge)?;
+    p::bytes(&native)
 }
 
-fn buffer(meter: &Arc<Meter>) -> PyResult<unityrs_core::budget::DecodeBuf> {
+fn buffer(meter: &Arc<Meter>) -> crate::worker_error::Result<unityrs_core::budget::DecodeBuf> {
     unityrs_core::budget::DecodeBuf::new(
         meter,
         0,
         u64::MAX,
         unityrs_core::error::LimitKind::InputMemory,
     )
-    .map_err(errors::charge)
+    .map_err(Failure::charge)
 }
-fn append(out: &mut unityrs_core::budget::DecodeBuf, bytes: &[u8]) -> PyResult<()> {
+fn append(
+    out: &mut unityrs_core::budget::DecodeBuf,
+    bytes: &[u8],
+) -> crate::worker_error::Result<()> {
     out.meter()
         .count_decode(bytes.len() as u64)
-        .map_err(errors::charge)?;
-    out.extend_from_slice(bytes).map_err(errors::charge)
+        .map_err(Failure::charge)?;
+    out.extend_from_slice(bytes).map_err(Failure::charge)
 }
-fn web_i32(value: usize) -> PyResult<[u8; 4]> {
+fn web_i32(value: usize) -> crate::worker_error::Result<[u8; 4]> {
     i32::try_from(value)
         .map(i32::to_le_bytes)
-        .map_err(|_| PyValueError::new_err("WebFile size"))
+        .map_err(|_| Failure::Static("ValueError", "WebFile size"))
 }
 
 // Ported from unityrs-core's WebFile stored-stream encoders. The decompressed
@@ -524,7 +535,7 @@ fn web_compress(
     data: unityrs_core::budget::DecodeBuf,
     packer: WebPacker,
     meter: &Arc<Meter>,
-) -> PyResult<unityrs_core::budget::DecodeBuf> {
+) -> crate::worker_error::Result<unityrs_core::budget::DecodeBuf> {
     if packer == WebPacker::None {
         return Ok(data);
     }
@@ -533,15 +544,15 @@ fn web_compress(
         append(&mut out, &[31, 139, 8, 0, 0, 0, 0, 0, 0, 255])?;
         for (index, chunk) in data.as_slice().chunks(65535).enumerate() {
             append(&mut out, &[u8::from(index == (data.len() - 1) / 65535)])?;
-            let size =
-                u16::try_from(chunk.len()).map_err(|_| PyValueError::new_err("gzip block size"))?;
+            let size = u16::try_from(chunk.len())
+                .map_err(|_| Failure::Static("ValueError", "gzip block size"))?;
             append(&mut out, &size.to_le_bytes())?;
             append(&mut out, &(!size).to_le_bytes())?;
             append(&mut out, chunk)?;
         }
         meter
             .count_decode(data.len() as u64)
-            .map_err(errors::charge)?;
+            .map_err(Failure::charge)?;
         let mut crc = !0u32;
         for byte in data.as_slice() {
             crc ^= u32::from(*byte);
@@ -550,7 +561,8 @@ fn web_compress(
             }
         }
         append(&mut out, &(!crc).to_le_bytes())?;
-        let size = u32::try_from(data.len()).map_err(|_| PyValueError::new_err("gzip size"))?;
+        let size =
+            u32::try_from(data.len()).map_err(|_| Failure::Static("ValueError", "gzip size"))?;
         append(&mut out, &size.to_le_bytes())?;
     } else {
         let mut metadata = [0u8; 38];
@@ -563,7 +575,7 @@ fn web_compress(
         append(&mut out, &metadata)?;
         for chunk in data.as_slice().chunks(65536) {
             let len = u32::try_from(chunk.len() - 1)
-                .map_err(|_| PyValueError::new_err("brotli block size"))?;
+                .map_err(|_| Failure::Static("ValueError", "brotli block size"))?;
             let bits = ((len << 3) | (1 << 19)).to_le_bytes();
             if let Some(bits) = bits.get(..3) {
                 append(&mut out, bits)?;
@@ -612,18 +624,18 @@ pub(crate) fn save_bundle_entries(
             ))
             .map_err(errors::charge)?;
     }
-    py.detach(move || {
+    let native = py.detach(|| {
         crate::worker::run(crate::worker::load_stack(&bundle.context().limits), || {
             let mut entries =
                 unityrs_core::limits::MeteredVec::with_capacity(meter, snapshots.len())
-                    .map_err(errors::charge)?;
+                    .map_err(Failure::charge)?;
             for (name, flags, data) in snapshots.as_slice() {
-                let name = RawStr::charged(name.as_ref(), meter).map_err(errors::charge)?;
+                let name = RawStr::charged(name.as_ref(), meter).map_err(Failure::charge)?;
                 let mut bytes = buffer(meter)?;
                 append(&mut bytes, data.as_ref())?;
                 entries
-                    .push((name, *flags, bytes.into_bytes().map_err(errors::charge)?))
-                    .map_err(errors::charge)?;
+                    .push((name, *flags, bytes.into_bytes().map_err(Failure::charge)?))
+                    .map_err(Failure::charge)?;
             }
             let engine_heap = bundle
                 .header()
@@ -633,12 +645,12 @@ pub(crate) fn save_bundle_entries(
                 .map_or(0, |v| v.version.heap_bytes());
             let _header_copy = meter
                 .charge(unityrs_core::limits::heap_cost(engine_heap as u64))
-                .map_err(errors::charge)?;
+                .map_err(Failure::charge)?;
             let mut header = bundle.header().clone();
-            header.signature = RawStr::charged(&signature, meter).map_err(errors::charge)?;
+            header.signature = RawStr::charged(&signature, meter).map_err(Failure::charge)?;
             header.format = version;
-            header.version_player = RawStr::charged(&player, meter).map_err(errors::charge)?;
-            header.version_engine = RawStr::charged(&engine, meter).map_err(errors::charge)?;
+            header.version_player = RawStr::charged(&player, meter).map_err(Failure::charge)?;
+            header.version_engine = RawStr::charged(&engine, meter).map_err(Failure::charge)?;
             header.block_alignment = alignment;
             header.data_flags = Some(data_flags);
             header.layout = if signature.as_ref() == b"UnityFS" || version == 6 {
@@ -667,11 +679,13 @@ pub(crate) fn save_bundle_entries(
                     },
                 )
             }
-            .map_err(error)?;
-            let _copy = meter
-                .charge(unityrs_core::limits::heap_cost(bytes.len() as u64))
-                .map_err(errors::charge)?;
-            p::bytes(&bytes)
+            .map_err(Failure::save)?;
+            Ok::<_, Failure>(bytes)
         })
-    })
+    })?;
+    let native = crate::worker_error::finish(native)?;
+    let _copy = meter
+        .charge(unityrs_core::limits::heap_cost(native.len() as u64))
+        .map_err(errors::charge)?;
+    p::bytes(&native)
 }

@@ -66,6 +66,7 @@ pub struct WebFile {
     files: Box<[FileSlot]>,
     pub(super) entries: Box<[super::teardown::FileCell]>,
     reader: ReaderKind,
+    constructor_position: i128,
     source_depth: u32,
     this: std::sync::Weak<Self>,
     parent: Option<Parent>,
@@ -113,6 +114,29 @@ impl WebFile {
         reader: ReaderKind,
         source_depth: u32,
     ) -> Result<Arc<Self>, Error> {
+        Self::open_with_state(
+            name,
+            data,
+            parent,
+            meter,
+            ctx,
+            reader,
+            source_depth,
+            &mut None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn open_with_state(
+        name: RawStr,
+        data: Bytes,
+        parent: Option<Parent>,
+        meter: &Arc<Meter>,
+        ctx: &Arc<FileContext>,
+        reader: ReaderKind,
+        source_depth: u32,
+        endian: &mut Option<Endian>,
+    ) -> Result<Arc<Self>, Error> {
         let mut charge = meter.charge(heap_cost((size_of::<Self>() + 16) as u64))?;
         let (data, packer, reader) = if data.starts_with(&[31, 139]) {
             (
@@ -127,6 +151,7 @@ impl WebFile {
                 ReaderKind::Memory,
             )
         } else {
+            *endian = Some(Endian::Little);
             (data, WebPacker::None, reader)
         };
         let mut r = Reader::with_kind(&data, Endian::Little, reader);
@@ -163,6 +188,13 @@ impl WebFile {
                 flags: None,
             })?;
         }
+        // Predict only the final successful cursor. Entry reads and their
+        // validation still run in directory order during eager loading.
+        let constructor_position = directory.as_slice().last().map_or(r.position(), |last| {
+            reader
+                .read(data.len(), i128::from(last.offset), last.size)
+                .map_or(r.position(), |(_, position)| position)
+        });
         let files = super::bundle::open::files_dict(&directory, meter)?;
         let mut entries = MeteredVec::new(meter);
         for _ in 0..directory.len() {
@@ -183,11 +215,18 @@ impl WebFile {
             entries,
             reader,
             source_depth,
+            constructor_position,
             parent,
             charge,
             ctx: ctx.clone(),
             this: this.clone(),
         }))
+    }
+
+    /// Final cursor of the uncompressed constructor reader.
+    #[must_use]
+    pub fn constructor_position(&self) -> i128 {
+        self.constructor_position
     }
 
     /// Loaded files dict: first key position, last row value. Newly created

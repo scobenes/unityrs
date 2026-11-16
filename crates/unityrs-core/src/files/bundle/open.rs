@@ -153,11 +153,13 @@ impl BundleFile {
         let (ends, c) = Ends::new(blocks.len(), meter)?;
         charge.absorb(c);
         let runs = RunIndex::mutex(&mut charge)?;
+        let constructor_position = r.position();
         Ok(Arc::new_cyclic(|this| Self {
             writable: crate::files::cab::WritableCabs::new(meter),
             changed: std::sync::atomic::AtomicBool::new(false),
             name,
             source: data,
+            constructor_position,
             legacy_data: None,
             header,
             blocks,
@@ -256,7 +258,7 @@ fn read_fs_header(
     ctx: &FileContext,
 ) -> Result<FsHeader, Error> {
     let meter = charge.meter().clone();
-    let meter = &*meter;
+    let meter = &meter;
     // UnityPy files/BundleFile.py:36-39
     let signature = string_to_null(r, data, meter)?;
     let format = r.read_u32()?;
@@ -270,10 +272,10 @@ fn read_fs_header(
         }
         b"UnityWeb" | b"UnityRaw" | b"UnityFS" => {}
         _ => {
-            return Err(Error::Malformed {
-                what: "bundle signature",
-                detail: "Unknown Bundle signature".into(),
-            });
+            return Err(Error::BundleSignature(RawStr::charged(
+                signature.as_bytes(),
+                meter,
+            )?));
         }
     }
     // :97-106
@@ -304,13 +306,16 @@ fn read_fs_header(
             }
             None
         } else {
-            Some(UnityCnDecryptor::read(
-                r,
+            Some(UnityCnDecryptor::read_with_key(r, || {
                 ctx.runtime_config
                     .as_ref()
-                    .map_or(ctx.assetbundle_decrypt_key, |config| config.decrypt_key())
-                    .as_ref(),
-            )?)
+                    .map_or(Ok(ctx.assetbundle_decrypt_key), |config| {
+                        config
+                            .resolve_decrypt_key(charge.meter())
+                            .map(|key| key.or(ctx.assetbundle_decrypt_key))
+                            .map_err(Error::from)
+                    })
+            })?)
         }
     } else {
         None

@@ -2,6 +2,7 @@
 """UnityCN configuration and bounded standalone decryption helpers."""
 import re
 from .. import _native
+from .._output import exact_string
 
 UNITY3D_SIGNATURE = b"#$unity3dchina!@"
 DECRYPT_KEY = None
@@ -31,6 +32,7 @@ def brute_force_key(fp, key_sig, data_sig, pattern=re.compile(rb"(?=(\w{16}))"),
     guard = _native.TreeTraversal()
     cap = _native.Limits().max_input_bytes
     data = bytearray()
+    fp = exact_string(fp)
     with open(fp, "rb") as stream:
         while True:
             size = min(65536, cap + 1 - len(data))

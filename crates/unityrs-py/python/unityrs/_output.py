@@ -4,8 +4,18 @@ import os
 import secrets
 
 
+def exact_string(value):
+    """Copy string payloads without dispatching any subclass protocols."""
+    if not isinstance(value, str):
+        value = os.fspath(value)
+    if not isinstance(value, str):
+        raise ValueError("asset path or name must be a string")
+    return str.__str__(value)
+
+
 def walk_directory(path, guard, create=False, parent=None):
     """Open each directory component without following links, retaining the leaf."""
+    path = exact_string(path)
     guard.step(0, len(path) * 8 + 256, len(path))
     guard.step(0, len(path) * 256 + 512, len(path))
     parts = path.split("/")
@@ -33,6 +43,7 @@ def output_name(name, *, container=False, guard=None):
     """Validate original spelling before any directory prefix is discarded."""
     if not isinstance(name, str):
         raise ValueError("asset output name must be a string")
+    name = exact_string(name)
     size = str.__len__(name)
     if (not size or str.startswith(name, "/")
             or any(str.find(name, c) >= 0 for c in ("\0", "\\", ":"))):
@@ -67,7 +78,7 @@ class OutputDirectory:
     leaf names; host writes use a held directory descriptor and atomic replace.
     """
     def __init__(self, directory, fs=None, guard=None):
-        self.directory = os.fspath(directory)
+        self.directory = exact_string(directory)
         self.fs = fs
         self.fd = None
         if guard is None:

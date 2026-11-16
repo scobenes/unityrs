@@ -46,7 +46,7 @@ def generate_classes():
 
 def update_tpk(*, url=None, resource_path=None):
     from .. import config, _native
-    from .._output import OutputDirectory, walk_directory
+    from .._output import OutputDirectory, walk_directory, exact_string
     print('Updating TPK file...')
     print('\tDownloading...')
     with urlopen(URL if url is None else url) as response:
@@ -56,7 +56,7 @@ def update_tpk(*, url=None, resource_path=None):
         if len(zip_data) > _MAX_DOWNLOAD:
             raise ValueError('TPK download exceeds 256 MiB')
     print('\tExtracting...')
-    destination = Path(RESOURCE_PATH if resource_path is None else resource_path)
+    destination = Path(exact_string(RESOURCE_PATH if resource_path is None else resource_path))
     with ZipFile(BytesIO(zip_data)) as archive:
         entry = archive.getinfo('lzma.tpk')
         if entry.file_size > _MAX_DOWNLOAD:

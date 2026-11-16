@@ -5,12 +5,11 @@ from ._object_reader import ObjectFileReader
 
 
 def reference_types(file):
-    from contextlib import nullcontext
     from types import SimpleNamespace
     from weakref import ref
     from .helpers.TypeTreeNode import TypeTreeNode
     from .helpers._bounded_tree import charge_node
-    with (file.environment._lock if file.environment is not None else nullcontext()):
+    with file._sync_owner._lock:
         if '_ref_types' in file.__dict__:
             return file._ref_types
         rows, guard = file._native.reference_types()
@@ -67,3 +66,16 @@ def raw_data(obj):
         return reader.read_bytes(size)
     finally:
         reader.Position = position
+
+
+def read_replacement(obj, nodes, wrap, check_read):
+    from .helpers.TypeTreeHelper import read_typetree
+    reader = obj.reader
+    node = obj._get_typetree_node(nodes)
+    obj.reset()
+    result = read_typetree(node, reader, as_dict=not wrap,
+                           assetsfile=obj.assets_file, byte_size=obj.byte_size,
+                           check_read=check_read, _guard=obj._native.tree_traversal())
+    if wrap:
+        result.set_object_reader(obj)
+    return result

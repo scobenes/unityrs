@@ -82,7 +82,24 @@ TOOLS = [("binding_y5_loader", "observe_" + name) for name in
     ("binding_y5_modules", "observe_" + name) for name in
     ("reexports", "streams", "module_tables", "primitive_maps", "compression",
      "texture_converter", "converter_helpers", "export_modules", "texture_extension", "decrypt_key",
-     "encrypted_load", "generator", "generator_cache")
+     "encrypted_load", "generator", "generator_cache", "untextured_material")
+] + [("binding_y5_review", "observe_" + name) for name in ("destination_order", "failed_image")] + [
+    ("binding_y5_round2", "observe_" + name) for name in ("primitive_string_budget", "deferred_key")
+] + [
+    ("binding_y5_round3", "observe_" + name) for name in
+    ("generator_reentry", "negative_readers", "negative_string_budget", "array_maps")
+] + [
+    ("binding_y5_round4", "observe_" + name) for name in
+    ("container_identity", "root_spellings", "none_extensions")
+] + [("binding_y5_round5", "observe_" + name) for name in
+     ("repeated_roots", "falsy_extensions", "runtime_keys")] + [
+    ("binding_y5_round6", "observe_" + name) for name in
+    ("parse_registration", "scalar_extensions", "skipped_destination_conversion")
+] + [
+    ("binding_y5_round7", "observe_" + name) for name in
+    ("unused_destinations", "source_error_order", "empty_root")
+] + [
+    ("binding_y5_round8", "observe_" + name) for name in ("array_reads", "aggregate_bytes")
 ]
 
 RESIDUE = [("binding_y6_loader", "observe_" + name) for name in
@@ -91,9 +108,16 @@ RESIDUE = [("binding_y6_loader", "observe_" + name) for name in
     ("binding_y6_objects", "observe_" + name) for name in
     ("references", "nonclass", "transform", "preload")
 ] + [("binding_y6_exports", "observe_" + name) for name in
-     ("material_textures", "audio_float", "audio_options")] + [
+     ("material_textures", "renderer_texture_collisions", "audio_float", "audio_options")] + [
     ("binding_y6_parse", "observe_" + name) for name in
     ("forced_raw", "forced_parsers", "forced_failures", "forced_positions")
+] + [
+    ("binding_y6_review", "observe_" + name) for name in
+    ("detached_save", "detached_mark", "detached_raw", "detached_patch",
+     "constructor_states", "compressed_failures", "oversized_member_states",
+     "failed_constructor_endian", "partial_child_registration", "nested_bounds_failures",
+     "explicit_reader_states", "nested_bundle_signatures", "positioned_detection",
+     "negative_member_readers", "negative_bundle_offsets")
 ]
 
 
@@ -116,6 +140,11 @@ def helper_records():
     references = {
         ("binding_y6b_images", "observe_astc_options"): "PARITY.md 19.2: ASTC context facade supports 2D U8 RGBA storage",
         ("binding_y6b_images", "observe_sprite_bounds"): "PARITY.md 19.2: standalone sprite helpers retain the native singular-matrix correction and RGB/RGBA sheet bound",
+        ("binding_y5_objects", "observe_gameobject"): "PARITY.md 19.2: empty components and actual legacy PPtrs follow the supplied component list",
+        ("binding_y5_round2", "observe_primitive_string_budget"): "PARITY.md 19.3: primitive map strings dispatch through the bounded reader",
+        ("binding_y5_round3", "observe_negative_string_budget"): "PARITY.md 19.3: negative string reads retain decoding staging for the remaining input span",
+        ("binding_y5_round8", "observe_aggregate_bytes"): "PARITY.md 19.3: retain byte spans in every enclosing array until handoff",
+        ("binding_y5_review", "observe_failed_image"): "PARITY.md 19.3: failed image exports preserve existing files with atomic publication",
         ("binding_y5_loader", "observe_filesystem"): "PARITY.md 19.2: custom filesystem reads use the same file opened as a stream",
         ("binding_y5_loader", "observe_streams"): "PARITY.md 19.2: non-string names retain keys and register textual CAB names; read-only streams load their bytes",
         ("binding_y6_loader", "observe_buffers"): "PARITY.md 19.2: mutable nameless buffers and read-only streams load their bytes reference",
@@ -124,6 +153,7 @@ def helper_records():
         ("binding_y6_loader", "observe_urls"): "PARITY.md 19.2: URL-prefixed environment paths retain the literal existence gate",
         ("binding_y6_objects", "observe_nonclass"): "PARITY.md 19.2: non-class attributes use the missing-type UnknownObject reference",
         ("binding_y6_exports", "observe_material_textures"): "PARITY.md 19.1: iterate material texture dictionary items and snapshot current resolved texture names",
+        ("binding_y6_exports", "observe_renderer_texture_collisions"): "PARITY.md 19.1: correct material texture dictionary iteration while retaining source-order PNG writes",
         ("binding_y6_exports", "observe_audio_float"): "PARITY.md 16: PCM float bank VERSION refusal retains the fmod_toolkit subsound WAV reference",
         ("binding_y6_parse", "observe_forced_positions"): "PARITY.md 19.3: forced parsers explicitly refuse a nonzero cursor or non-default Assets/Bundle endian",
         ("binding_y5_objects", "observe_iteration"): "PARITY.md 19.2: file iteration follows nested containers and yields requested objects",

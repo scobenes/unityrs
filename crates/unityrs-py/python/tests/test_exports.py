@@ -14,6 +14,17 @@ import unityrs
 
 
 class ExportAPI(unittest.TestCase):
+    def test_renderer_duplicate_properties_preserve_png_write_order(self):
+        from binding_y6_exports import observe_renderer_texture_collisions
+        result = observe_renderer_texture_collisions(unityrs)
+        self.assertEqual(result["writes"], ["textures/old.png", *["textures/shared.png"] * 3,
+                                            "textures/triangle.obj", "textures/triangle.mtl"])
+        self.assertEqual(result["files"]["textures/old.png"], [[255, 0, 0, 255]])
+        self.assertEqual(result["files"]["textures/shared.png"], [[255, 255, 0, 255]])
+        mtl = result["files"]["textures/triangle.mtl"]
+        self.assertEqual(mtl.count("map_Kd "), 1)
+        self.assertIn("map_Kd shared.png", mtl)
+
     def test_pillow_is_optional_until_image_access(self):
         script = """
 import sys

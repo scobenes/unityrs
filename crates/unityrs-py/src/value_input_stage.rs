@@ -2,6 +2,7 @@
 use super::schema::{Schemas, Shape};
 use super::{Inspect, State, next_depth, next_item, none_for_shape, scalar_for_shape};
 use crate::errors;
+use crate::worker_error::Failure;
 use pyo3::prelude::*;
 use std::sync::Arc;
 use unityrs_core::{
@@ -45,40 +46,41 @@ impl Arena {
             values: MeteredVec::new(meter),
         }
     }
-    fn push(&mut self, value: Staged) -> PyResult<usize> {
+    fn push(&mut self, value: Staged) -> crate::worker_error::Result<usize> {
         let id = self.values.len();
-        self.values.push(Some(value)).map_err(errors::charge)?;
+        self.values.push(Some(value)).map_err(Failure::charge)?;
         Ok(id)
     }
-    fn take(&mut self, id: usize) -> PyResult<Staged> {
+    fn take(&mut self, id: usize) -> crate::worker_error::Result<Staged> {
         self.values
             .as_mut_slice()
             .get_mut(id)
             .and_then(Option::take)
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid snapshot index"))
+            .ok_or_else(|| Failure::Static("ValueError", "invalid snapshot index"))
     }
-    fn take_built(&mut self, id: usize) -> PyResult<Built> {
+    fn take_built(&mut self, id: usize) -> crate::worker_error::Result<Built> {
         match self.take(id)? {
             Staged::Built(value) => Ok(value),
-            _ => Err(pyo3::exceptions::PyValueError::new_err(
+            _ => Err(Failure::Static(
+                "ValueError",
                 "snapshot child was not built",
             )),
         }
     }
-    fn build(mut self, root: usize, builder: &ValueBuilder) -> PyResult<Built> {
+    fn build(mut self, root: usize, builder: &ValueBuilder) -> crate::worker_error::Result<Built> {
         // Children precede parents. Only this worker-side pass constructs
         // nested native values; caller-side refusal drops a flat arena.
         for id in 0..self.values.len() {
             let built = match self.take(id)? {
-                Staged::Scalar(value) => builder.scalar(value).map_err(|_| {
-                    pyo3::exceptions::PyTypeError::new_err("invalid scalar snapshot")
-                })?,
+                Staged::Scalar(value) => builder
+                    .scalar(value)
+                    .map_err(|_| Failure::Static("TypeError", "invalid scalar snapshot"))?,
                 Staged::List(items) => {
                     let mut out = builder.vec();
                     let (items, _charge) = items.into_parts();
                     for child in items {
                         out.push_built(self.take_built(child)?)
-                            .map_err(errors::charge)?;
+                            .map_err(Failure::charge)?;
                     }
                     builder.list(out)
                 }
@@ -87,38 +89,39 @@ impl Arena {
                     let (items, _charge) = items.into_parts();
                     for child in items {
                         out.push_built(self.take_built(child)?)
-                            .map_err(errors::charge)?;
+                            .map_err(Failure::charge)?;
                     }
-                    builder.tuple(out).map_err(errors::charge)?
+                    builder.tuple(out).map_err(Failure::charge)?
                 }
                 Staged::Map(items) => {
                     let mut out = builder.vec();
                     let (items, _charge) = items.into_parts();
                     for (key, child) in items {
                         out.push_entry(key, self.take_built(child)?)
-                            .map_err(errors::charge)?;
+                            .map_err(Failure::charge)?;
                     }
                     builder.map(0, out)
                 }
                 Staged::Built(_) => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(
-                        "snapshot already built",
-                    ));
+                    return Err(Failure::Static("ValueError", "snapshot already built"));
                 }
             };
-            *self.values.as_mut_slice().get_mut(id).ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("invalid snapshot index")
-            })? = Some(Staged::Built(built));
+            *self
+                .values
+                .as_mut_slice()
+                .get_mut(id)
+                .ok_or_else(|| Failure::Static("ValueError", "invalid snapshot index"))? =
+                Some(Staged::Built(built));
         }
         self.take_built(root)
     }
-    fn remap_rows(&mut self, mapping: &[NodeId]) -> PyResult<()> {
+    fn remap_rows(&mut self, mapping: &[NodeId]) -> crate::worker_error::Result<()> {
         for value in self.values.as_mut_slice() {
             if let Some(Staged::Map(items)) = value {
                 for (node, _) in items.as_mut_slice() {
-                    *node = *mapping.get(node.index()).ok_or_else(|| {
-                        pyo3::exceptions::PyValueError::new_err("invalid snapshot row")
-                    })?;
+                    *node = *mapping
+                        .get(node.index())
+                        .ok_or_else(|| Failure::Static("ValueError", "invalid snapshot row"))?;
                 }
             }
         }
@@ -142,22 +145,22 @@ pub(crate) struct Snapshot {
     logical_lengths: MeteredVec<(u64, usize)>,
 }
 impl Snapshot {
-    fn reorder_rows(&mut self) -> PyResult<()> {
+    fn reorder_rows(&mut self) -> crate::worker_error::Result<()> {
         if self.rotations.is_empty() {
             return Ok(());
         }
         let meter = self.rows.charge().meter().clone();
         let count = self.rows.len();
-        let mut order = MeteredVec::with_capacity(&meter, count).map_err(errors::charge)?;
-        let mut mapping = MeteredVec::with_capacity(&meter, count).map_err(errors::charge)?;
+        let mut order = MeteredVec::with_capacity(&meter, count).map_err(Failure::charge)?;
+        let mut mapping = MeteredVec::with_capacity(&meter, count).map_err(Failure::charge)?;
         meter
             .count_decode(count as u64 * 3 + (self.values.values.len() as u64).saturating_mul(2))
-            .map_err(errors::charge)?;
+            .map_err(Failure::charge)?;
         for index in 0..count {
             order
                 .push(NodeId(u32::try_from(index)?))
-                .map_err(errors::charge)?;
-            mapping.push(NodeId(0)).map_err(errors::charge)?;
+                .map_err(Failure::charge)?;
+            mapping.push(NodeId(0)).map_err(Failure::charge)?;
         }
         // Child rotations precede parent rotations and keep subtree lengths.
         // Tails remain under the synthetic size node; only the first element
@@ -167,43 +170,41 @@ impl Snapshot {
             let pivot = rotation.first_end - rotation.start;
             meter
                 .count_decode((range.len() as u64).saturating_mul(2))
-                .map_err(errors::charge)?;
+                .map_err(Failure::charge)?;
             self.rows
                 .as_mut_slice()
                 .get_mut(range.clone())
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err("invalid snapshot rotation")
-                })?
+                .ok_or_else(|| Failure::Static("ValueError", "invalid snapshot rotation"))?
                 .rotate_left(pivot);
             order
                 .as_mut_slice()
                 .get_mut(range)
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err("invalid snapshot rotation")
-                })?
+                .ok_or_else(|| Failure::Static("ValueError", "invalid snapshot rotation"))?
                 .rotate_left(pivot);
         }
         for (index, old) in order.as_slice().iter().enumerate() {
             *mapping
                 .as_mut_slice()
                 .get_mut(old.index())
-                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid snapshot row"))? =
+                .ok_or_else(|| Failure::Static("ValueError", "invalid snapshot row"))? =
                 NodeId(u32::try_from(index)?);
         }
         self.values.remap_rows(mapping.as_slice())
     }
 
-    pub(crate) fn build(self) -> PyResult<Parsed> {
+    pub(crate) fn build(self) -> crate::worker_error::Result<Parsed> {
         self.build_writer().map(|(parsed, _)| parsed)
     }
 
-    pub(crate) fn build_writer(mut self) -> PyResult<(Parsed, super::lengths::Lengths)> {
+    pub(crate) fn build_writer(
+        mut self,
+    ) -> crate::worker_error::Result<(Parsed, super::lengths::Lengths)> {
         self.reorder_rows()?;
         let meter = self.rows.charge().meter().clone();
         let list = NodeList::from_rows(self.rows)
             .and_then(NodeList::into_shared)
-            .map_err(|error| pyo3::exceptions::PyValueError::new_err(errors::message(&error)))?;
-        let builder = ValueBuilder::new(&meter, list).map_err(errors::charge)?;
+            .map_err(|error| Failure::Message("ValueError", errors::message(&error)))?;
+        let builder = ValueBuilder::new(&meter, list).map_err(Failure::charge)?;
         let value = self.values.build(self.root, &builder)?;
         let parsed = builder.finish(value, 0);
         let lengths = super::lengths::Lengths::resolve(&parsed, &self.logical_lengths)?;
@@ -283,7 +284,9 @@ impl Frame {
                         .count_decode(1)
                         .map_err(errors::charge)?;
                     if !*skip_null
-                        || !Python::attach(|py| input.bind(py).get_item(1).map(|v| v.is_none()))?
+                        || !crate::python::relay::attach(|py| {
+                            input.bind(py).get_item(1).map(|v| v.is_none())
+                        })?
                     {
                         break input;
                     }
@@ -333,7 +336,9 @@ impl Frame {
         depth: u32,
         parent: Option<Shape>,
     ) -> PyResult<Option<Visit>> {
-        let Some((key, input)) = Python::attach(|py| fields.next(py, &mut state.staging))? else {
+        let Some((key, input)) =
+            crate::python::relay::attach(|py| fields.next(py, &mut state.staging))?
+        else {
             return Ok(None);
         };
         items.reserve(1).map_err(errors::charge)?;
@@ -413,7 +418,7 @@ impl State<'_> {
     ) -> PyResult<(NodeId, usize)> {
         let mut frames = MeteredVec::new(self.staging.meter());
         let mut next = Some(Visit {
-            input: Python::attach(|py| input.clone_ref(py)),
+            input: crate::python::relay::attach(|py| input.clone_ref(py)),
             name,
             depth,
             shape,
@@ -497,7 +502,7 @@ impl State<'_> {
         let result = if let Some(scalar) = scalar {
             scalar
         } else if let Some((tree, shape)) = self.schemas.target(shape)
-            && Python::attach(|py| input.bind(py).is_none())
+            && crate::python::relay::attach(|py| input.bind(py).is_none())
         {
             none_for_shape(tree, shape, input, self.staging.meter())?
         } else if let Some(info) = self
@@ -515,12 +520,12 @@ impl State<'_> {
             let logical_len = if tuple {
                 None
             } else {
-                Some(Python::attach(|py| input.bind(py).len())?)
+                Some(crate::python::relay::attach(|py| input.bind(py).len())?)
             };
             let iter = if tuple {
-                super::Elements::Pair(Python::attach(|py| input.clone_ref(py)))
+                super::Elements::Pair(crate::python::relay::attach(|py| input.clone_ref(py)))
             } else {
-                super::Elements::Iter(Python::attach(|py| {
+                super::Elements::Iter(crate::python::relay::attach(|py| {
                     input.bind(py).try_iter().map(Bound::unbind)
                 })?)
             };

@@ -4,7 +4,7 @@ import os
 
 from .. import _native
 from ..enums import AUDIO_TYPE_EXTEMSION
-from .._output import OutputDirectory, output_name
+from .._output import OutputDirectory, output_name, exact_string
 from ._images import _guard
 from .._buffers import snapshot_bytes as _bytes
 
@@ -50,7 +50,10 @@ def _audio_samples(self, convert_pcm_float=True):
     guard.step(0, len(data) + 256, 0)
     if isinstance(self.m_Name, str):
         guard.step(0, str.__len__(self.m_Name) * 4 + 256, 0)
-    name = f"{self.m_Name}"
+    # Normalize string payloads before formatting, retaining scalar-name
+    # formatting for values such as None and integers.
+    name = self.m_Name
+    name = exact_string(name) if isinstance(name, (str, os.PathLike)) else exact_string(f"{name}")
     guard.step(0, len(name) * 4 + 256, len(name))
     from .. import config
     source = getattr(config, "AUDIO_VORBIS_HEADERS", os.environ.get("UNITYRS_VORBIS_HEADERS"))
@@ -100,6 +103,7 @@ def _mesh_obj(value, material_names=None):
         guard.step(0, 256, 1)
         names = []
         for name in material_names:
+            name = exact_string(name) if isinstance(name, (str, os.PathLike)) else name
             name = name or ""
             guard.step(0, 128 + (str.__len__(name) * 4 if isinstance(name, str) else 0), 1)
             names.append(name.encode("utf-8", "surrogateescape"))
@@ -109,6 +113,7 @@ def _mesh_obj(value, material_names=None):
 
 def _mesh_export(self, format="obj"):
     # export/MeshExporter.py:11-14.
+    format = exact_string(format) if isinstance(format, (str, os.PathLike)) else format
     if format == "obj":
         return _mesh_obj(self)
     if isinstance(format, str):
@@ -145,22 +150,28 @@ class _LocalFS:
     open = staticmethod(open)
 
 
-def _material_texture_names(material, guard):
+def _material_texture_names(material, guard, *, include_writes=False):
     # export/MeshRendererExporter.py:106-189, with PARITY 19.1's dict fix.
     # Resolve the caller's current pointers, including their current owners.
     guard.step(0, 256, 1)
-    names, textures, properties = [], [], {}
+    names, textures, properties, entries = {}, [], {}, []
     for key, texture_env in material.m_SavedProperties.m_TexEnvs:
         guard.step(0, 0, 1)
         if texture_env is None:
             continue
         if not isinstance(key, str):
             key = key.name
+        key = exact_string(key)
         guard.step(0, str.__len__(key) * 4 + 256, 1)
         properties[key] = texture_env
-    for key, texture_env in properties.items():
+        if include_writes:
+            entries.append((key, texture_env))
+    # MTL references use the last property value, in first-key order. PNG
+    # writes retain every source entry so the last filename collision wins.
+    for key, texture_env in entries if include_writes else properties.items():
         guard.step(0, 0, 1)
         if not texture_env.m_Texture:
+            names.pop(key, None)
             continue
         texture = texture_env.m_Texture.deref_parse_as_object()
         chosen = texture.m_Name if texture.m_Name else key
@@ -168,15 +179,16 @@ def _material_texture_names(material, guard):
             guard.step(0, str.__len__(chosen) * 4 + 256, str.__len__(chosen))
         name = output_name(output_name(chosen, guard=guard) + ".png", guard=guard)
         guard.step(0, 512 + str.__len__(key) * 4 + str.__len__(name) * 8, 1)
-        names.append((key.encode("utf-8", "surrogateescape"),
-                      name[:-4].encode("utf-8", "surrogateescape")))
+        names[key] = (key.encode("utf-8", "surrogateescape"),
+                      name[:-4].encode("utf-8", "surrogateescape"))
         textures.append((name, texture))
-    return names, textures
+    return [names[key] for key in properties if key in names], textures
 
 
 def _renderer_export(self, export_dir):
     # export/MeshRendererExporter.py:48-103. Resolution uses current class
     # attributes; geometry/material values enter the existing native writers.
+    export_dir = exact_string(export_dir)
     env = self.object_reader.assets_file.environment
     guard = _guard(self)
     fs = getattr(env, "fs", _LocalFS)
@@ -207,7 +219,7 @@ def _renderer_export(self, export_dir):
         material = self.m_Materials[slot].deref_parse_as_object()
         material_name = output_name(material.m_Name, guard=guard)
         names.append(material_name)
-        texture_names, material_textures = _material_texture_names(material, guard)
+        texture_names, material_textures = _material_texture_names(material, guard, include_writes=True)
         guard.step(0, len(material_textures) * 16 + 128, len(material_textures))
         textures.extend(material_textures)
         exported = _native.export_material(material, _reader(material), _environment(material), texture_names)

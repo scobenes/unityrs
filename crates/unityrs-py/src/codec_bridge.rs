@@ -29,7 +29,7 @@ pub(crate) struct Call {
 }
 
 pub(crate) fn invoke(call: &Call) -> PyResult<Response> {
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         let module = py.import("unityrs.helpers.CompressionHelper")?;
         let id = call.which.id();
         if call.kind == 2 {
@@ -265,7 +265,7 @@ impl BlockCodec for Captured {
             selected: self
                 .selected
                 .as_ref()
-                .map(|value| Python::attach(|py| value.clone_ref(py))),
+                .map(|value| crate::python::relay::attach(|py| value.clone_ref(py))),
         }))
         .map_err(|error| SaveError::Read(failure(error)))?;
         match result {

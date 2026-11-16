@@ -25,7 +25,10 @@ pub(crate) fn tree_error(error: TreeError) -> PyErr {
 }
 
 pub(crate) fn object_nodes(object: &ObjectRef) -> PyResult<(Py<PyAny>, TreeTraversal)> {
-    let found = object.tree(None).map_err(errors::parse)?;
+    let found = crate::worker::run(object.file().context().limits.stack_needed(), || {
+        object.tree(None)
+    })?
+    .map_err(errors::parse)?;
     let Some(tree) = found else {
         return Err(errors::parse(unityrs_core::walk::ParseError::NoTypeTree {
             class_id: object.class_id(),
@@ -42,6 +45,13 @@ pub(crate) fn object_nodes(object: &ObjectRef) -> PyResult<(Py<PyAny>, TreeTrave
 }
 
 pub(crate) fn rows_to_python(
+    list: &unityrs_core::typetree::NodeList,
+    traversal: &mut TreeTraversal,
+) -> PyResult<Py<PyAny>> {
+    crate::python::relay::attach(|py| py.detach(|| rows_to_python_detached(list, traversal)))
+}
+
+fn rows_to_python_detached(
     list: &unityrs_core::typetree::NodeList,
     traversal: &mut TreeTraversal,
 ) -> PyResult<Py<PyAny>> {
@@ -109,11 +119,11 @@ pub(crate) fn compile_rows_with(
 ) -> PyResult<Arc<Tree>> {
     let mut rows = MeteredVec::new(meter);
     let mut staging = TreeTraversal::on(meter, limits.max_tree_depth);
-    let iter = Python::attach(|py| input.bind(py).try_iter().map(Bound::unbind))?;
+    let iter = crate::python::relay::attach(|py| input.bind(py).try_iter().map(Bound::unbind))?;
     loop {
         // Only Python iteration, field extraction and encoding hold the GIL.
         // The iterator owns no flattened graph or encoded string snapshot.
-        let row = Python::attach(|py| {
+        let row = crate::python::relay::attach(|py| {
             iter.bind(py)
                 .clone()
                 .next()
@@ -148,8 +158,9 @@ pub(crate) fn compile_rows_with(
         let _encoding = meter
             .charge(256_u64.saturating_add(bytes))
             .map_err(errors::charge)?;
-        let (ty, name) = Python::attach(|py| Ok::<_, PyErr>((ty.bytes(py)?, name.bytes(py)?)))?;
-        Python::attach(|py| {
+        let (ty, name) =
+            crate::python::relay::attach(|py| Ok::<_, PyErr>((ty.bytes(py)?, name.bytes(py)?)))?;
+        crate::python::relay::attach(|py| {
             py.detach(|| {
                 #[cfg(test)]
                 crate::row_copy_test::before_copy()?;
@@ -160,7 +171,7 @@ pub(crate) fn compile_rows_with(
             })
         })?;
     }
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         py.detach(move || {
             let list = NodeList::from_rows(rows).map_err(tree_error)?;
             Tree::compile(list.into_shared().map_err(tree_error)?, limits).map_err(tree_error)

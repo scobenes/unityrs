@@ -6,21 +6,24 @@ streams/EndianBinaryReader.py:34-228. Native reads meter each returned span.
 """
 from .streams.EndianBinaryReader import EndianBinaryReader, STREAM_FUNCTIONS
 from struct import calcsize
+from operator import index
+from sys import maxsize
 
 
 class ObjectFileReader(EndianBinaryReader):
     _function_map = STREAM_FUNCTIONS
 
-    def __new__(cls, native):
+    def __new__(cls, native, bytes_io=False):
         return object.__new__(cls)
 
-    def __init__(self, native):
+    def __init__(self, native, bytes_io=False):
         self._native = native
-        self.Length, endian, self._stream_kind = native.serialized_reader_info()
-        self._position = 0
+        self._bytes_io = bytes_io
+        self.Length, endian, self._stream_kind, initial_position = native.serialized_reader_info()
         self._array_staging = None
         self.stream = self
         super().__init__(None, endian=endian)
+        self._position = initial_position
 
     @property
     def Position(self):
@@ -33,19 +36,34 @@ class ObjectFileReader(EndianBinaryReader):
         self._position = value
 
     def read(self, size=-1):
+        if size is None:
+            size = -1 if self._stream_kind else 0
+        else:
+            size = index(size)
+            # BytesIO accepts every representable negative size. Buffered
+            # path readers reject sizes below -1; retain native validation.
+            if self._bytes_io and -maxsize - 1 <= size < 0:
+                size = -1
         data, self._position = self._native.serialized_read(self._position, size)
+        # The native copy charge ends at this call's return. Enclosing arrays
+        # still own these bytes, including spans read by strings/typed arrays.
+        self._retain(len(data))
         return data
 
     @property
     def bytes(self):
-        return self._native.serialized_read(0, -1)[0]
+        data = self._native.serialized_read(0, -1)[0]
+        self._retain(len(data))
+        return data
 
     def read_string(self, size=None):
         if size is None:
             return self.read_string_to_null()
+        remaining = max(self.Length - max(self.Position, 0), 0)
+        span = remaining if size < 0 else min(size, remaining)
         guard = self._native.tree_traversal()
-        guard.step(0, 256 + min(max(size, 0), self.Length) * 5, 1)
-        self._retain(min(max(size, 0), self.Length) * 4)
+        guard.step(0, 256 + span * 5, 1)
+        self._retain(span * 4)
         return self.read_bytes(size).decode('utf8', 'surrogateescape')
 
     def _retain(self, memory):

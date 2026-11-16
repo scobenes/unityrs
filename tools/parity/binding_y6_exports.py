@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from binding_y4_exports import _call, _new
-from binding_y4_review_exports import material
+from binding_y4_exports import _call, _new, mesh
+from binding_y4_review_exports import material, renderer
 from binding_y4_round6 import _texture_source
 
 
@@ -57,6 +57,67 @@ def observe_material_textures(package, corrected=False):
         type(value.m_SavedProperties.m_TexEnvs[0][1]),
         m_Texture=unnamed, m_Offset=(0, 0), m_Scale=(1, 1)))]
     result["duplicate"] = _call(lambda: exporter.export_material(value))
+    return result
+
+
+def observe_renderer_texture_collisions(package, corrected=False):
+    """PNG writes retain duplicate properties and source-order collisions."""
+    import io
+    from PIL import Image
+
+    class MemoryFS:
+        sep = "/"
+
+        def __init__(self):
+            self.files = {}
+            self.writes = []
+
+        def makedirs(self, path, exist_ok=False):
+            pass
+
+        def open(self, path, mode, **kwargs):
+            fs = self
+            base = io.BytesIO if "b" in mode else io.StringIO
+
+            class Stream(base):
+                def close(self):
+                    fs.files[path] = self.getvalue()
+                    fs.writes.append(path)
+                    super().close()
+
+            stream = Stream()
+            stream.name = path
+            return stream
+
+    C = importlib.import_module(package.__name__ + ".classes")
+    env, value = material(package)
+
+    def entry(name, pixel):
+        texture = SimpleNamespace(m_Name=name, image=Image.new("RGBA", (1, 1), pixel))
+        return _new(C.UnityTexEnv, m_Texture=SimpleNamespace(
+            m_FileID=0, m_PathID=1, deref_parse_as_object=lambda: texture),
+            m_Offset=(0, 0), m_Scale=(1, 1))
+
+    value.m_SavedProperties.m_TexEnvs = [
+        ("_MainTex", entry("old", (255, 0, 0, 255))),
+        ("_MainTex", entry("shared", (0, 255, 0, 255))),
+        ("_BumpMap", entry("shared", (0, 0, 255, 255))),
+        (_new(C.FastPropertyName, name="_MainTex"), entry("shared", (255, 255, 0, 255))),
+    ]
+    fs = MemoryFS()
+    target = renderer(package, mesh(package), [value], fs)
+    exporter = _module(package, "MeshRendererExporter")
+    if corrected and package.__name__ == "UnityPy":
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures"))
+        from obj_export import corrected as reference
+        exporter = reference(exporter)
+    result = _call(lambda: exporter.export_mesh_renderer(target, "textures"))
+    result["writes"] = fs.writes
+    result["files"] = {
+        name: [list(pixel) for pixel in Image.open(io.BytesIO(data)).getdata()]
+        if name.endswith(".png") else data
+        for name, data in sorted(fs.files.items())
+    }
     return result
 
 

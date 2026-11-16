@@ -10,6 +10,18 @@ import binding_y6_exports as observations
 
 
 class ExportAdapters(unittest.TestCase):
+    def test_renderer_duplicate_texture_properties_match_corrected_oracle(self):
+        actual = observations.observe_renderer_texture_collisions(unityrs)
+        self.assertEqual(actual, observations.observe_renderer_texture_collisions(UnityPy, corrected=True))
+        self.assertEqual(actual["value"], ["NoneType", None])
+        self.assertEqual(actual["writes"][:4], ["textures/old.png", *["textures/shared.png"] * 3])
+        self.assertEqual(actual["files"]["textures/old.png"], [[255, 0, 0, 255]])
+        self.assertEqual(actual["files"]["textures/shared.png"], [[255, 255, 0, 255]])
+        mtl = actual["files"]["textures/triangle.mtl"]
+        self.assertEqual(mtl.count("map_Kd "), 1)
+        self.assertIn("map_Kd shared.png", mtl)
+        self.assertIn("map_bump shared.png\nbump shared.png", mtl)
+
     def test_material_textures_match_corrected_oracle(self):
         self.assertEqual(UnityPy.__version__, "1.25.2")
         actual = observations.observe_material_textures(unityrs)

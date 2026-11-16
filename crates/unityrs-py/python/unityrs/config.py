@@ -27,13 +27,11 @@ def get_fallback_version():
 
 def _load(native, method, *args):
     """Initialize settings; warning callbacks refresh them before parsing resumes."""
-    from .helpers.ArchiveStorageManager import DECRYPT_KEY
     native.configure(
         # A placeholder enables the lazy resolver callback. The Python setting
         # is fetched and converted by _warn_fallback only when it is needed.
         b"",
         SERIALIZED_FILE_PARSE_TYPETREE is not False,
-        DECRYPT_KEY,
     )
     try:
         return method(*args)
