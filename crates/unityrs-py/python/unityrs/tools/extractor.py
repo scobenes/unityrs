@@ -31,7 +31,6 @@ def export_obj(
     append_path_id: bool = False, export_unknown_as_typetree: bool = False,
     asset_filter: Optional[Callable[[Object], bool]] = None,
 ) -> List[Tuple[SerializedFile, int]]:
-    fp = _paths.destination(fp, guard_for(obj))
     export_func = EXPORT_TYPES.get(obj.type)
     if not export_func:
         if export_unknown_as_typetree:

@@ -92,7 +92,10 @@ TOOLS = [("binding_y5_loader", "observe_" + name) for name in
     ("binding_y5_round4", "observe_" + name) for name in
     ("container_identity", "root_spellings", "none_extensions")
 ] + [("binding_y5_round5", "observe_" + name) for name in
-     ("repeated_roots", "falsy_extensions", "runtime_keys")]
+     ("repeated_roots", "falsy_extensions", "runtime_keys")] + [
+    ("binding_y5_round6", "observe_" + name) for name in
+    ("parse_registration", "scalar_extensions", "skipped_destination_conversion")
+]
 
 
 def helper_records():

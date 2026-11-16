@@ -121,7 +121,7 @@ Interrupted runs may leave
 the nine exporters and extraction helpers with the same destination confinement.
 It validates names and extensions before creating output, opens destinations only
 when dispatch and filters reach an export, and preserves existing files on failed
-image exports through atomic publication. Its 251 oracle comparisons and 95 wheel
+image exports through atomic publication. Its 263 oracle comparisons and 99 wheel
 tests include hostile path, shared-reader cursor and concurrency regressions,
 primitive-map decoding budgets, empty and legacy GameObject components, and
 decryption-key conversion deferred until encrypted bundle processing. Generated
@@ -133,8 +133,11 @@ textures under the environment lock. Container extraction accepts equivalent
 destination spellings, including repeated trailing slashes. Public tool paths,
 class export arguments and asset-derived output names become exact strings before
 use; hostile subclass regressions check the surrounding filesystem too. Direct
-exporters preserve defaults or ignored arguments for all falsy extensions and
-validate effective output names. Runtime configuration retains a context's
+exporters preserve defaults or ignored arguments for all falsy extensions,
+retain scalar extension formatting, and validate effective output names.
+Unsupported and filtered objects skip destination conversion. Standalone
+SerializedFile parsing leaves the environment's file and CAB mappings unchanged.
+Runtime configuration retains a context's
 decryption key unless it supplies an override.
 Textured material adapters and replacement texture converters requiring Switch
 or crunch preprocessing have named refusals pending Y6a/Y6b.

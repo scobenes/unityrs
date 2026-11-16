@@ -31,8 +31,8 @@ def exporter(function):
 
     The root opens lazily on the first write, after filters and dispatch. Both
     destination and supplied string suffix are exact strings before formatting;
-    falsy values reach the exporter's default or ignored-argument handling. The
-    effective output leaf is validated at the write. Only caller-selected
+    scalar values reach the exporter's formatting, default or ignored-argument
+    handling. The effective output leaf is validated at the write. Only caller-selected
     destination directories may contain separators.
     """
     @wraps(function)
@@ -44,7 +44,7 @@ def exporter(function):
         # file() validates the complete name after the exporter adds its suffix.
         name = leaf(name, guard, allow_empty=True)
         extension = args[0] if args else kwargs.get("extension", "")
-        if isinstance(extension, (str, os.PathLike)) or extension:
+        if isinstance(extension, (str, os.PathLike)):
             extension = leaf(extension, guard, allow_empty=True)
         if args:
             args = (extension, *args[1:])

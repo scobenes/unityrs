@@ -143,7 +143,21 @@ def parse_file(
         environment = Environment()
     else:
         environment = getattr(parent, "environment", parent)
-    return environment.load_file(reader, parent=parent, name=name, is_dependency=is_dependency)
+    from .. import config
+    from .._native import TreeTraversal
+    with environment._lock:
+        data, input_guard = environment._read_stream(reader)
+        name_guard = TreeTraversal(environment._limits, environment._budget)
+        name_guard.step(0, str.__len__(name) * 4 + 256, 0)
+        encoded_name = name.encode("utf-8", "surrogateescape")
+        native = config._load(environment._native, environment._native.load_bytes,
+                              data, encoded_name, is_dependency, True, False)
+        result = environment._wrap(native, parent, is_dependency)
+        # Container constructors register child CABs in the native registry;
+        # no root file has been listed for synchronization to publish.
+        if isinstance(result, (files.BundleFile, files.WebFile)):
+            environment._sync()
+        return result
 
 
 def find_sensitive_path(dir: str, insensitive_path: str) -> Union[str, None]:

@@ -172,3 +172,49 @@ class Tools(unittest.TestCase):
         for name, rows in observe_falsy_extensions(unityrs).items():
             for outcome, tree in rows:
                 self.assertIn('error' if name == 'Sprite' else 'value', outcome)
+
+    def test_standalone_parse_does_not_register_files_or_cabs(self):
+        from binding_y5_round6 import observe_parse_registration
+        result = observe_parse_registration(unityrs)
+        for row in result['serialized']:
+            self.assertEqual(row['before'], row['after'])
+            self.assertEqual(row['identities'], [True, True])
+            self.assertEqual(row['later_identities'], [True, True])
+            expected = ['existing.assets', 'later.assets'] if row['before'][0] else ['later.assets']
+            self.assertEqual(row['later'], [expected, expected])
+            self.assertEqual(row['value'], {'m_Name': 'name', 'm_Script': 'body'})
+        self.assertEqual(result['containers'], {
+            'bundle': {'files': [], 'cabs': ['cab-y1', 'cab-y1.ress'], 'parent': True,
+                       'resource': b'resource'.hex()},
+            'nested': {'files': [], 'cabs': ['cab-y1'], 'parent': True},
+            'duplicate_containers': {'files': [], 'cabs': ['cab-y1', 'cab-y1.ress', 'first.ress'],
+                                     'parent': True, 'resource': b'first'.hex()},
+            'raw_tree_limit': {'files': [], 'cabs': ['raw.resource'], 'parent': True},
+        })
+
+    def test_truthy_scalar_extensions_are_formatted_or_ignored(self):
+        from binding_y5_round6 import observe_scalar_extensions
+        ignored = {'Font': 'output.otf', 'MonoBehaviour': 'output.json', 'AudioClip': 'output.wav'}
+        values = (1, -2, True, 1.25, 1 + 2j, b'.png')
+        for name, rows in observe_scalar_extensions(unityrs).items():
+            for index, (outcome, tree) in enumerate(rows):
+                with self.subTest(exporter=name, case=index):
+                    if name in ('Sprite', 'Texture2D'):
+                        self.assertEqual(outcome['error'], 'ValueError')
+                        self.assertEqual(tree, {})
+                    else:
+                        self.assertIn('value', outcome)
+                        expected = [] if name == 'GameObject' else [ignored.get(name, 'output' + str(values[index // 2]))]
+                        self.assertEqual([bytes.fromhex(key).decode() for key in tree], expected)
+
+    def test_formatted_scalar_suffixes_cannot_escape(self):
+        from binding_y5_round6 import check_scalar_suffix_confinement
+        check_scalar_suffix_confinement(unityrs)
+
+    def test_skipped_exports_do_not_convert_invalid_destinations(self):
+        from binding_y5_round6 import observe_skipped_destination_conversion
+        rows = observe_skipped_destination_conversion(unityrs)
+        for label in ('unsupported', 'filtered'):
+            self.assertTrue(all(row[0] == {'value': ['list', []]} for row in rows[label]))
+        self.assertTrue(all(row[0]['error'] == 'TypeError' for row in rows['accepted']))
+        self.assertEqual(rows['tree'], {})

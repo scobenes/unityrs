@@ -213,6 +213,7 @@ impl NativeEnvironment {
         });
         error.map_or(Ok(0), Err)
     }
+    #[pyo3(signature = (data, name, dependency, stream, register=true))]
     fn load_bytes(
         &self,
         py: Python<'_>,
@@ -220,6 +221,7 @@ impl NativeEnvironment {
         name: &Bound<'_, PyAny>,
         dependency: bool,
         stream: bool,
+        register: bool,
     ) -> PyResult<Option<NativeFile>> {
         let meter = self.input_meter();
         let data = crate::buffer_snapshot::BufferSnapshot::source(
@@ -251,14 +253,19 @@ impl NativeEnvironment {
                     } else {
                         unityrs_core::stream::ReaderKind::Memory
                     };
+                    let name = RawStr::from(unityrs_core::Bytes::from_owner(name));
+                    let data = unityrs_core::Bytes::from_owner(data);
+                    if !register {
+                        return self
+                            .inner
+                            .parse_reader(&name, data, reader)
+                            .map(NativeFile::new)
+                            .map(Some)
+                            .map_err(errors::core);
+                    }
                     let file = self
                         .inner
-                        .load_reader(
-                            RawStr::from(unityrs_core::Bytes::from_owner(name)),
-                            unityrs_core::Bytes::from_owner(data),
-                            reader,
-                            dependency,
-                        )
+                        .load_reader(name, data, reader, dependency)
                         .map_err(errors::core)?;
                     Ok(file.map(NativeFile::new))
                 },
