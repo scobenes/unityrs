@@ -576,6 +576,8 @@ class PortTests(unittest.TestCase):
                 "python-fsb5": ["LICENSE-PYTHON-FSB5"],
                 "Fmod5Sharp": ["LICENSE-FMOD5SHARP"],
                 "liblz4 1.9.4": ["LICENSE-LZ4"],
+                "etcpak 0.9.14": ["LICENSE-ETCPAK"],
+                "bc7enc in etcpak 0.9.14": ["LICENSE-BC7ENC"],
                 "CPython 3.11": ["NOTICE-PSF", "LICENSE-PSF"],
                 "Pillow 9.5.0": ["LICENSE-PILLOW"],
                 "Little CMS 2.15": ["LICENSE-LCMS"],

@@ -118,6 +118,41 @@ jobs:
       - name: Test, the binary's test hooks
         run: cargo test -p unityrs-cli --features test-hooks
 
+  # Native encoders are feature gated; exercise both CPU architectures and
+  # the supported macOS compiler while checking pristine sources byte for byte.
+  texture-encode:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Verify native encoder sources against the pinned PyPI sdists
+        run: |
+          etcpak="$RUNNER_TEMP/etcpak-0.9.14.tar.gz"
+          astcenc="$RUNNER_TEMP/astc_encoder_py-0.1.12.tar.gz"
+          curl -fsSL --connect-timeout 30 --max-time 300 --retry 3 --retry-all-errors -o "$etcpak" \
+            https://files.pythonhosted.org/packages/c1/e3/461896dd46c5e946b9581d8d089d1e7697141ae5ae80ba7a29bdcc6f2a31/etcpak-0.9.14.tar.gz
+          curl -fsSL --connect-timeout 30 --max-time 300 --retry 3 --retry-all-errors -o "$astcenc" \
+            https://files.pythonhosted.org/packages/4f/1e/fca57bdb9b429a1d2e2f83ad0621b4ab6af65ee5fefc38a4f318afad0d8e/astc_encoder_py-0.1.12.tar.gz
+          echo "39c3a7f03960a654cedc452d0124a21ef02ab31e325d481032d96bf6eb429314  $etcpak" | shasum -a 256 -c -
+          echo "03759ac32804cae32bc238e72f94c5ba27e228507df00816b741f7961f1184f9  $astcenc" | shasum -a 256 -c -
+          python3 scripts/etcpak_vendor.py verify "$etcpak"
+          python3 scripts/astcenc_vendor.py verify "$astcenc"
+      - name: Clippy with native encoders
+        run: cargo clippy --locked -p unityrs-texture --all-targets --features encode -- -D warnings
+      - name: Test native encoders
+        run: cargo test --locked -p unityrs-texture --features encode
+
   # The batch engine's scale cases (production-sized and million-record
   # phase-6 runs, plus archive count, memory and digest boundaries, and
   # X13's squeeze of every testkit scene), in release. Heavy cases are
@@ -329,7 +364,7 @@ jobs:
             -r scripts/requirements-tests.txt
       # A skipped test, or fewer tests than the minimum, fails the job.
       - name: Self-tests (scripts)
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=115'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=131'
       - name: Aggregate memory regeneration tooling
         run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/memory/tests=33'
 
@@ -465,6 +500,7 @@ jobs:
           python tools/fixtures/writeable_cab.py --check
           python tools/fixtures/head_save_serialized.py --check
           python tools/fixtures/head_save_bundle.py --check
+          python tools/fixtures/set_image_encoders.py --check
           python tools/fixtures/head_read.py --check
           python tools/fixtures/unitycn.py --check
           python tools/fixtures/loading.py --check

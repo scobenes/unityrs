@@ -88,6 +88,8 @@ license-files = [
     { path = "LICENSE-CRUNCH", hash = 0x049cfc10 },
     { path = "LICENSE-UNITYCRUNCH", hash = 0x9e44785d },
     { path = "LICENSE-LCMS", hash = 0xf969f967 },
+    { path = "LICENSE-BC7ENC", hash = 0xe9691e9f },
+    { path = "LICENSE-ETCPAK", hash = 0xa91fc8f1 },
 ]
 
 [[licenses.exceptions]]

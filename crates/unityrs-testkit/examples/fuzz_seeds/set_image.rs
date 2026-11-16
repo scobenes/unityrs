@@ -47,5 +47,18 @@ pub(super) fn write(seeds: &mut super::Seeds) -> std::io::Result<()> {
     for n in 0..22 {
         seeds.add("set_image", &format!("header{n}"), &vec![0; n])?;
     }
+    // RGBA, ordinary platform, enough budget: these reach native encoders
+    // rather than only their dimension, platform and allocation refusals.
+    for format in [
+        10i32, 12, 25, 26, 27, 34, 45, 47, 48, 49, 50, 51, 52, 53, 54, 59, 60, 66, 71,
+    ] {
+        let mut input = Vec::new();
+        input.extend_from_slice(&4u32.to_le_bytes());
+        input.extend_from_slice(&4u32.to_le_bytes());
+        input.extend_from_slice(&format.to_le_bytes());
+        input.extend_from_slice(&1i32.to_le_bytes());
+        input.extend_from_slice(&[7, 0, 0, 0, 3, 2, 73, 0, 255, 128]);
+        seeds.add("set_image", &format!("encode-{format}"), &input)?;
+    }
     Ok(())
 }

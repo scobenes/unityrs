@@ -158,9 +158,14 @@ fn every_raw_write_and_object_save_replays_the_oracle() {
             mipmap_count: case["mips"].as_i64().unwrap() as i32,
         };
         let meter = Meter::unlimited();
-        let result = image_to_texture2d(&source, options, &meter);
         let policy = case["policy"].as_str().unwrap_or("oracle");
         *policies.entry(policy.to_owned()).or_default() += 1;
+        // B3a stopped at the encoder boundary. B3b's separate fixture replays
+        // actual output when the optional encoder implementation is enabled.
+        if cfg!(feature = "encode") && policy == "encoder" {
+            continue;
+        }
+        let result = image_to_texture2d(&source, options, &meter);
         if case.get("result").is_none() {
             check_refusal(policy, &result, i);
             assert_eq!(meter.used(), 0, "case {i}");
