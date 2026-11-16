@@ -64,6 +64,10 @@ EXPORTS = [
     ("binding_y4_round5", name) for name in (
         "observe_buffer_lengths", "observe_vector_lengths", "observe_cab_validation",
         "observe_array_storage", "observe_exact_output_names", "observe_snapshot_threads", "observe_array_inputs")
+] + [
+    ("binding_y4_round6", name) for name in (
+        "observe_blob_lifetime", "observe_resource_inheritance", "observe_pointer_owner",
+        "observe_payload_lengths", "observe_clear_replacement", "observe_detached_material")
 ]
 
 
@@ -81,6 +85,8 @@ def helper_records():
         ("binding_y4_round3", "observe_cab_budget"): "PARITY.md 19.3: CAB snapshots and padding charge before allocation",
         ("binding_y4_round4", "observe_output_names"): "PARITY.md 19.3: validate output names and charge copies before allocation",
         ("binding_y4_round4", "observe_path_budgets"): "PARITY.md 19.3: fallible charged path staging",
+        ("binding_y4_round6", "observe_blob_lifetime"): "PARITY.md 19.3: keep blob staging charged through image decode and encode",
+        ("binding_y4_round6", "observe_pointer_owner"): "PARITY.md 19.1: correct texture dictionary iteration; preserve current pointer ownership",
     }
     for name, reason in (
         ("observe_cab_validation", "validate encoded CAB external paths before mutation"),

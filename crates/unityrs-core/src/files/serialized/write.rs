@@ -29,13 +29,16 @@ pub struct SerializedSaveSnapshot<'a> {
     pub enable_type_tree: bool,
     /// Pre-format-14 path-id width switch.
     pub big_id_enabled: i32,
-    /// Current object metadata and payloads, sorted by signed path id.
+    /// Current object metadata and payloads, sorted by signed path id. Each
+    /// row's `byte_size` is its logical payload length, which may differ from
+    /// the buffer's byte count (Python's `len(data)` versus `nbytes`).
     pub objects: &'a [(ObjectInfo, Bytes)],
     /// Current external reference list, replacing loaded and pending entries.
     pub externals: &'a [External],
     /// Current user information string.
     pub user_information: Option<RawStr>,
 }
+const _: () = crate::send_sync::<SerializedSaveSnapshot<'static>>();
 
 impl SerializedFile {
     /// Save metadata and objects, sorting by signed path id and padding every
@@ -177,7 +180,11 @@ impl SerializedFile {
         } else {
             meta.u32(narrow(data.len(), "byte_start")?)?;
         }
-        meta.u32(narrow(payload.len(), "byte_size")?)?;
+        meta.u32(if native {
+            narrow(payload.len(), "byte_size")?
+        } else {
+            row.byte_size
+        })?;
         data.bytes(payload)?;
         data.align(8)?;
         meta.i32(row.type_id)?;

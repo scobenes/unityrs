@@ -347,6 +347,7 @@ class EndianBinaryReader_Memoryview:
         self._native = native
         self._position = 0
         self._length = metadata["length"]
+        self.endian = ">"
 
     @property
     def Position(self):

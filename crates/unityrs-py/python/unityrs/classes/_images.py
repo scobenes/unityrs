@@ -19,10 +19,9 @@ def _reader(obj):
     return getattr(getattr(obj, "object_reader", None), "_native", None)
 
 
-def _blob(obj):
+def _blob(obj, guard):
     blob = getattr(obj, "m_PlatformBlob", None)
     if blob is not None:
-        guard = _guard(obj)
         return snapshot_bytes(blob, guard)
     return None
 
@@ -72,8 +71,9 @@ def get_image(self):
     if self.m_Width == 0 or self.m_Height == 0:
         return Image.new("RGBA", (0, 0))
     reader = self.object_reader
+    guard = _guard(self)
     return _decode(self, self.get_image_data(), self.m_Width, self.m_Height,
-                   self.m_TextureFormat, getattr(reader, "platform", 0), _blob(self),
+                   self.m_TextureFormat, getattr(reader, "platform", 0), _blob(self, guard),
                    getattr(reader, "version", (0, 0, 0, 0)))
 
 
@@ -134,7 +134,7 @@ def set_image(self, img, target_format=None, mipmap_count=1):
     target_format = TextureFormat(target_format)
     platform = self.object_reader.platform if self.object_reader is not None else 0
     guard = _guard(self)
-    blob = _blob(self)
+    blob = _blob(self, guard)
     img_data, tex_format, img = _encode(self, img, target_format, platform, blob, guard)
     old_size = self.m_Width, self.m_Height
     self.m_Width = img.width

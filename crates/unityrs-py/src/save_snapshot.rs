@@ -57,8 +57,10 @@ pub(crate) fn serialized(
     for row in rows.try_iter()? {
         let (object, path_id, type_id, class_id, destroyed, stripped, script, data) =
             row?.extract::<ObjectRow>()?;
+        let logical_len = u32::try_from(data.bind(py).len()?)?;
         let data = crate::buffer_snapshot::BufferSnapshot::writer(data.bind(py), meter)?;
         let mut info = object.borrow(py).inner.info().clone();
+        info.byte_size = logical_len;
         info.path_id = path_id;
         info.type_id = type_id;
         info.class_id = class_id;

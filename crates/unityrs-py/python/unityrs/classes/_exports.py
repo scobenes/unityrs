@@ -177,10 +177,8 @@ def _renderer_export(self, export_dir):
             continue
         material = self.m_Materials[slot].deref_parse_as_object()
         material_name = output_name(material.m_Name, guard=guard)
-        exported = _native.export_material(material, _reader(material), _environment(material))
-        guard.step(0, len(exported) * 4 + 256, 0)
-        materials.append(exported)
         names.append(material_name)
+        texture_names = []
         for key, texture_env in material.m_SavedProperties.m_TexEnvs:
             guard.step(0, 0, 1)
             if texture_env is None:
@@ -194,8 +192,13 @@ def _renderer_export(self, export_dir):
             if isinstance(chosen, str):
                 guard.step(0, str.__len__(chosen) * 4 + 256, str.__len__(chosen))
             name = output_name(output_name(chosen, guard=guard) + ".png", guard=guard)
-            guard.step(0, 128, 1)
+            guard.step(0, 512 + str.__len__(key) * 4 + str.__len__(name) * 8, 1)
+            texture_names.append((key.encode("utf-8", "surrogateescape"),
+                                  name[:-4].encode("utf-8", "surrogateescape")))
             textures.append((name, texture))
+        exported = _native.export_material(material, _reader(material), _environment(material), texture_names)
+        guard.step(0, len(exported) * 4 + 256, 0)
+        materials.append(exported)
     # Preflight every asset-derived name before opening any output. Local
     # leaves are replaced against a held directory, so symlinks and hardlinks
     # cannot redirect writes outside the destination.

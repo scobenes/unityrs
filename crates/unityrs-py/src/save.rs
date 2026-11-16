@@ -178,6 +178,10 @@ pub(crate) fn object_set_raw_data(
     object: &NativeObject,
     data: &Bound<'_, PyAny>,
 ) -> PyResult<()> {
+    if data.is_none() {
+        py.detach(|| object.inner.clear_raw_data());
+        return Ok(());
+    }
     let data = crate::buffer_snapshot::BufferSnapshot::new(data, object.inner.file().meter())?;
     py.detach(move || object.inner.set_raw_data(data.as_ref()).map_err(error))
 }

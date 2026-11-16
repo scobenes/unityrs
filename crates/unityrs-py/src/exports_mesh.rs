@@ -169,23 +169,38 @@ fn attribute(
 }
 
 #[pyfunction]
+#[pyo3(signature = (input, reader=None, environment=None, texture_names=None))]
 pub(super) fn export_material(
     py: Python<'_>,
     input: &Bound<'_, PyAny>,
-    reader: &NativeObject,
-    environment: &NativeEnvironment,
+    reader: Option<&NativeObject>,
+    environment: Option<&NativeEnvironment>,
+    texture_names: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    let (limits, meter) = context(Some(reader));
+    let (limits, meter) = context(reader);
     let snapshot = crate::value_input::material_snapshot(input.as_unbound(), &meter, &limits)?;
+    let texture_names = texture_names
+        .map(|input| resolved_names(input, &meter))
+        .transpose()?;
     py.detach(move || {
         crate::worker::run(limits.stack_needed(), || {
             let parsed: Parsed = snapshot.build()?;
-            let material = unityrs_mesh::obj::MaterialView::new(
-                &parsed,
-                reader.inner.file(),
-                &environment.inner,
-                &meter,
-            )
+            let material = if let Some(names) = &texture_names {
+                unityrs_mesh::obj::MaterialView::with_texture_names(
+                    &parsed,
+                    names.as_slice(),
+                    &meter,
+                )
+            } else if let Some((reader, environment)) = reader.zip(environment) {
+                unityrs_mesh::obj::MaterialView::new(
+                    &parsed,
+                    reader.inner.file(),
+                    &environment.inner,
+                    &meter,
+                )
+            } else {
+                unityrs_mesh::obj::MaterialView::with_texture_names(&parsed, &[], &meter)
+            }
             .map_err(mesh_error)?;
             let mut out = ChargedBytes::new(&meter);
             unityrs_mesh::obj::export_material(&material, &mut out).map_err(mesh_error)?;
@@ -195,6 +210,26 @@ pub(super) fn export_material(
             p::string(out.as_bytes())
         })
     })
+}
+
+fn resolved_names(
+    input: &Bound<'_, PyAny>,
+    meter: &Arc<Meter>,
+) -> PyResult<MeteredVec<(RawStr, RawStr)>> {
+    let count = input.len()?;
+    meter.count_decode(count as u64).map_err(errors::charge)?;
+    let mut out = MeteredVec::with_capacity(meter, count).map_err(errors::charge)?;
+    for i in 0..count {
+        let row = input.get_item(i)?;
+        let key = crate::buffer_snapshot::BufferSnapshot::new(&row.get_item(0)?, meter)?;
+        let name = crate::buffer_snapshot::BufferSnapshot::new(&row.get_item(1)?, meter)?;
+        out.push((
+            RawStr::charged(&key, meter).map_err(errors::charge)?,
+            RawStr::charged(&name, meter).map_err(errors::charge)?,
+        ))
+        .map_err(errors::charge)?;
+    }
+    Ok(out)
 }
 
 fn decode_error(error: unityrs_meshdecode::MeshError) -> PyErr {
