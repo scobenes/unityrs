@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=104
+python scripts/unittest-suites crates/unityrs-py/python/tests=108
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=257
+python ../../scripts/unittest-suites bindings=260
 ```
 
-The recorder writes 191 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups, 29 tools/module/loader groups, 20 Y6a groups and 28 Y6b groups),
+The recorder writes 194 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups, 29 tools/module/loader groups, 20 Y6a groups and 31 Y6b groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 104 tests and the oracle comparison has 257; CI enforces both
+The wheel suite has 108 tests and the oracle comparison has 260; CI enforces both
 minimum counts. Warning handlers run on the calling Python thread before a
 fallback load is published, including handlers that re-enter the environment.
 
@@ -246,6 +246,11 @@ replacement, endian changes and failure cursors use the same bounded parsing
 policy. Codec map callbacks and compressor finalizers run on the calling Python
 thread outside native locks; a payload retains its selected compressor and chunk
 size while it is packed. Callback buffers are charged before copying.
+
+Standalone traversal checks runtime value depth separately from schema depth
+and charged scheduler frames. Accelerated reference lookup stops at the first
+matching descriptor and compiles only its node, with attribute access relayed
+to the calling Python thread. Decryptor block indices wrap modulo 2**64.
 
 | behavior | UnityPy 1.25.2 source | PARITY.md rows |
 |---|---|---|

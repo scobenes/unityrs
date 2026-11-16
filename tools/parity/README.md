@@ -43,10 +43,10 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `binding_y6_exports.py` | Standalone material texture names and optional PCM float conversion |
 | `binding_y6_parse.py` | Forced file-type parsing, raw reader identity and mismatch failures |
 | `binding_y6b_codecs.py` | Live codec-map callbacks, malformed codec exceptions and mutable object readers |
-| `binding_y6b_tree.py` | Standalone tree reads/writes, optional generator backend and local download peer |
-| `binding_y6b_crypto_shader.py` | Standalone decryptor/key helpers and direct shader stages/programs |
+| `binding_y6b_tree.py` | Standalone tree reads/writes, deep values, short-circuit references, optional generator backend and local download peer |
+| `binding_y6b_crypto_shader.py` | Standalone decryptor/key helpers, wrapping block indices and direct shader stages/programs |
 | `binding_y6b_images.py` | ASTC contexts, patched platform dispatch and standalone sprite geometry |
-| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=257`); requires `unityrs` and UnityPy 1.25.2, and never skips |
+| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=260`); requires `unityrs` and UnityPy 1.25.2, and never skips |
 | `encoder_probe.py` | B3b's encoder ISA probe (decision 16): replays the native builds of the vendored etcpak, bc7enc and astcenc against the pinned amd64 wheels' raw output, frozen in `crates/unityrs-texture/tests/fixtures/encoder_isa.json` (`--check`, `--oracle`); runs only in the development containers |
 | `encoder_probe.cpp` | `encoder_probe.py`'s native side: the vendored encoders' entry points, compiled with each recorded set of flags and run on framed inputs |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |

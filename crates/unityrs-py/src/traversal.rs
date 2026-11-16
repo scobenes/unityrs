@@ -15,6 +15,7 @@ pub(crate) struct TreeTraversal {
     inner: CoreTraversal,
     value_limit: u64,
     zero_limit: u64,
+    depth_limit: u32,
 }
 
 impl TreeTraversal {
@@ -31,6 +32,7 @@ impl TreeTraversal {
             inner: CoreTraversal::new(meter, depth_limit),
             value_limit: unityrs_core::limits::Limits::default().max_values_per_object,
             zero_limit: unityrs_core::limits::Limits::default().max_zero_size_elements,
+            depth_limit: unityrs_core::limits::Limits::default().max_value_depth,
         }
     }
 
@@ -39,6 +41,7 @@ impl TreeTraversal {
             inner: CoreTraversal::new(meter, limits.max_tree_depth),
             value_limit: limits.max_values_per_object,
             zero_limit: limits.max_zero_size_elements,
+            depth_limit: limits.max_value_depth,
         }
     }
 
@@ -65,6 +68,20 @@ impl TreeTraversal {
 
     fn step(&mut self, depth: u64, memory: u64, work: u64) -> PyResult<()> {
         self.expand(depth, memory, work)
+    }
+
+    fn value_depth(&self, depth: u64) -> PyResult<()> {
+        if depth > u64::from(self.depth_limit) {
+            return Err(errors::core(
+                unityrs_core::LimitError::refused(
+                    unityrs_core::LimitKind::ValueDepth,
+                    depth,
+                    u64::from(self.depth_limit),
+                )
+                .into(),
+            ));
+        }
+        Ok(())
     }
 
     fn read_values(&mut self, py: Python<'_>, total: u64, added: u64) -> PyResult<()> {

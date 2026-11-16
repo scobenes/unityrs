@@ -11,6 +11,120 @@ def node(ty='int', children=()):
 
 
 class StandaloneBounds(unittest.TestCase):
+    def test_selected_reference_schema_has_its_own_graph_bounds(self):
+        from types import SimpleNamespace
+        def named(ty, name, children=()):
+            result = node(ty, children)
+            result.m_Name = name
+            return result
+        descriptor = named('Descriptor', 'type', [named('string', part) for part in ('class', 'ns', 'asm')])
+        root = named('ReferencedObject', 'Base', [descriptor, named('ReferencedObjectData', 'data')])
+        selected, value = node(), 23
+        for _ in range(8):
+            selected, value = node('Synthetic', [selected]), {'value': value}
+        names = {'class': 'Synthetic', 'ns': 'NS', 'asm': 'ASM'}
+        file = SimpleNamespace(ref_types=[SimpleNamespace(m_ClassName='Synthetic', m_NameSpace='NS',
+                                                          m_AssemblyName='ASM', node=selected)])
+        prefix = unityrs.streams.EndianBinaryWriter(endian='<')
+        helper.write_typetree(names, descriptor, prefix)
+        data = prefix.bytes + b'\x17\0\0\0'
+        expected = {'type': names, 'data': value}
+        for tree_depth in (3, 9):
+            limits = unityrs.Limits(max_tree_depth=tree_depth, max_value_depth=100)
+            for accelerated in (False, True):
+                reader = unityrs.streams.EndianBinaryReader(data, '<')
+                if tree_depth == 3:
+                    with self.assertRaises(unityrs.LimitError):
+                        helper.read_typetree(root, reader, byte_size=len(data) if accelerated else None,
+                                             check_read=False, assetsfile=file, limits=limits)
+                    if not accelerated:
+                        self.assertEqual(reader.Position, len(prefix.bytes))
+                else:
+                    self.assertEqual(helper.read_typetree(root, reader, byte_size=len(data) if accelerated else None,
+                                     check_read=False, assetsfile=file, limits=limits), expected)
+            writer = unityrs.streams.EndianBinaryWriter(endian='<')
+            if tree_depth == 3:
+                with self.assertRaises(unityrs.LimitError):
+                    helper.write_typetree(expected, root, writer, assetsfile=file, limits=limits)
+                self.assertEqual(writer.bytes, prefix.bytes)
+            else:
+                helper.write_typetree(expected, root, writer, assetsfile=file, limits=limits)
+                self.assertEqual(writer.bytes, data)
+        selected.m_Children.append(selected)
+        reader = unityrs.streams.EndianBinaryReader(data, '<')
+        with self.assertRaisesRegex(ValueError, 'cycle'):
+            helper.read_typetree(root, reader, check_read=False, assetsfile=file)
+        self.assertEqual(reader.Position, len(prefix.bytes))
+
+    def test_value_depth_zero_refuses_pure_reads_and_writes_before_io(self):
+        config = helper.TypeTreeConfig(True)
+        for read, expected in (
+                (lambda r, lim: helper.read_typetree(node(), r, check_read=False, limits=lim), 23),
+                (lambda r, lim: helper.read_value(node(), r, config, limits=lim), 23),
+                (lambda r, lim: helper.read_value_array(node(), r, config, 1, limits=lim), (23,))):
+            reader = unityrs.streams.EndianBinaryReader(b'\x17\0\0\0', '<')
+            with self.assertRaises(unityrs.LimitError):
+                read(reader, unityrs.Limits(max_value_depth=0))
+            self.assertEqual(reader.Position, 0)
+            self.assertEqual(read(reader, unityrs.Limits(max_value_depth=1)), expected)
+        writer = unityrs.streams.EndianBinaryWriter(endian='<')
+        with self.assertRaises(unityrs.LimitError):
+            helper.write_typetree(23, node(), writer, limits=unityrs.Limits(max_value_depth=0))
+        self.assertEqual(writer.Position, 0)
+        helper.write_typetree(23, node(), writer, limits=unityrs.Limits(max_value_depth=1))
+        self.assertEqual(writer.bytes, b'\x17\0\0\0')
+
+    def test_schema_and_value_depth_boundaries_are_independent(self):
+        root = node('Synthetic', [node('Synthetic', [node()])])
+        value = {'value': {'value': 23}}
+        for tree_depth, value_depth, accepted in ((3, 3, True), (2, 10, False), (10, 2, False)):
+            limits = unityrs.Limits(max_tree_depth=tree_depth, max_value_depth=value_depth)
+            reader = unityrs.streams.EndianBinaryReader(b'\x17\0\0\0', '<')
+            writer = unityrs.streams.EndianBinaryWriter(endian='<')
+            if accepted:
+                self.assertEqual(helper.read_typetree(root, reader, check_read=False, limits=limits), value)
+                helper.write_typetree(value, root, writer, limits=limits)
+                self.assertEqual(writer.bytes, b'\x17\0\0\0')
+            else:
+                with self.assertRaises(unityrs.LimitError):
+                    helper.read_typetree(root, reader, check_read=False, limits=limits)
+                with self.assertRaises(unityrs.LimitError):
+                    helper.write_typetree(value, root, writer, limits=limits)
+                self.assertEqual(reader.Position, 0)
+                self.assertEqual(writer.Position, 0)
+
+    def test_array_comprehension_depth_boundary(self):
+        root = node('vector', [node('Array', [node(), node()])])
+        for depth, accepted in ((2, False), (3, True)):
+            limits = unityrs.Limits(max_value_depth=depth)
+            reader = unityrs.streams.EndianBinaryReader(b'\1\0\0\0\x17\0\0\0', '<')
+            writer = unityrs.streams.EndianBinaryWriter(endian='<')
+            if accepted:
+                self.assertEqual(helper.read_typetree(root, reader, check_read=False, limits=limits), [23])
+                helper.write_typetree([23], root, writer, limits=limits)
+                self.assertEqual(writer.bytes, b'\1\0\0\0\x17\0\0\0')
+            else:
+                with self.assertRaises(unityrs.LimitError):
+                    helper.read_typetree(root, reader, check_read=False, limits=limits)
+                with self.assertRaises(unityrs.LimitError):
+                    helper.write_typetree([23], root, writer, limits=limits)
+
+        # Direct array reads retain the oracle's comprehension/lambda depth,
+        # independently of how many coroutine helpers implement them.
+        config = helper.TypeTreeConfig(True)
+        cases = [(node('string'), b'\0\0\0\0', 2, ['']),
+                 (node('Synthetic', [node()]), b'\x17\0\0\0', 4, [{'value': 23}]),
+                 (node('pair', [node('Synthetic', [node()]), node()]),
+                  b'\x17\0\0\0\x18\0\0\0', 5, [({'value': 23}, 24)])]
+        for root, data, required, expected in cases:
+            reader = unityrs.streams.EndianBinaryReader(data, '<')
+            with self.assertRaises(unityrs.LimitError):
+                helper.read_value_array(root, reader, config, 1,
+                                        limits=unityrs.Limits(max_value_depth=required - 1))
+            reader.Position = 0
+            self.assertEqual(helper.read_value_array(root, reader, config, 1,
+                             limits=unityrs.Limits(max_value_depth=required)), expected)
+
     def test_budget_refuses_before_reader_or_writer_side_effects(self):
         for accelerated in (False, True):
             reader = unityrs.streams.EndianBinaryReader(b'\0' * 4, '<')

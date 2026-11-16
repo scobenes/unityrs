@@ -16,6 +16,15 @@ def _module(package, suffix):
     return importlib.import_module(package.__name__ + '.' + suffix)
 
 
+def observe_crypto_block_indices(package):
+    module = _module(package, 'helpers.ArchiveStorageManager')
+    value = module.ArchiveStorageDecryptor.__new__(module.ArchiveStorageDecryptor)
+    value.index = bytes(range(16))
+    value.substitute = bytes(range(16))
+    return [[index, _call(lambda: value.decrypt_block(b'\x10X', index))]
+            for index in (-1, -(1 << 64) - 1, 0, (1 << 64) - 1, 1 << 64, (1 << 128) + 1)]
+
+
 def observe_crypto_keys(package):
     module = _module(package, 'helpers.ArchiveStorageManager')
     result = {}

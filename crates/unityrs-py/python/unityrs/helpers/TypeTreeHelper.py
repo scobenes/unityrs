@@ -35,7 +35,11 @@ def get_ref_type_node(ref_object, assetfile, *, _guard=None):
         work = 1 + sum(text_bound(value) for value in (cls, ns, asm, *descriptor) if isinstance(value, str))
         guard.step(0, 128, work)
         if (cls, ns, asm) == descriptor:
-            return ref.node
+            node = ref.node
+            if node is not None:
+                for _ in walk(node, guard):
+                    pass
+            return node
     raise ValueError(f'Referenced type not found: {cls} {ns} {asm}')
 
 
@@ -50,6 +54,9 @@ class _ReadGuard:
 
     def step(self, depth, memory, work):
         self.guard.step(depth, memory, work)
+
+    def value_depth(self, depth):
+        self.guard.value_depth(depth)
 
     def values(self, count):
         self.total += count
@@ -95,7 +102,7 @@ def read_typetree_boost(data, node, endian, as_dict=False, assetsfile=None, clas
     if not as_dict:
         from .._object import build
         value = build(value, lists, assetsfile, True, refs, completed, error,
-                      charge=construction, class_namespace=classes)
+                      charge=construction, class_namespace=classes, reference_occurrences=True)
     return value, consumed
 
 
@@ -126,7 +133,7 @@ def _drive(generator, guard):
     stack = [generator]
     value = None
     while stack:
-        guard.step(len(stack), 128, 1)
+        guard.step(0, 128, 1)
         try:
             child = stack[-1].send(value)
             stack.append(child)
@@ -161,7 +168,8 @@ def _primitive(node, reader, guard, array_size=None):
     return FUNCTION_READ_MAP[ty](reader)
 
 
-def _read(node, reader, config, guard, array_size=None):
+def _read(node, reader, config, guard, array_size=None, depth=1):
+    guard.value_depth(depth)
     guard.values(1 if array_size is None else max(array_size, 0))
     align = metaflag_is_aligned(node.m_MetaFlag)
     ty = node.m_Type
@@ -171,6 +179,8 @@ def _read(node, reader, config, guard, array_size=None):
         if ty in FUNCTION_READ_MAP_ARRAY:
             value = _primitive(node, reader, guard, array_size)
         else:
+            if ty != 'ReferencedObject':
+                guard.value_depth(depth + 1)  # The array's list comprehension.
             value = []
             if ty == 'pair':
                 first, second = node.m_Children[0], node.m_Children[1]
@@ -193,49 +203,52 @@ def _read(node, reader, config, guard, array_size=None):
                         if child.m_Type in FUNCTION_READ_MAP:
                             guard.values(1)
                         parts.append(_primitive(child, reader, guard) if child.m_Type in FUNCTION_READ_MAP
-                                     else (yield _read(child, reader, config, guard)))
+                                     else (yield _read(child, reader, config, guard, depth=depth + 3)))
                     item = tuple(parts)
                 elif node.m_Children and node.m_Children[0].m_Type == 'Array':
                     count = reader.read_int()
-                    item = (yield _array(subtype, reader, config, guard, count))
+                    item = (yield _array(subtype, reader, config, guard, count, depth + 2))
                 else:
-                    item = (yield _class(node, reader, config, guard, array=True))
+                    item = (yield _class(node, reader, config, guard,
+                                        depth if ty == 'ReferencedObject' else depth + 2, array=True))
                 value.append(item)
                 guard.element(reader, before)
     elif ty in FUNCTION_READ_MAP:
         value = _primitive(node, reader, guard)
     elif ty == 'pair':
-        first = yield _read(node.m_Children[0], reader, config, guard)
-        second = yield _read(node.m_Children[1], reader, config, guard)
+        first = yield _read(node.m_Children[0], reader, config, guard, depth=depth + 1)
+        second = yield _read(node.m_Children[1], reader, config, guard, depth=depth + 1)
         value = (first, second)
     elif ty == 'ReferencedObject':
-        value = yield _class(node, reader, config, guard)
+        value = yield _class(node, reader, config, guard, depth)
     elif node.m_Children and node.m_Children[0].m_Type == 'Array':
         align |= metaflag_is_aligned(node.m_Children[0].m_MetaFlag)
         size = reader.read_int()
         if size < 0:
             raise ValueError('Negative length read from TypeTree')
-        value = yield _array(node.m_Children[0].m_Children[1], reader, config, guard, size)
+        value = yield _array(node.m_Children[0].m_Children[1], reader, config, guard, size, depth + 1)
     else:
-        value = yield _class(node, reader, config, guard)
+        value = yield _class(node, reader, config, guard, depth)
     if align:
         reader.align_stream()
     return value
 
 
-def _array(node, reader, config, guard, size):
+def _array(node, reader, config, guard, size, depth):
+    guard.value_depth(depth)
     guard.step(0, 256 + max(size, 0) * 128, max(size, 0))
     if metaflag_is_aligned(node.m_MetaFlag):
-        return (yield _read(node, reader, config, guard, size))
+        return (yield _read(node, reader, config, guard, size, depth=depth))
     value = []
     for _ in range(size):
         before = reader.Position, guard.discards
-        value.append((yield _read(node, reader, config, guard)))
+        value.append((yield _read(node, reader, config, guard, depth=depth + 1)))
         guard.element(reader, before)
     return value
 
 
-def _class(node, reader, config, guard, array=False):
+def _class(node, reader, config, guard, depth, array=False):
+    guard.value_depth(depth)
     value = {}
     reference = node.m_Type == 'ReferencedObject'
     for child in node.m_Children:
@@ -256,7 +269,7 @@ def _class(node, reader, config, guard, array=False):
             config = config.copy()
             config.has_registry = True
         key = child.m_Name if config.as_dict or reference or (array and node.m_Type.startswith('PPtr<')) else child._clean_name
-        field = yield _read(child_node, reader, config, guard)
+        field = yield _read(child_node, reader, config, guard, depth=depth + 1)
         if key in value:
             guard.discard()
         value[key] = field
@@ -295,7 +308,8 @@ def write_value(value, node, writer, config, *, limits=None, budget=None, _guard
     return _drive(_write(value, node, writer, config, guard), guard)
 
 
-def _write(value, node, writer, config, guard):
+def _write(value, node, writer, config, guard, depth=1):
+    guard.value_depth(depth)
     align = metaflag_is_aligned(node.m_MetaFlag)
     ty = node.m_Type
     guard.step(0, 512, 1)
@@ -306,18 +320,19 @@ def _write(value, node, writer, config, guard):
             guard.step(0, 256 + memoryview(value).nbytes, memoryview(value).nbytes)
         FUNCTION_WRITE_MAP[ty](writer, value)
     elif ty == 'pair':
-        yield _write(value[0], node.m_Children[0], writer, config, guard)
-        yield _write(value[1], node.m_Children[1], writer, config, guard)
+        yield _write(value[0], node.m_Children[0], writer, config, guard, depth + 1)
+        yield _write(value[1], node.m_Children[1], writer, config, guard, depth + 1)
     elif ty == 'ReferencedObject':
         for child in node.m_Children:
             target = get_ref_type_node(value, config.assetsfile, _guard=guard) if child.m_Type == 'ReferencedObjectData' else child
-            yield _write(value[child.m_Name], target, writer, config, guard)
+            yield _write(value[child.m_Name], target, writer, config, guard, depth + 1)
     elif node.m_Children and node.m_Children[0].m_Type == 'Array':
         align |= metaflag_is_aligned(node.m_Children[0].m_MetaFlag)
         writer.write_int(len(value))
         subtype = node.m_Children[0].m_Children[1]
+        guard.value_depth(depth + 1)  # The writer's array comprehension.
         for item in value:
-            yield _write(item, subtype, writer, config, guard)
+            yield _write(item, subtype, writer, config, guard, depth + 2)
     else:
         for child in node.m_Children:
             if child.m_Type == 'ManagedReferencesRegistry':
@@ -326,6 +341,6 @@ def _write(value, node, writer, config, guard):
                 config = config.copy()
                 config.has_registry = True
             item = value[child.m_Name] if isinstance(value, dict) else getattr(value, child._clean_name)
-            yield _write(item, child, writer, config, guard)
+            yield _write(item, child, writer, config, guard, depth + 1)
     if align:
         writer.align_stream()

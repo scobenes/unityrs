@@ -12,7 +12,7 @@ def reference_input(root, assetsfile, guard):
     references = getattr(assetsfile, 'ref_types', None)
     if not isinstance(references, list):
         return (1, None)
-    return (2, _rows(references, guard))
+    return (2, lambda cls, ns, asm: _resolve(references, guard, (cls, ns, asm)))
 
 
 def _is_reference(node):
@@ -23,14 +23,23 @@ def _is_reference(node):
             and (str.__len__(ty) == 20 or str.__getitem__(ty, 20) == '\0'))
 
 
-def _rows(references, guard):
+def _resolve(references, guard, selected):
     # The accelerated oracle uses the concrete list storage, bypassing overrides.
     for index in range(list.__len__(references)):
         guard.step(0, 512, 1)
         reference = list.__getitem__(references, index)
-        names = (reference.m_ClassName, reference.m_NameSpace, reference.m_AssemblyName)
+        try:
+            names = (reference.m_ClassName, reference.m_NameSpace, reference.m_AssemblyName)
+        except Exception:
+            return None
         for value in names:
             if isinstance(value, str):
                 guard.step(0, 256 + text_bound(value), text_bound(value))
-        node = reference.node
-        yield (*names, None if node is None else node._native_rows(_guard=guard))
+        if all(isinstance(value, str) and str.__eq__(value, target)
+               for value, target in zip(names, selected)):
+            try:
+                node = reference.node
+            except Exception:
+                return None
+            return (*selected, None if node is None else node._native_rows(_guard=guard))
+    return None

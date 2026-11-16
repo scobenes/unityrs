@@ -206,7 +206,7 @@ fn replays_unitypy_residue_observations() -> PyResult<()> {
 fn replays_unitypy_internal_helper_observations() -> PyResult<()> {
     unityrs_testkit::guard::finishes(
         "caller-thread helper callbacks and local update peer",
-        || replay_groups("binding_y6b_", 28),
+        || replay_groups("binding_y6b_", 31),
     )
 }
 

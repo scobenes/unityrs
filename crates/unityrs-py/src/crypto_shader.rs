@@ -45,8 +45,15 @@ pub(crate) fn cn_block(
     index: [u8; 16],
     substitute: [u8; 16],
     data: &Bound<'_, PyAny>,
-    block_index: usize,
+    block_index: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
+    // The accelerated oracle uses PyLong_AsUnsignedLongLongMask.
+    let block_index = unsafe { pyo3::ffi::PyLong_AsUnsignedLongLongMask(block_index.as_ptr()) };
+    if unsafe { !pyo3::ffi::PyErr_Occurred().is_null() } {
+        return Err(PyErr::fetch(py));
+    }
+    // Only the low byte affects the cipher, including on 32-bit platforms.
+    let block_index = (block_index & 255) as usize;
     let (_, meter) = crate::exports::context(None);
     let input = crate::buffer_snapshot::BufferSnapshot::new(data, &meter)?;
     py.detach(|| {
@@ -118,7 +125,13 @@ mod tests {
                 ]
             );
             let block = PyBytes::new(py, &[0]);
-            let got = cn_block(py, [255; 16], [255; 16], block.as_any(), 0)?;
+            let got = cn_block(
+                py,
+                [255; 16],
+                [255; 16],
+                block.as_any(),
+                p::uint(0)?.bind(py),
+            )?;
             assert_eq!(got.bind(py).extract::<Vec<u8>>()?, [0x33]);
             Ok(())
         })

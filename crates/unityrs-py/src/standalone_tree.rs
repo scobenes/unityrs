@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 use unityrs_core::{
     budget::{Reservation, Unbounded},
-    limits::{Charge, Meter},
+    limits::{Charge, Meter, MeteredVec},
 };
 
 #[pyfunction]
@@ -68,7 +68,7 @@ pub(crate) fn standalone_tree_read(
         crate::buffer_snapshot::BufferSnapshot::source(data, &meter, limits.max_input_bytes)?;
     let tree = crate::tree::compile_rows_with(&meter, &limits, rows.as_unbound())?;
     let references = references
-        .map(|input| crate::reference_input::ReferenceInput::snapshot(input, &meter, &limits))
+        .map(crate::reference_input::ReferenceInput::snapshot)
         .transpose()?;
     py.detach(|| {
         crate::worker::run(limits.stack_needed(), || {
@@ -102,20 +102,63 @@ pub(crate) fn standalone_tree_read(
                 options: &options,
                 meter: &meter,
             };
-            let (parsed, progress) = if as_dict {
-                unityrs_core::walk::boost::read(&input, &tree, &ctx)
-                    .map(|parsed| (parsed, unityrs_core::walk::FieldProgress::default()))
-            } else {
-                unityrs_core::walk::boost::read_object_fields(&input, &tree, &ctx)
-            }
-            .map_err(|e| errors::parse_reader(&e.into(), true))?;
-            let refs = match refs {
-                unityrs_core::walk::RefTypes::List(refs) => Some(refs),
-                _ => None,
-            };
-            convert(&parsed, progress, refs, as_dict, &meter)
+            parse(&input, &tree, &ctx, references.as_ref(), as_dict)
         })
     })
+}
+
+fn parse(
+    input: &unityrs_core::Bytes,
+    tree: &Arc<unityrs_core::typetree::Tree>,
+    ctx: &unityrs_core::walk::ReadCtx<'_>,
+    references: Option<&crate::reference_input::ReferenceInput>,
+    as_dict: bool,
+) -> PyResult<Py<PyAny>> {
+    let meter = ctx.meter;
+    let limits = ctx.options.limits;
+    let mut selected = MeteredVec::new(meter);
+    let resolver = references.and_then(crate::reference_input::ReferenceInput::resolver);
+    let mut resolve =
+        |cls: &unityrs_core::Value, ns: &unityrs_core::Value, asm: &unityrs_core::Value, at| {
+            match resolver {
+                Some(resolver) => crate::reference_input::resolve(
+                    resolver,
+                    meter,
+                    limits,
+                    [cls, ns, asm],
+                    at,
+                    &mut selected,
+                ),
+                None => Ok(None),
+            }
+        };
+    let mut progress = unityrs_core::walk::FieldProgress::default();
+    let parsed = if resolver.is_some() {
+        unityrs_core::walk::boost::read_resolved(
+            input,
+            tree,
+            ctx,
+            if as_dict { None } else { Some(&mut progress) },
+            Some(&mut resolve),
+        )
+    } else if as_dict {
+        unityrs_core::walk::boost::read(input, tree, ctx)
+    } else {
+        unityrs_core::walk::boost::read_object_fields(input, tree, ctx).map(|(parsed, fields)| {
+            progress = fields;
+            parsed
+        })
+    }
+    .map_err(|e| errors::parse_reader(&e.into(), true))?;
+    let refs = if resolver.is_some() {
+        Some(selected.as_slice())
+    } else {
+        match ctx.ref_types {
+            unityrs_core::walk::RefTypes::List(refs) => Some(refs),
+            _ => None,
+        }
+    };
+    convert(&parsed, progress, refs, as_dict, meter)
 }
 
 fn convert(

@@ -64,6 +64,22 @@ pub(crate) fn read_with_fields(
     ctx: &ReadCtx<'_>,
     progress: Option<&mut super::FieldProgress>,
 ) -> Result<Parsed, ReadError> {
+    read_resolved(data, tree, ctx, progress, None)
+}
+
+/// Caller-supplied reference lookup, invoked only for a selected data field.
+/// The resolver returns the selected tree, or `None` for a disabled tree.
+type ReferenceResolver<'a> =
+    dyn FnMut(&Value, &Value, &Value, u64) -> Result<Option<Arc<Tree>>, ReadError> + 'a;
+
+/// Read with a lazy reference resolver, retaining ordinary object-field progress.
+pub fn read_resolved(
+    data: &Bytes,
+    tree: &Arc<Tree>,
+    ctx: &ReadCtx<'_>,
+    progress: Option<&mut super::FieldProgress>,
+    resolver: Option<&mut ReferenceResolver<'_>>,
+) -> Result<Parsed, ReadError> {
     let work = Work::start(ctx.options.limits, ctx.meter)?;
     let builder =
         ValueBuilder::new(ctx.meter, tree.list().clone()).map_err(|e| charge_error(0, e))?;
@@ -82,6 +98,7 @@ pub(crate) fn read_with_fields(
         has_registry: false,
         method: "read_length",
         progress,
+        resolver,
     };
     let value = r.value(tree, 0, tree.root());
     let at = r.at();
@@ -97,7 +114,7 @@ pub(crate) fn read_with_fields(
 
 /// UnityPyBoost's `ReaderT` (`TypeTreeHelper.cpp:13-18`) and its config
 /// (`:20-26`), with the reader's own bounds on work.
-struct Reader<'a, 'c, 'p> {
+struct Reader<'a, 'c, 'p, 'r, 's> {
     data: &'a Bytes,
     bytes: &'a [u8],
     /// `ptr - start`: may pass the end after an alignment (R3).
@@ -114,6 +131,7 @@ struct Reader<'a, 'c, 'p> {
     has_registry: bool,
     method: &'static str,
     progress: Option<&'p mut super::FieldProgress>,
+    resolver: Option<&'r mut ReferenceResolver<'s>>,
 }
 
 /// A fixed-width number from its bytes in the file's order.
@@ -127,7 +145,7 @@ macro_rules! num {
     };
 }
 
-impl Reader<'_, '_, '_> {
+impl Reader<'_, '_, '_, '_, '_> {
     fn at(&self) -> u64 {
         u64::try_from(self.pos).unwrap_or(u64::MAX)
     }
@@ -676,6 +694,10 @@ impl Reader<'_, '_, '_> {
         // `:637-644`: `PyUnicode_GET_LENGTH(cls) == 0` skips the data.
         if py_size_field_is_zero(cls) {
             return Ok(None);
+        }
+        if let Some(resolve) = &mut self.resolver {
+            return resolve(cls, ns, asm, at)
+                .map(|tree| Some(tree.map_or(RefNode::NoTree, RefNode::Tree)));
         }
         // `:646-673`: the first ref type whose three names compare equal.
         let found = self

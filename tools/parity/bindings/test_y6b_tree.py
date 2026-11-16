@@ -6,6 +6,13 @@ import binding_y6b_tree as observations
 
 
 class StandaloneTrees(unittest.TestCase):
+    def test_value_depth_is_independent_of_scheduler_frames(self):
+        self.assertEqual(observations.observe_tree_depth(unityrs), observations.observe_tree_depth(UnityPy))
+
+    def test_accelerated_reference_lookup_short_circuits(self):
+        self.assertEqual(observations.observe_tree_reference_lookup(unityrs),
+                         observations.observe_tree_reference_lookup(UnityPy))
+
     def test_defaults_offsets_and_checks(self):
         self.assertEqual(observations.observe_tree_defaults(unityrs), observations.observe_tree_defaults(UnityPy))
 

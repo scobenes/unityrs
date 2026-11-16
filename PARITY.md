@@ -120,7 +120,7 @@ Every row is tier A at level API. `test_parity_rows.py` package_aliases_and_reex
 
 The binding's helper calls are measured by synthetic oracle observations, not
 namespace checks alone. Y6b's `replays_unitypy_internal_helper_observations`
-replays 28 groups from `tools/fixtures/py_bindings.py`; each deliberate difference
+replays 31 groups from `tools/fixtures/py_bindings.py`; each deliberate difference
 keeps the original oracle result beside its reference in `api.json`.
 
 No standalone helper-module rows remain open. The supported calls and explicit
@@ -132,9 +132,9 @@ the documented divergences and safety limits.
 | 2.1 `UnityPy.cli.update_tpk` | Explicit download/extraction through a deterministic local HTTP peer. | Raw TPK in caller cache; class generation stays in memory (19.2). |
 | 6 codec maps | Live decompression, captured compressor/chunk policy, reentry, finalizers and malformed standalone errors. | Callbacks on the original caller outside native locks; nonpositive chunks refused (19.3). |
 | 8 reader parsing | Reader replacement, endian, raw spans and successful/failed cursor progress. | Charged snapshots and inherited input limits. |
-| 9.1 `TypeTreeHelper`, 23 `read_typetree_boost` | Read/write defaults, offsets, arrays, constructors, explicit class namespace and failures. | Bounded graph, value, memory and work traversal; pinned accelerated omission behavior is recorded. |
+| 9.1 `TypeTreeHelper`, 23 `read_typetree_boost` | Read/write defaults, offsets, arrays, constructors, explicit class namespace, deep values and short-circuit reference lookup. | Schema depth, runtime value depth and charged scheduler frames are independent; reference metadata is scanned only through the match and only its node is compiled. Pinned accelerated omission behavior is recorded. |
 | 10 `TypeTreeGenerator` | Explicit synthetic optional backend, local discovery, normalization and cache identity. | Generated nodes remain in memory; no generated schema saved. |
-| 12 `ArchiveStorageManager` | Standalone decryptor, key/byte/sequence decryption and bounded key search. | Synthetic encrypted fixtures only; existing unsafe Boost walks remain Tier U. |
+| 12 `ArchiveStorageManager` | Standalone decryptor, key/byte/sequence decryption, unsigned block indices wrapping modulo 2**64 and bounded key search. | Synthetic encrypted fixtures only; existing unsafe Boost walks remain Tier U. |
 | 15.1 texture extension hooks | Switch/crunch preprocessing, patched dispatch, ASTC cache and all fourteen 2D footprints. | ASTC proxy identity and U8/RGBA bounds recorded in 19.2. |
 | 15.2 lower `SpriteHelper` | Cache/settings, mask, mesh, triangle copying and matrix helpers. | Existing singular-matrix correction and RGB/RGBA sheet bound (19.2). |
 | 15.5 lower `ShaderConverter` | Direct converter stages, program parsing, current fields and exports. | Existing native stage limits and typed failures. |

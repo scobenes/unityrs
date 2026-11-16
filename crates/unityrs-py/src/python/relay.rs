@@ -11,12 +11,15 @@ use unityrs_core::RawStr;
 pub(crate) enum Request {
     Warning(RawStr, bool),
     Codec(crate::codec_bridge::Call),
+    Reference(crate::reference_input::Call),
     Release(Py<PyAny>),
 }
 
 pub(crate) enum Response {
     Warning(RawStr, bool),
     Codec(Option<crate::buffer_snapshot::BufferSnapshot>),
+    Reference(Option<std::sync::Arc<unityrs_core::typetree::Tree>>),
+    ReferenceMissing,
     Encoder(Py<PyAny>, usize, bool),
     Released,
 }
@@ -84,6 +87,7 @@ impl Relay {
                     emit(&value, bundle).map(|(v, b)| Response::Warning(v, b))
                 }
                 Request::Codec(call) => crate::codec_bridge::invoke(&call),
+                Request::Reference(call) => crate::reference_input::invoke(&call),
                 Request::Release(value) => Python::attach(|_| {
                     drop(value);
                     Ok(Response::Released)
@@ -159,6 +163,7 @@ pub(crate) fn request(request: Request) -> PyResult<Response> {
                     emit(&value, bundle).map(|(v, b)| Response::Warning(v, b))
                 }
                 Request::Codec(call) => crate::codec_bridge::invoke(&call),
+                Request::Reference(call) => crate::reference_input::invoke(&call),
                 Request::Release(value) => Python::attach(|_| {
                     drop(value);
                     Ok(Response::Released)

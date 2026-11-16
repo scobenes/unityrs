@@ -6,6 +6,9 @@ import binding_y6b_crypto_shader as observations
 
 
 class CryptoShader(unittest.TestCase):
+    def test_block_indices_wrap_unsigned_64_bits(self):
+        self.compare('crypto_block_indices')
+
     def compare(self, name):
         call = getattr(observations, 'observe_' + name)
         self.assertEqual(UnityPy.__version__, '1.25.2')

@@ -16,6 +16,131 @@ def _node(package, ty='int', name='value', children=None, flag=0):
                                                     children or [], m_MetaFlag=flag)
 
 
+def observe_tree_depth(package):
+    helper = _module(package, 'helpers.TypeTreeHelper')
+    result = []
+    for depth in (1, 160, 161, 256):
+        root, value = _node(package), 23
+        for _ in range(depth - 1):
+            root = _node(package, 'Synthetic', children=[root])
+            value = {'value': value}
+        writer = package.streams.EndianBinaryWriter(endian='<')
+        helper.write_typetree(value, root, writer)
+        reads = []
+        for accelerated in (False, True):
+            reader = package.streams.EndianBinaryReader(writer.bytes, '<')
+            parsed = helper.read_typetree(root, reader, byte_size=4 if accelerated else None,
+                                          check_read=False)
+            for _ in range(depth - 1):
+                parsed = parsed['value']
+            reads.append([parsed, reader.Position])
+        result.append([depth, writer.bytes.hex(), reads])
+    return result
+
+
+def observe_tree_reference_lookup(package):
+    import threading
+    helper = _module(package, 'helpers.TypeTreeHelper')
+    descriptor = _node(package, 'SyntheticType', 'type', [
+        _node(package, 'string', name) for name in ('class', 'ns', 'asm')])
+    root = _node(package, 'ReferencedObject', 'Base', [
+        descriptor, _node(package, 'ReferencedObjectData', 'data')])
+    writer = package.streams.EndianBinaryWriter(endian='<')
+    for word in ('Synthetic', 'NS', 'ASM'):
+        writer.write_aligned_string(word)
+    writer.write_int(23)
+    match = SimpleNamespace(m_ClassName='Synthetic', m_NameSpace='NS', m_AssemblyName='ASM',
+                            node=_node(package))
+    class Unselected:
+        m_ClassName, m_NameSpace, m_AssemblyName = 'Other', 'NS', 'ASM'
+        @property
+        def node(self):
+            raise AssertionError('unselected reference node')
+    class BadDescriptor:
+        @property
+        def m_ClassName(self):
+            raise RuntimeError('descriptor getter')
+    class BadNode:
+        m_ClassName, m_NameSpace, m_AssemblyName = 'Synthetic', 'NS', 'ASM'
+        @property
+        def node(self):
+            raise RuntimeError('node getter')
+    caller = threading.get_ident()
+    class ReentrantNode:
+        m_ClassName, m_NameSpace, m_AssemblyName = 'Synthetic', 'NS', 'ASM'
+        @property
+        def node(self):
+            if threading.get_ident() != caller:
+                raise AssertionError('reference callback thread')
+            parsed, consumed = helper.read_typetree_boost(b'\x18\0\0\0', _node(package), '<', True)
+            if (parsed, consumed) != (24, 4):
+                raise AssertionError('reference callback reentry')
+            return _node(package)
+    result = []
+    for references in ([match, None], [Unselected(), match], [match, Unselected()], [match, match],
+                       [ReentrantNode(), None], [BadDescriptor(), match], [BadNode(), None]):
+        try:
+            value, consumed = helper.read_typetree_boost(writer.bytes, root, '<', True,
+                                                        SimpleNamespace(ref_types=references))
+            result.append([value, consumed])
+        except Exception as error:
+            result.append([type(error).__name__, str(error)])
+    class Changing:
+        m_ClassName, m_NameSpace, m_AssemblyName = 'Synthetic', 'NS', 'ASM'
+        count = 0
+        @property
+        def node(self):
+            self.count += 1
+            return _node(package, 'SyntheticA' if self.count == 1 else 'SyntheticB',
+                         children=[_node(package)])
+    first = _node(package, 'ReferencedObject', 'first', root.m_Children)
+    second = _node(package, 'ReferencedObject', 'second', root.m_Children)
+    outer = _node(package, 'SyntheticOuter', children=[first, second])
+    obj, consumed = helper.read_typetree_boost(writer.bytes * 2, outer, '<', False,
+        SimpleNamespace(ref_types=[Changing()]), _module(package, 'classes'))
+    result.append([obj.first.data.get_type(), obj.second.data.get_type(), consumed])
+
+    nested = _node(package, 'ReferencedObject', 'nested', root.m_Children)
+    schemas = [_node(package, 'SyntheticOuter1', children=[nested]),
+               _node(package, 'SyntheticInner', children=[_node(package)]),
+               _node(package, 'SyntheticOuter2', children=[_node(package)])]
+    class ChangingNested:
+        m_ClassName, m_NameSpace, m_AssemblyName = 'Synthetic', 'NS', 'ASM'
+        count = 0
+        @property
+        def node(self):
+            selected = schemas[self.count]
+            self.count += 1
+            return selected
+    repeated = _node(package, 'ReferencedObject', children=[
+        descriptor, _node(package, 'ReferencedObjectData', 'data1'),
+        descriptor, _node(package, 'ReferencedObjectData', 'data2')])
+    prefix = writer.bytes[:-4]
+    data = prefix + prefix + struct.pack('<i', 23) + prefix + struct.pack('<i', 24)
+    obj, consumed = helper.read_typetree_boost(data, repeated, '<', False,
+        SimpleNamespace(ref_types=[ChangingNested()]), _module(package, 'classes'))
+    result.append([obj.data1.get_type(), obj.data1.nested.data.get_type(), obj.data2.get_type(), consumed])
+
+    calls = []
+    class SyntheticCompleted:
+        __annotations__ = {'value': int}
+        def __init__(self, value):
+            calls.append(value)
+            self.value = value
+    namespace = SimpleNamespace(SyntheticCompleted=SyntheticCompleted,
+                                 UnknownObject=_module(package, 'classes').UnknownObject)
+    outer = _node(package, 'SyntheticOuter', children=[
+        _node(package, 'SyntheticCompleted', 'completed', [_node(package)]), root])
+    try:
+        helper.read_typetree_boost(struct.pack('<i', 23) + writer.bytes, outer, '<', False,
+                                  SimpleNamespace(ref_types=[BadNode()]), namespace)
+    except Exception as error:
+        result.append([calls, type(error).__name__, str(error)])
+    else:
+        result.append([calls, 'accepted'])
+    return result
+
+
 def observe_tree_defaults(package):
     helper = _module(package, 'helpers.TypeTreeHelper')
     result = []
