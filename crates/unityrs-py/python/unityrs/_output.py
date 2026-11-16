@@ -32,7 +32,7 @@ def output_name(name, *, container=False, guard=None):
     if guard is not None:
         # Retain room for the leaf copy and filesystem encoding together.
         guard.step(0, count * 8 + 512, count)
-    return name[start:] if start else name
+    return str.__getitem__(name, slice(start, None))
 
 
 class OutputDirectory:
@@ -65,7 +65,7 @@ class OutputDirectory:
 
     @contextlib.contextmanager
     def open(self, name, mode, **kwargs):
-        output_name(name, guard=self.guard)
+        name = output_name(name, guard=self.guard)
         if self.fd is None:
             self.guard.step(0, (len(self.directory) + len(name) + len(self.fs.sep)) * 4 + 256, 1)
             with self.fs.open(self.fs.sep.join([self.directory, name]), mode, **kwargs) as stream:

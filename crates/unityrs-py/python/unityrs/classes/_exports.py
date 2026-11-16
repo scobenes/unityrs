@@ -193,20 +193,22 @@ def _renderer_export(self, export_dir):
             chosen = texture.m_Name if texture.m_Name else key
             if isinstance(chosen, str):
                 guard.step(0, str.__len__(chosen) * 4 + 256, str.__len__(chosen))
-            name = output_name(chosen, guard=guard) + ".png"
+            name = output_name(output_name(chosen, guard=guard) + ".png", guard=guard)
             guard.step(0, 128, 1)
             textures.append((name, texture))
     # Preflight every asset-derived name before opening any output. Local
     # leaves are replaced against a held directory, so symlinks and hardlinks
     # cannot redirect writes outside the destination.
+    obj_name = output_name(mesh_name + ".obj", guard=guard)
+    mtl_name = output_name(mesh_name + ".mtl", guard=guard)
     fs.makedirs(export_dir, exist_ok=True)
     with OutputDirectory(export_dir, fs, guard=guard) as directory:
         for name, texture in textures:
             with directory.open(name, "wb") as stream:
                 texture.image.save(stream, format="PNG")
-        with directory.open(mesh_name + ".obj", "wt", encoding="utf8", newline="") as stream:
+        with directory.open(obj_name, "wt", encoding="utf8", newline="") as stream:
             stream.write(_mesh_obj(mesh, names))
-        with directory.open(mesh_name + ".mtl", "wt", encoding="utf8", newline="") as stream:
+        with directory.open(mtl_name, "wt", encoding="utf8", newline="") as stream:
             guard.step(0, (sum(map(len, materials)) + len(materials)) * 4 + 256, len(materials))
             stream.write("\n".join(materials))
 

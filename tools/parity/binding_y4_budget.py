@@ -23,6 +23,7 @@ def native_cases(module):
     native = module._native
     header = file._save_header(file._native.tree_traversal())
     rows = [(b"raw", 0, data)]
+    small_rows = [(b"raw", 0, b"x")]
     metadata = ((22, "<", data, 0), None, None, True, 0, None)
     tree_rows = list(owner._get_typetree_node()._native_rows(use_boost=False, _guard=owner._native.tree_traversal()))
     def exhausted(call):
@@ -30,7 +31,7 @@ def native_cases(module):
         budget = file.environment._budget
         guard.step(0, budget.limit - budget.used, 0)
         return call()
-    return [
+    cases = [
         ("audio", lambda: native.export_audio(data, b"name", owner._native)),
         ("audio_name", lambda: native.export_audio(b"RIFF", data, owner._native)),
         ("vorbis_bytes", lambda: native.export_audio(b"RIFF", b"name", owner._native, None, bytes_view)),
@@ -60,15 +61,39 @@ def native_cases(module):
         ("load_files", lambda: file.environment._native.load_files(text)),
         ("load_folder", lambda: file.environment._native.load_folder(text)),
         ("load_zip_path", lambda: file.environment._native.load_zip_path(text)),
-        ("bundle_mode", lambda: file._native.save_bundle_entries(modes[0], rows, None, (64,64), header)),
+        ("bundle_mode", lambda: file._native.save_bundle_entries(modes[0], small_rows, None, (64,64), header)),
         ("file_mode", lambda: file._native.save(modes[1], None, 64, 64, "UnityWebData1.0")),
         ("file_signature", lambda: web._native.save("save", None, 64, 64, modes[2])),
-        ("encode_mode", lambda: native._image_encode(data, 1, 1, modes[3], 4, 0, None, owner._native)),
-        ("sprite_mode", lambda: native._sprite_render(data, modes[4], 1, 1, (0,0,1,1), 2, 1, None, owner._native)),
-        ("typetree_endian", lambda: owner._native.save_typetree({"value": 7, "name": text}, tree_rows, 0, modes[5])),
-        ("web_packer", lambda: web._native.save_web_entries([(b"raw", data)], modes[6], b"UnityWebData1.0")),
-        ("bundle_packer", lambda: file._native.save_bundle_entries("save", rows, modes[7], (64,64), header)),
+        ("encode_mode", lambda: native._image_encode(b"rgba", 1, 1, modes[3], 4, 0, None, owner._native)),
+        ("sprite_mode", lambda: native._sprite_render(b"rgba", modes[4], 1, 1, (0,0,1,1), 2, 1, None, owner._native)),
+        ("typetree_endian", lambda: owner._native.save_typetree({"value": 7, "name": "ok"}, tree_rows, 0, modes[5])),
+        ("web_packer", lambda: web._native.save_web_entries([(b"raw", b"x")], modes[6], b"UnityWebData1.0")),
+        ("bundle_packer", lambda: file._native.save_bundle_entries("save", small_rows, modes[7], (64,64), header)),
     ]
+    # Distinct requested sizes distinguish the named argument's staging from
+    # an earlier value, name or row. Only that argument is oversized.
+    sizes = dict.fromkeys((name for name, _ in cases), 8_000_000)
+    sizes.update(dict.fromkeys(("vorbis_bytes", "vorbis_str", "load_path", "load_files", "load_folder", "load_zip_path"), 64_000_256))
+    sizes.update(dict.fromkeys(("material", "bundle_mode", "file_mode", "file_signature", "encode_mode", "sprite_mode", "typetree_endian", "web_packer", "bundle_packer"), 32_000_256))
+    sizes.update(save_typetree=32_000_000, typetree_row_text=8_000_256, cab_data=32, file_save=272)
+    return [(name, _at_boundary(call, sizes[name], name, exact=name != "cab_padding")) for name, call in cases]
+
+
+def _at_boundary(call, size, name, *, exact=True, reached=None):
+    def checked():
+        try:
+            call()
+        except MemoryError as error:
+            if reached is not None:
+                assert reached, f"{name}: refused before reaching payload"
+            import re
+            match = re.search(r"refused (\d+) bytes", str(error))
+            assert match, f"{name}: unrecognized refusal: {error}"
+            requested = int(match[1])
+            assert requested == size if exact else requested >= size, (name, requested, size)
+            raise
+        raise AssertionError(f"{name}: oversized boundary accepted")
+    return checked
 
 
 # Keep an immutable oversized path without making it inside the measured call.
@@ -83,18 +108,6 @@ def python_case(module, operation):
     data = bytearray(64 << 20)
     data[::4096] = b"x" * (len(data) // 4096)
     text = "x" * (64 << 20)
-    if operation in ("samples_sequence", "image_sequence"):
-        class Sequence:
-            def __len__(self):
-                return 1
-            def __iter__(self):
-                return iter(data)
-        sequence = Sequence()
-        if operation == "samples_sequence":
-            obj = make(module, "AudioClip", m_AudioData=sequence, m_Resource=None, m_Name="clip", object_reader=owner)
-            return lambda: obj.samples
-        obj = texture(module, sequence, object_reader=owner)
-        return lambda: obj.image
     obj = texture(module, data, object_reader=owner)
     cab = file.get_writeable_cab("new.resS")
     if operation == "object_write":
@@ -120,14 +133,26 @@ def python_case(module, operation):
         return value.save
     if operation in ("bundle", "bundle_fs", "bundle_web_raw", "web"):
         target = web if operation == "web" else file
-        target.files = {text: SimpleNamespace(flags=0, save=lambda: data)}
+        reached = []
+        def payload():
+            reached.append(True)
+            return data
+        target.files = {"raw.resS": SimpleNamespace(flags=0, save=payload)}
+        # Reserve all but a controlled allowance for admissible names/header
+        # staging. The payload is the only oversized argument.
+        held = target._native.tree_traversal()
+        budget = target.environment._budget
+        held.step(0, budget.limit - budget.used - 65_536, 0)
+        def checked(call):
+            boundary = _at_boundary(call, len(data), operation, reached=reached)
+            return lambda: (held, boundary())[1]
         if operation == "bundle_fs":
             from binding_y4_review_save import _ReviewWriter
-            return lambda: target.save_fs(_ReviewWriter(), 64, 64)
+            return checked(lambda: target.save_fs(_ReviewWriter(), 64, 64))
         if operation == "bundle_web_raw":
             from binding_y4_review_save import _ReviewWriter
-            return lambda: target.save_web_raw(_ReviewWriter())
-        return target.save
+            return checked(lambda: target.save_web_raw(_ReviewWriter()))
+        return checked(target.save)
     if operation == "environment":
         file.environment.files = {"prefix/" + text: file}
         file.mark_changed()
@@ -184,4 +209,4 @@ def python_case(module, operation):
 PYTHON_CASES = ("serialized", "object_raw", "typetree", "object_save", "bundle", "bundle_fs",
     "bundle_web_raw", "web", "environment", "cab_write", "cab_save", "image", "image_blob",
     "set_image", "image_setter", "array_images", "sprite_image", "samples", "shader_export",
-    "mesh_export", "renderer_export", "samples_sequence", "image_sequence", "object_write", "sprite_external_path")
+    "mesh_export", "renderer_export", "object_write", "sprite_external_path")

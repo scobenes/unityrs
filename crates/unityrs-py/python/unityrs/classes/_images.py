@@ -195,9 +195,28 @@ def get_images(self):
     guard = _guard(self)
     guard.step(0, len(offsets) * 256 + 128, len(offsets))
     result = []
+    try:
+        storage = memoryview(image_data)
+    except TypeError:
+        storage = None
     for offset in offsets:
-        guard.step(0, texture_size + max(0, self.m_Width) * max(0, self.m_Height) * 8 + 1024, texture_size)
-        result.append(_decode(self, image_data[offset:offset + texture_size], self.m_Width,
+        pixels = max(0, self.m_Width) * max(0, self.m_Height) * 8 + 1024
+        if storage is not None:
+            chunk = storage[offset:offset + texture_size]
+            guard.step(0, chunk.nbytes + pixels, chunk.nbytes)
+        else:
+            # Built-in sequence slices allocate reference slots (or Unicode
+            # storage) before _decode coerces them to bytes. Charge their
+            # clamped length before slicing; custom protocols own their work.
+            count = texture_size
+            for base in (list, tuple, str):
+                if isinstance(image_data, base):
+                    start, stop, _ = slice(offset, offset + texture_size).indices(base.__len__(image_data))
+                    count = max(0, stop - start)
+                    break
+            guard.step(0, count * 8 + 256 + pixels, count)
+            chunk = image_data[offset:offset + texture_size]
+        result.append(_decode(self, chunk, self.m_Width,
                               self.m_Height, texture_format, 0, None, self.object_reader.version))
     return result
 

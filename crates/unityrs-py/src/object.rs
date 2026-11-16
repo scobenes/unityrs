@@ -34,18 +34,22 @@ impl NativeObject {
         // The Python caller owns the environment's RLock. Getters, numeric
         // protocols, and row iteration must run on that thread so they can
         // reenter the owning reader. Row copying and compilation detach on
-        // this thread; prefix filling and snapshot building use a worker.
+        // this thread, attaching only for Python extraction; final native building
+        // and writing use a worker.
         let tree = crate::tree::compile_rows(&self.inner, rows.as_unbound())?;
         let file = self.inner.file();
         let meter = file.meter();
         let limits = &file.context().limits;
-        let snapshot = crate::value_input::for_tree_snapshot(
-            value.as_unbound(),
-            meter,
-            limits,
-            &tree,
-            file.ref_types().unwrap_or_default(),
-        )?;
+        let value = value.as_unbound();
+        let snapshot = py.detach(|| {
+            crate::value_input::for_tree_snapshot(
+                value,
+                meter,
+                limits,
+                &tree,
+                file.ref_types().unwrap_or_default(),
+            )
+        })?;
         let endian = endian
             .map(|v| crate::text_snapshot::snapshot(v, meter))
             .transpose()?;
@@ -76,14 +80,21 @@ impl NativeObject {
                         .map_err(errors::charge)?;
                     left -= n;
                 }
-                let parsed = snapshot.build()?;
+                let (parsed, lengths) = snapshot.build_writer()?;
                 let ctx = unityrs_core::walk::WriteCtx {
                     endian,
                     ref_types: file.ref_types_view(),
                     rules: unityrs_core::walk::WriteRules::UnityPy,
                     limits,
                 };
-                let result = unityrs_core::walk::write::write_at(&parsed, &tree, &ctx, &mut out, 0);
+                let result = unityrs_core::walk::write::write_at_with_lengths(
+                    &parsed,
+                    &tree,
+                    &ctx,
+                    &mut out,
+                    0,
+                    &|value| lengths.get(value, parsed.value()),
+                );
                 Ok((out, result))
             })
         })?;

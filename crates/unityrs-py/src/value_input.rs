@@ -17,6 +17,8 @@ use unityrs_core::{
     limits::{Charge, Limits, Meter, MeteredVec},
     typetree::{NodeId, NodeRow, Tree},
 };
+#[path = "value_input_lengths.rs"]
+mod lengths;
 #[path = "value_input_lookup.rs"]
 mod lookup;
 #[path = "value_input_schema.rs"]
@@ -37,6 +39,7 @@ struct State<'a> {
     values: staging::Arena,
     filter_null_properties: bool,
     rotations: MeteredVec<staging::Rotation>,
+    logical_lengths: MeteredVec<(u64, usize)>,
 }
 
 #[cfg(test)]
@@ -102,6 +105,21 @@ fn snapshot_input(
     filter_null_properties: bool,
     refs: &[unityrs_core::files::SerializedType],
 ) -> PyResult<Snapshot> {
+    Python::attach(|py| {
+        py.detach(|| {
+            snapshot_input_native(input, meter, limits, tree, filter_null_properties, refs)
+        })
+    })
+}
+
+fn snapshot_input_native(
+    input: &Py<PyAny>,
+    meter: &Arc<Meter>,
+    limits: &Limits,
+    tree: Option<&Tree>,
+    filter_null_properties: bool,
+    refs: &[unityrs_core::files::SerializedType],
+) -> PyResult<Snapshot> {
     let mut state = State {
         rows: MeteredVec::new(meter),
         active: MeteredVec::new(meter),
@@ -114,6 +132,7 @@ fn snapshot_input(
         values: staging::Arena::new(meter),
         filter_null_properties,
         rotations: MeteredVec::new(meter),
+        logical_lengths: MeteredVec::new(meter),
     };
     let (_, value) = state.stage(input, RawStr::from_static(b"Base"), 0, state.schemas.root())?;
     Ok(state.into_snapshot(value))
@@ -142,12 +161,16 @@ fn text(value: &Bound<'_, PyAny>, staging: &mut Charge) -> PyResult<RawStr> {
         .meter()
         .count_decode(bytes.as_bytes().len() as u64)
         .map_err(errors::charge)?;
-    RawStr::charged(bytes.as_bytes(), staging.meter()).map_err(errors::charge)
+    let raw = bytes.as_bytes();
+    value
+        .py()
+        .detach(|| RawStr::charged(raw, staging.meter()).map_err(errors::charge))
 }
 
 enum Inspect {
     Scalar(Value),
-    Sequence(Elements, bool),
+    Sized(Value, usize),
+    Sequence(Elements, bool, Option<usize>),
     Map(Fields),
 }
 enum Elements {
@@ -312,7 +335,7 @@ impl State<'_> {
                 let tuple = value.is_instance_of::<PyTuple>();
                 return Ok((
                     RawStr::from_static(if tuple { b"pair" } else { b"vector" }),
-                    Inspect::Sequence(Elements::Iter(value.try_iter()?.unbind()), tuple),
+                    Inspect::Sequence(Elements::Iter(value.try_iter()?.unbind()), tuple, None),
                 ));
             }
             self.staging.grow(512).map_err(errors::charge)?;
@@ -384,7 +407,10 @@ fn buffer_value(
         Err(error) => return Err(error),
     };
     let bytes = crate::buffer_snapshot::BufferSnapshot::from_view(value, &view, charge)?;
-    copy_bytes(bytes.as_ref(), staging, limits).map(Some)
+    value
+        .py()
+        .detach(|| copy_bytes(bytes.as_ref(), staging, limits))
+        .map(Some)
 }
 
 fn next_item(iter: &Elements, index: usize) -> PyResult<Option<Py<PyAny>>> {
@@ -423,11 +449,14 @@ fn optional_attr<'py>(
 fn writer_buffer(
     input: &Bound<'_, PyAny>,
     meter: &Arc<Meter>,
-) -> PyResult<crate::buffer_snapshot::BufferSnapshot> {
+) -> PyResult<(crate::buffer_snapshot::BufferSnapshot, usize)> {
     // UnityPy measures the value before asking its writer for a buffer.
     // Preserve both operations' Python errors without copying invalid input.
-    input.len()?;
-    crate::buffer_snapshot::BufferSnapshot::writer(input, meter)
+    let len = input.len()?;
+    Ok((
+        crate::buffer_snapshot::BufferSnapshot::writer(input, meter)?,
+        len,
+    ))
 }
 
 fn scalar_for_shape(
@@ -454,21 +483,25 @@ fn scalar_for_shape(
                         .map_err(errors::charge)?;
                 }
                 let encoded = input.call_method1("encode", ("utf8", "surrogateescape"))?;
-                let bytes = writer_buffer(&encoded, staging.meter())?;
+                let (bytes, logical_len) = writer_buffer(&encoded, staging.meter())?;
                 staging
                     .meter()
                     .count_decode(bytes.as_ref().len() as u64)
                     .map_err(errors::charge)?;
-                return RawStr::charged(bytes.as_ref(), staging.meter())
-                    .map(Value::Str)
-                    .map_err(errors::charge);
+                return py.detach(|| {
+                    RawStr::charged(bytes.as_ref(), staging.meter())
+                        .map(Value::Str)
+                        .map(|value| Inspect::Sized(value, logical_len))
+                        .map_err(errors::charge)
+                });
             }
-            let bytes = writer_buffer(input, staging.meter())?;
-            copy_bytes(bytes.as_ref(), staging, limits)
+            let (bytes, logical_len) = writer_buffer(input, staging.meter())?;
+            py.detach(|| copy_bytes(bytes.as_ref(), staging, limits))
+                .map(|value| Inspect::Sized(value, logical_len))
         })?;
         return Ok(Some((
             RawStr::charged(ty, staging.meter()).map_err(errors::charge)?,
-            Inspect::Scalar(value),
+            value,
         )));
     }
     let format = match kind {

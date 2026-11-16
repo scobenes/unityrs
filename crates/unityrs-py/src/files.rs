@@ -317,6 +317,21 @@ impl NativeFile {
             Ok(result)
         })
     }
+    fn validate_external_path(&self, py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        let path = crate::buffer_snapshot::BufferSnapshot::new(path, self.inner.meter())?;
+        py.detach(|| {
+            self.inner
+                .meter()
+                .count_decode(path.len() as u64)
+                .map_err(errors::charge)?;
+            if path.contains(&0) || path.len() > unityrs_core::stream::STRING_TO_NULL_WINDOW {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "CAB external path out of range",
+                ));
+            }
+            Ok(())
+        })
+    }
     fn raw_data(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         py.detach(|| match &self.inner {
             File::Raw(f) => {

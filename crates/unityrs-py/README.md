@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=143
+python ../../scripts/unittest-suites bindings=151
 ```
 
-The recorder writes 65 synthetic API records (34 Y1 records, 10 Y3 groups and
-21 Y4 groups),
+The recorder writes 105 synthetic API records (34 Y1 records, 10 Y3 groups and
+61 Y4 groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 61 tests and the oracle comparison has 122; CI enforces both
+The wheel suite has 61 tests and the oracle comparison has 151; CI enforces both
 minimum counts. Warning handlers run on the calling Python thread before a
 fallback load is published, including handlers that re-enter the environment.
 
@@ -55,9 +55,17 @@ for obj in env.objects:
 ```
 
 `Budget.used` is a Rust atomic counter. Limits and budgets apply to retained
-Rust storage and conversion staging; existing Python input buffers are retained
-without a Rust copy, and Python owns returned values after handoff. Every core
-operation releases the GIL; parser work runs on a scoped worker using the core's
+Rust storage and the binding's conversion staging driven by asset files, streams
+and bundles. Existing Python input buffers are retained without a Rust copy,
+and Python owns returned values after handoff. Caller-constructed objects and
+third-party libraries' work are outside this budget: this includes protocol
+overrides such as `str` subclasses with lying `__len__` or custom `__add__`,
+unsized or infinite `subset` iterables, caller-positioned writers (for example,
+`Position = 8_000_000`), and Pillow's `Image.open()` and decoding of a caller's
+image file passed to `set_image` (Pillow's own limits apply). Regardless of the
+caller input, the binding must remain memory-safe and must never panic, abort
+or deadlock. Every core operation releases the GIL; parser work runs on a scoped
+worker using the core's
 advertised value stack allowance plus container and tree parsing frames,
 including when a Python thread has a small stack. Native container destruction
 is iterative on the releasing thread, including wrapper failure cleanup.

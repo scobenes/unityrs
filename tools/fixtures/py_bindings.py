@@ -60,6 +60,10 @@ EXPORTS = [
     ("binding_y4_round4", name) for name in (
         "observe_pairs", "observe_managed", "observe_cab_mapping", "observe_export_buffers",
         "observe_strided_writes", "observe_output_names", "observe_bundle_views", "observe_path_budgets")
+] + [
+    ("binding_y4_round5", name) for name in (
+        "observe_buffer_lengths", "observe_vector_lengths", "observe_cab_validation",
+        "observe_array_storage", "observe_exact_output_names", "observe_snapshot_threads", "observe_array_inputs")
 ]
 
 
@@ -78,6 +82,13 @@ def helper_records():
         ("binding_y4_round4", "observe_output_names"): "PARITY.md 19.3: validate output names and charge copies before allocation",
         ("binding_y4_round4", "observe_path_budgets"): "PARITY.md 19.3: fallible charged path staging",
     }
+    for name, reason in (
+        ("observe_cab_validation", "validate encoded CAB external paths before mutation"),
+        ("observe_array_storage", "charge actual image array storage before slicing"),
+        ("observe_exact_output_names", "normalize validated names before suffix construction"),
+        ("observe_snapshot_threads", "release the GIL during native value staging"),
+    ):
+        references["binding_y4_round5", name] = "PARITY.md 19.3: " + reason
     records = []
     for observer, function in HELPERS + EXPORTS:
         call = getattr(importlib.import_module(observer), function)

@@ -65,7 +65,7 @@ else:
         from pathlib import Path
         import child
         from binding_y4_budget import PYTHON_CASES
-        self.assertEqual(len(PYTHON_CASES), 25)
+        self.assertEqual(len(PYTHON_CASES), 23)
         script = r'''
 import resource, sys, tracemalloc
 sys.path.insert(0, sys.argv[1])

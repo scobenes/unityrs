@@ -169,11 +169,14 @@ class SerializedFile(File):
         import uuid
         with self.environment._lock:
             guard = self._native.tree_traversal()
-            writer = self.parent.get_writeable_cab(name)
             size = str.__len__(name) if isinstance(name, str) else len(name)
             own_size = str.__len__(self.name) if isinstance(self.name, str) else len(self.name)
             guard.step(0, (own_size + size + 10) * 4 + 256, 1)
-            writer.path = f"archive:/{self.name}/{name}"
+            path = f"archive:/{self.name}/{name}"
+            encoded = _save_text(path, guard)
+            self._native.validate_external_path(encoded)
+            writer = self.parent.get_writeable_cab(name)
+            writer.path = path
             if not any(writer.path == entry.path for entry in self.externals):
                 guard.step(0, 512, 1)
                 guid = uuid.uuid1().urn[-16:].encode("ascii")

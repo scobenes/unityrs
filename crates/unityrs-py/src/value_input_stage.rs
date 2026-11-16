@@ -139,6 +139,7 @@ pub(crate) struct Snapshot {
     values: Arena,
     root: usize,
     rotations: MeteredVec<Rotation>,
+    logical_lengths: MeteredVec<(u64, usize)>,
 }
 impl Snapshot {
     fn reorder_rows(&mut self) -> PyResult<()> {
@@ -192,7 +193,11 @@ impl Snapshot {
         self.values.remap_rows(mapping.as_slice())
     }
 
-    pub(crate) fn build(mut self) -> PyResult<Parsed> {
+    pub(crate) fn build(self) -> PyResult<Parsed> {
+        self.build_writer().map(|(parsed, _)| parsed)
+    }
+
+    pub(crate) fn build_writer(mut self) -> PyResult<(Parsed, super::lengths::Lengths)> {
         self.reorder_rows()?;
         let meter = self.rows.charge().meter().clone();
         let list = NodeList::from_rows(self.rows)
@@ -200,7 +205,9 @@ impl Snapshot {
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(errors::message(&error)))?;
         let builder = ValueBuilder::new(&meter, list).map_err(errors::charge)?;
         let value = self.values.build(self.root, &builder)?;
-        Ok(builder.finish(value, 0))
+        let parsed = builder.finish(value, 0);
+        let lengths = super::lengths::Lengths::resolve(&parsed, &self.logical_lengths)?;
+        Ok((parsed, lengths))
     }
 }
 
@@ -394,6 +401,7 @@ impl State<'_> {
             values: self.values,
             root,
             rotations: self.rotations,
+            logical_lengths: self.logical_lengths,
         }
     }
     pub(super) fn stage(
@@ -504,6 +512,11 @@ impl State<'_> {
             // A typed buffer is a sequence of Python elements for vectors.
             // Only scalar byte schemas use the raw buffer representation.
             let tuple = matches!(info.shape, unityrs_core::typetree::Shape::Pair);
+            let logical_len = if tuple {
+                None
+            } else {
+                Some(Python::attach(|py| input.bind(py).len())?)
+            };
             let iter = if tuple {
                 super::Elements::Pair(Python::attach(|py| input.clone_ref(py)))
             } else {
@@ -513,7 +526,7 @@ impl State<'_> {
             };
             (
                 RawStr::from_static(if tuple { b"pair" } else { b"vector" }),
-                Inspect::Sequence(iter, tuple),
+                Inspect::Sequence(iter, tuple, logical_len),
             )
         } else {
             self.inspect(input)?
@@ -544,12 +557,21 @@ impl State<'_> {
             .count_decode(1)
             .map_err(errors::charge)?;
         let (ty, inspection) = self.inspect_target(&input, shape)?;
+        #[cfg(test)]
+        crate::row_copy_test::before_value()?;
         let skip_null = self.filter_null_properties
             && matches!(name.as_bytes(), b"m_Colors" | b"m_Floats" | b"m_TexEnvs");
         let node = self.row(depth, ty, name)?;
-        if let Inspect::Scalar(value) = inspection {
-            return Ok(Opened::Scalar(node, value));
-        }
+        let inspection = match inspection {
+            Inspect::Sized(value, len) => {
+                self.logical_lengths
+                    .push((self.count, len))
+                    .map_err(errors::charge)?;
+                return Ok(Opened::Scalar(node, value));
+            }
+            Inspect::Scalar(value) => return Ok(Opened::Scalar(node, value)),
+            other => other,
+        };
         let identity = input.as_ptr() as usize;
         self.staging
             .meter()
@@ -576,7 +598,12 @@ impl State<'_> {
                 }
                 Container::Map(fields, MeteredVec::new(self.staging.meter()))
             }
-            Inspect::Sequence(iter, tuple) => {
+            Inspect::Sequence(iter, tuple, logical_len) => {
+                if let Some(len) = logical_len {
+                    self.logical_lengths
+                        .push((self.count, len))
+                        .map_err(errors::charge)?;
+                }
                 self.sequence_rows(depth, tuple)?;
                 Container::Sequence {
                     iter,
@@ -586,7 +613,7 @@ impl State<'_> {
                     items: MeteredVec::new(self.staging.meter()),
                 }
             }
-            Inspect::Scalar(_) => {
+            Inspect::Scalar(_) | Inspect::Sized(_, _) => {
                 return Err(pyo3::exceptions::PyTypeError::new_err(
                     "invalid snapshot state",
                 ));
