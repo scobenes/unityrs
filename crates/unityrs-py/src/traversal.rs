@@ -16,6 +16,8 @@ pub(crate) struct TreeTraversal {
     value_limit: u64,
     zero_limit: u64,
     depth_limit: u32,
+    pub(crate) meter: Arc<Meter>,
+    pub(crate) limits: unityrs_core::limits::Limits,
 }
 
 impl TreeTraversal {
@@ -28,12 +30,9 @@ impl TreeTraversal {
     }
 
     pub(crate) fn on(meter: &Arc<Meter>, depth_limit: u32) -> Self {
-        Self {
-            inner: CoreTraversal::new(meter, depth_limit),
-            value_limit: unityrs_core::limits::Limits::default().max_values_per_object,
-            zero_limit: unityrs_core::limits::Limits::default().max_zero_size_elements,
-            depth_limit: unityrs_core::limits::Limits::default().max_value_depth,
-        }
+        let mut limits = unityrs_core::limits::Limits::default();
+        limits.max_tree_depth = depth_limit;
+        Self::with_limits(meter, &limits)
     }
 
     pub(crate) fn with_limits(meter: &Arc<Meter>, limits: &unityrs_core::limits::Limits) -> Self {
@@ -42,6 +41,8 @@ impl TreeTraversal {
             value_limit: limits.max_values_per_object,
             zero_limit: limits.max_zero_size_elements,
             depth_limit: limits.max_value_depth,
+            meter: meter.clone(),
+            limits: *limits,
         }
     }
 

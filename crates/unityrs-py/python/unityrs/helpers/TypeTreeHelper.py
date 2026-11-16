@@ -32,7 +32,7 @@ def get_ref_type_node(ref_object, assetfile, *, _guard=None):
         raise ValueError('SerializedFile has no ref_types')
     if cls == '':
         return None
-    guard = guard_for(guard=_guard)
+    guard = _source_guard(None, None, None, _guard, assetfile)
     for ref in assetfile.ref_types:
         guard.step(0, 128, 1)
         for expected, name in ((cls, 'm_ClassName'), (ns, 'm_NameSpace'), (asm, 'm_AssemblyName')):
@@ -79,12 +79,18 @@ class _ReadGuard:
             self.guard.read_zero_size(self.zero_size)
 
 
-def _new_guard(node, limits, budget, guard, assetsfile=None):
-    if guard is None and limits is None and budget is None and assetsfile is not None:
-        source = getattr(assetsfile, '_native', None)
-        if source is not None:
-            guard = source.tree_traversal()
-    guard = guard_for(node, limits, budget, guard)
+def _source_guard(node, limits, budget, guard, assetsfile=None, reader=None):
+    if guard is None and limits is None and budget is None:
+        for source in (reader, assetsfile):
+            native = getattr(source, '_native', None)
+            if native is not None:
+                guard = native.tree_traversal()
+                break
+    return guard_for(node, limits, budget, guard)
+
+
+def _new_guard(node, limits, budget, guard, assetsfile=None, reader=None):
+    guard = _source_guard(node, limits, budget, guard, assetsfile, reader)
     # Validate all edges before parsing, including cycles and repeated DAG edges.
     for _ in walk(node, guard):
         pass
@@ -105,7 +111,7 @@ def read_typetree_boost(data, node, endian, as_dict=False, assetsfile=None, clas
     from ._reference_input import reference_input
     references = reference_input(root_node, assetsfile, guard)
     value, lists, refs, consumed, completed, error, construction = standalone_tree_read(
-        data, rows, endian, as_dict, getattr(assetsfile, '_native', None), limits, budget, owner, references)
+        data, rows, endian, as_dict, getattr(assetsfile, '_native', None), limits, budget, owner, references, guard)
     if not as_dict:
         from .._object import build
         value = build(value, lists, assetsfile, True, refs, completed, error,
@@ -115,7 +121,7 @@ def read_typetree_boost(data, node, endian, as_dict=False, assetsfile=None, clas
 
 def read_typetree(root_node, reader, as_dict=True, byte_size=None, check_read=True, assetsfile=None,
                   *, limits=None, budget=None, _guard=None):
-    guard = _new_guard(root_node, limits, budget, _guard, assetsfile)
+    guard = _new_guard(root_node, limits, budget, _guard, assetsfile, reader)
     if byte_size and read_typetree_boost:
         bound = max(0, reader.Length - reader.Position) if byte_size < 0 else byte_size
         guard.step(0, 256 + bound * 4, bound)
@@ -294,17 +300,17 @@ def _class(node, reader, config, guard, depth, array=False):
 
 
 def read_value(node, reader, config, *, limits=None, budget=None, _guard=None):
-    guard = _guard_for_value(node, limits, budget, _guard, config.assetsfile)
+    guard = _guard_for_value(node, limits, budget, _guard, config.assetsfile, reader)
     guard = _ReadGuard(guard)
     return _drive(_read(node, reader, config, guard), guard)
 
 
-def _guard_for_value(node, limits, budget, guard, assetsfile=None):
-    return _new_guard(node, limits, budget, guard, assetsfile)
+def _guard_for_value(node, limits, budget, guard, assetsfile=None, reader=None):
+    return _new_guard(node, limits, budget, guard, assetsfile, reader)
 
 
 def read_value_array(node, reader, config, size, *, limits=None, budget=None, _guard=None):
-    guard = _guard_for_value(node, limits, budget, _guard, config.assetsfile)
+    guard = _guard_for_value(node, limits, budget, _guard, config.assetsfile, reader)
     guard = _ReadGuard(guard)
     return _drive(_read(node, reader, config, guard, size), guard)
 

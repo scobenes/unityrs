@@ -12,10 +12,10 @@ fn shader_stage_omits_none_clip_and_distinguishes_missing() -> PyResult<()> {
             None,
             None,
         )?;
-        let result = crate::crypto_shader::shader_stage(py, &input, "state")?;
+        let result = crate::crypto_shader::shader_stage(py, &input, "state", None)?;
         assert_eq!(result.extract::<String>(py)?, "  GpuProgramID 0\n");
         input.get_item("value")?.delattr("zClip")?;
-        let error = crate::crypto_shader::shader_stage(py, &input, "state").unwrap_err();
+        let error = crate::crypto_shader::shader_stage(py, &input, "state", None).unwrap_err();
         assert!(error.is_instance_of::<pyo3::exceptions::PyAttributeError>(py));
         Ok(())
     })

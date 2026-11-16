@@ -46,30 +46,30 @@ def ConvertSerializedShader(m_Shader):
             # it before allocating output, retaining the oracle's error order.
             decoded = CompressionHelper.decompress_lz4(data, decoded_size)
             programs.append(ShaderProgram(EndianBinaryReader(decoded, '<'), m_Shader.object_reader.version))
-        return ConvertSerializedShaderParsedForm(m_Shader.m_ParsedForm, m_Shader.platforms, programs)
+        return _stage('shader', m_Shader.m_ParsedForm, m_Shader.platforms, programs, _guard=guard)
     version = tuple(m_Shader.object_reader.version[:2]) if (m_Shader.platforms and
               m_Shader.compressedLengths and m_Shader.decompressedLengths) else (0, 0)
     return _native.export_shader(fields, version, _reader(m_Shader))[len(HEADER):]
 
 
-def _stage(stage, value, platforms=(), programs=(), **extra):
+def _stage(stage, value, platforms=(), programs=(), *, _guard=None, **extra):
+    guard = _native.TreeTraversal() if _guard is None else _guard
     if stage in ('shader', 'subshader', 'pass', 'subprograms'):
-        out = _StageOutput()
+        out = _StageOutput(guard)
         _convert(stage, value, platforms, programs, out)
         return out.finish()
-    guard = _native.TreeTraversal()
     blobs = []
     for program in programs:
         guard.step(0, 256, 1)
         blobs.append(program._blob(guard))
     return _native.shader_stage(dict(value=value, platforms=platforms,
-                                    program_blobs=blobs, **extra), stage)
+                                    program_blobs=blobs, **extra), stage, guard)
 
 
 class _StageOutput:
     """Keep stage assembly charged while selected Python exports stay mutable."""
-    def __init__(self):
-        self.guard = _native.TreeTraversal()
+    def __init__(self, guard):
+        self.guard = guard
         self.parts = []
         self.size = 0
 
@@ -94,7 +94,7 @@ def _convert(stage, value, platforms, programs, out):
     # Do not serialize/reparse shaderPrograms: UnityPy calls Export only on the
     # selected current subprogram, without validating its type as a new enum.
     if stage == 'shader':
-        out.add('Shader "', value.m_Name, '" {\n', ConvertSerializedProperties(value.m_PropInfo))
+        out.add('Shader "', value.m_Name, '" {\n', _stage('properties', value.m_PropInfo, _guard=out.guard))
         for sub in out.items(value.m_SubShaders):
             _convert('subshader', sub, platforms, programs, out)
         for name, label in ((value.m_FallbackName, 'Fall back'),
@@ -106,7 +106,7 @@ def _convert(stage, value, platforms, programs, out):
         out.add('SubShader {\n')
         if value.m_LOD != 0:
             out.add(' LOD ', value.m_LOD, '\n')
-        out.add(ConvertSerializedTagMap(value.m_Tags, 1))
+        out.add(_stage('tags', value.m_Tags, indent=1, _guard=out.guard))
         for item in out.items(value.m_Passes):
             _convert('pass', item, platforms, programs, out)
         out.add('}\n')
@@ -121,7 +121,7 @@ def _convert(stage, value, platforms, programs, out):
             if value.m_TextureName:
                 out.add(' "', value.m_TextureName, '"\n')
         else:
-            out.add(ConvertSerializedShaderState(value.m_State))
+            out.add(_stage('state', value.m_State, _guard=out.guard))
             for name, label in (('progVertex', 'vp'), ('progFragment', 'fp'),
                                 ('progGeometry', 'gp'), ('progHull', 'hp'), ('progDomain', 'dp')):
                 subs = getattr(value, name).m_SubPrograms

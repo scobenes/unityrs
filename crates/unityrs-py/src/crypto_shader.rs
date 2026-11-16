@@ -11,13 +11,18 @@ use unityrs_core::{
 };
 
 #[pyfunction]
+#[pyo3(signature = (vector, data, key, guard=None))]
 pub(crate) fn cn_key(
     py: Python<'_>,
     vector: &Bound<'_, PyAny>,
     data: &Bound<'_, PyAny>,
     key: &Bound<'_, PyAny>,
+    guard: Option<Py<crate::traversal::TreeTraversal>>,
 ) -> PyResult<Py<PyAny>> {
-    let (_, meter) = crate::exports::context(None);
+    let meter = match guard {
+        Some(guard) => guard.try_borrow(py)?.meter.clone(),
+        None => crate::exports::context(None).1,
+    };
     let vector = crate::buffer_snapshot::BufferSnapshot::new(vector, &meter)?;
     let data = crate::buffer_snapshot::BufferSnapshot::new(data, &meter)?;
     let key = crate::buffer_snapshot::BufferSnapshot::new(key, &meter)?;
@@ -71,12 +76,20 @@ pub(crate) fn cn_block(
 }
 
 #[pyfunction]
+#[pyo3(signature = (input, stage, guard=None))]
 pub(crate) fn shader_stage(
     py: Python<'_>,
     input: &Bound<'_, PyAny>,
     stage: &str,
+    guard: Option<Py<crate::traversal::TreeTraversal>>,
 ) -> PyResult<Py<PyAny>> {
-    let (limits, meter) = crate::exports::context(None);
+    let (limits, meter) = match guard {
+        Some(guard) => {
+            let guard = guard.try_borrow(py)?;
+            (guard.limits, guard.meter.clone())
+        }
+        None => crate::exports::context(None),
+    };
     let snapshot = crate::value_input::shader_snapshot(input.as_unbound(), &meter, &limits)?;
     py.detach(|| {
         crate::worker::run(limits.stack_needed(), || {
@@ -116,7 +129,7 @@ mod tests {
             );
             let key = PyBytes::new(py, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
             let data = PyBytes::new(py, &[0; 16]);
-            let got = cn_key(py, vector.as_any(), data.as_any(), key.as_any())?;
+            let got = cn_key(py, vector.as_any(), data.as_any(), key.as_any(), None)?;
             assert_eq!(
                 got.bind(py).extract::<Vec<u8>>()?,
                 [

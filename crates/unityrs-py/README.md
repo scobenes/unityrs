@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=180
+python scripts/unittest-suites crates/unityrs-py/python/tests=197
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=360
+python ../../scripts/unittest-suites bindings=365
 ```
 
-The recorder writes 245 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups, 52 tools/module/loader groups, 36 Y6a groups and 43 Y6b groups),
+The recorder writes 250 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups, 52 tools/module/loader groups, 36 Y6a groups and 48 Y6b groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,12 +40,12 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 180 tests and the oracle comparison has 360; CI enforces both
+The wheel suite has 197 tests and the oracle comparison has 365; CI enforces both
 minimum counts. Exception translation and object-value handoff run on the calling
 thread after the native worker joins. Other worker sites relay Python callbacks,
 allocations and finalizers to that caller. Warning handlers run on that thread
 before a fallback load is published, including handlers that re-enter the environment.
-The Rust binding suite has 41 tests, including guarded finalization and unwind
+The Rust binding suite has 42 tests, including guarded finalization and unwind
 regressions and replay of the synthetic API observations.
 
 ```python
@@ -423,7 +423,7 @@ a member size of -2 reads to EOF only for `BytesIO`, retaining its final cursor
 and child CAB. Negative legacy-bundle offsets follow `struct.unpack_from`'s
 normalization and range messages. These three observations are oracle-compared
 and replayed in `binding_y6_review`; native bounds tests also compare directly
-with `struct.unpack_from`. The Rust binding suite has 41 tests, including guarded
+with `struct.unpack_from`. The Rust binding suite has 42 tests, including guarded
 caller-thread finalization and callback-unwind regressions.
 
 Renderer PNG writes preserve every `m_TexEnvs` entry in source order, including
@@ -431,3 +431,46 @@ duplicate property names and filename collisions; MTL references use the last
 value for each property in first-key order. The duplicate `_MainTex` regression
 keeps `old.png` and verifies the final pixels of `shared.png` against the
 corrected 1.25.2 oracle, recorded and replayed in `binding_y6_exports`.
+
+Y6b reader-meter audit: standalone tree reads select the supplied native reader
+before an assets file or schema owner. An explicit `_guard` takes precedence;
+explicit `limits=` or `budget=` retain the caller's opt-in policy. The selected
+guard carries its meter and complete limits into accelerated parsing, node
+compilation, reference callbacks and result construction. Python guard borrows
+end before callbacks can re-enter it. With 32 KiB remaining, a detached schema
+refuses a 20,000-element count after four bytes, before allocating the list.
+Returned Python values still belong to Python after handoff, as specified above.
+
+The following table lists the Y6b entry points and their account propagation.
+"Caller values" means that the entry accepts no asset reader or owner: bytes,
+images, matrices, fields or paths supplied after Python handoff have no retained
+input provenance. These direct calls are outside the asset budget threat model;
+their default native meters still enforce the documented core limits. They do
+not infer an input account from a Python buffer. Calls from an asset adapter
+that supply a reader or guard are listed separately.
+
+| entry points | meter and route to the reader guard | boundary evidence |
+|---|---|---|
+| `TypeTreeHelper.read_typetree`, `read_value`, `read_value_array` | `_source_guard`: explicit guard, then native reader, native assets file, schema `_tree_source`, or explicit/default policy; `_ReadGuard` charges traversal, counts, values and primitive staging through handoff | `test_y6b_meter.py`: detached count, schema/file matrix, reader depth limits and a different schema owner |
+| `read_typetree_boost` | Same assets-file/schema policy for direct calls; `read_typetree` passes its reader guard. `standalone_tree_read` copies the guard's meter and limits before compiling rows or parsing, and charges native buffers and construction. Fully detached bytes/schema without an owner are caller values | Read matrix checks every owned/detached schema and present/absent assets-file combination; each reachable combination checks its one-byte refusal/success edge and charge cleanup |
+| `write_typetree`, `write_value` | Explicit guard, native assets file, schema owner, or explicit/default policy; detached schema with no assets file receives only caller values and writer. Writer position is caller-controlled. Traversal/output allowance stays charged until return | Write matrix checks both functions with all four schema/file combinations; the fully detached case explicitly supplies a budget |
+| `get_ref_type_node` | `_source_guard` inherits the native assets file, including direct calls with no schema; reads/writes pass their existing traversal guard | Direct lookup and pure/read-value/accelerated/write/write-value reference boundaries in `test_y6b_entry_meters.py`; accelerated callbacks re-enter the same guard |
+| Compression `decompress_lzma`, `compress_lzma`, `decompress_lz4`, `compress_lz4`, `decompress_brotli`, `compress_brotli`, `decompress_gzip`, `compress_gzip`, `decompress_lzham`, `chunk_based_compress` | Direct APIs receive caller byte buffers; native codecs use a default meter, gzip uses the caller's library, and LZHAM is a named refusal. They accept no asset reader | Outside the asset threat model as direct calls; codec failures and bytes are oracle-compared in `binding_y6b_codecs` |
+| Asset loading/saving through `DECOMPRESSION_MAP`, `COMPRESSION_MAP`, `COMPRESSION_CHUNK_SIZE_MAP` | Builtins dispatch to core codecs with the input/output meter; `codec_bridge` carries that meter to the caller and charges callback arguments, result snapshots and copied output. Caller callback internals are outside the budget | `test_codec_loader_and_save_entry_boundaries` checks builtins and replacements; `test_y6b_codecs.py` checks callback block limits and snapshot refusal. Existing codec observations compare and replay callbacks and save output |
+| `ArchiveStorageManager.read_vector`, `ArchiveStorageDecryptor.__init__` | Native reader `read_bytes`/`read_u_int` use `serialized_read` on the owning file meter. Each read's copy charge ends at Python handoff. The decryptor also passes its reader traversal guard into both `cn_key` calls, keeping AES snapshots, native output, decode work and output handoff on the owner meter. Reads, nibble expansion and tables are fixed size | Fixed-span and constructor boundary tests in `test_y6b_entry_meters.py` check cleanup and refuse AES staging with 288 bytes remaining after the header fits; `observe_decryptor_asset_meter` compares and replays memory/stream reader fields and cursors |
+| `set_assetbundle_decrypt_key`, `decrypt_key`, `brute_force_key`, `ArchiveStorageDecryptor.decrypt_block`, `decrypt_byte`, `decrypt` | Direct key/data buffers, mutable views, indices or an explicit search path are caller values. Native key/block operations and bounded key-file search use default meters. Bundle decryption instead uses the core input meter and deferred key staging | Direct calls are outside the asset threat model; bundle-key budget/retry regressions and `binding_y6b_crypto_shader` cover the asset path and direct parity |
+| `SpriteHelper.get_image_from_sprite`, `get_image`, `mask_sprite`, `render_sprite_mesh` | `_images._guard(sprite)` gets `object_reader._native.tree_traversal()`; texture reads use their own readers; `_sprite_render`/`_sprite_geometry` receive the sprite reader and use its meter. Python geometry/image staging retains the guard through handoff | Sprite sheet/image and both geometry entry boundaries in `test_y6b_entry_meters.py`; `test_y6b_images.py` checks cleanup and full-budget geometry refusal |
+| `SpriteSettings`, `copy_triangle`, `transpose_matrix`, `get_matrix_minor`, `get_matrix_determinant`, `get_matrix_inverse`, `linalg_solve` | Scalar settings, PIL images, triangles and matrices are caller values; allocating standalone geometry/matrix operations use default guards and bounded native helpers | Outside the asset threat model as direct calls; geometry/matrix parity, singular refusal and factorial work limits have existing tests |
+| `ShaderConverter.export_shader`, `ConvertSerializedShader` | `_images._guard(shader)` and native exporter context inherit `object_reader`. Empty-blob conversion now passes that guard through `_stage`, `_StageOutput` and native `shader_stage`, including nested properties, tags and state | Export/conversion entry boundaries plus `test_empty_shader_conversion_retains_owner_guard_for_nested_stages` check 32 KiB against both a long name and 1,000 properties |
+| `ShaderProgram.__init__`, `ShaderSubProgram.__init__` | Native reader traversal guard, shared by nested subprograms until construction returns; retained keyword/list/code staging charges the same meter | Constructor one-byte boundaries, cleanup and 20,000-keyword refusal in `test_y6b_review.py` and constructor entry boundaries |
+| `ConvertSerializedShaderParsedForm`, `ConvertSerializedSubShader`, `ConvertSerializedPass`, `ConvertSerializedSubPrograms`, `ConvertSerializedShaderState`, `ConvertSerializedShaderRTBlendState`, `ConvertSerializedTagMap`, `ConvertSerializedProperties`, `ConvertSerializedProperty`, `CheckGpuProgramUsable`, `GetPlatformString`, `ShaderProgram.Export`, `ShaderSubProgram.Export` | Standalone fields/programs/strings are caller values; default stage guards/native meters. Their internal calls from `ConvertSerializedShader` retain its owner guard as described above. Only selected current program exports are invoked | Direct stage/program parity replays `binding_y6b_crypto_shader`; attached empty-blob stages replay `binding_y6b_meter` |
+| `Texture2DConverter.get_image_from_texture2d` and asset dispatch/preprocessing | `_images._guard(texture)` reaches the native object reader; both default decoding and replaced `CONV_TABLE` dispatch pass guard and reader to `_parse_image_data`, `_decode`, `_image_decode` or `_texture_preprocess`. Switch/crunch storage uses that meter before the selected callback; its buffers remain charged through handoff | Default/replaced converter entry boundaries, full-owner-budget Switch predicate regressions and patched platform oracle observations |
+| `parse_image_data`, `pillow`, `atc`, `astc`, `pvrtc`, `etc`, `eac`, `half`, `rg`, `rgb9e5float`, `image_to_texture2d`, `compress_etcpak`, `compress_astc`, `swap_bytes_for_xbox`, `calculate_astc_compressed_size`, `pad_image`, `get_astc_context` and its compress/decompress proxies | Direct APIs receive caller buffers, images, dimensions and block sizes; no reader. Native implementations/default guards bound their own work. Asset preprocessing occurs under the preceding owner's guard before invoking a replaced converter | Outside the asset threat model as direct calls; ASTC/cache, conversion and platform observations and bounds tests remain in effect |
+| TextureSwizzler `ceil_divide`, `deswizzle`, `swizzle`, `get_padded_texture_size`, `get_switch_gobs_per_block`, `is_switch_swizzled` | Direct buffers/dimensions are caller values. Asset dispatch compares the exponent without expanding an integer, then uses native checked layout/preprocessing on its input meter | Existing exponent/full-budget/allocation regressions in `test_y6b_images.py` |
+| Optional generator discovery/backend and `cli.update_tpk` | Explicit caller paths/backend or explicit bounded download; no asset-reader bytes or inherited asset guard | Outside the asset threat model; bounded synthetic backend/download and confined publication tests remain in effect |
+
+Five `binding_y6b_meter` observation groups compare and replay successful tree
+schema/file combinations and 20,000-element reads, direct native-file reference
+lookup, empty-blob shader conversion, and decryptor construction from native
+memory/stream readers. The budget refusals above are safety
+boundaries; UnityPy has no corresponding input budget.

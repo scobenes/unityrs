@@ -12,7 +12,7 @@ use unityrs_core::{
 };
 
 #[pyfunction]
-#[pyo3(signature = (data, rows, endian, as_dict=true, assetsfile=None, limits=None, budget=None, owner=None, references=None))]
+#[pyo3(signature = (data, rows, endian, as_dict=true, assetsfile=None, limits=None, budget=None, owner=None, references=None, guard=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn standalone_tree_read(
     py: Python<'_>,
@@ -25,7 +25,16 @@ pub(crate) fn standalone_tree_read(
     budget: Option<&Budget>,
     owner: Option<&crate::files::NativeFile>,
     references: Option<&Bound<'_, PyAny>>,
+    guard: Option<Py<crate::traversal::TreeTraversal>>,
 ) -> PyResult<Py<PyAny>> {
+    // Copy the account, then release the Python borrow before resolver callbacks
+    // re-enter the same traversal guard on the caller.
+    let guard_context = guard
+        .map(|guard| {
+            let guard = guard.try_borrow(py)?;
+            Ok::<_, PyErr>((guard.limits, guard.meter.clone()))
+        })
+        .transpose()?;
     let file = assetsfile.and_then(|v| match &v.inner {
         unityrs_core::File::Serialized(file) => Some(file.clone()),
         _ => None,
@@ -37,17 +46,24 @@ pub(crate) fn standalone_tree_read(
         })
     });
     let inherit_meter = limits.is_none() && budget.is_none();
-    let limits = limits.map_or_else(
+    let limits = guard_context.as_ref().map_or_else(
         || {
-            source
-                .as_ref()
-                .map_or_else(unityrs_core::limits::Limits::default, |f| {
-                    f.context().limits
-                })
+            limits.map_or_else(
+                || {
+                    source
+                        .as_ref()
+                        .map_or_else(unityrs_core::limits::Limits::default, |f| {
+                            f.context().limits
+                        })
+                },
+                |v| v.inner,
+            )
         },
-        |v| v.inner,
+        |(limits, _)| *limits,
     );
-    let meter = if inherit_meter {
+    let meter = if let Some((_, meter)) = &guard_context {
+        Some(meter.clone())
+    } else if inherit_meter {
         source.as_ref().map(|f| f.meter().clone())
     } else {
         None
@@ -194,4 +210,36 @@ fn convert(
     })?;
     p::push(&result, &construction)?;
     p::tuple(&result)
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::prelude::*;
+
+    #[test]
+    fn detached_schema_retains_asset_reader_account() -> PyResult<()> {
+        let _serial = crate::tests::serial();
+        crate::python::relay::attach(|py| {
+            let native = PyModule::new(py, "unityrs._native")?;
+            crate::native(&native)?;
+            py.import("sys")?
+                .getattr("modules")?
+                .set_item("unityrs._native", native)?;
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let paths = py.import("sys")?.getattr("path")?;
+            for directory in [root.join("python"), root.join("python/tests")] {
+                paths.call_method1("insert", (0, directory.to_string_lossy().as_ref()))?;
+            }
+            let case = py.import("test_y6b_meter")?.getattr("TreeMeter")?.call0()?;
+            for name in [
+                "test_detached_schema_refuses_count_expansion_on_reader_budget",
+                "test_detached_schema_inherits_reader_value_limits_in_both_parsers",
+                "test_accelerated_detached_schema_keeps_guard_budget_inside_native_parser",
+                "test_reader_account_precedes_a_different_schema_owner",
+            ] {
+                case.call_method0(name)?;
+            }
+            Ok(())
+        })
+    }
 }

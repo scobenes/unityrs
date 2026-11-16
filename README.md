@@ -121,7 +121,7 @@ Interrupted runs may leave
 the nine exporters and extraction helpers with the same destination confinement.
 It validates names and extensions before creating output, opens destinations only
 when dispatch and filters reach an export, and preserves existing files on failed
-image exports through atomic publication. Its 360 oracle comparisons and 180 wheel
+image exports through atomic publication. Its 365 oracle comparisons and 197 wheel
 tests include hostile path, shared-reader cursor and concurrency regressions,
 primitive-map decoding budgets, empty and legacy GameObject components, and
 decryption-key conversion deferred until encrypted bundle processing. Generated
@@ -158,7 +158,13 @@ shader construction from native asset readers, and memoryview string decoding
 with cursor alignment. Shader constructors retain the owning reader's traversal
 guard through construction; one-byte budget boundaries and the 20,000-keyword
 case with 4 KiB remaining have wheel regressions.
-The 245 API fixtures and 90 object observations replay in 41 Rust binding tests;
+Detached-schema tree reads inherit the native reader's meter and limits through
+accelerated parsing. Direct reference lookup, decryptor AES staging and
+empty-blob shader stages also retain their owning input account. The helper audit in the binding README lists
+every Y6b byte-consuming entry, guard route and small-budget boundary test;
+five new oracle groups replay successful tree, reference, decryptor and shader
+behavior.
+The 250 API fixtures and 90 object observations replay in 42 Rust binding tests;
 the threat model in `crates/unityrs-py/README.md` applies unchanged.
 
 ## Licence

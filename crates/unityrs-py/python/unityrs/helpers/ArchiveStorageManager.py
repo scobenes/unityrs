@@ -24,8 +24,8 @@ def read_vector(reader):
     return data, key
 
 
-def decrypt_key(key, data, keybytes):
-    return _native.cn_key(key, data, keybytes)
+def decrypt_key(key, data, keybytes, *, _guard=None):
+    return _native.cn_key(key, data, keybytes, _guard)
 
 
 def brute_force_key(fp, key_sig, data_sig, pattern=re.compile(rb"(?=(\w{16}))"), verbose=False):
@@ -66,6 +66,8 @@ class ArchiveStorageDecryptor:
     substitute: bytes = bytes(0x10)
 
     def __init__(self, reader):
+        native = getattr(reader, '_native', None)
+        guard = native.tree_traversal() if native is not None else _native.TreeTraversal()
         self.unknown_1 = reader.read_u_int()
         self.data, self.key = read_vector(reader)
         self.data_sig, self.key_sig = read_vector(reader)
@@ -76,10 +78,10 @@ class ArchiveStorageDecryptor:
                 "To try brute-forcing the key, use UnityPy.helpers.ArchiveStorageManager.brute_force_key(fp, key_sig, data_sig)",
                 f"with  key_sig = {self.key_sig}, data_sig = {self.data_sig},and fp being the path to global-metadata.dat or a memory dump.",
             ]))
-        signature = decrypt_key(self.key_sig, self.data_sig, DECRYPT_KEY)
+        signature = decrypt_key(self.key_sig, self.data_sig, DECRYPT_KEY, _guard=guard)
         if signature != UNITY3D_SIGNATURE:
             raise Exception(f"Invalid signature {signature} != {UNITY3D_SIGNATURE}")
-        data = decrypt_key(self.key, self.data, DECRYPT_KEY)
+        data = decrypt_key(self.key, self.data, DECRYPT_KEY, _guard=guard)
         data = bytes(nibble for byte in data for nibble in (byte >> 4, byte & 0xF))
         self.index = data[:0x10]
         self.substitute = bytes(data[0x10 + i * 4 + j] for j in range(4) for i in range(4))
