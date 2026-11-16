@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=89
+python scripts/unittest-suites crates/unityrs-py/python/tests=90
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=244
+python ../../scripts/unittest-suites bindings=245
 ```
 
-The recorder writes 178 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups, 29 tools/module/loader groups and 35 Y6a groups),
+The recorder writes 179 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups, 29 tools/module/loader groups and 36 Y6a groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 89 tests and the oracle comparison has 244; CI enforces both
+The wheel suite has 90 tests and the oracle comparison has 245; CI enforces both
 minimum counts. Exception translation and Python handoff run on the calling
 thread after the native worker joins. Warning handlers run on that thread before
 a fallback load is published, including handlers that re-enter the environment.
@@ -216,7 +216,7 @@ verified by the namespace checks. Standalone Brotli uses the core's bounded
 inflater and stored-metablock writer: decoded bytes replay against UnityPy;
 compressed bytes retain the existing Tier B difference from its quality-11 writer.
 
-Y6a's `replays_unitypy_residue_observations` replays 35 additional groups.
+Y6a's `replays_unitypy_residue_observations` replays 36 additional groups.
 They cover the loader edge cases, synthetic object-mode residue and Transform,
 damaged AssetInfo preloads, current material texture names, raw float WAVs and
 forced helper parsing, detached saves and mutations, constructor reader state
@@ -231,7 +231,7 @@ these adapters too. No dependency or bundled runtime schema is added.
 | referenced arrays and non-class names | helpers/TypeTreeHelper.py:182-263, helpers/TypeTreeHelper.py:266-361; UnityPyBoost/TypeTreeHelper.cpp:458-583 | 9.2, 19.2 |
 | synthetic Transform reader | files/ObjectReader.py:186-187, files/ObjectReader.py:217-218, files/ObjectReader.py:244-262 | 14.3 |
 | damaged preload tables and external lookup | helpers/ContainerHelper.py:31-49; classes/PPtr.py:43-90 | 19.3 |
-| standalone material texture names | export/MeshRendererExporter.py:106-189 | 15.4 |
+| standalone material texture names and renderer PNG write order | export/MeshRendererExporter.py:48-103, export/MeshRendererExporter.py:106-189 | 15.4, 19.1 |
 | optional PCM float conversion | export/AudioClipConverter.py:13-49 | 16 |
 | forced file-type parsing | helpers/ImportHelper.py:127-156 | 22 |
 
@@ -268,3 +268,9 @@ and child CAB. Negative legacy-bundle offsets follow `struct.unpack_from`'s
 normalization and range messages. These three observations are oracle-compared
 and replayed in `binding_y6_review`; native bounds tests also compare directly
 with `struct.unpack_from`. The Rust binding suite has 34 tests.
+
+Renderer PNG writes preserve every `m_TexEnvs` entry in source order, including
+duplicate property names and filename collisions; MTL references use the last
+value for each property in first-key order. The duplicate `_MainTex` regression
+keeps `old.png` and verifies the final pixels of `shared.png` against the
+corrected 1.25.2 oracle, recorded and replayed in `binding_y6_exports`.

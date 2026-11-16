@@ -145,11 +145,11 @@ class _LocalFS:
     open = staticmethod(open)
 
 
-def _material_texture_names(material, guard):
+def _material_texture_names(material, guard, *, include_writes=False):
     # export/MeshRendererExporter.py:106-189, with PARITY 19.1's dict fix.
     # Resolve the caller's current pointers, including their current owners.
     guard.step(0, 256, 1)
-    names, textures, properties = [], [], {}
+    names, textures, properties, entries = {}, [], {}, []
     for key, texture_env in material.m_SavedProperties.m_TexEnvs:
         guard.step(0, 0, 1)
         if texture_env is None:
@@ -158,9 +158,14 @@ def _material_texture_names(material, guard):
             key = key.name
         guard.step(0, str.__len__(key) * 4 + 256, 1)
         properties[key] = texture_env
-    for key, texture_env in properties.items():
+        if include_writes:
+            entries.append((key, texture_env))
+    # MTL references use the last property value, in first-key order. PNG
+    # writes retain every source entry so the last filename collision wins.
+    for key, texture_env in entries if include_writes else properties.items():
         guard.step(0, 0, 1)
         if not texture_env.m_Texture:
+            names.pop(key, None)
             continue
         texture = texture_env.m_Texture.deref_parse_as_object()
         chosen = texture.m_Name if texture.m_Name else key
@@ -168,10 +173,10 @@ def _material_texture_names(material, guard):
             guard.step(0, str.__len__(chosen) * 4 + 256, str.__len__(chosen))
         name = output_name(output_name(chosen, guard=guard) + ".png", guard=guard)
         guard.step(0, 512 + str.__len__(key) * 4 + str.__len__(name) * 8, 1)
-        names.append((key.encode("utf-8", "surrogateescape"),
-                      name[:-4].encode("utf-8", "surrogateescape")))
+        names[key] = (key.encode("utf-8", "surrogateescape"),
+                      name[:-4].encode("utf-8", "surrogateescape"))
         textures.append((name, texture))
-    return names, textures
+    return [names[key] for key in properties if key in names], textures
 
 
 def _renderer_export(self, export_dir):
@@ -207,7 +212,7 @@ def _renderer_export(self, export_dir):
         material = self.m_Materials[slot].deref_parse_as_object()
         material_name = output_name(material.m_Name, guard=guard)
         names.append(material_name)
-        texture_names, material_textures = _material_texture_names(material, guard)
+        texture_names, material_textures = _material_texture_names(material, guard, include_writes=True)
         guard.step(0, len(material_textures) * 16 + 128, len(material_textures))
         textures.extend(material_textures)
         exported = _native.export_material(material, _reader(material), _environment(material), texture_names)

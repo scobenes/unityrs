@@ -91,7 +91,7 @@ RESIDUE = [("binding_y6_loader", "observe_" + name) for name in
     ("binding_y6_objects", "observe_" + name) for name in
     ("references", "nonclass", "transform", "preload")
 ] + [("binding_y6_exports", "observe_" + name) for name in
-     ("material_textures", "audio_float", "audio_options")] + [
+     ("material_textures", "renderer_texture_collisions", "audio_float", "audio_options")] + [
     ("binding_y6_parse", "observe_" + name) for name in
     ("forced_raw", "forced_parsers", "forced_failures", "forced_positions")
 ] + [
@@ -115,6 +115,7 @@ def helper_records():
         ("binding_y6_loader", "observe_urls"): "PARITY.md 19.2: URL-prefixed environment paths retain the literal existence gate",
         ("binding_y6_objects", "observe_nonclass"): "PARITY.md 19.2: non-class attributes use the missing-type UnknownObject reference",
         ("binding_y6_exports", "observe_material_textures"): "PARITY.md 19.1: iterate material texture dictionary items and snapshot current resolved texture names",
+        ("binding_y6_exports", "observe_renderer_texture_collisions"): "PARITY.md 19.1: correct material texture dictionary iteration while retaining source-order PNG writes",
         ("binding_y6_exports", "observe_audio_float"): "PARITY.md 16: PCM float bank VERSION refusal retains the fmod_toolkit subsound WAV reference",
         ("binding_y6_parse", "observe_forced_positions"): "PARITY.md 19.3: forced parsers explicitly refuse a nonzero cursor or non-default Assets/Bundle endian",
         ("binding_y5_objects", "observe_iteration"): "PARITY.md 19.2: file iteration follows nested containers and yields requested objects",
