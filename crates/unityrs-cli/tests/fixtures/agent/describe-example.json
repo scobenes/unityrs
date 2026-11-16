@@ -1,0 +1,11 @@
+{
+  "batch_schema": "unityrs batch --schema",
+  "format": "unityrs.describe",
+  "schemas": [
+    "inspect",
+    "show",
+    "describe",
+    "error"
+  ],
+  "version": 1
+}

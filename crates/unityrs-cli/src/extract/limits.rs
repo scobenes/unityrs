@@ -5,7 +5,7 @@ use unityrs_core::{
     limits::{Limits, Meter},
 };
 
-pub(super) fn parse(raw: &[Vec<u8>]) -> Result<Limits, Box<dyn std::error::Error>> {
+pub(crate) fn parse(raw: &[Vec<u8>]) -> Result<Limits, Box<dyn std::error::Error>> {
     let mut limits = Limits::default();
     let mut args = raw.iter();
     while let Some(arg) = args.next() {
@@ -37,7 +37,7 @@ pub(super) fn parse(raw: &[Vec<u8>]) -> Result<Limits, Box<dyn std::error::Error
     Ok(limits)
 }
 
-pub(super) fn extraction(limits: &Limits) -> Arc<Meter> {
+pub(crate) fn extraction(limits: &Limits) -> Arc<Meter> {
     Meter::for_input(limits, Arc::new(Unbounded), Reservation::Input)
 }
 

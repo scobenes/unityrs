@@ -43,6 +43,7 @@
     )
 )]
 
+mod agent;
 mod args;
 mod batch;
 mod extract;
@@ -72,13 +73,16 @@ mod test_alloc;
 #[global_allocator]
 static ALLOCATOR: Counting = Counting::new();
 
-const USAGE: &str = "usage: unityrs {dump,values,batch,obj,gltf,extract} ...\n\n\
+const USAGE: &str = "usage: unityrs {dump,values,batch,obj,gltf,extract,inspect,show,describe} ...\n\n\
   unityrs dump INPUT... -o OUT.jsonl[.gz] [options]   the canonical dump (dump -h)\n\
   unityrs gltf INPUT... --scene FILE -o OUTPUT.glb      scene/prefab export (gltf -h)\n\
   unityrs obj INPUT --path-id ID -o OUTPUT              OBJ/MTL export (obj -h)\n\
   unityrs extract INPUT... -o DIR [options]            extractor tree (extract -h)\n\
   unityrs values CASES.json                           the value-case protocol\n\
   unityrs batch --check JOB.json | --schema           the batch engine\n\
+  unityrs inspect INPUT... [options]                  bounded object inventory\n\
+  unityrs show INPUT... --path-id N [options]          bounded object value\n\
+  unityrs describe [--schema NAME]                    machine command reference\n\
   unityrs --version                                   the version and spec version";
 
 const VALUES_USAGE: &str = "usage: unityrs values CASES.json";
@@ -205,6 +209,9 @@ fn main() -> ExitCode {
         .collect();
     let rest = argv.get(1..).unwrap_or_default();
     match argv.first().map(Vec::as_slice) {
+        Some(b"inspect") => agent::main("inspect", rest),
+        Some(b"show") => agent::main("show", rest),
+        Some(b"describe") => agent::main("describe", rest),
         Some(b"dump") => dump(rest),
         Some(b"extract") => extract::main(rest),
         Some(b"obj") => obj::main(rest),
@@ -231,7 +238,7 @@ fn main() -> ExitCode {
             USAGE,
             "unityrs",
             &format!(
-                "argument command: invalid choice: {} (choose from 'dump', 'values', 'batch', 'obj', 'gltf', 'extract')",
+                "argument command: invalid choice: {} (choose from 'dump', 'values', 'batch', 'obj', 'gltf', 'extract', 'inspect', 'show', 'describe')",
                 args::py_repr(other)
             ),
         ),

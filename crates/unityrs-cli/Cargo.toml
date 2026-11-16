@@ -18,6 +18,7 @@ name = "unityrs"
 path = "src/main.rs"
 
 [dependencies]
+serde_json = "=1.0.154"
 caseless = "=0.2.2"
 # `startup_failed`'s errno name (src/batch.rs). Already in the lock.
 libc = "=0.2.191"
@@ -61,7 +62,6 @@ sha2 = "=0.11.1"
 # The core's synthetic UnityCN encryptor, which the batch run harness
 # (`unityrs-batch/tests/run_support`) builds the encrypted golden with.
 aes = "=0.8.4"
-serde_json = "=1.0.154"
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 unityrs-testkit = { path = "../unityrs-testkit" }
 

@@ -1,7 +1,7 @@
 //! `extract` uses one Environment for INPUT..., writes a JSON report on
 //! stdout (and optionally beneath -o), and continues after object failures.
 mod files;
-mod limits;
+pub(crate) mod limits;
 mod report;
 use std::{
     ffi::OsStr, io::Write, os::unix::ffi::OsStrExt, path::Path, process::ExitCode, sync::Arc,

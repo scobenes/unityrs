@@ -1,0 +1,635 @@
+{
+  "batch_schema": "unityrs batch --schema",
+  "commands": [
+    {
+      "exit_codes": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "name": "dump",
+      "options": [
+        {
+          "default": null,
+          "help": "Required dump JSONL output, optionally gzip.",
+          "name": "-o",
+          "value": "PATH"
+        },
+        {
+          "default": null,
+          "help": "Required dump JSONL output, optionally gzip.",
+          "name": "--output",
+          "value": "PATH"
+        },
+        {
+          "default": "false",
+          "help": "Inputs are index JSON files.",
+          "name": "--index",
+          "value": null
+        },
+        {
+          "default": "bundle,unitypy-sample",
+          "help": "Index kinds to select.",
+          "name": "--kind",
+          "value": "K[,K...]"
+        },
+        {
+          "default": null,
+          "help": "Index builds to select.",
+          "name": "--build",
+          "value": "B[,B...]"
+        },
+        {
+          "default": "false",
+          "help": "Warn rather than refuse an index hash mismatch.",
+          "name": "--allow-index-mismatch",
+          "value": null
+        },
+        {
+          "default": null,
+          "help": "Repeatable glob on dump-relative input path.",
+          "name": "--name",
+          "value": "GLOB"
+        },
+        {
+          "default": null,
+          "help": "Evenly sample sorted inputs.",
+          "name": "--sample",
+          "value": "N"
+        },
+        {
+          "default": null,
+          "help": "First N sorted inputs.",
+          "name": "--limit",
+          "value": "N"
+        },
+        {
+          "default": "L0,L1,L2,L3",
+          "help": "Canonical levels to write.",
+          "name": "--levels",
+          "value": "L0,L1,L2,L3"
+        },
+        {
+          "default": "1",
+          "help": "Concurrent inputs; values below one mean one.",
+          "name": "-j",
+          "value": "N"
+        },
+        {
+          "default": "1",
+          "help": "Concurrent inputs; values below one mean one.",
+          "name": "--jobs",
+          "value": "N"
+        },
+        {
+          "default": null,
+          "help": "Save timing JSON.",
+          "name": "--stats",
+          "value": "PATH"
+        },
+        {
+          "default": "false",
+          "help": "Suppress per-input progress.",
+          "name": "-q",
+          "value": null
+        },
+        {
+          "default": "false",
+          "help": "Suppress per-input progress.",
+          "name": "--quiet",
+          "value": null
+        },
+        {
+          "default": "false",
+          "help": "Visit entries in reverse before dumping.",
+          "name": "--reverse-prepass",
+          "value": null
+        },
+        {
+          "default": null,
+          "help": "Lift named bounds for parity experiments.",
+          "name": "--unbounded",
+          "value": "KIND[,KIND...]"
+        },
+        {
+          "default": "false",
+          "help": "Include mesh digests.",
+          "name": "--mesh",
+          "value": null
+        },
+        {
+          "default": null,
+          "help": "Schema provider for stripped files.",
+          "name": "--tpk",
+          "value": "FILE"
+        },
+        {
+          "default": null,
+          "help": "Print command help (also -h).",
+          "name": "--help",
+          "value": null
+        }
+      ],
+      "purpose": "Write the canonical parity dump.",
+      "stdout": "Canonical JSONL; dump -h documents parity semantics.",
+      "usage": "unityrs dump INPUT... -o OUT.jsonl[.gz] [options]"
+    },
+    {
+      "exit_codes": [
+        0,
+        1,
+        2
+      ],
+      "name": "values",
+      "options": [
+        {
+          "default": null,
+          "help": "Print command help (also -h).",
+          "name": "--help",
+          "value": null
+        }
+      ],
+      "purpose": "Run the parity value-case protocol.",
+      "stdout": "Value-case JSON lines.",
+      "usage": "unityrs values CASES.json"
+    },
+    {
+      "exit_codes": [
+        0,
+        1
+      ],
+      "name": "gltf",
+      "options": [
+        {
+          "default": null,
+          "help": "Select a SerializedFile or SceneAsset.",
+          "name": "--scene",
+          "value": "FILE"
+        },
+        {
+          "default": null,
+          "help": "Select a prefab root or SceneAsset.",
+          "name": "--path-id",
+          "value": "ID"
+        },
+        {
+          "default": null,
+          "help": "Select a container prefab path.",
+          "name": "--prefab",
+          "value": "PATH"
+        },
+        {
+          "default": null,
+          "help": "Required output GLB.",
+          "name": "-o",
+          "value": "FILE"
+        },
+        {
+          "default": null,
+          "help": "Strict profile_version 1 JSON.",
+          "name": "--profile",
+          "value": "FILE"
+        },
+        {
+          "default": null,
+          "help": "Supplied built-in resources.",
+          "name": "--builtin-file",
+          "value": "FILE"
+        },
+        {
+          "default": null,
+          "help": "Also write detailed report JSON.",
+          "name": "--report",
+          "value": "FILE"
+        },
+        {
+          "default": "unlit",
+          "help": "Material mapper.",
+          "name": "--mapper",
+          "value": "unlit|pbr"
+        },
+        {
+          "default": "8589934592",
+          "help": "Charged bytes per input and response.",
+          "name": "--max-input-memory",
+          "value": "N"
+        },
+        {
+          "default": "4294967296",
+          "help": "Source bytes per input.",
+          "name": "--max-input-bytes",
+          "value": "N"
+        },
+        {
+          "default": "34359738368",
+          "help": "Work bytes per input and response.",
+          "name": "--max-decode-work",
+          "value": "N"
+        },
+        {
+          "default": "256",
+          "help": "Reader tree and graph depth.",
+          "name": "--max-tree-depth",
+          "value": "N"
+        },
+        {
+          "default": null,
+          "help": "Optional schema provider for stripped trees.",
+          "name": "--tpk",
+          "value": "FILE"
+        },
+        {
+          "default": null,
+          "help": "Print command help (also -h).",
+          "name": "--help",
+          "value": null
+        }
+      ],
+      "purpose": "Export a scene or prefab to GLB.",
+      "stdout": "No stdout document; writes GLB and optional report files.",
+      "usage": "unityrs gltf INPUT... (--scene FILE | --path-id ID | --prefab PATH) -o OUT.glb [options]"
+    },
+    {
+      "exit_codes": [
+        0,
+        1
+      ],
+      "name": "obj",
+      "options": [
+        {
+          "default": null,
+          "help": "Required Mesh or renderer ID.",
+          "name": "--path-id",
+          "value": "ID"
+        },
+        {
+          "default": null,
+          "help": "Required OBJ file or renderer output directory.",
+          "name": "-o",
+          "value": "PATH"
+        },
+        {
+          "default": null,
+          "help": "Schema provider for stripped files.",
+          "name": "--tpk",
+          "value": "FILE"
+        },
+        {
+          "default": null,
+          "help": "Print command help (also -h).",
+          "name": "--help",
+          "value": null
+        }
+      ],
+      "purpose": "Export a Mesh or renderer to OBJ/MTL.",
+      "stdout": "No stdout document; writes OBJ/MTL files.",
+      "usage": "unityrs obj INPUT --path-id ID -o OUTPUT [--tpk FILE]"
+    },
+    {
+      "exit_codes": [
+        0,
+        1
+      ],
+      "name": "extract",
+      "options": [
+        {
+          "default": null,
+          "help": "Required output directory.",
+          "name": "-o",
+          "value": "DIR"
+        },
+        {
+          "default": "false",
+          "help": "Export every object by name.",
+          "name": "--no-container",
+          "value": null
+        },
+        {
+          "default": "false",
+          "help": "Alias for --no-container.",
+          "name": "--no-use-container",
+          "value": null
+        },
+        {
+          "default": "true",
+          "help": "Export container assets.",
+          "name": "--use-container",
+          "value": null
+        },
+        {
+          "default": "0",
+          "help": "Drop slash components from container paths.",
+          "name": "--ignore-first-container-dirs",
+          "value": "N"
+        },
+        {
+          "default": "false",
+          "help": "Append UnityPy's _None suffix.",
+          "name": "--append-path-id",
+          "value": null
+        },
+        {
+          "default": "false",
+          "help": "Other classes as JSON or raw binary.",
+          "name": "--export-unknown-as-typetree",
+          "value": null
+        },
+        {
+          "default": null,
+          "help": "Repeatable class name or integer ID.",
+          "name": "--asset-filter",
+          "value": "CLASS"
+        },
+        {
+          "default": null,
+          "help": "Runtime VST1 headers; never fetched.",
+          "name": "--vorbis-headers",
+          "value": "FILE"
+        },
+        {
+          "default": null,
+          "help": "Also save JSON beneath output directory.",
+          "name": "--report",
+          "value": "PATH"
+        },
+        {
+          "default": "8589934592",
+          "help": "Charged bytes per input and response.",
+          "name": "--max-input-memory",
+          "value": "N"
+        },
+        {
+          "default": "4294967296",
+          "help": "Source bytes per input.",
+          "name": "--max-input-bytes",
+          "value": "N"
+        },
+        {
+          "default": "34359738368",
+          "help": "Work bytes per input and response.",
+          "name": "--max-decode-work",
+          "value": "N"
+        },
+        {
+          "default": "256",
+          "help": "Reader tree and graph depth.",
+          "name": "--max-tree-depth",
+          "value": "N"
+        },
+        {
+          "default": null,
+          "help": "Optional schema provider for stripped trees.",
+          "name": "--tpk",
+          "value": "FILE"
+        },
+        {
+          "default": null,
+          "help": "Print command help (also -h).",
+          "name": "--help",
+          "value": null
+        }
+      ],
+      "purpose": "Export assets to a directory.",
+      "stdout": "Extraction JSON report including object failures.",
+      "usage": "unityrs extract INPUT... -o DIR [options]"
+    },
+    {
+      "exit_codes": [
+        0,
+        3,
+        4,
+        5,
+        6,
+        7,
+        69,
+        70,
+        74,
+        78
+      ],
+      "name": "batch",
+      "options": [
+        {
+          "default": null,
+          "help": "Validate the job without running it.",
+          "name": "--check",
+          "value": "JOB.json"
+        },
+        {
+          "default": null,
+          "help": "Print the existing batch job schema; see unityrs batch --schema.",
+          "name": "--schema",
+          "value": null
+        }
+      ],
+      "purpose": "Run the budgeted batch engine.",
+      "stdout": "NDJSON progress or validation, or job schema with --schema; see docs/BATCH_SPEC.md.",
+      "usage": "unityrs batch --check JOB.json | --schema | JOB.json"
+    },
+    {
+      "exit_codes": [
+        0,
+        1,
+        2
+      ],
+      "name": "inspect",
+      "options": [
+        {
+          "default": null,
+          "help": "Class name or integer ID; repeat for a union.",
+          "name": "--class",
+          "value": "CLASS"
+        },
+        {
+          "default": null,
+          "help": "Object name, using dump's case-sensitive glob syntax; repeat for a union.",
+          "name": "--name",
+          "value": "GLOB"
+        },
+        {
+          "default": "200",
+          "help": "Page size, 1 through 10000.",
+          "name": "--limit",
+          "value": "N"
+        },
+        {
+          "default": null,
+          "help": "Continue this inventory with the same inputs and filters.",
+          "name": "--cursor",
+          "value": "TOKEN"
+        },
+        {
+          "default": "8589934592",
+          "help": "Charged bytes per input and response.",
+          "name": "--max-input-memory",
+          "value": "N"
+        },
+        {
+          "default": "4294967296",
+          "help": "Source bytes per input.",
+          "name": "--max-input-bytes",
+          "value": "N"
+        },
+        {
+          "default": "34359738368",
+          "help": "Work bytes per input and response.",
+          "name": "--max-decode-work",
+          "value": "N"
+        },
+        {
+          "default": "256",
+          "help": "Reader tree and graph depth.",
+          "name": "--max-tree-depth",
+          "value": "N"
+        },
+        {
+          "default": null,
+          "help": "Optional schema provider for stripped trees.",
+          "name": "--tpk",
+          "value": "FILE"
+        },
+        {
+          "default": null,
+          "help": "Return the command description as JSON (also -h).",
+          "name": "--help",
+          "value": null
+        }
+      ],
+      "purpose": "List objects with filters and pagination.",
+      "stdout": "One unityrs.inspect or unityrs.error JSON document.",
+      "usage": "unityrs inspect INPUT... [options]"
+    },
+    {
+      "exit_codes": [
+        0,
+        1,
+        2
+      ],
+      "name": "show",
+      "options": [
+        {
+          "default": null,
+          "help": "Required signed object path ID.",
+          "name": "--path-id",
+          "value": "N"
+        },
+        {
+          "default": null,
+          "help": "Exact SerializedFile name to disambiguate the path ID.",
+          "name": "--file",
+          "value": "NAME"
+        },
+        {
+          "default": "65536",
+          "help": "Maximum compact JSON document bytes, including its newline.",
+          "name": "--max-bytes",
+          "value": "N"
+        },
+        {
+          "default": "256",
+          "help": "Maximum retained entries in each array or map.",
+          "name": "--max-items",
+          "value": "N"
+        },
+        {
+          "default": "32",
+          "help": "Maximum value nesting, 0 through 128.",
+          "name": "--max-depth",
+          "value": "N"
+        },
+        {
+          "default": "summary",
+          "help": "Byte runs are summaries unless full hex fits.",
+          "name": "--bytes",
+          "value": "summary|full"
+        },
+        {
+          "default": "8589934592",
+          "help": "Charged bytes per input and response.",
+          "name": "--max-input-memory",
+          "value": "N"
+        },
+        {
+          "default": "4294967296",
+          "help": "Source bytes per input.",
+          "name": "--max-input-bytes",
+          "value": "N"
+        },
+        {
+          "default": "34359738368",
+          "help": "Work bytes per input and response.",
+          "name": "--max-decode-work",
+          "value": "N"
+        },
+        {
+          "default": "256",
+          "help": "Reader tree and graph depth.",
+          "name": "--max-tree-depth",
+          "value": "N"
+        },
+        {
+          "default": null,
+          "help": "Optional schema provider for stripped trees.",
+          "name": "--tpk",
+          "value": "FILE"
+        },
+        {
+          "default": null,
+          "help": "Return the command description as JSON (also -h).",
+          "name": "--help",
+          "value": null
+        }
+      ],
+      "purpose": "Read one object with bounded context.",
+      "stdout": "One unityrs.show or unityrs.error JSON document.",
+      "usage": "unityrs show INPUT... --path-id N [options]"
+    },
+    {
+      "exit_codes": [
+        0,
+        1,
+        2
+      ],
+      "name": "describe",
+      "options": [
+        {
+          "default": null,
+          "help": "Print the named draft 2020-12 output schema.",
+          "name": "--schema",
+          "value": "inspect|show|describe|error"
+        },
+        {
+          "default": null,
+          "help": "Return the command description as JSON (also -h).",
+          "name": "--help",
+          "value": null
+        }
+      ],
+      "purpose": "Describe commands or print an output schema.",
+      "stdout": "One unityrs.describe or unityrs.error JSON document, or a JSON Schema.",
+      "usage": "unityrs describe [--schema NAME]"
+    }
+  ],
+  "exit_codes": {
+    "0": "Success; inspect may contain per-input errors.",
+    "1": "New commands: operation failed. Legacy commands: command-specific failure.",
+    "2": "Usage error for the new commands, dump and values.",
+    "3": "Dump: every input crashed. Batch: complete with skips.",
+    "4": "Batch: incomplete.",
+    "5": "Batch: budget refusal.",
+    "6": "Batch: stopped.",
+    "69": "Batch: could not start.",
+    "7": "Batch: superseded.",
+    "70": "Batch: internal failure.",
+    "74": "Batch: host failure.",
+    "78": "Batch: invalid job specification."
+  },
+  "format": "unityrs.describe",
+  "schemas": [
+    "inspect",
+    "show",
+    "describe",
+    "error"
+  ],
+  "version": 1
+}
