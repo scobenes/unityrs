@@ -177,8 +177,7 @@ jobs:
         run: >-
           cargo test --locked --profile sweep -p unityrs-imageio --features test-hooks
           --test webp_charges every_allocation_refusal_at_quality_boundaries_is_clean
-      # controller_alloc includes the serialized whole-store CR10 census
-      # and refusal sweep (PUT, multipart, resume, verification and finish).
+      # The whole-store CR10 census and refusal sweep runs in scale-store.
       - name: Test, phase 6, publication, stores and archives at scale (release)
         run: >-
           cargo test --locked --profile sweep -p unityrs-batch --features test-hooks
@@ -189,7 +188,25 @@ jobs:
           --test controller_determinism
           --test finish_alloc --test publication_pool --test golden_runs --test pool_alloc --test controller_alloc
           --test archive_publish --test limit_squeeze --test lifetime_process --test memory_gate --test memory_constants --test store_memory_gate --test memory_retention
-          -- --include-ignored --test-threads=1
+          -- --include-ignored --test-threads=1 --skip every_store_run_allocation_is_fallible_after_publication_admission
+
+  # The whole-store CR10 census and refusal sweep (PUT, multipart, resume,
+  # verification and finish): thousands of children, so a job of its own
+  # beside scale rather than sharing its runner.
+  scale-store:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Test, phase 6, store CR10 sweeps at scale (release)
+        run: >-
+          cargo test --locked --profile sweep -p unityrs-batch --features test-hooks
+          --test controller_alloc every_store_run_allocation_is_fallible_after_publication_admission
+          -- --exact --include-ignored
 
   licenses:
     runs-on: ubuntu-latest
