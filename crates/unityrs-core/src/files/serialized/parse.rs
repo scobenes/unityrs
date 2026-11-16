@@ -119,6 +119,20 @@ impl SerializedFile {
         let enable_type_tree = p.enable_type_tree && ctx.serialized_file_parse_typetree;
         charge.absorb(p.kept);
         let (object_order, by_path) = dict_order(&object_infos, meter)?;
+        // Eager AssetBundle reading uses the same input reader and check_read
+        // requires consuming its complete object payload on success.
+        let container_end = ctx
+            .eager_asset_bundle
+            .then(|| {
+                object_order
+                    .as_slice()
+                    .iter()
+                    .filter_map(|index| object_infos.as_slice().get(*index as usize))
+                    .find(|object| object.class_id == ASSET_BUNDLE)
+                    .map(|object| object.byte_start + i128::from(object.byte_size))
+            })
+            .flatten();
+        let constructor_position = container_end.unwrap_or(p.r.position());
         let types = keep(types, &mut charge)?;
         let object_infos = keep(object_infos, &mut charge)?;
         let script_types = keep(script_types, &mut charge)?;
@@ -154,18 +168,13 @@ impl SerializedFile {
             container: ResultCell::new(),
             parent,
             reader,
+            constructor_position,
             charge,
             ctx: ctx.clone(),
         });
         // :316-324: the first AssetBundle in dict order is read at load; a
         // failure fails the parse, whose grants the bundle counts.
-        if ctx.eager_asset_bundle
-            && file
-                .object_order
-                .iter()
-                .filter_map(|i| file.object_infos.get(usize::try_from(*i).ok()?))
-                .any(|o| o.class_id == ASSET_BUNDLE)
-        {
+        if container_end.is_some() {
             file.container_at_load()?;
         }
         Ok(file)

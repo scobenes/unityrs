@@ -160,9 +160,12 @@ def parse_file(
             guard = TreeTraversal(owner._limits, owner._budget)
             text = name if isinstance(name, str) else ""
             guard.step(0, str.__len__(text) * 4 + 256, 0)
-            native = config._load(owner._native, owner._native.parse_bytes, data,
+            native, position, endian = config._load(owner._native, owner._native.parse_bytes, data,
                                   text.encode("utf-8", "surrogateescape"), int(typ),
                                   stream, parent._native if isinstance(parent, files.File) else None)
+            reader.Position = position
+            if endian is not None:
+                reader.endian = endian
             result = owner._wrap(native, parent, is_dependency)
             owner._sync()
             if isinstance(result, files.SerializedFile):

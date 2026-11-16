@@ -57,44 +57,66 @@ pub(crate) fn file_parse(
         return file_signature(data, stream, meter, bundle, template);
     }
     if let Error::OutOfBounds {
-        what, pos, need, ..
+        what,
+        pos,
+        need,
+        reader,
+        length,
+        ..
     } = error
     {
-        let length = data.len();
-        if what == "string to null" {
-            return if stream {
-                PyValueError::new_err("Unterminated string: [b'']")
-            } else {
-                PyException::new_err("String not terminated")
-            };
-        }
-        // Fixed-width numeric fields bound this message well below 512 bytes.
-        let _staging = match meter.charge(512) {
-            Ok(charge) => charge,
-            Err(error) => return charge(error),
-        };
-        let text = if stream || need == 1 {
-            message(&format_args!("unpack requires a buffer of {need} bytes"))
-        } else {
-            let end = pos.saturating_add(i128::from(need));
-            message(&format_args!(
-                "unpack_from requires a buffer of at least {end} bytes for unpacking {need} bytes at offset {pos} (actual buffer size is {length})"
-            ))
-        };
-        return Python::attach(|py| {
-            match py
-                .import("struct")
-                .and_then(|module| module.getattr("error"))
-            {
-                Ok(class) => match class.cast_into::<pyo3::types::PyType>() {
-                    Ok(class) => PyErr::from_type(class, (text,)),
-                    Err(error) => error.into(),
-                },
-                Err(error) => error,
-            }
-        });
+        return file_parse_bounds(
+            what,
+            pos,
+            need,
+            length,
+            reader == unityrs_core::stream::ReaderKind::Stream,
+            meter,
+        );
     }
     core(error)
+}
+
+fn file_parse_bounds(
+    what: &'static str,
+    pos: i128,
+    need: u64,
+    length: usize,
+    stream: bool,
+    meter: &std::sync::Arc<unityrs_core::limits::Meter>,
+) -> PyErr {
+    if what == "string to null" {
+        return if stream {
+            PyValueError::new_err("Unterminated string: [b'']")
+        } else {
+            PyException::new_err("String not terminated")
+        };
+    }
+    // Fixed-width numeric fields bound this message well below 512 bytes.
+    let _staging = match meter.charge(512) {
+        Ok(charge) => charge,
+        Err(error) => return charge(error),
+    };
+    let text = if stream || need == 1 {
+        message(&format_args!("unpack requires a buffer of {need} bytes"))
+    } else {
+        let end = pos.saturating_add(i128::from(need));
+        message(&format_args!(
+            "unpack_from requires a buffer of at least {end} bytes for unpacking {need} bytes at offset {pos} (actual buffer size is {length})"
+        ))
+    };
+    Python::attach(|py| {
+        match py
+            .import("struct")
+            .and_then(|module| module.getattr("error"))
+        {
+            Ok(class) => match class.cast_into::<pyo3::types::PyType>() {
+                Ok(class) => PyErr::from_type(class, (text,)),
+                Err(error) => error.into(),
+            },
+            Err(error) => error,
+        }
+    })
 }
 
 fn file_signature(

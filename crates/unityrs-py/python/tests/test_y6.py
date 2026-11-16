@@ -9,6 +9,8 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / 'tools/parity'))
 import binding_cases as B
 import scratch
+import child
+import binding_y6_review as review
 import unityrs
 
 
@@ -23,6 +25,18 @@ class ReadOnly:
 
 
 class Residue(unittest.TestCase):
+    def test_detached_files_keep_private_owner_for_mutations(self):
+        for name in ("save", "mark", "raw", "patch"):
+            for value in getattr(review, "observe_detached_" + name)(unityrs):
+                self.assertNotIn("error", value)
+                self.assertTrue(all(value["detached"]))
+
+    def test_exception_lookup_reenters_on_calling_thread(self):
+        code = "import unityrs; from binding_y6_review import exception_reentry; exception_reentry(unityrs)"
+        child.run([sys.executable, "-c", code], check=True, capture_output=True,
+                  text=True, timeout=45, env=dict(__import__('os').environ,
+                    PYTHONPATH=str(ROOT / 'tools/parity')))
+
     def test_mutable_nameless_buffers_respect_input_limit(self):
         for source in (bytearray(b'12345'), memoryview(bytearray(b'12345'))):
             env = unityrs.Environment(limits=unityrs.Limits(max_input_bytes=4))

@@ -96,8 +96,8 @@ fn staging_memory_refusal_preserves_work(stage: &str) -> PyResult<()> {
     let convert = || {
         let mut charge = Charge::zero(&meter);
         match stage {
-            "nodes" => super::object_nodes::convert(&parsed, &mut charge),
-            "references" => super::object_nodes::references(&parsed, None, &mut charge),
+            "nodes" => super::object_nodes::convert(parsed.lists(), &mut charge),
+            "references" => super::object_nodes::references(parsed.lists(), None, &mut charge),
             _ => super::value::convert(&parsed, &meter),
         }
     };
@@ -199,7 +199,34 @@ fn replays_unitypy_tools_observations() -> PyResult<()> {
 
 #[test]
 fn replays_unitypy_residue_observations() -> PyResult<()> {
-    replay_groups("binding_y6_", 20)
+    replay_groups("binding_y6_", 26)
+}
+
+#[test]
+fn exception_translation_reenters_environment_on_calling_thread() -> PyResult<()> {
+    let _serial = serial();
+    unityrs_testkit::guard::finishes(
+        "exception lookup re-enters the caller's environment lock",
+        || {
+            Python::attach(|py| {
+                let module = PyModule::new(py, "unityrs._native")?;
+                super::native(&module)?;
+                py.import("sys")?
+                    .getattr("modules")?
+                    .set_item("unityrs._native", module)?;
+                let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+                for directory in [root.join("python"), root.join("../../tools/parity")] {
+                    py.import("sys")?
+                        .getattr("path")?
+                        .call_method1("insert", (0, directory.to_string_lossy().as_ref()))?;
+                }
+                py.import("binding_y6_review")?
+                    .getattr("exception_reentry")?
+                    .call1((py.import("unityrs")?,))?;
+                Ok(())
+            })
+        },
+    )
 }
 
 #[test]

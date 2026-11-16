@@ -1,11 +1,9 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/files/SerializedFile.py, UnityPy/files/ObjectReader.py. See THIRD_PARTY_LICENSES.
 //! Charged snapshots of current Python save metadata, taken on the caller's
 //! thread before dispatching the core writer. No Python getters run on workers.
-use crate::{errors, files::NativeFile, object::NativeObject, python as p, save};
-use pyo3::{
-    exceptions::{PyTypeError, PyValueError},
-    prelude::*,
-};
+use crate::worker_error::Failure;
+use crate::{errors, files::NativeFile, object::NativeObject, python as p};
+use pyo3::{exceptions::PyTypeError, prelude::*};
 use unityrs_core::{
     File, RawStr,
     files::{External, SaveLayout, SaveOptions, serialized::SerializedSaveSnapshot},
@@ -33,6 +31,10 @@ type ObjectRow = (
 );
 type ExternalRow = (Option<Py<PyAny>>, Option<Py<PyAny>>, Option<i32>, Py<PyAny>);
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "snapshot native metadata before the worker and hand bytes back after joining"
+)]
 pub(crate) fn serialized(
     py: Python<'_>,
     file: &NativeFile,
@@ -70,10 +72,10 @@ pub(crate) fn serialized(
         objects.push((info, data)).map_err(errors::charge)?;
     }
     let external_rows = snapshot_externals(py, externals, meter)?;
-    py.detach(move || {
+    let native = py.detach(|| {
         crate::worker::run(crate::worker::load_stack(&source.context().limits), || {
             let mut entries =
-                MeteredVec::with_capacity(meter, objects.len()).map_err(errors::charge)?;
+                MeteredVec::with_capacity(meter, objects.len()).map_err(Failure::charge)?;
             for (info, payload) in objects.as_slice() {
                 let mut bytes = unityrs_core::budget::DecodeBuf::new(
                     meter,
@@ -81,16 +83,16 @@ pub(crate) fn serialized(
                     u64::MAX,
                     unityrs_core::error::LimitKind::InputMemory,
                 )
-                .map_err(errors::charge)?;
+                .map_err(Failure::charge)?;
                 meter
                     .count_decode(payload.as_ref().len() as u64)
-                    .map_err(errors::charge)?;
+                    .map_err(Failure::charge)?;
                 bytes
                     .extend_from_slice(payload.as_ref())
-                    .map_err(errors::charge)?;
+                    .map_err(Failure::charge)?;
                 entries
-                    .push((info.clone(), bytes.into_bytes().map_err(errors::charge)?))
-                    .map_err(errors::charge)?;
+                    .push((info.clone(), bytes.into_bytes().map_err(Failure::charge)?))
+                    .map_err(Failure::charge)?;
             }
             let external_entries = external_snapshot(external_rows.as_slice(), meter)?;
             let mut header = source.header().clone();
@@ -98,15 +100,14 @@ pub(crate) fn serialized(
             header.endian = match endian {
                 '<' => Endian::Little,
                 '>' => Endian::Big,
-                _ => return Err(PyValueError::new_err("invalid endian")),
+                _ => return Err(Failure::Static("ValueError", "invalid endian")),
             };
             header.reserved = reserved
                 .as_ref()
                 .map(|value| {
-                    value
-                        .as_ref()
-                        .try_into()
-                        .map_err(|_| PyValueError::new_err("reserved must contain three bytes"))
+                    value.as_ref().try_into().map_err(|_| {
+                        Failure::Static("ValueError", "reserved must contain three bytes")
+                    })
                 })
                 .transpose()?;
             header.unknown = unknown;
@@ -116,7 +117,7 @@ pub(crate) fn serialized(
                     .as_ref()
                     .map(|v| RawStr::charged(v.as_ref(), meter))
                     .transpose()
-                    .map_err(errors::charge)?,
+                    .map_err(Failure::charge)?,
                 target_platform: platform,
                 enable_type_tree: enabled,
                 big_id_enabled: big_id,
@@ -126,7 +127,7 @@ pub(crate) fn serialized(
                     .as_ref()
                     .map(|v| RawStr::charged(v.as_ref(), meter))
                     .transpose()
-                    .map_err(errors::charge)?,
+                    .map_err(Failure::charge)?,
             };
             let bytes = source
                 .save_with_snapshot(
@@ -135,13 +136,15 @@ pub(crate) fn serialized(
                     },
                     &snapshot,
                 )
-                .map_err(save::error)?;
-            let _copy = meter
-                .charge(unityrs_core::limits::heap_cost(bytes.len() as u64))
-                .map_err(errors::charge)?;
-            p::bytes(&bytes)
+                .map_err(Failure::save)?;
+            Ok::<_, Failure>(bytes)
         })
-    })
+    })?;
+    let native = crate::worker_error::finish(native)?;
+    let _copy = meter
+        .charge(unityrs_core::limits::heap_cost(native.len() as u64))
+        .map_err(errors::charge)?;
+    p::bytes(&native)
 }
 
 type ExternalSnapshot = (
@@ -177,19 +180,19 @@ fn snapshot_externals(
 fn external_snapshot(
     rows: &[ExternalSnapshot],
     meter: &std::sync::Arc<unityrs_core::limits::Meter>,
-) -> PyResult<MeteredVec<External>> {
-    let mut entries = MeteredVec::with_capacity(meter, rows.len()).map_err(errors::charge)?;
+) -> crate::worker_error::Result<MeteredVec<External>> {
+    let mut entries = MeteredVec::with_capacity(meter, rows.len()).map_err(Failure::charge)?;
     for (empty, guid, kind, path) in rows {
         let mut entry =
-            External::new(RawStr::charged(path.as_ref(), meter).map_err(errors::charge)?);
+            External::new(RawStr::charged(path.as_ref(), meter).map_err(Failure::charge)?);
         entry.temp_empty = empty
             .as_ref()
             .map(|v| RawStr::charged(v.as_ref(), meter))
             .transpose()
-            .map_err(errors::charge)?;
+            .map_err(Failure::charge)?;
         entry.guid = guid.as_ref().map(|v| ShortArray::from_slice(v));
         entry.kind = *kind;
-        entries.push(entry).map_err(errors::charge)?;
+        entries.push(entry).map_err(Failure::charge)?;
     }
     Ok(entries)
 }

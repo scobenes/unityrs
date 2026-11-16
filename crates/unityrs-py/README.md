@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=78
+python scripts/unittest-suites crates/unityrs-py/python/tests=80
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=228
+python ../../scripts/unittest-suites bindings=235
 ```
 
-The recorder writes 163 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups, 29 tools/module/loader groups and 20 Y6a groups),
+The recorder writes 169 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups, 29 tools/module/loader groups and 26 Y6a groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,9 +40,10 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 78 tests and the oracle comparison has 228; CI enforces both
-minimum counts. Warning handlers run on the calling Python thread before a
-fallback load is published, including handlers that re-enter the environment.
+The wheel suite has 80 tests and the oracle comparison has 235; CI enforces both
+minimum counts. Exception translation and Python handoff run on the calling
+thread after the native worker joins. Warning handlers run on that thread before
+a fallback load is published, including handlers that re-enter the environment.
 
 ```python
 import unityrs
@@ -71,8 +72,10 @@ including when a Python thread has a small stack. Native container destruction
 is iterative on the releasing thread, including wrapper failure cleanup.
 The already charged entry tables form its work list: teardown allocates no
 storage and creates no workers, even with a full budget or refused allocator.
-Conversion uses an explicit metered work stack. Files and objects retain strong
-parent links, and a weak wrapper cache preserves identity without retaining
+Conversion uses an explicit metered work stack. Object reads hand a flat, metered
+construction plan to the caller; recursive native values are destroyed on the
+parser worker, including failed `check_read` results. Files and objects retain
+strong parent links, and a weak wrapper cache preserves identity without retaining
 replaced files forever. An environment lock serializes loads and wrapper
 publication. Stream reads accumulate bounded chunks up to `max_input_bytes + 1` bytes, restore
 the original position, and refuse oversized input before parsing. ZIP members
@@ -213,11 +216,12 @@ verified by the namespace checks. Standalone Brotli uses the core's bounded
 inflater and stored-metablock writer: decoded bytes replay against UnityPy;
 compressed bytes retain the existing Tier B difference from its quality-11 writer.
 
-Y6a's `replays_unitypy_residue_observations` replays 20 additional groups.
+Y6a's `replays_unitypy_residue_observations` replays 26 additional groups.
 They cover the loader edge cases, synthetic object-mode residue and Transform,
 damaged AssetInfo preloads, current material texture names, raw float WAVs and
-forced helper parsing. Original oracle failures remain beside each corrected
-reference; non-class module attributes are probed in isolated oracle children.
+forced helper parsing, detached saves and mutations, constructor reader state
+and compressed-reader failures. Original oracle failures remain beside each
+corrected reference; non-class module attributes are probed in isolated oracle children.
 The input limits, charged staging and dependency confinement above apply to
 these adapters too. No dependency or bundled runtime schema is added.
 
@@ -236,3 +240,11 @@ A nonzero parser cursor, or a non-default endian for Assets/Bundle parsing,
 raises a recorded `NotImplementedError` before parsing; this prevents silently
 parsing a different reader state. Raw-type selections preserve the original
 reader and cursor. PARITY.md 19.3 records both refusals beside the oracle results.
+
+Successful forced constructors apply their final cursor and endian to the input
+reader. Compressed WebFiles keep the outer reader at its constructor state;
+short-read errors use the decoded reader's kind and size. Detached files and
+descendants expose `environment=None` while retaining a private synchronization
+owner for saves, object edits and lazy node publication. These cases replay
+`binding_y6_review` and compare with the pinned oracle; exception lookup
+reentrancy also runs under the Rust `DEADLOCK_GUARD`.

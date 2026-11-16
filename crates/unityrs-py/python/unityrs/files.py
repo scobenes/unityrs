@@ -5,7 +5,6 @@ import os
 import struct
 import weakref
 from collections import namedtuple
-from contextlib import nullcontext
 from types import SimpleNamespace
 from .enums import ClassIDType, BuildTarget
 from .helpers.UnityVersion import UnityVersion
@@ -21,6 +20,9 @@ class File:
         self.name = os.path.basename(self.name)
         self.parent = parent
         self.environment = environment
+        # Detached constructors clear the public environment, while all file
+        # and object operations keep sharing this owner's reentrant lock.
+        self._sync_owner = environment
         self.is_dependency = dependency
         self.is_changed = False
         self.cab_file = "CAB-UnityPy_Mod.resS"
@@ -52,7 +54,7 @@ class File:
 
     def mark_changed(self):
         # files/File.py:145-148: propagation includes Python-visible parents.
-        with self.environment._lock:
+        with self._sync_owner._lock:
             self._native.mark_changed()
             current = self
             while isinstance(current, File):
@@ -64,7 +66,7 @@ class File:
         name = name or self.cab_file
         if not name:
             return None
-        with self.environment._lock:
+        with self._sync_owner._lock:
             if name in self.files:
                 if isinstance(self.files[name], _CabWriter):
                     return self.files[name]
@@ -178,7 +180,7 @@ class SerializedFile(File):
         return self._container
 
     def save(self, packer=None):
-        with self.environment._lock:
+        with self._sync_owner._lock:
             guard = self._native.tree_traversal()
             count = len(self.objects)
             guard.step(0, 512 + count * 256, count * (count.bit_length() + 1))
@@ -209,7 +211,7 @@ class SerializedFile(File):
         if not isinstance(self.parent, (BundleFile, WebFile)):
             return None
         import uuid
-        with self.environment._lock:
+        with self._sync_owner._lock:
             guard = self._native.tree_traversal()
             size = str.__len__(name) if isinstance(name, str) else len(name)
             own_size = str.__len__(self.name) if isinstance(self.name, str) else len(self.name)
@@ -245,7 +247,7 @@ class BundleFile(File):
         return rows
 
     def save(self, packer=None):
-        with self.environment._lock:
+        with self._sync_owner._lock:
             if (self.signature == "UnityFS" and packer
                     and packer not in ("none", "original", "lz4", "lzma", "lz4hc")
                     and not isinstance(packer, tuple)):
@@ -260,7 +262,7 @@ class BundleFile(File):
         return data.index(b"\0", position) + 1
 
     def save_fs(self, writer, data_flag, block_info_flag):
-        with self.environment._lock:
+        with self._sync_owner._lock:
             guard = self._native.tree_traversal()
             data = self._native.save_bundle_entries("fs", self._save_rows(guard), None, (data_flag, block_info_flag), self._save_header(guard))
             head = self._body_offset(data)
@@ -305,7 +307,7 @@ class BundleFile(File):
             writer.Position = end_position
 
     def save_web_raw(self, writer):
-        with self.environment._lock:
+        with self._sync_owner._lock:
             guard = self._native.tree_traversal()
             data = self._native.save_bundle_entries("web_raw", self._save_rows(guard), None, (64, 64), self._save_header(guard))
             start = self._body_offset(data)
@@ -335,7 +337,7 @@ class BundleFile(File):
 
 class WebFile(File):
     def save(self, files=None, packer="none", signature="UnityWebData1.0"):
-        with self.environment._lock:
+        with self._sync_owner._lock:
             guard = self._native.tree_traversal()
             guard.step(0, 256, 1)
             rows = []
@@ -513,7 +515,7 @@ class ObjectReader:
 
     def set_raw_data(self, data):
         # files/ObjectReader.py:181-184: reads retain the original byte source.
-        with self.assets_file.environment._lock:
+        with self.assets_file._sync_owner._lock:
             try:
                 self._native.set_raw_data(data)
             except (TypeError, ValueError, BufferError):
@@ -536,7 +538,7 @@ class ObjectReader:
 
     def save_typetree(self, tree, nodes=None, writer=None):
         # files/ObjectReader.py:264-276: explicit node selection also applies to writes.
-        with self.assets_file.environment._lock:
+        with self.assets_file._sync_owner._lock:
             node = self._get_typetree_node(nodes)
             rows = node._native_rows(use_boost=False, _guard=self._native.tree_traversal())
             data = self._native.save_typetree(
@@ -596,7 +598,7 @@ class ObjectReader:
     def read_typetree(self, nodes=None, wrap=False, check_read=True, *, as_dict=None):
         if as_dict is not None:
             wrap = not as_dict
-        with (self.assets_file.environment._lock if self.assets_file.environment is not None else nullcontext()):
+        with self.assets_file._sync_owner._lock:
             rows = None
             if (nodes is not None or (self.class_id == 114 and not self._has_embedded_nodes) or "_node" in self.__dict__
                     or self.type_id in self.assets_file._type_nodes or self.assets_file._head_nodes):
@@ -664,7 +666,7 @@ class ObjectReader:
     def _get_typetree_node(self, node=None, *, _guard=None):
         # Export releases the GIL. The lock must cover the check, rebuild and
         # publication together, including HEAD identities shared across types.
-        with (self.assets_file.environment._lock if self.assets_file.environment is not None else nullcontext()):
+        with self.assets_file._sync_owner._lock:
             from ._monobehaviour import generated_node
             base = self._get_typetree_node_locked(node, _guard)
             return generated_node(self, base) if node is None else base

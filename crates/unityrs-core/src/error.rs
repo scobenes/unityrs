@@ -40,6 +40,10 @@ pub enum Error {
         need: u64,
         /// Bytes left.
         have: u64,
+        /// Rules of the reader whose read failed.
+        reader: crate::stream::ReaderKind,
+        /// Size of that reader's buffer, including after decompression.
+        length: usize,
     },
     /// Input UnityPy rejects with an exception other than a short read.
     #[error("malformed {what}: {detail}")]
@@ -398,6 +402,8 @@ mod tests {
             pos: -1,
             need: 1,
             have: 0,
+            reader: crate::stream::ReaderKind::Memory,
+            length: 0,
         };
         assert_eq!(e.to_string(), "u8: out of bounds at -1 (need 1, have 0)");
         let far = Error::OutOfBounds {
@@ -405,6 +411,8 @@ mod tests {
             pos: i128::from(i64::MAX) + 144,
             need: 1,
             have: 0,
+            reader: crate::stream::ReaderKind::Memory,
+            length: 0,
         };
         assert!(far.to_string().contains("9223372036854775951"));
     }

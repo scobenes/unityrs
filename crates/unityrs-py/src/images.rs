@@ -2,6 +2,7 @@
 //! Image storage handoff for `export/Texture2DConverter.py:237-320` and
 //! `export/SpriteHelper.py:62-127`. Python owns Pillow objects; decoding,
 //! encoding and sprite raster work use the existing metered Rust ports.
+use crate::worker_error::Failure;
 use crate::{errors, object::NativeObject, python as p};
 use pyo3::{
     exceptions::{PyMemoryError, PyNotImplementedError, PyTypeError, PyValueError},
@@ -52,47 +53,43 @@ fn _image_resource(
         ));
     };
     let path = crate::buffer_snapshot::BufferSnapshot::new(path, file.meter())?;
-    py.detach(|| {
-        crate::worker::run(crate::worker::load_stack(&file.context().limits), || {
-            let stream = unityrs_texture::fetch::Stream {
-                path: unityrs_core::RawStr::charged(&path, file.meter()).map_err(errors::charge)?,
-                offset,
-                size,
-            };
-            let (offset, size, slice) = match stream.span() {
-                unityrs_texture::fetch::Span::Range(offset, size) => (offset, size, None),
-                unityrs_texture::fetch::Span::Slice(start, stop) => {
-                    (0, u64::MAX, Some((start, stop)))
-                }
-            };
-            let bytes = env
-                .inner
-                .resource(file, &stream.path, offset, size)
-                .map_err(|error| errors::resource(error, &stream.path))?;
-            let data = if let Some((start, stop)) = slice {
-                bytes
-                    .get(unityrs_texture::fetch::python_slice(
-                        bytes.len(),
-                        start,
-                        stop,
-                    ))
-                    .unwrap_or_default()
-            } else {
-                &bytes
-            };
-            let cost = unityrs_core::limits::heap_cost(data.len() as u64);
-            // A facade decode retains the Python resource bytes beyond this
-            // fetch, alongside blob and pixel staging. Its traversal owns
-            // that reservation until the entire image operation returns.
-            let _copy = if let Some(guard) = &guard {
-                crate::traversal::TreeTraversal::shared_step(guard, cost, 0)?;
-                None
-            } else {
-                Some(file.meter().charge(cost).map_err(errors::charge)?)
-            };
-            p::bytes(data)
-        })
-    })
+    let stream = unityrs_texture::fetch::Stream {
+        path: unityrs_core::RawStr::charged(&path, file.meter()).map_err(errors::charge)?,
+        offset,
+        size,
+    };
+    let (offset, size, slice) = match stream.span() {
+        unityrs_texture::fetch::Span::Range(offset, size) => (offset, size, None),
+        unityrs_texture::fetch::Span::Slice(start, stop) => (0, u64::MAX, Some((start, stop))),
+    };
+    let bytes = py
+        .detach(|| {
+            crate::worker::run(crate::worker::load_stack(&file.context().limits), || {
+                env.inner
+                    .resource(file, &stream.path, offset, size)
+                    .map_err(Failure::core)
+            })
+        })?
+        .map_err(|error: Failure| error.resource(&stream.path))?;
+    let data = if let Some((start, stop)) = slice {
+        bytes
+            .get(unityrs_texture::fetch::python_slice(
+                bytes.len(),
+                start,
+                stop,
+            ))
+            .unwrap_or_default()
+    } else {
+        &bytes
+    };
+    let cost = unityrs_core::limits::heap_cost(data.len() as u64);
+    let _copy = if let Some(guard) = &guard {
+        crate::traversal::TreeTraversal::shared_step(guard, cost, 0)?;
+        None
+    } else {
+        Some(file.meter().charge(cost).map_err(errors::charge)?)
+    };
+    p::bytes(data)
 }
 
 fn meter(reader: Option<&NativeObject>) -> Arc<Meter> {
@@ -121,7 +118,7 @@ fn exception(class: &str, message: String) -> PyErr {
     })
 }
 
-fn decode_error(error: DecodeError, format: i32) -> PyErr {
+pub(crate) fn decode_error(error: DecodeError, format: i32) -> PyErr {
     match error {
         DecodeError::Charge(e) => errors::charge(e),
         DecodeError::NoImageData => PyValueError::new_err("Texture2D has no image data"),
@@ -143,7 +140,7 @@ fn decode_error(error: DecodeError, format: i32) -> PyErr {
     }
 }
 
-fn write_error(error: unityrs_texture::write::WriteError) -> PyErr {
+pub(crate) fn write_error(error: unityrs_texture::write::WriteError) -> PyErr {
     use unityrs_texture::write::WriteError;
     match error {
         WriteError::Charge(e) => errors::charge(e),
@@ -152,7 +149,7 @@ fn write_error(error: unityrs_texture::write::WriteError) -> PyErr {
     }
 }
 
-fn sprite_error(error: unityrs_texture::sprite::SpriteError) -> PyErr {
+pub(crate) fn sprite_error(error: unityrs_texture::sprite::SpriteError) -> PyErr {
     if let unityrs_texture::sprite::SpriteError::Charge(e) = error {
         return errors::charge(e);
     }
@@ -198,7 +195,7 @@ fn _image_decode(
         .map(|v| crate::buffer_snapshot::BufferSnapshot::new(v, &meter))
         .transpose()?;
     let limits = reader.map_or_else(Limits::default, |r| r.inner.file().context().limits);
-    py.detach(move || {
+    let native = py.detach(|| {
         crate::worker::run(limits.stack_needed(), || {
             let fields = TextureFields {
                 texture_format,
@@ -216,10 +213,12 @@ fn _image_decode(
                 };
             }
             let image = unityrs_texture::decode_in_as(format, &fields, &data, &meter)
-                .map_err(|e| decode_error(e, texture_format))?;
-            output(&image, &meter)
+                .map_err(|error| Failure::Decode(error, texture_format))?;
+            Ok::<_, Failure>(image)
         })
-    })
+    })?;
+    let native = crate::worker_error::finish(native)?;
+    output(&native, &meter)
 }
 
 #[pyfunction]
@@ -248,12 +247,12 @@ fn _image_encode(
         .map(|v| crate::buffer_snapshot::BufferSnapshot::new(v, &meter))
         .transpose()?;
     let limits = reader.map_or_else(Limits::default, |r| r.inner.file().context().limits);
-    py.detach(move || {
+    let native = py.detach(|| {
         crate::worker::run(limits.stack_needed(), || {
             // Python resizes each mip with Pillow, so the core sees one
             // level at a time. Retain its gate for the requested mip count.
             if switch_mips {
-                return Err(write_error(
+                return Err(Failure::Write(
                     unityrs_texture::write::WriteError::Unsupported("Switch mip chain"),
                 ));
             }
@@ -262,14 +261,14 @@ fn _image_encode(
                 "A" => {
                     meter
                         .count_decode(data.len() as u64)
-                        .map_err(errors::charge)?;
+                        .map_err(Failure::charge)?;
                     alpha
                         .reserve(data.len().saturating_mul(2))
-                        .map_err(errors::charge)?;
+                        .map_err(Failure::charge)?;
                     for &byte in data.iter() {
                         alpha
                             .extend_from_slice(&[byte, byte])
-                            .map_err(errors::charge)?;
+                            .map_err(Failure::charge)?;
                     }
                     ("LA", alpha.as_slice())
                 }
@@ -278,7 +277,7 @@ fn _image_encode(
                 _ => ("RGBA", data.as_ref()),
             };
             let source = unityrs_texture::write::Source::new(width, height, mode, data, None)
-                .map_err(write_error)?;
+                .map_err(Failure::Write)?;
             let encoded = unityrs_texture::write::image_to_texture2d(
                 &source,
                 unityrs_texture::write::Options {
@@ -290,16 +289,18 @@ fn _image_encode(
                 },
                 &meter,
             )
-            .map_err(write_error)?;
-            let _charge = meter
-                .charge((encoded.data.len() as u64).saturating_add(512))
-                .map_err(errors::charge)?;
-            let out = p::list()?;
-            p::push(&out, &p::bytes(&encoded.data)?)?;
-            p::push(&out, &p::int(i64::from(encoded.format))?)?;
-            Ok(out)
+            .map_err(Failure::Write)?;
+            Ok::<_, Failure>(encoded)
         })
-    })
+    })?;
+    let native = crate::worker_error::finish(native)?;
+    let _charge = meter
+        .charge((native.data.len() as u64).saturating_add(512))
+        .map_err(errors::charge)?;
+    let out = p::list()?;
+    p::push(&out, &p::bytes(&native.data)?)?;
+    p::push(&out, &p::int(i64::from(native.format))?)?;
+    Ok(out)
 }
 
 #[pyfunction]
@@ -335,7 +336,7 @@ fn _sprite_render(
     } else {
         None
     };
-    py.detach(move || {
+    let native = py.detach(|| {
         crate::worker::run(limits.stack_needed(), || {
             let mode = match mode.as_str() {
                 "RGB" => Mode::Rgb,
@@ -343,9 +344,9 @@ fn _sprite_render(
                 _ => Mode::L,
             };
             let image = unityrs_texture::image_from_pixels(mode, width, height, &data, &meter)
-                .map_err(|e| decode_error(e, 4))?;
-            let sheet =
-                unityrs_texture::sprite::Sheet::new(&image, None, &meter).map_err(sprite_error)?;
+                .map_err(|error| Failure::Decode(error, 4))?;
+            let sheet = unityrs_texture::sprite::Sheet::new(&image, None, &meter)
+                .map_err(Failure::Sprite)?;
             let parsed = snapshot
                 .map(crate::value_input::Snapshot::build)
                 .transpose()?;
@@ -368,8 +369,10 @@ fn _sprite_render(
                 },
                 &meter,
             )
-            .map_err(sprite_error)?;
-            output(&image, &meter)
+            .map_err(Failure::Sprite)?;
+            Ok::<_, Failure>(image)
         })
-    })
+    })?;
+    let native = crate::worker_error::finish(native)?;
+    output(&native, &meter)
 }

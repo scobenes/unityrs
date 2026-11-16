@@ -153,11 +153,13 @@ impl BundleFile {
         let (ends, c) = Ends::new(blocks.len(), meter)?;
         charge.absorb(c);
         let runs = RunIndex::mutex(&mut charge)?;
+        let constructor_position = r.position();
         Ok(Arc::new_cyclic(|this| Self {
             writable: crate::files::cab::WritableCabs::new(meter),
             changed: std::sync::atomic::AtomicBool::new(false),
             name,
             source: data,
+            constructor_position,
             legacy_data: None,
             header,
             blocks,

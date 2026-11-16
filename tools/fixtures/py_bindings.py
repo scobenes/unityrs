@@ -94,6 +94,10 @@ RESIDUE = [("binding_y6_loader", "observe_" + name) for name in
      ("material_textures", "audio_float", "audio_options")] + [
     ("binding_y6_parse", "observe_" + name) for name in
     ("forced_raw", "forced_parsers", "forced_failures", "forced_positions")
+] + [
+    ("binding_y6_review", "observe_" + name) for name in
+    ("detached_save", "detached_mark", "detached_raw", "detached_patch",
+     "constructor_states", "compressed_failures")
 ]
 
 

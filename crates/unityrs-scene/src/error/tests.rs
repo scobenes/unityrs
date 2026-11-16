@@ -133,6 +133,8 @@ fn all_core_and_detection_variants_preserve_the_refusal_policy() {
             pos: 0,
             need: 1,
             have: 0,
+            reader: unityrs_core::stream::ReaderKind::Memory,
+            length: 0,
         },
         Error::Malformed {
             what: "test",
