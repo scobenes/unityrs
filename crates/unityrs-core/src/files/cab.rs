@@ -104,6 +104,12 @@ impl WriteableCab {
         data.bytes(bytes)?;
         Ok(at)
     }
+    /// Write at a caller-selected cursor, retaining the tail and zero-filling
+    /// any gap. A refused growth or work charge leaves the bytes unchanged.
+    pub fn write_at(&self, offset: u64, bytes: &[u8]) -> Result<(), SaveError> {
+        let offset = super::save::narrow(offset, "CAB offset")?;
+        lock(&self.0.data).write_at(offset, bytes)
+    }
     /// Write a signed integer using the inherited endian.
     pub fn write_i32(&self, value: i32) -> Result<(), SaveError> {
         lock(&self.0.data).i32(value)

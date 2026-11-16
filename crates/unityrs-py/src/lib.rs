@@ -12,21 +12,30 @@ mod class_tpk;
 mod construction;
 mod environment;
 mod errors;
+mod exports;
 mod files;
+mod images;
 mod object;
 mod object_nodes;
 mod python;
 #[cfg(test)]
 mod row_copy_test;
+mod save;
 mod settings;
 mod tpk;
 mod traversal;
 mod tree;
 mod value;
+mod value_input;
+#[cfg(test)]
+mod value_input_tests;
 mod worker;
 
 #[pymodule(name = "_native")]
 fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    exports::register(m)?;
+    images::register(m)?;
+    m.add_class::<save::NativeCab>()?;
     m.add_function(wrap_pyfunction!(class_tpk::class_tpk_lz4, m)?)?;
     m.add_class::<environment::NativeEnvironment>()?;
     m.add_class::<files::NativeFile>()?;

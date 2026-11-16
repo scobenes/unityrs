@@ -83,13 +83,31 @@ pub fn write(
     ctx: &WriteCtx<'_>,
     out: &mut DecodeBuf,
 ) -> Result<(), WriteError> {
+    write_at(parsed, tree, ctx, out, out.len())
+}
+
+/// Append an object while aligning relative to a caller's stream origin.
+/// UnityPy's supplied writer aligns its complete stream, including any prefix
+/// (`streams/EndianBinaryWriter.py:88-97`). An origin past the current output
+/// refuses before writing. [`write`] retains object-relative alignment.
+pub fn write_at(
+    parsed: &Parsed,
+    tree: &Tree,
+    ctx: &WriteCtx<'_>,
+    out: &mut DecodeBuf,
+    alignment_origin: usize,
+) -> Result<(), WriteError> {
+    if alignment_origin > out.len() {
+        return Err(WriteError::OutOfRange {
+            node: RawStr::from_static(b"writer alignment origin"),
+        });
+    }
     let meter = out.meter().clone();
     let open = OpenWork::start(&meter).map_err(WriteError::Limit)?;
-    let base = out.len();
     let mut w = Writer {
         parsed,
         out,
-        base,
+        base: alignment_origin,
         big: ctx.endian == crate::stream::Endian::Big,
         mirror: match ctx.rules {
             WriteRules::UnityPy => None,
@@ -117,8 +135,7 @@ pub fn write(
 struct Writer<'a, 'o> {
     parsed: &'a Parsed,
     out: &'o mut DecodeBuf,
-    /// Where this object's bytes start in `out` (`align_stream` aligns the
-    /// writer's own stream, which starts at the object).
+    /// Alignment origin of the caller's stream within `out`.
     base: usize,
     big: bool,
     /// The reader whose rules [`WriteRules::MirrorReader`] writes by (the
@@ -211,7 +228,7 @@ impl<'a> Writer<'a, '_> {
     }
 
     /// `align_stream` (`EndianBinaryWriter.py:94-97`): zeros to a multiple
-    /// of 4 from the object's start.
+    /// of 4 from the selected stream origin.
     fn align(&mut self) -> Result<(), WriteError> {
         let pos = self.out.len().saturating_sub(self.base);
         let pad = (4 - pos % 4) % 4;

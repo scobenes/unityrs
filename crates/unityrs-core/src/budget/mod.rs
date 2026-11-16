@@ -679,6 +679,37 @@ impl DecodeBuf {
         Ok(())
     }
 
+    /// Patch existing bytes, extending with a zero-filled gap when needed.
+    /// Every fallible check precedes the first byte mutation.
+    pub(crate) fn write_at(&mut self, offset: usize, data: &[u8]) -> Result<(), ChargeError> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        let refused =
+            || ChargeError::Limit(LimitError::refused(self.seg_kind, u64::MAX, self.seg_cap));
+        let end = offset.checked_add(data.len()).ok_or_else(refused)?;
+        let old = self.buf.len();
+        let overlap = old.saturating_sub(offset).min(data.len());
+        let (prefix, suffix) = data.split_at_checked(overlap).ok_or_else(refused)?;
+        let gap = offset.saturating_sub(old);
+        let work = if self.count_writes {
+            u64::try_from(gap.saturating_add(data.len())).unwrap_or(u64::MAX)
+        } else {
+            0
+        };
+        let credit = work.min(self.prepaid);
+        self.make_room(end.saturating_sub(old), work - credit)?;
+        self.prepaid -= credit;
+        if gap > 0 {
+            self.buf.resize(offset, 0);
+        }
+        if let Some(target) = self.buf.get_mut(offset..offset.saturating_add(overlap)) {
+            target.copy_from_slice(prefix);
+        }
+        self.buf.extend_from_slice(suffix);
+        Ok(())
+    }
+
     /// Appends `n` zero bytes and returns them for a decoder to fill; cut the
     /// unused tail with [`Self::truncate`]. All `n` count as written.
     pub fn grow_zeroed(&mut self, n: usize) -> Result<&mut [u8], ChargeError> {

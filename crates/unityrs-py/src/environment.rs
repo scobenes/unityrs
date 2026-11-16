@@ -70,6 +70,50 @@ impl unityrs_core::config::FallbackWarningSink for FallbackWarning {
 }
 #[pymethods]
 impl NativeEnvironment {
+    fn resource(
+        &self,
+        py: Python<'_>,
+        file: &NativeFile,
+        path: PyBackedBytes,
+        offset: i128,
+        size: i128,
+    ) -> PyResult<Py<PyAny>> {
+        let unityrs_core::File::Serialized(file) = &file.inner else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "resource owner is not a SerializedFile",
+            ));
+        };
+        py.detach(move || {
+            crate::worker::run(crate::worker::load_stack(&file.context().limits), || {
+                let path = RawStr::charged(&path, file.meter()).map_err(errors::charge)?;
+                let stream = unityrs_texture::fetch::Stream { path, offset, size };
+                let (offset, size, slice) = match stream.span() {
+                    unityrs_texture::fetch::Span::Range(offset, size) => (offset, size, None),
+                    unityrs_texture::fetch::Span::Slice(start, stop) => {
+                        (0, u64::MAX, Some((start, stop)))
+                    }
+                };
+                let bytes = self
+                    .inner
+                    .resource(file, &stream.path, offset, size)
+                    .map_err(|error| errors::resource(error, &stream.path))?;
+                let bytes = if let Some((start, stop)) = slice {
+                    bytes.slice(unityrs_texture::fetch::python_slice(
+                        bytes.len(),
+                        start,
+                        stop,
+                    ))
+                } else {
+                    bytes
+                };
+                let _copy = file
+                    .meter()
+                    .charge(unityrs_core::limits::heap_cost(bytes.len() as u64))
+                    .map_err(errors::charge)?;
+                p::bytes(&bytes)
+            })
+        })
+    }
     #[new]
     #[pyo3(signature = (limits=None, budget=None, tpk=None))]
     fn new(

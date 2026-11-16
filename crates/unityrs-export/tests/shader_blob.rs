@@ -166,9 +166,12 @@ fn rendering_charges_before_utf8_and_metal_failure_paths() {
             );
             assert_eq!(meter.used(), 0);
         }
+        // Invalid UTF-8 errors retain a metered copy of the decoded source
+        // for Python's UnicodeDecodeError.object and exact error span.
+        let error_copy = if kind == 1 { code.len() as u64 } else { 0 };
         let meter = Meter::with_decode_work(
             u64::MAX,
-            before + scan,
+            before + scan + error_copy,
             Arc::new(Unbounded),
             Reservation::Input,
         );

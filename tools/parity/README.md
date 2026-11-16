@@ -21,7 +21,11 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `binding_y3_objects.py` | Y3 ObjectReader helpers and embedded typetree observations, including the vendored HEAD reader |
 | `binding_y3_tree.py` | Y3 mutable TypeTreeNode construction, traversal, parsing, dumping and cache behavior |
 | `binding_y3_values.py` | Y3 handwritten enum members and lookup tables, unknown members, and UnityVersion parsing and comparisons |
-| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=61`); requires `unityrs` and UnityPy 1.25.2, and never skips |
+| `binding_y4_exports.py` | Y4 current class export and audio observations on synthetic shader, mesh and PCM inputs |
+| `binding_y4_images.py`, `binding_y4_images_matrix.py` | Y4 images, texture editing, sprites and platform/format observations; no generated schemas |
+| `binding_y4_save.py` | Y4 object, file, bundle, WebFile, CAB and environment save observations |
+| `encoder_probe.py`, `encoder_probe.cpp` | B3b scalar/invariant texture encoder build and instruction-set probe against the oracle wheels |
+| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=94`); requires `unityrs` and UnityPy 1.25.2, and never skips |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |
 | `child.py` | how every Python test and tool here runs a child process: a child the system killed (SIGKILL) is run again, up to `KILLED_RUNS` runs, any other ending comes back at once, and each run gets a scratch folder its parent removes (standard library only) |
 | `scratch.py` | where every Python test and tool here writes outside its memory: scratch folders removed whatever happens, a test's with its cleanups, a child's with its run, a dead process's at the next sweep (standard library only) |

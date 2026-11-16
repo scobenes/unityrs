@@ -107,6 +107,7 @@ class Environment:
             else:
                 key, child = entry
                 item, frame = create(child, owner)
+                item.flags = getattr(owner, "_entry_flags", {}).get(key, 0)
                 owner.files[key] = item
                 if frame is not None:
                     pending.append(frame)
@@ -335,6 +336,15 @@ class Environment:
 
     def register_cab(self, name, item):
         self.cabs[ntpath.basename(name).lower()] = item
+
+    @_locked
+    def save(self, pack="none", out_path="output"):
+        # environment.py:176-184: local writes, basename collisions and no mkdir.
+        separator = getattr(self, "fs", os).sep
+        for name, file in self.files.items():
+            if getattr(file, "is_changed", False):
+                with open(separator.join([out_path, ntpath.basename(name)]), "wb") as output:
+                    output.write(file.save(packer=pack))
 
 
 load = Environment

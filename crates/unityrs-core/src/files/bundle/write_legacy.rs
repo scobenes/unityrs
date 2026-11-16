@@ -13,16 +13,37 @@ impl BundleFile {
     /// directory padded to four bytes. UnityWeb uses a size-prefixed raw
     /// LZMA1 stream. Format 6 belongs to `save_fs` instead.
     pub fn save_web_raw(&self, options: SaveOptions) -> Result<Bytes, SaveError> {
+        self.save_web_raw_impl(options, None)
+    }
+
+    /// Save legacy layout using caller-owned, metered serialized child snapshots.
+    pub fn save_web_raw_with_entries(
+        &self,
+        options: SaveOptions,
+        entries: &[(crate::RawStr, u32, Bytes)],
+    ) -> Result<Bytes, SaveError> {
+        self.save_web_raw_impl(options, Some(entries))
+    }
+
+    pub(super) fn save_web_raw_impl(
+        &self,
+        options: SaveOptions,
+        entries: Option<&[(crate::RawStr, u32, Bytes)]>,
+    ) -> Result<Bytes, SaveError> {
         self.save_version()?;
         if self.header.layout != LayoutKind::WebRaw {
             return Err(SaveError::Unsupported("legacy layout on an FS bundle"));
         }
         let mut directory_size = 4usize;
-        let cabs = self.writeable_cabs()?;
+        let cabs = if entries.is_some() {
+            crate::limits::MeteredVec::new(self.meter())
+        } else {
+            self.writeable_cabs()?
+        };
         for cab in cabs.as_slice() {
             cab.validate_name(options.layout, false)?;
         }
-        for slot in &self.files {
+        for slot in self.files.iter().filter(|_| entries.is_none()) {
             self.meter().count_decode(8)?;
             let nul = usize::from(
                 options.layout != SaveLayout::Semantic
@@ -37,11 +58,24 @@ impl BundleFile {
             );
             directory_size = add(directory_size, add(cab.name().len(), 8 + nul)?)?;
         }
+        if let Some(entries) = entries {
+            for (name, _, _) in entries {
+                self.meter().count_decode(8)?;
+                let nul = usize::from(
+                    options.layout != SaveLayout::Semantic
+                        || name.len() != crate::stream::STRING_TO_NULL_WINDOW,
+                );
+                directory_size = add(directory_size, add(name.len(), 8 + nul)?)?;
+            }
+        }
         directory_size = aligned(directory_size, 4)?;
         let mut directory = Writer::metadata(self.meter(), Endian::Big, options.layout)?;
         let mut payload = Writer::new(self.meter(), Endian::Big)?;
-        directory.count(add(self.files.len(), cabs.len())?)?;
-        for slot in &self.files {
+        directory.count(entries.map_or_else(
+            || add(self.files.len(), cabs.len()),
+            |entries| Ok(entries.len()),
+        )?)?;
+        for slot in self.files.iter().filter(|_| entries.is_none()) {
             self.meter().count_decode(8)?;
             let bytes = self.save_child(slot.dir_index, options)?;
             directory.cstr(slot.name.as_bytes())?;
@@ -51,6 +85,18 @@ impl BundleFile {
             )?)?;
             directory.u32(narrow(bytes.len(), "legacy entry size")?)?;
             payload.bytes(&bytes)?;
+        }
+        if let Some(entries) = entries {
+            for (name, _, bytes) in entries {
+                self.meter().count_decode(8)?;
+                directory.cstr(name.as_bytes())?;
+                directory.u32(narrow(
+                    add(directory_size, payload.len())?,
+                    "legacy entry offset",
+                )?)?;
+                directory.u32(narrow(bytes.len(), "legacy entry size")?)?;
+                payload.bytes(bytes)?;
+            }
         }
         for cab in cabs.as_slice() {
             let bytes = cab.save()?;
@@ -67,6 +113,15 @@ impl BundleFile {
         // there is no unterminated string at the end of this directory.
         directory.bytes(payload.slice())?;
         drop(payload);
+        self.save_legacy_content(options, directory_size, directory)
+    }
+
+    fn save_legacy_content(
+        &self,
+        options: SaveOptions,
+        directory_size: usize,
+        directory: Writer,
+    ) -> Result<Bytes, SaveError> {
         let uncompressed_size = directory.len();
         let data = if self.header.signature.as_bytes() == b"UnityWeb" {
             let compressed = encode::compress(directory.slice(), Codec::Lzma, self.meter())?;

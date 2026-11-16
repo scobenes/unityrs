@@ -5,7 +5,8 @@ The bindings provide local-path and byte loading, eager files and object discove
 Y3 adds mutable `TypeTreeNode` helpers,
 explicit-node dict reads, `peek_name`, `ContainerHelper`, mutable loader config,
 `UnityVersion` and the handwritten enums and lookup tables. It uses PyO3 0.29.3's Python 3.10+
-abi3 interface and maturin 1.9.6. PyO3's MIT/Apache-2.0 licence is already
+abi3 interface and maturin 1.9.6. Y4 adds current-value images, samples, class
+exports, texture editing and object/file/environment saves. PyO3's licence is already
 accepted by the repository. The wheel includes `THIRD_PARTY_LICENSES`.
 
 From the repository root, with maturin installed in a build venv:
@@ -13,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=49
+python scripts/unittest-suites crates/unityrs-py/python/tests=61
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -23,10 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=61
+python ../../scripts/unittest-suites bindings=94
 ```
 
-The recorder writes 44 synthetic API records (34 Y1 records and 10 Y3 groups),
+The recorder writes 65 synthetic API records (34 Y1 records, 10 Y3 groups and
+21 Y4 groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -38,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 49 tests and the oracle comparison has 61; CI enforces both
+The wheel suite has 61 tests and the oracle comparison has 94; CI enforces both
 minimum counts. Warning handlers run on the calling Python thread before a
 fallback load is published, including handlers that re-enter the environment.
 
@@ -78,10 +80,11 @@ node lookup and publication use the environment's reentrant lock.
 No core call may be in flight in another thread at `fork()`. Use `spawn` or
 `forkserver`, or fork before reading. There is no child-side lock reset.
 
-Image/export and write APIs are Y4; extractor and remaining re-exports are Y5.
+Pillow is an optional runtime import for image access and editing, never a build
+dependency. These calls propagate its import error when Pillow is unavailable.
 Classes use the MIT-licensed attrs dependency for UnityPy-compatible slots,
-constructors, equality and hashing. The bindings have no UnityPy or Pillow
-runtime dependency and bundle no TPK or generated class data. Nonlocal
+constructors, equality and hashing. The bindings do not require UnityPy and
+bundle no TPK or generated class data. Nonlocal
 filesystems remain outside this local-input API.
 
 Importing `unityrs.classes` generates records in memory. Set `UNITYRS_TPK` to a
@@ -131,3 +134,55 @@ Object construction follows UnityPyBoost/TypeTreeHelper.cpp:458-583; zero-byte
 objects follow helpers/TypeTreeHelper.py:233-258 and
 helpers/TypeTreeHelper.py:314-357. Ports of Object, PPtr, UnknownObject and math
 retain the original MIT notices via `LICENSE-UNITYPY` and `THIRD_PARTY_LICENSES`.
+
+Y4's `replays_unitypy_export_observations` replays recorded class API results.
+The installed-wheel comparisons cover current field edits, streamed resources,
+sprite atlases and caches, 256 texture decode cases, raw target promotions and
+filtered mip chains, shader fixtures, PCM/IMA/FADPCM banks, and save packers. Observations
+never store generated class fields or defaults.
+
+| behavior | UnityPy 1.25.2 source | PARITY.md rows |
+|---|---|---|
+| `Texture2D.image`, `get_image_data`, setter and `set_image` | classes/legacy_patch/Texture2D.py:8-11, classes/legacy_patch/Texture2D.py:14-60, classes/legacy_patch/Texture2D.py:63-75 | 14.2, 15.1, 18 |
+| `Sprite.image`, array images | classes/legacy_patch/Sprite.py:4-7, classes/legacy_patch/Texture2DArray.py:12-43; export/SpriteHelper.py:44-127 | 14.2, 15.2 |
+| `AudioClip.samples`, `extension` | classes/legacy_patch/AudioClip.py:5-6, classes/legacy_patch/AudioClip.py:9-12 | 14.2, 16 |
+| `Mesh.export`, `Renderer.export`, `Shader.export` | classes/legacy_patch/Mesh.py:4-7, classes/legacy_patch/Renderer.py:4-7, classes/legacy_patch/Shader.py:4-7 | 14.2, 15.4, 15.5 |
+| inherited `Object.save`, including Font, TextAsset and MonoBehaviour | classes/Object.py:29-33; files/ObjectReader.py:264-276 | 8, 14.1, 18 |
+| file, bundle, WebFile and environment save | files/SerializedFile.py:389-491; files/BundleFile.py:188-487; files/WebFile.py:58-112; environment.py:176-184 | 3, 18 |
+
+Exports use current Python values. `set_image` changes the class fields;
+`Object.save()` installs their serialization, and file/environment save writes
+it. ObjectReader reads keep returning the original bytes until reload, as in
+UnityPy. Writer endian, position and alignment are honored. Core calls release
+the GIL and use the owning input's meter; class snapshots reject cycles and
+bound depth, value count and work. Returned PIL images and sample dictionaries
+belong to Python. The existing `encode` feature is enabled; no new third-party
+dependency is introduced.
+
+PCM, IMA ADPCM and FADPCM use the core decoders. MPEG/Opus and unsupported FMOD
+containers raise `NotImplementedError`; FMOD is never included. For Vorbis,
+set `unityrs.config.AUDIO_VORBIS_HEADERS` to runtime setup-table bytes or a path,
+or set `UNITYRS_VORBIS_HEADERS` to a path. No table is bundled; without supplied
+headers these banks raise `NotImplementedError`. Passthrough Ogg, RIFF and M4A retain their
+bytes. Core Tier B/C/HEAD corrections remain in effect, including integer array
+formats, BC7 encoding, CAB registration and later file layouts; oracle equality
+claims apply to the recorded Tier A cases.
+Mode-packer failures retain their original oracle results beside the Tier C
+reference (UnityPy writing the RGBA-converted input). Switch mip chains retain
+the core's named refusal before changing texture fields.
+Zero-size texture images and empty streamed audio clips retain the core's
+Tier B results, empty RGBA and an empty samples dict, before resource lookup;
+their original oracle exceptions are recorded beside those references.
+
+Y5 still owns the `unityrs.tools` extractor surface: `export_obj`,
+`extract_assets`, `exportTextAsset`, `exportFont`, `exportMesh`, `exportShader`,
+`exportMonoBehaviour`, `exportAudioClip`, `exportSprite`, `exportTexture2D`,
+`exportGameObject`, `crawl_obj`, `flatten` and the extractor dispatch table.
+Font, TextAsset, MonoBehaviour and VideoClip have no class `export()` in 1.25.2;
+their file exporters belong to that tools surface. Y5 also owns the remaining
+package/module re-exports enumerated in PARITY.md 2.1 and 23, including streams
+and export modules, codec maps, the decryption-key entry point and module
+aliases/loop variables. Its final binding rows include GameObject component
+accessors, `File.container` and file-iteration corrections, `ObjectReader.patch`,
+provider/generator hooks, and the unclosed loader/filesystem cases from Y1.
+Y4 does not mark those rows verified.

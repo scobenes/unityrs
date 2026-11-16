@@ -119,6 +119,10 @@ impl Writer {
         }
         Ok(())
     }
+    pub(crate) fn write_at(&mut self, offset: usize, bytes: &[u8]) -> Result<(), SaveError> {
+        self.buf.write_at(offset, bytes)?;
+        Ok(())
+    }
     pub(crate) fn slice(&self) -> &[u8] {
         self.buf.as_slice()
     }
@@ -201,6 +205,33 @@ impl Writer {
 mod tests {
     use super::*;
     use crate::budget::{Reservation, Unbounded};
+
+    #[test]
+    fn positioned_writes_preserve_tails_and_refusals_preserve_bytes() {
+        let meter = Meter::with_decode_work(1 << 20, 2048, Arc::new(Unbounded), Reservation::Input);
+        let mut writer = Writer::new(&meter, Endian::Little).unwrap();
+        writer.bytes(b"abc").unwrap();
+        writer.write_at(0, b"Z").unwrap();
+        writer.write_at(5, b"Q").unwrap();
+        assert_eq!(writer.slice(), b"Zbc\0\0Q");
+        writer.write_at(100, b"").unwrap();
+        assert_eq!(writer.slice(), b"Zbc\0\0Q");
+        let before = meter.used();
+        let work = meter.decoded();
+        let held = meter.charge(meter.limit() - before).unwrap();
+        let error = writer.write_at(1, &[b'x'; 1024]).unwrap_err();
+        assert!(matches!(error, SaveError::Charge(ChargeError::Limit(_))));
+        assert_eq!(writer.slice(), b"Zbc\0\0Q");
+        assert_eq!(meter.decoded(), work);
+        drop(held);
+        writer.write_at(1, &[b'x'; 1024]).unwrap();
+        assert_eq!(writer.len(), 1025);
+        assert_eq!(writer.slice().first(), Some(&b'Z'));
+        meter.count_decode(2048 - meter.decoded()).unwrap();
+        let error = writer.write_at(0, b"W").unwrap_err();
+        assert!(matches!(error, SaveError::Charge(ChargeError::Limit(_))));
+        assert_eq!(writer.slice().first(), Some(&b'Z'));
+    }
 
     #[test]
     fn memory_refused_alignment_can_retry_with_its_exact_work_allowance() {

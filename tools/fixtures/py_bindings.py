@@ -28,12 +28,42 @@ HELPERS = [
     ("binding_y3_objects", "observe_head"),
 ]
 
+EXPORTS = [
+    ("binding_y4_images", name) for name in (
+        "observe_textures", "observe_set_image", "observe_arrays", "observe_sprites", "observe_image_formats")
+] + [("binding_y4_images_matrix", "observe_decode_matrix")] + [
+    ("binding_y4_exports", name) for name in (
+        "observe_audio", "observe_shader", "observe_mesh", "observe_surface",
+        "observe_renderer_errors", "observe_audio_resources", "observe_renderer",
+        "observe_shader_cases", "observe_audio_pcm")
+] + [
+    ("binding_y4_save", name) for name in (
+        "observe_objects", "observe_files", "observe_environment", "observe_cabs", "observe_writers", "observe_legacy")
+]
+
 
 def helper_records():
     import importlib
-    return [{"name": f"{observer}.{function}", "observer": observer, "function": function,
-             "expected": getattr(importlib.import_module(observer), function)(UnityPy)}
-            for observer, function in HELPERS]
+    references = {
+        ("binding_y4_images", "observe_set_image"): "PARITY.md 18.1: convert unsupported packer modes to RGBA",
+        ("binding_y4_images", "observe_image_formats"): "PARITY.md 18.1: convert unsupported packer modes to RGBA",
+        ("binding_y4_images", "observe_textures"): "PARITY.md 19.2: zero-size textures yield empty RGBA before fetching data",
+        ("binding_y4_exports", "observe_audio"): "PARITY.md 19.2: empty audio resources yield no samples",
+        ("binding_y4_exports", "observe_audio_resources"): "PARITY.md 19.2: empty audio resources yield no samples",
+    }
+    records = []
+    for observer, function in HELPERS + EXPORTS:
+        call = getattr(importlib.import_module(observer), function)
+        observed = call(UnityPy)
+        record = {"name": f"{observer}.{function}", "observer": observer,
+                  "function": function, "expected": observed}
+        if (observer, function) in references:
+            # Keep the original oracle result beside the stated B/C reference.
+            record["oracle"] = observed
+            record["reference"] = references[observer, function]
+            record["expected"] = call(UnityPy, corrected=True)
+        records.append(record)
+    return records
 
 
 def main():

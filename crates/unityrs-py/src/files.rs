@@ -16,16 +16,62 @@ impl NativeFile {
 }
 #[pymethods]
 impl NativeFile {
-    fn tree_traversal(&self) -> PyResult<crate::traversal::TreeTraversal> {
-        let File::Serialized(file) = &self.inner else {
-            return Err(pyo3::exceptions::PyTypeError::new_err(
-                "not a serialized file",
-            ));
+    fn save_bundle_entries(
+        &self,
+        py: Python<'_>,
+        mode: &str,
+        rows: Py<PyAny>,
+        value: Option<Py<PyAny>>,
+        data_flag: u32,
+        block_info_flag: u16,
+    ) -> PyResult<Py<PyAny>> {
+        crate::save::save_bundle_entries(py, self, mode, rows, value, data_flag, block_info_flag)
+    }
+    fn save_web_entries(
+        &self,
+        py: Python<'_>,
+        rows: Py<PyAny>,
+        packer: Option<Py<PyAny>>,
+        signature: pyo3::pybacked::PyBackedBytes,
+    ) -> PyResult<Py<PyAny>> {
+        crate::save::save_web_entries(py, self, rows, packer, signature)
+    }
+    fn save(
+        &self,
+        py: Python<'_>,
+        mode: &str,
+        value: Option<Py<PyAny>>,
+        data_flag: u32,
+        block_info_flag: u16,
+        signature: &str,
+    ) -> PyResult<Py<PyAny>> {
+        crate::save::file_save(py, self, mode, value, data_flag, block_info_flag, signature)
+    }
+    fn save_metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        crate::save::file_metadata(py, self)
+    }
+    fn is_changed(&self, py: Python<'_>) -> bool {
+        crate::save::file_is_changed(py, self)
+    }
+    fn mark_changed(&self, py: Python<'_>) {
+        crate::save::file_mark_changed(py, self);
+    }
+    fn get_writeable_cab(
+        &self,
+        py: Python<'_>,
+        name: pyo3::pybacked::PyBackedBytes,
+        guid: Option<[u8; 16]>,
+    ) -> PyResult<Option<crate::save::NativeCab>> {
+        crate::save::file_get_writeable_cab(py, self, name, guid)
+    }
+    fn tree_traversal(&self) -> crate::traversal::TreeTraversal {
+        let depth = match &self.inner {
+            File::Serialized(f) => f.context().limits.max_tree_depth,
+            File::Bundle(f) => f.context().limits.max_tree_depth,
+            File::Web(f) => f.context().limits.max_tree_depth,
+            File::Raw(_) => unityrs_core::limits::Limits::default().max_tree_depth,
         };
-        Ok(crate::traversal::TreeTraversal::on(
-            file.meter(),
-            file.context().limits.max_tree_depth,
-        ))
+        crate::traversal::TreeTraversal::on(self.inner.meter(), depth)
     }
     #[getter]
     fn identity(&self, py: Python<'_>) -> usize {

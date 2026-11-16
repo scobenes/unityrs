@@ -244,7 +244,9 @@ const C_FUNCTIONS: [(&str, &str); 6] = [
 /// entry point of unityrs-imageio's own shim (`webp-shim.c`); and liblz4
 /// 1.9.4's, renamed by the compression bridge's build script. Each is
 /// declared only in the file named.
-const VENDORED_C_FUNCTIONS: [(&str, &str); 14] = [
+const VENDORED_C_FUNCTIONS: [(&str, &str); 16] = [
+    ("unityrs_etcpak_encode", "unityrs-texture/src/write/ffi.rs"),
+    ("unityrs_astc_encode", "unityrs-texture/src/write/ffi.rs"),
     (
         "unityrs_LZ4_versionNumber",
         "unityrs-compress-sys/src/lib.rs",
@@ -391,6 +393,7 @@ struct VendoredSources {
     zconf: String,
     reference: String,
     shim: String,
+    encoders: String,
     lz4_headers: [String; 2],
 }
 
@@ -401,6 +404,7 @@ impl VendoredSources {
             zconf: read("unityrs-imageio/vendor/zlib-1.2.13/zconf.h"),
             reference: read("unityrs-imageio/zlib-match/reference.c"),
             shim: read("unityrs-imageio/webp-shim.c"),
+            encoders: read("unityrs-texture/encoder_bridge.cpp"),
             lz4_headers: ["lz4.h", "lz4hc.h"].map(|header| {
                 read(&format!("unityrs-compress-sys/vendor/lz4-1.9.4/{header}"))
                     .split_whitespace()
@@ -410,6 +414,13 @@ impl VendoredSources {
     }
 
     fn declare(&self, name: &str) -> bool {
+        if matches!(name, "unityrs_etcpak_encode" | "unityrs_astc_encode") {
+            return self.encoders.lines().any(|line| {
+                line.strip_prefix("extern \"C\" int ")
+                    .and_then(|rest| rest.split_once('('))
+                    .is_some_and(|(symbol, _)| symbol == name)
+            });
+        }
         if let Some(bare) = name
             .strip_prefix("unityrs_")
             .filter(|n| n.starts_with("LZ4_"))

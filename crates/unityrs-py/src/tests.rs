@@ -184,6 +184,15 @@ fn replays_unitypy_api_observations() -> PyResult<()> {
 
 #[test]
 fn replays_unitypy_helper_observations() -> PyResult<()> {
+    replay_groups("binding_y3_", 10)
+}
+
+#[test]
+fn replays_unitypy_export_observations() -> PyResult<()> {
+    replay_groups("binding_y4_", 21)
+}
+
+fn replay_groups(prefix: &str, expected_count: usize) -> PyResult<()> {
     let _serial = serial();
     let records: Value = serde_json::from_str(include_str!("../tests/fixtures/api.json")).unwrap();
     Python::attach(|py| {
@@ -199,10 +208,27 @@ fn replays_unitypy_helper_observations() -> PyResult<()> {
         }
         let binding = py.import("unityrs")?;
         let mut count = 0;
+        let mut corrected = 0;
         for record in records.as_array().unwrap() {
             let Some(observer) = record.get("observer").and_then(Value::as_str) else {
                 continue;
             };
+            if !observer.starts_with(prefix) {
+                continue;
+            }
+            if let Some(oracle) = record.get("oracle") {
+                assert_ne!(
+                    oracle, &record["expected"],
+                    "a corrected reference must preserve the original difference"
+                );
+                assert!(
+                    record["reference"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("PARITY.md ")
+                );
+                corrected += 1;
+            }
             let function = record["function"].as_str().unwrap();
             let got = py.import(observer)?.getattr(function)?.call1((&binding,))?;
             let encoded: String = py
@@ -216,7 +242,11 @@ fn replays_unitypy_helper_observations() -> PyResult<()> {
             }
             count += 1;
         }
-        assert_eq!(count, 10, "every Y3 observation group must replay");
+        assert_eq!(
+            count, expected_count,
+            "every recorded observation group must replay"
+        );
+        assert_eq!(corrected, usize::from(prefix == "binding_y4_") * 5);
         Ok(())
     })
 }
