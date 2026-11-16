@@ -121,10 +121,13 @@ Interrupted runs may leave
 the nine exporters and extraction helpers with the same destination confinement.
 It validates names and extensions before creating output, opens destinations only
 when dispatch and filters reach an export, and preserves existing files on failed
-image exports through atomic publication. Its 214 oracle comparisons and 83 wheel
+image exports through atomic publication. Its 223 oracle comparisons and 84 wheel
 tests include hostile path, shared-reader cursor and concurrency regressions,
 primitive-map decoding budgets, empty and legacy GameObject components, and
-decryption-key conversion deferred until encrypted bundle processing.
+decryption-key conversion deferred until encrypted bundle processing. Generated
+node getters, result allocation, error callbacks and finalization run on the
+calling thread; negative string reads reserve decoding storage for the remaining
+input span. Array-map recordings include values and cursors for every alias.
 Textured material adapters and replacement texture converters requiring Switch
 or crunch preprocessing have named refusals pending Y6a/Y6b.
 

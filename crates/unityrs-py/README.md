@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=83
+python scripts/unittest-suites crates/unityrs-py/python/tests=84
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=214
+python ../../scripts/unittest-suites bindings=223
 ```
 
-The recorder writes 148 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups and 34 tools/module/loader groups),
+The recorder writes 152 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups and 38 tools/module/loader groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,9 +40,11 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 83 tests and the oracle comparison has 214; CI enforces both
+The wheel suite has 84 tests and the oracle comparison has 223; CI enforces both
 minimum counts. Warning handlers run on the calling Python thread before a
 fallback load is published, including handlers that re-enter the environment.
+The Rust binding suite has 32 tests, including guarded finalization and unwind
+regressions and replay of the synthetic API observations.
 
 ```python
 import unityrs
@@ -219,9 +221,21 @@ and crunch inputs with a named refusal until Y6b supplies their preprocessing.
 
 The tools observations replay through `replays_unitypy_tools_observations`.
 Recordings contain synthetic values and output bytes, never runtime TPK schemas.
+Array-map recordings call every alias with empty and nonempty arrays, both
+endians and both reader kinds, recording values and final cursors.
+Generated MonoBehaviour rows compile on the caller before starting a worker.
+Worker output allocation, exception lookup and formatting, and shared traversal
+access relay to that caller; queued Python decrefs drain there too. Reentrancy
+regressions cover node getters, GC callbacks, resource-error callbacks, snapshots,
+configuration callbacks and buffer finalizers under the deadlock guard.
+BytesIO reader policy is installed before synchronization publishes its wrapper,
+including when a callback creates the lazy reader during synchronization. A
+reader already created by a nested load receives the same policy.
 Primitive string maps dispatch through the owning reader's decoding guard;
 budget regressions cover the one-byte refusal boundary and every tuple-producing array-map
-alias. Empty GameObject component lists return no components, and legacy
+alias. Negative string sizes reserve the remaining input span through decoding;
+negative and None-size byte, string and array reads also compare with the oracle.
+Empty GameObject component lists return no components, and legacy
 `(classID, PPtr)` entries return their actual pointers. These documented Tier B
 corrections replay beside the original oracle exceptions. Global decryption
 keys are converted on the calling Python thread only when an encrypted bundle

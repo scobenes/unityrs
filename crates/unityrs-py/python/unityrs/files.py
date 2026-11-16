@@ -156,7 +156,7 @@ class SerializedFile(File):
                 from ._object_reader import ObjectFileReader
                 guard = self._native.tree_traversal()
                 guard.step(0, 2048, 1)
-                self._reader = ObjectFileReader(self._native)
+                self._reader = ObjectFileReader(self._native, self.__dict__.get('_bytes_io_reader', False))
             return self._reader
 
     @reader.setter

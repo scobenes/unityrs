@@ -160,11 +160,11 @@ impl NativeObject {
         &self,
         py: Python<'_>,
         check_read: bool,
-        rows: Py<PyAny>,
+        rows: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
+        let tree = crate::tree::compile_rows(&self.inner, rows.as_unbound())?;
         py.detach(move || {
             crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
-                let tree = crate::tree::compile_rows(&self.inner, &rows)?;
                 let parsed = self
                     .inner
                     .read_typetree(Some(&tree), check_read)
@@ -178,13 +178,15 @@ impl NativeObject {
         &self,
         py: Python<'_>,
         check_read: bool,
-        rows: Option<Py<PyAny>>,
+        rows: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
+        // The row iterator may invoke arbitrary getters and finalizers while
+        // the facade holds its environment RLock. Consume it on the caller.
+        let tree = rows
+            .map(|rows| crate::tree::compile_rows(&self.inner, rows.as_unbound()))
+            .transpose()?;
         py.detach(move || {
             crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
-                let tree = rows
-                    .map(|rows| crate::tree::compile_rows(&self.inner, &rows))
-                    .transpose()?;
                 let parsed = self
                     .inner
                     .read_typetree(tree.as_ref(), check_read)
@@ -251,80 +253,86 @@ impl NativeObject {
         })
     }
     #[pyo3(signature = (rows=None))]
-    fn object_data(&self, py: Python<'_>, rows: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
+    fn object_data(&self, py: Python<'_>, rows: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
+        let tree = rows
+            .map(|rows| crate::tree::compile_rows(&self.inner, rows.as_unbound()))
+            .transpose()?;
         py.detach(move || {
             crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
-                let tree = rows
-                    .as_ref()
-                    .map(|rows| crate::tree::compile_rows(&self.inner, rows))
-                    .transpose()?;
                 let (parsed, progress) = self
                     .inner
                     .read_object_fields_with_nodes(tree.as_ref())
                     .map_err(|e| errors::parse_reader(&e, self.inner.info().byte_size > 0))?;
-                let meter = self.inner.file().meter();
-                let mut charge = unityrs_core::limits::Charge::zero(meter);
-                charge.grow(128).map_err(errors::charge)?;
-                let result = p::list()?;
-                p::push(
-                    &result,
-                    &value::convert_fields(&parsed, meter, &mut charge)?,
-                )?;
-                p::push(
-                    &result,
-                    &crate::object_nodes::convert(&parsed, &mut charge)?,
-                )?;
-                p::push(
-                    &result,
-                    &crate::object_nodes::references(
-                        &parsed,
-                        self.inner.file().ref_types(),
-                        &mut charge,
-                    )?,
-                )?;
-                p::push(&result, &p::int(parsed.bytes_read)?)?;
-                p::push(&result, &p::uint(progress.completed as u64)?)?;
-                let error = if let Some(error) = progress.error {
-                    let error = if let Some(names) = progress.reference_names {
-                        charge
-                            .grow(
-                                256 + names
-                                    .iter()
-                                    .map(|s| s.as_bytes().len() as u64)
-                                    .sum::<u64>()
-                                    .saturating_mul(8),
-                            )
-                            .map_err(errors::charge)?;
-                        let [class, namespace, assembly] = names;
-                        let args = (
-                            p::string(class.as_bytes())?,
-                            p::string(namespace.as_bytes())?,
-                            p::string(assembly.as_bytes())?,
-                        );
-                        Python::attach(|py| -> PyResult<PyErr> {
-                            let message = pyo3::types::PyString::new(
-                                py,
-                                "Referenced type not found: {} {} {}",
-                            )
-                            .call_method1("format", args)?;
-                            Ok(pyo3::exceptions::PyValueError::new_err(message.unbind()))
-                        })?
-                    } else {
-                        errors::parse_reader(
-                            &unityrs_core::walk::ParseError::Read(error),
-                            self.inner.info().byte_size > 0,
-                        )
-                    };
-                    Python::attach(|py| error.value(py).clone().into_any().unbind())
-                } else {
-                    p::none()
-                };
-                p::push(&result, &error)?;
-                let construction = Python::attach(|py| {
-                    Py::new(py, crate::construction::Construction { charge }).map(Py::into_any)
-                })?;
-                p::push(&result, &construction)?;
-                Ok(result)
+                crate::python::relay::attach(|py| {
+                    py.detach(|| {
+                        let meter = self.inner.file().meter();
+                        let mut charge = unityrs_core::limits::Charge::zero(meter);
+                        charge.grow(128).map_err(errors::charge)?;
+                        let result = p::list()?;
+                        p::push(
+                            &result,
+                            &value::convert_fields(&parsed, meter, &mut charge)?,
+                        )?;
+                        p::push(
+                            &result,
+                            &crate::object_nodes::convert(&parsed, &mut charge)?,
+                        )?;
+                        p::push(
+                            &result,
+                            &crate::object_nodes::references(
+                                &parsed,
+                                self.inner.file().ref_types(),
+                                &mut charge,
+                            )?,
+                        )?;
+                        p::push(&result, &p::int(parsed.bytes_read)?)?;
+                        p::push(&result, &p::uint(progress.completed as u64)?)?;
+                        let error = if let Some(error) = progress.error {
+                            let error = if let Some(names) = progress.reference_names {
+                                charge
+                                    .grow(
+                                        256 + names
+                                            .iter()
+                                            .map(|s| s.as_bytes().len() as u64)
+                                            .sum::<u64>()
+                                            .saturating_mul(8),
+                                    )
+                                    .map_err(errors::charge)?;
+                                let [class, namespace, assembly] = names;
+                                let args = (
+                                    p::string(class.as_bytes())?,
+                                    p::string(namespace.as_bytes())?,
+                                    p::string(assembly.as_bytes())?,
+                                );
+                                crate::python::relay::attach(|py| -> PyResult<PyErr> {
+                                    let message = pyo3::types::PyString::new(
+                                        py,
+                                        "Referenced type not found: {} {} {}",
+                                    )
+                                    .call_method1("format", args)?;
+                                    Ok(pyo3::exceptions::PyValueError::new_err(message.unbind()))
+                                })?
+                            } else {
+                                errors::parse_reader(
+                                    &unityrs_core::walk::ParseError::Read(error),
+                                    self.inner.info().byte_size > 0,
+                                )
+                            };
+                            crate::python::relay::attach(|py| {
+                                error.value(py).clone().into_any().unbind()
+                            })
+                        } else {
+                            p::none()
+                        };
+                        p::push(&result, &error)?;
+                        let construction = crate::python::relay::attach(|py| {
+                            Py::new(py, crate::construction::Construction { charge })
+                                .map(Py::into_any)
+                        })?;
+                        p::push(&result, &construction)?;
+                        Ok(result)
+                    })
+                })
             })
         })
     }

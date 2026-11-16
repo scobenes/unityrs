@@ -374,7 +374,7 @@ impl NativeEnvironment {
                     .map_err(errors::charge)?;
                 let row = p::list()?;
                 p::push(&row, &p::string(entry.name.as_bytes())?)?;
-                let file = Python::attach(|py| {
+                let file = crate::python::relay::attach(|py| {
                     Py::new(py, NativeFile::new(entry.file)).map(Py::into_any)
                 })?;
                 p::push(&row, &file)?;
@@ -420,7 +420,8 @@ impl NativeEnvironment {
                         let file = NativeFile::new(file);
                         let row = p::list()?;
                         p::push(&row, &p::string(key.as_bytes())?)?;
-                        let file = Python::attach(|py| Py::new(py, file).map(Py::into_any))?;
+                        let file =
+                            crate::python::relay::attach(|py| Py::new(py, file).map(Py::into_any))?;
                         p::push(&row, &file)?;
                         p::push(&result, &row)?;
                     }

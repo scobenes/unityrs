@@ -15,6 +15,7 @@ TPK (or the installed UnityPy resource). No Pillow dependency.
 """
 
 import ntpath
+from io import BytesIO as _BytesIO
 import os
 import re
 import sys
@@ -215,10 +216,20 @@ class Environment:
                     key.endswith((".ress", ".resource"))
                 if kind.startswith("EndianBinaryReader"):
                     simplify_name(key)
+            if native is not None:
+                result = self._wrap(native, parent, is_dependency)
+                if isinstance(result, SerializedFile):
+                    result._bytes_io_reader = isinstance(file, _BytesIO)
+                    # A nested load may have synced this core file and built
+                    # its lazy reader before the outer native call returned.
+                    reader = result.__dict__.get('_reader')
+                    if reader is not None:
+                        from ._object_reader import ObjectFileReader
+                        if isinstance(reader, ObjectFileReader):
+                            reader._bytes_io = result._bytes_io_reader
             self._sync()
             if native is None:
                 return None
-            result = self._wrap(native, parent, is_dependency)
             if not isinstance(key, str) and kind.startswith("EndianBinaryReader"):
                 self.cabs.pop(simplify_name(native_key), None)
                 self.cabs[simplify_name(key)] = result

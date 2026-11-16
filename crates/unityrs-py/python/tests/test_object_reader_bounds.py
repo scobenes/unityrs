@@ -11,6 +11,30 @@ import unityrs
 
 
 class ObjectReaderBounds(unittest.TestCase):
+    def test_negative_string_size_charges_remaining_span_at_boundary(self):
+        from binding_y5_round2 import string_asset
+        for size in (-1, -2):
+            budget = unityrs.Budget(1_000_000)
+            obj = unityrs.Environment(string_asset(65_536), budget=budget).objects[0]
+            reader = obj.reader
+            reader.Position = reader.Length - 65_536
+            start = reader.Position
+            baseline = budget.used
+            # -1 reads the remaining span; any negative size does so for a
+            # stream. The memory reader's other negative slices stay bounded.
+            held = obj._native.tree_traversal()
+            held.step(0, budget.limit - budget.used - (256 + 5 * 65_536 - 1), 0)
+            retained = budget.used
+            try:
+                with self.assertRaises(MemoryError):
+                    reader.read_string(size)
+                self.assertEqual(reader.Position, start)
+                self.assertEqual(budget.used, retained)
+            finally:
+                del held
+            self.assertEqual(budget.used, baseline)
+            self.assertEqual(reader.read_string(-1), '\udcff' * 65_536)
+
     def test_primitive_string_map_refuses_at_decoding_budget_boundary(self):
         from binding_y5_round2 import string_asset
         from unityrs.helpers.TypeTreeHelper import FUNCTION_READ_MAP

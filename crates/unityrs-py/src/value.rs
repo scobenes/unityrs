@@ -30,7 +30,7 @@ fn assign(target: Target, item: Py<PyAny>, result: &mut Option<Py<PyAny>>) -> Py
     Ok(())
 }
 fn cloned(object: &Py<PyAny>) -> Py<PyAny> {
-    Python::attach(|py| object.clone_ref(py))
+    crate::python::relay::attach(|py| object.clone_ref(py))
 }
 
 pub(crate) fn convert(parsed: &Parsed, meter: &Arc<Meter>) -> PyResult<Py<PyAny>> {
@@ -55,6 +55,19 @@ pub(crate) fn convert_fields(
 }
 
 fn convert_mode(
+    parsed: &Parsed,
+    meter: &Arc<Meter>,
+    charge: &mut Charge,
+    fields: bool,
+) -> PyResult<Py<PyAny>> {
+    // Relay one complete handoff, not one request per field. Conversion is
+    // iterative and still detaches between individual Python allocations.
+    crate::python::relay::attach(|py| {
+        py.detach(|| convert_mode_detached(parsed, meter, charge, fields))
+    })
+}
+
+fn convert_mode_detached(
     parsed: &Parsed,
     meter: &Arc<Meter>,
     charge: &mut Charge,

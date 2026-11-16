@@ -315,7 +315,9 @@ impl NativeFile {
                     .map_err(errors::core)?;
                 let row = p::list()?;
                 p::push(&row, &p::string(slot.name.as_bytes())?)?;
-                let f = Python::attach(|py| Py::new(py, NativeFile::new(file)).map(Py::into_any))?;
+                let f = crate::python::relay::attach(|py| {
+                    Py::new(py, NativeFile::new(file)).map(Py::into_any)
+                })?;
                 p::push(&row, &f)?;
                 p::push(&result, &row)?;
             }
@@ -330,7 +332,7 @@ impl NativeFile {
             if let File::Serialized(f) = &self.inner {
                 for inner in f.objects() {
                     staging.grow(128).map_err(errors::charge)?;
-                    let obj = Python::attach(|py| {
+                    let obj = crate::python::relay::attach(|py| {
                         Py::new(py, NativeObject::new(inner)).map(Py::into_any)
                     })?;
                     p::push(&result, &obj)?;
