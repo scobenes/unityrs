@@ -1,4 +1,4 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/ObjectReader.py, UnityPy/helpers/TypeTreeHelper.py, UnityPy/helpers/ImportHelper.py, UnityPy/helpers/ResourceReader.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/ObjectReader.py, UnityPy/files/BundleFile.py, UnityPy/files/WebFile.py, UnityPy/streams/EndianBinaryReader.py, UnityPy/helpers/TypeTreeHelper.py, UnityPy/helpers/ImportHelper.py, UnityPy/helpers/ResourceReader.py. See THIRD_PARTY_LICENSES.
 //! Python exception classes for the corresponding core failures.
 use pyo3::{
     create_exception,
@@ -21,6 +21,136 @@ create_exception!(unityrs, TypeTreeError, PyException);
 
 pub(crate) fn charge(error: unityrs_core::limits::ChargeError) -> PyErr {
     core(error.into())
+}
+
+/// Reader exceptions at the direct helper boundary. The core retains a named
+/// short-read error; Python exposes the reader's original exception text.
+pub(crate) fn file_parse(
+    error: Error,
+    data: &[u8],
+    stream: bool,
+    meter: &std::sync::Arc<unityrs_core::limits::Meter>,
+) -> PyErr {
+    if let Error::WebSignature(signature) = &error {
+        return signature_error(
+            signature.as_bytes(),
+            meter,
+            false,
+            "Invalid WebFile signature: {!r}. Expected 'UnityWebData' or 'TuanjieWebData'.",
+        );
+    }
+    let template = match &error {
+        Error::Malformed {
+            what: "bundle signature",
+            ..
+        } => Some((true, "Unknown Bundle signature: {}")),
+        Error::Malformed {
+            what: "WebFile",
+            detail,
+        } if detail.as_ref() == "invalid signature" => Some((
+            false,
+            "Invalid WebFile signature: {!r}. Expected 'UnityWebData' or 'TuanjieWebData'.",
+        )),
+        _ => None,
+    };
+    if let Some((bundle, template)) = template {
+        return file_signature(data, stream, meter, bundle, template);
+    }
+    if let Error::OutOfBounds {
+        what, pos, need, ..
+    } = error
+    {
+        let length = data.len();
+        if what == "string to null" {
+            return if stream {
+                PyValueError::new_err("Unterminated string: [b'']")
+            } else {
+                PyException::new_err("String not terminated")
+            };
+        }
+        // Fixed-width numeric fields bound this message well below 512 bytes.
+        let _staging = match meter.charge(512) {
+            Ok(charge) => charge,
+            Err(error) => return charge(error),
+        };
+        let text = if stream || need == 1 {
+            message(&format_args!("unpack requires a buffer of {need} bytes"))
+        } else {
+            let end = pos.saturating_add(i128::from(need));
+            message(&format_args!(
+                "unpack_from requires a buffer of at least {end} bytes for unpacking {need} bytes at offset {pos} (actual buffer size is {length})"
+            ))
+        };
+        return Python::attach(|py| {
+            match py
+                .import("struct")
+                .and_then(|module| module.getattr("error"))
+            {
+                Ok(class) => match class.cast_into::<pyo3::types::PyType>() {
+                    Ok(class) => PyErr::from_type(class, (text,)),
+                    Err(error) => error.into(),
+                },
+                Err(error) => error,
+            }
+        });
+    }
+    core(error)
+}
+
+fn file_signature(
+    data: &[u8],
+    stream: bool,
+    meter: &std::sync::Arc<unityrs_core::limits::Meter>,
+    bundle: bool,
+    template: &str,
+) -> PyErr {
+    if let Err(error) = meter.count_decode(data.len().min(32767) as u64) {
+        return charge(error);
+    }
+    let mut reader = unityrs_core::stream::Reader::with_kind(
+        data,
+        unityrs_core::stream::Endian::Big,
+        if stream {
+            unityrs_core::stream::ReaderKind::Stream
+        } else {
+            unityrs_core::stream::ReaderKind::Memory
+        },
+    );
+    let signature = match reader.read_string_to_null() {
+        Ok(signature) => signature,
+        Err(error) => return core(error),
+    };
+    signature_error(signature, meter, bundle, template)
+}
+
+fn signature_error(
+    signature: &[u8],
+    meter: &std::sync::Arc<unityrs_core::limits::Meter>,
+    bundle: bool,
+    template: &str,
+) -> PyErr {
+    let _staging = match meter.charge(
+        (signature.len() as u64)
+            .saturating_mul(16)
+            .saturating_add(1024),
+    ) {
+        Ok(charge) => charge,
+        Err(error) => return charge(error),
+    };
+    Python::attach(|py| {
+        let rendered = (|| {
+            let signature = crate::python::string(signature)?;
+            let text =
+                pyo3::types::PyString::new(py, template).call_method1("format", (signature,))?;
+            let class = if bundle {
+                py.get_type::<PyNotImplementedError>()
+            } else {
+                py.get_type::<PyValueError>()
+            };
+            Ok::<_, PyErr>(PyErr::from_type(class, (text.unbind(),)))
+        })();
+        rendered.unwrap_or_else(|error| error)
+    })
 }
 
 pub(crate) fn resource(error: Error, path: &unityrs_core::RawStr) -> PyErr {

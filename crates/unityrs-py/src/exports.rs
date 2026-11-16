@@ -26,7 +26,7 @@ pub(crate) fn context(reader: Option<&NativeObject>) -> (Limits, Arc<Meter>) {
 }
 
 #[pyfunction]
-#[pyo3(signature = (data, name, reader=None, vorbis_headers=None, vorbis_path=None))]
+#[pyo3(signature = (data, name, reader=None, vorbis_headers=None, vorbis_path=None, convert_pcm_float=true))]
 fn export_audio(
     py: Python<'_>,
     data: &Bound<'_, PyAny>,
@@ -34,6 +34,7 @@ fn export_audio(
     reader: Option<&NativeObject>,
     vorbis_headers: Option<&Bound<'_, PyAny>>,
     vorbis_path: Option<&Bound<'_, PyAny>>,
+    convert_pcm_float: bool,
 ) -> PyResult<Py<PyAny>> {
     let (limits, meter) = context(reader);
     let data = crate::buffer_snapshot::BufferSnapshot::new(data, &meter)?;
@@ -48,7 +49,8 @@ fn export_audio(
         crate::worker::run(limits.stack_needed(), || {
             // export/AudioClipConverter.py:13-49. The facade handles current
             // inline/resource selection before this magic dispatch and decoder.
-            let plan = unityrs_audio::plan(&data, true, &meter).map_err(audio_error)?;
+            let plan =
+                unityrs_audio::plan(&data, convert_pcm_float, &meter).map_err(audio_error)?;
             let headers = if plan.header().is_some_and(|header| header.mode == 15) {
                 if let Some(bytes) = vorbis_headers.as_ref() {
                     Some(
@@ -189,4 +191,46 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mesh::export_material, m)?)?;
     m.add("LZ4BlockError", m.py().get_type::<LZ4BlockError>())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyo3::types::{PyBytes, PyDict};
+
+    #[test]
+    fn raw_float_wav_bytes_and_default_conversion() -> PyResult<()> {
+        let _serial = crate::tests::serial();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "export_adapter_test")?;
+            register(&module)?;
+            let scope = PyDict::new(py);
+            scope.set_item("native", &module)?;
+            let data = py.eval(
+                c"b'FSB5' + __import__('struct').pack('<6I', 1, 1, 8, 0, 8, 5) + bytes(32) + __import__('struct').pack('<Q', (8 << 1) | (2 << 34)) + __import__('struct').pack('<2f', .5, -.5)",
+                None,
+                None,
+            )?;
+            scope.set_item("data", data)?;
+            let raw = py.eval(
+                c"native.export_audio(data, b'tone', convert_pcm_float=False)['tone.wav']",
+                Some(&scope),
+                None,
+            )?;
+            let converted = py.eval(
+                c"native.export_audio(data, b'tone')['tone.wav']",
+                Some(&scope),
+                None,
+            )?;
+            let raw = raw.cast::<PyBytes>()?.as_bytes();
+            let converted = converted.cast::<PyBytes>()?.as_bytes();
+            assert_eq!(raw.get(20..24), Some([3, 0, 1, 0].as_slice()));
+            assert_eq!(raw.get(34..36), Some([32, 0].as_slice()));
+            assert_eq!(raw.get(44..), Some([0, 0, 0, 63, 0, 0, 0, 191].as_slice()));
+            assert_eq!(converted.get(20..24), Some([1, 0, 1, 0].as_slice()));
+            assert_eq!(converted.get(34..36), Some([16, 0].as_slice()));
+            assert_eq!(converted.get(44..), Some([0, 64, 0, 192].as_slice()));
+            Ok(())
+        })
+    }
 }

@@ -11,5 +11,7 @@ def export_mesh_renderer(renderer, export_dir):
 
 def export_material(mat):
     from .. import _native
-    from ..classes._exports import _reader, _environment
-    return _native.export_material(mat, _reader(mat), _environment(mat), [])
+    from ..classes._exports import _reader, _environment, _guard, _material_texture_names
+    guard = _guard(mat)
+    texture_names, textures = _material_texture_names(mat, guard)
+    return _native.export_material(mat, _reader(mat), _environment(mat), texture_names)

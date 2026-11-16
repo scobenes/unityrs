@@ -237,10 +237,29 @@ impl Parser<'_> {
     /// reader refuses).
     fn header(&mut self) -> Result<SerializedHeader, Error> {
         let r = &mut self.r;
-        let mut metadata_size = r.read_u32()?;
-        let mut file_size = i64::from(r.read_u32()?);
-        let version = r.read_u32()?;
-        let mut data_offset = i64::from(r.read_u32()?);
+        // files/SerializedFile.py:23-38 reads all four fields in one struct.
+        let [
+            meta0,
+            meta1,
+            meta2,
+            meta3,
+            file0,
+            file1,
+            file2,
+            file3,
+            ver0,
+            ver1,
+            ver2,
+            ver3,
+            off0,
+            off1,
+            off2,
+            off3,
+        ] = r.read_array::<16>()?;
+        let mut metadata_size = u32::from_be_bytes([meta0, meta1, meta2, meta3]);
+        let mut file_size = i64::from(u32::from_be_bytes([file0, file1, file2, file3]));
+        let version = u32::from_be_bytes([ver0, ver1, ver2, ver3]);
+        let mut data_offset = i64::from(u32::from_be_bytes([off0, off1, off2, off3]));
         let (endian, reserved, unknown);
         let order = |big: bool| if big { Endian::Big } else { Endian::Little };
         if version >= 9 {

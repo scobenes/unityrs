@@ -14,10 +14,10 @@ class Loader(unittest.TestCase):
         self.compare(observations.observe_paths)
 
     def test_supplied_filesystem_and_local_lookup_quirks(self):
-        self.compare(observations.observe_filesystem)
+        self.assertEqual(observations.observe_filesystem(unityrs), observations.observe_filesystem(UnityPy, corrected=True))
 
     def test_stream_name_types(self):
-        self.compare(observations.observe_streams)
+        self.assertEqual(observations.observe_streams(unityrs), observations.observe_streams(UnityPy, corrected=True))
 
     def test_split_loading_and_deduplication(self):
         self.compare(observations.observe_splits)

@@ -1,4 +1,4 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py, UnityPy/helpers/ImportHelper.py, UnityPy/files/File.py. See THIRD_PARTY_LICENSES.
 //! A binding's immutable Python buffer keeps its reader's origin and uses one
 //! input meter. The caller retains the bytes; all core storage is metered.
 use super::{Environment, load::Target};
@@ -12,6 +12,49 @@ use crate::{
 };
 
 impl Environment {
+    /// `ImportHelper`'s parser selection without detection or a top-level file
+    /// registration (helpers/ImportHelper.py:127-156). Container constructors
+    /// still register their child CABs (files/File.py:76-90).
+    pub fn parse_reader(
+        &self,
+        name: &RawStr,
+        data: Bytes,
+        reader: ReaderKind,
+        ty: FileType,
+        parent_file: Option<&File>,
+    ) -> Result<File, Error> {
+        use crate::files::{Parent, ParentKind};
+        let ctx = self.ctx();
+        super::within_input_bytes(data.len() as u64, &ctx.limits)?;
+        let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
+        let parent = match parent_file {
+            Some(File::Bundle(file)) => Some(Parent {
+                name: file.name().clone(),
+                kind: ParentKind::Bundle {
+                    version_engine: file.header().version_engine.clone(),
+                    bundle: std::sync::Arc::downgrade(file),
+                    dir_index: usize::MAX,
+                },
+                depth: file.parent().map_or(1, |p| p.depth.saturating_add(1)),
+                pinned: data.len() as u64,
+            }),
+            Some(File::Web(file)) => Some(Parent {
+                name: file.name().clone(),
+                kind: ParentKind::Web {
+                    web: std::sync::Arc::downgrade(file),
+                },
+                depth: file.parent().map_or(1, |p| p.depth.saturating_add(1)),
+                pinned: data.len() as u64,
+            }),
+            _ => None,
+        };
+        let file = parse_file_with_reader(name.clone(), data, ty, parent, &meter, ctx, reader)?;
+        if matches!(file, File::Bundle(_) | File::Web(_)) {
+            self.register_file(name, &file, &mut Target::Caller)?;
+        }
+        Ok(file)
+    }
+
     /// Loads caller-owned bytes by the memory or stream reader's rules,
     /// registers their CABs and lists the file with UnityPy's dependency flag
     /// (environment.py:100-160). ZIP members are loaded and the result is None.
@@ -46,6 +89,47 @@ impl Environment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn forced_web_bypasses_detection_without_listing_a_root_file() {
+        let env = Environment::new(super::super::EnvOptions::unitypy());
+        let data = Bytes::from_static(b"UnityWebData\0\x11\0\0\0");
+        assert_eq!(
+            check_file_type_with_reader(&data, &env.ctx().limits, ReaderKind::Memory).unwrap(),
+            FileType::ResourceFile
+        );
+        let file = env
+            .parse_reader(
+                &"forced".into(),
+                data,
+                ReaderKind::Memory,
+                FileType::WebFile,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(file, File::Web(_)));
+        assert_eq!(env.files().count(), 0);
+    }
+
+    #[test]
+    fn forced_reader_enforces_input_limit_before_parsing() {
+        let mut options = super::super::EnvOptions::unitypy();
+        let mut context = crate::FileContext::unitypy();
+        context.limits.max_input_bytes = 2;
+        options.context = std::sync::Arc::new(context);
+        let env = Environment::new(options);
+        assert!(matches!(
+            env.parse_reader(
+                &"forced".into(),
+                Bytes::from_static(b"raw"),
+                ReaderKind::Memory,
+                FileType::AssetsFile,
+                None,
+            ),
+            Err(Error::Limit(_))
+        ));
+        assert_eq!(env.files().count(), 0);
+    }
+
     #[test]
     fn memory_and_stream_origins_keep_their_detection_rules() {
         let env = Environment::new(super::super::EnvOptions::unitypy());

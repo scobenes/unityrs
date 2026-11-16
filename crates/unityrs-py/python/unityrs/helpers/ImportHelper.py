@@ -132,18 +132,60 @@ def parse_file(
     typ: Optional[FileType] = None,
     is_dependency: bool = False,
 ) -> Union[files.File, EndianBinaryReader]:
-    # Loading remains in the existing native graph; explicit type overrides
-    # cannot select a different parser at this boundary yet.
-    if typ is not None:
-        actual, _ = check_file_type(reader)
-        if actual != typ:
-            raise NotImplementedError("parse_file explicit file-type override is not exposed")
-    if parent is None:
-        from .. import Environment
-        environment = Environment()
-    else:
-        environment = getattr(parent, "environment", parent)
-    return environment.load_file(reader, parent=parent, name=name, is_dependency=is_dependency)
+    if typ is None:
+        typ, _ = check_file_type(reader)
+    try:
+        if typ == FileType.AssetsFile:
+            if name.endswith((".resS", ".resource", ".config", ".xml", ".dat")):
+                return reader
+        elif typ not in (FileType.BundleFile, FileType.WebFile):
+            return reader
+        if reader.Position != 0:
+            raise NotImplementedError("parse_file nonzero parser position is not exposed")
+        if typ in (FileType.AssetsFile, FileType.BundleFile) and reader.endian != ">":
+            raise NotImplementedError("parse_file non-default parser endian is not exposed")
+        from .. import Environment, config
+        from .._native import TreeTraversal
+        from ..streams.EndianBinaryReader import EndianBinaryReader_Streamable
+        environment = getattr(parent, "environment", parent) if parent else None
+        owner = environment if environment is not None else Environment()
+        with owner._lock:
+            stream = isinstance(reader, EndianBinaryReader_Streamable)
+            if isinstance(getattr(reader, "view", None), memoryview):
+                data = reader.view
+            else:
+                # Keep reads bounded, including for streams whose declared
+                # Length is false. _read_stream restores the caller's cursor.
+                data, input_guard = owner._read_stream(reader)
+            guard = TreeTraversal(owner._limits, owner._budget)
+            text = name if isinstance(name, str) else ""
+            guard.step(0, str.__len__(text) * 4 + 256, 0)
+            native = config._load(owner._native, owner._native.parse_bytes, data,
+                                  text.encode("utf-8", "surrogateescape"), int(typ),
+                                  stream, parent._native if isinstance(parent, files.File) else None)
+            result = owner._wrap(native, parent, is_dependency)
+            owner._sync()
+            if isinstance(result, files.SerializedFile):
+                result.reader = reader
+                reader.endian = result.header.endian
+            if environment is None:
+                # Detached constructors expose no environment on any member.
+                # Native handles already retain each file's context and meter.
+                guard.step(0, 256, 1)
+                pending = [result]
+                while pending:
+                    current = pending.pop()
+                    current.environment = None
+                    if isinstance(current, (files.BundleFile, files.WebFile)):
+                        for child in current.files.values():
+                            guard.step(0, 256, 1)
+                            if isinstance(child, files.File):
+                                pending.append(child)
+            return result
+    except Exception as error:
+        reader.seek(0)
+        print(f"Error parsing file {name!r} as {typ}: {error}")
+        raise
 
 
 def find_sensitive_path(dir: str, insensitive_path: str) -> Union[str, None]:

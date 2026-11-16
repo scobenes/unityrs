@@ -79,6 +79,8 @@ class PPtr(Generic[T]):
             external_clean_path = path[start:].lower()
 
             for key, file in container.files.items():
+                if not isinstance(key, str):
+                    continue
                 size = str.__len__(key) if isinstance(key, str) else len(key)
                 guard.step(0, size * 4 + 256, size)
                 if key.lower() == external_clean_path:
@@ -86,10 +88,19 @@ class PPtr(Generic[T]):
                     break
             else:
                 env = assetsfile.environment
-                cab = env.find_file(external_clean_path)
+                missing_error = None
+                try:
+                    cab = env.find_file(external_clean_path)
+                except FileNotFoundError as error:
+                    missing_error = error
+                    cab = None
+                if cab is None:
+                    cab = env._find_file_exact(path[start:])
                 if cab:
                     assetsfile_dst = cab
                 else:
+                    if missing_error is not None:
+                        raise missing_error
                     raise FileNotFoundError(f"Failed to resolve pointer - {external.path} not found!")
 
         if assetsfile_dst is None:

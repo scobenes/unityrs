@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=70
+python scripts/unittest-suites crates/unityrs-py/python/tests=78
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=198
+python ../../scripts/unittest-suites bindings=228
 ```
 
-The recorder writes 143 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups and 29 tools/module/loader groups),
+The recorder writes 163 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups, 29 tools/module/loader groups and 20 Y6a groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 70 tests and the oracle comparison has 198; CI enforces both
+The wheel suite has 78 tests and the oracle comparison has 228; CI enforces both
 minimum counts. Warning handlers run on the calling Python thread before a
 fallback load is published, including handlers that re-enter the environment.
 
@@ -207,8 +207,32 @@ Recordings contain synthetic values and output bytes, never runtime TPK schemas.
 Font, TextAsset, MonoBehaviour and VideoClip have no class `export()` in 1.25.2;
 their file exporters belong to the tools surface.
 
-The module completion table after PARITY.md 2.1 names the remaining helper APIs,
-codec callback integration and reader edge cases. These are follow-ups, not
+The module completion table after PARITY.md 2.1 assigns the remaining helper APIs,
+codec callback integration and reader edge cases to Y6b. These are follow-ups, not
 verified by the namespace checks. Standalone Brotli uses the core's bounded
 inflater and stored-metablock writer: decoded bytes replay against UnityPy;
 compressed bytes retain the existing Tier B difference from its quality-11 writer.
+
+Y6a's `replays_unitypy_residue_observations` replays 20 additional groups.
+They cover the loader edge cases, synthetic object-mode residue and Transform,
+damaged AssetInfo preloads, current material texture names, raw float WAVs and
+forced helper parsing. Original oracle failures remain beside each corrected
+reference; non-class module attributes are probed in isolated oracle children.
+The input limits, charged staging and dependency confinement above apply to
+these adapters too. No dependency or bundled runtime schema is added.
+
+| behavior | UnityPy 1.25.2 source | PARITY.md rows |
+|---|---|---|
+| loader path, key and reader observations | helpers/ImportHelper.py:159-173; environment.py:100-160, environment.py:310-354; classes/PPtr.py:43-90 | 3, 19.2 |
+| referenced arrays and non-class names | helpers/TypeTreeHelper.py:182-263, helpers/TypeTreeHelper.py:266-361; UnityPyBoost/TypeTreeHelper.cpp:458-583 | 9.2, 19.2 |
+| synthetic Transform reader | files/ObjectReader.py:186-187, files/ObjectReader.py:217-218, files/ObjectReader.py:244-262 | 14.3 |
+| damaged preload tables and external lookup | helpers/ContainerHelper.py:31-49; classes/PPtr.py:43-90 | 19.3 |
+| standalone material texture names | export/MeshRendererExporter.py:106-189 | 15.4 |
+| optional PCM float conversion | export/AudioClipConverter.py:13-49 | 16 |
+| forced file-type parsing | helpers/ImportHelper.py:127-156 | 22 |
+
+Forced parsers accept the default big-endian, zero-position reader state.
+A nonzero parser cursor, or a non-default endian for Assets/Bundle parsing,
+raises a recorded `NotImplementedError` before parsing; this prevents silently
+parsing a different reader state. Raw-type selections preserve the original
+reader and cursor. PARITY.md 19.3 records both refusals beside the oracle results.

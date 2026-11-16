@@ -38,7 +38,11 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `binding_y5_modules.py` | Package re-exports, streams, codec tables and decryption-key entry points |
 | `binding_y5_objects.py` | File containers, reader patching and forwarding, GameObject components and generator hooks |
 | `binding_y5_tools.py` | Extractor dispatch, individual exporters, graph helpers and extraction trees |
-| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=198`); requires `unityrs` and UnityPy 1.25.2, and never skips |
+| `binding_y6_loader.py` | Loader edge observations and paired corrected path, buffer and pointer references |
+| `binding_y6_objects.py` | Referenced arrays, isolated non-class names, synthetic Transform and damaged preloads |
+| `binding_y6_exports.py` | Standalone material texture names and optional PCM float conversion |
+| `binding_y6_parse.py` | Forced file-type parsing, raw reader identity and mismatch failures |
+| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=228`); requires `unityrs` and UnityPy 1.25.2, and never skips |
 | `encoder_probe.py` | B3b's encoder ISA probe (decision 16): replays the native builds of the vendored etcpak, bc7enc and astcenc against the pinned amd64 wheels' raw output, frozen in `crates/unityrs-texture/tests/fixtures/encoder_isa.json` (`--check`, `--oracle`); runs only in the development containers |
 | `encoder_probe.cpp` | `encoder_probe.py`'s native side: the vendored encoders' entry points, compiled with each recorded set of flags and run on framed inputs |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |

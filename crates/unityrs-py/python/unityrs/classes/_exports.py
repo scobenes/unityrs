@@ -26,7 +26,7 @@ def _audio_extension(self):
     return AUDIO_TYPE_EXTEMSION.get(self.m_CompressionFormat, ".audioclip")
 
 
-def _audio_samples(self):
+def _audio_samples(self, convert_pcm_float=True):
     # export/AudioClipConverter.py:13-49. Inline truth precedes resources;
     # bytes() preserves Python's byte-range and missing-encoding exceptions.
     guard = _guard(self)
@@ -57,7 +57,7 @@ def _audio_samples(self):
     headers = _bytes(source, guard) if isinstance(source, (bytes, bytearray, memoryview)) else None
     path = None if source is None or headers is not None else os.fspath(source)
     return _native.export_audio(data, name.encode("utf-8", "surrogateescape"),
-                                _reader(self), headers, path)
+                                _reader(self), headers, path, bool(convert_pcm_float))
 
 
 def _shader_export(self):
@@ -145,6 +145,35 @@ class _LocalFS:
     open = staticmethod(open)
 
 
+def _material_texture_names(material, guard):
+    # export/MeshRendererExporter.py:106-189, with PARITY 19.1's dict fix.
+    # Resolve the caller's current pointers, including their current owners.
+    guard.step(0, 256, 1)
+    names, textures, properties = [], [], {}
+    for key, texture_env in material.m_SavedProperties.m_TexEnvs:
+        guard.step(0, 0, 1)
+        if texture_env is None:
+            continue
+        if not isinstance(key, str):
+            key = key.name
+        guard.step(0, str.__len__(key) * 4 + 256, 1)
+        properties[key] = texture_env
+    for key, texture_env in properties.items():
+        guard.step(0, 0, 1)
+        if not texture_env.m_Texture:
+            continue
+        texture = texture_env.m_Texture.deref_parse_as_object()
+        chosen = texture.m_Name if texture.m_Name else key
+        if isinstance(chosen, str):
+            guard.step(0, str.__len__(chosen) * 4 + 256, str.__len__(chosen))
+        name = output_name(output_name(chosen, guard=guard) + ".png", guard=guard)
+        guard.step(0, 512 + str.__len__(key) * 4 + str.__len__(name) * 8, 1)
+        names.append((key.encode("utf-8", "surrogateescape"),
+                      name[:-4].encode("utf-8", "surrogateescape")))
+        textures.append((name, texture))
+    return names, textures
+
+
 def _renderer_export(self, export_dir):
     # export/MeshRendererExporter.py:48-103. Resolution uses current class
     # attributes; geometry/material values enter the existing native writers.
@@ -178,24 +207,9 @@ def _renderer_export(self, export_dir):
         material = self.m_Materials[slot].deref_parse_as_object()
         material_name = output_name(material.m_Name, guard=guard)
         names.append(material_name)
-        texture_names = []
-        for key, texture_env in material.m_SavedProperties.m_TexEnvs:
-            guard.step(0, 0, 1)
-            if texture_env is None:
-                continue
-            if not texture_env.m_Texture:
-                continue
-            if not isinstance(key, str):
-                key = key.name
-            texture = texture_env.m_Texture.deref_parse_as_object()
-            chosen = texture.m_Name if texture.m_Name else key
-            if isinstance(chosen, str):
-                guard.step(0, str.__len__(chosen) * 4 + 256, str.__len__(chosen))
-            name = output_name(output_name(chosen, guard=guard) + ".png", guard=guard)
-            guard.step(0, 512 + str.__len__(key) * 4 + str.__len__(name) * 8, 1)
-            texture_names.append((key.encode("utf-8", "surrogateescape"),
-                                  name[:-4].encode("utf-8", "surrogateescape")))
-            textures.append((name, texture))
+        texture_names, material_textures = _material_texture_names(material, guard)
+        guard.step(0, len(material_textures) * 16 + 128, len(material_textures))
+        textures.extend(material_textures)
         exported = _native.export_material(material, _reader(material), _environment(material), texture_names)
         guard.step(0, len(exported) * 4 + 256, 0)
         materials.append(exported)

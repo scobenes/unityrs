@@ -49,6 +49,10 @@ pub enum Error {
         /// The detail, for people. Shared, so a clone allocates nothing.
         detail: Arc<str>,
     },
+    /// The decoded signature rejected by the `WebFile` constructor. Keep only
+    /// a charged copy, so an error cannot retain an entire inflated input.
+    #[error("malformed WebFile: invalid signature")]
+    WebSignature(RawStr),
     /// A format or feature unityrs does not read (yet), each named.
     #[error("unsupported: {0}")]
     Unsupported(Unsupported),
@@ -225,6 +229,7 @@ impl CellError for Error {
                 arc_heap_of(detail.len())
             }
             Self::Version(VersionError::NoMatch(r))
+            | Self::WebSignature(r)
             | Self::NotFound(NotFound::Cab(r) | NotFound::Resource(r)) => heap_of(r.len()),
             Self::Tree(t) => t.heap_bytes(),
             Self::AssetBundle(p) => {

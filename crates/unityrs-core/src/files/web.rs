@@ -135,7 +135,10 @@ impl WebFile {
         if !signature.as_bytes().starts_with(b"UnityWebData")
             && !signature.as_bytes().starts_with(b"TuanjieWebData")
         {
-            return Err(inflate::bad("invalid signature"));
+            return Err(Error::WebSignature(RawStr::charged(
+                signature.as_bytes(),
+                meter,
+            )?));
         }
         let end = i128::from(r.read_i32()?);
         let mut directory = MeteredVec::new(meter);

@@ -198,6 +198,11 @@ fn replays_unitypy_tools_observations() -> PyResult<()> {
 }
 
 #[test]
+fn replays_unitypy_residue_observations() -> PyResult<()> {
+    replay_groups("binding_y6_", 20)
+}
+
+#[test]
 fn replays_runtime_class_map_without_persisting_tpk_data() -> PyResult<()> {
     let _serial = serial();
     Python::attach(|py| {
@@ -288,7 +293,8 @@ fn replay_groups(prefix: &str, expected_count: usize) -> PyResult<()> {
             corrected,
             match prefix {
                 "binding_y4_" => 18,
-                "binding_y5_" => 1,
+                "binding_y5_" => 3,
+                "binding_y6_" => 8,
                 _ => 0,
             }
         );

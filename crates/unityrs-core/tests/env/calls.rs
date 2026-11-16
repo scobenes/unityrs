@@ -93,6 +93,7 @@ const CALLS: &[(&str, Pool, &[&str])] = &[
     ("Environment::load_file", Pool::Inner, &[SETTLE]),
     ("Environment::load_zip_file", Pool::Inner, &[SETTLE]),
     ("Environment::load_reader", Pool::Inner, &[SETTLE]),
+    ("Environment::parse_reader", Pool::Inner, &[SETTLE]),
     ("Environment::load_path", Pool::Inner, &[SETTLE]),
     ("Environment::load_files", Pool::Inner, &[SETTLE]),
     ("Environment::load_folder", Pool::Inner, &[SETTLE]),
@@ -365,6 +366,7 @@ enum Dropper {
     Load,
     LoadFile,
     LoadReader,
+    ParseReader,
     LoadZip,
     LoadPath,
     LoadFiles,
@@ -386,6 +388,7 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
         Dropper::Load
         | Dropper::LoadFile
         | Dropper::LoadReader
+        | Dropper::ParseReader
         | Dropper::LoadZip
         | Dropper::LoadPath
         | Dropper::LoadFiles
@@ -413,6 +416,19 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
                         Bytes::copy_from_slice(bytes),
                         unityrs_core::stream::ReaderKind::Memory,
                         false,
+                    )
+                    .unwrap(),
+                );
+            }
+            Dropper::ParseReader => {
+                let (name, bytes) = &d.scene.files[3];
+                drop(
+                    env.parse_reader(
+                        &RawStr::from(name.as_slice()),
+                        Bytes::copy_from_slice(bytes),
+                        unityrs_core::stream::ReaderKind::Memory,
+                        unityrs_core::detect::FileType::BundleFile,
+                        None,
                     )
                     .unwrap(),
                 );
@@ -466,6 +482,7 @@ fn a_registration_that_drops_a_dependencys_container_makes_room_to_reach_it() {
         Dropper::Load,
         Dropper::LoadFile,
         Dropper::LoadReader,
+        Dropper::ParseReader,
         Dropper::LoadZip,
         Dropper::LoadPath,
         Dropper::LoadFiles,

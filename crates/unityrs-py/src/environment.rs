@@ -1,4 +1,4 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py, UnityPy/helpers/ImportHelper.py. See THIRD_PARTY_LICENSES.
 //! Eager Environment entry points (environment.py:37-73, environment.py:100-160).
 use crate::{
     errors,
@@ -244,6 +244,57 @@ impl NativeEnvironment {
                         )
                         .map_err(errors::core)?;
                     Ok(file.map(NativeFile::new))
+                },
+            )
+        })
+    }
+    #[pyo3(signature = (data, name, typ, stream, parent=None))]
+    fn parse_bytes(
+        &self,
+        py: Python<'_>,
+        data: &Bound<'_, PyAny>,
+        name: &Bound<'_, PyAny>,
+        typ: u8,
+        stream: bool,
+        parent: Option<&NativeFile>,
+    ) -> PyResult<NativeFile> {
+        use unityrs_core::detect::FileType;
+        let ty = match typ {
+            0 => FileType::AssetsFile,
+            1 => FileType::BundleFile,
+            2 => FileType::WebFile,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "invalid parser type",
+                ));
+            }
+        };
+        let meter = self.input_meter();
+        let data = crate::buffer_snapshot::BufferSnapshot::source(
+            data,
+            &meter,
+            self.inner.options().context.limits.max_input_bytes,
+        )?;
+        let name = crate::buffer_snapshot::BufferSnapshot::source(name, &meter, u64::MAX)?;
+        py.detach(|| {
+            crate::worker::run(
+                crate::worker::load_stack(&self.inner.options().context.limits),
+                || {
+                    let data = unityrs_core::Bytes::from_owner(data);
+                    self.inner
+                        .parse_reader(
+                            &RawStr::from(unityrs_core::Bytes::from_owner(name)),
+                            data.clone(),
+                            if stream {
+                                unityrs_core::stream::ReaderKind::Stream
+                            } else {
+                                unityrs_core::stream::ReaderKind::Memory
+                            },
+                            ty,
+                            parent.map(|file| &file.inner),
+                        )
+                        .map(NativeFile::new)
+                        .map_err(|error| errors::file_parse(error, &data, stream, &meter))
                 },
             )
         })

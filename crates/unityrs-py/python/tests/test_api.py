@@ -68,8 +68,9 @@ class API(unittest.TestCase):
         env = unityrs.Environment(data)
         self.assertEqual(list(env.files), [str(hash(data))])
         self.assertEqual(list(unityrs.Environment().files), [])
-        with self.assertRaises(TypeError):
-            unityrs.Environment(bytearray(data))
+        mutable = unityrs.Environment(bytearray(data))
+        self.assertEqual(list(mutable.files), [str(hash(data))])
+        self.assertEqual(mutable.objects[0].parse_as_dict()["m_Script"], "body")
 
 
 class EdgeCases(unittest.TestCase):
