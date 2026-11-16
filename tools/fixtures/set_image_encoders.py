@@ -22,6 +22,7 @@ import sys
 from types import SimpleNamespace as NS
 from unittest.mock import patch
 
+import astc_encoder
 import etcpak
 import PIL
 import UnityPy
@@ -35,6 +36,20 @@ OUT = ROOT / "crates/unityrs-texture/tests/fixtures/set_image_encoders.json"
 TARGETS = sorted(ENCODERS | {41, 42, 43, 44})
 ETCPAK = CONVERTER.compress_etcpak
 CONVERT = CONVERTER.image_to_texture2d
+# The build the pinned oracle container's `astc_encoder` dispatches to, which
+# every write is recorded with whatever this host would pick: astc-encoder-py
+# 0.1.12 picks its AVX2 build where the CPU has AVX2 (a CI runner), and its
+# builds need not encode the same blocks.
+ASTC_BUILD = "astc_encoder._encoder_sse41"
+
+
+def astc_build():
+    """`ASTC_BUILD` as the `astc_encoder` UnityPy's converter calls
+    (export/Texture2DConverter.py:106-115, :369-387)."""
+    build = importlib.import_module(ASTC_BUILD)
+    return NS(**{name: getattr(build, name)
+                 for name in ("ASTCConfig", "ASTCContext", "ASTCError", "ASTCImage", "ASTCSwizzle")},
+              **{name: getattr(astc_encoder, name) for name in ("ASTCConfigFlags", "ASTCProfile", "ASTCType")})
 
 
 def bc7_reference(data, width, height, fmt):
@@ -131,6 +146,15 @@ def generate():
     assert importlib.metadata.version("astc-encoder-py") == "0.1.12"
     etcpak_backend = sorted(name for name in sys.modules if name.startswith("etcpak._etcpak_"))
     assert etcpak_backend == ["etcpak._etcpak_none"], etcpak_backend
+    CONVERTER._get_astc_context.cache_clear()
+    with patch.object(CONVERTER, "astc_encoder", astc_build()):
+        try:
+            return cases_with(etcpak_backend)
+        finally:
+            CONVERTER._get_astc_context.cache_clear()
+
+
+def cases_with(etcpak_backend):
     defaults = etcpak.BC7CompressBlockParams()
     cases = [record(fmt, size, mode, mips=mips)
              for fmt in TARGETS for mode in ("RGB", "RGBA")
@@ -154,8 +178,7 @@ def generate():
     return dict(unitypy=UnityPy.__version__, pillow=PIL.__version__, machine=platform.machine(),
                 etcpak="0.9.14", astc_encoder_py="0.1.12", sources=sources,
                 oracle_backends=dict(etcpak=etcpak_backend,
-                                     astc=sorted(name for name in sys.modules
-                                                 if name.startswith("astc_encoder._encoder_"))),
+                                     astc=[ASTC_BUILD]),
                 settings=dict(astc=dict(profile="LDR", quality=100, flags="USE_DECODE_UNORM8",
                                         type="U8", swizzle="RGBA", threads=1),
                               bc7={name: getattr(defaults, name) for name in dir(defaults) if name.startswith("m_")},

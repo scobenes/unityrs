@@ -31,8 +31,9 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `binding_y4_round3.py` | Caller-thread snapshots, typed sequences, metered CAB writes and Switch argument ordering |
 | `binding_y4_round4.py` | Managed-reference and pair writes, buffer parity, current CAB mappings and charged output adapters |
 | `binding_y4_budget.py` | Systematic native and Python output entry-point allocation matrices |
-| `encoder_probe.py`, `encoder_probe.cpp` | B3b scalar/invariant texture encoder build and instruction-set probe against the oracle wheels |
-| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=94`); requires `unityrs` and UnityPy 1.25.2, and never skips |
+| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=143`); requires `unityrs` and UnityPy 1.25.2, and never skips |
+| `encoder_probe.py` | B3b's encoder ISA probe (decision 16): replays the native builds of the vendored etcpak, bc7enc and astcenc against the pinned amd64 wheels' raw output, frozen in `crates/unityrs-texture/tests/fixtures/encoder_isa.json` (`--check`, `--oracle`); runs only in the development containers |
+| `encoder_probe.cpp` | `encoder_probe.py`'s native side: the vendored encoders' entry points, compiled with each recorded set of flags and run on framed inputs |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |
 | `child.py` | how every Python test and tool here runs a child process: a child the system killed (SIGKILL) is run again, up to `KILLED_RUNS` runs, any other ending comes back at once, and each run gets a scratch folder its parent removes (standard library only) |
 | `scratch.py` | where every Python test and tool here writes outside its memory: scratch folders removed whatever happens, a test's with its cleanups, a child's with its run, a dead process's at the next sweep (standard library only) |
