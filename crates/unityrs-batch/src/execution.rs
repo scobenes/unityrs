@@ -8,6 +8,7 @@ use crate::{
     sys::Wake,
     worker::{self, Dispatch},
 };
+pub(crate) mod startup;
 use std::{
     io,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -110,6 +111,7 @@ impl Execution {
             .thread_keep_alive(std::time::Duration::MAX)
             .build()
             .map_err(|_| SetupError::Execution)?;
+        startup::prime(&runtime).map_err(|_| SetupError::Execution)?;
         prewarm(runtime.handle(), threads).map_err(|_| SetupError::Execution)?;
         let wake = Arc::new(Wake::new().map_err(|_| SetupError::Execution)?);
         let mut execution = Self::prepare_on(p, runtime.handle().clone(), wake)?;

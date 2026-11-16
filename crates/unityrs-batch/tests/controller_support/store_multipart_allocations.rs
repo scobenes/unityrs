@@ -194,6 +194,7 @@ pub const INVENTORY: &[Exclusion] = &[
     Exclusion {
         scopes: super::STORE,
         functions: &[
+            "unityrs_batch::store::abort::upload",
             "unityrs_batch::store::head::Write::publish",
             "unityrs_batch::store::multipart::Transfer::part",
             "unityrs_batch::store::put::Request::bytes",
@@ -201,6 +202,7 @@ pub const INVENTORY: &[Exclusion] = &[
         platform: Platform::All,
         frame: Some("<tokio::runtime::io::registration_set::RegistrationSet>::deregister"),
         via: &[
+            "<object_store::aws::AmazonS3 as object_store::multipart::MultipartStore>::abort_multipart",
             "<object_store::aws::AmazonS3 as object_store::ObjectStore>::put_opts",
             "<object_store::aws::AmazonS3 as object_store::multipart::MultipartStore>::put_part",
         ],
@@ -292,9 +294,7 @@ pub const INVENTORY: &[Exclusion] = &[
         functions: &["unityrs_batch::store::put::options"],
         platform: Platform::All,
         frame: Some("hashbrown::alloc::inner::do_alloc"),
-        via: &[
-            "<hashbrown::map::HashMap<object_store::attributes::Attribute, object_store::attributes::AttributeValue, std::hash::random::RandomState>>::insert",
-        ],
+        via: &["<object_store::attributes::Attributes>::insert"],
         name: "store dependency hashbrown::alloc::inner::do_alloc",
     },
     Exclusion {

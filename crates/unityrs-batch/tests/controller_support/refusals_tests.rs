@@ -1,6 +1,60 @@
 use super::*;
 
 #[test]
+fn store_entries_name_the_public_attribute_and_abort_entry_points() {
+    for (owner, frame, via) in [
+        (
+            "unityrs_batch::store::put::options",
+            "hashbrown::alloc::inner::do_alloc::<alloc::alloc::Global>",
+            "<object_store::attributes::Attributes>::insert",
+        ),
+        (
+            "unityrs_batch::store::abort::upload",
+            "<tokio::runtime::io::registration_set::RegistrationSet>::deregister",
+            "<object_store::aws::AmazonS3 as object_store::multipart::MultipartStore>::abort_multipart",
+        ),
+    ] {
+        let trace = format!(
+            "REFUSED_ALLOCATION site=1 size=32\n\
+            0: <unityrs_batch::alloc::Counting<controller_alloc::Refuse> as core::alloc::global::GlobalAlloc>::alloc\n\
+            1: {frame}\n\
+            2: {via}\n\
+            3: {owner}\n\
+            END_REFUSED_ALLOCATION"
+        );
+        let admitted = |trace: &str| {
+            inventory().any(|e| e.applies("store") && e.admits(innermost(trace).as_deref(), trace))
+        };
+        assert!(admitted(&trace), "{trace}");
+        assert!(!admitted(&trace.replace(via, "unlisted::call")));
+    }
+}
+
+#[test]
+fn darwin_socket_waiters_require_the_exact_mutex_owner_and_dependency_callee() {
+    let trace = "REFUSED_ALLOCATION site=117 size=64\n\
+        0: <unityrs_batch::alloc::Counting<controller_alloc::Refuse> as core::alloc::global::GlobalAlloc>::alloc\n\
+        1: <tokio::loom::std::mutex::Mutex<tokio::runtime::io::scheduled_io::Waiters>>::lock\n\
+        2: <tokio::io::async_fd::AsyncFd<unityrs_batch::sys::reset::Socket>>::async_io\n\
+                 at /opt/.cargo/registry/src/tokio/src/io/async_fd.rs:1:1\n\
+        3: <unityrs_batch::sys::reset::RegisteredSocket>::connected\n\
+        END_REFUSED_ALLOCATION";
+    let admitted = |trace: &str| inventory().find(|e| e.admits(innermost(trace).as_deref(), trace));
+    let entry = admitted(trace).expect("per-registration Darwin waiters are inventoried");
+    assert!(matches!(entry.platform, Platform::Darwin));
+    assert_eq!(entry.applies("store"), cfg!(target_vendor = "apple"));
+    for other in [
+        trace.replace("scheduled_io::Waiters", "registration_set::Synced"),
+        trace.replace("::async_io", "::new"),
+        trace.replace("::async_io", "::async_io_mut"),
+        trace.replace("::lock\n", "::lock_other\n"),
+        trace.replace("::connected", "::register"),
+    ] {
+        assert!(admitted(&other).is_none(), "unlisted stack: {other}");
+    }
+}
+
+#[test]
 fn dependency_methods_ignore_type_arguments_but_keep_the_exact_method() {
     let entry = Exclusion {
         scopes: &["store"],

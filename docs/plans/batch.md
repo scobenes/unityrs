@@ -2134,8 +2134,8 @@ positions.
 | `unityrs-export` | `ngui/register.rs` | `dependency_failed`: formatted dependency wrapper; `container`: container reclassification; `open`, `opened`, `own`, `internal`, `peeked`, `Peeked::member`, `Peeked::finish`, `same_open`: reason construction through classify's constructors and these wrappers | All |
 
 Store integration adds these two exact third-party call entries to the same
-inventory. With the whole-store census below it has 121 entries total:
-119 All and 2 Darwin. Engine buffers, key copies,
+inventory. With the whole-store census and Darwin entries below it has
+128 entries total: 119 All and 9 Darwin. Engine buffers, key copies,
 future boxes and file adapters still reserve fallibly before allocating.
 The existing core/export sweep's 17 All function entries below are unchanged;
 the `store` entries identify the additional calls separately.
@@ -2151,7 +2151,8 @@ frame and the wake's `AsyncFd` drop callee. Its scope and count are unchanged.
 The whole-store census adds 73 further All entries. Their exact allocating
 frames, owning functions and immediate dependency callees are in
 `controller_support/store_allocations.rs`, `store_multipart_allocations.rs`
-and `store_parsing_allocations.rs`, joined by `refusals::inventory()`. These
+and `store_parsing_allocations.rs`, joined by `refusals::inventory()`;
+`darwin_allocations.rs` adds seven exact Darwin entries. These
 are dependency APIs without fallible storage constructors; their bounded
 storage belongs to the existing network and phase envelopes. A refusal is
 the documented A13 abort, never an admitted engine allocation. The groups
@@ -2170,6 +2171,32 @@ below count individual allocating-frame entries, not allocation ordinals.
 | Tokio cooperative deferred-wake queue | 1 | each `block_on` creates its private infallible wake queue; startup cannot prime a later context |
 | HTTP response body box | 1 | `HttpResponseBody` wraps a private `BoxBody`; `new` and the bytes conversion box infallibly and accept no existing box/storage |
 | hyper queued body buffers | 1 | hyper's private vectored body queue exposes no caller reservation or fallible allocator |
+| Darwin Tokio socket waiters mutex | 1 Darwin only | Tokio 1.53.3 creates a fresh `ScheduledIo` and private `Mutex<scheduled_io::Waiters>` for every registration; neither a fallible constructor nor caller-supplied/reusable registration storage is exposed. The entry requires the full `tokio::loom::std::mutex::Mutex<tokio::runtime::io::scheduled_io::Waiters>>::lock` frame, `RegisteredSocket::connected` owner and `AsyncFd<Socket>::async_io` callee. A startup registration cannot initialize later sockets' private locks. |
+| Darwin Hyper dispatch-close notification mutex | 5 Darwin only | Each handshake creates a fresh private Tokio unbounded dispatch channel. Its `notify_rx_closed` owns `Mutex<LinkedList<notify::Waiter>>`, first locked by receiver close/drop. Hyper exposes neither that Notify nor caller-supplied channel storage. Separate full stack keys require the payload PUT, head PUT, multipart part, abort or response-completion engine owner and its exact dependency callee; startup cannot initialize future connections' channels. |
+| Darwin Hyper incoming-body channel mutex | 1 Darwin only | Each nonempty response creates a fresh private `Mutex<hyper::body::chan::State>`. The channel and its sender/receiver types expose no public storage or initialization API; the exact entry requires `Sender::poll_ready`, `exchange_charged`, and the fully typed Hyper connection poll callee. |
+
+Retained Tokio state is initialized before `running`, rather than excluded:
+on Darwin, `execution::startup::prime` exercises registration and deregistration, the
+remote inject queue, all four current-thread task-list shards (observing
+task IDs in serialized bursts, with a one-second retry deadline so concurrent
+callers cannot strand a primer on only odd or even IDs), and
+the timer driver. Library controller and store-finisher runtimes and both
+process runtimes use this preparation. The disposable registration's own
+waiters lock is initialized before it is retired. In particular, the
+Darwin `Mutex<inject::synced::Synced>` allocation at first runtime shutdown
+moves to startup. `runtime_alloc` guards the first shutdown of freshly
+prepared library and process runtimes against retained Tokio lock
+allocations, preserves async-host preparation, and uses barriers to verify
+concurrent preparation; the exact-stack regression in `refusals_tests` rejects a
+different mutex type, engine owner or dependency callee and checks the
+socket entry applies only on Darwin.
+Linux's inline mutexes need no warm-up; leaving its runtime untouched also
+preserves the reactor's initial deregistration capacity for stopped requests.
+The existing attribute-map entry names the public `Attributes::insert`
+callee, and the existing response-deregistration entry also names abort's
+`abort_multipart` call; full inline information exposes those exact keys.
+Their entry counts are unchanged. A separate regression requires both
+public dependency entry points and rejects an unlisted callee.
 
 This audit uses the pinned dependency sources, including
 `object_store` 0.14.2's `client/crypto.rs`, `client/http/body.rs`,
@@ -2234,8 +2261,12 @@ remains distinct from every other method. A std generic function
 that mentions a core/export type does not own that allocation. The test
 rejects an innermost batch/CLI function even when a core/export ancestor is
 listed, and rejects an unsymbolized abort. `Cargo.toml` defines
-`[profile.sweep]` with `inherits = "release"` and `debug = "limited"`:
-qualified inline function names as well as line tables;
+`[profile.sweep]` with `inherits = "release"` and `debug = "full"`:
+Darwin's finisher async monomorphizations under limited debug information
+otherwise omit engine closures and dependency poll
+frames, so an exact owner/callee cannot be proven. Full package debug
+restores that evidence without treating wrapper polls as transparent.
+Both engine and dependencies need the full inline information;
 `line-tables-only` alone produced unqualified names on Darwin. CI's `scale`
 command includes `--test controller_alloc` under `--profile sweep`; use
 that profile for manual refusal sweeps too. The release profile is unchanged.

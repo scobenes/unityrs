@@ -2,6 +2,8 @@
 //! ordinals and sizes. Each entry must still abort in every named scope on
 //! its platform. Every other refusal must return `host_memory`/74.
 
+#[path = "darwin_allocations.rs"]
+mod darwin_allocations;
 #[path = "store_allocations.rs"]
 mod store_allocations;
 #[path = "store_multipart_allocations.rs"]
@@ -12,6 +14,7 @@ mod store_parsing_allocations;
 pub fn inventory() -> impl Iterator<Item = &'static Exclusion> {
     INVENTORY
         .iter()
+        .chain(darwin_allocations::INVENTORY)
         .chain(store_allocations::INVENTORY)
         .chain(store_parsing_allocations::INVENTORY)
         .chain(store_multipart_allocations::INVENTORY)
@@ -584,16 +587,33 @@ impl Exclusion {
     /// Whether a refusal's trace, whose innermost owner is `function`, is
     /// this entry's: ours by name, a third party's by name and frame.
     pub fn admits(&self, function: Option<&str>, trace: &str) -> bool {
+        // Darwin dependency mutex entries spell the complete type/method.
+        // Preserve generic arguments and reject method-name prefix collisions.
+        let exact = |symbol: &str, key: &str| {
+            symbol.strip_prefix(key).is_some_and(|tail| {
+                tail.is_empty() || tail.starts_with("::<") || tail.starts_with("::{closure")
+            })
+        };
+        let darwin = matches!(self.platform, Platform::Darwin);
         function.is_some_and(|f| self.functions.contains(&f))
             && match self.frame {
                 Some(frame) => {
-                    allocating(trace).is_some_and(|f| f.contains(frame))
-                        && callee(trace).is_some_and(|c| {
-                            let key = symbol_key(&c);
-                            self.via
-                                .iter()
-                                .any(|v| c.contains(v) || key.as_deref() == Some(*v))
+                    allocating(trace).is_some_and(|f| {
+                        if darwin {
+                            exact(&f, frame)
+                        } else {
+                            f.contains(frame)
+                        }
+                    }) && callee(trace).is_some_and(|c| {
+                        let key = symbol_key(&c);
+                        self.via.iter().any(|v| {
+                            if darwin {
+                                exact(&c, v)
+                            } else {
+                                c.contains(v) || key.as_deref() == Some(*v)
+                            }
                         })
+                    })
                 }
                 None => self
                     .functions
@@ -606,7 +626,7 @@ impl Exclusion {
 /// Only function symbols count. Generic arguments may mention our types in
 /// std/alloc functions; trait implementations supplied by std (e.g. slice's
 /// `ConvertVec` for `Piece`) are also foreign, as their source location shows.
-/// Cargo's sweep profile `debug = "limited"` keeps qualified inline function names.
+/// Cargo's sweep profile `debug = "full"` preserves inline owner/callee frames.
 pub fn innermost(stderr: &str) -> Option<String> {
     let trace = stderr.split_once("REFUSED_ALLOCATION ")?.1;
     let (trace, _) = trace.split_once("END_REFUSED_ALLOCATION")?;

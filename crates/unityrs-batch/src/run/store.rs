@@ -55,6 +55,7 @@ pub(super) fn preflight(
             .thread_keep_alive(std::time::Duration::MAX)
             .build()
             .map_err(|_| Error::spawn())?;
+        crate::execution::startup::prime(&runtime).map_err(|_| Error::spawn())?;
         crate::execution::prewarm(runtime.handle(), spec.download_concurrency as usize + 1)
             .map_err(|_| Error::spawn())?;
         let controller = crate::http::Service::new(
