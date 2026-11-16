@@ -32,8 +32,9 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `binding_y4_round4.py` | Managed-reference and pair writes, buffer parity, current CAB mappings and charged output adapters |
 | `binding_y4_round5.py` | Logical writer lengths, image storage, CAB validation, exact output names and competing-thread progress |
 | `binding_y4_round6.py` | Blob charge lifetimes, resource sibling settings, current texture pointer ownership, logical payload sizes and cleared replacements |
+| `binding_y4_round7.py` | Streamed resource charge lifetimes, typed CAB writer protocol and deferred replacement validation |
 | `binding_y4_budget.py` | Systematic native and Python output entry-point allocation matrices |
-| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=157`); requires `unityrs` and UnityPy 1.25.2, and never skips |
+| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=160`); requires `unityrs` and UnityPy 1.25.2, and never skips |
 | `encoder_probe.py` | B3b's encoder ISA probe (decision 16): replays the native builds of the vendored etcpak, bc7enc and astcenc against the pinned amd64 wheels' raw output, frozen in `crates/unityrs-texture/tests/fixtures/encoder_isa.json` (`--check`, `--oracle`); runs only in the development containers |
 | `encoder_probe.cpp` | `encoder_probe.py`'s native side: the vendored encoders' entry points, compiled with each recorded set of flags and run on framed inputs |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |

@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=157
+python ../../scripts/unittest-suites bindings=160
 ```
 
-The recorder writes 111 synthetic API records (34 Y1 records, 10 Y3 groups and
-67 Y4 groups),
+The recorder writes 114 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 61 tests and the oracle comparison has 157; CI enforces both
+The wheel suite has 61 tests and the oracle comparison has 160; CI enforces both
 minimum counts. Warning handlers run on the calling Python thread before a
 fallback load is published, including handlers that re-enter the environment.
 

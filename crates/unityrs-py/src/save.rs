@@ -298,6 +298,13 @@ pub(crate) struct NativeCab {
 
 #[pymethods]
 impl NativeCab {
+    fn tree_traversal(&self) -> crate::traversal::TreeTraversal {
+        crate::traversal::TreeTraversal::on(
+            &self.meter,
+            unityrs_core::limits::Limits::default().max_tree_depth,
+        )
+    }
+
     fn write_bytes(
         &self,
         py: Python<'_>,

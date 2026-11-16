@@ -32,6 +32,7 @@ fn _array_format(py: Python<'_>, graphics_format: i32) -> PyResult<i32> {
 }
 
 #[pyfunction]
+#[pyo3(signature = (env, file, path, offset, size, guard=None))]
 #[allow(
     clippy::needless_pass_by_value,
     reason = "PyO3 retains the owned Python buffer through detached work"
@@ -43,6 +44,7 @@ fn _image_resource(
     path: &Bound<'_, PyAny>,
     offset: i128,
     size: i128,
+    guard: Option<Py<crate::traversal::TreeTraversal>>,
 ) -> PyResult<Py<PyAny>> {
     let unityrs_core::File::Serialized(file) = &file.inner else {
         return Err(PyTypeError::new_err(
@@ -78,10 +80,16 @@ fn _image_resource(
             } else {
                 &bytes
             };
-            let _copy = file
-                .meter()
-                .charge(unityrs_core::limits::heap_cost(data.len() as u64))
-                .map_err(errors::charge)?;
+            let cost = unityrs_core::limits::heap_cost(data.len() as u64);
+            // A facade decode retains the Python resource bytes beyond this
+            // fetch, alongside blob and pixel staging. Its traversal owns
+            // that reservation until the entire image operation returns.
+            let _copy = if let Some(guard) = &guard {
+                crate::traversal::TreeTraversal::shared_step(guard, cost, 0)?;
+                None
+            } else {
+                Some(file.meter().charge(cost).map_err(errors::charge)?)
+            };
             p::bytes(data)
         })
     })

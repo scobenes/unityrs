@@ -1,4 +1,4 @@
-# Ported from UnityPy 1.25.2 (MIT): UnityPy/files/File.py, UnityPy/files/ObjectReader.py, UnityPy/enums/ExtendableEnum.py. See THIRD_PARTY_LICENSES.
+# Ported from UnityPy 1.25.2 (MIT): UnityPy/files/File.py, UnityPy/files/ObjectReader.py, UnityPy/enums/ExtendableEnum.py, UnityPy/streams/EndianBinaryWriter.py. See THIRD_PARTY_LICENSES.
 """Python graph wrappers; each owns its native handle and strong parent links."""
 
 import os
@@ -328,8 +328,78 @@ class _CabWriter:
 
     write_bytes = write
 
+    def write_byte(self, value):
+        self.write(struct.pack(self.endian + "b", value))
+
+    def write_u_byte(self, value):
+        self.write(struct.pack(self.endian + "B", value))
+
+    def write_short(self, value):
+        self.write(struct.pack(self.endian + "h", value))
+
     def write_int(self, value):
         self.write(struct.pack(self.endian + "i", value))
+
+    def write_long(self, value):
+        self.write(struct.pack(self.endian + "q", value))
+
+    def write_u_short(self, value):
+        self.write(struct.pack(self.endian + "H", value))
+
+    def write_u_int(self, value):
+        self.write(struct.pack(self.endian + "I", value))
+
+    def write_u_long(self, value):
+        self.write(struct.pack(self.endian + "Q", value))
+
+    def write_float(self, value):
+        self.write(struct.pack(self.endian + "f", value))
+
+    def write_double(self, value):
+        self.write(struct.pack(self.endian + "d", value))
+
+    def write_boolean(self, value):
+        self.write(struct.pack(self.endian + "?", value))
+
+    def write_string_to_null(self, value):
+        guard = self._native.tree_traversal()
+        self.write(_save_text(value, guard))
+        self.write(b"\0")
+
+    def write_aligned_string(self, value):
+        guard = self._native.tree_traversal()
+        encoded = _save_text(value, guard)
+        self.write_int(len(encoded))
+        self.write(encoded)
+        self.align_stream(4)
+
+    def write_array(self, command, value, write_length=True):
+        if write_length:
+            self.write_int(len(value))
+        for item in value:
+            command(item)
+
+    def write_byte_array(self, value):
+        self.write_int(len(value))
+        self.write(value)
+
+    def write_boolean_array(self, value):
+        self.write_array(self.write_boolean, value)
+
+    def write_u_short_array(self, value):
+        self.write_array(self.write_u_short, value)
+
+    def write_int_array(self, value, write_length=False):
+        return self.write_array(self.write_int, value, write_length)
+
+    def write_u_int_array(self, value, write_length=False):
+        return self.write_array(self.write_u_int, value, write_length)
+
+    def write_float_array(self, value, write_length=False):
+        return self.write_array(self.write_float, value, write_length)
+
+    def write_string_array(self, value):
+        self.write_array(self.write_aligned_string, value)
 
     def align_stream(self, alignment=4):
         count = (alignment - self.Position % alignment) % alignment
@@ -400,7 +470,23 @@ class ObjectReader:
     def set_raw_data(self, data):
         # files/ObjectReader.py:181-184: reads retain the original byte source.
         with self.assets_file.environment._lock:
-            self._native.set_raw_data(data)
+            try:
+                self._native.set_raw_data(data)
+            except (TypeError, ValueError, BufferError):
+                # Keep the native mirror for valid buffers, but Python owns
+                # the replacement. Writer validation belongs to save(), even
+                # for values that do not implement the buffer protocol.
+                pass
+            except MemoryError:
+                # A full meter can refuse even the snapshot's fixed overhead
+                # before checking the buffer protocol. Invalid replacements
+                # still need no mirror; valid ones retain the budget refusal.
+                try:
+                    memoryview(data)
+                except (TypeError, ValueError, BufferError):
+                    pass
+                else:
+                    raise
             self.data = data
             self.assets_file.mark_changed()
 

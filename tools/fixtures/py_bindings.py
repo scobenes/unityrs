@@ -68,6 +68,9 @@ EXPORTS = [
     ("binding_y4_round6", name) for name in (
         "observe_blob_lifetime", "observe_resource_inheritance", "observe_pointer_owner",
         "observe_payload_lengths", "observe_clear_replacement", "observe_detached_material")
+] + [
+    ("binding_y4_round7", name) for name in (
+        "observe_streamed_lifetime", "observe_cab_protocol", "observe_deferred_replacements")
 ]
 
 
@@ -86,6 +89,7 @@ def helper_records():
         ("binding_y4_round4", "observe_output_names"): "PARITY.md 19.3: validate output names and charge copies before allocation",
         ("binding_y4_round4", "observe_path_budgets"): "PARITY.md 19.3: fallible charged path staging",
         ("binding_y4_round6", "observe_blob_lifetime"): "PARITY.md 19.3: keep blob staging charged through image decode and encode",
+        ("binding_y4_round7", "observe_streamed_lifetime"): "PARITY.md 19.3: retain streamed resource staging through blob staging and image decode",
         ("binding_y4_round6", "observe_pointer_owner"): "PARITY.md 19.1: correct texture dictionary iteration; preserve current pointer ownership",
     }
     for name, reason in (

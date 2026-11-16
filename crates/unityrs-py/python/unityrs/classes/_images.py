@@ -26,21 +26,21 @@ def _blob(obj, guard):
     return None
 
 
-def _resource(obj):
+def _resource(obj, guard=None):
     stream = obj.m_StreamData
     file = obj.object_reader.assets_file
-    guard = _guard(obj)
+    guard = guard or _guard(obj)
     size = str.__len__(stream.path) if isinstance(stream.path, str) else len(stream.path)
     guard.step(0, size * 4 + 256, size)
     return _native._image_resource(file.environment._native,
-        file._native, stream.path.encode("utf-8", "surrogateescape"), stream.offset, stream.size)
+        file._native, stream.path.encode("utf-8", "surrogateescape"), stream.offset, stream.size, guard)
 
 
-def get_image_data(self):
+def get_image_data(self, *, _guard=None):
     if self.image_data:
         return self.image_data
     if self.m_StreamData:
-        return _resource(self)
+        return _resource(self, _guard)
     raise ValueError("No image data found")
 
 
@@ -72,7 +72,7 @@ def get_image(self):
         return Image.new("RGBA", (0, 0))
     reader = self.object_reader
     guard = _guard(self)
-    return _decode(self, self.get_image_data(), self.m_Width, self.m_Height,
+    return _decode(self, self.get_image_data(_guard=guard), self.m_Width, self.m_Height,
                    self.m_TextureFormat, getattr(reader, "platform", 0), _blob(self, guard),
                    getattr(reader, "version", (0, 0, 0, 0)))
 
@@ -187,12 +187,12 @@ def get_images(self):
         texture_format = _native._array_format(int(graphics_format))
     if not texture_format:
         raise NotImplementedError(f"GraphicsFormat {self.m_Format} not supported yet")
+    guard = _guard(self)
     image_data = self.image_data
     if image_data is None or (not image_data and self.m_StreamData and self.m_StreamData.path):
-        image_data = _resource(self)
+        image_data = _resource(self, guard)
     texture_size = self.m_DataSize // self.m_Depth
     offsets = range(0, self.m_DataSize, texture_size)
-    guard = _guard(self)
     guard.step(0, len(offsets) * 256 + 128, len(offsets))
     result = []
     try:
