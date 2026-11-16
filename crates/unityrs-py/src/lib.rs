@@ -12,6 +12,7 @@ use pyo3::prelude::*;
 mod allocation_tests;
 mod buffer_snapshot;
 mod class_tpk;
+mod codecs;
 mod construction;
 mod environment;
 mod errors;
@@ -41,6 +42,7 @@ mod worker;
 fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     exports::register(m)?;
     images::register(m)?;
+    m.add_function(wrap_pyfunction!(codecs::codec, m)?)?;
     m.add_class::<save::NativeCab>()?;
     m.add_function(wrap_pyfunction!(class_tpk::class_tpk_lz4, m)?)?;
     m.add_class::<environment::NativeEnvironment>()?;

@@ -192,6 +192,44 @@ fn replays_unitypy_export_observations() -> PyResult<()> {
     replay_groups("binding_y4_", 70)
 }
 
+#[test]
+fn replays_unitypy_tools_observations() -> PyResult<()> {
+    replay_groups("binding_y5_", 29)
+}
+
+#[test]
+fn replays_runtime_class_map_without_persisting_tpk_data() -> PyResult<()> {
+    let _serial = serial();
+    Python::attach(|py| {
+        let module = PyModule::new(py, "unityrs._native")?;
+        super::native(&module)?;
+        py.import("sys")?
+            .getattr("modules")?
+            .set_item("unityrs._native", module)?;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let paths = py.import("sys")?.getattr("path")?;
+        for directory in [root.join("python"), root.join("../../tools/parity")] {
+            paths.call_method1("insert", (0, directory.to_string_lossy().as_ref()))?;
+        }
+        let observer = py
+            .import("binding_y5_modules")?
+            .getattr("runtime_class_map")?;
+        let json = py.import("json")?.getattr("dumps")?;
+        // The oracle record exists only in this process. Q2 forbids committing
+        // a class map or even a digest derived from an external TPK.
+        let recorded: String = json
+            .call1((observer.call1((py.import("UnityPy")?,))?,))?
+            .extract()?;
+        let expected: Value = serde_json::from_str(&recorded).unwrap();
+        let replayed: String = json
+            .call1((observer.call1((py.import("unityrs")?,))?,))?
+            .extract()?;
+        let actual: Value = serde_json::from_str(&replayed).unwrap();
+        assert_eq!(actual, expected);
+        Ok(())
+    })
+}
+
 fn replay_groups(prefix: &str, expected_count: usize) -> PyResult<()> {
     let _serial = serial();
     let records: Value = serde_json::from_str(include_str!("../tests/fixtures/api.json")).unwrap();
@@ -246,7 +284,14 @@ fn replay_groups(prefix: &str, expected_count: usize) -> PyResult<()> {
             count, expected_count,
             "every recorded observation group must replay"
         );
-        assert_eq!(corrected, usize::from(prefix == "binding_y4_") * 18);
+        assert_eq!(
+            corrected,
+            match prefix {
+                "binding_y4_" => 18,
+                "binding_y5_" => 1,
+                _ => 0,
+            }
+        );
         Ok(())
     })
 }

@@ -4,9 +4,14 @@
 import os
 import struct
 import weakref
+from collections import namedtuple
+from contextlib import nullcontext
 from types import SimpleNamespace
 from .enums import ClassIDType, BuildTarget
 from .helpers.UnityVersion import UnityVersion
+
+# files/File.py:13; files/__init__.py:1-14: the public legacy directory row.
+DirectoryInfo = namedtuple('DirectoryInfo', 'path offset size')
 
 
 class File:
@@ -88,39 +93,40 @@ class File:
     def __getitem__(self, key):
         return self.files[key]
 
+    @property
+    def container(self):
+        # files/File.py:123-125: later children replace earlier equal paths.
+        guard = self._native.tree_traversal()
+        guard.step(0, 256, 1)
+        result = {}
+        pending = [(iter(self.files.values()), 0)]
+        while pending:
+            children, depth = pending[-1]
+            try:
+                file = next(children)
+            except StopIteration:
+                pending.pop()
+                continue
+            if isinstance(file, SerializedFile):
+                for path, pointer in file.container.items():
+                    guard.step(depth, 256, 1)
+                    result[path] = pointer
+            elif isinstance(file, File):
+                guard.step(depth + 1, 256, 1)
+                pending.append((iter(file.files.values()), depth + 1))
+        return result
+
     def get_assets(self):
-        # files/File.py:41-50: a SerializedFile returns inside a generator.
-        if isinstance(self, SerializedFile):
-            return self
-        for file in self.files.values():
-            if isinstance(file, (BundleFile, WebFile)):
-                yield from file.get_assets()
-            elif isinstance(file, SerializedFile):
-                yield file
+        from ._file_iteration import assets
+        return assets(self)
 
     def get_objects(self):
-        # files/File.py:65-74: nested containers have no objects attribute.
-        for file in self.files.values():
-            if isinstance(file, (BundleFile, WebFile)):
-                yield from file.objects
-            elif isinstance(file, SerializedFile):
-                yield from file.objects.values()
-            elif isinstance(file, ObjectReader):
-                yield file
+        from ._file_iteration import objects
+        return objects(self)
 
     def get_filtered_objects(self, obj_types=None):
-        # files/File.py:52-63: return from the generator, yielding nothing.
-        if obj_types is None or len(obj_types) == 0:
-            return self.get_objects()
-        for file in self.files.values():
-            if isinstance(file, (BundleFile, WebFile)):
-                for obj in file.objects:
-                    if obj.type in obj_types:
-                        yield obj
-            elif isinstance(file, SerializedFile):
-                for obj in file.objects.values():
-                    if obj.type in obj_types:
-                        yield obj
+        from ._file_iteration import objects
+        return objects(self, obj_types)
 
     def __repr__(self):
         return f"<{type(self).__name__}>"
@@ -143,6 +149,34 @@ def _writer_text(value, guard):
 
 
 class SerializedFile(File):
+    @property
+    def reader(self):
+        if '_reader' not in self.__dict__:
+            from ._object_reader import ObjectFileReader
+            guard = self._native.tree_traversal()
+            guard.step(0, 2048, 1)
+            self._reader = ObjectFileReader(self._native)
+        return self._reader
+
+    @reader.setter
+    def reader(self, value):
+        self._reader = value
+
+    @property
+    def container(self):
+        # files/SerializedFile.py:235-328: only the first AssetBundle matters.
+        if '_container' not in self.__dict__:
+            from .helpers.ContainerHelper import ContainerHelper
+            guard = self._native.tree_traversal()
+            guard.step(0, 512, 1)
+            bundle = next((obj for obj in self.objects.values() if obj.type == ClassIDType.AssetBundle), None)
+            value = bundle.read() if bundle is not None else []
+            if bundle is not None:
+                for path, _ in value.m_Container:
+                    guard.step(0, 1024 + str.__len__(path) * 4, 1)
+            self._container = ContainerHelper(value)
+        return self._container
+
     def save(self, packer=None):
         with self.environment._lock:
             guard = self._native.tree_traversal()
@@ -452,6 +486,8 @@ class EndianBinaryReader_Memoryview:
     read_bytes = read
 
 class ObjectReader:
+    from ._monobehaviour import parse_monobehaviour_head, generate_monobehaviour_node
+
     def __init__(self, native, assets_file):
         self._native = native
         self.assets_file = assets_file
@@ -516,6 +552,10 @@ class ObjectReader:
             self.assets_file.mark_changed()
             return data
 
+    def patch(self, obj, nodes=None, writer=None):
+        # files/ObjectReader.py:316-322: retain keyword forwarding and return.
+        return self.save_typetree(obj, nodes=nodes, writer=writer)
+
     def write(self, header, writer, data_writer):
         # files/ObjectReader.py:132-179: object metadata and the selected payload.
         guard = self._native.tree_traversal()
@@ -556,22 +596,23 @@ class ObjectReader:
     def read_typetree(self, nodes=None, wrap=False, check_read=True, *, as_dict=None):
         if as_dict is not None:
             wrap = not as_dict
-        with self.assets_file.environment._lock:
+        with (self.assets_file.environment._lock if self.assets_file.environment is not None else nullcontext()):
             rows = None
-            if (nodes is not None or "_node" in self.__dict__
+            if (nodes is not None or (self.class_id == 114 and not self._has_embedded_nodes) or "_node" in self.__dict__
                     or self.type_id in self.assets_file._type_nodes or self.assets_file._head_nodes):
                 node = self._get_typetree_node(nodes)
                 rows = node._native_rows(
                     use_boost=bool(self.byte_size), _guard=self._native.tree_traversal())
             if not wrap:
-                if rows is not None:
-                    return self._native.parse_nodes(check_read, rows)
-                return self._native.parse(check_read)
+                value, count = self._native.parse_with_position(check_read, rows)
+                self.Position = self.byte_start + count
+                return value
             return self._read_object(rows, check_read)
 
     def _read_object(self, rows, check_read):
         from ._object import build
         data, lists, references, bytes_read, completed, error, charge = self._native.object_data(rows)
+        self.Position = self.byte_start + bytes_read
         result = build(data, lists, self.assets_file, self.byte_size > 0, references, completed, error, charge)
         if check_read and bytes_read != self.byte_size:
             raise ValueError(f"Expected to read {self.byte_size} bytes, but only read {bytes_read} bytes")
@@ -588,14 +629,45 @@ class ObjectReader:
         from .classes.ClassIDTypeToClassMap import ClassIDTypeToClassMap
         return ClassIDTypeToClassMap.get(self.type)
 
+    @property
+    def reader(self):
+        if '_reader' not in self.__dict__:
+            self._reader = self.assets_file.reader
+        return self._reader
+
+    @reader.setter
+    def reader(self, value):
+        self._reader = value
+
+    @property
+    def Position(self):
+        return self.reader.Position
+
+    @Position.setter
+    def Position(self, value):
+        self.reader.Position = value
+
+    def reset(self):
+        self.reader.Position = self.byte_start
+
+    @property
+    def container(self):
+        # files/ObjectReader.py:199-204: preload index, then own-file path id.
+        env = self.assets_file.environment
+        if env is not None:
+            env._build_container_index()
+        return self.assets_file.container.path_dict.get(self.path_id)
+
     def parse_as_dict(self, node=None, check_read=True):
         return self.read_typetree(nodes=node, check_read=check_read)
 
     def _get_typetree_node(self, node=None, *, _guard=None):
         # Export releases the GIL. The lock must cover the check, rebuild and
         # publication together, including HEAD identities shared across types.
-        with self.assets_file.environment._lock:
-            return self._get_typetree_node_locked(node, _guard)
+        with (self.assets_file.environment._lock if self.assets_file.environment is not None else nullcontext()):
+            from ._monobehaviour import generated_node
+            base = self._get_typetree_node_locked(node, _guard)
+            return generated_node(self, base) if node is None else base
 
     def _get_typetree_node_locked(self, node, guard):
         # files/ObjectReader.py:285-307: explicit nodes precede the embedded tree.
@@ -675,7 +747,12 @@ class ObjectReader:
         return getattr(self, key, default)
 
     def __getattr__(self, name):
-        return None
+        # files/ObjectReader.py:223-225: absent names deliberately return None.
+        if name == 'reader':
+            return None
+        reader = self.reader
+        if hasattr(reader, name):
+            return getattr(reader, name)
 
 
 class EndianBinaryReader_Streamable(EndianBinaryReader_Memoryview):

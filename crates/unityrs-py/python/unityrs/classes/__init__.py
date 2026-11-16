@@ -6,7 +6,9 @@ from .PPtr import PPtr as PPtr
 from .UnknownObject import UnknownObject as UnknownObject
 from ._exports import install as _install_exports
 from ._images import install as _install_images
+from ._gameobject import install as _install_gameobject
 
 _install_exports(globals())
 _install_images(globals())
-del _install_exports, _install_images
+_install_gameobject(globals())
+del _install_exports, _install_images, _install_gameobject

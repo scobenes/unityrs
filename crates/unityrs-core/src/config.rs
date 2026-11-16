@@ -15,6 +15,7 @@ use std::sync::RwLock;
 #[derive(Debug)]
 pub struct RuntimeConfig {
     values: RwLock<(Option<RawStr>, bool)>,
+    decrypt_key: RwLock<Option<[u8; 16]>>,
 }
 
 impl Default for RuntimeConfig {
@@ -29,6 +30,7 @@ impl RuntimeConfig {
     pub fn unitypy() -> Self {
         Self {
             values: RwLock::new((None, true)),
+            decrypt_key: RwLock::new(None),
         }
     }
 
@@ -47,6 +49,23 @@ impl RuntimeConfig {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    /// Configure the key used by a binding's subsequent bundle loads.
+    pub fn set_decrypt_key(&self, key: Option<[u8; 16]>) {
+        *self
+            .decrypt_key
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = key;
+    }
+
+    /// Copy the key without retaining a lock while decoding a bundle.
+    #[must_use]
+    pub fn decrypt_key(&self) -> Option<[u8; 16]> {
+        *self
+            .decrypt_key
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

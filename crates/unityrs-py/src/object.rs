@@ -16,6 +16,39 @@ impl NativeObject {
 }
 #[pymethods]
 impl NativeObject {
+    fn monobehaviour_head_nodes(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<(Py<PyAny>, crate::traversal::TreeTraversal)> {
+        py.detach(|| {
+            crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
+                let file = self.inner.file();
+                let version = file.version().ok_or_else(|| {
+                    pyo3::exceptions::PyNotImplementedError::new_err("Unsupported comparison")
+                })?;
+                let request = unityrs_core::provider::TreeRequest {
+                    class_id: 114,
+                    version: &version.version,
+                    script: None,
+                };
+                let tree = file
+                    .context()
+                    .providers
+                    .lookup(&request)
+                    .map_err(|e| errors::parse(unityrs_core::walk::ParseError::Provider(e)))?
+                    .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(114))?;
+                let mut guard = crate::traversal::TreeTraversal::on(
+                    file.meter(),
+                    file.context().limits.max_tree_depth,
+                );
+                guard.expand(u64::from(tree.tree.depth()), 0, 0)?;
+                Ok((
+                    crate::tree::rows_to_python(tree.tree.list(), &mut guard)?,
+                    guard,
+                ))
+            })
+        })
+    }
     fn set_raw_data(&self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
         crate::save::object_set_raw_data(py, self, data)
     }
@@ -140,10 +173,44 @@ impl NativeObject {
             })
         })
     }
+    #[pyo3(signature = (check_read, rows=None))]
+    fn parse_with_position(
+        &self,
+        py: Python<'_>,
+        check_read: bool,
+        rows: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        py.detach(move || {
+            crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
+                let tree = rows
+                    .map(|rows| crate::tree::compile_rows(&self.inner, &rows))
+                    .transpose()?;
+                let parsed = self
+                    .inner
+                    .read_typetree(tree.as_ref(), check_read)
+                    .map_err(|e| errors::parse_reader(&e, self.inner.info().byte_size > 0))?;
+                let meter = self.inner.file().meter();
+                let _staging = meter.charge(256).map_err(errors::charge)?;
+                let result = p::list()?;
+                p::push(&result, &value::convert(&parsed, meter)?)?;
+                p::push(&result, &p::int(parsed.bytes_read)?)?;
+                p::tuple(&result)
+            })
+        })
+    }
     fn metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         py.detach(|| {
             let d = p::dict()?;
             let i = self.inner.info();
+            p::field(
+                &d,
+                "_has_embedded_nodes",
+                &p::boolean(
+                    self.inner
+                        .serialized_type()
+                        .is_some_and(|ty| ty.nodes.is_some()),
+                )?,
+            )?;
             for (key, val) in [
                 ("path_id", i.path_id),
                 ("class_id", i.class_id.into()),

@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=61
+python scripts/unittest-suites crates/unityrs-py/python/tests=70
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=160
+python ../../scripts/unittest-suites bindings=198
 ```
 
-The recorder writes 114 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups),
+The recorder writes 143 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups and 29 tools/module/loader groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 61 tests and the oracle comparison has 160; CI enforces both
+The wheel suite has 70 tests and the oracle comparison has 198; CI enforces both
 minimum counts. Warning handlers run on the calling Python thread before a
 fallback load is published, including handlers that re-enter the environment.
 
@@ -92,8 +92,8 @@ Pillow is an optional runtime import for image access and editing, never a build
 dependency. These calls propagate its import error when Pillow is unavailable.
 Classes use the MIT-licensed attrs dependency for UnityPy-compatible slots,
 constructors, equality and hashing. The bindings do not require UnityPy and
-bundle no TPK or generated class data. Nonlocal
-filesystems remain outside this local-input API.
+bundle no TPK or generated class data. Caller-supplied filesystems follow the recorded loader rules, including its
+local path checks. fsspec remains optional; a local fallback is available.
 
 Importing `unityrs.classes` generates records in memory. Set `UNITYRS_TPK` to a
 TPK file path before importing it. The `unityrs.config` module's
@@ -104,7 +104,8 @@ with those source options; ordinary dict reading remains available.
 Stripped-file schemas and the complete common-string table use an external TPK.
 With no TPK available, embedded trees and explicit nodes remain usable for dict
 reads, and common-string lookup uses the 108-entry MIT table. No TPK-derived
-data is saved in the wheel or replay fixtures.
+data is saved in the wheel or replay fixtures. The complete class map also
+replays an oracle recording held only in memory during the Rust test.
 Uncompressed, LZ4 and Unity raw-LZMA TPKs are accepted. Generator inputs,
 decoded payloads and decoder dictionaries are bounded at 256 MiB, tables at
 four million records (class entries in aggregate). Invalid generated syntax
@@ -182,15 +183,32 @@ Zero-size texture images and empty streamed audio clips retain the core's
 Tier B results, empty RGBA and an empty samples dict, before resource lookup;
 their original oracle exceptions are recorded beside those references.
 
-Y5 still owns the `unityrs.tools` extractor surface: `export_obj`,
-`extract_assets`, `exportTextAsset`, `exportFont`, `exportMesh`, `exportShader`,
-`exportMonoBehaviour`, `exportAudioClip`, `exportSprite`, `exportTexture2D`,
-`exportGameObject`, `crawl_obj`, `flatten` and the extractor dispatch table.
+The tools surface exposes `export_obj`, `extract_assets`, `exportTextAsset`,
+`exportFont`, `exportMesh`, `exportShader`, `exportMonoBehaviour`, `exportAudioClip`,
+`exportSprite`, `exportTexture2D`, `exportGameObject`, `crawl_obj`, `flatten` and
+`EXPORT_TYPES` through `unityrs.tools` and `unityrs.tools.extractor`.
+The facade uses the existing bounded class exporters. E4's native extractor has
+intentional corrections to the oracle's graph and naming behavior; the Python
+facade retains the recorded oracle behavior while using confined destination
+writes. Hostile names and existing symlink directories are refused.
+
+| behavior | UnityPy 1.25.2 source | PARITY.md rows |
+|---|---|---|
+| tool dispatch and extraction | tools/extractor.py:25-78, tools/extractor.py:81-157 | 15.7 |
+| individual file exporters | tools/extractor.py:165-174, tools/extractor.py:177-187, tools/extractor.py:190-197, tools/extractor.py:200-207, tools/extractor.py:210-224, tools/extractor.py:227-247, tools/extractor.py:250-268, tools/extractor.py:271-281, tools/extractor.py:284-304 | 15.7 |
+| graph helpers and dispatch tables | tools/extractor.py:307-324, tools/extractor.py:327-358, tools/extractor.py:361-368 | 15.7, 23 |
+| file container and reader patch | files/File.py:123-125; files/ObjectReader.py:316-322 | 5.2, 8 |
+| MonoBehaviour generator hooks | files/ObjectReader.py:325-350 | 8, 10, 14.3 |
+| custom filesystem and loading | environment.py:37-73, environment.py:75-98, environment.py:100-174, environment.py:282-308 | 3, 19.2 |
+| streams and module re-exports | streams/__init__.py:1-2; streams/EndianBinaryReader.py:335-349 | 2.1, 13, 23 |
+
+The tools observations replay through `replays_unitypy_tools_observations`.
+Recordings contain synthetic values and output bytes, never runtime TPK schemas.
 Font, TextAsset, MonoBehaviour and VideoClip have no class `export()` in 1.25.2;
-their file exporters belong to that tools surface. Y5 also owns the remaining
-package/module re-exports enumerated in PARITY.md 2.1 and 23, including streams
-and export modules, codec maps, the decryption-key entry point and module
-aliases/loop variables. Its final binding rows include GameObject component
-accessors, `File.container` and file-iteration corrections, `ObjectReader.patch`,
-provider/generator hooks, and the unclosed loader/filesystem cases from Y1.
-Y4 does not mark those rows verified.
+their file exporters belong to the tools surface.
+
+The module completion table after PARITY.md 2.1 names the remaining helper APIs,
+codec callback integration and reader edge cases. These are follow-ups, not
+verified by the namespace checks. Standalone Brotli uses the core's bounded
+inflater and stored-metablock writer: decoded bytes replay against UnityPy;
+compressed bytes retain the existing Tier B difference from its quality-11 writer.

@@ -1,0 +1,78 @@
+"""Installed-wheel tools exports, loader limits and caller hooks."""
+import io
+import struct
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(ROOT / "tools/parity"))
+import binding_cases as B
+import scratch
+import unityrs
+
+
+class Tools(unittest.TestCase):
+    def text(self):
+        return next(data for name, data in B.cases() if name == "text")
+
+    def test_text_export_preserves_surrogate_bytes(self):
+        from unityrs.tools import exportTextAsset
+        env = unityrs.Environment(self.text())
+        with scratch.folder("wheel-tools-") as directory:
+            path = Path(directory) / "output"
+            returned = exportTextAsset(env.objects[0], str(path))
+            self.assertEqual(returned, [(env.file, 7)])
+            self.assertEqual(path.with_suffix(".txt").read_bytes(), b"body")
+
+    def test_object_patch_installs_bytes_and_marks_parent(self):
+        env = unityrs.Environment(self.text())
+        reader = env.objects[0]
+        result = reader.patch({"m_Name": "edited", "m_Script": "replacement"})
+        self.assertEqual(result, B.S.s32("edited") + B.S.s32("replacement"))
+        self.assertEqual(reader.data, result)
+        self.assertTrue(env.file.is_changed)
+
+    def test_stream_reexports_read_written_values(self):
+        from unityrs.streams import EndianBinaryReader, EndianBinaryWriter
+        for endian in ("<", ">"):
+            writer = EndianBinaryWriter(endian=endian)
+            writer.write_int(-27)
+            writer.write_aligned_string("text")
+            reader = EndianBinaryReader(writer.bytes, endian=endian)
+            self.assertEqual(reader.read_int(), -27)
+            self.assertEqual(reader.read_aligned_string(), "text")
+
+    def test_split_join_enforces_aggregate_input_limit(self):
+        data = self.text()
+        with scratch.folder("wheel-splits-") as directory:
+            base = str(Path(directory) / "input.assets")
+            Path(base + ".split0").write_bytes(data[:40])
+            Path(base + ".split1").write_bytes(data[40:])
+            env = unityrs.Environment(limits=unityrs.Limits(max_input_bytes=len(data) - 1))
+            with self.assertRaises(unityrs.LimitError):
+                env.load_file(base + ".split0")
+
+    def test_split_join_releases_budget_after_refusal(self):
+        budget = unityrs.Budget(4096)
+        with scratch.folder("wheel-split-budget-") as directory:
+            base = str(Path(directory) / "input.assets")
+            Path(base + ".split0").write_bytes(b"x" * 8192)
+            env = unityrs.Environment(budget=budget)
+            with self.assertRaises(MemoryError):
+                env._load_split_file(base)
+            self.assertEqual(budget.used, 0)
+
+    def test_custom_filesystem_split_parts_load_without_local_files(self):
+        from fsspec.implementations.memory import MemoryFileSystem
+        fs = MemoryFileSystem(skip_instance_cache=True)
+        fs.pipe("/wheel-input.assets.split0", self.text()[:40])
+        fs.pipe("/wheel-input.assets.split1", self.text()[40:])
+        env = unityrs.Environment(fs=fs)
+        env.load_file("/wheel-input.assets.split0")
+        self.assertEqual(env.objects[0].parse_as_dict()["m_Script"], "body")
+
+    def test_empty_environment_container(self):
+        env = unityrs.Environment()
+        self.assertEqual(len(env.container), 0)
+        self.assertIsNone(env.typetree_generator)

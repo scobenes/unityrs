@@ -157,17 +157,28 @@ impl NativeEnvironment {
             })
         })
     }
+    #[pyo3(signature = (fallback, parse_typetree, decrypt_key=None))]
     fn configure(
         &self,
         py: Python<'_>,
         fallback: Option<&Bound<'_, PyAny>>,
         parse_typetree: bool,
+        decrypt_key: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
         let meter = self.input_meter();
         let fallback = fallback
             .map(|v| crate::buffer_snapshot::BufferSnapshot::source(v, &meter, u64::MAX))
             .transpose()?;
+        let decrypt_key = decrypt_key
+            .map(|value| {
+                let snapshot = crate::buffer_snapshot::BufferSnapshot::new(value, &meter)?;
+                <[u8; 16]>::try_from(snapshot.as_ref()).map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err("AssetBundle Key length is wrong")
+                })
+            })
+            .transpose()?;
         py.detach(|| {
+            self.config.set_decrypt_key(decrypt_key);
             self.config.set(
                 fallback.map(|data| RawStr::from(unityrs_core::Bytes::from_owner(data))),
                 parse_typetree,

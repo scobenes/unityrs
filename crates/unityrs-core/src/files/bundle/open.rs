@@ -306,7 +306,10 @@ fn read_fs_header(
         } else {
             Some(UnityCnDecryptor::read(
                 r,
-                ctx.assetbundle_decrypt_key.as_ref(),
+                ctx.runtime_config
+                    .as_ref()
+                    .map_or(ctx.assetbundle_decrypt_key, |config| config.decrypt_key())
+                    .as_ref(),
             )?)
         }
     } else {

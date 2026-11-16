@@ -77,7 +77,25 @@ def cases():
     yield "gzip_corrupt", b"\x1f\x8b\x08\0" + b"\0"*6 + b"\xff"*128
 
 
-def observe(module, data=None, name="input.assets", env=None):
+def _corrected_iteration(module, file, method, args):
+    """Independent reference for PARITY.md 19.2's file iteration corrections."""
+    pending = [file]
+    result = []
+    while pending:
+        value = pending.pop()
+        if isinstance(value, module.files.SerializedFile):
+            if method == "get_assets":
+                result.append(value)
+            else:
+                types = args[0] if args else None
+                result.extend(obj for obj in value.objects.values()
+                              if not types or obj.type in types)
+        elif isinstance(value, (module.files.BundleFile, module.files.WebFile)):
+            pending.extend(reversed(list(value.files.values())))
+    return result
+
+
+def observe(module, data=None, name="input.assets", env=None, *, corrected=False):
     """Stable public observations, with addresses and process hashes excluded."""
     env = module.Environment() if env is None else env
     try:
@@ -98,7 +116,9 @@ def observe(module, data=None, name="input.assets", env=None):
                                  ("get_filtered_objects", ()), ("get_filtered_objects", ([49],))]:
                 key = method + str(args)
                 try:
-                    result[key] = [getattr(x, "path_id", getattr(x, "name", None)) for x in getattr(f, method)(*args)]
+                    values = (_corrected_iteration(module, f, method, args) if corrected
+                              else getattr(f, method)(*args))
+                    result[key] = [getattr(x, "path_id", getattr(x, "name", None)) for x in values]
                 except Exception as error:
                     result[key] = {"error": type(error).__name__, "message": str(error)}
         if isinstance(getattr(f, "name", None), str):
@@ -126,7 +146,7 @@ def observe(module, data=None, name="input.assets", env=None):
             "assets": [f.name for f in env.assets], "file": hasattr(env, "file"), "cabs": list(env.cabs)}
 
 
-def observe_paths(module, data, root):
+def observe_paths(module, data, root, *, corrected=False):
     """Local loading and nameless stream cases, with scratch paths normalized."""
     root = Path(root)
     path = root / "path.assets"
@@ -140,19 +160,19 @@ def observe_paths(module, data, root):
         with contextlib.redirect_stdout(io.StringIO()):
             try:
                 env = module.Environment(source)
-                results[key] = observe(module, env=env)
+                results[key] = observe(module, env=env, corrected=corrected)
                 if key in ("bytes", "stream", "stream20"):
                     original = str(next(iter(env.files)))
                     token = "<hash>" if key == "bytes" else "<stream>"
                     results[key] = replace_string(results[key], original, token)
             except Exception as error:
                 results[key] = {"error": type(error).__name__}
-    results["multiple"] = observe(module, env=module.Environment(str(path), str(folder)))
+    results["multiple"] = observe(module, env=module.Environment(str(path), str(folder)), corrected=corrected)
     env = module.Environment(path=str(root))
     env.load_file("path.assets")
-    results["relative"] = observe(module, env=env)
+    results["relative"] = observe(module, env=env, corrected=corrected)
     env.load_file(data, name="dependency", is_dependency=True)
-    results["dependency"] = observe(module, env=env)
+    results["dependency"] = observe(module, env=env, corrected=corrected)
     env = module.Environment()
     first = env.load_file(data, name="CAB-y1")
     nested = env.load_file(S.web_file([(b"CAB-y1", data)]), name="nested")
@@ -181,7 +201,7 @@ def observe_paths(module, data, root):
     Path(str(base) + ".split1").write_bytes(data[len(data)//2:])
     env = module.Environment()
     env.load_file(str(base) + ".split0")
-    results["split_direct"] = observe(module, env=env)
+    results["split_direct"] = observe(module, env=env, corrected=corrected)
     import zipfile
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -199,7 +219,7 @@ def observe_paths(module, data, root):
     for key, source in (("zip_bytes", buffer.getvalue()), ("zip_stream", io.BytesIO(buffer.getvalue()))):
         env = module.Environment()
         env.load_zip_file(source)
-        results[key] = observe(module, env=env)
+        results[key] = observe(module, env=env, corrected=corrected)
 
     def clean(value):
         if isinstance(value, str):
