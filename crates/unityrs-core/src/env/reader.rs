@@ -1,4 +1,4 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py, UnityPy/helpers/ImportHelper.py, UnityPy/files/File.py. See THIRD_PARTY_LICENSES.
 //! A binding's immutable Python buffer keeps its reader's origin and uses one
 //! input meter. The caller retains the bytes; all core storage is metered.
 use super::{Environment, load::Target};
@@ -12,6 +12,27 @@ use crate::{
 };
 
 impl Environment {
+    /// Parses caller-owned bytes without adding an environment file or
+    /// registering a standalone SerializedFile/raw reader. Container child
+    /// CABs retain their constructor registrations (helpers/ImportHelper.py:127-156,
+    /// files/File.py:76-90), including duplicate directory rows in parse order.
+    pub fn parse_reader(
+        &self,
+        name: &RawStr,
+        data: Bytes,
+        reader: ReaderKind,
+    ) -> Result<File, Error> {
+        let ctx = self.ctx();
+        super::within_input_bytes(data.len() as u64, &ctx.limits)?;
+        let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
+        let ty = check_file_type_with_reader(&data, &ctx.limits, reader)?;
+        let file = parse_file_with_reader(name.clone(), data, ty, None, &meter, ctx, reader)?;
+        if matches!(file, File::Bundle(_) | File::Web(_)) {
+            self.register_file(name, &file, &mut Target::Caller)?;
+        }
+        Ok(file)
+    }
+
     /// Loads caller-owned bytes by the memory or stream reader's rules,
     /// registers their CABs and lists the file with UnityPy's dependency flag
     /// (environment.py:100-160). ZIP members are loaded and the result is None.

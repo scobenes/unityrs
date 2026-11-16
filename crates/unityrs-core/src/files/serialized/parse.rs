@@ -126,6 +126,21 @@ impl SerializedFile {
         let object_order = keep(object_order, &mut charge)?;
         let by_path = keep(by_path, &mut charge)?;
         let copies = CopyCounts::new(p.trees.0, p.trees.1);
+        // A successful eager container read uses check_read, so its final
+        // cursor is exactly the first AssetBundle's byte_start + byte_size.
+        // Without one, retain the actual metadata parser cursor, including
+        // old formats whose metadata lives at the end of the file.
+        let eager_reader_position = ctx
+            .eager_asset_bundle
+            .then(|| {
+                object_order
+                    .iter()
+                    .filter_map(|i| object_infos.get(usize::try_from(*i).ok()?))
+                    .find(|o| o.class_id == ASSET_BUNDLE)
+                    .map(|o| o.byte_start + i128::from(o.byte_size))
+            })
+            .flatten();
+        let reader_position = eager_reader_position.unwrap_or_else(|| p.r.position());
         let head_handlers = p.handlers;
         let file = Arc::new(Self {
             changed: std::sync::atomic::AtomicBool::new(false),
@@ -154,18 +169,13 @@ impl SerializedFile {
             container: ResultCell::new(),
             parent,
             reader,
+            reader_position,
             charge,
             ctx: ctx.clone(),
         });
         // :316-324: the first AssetBundle in dict order is read at load; a
         // failure fails the parse, whose grants the bundle counts.
-        if ctx.eager_asset_bundle
-            && file
-                .object_order
-                .iter()
-                .filter_map(|i| file.object_infos.get(usize::try_from(*i).ok()?))
-                .any(|o| o.class_id == ASSET_BUNDLE)
-        {
+        if eager_reader_position.is_some() {
             file.container_at_load()?;
         }
         Ok(file)

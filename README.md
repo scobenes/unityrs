@@ -117,7 +117,40 @@ if the rename happened after extraction. A directory moved outside the `-o`
 pathname can therefore receive subsequent writes through its held descriptor;
 this does not grant access to a directory the renamer could not write to.
 Interrupted runs may leave
-`.unityrs-extract-*.tmp` files, safe to delete. Python exposure is Y5.
+`.unityrs-extract-*.tmp` files, safe to delete. The Python tools facade exposes
+the nine exporters and extraction helpers with the same destination confinement.
+It validates names and extensions before creating output, opens destinations only
+when dispatch and filters reach an export, and preserves existing files on failed
+image exports through atomic publication. Its 269 oracle comparisons and 113 wheel
+tests include hostile path, shared-reader cursor and concurrency regressions,
+primitive-map decoding budgets, empty and legacy GameObject components, and
+decryption-key conversion deferred until encrypted bundle processing. Generated
+node getters, result allocation, error callbacks and finalization run on the
+calling thread; negative string reads reserve decoding storage for the remaining
+input span. Array-map recordings include values and cursors for every alias.
+Every enclosing reader array retains byte-span charges through handoff,
+including whole-file copies and nested arrays. One-byte boundary tests cover
+raw bytes, strings, aligned reads and typed arrays; recorded oracle comparisons
+preserve successful values and cursors and document the aggregate budget refusal.
+Concurrent first access shares file containers, readers and decoded sprite
+textures under the environment lock. Container extraction accepts equivalent
+destination spellings, including repeated trailing slashes. Public tool paths,
+class export arguments and asset-derived output names become exact strings before
+use; hostile subclass regressions check the surrounding filesystem too. Direct
+exporters preserve defaults or ignored arguments for all falsy extensions,
+retain scalar extension formatting, and validate effective output names.
+Empty sources, unsupported objects and filtered objects skip unused destination
+conversion; source-loading errors take precedence. Non-container extraction
+accepts an empty destination as the current directory while validating names.
+These cases have oracle comparisons and recorded replay. Standalone
+SerializedFile parsing leaves the environment's file and CAB mappings unchanged.
+Forced-parsing stream semantics (memory-reader `read(None)` and BytesIO
+`read(-2)`) and an earlier child's CAB surviving a later container failure remain
+open under PARITY section 22 for Y6a; Y5 does not verify them.
+Runtime configuration retains a context's
+decryption key unless it supplies an override.
+Textured material adapters and replacement texture converters requiring Switch
+or crunch preprocessing have named refusals pending Y6a/Y6b.
 
 ## Licence
 

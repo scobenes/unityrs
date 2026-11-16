@@ -22,8 +22,32 @@ pub(crate) struct NativeEnvironment {
 
 #[derive(Debug, Default)]
 struct FallbackWarning {
-    error: Mutex<Option<PyErr>>,
+    error: Arc<Mutex<Option<PyErr>>>,
     config: Arc<unityrs_core::config::RuntimeConfig>,
+}
+
+#[derive(Debug)]
+struct DeferredKey {
+    error: Arc<Mutex<Option<PyErr>>>,
+}
+
+impl unityrs_core::config::DecryptKeySource for DeferredKey {
+    fn key(
+        &self,
+        meter: &Arc<unityrs_core::limits::Meter>,
+    ) -> Result<Option<[u8; 16]>, unityrs_core::limits::ChargeError> {
+        crate::python::relay::decrypt_key(meter).map_err(|error| {
+            *self
+                .error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+            unityrs_core::budget::AllocError {
+                requested: 0,
+                what: unityrs_core::budget::Reservation::Input,
+            }
+            .into()
+        })
+    }
 }
 impl unityrs_core::config::FallbackWarningSink for FallbackWarning {
     fn warn(&self, value: &RawStr) -> Result<(), unityrs_core::limits::ChargeError> {
@@ -134,7 +158,7 @@ impl NativeEnvironment {
             let mut context = FileContext::unitypy();
             let config = Arc::new(unityrs_core::config::RuntimeConfig::unitypy());
             let fallback_warnings = Arc::new(FallbackWarning {
-                error: Mutex::new(None),
+                error: Arc::new(Mutex::new(None)),
                 config: config.clone(),
             });
             context.runtime_config = Some(config.clone());
@@ -148,6 +172,9 @@ impl NativeEnvironment {
             if let Some(budget) = budget {
                 context.budget = budget.inner.clone();
             }
+            config.set_decrypt_key_source(Arc::new(DeferredKey {
+                error: fallback_warnings.error.clone(),
+            }));
             let mut options = EnvOptions::unitypy();
             options.context = Arc::new(context);
             Ok(Self {
@@ -157,6 +184,7 @@ impl NativeEnvironment {
             })
         })
     }
+    #[pyo3(signature = (fallback, parse_typetree))]
     fn configure(
         &self,
         py: Python<'_>,
@@ -185,6 +213,7 @@ impl NativeEnvironment {
         });
         error.map_or(Ok(0), Err)
     }
+    #[pyo3(signature = (data, name, dependency, stream, register=true))]
     fn load_bytes(
         &self,
         py: Python<'_>,
@@ -192,6 +221,7 @@ impl NativeEnvironment {
         name: &Bound<'_, PyAny>,
         dependency: bool,
         stream: bool,
+        register: bool,
     ) -> PyResult<Option<NativeFile>> {
         let meter = self.input_meter();
         let data = crate::buffer_snapshot::BufferSnapshot::source(
@@ -223,14 +253,19 @@ impl NativeEnvironment {
                     } else {
                         unityrs_core::stream::ReaderKind::Memory
                     };
+                    let name = RawStr::from(unityrs_core::Bytes::from_owner(name));
+                    let data = unityrs_core::Bytes::from_owner(data);
+                    if !register {
+                        return self
+                            .inner
+                            .parse_reader(&name, data, reader)
+                            .map(NativeFile::new)
+                            .map(Some)
+                            .map_err(errors::core);
+                    }
                     let file = self
                         .inner
-                        .load_reader(
-                            RawStr::from(unityrs_core::Bytes::from_owner(name)),
-                            unityrs_core::Bytes::from_owner(data),
-                            reader,
-                            dependency,
-                        )
+                        .load_reader(name, data, reader, dependency)
                         .map_err(errors::core)?;
                     Ok(file.map(NativeFile::new))
                 },
@@ -346,7 +381,7 @@ impl NativeEnvironment {
                     .map_err(errors::charge)?;
                 let row = p::list()?;
                 p::push(&row, &p::string(entry.name.as_bytes())?)?;
-                let file = Python::attach(|py| {
+                let file = crate::python::relay::attach(|py| {
                     Py::new(py, NativeFile::new(entry.file)).map(Py::into_any)
                 })?;
                 p::push(&row, &file)?;
@@ -392,7 +427,8 @@ impl NativeEnvironment {
                         let file = NativeFile::new(file);
                         let row = p::list()?;
                         p::push(&row, &p::string(key.as_bytes())?)?;
-                        let file = Python::attach(|py| Py::new(py, file).map(Py::into_any))?;
+                        let file =
+                            crate::python::relay::attach(|py| Py::new(py, file).map(Py::into_any))?;
                         p::push(&row, &file)?;
                         p::push(&result, &row)?;
                     }

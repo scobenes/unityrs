@@ -15,7 +15,7 @@ class BindingRows(unittest.TestCase):
         self.assertEqual(UnityPy.__version__, "1.25.2")
         for name, data in B.cases():
             with self.subTest(name=name):
-                self.assertEqual(B.observe(unityrs, data), B.observe(UnityPy, data))
+                self.assertEqual(B.observe(unityrs, data), B.observe(UnityPy, data, corrected=True))
 
     def test_y1_paths_and_streams(self):
         import UnityPy
@@ -24,4 +24,4 @@ class BindingRows(unittest.TestCase):
         import scratch
         data = next(data for name, data in B.cases() if name == "text")
         with scratch.folder("unityrs-bindings-") as root:
-            self.assertEqual(B.observe_paths(unityrs, data, root), B.observe_paths(UnityPy, data, root))
+            self.assertEqual(B.observe_paths(unityrs, data, root), B.observe_paths(UnityPy, data, root, corrected=True))
