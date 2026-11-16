@@ -1,4 +1,6 @@
 """Helper regressions retain cursor, callback and validation contracts."""
+import importlib
+import struct
 import sys
 import unittest
 from pathlib import Path
@@ -9,6 +11,76 @@ import unityrs
 
 
 class HelperReview(unittest.TestCase):
+    def test_shader_constructors_retain_owner_budget_to_handoff(self):
+        module = importlib.import_module('unityrs.export.ShaderConverter')
+        for program, boundary in ((False, 1024), (True, 1288)):
+            budget = unityrs.Budget(4_000_000)
+            obj, reader = O.shader_reader(unityrs, 2, program, budget=budget)
+            baseline = budget.used
+            for available in (boundary - 1, boundary):
+                with self.subTest(program=program, available=available):
+                    reader.Position = obj.byte_start
+                    held = obj._native.tree_traversal()
+                    held.step(0, budget.limit - budget.used - available, 0)
+                    def construct():
+                        return module.ShaderProgram(reader, (2019, 3)) if program else module.ShaderSubProgram(reader)
+                    try:
+                        if available < boundary:
+                            with self.assertRaises(MemoryError):
+                                construct()
+                        else:
+                            value = construct()
+                            sub = value.m_SubPrograms[0] if program else value
+                            self.assertEqual(sub.m_Keywords, ['', ''])
+                            self.assertEqual(sub.m_ProgramCode, b'')
+                            self.assertEqual(reader.Position - obj.byte_start, 44 if program else 40)
+                    finally:
+                        del held
+                    self.assertEqual(budget.used, baseline)
+
+    def test_shader_keyword_expansion_refuses_small_owner_budget(self):
+        module = importlib.import_module('unityrs.export.ShaderConverter')
+        for program in (False, True):
+            budget = unityrs.Budget(16_000_000)
+            obj, reader = O.shader_reader(unityrs, 20_000, program, budget=budget)
+            baseline = budget.used
+            held = obj._native.tree_traversal()
+            held.step(0, budget.limit - budget.used - 4096, 0)
+            try:
+                with self.subTest(program=program), self.assertRaises(MemoryError):
+                    if program:
+                        module.ShaderProgram(reader, (2019, 3))
+                    else:
+                        module.ShaderSubProgram(reader)
+            finally:
+                del held
+            self.assertEqual(budget.used, baseline)
+
+    def test_tree_strings_accept_memoryview_and_align(self):
+        for data, kind, result, position in O.observe_tree_memoryview_strings(unityrs):
+            with self.subTest(data=data, kind=kind):
+                value = ['str', 'edb3bf' if data == 'ff' else data]
+                self.assertEqual(result, {'value': ['list', [value]] if kind == 'array' else value})
+                self.assertEqual(position, 8)
+
+    def test_memoryview_string_copy_is_charged_before_reading(self):
+        helper = importlib.import_module('unityrs.helpers.TypeTreeHelper')
+        node = unityrs.helpers.TypeTreeNode.TypeTreeNode(0, 'string', 'value', -1, 1, [])
+        budget = unityrs.Budget(10_000)
+        reader = unityrs.streams.EndianBinaryReader(struct.pack('<i', 4096) + b'x' * 4096, '<')
+        original = reader.read_bytes
+        def read_bytes(size):
+            self.fail('string buffer copied before its charge')
+        reader.read_bytes = read_bytes
+        with self.assertRaises(MemoryError):
+            helper.read_typetree(node, reader, check_read=False, budget=budget)
+        self.assertEqual(reader.Position, 4)
+        self.assertEqual(budget.used, 0)
+        reader.Position = 0
+        reader.read_bytes = lambda size: memoryview(original(size))
+        self.assertEqual(helper.read_typetree(node, reader, check_read=False), 'x' * 4096)
+        self.assertEqual(reader.Position, 4100)
+
     def test_schema_failure_keeps_original_cursor(self):
         for stream, wrap, result, position in O.observe_schema_failure_cursor(unityrs):
             with self.subTest(stream=stream, wrap=wrap):

@@ -121,7 +121,7 @@ Interrupted runs may leave
 the nine exporters and extraction helpers with the same destination confinement.
 It validates names and extensions before creating output, opens destinations only
 when dispatch and filters reach an export, and preserves existing files on failed
-image exports through atomic publication. Its 358 oracle comparisons and 176 wheel
+image exports through atomic publication. Its 360 oracle comparisons and 180 wheel
 tests include hostile path, shared-reader cursor and concurrency regressions,
 primitive-map decoding budgets, empty and legacy GameObject components, and
 decryption-key conversion deferred until encrypted bundle processing. Generated
@@ -151,10 +151,14 @@ Runtime configuration retains a context's
 decryption key unless it supplies an override.
 Standalone textured materials resolve current texture names through Y6a’s bounded
 adapter. Y6b adds standalone helpers and Switch/crunch preprocessing for replacement
-texture converters. Five helper review recordings cover schema-error cursors,
+texture converters. Seven helper review recordings cover schema-error cursors,
 truncated stream-object cursors, live primitive callbacks on the caller, empty
-shader blobs with declared platforms, and signed LZ4 arguments and embedded sizes.
-The 243 API fixtures and 90 object observations replay in 41 Rust binding tests;
+shader blobs with declared platforms, signed LZ4 arguments and embedded sizes,
+shader construction from native asset readers, and memoryview string decoding
+with cursor alignment. Shader constructors retain the owning reader's traversal
+guard through construction; one-byte budget boundaries and the 20,000-keyword
+case with 4 KiB remaining have wheel regressions.
+The 245 API fixtures and 90 object observations replay in 41 Rust binding tests;
 the threat model in `crates/unityrs-py/README.md` applies unchanged.
 
 ## Licence

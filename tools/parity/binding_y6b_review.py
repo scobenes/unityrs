@@ -109,3 +109,52 @@ def observe_lz4_signed_sizes(package):
         data = struct.pack('<I', size) + b'\x10x'
         rows.append(['header', size, _call(lambda: helper.decompress_lz4(data, -1))])
     return rows
+
+
+def shader_reader(package, count, program=False, **options):
+    # Empty keywords isolate retained list charges from native byte-copy charges.
+    blob = struct.pack('<7i', 202012090, 1, 0, 0, 0, 0, count) + bytes(count * 4 + 4)
+    if program:
+        blob = struct.pack('<i', 1) + blob
+    data = B.S.serialized_file([B.S.Type(49)], [B.S.Obj(1, 0, blob)], enable_type_tree=False)
+    if program:
+        start = struct.unpack_from('>q', data, 32)[0]
+        # Version 22 ignores the legacy size field. Use it as the program's
+        # absolute offset table, so the real asset reader needs no replacement.
+        data = data[:4] + struct.pack('<i', start + 4) + data[8:]
+    obj = package.Environment(data, **options).objects[0]
+    reader = obj.reader
+    reader.Position = obj.byte_start
+    return obj, reader
+
+
+def observe_shader_asset_readers(package):
+    module = importlib.import_module(package.__name__ + '.export.ShaderConverter')
+    rows = []
+    for program in (False, True):
+        for count in (2, 20_000):
+            obj, reader = shader_reader(package, count, program)
+            value = module.ShaderProgram(reader, (2019, 3)) if program else module.ShaderSubProgram(reader)
+            sub = value.m_SubPrograms[0] if program else value
+            rows.append([program, count, len(sub.m_Keywords), sub.m_Keywords[:2],
+                         sub.m_LocalKeywords, sub.m_ProgramCode.hex(), reader.Position - obj.byte_start])
+    return rows
+
+
+def observe_tree_memoryview_strings(package):
+    helper = importlib.import_module(package.__name__ + '.helpers.TypeTreeHelper')
+    rows = []
+    for data in (b'x', b'\xc3\xa9', b'\xff'):
+        for kind in ('tree', 'value', 'array'):
+            reader = package.streams.EndianBinaryReader(struct.pack('<i', len(data)) + data + bytes(3), '<')
+            original = reader.read_bytes
+            reader.read_bytes = lambda size: memoryview(original(size))
+            node, config = _node(package, 'string'), helper.TypeTreeConfig(True)
+            def read():
+                if kind == 'array':
+                    return helper.read_value_array(node, reader, config, 1)
+                if kind == 'value':
+                    return helper.read_value(node, reader, config)
+                return helper.read_typetree(node, reader, check_read=False)
+            rows.append([data.hex(), kind, _call(read), reader.Position])
+    return rows

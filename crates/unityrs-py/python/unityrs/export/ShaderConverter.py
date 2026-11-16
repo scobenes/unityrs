@@ -214,7 +214,8 @@ def _words(out, words, guard):
 
 class ShaderProgram:
     def __init__(self, reader, version):
-        guard = _native.TreeTraversal()
+        native = getattr(reader, '_native', None)
+        guard = native.tree_traversal() if native is not None else _native.TreeTraversal()
         count = reader.read_int()
         guard.step(0, max(0, count) * 8 + 256, max(0, count))
         self.m_SubPrograms = [None] * count
@@ -248,7 +249,9 @@ class ShaderProgram:
 
 class ShaderSubProgram:
     def __init__(self, reader, *, _guard=None):
-        guard = _native.TreeTraversal() if _guard is None else _guard
+        native = getattr(reader, '_native', None)
+        guard = _guard if _guard is not None else (
+            native.tree_traversal() if native is not None else _native.TreeTraversal())
         self.m_Version = reader.read_int()
         self.m_ProgramType = ShaderGpuProgramType(reader.read_int())
         reader.Position += 12

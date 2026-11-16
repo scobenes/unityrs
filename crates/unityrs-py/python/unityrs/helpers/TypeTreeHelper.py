@@ -167,7 +167,7 @@ def _bounded_primitive(ty, reader, guard):
         if not 0 < length <= reader.Length - reader.Position:
             return ''
         guard.step(0, 256 + length * 5, length)
-        value = reader.read_bytes(length).decode('utf8', 'surrogateescape')
+        value = bytes(reader.read_bytes(length)).decode('utf8', 'surrogateescape')
         reader.align_stream()
         return value
     bound = max(length, reader.Length - reader.Position) if length < 0 else length

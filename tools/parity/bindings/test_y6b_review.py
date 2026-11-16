@@ -6,6 +6,12 @@ import binding_y6b_review as O
 
 
 class HelperReview(unittest.TestCase):
+    def test_shader_constructors_accept_native_asset_readers(self):
+        self.assertEqual(O.observe_shader_asset_readers(unityrs), O.observe_shader_asset_readers(UnityPy))
+
+    def test_tree_strings_accept_memoryview_and_align(self):
+        self.assertEqual(O.observe_tree_memoryview_strings(unityrs), O.observe_tree_memoryview_strings(UnityPy))
+
     def test_schema_failure_keeps_original_cursor(self):
         self.assertEqual(O.observe_schema_failure_cursor(unityrs), O.observe_schema_failure_cursor(UnityPy))
 
