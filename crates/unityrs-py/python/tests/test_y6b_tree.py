@@ -156,8 +156,57 @@ class StandaloneBounds(unittest.TestCase):
     def test_update_import_performs_no_download(self):
         import importlib
         update = importlib.import_module('unityrs.cli.update_tpk')
-        with patch('urllib.request.urlopen', side_effect=AssertionError('implicit download')):
+        try:
+            with patch('urllib.request.urlopen', side_effect=AssertionError('implicit download')):
+                importlib.reload(update)
+        finally:
             importlib.reload(update)
+
+    def test_update_replaces_leaf_symlink_without_changing_its_target(self):
+        import contextlib
+        import importlib
+        import io
+        import scratch
+        from binding_y6b_tree import update_tpk_peer
+        update = importlib.import_module('unityrs.cli.update_tpk')
+        old_tpk = getattr(unityrs.config, 'TPK', None)
+        self.addCleanup(setattr, unityrs.config, 'TPK', old_tpk)
+        with scratch.folder('tpk-link-') as root, update_tpk_peer() as (url, _):
+            cache = root / 'cache'
+            cache.mkdir()
+            former = root / 'former.tpk'
+            former.write_bytes(b'unchanged')
+            target = cache / 'lzma.tpk'
+            target.symlink_to(former)
+            with patch.object(update, 'generate_classes'), contextlib.redirect_stdout(io.StringIO()):
+                update.update_tpk(url=url, resource_path=cache)
+            self.assertFalse(target.is_symlink())
+            self.assertTrue(target.is_file())
+            self.assertEqual(target.read_bytes(), b'synthetic-tpk')
+            self.assertEqual(former.read_bytes(), b'unchanged')
+            self.assertEqual(sorted(path.name for path in cache.iterdir()), ['lzma.tpk'])
+
+    def test_update_refuses_symlinked_destination_components_before_writing(self):
+        import contextlib
+        import importlib
+        import io
+        import scratch
+        from binding_y6b_tree import update_tpk_peer
+        update = importlib.import_module('unityrs.cli.update_tpk')
+        old_tpk = getattr(unityrs.config, 'TPK', None)
+        self.addCleanup(setattr, unityrs.config, 'TPK', old_tpk)
+        with scratch.folder('tpk-link-') as root, update_tpk_peer() as (url, _):
+            outside = root / 'outside'
+            outside.mkdir()
+            link = root / 'link'
+            link.symlink_to(outside, target_is_directory=True)
+            for destination in (link, link / 'new' / 'cache'):
+                with self.subTest(destination=destination.relative_to(root)), \
+                     patch.object(update, 'generate_classes'), contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(OSError):
+                        update.update_tpk(url=url, resource_path=destination)
+                self.assertEqual(list(outside.iterdir()), [])
+                self.assertEqual(unityrs.config.TPK, old_tpk)
 
     def test_downloaded_raw_cache_is_discovered_without_oracle(self):
         import os

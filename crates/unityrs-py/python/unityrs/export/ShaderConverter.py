@@ -2,6 +2,7 @@
 """Shader converter stages backed by the bounded native exporter."""
 import re
 import struct
+from itertools import groupby
 from .. import _native
 from .._buffers import snapshot_bytes
 from ..enums import ShaderGpuProgramType
@@ -34,6 +35,10 @@ def ConvertSerializedShader(m_Shader):
 
 
 def _stage(stage, value, platforms=(), programs=(), **extra):
+    if stage in ('shader', 'subshader', 'pass', 'subprograms'):
+        out = _StageOutput()
+        _convert(stage, value, platforms, programs, out)
+        return out.finish()
     guard = _native.TreeTraversal()
     blobs = []
     for program in programs:
@@ -41,6 +46,89 @@ def _stage(stage, value, platforms=(), programs=(), **extra):
         blobs.append(program._blob(guard))
     return _native.shader_stage(dict(value=value, platforms=platforms,
                                     program_blobs=blobs, **extra), stage)
+
+
+class _StageOutput:
+    """Keep stage assembly charged while selected Python exports stay mutable."""
+    def __init__(self):
+        self.guard = _native.TreeTraversal()
+        self.parts = []
+        self.size = 0
+
+    def add(self, *parts):
+        for part in parts:
+            part = str(part)
+            self.guard.step(0, len(part) * 8 + 256, len(part) + 1)
+            self.parts.append(part)
+            self.size += len(part)
+
+    def items(self, values):
+        for value in values:
+            self.guard.step(0, 256, 1)
+            yield value
+
+    def finish(self):
+        self.guard.step(0, self.size * 4 + 256, self.size)
+        return ''.join(self.parts)
+
+
+def _convert(stage, value, platforms, programs, out):
+    # Do not serialize/reparse shaderPrograms: UnityPy calls Export only on the
+    # selected current subprogram, without validating its type as a new enum.
+    if stage == 'shader':
+        out.add('Shader "', value.m_Name, '" {\n', ConvertSerializedProperties(value.m_PropInfo))
+        for sub in out.items(value.m_SubShaders):
+            _convert('subshader', sub, platforms, programs, out)
+        for name, label in ((value.m_FallbackName, 'Fall back'),
+                            (value.m_CustomEditorName, 'CustomEditor')):
+            if name:
+                out.add(label, ' "', name, '"\n')
+        out.add('}')
+    elif stage == 'subshader':
+        out.add('SubShader {\n')
+        if value.m_LOD != 0:
+            out.add(' LOD ', value.m_LOD, '\n')
+        out.add(ConvertSerializedTagMap(value.m_Tags, 1))
+        for item in out.items(value.m_Passes):
+            _convert('pass', item, platforms, programs, out)
+        out.add('}\n')
+    elif stage == 'pass':
+        kind = value.m_Type
+        out.add({0: ' Pass ', 1: ' UsePass ', 2: ' GrabPass '}.get(kind, ''))
+        if kind == 1:
+            out.add('"', value.m_UseName, '"\n')
+            return
+        out.add('{\n')
+        if kind == 2:
+            if value.m_TextureName:
+                out.add(' "', value.m_TextureName, '"\n')
+        else:
+            out.add(ConvertSerializedShaderState(value.m_State))
+            for name, label in (('progVertex', 'vp'), ('progFragment', 'fp'),
+                                ('progGeometry', 'gp'), ('progHull', 'hp'), ('progDomain', 'dp')):
+                subs = getattr(value, name).m_SubPrograms
+                if len(subs) > 0:
+                    out.add('Program "', label, '" {\n')
+                    _convert('subprograms', subs, platforms, programs, out)
+                    out.add('}\n')
+        out.add('}\n')
+    else:
+        ordered = list(out.items(value))
+        count = len(ordered)
+        out.guard.step(0, count * 256 + 256, count * max(1, count.bit_length()))
+        ordered.sort(key=lambda sub: (sub.m_BlobIndex, sub.m_GpuProgramType))
+        for (_, kind), group in groupby(ordered, lambda sub: (sub.m_BlobIndex, sub.m_GpuProgramType)):
+            group = list(out.items(group))
+            for i in range(min(len(platforms), len(programs))):
+                out.guard.step(0, 256, 1)
+                platform = platforms[i]
+                if CheckGpuProgramUsable(platform, kind):
+                    for sub in out.items(group):
+                        out.add('SubProgram "', GetPlatformString(platform), ' ')
+                        if len(group) > 1:
+                            out.add('hw_tier', format(sub.m_ShaderHardwareTier, '02'), ' ')
+                        out.add('" {\n', programs[i].m_SubPrograms[sub.m_BlobIndex].Export(), '\n}\n')
+                    break
 
 
 def ConvertSerializedShaderParsedForm(m_ParsedForm, platforms, shaderPrograms):

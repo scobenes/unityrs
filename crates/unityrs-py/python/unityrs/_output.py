@@ -4,6 +4,31 @@ import os
 import secrets
 
 
+def walk_directory(path, guard, create=False, parent=None):
+    """Open each directory component without following links, retaining the leaf."""
+    guard.step(0, len(path) * 8 + 256, len(path))
+    guard.step(0, len(path) * 256 + 512, len(path))
+    parts = path.split("/")
+    fd = os.dup(parent) if parent is not None else os.open(
+        "/" if os.path.isabs(path) else ".", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts:
+            if part in ("", "."):
+                continue
+            if create:
+                try:
+                    os.mkdir(part, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def output_name(name, *, container=False, guard=None):
     """Validate original spelling before any directory prefix is discarded."""
     if not isinstance(name, str):

@@ -1,5 +1,6 @@
 """Synthetic standalone helpers and explicit optional backend observations."""
 import importlib
+import contextlib
 import io
 import struct
 import scratch
@@ -260,20 +261,17 @@ def observe_generator_backend(package):
         importlib.reload(module)
 
 
-def observe_update_tpk(package):
-    """A local deterministic HTTP peer serves synthetic zip bytes only."""
-    import contextlib
+@contextlib.contextmanager
+def update_tpk_peer():
+    """Serve synthetic ZIP bytes for update observations and confinement tests."""
     import http.server
     import threading
     import zipfile
-    from unittest.mock import patch
-    module = _module(package, 'cli.update_tpk')
-    output = io.StringIO()
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w') as archive:
         archive.writestr('lzma.tpk', b'synthetic-tpk')
     payload = buffer.getvalue()
-    requests, generated = [], []
+    requests = []
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             requests.append(self.path)
@@ -286,11 +284,25 @@ def observe_update_tpk(package):
     server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    try:
+        yield f'http://127.0.0.1:{server.server_port}/synthetic.zip', requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def observe_update_tpk(package):
+    """A local deterministic HTTP peer serves synthetic zip bytes only."""
+    from unittest.mock import patch
+    module = _module(package, 'cli.update_tpk')
+    output = io.StringIO()
+    generated = []
     old_tpk = getattr(package.config, 'TPK', None)
     try:
-        with scratch.folder('y6b-tree-') as directory:
+        with update_tpk_peer() as (url, requests), scratch.folder('y6b-tree-') as directory:
             target = Path(directory)
-            with patch.object(module, 'URL', f'http://127.0.0.1:{server.server_port}/synthetic.zip'), \
+            with patch.object(module, 'URL', url), \
                  patch.object(module, 'RESOURCE_PATH', str(directory)), \
                  patch.object(module, 'generate_classes', lambda: generated.append(True)), \
                  contextlib.redirect_stdout(output):
@@ -300,9 +312,6 @@ def observe_update_tpk(package):
         return [requests, generated, files, data, output.getvalue(),
                 _module(package, 'cli').update_tpk is module.update_tpk]
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
         if package.__name__ == 'unityrs':
             package.config.TPK = old_tpk
 

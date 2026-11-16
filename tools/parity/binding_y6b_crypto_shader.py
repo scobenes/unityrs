@@ -201,3 +201,52 @@ def observe_shader_platforms(package):
     return {str(platform): [module.GetPlatformString(platform),
             [_call(lambda kind=kind: module.CheckGpuProgramUsable(platform, kind)) for kind in range(32)]]
             for platform in range(-1, 23)}
+
+
+def observe_shader_mutable_stages(package):
+    module = _module(package, 'export.ShaderConverter')
+    Reader = _module(package, 'streams').EndianBinaryReader
+    result = {}
+    for kind in (999, 1 << 80, -(1 << 80)):
+        for code in (b'\xff', b''):
+            sub = module.ShaderSubProgram(Reader(sub_blob(), endian='<'))
+            sub.m_ProgramType = kind
+            sub.m_Keywords = ['EDIT']
+            sub.m_LocalKeywords = ['LOCAL EDIT']
+            sub.m_ProgramCode = code
+            program = module.ShaderProgram.__new__(module.ShaderProgram)
+            program.m_SubPrograms = [sub]
+            variants = [N(m_BlobIndex=-1, m_GpuProgramType=1, m_ShaderHardwareTier=tier)
+                        for tier in (2, 1)]
+            normal = N(m_Type=0, m_State=shader_state(), **{
+                name: N(m_SubPrograms=variants if name == 'progVertex' else [])
+                for name in ('progVertex', 'progFragment', 'progGeometry', 'progHull', 'progDomain')})
+            shader = N(m_LOD=0, m_Tags=N(tags=[]), m_Passes=[normal])
+            form = N(m_Name='Synthetic', m_PropInfo=N(m_Props=[]), m_SubShaders=[shader],
+                     m_FallbackName='', m_CustomEditorName='')
+            programs = [program]
+            result[f'{kind}/{bool(code)}'] = [
+                _call(lambda: module.ConvertSerializedSubPrograms(variants, [0, 1], programs)),
+                _call(lambda: module.ConvertSerializedPass(normal, [0, 1], programs)),
+                _call(lambda: module.ConvertSerializedSubShader(shader, [0, 1], programs)),
+                _call(lambda: module.ConvertSerializedShaderParsedForm(form, [0, 1], programs))]
+    return result
+
+
+def observe_shader_unused_programs(package):
+    module = _module(package, 'export.ShaderConverter')
+    Reader = _module(package, 'streams').EndianBinaryReader
+    program = module.ShaderProgram.__new__(module.ShaderProgram)
+    program.m_SubPrograms = [module.ShaderSubProgram(Reader(sub_blob(), endian='<')), None]
+    variants = [N(m_BlobIndex=0, m_GpuProgramType=9, m_ShaderHardwareTier=0)]
+    return {
+        'use': _call(lambda: module.ConvertSerializedPass(
+            N(m_Type=1, m_UseName='Synthetic/PASS'), [0], [None])),
+        'grab': _call(lambda: module.ConvertSerializedPass(
+            N(m_Type=2, m_TextureName='_Grab'), [0], [None])),
+        'empty': _call(lambda: module.ConvertSerializedSubPrograms([], [0], [None])),
+        'unusable': _call(lambda: module.ConvertSerializedSubPrograms(variants, [0], [None])),
+        'missing': _call(lambda: module.ConvertSerializedSubPrograms(variants, [1], [])),
+        'selected_only': _call(lambda: module.ConvertSerializedSubPrograms(
+            [N(m_BlobIndex=0, m_GpuProgramType=1)], [0, 1], [program, None])),
+    }

@@ -45,7 +45,8 @@ def generate_classes():
 
 
 def update_tpk(*, url=None, resource_path=None):
-    from .. import config
+    from .. import config, _native
+    from .._output import OutputDirectory, walk_directory
     print('Updating TPK file...')
     print('\tDownloading...')
     with urlopen(URL if url is None else url) as response:
@@ -61,9 +62,15 @@ def update_tpk(*, url=None, resource_path=None):
         if entry.file_size > _MAX_DOWNLOAD:
             raise ValueError('TPK file exceeds 256 MiB')
         data = archive.read(entry)
-    destination.mkdir(parents=True, exist_ok=True)
     target = destination / 'lzma.tpk'
-    target.write_bytes(data)
+    guard = _native.TreeTraversal()
+    directory = OutputDirectory(destination, guard=guard)
+    directory.fd = walk_directory(os.fspath(destination), guard, create=True)
+    try:
+        with directory.open('lzma.tpk', 'wb') as output:
+            output.write(data)
+    finally:
+        directory.__exit__()
     config.TPK = str(target)
     print('\tGenerating classes...')
     generate_classes()

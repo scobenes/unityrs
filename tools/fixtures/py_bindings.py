@@ -104,7 +104,8 @@ INTERNALS = [("binding_y6b_codecs", "observe_" + name) for name in
      "tree_objects", "tree_namespace", "tree_depth", "tree_reference_lookup",
      "generator_discovery", "generator_backend", "update_tpk")
 ] + [("binding_y6b_crypto_shader", "observe_" + name) for name in
-     ("crypto_keys", "crypto_decryptor", "crypto_block_indices", "crypto_bruteforce", "shader_stages", "shader_programs", "shader_platforms")] + [
+     ("crypto_keys", "crypto_decryptor", "crypto_block_indices", "crypto_bruteforce", "shader_stages", "shader_programs", "shader_platforms",
+      "shader_mutable_stages", "shader_unused_programs")] + [
     ("binding_y6b_images", "observe_" + name) for name in
     ("texture_dispatch", "astc_context", "sprite_geometry", "sprite_matrices", "astc_options", "sprite_bounds")
 ]

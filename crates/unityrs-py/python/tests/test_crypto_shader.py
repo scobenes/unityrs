@@ -2,6 +2,7 @@
 import importlib
 import struct
 import unittest
+from types import SimpleNamespace as N
 
 import unityrs
 from unityrs.streams import EndianBinaryReader
@@ -44,6 +45,26 @@ class CryptoShader(unittest.TestCase):
         self.assertEqual(S.GetPlatformString(12345), 'unknown')
         with self.assertRaises(NotImplementedError):
             S.CheckGpuProgramUsable(12345, 1)
+
+    def test_stage_exports_current_type_without_reparsing_program(self):
+        sub = S.ShaderSubProgram.__new__(S.ShaderSubProgram)
+        sub.m_Version = 202012090
+        sub.m_ProgramType = 999
+        sub.m_Keywords = ['EDIT']
+        sub.m_LocalKeywords = None
+        sub.m_ProgramCode = b'\xff'
+        program = S.ShaderProgram.__new__(S.ShaderProgram)
+        program.m_SubPrograms = [sub]
+        variants = [N(m_BlobIndex=0, m_GpuProgramType=1)]
+        self.assertEqual(S.ConvertSerializedSubPrograms(variants, [0], [program]),
+                         'SubProgram "openGL " {\nKeywords { "EDIT" }\n'
+                         '"//shader disassembly not supported on 999"\n}\n')
+
+    def test_stage_ignores_unused_programs(self):
+        self.assertEqual(S.ConvertSerializedPass(N(m_Type=1, m_UseName='Synthetic/PASS'),
+                                                [0], [None]), ' UsePass "Synthetic/PASS"\n')
+        variants = [N(m_BlobIndex=0, m_GpuProgramType=9)]
+        self.assertEqual(S.ConvertSerializedSubPrograms(variants, [0], [None]), '')
 
 
 if __name__ == '__main__':
