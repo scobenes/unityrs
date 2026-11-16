@@ -57,6 +57,10 @@ pub enum Error {
     /// a charged copy, so an error cannot retain an entire inflated input.
     #[error("malformed WebFile: invalid signature")]
     WebSignature(RawStr),
+    /// The rejected bundle signature, copied into charged storage so nested
+    /// failures identify their own input without retaining its whole buffer.
+    #[error("malformed bundle signature: Unknown Bundle signature")]
+    BundleSignature(RawStr),
     /// A format or feature unityrs does not read (yet), each named.
     #[error("unsupported: {0}")]
     Unsupported(Unsupported),
@@ -234,6 +238,7 @@ impl CellError for Error {
             }
             Self::Version(VersionError::NoMatch(r))
             | Self::WebSignature(r)
+            | Self::BundleSignature(r)
             | Self::NotFound(NotFound::Cab(r) | NotFound::Resource(r)) => heap_of(r.len()),
             Self::Tree(t) => t.heap_bytes(),
             Self::AssetBundle(p) => {

@@ -169,6 +169,39 @@ def observe_nested_bounds_failures(module):
     return _nested_failure(module, registrations=False)
 
 
+def observe_explicit_reader_states(module):
+    assets = next(data for name, data in B.cases() if name == "text")
+    web = B.S.web_file([(b"child", assets)])
+    bundle = B.S.fs_bundle([(b"child", assets, 0)])
+    result = []
+    for stream in (False, True):
+        for payload in (b"raw", b"A" * 20, assets, web, bundle):
+            if not stream and payload == b"A" * 20:
+                continue  # Memory detection rejects this unterminated string.
+            for position in ((0, 2) if payload in (b"raw", b"A" * 20, assets) else (0,)):
+                reader = module.streams.EndianBinaryReader(io.BytesIO(payload) if stream else payload)
+                reader.Position = position
+                env = module.Environment()
+                loaded = env.load_file(reader, name="explicit")
+                identity = loaded.reader is reader if hasattr(loaded, "objects") else loaded is reader
+                result.append([reader.Position, reader.endian, identity,
+                               env.files["explicit"] is loaded])
+    return result
+
+
+def observe_nested_bundle_signatures(module):
+    broken = ("ú" * 8).encode("utf-8") + b"\0" + struct.pack(">I", 6) + b"\0\0"
+    result = []
+    for stream in (False, True):
+        for bundle in (False, True):
+            payload = (B.S.fs_bundle([(b"broken", broken, 0)]) if bundle else
+                       B.S.web_file([(b"broken", broken)]))
+            typ = module.enums.FileType.BundleFile if bundle else module.enums.FileType.WebFile
+            failure = _record(module, payload, typ, stream=stream)
+            result.append([failure["error"], failure["message"], failure["position"]])
+    return result
+
+
 def exception_reentry(module):
     """A real module override re-enters the lock held by the parser caller."""
     import struct

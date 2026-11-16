@@ -25,6 +25,21 @@ class ReadOnly:
 
 
 class Residue(unittest.TestCase):
+    def test_explicit_reader_receives_final_cursor_and_endian(self):
+        assets = next(data for name, data in B.cases() if name == 'text')
+        for payload, position, endian in ((b'raw', 2, '>'), (b'A' * 20, 0, '>'),
+                                          (assets, 281, '<')):
+            reader = unityrs.streams.EndianBinaryReader(io.BytesIO(payload))
+            reader.Position = 2
+            env = unityrs.Environment()
+            loaded = env.load_file(reader, name='explicit')
+            self.assertIs(loaded.reader if hasattr(loaded, 'objects') else loaded, reader)
+            self.assertEqual((reader.Position, reader.endian), (position, endian))
+
+    def test_nested_bundle_error_retains_rejected_signature(self):
+        for result in review.observe_nested_bundle_signatures(unityrs):
+            self.assertIn('Unknown Bundle signature: ' + 'ú' * 8, str(result))
+
     def test_oversized_forced_member_retains_stream_short_read_cursor(self):
         self.assertEqual(review.observe_oversized_member_states(unityrs),
                          [[137, '<', '726177'], [40, '<', '726177']])

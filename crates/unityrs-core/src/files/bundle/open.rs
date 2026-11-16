@@ -258,7 +258,7 @@ fn read_fs_header(
     ctx: &FileContext,
 ) -> Result<FsHeader, Error> {
     let meter = charge.meter().clone();
-    let meter = &*meter;
+    let meter = &meter;
     // UnityPy files/BundleFile.py:36-39
     let signature = string_to_null(r, data, meter)?;
     let format = r.read_u32()?;
@@ -272,10 +272,10 @@ fn read_fs_header(
         }
         b"UnityWeb" | b"UnityRaw" | b"UnityFS" => {}
         _ => {
-            return Err(Error::Malformed {
-                what: "bundle signature",
-                detail: "Unknown Bundle signature".into(),
-            });
+            return Err(Error::BundleSignature(RawStr::charged(
+                signature.as_bytes(),
+                meter,
+            )?));
         }
     }
     // :97-106

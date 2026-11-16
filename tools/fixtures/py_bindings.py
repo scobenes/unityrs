@@ -98,7 +98,8 @@ RESIDUE = [("binding_y6_loader", "observe_" + name) for name in
     ("binding_y6_review", "observe_" + name) for name in
     ("detached_save", "detached_mark", "detached_raw", "detached_patch",
      "constructor_states", "compressed_failures", "oversized_member_states",
-     "failed_constructor_endian", "partial_child_registration", "nested_bounds_failures")
+     "failed_constructor_endian", "partial_child_registration", "nested_bounds_failures",
+     "explicit_reader_states", "nested_bundle_signatures")
 ]
 
 

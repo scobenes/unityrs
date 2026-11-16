@@ -247,9 +247,15 @@ class Environment:
                 return None
             result = self._wrap(native, parent, is_dependency)
             if explicit_reader:
+                # Detection resets readers of at least 20 bytes. Constructors
+                # then advance that same reader, including its endian change.
+                position, endian = native.constructor_reader_state()
+                if len(data) >= 20:
+                    file.Position = position
+                if endian is not None:
+                    file.endian = endian
                 if isinstance(result, SerializedFile):
                     result.reader = file
-                    file.endian = result._native.serialized_reader_info()[1]
                 elif isinstance(result, EndianBinaryReader):
                     result = file
                     self.cabs[simplify_name(native_key)] = result

@@ -16,6 +16,25 @@ impl NativeFile {
 }
 #[pymethods]
 impl NativeFile {
+    fn constructor_reader_state(&self, py: Python<'_>) -> (i128, Option<char>) {
+        py.detach(|| match &self.inner {
+            File::Serialized(file) => (
+                file.constructor_position(),
+                Some(
+                    if file.header().endian == unityrs_core::stream::Endian::Little {
+                        '<'
+                    } else {
+                        '>'
+                    },
+                ),
+            ),
+            File::Bundle(file) => (file.constructor_position(), None),
+            File::Web(file) if file.packer() == unityrs_core::files::WebPacker::None => {
+                (file.constructor_position(), Some('<'))
+            }
+            _ => (0, None),
+        })
+    }
     fn serialized_reader_info(&self, py: Python<'_>) -> PyResult<(usize, char, bool)> {
         py.detach(|| {
             let File::Serialized(file) = &self.inner else {

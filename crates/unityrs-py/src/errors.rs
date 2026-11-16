@@ -42,11 +42,15 @@ pub(crate) fn file_parse(
             "Invalid WebFile signature: {!r}. Expected 'UnityWebData' or 'TuanjieWebData'.",
         );
     }
+    if let Error::BundleSignature(signature) = &error {
+        return signature_error(
+            signature.as_bytes(),
+            meter,
+            true,
+            "Unknown Bundle signature: {}",
+        );
+    }
     let template = match &error {
-        Error::Malformed {
-            what: "bundle signature",
-            ..
-        } => Some((true, "Unknown Bundle signature: {}")),
         Error::Malformed {
             what: "WebFile",
             detail,

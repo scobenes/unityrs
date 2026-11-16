@@ -43,6 +43,12 @@ class ForcedReview(unittest.TestCase):
     def test_nested_bounds_use_child_reader_diagnostic(self):
         self.compare("observe_nested_bounds_failures")
 
+    def test_explicit_readers_apply_detection_and_constructor_states(self):
+        self.compare("observe_explicit_reader_states")
+
+    def test_nested_bundle_errors_keep_child_signature(self):
+        self.compare("observe_nested_bundle_signatures")
+
     def test_exception_lookup_reenters_on_caller(self):
         for module in ("UnityPy", "unityrs"):
             child.run([sys.executable, "-c",

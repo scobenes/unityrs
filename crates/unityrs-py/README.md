@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=84
+python scripts/unittest-suites crates/unityrs-py/python/tests=86
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=239
+python ../../scripts/unittest-suites bindings=241
 ```
 
-The recorder writes 173 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups, 29 tools/module/loader groups and 30 Y6a groups),
+The recorder writes 175 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups, 29 tools/module/loader groups and 32 Y6a groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 84 tests and the oracle comparison has 239; CI enforces both
+The wheel suite has 86 tests and the oracle comparison has 241; CI enforces both
 minimum counts. Exception translation and Python handoff run on the calling
 thread after the native worker joins. Warning handlers run on that thread before
 a fallback load is published, including handlers that re-enter the environment.
@@ -216,7 +216,7 @@ verified by the namespace checks. Standalone Brotli uses the core's bounded
 inflater and stored-metablock writer: decoded bytes replay against UnityPy;
 compressed bytes retain the existing Tier B difference from its quality-11 writer.
 
-Y6a's `replays_unitypy_residue_observations` replays 30 additional groups.
+Y6a's `replays_unitypy_residue_observations` replays 32 additional groups.
 They cover the loader edge cases, synthetic object-mode residue and Transform,
 damaged AssetInfo preloads, current material texture names, raw float WAVs and
 forced helper parsing, detached saves and mutations, constructor reader state
@@ -251,3 +251,10 @@ descendants expose `environment=None` while retaining a private synchronization
 owner for saves, object edits and lazy node publication. These cases replay
 `binding_y6_review` and compare with the pinned oracle; exception lookup
 reentrancy also runs under the Rust `DEADLOCK_GUARD`.
+
+Explicit readers passed to `Environment.load_file` keep their identity and
+receive the detection reset and final constructor cursor and endian: short raw
+inputs keep their cursor, a 20-byte raw stream resets to zero, and the synthetic
+TextAsset finishes at 281. Nested bundle-signature errors retain a charged copy
+of the rejected child's signature instead of rereading the outer container.
+Both observations are oracle-compared and replayed in `binding_y6_review`.

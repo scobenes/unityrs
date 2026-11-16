@@ -312,8 +312,8 @@ fn an_unknown_bundle_signature_is_malformed() {
             &c,
         );
         assert!(
-            matches!(&got, Err(Error::Malformed { what: "bundle signature", detail })
-                if &**detail == "Unknown Bundle signature"),
+            matches!(&got, Err(Error::BundleSignature(value))
+                if value.as_bytes() == signature.as_bytes()),
             "{signature:?}: {got:?}"
         );
     }
