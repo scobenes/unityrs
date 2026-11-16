@@ -57,7 +57,7 @@ impl std::fmt::Debug for ValueBuilder {
 
 /// Whether `value` itself owns heap (its children aside): a list, map,
 /// tuple or run with an allocation.
-fn owns_heap(value: &Value) -> bool {
+pub(super) fn owns_heap(value: &Value) -> bool {
     match value {
         Value::List(v) => v.capacity() > 0,
         Value::Tuple(v) => !v.is_empty(),

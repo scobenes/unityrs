@@ -43,10 +43,11 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `obj_text` | raw mesh OBJ plus corrected renderer OBJ/MTL/texture export to a streaming digest; repeated fresh exports must match, smaller-meter exports must match or name their memory/work refusal, and operation meters return to zero | `SceneCase`, sharing the synthetic scene seeds |
 | `fsb5` | `unityrs_audio::plan` and `decode`: bounded parsing, PCM and float WAV lengths, repeatability and charge release | raw audio bytes |
 | `image_writers` | `Image::new` and palette validation, then default image writers: deterministic output and typed refusals, charged output and released charges; at most 65,536 source pixels and 4 MiB per writer run; ICNS uses a zero allocation budget to bound its mandatory resize | width/height u32 LE, mode, format, dimension policy, budget selector, filename selector, then repeating pixel/palette bytes |
+| `set_image` | Raw texture conversion, BICUBIC mips, all 23 Pillow modes, format promotion, platform gates, native BC/ETC/ASTC encoding and encoder refusals with the `encode` feature enabled; at most 65,536 generated pixel bytes and 8 MiB per run; deterministic output and released charges | width/height u32 LE, format/mips i32 LE, mode, platform, flip, exponent, memory and size policies, then repeating pixels |
 | `shader` | `shader::Program::parse` and every entry's export through `shader::render_all`, twice on fresh meters with the same memory and work bounds: the verdict and attempted entry count must repeat and temporary memory charges must return to zero; rendering errors must not hide later entries; then `walk::boost::read` and `shader::export_parsed` over the same input as an arbitrary tree value, under the case's memory and work limits, with conversion charges released | both interpretations: `unityrs_testkit::fuzz::ShaderCase` (Unity major/minor version, meter, program blob) and `TreeCase`; input capped at 8 MiB |
 | `extractor_paths` | deterministic path validation, slicing and splitext; bounded Environment loading and `extract_assets` in both container modes into an in-memory sink, asserting every emitted path is confined and all extraction charges return to zero; 8 MiB input/load memory, 64 KiB extraction memory and 1 MiB extraction work | arbitrary byte paths and every generated serialized seed, including bundle members |
 
-Except for `image_writers`' and `extractor_paths`' tighter bounds above, runs use the limits in
+Except for `image_writers`', `set_image`'s and `extractor_paths`' tighter bounds above, runs use the limits in
 `src/lib.rs`: 128 MiB of memory, of
 input and of one block's output (`MEMORY`), and 8 MiB of decode work and of
 inflate (`WORK`). A value read never reaches 128 MiB within the work bound,
@@ -182,8 +183,8 @@ at step 1.
 - `.github/workflows/ci.yml`'s `fuzz-build`: on every push, every target
   built and run for 30 seconds from the seeds, the harness's own tests
   (`cargo test --lib`), and `cargo fmt --check` over this crate.
-  The smoke lists and nightly matrix include all 26 targets, including
-  `image_writers`, `scene_collect`, `obj_text`, `shader` and `extractor_paths`, run from their
+  The smoke lists and nightly matrix include all 27 targets, including
+  `image_writers`, `set_image`, `scene_collect`, `obj_text`, `shader` and `extractor_paths`, run from their
   generated seeds.
 
 ## Licences

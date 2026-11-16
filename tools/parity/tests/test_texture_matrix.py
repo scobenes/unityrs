@@ -151,7 +151,7 @@ class ThisParityFile(unittest.TestCase):
         )
 
     def test_p1b_formats_are_the_five_design_names(self):
-        p1b = sorted(name for name, row in self.rows.items() if row["status"] == P1B_STATUS)
+        p1b = sorted(name for name, row in self.rows.items() if row["status"].startswith(P1B_STATUS))
         self.assertEqual(p1b, P1B)
         # ETC/EAC, Pillow, ASTC LDR/HDR, BC6H, PVRTC/ATC and closed forms, plus ARGBFloat's refusal, are verified P3.
         p3 = sorted(name for name, row in self.rows.items() if "verified P3 (" in row["status"])

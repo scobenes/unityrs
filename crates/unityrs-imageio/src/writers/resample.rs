@@ -1,7 +1,7 @@
 // Ported from Pillow 9.5.0 (MIT-CMU): src/libImaging/Resample.c,
 // src/libImaging/Convert.c, src/libImaging/Geometry.c's ImagingScaleAffine,
 // and src/PIL/Image.py's resize and thumbnail. See LICENSE-PILLOW.
-//! Icon resizing with Pillow's fixed point separable filters.
+//! Image resizing with Pillow's fixed point separable filters.
 // Convert.c: Copyright (c) 1997-2005 by Secret Labs AB.
 // Copyright (c) 1995-1997 by Fredrik Lundh.
 // Geometry.c: Copyright (c) Fredrik Lundh 1999.
@@ -11,17 +11,27 @@ use super::{Exception, Refusal, SaveError};
 use crate::{Buffer, Charger, EncodeError, Image, ImageError, Mode};
 
 #[derive(Clone, Copy)]
-pub(super) enum Filter {
+/// Pillow's separable fixed-point filters.
+pub enum Filter {
+    /// Cubic convolution with support two (Pillow's default resize filter).
     Bicubic,
+    /// Windowed sinc with support three.
     Lanczos,
 }
+const _: () = crate::send_sync::<Filter>();
 
-pub(super) struct Resized<C> {
+/// Resized pixels with their allocation charge. Keep the charge alive while
+/// using the bytes; their layout and mode are the source image's.
+pub struct Resized<C> {
+    /// Pixels in top-to-bottom row order.
     pub bytes: Vec<u8>,
     _charge: C,
 }
+const _: () = crate::send_sync::<Resized<()>>();
 
-pub(super) fn resize<C: Charger>(
+/// Resize as Pillow 9.5.0 does, including premultiplication for LA/RGBA and
+/// NEAREST for P. Coefficients, scratch and output are charged before allocation.
+pub fn resize<C: Charger>(
     image: &Image<'_>,
     width: u32,
     height: u32,

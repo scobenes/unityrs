@@ -242,9 +242,11 @@ const C_FUNCTIONS: [(&str, &str); 6] = [
 /// compiles under `Z_PREFIX`, each declared by the `z_` name that
 /// `zconf.h` gives it there; libwebp 1.3.0's, reached through the one
 /// entry point of unityrs-imageio's own shim (`webp-shim.c`); and liblz4
-/// 1.9.4's, renamed by the compression bridge's build script. Each is
-/// declared only in the file named.
-const VENDORED_C_FUNCTIONS: [(&str, &str); 14] = [
+/// 1.9.4's, renamed by the compression bridge's build script; and the
+/// entry points of unityrs-texture's encoder bridge over the vendored
+/// etcpak and astcenc (`encoder_bridge.cpp`). Each is declared only in the
+/// file named.
+const VENDORED_C_FUNCTIONS: [(&str, &str); 16] = [
     (
         "unityrs_LZ4_versionNumber",
         "unityrs-compress-sys/src/lib.rs",
@@ -282,6 +284,10 @@ const VENDORED_C_FUNCTIONS: [(&str, &str); 14] = [
     ("z_deflateInit2_", "unityrs-imageio/src/zlib.rs"),
     ("z_zlibVersion", "unityrs-imageio/src/zlib.rs"),
     ("unityrs_webp_encode", "unityrs-imageio/src/webp_ffi.rs"),
+    // The encoder bridge over the vendored etcpak and astcenc
+    // (`unityrs-texture/encoder_bridge.cpp`, the `encode` feature).
+    ("unityrs_etcpak_encode", "unityrs-texture/src/write/ffi.rs"),
+    ("unityrs_astc_encode", "unityrs-texture/src/write/ffi.rs"),
 ];
 
 /// The oldest glibc Rust's `*-linux-gnu` targets run on, which the
@@ -383,7 +389,8 @@ fn an_extern_block_is_read_for_its_declarations_only() {
 /// renames it under `Z_PREFIX` (`#  define deflate  z_deflate`); the
 /// test-only pristine reference renames its entry points itself (`#define
 /// deflate unityrs_zref_deflate`); the WebP shim defines its own, each at the
-/// start of a line (`int unityrs_webp_encode(...`); liblz4's headers declare
+/// start of a line (`int unityrs_webp_encode(...`), and so does the encoder
+/// bridge (`extern "C" int unityrs_etcpak_encode(...`); liblz4's headers declare
 /// the bare names the compression bridge's build script renames (its
 /// archive/link tests also check the compiled namespace and the pristine
 /// source manifest on ELF and Mach-O).
@@ -391,6 +398,7 @@ struct VendoredSources {
     zconf: String,
     reference: String,
     shim: String,
+    bridge: String,
     lz4_headers: [String; 2],
 }
 
@@ -401,6 +409,7 @@ impl VendoredSources {
             zconf: read("unityrs-imageio/vendor/zlib-1.2.13/zconf.h"),
             reference: read("unityrs-imageio/zlib-match/reference.c"),
             shim: read("unityrs-imageio/webp-shim.c"),
+            bridge: read("unityrs-texture/encoder_bridge.cpp"),
             lz4_headers: ["lz4.h", "lz4hc.h"].map(|header| {
                 read(&format!("unityrs-compress-sys/vendor/lz4-1.9.4/{header}"))
                     .split_whitespace()
@@ -419,8 +428,15 @@ impl VendoredSources {
                 .iter()
                 .any(|header| header.contains(&format!("{bare}(")));
         }
-        if name.starts_with("unityrs_webp_") {
-            return self.shim.lines().any(|l| {
+        let source = if name.starts_with("unityrs_webp_") {
+            Some(&self.shim)
+        } else if name.starts_with("unityrs_etcpak_") || name.starts_with("unityrs_astc_") {
+            Some(&self.bridge)
+        } else {
+            None
+        };
+        if let Some(source) = source {
+            return source.lines().any(|l| {
                 l.split_once('(')
                     .and_then(|(head, _)| head.split_whitespace().last())
                     .is_some_and(|f| f == name)
@@ -515,7 +531,8 @@ fn every_c_function_a_crate_declares_links_on_every_glibc_it_builds_on() {
             found,
             "{name} is no function zconf.h renames under Z_PREFIX, nor one \
              zlib-match/reference.c renames for the test-only reference, nor \
-             one webp-shim.c defines, nor one the pinned liblz4 headers declare"
+             one webp-shim.c or encoder_bridge.cpp defines, nor one the pinned \
+             liblz4 headers declare"
         );
     }
 }

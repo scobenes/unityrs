@@ -27,7 +27,7 @@ unityrs-mesh = { path = "../crates/unityrs-mesh" }
 unityrs-scene = { path = "../crates/unityrs-scene" }
 unityrs-meshdecode = { path = "../crates/unityrs-meshdecode" }
 unityrs-testkit = { path = "../crates/unityrs-testkit" }
-unityrs-texture = { path = "../crates/unityrs-texture" }
+unityrs-texture = { path = "../crates/unityrs-texture", features = ["encode"] }
 
 [dev-dependencies]
 # The harness's test of the `meshdecode` check reads unityrs-meshdecode's
@@ -211,6 +211,13 @@ bench = false
 [[bin]]
 name = "shader"
 path = "fuzz_targets/shader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "set_image"
+path = "fuzz_targets/set_image.rs"
 test = false
 doc = false
 bench = false

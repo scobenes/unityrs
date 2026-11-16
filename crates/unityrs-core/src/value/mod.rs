@@ -665,6 +665,7 @@ impl Value {
 }
 
 mod builder;
+mod edit;
 
 pub use builder::ValueBuilder;
 

@@ -47,6 +47,12 @@
 //! data and decodes slices, applying PARITY section 19.2's B/C corrections
 //! and platform refusals. [`pad_image`] repeats edge pixels for encoder callers.
 //!
+//! [`write`] converts Pillow image storage to raw texture bytes, generates
+//! exact BICUBIC mips, pads and swizzles Switch writes, and installs object
+//! edits through `SerializedFile` save. The `encode` feature enables the pinned
+//! etcpak and astcenc encoders; otherwise nonempty compressed writes return
+//! [`write::WriteError::EncoderUnavailable`].
+//!
 //! **Tier B/C raw formats.** The twenty-two raw formats of `PARITY.md`
 //! sections 17.1, 19.1 and 19.2 use independent closed forms in `tierb`,
 //! with no Pillow conversion. `tests/tierb_oracle.rs` pins UnityPy's actual
@@ -123,7 +129,8 @@
 //! decode's pixel work is linear in its output. Crunch's header-derived
 //! palette and model setup also counts against the meter's work allowance.
 
-#![forbid(unsafe_code)]
+// Only write::ffi may opt in, at the synchronous encoder boundary.
+#![deny(unsafe_code)]
 // No panics on a texture's contents (plan section 3.15). Tests may opt out.
 #![cfg_attr(
     not(test),
@@ -158,6 +165,7 @@ mod raw;
 mod select;
 pub mod sprite;
 mod tierb;
+pub mod write;
 
 pub use contain::{MESSAGE_BYTES, NON_STRING_PAYLOAD, Payload, contain};
 pub use crunch::CrunchError;
