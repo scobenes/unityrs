@@ -194,7 +194,7 @@ fn replays_unitypy_export_observations() -> PyResult<()> {
 
 #[test]
 fn replays_unitypy_tools_observations() -> PyResult<()> {
-    replay_groups("binding_y5_", 47)
+    replay_groups("binding_y5_", 50)
 }
 
 #[test]

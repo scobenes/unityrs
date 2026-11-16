@@ -44,7 +44,8 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `binding_y5_round4.py` | Concurrent container identity, reader and sprite cache publication, equivalent extraction roots and every direct exporter's None extension behavior |
 | `binding_y5_round5.py` | Exact-string and hostile-subclass matrices, repeated root separators, falsy exporter extensions and runtime decryption keys |
 | `binding_y5_round6.py` | Standalone parse registration, truthy scalar extensions for every exporter, and destination conversion after dispatch and filters |
-| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=263`); requires `unityrs` and UnityPy 1.25.2, and never skips |
+| `binding_y5_round7.py` | Unused extraction destinations, source-error ordering and empty current-directory roots, with name confinement |
+| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=267`); requires `unityrs` and UnityPy 1.25.2, and never skips |
 | `encoder_probe.py` | B3b's encoder ISA probe (decision 16): replays the native builds of the vendored etcpak, bc7enc and astcenc against the pinned amd64 wheels' raw output, frozen in `crates/unityrs-texture/tests/fixtures/encoder_isa.json` (`--check`, `--oracle`); runs only in the development containers |
 | `encoder_probe.cpp` | `encoder_probe.py`'s native side: the vendored encoders' entry points, compiled with each recorded set of flags and run on framed inputs |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |

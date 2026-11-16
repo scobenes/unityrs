@@ -11,6 +11,7 @@ tools/extractor.py:327-358 and tools/extractor.py:361-368.
 """
 import json
 import os
+from contextlib import ExitStack, nullcontext
 from io import BytesIO
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
@@ -44,17 +45,21 @@ def export_obj(
     if asset_filter and not asset_filter(instance):
         return []
     fp = _paths.destination(fp, guard)
-    if append_name:
-        name = getattr(instance, "m_Name", obj.type.name)
-        name = _paths.leaf(name, guard, allow_empty=True)
-        guard.step(0, (len(fp) + len(name)) * 8 + 256, 1)
-        fp = os.path.join(fp, name)
-    fp, extension = os.path.splitext(fp)
-    if append_path_id:
-        guard.step(0, len(fp) * 8 + 512, 1)
-        identity = _paths.leaf(f"{obj.m_PathID}", guard)
-        fp = f"{fp}_{identity}"
-    return export_func(instance, fp, extension)
+    # Non-container extraction first uses its root here, after both filters
+    # and dispatch. Preserve an enclosing held root for graph exports.
+    context = _paths.root(fp, guard, create=False, reuse=True) if append_name else nullcontext(fp)
+    with context as fp:
+        if append_name:
+            name = getattr(instance, "m_Name", obj.type.name)
+            name = _paths.leaf(name, guard, allow_empty=True)
+            guard.step(0, (len(fp) + len(name)) * 8 + 256, 1)
+            fp = os.path.join(fp, name)
+        fp, extension = os.path.splitext(fp)
+        if append_path_id:
+            guard.step(0, len(fp) * 8 + 512, 1)
+            identity = _paths.leaf(f"{obj.m_PathID}", guard)
+            fp = f"{fp}_{identity}"
+        return export_func(instance, fp, extension)
 
 
 def extract_assets(
@@ -65,7 +70,6 @@ def extract_assets(
 ) -> List[Tuple[SerializedFile, int]]:
     if isinstance(src, (str, os.PathLike)):
         src = _paths.exact_string(src)
-    dst = _paths.exact_string(dst)
     env = UnityPy.load(src)
     guard = TreeTraversal(getattr(env, "_limits", None), getattr(env, "_budget", None))
     guard.step(0, 512 + len(EXPORT_TYPES) * 128, len(EXPORT_TYPES))
@@ -78,7 +82,6 @@ def extract_assets(
         except (IndexError, ValueError):
             return 999
 
-    dst = _paths.destination(dst, guard)
     values = env.container if use_container else env.objects
     guard.step(0, len(values) * 512 + 256, len(values))
     if use_container:
@@ -88,18 +91,21 @@ def extract_assets(
     # Empty sources do not open the destination in the original extractor.
     if not values:
         return exported
-    with _paths.root(dst, guard, create=use_container) as dst:
+    with ExitStack() as stack:
+        container_root = None
         for entry in values:
             obj_path, obj = entry if use_container else (None, entry)
             if asset_filter is not None and not asset_filter(obj):
                 continue
             if use_container:
+                if container_root is None:
+                    container_root = stack.enter_context(_paths.root(dst, guard, create=True))
                 obj_path = _paths.relative(obj_path, guard)
-                guard.step(0, len(obj_path) * 512 + len(dst) * 8 + 256, len(obj_path))
+                guard.step(0, len(obj_path) * 512 + len(container_root) * 8 + 256, len(obj_path))
                 parts = [x for x in obj_path.split("/")[ignore_first_container_dirs:] if x]
                 if not parts:
                     raise ValueError("unsafe asset output name")
-                obj_dest = os.path.join(dst, *parts)
+                obj_dest = os.path.join(container_root, *parts)
                 _paths.mkdir(os.path.dirname(obj_dest), guard)
             else:
                 guard.step(0, 0, len(exported))

@@ -106,11 +106,14 @@ def _walk(path, guard, create=False, parent=None):
 
 
 @contextlib.contextmanager
-def root(directory, guard, create):
+def root(directory, guard, create, *, reuse=False):
+    if reuse and _root.get() is not None:
+        yield directory
+        return
     directory = destination(directory, guard)
     # dirname(join('out/', 'asset')) is 'out'. Keep the held root in that
     # equivalent spelling without resolving any descriptor-walk components.
-    directory = directory.rstrip('/') or directory
+    directory = directory.rstrip('/') or directory or "."
     held = [directory, None, create]
     token = _root.set(held)
     try:

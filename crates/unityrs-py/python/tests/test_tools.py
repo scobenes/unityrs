@@ -218,3 +218,32 @@ class Tools(unittest.TestCase):
             self.assertTrue(all(row[0] == {'value': ['list', []]} for row in rows[label]))
         self.assertTrue(all(row[0]['error'] == 'TypeError' for row in rows['accepted']))
         self.assertEqual(rows['tree'], {})
+
+    def test_unused_extraction_destinations_are_not_converted(self):
+        from binding_y5_round7 import observe_unused_destinations
+        for name, row in observe_unused_destinations(unityrs).items():
+            if name == 'tree':
+                self.assertEqual(row, {})
+            elif name.endswith('/real_empty'):
+                self.assertEqual(row, {'value': ['list', []]})
+            else:
+                self.assertEqual(row[0], {'value': ['list', []]})
+                self.assertNotIn('destination', row[1])
+
+    def test_source_errors_precede_destination_conversion(self):
+        from binding_y5_round7 import observe_source_error_order
+        for outcome, calls in observe_source_error_order(unityrs).values():
+            self.assertEqual(outcome, {'error': 'RuntimeError', 'message': 'source load failed'})
+            self.assertEqual(calls, ['source'])
+
+    def test_empty_extraction_destination_uses_current_directory(self):
+        from binding_y5_round7 import observe_empty_root
+        rows = observe_empty_root(unityrs)
+        self.assertTrue(all(row == rows[0] for row in rows))
+        self.assertIn('value', rows[0][0])
+        self.assertEqual(rows[0][1], {b'named.old'.hex(): b'hello\xff'.hex(),
+                                    b'.txt'.hex(): b'empty'.hex()})
+
+    def test_empty_extraction_destination_keeps_name_validation(self):
+        from binding_y5_round7 import check_empty_root_confinement
+        check_empty_root_confinement(unityrs)

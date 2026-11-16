@@ -95,6 +95,9 @@ TOOLS = [("binding_y5_loader", "observe_" + name) for name in
      ("repeated_roots", "falsy_extensions", "runtime_keys")] + [
     ("binding_y5_round6", "observe_" + name) for name in
     ("parse_registration", "scalar_extensions", "skipped_destination_conversion")
+] + [
+    ("binding_y5_round7", "observe_" + name) for name in
+    ("unused_destinations", "source_error_order", "empty_root")
 ]
 
 

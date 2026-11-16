@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=99
+python scripts/unittest-suites crates/unityrs-py/python/tests=103
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=263
+python ../../scripts/unittest-suites bindings=267
 ```
 
-The recorder writes 161 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups and 47 tools/module/loader groups),
+The recorder writes 164 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups and 50 tools/module/loader groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 99 tests and the oracle comparison has 263; CI enforces both
+The wheel suite has 103 tests and the oracle comparison has 267; CI enforces both
 minimum counts. Warning handlers run on the calling Python thread before a
 fallback load is published, including handlers that re-enter the environment.
 The Rust binding suite has 33 tests, including guarded finalization and unwind
@@ -217,12 +217,23 @@ handling, including integers, booleans, floats, complex numbers and bytes.
 The resulting output leaf is validated before writing. `export_obj` converts
 the destination after dispatch and the parsed-object filter, so unsupported or
 filtered objects accept `fp=None` and return `[]` as in UnityPy.
+`extract_assets` loads and sorts the source before converting a destination.
+Empty inputs and rejected objects leave `dst=None` or an unused PathLike
+untouched; source-loading errors precede destination errors. Non-container
+extraction also waits for dispatch and the parsed-object filter. An empty
+destination exports into the current directory, with relative-name validation
+and held-directory confinement intact. These cases compare with UnityPy in
+scratch directories and replay through `binding_y5_round7`.
 Standalone `ImportHelper.parse_file` parses without loader registration;
 container constructors retain their native child CAB registration, including
 streamed-resource lookup through duplicate nested container entries.
-oracle comparisons check `Environment.files` and `cabs` before and after,
+Oracle comparisons check `Environment.files` and `cabs` before and after,
 including replacement names and a later load. All three behaviors are recorded
 and replayed through `binding_y5_round6`.
+Stream semantics for standalone forced parsing (memory-reader `read(None)` and
+BytesIO `read(-2)`) and preservation of an earlier child's CAB after a later
+container child fails remain open in PARITY section 22, owned by Y6a's forced-parsing
+follow-up. Y5's normal parsing observations do not verify these cases.
 
 Failed image exports retain the previous file and remove their temporary sibling.
 This is a documented safety divergence: Pillow can leave a partial destination

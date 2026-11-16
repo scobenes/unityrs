@@ -121,7 +121,7 @@ Interrupted runs may leave
 the nine exporters and extraction helpers with the same destination confinement.
 It validates names and extensions before creating output, opens destinations only
 when dispatch and filters reach an export, and preserves existing files on failed
-image exports through atomic publication. Its 263 oracle comparisons and 99 wheel
+image exports through atomic publication. Its 267 oracle comparisons and 103 wheel
 tests include hostile path, shared-reader cursor and concurrency regressions,
 primitive-map decoding budgets, empty and legacy GameObject components, and
 decryption-key conversion deferred until encrypted bundle processing. Generated
@@ -135,8 +135,14 @@ class export arguments and asset-derived output names become exact strings befor
 use; hostile subclass regressions check the surrounding filesystem too. Direct
 exporters preserve defaults or ignored arguments for all falsy extensions,
 retain scalar extension formatting, and validate effective output names.
-Unsupported and filtered objects skip destination conversion. Standalone
+Empty sources, unsupported objects and filtered objects skip unused destination
+conversion; source-loading errors take precedence. Non-container extraction
+accepts an empty destination as the current directory while validating names.
+These cases have oracle comparisons and recorded replay. Standalone
 SerializedFile parsing leaves the environment's file and CAB mappings unchanged.
+Forced-parsing stream semantics (memory-reader `read(None)` and BytesIO
+`read(-2)`) and an earlier child's CAB surviving a later container failure remain
+open under PARITY section 22 for Y6a; Y5 does not verify them.
 Runtime configuration retains a context's
 decryption key unless it supplies an override.
 Textured material adapters and replacement texture converters requiring Switch
