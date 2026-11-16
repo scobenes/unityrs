@@ -121,13 +121,17 @@ Interrupted runs may leave
 the nine exporters and extraction helpers with the same destination confinement.
 It validates names and extensions before creating output, opens destinations only
 when dispatch and filters reach an export, and preserves existing files on failed
-image exports through atomic publication. Its 267 oracle comparisons and 103 wheel
+image exports through atomic publication. Its 316 oracle comparisons and 133 wheel
 tests include hostile path, shared-reader cursor and concurrency regressions,
 primitive-map decoding budgets, empty and legacy GameObject components, and
 decryption-key conversion deferred until encrypted bundle processing. Generated
 node getters, result allocation, error callbacks and finalization run on the
 calling thread; negative string reads reserve decoding storage for the remaining
 input span. Array-map recordings include values and cursors for every alias.
+Every enclosing reader array retains byte-span charges through handoff,
+including whole-file copies and nested arrays. One-byte boundary tests cover
+raw bytes, strings, aligned reads and typed arrays; recorded oracle comparisons
+preserve successful values and cursors and document the aggregate budget refusal.
 Concurrent first access shares file containers, readers and decoded sprite
 textures under the environment lock. Container extraction accepts equivalent
 destination spellings, including repeated trailing slashes. Public tool paths,
