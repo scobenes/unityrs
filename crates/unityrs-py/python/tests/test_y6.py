@@ -25,6 +25,29 @@ class ReadOnly:
 
 
 class Residue(unittest.TestCase):
+    def test_oversized_forced_member_retains_stream_short_read_cursor(self):
+        self.assertEqual(review.observe_oversized_member_states(unityrs),
+                         [[137, '<', '726177'], [40, '<', '726177']])
+
+    def test_failed_forced_constructor_keeps_applied_endian(self):
+        payloads = [(b'raw', unityrs.enums.FileType.WebFile),
+                    (B.S.serialized_file([], [], version=17)[:20], unityrs.enums.FileType.AssetsFile)]
+        for stream in (False, True):
+            for payload, typ in payloads:
+                reader = unityrs.streams.EndianBinaryReader(io.BytesIO(payload) if stream else payload)
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(Exception):
+                    unityrs.helpers.ImportHelper.parse_file(reader, unityrs.Environment(), 'forced', typ)
+                self.assertEqual((reader.Position, reader.endian), (0, '<'))
+
+    def test_failed_forced_container_exposes_successful_child(self):
+        self.assertEqual(review.observe_partial_child_registration(unityrs),
+                         [[[], ['first'], ['6e616d65ff', 'body']]] * 4)
+
+    def test_nested_forced_bounds_report_child_buffer(self):
+        expected = ['error', 'unpack_from requires a buffer of at least 24 bytes for unpacking '
+                    '4 bytes at offset 20 (actual buffer size is 21)']
+        self.assertEqual(review.observe_nested_bounds_failures(unityrs), [expected] * 4)
+
     def test_detached_files_keep_private_owner_for_mutations(self):
         for name in ("save", "mark", "raw", "patch"):
             for value in getattr(review, "observe_detached_" + name)(unityrs):

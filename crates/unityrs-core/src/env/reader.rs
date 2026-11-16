@@ -23,6 +23,19 @@ impl Environment {
         ty: FileType,
         parent_file: Option<&File>,
     ) -> Result<File, Error> {
+        self.parse_reader_with_state(name, data, reader, ty, parent_file, &mut None)
+    }
+
+    /// [`Self::parse_reader`] retaining a partial constructor's endian change.
+    pub fn parse_reader_with_state(
+        &self,
+        name: &RawStr,
+        data: Bytes,
+        reader: ReaderKind,
+        ty: FileType,
+        parent_file: Option<&File>,
+        endian: &mut Option<crate::stream::Endian>,
+    ) -> Result<File, Error> {
         use crate::files::{Parent, ParentKind};
         let ctx = self.ctx();
         super::within_input_bytes(data.len() as u64, &ctx.limits)?;
@@ -48,7 +61,17 @@ impl Environment {
             }),
             _ => None,
         };
-        let file = parse_file_with_reader(name.clone(), data, ty, parent, &meter, ctx, reader)?;
+        let file = crate::files::parse_file_with_state(
+            name.clone(),
+            data,
+            ty,
+            parent,
+            &meter,
+            ctx,
+            reader,
+            0,
+            endian,
+        )?;
         if matches!(file, File::Bundle(_) | File::Web(_)) {
             self.register_file(name, &file, &mut Target::Caller)?;
         }

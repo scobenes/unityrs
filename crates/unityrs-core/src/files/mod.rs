@@ -286,6 +286,33 @@ pub(crate) fn parse_file_at_depth(
     reader: ReaderKind,
     source_depth: u32,
 ) -> Result<File, Error> {
+    parse_file_with_state(
+        name,
+        data,
+        ty,
+        parent,
+        meter,
+        ctx,
+        reader,
+        source_depth,
+        &mut None,
+    )
+}
+
+/// Parse with the endian assignment made to the constructor's input reader,
+/// including when construction fails. Inflated readers do not change it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn parse_file_with_state(
+    name: RawStr,
+    data: Bytes,
+    ty: FileType,
+    parent: Option<Parent>,
+    meter: &Arc<Meter>,
+    ctx: &Arc<FileContext>,
+    reader: ReaderKind,
+    source_depth: u32,
+    endian: &mut Option<crate::stream::Endian>,
+) -> Result<File, Error> {
     // UnityPy helpers/ImportHelper.py:127-156; a zip input is refused (P3).
     let kind = parsed_as(ty, name.as_bytes(), parent.is_some());
     if matches!(kind, ParsedAs::BundleFile | ParsedAs::WebFile)
@@ -298,8 +325,8 @@ pub(crate) fn parse_file_at_depth(
         )));
     }
     Ok(match kind {
-        ParsedAs::SerializedFile => File::Serialized(SerializedFile::parse_with_reader(
-            name, data, parent, meter, ctx, reader,
+        ParsedAs::SerializedFile => File::Serialized(SerializedFile::parse_with_state(
+            name, data, parent, meter, ctx, reader, endian,
         )?),
         ParsedAs::BundleFile => File::Bundle(BundleFile::open_at_depth(
             name,
@@ -310,7 +337,7 @@ pub(crate) fn parse_file_at_depth(
             reader,
             source_depth,
         )?),
-        ParsedAs::WebFile => File::Web(WebFile::open_at_depth(
+        ParsedAs::WebFile => File::Web(WebFile::open_with_state(
             name,
             data,
             parent,
@@ -318,6 +345,7 @@ pub(crate) fn parse_file_at_depth(
             ctx,
             reader,
             source_depth,
+            endian,
         )?),
         ParsedAs::Zip => return Err(Error::Unsupported(Unsupported::Zip)),
         ParsedAs::Raw | ParsedAs::Error => {

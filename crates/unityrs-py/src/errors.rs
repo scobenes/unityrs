@@ -26,11 +26,14 @@ pub(crate) fn charge(error: unityrs_core::limits::ChargeError) -> PyErr {
 /// Reader exceptions at the direct helper boundary. The core retains a named
 /// short-read error; Python exposes the reader's original exception text.
 pub(crate) fn file_parse(
-    error: Error,
+    mut error: Error,
     data: &[u8],
     stream: bool,
     meter: &std::sync::Arc<unityrs_core::limits::Meter>,
 ) -> PyErr {
+    while let Error::Entry { source, .. } = error {
+        error = (*source).clone();
+    }
     if let Error::WebSignature(signature) = &error {
         return signature_error(
             signature.as_bytes(),

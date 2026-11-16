@@ -31,6 +31,18 @@ class ForcedReview(unittest.TestCase):
     def test_compressed_failures_use_inner_reader(self):
         self.compare("observe_compressed_failures")
 
+    def test_oversized_member_uses_constructor_reader_kind(self):
+        self.compare("observe_oversized_member_states")
+
+    def test_failed_constructor_retains_endian_changes(self):
+        self.compare("observe_failed_constructor_endian")
+
+    def test_failed_container_publishes_prior_children(self):
+        self.compare("observe_partial_child_registration")
+
+    def test_nested_bounds_use_child_reader_diagnostic(self):
+        self.compare("observe_nested_bounds_failures")
+
     def test_exception_lookup_reenters_on_caller(self):
         for module in ("UnityPy", "unityrs"):
             child.run([sys.executable, "-c",

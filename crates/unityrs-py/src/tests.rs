@@ -199,7 +199,7 @@ fn replays_unitypy_tools_observations() -> PyResult<()> {
 
 #[test]
 fn replays_unitypy_residue_observations() -> PyResult<()> {
-    replay_groups("binding_y6_", 26)
+    replay_groups("binding_y6_", 30)
 }
 
 #[test]

@@ -14,6 +14,10 @@ use unityrs_core::{
     env::{EnvOptions, Environment, Source},
 };
 
+// Error outcomes retain constructor reader state until the facade applies it
+// and publishes any successful child CABs, then raises on the caller thread.
+type ParsedFile = (Option<NativeFile>, i128, Option<char>, Option<PyErr>);
+
 #[pyclass(frozen, module = "unityrs._native")]
 pub(crate) struct NativeEnvironment {
     pub(crate) inner: Environment,
@@ -259,7 +263,7 @@ impl NativeEnvironment {
         typ: u8,
         stream: bool,
         parent: Option<&NativeFile>,
-    ) -> PyResult<(NativeFile, i128, Option<char>)> {
+    ) -> PyResult<ParsedFile> {
         use unityrs_core::detect::FileType;
         let ty = match typ {
             0 => FileType::AssetsFile,
@@ -279,28 +283,52 @@ impl NativeEnvironment {
         )?;
         let name = crate::buffer_snapshot::BufferSnapshot::source(name, &meter, u64::MAX)?;
         let data = unityrs_core::Bytes::from_owner(data);
-        let file = py
-            .detach(|| {
-                crate::worker::run(
-                    crate::worker::load_stack(&self.inner.options().context.limits),
-                    || {
-                        self.inner
-                            .parse_reader(
-                                &RawStr::from(unityrs_core::Bytes::from_owner(name)),
-                                data.clone(),
-                                if stream {
-                                    unityrs_core::stream::ReaderKind::Stream
-                                } else {
-                                    unityrs_core::stream::ReaderKind::Memory
-                                },
-                                ty,
-                                parent.map(|file| &file.inner),
-                            )
-                            .map_err(Failure::core)
-                    },
-                )
-            })?
-            .map_err(|error: Failure| error.file_parse(&data, stream, &meter))?;
+        let mut constructor_endian = None;
+        let file = py.detach(|| {
+            crate::worker::run(
+                crate::worker::load_stack(&self.inner.options().context.limits),
+                || {
+                    self.inner
+                        .parse_reader_with_state(
+                            &RawStr::from(unityrs_core::Bytes::from_owner(name)),
+                            data.clone(),
+                            if stream {
+                                unityrs_core::stream::ReaderKind::Stream
+                            } else {
+                                unityrs_core::stream::ReaderKind::Memory
+                            },
+                            ty,
+                            parent.map(|file| &file.inner),
+                            &mut constructor_endian,
+                        )
+                        .map_err(Failure::core)
+                },
+            )
+        })?;
+        let file = match file {
+            Ok(file) => file,
+            Err(error) => {
+                let endian = constructor_endian.map(|endian| {
+                    if endian == unityrs_core::stream::Endian::Little {
+                        '<'
+                    } else {
+                        '>'
+                    }
+                });
+                return Ok((
+                    None,
+                    0,
+                    endian,
+                    // A fallback callback error otherwise escapes from
+                    // config._load's finally before the facade receives state.
+                    Some(
+                        self.take_fallback_warnings(py)
+                            .err()
+                            .unwrap_or_else(|| error.file_parse(&data, stream, &meter)),
+                    ),
+                ));
+            }
+        };
         let (position, endian) = match &file {
             unityrs_core::File::Serialized(file) => (
                 file.constructor_position(),
@@ -320,7 +348,7 @@ impl NativeEnvironment {
             }
             _ => (0, None),
         };
-        Ok((NativeFile::new(file), position, endian))
+        Ok((Some(NativeFile::new(file)), position, endian, None))
     }
     #[pyo3(signature = (path, constructor, dependency, root=None))]
     fn load_path(

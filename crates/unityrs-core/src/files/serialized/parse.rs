@@ -38,10 +38,6 @@ impl SerializedFile {
     /// [`Self::parse`] by the rules of the reader UnityPy would read `data`
     /// with ([`ReaderKind::Stream`] for a top-level file loaded from a path),
     /// which its objects' reads follow too.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "format-gated metadata and charged file construction"
-    )]
     pub fn parse_with_reader(
         name: RawStr,
         data: Bytes,
@@ -49,6 +45,23 @@ impl SerializedFile {
         meter: &Arc<Meter>,
         ctx: &Arc<FileContext>,
         reader: ReaderKind,
+    ) -> Result<Arc<Self>, Error> {
+        Self::parse_with_state(name, data, parent, meter, ctx, reader, &mut None)
+    }
+
+    /// Parse while retaining the caller reader's endian assignment on failure.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "format-gated metadata and charged file construction"
+    )]
+    pub(crate) fn parse_with_state(
+        name: RawStr,
+        data: Bytes,
+        parent: Option<Parent>,
+        meter: &Arc<Meter>,
+        ctx: &Arc<FileContext>,
+        reader: ReaderKind,
+        endian: &mut Option<Endian>,
     ) -> Result<Arc<Self>, Error> {
         // The handle itself, in its `Arc`.
         let mut charge = meter.charge(heap_cost(
@@ -58,6 +71,7 @@ impl SerializedFile {
         let header = p.header()?;
         p.version = header.version;
         p.r.set_endian(header.endian);
+        *endian = Some(header.endian);
         let format = header.version;
         // UnityPy files/SerializedFile.py:271-273, :351-360
         let (unity_version, version) = if format >= 7 {

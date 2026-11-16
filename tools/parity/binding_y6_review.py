@@ -2,6 +2,7 @@
 import contextlib
 import gzip
 import io
+import struct
 import sys
 import threading
 import types
@@ -92,6 +93,80 @@ def observe_compressed_failures(module):
             result.append(_record(module, gzip.compress(payload, mtime=0),
                                   module.enums.FileType.WebFile, stream=stream))
     return result
+
+
+def observe_oversized_member_states(module):
+    payload = bytearray(B.S.web_file([(b"child", b"raw")]))
+    struct.pack_into("<i", payload, 24, 100)
+    result = []
+    for stream in (False, True):
+        reader = module.streams.EndianBinaryReader(io.BytesIO(payload) if stream else bytes(payload))
+        file = module.helpers.ImportHelper.parse_file(
+            reader, module.Environment(), "forced", module.enums.FileType.WebFile)
+        result.append([reader.Position, reader.endian, file.files["child"].bytes.hex()])
+    return result
+
+
+def observe_failed_constructor_endian(module):
+    # Before/after the endian assignment, including a short extended header.
+    payloads = [(b"raw", module.enums.FileType.WebFile),
+                (gzip.compress(b"raw", mtime=0), module.enums.FileType.WebFile)]
+    for big in (False, True):
+        for version in (8, 17, 22):
+            data = B.S.serialized_file([], [], version=version, endian=">" if big else "<")
+            sizes = ((16, 17, 20, 25, 48, 60) if version >= 22 else
+                     (16, 17, 20, 25) if version >= 9 else (16, 17))
+            payloads.extend((data[:size], module.enums.FileType.AssetsFile) for size in sizes)
+    result = []
+    for stream in (False, True):
+        for payload, typ in payloads:
+            reader = module.streams.EndianBinaryReader(io.BytesIO(payload) if stream else payload)
+            with contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    module.helpers.ImportHelper.parse_file(reader, module.Environment(), "forced", typ)
+                except Exception as error:
+                    result.append([reader.Position, reader.endian, type(error).__name__])
+                else:
+                    raise AssertionError("truncated constructor succeeded")
+    return result
+
+
+def _nested_failure(module, *, registrations):
+    broken = b"UnityWebData1.0\0" + struct.pack("<i", 33) + b"x"
+    assets = next(data for name, data in B.cases() if name == "text")
+    result = []
+    for stream in (False, True):
+        for bundle in (False, True):
+            rows = [(b"first", assets), (b"broken", broken)]
+            payload = (B.S.fs_bundle([(name, data, 0) for name, data in rows]) if bundle else
+                       B.S.web_file(rows))
+            reader = module.streams.EndianBinaryReader(io.BytesIO(payload) if stream else payload)
+            env = module.Environment()
+            typ = module.enums.FileType.BundleFile if bundle else module.enums.FileType.WebFile
+            with contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    module.helpers.ImportHelper.parse_file(reader, env, "forced", typ)
+                except Exception as error:
+                    if registrations:
+                        first = env.get_cab("first")
+                        fields = None if first is None else first.objects[7].parse_as_dict()
+                        result.append([list(env.files), list(env.cabs),
+                                       None if fields is None else
+                                       [fields["m_Name"].encode("utf-8", "surrogateescape").hex(),
+                                        fields["m_Script"]]])
+                    else:
+                        result.append([type(error).__name__, str(error)])
+                else:
+                    raise AssertionError("malformed second member succeeded")
+    return result
+
+
+def observe_partial_child_registration(module):
+    return _nested_failure(module, registrations=True)
+
+
+def observe_nested_bounds_failures(module):
+    return _nested_failure(module, registrations=False)
 
 
 def exception_reentry(module):
