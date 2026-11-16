@@ -55,7 +55,7 @@ class File:
                 current = current.parent
 
     def get_writeable_cab(self, name=None):
-        # files/File.py:92-121. Keep one wrapper for each live native writer.
+        # files/File.py:92-121. The current mapping owns writer identity.
         name = name or self.cab_file
         if not name:
             return None
@@ -65,9 +65,13 @@ class File:
                     return self.files[name]
                 raise ValueError("This cab already exists and isn't an EndianBinaryWriter")
             guard = self._native.tree_traversal()
-            native = self._native.get_writeable_cab(_save_text(name, guard), None)
-            if native is None:
-                return None
+            flags, endian = 0, ">"
+            for resource_name, resource in self.files.items():
+                guard.step(0, 0, 1)
+                if resource_name.endswith(".resS"):
+                    flags, endian = resource.flags, resource.endian
+                    break
+            native = self._native.create_cab(_save_text(name, guard), flags, endian)
             writer = _CabWriter(native)
             self.files[name] = writer
             return writer
@@ -164,16 +168,15 @@ class SerializedFile(File):
             return None
         import uuid
         with self.environment._lock:
-            guid = uuid.uuid1().urn[-16:].encode("ascii")
             guard = self._native.tree_traversal()
-            native = self._native.get_writeable_cab(_save_text(name, guard), list(guid))
-            writer = self.parent.files.get(name)
-            if not isinstance(writer, _CabWriter):
-                writer = _CabWriter(native)
-                self.parent.files[name] = writer
-            else:
-                writer.__dict__.update(native.metadata())
+            writer = self.parent.get_writeable_cab(name)
+            size = str.__len__(name) if isinstance(name, str) else len(name)
+            own_size = str.__len__(self.name) if isinstance(self.name, str) else len(self.name)
+            guard.step(0, (own_size + size + 10) * 4 + 256, 1)
+            writer.path = f"archive:/{self.name}/{name}"
             if not any(writer.path == entry.path for entry in self.externals):
+                guard.step(0, 512, 1)
+                guid = uuid.uuid1().urn[-16:].encode("ascii")
                 self.externals.append(SimpleNamespace(temp_empty="", guid=guid, path=writer.path, type=0))
             return writer
 
@@ -206,30 +209,32 @@ class BundleFile(File):
             return self._native.save_bundle_entries("save", self._save_rows(guard), packer, (64, 64), self._save_header(guard))
 
     @staticmethod
-    def _body(data):
+    def _body_offset(data):
         position = data.index(b"\0") + 5
         position = data.index(b"\0", position) + 1
-        return data[data.index(b"\0", position) + 1:]
+        return data.index(b"\0", position) + 1
 
     def save_fs(self, writer, data_flag, block_info_flag):
         with self.environment._lock:
             guard = self._native.tree_traversal()
             data = self._native.save_bundle_entries("fs", self._save_rows(guard), None, (data_flag, block_info_flag), self._save_header(guard))
-            head = len(data) - len(self._body(data))
+            head = self._body_offset(data)
             _, compressed, uncompressed, flags = struct.unpack_from(">qIII", data, head)
             start = head + 20 + (self.signature != "UnityFS")
             if self._uses_block_alignment:
                 start += (-start) % 16
+            guard.step(0, 1024, 0)
+            view = memoryview(data)
             if flags & 0x80:
                 if flags & 0x200:
                     start += (-start) % 16
-                blocks, payload = data[-compressed:], data[start:-compressed]
+                blocks, payload = view[-compressed:], view[start:-compressed]
             else:
-                blocks = data[start:start + compressed]
+                blocks = view[start:start + compressed]
                 start += compressed
                 if flags & 0x200:
                     start += (-start) % 16
-                payload = data[start:]
+                payload = view[start:]
             header_position = writer.Position
             writer.write_long(0)
             writer.write_u_int(compressed)
@@ -258,14 +263,16 @@ class BundleFile(File):
         with self.environment._lock:
             guard = self._native.tree_traversal()
             data = self._native.save_bundle_entries("web_raw", self._save_rows(guard), None, (64, 64), self._save_header(guard))
-            start = len(data) - len(self._body(data))
+            start = self._body_offset(data)
+            guard.step(0, 1024, 0)
+            view = memoryview(data)
             extra = 20 if self.version >= 4 else 0
             fields = struct.unpack_from(">IIIIII", data, start + extra)
             original_header, compressed, uncompressed = fields[1], fields[4], fields[5]
             header_size = writer.Position + extra + 24 + 4 * (self.version >= 2) + 4 * (self.version >= 3)
             header_size += (-header_size) % 4
             if extra:
-                writer.write_bytes(data[start:start + 16])
+                writer.write_bytes(view[start:start + 16])
                 writer.write_u_int(struct.unpack_from(">I", data, start + 16)[0])
             writer.write_u_int(header_size + compressed)
             writer.write_u_int(header_size)
@@ -278,7 +285,7 @@ class BundleFile(File):
             if self.version >= 3:
                 writer.write_u_int(struct.unpack_from(">I", data, start + extra + 28)[0])
             writer.align_stream(4)
-            writer.write(data[original_header:original_header + compressed])
+            writer.write(view[original_header:original_header + compressed])
 
 
 class WebFile(File):
@@ -401,6 +408,9 @@ class ObjectReader:
             data = self._native.save_typetree(
                 tree, rows, writer.Position if writer else 0, writer.endian if writer else None)
             if writer:
+                guard = self._native.tree_traversal()
+                extent = max(getattr(writer, "Length", 0), writer.Position + len(data))
+                guard.step(0, 2 * extent + 512, 0)
                 writer.write(data)
                 data = writer.bytes
             self._native.set_raw_data(data)
@@ -410,6 +420,14 @@ class ObjectReader:
 
     def write(self, header, writer, data_writer):
         # files/ObjectReader.py:132-179: object metadata and the selected payload.
+        guard = self._native.tree_traversal()
+        guard.step(0, 1024, 0)
+        data = self.data if self.data is not None else self.get_raw_data()
+        try:
+            size = memoryview(data).nbytes
+        except TypeError:
+            size = len(data)
+        guard.step(0, 2 * (data_writer.Position + size) + 512, 0)
         if self.assets_file.big_id_enabled:
             writer.write_long(self.path_id)
         elif header.version < 14:
@@ -417,7 +435,6 @@ class ObjectReader:
         else:
             writer.align_stream()
             writer.write_long(self.path_id)
-        data = self.data if self.data is not None else self.get_raw_data()
         if header.version >= 22:
             writer.write_long(data_writer.Position)
         else:

@@ -6,8 +6,8 @@ use pyo3::{
     ffi,
     prelude::*,
     types::{
-        PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyInt, PyIterator, PyList, PyMemoryView,
-        PySet, PyString, PyTuple,
+        PyBool, PyBytes, PyDict, PyFloat, PyInt, PyIterator, PyList, PyMemoryView, PySet, PyString,
+        PyTuple,
     },
 };
 use std::sync::Arc;
@@ -19,6 +19,8 @@ use unityrs_core::{
 };
 #[path = "value_input_lookup.rs"]
 mod lookup;
+#[path = "value_input_schema.rs"]
+mod schema;
 #[path = "value_input_stage.rs"]
 mod staging;
 pub(crate) use staging::Snapshot;
@@ -30,7 +32,8 @@ struct State<'a> {
     limits: &'a Limits,
     count: u64,
     tree: Option<&'a Tree>,
-    lookups: lookup::Lookups,
+    schemas: schema::Schemas<'a>,
+    refs: &'a [unityrs_core::files::SerializedType],
     values: staging::Arena,
     filter_null_properties: bool,
     rotations: MeteredVec<staging::Rotation>,
@@ -60,8 +63,9 @@ pub(crate) fn for_tree_snapshot(
     meter: &Arc<Meter>,
     limits: &Limits,
     tree: &Tree,
+    refs: &[unityrs_core::files::SerializedType],
 ) -> PyResult<Snapshot> {
-    snapshot_input(input, meter, limits, Some(tree), false)
+    snapshot_input(input, meter, limits, Some(tree), false, refs)
 }
 
 #[cfg(test)]
@@ -71,7 +75,7 @@ fn snapshot(
     limits: &Limits,
     tree: Option<&Tree>,
 ) -> PyResult<unityrs_core::Parsed> {
-    snapshot_input(input, meter, limits, tree, false)?.build()
+    snapshot_input(input, meter, limits, tree, false, &[])?.build()
 }
 
 pub(crate) fn material_snapshot(
@@ -79,7 +83,7 @@ pub(crate) fn material_snapshot(
     meter: &Arc<Meter>,
     limits: &Limits,
 ) -> PyResult<Snapshot> {
-    snapshot_input(input, meter, limits, None, true)
+    snapshot_input(input, meter, limits, None, true, &[])
 }
 
 pub(crate) fn export_snapshot(
@@ -87,7 +91,7 @@ pub(crate) fn export_snapshot(
     meter: &Arc<Meter>,
     limits: &Limits,
 ) -> PyResult<Snapshot> {
-    snapshot_input(input, meter, limits, None, false)
+    snapshot_input(input, meter, limits, None, false, &[])
 }
 
 fn snapshot_input(
@@ -96,6 +100,7 @@ fn snapshot_input(
     limits: &Limits,
     tree: Option<&Tree>,
     filter_null_properties: bool,
+    refs: &[unityrs_core::files::SerializedType],
 ) -> PyResult<Snapshot> {
     let mut state = State {
         rows: MeteredVec::new(meter),
@@ -104,17 +109,13 @@ fn snapshot_input(
         limits,
         count: 0,
         tree,
-        lookups: lookup::Lookups::new(tree, meter)?,
+        schemas: schema::Schemas::new(tree, meter)?,
+        refs,
         values: staging::Arena::new(meter),
         filter_null_properties,
         rotations: MeteredVec::new(meter),
     };
-    let (_, value) = state.stage(
-        input,
-        RawStr::from_static(b"Base"),
-        0,
-        tree.map(|t| t.list().root()),
-    )?;
+    let (_, value) = state.stage(input, RawStr::from_static(b"Base"), 0, state.schemas.root())?;
     Ok(state.into_snapshot(value))
 }
 
@@ -146,8 +147,12 @@ fn text(value: &Bound<'_, PyAny>, staging: &mut Charge) -> PyResult<RawStr> {
 
 enum Inspect {
     Scalar(Value),
-    Sequence(Py<PyIterator>, bool),
+    Sequence(Elements, bool),
     Map(Fields),
+}
+enum Elements {
+    Iter(Py<PyIterator>),
+    Pair(Py<PyAny>),
 }
 struct Fields {
     input: Py<PyAny>,
@@ -293,16 +298,9 @@ impl State<'_> {
                     b"string".as_slice(),
                     Value::Str(text(value, &mut self.staging)?),
                 ))
-            } else if value.is_instance_of::<PyBytes>()
-                || value.is_instance_of::<PyByteArray>()
-                || value.is_instance_of::<PyMemoryView>()
-            {
-                Some((
-                    b"TypelessData".as_slice(),
-                    buffer_value(value, &self.staging, self.limits)?,
-                ))
             } else {
-                None
+                buffer_value(value, &self.staging, self.limits)?
+                    .map(|buffer| (b"TypelessData".as_slice(), buffer))
             };
             if let Some((ty, value)) = scalar {
                 return Ok((
@@ -314,7 +312,7 @@ impl State<'_> {
                 let tuple = value.is_instance_of::<PyTuple>();
                 return Ok((
                     RawStr::from_static(if tuple { b"pair" } else { b"vector" }),
-                    Inspect::Sequence(value.try_iter()?.unbind(), tuple),
+                    Inspect::Sequence(Elements::Iter(value.try_iter()?.unbind()), tuple),
                 ));
             }
             self.staging.grow(512).map_err(errors::charge)?;
@@ -372,30 +370,35 @@ fn copy_bytes(bytes: &[u8], staging: &Charge, limits: &Limits) -> PyResult<Value
     Ok(Value::Bytes(buffer.into_bytes().map_err(errors::charge)?))
 }
 
-fn buffer_value(value: &Bound<'_, PyAny>, staging: &Charge, limits: &Limits) -> PyResult<Value> {
-    if let Ok(value) = value.cast::<PyByteArray>() {
-        // The GIL stays held through this copy, so mutable bytearray storage
-        // cannot resize or change while its borrowed bytes are read.
-        return copy_bytes(unsafe { value.as_bytes() }, staging, limits);
-    }
-    if value.is_instance_of::<PyMemoryView>() {
-        let count = value.getattr("nbytes")?.extract::<usize>()?;
-        let _copy = staging
-            .meter()
-            .charge(256 + count as u64)
-            .map_err(errors::charge)?;
-        staging
-            .meter()
-            .count_decode(count as u64)
-            .map_err(errors::charge)?;
-        let encoded = value.call_method0("tobytes")?;
-        return copy_bytes(encoded.cast::<PyBytes>()?.as_bytes(), staging, limits);
-    }
-    copy_bytes(value.cast::<PyBytes>()?.as_bytes(), staging, limits)
+fn buffer_value(
+    value: &Bound<'_, PyAny>,
+    staging: &Charge,
+    limits: &Limits,
+) -> PyResult<Option<Value>> {
+    let charge = staging.meter().charge(256).map_err(errors::charge)?;
+    let view = match PyMemoryView::from(value) {
+        Ok(view) => view,
+        Err(error) if error.is_instance_of::<pyo3::exceptions::PyTypeError>(value.py()) => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let bytes = crate::buffer_snapshot::BufferSnapshot::from_view(value, &view, charge)?;
+    copy_bytes(bytes.as_ref(), staging, limits).map(Some)
 }
 
-fn next_item(iter: &Py<PyIterator>) -> PyResult<Option<Py<PyAny>>> {
+fn next_item(iter: &Elements, index: usize) -> PyResult<Option<Py<PyAny>>> {
     Python::attach(|py| {
+        let Elements::Iter(iter) = iter else {
+            let Elements::Pair(input) = iter else {
+                return Ok(None);
+            };
+            return if index == 2 {
+                Ok(None)
+            } else {
+                input.bind(py).get_item(index).map(|v| Some(v.unbind()))
+            };
+        };
         iter.bind(py)
             .clone()
             .next()
@@ -424,26 +427,7 @@ fn writer_buffer(
     // UnityPy measures the value before asking its writer for a buffer.
     // Preserve both operations' Python errors without copying invalid input.
     input.len()?;
-    let charge = meter.charge(256).map_err(errors::charge)?;
-    let py = input.py();
-    let view = match PyMemoryView::from(input) {
-        Err(error) if !error.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
-            return Err(error);
-        }
-        Ok(view) if view.getattr("c_contiguous")?.is_truthy()? => view,
-        _ => {
-            // BytesIO produces the writer's exact TypeError or BufferError.
-            // This path only sees invalid buffers, so it allocates no payload.
-            py.import("io")?
-                .getattr("BytesIO")?
-                .call0()?
-                .call_method1("write", (input,))?;
-            return Err(pyo3::exceptions::PyTypeError::new_err(
-                "invalid writer buffer",
-            ));
-        }
-    };
-    crate::buffer_snapshot::BufferSnapshot::from_view(input, &view, charge)
+    crate::buffer_snapshot::BufferSnapshot::writer(input, meter)
 }
 
 fn scalar_for_shape(

@@ -153,11 +153,11 @@ fn gzip(detail: &str) -> PyErr {
     Python::attach(|py| {
         let text = detail.split_once(": ").map_or(detail, |(_, s)| s);
         let text = if detail.starts_with("zlib.error:") {
-            format!(
+            message(&format_args!(
                 "Error -3 while decompressing data: {}",
                 text.strip_prefix("deflate decompression error: ")
                     .unwrap_or(text)
-            )
+            ))
         } else {
             message(&text)
         };

@@ -226,7 +226,7 @@ fn _image_encode(
     data: &Bound<'_, PyAny>,
     width: u32,
     height: u32,
-    pack_mode: &str,
+    pack_mode: &Bound<'_, PyAny>,
     texture_format: i32,
     platform: i32,
     blob: Option<&Bound<'_, PyAny>>,
@@ -234,6 +234,7 @@ fn _image_encode(
     switch_mips: bool,
 ) -> PyResult<Py<PyAny>> {
     let meter = meter(reader);
+    let (pack_mode, _mode_charge) = crate::text_snapshot::snapshot(pack_mode, &meter)?;
     let data = crate::buffer_snapshot::BufferSnapshot::new(data, &meter)?;
     let blob = blob
         .map(|v| crate::buffer_snapshot::BufferSnapshot::new(v, &meter))
@@ -249,7 +250,7 @@ fn _image_encode(
                 ));
             }
             let mut alpha = MeteredVec::new(&meter);
-            let (mode, data) = match pack_mode {
+            let (mode, data) = match pack_mode.as_str() {
                 "A" => {
                     meter
                         .count_decode(data.len() as u64)
@@ -303,7 +304,7 @@ fn _image_encode(
 fn _sprite_render(
     py: Python<'_>,
     data: &Bound<'_, PyAny>,
-    mode: &str,
+    mode: &Bound<'_, PyAny>,
     width: u32,
     height: u32,
     rect: [f64; 4],
@@ -314,6 +315,7 @@ fn _sprite_render(
     version: (u16, u16, u16, u8, u8),
 ) -> PyResult<Py<PyAny>> {
     let meter = meter(reader);
+    let (mode, _mode_charge) = crate::text_snapshot::snapshot(mode, &meter)?;
     let data = crate::buffer_snapshot::BufferSnapshot::new(data, &meter)?;
     let limits = reader.map_or_else(Limits::default, |r| r.inner.file().context().limits);
     let version =
@@ -327,7 +329,7 @@ fn _sprite_render(
     };
     py.detach(move || {
         crate::worker::run(limits.stack_needed(), || {
-            let mode = match mode {
+            let mode = match mode.as_str() {
                 "RGB" => Mode::Rgb,
                 "RGBA" => Mode::Rgba,
                 _ => Mode::L,

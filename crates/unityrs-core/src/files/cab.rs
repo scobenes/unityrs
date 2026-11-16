@@ -39,7 +39,9 @@ impl std::fmt::Debug for WriteableCab {
 }
 
 impl WriteableCab {
-    fn new(
+    /// Create an empty writer owned by a caller-managed file mapping.
+    /// The caller supplies resource metadata from its current mapping.
+    pub fn new(
         name: RawStr,
         flags: u32,
         endian: Endian,

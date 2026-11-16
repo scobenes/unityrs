@@ -7,10 +7,7 @@ use crate::{
     settings::{Budget, Limits},
 };
 use pyo3::prelude::*;
-use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 use unityrs_core::{
     FileContext, RawStr,
     env::{EnvOptions, Environment, Source},
@@ -244,11 +241,17 @@ impl NativeEnvironment {
     fn load_path(
         &self,
         py: Python<'_>,
-        path: PathBuf,
+        path: &Bound<'_, PyAny>,
         constructor: bool,
         dependency: bool,
-        root: Option<PathBuf>,
+        root: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Option<NativeFile>> {
+        let meter = self.input_meter();
+        let (path, _path_charge) = crate::path_snapshot::snapshot(path, &meter)?;
+        let (root, _root_charge) = root
+            .map(|root| crate::path_snapshot::snapshot(root, &meter))
+            .transpose()?
+            .unzip();
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),
@@ -274,7 +277,8 @@ impl NativeEnvironment {
             )
         })
     }
-    fn load_files(&self, py: Python<'_>, path: PathBuf) -> PyResult<()> {
+    fn load_files(&self, py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        let (path, _charge) = crate::path_snapshot::snapshot(path, &self.input_meter())?;
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),
@@ -282,7 +286,8 @@ impl NativeEnvironment {
             )
         })
     }
-    fn load_zip_path(&self, py: Python<'_>, path: PathBuf) -> PyResult<()> {
+    fn load_zip_path(&self, py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        let (path, _charge) = crate::path_snapshot::snapshot(path, &self.input_meter())?;
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),
@@ -315,8 +320,8 @@ impl NativeEnvironment {
             )
         })
     }
-    #[allow(clippy::needless_pass_by_value, reason = "PyO3 extracts an owned path")]
-    fn load_folder(&self, py: Python<'_>, path: PathBuf) -> PyResult<()> {
+    fn load_folder(&self, py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        let (path, _charge) = crate::path_snapshot::snapshot(path, &self.input_meter())?;
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),

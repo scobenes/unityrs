@@ -1,4 +1,5 @@
 //! Iterative Python inspection and a flat, metered snapshot for native workers.
+use super::schema::{Schemas, Shape};
 use super::{Inspect, State, next_depth, next_item, none_for_shape, scalar_for_shape};
 use crate::errors;
 use pyo3::prelude::*;
@@ -22,6 +23,23 @@ pub(super) struct Arena {
 }
 
 impl Arena {
+    fn field(&self, items: &[(NodeId, usize)], rows: &[NodeRow], key: &[u8]) -> Option<&Staged> {
+        let (_, id) = items.iter().find(|(node, _)| {
+            rows.get(node.index())
+                .is_some_and(|row| row.name.as_bytes() == key)
+        })?;
+        self.values.as_slice().get(*id)?.as_ref()
+    }
+    fn reference_names(&self, items: &[(NodeId, usize)], rows: &[NodeRow]) -> Option<[RawStr; 3]> {
+        let Staged::Map(fields) = self.field(items, rows, b"type")? else {
+            return None;
+        };
+        let get = |key| match self.field(fields.as_slice(), rows, key)? {
+            Staged::Scalar(Value::Str(name)) => Some(name.clone()),
+            _ => None,
+        };
+        Some([get(b"class")?, get(b"ns")?, get(b"asm")?])
+    }
     pub(super) fn new(meter: &Arc<Meter>) -> Self {
         Self {
             values: MeteredVec::new(meter),
@@ -190,13 +208,13 @@ struct Visit {
     input: Py<PyAny>,
     name: RawStr,
     depth: u32,
-    shape: Option<NodeId>,
+    shape: Option<Shape>,
 }
 
 enum Container {
     Map(super::Fields, MeteredVec<(NodeId, usize)>),
     Sequence {
-        iter: Py<pyo3::types::PyIterator>,
+        iter: super::Elements,
         tuple: bool,
         skip_null: bool,
         first_rows: Option<(usize, usize)>,
@@ -206,7 +224,7 @@ enum Container {
 struct Frame {
     node: NodeId,
     depth: u32,
-    shape: Option<NodeId>,
+    shape: Option<Shape>,
     container: Container,
 }
 
@@ -242,7 +260,7 @@ impl Frame {
             } => {
                 items.reserve(1).map_err(errors::charge)?;
                 let input = loop {
-                    let Some(input) = next_item(iter)? else {
+                    let Some(input) = next_item(iter, items.len())? else {
                         if !*tuple && items.is_empty() {
                             state.row(
                                 next_depth(self.depth, 2)?,
@@ -264,14 +282,15 @@ impl Frame {
                     }
                 };
                 let first_item = items.is_empty();
-                let shape = state.tree.zip(self.shape).and_then(|(tree, node)| {
-                    match tree.info(node)?.shape {
+                let shape = state.schemas.target(self.shape).and_then(|(tree, node)| {
+                    let child = match tree.info(node)?.shape {
                         unityrs_core::typetree::Shape::Vector { elem, .. } => Some(elem),
                         unityrs_core::typetree::Shape::Pair => {
                             tree.list().children(node).get(items.len()).copied()
                         }
                         _ => None,
-                    }
+                    }?;
+                    self.shape.map(|shape| Schemas::child(shape, child))
                 });
                 let key = if *tuple {
                     if items.is_empty() {
@@ -305,16 +324,15 @@ impl Frame {
         items: &mut MeteredVec<(NodeId, usize)>,
         state: &mut State<'_>,
         depth: u32,
-        parent: Option<NodeId>,
+        parent: Option<Shape>,
     ) -> PyResult<Option<Visit>> {
         let Some((key, input)) = Python::attach(|py| fields.next(py, &mut state.staging))? else {
             return Ok(None);
         };
         items.reserve(1).map_err(errors::charge)?;
-        let shape = if let Some((tree, node)) = state.tree.zip(parent) {
-            state.lookups.find(
-                tree,
-                node,
+        let mut shape = if let Some(parent) = parent {
+            state.schemas.find(
+                parent,
                 fields.dict || fields.raw_names,
                 key.as_bytes(),
                 state.staging.meter(),
@@ -324,12 +342,29 @@ impl Frame {
         };
         let name = if fields.dict || fields.raw_names {
             key
-        } else if let Some((tree, node)) = state.tree.zip(shape) {
+        } else if let Some((tree, node)) = state.schemas.target(shape) {
             RawStr::charged(tree.list().name(node), state.staging.meter())
                 .map_err(errors::charge)?
         } else {
             key
         };
+        if state.schemas.target(parent).is_some_and(|(tree, node)| {
+            tree.info(node)
+                .is_some_and(|i| matches!(i.shape, unityrs_core::typetree::Shape::RefObject))
+        }) && state
+            .schemas
+            .target(shape)
+            .is_some_and(|(tree, node)| tree.list().type_name(node) == b"ReferencedObjectData")
+            && let Some(names) = state
+                .values
+                .reference_names(items.as_slice(), state.rows.as_slice())
+            && let Some(target) =
+                state
+                    .schemas
+                    .referenced(state.refs, &names, state.limits, state.staging.meter())?
+        {
+            shape = Some(target);
+        }
         Ok(Some(Visit {
             input,
             name,
@@ -366,7 +401,7 @@ impl State<'_> {
         input: &Py<PyAny>,
         name: RawStr,
         depth: u32,
-        shape: Option<NodeId>,
+        shape: Option<Shape>,
     ) -> PyResult<(NodeId, usize)> {
         let mut frames = MeteredVec::new(self.staging.meter());
         let mut next = Some(Visit {
@@ -441,11 +476,11 @@ impl State<'_> {
     fn inspect_target(
         &mut self,
         input: &Py<PyAny>,
-        shape: Option<NodeId>,
+        shape: Option<Shape>,
     ) -> PyResult<(RawStr, Inspect)> {
         let scalar = self
-            .tree
-            .zip(shape)
+            .schemas
+            .target(shape)
             .map(|(tree, shape)| {
                 scalar_for_shape(tree, shape, input, &mut self.staging, self.limits)
             })
@@ -453,13 +488,13 @@ impl State<'_> {
             .flatten();
         let result = if let Some(scalar) = scalar {
             scalar
-        } else if let Some((tree, shape)) = self.tree.zip(shape)
+        } else if let Some((tree, shape)) = self.schemas.target(shape)
             && Python::attach(|py| input.bind(py).is_none())
         {
             none_for_shape(tree, shape, input, self.staging.meter())?
         } else if let Some(info) = self
-            .tree
-            .zip(shape)
+            .schemas
+            .target(shape)
             .and_then(|(tree, node)| tree.info(node))
             && matches!(
                 info.shape,
@@ -469,7 +504,13 @@ impl State<'_> {
             // A typed buffer is a sequence of Python elements for vectors.
             // Only scalar byte schemas use the raw buffer representation.
             let tuple = matches!(info.shape, unityrs_core::typetree::Shape::Pair);
-            let iter = Python::attach(|py| input.bind(py).try_iter().map(Bound::unbind))?;
+            let iter = if tuple {
+                super::Elements::Pair(Python::attach(|py| input.clone_ref(py)))
+            } else {
+                super::Elements::Iter(Python::attach(|py| {
+                    input.bind(py).try_iter().map(Bound::unbind)
+                })?)
+            };
             (
                 RawStr::from_static(if tuple { b"pair" } else { b"vector" }),
                 Inspect::Sequence(iter, tuple),
@@ -522,7 +563,7 @@ impl State<'_> {
         self.active.push(identity).map_err(errors::charge)?;
         let container = match inspection {
             Inspect::Map(mut fields) => {
-                if let Some((tree, node)) = self.tree.zip(shape)
+                if let Some((tree, node)) = self.schemas.target(shape)
                     && tree.info(node).is_some_and(|info| {
                         matches!(
                             info.shape,

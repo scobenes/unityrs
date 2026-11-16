@@ -29,7 +29,7 @@ impl NativeObject {
         value: &Bound<'_, PyAny>,
         rows: &Bound<'_, PyAny>,
         offset: usize,
-        endian: Option<&str>,
+        endian: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         // The Python caller owns the environment's RLock. Getters, numeric
         // protocols, and row iteration must run on that thread so they can
@@ -39,9 +39,17 @@ impl NativeObject {
         let file = self.inner.file();
         let meter = file.meter();
         let limits = &file.context().limits;
-        let snapshot =
-            crate::value_input::for_tree_snapshot(value.as_unbound(), meter, limits, &tree)?;
-        let endian = match endian {
+        let snapshot = crate::value_input::for_tree_snapshot(
+            value.as_unbound(),
+            meter,
+            limits,
+            &tree,
+            file.ref_types().unwrap_or_default(),
+        )?;
+        let endian = endian
+            .map(|v| crate::text_snapshot::snapshot(v, meter))
+            .transpose()?;
+        let endian = match endian.as_ref().map(|(text, _)| text.as_str()) {
             Some(">") => unityrs_core::stream::Endian::Big,
             Some("<") => unityrs_core::stream::Endian::Little,
             Some(_) => {

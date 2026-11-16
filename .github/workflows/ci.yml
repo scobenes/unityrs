@@ -758,4 +758,4 @@ jobs:
         run: python scripts/unittest-suites crates/unityrs-py/python/tests=61
       - name: Compare the binding with UnityPy
         working-directory: tools/parity
-        run: python ../../scripts/unittest-suites bindings=134
+        run: python ../../scripts/unittest-suites bindings=143

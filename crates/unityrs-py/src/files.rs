@@ -28,13 +28,14 @@ impl NativeFile {
     fn save_bundle_entries(
         &self,
         py: Python<'_>,
-        mode: &str,
+        mode: &Bound<'_, PyAny>,
         rows: &Bound<'_, PyAny>,
         value: Option<&Bound<'_, PyAny>>,
         flags: (u32, u16),
         header: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
-        crate::save::save_bundle_entries(py, self, mode, rows, value, flags, header)
+        let (mode, _charge) = crate::text_snapshot::snapshot(mode, self.inner.meter())?;
+        crate::save::save_bundle_entries(py, self, &mode, rows, value, flags, header)
     }
     fn save_web_entries(
         &self,
@@ -48,13 +49,24 @@ impl NativeFile {
     fn save(
         &self,
         py: Python<'_>,
-        mode: &str,
+        mode: &Bound<'_, PyAny>,
         value: Option<&Bound<'_, PyAny>>,
         data_flag: u32,
         block_info_flag: u16,
-        signature: &str,
+        signature: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
-        crate::save::file_save(py, self, mode, value, data_flag, block_info_flag, signature)
+        let (mode, _mode_charge) = crate::text_snapshot::snapshot(mode, self.inner.meter())?;
+        let (signature, _signature_charge) =
+            crate::text_snapshot::snapshot(signature, self.inner.meter())?;
+        crate::save::file_save(
+            py,
+            self,
+            &mode,
+            value,
+            data_flag,
+            block_info_flag,
+            &signature,
+        )
     }
     fn save_metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         crate::save::file_metadata(py, self)
@@ -72,6 +84,15 @@ impl NativeFile {
         guid: Option<[u8; 16]>,
     ) -> PyResult<Option<crate::save::NativeCab>> {
         crate::save::file_get_writeable_cab(py, self, name, guid)
+    }
+    fn create_cab(
+        &self,
+        py: Python<'_>,
+        name: &Bound<'_, PyAny>,
+        flags: u32,
+        endian: char,
+    ) -> PyResult<crate::save::NativeCab> {
+        crate::save::file_create_cab(py, self, name, flags, endian)
     }
     fn tree_traversal(&self) -> crate::traversal::TreeTraversal {
         let depth = match &self.inner {

@@ -59,6 +59,12 @@ class PPtr(Generic[T]):
             if external_id >= len(assetsfile.externals):
                 raise FileNotFoundError("Failed to resolve pointer - invalid m_FileID!")
             external = assetsfile.externals[external_id]
+            from .._native import TreeTraversal
+            source = getattr(assetsfile, "_native", None)
+            guard = source.tree_traversal() if source is not None else TreeTraversal()
+            path = external.path
+            size = str.__len__(path) if isinstance(path, str) else len(path)
+            guard.step(0, size * 16 + 1024, size)
 
             # resolve external name to assetsfile
             container = assetsfile.parent
@@ -66,14 +72,15 @@ class PPtr(Generic[T]):
                 # TODO - use default fs
                 raise FileNotFoundError(f"PPtr points to {external.path} but no container is set!")
 
-            external_clean_path = external.path
-            if external_clean_path.startswith("archive:/"):
-                external_clean_path = external_clean_path[9:]
-            if external_clean_path.startswith("assets/"):
-                external_clean_path = external_clean_path[7:]
-            external_clean_path = external_clean_path.rsplit("/")[-1].lower()
+            start = 9 if path.startswith("archive:/") else 0
+            if path.startswith("assets/", start):
+                start += 7
+            start = max(start, path.rfind("/", start) + 1)
+            external_clean_path = path[start:].lower()
 
             for key, file in container.files.items():
+                size = str.__len__(key) if isinstance(key, str) else len(key)
+                guard.step(0, size * 4 + 256, size)
                 if key.lower() == external_clean_path:
                     assetsfile_dst = file
                     break

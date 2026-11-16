@@ -59,7 +59,8 @@ def get_sprite_image(self):
     version = (0, 0, 0, 0, 0)
     if not ((settings >> 1) & 1):
         assert self.object_reader, "Sprite object reader is not set!"
-        version = (tuple(getattr(self.object_reader, "version", ())) + (0,) * 5)[:5]
+        from itertools import islice
+        version = (tuple(islice(getattr(self.object_reader, "version", ()), 5)) + (0,) * 5)[:5]
     mode, width, height, pixels = _native._sprite_render(
         flipped.tobytes(), flipped.mode, flipped.width, flipped.height,
         (rect.x, rect.y, rect.width, rect.height), settings, self.m_PixelsToUnits,

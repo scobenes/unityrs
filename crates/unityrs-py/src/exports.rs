@@ -4,7 +4,6 @@ use crate::{environment::NativeEnvironment, errors, object::NativeObject, python
 use pyo3::{
     exceptions::{PyException, PyNotImplementedError, PyValueError},
     prelude::*,
-    pybacked::PyBackedBytes,
 };
 use std::sync::Arc;
 use unityrs_core::{
@@ -43,7 +42,7 @@ fn export_audio(
         .map(|v| crate::buffer_snapshot::BufferSnapshot::new(v, &meter))
         .transpose()?;
     let path = vorbis_path
-        .map(|path| snapshot_vorbis_path(path.as_unbound(), &meter))
+        .map(|path| crate::path_snapshot::snapshot(path, &meter))
         .transpose()?;
     py.detach(move || {
         crate::worker::run(limits.stack_needed(), || {
@@ -83,42 +82,6 @@ fn export_audio(
             }
             Ok(result)
         })
-    })
-}
-
-fn snapshot_vorbis_path(
-    path: &Py<PyAny>,
-    meter: &Arc<Meter>,
-) -> PyResult<(std::path::PathBuf, unityrs_core::limits::Charge)> {
-    Python::attach(|py| {
-        let value = path.bind(py);
-        let len = if let Ok(text) = value.cast::<pyo3::types::PyString>() {
-            usize::try_from(unsafe { pyo3::ffi::PyUnicode_GetLength(text.as_ptr()) })?
-        } else {
-            value.cast::<pyo3::types::PyBytes>()?.as_bytes().len()
-        };
-        let charge = meter
-            .charge(256 + (len as u64).saturating_mul(4))
-            .map_err(errors::charge)?;
-        let path = if value.is_instance_of::<pyo3::types::PyBytes>() {
-            let bytes = value.extract::<PyBackedBytes>()?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::ffi::OsStrExt;
-                std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&bytes))
-            }
-            #[cfg(not(unix))]
-            {
-                std::path::PathBuf::from(
-                    std::str::from_utf8(&bytes)
-                        .map_err(|_| PyValueError::new_err("Vorbis header path must be UTF-8"))?,
-                )
-            }
-        } else {
-            let text = value.extract::<pyo3::pybacked::PyBackedStr>()?;
-            std::path::PathBuf::from(&*text)
-        };
-        Ok((path, charge))
     })
 }
 

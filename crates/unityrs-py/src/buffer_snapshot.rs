@@ -38,6 +38,30 @@ impl BufferSnapshot {
         Self::from_view(input, &view, charge)
     }
 
+    /// `BytesIO` writers require C-contiguous storage. Validate before making
+    /// an immutable copy, retaining Python's writer-specific exceptions.
+    pub(crate) fn writer(input: &Bound<'_, PyAny>, meter: &Arc<Meter>) -> PyResult<Self> {
+        let charge = meter.charge(256).map_err(errors::charge)?;
+        let view = match PyMemoryView::from(input) {
+            Ok(view) if view.getattr("c_contiguous")?.is_truthy()? => view,
+            Err(error) if !error.is_instance_of::<pyo3::exceptions::PyTypeError>(input.py()) => {
+                return Err(error);
+            }
+            _ => {
+                input
+                    .py()
+                    .import("io")?
+                    .getattr("BytesIO")?
+                    .call0()?
+                    .call_method1("write", (input,))?;
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "invalid writer buffer",
+                ));
+            }
+        };
+        Self::from_view(input, &view, charge)
+    }
+
     pub(crate) fn from_view(
         input: &Bound<'_, PyAny>,
         view: &Bound<'_, PyMemoryView>,

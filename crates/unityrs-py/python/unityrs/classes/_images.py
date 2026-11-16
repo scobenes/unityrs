@@ -7,6 +7,7 @@ Array extraction follows classes/legacy_patch/Texture2DArray.py:12-43.
 
 from .. import _native
 from ..enums import TextureFormat
+from .._buffers import snapshot_bytes
 
 
 def _guard(obj):
@@ -18,27 +19,20 @@ def _reader(obj):
     return getattr(getattr(obj, "object_reader", None), "_native", None)
 
 
-def _byte_size(data):
-    try:
-        return memoryview(data).nbytes
-    except TypeError:
-        return len(data)
-
-
 def _blob(obj):
     blob = getattr(obj, "m_PlatformBlob", None)
     if blob is not None:
         guard = _guard(obj)
-        size = _byte_size(blob)
-        guard.step(0, size * 4 + 256, size)
-    return None if blob is None else bytes(blob)
+        return snapshot_bytes(blob, guard)
+    return None
 
 
 def _resource(obj):
     stream = obj.m_StreamData
     file = obj.object_reader.assets_file
     guard = _guard(obj)
-    guard.step(0, len(stream.path) * 4 + 256, len(stream.path))
+    size = str.__len__(stream.path) if isinstance(stream.path, str) else len(stream.path)
+    guard.step(0, size * 4 + 256, size)
     return _native._image_resource(file.environment._native,
         file._native, stream.path.encode("utf-8", "surrogateescape"), stream.offset, stream.size)
 
@@ -63,10 +57,9 @@ def _decode(obj, data, width, height, texture_format, platform, blob, version):
     texture_format = TextureFormat(texture_format)
     version = tuple(version[:2]) if "Crunched" in texture_format.name else (0, 0)
     guard = _guard(obj)
-    size = _byte_size(data)
-    guard.step(0, size + 1024, size)
+    data = snapshot_bytes(data, guard)
     mode, w, h, pixels = _native._image_decode(
-        bytes(data), width, height, int(texture_format), version,
+        data, width, height, int(texture_format), version,
         int(platform), blob, _reader(obj))
     guard.step(0, len(pixels) + 1024, len(pixels))
     return Image.frombytes(mode, (w, h), pixels)
@@ -165,7 +158,9 @@ def set_image(self, img, target_format=None, mipmap_count=1):
                 break
             guard.step(0, width * height * 16 + len(img_data) + 1024, width * height)
             re_img = re_img.resize((width, height), Image.Resampling.BICUBIC)
-            img_data += _encode(self, re_img, target_format, 0, None, guard)[0]
+            mip = _encode(self, re_img, target_format, 0, None, guard)[0]
+            guard.step(0, len(img_data) + len(mip) + 256, 0)
+            img_data += mip
     if self.m_MipMap is not None:
         self.m_MipMap = mipmap_count > 1
     if self.m_MipCount is not None:

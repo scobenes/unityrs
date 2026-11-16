@@ -6,53 +6,7 @@ from .. import _native
 from ..enums import AUDIO_TYPE_EXTEMSION
 from .._output import OutputDirectory, output_name
 from ._images import _guard
-
-
-def _bytes(value, guard):
-    # Keep Python's bytes() coercion, charging sized results before allocation.
-    if isinstance(value, int):
-        size = max(0, value)
-    elif isinstance(value, memoryview):
-        size = value.nbytes
-    else:
-        try:
-            size = len(value)
-        except TypeError:
-            # Unsized iterables grow one bounded byte at a time. A user-defined
-            # __bytes__ callback owns its own allocation, just as a custom getter.
-            if hasattr(value, "__bytes__"):
-                result = bytes(value)
-                guard.step(0, len(result) + 256, len(result))
-                return result
-            if hasattr(value, "__index__"):
-                import operator
-                return _bytes(operator.index(value), guard)
-            try:
-                iterator = iter(value)
-            except TypeError:
-                return bytes(value)
-            guard.step(0, 256, 1)
-            staged = bytearray()
-            for item in iterator:
-                guard.step(0, 2, 1)
-                staged.append(item)
-            guard.step(0, len(staged) + 256, len(staged))
-            return bytes(staged)
-        else:
-            # A multidimensional buffer's len is only its first dimension.
-            # A view exposes its full byte count without copying its storage.
-            guard.step(0, 256, 1)
-            try:
-                view = memoryview(value)
-            except TypeError:
-                pass
-            else:
-                size = view.nbytes
-    guard.step(0, min(size + 256, (1 << 64) - 1), min(size, (1 << 64) - 1))
-    result = bytes(value)
-    if len(result) > size:
-        guard.step(0, len(result) - size, len(result) - size)
-    return result
+from .._buffers import snapshot_bytes as _bytes
 
 
 def _reader(value):
@@ -94,6 +48,8 @@ def _audio_samples(self):
     else:
         raise ValueError("AudioClip with neither m_AudioData nor m_Resource")
     guard.step(0, len(data) + 256, 0)
+    if isinstance(self.m_Name, str):
+        guard.step(0, str.__len__(self.m_Name) * 4 + 256, 0)
     name = f"{self.m_Name}"
     guard.step(0, len(name) * 4 + 256, len(name))
     from .. import config
@@ -145,7 +101,7 @@ def _mesh_obj(value, material_names=None):
         names = []
         for name in material_names:
             name = name or ""
-            guard.step(0, 128 + (len(name) * 4 if isinstance(name, str) else 0), 1)
+            guard.step(0, 128 + (str.__len__(name) * 4 if isinstance(name, str) else 0), 1)
             names.append(name.encode("utf-8", "surrogateescape"))
     return _native.export_mesh(value, int(value.object_reader.version), _reader(value),
                                _environment(value), names)
@@ -155,6 +111,9 @@ def _mesh_export(self, format="obj"):
     # export/MeshExporter.py:11-14.
     if format == "obj":
         return _mesh_obj(self)
+    if isinstance(format, str):
+        guard = _guard(self)
+        guard.step(0, str.__len__(format) * 4 + 256, 0)
     raise NotImplementedError(f"Export format {format} not implemented")
 
 
@@ -196,7 +155,8 @@ def _renderer_export(self, export_dir):
     if not mesh:
         fs.makedirs(export_dir, exist_ok=True)
         return
-    mesh_name = output_name(mesh.m_Name)
+    mesh_name = output_name(mesh.m_Name, guard=guard)
+    guard.step(0, str.__len__(mesh_name) * 12 + 512, str.__len__(mesh_name))
     first = 0
     batch = getattr(self, "m_StaticBatchInfo", None)
     subset = getattr(self, "m_SubsetIndices", None)
@@ -216,7 +176,7 @@ def _renderer_export(self, export_dir):
             names.append(None)
             continue
         material = self.m_Materials[slot].deref_parse_as_object()
-        material_name = output_name(material.m_Name)
+        material_name = output_name(material.m_Name, guard=guard)
         exported = _native.export_material(material, _reader(material), _environment(material))
         guard.step(0, len(exported) * 4 + 256, 0)
         materials.append(exported)
@@ -232,15 +192,15 @@ def _renderer_export(self, export_dir):
             texture = texture_env.m_Texture.deref_parse_as_object()
             chosen = texture.m_Name if texture.m_Name else key
             if isinstance(chosen, str):
-                guard.step(0, len(chosen) * 4 + 256, len(chosen))
-            name = output_name(chosen) + ".png"
+                guard.step(0, str.__len__(chosen) * 4 + 256, str.__len__(chosen))
+            name = output_name(chosen, guard=guard) + ".png"
             guard.step(0, 128, 1)
             textures.append((name, texture))
     # Preflight every asset-derived name before opening any output. Local
     # leaves are replaced against a held directory, so symlinks and hardlinks
     # cannot redirect writes outside the destination.
     fs.makedirs(export_dir, exist_ok=True)
-    with OutputDirectory(export_dir, fs) as directory:
+    with OutputDirectory(export_dir, fs, guard=guard) as directory:
         for name, texture in textures:
             with directory.open(name, "wb") as stream:
                 texture.image.save(stream, format="PNG")

@@ -8,6 +8,8 @@
 )]
 
 use pyo3::prelude::*;
+#[cfg(test)]
+mod allocation_tests;
 mod buffer_snapshot;
 mod class_tpk;
 mod construction;
@@ -18,12 +20,14 @@ mod files;
 mod images;
 mod object;
 mod object_nodes;
+mod path_snapshot;
 mod python;
 #[cfg(test)]
 mod row_copy_test;
 mod save;
 mod save_snapshot;
 mod settings;
+mod text_snapshot;
 mod tpk;
 mod traversal;
 mod tree;

@@ -15,7 +15,7 @@ use unityrs_core::{
         BundlePacker, BundleSaveOptions, SaveError, SaveLayout, SaveOptions, WebPacker,
         WebSaveOptions, WriteableCab,
     },
-    limits::Meter,
+    limits::{Charge, Meter},
 };
 
 pub(crate) fn error(error: SaveError) -> PyErr {
@@ -43,15 +43,19 @@ fn context(file: &File) -> Option<&Arc<unityrs_core::FileContext>> {
     }
 }
 
-fn packer(value: Option<&Bound<'_, PyAny>>) -> PyResult<BundlePacker> {
+fn packer(
+    value: Option<&Bound<'_, PyAny>>,
+    meter: &Arc<Meter>,
+) -> PyResult<(BundlePacker, Charge)> {
     let Some(value) = value else {
-        return Ok(BundlePacker::None);
+        return Ok((BundlePacker::None, Charge::zero(meter)));
     };
     if !value.is_truthy()? {
-        return Ok(BundlePacker::None);
+        return Ok((BundlePacker::None, Charge::zero(meter)));
     }
-    if let Ok(s) = value.extract::<&str>() {
-        return match s {
+    if value.is_instance_of::<pyo3::types::PyString>() {
+        let (s, charge) = crate::text_snapshot::snapshot(value, meter)?;
+        let pack = match s.as_str() {
             "none" => Ok(BundlePacker::None),
             "original" => Ok(BundlePacker::Original),
             "lz4" => Ok(BundlePacker::Lz4),
@@ -61,11 +65,12 @@ fn packer(value: Option<&Bound<'_, PyAny>>) -> PyResult<BundlePacker> {
                 "UnityFS - Packer:",
                 value.clone().unbind(),
             ))),
-        };
+        }?;
+        return Ok((pack, charge));
     }
     if value.is_instance_of::<PyTuple>() {
         let (data, blocks) = value.extract::<(u32, u16)>()?;
-        return Ok(BundlePacker::Flags { data, blocks });
+        return Ok((BundlePacker::Flags { data, blocks }, Charge::zero(meter)));
     }
     Err(PyNotImplementedError::new_err((
         "UnityFS - Packer:",
@@ -73,18 +78,31 @@ fn packer(value: Option<&Bound<'_, PyAny>>) -> PyResult<BundlePacker> {
     )))
 }
 
-fn web_packer(value: Option<&Bound<'_, PyAny>>, default: WebPacker) -> PyResult<WebPacker> {
+fn web_packer(
+    value: Option<&Bound<'_, PyAny>>,
+    default: WebPacker,
+    meter: &Arc<Meter>,
+) -> PyResult<(WebPacker, Charge)> {
     let Some(value) = value else {
-        return Ok(default);
+        return Ok((default, Charge::zero(meter)));
     };
     if !value.is_truthy()? {
-        return Ok(default);
+        return Ok((default, Charge::zero(meter)));
     }
-    Ok(match value.extract::<&str>().unwrap_or("") {
+    let text = if value.is_instance_of::<pyo3::types::PyString>() {
+        Some(crate::text_snapshot::snapshot(value, meter)?)
+    } else {
+        None
+    };
+    let pack = match text.as_ref().map_or("", |(s, _)| s.as_str()) {
         "gzip" => WebPacker::Gzip,
         "brotli" => WebPacker::Brotli,
         _ => WebPacker::None,
-    })
+    };
+    Ok((
+        pack,
+        text.map_or_else(|| Charge::zero(meter), |(_, charge)| charge),
+    ))
 }
 
 pub(crate) fn file_save(
@@ -96,19 +114,19 @@ pub(crate) fn file_save(
     block_info_flag: u16,
     signature: &str,
 ) -> PyResult<Py<PyAny>> {
-    let bundle_packer = match &file.inner {
+    let (bundle_packer, _bundle_pack_charge) = match &file.inner {
         File::Bundle(f)
             if mode != "fs"
                 && mode != "web_raw"
                 && f.header().signature.as_bytes() == b"UnityFS" =>
         {
-            packer(value)?
+            packer(value, file.inner.meter())?
         }
-        _ => BundlePacker::None,
+        _ => (BundlePacker::None, Charge::zero(file.inner.meter())),
     };
-    let web_packer = match &file.inner {
-        File::Web(f) => web_packer(value, f.packer())?,
-        _ => WebPacker::None,
+    let (web_packer, _web_pack_charge) = match &file.inner {
+        File::Web(f) => web_packer(value, f.packer(), file.inner.meter())?,
+        _ => (WebPacker::None, Charge::zero(file.inner.meter())),
     };
     py.detach(move || {
         let ctx = context(&file.inner)
@@ -282,7 +300,7 @@ impl NativeCab {
         value: &Bound<'_, PyAny>,
         position: u64,
     ) -> PyResult<usize> {
-        let value = crate::buffer_snapshot::BufferSnapshot::new(value, &self.meter)?;
+        let value = crate::buffer_snapshot::BufferSnapshot::writer(value, &self.meter)?;
         py.detach(move || {
             self.inner
                 .write_at(position, value.as_ref())
@@ -377,6 +395,29 @@ pub(crate) fn file_get_writeable_cab(
     })
 }
 
+pub(crate) fn file_create_cab(
+    py: Python<'_>,
+    file: &NativeFile,
+    name: &Bound<'_, PyAny>,
+    flags: u32,
+    endian: char,
+) -> PyResult<NativeCab> {
+    let meter = file.inner.meter();
+    let name = crate::buffer_snapshot::BufferSnapshot::new(name, meter)?;
+    let endian = match endian {
+        '<' => unityrs_core::stream::Endian::Little,
+        '>' => unityrs_core::stream::Endian::Big,
+        _ => return Err(PyValueError::new_err("invalid endian")),
+    };
+    py.detach(move || {
+        let name = RawStr::charged(&name, meter).map_err(errors::charge)?;
+        Ok(NativeCab {
+            inner: WriteableCab::new(name, flags, endian, meter).map_err(error)?,
+            meter: meter.clone(),
+        })
+    })
+}
+
 // The optional WebFile mapping contains caller-owned snapshots. Every retained
 // handle and every output byte is charged before construction.
 pub(crate) fn save_web_entries(
@@ -390,7 +431,7 @@ pub(crate) fn save_web_entries(
         return Err(PyTypeError::new_err("not a WebFile"));
     };
     let meter = file.inner.meter();
-    let pack = web_packer(packer, web.packer())?;
+    let (pack, _pack_charge) = web_packer(packer, web.packer(), meter)?;
     let signature = crate::buffer_snapshot::BufferSnapshot::new(signature, meter)?;
     let mut entries = unityrs_core::limits::MeteredVec::with_capacity(meter, rows.len()?)
         .map_err(errors::charge)?;
@@ -542,10 +583,10 @@ pub(crate) fn save_bundle_entries(
     let File::Bundle(bundle) = &file.inner else {
         return Err(PyTypeError::new_err("not a bundle"));
     };
-    let pack = if mode != "web_raw" && signature.as_ref() == b"UnityFS" {
-        packer(value)?
+    let (pack, _pack_charge) = if mode != "web_raw" && signature.as_ref() == b"UnityFS" {
+        packer(value, meter)?
     } else {
-        BundlePacker::None
+        (BundlePacker::None, Charge::zero(meter))
     };
     let meter = file.inner.meter();
     let mut snapshots = unityrs_core::limits::MeteredVec::with_capacity(meter, rows.len()?)

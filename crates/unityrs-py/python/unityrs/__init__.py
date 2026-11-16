@@ -356,13 +356,17 @@ class Environment:
         # Preserve safe relative-name basename collisions and no mkdir, while
         # validating the original asset path before discarding its prefix.
         from ._output import OutputDirectory, output_name
+        guard = TreeTraversal(self._limits, self._budget)
+        guard.step(0, 256, 1)
         pending = []
         for name, file in self.files.items():
             if getattr(file, "is_changed", False):
-                pending.append((output_name(name, container=True), file))
+                leaf = output_name(name, container=True, guard=guard)
+                guard.step(0, 128, 1)
+                pending.append((leaf, file))
         if not pending:
             return
-        with OutputDirectory(out_path) as directory:
+        with OutputDirectory(out_path, guard=guard) as directory:
             for name, file in pending:
                 with directory.open(name, "wb") as output:
                     output.write(file.save(packer=pack))

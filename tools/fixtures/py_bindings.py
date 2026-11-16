@@ -56,6 +56,10 @@ EXPORTS = [
         "observe_cab_budget", "observe_cab_length", "observe_cab_padding", "observe_typed_sequences",
         "observe_packer_threads", "observe_mesh_thread", "observe_shader_thread",
         "observe_sprite_thread", "observe_entry_threads", "observe_switch_invalid_counts")
+] + [
+    ("binding_y4_round4", name) for name in (
+        "observe_pairs", "observe_managed", "observe_cab_mapping", "observe_export_buffers",
+        "observe_strided_writes", "observe_output_names", "observe_bundle_views", "observe_path_budgets")
 ]
 
 
@@ -71,6 +75,8 @@ def helper_records():
         ("binding_y4_review_exports", "observe_output_security"): "PARITY.md 19.3: binding asset output confinement",
         ("binding_y4_review_images", "observe_buffer_budgets"): "PARITY.md 19.3: charge buffer bytes before allocation",
         ("binding_y4_round3", "observe_cab_budget"): "PARITY.md 19.3: CAB snapshots and padding charge before allocation",
+        ("binding_y4_round4", "observe_output_names"): "PARITY.md 19.3: validate output names and charge copies before allocation",
+        ("binding_y4_round4", "observe_path_budgets"): "PARITY.md 19.3: fallible charged path staging",
     }
     records = []
     for observer, function in HELPERS + EXPORTS:
