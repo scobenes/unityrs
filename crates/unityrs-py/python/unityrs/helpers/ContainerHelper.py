@@ -18,22 +18,35 @@ class ContainerHelper:
         self.path_dict = {value.asset.path_id: key for key, value in container}
         self._preload_table = preload_table
 
-    def parse_preload_table(self):
+    def parse_preload_table(self, *, _guard=None):
         if self._preload_table is None:
             return
+        from ._bounded_tree import guard_for
+        guard = guard_for(guard=_guard)
+        guard.step(0, 256, 1)
         for path, info in self.container:
+            guard.step(0, 0, 1)
             start = info.preloadIndex
             size = info.preloadSize
             if start < 0 or size <= 0 or start + size > len(self._preload_table):
                 continue
-            for pptr in self._preload_table[start:start + size]:
+            for index in range(start, start + size):
+                guard.step(0, 0, 1)
+                pptr = self._preload_table[index]
                 if not pptr:
                     continue
                 try:
                     target = pptr.deref()
                 except (FileNotFoundError, KeyError):
                     continue
-                target.assets_file._container.path_dict.setdefault(pptr.path_id, path)
+                from ..files import SerializedFile
+                target_file = target.assets_file
+                container = target_file.container if isinstance(target_file, SerializedFile) else target_file._container
+                paths = container.path_dict
+                path_id = pptr.path_id
+                if path_id not in paths:
+                    guard.step(0, 256, 1)
+                    paths[path_id] = path
         self._preload_table = None
 
     def items(self):

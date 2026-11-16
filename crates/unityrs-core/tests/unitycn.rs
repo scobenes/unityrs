@@ -262,3 +262,28 @@ fn inverse_covers_token_walks_at_wrapping_index_boundaries() {
         assert_eq!(plain, expected, "index {index}");
     }
 }
+
+#[test]
+fn runtime_configuration_preserves_context_key_without_an_override() {
+    use unityrs_core::config::RuntimeConfig;
+    let data = support::bundle(b"2022.3.0f1", 7, 0x1000, false, false, false);
+    let config = Arc::new(RuntimeConfig::unitypy());
+    let mut ctx = FileContext::default();
+    ctx.set_assetbundle_decrypt_key(support::KEY).unwrap();
+    ctx.runtime_config = Some(Arc::clone(&config));
+    let ctx = Arc::new(ctx);
+    assert_eq!(
+        open(data.clone(), &ctx).unwrap().entry_bytes(0).unwrap(),
+        support::plaintext()
+    );
+    config.set_decrypt_key(Some(*b"synthetic-key-02"));
+    assert!(matches!(
+        open(data.clone(), &ctx),
+        Err(Error::UnityCnSignature)
+    ));
+    config.set_decrypt_key(None);
+    assert_eq!(
+        open(data, &ctx).unwrap().entry_bytes(0).unwrap(),
+        support::plaintext()
+    );
+}

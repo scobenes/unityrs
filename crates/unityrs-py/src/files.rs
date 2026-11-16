@@ -16,6 +16,56 @@ impl NativeFile {
 }
 #[pymethods]
 impl NativeFile {
+    fn serialized_reader_info(&self, py: Python<'_>) -> PyResult<(usize, char, bool, i128)> {
+        py.detach(|| {
+            let File::Serialized(file) = &self.inner else {
+                return Err(pyo3::exceptions::PyAttributeError::new_err(
+                    "not a serialized reader",
+                ));
+            };
+            Ok((
+                file.data().len(),
+                if file.header().endian == unityrs_core::stream::Endian::Little {
+                    '<'
+                } else {
+                    '>'
+                },
+                file.reader_kind() == unityrs_core::stream::ReaderKind::Stream,
+                file.reader_position(),
+            ))
+        })
+    }
+    fn serialized_read(&self, py: Python<'_>, position: i128, size: i64) -> PyResult<Py<PyAny>> {
+        py.detach(|| {
+            let File::Serialized(file) = &self.inner else {
+                return Err(pyo3::exceptions::PyAttributeError::new_err(
+                    "not a serialized reader",
+                ));
+            };
+            let kind = file.reader_kind();
+            let start = kind
+                .seek(position)
+                .map_err(|e| errors::stream(e.exception()))?;
+            let (span, next) = kind
+                .read(file.data().len(), start, size)
+                .map_err(|e| errors::stream(e.exception()))?;
+            let bytes = file
+                .data()
+                .get(span)
+                .ok_or_else(|| pyo3::exceptions::PyEOFError::new_err("serialized reader span"))?;
+            file.meter()
+                .count_decode(bytes.len() as u64)
+                .map_err(errors::charge)?;
+            let _copy = file
+                .meter()
+                .charge(unityrs_core::limits::heap_cost(bytes.len() as u64) + 256)
+                .map_err(errors::charge)?;
+            let result = p::list()?;
+            p::push(&result, &p::bytes(bytes)?)?;
+            p::push(&result, &p::wide_int(next)?)?;
+            p::tuple(&result)
+        })
+    }
     fn save_serialized_snapshot(
         &self,
         py: Python<'_>,
@@ -265,7 +315,9 @@ impl NativeFile {
                     .map_err(errors::core)?;
                 let row = p::list()?;
                 p::push(&row, &p::string(slot.name.as_bytes())?)?;
-                let f = Python::attach(|py| Py::new(py, NativeFile::new(file)).map(Py::into_any))?;
+                let f = crate::python::relay::attach(|py| {
+                    Py::new(py, NativeFile::new(file)).map(Py::into_any)
+                })?;
                 p::push(&row, &f)?;
                 p::push(&result, &row)?;
             }
@@ -280,7 +332,7 @@ impl NativeFile {
             if let File::Serialized(f) = &self.inner {
                 for inner in f.objects() {
                     staging.grow(128).map_err(errors::charge)?;
-                    let obj = Python::attach(|py| {
+                    let obj = crate::python::relay::attach(|py| {
                         Py::new(py, NativeObject::new(inner)).map(Py::into_any)
                     })?;
                     p::push(&result, &obj)?;

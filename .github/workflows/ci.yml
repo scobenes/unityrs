@@ -659,7 +659,7 @@ jobs:
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=602
+          tools/parity/tests=603
           tools/perf/tests=10
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6
@@ -755,7 +755,7 @@ jobs:
       - name: Check the API oracle fixtures
         run: python tools/fixtures/py_bindings.py --check
       - name: Test the installed wheel
-        run: python scripts/unittest-suites crates/unityrs-py/python/tests=61
+        run: python scripts/unittest-suites crates/unityrs-py/python/tests=113
       - name: Compare the binding with UnityPy
         working-directory: tools/parity
-        run: python ../../scripts/unittest-suites bindings=160
+        run: python ../../scripts/unittest-suites bindings=269

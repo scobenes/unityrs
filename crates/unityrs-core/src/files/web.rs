@@ -23,6 +23,25 @@ use crate::options::FileContext;
 use crate::raw::RawStr;
 pub use write::WebSaveOptions;
 
+/// Decode a standalone Brotli stream with the WebFile's metered inflater.
+pub fn decompress_brotli(
+    data: &Bytes,
+    meter: &Arc<Meter>,
+    context: &FileContext,
+) -> Result<Bytes, Error> {
+    inflate::brotli(data, meter, context)
+}
+
+/// Encode a standalone Brotli stream using deterministic stored metablocks.
+/// Its decoded bytes equal the input; compressed bytes differ from UnityPy's
+/// default quality-11 compressor, as for WebFile's existing Tier B writer.
+pub fn compress_brotli(
+    data: &[u8],
+    meter: &Arc<Meter>,
+) -> Result<Bytes, crate::files::save::SaveError> {
+    write::brotli(data, meter)
+}
+
 /// How a `WebFile` is packed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum WebPacker {

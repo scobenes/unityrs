@@ -144,16 +144,12 @@ fn shader_error(error: unityrs_export::shader::Error, meter: &Arc<Meter>) -> PyE
                 return errors::charge(error);
             }
             match p::bytes(data.as_ref()) {
-                Ok(bytes) => {
-                    Python::attach(
-                        |py| match bytes.bind(py).call_method1("decode", ("utf8",)) {
-                            Err(error) => error,
-                            Ok(_) => {
-                                PyValueError::new_err("invalid UTF-8 error contained valid bytes")
-                            }
-                        },
-                    )
-                }
+                Ok(bytes) => crate::python::relay::attach(|py| {
+                    match bytes.bind(py).call_method1("decode", ("utf8",)) {
+                        Err(error) => error,
+                        Ok(_) => PyValueError::new_err("invalid UTF-8 error contained valid bytes"),
+                    }
+                }),
                 Err(error) => error,
             }
         }
@@ -165,7 +161,7 @@ fn shader_error(error: unityrs_export::shader::Error, meter: &Arc<Meter>) -> PyE
 }
 
 pub(super) fn named_error(name: &str, message: String) -> PyErr {
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         let class = match name {
             "error" => py.import("struct").and_then(|m| m.getattr("error")),
             "LZ4BlockError" => py

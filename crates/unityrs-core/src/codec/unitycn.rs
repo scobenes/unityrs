@@ -36,15 +36,23 @@ impl UnityCnDecryptor {
     /// Reads the u32 and both vectors before checking the load-local key.
     /// UnityPy 1.25.2 helpers/ArchiveStorageManager.py:67-94.
     pub fn read(r: &mut Reader<'_>, key: Option<&[u8; 16]>) -> Result<Self, Error> {
+        Self::read_with_key(r, || Ok(key.copied()))
+    }
+
+    /// Binding key conversion follows envelope reads, preserving error order.
+    pub(crate) fn read_with_key(
+        r: &mut Reader<'_>,
+        key: impl FnOnce() -> Result<Option<[u8; 16]>, Error>,
+    ) -> Result<Self, Error> {
         r.read_u32()?;
         let (data, vector) = read_vector(r)?;
         let (signature, signature_vector) = read_vector(r)?;
-        let key = key.ok_or(Error::UnityCnKeyMissing)?;
-        let (decoded, len) = decrypt_key(signature_vector, signature, key)?;
+        let key = key()?.ok_or(Error::UnityCnKeyMissing)?;
+        let (decoded, len) = decrypt_key(signature_vector, signature, &key)?;
         if len != 16 || &decoded != b"#$unity3dchina!@" {
             return Err(Error::UnityCnSignature);
         }
-        let (decoded, len) = decrypt_key(vector, data, key)?;
+        let (decoded, len) = decrypt_key(vector, data, &key)?;
         if len != 16 {
             return Err(Error::UnityCnSignature);
         }

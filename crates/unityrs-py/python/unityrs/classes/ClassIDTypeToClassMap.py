@@ -7,6 +7,8 @@ from ..enums.ClassIDType import ClassIDType
 from . import generated
 from ._generator import TPK
 
+CIT = ClassIDType
+
 
 def _mapping():
     result = {}

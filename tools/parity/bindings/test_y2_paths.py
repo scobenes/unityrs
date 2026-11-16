@@ -20,7 +20,7 @@ class FindFilePaths(unittest.TestCase):
             with self.subTest(bound=bound), patch.object(_search, bound, maximum):
                 with self.assertRaises(unityrs.LimitError):
                     env.find_file('missing.resource')
-                self.assertFalse(hasattr(env, 'local_files'))
+                self.assertEqual(env.local_files, [])
 
     def test_deep_filesystem_inventory_uses_iterative_traversal(self):
         import unityrs
