@@ -30,6 +30,9 @@ impl<'a> Output<'a> {
         self.meter.count_decode(bytes)?;
         Ok(())
     }
+    pub fn utf8_error(&self, bytes: &[u8]) -> Error {
+        super::utf8_error(bytes, self.meter)
+    }
     pub fn int(&mut self, n: i128) -> Result<(), Error> {
         pyjson::int(n, self);
         self.check()?;

@@ -1,4 +1,4 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/ObjectReader.py, UnityPy/helpers/TypeTreeHelper.py, UnityPy/helpers/ImportHelper.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/files/ObjectReader.py, UnityPy/helpers/TypeTreeHelper.py, UnityPy/helpers/ImportHelper.py, UnityPy/helpers/ResourceReader.py. See THIRD_PARTY_LICENSES.
 //! Python exception classes for the corresponding core failures.
 use pyo3::{
     create_exception,
@@ -21,6 +21,23 @@ create_exception!(unityrs, TypeTreeError, PyException);
 
 pub(crate) fn charge(error: unityrs_core::limits::ChargeError) -> PyErr {
     core(error.into())
+}
+
+pub(crate) fn resource(error: Error, path: &unityrs_core::RawStr) -> PyErr {
+    if matches!(error, Error::NotFound(_)) {
+        Python::attach(|py| {
+            let name = py
+                .import("ntpath")?
+                .getattr("basename")?
+                .call1((crate::python::string(path.as_bytes())?,))?;
+            let message = pyo3::types::PyString::new(py, "Resource file {} not found")
+                .call_method1("format", (name,))?;
+            Ok::<_, PyErr>(PyFileNotFoundError::new_err(message.unbind()))
+        })
+        .unwrap_or_else(|e| e)
+    } else {
+        core(error)
+    }
 }
 
 pub(crate) fn core(error: Error) -> PyErr {
@@ -136,11 +153,11 @@ fn gzip(detail: &str) -> PyErr {
     Python::attach(|py| {
         let text = detail.split_once(": ").map_or(detail, |(_, s)| s);
         let text = if detail.starts_with("zlib.error:") {
-            format!(
+            message(&format_args!(
                 "Error -3 while decompressing data: {}",
                 text.strip_prefix("deflate decompression error: ")
                     .unwrap_or(text)
-            )
+            ))
         } else {
             message(&text)
         };

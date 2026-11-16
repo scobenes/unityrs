@@ -16,16 +16,92 @@ impl NativeFile {
 }
 #[pymethods]
 impl NativeFile {
-    fn tree_traversal(&self) -> PyResult<crate::traversal::TreeTraversal> {
-        let File::Serialized(file) = &self.inner else {
-            return Err(pyo3::exceptions::PyTypeError::new_err(
-                "not a serialized file",
-            ));
+    fn save_serialized_snapshot(
+        &self,
+        py: Python<'_>,
+        metadata: &Bound<'_, PyAny>,
+        rows: &Bound<'_, PyAny>,
+        externals: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        crate::save_snapshot::serialized(py, self, metadata, rows, externals)
+    }
+    fn save_bundle_entries(
+        &self,
+        py: Python<'_>,
+        mode: &Bound<'_, PyAny>,
+        rows: &Bound<'_, PyAny>,
+        value: Option<&Bound<'_, PyAny>>,
+        flags: (u32, u16),
+        header: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        let (mode, _charge) = crate::text_snapshot::snapshot(mode, self.inner.meter())?;
+        crate::save::save_bundle_entries(py, self, &mode, rows, value, flags, header)
+    }
+    fn save_web_entries(
+        &self,
+        py: Python<'_>,
+        rows: &Bound<'_, PyAny>,
+        packer: Option<&Bound<'_, PyAny>>,
+        signature: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        crate::save::save_web_entries(py, self, rows, packer, signature)
+    }
+    fn save(
+        &self,
+        py: Python<'_>,
+        mode: &Bound<'_, PyAny>,
+        value: Option<&Bound<'_, PyAny>>,
+        data_flag: u32,
+        block_info_flag: u16,
+        signature: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        let (mode, _mode_charge) = crate::text_snapshot::snapshot(mode, self.inner.meter())?;
+        let (signature, _signature_charge) =
+            crate::text_snapshot::snapshot(signature, self.inner.meter())?;
+        crate::save::file_save(
+            py,
+            self,
+            &mode,
+            value,
+            data_flag,
+            block_info_flag,
+            &signature,
+        )
+    }
+    fn save_metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        crate::save::file_metadata(py, self)
+    }
+    fn is_changed(&self, py: Python<'_>) -> bool {
+        crate::save::file_is_changed(py, self)
+    }
+    fn mark_changed(&self, py: Python<'_>) {
+        crate::save::file_mark_changed(py, self);
+    }
+    fn get_writeable_cab(
+        &self,
+        py: Python<'_>,
+        name: &Bound<'_, PyAny>,
+        guid: Option<[u8; 16]>,
+    ) -> PyResult<Option<crate::save::NativeCab>> {
+        crate::save::file_get_writeable_cab(py, self, name, guid)
+    }
+    fn create_cab(
+        &self,
+        py: Python<'_>,
+        name: &Bound<'_, PyAny>,
+        flags: u32,
+        endian: char,
+    ) -> PyResult<crate::save::NativeCab> {
+        crate::save::file_create_cab(py, self, name, flags, endian)
+    }
+    fn tree_traversal(&self) -> crate::traversal::TreeTraversal {
+        let depth = match &self.inner {
+            File::Serialized(f) => f.context().limits.max_tree_depth,
+            File::Bundle(f) => f.context().limits.max_tree_depth,
+            File::Web(f) => f.context().limits.max_tree_depth,
+            File::Raw(_) => unityrs_core::limits::Limits::default().max_tree_depth,
         };
-        Ok(crate::traversal::TreeTraversal::on(
-            file.meter(),
-            file.context().limits.max_tree_depth,
-        ))
+        crate::traversal::TreeTraversal::on(self.inner.meter(), depth)
     }
     #[getter]
     fn identity(&self, py: Python<'_>) -> usize {
@@ -99,6 +175,23 @@ impl NativeFile {
                 ] {
                     p::field(&h, k, &p::int(v)?)?;
                 }
+                p::field(
+                    &h,
+                    "endian",
+                    &p::string(if header.endian == unityrs_core::stream::Endian::Little {
+                        b"<"
+                    } else {
+                        b">"
+                    })?,
+                )?;
+                p::field(
+                    &h,
+                    "reserved",
+                    &match header.reserved {
+                        Some(v) => p::bytes(&v)?,
+                        None => p::none(),
+                    },
+                )?;
                 p::field(&d, "header", &h)?;
             }
             if let File::Bundle(f) = &self.inner {
@@ -117,10 +210,40 @@ impl NativeFile {
             if let File::Serialized(file) = &self.inner {
                 for external in file.externals() {
                     charge
-                        .grow(512 + (external.path.as_bytes().len() as u64).saturating_mul(8))
+                        .grow(
+                            512 + (external.path.len() as u64).saturating_mul(8)
+                                + external
+                                    .temp_empty
+                                    .as_ref()
+                                    .map_or(0, |v| (v.len() as u64).saturating_mul(4)),
+                        )
                         .map_err(errors::charge)?;
                     let row = p::dict()?;
                     p::field(&row, "path", &p::string(external.path.as_bytes())?)?;
+                    p::field(
+                        &row,
+                        "temp_empty",
+                        &match &external.temp_empty {
+                            Some(v) => p::string(v.as_bytes())?,
+                            None => p::none(),
+                        },
+                    )?;
+                    p::field(
+                        &row,
+                        "guid",
+                        &match &external.guid {
+                            Some(v) => p::bytes(v.as_slice())?,
+                            None => p::none(),
+                        },
+                    )?;
+                    p::field(
+                        &row,
+                        "type",
+                        &match external.kind {
+                            Some(v) => p::int(i64::from(v))?,
+                            None => p::none(),
+                        },
+                    )?;
                     p::push(&out, &row)?;
                 }
             }
@@ -192,6 +315,21 @@ impl NativeFile {
             p::field(&result, "data", &p::bytes(bytes)?)?;
             p::field(&result, "position", &p::wide_int(next)?)?;
             Ok(result)
+        })
+    }
+    fn validate_external_path(&self, py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        let path = crate::buffer_snapshot::BufferSnapshot::new(path, self.inner.meter())?;
+        py.detach(|| {
+            self.inner
+                .meter()
+                .count_decode(path.len() as u64)
+                .map_err(errors::charge)?;
+            if path.contains(&0) || path.len() > unityrs_core::stream::STRING_TO_NULL_WINDOW {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "CAB external path out of range",
+                ));
+            }
+            Ok(())
         })
     }
     fn raw_data(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {

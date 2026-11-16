@@ -2,7 +2,7 @@
 //! Runtime-only TPK data (helpers/TypeTreeNode.py:308-328).
 use crate::{errors, python as p, traversal::TreeTraversal};
 use pyo3::{exceptions::PyMemoryError, prelude::*};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 use unityrs_core::provider::{ProviderChain, TypeTreeProvider};
 use unityrs_tpk::TpkProvider;
 
@@ -25,7 +25,14 @@ impl NativeTpk {
 #[pymethods]
 impl NativeTpk {
     #[new]
-    fn new(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
+    fn new(py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let ctx = unityrs_core::FileContext::unitypy();
+        let meter = unityrs_core::limits::Meter::for_input(
+            &ctx.limits,
+            ctx.budget,
+            unityrs_core::budget::Reservation::Input,
+        );
+        let (path, _charge) = crate::path_snapshot::snapshot(path, &meter)?;
         py.detach(|| {
             let provider = TpkProvider::open(path)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(errors::message(&e)))?;

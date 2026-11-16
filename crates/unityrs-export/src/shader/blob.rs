@@ -290,7 +290,7 @@ impl<'a> Program<'a> {
 }
 fn utf8(code: &[u8], out: &mut Output<'_>) -> Result<(), Error> {
     out.work(code.len() as u64)?;
-    std::str::from_utf8(code).map_err(|_| Error::Utf8)?;
+    std::str::from_utf8(code).map_err(|_| out.utf8_error(code))?;
     out.text(code)
 }
 

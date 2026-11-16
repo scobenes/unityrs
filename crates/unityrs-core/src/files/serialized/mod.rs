@@ -79,6 +79,8 @@ mod head;
 mod parse;
 mod write;
 
+pub use write::SerializedSaveSnapshot;
+
 /// The header, as read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -229,6 +231,19 @@ pub struct External {
     pub kind: Option<i32>,
     /// `path`.
     pub path: RawStr,
+}
+
+impl External {
+    /// A writable reference to `path`, with empty GUID and type zero.
+    #[must_use]
+    pub fn new(path: RawStr) -> Self {
+        Self {
+            temp_empty: Some(RawStr::from_static(b"")),
+            guid: Some([0; 16].into()),
+            kind: Some(0),
+            path,
+        }
+    }
 }
 
 /// One script type reference (`LocalSerializedObjectIdentifier`).

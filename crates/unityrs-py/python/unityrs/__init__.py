@@ -22,7 +22,7 @@ import threading
 import weakref
 from functools import wraps
 
-from ._native import Budget, Limits, LimitError, TypeTreeError, NativeEnvironment
+from ._native import Budget, Limits, LimitError, TypeTreeError, NativeEnvironment, TreeTraversal
 from . import config, enums
 from .helpers import _tpk
 from .files import BundleFile, EndianBinaryReader, EndianBinaryReader_Stream, File, ObjectReader, SerializedFile, WebFile
@@ -53,6 +53,7 @@ class Environment:
     def __init__(self, *args, path=None, limits=None, budget=None):
         self._lock = threading.RLock()
         self._limits = limits if limits is not None else Limits()
+        self._budget = budget
         self._native = NativeEnvironment(limits, budget, _tpk.provider())
         self.path = os.getcwd() if path is None else os.fspath(path)
         self.files = {}
@@ -107,6 +108,7 @@ class Environment:
             else:
                 key, child = entry
                 item, frame = create(child, owner)
+                item.flags = getattr(owner, "_entry_flags", {}).get(key, 0)
                 owner.files[key] = item
                 if frame is not None:
                     pending.append(frame)
@@ -161,12 +163,16 @@ class Environment:
             if stream:
                 if not hasattr(file, "seek") or not hasattr(file, "tell"):
                     raise TypeError("memoryview: a bytes-like object is required")
-                data = self._read_stream(file)
+                data, input_guard = self._read_stream(file)
             else:
                 if not isinstance(file, (bytes, bytearray, memoryview)):
                     raise TypeError("Unsupported file source")
                 data = file
-            native = config._load(self._native, self._native.load_bytes, bytes(data), native_key.encode("utf-8", "surrogateescape"), is_dependency, stream)
+            name_guard = TreeTraversal(self._limits, self._budget)
+            name_guard.step(0, str.__len__(native_key) * 4 + 256, 0)
+            encoded_name = native_key.encode("utf-8", "surrogateescape")
+            del name_guard
+            native = config._load(self._native, self._native.load_bytes, data, encoded_name, is_dependency, stream)
             self._sync()
             if native is None:
                 return None
@@ -181,16 +187,25 @@ class Environment:
             # Short reads need not mean EOF. Keep every request and the total
             # bounded, including Python's Py_ssize_t read-size limit.
             remaining = self._limits.max_input_bytes + 1
+            guard = TreeTraversal(self._limits, self._budget)
+            guard.step(0, 256, 0)
             data = bytearray()
             while remaining:
-                chunk = stream.read(min(remaining, sys.maxsize))
+                requested = min(remaining, 64 * 1024)
+                read_guard = TreeTraversal(self._limits, self._budget)
+                read_guard.step(0, requested + 256, 0)
+                chunk = stream.read(requested)
                 if not chunk:
                     break
+                size = memoryview(chunk).nbytes
+                if size > remaining:
+                    raise LimitError("input exceeds max_input_bytes")
+                guard.step(0, size * 2 + 16, size)
                 data.extend(chunk)
-                remaining -= len(chunk)
+                remaining -= size
             if len(data) > self._limits.max_input_bytes:
                 raise LimitError("input exceeds max_input_bytes")
-            return data
+            return data, guard
         finally:
             stream.seek(pos)
 
@@ -249,8 +264,8 @@ class Environment:
         if isinstance(value, (str, os.PathLike)):
             config._load(self._native, self._native.load_zip_path, os.fspath(value))
         else:
-            data = self._read_stream(value) if hasattr(value, "read") else value
-            config._load(self._native, self._native.load_zip_bytes, bytes(data))
+            data, input_guard = self._read_stream(value) if hasattr(value, "read") else (value, None)
+            config._load(self._native, self._native.load_zip_bytes, data)
         self._sync()
 
     def load_assets(self, assets, open_f):
@@ -335,6 +350,26 @@ class Environment:
 
     def register_cab(self, name, item):
         self.cabs[ntpath.basename(name).lower()] = item
+
+    @_locked
+    def save(self, pack="none", out_path="output"):
+        # Preserve safe relative-name basename collisions and no mkdir, while
+        # validating the original asset path before discarding its prefix.
+        from ._output import OutputDirectory, output_name
+        guard = TreeTraversal(self._limits, self._budget)
+        guard.step(0, 256, 1)
+        pending = []
+        for name, file in self.files.items():
+            if getattr(file, "is_changed", False):
+                leaf = output_name(name, container=True, guard=guard)
+                guard.step(0, 128, 1)
+                pending.append((leaf, file))
+        if not pending:
+            return
+        with OutputDirectory(out_path, guard=guard) as directory:
+            for name, file in pending:
+                with directory.open(name, "wb") as output:
+                    output.write(file.save(packer=pack))
 
 
 load = Environment

@@ -6,11 +6,8 @@ use crate::{
     python as p,
     settings::{Budget, Limits},
 };
-use pyo3::{prelude::*, pybacked::PyBackedBytes};
-use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use pyo3::prelude::*;
+use std::sync::{Arc, Mutex};
 use unityrs_core::{
     FileContext, RawStr,
     env::{EnvOptions, Environment, Source},
@@ -68,8 +65,63 @@ impl unityrs_core::config::FallbackWarningSink for FallbackWarning {
         }
     }
 }
+impl NativeEnvironment {
+    fn input_meter(&self) -> Arc<unityrs_core::limits::Meter> {
+        let ctx = &self.inner.options().context;
+        unityrs_core::limits::Meter::for_input(
+            &ctx.limits,
+            ctx.budget.clone(),
+            unityrs_core::budget::Reservation::Input,
+        )
+    }
+}
 #[pymethods]
 impl NativeEnvironment {
+    fn resource(
+        &self,
+        py: Python<'_>,
+        file: &NativeFile,
+        path: &Bound<'_, PyAny>,
+        offset: i128,
+        size: i128,
+    ) -> PyResult<Py<PyAny>> {
+        let unityrs_core::File::Serialized(file) = &file.inner else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "resource owner is not a SerializedFile",
+            ));
+        };
+        let path = crate::buffer_snapshot::BufferSnapshot::new(path, file.meter())?;
+        py.detach(move || {
+            crate::worker::run(crate::worker::load_stack(&file.context().limits), || {
+                let path = RawStr::charged(&path, file.meter()).map_err(errors::charge)?;
+                let stream = unityrs_texture::fetch::Stream { path, offset, size };
+                let (offset, size, slice) = match stream.span() {
+                    unityrs_texture::fetch::Span::Range(offset, size) => (offset, size, None),
+                    unityrs_texture::fetch::Span::Slice(start, stop) => {
+                        (0, u64::MAX, Some((start, stop)))
+                    }
+                };
+                let bytes = self
+                    .inner
+                    .resource(file, &stream.path, offset, size)
+                    .map_err(|error| errors::resource(error, &stream.path))?;
+                let bytes = if let Some((start, stop)) = slice {
+                    bytes.slice(unityrs_texture::fetch::python_slice(
+                        bytes.len(),
+                        start,
+                        stop,
+                    ))
+                } else {
+                    bytes
+                };
+                let _copy = file
+                    .meter()
+                    .charge(unityrs_core::limits::heap_cost(bytes.len() as u64))
+                    .map_err(errors::charge)?;
+                p::bytes(&bytes)
+            })
+        })
+    }
     #[new]
     #[pyo3(signature = (limits=None, budget=None, tpk=None))]
     fn new(
@@ -105,13 +157,23 @@ impl NativeEnvironment {
             })
         })
     }
-    fn configure(&self, py: Python<'_>, fallback: Option<PyBackedBytes>, parse_typetree: bool) {
+    fn configure(
+        &self,
+        py: Python<'_>,
+        fallback: Option<&Bound<'_, PyAny>>,
+        parse_typetree: bool,
+    ) -> PyResult<()> {
+        let meter = self.input_meter();
+        let fallback = fallback
+            .map(|v| crate::buffer_snapshot::BufferSnapshot::source(v, &meter, u64::MAX))
+            .transpose()?;
         py.detach(|| {
             self.config.set(
                 fallback.map(|data| RawStr::from(unityrs_core::Bytes::from_owner(data))),
                 parse_typetree,
             );
         });
+        Ok(())
     }
     fn take_fallback_warnings(&self, py: Python<'_>) -> PyResult<u64> {
         let error = py.detach(|| {
@@ -126,11 +188,18 @@ impl NativeEnvironment {
     fn load_bytes(
         &self,
         py: Python<'_>,
-        data: PyBackedBytes,
-        name: PyBackedBytes,
+        data: &Bound<'_, PyAny>,
+        name: &Bound<'_, PyAny>,
         dependency: bool,
         stream: bool,
     ) -> PyResult<Option<NativeFile>> {
+        let meter = self.input_meter();
+        let data = crate::buffer_snapshot::BufferSnapshot::source(
+            data,
+            &meter,
+            self.inner.options().context.limits.max_input_bytes,
+        )?;
+        let name = crate::buffer_snapshot::BufferSnapshot::source(name, &meter, u64::MAX)?;
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),
@@ -172,11 +241,17 @@ impl NativeEnvironment {
     fn load_path(
         &self,
         py: Python<'_>,
-        path: PathBuf,
+        path: &Bound<'_, PyAny>,
         constructor: bool,
         dependency: bool,
-        root: Option<PathBuf>,
+        root: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Option<NativeFile>> {
+        let meter = self.input_meter();
+        let (path, _path_charge) = crate::path_snapshot::snapshot(path, &meter)?;
+        let (root, _root_charge) = root
+            .map(|root| crate::path_snapshot::snapshot(root, &meter))
+            .transpose()?
+            .unzip();
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),
@@ -202,7 +277,8 @@ impl NativeEnvironment {
             )
         })
     }
-    fn load_files(&self, py: Python<'_>, path: PathBuf) -> PyResult<()> {
+    fn load_files(&self, py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        let (path, _charge) = crate::path_snapshot::snapshot(path, &self.input_meter())?;
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),
@@ -210,7 +286,8 @@ impl NativeEnvironment {
             )
         })
     }
-    fn load_zip_path(&self, py: Python<'_>, path: PathBuf) -> PyResult<()> {
+    fn load_zip_path(&self, py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        let (path, _charge) = crate::path_snapshot::snapshot(path, &self.input_meter())?;
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),
@@ -222,7 +299,13 @@ impl NativeEnvironment {
             )
         })
     }
-    fn load_zip_bytes(&self, py: Python<'_>, data: PyBackedBytes) -> PyResult<()> {
+    fn load_zip_bytes(&self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
+        let meter = self.input_meter();
+        let data = crate::buffer_snapshot::BufferSnapshot::source(
+            data,
+            &meter,
+            self.inner.options().context.limits.max_input_bytes,
+        )?;
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),
@@ -237,8 +320,8 @@ impl NativeEnvironment {
             )
         })
     }
-    #[allow(clippy::needless_pass_by_value, reason = "PyO3 extracts an owned path")]
-    fn load_folder(&self, py: Python<'_>, path: PathBuf) -> PyResult<()> {
+    fn load_folder(&self, py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        let (path, _charge) = crate::path_snapshot::snapshot(path, &self.input_meter())?;
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),

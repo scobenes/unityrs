@@ -3,7 +3,7 @@
 //! Bundle save and block/directory layout (`files/BundleFile.py:188-393`).
 //! Output and all temporary buffers charge the opened input's meter.
 
-use super::{BundleFile, LayoutKind};
+use super::{BundleFile, BundleHeader, LayoutKind};
 use crate::codec::{Codec, encode};
 use crate::files::File;
 use crate::files::save::{SaveError, SaveLayout, SaveOptions, Writer, narrow, required};
@@ -60,20 +60,67 @@ impl BundleFile {
     /// 1.25.2's other packers. Formats above 9 refuse before output charges.
     /// Legacy signatures ignore the packer, as UnityPy does.
     pub fn save(&self, options: BundleSaveOptions) -> Result<Bytes, SaveError> {
-        self.save_version()?;
+        self.save_impl(options, None, &self.header, None)
+    }
+
+    /// Save an ordered caller-supplied directory of already serialized children.
+    /// The caller owns and meters the names and payload snapshots.
+    pub fn save_with_entries(
+        &self,
+        options: BundleSaveOptions,
+        entries: &[(crate::RawStr, u32, Bytes)],
+    ) -> Result<Bytes, SaveError> {
+        self.save_impl(options, Some(entries), &self.header, None)
+    }
+
+    /// Save charged caller-owned directory and header snapshots. `mode` selects
+    /// the FS/legacy body API; `None` dispatches from the supplied signature.
+    pub fn save_with_snapshot(
+        &self,
+        options: BundleSaveOptions,
+        entries: &[(crate::RawStr, u32, Bytes)],
+        header: &BundleHeader,
+        block_flags: u16,
+        mode: Option<(u32, u16)>,
+    ) -> Result<Bytes, SaveError> {
+        if let Some((data, blocks)) = mode {
+            self.save_fs_impl(
+                data,
+                blocks,
+                SaveOptions {
+                    layout: options.layout,
+                },
+                false,
+                Some(entries),
+                header,
+            )
+        } else {
+            self.save_impl(options, Some(entries), header, Some(block_flags))
+        }
+    }
+
+    fn save_impl(
+        &self,
+        options: BundleSaveOptions,
+        entries: Option<&[(crate::RawStr, u32, Bytes)]>,
+        header: &BundleHeader,
+        block_flags: Option<u16>,
+    ) -> Result<Bytes, SaveError> {
+        Self::save_version(header)?;
         let child_options = SaveOptions {
             layout: options.layout,
         };
-        if self.header.layout == LayoutKind::WebRaw {
-            return self.save_web_raw(child_options);
+        if header.layout == LayoutKind::WebRaw {
+            return self.save_web_raw_impl(child_options, entries, header);
         }
-        let (data, blocks) = if self.header.signature.as_bytes() == b"UnityFS" {
+        let (data, blocks) = if header.signature.as_bytes() == b"UnityFS" {
             match options.packer {
                 BundlePacker::None => (64, 64),
                 BundlePacker::Original => {
-                    let flags = required(self.header.data_flags, "data flags")?;
+                    let flags = required(header.data_flags, "data flags")?;
                     // Tier C writing: an empty bundle has no first block.
-                    let blocks = self.blocks.first().map_or(flags, |b| b.flags);
+                    let blocks = block_flags
+                        .map_or_else(|| self.blocks.first().map_or(flags, |b| b.flags), u32::from);
                     (flags, narrow(blocks, "block flags")?)
                 }
                 BundlePacker::Lz4 => (194, 2),
@@ -89,6 +136,8 @@ impl BundleFile {
             blocks,
             child_options,
             options.packer == BundlePacker::Lz4Hc,
+            entries,
+            header,
         )
     }
 
@@ -102,7 +151,32 @@ impl BundleFile {
         block_info_flag: u16,
         options: SaveOptions,
     ) -> Result<Bytes, SaveError> {
-        self.save_fs_impl(data_flag, block_info_flag, options, false)
+        self.save_fs_impl(
+            data_flag,
+            block_info_flag,
+            options,
+            false,
+            None,
+            &self.header,
+        )
+    }
+
+    /// Save the FS body using an ordered supplied child directory.
+    pub fn save_fs_with_entries(
+        &self,
+        data_flag: u32,
+        block_info_flag: u16,
+        options: SaveOptions,
+        entries: &[(crate::RawStr, u32, Bytes)],
+    ) -> Result<Bytes, SaveError> {
+        self.save_fs_impl(
+            data_flag,
+            block_info_flag,
+            options,
+            false,
+            Some(entries),
+            &self.header,
+        )
     }
 
     fn save_fs_impl(
@@ -111,12 +185,14 @@ impl BundleFile {
         block_info_flag: u16,
         options: SaveOptions,
         named_hc: bool,
+        entries: Option<&[(crate::RawStr, u32, Bytes)]>,
+        header: &BundleHeader,
     ) -> Result<Bytes, SaveError> {
-        self.save_version()?;
-        if self.header.layout != LayoutKind::Fs {
+        Self::save_version(header)?;
+        if header.layout != LayoutKind::Fs {
             return Err(SaveError::Unsupported("FS layout on a legacy bundle"));
         }
-        let mask = match required(self.header.flags_class, "flags class")? {
+        let mask = match required(header.flags_class, "flags class")? {
             FlagsClass::New => 0x1400,
             FlagsClass::Old => 0x200,
         };
@@ -126,12 +202,16 @@ impl BundleFile {
         if data_flag & 0x40 == 0 {
             return Err(SaveError::Missing("directory flag 0x40"));
         }
-        let (file_data, directory) = self.save_entries(options)?;
-        let packed = if named_hc || self.header.format >= 9 {
+        let (file_data, directory) = if let Some(entries) = entries {
+            self.save_supplied_entries(options, entries)?
+        } else {
+            self.save_entries(options)?
+        };
+        let packed = if named_hc || header.format >= 9 {
             encode::head_chunk_based_compress(
                 &file_data,
                 block_info_flag,
-                self.header.format,
+                header.format,
                 self.meter(),
             )?
         } else {
@@ -152,10 +232,10 @@ impl BundleFile {
         let info_len = narrow(info.len(), "blocks-info size")?;
         let compressed =
             encode::compress(info.slice(), Codec::from_flags(data_flag), self.meter())?;
-        let mut out = self.save_header(options)?;
-        let extra = usize::from(self.header.signature.as_bytes() != b"UnityFS");
+        let mut out = self.save_header(options, header)?;
+        let extra = usize::from(header.signature.as_bytes() != b"UnityFS");
         let mut header_size = add(out.len(), 20 + extra)?;
-        if self.header.block_alignment {
+        if header.block_alignment {
             header_size = aligned(header_size, 16)?;
         }
         let body_size = if data_flag & 0x80 != 0 {
@@ -181,7 +261,7 @@ impl BundleFile {
         if extra != 0 {
             out.bytes(&[0])?;
         }
-        if self.header.block_alignment {
+        if header.block_alignment {
             out.align(16)?;
         }
         if data_flag & 0x80 != 0 {
@@ -200,19 +280,43 @@ impl BundleFile {
         out.finish()
     }
 
-    pub(super) fn save_version(&self) -> Result<(), SaveError> {
-        if self.header.format > 9 {
+    fn save_supplied_entries(
+        &self,
+        options: SaveOptions,
+        entries: &[(crate::RawStr, u32, Bytes)],
+    ) -> Result<(Bytes, Bytes), SaveError> {
+        let mut data = Writer::new(self.meter(), Endian::Big)?;
+        let mut directory = Writer::metadata(self.meter(), Endian::Big, options.layout)?;
+        directory.count(entries.len())?;
+        for (name, flags, bytes) in entries {
+            self.meter().count_decode(8)?;
+            directory.i64(narrow(data.len(), "entry offset")?)?;
+            directory.i64(narrow(bytes.len(), "entry size")?)?;
+            directory.u32(*flags)?;
+            directory.cstr(name.as_bytes())?;
+            data.bytes(bytes)?;
+        }
+        directory.end_metadata()?;
+        Ok((data.finish()?, directory.finish()?))
+    }
+
+    pub(super) fn save_version(header: &BundleHeader) -> Result<(), SaveError> {
+        if header.format > 9 {
             return Err(SaveError::HeadTierWritesNotImplemented);
         }
         Ok(())
     }
 
-    pub(super) fn save_header(&self, options: SaveOptions) -> Result<Writer, SaveError> {
+    pub(super) fn save_header(
+        &self,
+        options: SaveOptions,
+        header: &BundleHeader,
+    ) -> Result<Writer, SaveError> {
         let mut out = Writer::metadata(self.meter(), Endian::Big, options.layout)?;
-        out.cstr(self.header.signature.as_bytes())?;
-        out.u32(self.header.format)?;
-        out.cstr(self.header.version_player.as_bytes())?;
-        out.cstr(self.header.version_engine.as_bytes())?;
+        out.cstr(header.signature.as_bytes())?;
+        out.u32(header.format)?;
+        out.cstr(header.version_player.as_bytes())?;
+        out.cstr(header.version_engine.as_bytes())?;
         Ok(out)
     }
 

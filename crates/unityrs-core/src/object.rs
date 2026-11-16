@@ -318,6 +318,12 @@ impl ObjectRef {
         self.file.set_raw_data(self.index, data.as_ref())
     }
 
+    /// Restore the original save payload, marking this file and its parents.
+    /// Reads continue using the original reader throughout.
+    pub fn clear_raw_data(&self) {
+        self.file.clear_raw_data(self.index);
+    }
+
     /// Write and install a typetree, as `files/ObjectReader.py:264-276` does.
     /// A failed write or replacement leaves the file's previous edit intact.
     pub fn save_typetree(

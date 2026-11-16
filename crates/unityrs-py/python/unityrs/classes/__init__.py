@@ -4,3 +4,9 @@ from .generated import *
 from .Object import Object as Object
 from .PPtr import PPtr as PPtr
 from .UnknownObject import UnknownObject as UnknownObject
+from ._exports import install as _install_exports
+from ._images import install as _install_images
+
+_install_exports(globals())
+_install_images(globals())
+del _install_exports, _install_images

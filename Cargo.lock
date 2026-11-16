@@ -1698,8 +1698,13 @@ version = "0.0.1"
 dependencies = [
  "pyo3",
  "serde_json",
+ "unityrs-audio",
  "unityrs-core",
+ "unityrs-export",
+ "unityrs-mesh",
+ "unityrs-meshdecode",
  "unityrs-testkit",
+ "unityrs-texture",
  "unityrs-tpk",
 ]
 

@@ -49,10 +49,16 @@ pub(super) fn string(v: &Value) -> Result<&RawStr, MeshError> {
         _ => Err(MeshError::Field("string")),
     }
 }
+// Python's integer fixed-point formatting converts to binary64 too; retaining
+// that deliberately rounded conversion matches current material attributes.
+#[allow(clippy::cast_precision_loss)]
 pub(super) fn number(v: &Value) -> Result<f64, MeshError> {
     match v {
         Value::F32(b) => Ok(f64::from(f32::from_bits(*b))),
         Value::F64(b) => Ok(f64::from_bits(*b)),
+        Value::Int(n) => Ok(*n as f64),
+        Value::UInt(n) => Ok(*n as f64),
+        Value::Bool(n) => Ok(f64::from(u8::from(*n))),
         _ => Err(MeshError::Field("float")),
     }
 }

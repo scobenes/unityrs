@@ -1,7 +1,8 @@
-# Ported from UnityPy 1.25.2 (MIT): UnityPy/files/File.py, UnityPy/files/ObjectReader.py, UnityPy/enums/ExtendableEnum.py. See THIRD_PARTY_LICENSES.
+# Ported from UnityPy 1.25.2 (MIT): UnityPy/files/File.py, UnityPy/files/ObjectReader.py, UnityPy/enums/ExtendableEnum.py, UnityPy/streams/EndianBinaryWriter.py. See THIRD_PARTY_LICENSES.
 """Python graph wrappers; each owns its native handle and strong parent links."""
 
 import os
+import struct
 import weakref
 from types import SimpleNamespace
 from .enums import ClassIDType, BuildTarget
@@ -19,8 +20,10 @@ class File:
         self.is_changed = False
         self.cab_file = "CAB-UnityPy_Mod.resS"
         self.files = {}
+        self.__dict__.update(native.save_metadata())
         if isinstance(self, SerializedFile):
             self._enable_type_tree = self.enable_type_tree
+            self._m_target_platform = self.target_platform
             self.header = SimpleNamespace(**self.header)
             if self.resolved_version is not None:
                 self.version = UnityVersion.from_str(self.resolved_version)
@@ -41,6 +44,37 @@ class File:
 
     def get(self, key, default=None):
         return getattr(self, key, default)
+
+    def mark_changed(self):
+        # files/File.py:145-148: propagation includes Python-visible parents.
+        with self.environment._lock:
+            self._native.mark_changed()
+            current = self
+            while isinstance(current, File):
+                current.is_changed = True
+                current = current.parent
+
+    def get_writeable_cab(self, name=None):
+        # files/File.py:92-121. The current mapping owns writer identity.
+        name = name or self.cab_file
+        if not name:
+            return None
+        with self.environment._lock:
+            if name in self.files:
+                if isinstance(self.files[name], _CabWriter):
+                    return self.files[name]
+                raise ValueError("This cab already exists and isn't an EndianBinaryWriter")
+            guard = self._native.tree_traversal()
+            flags, endian = 0, ">"
+            for resource_name, resource in self.files.items():
+                guard.step(0, 0, 1)
+                if resource_name.endswith(".resS"):
+                    flags, endian = resource.flags, resource.endian
+                    break
+            native = self._native.create_cab(_save_text(name, guard), flags, endian)
+            writer = _CabWriter(native)
+            self.files[name] = writer
+            return writer
 
     def keys(self):
         return self.files.keys()
@@ -92,16 +126,296 @@ class File:
         return f"<{type(self).__name__}>"
 
 
+def _save_text(value, guard):
+    if value is None:
+        return None
+    size = str.__len__(value) if isinstance(value, str) else len(value)
+    guard.step(0, size * 4 + 64, 0)
+    return value.encode("utf-8", "surrogateescape")
+
+
+def _writer_text(value, guard):
+    # UnityPy's writer calls `value.encode(...)` (streams/EndianBinaryWriter.py:84-92),
+    # so a value without one, None or an int, raises its AttributeError there.
+    encode = value.encode
+    guard.step(0, (str.__len__(value) if isinstance(value, str) else 0) * 4 + 64, 0)
+    return encode("utf8", "surrogateescape")
+
+
 class SerializedFile(File):
-    pass
+    def save(self, packer=None):
+        with self.environment._lock:
+            guard = self._native.tree_traversal()
+            count = len(self.objects)
+            guard.step(0, 512 + count * 256, count * (count.bit_length() + 1))
+            # Sort values, preserving distinct mapping entries with equal IDs.
+            objects = sorted(self.objects.values(), key=lambda obj: obj.path_id)
+            rows = []
+            for obj in objects:
+                data = obj.data if obj.data is not None else obj.get_raw_data()
+                guard.step(0, len(data) + 256, 1)
+                rows.append((obj._native, obj.path_id, obj.type_id, obj.class_id,
+                             obj.is_destroyed, obj.is_stripped,
+                             obj._native.save_metadata()["script_type_index"], data))
+            externals = []
+            for entry in self.externals:
+                guard.step(0, 256 + len(entry.guid or b""), 1)
+                externals.append((_save_text(entry.temp_empty, guard), entry.guid,
+                                  entry.type, _save_text(entry.path, guard)))
+            reserved = self.header.reserved
+            guard.step(0, len(reserved) if reserved is not None else 0, 0)
+            metadata = ((self.header.version, self.header.endian, reserved, self.unknown),
+                        _save_text(self.unity_version, guard), self._m_target_platform,
+                        self._enable_type_tree, self.big_id_enabled,
+                        _save_text(self.userInformation, guard))
+            return self._native.save_serialized_snapshot(metadata, rows, externals)
+
+    def get_writeable_cab(self, name="CAB-UnityPy_Mod.resS"):
+        # files/SerializedFile.py:362-387. Creation does not mark changed.
+        if not isinstance(self.parent, (BundleFile, WebFile)):
+            return None
+        import uuid
+        with self.environment._lock:
+            guard = self._native.tree_traversal()
+            size = str.__len__(name) if isinstance(name, str) else len(name)
+            own_size = str.__len__(self.name) if isinstance(self.name, str) else len(self.name)
+            guard.step(0, (own_size + size + 10) * 4 + 256, 1)
+            path = f"archive:/{self.name}/{name}"
+            encoded = _save_text(path, guard)
+            self._native.validate_external_path(encoded)
+            writer = self.parent.get_writeable_cab(name)
+            writer.path = path
+            if not any(writer.path == entry.path for entry in self.externals):
+                guard.step(0, 512, 1)
+                guid = uuid.uuid1().urn[-16:].encode("ascii")
+                self.externals.append(SimpleNamespace(temp_empty="", guid=guid, path=writer.path, type=0))
+            return writer
 
 
 class BundleFile(File):
-    pass
+    def _save_header(self, guard):
+        guard.step(0, 256, 1)
+        return (_save_text(self.signature, guard), self.version,
+                _save_text(self.version_player, guard), _save_text(self.version_engine, guard),
+                self._uses_block_alignment, self.dataflags, self._block_info_flags)
+
+    def _save_rows(self, guard):
+        guard.step(0, 256, 1)
+        rows = []
+        for name, file in self.files.items():
+            guard.step(0, 256, 1)
+            encoded_name = _save_text(name, guard)
+            data = file.bytes if isinstance(file, (EndianBinaryReader_Memoryview, _CabWriter)) else file.save()
+            guard.step(0, len(data), 0)
+            rows.append((encoded_name, file.flags, data))
+        return rows
+
+    def save(self, packer=None):
+        with self.environment._lock:
+            if (self.signature == "UnityFS" and packer
+                    and packer not in ("none", "original", "lz4", "lzma", "lz4hc")
+                    and not isinstance(packer, tuple)):
+                raise NotImplementedError("UnityFS - Packer:", packer)
+            guard = self._native.tree_traversal()
+            return self._native.save_bundle_entries("save", self._save_rows(guard), packer, (64, 64), self._save_header(guard))
+
+    @staticmethod
+    def _body_offset(data):
+        position = data.index(b"\0") + 5
+        position = data.index(b"\0", position) + 1
+        return data.index(b"\0", position) + 1
+
+    def save_fs(self, writer, data_flag, block_info_flag):
+        with self.environment._lock:
+            guard = self._native.tree_traversal()
+            data = self._native.save_bundle_entries("fs", self._save_rows(guard), None, (data_flag, block_info_flag), self._save_header(guard))
+            head = self._body_offset(data)
+            _, compressed, uncompressed, flags = struct.unpack_from(">qIII", data, head)
+            start = head + 20 + (self.signature != "UnityFS")
+            if self._uses_block_alignment:
+                start += (-start) % 16
+            guard.step(0, 1024, 0)
+            view = memoryview(data)
+            if flags & 0x80:
+                if flags & 0x200:
+                    start += (-start) % 16
+                blocks, payload = view[-compressed:], view[start:-compressed]
+            else:
+                blocks = view[start:start + compressed]
+                start += compressed
+                if flags & 0x200:
+                    start += (-start) % 16
+                payload = view[start:]
+            header_position = writer.Position
+            writer.write_long(0)
+            writer.write_u_int(compressed)
+            writer.write_u_int(uncompressed)
+            writer.write_u_int(flags)
+            if self.signature != "UnityFS":
+                writer.write_byte(0)
+            if self._uses_block_alignment:
+                writer.align_stream(16)
+            if flags & 0x80:
+                if flags & 0x200:
+                    writer.align_stream(16)
+                writer.write(payload)
+                writer.write(blocks)
+            else:
+                writer.write(blocks)
+                if flags & 0x200:
+                    writer.align_stream(16)
+                writer.write(payload)
+            end_position = writer.Position
+            writer.Position = header_position
+            writer.write_long(end_position)
+            writer.Position = end_position
+
+    def save_web_raw(self, writer):
+        with self.environment._lock:
+            guard = self._native.tree_traversal()
+            data = self._native.save_bundle_entries("web_raw", self._save_rows(guard), None, (64, 64), self._save_header(guard))
+            start = self._body_offset(data)
+            guard.step(0, 1024, 0)
+            view = memoryview(data)
+            extra = 20 if self.version >= 4 else 0
+            fields = struct.unpack_from(">IIIIII", data, start + extra)
+            original_header, compressed, uncompressed = fields[1], fields[4], fields[5]
+            header_size = writer.Position + extra + 24 + 4 * (self.version >= 2) + 4 * (self.version >= 3)
+            header_size += (-header_size) % 4
+            if extra:
+                writer.write_bytes(view[start:start + 16])
+                writer.write_u_int(struct.unpack_from(">I", data, start + 16)[0])
+            writer.write_u_int(header_size + compressed)
+            writer.write_u_int(header_size)
+            writer.write_u_int(1)
+            writer.write_int(1)
+            writer.write_u_int(compressed)
+            writer.write_u_int(uncompressed)
+            if self.version >= 2:
+                writer.write_u_int(header_size + compressed)
+            if self.version >= 3:
+                writer.write_u_int(struct.unpack_from(">I", data, start + extra + 28)[0])
+            writer.align_stream(4)
+            writer.write(view[original_header:original_header + compressed])
 
 
 class WebFile(File):
-    pass
+    def save(self, files=None, packer="none", signature="UnityWebData1.0"):
+        with self.environment._lock:
+            guard = self._native.tree_traversal()
+            guard.step(0, 256, 1)
+            rows = []
+            for name, file in (files or self.files).items():
+                guard.step(0, 256, 1)
+                encoded_name = _save_text(name, guard)
+                data = file.bytes if isinstance(file, EndianBinaryReader_Memoryview) else file.save()
+                guard.step(0, len(data), 0)
+                rows.append((encoded_name, data))
+            return self._native.save_web_entries(
+                rows, packer or self.packer, _save_text(signature, guard))
+
+
+class _CabWriter:
+    def __init__(self, native):
+        self._native = native
+        self.__dict__.update(native.metadata())
+        self.Position = 0
+
+    @property
+    def bytes(self):
+        return self._native.data()
+
+    @property
+    def Length(self):
+        return self._native.length()
+
+    def write(self, data):
+        count = self._native.write_bytes(data, self.Position)
+        self.Position += count
+        return count
+
+    write_bytes = write
+
+    def write_byte(self, value):
+        self.write(struct.pack(self.endian + "b", value))
+
+    def write_u_byte(self, value):
+        self.write(struct.pack(self.endian + "B", value))
+
+    def write_short(self, value):
+        self.write(struct.pack(self.endian + "h", value))
+
+    def write_int(self, value):
+        self.write(struct.pack(self.endian + "i", value))
+
+    def write_long(self, value):
+        self.write(struct.pack(self.endian + "q", value))
+
+    def write_u_short(self, value):
+        self.write(struct.pack(self.endian + "H", value))
+
+    def write_u_int(self, value):
+        self.write(struct.pack(self.endian + "I", value))
+
+    def write_u_long(self, value):
+        self.write(struct.pack(self.endian + "Q", value))
+
+    def write_float(self, value):
+        self.write(struct.pack(self.endian + "f", value))
+
+    def write_double(self, value):
+        self.write(struct.pack(self.endian + "d", value))
+
+    def write_boolean(self, value):
+        self.write(struct.pack(self.endian + "?", value))
+
+    def write_string_to_null(self, value):
+        guard = self._native.tree_traversal()
+        self.write(_writer_text(value, guard))
+        self.write(b"\0")
+
+    def write_aligned_string(self, value):
+        guard = self._native.tree_traversal()
+        encoded = _writer_text(value, guard)
+        self.write_int(len(encoded))
+        self.write(encoded)
+        self.align_stream(4)
+
+    def write_array(self, command, value, write_length=True):
+        if write_length:
+            self.write_int(len(value))
+        for item in value:
+            command(item)
+
+    def write_byte_array(self, value):
+        self.write_int(len(value))
+        self.write(value)
+
+    def write_boolean_array(self, value):
+        self.write_array(self.write_boolean, value)
+
+    def write_u_short_array(self, value):
+        self.write_array(self.write_u_short, value)
+
+    def write_int_array(self, value, write_length=False):
+        return self.write_array(self.write_int, value, write_length)
+
+    def write_u_int_array(self, value, write_length=False):
+        return self.write_array(self.write_u_int, value, write_length)
+
+    def write_float_array(self, value, write_length=False):
+        return self.write_array(self.write_float, value, write_length)
+
+    def write_string_array(self, value):
+        self.write_array(self.write_aligned_string, value)
+
+    def align_stream(self, alignment=4):
+        count = (alignment - self.Position % alignment) % alignment
+        self._native.write_zeroes(self.Position, count)
+        self.Position += count
+
+    def save(self):
+        return self.bytes
 
 
 class EndianBinaryReader_Memoryview:
@@ -111,6 +425,7 @@ class EndianBinaryReader_Memoryview:
         self._native = native
         self._position = 0
         self._length = metadata["length"]
+        self.endian = ">"
 
     @property
     def Position(self):
@@ -159,6 +474,84 @@ class ObjectReader:
 
     def get_raw_data(self):
         return self._native.raw_data()
+
+    def set_raw_data(self, data):
+        # files/ObjectReader.py:181-184: reads retain the original byte source.
+        with self.assets_file.environment._lock:
+            try:
+                self._native.set_raw_data(data)
+            except (TypeError, ValueError, BufferError):
+                # Keep the native mirror for valid buffers, but Python owns
+                # the replacement. Writer validation belongs to save(), even
+                # for values that do not implement the buffer protocol.
+                pass
+            except MemoryError:
+                # A full meter can refuse even the snapshot's fixed overhead
+                # before checking the buffer protocol. Invalid replacements
+                # still need no mirror; valid ones retain the budget refusal.
+                try:
+                    memoryview(data)
+                except (TypeError, ValueError, BufferError):
+                    pass
+                else:
+                    raise
+            self.data = data
+            self.assets_file.mark_changed()
+
+    def save_typetree(self, tree, nodes=None, writer=None):
+        # files/ObjectReader.py:264-276: explicit node selection also applies to writes.
+        with self.assets_file.environment._lock:
+            node = self._get_typetree_node(nodes)
+            rows = node._native_rows(use_boost=False, _guard=self._native.tree_traversal())
+            data = self._native.save_typetree(
+                tree, rows, writer.Position if writer else 0, writer.endian if writer else None)
+            if writer:
+                guard = self._native.tree_traversal()
+                extent = max(getattr(writer, "Length", 0), writer.Position + len(data))
+                guard.step(0, 2 * extent + 512, 0)
+                writer.write(data)
+                data = writer.bytes
+            self._native.set_raw_data(data)
+            self.data = data
+            self.assets_file.mark_changed()
+            return data
+
+    def write(self, header, writer, data_writer):
+        # files/ObjectReader.py:132-179: object metadata and the selected payload.
+        guard = self._native.tree_traversal()
+        guard.step(0, 1024, 0)
+        data = self.data if self.data is not None else self.get_raw_data()
+        try:
+            size = memoryview(data).nbytes
+        except TypeError:
+            size = len(data)
+        guard.step(0, 2 * (data_writer.Position + size) + 512, 0)
+        if self.assets_file.big_id_enabled:
+            writer.write_long(self.path_id)
+        elif header.version < 14:
+            writer.write_int(self.path_id)
+        else:
+            writer.align_stream()
+            writer.write_long(self.path_id)
+        if header.version >= 22:
+            writer.write_long(data_writer.Position)
+        else:
+            writer.write_u_int(data_writer.Position)
+        writer.write_u_int(len(data))
+        data_writer.write(data)
+        writer.write_int(self.type_id)
+        if header.version < 16:
+            writer.write_u_short(self.class_id)
+        if header.version < 11:
+            assert self.is_destroyed is not None
+            writer.write_u_short(self.is_destroyed)
+        if 11 <= header.version < 17:
+            index = self._native.save_metadata()["script_type_index"]
+            assert index is not None
+            writer.write_short(index)
+        if header.version in (15, 16):
+            assert self.is_stripped is not None
+            writer.write_byte(self.is_stripped)
 
     def read_typetree(self, nodes=None, wrap=False, check_read=True, *, as_dict=None):
         if as_dict is not None:
