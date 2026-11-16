@@ -177,7 +177,8 @@ pub fn export_parsed(
         unityrs_core::limits::Limits::default().max_block_output,
     )
 }
-fn export_with_cap(
+/// Convert current fields using the owning file's decompression bound.
+pub fn export_with_cap(
     parsed: &Parsed,
     version: (u32, u32),
     meter: &Arc<Meter>,

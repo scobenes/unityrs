@@ -21,6 +21,7 @@ mod python;
 #[cfg(test)]
 mod row_copy_test;
 mod save;
+mod save_snapshot;
 mod settings;
 mod tpk;
 mod traversal;

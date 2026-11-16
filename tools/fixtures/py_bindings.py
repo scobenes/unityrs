@@ -39,6 +39,18 @@ EXPORTS = [
 ] + [
     ("binding_y4_save", name) for name in (
         "observe_objects", "observe_files", "observe_environment", "observe_cabs", "observe_writers", "observe_legacy")
+] + [
+    ("binding_y4_review_save", name) for name in (
+        "observe_serialized_mapping", "observe_serialized_payload", "observe_serialized_metadata",
+        "observe_bundle_headers", "observe_legacy_headers")
+] + [
+    ("binding_y4_review_images", "observe_mipmap_arguments")
+] + [
+    ("binding_y4_review_object", name) for name in (
+        "observe_reentrant_writer", "observe_numeric_writer")
+] + [
+    ("binding_y4_review_exports", name) for name in (
+        "observe_materials", "observe_shader_cap", "observe_output_security")
 ]
 
 
@@ -50,6 +62,8 @@ def helper_records():
         ("binding_y4_images", "observe_textures"): "PARITY.md 19.2: zero-size textures yield empty RGBA before fetching data",
         ("binding_y4_exports", "observe_audio"): "PARITY.md 19.2: empty audio resources yield no samples",
         ("binding_y4_exports", "observe_audio_resources"): "PARITY.md 19.2: empty audio resources yield no samples",
+        ("binding_y4_review_exports", "observe_shader_cap"): "PARITY.md 19.3: parsed shader export honors max_block_output",
+        ("binding_y4_review_exports", "observe_output_security"): "PARITY.md 19.3: binding asset output confinement",
     }
     records = []
     for observer, function in HELPERS + EXPORTS:

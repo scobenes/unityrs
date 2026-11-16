@@ -14,15 +14,16 @@ use crate::typetree::NodeList;
 impl Handler {
     pub(in crate::files::serialized) fn write(
         &self,
-        file: &SerializedFile,
+        source: (&SerializedFile, &super::super::SerializedHeader),
         out: &mut Writer,
         options: SaveOptions,
     ) -> Result<(), SaveError> {
+        let (file, header) = source;
         out.fixed16(&self.hash, "HEAD type hash")?;
         let Some(nodes) = &self.original_nodes else {
             return out.u32(0);
         };
-        let mut info = Writer::metadata(file.meter(), file.header.endian, options.layout)?;
+        let mut info = Writer::metadata(file.meter(), header.endian, options.layout)?;
         info.bytes(b"mhtt")?;
         info.i32(self.version)?;
         // HEAD's dump_blob omits descendants of nodes flagged 32. Format 26
@@ -40,7 +41,7 @@ impl Handler {
             }
             rows.push(row.clone())?;
             if row.type_flags.unwrap_or(0) & 32 != 0
-                && (options.layout == SaveLayout::UnityPy || file.header.version >= 26)
+                && (options.layout == SaveLayout::UnityPy || header.version >= 26)
             {
                 skip_level = Some(row.level);
             }
@@ -49,7 +50,7 @@ impl Handler {
         rows.write_blob(
             &mut info,
             u32::try_from(self.version).unwrap_or(0),
-            file.header.endian,
+            header.endian,
             options.layout,
             file.ctx.providers.common_strings(),
         )?;
@@ -63,10 +64,11 @@ impl Handler {
 }
 
 pub(super) fn write_shared(
-    file: &SerializedFile,
+    source: (&SerializedFile, &super::super::SerializedHeader),
     out: &mut Writer,
     options: SaveOptions,
 ) -> Result<(), SaveError> {
+    let (file, _) = source;
     let shared = file
         .head_handlers
         .as_slice()
@@ -115,7 +117,7 @@ pub(super) fn write_shared(
             shared
                 .get(i)
                 .ok_or(SaveError::Missing("HEAD shared index"))?
-                .write(file, out, options)?;
+                .write(source, out, options)?;
         }
     }
     Ok(())

@@ -211,7 +211,7 @@ fn _image_decode(
 }
 
 #[pyfunction]
-#[pyo3(signature = (data, width, height, pack_mode, texture_format, platform, blob, reader=None, mipmap_count=1))]
+#[pyo3(signature = (data, width, height, pack_mode, texture_format, platform, blob, reader=None, switch_mips=false))]
 #[allow(
     clippy::too_many_arguments,
     clippy::needless_pass_by_value,
@@ -227,7 +227,7 @@ fn _image_encode(
     platform: i32,
     blob: Option<PyBackedBytes>,
     reader: Option<&NativeObject>,
-    mipmap_count: i32,
+    switch_mips: bool,
 ) -> PyResult<Py<PyAny>> {
     let meter = meter(reader);
     let limits = reader.map_or_else(Limits::default, |r| r.inner.file().context().limits);
@@ -235,11 +235,7 @@ fn _image_encode(
         crate::worker::run(limits.stack_needed(), || {
             // Python resizes each mip with Pillow, so the core sees one
             // level at a time. Retain its gate for the requested mip count.
-            if mipmap_count > 1
-                && width >= 8
-                && height >= 8
-                && unityrs_texture::is_switch_swizzled(platform, blob.as_deref())
-            {
+            if switch_mips {
                 return Err(write_error(
                     unityrs_texture::write::WriteError::Unsupported("Switch mip chain"),
                 ));

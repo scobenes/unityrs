@@ -4,6 +4,7 @@ import os
 
 from .. import _native
 from ..enums import AUDIO_TYPE_EXTEMSION
+from .._output import OutputDirectory, output_name
 from ._images import _guard
 
 
@@ -195,6 +196,7 @@ def _renderer_export(self, export_dir):
     mesh = _get_mesh(self, guard)
     if not mesh:
         return
+    mesh_name = output_name(mesh.m_Name)
     first = 0
     batch = getattr(self, "m_StaticBatchInfo", None)
     subset = getattr(self, "m_SubsetIndices", None)
@@ -205,7 +207,7 @@ def _renderer_export(self, export_dir):
             guard.step(0, 0, len(subset))
         first = min(subset)
     guard.step(0, 256, 1)
-    materials, names = [], []
+    materials, names, textures = [], [], []
     for index in range(len(mesh.m_SubMeshes)):
         guard.step(0, 128, 1)
         slot = index - first
@@ -228,16 +230,21 @@ def _renderer_export(self, export_dir):
             chosen = texture.m_Name if texture.m_Name else key
             if isinstance(chosen, str):
                 guard.step(0, len(chosen) * 4 + 256, len(chosen))
-            name = f"{chosen}.png"
-            with fs.open(fs.sep.join([export_dir, name]), "wb") as stream:
-                texture.image.save(stream)
-    with fs.open(fs.sep.join([export_dir, f"{mesh.m_Name}.obj"]), "wt",
-                 encoding="utf8", newline="") as stream:
-        stream.write(_mesh_obj(mesh, names))
-    with fs.open(fs.sep.join([export_dir, f"{mesh.m_Name}.mtl"]), "wt",
-                 encoding="utf8", newline="") as stream:
-        guard.step(0, (sum(map(len, materials)) + len(materials)) * 4 + 256, len(materials))
-        stream.write("\n".join(materials))
+            name = output_name(chosen) + ".png"
+            guard.step(0, 128, 1)
+            textures.append((name, texture))
+    # Preflight every asset-derived name before opening any output. Local
+    # leaves are replaced against a held directory, so symlinks and hardlinks
+    # cannot redirect writes outside the destination.
+    with OutputDirectory(export_dir, fs) as directory:
+        for name, texture in textures:
+            with directory.open(name, "wb") as stream:
+                texture.image.save(stream, format="PNG")
+        with directory.open(mesh_name + ".obj", "wt", encoding="utf8", newline="") as stream:
+            stream.write(_mesh_obj(mesh, names))
+        with directory.open(mesh_name + ".mtl", "wt", encoding="utf8", newline="") as stream:
+            guard.step(0, (sum(map(len, materials)) + len(materials)) * 4 + 256, len(materials))
+            stream.write("\n".join(materials))
 
 
 def install(namespace):

@@ -2,7 +2,7 @@
 //! Legacy directory and header (`files/BundleFile.py:395-487`). The version
 //! guard is removed for Tier C writing; formats 4+ retain their hash and CRC.
 use super::write::{add, aligned};
-use super::{BundleFile, LayoutKind};
+use super::{BundleFile, BundleHeader, LayoutKind};
 use crate::codec::{Codec, encode};
 use crate::files::save::{SaveError, SaveLayout, SaveOptions, Writer, narrow, required};
 use crate::stream::Endian;
@@ -13,7 +13,7 @@ impl BundleFile {
     /// directory padded to four bytes. UnityWeb uses a size-prefixed raw
     /// LZMA1 stream. Format 6 belongs to `save_fs` instead.
     pub fn save_web_raw(&self, options: SaveOptions) -> Result<Bytes, SaveError> {
-        self.save_web_raw_impl(options, None)
+        self.save_web_raw_impl(options, None, &self.header)
     }
 
     /// Save legacy layout using caller-owned, metered serialized child snapshots.
@@ -22,16 +22,27 @@ impl BundleFile {
         options: SaveOptions,
         entries: &[(crate::RawStr, u32, Bytes)],
     ) -> Result<Bytes, SaveError> {
-        self.save_web_raw_impl(options, Some(entries))
+        self.save_web_raw_impl(options, Some(entries), &self.header)
+    }
+
+    /// Save a charged legacy directory and current caller-owned header.
+    pub fn save_web_raw_with_snapshot(
+        &self,
+        options: SaveOptions,
+        entries: &[(crate::RawStr, u32, Bytes)],
+        header: &BundleHeader,
+    ) -> Result<Bytes, SaveError> {
+        self.save_web_raw_impl(options, Some(entries), header)
     }
 
     pub(super) fn save_web_raw_impl(
         &self,
         options: SaveOptions,
         entries: Option<&[(crate::RawStr, u32, Bytes)]>,
+        header: &BundleHeader,
     ) -> Result<Bytes, SaveError> {
-        self.save_version()?;
-        if self.header.layout != LayoutKind::WebRaw {
+        Self::save_version(header)?;
+        if header.layout != LayoutKind::WebRaw {
             return Err(SaveError::Unsupported("legacy layout on an FS bundle"));
         }
         let mut directory_size = 4usize;
@@ -113,7 +124,7 @@ impl BundleFile {
         // there is no unterminated string at the end of this directory.
         directory.bytes(payload.slice())?;
         drop(payload);
-        self.save_legacy_content(options, directory_size, directory)
+        self.save_legacy_content(options, directory_size, directory, header)
     }
 
     fn save_legacy_content(
@@ -121,9 +132,10 @@ impl BundleFile {
         options: SaveOptions,
         directory_size: usize,
         directory: Writer,
+        header: &BundleHeader,
     ) -> Result<Bytes, SaveError> {
         let uncompressed_size = directory.len();
-        let data = if self.header.signature.as_bytes() == b"UnityWeb" {
+        let data = if header.signature.as_bytes() == b"UnityWeb" {
             let compressed = encode::compress(directory.slice(), Codec::Lzma, self.meter())?;
             let mut prefixed = Writer::new(self.meter(), Endian::Little)?;
             prefixed.bytes(required(compressed.get(..5), "LZMA properties")?)?;
@@ -133,8 +145,8 @@ impl BundleFile {
         } else {
             directory.finish()?
         };
-        let mut out = self.save_header(options)?;
-        let version = self.header.format;
+        let mut out = self.save_header(options, header)?;
+        let version = header.format;
         let extra = 24
             + usize::from(version >= 2) * 4
             + usize::from(version >= 3) * 4
@@ -142,8 +154,8 @@ impl BundleFile {
         let header_size = aligned(add(out.len(), extra)?, 4)?;
         let total = narrow(add(header_size, data.len())?, "legacy bundle size")?;
         if version >= 4 {
-            out.bytes(&required(self.header.hash, "legacy hash")?)?;
-            out.u32(required(self.header.crc, "legacy CRC")?)?;
+            out.bytes(&required(header.hash, "legacy hash")?)?;
+            out.u32(required(header.crc, "legacy CRC")?)?;
         }
         out.u32(total)?;
         out.u32(narrow(header_size, "legacy header size")?)?;

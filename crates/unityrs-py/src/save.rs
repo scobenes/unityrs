@@ -202,6 +202,16 @@ pub(crate) fn file_metadata(py: Python<'_>, file: &NativeFile) -> PyResult<Py<Py
                 )?;
             }
             p::field(&result, "_entry_flags", &flags)?;
+            p::field(
+                &result,
+                "dataflags",
+                &p::uint(u64::from(bundle.header().data_flags.unwrap_or(64)))?,
+            )?;
+            p::field(
+                &result,
+                "_block_info_flags",
+                &p::uint(u64::from(bundle.blocks().first().map_or(64, |b| b.flags)))?,
+            )?;
             for (key, value) in [
                 ("version_player", &bundle.header().version_player),
                 ("version_engine", &bundle.header().version_engine),
@@ -211,6 +221,24 @@ pub(crate) fn file_metadata(py: Python<'_>, file: &NativeFile) -> PyResult<Py<Py
                     .map_err(errors::charge)?;
                 p::field(&result, key, &p::string(value.as_bytes())?)?;
             }
+        }
+        if let File::Serialized(source) = &file.inner {
+            charge
+                .grow(
+                    source
+                        .user_information()
+                        .map_or(0, |v| (v.len() as u64).saturating_mul(4)),
+                )
+                .map_err(errors::charge)?;
+            p::field(
+                &result,
+                "userInformation",
+                &match source.user_information() {
+                    Some(v) => p::string(v.as_bytes())?,
+                    None => p::none(),
+                },
+            )?;
+            p::field(&result, "unknown", &p::int(source.header().unknown)?)?;
         }
         if let File::Web(web) = &file.inner {
             charge
@@ -490,9 +518,20 @@ pub(crate) fn save_bundle_entries(
     mode: &str,
     rows: Py<PyAny>,
     value: Option<Py<PyAny>>,
-    data_flag: u32,
-    block_info_flag: u16,
+    flags: (u32, u16),
+    header: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
+    let (data_flag, block_info_flag) = flags;
+    let (signature, version, player, engine, alignment, data_flags, block_flags) = header
+        .extract::<(
+            PyBackedBytes,
+            u32,
+            PyBackedBytes,
+            PyBackedBytes,
+            bool,
+            u32,
+            u16,
+        )>()?;
     py.detach(move || {
         let File::Bundle(bundle) = &file.inner else {
             return Err(PyTypeError::new_err("not a bundle"));
@@ -515,28 +554,51 @@ pub(crate) fn save_bundle_entries(
                     .push((name, flags, bytes.into_bytes().map_err(errors::charge)?))
                     .map_err(errors::charge)?;
             }
+            let engine_heap = bundle
+                .header()
+                .engine_version
+                .as_ref()
+                .and_then(|v| v.as_ref().ok())
+                .map_or(0, |v| v.version.heap_bytes());
+            let _header_copy = meter
+                .charge(unityrs_core::limits::heap_cost(engine_heap as u64))
+                .map_err(errors::charge)?;
+            let mut header = bundle.header().clone();
+            header.signature = RawStr::charged(&signature, meter).map_err(errors::charge)?;
+            header.format = version;
+            header.version_player = RawStr::charged(&player, meter).map_err(errors::charge)?;
+            header.version_engine = RawStr::charged(&engine, meter).map_err(errors::charge)?;
+            header.block_alignment = alignment;
+            header.data_flags = Some(data_flags);
+            header.layout = if signature.as_ref() == b"UnityFS" || version == 6 {
+                unityrs_core::files::LayoutKind::Fs
+            } else {
+                unityrs_core::files::LayoutKind::WebRaw
+            };
             let options = SaveOptions {
                 layout: SaveLayout::UnityPy,
             };
-            let bytes = match mode {
-                "fs" => bundle.save_fs_with_entries(
-                    data_flag,
-                    block_info_flag,
-                    options,
-                    entries.as_slice(),
-                ),
-                "web_raw" => bundle.save_web_raw_with_entries(options, entries.as_slice()),
-                _ => bundle.save_with_entries(
+            let bytes = if mode == "web_raw" {
+                bundle.save_web_raw_with_snapshot(options, entries.as_slice(), &header)
+            } else {
+                bundle.save_with_snapshot(
                     BundleSaveOptions {
                         layout: options.layout,
-                        packer: if bundle.header().signature.as_bytes() == b"UnityFS" {
+                        packer: if signature.as_ref() == b"UnityFS" {
                             packer(value.as_ref())?
                         } else {
                             BundlePacker::None
                         },
                     },
                     entries.as_slice(),
-                ),
+                    &header,
+                    block_flags,
+                    if mode == "fs" {
+                        Some((data_flag, block_info_flag))
+                    } else {
+                        None
+                    },
+                )
             }
             .map_err(error)?;
             let _copy = meter

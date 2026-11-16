@@ -24,6 +24,10 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `binding_y4_exports.py` | Y4 current class export and audio observations on synthetic shader, mesh and PCM inputs |
 | `binding_y4_images.py`, `binding_y4_images_matrix.py` | Y4 images, texture editing, sprites and platform/format observations; no generated schemas |
 | `binding_y4_save.py` | Y4 object, file, bundle, WebFile, CAB and environment save observations |
+| `binding_y4_review_exports.py` | Y4 material parity, owning shader limits and deliberate output confinement references |
+| `binding_y4_review_images.py` | Unbounded mipmap arguments and texture mutation ordering |
+| `binding_y4_review_object.py` | Reentrant writer getters and exact numeric writer validation |
+| `binding_y4_review_save.py` | Live object mapping, payload, metadata and bundle header save snapshots |
 | `encoder_probe.py`, `encoder_probe.cpp` | B3b scalar/invariant texture encoder build and instruction-set probe against the oracle wheels |
 | `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=94`); requires `unityrs` and UnityPy 1.25.2, and never skips |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |

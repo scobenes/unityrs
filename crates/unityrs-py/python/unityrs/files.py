@@ -23,6 +23,7 @@ class File:
         self.__dict__.update(native.save_metadata())
         if isinstance(self, SerializedFile):
             self._enable_type_tree = self.enable_type_tree
+            self._m_target_platform = self.target_platform
             self.header = SimpleNamespace(**self.header)
             if self.resolved_version is not None:
                 self.version = UnityVersion.from_str(self.resolved_version)
@@ -120,10 +121,40 @@ class File:
         return f"<{type(self).__name__}>"
 
 
+def _save_text(value, guard):
+    if value is None:
+        return None
+    guard.step(0, len(value) * 4 + 64, 0)
+    return value.encode("utf-8", "surrogateescape")
+
+
 class SerializedFile(File):
     def save(self, packer=None):
         with self.environment._lock:
-            return self._native.save("save", None, 64, 64, "UnityWebData1.0")
+            guard = self._native.tree_traversal()
+            count = len(self.objects)
+            guard.step(0, 512 + count * 256, count * (count.bit_length() + 1))
+            # Sort values, preserving distinct mapping entries with equal IDs.
+            objects = sorted(self.objects.values(), key=lambda obj: obj.path_id)
+            rows = []
+            for obj in objects:
+                data = obj.data if obj.data is not None else obj.get_raw_data()
+                guard.step(0, len(data) + 256, 1)
+                rows.append((obj._native, obj.path_id, obj.type_id, obj.class_id,
+                             obj.is_destroyed, obj.is_stripped,
+                             obj._native.save_metadata()["script_type_index"], data))
+            externals = []
+            for entry in self.externals:
+                guard.step(0, 256 + len(entry.guid or b""), 1)
+                externals.append((_save_text(entry.temp_empty, guard), entry.guid,
+                                  entry.type, _save_text(entry.path, guard)))
+            reserved = self.header.reserved
+            guard.step(0, len(reserved) if reserved is not None else 0, 0)
+            metadata = ((self.header.version, self.header.endian, reserved, self.unknown),
+                        _save_text(self.unity_version, guard), self._m_target_platform,
+                        self._enable_type_tree, self.big_id_enabled,
+                        _save_text(self.userInformation, guard))
+            return self._native.save_serialized_snapshot(metadata, rows, externals)
 
     def get_writeable_cab(self, name="CAB-UnityPy_Mod.resS"):
         # files/SerializedFile.py:362-387. Creation does not mark changed.
@@ -145,6 +176,12 @@ class SerializedFile(File):
 
 
 class BundleFile(File):
+    def _save_header(self, guard):
+        guard.step(0, 256, 1)
+        return (_save_text(self.signature, guard), self.version,
+                _save_text(self.version_player, guard), _save_text(self.version_engine, guard),
+                self._uses_block_alignment, self.dataflags, self._block_info_flags)
+
     def _save_rows(self, guard):
         guard.step(0, 256, 1)
         rows = []
@@ -162,7 +199,7 @@ class BundleFile(File):
                     and not isinstance(packer, tuple)):
                 raise NotImplementedError("UnityFS - Packer:", packer)
             guard = self._native.tree_traversal()
-            return self._native.save_bundle_entries("save", self._save_rows(guard), packer, 64, 64)
+            return self._native.save_bundle_entries("save", self._save_rows(guard), packer, (64, 64), self._save_header(guard))
 
     @staticmethod
     def _body(data):
@@ -173,7 +210,7 @@ class BundleFile(File):
     def save_fs(self, writer, data_flag, block_info_flag):
         with self.environment._lock:
             guard = self._native.tree_traversal()
-            data = self._native.save_bundle_entries("fs", self._save_rows(guard), None, data_flag, block_info_flag)
+            data = self._native.save_bundle_entries("fs", self._save_rows(guard), None, (data_flag, block_info_flag), self._save_header(guard))
             head = len(data) - len(self._body(data))
             _, compressed, uncompressed, flags = struct.unpack_from(">qIII", data, head)
             start = head + 20 + (self.signature != "UnityFS")
@@ -216,7 +253,7 @@ class BundleFile(File):
     def save_web_raw(self, writer):
         with self.environment._lock:
             guard = self._native.tree_traversal()
-            data = self._native.save_bundle_entries("web_raw", self._save_rows(guard), None, 64, 64)
+            data = self._native.save_bundle_entries("web_raw", self._save_rows(guard), None, (64, 64), self._save_header(guard))
             start = len(data) - len(self._body(data))
             extra = 20 if self.version >= 4 else 0
             fields = struct.unpack_from(">IIIIII", data, start + extra)

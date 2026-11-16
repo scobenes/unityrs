@@ -12,56 +12,16 @@ use pyo3::{
 };
 use std::sync::Arc;
 use unityrs_core::{
-    Built, Parsed, RawStr, Value, ValueBuilder,
+    Parsed, RawStr, Value,
     budget::DecodeBuf,
     limits::{Charge, Limits, Meter, MeteredVec},
-    typetree::{NodeId, NodeList, NodeRow, Tree},
+    typetree::{NodeId, NodeRow, Tree},
 };
 #[path = "value_input_lookup.rs"]
 mod lookup;
-
-enum Staged {
-    Scalar(Value),
-    List(MeteredVec<Staged>),
-    Tuple(MeteredVec<Staged>),
-    Map(MeteredVec<(NodeId, Staged)>),
-}
-impl Staged {
-    fn build(self, builder: &ValueBuilder) -> PyResult<Built> {
-        match self {
-            Self::Scalar(v) => builder
-                .scalar(v)
-                .map_err(|_| pyo3::exceptions::PyTypeError::new_err("invalid scalar snapshot")),
-            Self::List(items) => {
-                let mut out = builder.vec();
-                let (items, _charge) = items.into_parts();
-                for item in items {
-                    out.push_built(item.build(builder)?)
-                        .map_err(errors::charge)?;
-                }
-                Ok(builder.list(out))
-            }
-            Self::Tuple(items) => {
-                let mut out = builder.vec();
-                let (items, _charge) = items.into_parts();
-                for item in items {
-                    out.push_built(item.build(builder)?)
-                        .map_err(errors::charge)?;
-                }
-                builder.tuple(out).map_err(errors::charge)
-            }
-            Self::Map(items) => {
-                let mut out = builder.vec();
-                let (items, _charge) = items.into_parts();
-                for (key, item) in items {
-                    out.push_entry(key, item.build(builder)?)
-                        .map_err(errors::charge)?;
-                }
-                Ok(builder.map(0, out))
-            }
-        }
-    }
-}
+#[path = "value_input_stage.rs"]
+mod staging;
+pub(crate) use staging::Snapshot;
 
 struct State<'a> {
     rows: MeteredVec<NodeRow>,
@@ -71,13 +31,15 @@ struct State<'a> {
     count: u64,
     tree: Option<&'a Tree>,
     lookups: lookup::Lookups,
+    values: staging::Arena,
 }
 
-/// Called on a scoped worker, outside the GIL. Python inspection alone attaches.
+/// Export callers use a scoped worker. Python inspection alone attaches.
 pub(crate) fn parsed(input: &Py<PyAny>, meter: &Arc<Meter>, limits: &Limits) -> PyResult<Parsed> {
     snapshot(input, meter, limits, None)
 }
 
+#[cfg(test)]
 pub(crate) fn for_tree(
     input: &Py<PyAny>,
     meter: &Arc<Meter>,
@@ -87,12 +49,30 @@ pub(crate) fn for_tree(
     snapshot(input, meter, limits, Some(tree))
 }
 
+pub(crate) fn for_tree_snapshot(
+    input: &Py<PyAny>,
+    meter: &Arc<Meter>,
+    limits: &Limits,
+    tree: &Tree,
+) -> PyResult<Snapshot> {
+    snapshot_input(input, meter, limits, Some(tree))
+}
+
 fn snapshot(
     input: &Py<PyAny>,
     meter: &Arc<Meter>,
     limits: &Limits,
     tree: Option<&Tree>,
 ) -> PyResult<Parsed> {
+    snapshot_input(input, meter, limits, tree)?.build()
+}
+
+fn snapshot_input(
+    input: &Py<PyAny>,
+    meter: &Arc<Meter>,
+    limits: &Limits,
+    tree: Option<&Tree>,
+) -> PyResult<Snapshot> {
     let mut state = State {
         rows: MeteredVec::new(meter),
         active: MeteredVec::new(meter),
@@ -101,6 +81,7 @@ fn snapshot(
         count: 0,
         tree,
         lookups: lookup::Lookups::new(tree, meter)?,
+        values: staging::Arena::new(meter),
     };
     let (_, value) = state.stage(
         input,
@@ -108,12 +89,7 @@ fn snapshot(
         0,
         tree.map(|t| t.list().root()),
     )?;
-    let list = NodeList::from_rows(state.rows)
-        .and_then(NodeList::into_shared)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(errors::message(&e)))?;
-    let builder = ValueBuilder::new(meter, list).map_err(errors::charge)?;
-    let value = value.build(&builder)?;
-    Ok(builder.finish(value, 0))
+    Ok(state.into_snapshot(value))
 }
 
 fn text(value: &Bound<'_, PyAny>, staging: &mut Charge) -> PyResult<RawStr> {
@@ -352,199 +328,6 @@ impl State<'_> {
             ))
         })
     }
-    fn stage(
-        &mut self,
-        input: &Py<PyAny>,
-        name: RawStr,
-        depth: u32,
-        shape: Option<NodeId>,
-    ) -> PyResult<(NodeId, Staged)> {
-        if depth > self.limits.max_value_depth {
-            return Err(errors::LimitError::new_err(
-                "Python value depth exceeds max_value_depth",
-            ));
-        }
-        self.count = self.count.saturating_add(1);
-        if self.count > self.limits.max_values_per_object {
-            return Err(errors::LimitError::new_err(
-                "Python snapshot exceeds max_values_per_object",
-            ));
-        }
-        self.staging
-            .meter()
-            .count_decode(1)
-            .map_err(errors::charge)?;
-        let (ty, inspection) = if let Some((tree, shape)) = self.tree.zip(shape)
-            && Python::attach(|py| input.bind(py).is_none())
-        {
-            none_for_shape(tree, shape, input, self.staging.meter())?
-        } else {
-            self.inspect(input)?
-        };
-        let id = self.row(depth, ty, name)?;
-        if let Inspect::Scalar(value) = inspection {
-            return Ok((id, Staged::Scalar(value)));
-        }
-        let identity = input.as_ptr() as usize;
-        self.staging
-            .meter()
-            .count_decode(self.active.len() as u64)
-            .map_err(errors::charge)?;
-        if self.active.as_slice().contains(&identity) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "cyclic Python value",
-            ));
-        }
-        self.active.push(identity).map_err(errors::charge)?;
-        let staged = match inspection {
-            Inspect::Sequence(iter, tuple) => self.sequence(&iter, tuple, depth, shape)?,
-            Inspect::Map(mut fields) => {
-                if let Some((tree, node)) = self.tree.zip(shape)
-                    && tree.info(node).is_some_and(|info| {
-                        matches!(
-                            info.shape,
-                            unityrs_core::typetree::Shape::Class
-                                | unityrs_core::typetree::Shape::RefObject
-                        )
-                    })
-                {
-                    fields.restrict(tree, node, &mut self.staging)?;
-                }
-                let mut items = MeteredVec::new(self.staging.meter());
-                while let Some((key, child)) =
-                    Python::attach(|py| fields.next(py, &mut self.staging))?
-                {
-                    items.reserve(1).map_err(errors::charge)?;
-                    let child_shape = if let Some((tree, node)) = self.tree.zip(shape) {
-                        self.lookups.find(
-                            tree,
-                            node,
-                            fields.dict || fields.raw_names,
-                            key.as_bytes(),
-                            self.staging.meter(),
-                        )?
-                    } else {
-                        None
-                    };
-                    let key = if fields.dict || fields.raw_names {
-                        key
-                    } else if let Some((tree, node)) = self.tree.zip(child_shape) {
-                        RawStr::charged(tree.list().name(node), self.staging.meter())
-                            .map_err(errors::charge)?
-                    } else {
-                        key
-                    };
-                    let (key, value) =
-                        self.stage(&child, key, next_depth(depth, 1)?, child_shape)?;
-                    items.push((key, value)).map_err(errors::charge)?;
-                }
-                Staged::Map(items)
-            }
-            Inspect::Scalar(_) => {
-                return Err(pyo3::exceptions::PyTypeError::new_err(
-                    "invalid snapshot state",
-                ));
-            }
-        };
-        self.active.pop();
-        Ok((id, staged))
-    }
-
-    fn sequence(
-        &mut self,
-        iter: &Py<PyIterator>,
-        tuple: bool,
-        depth: u32,
-        shape: Option<NodeId>,
-    ) -> PyResult<Staged> {
-        if !tuple {
-            self.row(
-                next_depth(depth, 1)?,
-                RawStr::from_static(b"Array"),
-                RawStr::from_static(b"Array"),
-            )?;
-            self.row(
-                next_depth(depth, 2)?,
-                RawStr::from_static(b"int"),
-                RawStr::from_static(b"size"),
-            )?;
-        }
-        let mut items = MeteredVec::new(self.staging.meter());
-        let first = if tuple { None } else { next_item(iter)? };
-        loop {
-            items.reserve(1).map_err(errors::charge)?;
-            let Some(child) = next_item(iter)? else {
-                break;
-            };
-            let key = if tuple {
-                if items.is_empty() {
-                    b"first".as_slice()
-                } else {
-                    b"second".as_slice()
-                }
-            } else {
-                b"data".as_slice()
-            };
-            let child_shape = self.tree.zip(shape).and_then(|(tree, node)| {
-                let kids = tree.list().children(node);
-                if tuple {
-                    kids.get(items.len()).copied()
-                } else {
-                    kids.first()
-                        .and_then(|array| tree.list().children(*array).get(1))
-                        .copied()
-                }
-            });
-            // Later list schemas live below the unused size primitive. This
-            // retains their field IDs while Array's public shape stays exactly
-            // [size, element], as the geometry object-mode view requires.
-            let child = self
-                .stage(
-                    &child,
-                    RawStr::from_static(key),
-                    next_depth(depth, if tuple { 1 } else { 3 })?,
-                    child_shape,
-                )?
-                .1;
-            items.push(child).map_err(errors::charge)?;
-        }
-        if !tuple {
-            if let Some(first) = first {
-                let child_shape = self.tree.zip(shape).and_then(|(tree, node)| {
-                    tree.list()
-                        .children(node)
-                        .first()
-                        .and_then(|array| tree.list().children(*array).get(1))
-                        .copied()
-                });
-                let first = self
-                    .stage(
-                        &first,
-                        RawStr::from_static(b"data"),
-                        next_depth(depth, 2)?,
-                        child_shape,
-                    )?
-                    .1;
-                items.push(first).map_err(errors::charge)?;
-                self.staging
-                    .meter()
-                    .count_decode(items.len() as u64)
-                    .map_err(errors::charge)?;
-                items.as_mut_slice().rotate_right(1);
-            } else {
-                self.row(
-                    next_depth(depth, 2)?,
-                    RawStr::from_static(b"Object"),
-                    RawStr::from_static(b"data"),
-                )?;
-            }
-        }
-        Ok(if tuple {
-            Staged::Tuple(items)
-        } else {
-            Staged::List(items)
-        })
-    }
 }
 
 fn copy_bytes(bytes: &[u8], staging: &Charge, limits: &Limits) -> PyResult<Value> {
@@ -606,6 +389,67 @@ fn optional_attr<'py>(
         }
         Err(error) => Err(error),
     }
+}
+
+fn numeric_for_shape(
+    tree: &Tree,
+    node: NodeId,
+    input: &Py<PyAny>,
+    staging: &mut Charge,
+) -> PyResult<Option<(RawStr, Inspect)>> {
+    use unityrs_core::typetree::{Kind, tree::py_kind_of};
+    let ty = tree.list().type_name(node);
+    let kind = py_kind_of(ty);
+    let format = match kind {
+        Kind::Bool => "<?",
+        Kind::S8 => "<b",
+        Kind::U8 => "<B",
+        Kind::S16 => "<h",
+        Kind::U16 => "<H",
+        Kind::S32 => "<i",
+        Kind::U32 => "<I",
+        Kind::S64 => "<q",
+        Kind::U64 => "<Q",
+        Kind::F32 => "<f",
+        Kind::F64 => "<d",
+        _ => return Ok(None),
+    };
+    staging.grow(256).map_err(errors::charge)?;
+    staging.meter().count_decode(8).map_err(errors::charge)?;
+    let value = Python::attach(|py| {
+        // Match the writer's Python protocols and struct.error before any
+        // narrowing into Rust integers. This also handles arbitrary __bool__,
+        // __index__, and __float__ implementations on the caller's thread.
+        let packed = py
+            .import("struct")?
+            .call_method1("pack", (format, input.bind(py)))?;
+        let bytes = packed.cast::<PyBytes>()?.as_bytes();
+        let mut raw = [0_u8; 8];
+        raw.get_mut(..bytes.len())
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("invalid numeric snapshot width")
+            })?
+            .copy_from_slice(bytes);
+        Ok::<_, PyErr>(match kind {
+            Kind::Bool => Value::Bool(bytes.first().copied().unwrap_or_default() != 0),
+            Kind::F32 => {
+                let bits = u32::try_from(u64::from_le_bytes(raw))?;
+                Value::F32(bits)
+            }
+            Kind::F64 => Value::F64(u64::from_le_bytes(raw)),
+            Kind::S8 | Kind::S16 | Kind::S32 | Kind::S64 => {
+                if bytes.last().is_some_and(|byte| byte & 0x80 != 0) {
+                    raw.get_mut(bytes.len()..).unwrap_or_default().fill(0xff);
+                }
+                Value::Int(i64::from_le_bytes(raw))
+            }
+            _ => Value::UInt(u64::from_le_bytes(raw)),
+        })
+    })?;
+    Ok(Some((
+        RawStr::charged(ty, staging.meter()).map_err(errors::charge)?,
+        Inspect::Scalar(value),
+    )))
 }
 
 fn none_for_shape(

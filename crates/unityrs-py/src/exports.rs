@@ -151,8 +151,13 @@ fn export_shader(
     py.detach(move || {
         crate::worker::run(limits.stack_needed(), || {
             let parsed = crate::value_input::parsed(&input, &meter, &limits)?;
-            let bytes = unityrs_export::shader::export_parsed(&parsed, version, &meter)
-                .map_err(|error| shader_error(error, &meter))?;
+            let bytes = unityrs_export::shader::export_with_cap(
+                &parsed,
+                version,
+                &meter,
+                limits.max_block_output,
+            )
+            .map_err(|error| shader_error(error, &meter))?;
             let _handoff = meter
                 .charge((bytes.len() as u64).saturating_mul(4))
                 .map_err(errors::charge)?;

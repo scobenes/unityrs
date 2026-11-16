@@ -6,13 +6,36 @@
 //! objects use the already charged path index, including duplicate-id collapse.
 //! Every temporary and the returned bytes charge the input's meter.
 
-use super::{SerializedFile, SerializedType};
+use super::{External, ObjectInfo, SerializedFile, SerializedHeader, SerializedType};
+use crate::RawStr;
 use crate::files::save::{SaveError, SaveOptions, Writer, narrow, required};
 use crate::stream::Endian;
 use bytes::Bytes;
 
 #[path = "write_head.rs"]
 mod head_writer;
+
+/// Caller-owned metadata and object payload snapshot. All retained storage must
+/// be charged by the caller before constructing it. Object rows are emitted in
+/// supplied order, including repeated path ids; dictionary keys are irrelevant.
+pub struct SerializedSaveSnapshot<'a> {
+    /// Current header (sizes and offsets are recomputed).
+    pub header: SerializedHeader,
+    /// Current Unity version string.
+    pub unity_version: Option<RawStr>,
+    /// Current raw build target.
+    pub target_platform: Option<i32>,
+    /// Whether type records carry trees.
+    pub enable_type_tree: bool,
+    /// Pre-format-14 path-id width switch.
+    pub big_id_enabled: i32,
+    /// Current object metadata and payloads, sorted by signed path id.
+    pub objects: &'a [(ObjectInfo, Bytes)],
+    /// Current external reference list, replacing loaded and pending entries.
+    pub externals: &'a [External],
+    /// Current user information string.
+    pub user_information: Option<RawStr>,
+}
 
 impl SerializedFile {
     /// Save metadata and objects, sorting by signed path id and padding every
@@ -25,12 +48,31 @@ impl SerializedFile {
     /// HEAD 417d595 for formats 23-26. HEAD's absent per-type node assertion
     /// and formats above 26 refuse before building or charging output.
     pub fn save(&self, options: SaveOptions) -> Result<Bytes, SaveError> {
-        let h = &self.header;
+        self.save_impl(options, None)
+    }
+
+    /// Serialize a metered snapshot without modifying the loaded file or edits.
+    pub fn save_with_snapshot(
+        &self,
+        options: SaveOptions,
+        snapshot: &SerializedSaveSnapshot<'_>,
+    ) -> Result<Bytes, SaveError> {
+        self.save_impl(options, Some(snapshot))
+    }
+
+    fn save_impl(
+        &self,
+        options: SaveOptions,
+        snapshot: Option<&SerializedSaveSnapshot<'_>>,
+    ) -> Result<Bytes, SaveError> {
+        let h = snapshot.map_or(&self.header, |s| &s.header);
         let v = h.version;
+        let enabled = snapshot.map_or(self.enable_type_tree, |s| s.enable_type_tree);
+        let big_id = snapshot.map_or(self.big_id_enabled, |s| s.big_id_enabled);
         if v > 26 {
             return Err(SaveError::HeadTierWritesNotImplemented);
         }
-        if v >= 23 && self.enable_type_tree {
+        if v >= 23 && enabled {
             for t in self
                 .types
                 .iter()
@@ -43,80 +85,122 @@ impl SerializedFile {
         let mut meta = Writer::metadata(self.meter(), h.endian, options.layout)?;
         let mut data = Writer::new(self.meter(), h.endian)?;
         if v >= 7 {
-            meta.cstr(required(self.unity_version.as_ref(), "unity_version")?.as_bytes())?;
+            meta.cstr(
+                required(
+                    snapshot.map_or(self.unity_version.as_ref(), |s| s.unity_version.as_ref()),
+                    "unity_version",
+                )?
+                .as_bytes(),
+            )?;
         }
         if v >= 8 {
-            meta.i32(required(self.target_platform, "target_platform")?)?;
+            meta.i32(required(
+                snapshot.map_or(self.target_platform, |s| s.target_platform),
+                "target_platform",
+            )?)?;
         }
         // Below 13 the reader unconditionally expects trees, even when the
         // config flag was false at load. Keep the parsed trees (Tier C).
-        let trees = self.enable_type_tree || v < 13;
+        let trees = enabled || v < 13;
         if v >= 13 {
             meta.boolean(trees)?;
         }
         meta.count(self.types.len())?;
         for (i, t) in self.types.iter().enumerate() {
-            t.write(self, &mut meta, trees, false, i, options)?;
+            t.write((self, h), &mut meta, trees, false, i, options)?;
         }
         if (7..14).contains(&v) {
-            meta.i32(self.big_id_enabled)?;
+            meta.i32(big_id)?;
         }
-        meta.count(self.by_path.len())?;
+        meta.count(snapshot.map_or(self.by_path.len(), |s| s.objects.len()))?;
         // A save sees one consistent set of replacements. No read or write
         // can re-enter this mutex; allocations follow MemoryBudget's contract.
         let edits = self
             .edits
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for &index in &self.by_path {
-            let row = required(self.object_infos.get(index as usize), "object row")?;
-            if self.big_id_enabled != 0 {
-                meta.i64(row.path_id)?;
-            } else if v < 14 {
-                meta.i32(narrow(row.path_id, "path_id")?)?;
-            } else {
-                meta.align(4)?;
-                meta.i64(row.path_id)?;
-            }
+        let count = snapshot.map_or(self.by_path.len(), |s| s.objects.len());
+        for position in 0..count {
             let raw;
-            let payload = if let Some((_, replacement)) = edits
-                .as_slice()
-                .binary_search_by_key(&index, |(i, _)| *i)
-                .ok()
-                .and_then(|at| edits.as_slice().get(at))
-            {
-                replacement.as_ref()
+            let (row, payload) = if let Some(snapshot) = snapshot {
+                let (row, bytes) = required(snapshot.objects.get(position), "object row")?;
+                (row, bytes.as_ref())
             } else {
-                raw = self.original_data(row)?;
-                raw.as_ref()
+                let index = *required(self.by_path.get(position), "object index")?;
+                let row = required(self.object_infos.get(index as usize), "object row")?;
+                let payload = if let Some((_, replacement)) = edits
+                    .as_slice()
+                    .binary_search_by_key(&index, |(i, _)| *i)
+                    .ok()
+                    .and_then(|at| edits.as_slice().get(at))
+                {
+                    replacement.as_ref()
+                } else {
+                    raw = self.original_data(row)?;
+                    raw.as_ref()
+                };
+                (row, payload)
             };
-            if v >= 22 {
-                meta.i64(narrow(data.len(), "byte_start")?)?;
-            } else {
-                meta.u32(narrow(data.len(), "byte_start")?)?;
-            }
-            meta.u32(narrow(payload.len(), "byte_size")?)?;
-            data.bytes(payload)?;
-            data.align(8)?;
-            meta.i32(row.type_id)?;
-            if v < 16 {
-                meta.u16(narrow(row.class_id, "class_id")?)?;
-            }
-            if v < 11 {
-                meta.u16(required(row.is_destroyed, "is_destroyed")?)?;
-            }
-            if (11..17).contains(&v) {
-                let t = row.type_index.and_then(|i| self.types.get(i));
-                meta.i16(required(t, "serialized_type")?.script_type_index)?;
-            }
-            if v == 15 || v == 16 {
-                meta.bytes(&required(row.is_stripped, "is_stripped")?.to_ne_bytes())?;
-            }
+            self.write_object(
+                row,
+                payload,
+                &mut meta,
+                &mut data,
+                (v, big_id, snapshot.is_none()),
+            )?;
         }
         drop(edits);
-        self.write_references(&mut meta, trees, options)?;
+        self.write_references(&mut meta, trees, options, snapshot)?;
         meta.end_metadata()?;
-        self.finish_file(&meta, &data)
+        self.finish_file(h, &meta, &data)
+    }
+
+    fn write_object(
+        &self,
+        row: &ObjectInfo,
+        payload: &[u8],
+        meta: &mut Writer,
+        data: &mut Writer,
+        settings: (u32, i32, bool),
+    ) -> Result<(), SaveError> {
+        let (v, big_id, native) = settings;
+        if big_id != 0 {
+            meta.i64(row.path_id)?;
+        } else if v < 14 {
+            meta.i32(narrow(row.path_id, "path_id")?)?;
+        } else {
+            meta.align(4)?;
+            meta.i64(row.path_id)?;
+        }
+        if v >= 22 {
+            meta.i64(narrow(data.len(), "byte_start")?)?;
+        } else {
+            meta.u32(narrow(data.len(), "byte_start")?)?;
+        }
+        meta.u32(narrow(payload.len(), "byte_size")?)?;
+        data.bytes(payload)?;
+        data.align(8)?;
+        meta.i32(row.type_id)?;
+        if v < 16 {
+            meta.u16(narrow(row.class_id, "class_id")?)?;
+        }
+        if v < 11 {
+            meta.u16(required(row.is_destroyed, "is_destroyed")?)?;
+        }
+        if (11..17).contains(&v) {
+            let script = if native {
+                row.type_index
+                    .and_then(|i| self.types.get(i))
+                    .map(|t| t.script_type_index)
+            } else {
+                row.script_type_index
+            };
+            meta.i16(required(script, "script_type_index")?)?;
+        }
+        if v == 15 || v == 16 {
+            meta.bytes(&required(row.is_stripped, "is_stripped")?.to_ne_bytes())?;
+        }
+        Ok(())
     }
 
     fn write_references(
@@ -124,8 +208,10 @@ impl SerializedFile {
         meta: &mut Writer,
         trees: bool,
         options: SaveOptions,
+        snapshot: Option<&SerializedSaveSnapshot<'_>>,
     ) -> Result<(), SaveError> {
-        let v = self.header.version;
+        let h = snapshot.map_or(&self.header, |s| &s.header);
+        let v = h.version;
         if v >= 11 {
             meta.count(self.script_types.len())?;
             for s in &self.script_types {
@@ -143,12 +229,16 @@ impl SerializedFile {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         meta.count(
-            self.externals
-                .len()
-                .checked_add(pending.len())
+            snapshot
+                .map_or(self.externals.len(), |s| s.externals.len())
+                .checked_add(if snapshot.is_some() { 0 } else { pending.len() })
                 .ok_or(SaveError::Range("externals"))?,
         )?;
-        for e in self.externals.iter().chain(pending.as_slice()) {
+        let externals = snapshot.map_or(self.externals.as_ref(), |s| s.externals);
+        for e in externals
+            .iter()
+            .chain(pending.as_slice().iter().filter(|_| snapshot.is_none()))
+        {
             if v >= 6 {
                 meta.cstr(required(e.temp_empty.as_ref(), "temp_empty")?.as_bytes())?;
             }
@@ -163,7 +253,7 @@ impl SerializedFile {
             meta.count(refs.len())?;
             for (i, t) in refs.iter().enumerate() {
                 t.write(
-                    self,
+                    (self, h),
                     meta,
                     trees,
                     true,
@@ -176,16 +266,28 @@ impl SerializedFile {
             }
         }
         if v >= 26 {
-            head_writer::write_shared(self, meta, options)?;
+            head_writer::write_shared((self, h), meta, options)?;
         }
         if v >= 5 {
-            meta.cstr(required(self.user_information.as_ref(), "userInformation")?.as_bytes())?;
+            meta.cstr(
+                required(
+                    snapshot.map_or(self.user_information.as_ref(), |s| {
+                        s.user_information.as_ref()
+                    }),
+                    "userInformation",
+                )?
+                .as_bytes(),
+            )?;
         }
         Ok(())
     }
 
-    fn finish_file(&self, meta: &Writer, data: &Writer) -> Result<Bytes, SaveError> {
-        let h = &self.header;
+    fn finish_file(
+        &self,
+        h: &SerializedHeader,
+        meta: &Writer,
+        data: &Writer,
+    ) -> Result<Bytes, SaveError> {
         let v = h.version;
         let mut out = Writer::new(self.meter(), Endian::Big)?;
         let size = meta
@@ -264,14 +366,15 @@ impl SerializedFile {
 impl SerializedType {
     fn write(
         &self,
-        file: &SerializedFile,
+        source: (&SerializedFile, &SerializedHeader),
         out: &mut Writer,
         trees: bool,
         is_ref: bool,
         index: usize,
         options: SaveOptions,
     ) -> Result<(), SaveError> {
-        let v = file.header.version;
+        let (file, header) = source;
+        let v = header.version;
         out.i32(self.class_id)?;
         if v >= 16 {
             out.boolean(required(self.is_stripped_type, "is_stripped_type")?)?;
@@ -297,14 +400,14 @@ impl SerializedType {
                     file.head_handlers.as_slice().get(index),
                     "HEAD type handler",
                 )?
-                .write(file, out, options)?;
+                .write((file, header), out, options)?;
             } else {
                 let nodes = required(self.nodes.as_ref(), "node")?;
                 if crate::typetree::parse::is_blob_format(v) {
                     nodes.write_blob(
                         out,
                         v,
-                        file.header.endian,
+                        header.endian,
                         options.layout,
                         file.ctx.providers.common_strings(),
                     )?;

@@ -63,6 +63,12 @@ impl<'a> MaterialView<'a> {
             return Ok([default; 3]);
         };
         let mut out = [0.; 3];
+        if let Value::Tuple(values) = v {
+            for (i, slot) in out.iter_mut().enumerate() {
+                *slot = view::number(values.get(i).ok_or(MeshError::Field("color tuple"))?)?;
+            }
+            return Ok(out);
+        }
         for (n, slot) in ["r", "g", "b"].into_iter().zip(&mut out) {
             *slot = view::number(view::attr(self.p, v, n, self.meter)?)?;
         }

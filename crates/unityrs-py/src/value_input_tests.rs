@@ -4,6 +4,39 @@ use pyo3::prelude::*;
 use unityrs_core::limits::{Limits, Meter};
 
 #[test]
+fn writer_getter_reenters_owning_environment_without_deadlocking() -> PyResult<()> {
+    let _serial = crate::tests::serial();
+    unityrs_testkit::guard::finishes("writer getter reentering its owning environment", || {
+        Python::attach(|py| {
+            let module = PyModule::new(py, "unityrs._native")?;
+            crate::native(&module)?;
+            let sys = py.import("sys")?;
+            sys.getattr("modules")?
+                .set_item("unityrs._native", module)?;
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            for directory in [root.join("python"), root.join("../../tools/parity")] {
+                sys.getattr("path")?
+                    .call_method1("insert", (0, directory.to_string_lossy().as_ref()))?;
+            }
+            let result = py
+                .import("binding_y4_review_object")?
+                .getattr("_reentrant_writer")?
+                .call1((py.import("unityrs")?, false))?;
+            assert_eq!(result.get_item("bytes")?.extract::<String>()?, "0b000000");
+            assert_eq!(result.get_item("reads")?.extract::<Vec<i32>>()?, [7]);
+            assert_eq!(
+                result
+                    .get_item("saved")?
+                    .get_item("value")?
+                    .extract::<i32>()?,
+                11
+            );
+            Ok(())
+        })
+    })
+}
+
+#[test]
 fn current_python_values_roundtrip_without_generated_schema() -> PyResult<()> {
     let _serial = crate::tests::serial();
     Python::attach(|py| {

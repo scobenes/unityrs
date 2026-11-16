@@ -117,8 +117,14 @@ def _encode(obj, img, target, platform, blob, guard, mipmap_count=1):
         guard.step(0, img.width * img.height * 12 + 1024, img.width * img.height)
         img = img.convert("RGBA")
         raw = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM).tobytes("raw", pack)
+    # Ordinary mip arguments are interpreted after the base image and dimension
+    # updates, just as Python's range does. Only the unsupported Switch chain
+    # needs an early predicate; never narrow the caller's arbitrary-size count.
+    switch_mips = (platform == 38 and bool(blob) and len(blob) >= 12
+                   and any(blob[8:12]) and img.width >= 8 and img.height >= 8
+                   and mipmap_count > 1)
     data, written = _native._image_encode(raw, img.width, img.height, pack, target, platform, blob,
-                                          _reader(obj), mipmap_count)
+                                          _reader(obj), switch_mips)
     return data, written, img
 
 

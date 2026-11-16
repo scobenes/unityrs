@@ -16,16 +16,25 @@ impl NativeFile {
 }
 #[pymethods]
 impl NativeFile {
+    fn save_serialized_snapshot(
+        &self,
+        py: Python<'_>,
+        metadata: &Bound<'_, PyAny>,
+        rows: &Bound<'_, PyAny>,
+        externals: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        crate::save_snapshot::serialized(py, self, metadata, rows, externals)
+    }
     fn save_bundle_entries(
         &self,
         py: Python<'_>,
         mode: &str,
         rows: Py<PyAny>,
         value: Option<Py<PyAny>>,
-        data_flag: u32,
-        block_info_flag: u16,
+        flags: (u32, u16),
+        header: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
-        crate::save::save_bundle_entries(py, self, mode, rows, value, data_flag, block_info_flag)
+        crate::save::save_bundle_entries(py, self, mode, rows, value, flags, header)
     }
     fn save_web_entries(
         &self,
@@ -145,6 +154,23 @@ impl NativeFile {
                 ] {
                     p::field(&h, k, &p::int(v)?)?;
                 }
+                p::field(
+                    &h,
+                    "endian",
+                    &p::string(if header.endian == unityrs_core::stream::Endian::Little {
+                        b"<"
+                    } else {
+                        b">"
+                    })?,
+                )?;
+                p::field(
+                    &h,
+                    "reserved",
+                    &match header.reserved {
+                        Some(v) => p::bytes(&v)?,
+                        None => p::none(),
+                    },
+                )?;
                 p::field(&d, "header", &h)?;
             }
             if let File::Bundle(f) = &self.inner {
@@ -163,10 +189,40 @@ impl NativeFile {
             if let File::Serialized(file) = &self.inner {
                 for external in file.externals() {
                     charge
-                        .grow(512 + (external.path.as_bytes().len() as u64).saturating_mul(8))
+                        .grow(
+                            512 + (external.path.len() as u64).saturating_mul(8)
+                                + external
+                                    .temp_empty
+                                    .as_ref()
+                                    .map_or(0, |v| (v.len() as u64).saturating_mul(4)),
+                        )
                         .map_err(errors::charge)?;
                     let row = p::dict()?;
                     p::field(&row, "path", &p::string(external.path.as_bytes())?)?;
+                    p::field(
+                        &row,
+                        "temp_empty",
+                        &match &external.temp_empty {
+                            Some(v) => p::string(v.as_bytes())?,
+                            None => p::none(),
+                        },
+                    )?;
+                    p::field(
+                        &row,
+                        "guid",
+                        &match &external.guid {
+                            Some(v) => p::bytes(v.as_slice())?,
+                            None => p::none(),
+                        },
+                    )?;
+                    p::field(
+                        &row,
+                        "type",
+                        &match external.kind {
+                            Some(v) => p::int(i64::from(v))?,
+                            None => p::none(),
+                        },
+                    )?;
                     p::push(&out, &row)?;
                 }
             }

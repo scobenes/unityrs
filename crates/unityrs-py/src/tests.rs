@@ -189,7 +189,7 @@ fn replays_unitypy_helper_observations() -> PyResult<()> {
 
 #[test]
 fn replays_unitypy_export_observations() -> PyResult<()> {
-    replay_groups("binding_y4_", 21)
+    replay_groups("binding_y4_", 32)
 }
 
 fn replay_groups(prefix: &str, expected_count: usize) -> PyResult<()> {
@@ -246,7 +246,7 @@ fn replay_groups(prefix: &str, expected_count: usize) -> PyResult<()> {
             count, expected_count,
             "every recorded observation group must replay"
         );
-        assert_eq!(corrected, usize::from(prefix == "binding_y4_") * 5);
+        assert_eq!(corrected, usize::from(prefix == "binding_y4_") * 7);
         Ok(())
     })
 }

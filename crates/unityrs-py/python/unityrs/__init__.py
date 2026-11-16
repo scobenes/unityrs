@@ -339,11 +339,18 @@ class Environment:
 
     @_locked
     def save(self, pack="none", out_path="output"):
-        # environment.py:176-184: local writes, basename collisions and no mkdir.
-        separator = getattr(self, "fs", os).sep
+        # Preserve safe relative-name basename collisions and no mkdir, while
+        # validating the original asset path before discarding its prefix.
+        from ._output import OutputDirectory, output_name
+        pending = []
         for name, file in self.files.items():
             if getattr(file, "is_changed", False):
-                with open(separator.join([out_path, ntpath.basename(name)]), "wb") as output:
+                pending.append((output_name(name, container=True), file))
+        if not pending:
+            return
+        with OutputDirectory(out_path) as directory:
+            for name, file in pending:
+                with directory.open(name, "wb") as output:
                     output.write(file.save(packer=pack))
 
 

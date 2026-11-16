@@ -1469,6 +1469,14 @@ Defects found while writing this file, each decided by `DESIGN.md` section 3's d
 
 ### 19.3 Safety limits, opt-ins and Environment divergences (P1)
 
+Y4 review safety rows retain the unsafe UnityPy observation separately from the
+explicit refusal reference; native replay compares against the latter.
+
+| Y4 review safety behavior | UnityPy 1.25.2 | unityrs | layer | evidence | status |
+|---|---|---|---|---|---|
+| Y4 renderer and environment output confinement | `MeshRendererExporter.py:48-103` joins mesh names and texture names or property keys directly; `environment.py:176-184` discards directory prefixes before opening saved asset names. Local opens follow symlinks and modify existing hardlink targets | Renderer asset leaves reject empty or dot names, absolute names, parent components, separators, backslashes, colon and NUL before any output opens. Environment save validates the original container-relative spelling before basename selection, retaining safe relative directory prefixes. Candidate paths must remain under the output directory. Local writes hold the destination directory descriptor and replace temporary siblings without following symlink leaves or modifying hardlink targets; a symlink destination directory is refused. Custom filesystems receive only validated leaf names and own their backend's open semantics. This deliberately refuses unsafe UnityPy behavior | L4, L7 | `binding_y4_review_exports.observe_output_security` (unsafe oracle confined to memory, explicit safety reference); `test_y4_review_exports.py` renderer unsafe leaves, texture names/fallbacks, local links, real PNG, and environment original-name checks | verified P3c Y4 installed-wheel review regressions |
+| Y4 parsed shader owning decompression cap | exports the synthetic `version_5_5_0` shader's 80-byte decompressed program without a caller limit | parsed class exports use the owning file's `max_block_output`; a cap of 1 refuses before decompression, with `LimitError`, as the core object exporter does | L7 | `binding_y4_review_exports.observe_shader_cap`; `test_y4_review_exports.py` shader_parsed_export_uses_owning_decompression_cap | verified P3c Y4 installed-wheel review regressions |
+
 Fast PNG is an explicit batch version 2 extension (P3a W1b, `docs/BATCH_SPEC.md` 1.5), not a UnityPy API or a Pillow byte-parity claim. Default PNG retains section 15.7's PNG-bytes row: Pillow 9.5.0's `src/libImaging/ZipEncode.c:91-101` settings and `ZipEncode.c:172-273` filter choice. The opt-in uses the same PNG framing, vendored zlib, memory bound and fallible allocator, changing only the compression level and filter choice.
 
 | Behaviour | UnityPy / Pillow reference | unityrs | Layer | Tests | Status |
