@@ -121,7 +121,7 @@ Interrupted runs may leave
 the nine exporters and extraction helpers with the same destination confinement.
 It validates names and extensions before creating output, opens destinations only
 when dispatch and filters reach an export, and preserves existing files on failed
-image exports through atomic publication. Its 236 oracle comparisons and 89 wheel
+image exports through atomic publication. Its 251 oracle comparisons and 95 wheel
 tests include hostile path, shared-reader cursor and concurrency regressions,
 primitive-map decoding budgets, empty and legacy GameObject components, and
 decryption-key conversion deferred until encrypted bundle processing. Generated
@@ -130,9 +130,12 @@ calling thread; negative string reads reserve decoding storage for the remaining
 input span. Array-map recordings include values and cursors for every alias.
 Concurrent first access shares file containers, readers and decoded sprite
 textures under the environment lock. Container extraction accepts equivalent
-destination spellings, including trailing slashes; direct exporters preserve
-their defaults or ignored arguments for `extension=None` and validate the
-effective output names.
+destination spellings, including repeated trailing slashes. Public tool paths,
+class export arguments and asset-derived output names become exact strings before
+use; hostile subclass regressions check the surrounding filesystem too. Direct
+exporters preserve defaults or ignored arguments for all falsy extensions and
+validate effective output names. Runtime configuration retains a context's
+decryption key unless it supplies an override.
 Textured material adapters and replacement texture converters requiring Switch
 or crunch preprocessing have named refusals pending Y6a/Y6b.
 

@@ -9,6 +9,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from .enums import ClassIDType, BuildTarget
 from .helpers.UnityVersion import UnityVersion
+from ._output import exact_string
 
 # files/File.py:13; files/__init__.py:1-14: the public legacy directory row.
 DirectoryInfo = namedtuple('DirectoryInfo', 'path offset size')
@@ -135,6 +136,8 @@ class File:
 def _save_text(value, guard):
     if value is None:
         return None
+    if isinstance(value, (str, os.PathLike)):
+        value = exact_string(value)
     size = str.__len__(value) if isinstance(value, str) else len(value)
     guard.step(0, size * 4 + 64, 0)
     return value.encode("utf-8", "surrogateescape")
@@ -181,6 +184,8 @@ class SerializedFile(File):
             return self._container
 
     def save(self, packer=None):
+        if isinstance(packer, (str, os.PathLike)):
+            packer = exact_string(packer)
         with self.environment._lock:
             guard = self._native.tree_traversal()
             count = len(self.objects)
@@ -248,6 +253,8 @@ class BundleFile(File):
         return rows
 
     def save(self, packer=None):
+        if isinstance(packer, (str, os.PathLike)):
+            packer = exact_string(packer)
         with self.environment._lock:
             if (self.signature == "UnityFS" and packer
                     and packer not in ("none", "original", "lz4", "lzma", "lz4hc")
@@ -338,6 +345,9 @@ class BundleFile(File):
 
 class WebFile(File):
     def save(self, files=None, packer="none", signature="UnityWebData1.0"):
+        if isinstance(packer, (str, os.PathLike)):
+            packer = exact_string(packer)
+        signature = exact_string(signature)
         with self.environment._lock:
             guard = self._native.tree_traversal()
             guard.step(0, 256, 1)

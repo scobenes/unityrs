@@ -4,13 +4,14 @@ import contextvars
 import os
 from functools import wraps
 
-from .._output import OutputDirectory, output_name
+from .._output import OutputDirectory, output_name, exact_string
 from ._bounded import guard_for, text
 
 _root = contextvars.ContextVar("unityrs_extractor_root", default=None)
 
 
 def leaf(value, guard, *, allow_empty=False):
+    value = exact_string(value)
     text(guard, value)
     if allow_empty and isinstance(value, str) and str.__len__(value) == 0:
         return ""
@@ -18,7 +19,7 @@ def leaf(value, guard, *, allow_empty=False):
 
 
 def destination(value, guard):
-    value = os.fspath(value)
+    value = exact_string(value)
     text(guard, value)
     if not isinstance(value, str):
         raise ValueError("asset destination must be a string")
@@ -30,7 +31,7 @@ def exporter(function):
 
     The root opens lazily on the first write, after filters and dispatch. Both
     destination and supplied string suffix are exact strings before formatting;
-    None reaches the exporter's default or ignored-argument handling. The
+    falsy values reach the exporter's default or ignored-argument handling. The
     effective output leaf is validated at the write. Only caller-selected
     destination directories may contain separators.
     """
@@ -41,9 +42,9 @@ def exporter(function):
         parent, name = os.path.split(fp)
         # An empty object name can still produce a safe leaf such as .txt.
         # file() validates the complete name after the exporter adds its suffix.
-        leaf(name, guard, allow_empty=True)
+        name = leaf(name, guard, allow_empty=True)
         extension = args[0] if args else kwargs.get("extension", "")
-        if extension is not None:
+        if isinstance(extension, (str, os.PathLike)) or extension:
             extension = leaf(extension, guard, allow_empty=True)
         if args:
             args = (extension, *args[1:])
@@ -59,6 +60,7 @@ def exporter(function):
 
 
 def relative(value, guard):
+    value = exact_string(value)
     text(guard, value)
     if not isinstance(value, str):
         raise ValueError("asset output name must be a string")
@@ -80,7 +82,7 @@ def relative(value, guard):
 
 
 def _walk(path, guard, create=False, parent=None):
-    text(guard, path)
+    path = destination(path, guard)
     guard.step(0, len(path) * 256 + 512, len(path))
     parts = path.split("/")
     fd = os.dup(parent) if parent is not None else os.open(
@@ -112,7 +114,7 @@ def root(directory, guard, create):
     held = [directory, None, create]
     token = _root.set(held)
     try:
-        yield
+        yield directory
     finally:
         _root.reset(token)
         if held[1] is not None:
@@ -120,7 +122,7 @@ def root(directory, guard, create):
 
 
 def _location(path, guard):
-    text(guard, path)
+    path = destination(path, guard)
     held = _root.get()
     if held is None:
         parent, leaf = os.path.split(path)
@@ -133,7 +135,7 @@ def _location(path, guard):
         if not path.startswith(prefix):
             raise ValueError("unsafe asset output name")
         path = path[len(prefix):]
-        relative(path, guard)
+        path = relative(path, guard)
     if fd is None:
         held[1] = fd = _walk(directory, guard, create)
     parent, leaf = os.path.split(path)
@@ -144,14 +146,14 @@ def mkdir(path, guard):
     parent, leaf, fd = _location(path, guard)
     joined = os.path.join(parent, leaf)
     if fd is not None and joined:
-        relative(joined, guard)
+        joined = relative(joined, guard)
     os.close(_walk(joined, guard, True, fd))
 
 
 @contextlib.contextmanager
 def file(path, mode, guard, *, keep_partial=True, **kwargs):
     parent, leaf, fd = _location(path, guard)
-    output_name(leaf, guard=guard)
+    leaf = output_name(leaf, guard=guard)
     directory = OutputDirectory(".", guard=guard)
     directory.fd = _walk(parent, guard, False, fd)
     failure = None

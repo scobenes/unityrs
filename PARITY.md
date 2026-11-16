@@ -854,13 +854,21 @@ failed-image safety differences are documented in section 19.3.
 and nested assets into `out`, `out/`, `./out` and an absolute directory. Equivalent
 root spellings share containment behavior while directory traversal remains
 anchored to held descriptors with symlink refusal.
+`binding_y5_round5.observe_repeated_roots` adds `out//`, `./out//` and triple
+trailing slashes, using one returned root spelling for joins and prefix removal.
 `binding_y5_round4.observe_none_extensions` compares positional and keyword
 `extension=None` for every direct exporter: TextAsset, Mesh, Shader and Texture2D
 use their defaults; Font, MonoBehaviour, AudioClip and GameObject ignore it;
 Sprite reaches Pillow's unknown-extension error. Effective output leaves remain
-validated before writes. Both observations replay through
+validated before writes. `binding_y5_round5.observe_falsy_extensions` compares
+`False`, integer zero, `None`, empty string, float zero, empty list, dict, tuple
+and bytes in both argument positions for each exporter, including Sprite's exact Pillow error.
+These observations replay through
 `replays_unitypy_tools_observations` and have installed-wheel regressions in
-`bindings/test_y5_round4.py` and `python/tests/test_tools.py`.
+`bindings/test_y5_round4.py`, `bindings/test_y5_round5.py` and `python/tests/test_tools.py`.
+The round-five tests also compare scalar AudioClip names (`None` and an integer)
+with UnityPy, preserving their formatting while string subclasses bypass caller
+formatting methods.
 
 | item | UnityPy 1.25.2 | tier | level | test | status |
 |---|---|---|---|---|---|
@@ -1560,7 +1568,13 @@ bundle's envelope, on the calling Python thread and the active input's meter.
 truncated-envelope error ordering, encrypted key rejection and a valid-key
 retry against UnityPy. `python/tests/test_deferred_key.py` checks that key
 snapshots share retained input memory and that repeated encrypted attempts
-receive separate decode-work allowances.
+receive separate decode-work allowances. A runtime configuration with no key
+override retains `FileContext::set_assetbundle_decrypt_key`; an explicit key
+takes precedence. `crates/unityrs-core/tests/unitycn.rs`
+`runtime_configuration_preserves_context_key_without_an_override` covers the
+context fallback, override and restoration.
+`binding_y5_round5.observe_runtime_keys` compares and replays encrypted bundle
+loads across runtime setting changes against UnityPy.
 
 CAB writes charge mutable buffer snapshots and native zero padding before
 allocation. Under a 1 MB budget, a 2 MB write or alignment raises `MemoryError`
@@ -1586,7 +1600,7 @@ Fast PNG is an explicit batch version 2 extension (P3a W1b, `docs/BATCH_SPEC.md`
 | Behaviour | UnityPy / Pillow reference | unityrs | Layer | Tests | Status |
 |---|---|---|---|---|---|
 | Python failed-image atomic publication | A `(1, 0)` RGBA image exported over an existing PNG raises `SystemError: tile cannot extend outside image` and leaves a 33-byte partial PNG, destroying the old file | Safety divergence, following E62's directory-sink precedent: write a temporary sibling, rename over the destination only after success, remove the temporary on failure, and preserve the complete existing PNG. The original oracle bytes/result are recorded beside our preserved bytes/result | API, L7 | `binding_y5_review.observe_failed_image`; `tools/parity/bindings/test_y5_review_paths.py` test_failed_png_replays_oracle_partial_and_preserves_our_existing_file; `crates/unityrs-py/python/tests/test_tools.py` test_failed_image_keeps_existing_file_and_removes_temporary; `replays_unitypy_tools_observations` | verified P3c Y5 review |
-| Python direct-export destination anchoring | Direct tools exporters format caller destinations and concatenate extensions, allowing `/../../outside` or subclass formatting to redirect output | Safety divergence: exact string destinations and extensions, anchored destination roots, strict appended leaf names and extensions, no symlink components; validate GameObject mesh/material and audio sample names before creating directories or publishing earlier files | API, L9 | `tools/parity/bindings/test_y5_review_paths.py` (all nine direct exporters, export_obj, graph names and symlink components); `tools/parity/bindings/test_y5_tools.py` (extraction container names, links and audio); `crates/unityrs-py/python/tests/test_tools.py` | verified P3c Y5 review |
+| Python tools and class output string normalization | Direct tools exporters format caller destinations and concatenate extensions, allowing `/../../outside` or subclass formatting to redirect output | Safety divergence: normalize every public tools path/name, class export and environment save argument and asset-derived output name to an exact string without caller string protocols; use returned validated strings for joins, descriptor walks and prefix removal. Anchored destination roots, strict appended leaf names and extensions, no symlink components; validate GameObject mesh/material and audio sample names before creating directories or publishing earlier files | API, L9 | `tools/parity/bindings/test_y5_round5.py` (hostile subclass and path-like matrices, exact-string results and surrounding filesystem including empty directories); `crates/unityrs-py/src/tests.rs` hostile_strings_match_exact_string_exports_without_outside_writes; `tools/parity/bindings/test_y5_review_paths.py` (all nine direct exporters, export_obj, graph names and symlink components); `tools/parity/bindings/test_y5_tools.py` (extraction container names, links and audio); `crates/unityrs-py/python/tests/test_tools.py` | verified P3c Y5 review |
 | Python external-file lookup containment | `Environment.find_file` joins an external name directly to the environment path and also searches walk matches; absolute paths, parent components, Windows drive names and symlinks can reach outside it | Safety divergence: direct candidates and walk matches must resolve by realpath inside the environment path, otherwise they are skipped. Relative subpaths inside it retain the reference behaviour; registered CAB lookup is unchanged. | API | `tools/parity/bindings/test_y2_findings.py` test_find_file_confines_realpaths, test_windows_find_file_candidates_stay_inside | verified P3 Y2 |
 | Python name-peek cache retention | Process-wide, first-seen-wins cache keyed by `(m_Name, m_Type, m_Version)`, returning the same tuple on cache hits, without a size bound (`helpers/TypeTreeNode.py:67`, `:190-211`); its nodes do not reference their file | Safety divergence: nodes weakly reference the native file and cannot keep it alive; after file collection traversal uses default limits. Cache admission stops at 4,096 entries or 1,048,576 retained nodes total, counting the new root, prefix children and their subtrees conservatively per edge. Counting is iterative and stops at the remaining allowance, including cyclic prefixes. Cached results retain first-seen semantics and tuple identity; results past either cap are computed each time, equal but not identical for unchanged trees. | API | `crates/unityrs-py/python/tests/test_name_peek_cache.py` test_cached_peek_does_not_retain_native_file, test_dead_source_falls_back_to_default_limits, test_cached_tuple_identity_and_first_seen_win, test_entry_cap_returns_equal_distinct_results, test_total_node_cap_counts_prefix_subtrees, test_oversized_subtree_count_stops_at_node_cap, test_deep_and_cyclic_subtree_counts_are_iterative_and_bounded | verified P3 Y3 |
 | Python runtime class-generation expansion | Shared TPK nodes can expand exponentially when rendered as annotations | Safety divergence: annotation size, cumulative text, field count, recursion depth, source size and a conservative AST node count are charged before construction; excess raises `ExpansionError` (an `ImportError`). No generated schema is stored. | API | `tools/parity/bindings/test_y2_findings.py` test_shared_pair_tpk_is_refused_before_expansion, test_source_and_ast_are_bounded_before_parse, test_real_tpk_has_expansion_headroom | verified P3 Y2 |

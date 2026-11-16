@@ -470,7 +470,10 @@ class Environment:
     def save(self, pack="none", out_path="output"):
         # Preserve safe relative-name basename collisions and no mkdir, while
         # validating the original asset path before discarding its prefix.
-        from ._output import OutputDirectory, output_name
+        from ._output import OutputDirectory, output_name, exact_string
+        out_path = exact_string(out_path)
+        if isinstance(pack, (str, os.PathLike)):
+            pack = exact_string(pack)
         guard = TreeTraversal(self._limits, self._budget)
         guard.step(0, 256, 1)
         pending = []

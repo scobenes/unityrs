@@ -144,3 +144,31 @@ class Tools(unittest.TestCase):
     def test_sprite_cache_decodes_once_on_concurrent_access(self):
         from binding_y5_round4 import check_sprite_cache_publication
         check_sprite_cache_publication(unityrs)
+
+    def test_hostile_string_matrix_direct(self):
+        from binding_y5_round5 import check_strings
+        check_strings(unityrs, 'direct')
+
+    def test_hostile_string_matrix_extraction(self):
+        from binding_y5_round5 import check_strings
+        check_strings(unityrs, 'extract')
+
+    def test_hostile_string_matrix_classes_and_environment(self):
+        from binding_y5_round5 import check_strings
+        check_strings(unityrs, 'classes')
+
+    def test_audio_scalar_names_retain_formatting(self):
+        from binding_y5_round5 import observe_audio_scalar_names
+        self.assertEqual(observe_audio_scalar_names(unityrs),
+                         [{'None.wav': b'RIFFfake'}, {'42.wav': b'RIFFfake'}])
+
+    def test_repeated_root_slashes(self):
+        from binding_y5_round5 import observe_repeated_roots
+        self.assertTrue(all('value' in row[0] and len(row[1]) == 2
+                            for row in observe_repeated_roots(unityrs)))
+
+    def test_falsy_extension_values(self):
+        from binding_y5_round5 import observe_falsy_extensions
+        for name, rows in observe_falsy_extensions(unityrs).items():
+            for outcome, tree in rows:
+                self.assertIn('error' if name == 'Sprite' else 'value', outcome)

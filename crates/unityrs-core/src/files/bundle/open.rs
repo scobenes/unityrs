@@ -310,6 +310,7 @@ fn read_fs_header(
                     .map_or(Ok(ctx.assetbundle_decrypt_key), |config| {
                         config
                             .resolve_decrypt_key(charge.meter())
+                            .map(|key| key.or(ctx.assetbundle_decrypt_key))
                             .map_err(Error::from)
                     })
             })?)

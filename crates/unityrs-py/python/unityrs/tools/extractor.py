@@ -31,6 +31,7 @@ def export_obj(
     append_path_id: bool = False, export_unknown_as_typetree: bool = False,
     asset_filter: Optional[Callable[[Object], bool]] = None,
 ) -> List[Tuple[SerializedFile, int]]:
+    fp = _paths.destination(fp, guard_for(obj))
     export_func = EXPORT_TYPES.get(obj.type)
     if not export_func:
         if export_unknown_as_typetree:
@@ -63,6 +64,9 @@ def extract_assets(
     append_path_id: bool = False, export_unknown_as_typetree: bool = False,
     asset_filter: Optional[Callable[[Object], bool]] = None,
 ) -> List[Tuple[SerializedFile, int]]:
+    if isinstance(src, (str, os.PathLike)):
+        src = _paths.exact_string(src)
+    dst = _paths.exact_string(dst)
     env = UnityPy.load(src)
     guard = TreeTraversal(getattr(env, "_limits", None), getattr(env, "_budget", None))
     guard.step(0, 512 + len(EXPORT_TYPES) * 128, len(EXPORT_TYPES))
@@ -75,7 +79,7 @@ def extract_assets(
         except (IndexError, ValueError):
             return 999
 
-    dst = os.fspath(dst)
+    dst = _paths.destination(dst, guard)
     values = env.container if use_container else env.objects
     guard.step(0, len(values) * 512 + 256, len(values))
     if use_container:
@@ -85,7 +89,7 @@ def extract_assets(
     # Empty sources do not open the destination in the original extractor.
     if not values:
         return exported
-    with _paths.root(dst, guard, create=use_container):
+    with _paths.root(dst, guard, create=use_container) as dst:
         for entry in values:
             obj_path, obj = entry if use_container else (None, entry)
             if asset_filter is not None and not asset_filter(obj):

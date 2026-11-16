@@ -194,7 +194,7 @@ fn replays_unitypy_export_observations() -> PyResult<()> {
 
 #[test]
 fn replays_unitypy_tools_observations() -> PyResult<()> {
-    replay_groups("binding_y5_", 41)
+    replay_groups("binding_y5_", 44)
 }
 
 #[test]
@@ -226,6 +226,29 @@ fn replays_runtime_class_map_without_persisting_tpk_data() -> PyResult<()> {
             .extract()?;
         let actual: Value = serde_json::from_str(&replayed).unwrap();
         assert_eq!(actual, expected);
+        Ok(())
+    })
+}
+
+#[test]
+fn hostile_strings_match_exact_string_exports_without_outside_writes() -> PyResult<()> {
+    let _serial = serial();
+    Python::attach(|py| {
+        let module = PyModule::new(py, "unityrs._native")?;
+        super::native(&module)?;
+        py.import("sys")?
+            .getattr("modules")?
+            .set_item("unityrs._native", module)?;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let paths = py.import("sys")?.getattr("path")?;
+        for directory in [root.join("python"), root.join("../../tools/parity")] {
+            paths.call_method1("insert", (0, directory.to_string_lossy().as_ref()))?;
+        }
+        let binding = py.import("unityrs")?;
+        let check = py.import("binding_y5_round5")?.getattr("check_strings")?;
+        for group in ["direct", "extract", "classes"] {
+            check.call1((&binding, group))?;
+        }
         Ok(())
     })
 }
