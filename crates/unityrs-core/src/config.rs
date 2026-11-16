@@ -254,6 +254,7 @@ pub fn get_fallback_version<'a>(
 
 const _: () = {
     crate::send_sync::<RuntimeConfig>();
+    crate::send_sync::<dyn DecryptKeySource>();
     crate::send_sync::<UnityVersionFallbackWarning<'static>>();
     crate::send_sync::<UnityVersionFallbackError>();
     crate::send_sync::<FallbackWarnings>();
