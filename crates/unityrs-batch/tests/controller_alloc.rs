@@ -15,6 +15,9 @@ mod run_support;
 mod sites;
 mod stage_support;
 #[cfg(feature = "test-hooks")]
+#[path = "controller_support/store_schedule.rs"]
+mod store_schedule;
+#[cfg(feature = "test-hooks")]
 #[path = "controller_support/store_scopes.rs"]
 mod store_scopes;
 #[cfg(feature = "test-hooks")]
@@ -229,13 +232,13 @@ fn sweep(kinds: impl Iterator<Item = &'static str>) {
             sites::census(kind, &stdout).len()
         );
         let mut tally = Tally::default();
-        let strict = kind.starts_with("store");
         let (covered, missed) = retry::cover(kind, &targets, &expected, &mut tally);
+        sites::census_only(kind, &stdout, &output.stderr, &covered);
         let mut sites = targets.len();
         if timed(kind) {
             sites += settle(kind, sites, covered, &expected, &mut tally);
         }
-        if strict {
+        if kind.starts_with("store") {
             println!(
                 "CONTROLLER_TARGETS kind={kind} reached={} targets={sites}",
                 sites - missed
@@ -434,6 +437,7 @@ fn settle(
         let Some(key) = sites::refused(&String::from_utf8_lossy(&output.stderr)) else {
             return refused + 1;
         };
+        sites::diagnose(key, &String::from_utf8_lossy(&output.stderr));
         covered.insert(key);
     }
     tally.failures += 1;

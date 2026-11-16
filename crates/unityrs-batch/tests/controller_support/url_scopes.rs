@@ -272,14 +272,27 @@ impl Hooks for Arm {
 }
 /// The origin's early closes at the finisher, while the parked owners
 /// (a refused or frozen stage among them) are alive.
-struct Finish(Arc<Origin>);
+struct Finish(Arc<Origin>, bool);
 static EARLY: OnceLock<usize> = OnceLock::new();
 impl Observer for Finish {
+    fn test_before_wake_drop(&self) -> Option<fn(&tokio::runtime::Runtime)> {
+        self.1.then_some(flush_reactor)
+    }
     fn finished(&self, _: &Finished) {
         EXEMPT.with(|e| e.set(true));
         let _ = EARLY.set(self.0.early());
         EXEMPT.with(|e| e.set(false));
     }
+}
+/// Once real stage/socket owners have retired, purge their pending reactor
+/// registrations. Tokio's release takes the Vec, including its capacity; the
+/// next real wake deregistration must then grow it, in every census and aim.
+fn flush_reactor(runtime: &tokio::runtime::Runtime) {
+    EXEMPT.with(|e| e.set(true));
+    // This harness-only yield forces a current-thread IO-driver turn. No
+    // engine futures are spawned on this runtime; they were parked manually.
+    runtime.block_on(tokio::task::yield_now());
+    EXEMPT.with(|e| e.set(false));
 }
 /// The origin (and for `https`, the TLS peer) serving `scope`'s replies,
 /// with its `http` policy and the two bundles' URLs.
@@ -454,7 +467,7 @@ pub fn child(scope: &str, site: usize) {
                 polls: AtomicUsize::new(0),
                 lifetime,
             }),
-            observer: Arc::new(Finish(origin.clone())),
+            observer: Arc::new(Finish(origin.clone(), scope == "url-fail")),
             network: Some(Network {
                 environment: Arc::new(Environment),
                 hooks: Some(unityrs_batch::run::Hooks {

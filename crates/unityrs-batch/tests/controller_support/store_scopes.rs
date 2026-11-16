@@ -126,6 +126,7 @@ struct Observe(
     unityrs_batch::sys::Lock<Vec<Arc<unityrs_core::limits::Meter>>>,
     std::sync::atomic::AtomicBool,
     unityrs_batch::sys::Lock<Vec<unityrs_batch::http::permit::ChargeProbe>>,
+    unityrs_batch::sys::Lock<Option<super::store_schedule::Retire>>,
 );
 impl run::Observer for Observe {
     fn taken(&self, stop: Option<unityrs_batch::lifetime::Stop>) {
@@ -141,6 +142,7 @@ impl run::Observer for Observe {
         if let Some(unityrs_batch::sink::Sink::Store(store)) = &h.sink {
             store.visit_meters(|meter| meters.push(meter.clone()));
             store.visit_permits(|probe| self.2.lock().push(probe));
+            *self.3.lock() = Some(super::store_schedule::Retire::new(store));
         }
         EXEMPT.with(|e| e.set(false));
     }
@@ -175,6 +177,7 @@ fn drive(
         unityrs_batch::sys::Lock::new(Vec::with_capacity(8)),
         std::sync::atomic::AtomicBool::new(false),
         unityrs_batch::sys::Lock::new(Vec::with_capacity(8)),
+        unityrs_batch::sys::Lock::new(None),
     ));
     let result = run::drive_with(
         prepared,
@@ -188,7 +191,11 @@ fn drive(
             ..Default::default()
         },
     );
-    ACTIVE.store(false, SeqCst);
+    if let Some(retire) = observe.3.lock().take() {
+        retire.finish();
+    } else {
+        ACTIVE.store(false, SeqCst);
+    }
     let deadline = std::time::Instant::now() + unityrs_testkit::guard::DEADLOCK_GUARD;
     while observe.0.lock().iter().any(|m| m.used() != 0)
         || observe.2.lock().iter().any(|p| p.used() != 0)
@@ -239,6 +246,7 @@ fn drive(
     result
 }
 pub fn child(kind: &str, site: usize) {
+    unityrs_batch::execution::schedule::defer_blocking_completions();
     store_support::run(async {
         EXEMPT.with(|e| e.set(true));
         let fake = Arc::new(Fake::start().await);

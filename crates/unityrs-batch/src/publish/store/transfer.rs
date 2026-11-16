@@ -215,11 +215,12 @@ pub(super) async fn run(
     owned.hooks.point(Point::Transfer);
     phase::check(&stopped)?;
     let state = owned.clone();
-    let mut input = crate::execution::blocking(&pool, move || {
+    let input = crate::execution::blocking(&pool, move || {
         phase::on_pool_named("store payload open", || Input::open(state, item, slot))
-    })
-    .await
-    .map_err(|_| Error::internal())??;
+    });
+    #[cfg(feature = "test-hooks")]
+    crate::execution::schedule::blocking_ready().await;
+    let mut input = input.await.map_err(|_| Error::internal())??;
     if let Some(listed) = listed {
         let hashed = hash(input, &pool).await?;
         let summary = hashed.1;
@@ -322,11 +323,12 @@ async fn chunk(
     input: Input,
     pool: &tokio::runtime::Handle,
 ) -> Result<(Input, Payload, Option<archive::Summary>), Error> {
-    crate::execution::blocking(pool, move || {
+    let task = crate::execution::blocking(pool, move || {
         phase::on_pool_named("store payload part", || input.chunk())
-    })
-    .await
-    .map_err(|_| Error::internal())?
+    });
+    #[cfg(feature = "test-hooks")]
+    crate::execution::schedule::blocking_ready().await;
+    task.await.map_err(|_| Error::internal())?
 }
 // Archive hashing uses the same bounded puller and retires scratch before a
 // miss reopens it. The descriptor is retained while the completed input drops.
@@ -365,9 +367,10 @@ async fn reopen(mut input: Input, pool: &tokio::runtime::Handle) -> Result<Input
             input.remaining = descriptor.size();
             Ok(input)
         })
-    })
-    .await
-    .map_err(|_| Error::internal())??;
+    });
+    #[cfg(feature = "test-hooks")]
+    crate::execution::schedule::blocking_ready().await;
+    let input = input.await.map_err(|_| Error::internal())??;
     Ok(input)
 }
 fn summary_tag(summary: archive::Summary) -> Result<Etag, Error> {

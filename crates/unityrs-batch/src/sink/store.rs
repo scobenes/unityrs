@@ -369,6 +369,13 @@ impl Store {
             visit(slot.charge_probe());
         }
     }
+    /// Test-only reactor custody: a sweep can keep an idle registration
+    /// alive until counted teardown, independently of the last socket wake.
+    #[cfg(feature = "test-hooks")]
+    #[must_use]
+    pub fn test_finisher_handle(&self) -> Option<&tokio::runtime::Handle> {
+        self.runtime.get().map(tokio::runtime::Runtime::handle)
+    }
 }
 // The owner is constructed only from an ObjectStore spec. Returning a fixed
 // empty value keeps this checked accessor total even if that invariant breaks.
