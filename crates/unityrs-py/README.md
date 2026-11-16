@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=103
+python scripts/unittest-suites crates/unityrs-py/python/tests=113
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=267
+python ../../scripts/unittest-suites bindings=269
 ```
 
-The recorder writes 164 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups and 50 tools/module/loader groups),
+The recorder writes 166 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups and 52 tools/module/loader groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 103 tests and the oracle comparison has 267; CI enforces both
+The wheel suite has 113 tests and the oracle comparison has 269; CI enforces both
 minimum counts. Warning handlers run on the calling Python thread before a
 fallback load is published, including handlers that re-enter the environment.
 The Rust binding suite has 33 tests, including guarded finalization and unwind
@@ -269,6 +269,14 @@ Primitive string maps dispatch through the owning reader's decoding guard;
 budget regressions cover the one-byte refusal boundary and every tuple-producing array-map
 alias. Negative string sizes reserve the remaining input span through decoding;
 negative and None-size byte, string and array reads also compare with the oracle.
+Byte reads and the whole-file `bytes` property retain their spans in every
+enclosing array guard until handoff. Boundary regressions cover aggregate byte
+arrays, raw spans, fixed, aligned and NUL-terminated strings, every typed-array
+alias and nested byte/string arrays, including charge cleanup after refusal
+and success. The 64-entry array of 65,536-byte spans refuses a 200,000-byte
+budget. `binding_y5_round8` records that safety divergence beside UnityPy's
+result and replays values and cursors with sufficient space on memory, BytesIO
+and path readers.
 Empty GameObject component lists return no components, and legacy
 `(classID, PPtr)` entries return their actual pointers. These documented Tier B
 corrections replay beside the original oracle exceptions. Global decryption

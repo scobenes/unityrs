@@ -98,6 +98,8 @@ TOOLS = [("binding_y5_loader", "observe_" + name) for name in
 ] + [
     ("binding_y5_round7", "observe_" + name) for name in
     ("unused_destinations", "source_error_order", "empty_root")
+] + [
+    ("binding_y5_round8", "observe_" + name) for name in ("array_reads", "aggregate_bytes")
 ]
 
 
@@ -107,6 +109,7 @@ def helper_records():
         ("binding_y5_objects", "observe_gameobject"): "PARITY.md 19.2: empty components and actual legacy PPtrs follow the supplied component list",
         ("binding_y5_round2", "observe_primitive_string_budget"): "PARITY.md 19.3: primitive map strings dispatch through the bounded reader",
         ("binding_y5_round3", "observe_negative_string_budget"): "PARITY.md 19.3: negative string reads retain decoding staging for the remaining input span",
+        ("binding_y5_round8", "observe_aggregate_bytes"): "PARITY.md 19.3: retain byte spans in every enclosing array until handoff",
         ("binding_y5_review", "observe_failed_image"): "PARITY.md 19.3: failed image exports preserve existing files with atomic publication",
         ("binding_y5_objects", "observe_iteration"): "PARITY.md 19.2: file iteration follows nested containers and yields requested objects",
         ("binding_y4_images", "observe_set_image"): "PARITY.md 18.1: convert unsupported packer modes to RGBA",

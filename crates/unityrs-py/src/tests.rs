@@ -194,7 +194,7 @@ fn replays_unitypy_export_observations() -> PyResult<()> {
 
 #[test]
 fn replays_unitypy_tools_observations() -> PyResult<()> {
-    replay_groups("binding_y5_", 50)
+    replay_groups("binding_y5_", 52)
 }
 
 #[test]
@@ -311,7 +311,7 @@ fn replay_groups(prefix: &str, expected_count: usize) -> PyResult<()> {
             corrected,
             match prefix {
                 "binding_y4_" => 18,
-                "binding_y5_" => 5,
+                "binding_y5_" => 6,
                 _ => 0,
             }
         );

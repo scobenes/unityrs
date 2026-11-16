@@ -45,11 +45,16 @@ class ObjectFileReader(EndianBinaryReader):
             if self._bytes_io and -maxsize - 1 <= size < 0:
                 size = -1
         data, self._position = self._native.serialized_read(self._position, size)
+        # The native copy charge ends at this call's return. Enclosing arrays
+        # still own these bytes, including spans read by strings/typed arrays.
+        self._retain(len(data))
         return data
 
     @property
     def bytes(self):
-        return self._native.serialized_read(0, -1)[0]
+        data = self._native.serialized_read(0, -1)[0]
+        self._retain(len(data))
+        return data
 
     def read_string(self, size=None):
         if size is None:
