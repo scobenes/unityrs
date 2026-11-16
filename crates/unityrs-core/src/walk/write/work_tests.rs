@@ -224,3 +224,40 @@ fn a_write_refused_at_a_class_first_child_takes_no_pass_over_the_rest() {
     };
     assert_eq!(run(LONG), run(4), "2^16 children against 4");
 }
+
+#[test]
+fn caller_stream_alignment_uses_its_origin_and_preserves_the_prefix() {
+    let t = tree(vec![
+        NodeRow::new(0, "Base", "Base"),
+        NodeRow::new(1, "int", "value"),
+        NodeRow::new(1, "string", "name"),
+    ]);
+    let mut object = 41i32.to_le_bytes().to_vec();
+    string(&mut object, b"writer");
+    let parsed = read(&t, object.clone());
+    let limits = Limits::default();
+    let ctx = WriteCtx {
+        endian: Endian::Little,
+        ref_types: RefTypes::List(&[]),
+        rules: WriteRules::UnityPy,
+        limits: &limits,
+    };
+    for prefix_size in 0..8 {
+        let meter = Meter::unlimited();
+        let mut out = DecodeBuf::new(&meter, 0, u64::MAX, LimitKind::InputMemory).unwrap();
+        let prefix = vec![0x59; prefix_size];
+        out.extend_from_slice(&prefix).unwrap();
+        super::write_at(&parsed, &t, &ctx, &mut out, 0).unwrap();
+        let mut expected = prefix;
+        expected.extend(41i32.to_le_bytes());
+        expected.extend(6i32.to_le_bytes());
+        expected.extend(b"writer");
+        expected.resize(expected.len().next_multiple_of(4), 0);
+        assert_eq!(out.as_slice(), expected, "prefix {prefix_size}");
+    }
+    let meter = Meter::unlimited();
+    let mut out = DecodeBuf::new(&meter, 0, u64::MAX, LimitKind::InputMemory).unwrap();
+    out.extend_from_slice(b"prefix").unwrap();
+    super::write(&parsed, &t, &ctx, &mut out).unwrap();
+    assert_eq!(out.as_slice(), [b"prefix".as_slice(), &object].concat());
+}

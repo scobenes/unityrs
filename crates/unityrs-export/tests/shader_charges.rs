@@ -202,7 +202,7 @@ fn malformed_block_and_invalid_script_are_charged_before_scanning() {
         let meter = work_meter(u64::MAX);
         let error = shader::export(&obj, &env, &meter).unwrap_err();
         if script {
-            assert!(matches!(error, Error::Utf8));
+            assert!(matches!(error, Error::Utf8 | Error::Utf8Bytes(_)));
         } else {
             assert!(matches!(
                 error,

@@ -28,12 +28,90 @@ HELPERS = [
     ("binding_y3_objects", "observe_head"),
 ]
 
+EXPORTS = [
+    ("binding_y4_images", name) for name in (
+        "observe_textures", "observe_set_image", "observe_arrays", "observe_sprites", "observe_image_formats")
+] + [("binding_y4_images_matrix", "observe_decode_matrix")] + [
+    ("binding_y4_exports", name) for name in (
+        "observe_audio", "observe_shader", "observe_mesh", "observe_surface",
+        "observe_renderer_errors", "observe_audio_resources", "observe_renderer",
+        "observe_shader_cases", "observe_audio_pcm")
+] + [
+    ("binding_y4_save", name) for name in (
+        "observe_objects", "observe_files", "observe_environment", "observe_cabs", "observe_writers", "observe_legacy")
+] + [
+    ("binding_y4_review_save", name) for name in (
+        "observe_serialized_mapping", "observe_serialized_payload", "observe_serialized_metadata",
+        "observe_bundle_headers", "observe_legacy_headers", "observe_buffer_payloads")
+] + [
+    ("binding_y4_review_images", name) for name in ("observe_mipmap_arguments", "observe_buffer_budgets")
+] + [
+    ("binding_y4_review_object", name) for name in (
+        "observe_reentrant_writer", "observe_numeric_writer", "observe_sequence_writer", "observe_nonnumeric_writer")
+] + [
+    ("binding_y4_review_exports", name) for name in (
+        "observe_materials", "observe_shader_cap", "observe_output_security")
+] + [
+    ("binding_y4_round3", name) for name in (
+        "observe_cab_budget", "observe_cab_length", "observe_cab_padding", "observe_typed_sequences",
+        "observe_packer_threads", "observe_mesh_thread", "observe_shader_thread",
+        "observe_sprite_thread", "observe_entry_threads", "observe_switch_invalid_counts")
+] + [
+    ("binding_y4_round4", name) for name in (
+        "observe_pairs", "observe_managed", "observe_cab_mapping", "observe_export_buffers",
+        "observe_strided_writes", "observe_output_names", "observe_bundle_views", "observe_path_budgets")
+] + [
+    ("binding_y4_round5", name) for name in (
+        "observe_buffer_lengths", "observe_vector_lengths", "observe_cab_validation",
+        "observe_array_storage", "observe_exact_output_names", "observe_snapshot_threads", "observe_array_inputs")
+] + [
+    ("binding_y4_round6", name) for name in (
+        "observe_blob_lifetime", "observe_resource_inheritance", "observe_pointer_owner",
+        "observe_payload_lengths", "observe_clear_replacement", "observe_detached_material")
+] + [
+    ("binding_y4_round7", name) for name in (
+        "observe_streamed_lifetime", "observe_cab_protocol", "observe_deferred_replacements")
+]
+
 
 def helper_records():
     import importlib
-    return [{"name": f"{observer}.{function}", "observer": observer, "function": function,
-             "expected": getattr(importlib.import_module(observer), function)(UnityPy)}
-            for observer, function in HELPERS]
+    references = {
+        ("binding_y4_images", "observe_set_image"): "PARITY.md 18.1: convert unsupported packer modes to RGBA",
+        ("binding_y4_images", "observe_image_formats"): "PARITY.md 18.1: convert unsupported packer modes to RGBA",
+        ("binding_y4_images", "observe_textures"): "PARITY.md 19.2: zero-size textures yield empty RGBA before fetching data",
+        ("binding_y4_exports", "observe_audio"): "PARITY.md 19.2: empty audio resources yield no samples",
+        ("binding_y4_exports", "observe_audio_resources"): "PARITY.md 19.2: empty audio resources yield no samples",
+        ("binding_y4_review_exports", "observe_shader_cap"): "PARITY.md 19.3: parsed shader export honors max_block_output",
+        ("binding_y4_review_exports", "observe_output_security"): "PARITY.md 19.3: binding asset output confinement",
+        ("binding_y4_review_images", "observe_buffer_budgets"): "PARITY.md 19.3: charge buffer bytes before allocation",
+        ("binding_y4_round3", "observe_cab_budget"): "PARITY.md 19.3: CAB snapshots and padding charge before allocation",
+        ("binding_y4_round4", "observe_output_names"): "PARITY.md 19.3: validate output names and charge copies before allocation",
+        ("binding_y4_round4", "observe_path_budgets"): "PARITY.md 19.3: fallible charged path staging",
+        ("binding_y4_round6", "observe_blob_lifetime"): "PARITY.md 19.3: keep blob staging charged through image decode and encode",
+        ("binding_y4_round7", "observe_streamed_lifetime"): "PARITY.md 19.3: retain streamed resource staging through blob staging and image decode",
+        ("binding_y4_round6", "observe_pointer_owner"): "PARITY.md 19.1: correct texture dictionary iteration; preserve current pointer ownership",
+    }
+    for name, reason in (
+        ("observe_cab_validation", "validate encoded CAB external paths before mutation"),
+        ("observe_array_storage", "charge actual image array storage before slicing"),
+        ("observe_exact_output_names", "normalize validated names before suffix construction"),
+        ("observe_snapshot_threads", "release the GIL during native value staging"),
+    ):
+        references["binding_y4_round5", name] = "PARITY.md 19.3: " + reason
+    records = []
+    for observer, function in HELPERS + EXPORTS:
+        call = getattr(importlib.import_module(observer), function)
+        observed = call(UnityPy)
+        record = {"name": f"{observer}.{function}", "observer": observer,
+                  "function": function, "expected": observed}
+        if (observer, function) in references:
+            # Keep the original oracle result beside the stated B/C reference.
+            record["oracle"] = observed
+            record["reference"] = references[observer, function]
+            record["expected"] = call(UnityPy, corrected=True)
+        records.append(record)
+    return records
 
 
 def main():

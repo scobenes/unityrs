@@ -4,6 +4,8 @@
 //! Entry point: export/ShaderConverter.py:41-89;
 //! classes/legacy_patch/Shader.py:4-7.
 mod blob;
+#[cfg(test)]
+mod bytes_tests;
 mod convert;
 mod layout;
 mod legacy;
@@ -75,10 +77,14 @@ pub enum Error {
     Unterminated,
     #[error("invalid UTF-8 in Shader code")]
     Utf8,
+    #[error("invalid UTF-8 in Shader code")]
+    Utf8Bytes(Bytes),
     #[error("string argument without an encoding")]
     StringBytes,
     #[error("cannot convert 'NoneType' object to bytes")]
     NoneBytes,
+    #[error("bytes must be in range(0, 256)")]
+    ByteRange,
     #[error("typetree read {actual} bytes, expected {expected}")]
     CheckRead { expected: u32, actual: i64 },
     #[error(transparent)]
@@ -102,14 +108,15 @@ impl Error {
             Self::PropertyType(_)
             | Self::ProgramType(_)
             | Self::Lz4Prefix
-            | Self::Lz4HeaderSize(_) => "ValueError",
+            | Self::Lz4HeaderSize(_)
+            | Self::ByteRange => "ValueError",
             Self::Lz4HeaderLength { .. } => "LZ4BlockError",
             Self::Lz4Size => "OverflowError",
             Self::NotImplemented => "NotImplementedError",
             Self::Struct => "error",
             Self::Index => "IndexError",
             Self::Unterminated => "Exception",
-            Self::Utf8 => "UnicodeDecodeError",
+            Self::Utf8 | Self::Utf8Bytes(_) => "UnicodeDecodeError",
             Self::StringBytes
             | Self::NoneBytes
             | Self::PythonType(_)
@@ -170,7 +177,8 @@ pub fn export_parsed(
         unityrs_core::limits::Limits::default().max_block_output,
     )
 }
-fn export_with_cap(
+/// Convert current fields using the owning file's decompression bound.
+pub fn export_with_cap(
     parsed: &Parsed,
     version: (u32, u32),
     meter: &Arc<Meter>,
@@ -272,10 +280,22 @@ fn export_with_cap(
         let script = root.optional("m_Script")?.ok_or(Error::NoneBytes)?;
         let script = bytes(script.value, meter)?;
         meter.count_decode(script.len() as u64)?;
-        std::str::from_utf8(&script).map_err(|_| Error::Utf8)?;
+        std::str::from_utf8(&script).map_err(|_| utf8_error(&script, meter))?;
         out.text(&script)?;
     }
     Ok(out.bytes)
+}
+
+fn utf8_error(data: &[u8], meter: &Arc<Meter>) -> Error {
+    let copy = DecodeBuf::new(meter, 0, u64::MAX, LimitKind::InputMemory).and_then(|mut bytes| {
+        meter.count_decode(data.len() as u64)?;
+        bytes.extend_from_slice(data)?;
+        bytes.into_bytes()
+    });
+    match copy {
+        Ok(bytes) => Error::Utf8Bytes(bytes),
+        Err(error) => Error::Charge(error),
+    }
 }
 
 fn decode(
@@ -320,12 +340,49 @@ fn decode(
 pub fn validate_blob(blob: &[u8], version: (u32, u32), meter: &Arc<Meter>) -> Result<(), Error> {
     Program::parse(blob, version, meter).map(|_| ())
 }
-fn bytes(v: &Value, _meter: &Arc<Meter>) -> Result<Bytes, Error> {
+fn bytes(v: &Value, meter: &Arc<Meter>) -> Result<Bytes, Error> {
     match v {
         Value::Bytes(b) | Value::Prims(PrimArray::U8(b)) => Ok(b.clone()),
         Value::Str(_) => Err(Error::StringBytes),
+        Value::List(items) => byte_values(items, meter),
+        Value::Tuple(items) => byte_values(items, meter),
         _ => Err(Error::Field("byte array")),
     }
+}
+
+// export/ShaderConverter.py:41-55 uses Python bytes(), including when a
+// caller edits an already read class from a packed U8 array to a list.
+fn byte_values(items: &[Value], meter: &Arc<Meter>) -> Result<Bytes, Error> {
+    struct Owner {
+        bytes: MeteredVec<u8>,
+        _owner: unityrs_core::limits::Charge,
+    }
+    impl AsRef<[u8]> for Owner {
+        fn as_ref(&self) -> &[u8] {
+            self.bytes.as_slice()
+        }
+    }
+    meter.count_decode(items.len() as u64)?;
+    let mut bytes = MeteredVec::with_capacity(meter, items.len())?;
+    for item in items {
+        let byte = match item {
+            Value::Int(n) => u8::try_from(*n).map_err(|_| Error::ByteRange)?,
+            Value::UInt(n) => u8::try_from(*n).map_err(|_| Error::ByteRange)?,
+            Value::Bool(n) => u8::from(*n),
+            Value::F32(_) | Value::F64(_) => return Err(Error::IntegerType("float")),
+            Value::Str(_) => return Err(Error::IntegerType("str")),
+            Value::Bytes(_) => return Err(Error::IntegerType("bytes")),
+            Value::List(_) | Value::Prims(_) => return Err(Error::IntegerType("list")),
+            Value::Tuple(_) => return Err(Error::IntegerType("tuple")),
+            Value::Dict(_) => return Err(Error::IntegerType("dict")),
+        };
+        bytes.push(byte)?;
+    }
+    let owner = meter.charge(128)?;
+    Ok(Bytes::from_owner(Owner {
+        bytes,
+        _owner: owner,
+    }))
 }
 fn compressed_range(len: usize, offset: i128, size: i128) -> std::ops::Range<usize> {
     let norm = |n: i128| {

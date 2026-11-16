@@ -7,7 +7,7 @@ use pyo3::{
     ffi,
     prelude::*,
     pybacked::PyBackedBytes,
-    types::{PyByteArray, PyString},
+    types::{PyByteArray, PyBytes, PyString},
 };
 use std::sync::Arc;
 use unityrs_core::{
@@ -16,7 +16,7 @@ use unityrs_core::{
     typetree::{NodeList, NodeRow, Tree, TreeError},
 };
 
-fn tree_error(error: TreeError) -> PyErr {
+pub(crate) fn tree_error(error: TreeError) -> PyErr {
     match error {
         TreeError::Charge(e) => errors::charge(e),
         TreeError::Limit(e) => errors::core(e.into()),
@@ -138,16 +138,24 @@ pub(crate) fn compile_rows(object: &ObjectRef, input: &Py<PyAny>) -> PyResult<Ar
         let _encoding = meter
             .charge(256_u64.saturating_add(bytes))
             .map_err(errors::charge)?;
-        rows.reserve(1).map_err(errors::charge)?;
         let (ty, name) = Python::attach(|py| Ok::<_, PyErr>((ty.bytes(py)?, name.bytes(py)?)))?;
-        #[cfg(test)]
-        crate::row_copy_test::before_copy()?;
-        row.ty = RawStr::charged(&ty, meter).map_err(errors::charge)?;
-        row.name = RawStr::charged(&name, meter).map_err(errors::charge)?;
-        rows.push(row).map_err(errors::charge)?;
+        Python::attach(|py| {
+            py.detach(|| {
+                #[cfg(test)]
+                crate::row_copy_test::before_copy()?;
+                rows.reserve(1).map_err(errors::charge)?;
+                row.ty = RawStr::charged(&ty, meter).map_err(errors::charge)?;
+                row.name = RawStr::charged(&name, meter).map_err(errors::charge)?;
+                rows.push(row).map_err(errors::charge)
+            })
+        })?;
     }
-    let list = NodeList::from_rows(rows).map_err(tree_error)?;
-    Tree::compile(list.into_shared().map_err(tree_error)?, limits).map_err(tree_error)
+    Python::attach(|py| {
+        py.detach(move || {
+            let list = NodeList::from_rows(rows).map_err(tree_error)?;
+            Tree::compile(list.into_shared().map_err(tree_error)?, limits).map_err(tree_error)
+        })
+    })
 }
 
 enum RowText {
@@ -158,12 +166,19 @@ enum RowText {
 impl RowText {
     fn extract(value: &Bound<'_, PyAny>, staging: &mut TreeTraversal) -> PyResult<Self> {
         if let Ok(buffer) = value.cast::<PyByteArray>() {
-            // PyBackedBytes copies mutable storage. Measure and charge under
-            // the GIL before extraction, bypassing a subclass's __len__.
+            // PyBackedBytes' mutable conversion allocates a Rust Arc
+            // infallibly. CPython's buffer copy propagates allocation failure.
             staging.expand(0, 256_u64.saturating_add(buffer.len() as u64), 0)?;
+            let bytes = unsafe {
+                Bound::<PyAny>::from_owned_ptr_or_err(
+                    value.py(),
+                    ffi::PyBytes_FromObject(buffer.as_ptr()),
+                )?
+            };
+            return Ok(Self::Bytes(bytes.cast_into::<PyBytes>()?.into()));
         }
-        if let Ok(bytes) = value.extract::<PyBackedBytes>() {
-            return Ok(Self::Bytes(bytes));
+        if let Ok(bytes) = value.cast::<PyBytes>() {
+            return Ok(Self::Bytes(bytes.clone().into()));
         }
         let text = value.cast::<PyString>()?;
         // Read the actual Unicode size, bypassing a subclass's __len__.
@@ -196,5 +211,22 @@ impl RowText {
                 .map_err(Into::into)
             },
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod allocation_tests {
+    use super::*;
+    pub(crate) fn bytearray_copy(py: Python<'_>) -> PyResult<()> {
+        let input = py.eval(c"bytearray(8 << 20)", None, None)?;
+        let meter = unityrs_core::limits::Meter::unlimited();
+        let mut staging = TreeTraversal::on(&meter, 100);
+        // PyBackedBytes' bytearray conversion uses an infallible Rust Arc.
+        // A snapshot must instead copy with a fallible Python allocation.
+        let result = crate::allocation_tests::refusing_large_input(|| {
+            RowText::extract(&input, &mut staging)
+        });
+        assert!(result.is_ok());
+        Ok(())
     }
 }

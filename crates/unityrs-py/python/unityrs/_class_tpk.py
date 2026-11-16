@@ -125,7 +125,7 @@ def load(data):
                 raise ValueError('TPK decoded payload size differs from header')
         elif compression == 1:
             from ._native import class_tpk_lz4
-            payload = class_tpk_lz4(bytes(payload), decoded)
+            payload = class_tpk_lz4(payload, decoded)
         elif compression != 0:
             raise ValueError('class generation requires an uncompressed, LZ4 or LZMA TPK')
         table_budget = _TableBudget()

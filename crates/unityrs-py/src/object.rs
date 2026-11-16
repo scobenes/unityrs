@@ -16,6 +16,100 @@ impl NativeObject {
 }
 #[pymethods]
 impl NativeObject {
+    fn set_raw_data(&self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
+        crate::save::object_set_raw_data(py, self, data)
+    }
+    fn save_metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        crate::save::object_metadata(py, self)
+    }
+    #[pyo3(signature = (value, rows, offset=0, endian=None))]
+    fn save_typetree(
+        &self,
+        py: Python<'_>,
+        value: &Bound<'_, PyAny>,
+        rows: &Bound<'_, PyAny>,
+        offset: usize,
+        endian: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        // The Python caller owns the environment's RLock. Getters, numeric
+        // protocols, and row iteration must run on that thread so they can
+        // reenter the owning reader. Row copying and compilation detach on
+        // this thread, attaching only for Python extraction; final native building
+        // and writing use a worker.
+        let tree = crate::tree::compile_rows(&self.inner, rows.as_unbound())?;
+        let file = self.inner.file();
+        let meter = file.meter();
+        let limits = &file.context().limits;
+        let value = value.as_unbound();
+        let snapshot = py.detach(|| {
+            crate::value_input::for_tree_snapshot(
+                value,
+                meter,
+                limits,
+                &tree,
+                file.ref_types().unwrap_or_default(),
+            )
+        })?;
+        let endian = endian
+            .map(|v| crate::text_snapshot::snapshot(v, meter))
+            .transpose()?;
+        let endian = match endian.as_ref().map(|(text, _)| text.as_str()) {
+            Some(">") => unityrs_core::stream::Endian::Big,
+            Some("<") => unityrs_core::stream::Endian::Little,
+            Some(_) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "unsupported writer endian",
+                ));
+            }
+            None => file.header().endian,
+        };
+        let (out, result) = py.detach(move || {
+            crate::worker::run(limits.stack_needed(), move || {
+                let mut out = unityrs_core::budget::DecodeBuf::new(
+                    meter,
+                    0,
+                    limits.max_input_memory,
+                    unityrs_core::LimitKind::InputMemory,
+                )
+                .map_err(errors::charge)?;
+                meter.count_decode(offset as u64).map_err(errors::charge)?;
+                let mut left = offset;
+                while left > 0 {
+                    let n = left.min(4096);
+                    out.extend_from_slice([0_u8; 4096].get(..n).unwrap_or_default())
+                        .map_err(errors::charge)?;
+                    left -= n;
+                }
+                let (parsed, lengths) = snapshot.build_writer()?;
+                let ctx = unityrs_core::walk::WriteCtx {
+                    endian,
+                    ref_types: file.ref_types_view(),
+                    rules: unityrs_core::walk::WriteRules::UnityPy,
+                    limits,
+                };
+                let result = unityrs_core::walk::write::write_at_with_lengths(
+                    &parsed,
+                    &tree,
+                    &ctx,
+                    &mut out,
+                    0,
+                    &|value| lengths.get(value, parsed.value()),
+                );
+                Ok((out, result))
+            })
+        })?;
+        result.map_err(|error| match error {
+            unityrs_core::walk::WriteError::Charge(e) => errors::charge(e),
+            unityrs_core::walk::WriteError::Limit(e) => errors::core(e.into()),
+            _ => crate::exports::named_error(
+                error.exceptions().first().copied().unwrap_or("ValueError"),
+                errors::message(&error),
+            ),
+        })?;
+        let data = out.as_slice().get(offset..).unwrap_or_default();
+        let _copy = meter.charge(data.len() as u64).map_err(errors::charge)?;
+        p::bytes(data)
+    }
     fn tree_traversal(&self) -> crate::traversal::TreeTraversal {
         crate::traversal::TreeTraversal::on(
             self.inner.file().meter(),

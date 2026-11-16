@@ -31,8 +31,8 @@ pub struct MaterialView<'a> {
     pub(super) p: &'a Parsed,
     pub(super) name: &'a RawStr,
     saved: Obj<'a>,
-    pub(super) from: &'a Arc<SerializedFile>,
-    pub(super) env: &'a Environment,
+    resources: Option<(&'a Arc<SerializedFile>, &'a Environment)>,
+    texture_names: Option<&'a [(RawStr, RawStr)]>,
     pub(super) meter: &'a Arc<Meter>,
 }
 const _: () = crate::send_sync::<MaterialView<'static>>();
@@ -43,6 +43,23 @@ impl<'a> MaterialView<'a> {
         env: &'a Environment,
         meter: &'a Arc<Meter>,
     ) -> Result<Self, MeshError> {
+        Self::build(p, Some((from, env)), None, meter)
+    }
+    /// Use names already resolved from the caller's current texture pointers.
+    /// Empty names also support detached, texture-free materials.
+    pub fn with_texture_names(
+        p: &'a Parsed,
+        names: &'a [(RawStr, RawStr)],
+        meter: &'a Arc<Meter>,
+    ) -> Result<Self, MeshError> {
+        Self::build(p, None, Some(names), meter)
+    }
+    fn build(
+        p: &'a Parsed,
+        resources: Option<(&'a Arc<SerializedFile>, &'a Environment)>,
+        texture_names: Option<&'a [(RawStr, RawStr)]>,
+        meter: &'a Arc<Meter>,
+    ) -> Result<Self, MeshError> {
         let root = Obj::root(p, &MATERIAL, meter)?;
         Ok(Self {
             p,
@@ -50,8 +67,8 @@ impl<'a> MaterialView<'a> {
             saved: root
                 .class("m_SavedProperties", &SHEET)?
                 .ok_or(MeshError::Field("m_SavedProperties"))?,
-            from,
-            env,
+            resources,
+            texture_names,
             meter,
         })
     }
@@ -63,6 +80,12 @@ impl<'a> MaterialView<'a> {
             return Ok([default; 3]);
         };
         let mut out = [0.; 3];
+        if let Value::Tuple(values) = v {
+            for (i, slot) in out.iter_mut().enumerate() {
+                *slot = view::number(values.get(i).ok_or(MeshError::Field("color tuple"))?)?;
+            }
+            return Ok(out);
+        }
         for (n, slot) in ["r", "g", "b"].into_iter().zip(&mut out) {
             *slot = view::number(view::attr(self.p, v, n, self.meter)?)?;
         }
@@ -113,7 +136,10 @@ impl<'a> MaterialView<'a> {
         if !ptr.is_set() {
             return Ok(None);
         }
-        let object = self.env.deref(self.from, ptr)?;
+        let (from, env) = self
+            .resources
+            .ok_or(MeshError::Field("texture resources"))?;
+        let object = env.deref(from, ptr)?;
         let parsed = object.parse_as_dict(false)?;
         let name = view::string(view::attr(&parsed, parsed.value(), "m_Name", self.meter)?)?;
         let name = if name.is_empty() {
@@ -122,6 +148,26 @@ impl<'a> MaterialView<'a> {
             name.clone()
         };
         Ok(Some((object, name)))
+    }
+    fn texture_name(&self, key: &RawStr, value: &Value) -> Result<Option<RawStr>, MeshError> {
+        if let Some(names) = self.texture_names {
+            let ptr = view::pointer(
+                self.p,
+                view::attr(self.p, value, "m_Texture", self.meter)?,
+                self.meter,
+            )?;
+            if !ptr.is_set() {
+                return Ok(None);
+            }
+            self.meter
+                .count_decode((names.len() as u64).saturating_mul(key.len() as u64 + 1))?;
+            return Ok(names
+                .iter()
+                .rev()
+                .find(|(name, _)| name == key)
+                .map(|(_, name)| name.clone()));
+        }
+        Ok(self.texture(key, value)?.map(|(_, name)| name))
     }
 }
 /// Writes MTL text with Python's defaults and precision, no trailing newline.
@@ -150,7 +196,7 @@ pub fn export_material(m: &MaterialView<'_>, out: &mut dyn MeteredWrite) -> Resu
     out.write_bytes(b"\nNs ")?;
     out.write_bytes(f4(shininess, &mut buf).as_bytes())?;
     for &(key, value) in m.textures()?.as_slice() {
-        if let Some((_, name)) = m.texture(key, value)? {
+        if let Some(name) = m.texture_name(key, value)? {
             let key = key.as_bytes();
             m.meter.count_decode(key.len() as u64)?;
             let labels: &[&[u8]] = if key == b"_MainTex" {
