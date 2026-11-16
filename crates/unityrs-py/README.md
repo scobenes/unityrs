@@ -24,7 +24,7 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=94
+python ../../scripts/unittest-suites bindings=134
 ```
 
 The recorder writes 65 synthetic API records (34 Y1 records, 10 Y3 groups and

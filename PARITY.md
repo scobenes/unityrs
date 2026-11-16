@@ -1472,6 +1472,12 @@ Defects found while writing this file, each decided by `DESIGN.md` section 3's d
 Y4 review safety rows retain the unsafe UnityPy observation separately from the
 explicit refusal reference; native replay compares against the latter.
 
+CAB writes charge mutable buffer snapshots and native zero padding before
+allocation. Under a 1 MB budget, a 2 MB write or alignment raises `MemoryError`
+without copying the payload or advancing the cursor. UnityPy has no caller
+budget and performs those allocations. `binding_y4_round3.observe_cab_budget`
+records both the oracle behavior and this safety reference.
+
 Image coercion charges buffer `nbytes` before copying image data or platform
 blobs, including multidimensional views whose `len` counts only the first axis.
 UnityPy accepts these copies without a caller budget; the explicit safety

@@ -30,13 +30,21 @@ pub(crate) fn context(reader: Option<&NativeObject>) -> (Limits, Arc<Meter>) {
 #[pyo3(signature = (data, name, reader=None, vorbis_headers=None, vorbis_path=None))]
 fn export_audio(
     py: Python<'_>,
-    data: PyBackedBytes,
-    name: PyBackedBytes,
+    data: &Bound<'_, PyAny>,
+    name: &Bound<'_, PyAny>,
     reader: Option<&NativeObject>,
-    vorbis_headers: Option<PyBackedBytes>,
-    vorbis_path: Option<Py<PyAny>>,
+    vorbis_headers: Option<&Bound<'_, PyAny>>,
+    vorbis_path: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     let (limits, meter) = context(reader);
+    let data = crate::buffer_snapshot::BufferSnapshot::new(data, &meter)?;
+    let name = crate::buffer_snapshot::BufferSnapshot::new(name, &meter)?;
+    let vorbis_headers = vorbis_headers
+        .map(|v| crate::buffer_snapshot::BufferSnapshot::new(v, &meter))
+        .transpose()?;
+    let path = vorbis_path
+        .map(|path| snapshot_vorbis_path(path.as_unbound(), &meter))
+        .transpose()?;
     py.detach(move || {
         crate::worker::run(limits.stack_needed(), || {
             // export/AudioClipConverter.py:13-49. The facade handles current
@@ -48,8 +56,8 @@ fn export_audio(
                         unityrs_audio::VorbisHeaders::from_bytes(bytes, &meter)
                             .map_err(audio_error)?,
                     )
-                } else if let Some(path) = vorbis_path.as_ref() {
-                    Some(load_vorbis_path(path, &meter)?)
+                } else if let Some((path, _charge)) = path.as_ref() {
+                    Some(unityrs_audio::VorbisHeaders::load(path, &meter).map_err(audio_error)?)
                 } else {
                     None
                 }
@@ -78,50 +86,40 @@ fn export_audio(
     })
 }
 
-fn load_vorbis_path(
+fn snapshot_vorbis_path(
     path: &Py<PyAny>,
     meter: &Arc<Meter>,
-) -> PyResult<unityrs_audio::VorbisHeaders> {
-    enum PathText {
-        String(pyo3::pybacked::PyBackedStr),
-        Bytes(PyBackedBytes),
-    }
-    let (path, _staging) = Python::attach(|py| -> PyResult<_> {
+) -> PyResult<(std::path::PathBuf, unityrs_core::limits::Charge)> {
+    Python::attach(|py| {
         let value = path.bind(py);
-        let len = value.len()?;
-        let staging = meter
+        let len = if let Ok(text) = value.cast::<pyo3::types::PyString>() {
+            usize::try_from(unsafe { pyo3::ffi::PyUnicode_GetLength(text.as_ptr()) })?
+        } else {
+            value.cast::<pyo3::types::PyBytes>()?.as_bytes().len()
+        };
+        let charge = meter
             .charge(256 + (len as u64).saturating_mul(4))
             .map_err(errors::charge)?;
         let path = if value.is_instance_of::<pyo3::types::PyBytes>() {
-            PathText::Bytes(value.extract()?)
-        } else {
-            PathText::String(value.extract()?)
-        };
-        Ok((path, staging))
-    })?;
-    let headers = match path {
-        PathText::String(path) => {
-            unityrs_audio::VorbisHeaders::load(std::path::Path::new(&*path), meter)
-        }
-        PathText::Bytes(path) => {
+            let bytes = value.extract::<PyBackedBytes>()?;
             #[cfg(unix)]
             {
                 use std::os::unix::ffi::OsStrExt;
-                unityrs_audio::VorbisHeaders::load(
-                    std::path::Path::new(std::ffi::OsStr::from_bytes(&path)),
-                    meter,
-                )
+                std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&bytes))
             }
             #[cfg(not(unix))]
             {
-                let path = std::str::from_utf8(&path).map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err("Vorbis header path must be UTF-8")
-                })?;
-                unityrs_audio::VorbisHeaders::load(std::path::Path::new(path), meter)
+                std::path::PathBuf::from(
+                    std::str::from_utf8(&bytes)
+                        .map_err(|_| PyValueError::new_err("Vorbis header path must be UTF-8"))?,
+                )
             }
-        }
-    };
-    headers.map_err(audio_error)
+        } else {
+            let text = value.extract::<pyo3::pybacked::PyBackedStr>()?;
+            std::path::PathBuf::from(&*text)
+        };
+        Ok((path, charge))
+    })
 }
 
 fn audio_error(error: unityrs_audio::Error) -> PyErr {
@@ -143,14 +141,15 @@ fn audio_error(error: unityrs_audio::Error) -> PyErr {
 #[pyo3(signature = (input, version=(0,0), reader=None))]
 fn export_shader(
     py: Python<'_>,
-    input: Py<PyAny>,
+    input: &Bound<'_, PyAny>,
     version: (u32, u32),
     reader: Option<&NativeObject>,
 ) -> PyResult<Py<PyAny>> {
     let (limits, meter) = context(reader);
+    let snapshot = crate::value_input::export_snapshot(input.as_unbound(), &meter, &limits)?;
     py.detach(move || {
         crate::worker::run(limits.stack_needed(), || {
-            let parsed = crate::value_input::parsed(&input, &meter, &limits)?;
+            let parsed = snapshot.build()?;
             let bytes = unityrs_export::shader::export_with_cap(
                 &parsed,
                 version,

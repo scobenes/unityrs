@@ -719,6 +719,34 @@ impl DecodeBuf {
         Ok(self.buf.get_mut(start..).unwrap_or_default())
     }
 
+    /// Zero a cursor-selected span, charging its growth and work atomically.
+    pub(crate) fn write_zeroes_at(
+        &mut self,
+        offset: usize,
+        count: usize,
+    ) -> Result<(), ChargeError> {
+        if count == 0 {
+            return Ok(());
+        }
+        let end = offset.checked_add(count).ok_or_else(|| {
+            ChargeError::Limit(LimitError::refused(self.seg_kind, u64::MAX, self.seg_cap))
+        })?;
+        let old = self.buf.len();
+        let work = if self.count_writes {
+            u64::try_from(offset.saturating_sub(old).saturating_add(count)).unwrap_or(u64::MAX)
+        } else {
+            0
+        };
+        let credit = work.min(self.prepaid);
+        self.make_room(end.saturating_sub(old), work - credit)?;
+        self.prepaid -= credit;
+        self.buf.resize(old.max(end), 0);
+        if let Some(target) = self.buf.get_mut(offset..end) {
+            target.fill(0);
+        }
+        Ok(())
+    }
+
     /// Cuts the written bytes to `len`. The allocation and its charge stay
     /// until [`Self::into_bytes`] or drop.
     pub fn truncate(&mut self, len: usize) {

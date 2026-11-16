@@ -29,8 +29,8 @@ impl NativeFile {
         &self,
         py: Python<'_>,
         mode: &str,
-        rows: Py<PyAny>,
-        value: Option<Py<PyAny>>,
+        rows: &Bound<'_, PyAny>,
+        value: Option<&Bound<'_, PyAny>>,
         flags: (u32, u16),
         header: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
@@ -39,9 +39,9 @@ impl NativeFile {
     fn save_web_entries(
         &self,
         py: Python<'_>,
-        rows: Py<PyAny>,
-        packer: Option<Py<PyAny>>,
-        signature: pyo3::pybacked::PyBackedBytes,
+        rows: &Bound<'_, PyAny>,
+        packer: Option<&Bound<'_, PyAny>>,
+        signature: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
         crate::save::save_web_entries(py, self, rows, packer, signature)
     }
@@ -49,7 +49,7 @@ impl NativeFile {
         &self,
         py: Python<'_>,
         mode: &str,
-        value: Option<Py<PyAny>>,
+        value: Option<&Bound<'_, PyAny>>,
         data_flag: u32,
         block_info_flag: u16,
         signature: &str,
@@ -68,7 +68,7 @@ impl NativeFile {
     fn get_writeable_cab(
         &self,
         py: Python<'_>,
-        name: pyo3::pybacked::PyBackedBytes,
+        name: &Bound<'_, PyAny>,
         guid: Option<[u8; 16]>,
     ) -> PyResult<Option<crate::save::NativeCab>> {
         crate::save::file_get_writeable_cab(py, self, name, guid)

@@ -64,7 +64,8 @@ class File:
                 if isinstance(self.files[name], _CabWriter):
                     return self.files[name]
                 raise ValueError("This cab already exists and isn't an EndianBinaryWriter")
-            native = self._native.get_writeable_cab(name.encode("utf-8", "surrogateescape"), None)
+            guard = self._native.tree_traversal()
+            native = self._native.get_writeable_cab(_save_text(name, guard), None)
             if native is None:
                 return None
             writer = _CabWriter(native)
@@ -124,7 +125,8 @@ class File:
 def _save_text(value, guard):
     if value is None:
         return None
-    guard.step(0, len(value) * 4 + 64, 0)
+    size = str.__len__(value) if isinstance(value, str) else len(value)
+    guard.step(0, size * 4 + 64, 0)
     return value.encode("utf-8", "surrogateescape")
 
 
@@ -163,7 +165,8 @@ class SerializedFile(File):
         import uuid
         with self.environment._lock:
             guid = uuid.uuid1().urn[-16:].encode("ascii")
-            native = self._native.get_writeable_cab(name.encode("utf-8", "surrogateescape"), list(guid))
+            guard = self._native.tree_traversal()
+            native = self._native.get_writeable_cab(_save_text(name, guard), list(guid))
             writer = self.parent.files.get(name)
             if not isinstance(writer, _CabWriter):
                 writer = _CabWriter(native)
@@ -186,10 +189,11 @@ class BundleFile(File):
         guard.step(0, 256, 1)
         rows = []
         for name, file in self.files.items():
-            guard.step(0, len(name) * 4 + 256, 1)
+            guard.step(0, 256, 1)
+            encoded_name = _save_text(name, guard)
             data = file.bytes if isinstance(file, (EndianBinaryReader_Memoryview, _CabWriter)) else file.save()
             guard.step(0, len(data), 0)
-            rows.append((name.encode("utf-8", "surrogateescape"), file.flags, data))
+            rows.append((encoded_name, file.flags, data))
         return rows
 
     def save(self, packer=None):
@@ -284,12 +288,13 @@ class WebFile(File):
             guard.step(0, 256, 1)
             rows = []
             for name, file in (files or self.files).items():
-                guard.step(0, len(name) * 4 + 256, 1)
+                guard.step(0, 256, 1)
+                encoded_name = _save_text(name, guard)
                 data = file.bytes if isinstance(file, EndianBinaryReader_Memoryview) else file.save()
                 guard.step(0, len(data), 0)
-                rows.append((name.encode("utf-8"), data))
+                rows.append((encoded_name, data))
             return self._native.save_web_entries(
-                rows, packer or self.packer, signature.encode("utf-8", "surrogateescape"))
+                rows, packer or self.packer, _save_text(signature, guard))
 
 
 class _CabWriter:
@@ -304,7 +309,7 @@ class _CabWriter:
 
     @property
     def Length(self):
-        return len(self.bytes)
+        return self._native.length()
 
     def write(self, data):
         count = self._native.write_bytes(data, self.Position)
@@ -317,7 +322,9 @@ class _CabWriter:
         self.write(struct.pack(self.endian + "i", value))
 
     def align_stream(self, alignment=4):
-        self.write(b"\0" * ((alignment - self.Position % alignment) % alignment))
+        count = (alignment - self.Position % alignment) % alignment
+        self._native.write_zeroes(self.Position, count)
+        self.Position += count
 
     def save(self):
         return self.bytes

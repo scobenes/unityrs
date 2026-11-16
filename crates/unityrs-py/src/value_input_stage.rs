@@ -438,20 +438,46 @@ impl State<'_> {
         Ok(())
     }
 
-    fn target_sequence(&self, ty: &mut RawStr, inspection: &mut Inspect, shape: Option<NodeId>) {
-        if let Inspect::Sequence(_, tuple) = inspection
-            && let Some(info) = self
-                .tree
-                .zip(shape)
-                .and_then(|(tree, node)| tree.info(node))
+    fn inspect_target(
+        &mut self,
+        input: &Py<PyAny>,
+        shape: Option<NodeId>,
+    ) -> PyResult<(RawStr, Inspect)> {
+        let scalar = self
+            .tree
+            .zip(shape)
+            .map(|(tree, shape)| {
+                scalar_for_shape(tree, shape, input, &mut self.staging, self.limits)
+            })
+            .transpose()?
+            .flatten();
+        let result = if let Some(scalar) = scalar {
+            scalar
+        } else if let Some((tree, shape)) = self.tree.zip(shape)
+            && Python::attach(|py| input.bind(py).is_none())
         {
-            match info.shape {
-                unityrs_core::typetree::Shape::Pair => *tuple = true,
-                unityrs_core::typetree::Shape::Vector { .. } => *tuple = false,
-                _ => {}
-            }
-            *ty = RawStr::from_static(if *tuple { b"pair" } else { b"vector" });
-        }
+            none_for_shape(tree, shape, input, self.staging.meter())?
+        } else if let Some(info) = self
+            .tree
+            .zip(shape)
+            .and_then(|(tree, node)| tree.info(node))
+            && matches!(
+                info.shape,
+                unityrs_core::typetree::Shape::Vector { .. } | unityrs_core::typetree::Shape::Pair
+            )
+        {
+            // A typed buffer is a sequence of Python elements for vectors.
+            // Only scalar byte schemas use the raw buffer representation.
+            let tuple = matches!(info.shape, unityrs_core::typetree::Shape::Pair);
+            let iter = Python::attach(|py| input.bind(py).try_iter().map(Bound::unbind))?;
+            (
+                RawStr::from_static(if tuple { b"pair" } else { b"vector" }),
+                Inspect::Sequence(iter, tuple),
+            )
+        } else {
+            self.inspect(input)?
+        };
+        Ok(result)
     }
 
     fn open(&mut self, visit: Visit) -> PyResult<Opened> {
@@ -476,24 +502,7 @@ impl State<'_> {
             .meter()
             .count_decode(1)
             .map_err(errors::charge)?;
-        let scalar = self
-            .tree
-            .zip(shape)
-            .map(|(tree, shape)| {
-                scalar_for_shape(tree, shape, &input, &mut self.staging, self.limits)
-            })
-            .transpose()?
-            .flatten();
-        let (mut ty, mut inspection) = if let Some(scalar) = scalar {
-            scalar
-        } else if let Some((tree, shape)) = self.tree.zip(shape)
-            && Python::attach(|py| input.bind(py).is_none())
-        {
-            none_for_shape(tree, shape, &input, self.staging.meter())?
-        } else {
-            self.inspect(&input)?
-        };
-        self.target_sequence(&mut ty, &mut inspection, shape);
+        let (ty, inspection) = self.inspect_target(&input, shape)?;
         let skip_null = self.filter_null_properties
             && matches!(name.as_bytes(), b"m_Colors" | b"m_Floats" | b"m_TexEnvs");
         let node = self.row(depth, ty, name)?;

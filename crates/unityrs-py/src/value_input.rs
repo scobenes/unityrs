@@ -12,7 +12,7 @@ use pyo3::{
 };
 use std::sync::Arc;
 use unityrs_core::{
-    Parsed, RawStr, Value,
+    RawStr, Value,
     budget::DecodeBuf,
     limits::{Charge, Limits, Meter, MeteredVec},
     typetree::{NodeId, NodeRow, Tree},
@@ -36,8 +36,12 @@ struct State<'a> {
     rotations: MeteredVec<staging::Rotation>,
 }
 
-/// Export callers use a scoped worker. Python inspection alone attaches.
-pub(crate) fn parsed(input: &Py<PyAny>, meter: &Arc<Meter>, limits: &Limits) -> PyResult<Parsed> {
+#[cfg(test)]
+pub(crate) fn parsed(
+    input: &Py<PyAny>,
+    meter: &Arc<Meter>,
+    limits: &Limits,
+) -> PyResult<unityrs_core::Parsed> {
     snapshot(input, meter, limits, None)
 }
 
@@ -47,7 +51,7 @@ pub(crate) fn for_tree(
     meter: &Arc<Meter>,
     limits: &Limits,
     tree: &Tree,
-) -> PyResult<Parsed> {
+) -> PyResult<unityrs_core::Parsed> {
     snapshot(input, meter, limits, Some(tree))
 }
 
@@ -60,12 +64,13 @@ pub(crate) fn for_tree_snapshot(
     snapshot_input(input, meter, limits, Some(tree), false)
 }
 
+#[cfg(test)]
 fn snapshot(
     input: &Py<PyAny>,
     meter: &Arc<Meter>,
     limits: &Limits,
     tree: Option<&Tree>,
-) -> PyResult<Parsed> {
+) -> PyResult<unityrs_core::Parsed> {
     snapshot_input(input, meter, limits, tree, false)?.build()
 }
 
@@ -75,6 +80,14 @@ pub(crate) fn material_snapshot(
     limits: &Limits,
 ) -> PyResult<Snapshot> {
     snapshot_input(input, meter, limits, None, true)
+}
+
+pub(crate) fn export_snapshot(
+    input: &Py<PyAny>,
+    meter: &Arc<Meter>,
+    limits: &Limits,
+) -> PyResult<Snapshot> {
+    snapshot_input(input, meter, limits, None, false)
 }
 
 fn snapshot_input(

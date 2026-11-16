@@ -6,7 +6,6 @@ use crate::{errors, object::NativeObject, python as p};
 use pyo3::{
     exceptions::{PyMemoryError, PyNotImplementedError, PyTypeError, PyValueError},
     prelude::*,
-    pybacked::PyBackedBytes,
 };
 use std::sync::Arc;
 use unityrs_core::{
@@ -41,7 +40,7 @@ fn _image_resource(
     py: Python<'_>,
     env: &crate::environment::NativeEnvironment,
     file: &crate::files::NativeFile,
-    path: PyBackedBytes,
+    path: &Bound<'_, PyAny>,
     offset: i128,
     size: i128,
 ) -> PyResult<Py<PyAny>> {
@@ -50,6 +49,7 @@ fn _image_resource(
             "resource owner is not a SerializedFile",
         ));
     };
+    let path = crate::buffer_snapshot::BufferSnapshot::new(path, file.meter())?;
     py.detach(|| {
         crate::worker::run(crate::worker::load_stack(&file.context().limits), || {
             let stream = unityrs_texture::fetch::Stream {
@@ -175,16 +175,20 @@ fn output(image: &Image, meter: &Arc<Meter>) -> PyResult<Py<PyAny>> {
 )]
 fn _image_decode(
     py: Python<'_>,
-    data: PyBackedBytes,
+    data: &Bound<'_, PyAny>,
     width: i32,
     height: i32,
     texture_format: i32,
     version: (u16, u16),
     platform: i32,
-    blob: Option<PyBackedBytes>,
+    blob: Option<&Bound<'_, PyAny>>,
     reader: Option<&NativeObject>,
 ) -> PyResult<Py<PyAny>> {
     let meter = meter(reader);
+    let data = crate::buffer_snapshot::BufferSnapshot::new(data, &meter)?;
+    let blob = blob
+        .map(|v| crate::buffer_snapshot::BufferSnapshot::new(v, &meter))
+        .transpose()?;
     let limits = reader.map_or_else(Limits::default, |r| r.inner.file().context().limits);
     py.detach(move || {
         crate::worker::run(limits.stack_needed(), || {
@@ -219,17 +223,21 @@ fn _image_decode(
 )]
 fn _image_encode(
     py: Python<'_>,
-    data: PyBackedBytes,
+    data: &Bound<'_, PyAny>,
     width: u32,
     height: u32,
     pack_mode: &str,
     texture_format: i32,
     platform: i32,
-    blob: Option<PyBackedBytes>,
+    blob: Option<&Bound<'_, PyAny>>,
     reader: Option<&NativeObject>,
     switch_mips: bool,
 ) -> PyResult<Py<PyAny>> {
     let meter = meter(reader);
+    let data = crate::buffer_snapshot::BufferSnapshot::new(data, &meter)?;
+    let blob = blob
+        .map(|v| crate::buffer_snapshot::BufferSnapshot::new(v, &meter))
+        .transpose()?;
     let limits = reader.map_or_else(Limits::default, |r| r.inner.file().context().limits);
     py.detach(move || {
         crate::worker::run(limits.stack_needed(), || {
@@ -294,7 +302,7 @@ fn _image_encode(
 )]
 fn _sprite_render(
     py: Python<'_>,
-    data: PyBackedBytes,
+    data: &Bound<'_, PyAny>,
     mode: &str,
     width: u32,
     height: u32,
@@ -306,9 +314,17 @@ fn _sprite_render(
     version: (u16, u16, u16, u8, u8),
 ) -> PyResult<Py<PyAny>> {
     let meter = meter(reader);
+    let data = crate::buffer_snapshot::BufferSnapshot::new(data, &meter)?;
     let limits = reader.map_or_else(Limits::default, |r| r.inner.file().context().limits);
     let version =
         unityrs_meshdecode::Version::new(version.0, version.1, version.2, version.3, version.4);
+    let snapshot = if settings & 2 == 0 {
+        Some(crate::value_input::export_snapshot(
+            &sprite, &meter, &limits,
+        )?)
+    } else {
+        None
+    };
     py.detach(move || {
         crate::worker::run(limits.stack_needed(), || {
             let mode = match mode {
@@ -320,11 +336,9 @@ fn _sprite_render(
                 .map_err(|e| decode_error(e, 4))?;
             let sheet =
                 unityrs_texture::sprite::Sheet::new(&image, None, &meter).map_err(sprite_error)?;
-            let parsed = if settings & 2 == 0 {
-                Some(crate::value_input::parsed(&sprite, &meter, &limits)?)
-            } else {
-                None
-            };
+            let parsed = snapshot
+                .map(crate::value_input::Snapshot::build)
+                .transpose()?;
             let image = unityrs_texture::sprite::render(
                 &sheet,
                 &unityrs_texture::sprite::SpriteData {

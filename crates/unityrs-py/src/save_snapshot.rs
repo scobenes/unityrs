@@ -5,7 +5,6 @@ use crate::{errors, files::NativeFile, object::NativeObject, python as p, save};
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
     prelude::*,
-    pybacked::PyBackedBytes,
 };
 use unityrs_core::{
     File, RawStr,
@@ -15,12 +14,12 @@ use unityrs_core::{
 };
 
 type Metadata = (
-    (u32, char, Option<PyBackedBytes>, i64),
-    Option<PyBackedBytes>,
+    (u32, char, Option<Py<PyAny>>, i64),
+    Option<Py<PyAny>>,
     Option<i32>,
     bool,
     i32,
-    Option<PyBackedBytes>,
+    Option<Py<PyAny>>,
 );
 type ObjectRow = (
     Py<NativeObject>,
@@ -32,12 +31,7 @@ type ObjectRow = (
     Option<i16>,
     Py<PyAny>,
 );
-type ExternalRow = (
-    Option<PyBackedBytes>,
-    Option<PyBackedBytes>,
-    Option<i32>,
-    PyBackedBytes,
-);
+type ExternalRow = (Option<Py<PyAny>>, Option<Py<PyAny>>, Option<i32>, Py<PyAny>);
 
 pub(crate) fn serialized(
     py: Python<'_>,
@@ -52,7 +46,13 @@ pub(crate) fn serialized(
     let meter = source.meter();
     // The Python facade charges its lists and encodings before construction;
     // these native rows are separately charged before retaining handles.
-    let metadata = metadata.extract::<Metadata>()?;
+    let ((version, endian, reserved, unknown), unity, platform, enabled, big_id, user) =
+        metadata.extract::<Metadata>()?;
+    let snapshot =
+        |value: Py<PyAny>| crate::buffer_snapshot::BufferSnapshot::new(value.bind(py), meter);
+    let reserved = reserved.map(snapshot).transpose()?;
+    let unity = unity.map(snapshot).transpose()?;
+    let user = user.map(snapshot).transpose()?;
     let mut objects = MeteredVec::with_capacity(meter, rows.len()?).map_err(errors::charge)?;
     for row in rows.try_iter()? {
         let (object, path_id, type_id, class_id, destroyed, stripped, script, data) =
@@ -67,13 +67,7 @@ pub(crate) fn serialized(
         info.script_type_index = script;
         objects.push((info, data)).map_err(errors::charge)?;
     }
-    let mut external_rows =
-        MeteredVec::with_capacity(meter, externals.len()?).map_err(errors::charge)?;
-    for row in externals.try_iter()? {
-        external_rows
-            .push(row?.extract::<ExternalRow>()?)
-            .map_err(errors::charge)?;
-    }
+    let external_rows = snapshot_externals(py, externals, meter)?;
     py.detach(move || {
         crate::worker::run(crate::worker::load_stack(&source.context().limits), || {
             let mut entries =
@@ -97,8 +91,6 @@ pub(crate) fn serialized(
                     .map_err(errors::charge)?;
             }
             let external_entries = external_snapshot(external_rows.as_slice(), meter)?;
-            let ((version, endian, reserved, unknown), unity, platform, enabled, big_id, user) =
-                metadata;
             let mut header = source.header().clone();
             header.version = version;
             header.endian = match endian {
@@ -120,7 +112,7 @@ pub(crate) fn serialized(
                 header,
                 unity_version: unity
                     .as_ref()
-                    .map(|v| RawStr::charged(v, meter))
+                    .map(|v| RawStr::charged(v.as_ref(), meter))
                     .transpose()
                     .map_err(errors::charge)?,
                 target_platform: platform,
@@ -130,7 +122,7 @@ pub(crate) fn serialized(
                 externals: external_entries.as_slice(),
                 user_information: user
                     .as_ref()
-                    .map(|v| RawStr::charged(v, meter))
+                    .map(|v| RawStr::charged(v.as_ref(), meter))
                     .transpose()
                     .map_err(errors::charge)?,
             };
@@ -150,16 +142,47 @@ pub(crate) fn serialized(
     })
 }
 
+type ExternalSnapshot = (
+    Option<crate::buffer_snapshot::BufferSnapshot>,
+    Option<crate::buffer_snapshot::BufferSnapshot>,
+    Option<i32>,
+    crate::buffer_snapshot::BufferSnapshot,
+);
+
+fn snapshot_externals(
+    py: Python<'_>,
+    externals: &Bound<'_, PyAny>,
+    meter: &std::sync::Arc<unityrs_core::limits::Meter>,
+) -> PyResult<MeteredVec<ExternalSnapshot>> {
+    let snapshot =
+        |value: Py<PyAny>| crate::buffer_snapshot::BufferSnapshot::new(value.bind(py), meter);
+    let mut external_rows =
+        MeteredVec::with_capacity(meter, externals.len()?).map_err(errors::charge)?;
+    for row in externals.try_iter()? {
+        let (empty, guid, kind, path) = row?.extract::<ExternalRow>()?;
+        external_rows
+            .push((
+                empty.map(snapshot).transpose()?,
+                guid.map(snapshot).transpose()?,
+                kind,
+                snapshot(path)?,
+            ))
+            .map_err(errors::charge)?;
+    }
+    Ok(external_rows)
+}
+
 fn external_snapshot(
-    rows: &[ExternalRow],
+    rows: &[ExternalSnapshot],
     meter: &std::sync::Arc<unityrs_core::limits::Meter>,
 ) -> PyResult<MeteredVec<External>> {
     let mut entries = MeteredVec::with_capacity(meter, rows.len()).map_err(errors::charge)?;
     for (empty, guid, kind, path) in rows {
-        let mut entry = External::new(RawStr::charged(path, meter).map_err(errors::charge)?);
+        let mut entry =
+            External::new(RawStr::charged(path.as_ref(), meter).map_err(errors::charge)?);
         entry.temp_empty = empty
             .as_ref()
-            .map(|v| RawStr::charged(v, meter))
+            .map(|v| RawStr::charged(v.as_ref(), meter))
             .transpose()
             .map_err(errors::charge)?;
         entry.guid = guid.as_ref().map(|v| ShortArray::from_slice(v));

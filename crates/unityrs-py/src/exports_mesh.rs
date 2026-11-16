@@ -5,7 +5,6 @@ use crate::{errors, python as p};
 use pyo3::{
     exceptions::{PyIndexError, PyNotImplementedError, PyTypeError, PyValueError},
     prelude::*,
-    pybacked::PyBackedBytes,
 };
 use std::sync::Arc;
 use unityrs_core::{
@@ -23,17 +22,18 @@ use unityrs_meshdecode::{FileResources, MeshHandler, Source, Version, VertexArra
 #[pyo3(signature = (input, version, reader=None, environment=None, material_names=None))]
 pub(super) fn export_mesh(
     py: Python<'_>,
-    input: Py<PyAny>,
+    input: &Bound<'_, PyAny>,
     version: u64,
     reader: Option<&NativeObject>,
     environment: Option<&NativeEnvironment>,
-    material_names: Option<Py<PyAny>>,
+    material_names: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     let (limits, meter) = context(reader);
+    let snapshot = crate::value_input::export_snapshot(input.as_unbound(), &meter, &limits)?;
+    let names = names(material_names, &meter)?;
     py.detach(move || {
         crate::worker::run(limits.stack_needed(), || {
-            let parsed = crate::value_input::parsed(&input, &meter, &limits)?;
-            let names = names(material_names.as_ref(), &meter)?;
+            let parsed = snapshot.build()?;
             let resources = reader
                 .zip(environment)
                 .map(|(reader, environment)| FileResources {
@@ -113,16 +113,16 @@ pub(super) fn export_mesh(
     })
 }
 
-fn names(input: Option<&Py<PyAny>>, meter: &Arc<Meter>) -> PyResult<MeteredVec<RawStr>> {
+fn names(input: Option<&Bound<'_, PyAny>>, meter: &Arc<Meter>) -> PyResult<MeteredVec<RawStr>> {
     let mut out = MeteredVec::new(meter);
     if let Some(input) = input {
-        Python::attach(|py| -> PyResult<()> {
-            let input = input.bind(py);
+        Python::attach(|_py| -> PyResult<()> {
             let count = input.len()?;
             meter.count_decode(count as u64).map_err(errors::charge)?;
             out.reserve(count).map_err(errors::charge)?;
             for i in 0..count {
-                let value = input.get_item(i)?.extract::<PyBackedBytes>()?;
+                let value =
+                    crate::buffer_snapshot::BufferSnapshot::new(&input.get_item(i)?, meter)?;
                 out.push(RawStr::charged(&value, meter).map_err(errors::charge)?)
                     .map_err(errors::charge)?;
             }

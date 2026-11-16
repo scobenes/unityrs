@@ -6,7 +6,7 @@ use crate::{
     python as p,
     settings::{Budget, Limits},
 };
-use pyo3::{prelude::*, pybacked::PyBackedBytes};
+use pyo3::prelude::*;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -68,13 +68,23 @@ impl unityrs_core::config::FallbackWarningSink for FallbackWarning {
         }
     }
 }
+impl NativeEnvironment {
+    fn input_meter(&self) -> Arc<unityrs_core::limits::Meter> {
+        let ctx = &self.inner.options().context;
+        unityrs_core::limits::Meter::for_input(
+            &ctx.limits,
+            ctx.budget.clone(),
+            unityrs_core::budget::Reservation::Input,
+        )
+    }
+}
 #[pymethods]
 impl NativeEnvironment {
     fn resource(
         &self,
         py: Python<'_>,
         file: &NativeFile,
-        path: PyBackedBytes,
+        path: &Bound<'_, PyAny>,
         offset: i128,
         size: i128,
     ) -> PyResult<Py<PyAny>> {
@@ -83,6 +93,7 @@ impl NativeEnvironment {
                 "resource owner is not a SerializedFile",
             ));
         };
+        let path = crate::buffer_snapshot::BufferSnapshot::new(path, file.meter())?;
         py.detach(move || {
             crate::worker::run(crate::worker::load_stack(&file.context().limits), || {
                 let path = RawStr::charged(&path, file.meter()).map_err(errors::charge)?;
@@ -149,13 +160,23 @@ impl NativeEnvironment {
             })
         })
     }
-    fn configure(&self, py: Python<'_>, fallback: Option<PyBackedBytes>, parse_typetree: bool) {
+    fn configure(
+        &self,
+        py: Python<'_>,
+        fallback: Option<&Bound<'_, PyAny>>,
+        parse_typetree: bool,
+    ) -> PyResult<()> {
+        let meter = self.input_meter();
+        let fallback = fallback
+            .map(|v| crate::buffer_snapshot::BufferSnapshot::source(v, &meter, u64::MAX))
+            .transpose()?;
         py.detach(|| {
             self.config.set(
                 fallback.map(|data| RawStr::from(unityrs_core::Bytes::from_owner(data))),
                 parse_typetree,
             );
         });
+        Ok(())
     }
     fn take_fallback_warnings(&self, py: Python<'_>) -> PyResult<u64> {
         let error = py.detach(|| {
@@ -170,11 +191,18 @@ impl NativeEnvironment {
     fn load_bytes(
         &self,
         py: Python<'_>,
-        data: PyBackedBytes,
-        name: PyBackedBytes,
+        data: &Bound<'_, PyAny>,
+        name: &Bound<'_, PyAny>,
         dependency: bool,
         stream: bool,
     ) -> PyResult<Option<NativeFile>> {
+        let meter = self.input_meter();
+        let data = crate::buffer_snapshot::BufferSnapshot::source(
+            data,
+            &meter,
+            self.inner.options().context.limits.max_input_bytes,
+        )?;
+        let name = crate::buffer_snapshot::BufferSnapshot::source(name, &meter, u64::MAX)?;
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),
@@ -266,7 +294,13 @@ impl NativeEnvironment {
             )
         })
     }
-    fn load_zip_bytes(&self, py: Python<'_>, data: PyBackedBytes) -> PyResult<()> {
+    fn load_zip_bytes(&self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
+        let meter = self.input_meter();
+        let data = crate::buffer_snapshot::BufferSnapshot::source(
+            data,
+            &meter,
+            self.inner.options().context.limits.max_input_bytes,
+        )?;
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),

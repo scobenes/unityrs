@@ -123,6 +123,10 @@ impl Writer {
         self.buf.write_at(offset, bytes)?;
         Ok(())
     }
+    pub(crate) fn write_zeroes_at(&mut self, offset: usize, count: usize) -> Result<(), SaveError> {
+        self.buf.write_zeroes_at(offset, count)?;
+        Ok(())
+    }
     pub(crate) fn slice(&self) -> &[u8] {
         self.buf.as_slice()
     }

@@ -28,6 +28,7 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `binding_y4_review_images.py` | Unbounded mipmap arguments and texture mutation ordering |
 | `binding_y4_review_object.py` | Reentrant writer getters and exact numeric writer validation |
 | `binding_y4_review_save.py` | Live object mapping, payload, metadata and bundle header save snapshots |
+| `binding_y4_round3.py` | Caller-thread snapshots, typed sequences, metered CAB writes and Switch argument ordering |
 | `encoder_probe.py`, `encoder_probe.cpp` | B3b scalar/invariant texture encoder build and instruction-set probe against the oracle wheels |
 | `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=94`); requires `unityrs` and UnityPy 1.25.2, and never skips |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |

@@ -14,6 +14,24 @@ pub(crate) struct BufferSnapshot {
 }
 
 impl BufferSnapshot {
+    /// Loaded immutable input is charged by the core's source owner. Only a
+    /// mutable snapshot needs an additional payload allocation at this layer.
+    pub(crate) fn source(input: &Bound<'_, PyAny>, meter: &Arc<Meter>, cap: u64) -> PyResult<Self> {
+        if let Ok(bytes) = input.cast::<PyBytes>() {
+            check_size(bytes.as_bytes().len() as u64, cap)?;
+            // Retaining an immutable owner only increments its reference count.
+            return Ok(Self {
+                bytes: input.extract()?,
+                _charge: Charge::zero(meter),
+            });
+        }
+        let charge = meter.charge(256).map_err(errors::charge)?;
+        let view = PyMemoryView::from(input)?;
+        let size = view.getattr("nbytes")?.extract::<u64>()?;
+        check_size(size, cap)?;
+        Self::from_view(input, &view, charge)
+    }
+
     pub(crate) fn new(input: &Bound<'_, PyAny>, meter: &Arc<Meter>) -> PyResult<Self> {
         let charge = meter.charge(256).map_err(errors::charge)?;
         let view = PyMemoryView::from(input)?;
@@ -43,9 +61,26 @@ impl BufferSnapshot {
     }
 }
 
+fn check_size(size: u64, cap: u64) -> PyResult<()> {
+    if size > cap {
+        return Err(errors::core(
+            unityrs_core::LimitError::refused(unityrs_core::LimitKind::InputBytes, size, cap)
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 impl AsRef<[u8]> for BufferSnapshot {
     fn as_ref(&self) -> &[u8] {
         &self.bytes
+    }
+}
+
+impl std::ops::Deref for BufferSnapshot {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.as_ref()
     }
 }
 

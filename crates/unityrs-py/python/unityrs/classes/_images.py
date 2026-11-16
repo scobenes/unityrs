@@ -106,7 +106,7 @@ def _pack_format(target, mode):
     return 4, "RGBA"
 
 
-def _encode(obj, img, target, platform, blob, guard, mipmap_count=1):
+def _encode(obj, img, target, platform, blob, guard):
     from PIL import Image
 
     target, pack = _pack_format(target, img.mode)
@@ -126,14 +126,8 @@ def _encode(obj, img, target, platform, blob, guard, mipmap_count=1):
         guard.step(0, img.width * img.height * 12 + 1024, img.width * img.height)
         img = img.convert("RGBA")
         raw = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM).tobytes("raw", pack)
-    # Ordinary mip arguments are interpreted after the base image and dimension
-    # updates, just as Python's range does. Only the unsupported Switch chain
-    # needs an early predicate; never narrow the caller's arbitrary-size count.
-    switch_mips = (platform == 38 and bool(blob) and len(blob) >= 12
-                   and any(blob[8:12]) and img.width >= 8 and img.height >= 8
-                   and mipmap_count > 1)
     data, written = _native._image_encode(raw, img.width, img.height, pack, target, platform, blob,
-                                          _reader(obj), switch_mips)
+                                          _reader(obj))
     return data, written, img
 
 
@@ -147,13 +141,23 @@ def set_image(self, img, target_format=None, mipmap_count=1):
     target_format = TextureFormat(target_format)
     platform = self.object_reader.platform if self.object_reader is not None else 0
     guard = _guard(self)
-    img_data, tex_format, img = _encode(self, img, target_format, platform, _blob(self), guard, mipmap_count)
+    blob = _blob(self)
+    img_data, tex_format, img = _encode(self, img, target_format, platform, blob, guard)
+    old_size = self.m_Width, self.m_Height
     self.m_Width = img.width
     self.m_Height = img.height
     if mipmap_count > 1:
+        # Validate Python's range protocol after updating dimensions. Invalid
+        # counts retain those updates, matching the normal writer ordering.
+        levels = range(mipmap_count - 1)
+        if (platform == 38 and blob and len(blob) >= 12 and any(blob[8:12])
+                and img.width >= 8 and img.height >= 8):
+            # Valid Switch chains remain an atomic, explicit capability gap.
+            self.m_Width, self.m_Height = old_size
+            raise NotImplementedError("unsupported set_image: Switch mip chain")
         width, height = self.m_Width, self.m_Height
         re_img = img
-        for i in range(mipmap_count - 1):
+        for i in levels:
             width //= 2
             height //= 2
             if width < 4 or height < 4:

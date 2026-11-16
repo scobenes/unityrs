@@ -6,7 +6,6 @@ use crate::{errors, files::NativeFile, object::NativeObject, python as p};
 use pyo3::{
     exceptions::{PyNotImplementedError, PyTypeError, PyValueError},
     prelude::*,
-    pybacked::PyBackedBytes,
     types::PyTuple,
 };
 use std::sync::Arc;
@@ -44,36 +43,47 @@ fn context(file: &File) -> Option<&Arc<unityrs_core::FileContext>> {
     }
 }
 
-fn packer(value: Option<&Py<PyAny>>) -> PyResult<BundlePacker> {
-    Python::attach(|py| {
-        let Some(value) = value else {
-            return Ok(BundlePacker::None);
+fn packer(value: Option<&Bound<'_, PyAny>>) -> PyResult<BundlePacker> {
+    let Some(value) = value else {
+        return Ok(BundlePacker::None);
+    };
+    if !value.is_truthy()? {
+        return Ok(BundlePacker::None);
+    }
+    if let Ok(s) = value.extract::<&str>() {
+        return match s {
+            "none" => Ok(BundlePacker::None),
+            "original" => Ok(BundlePacker::Original),
+            "lz4" => Ok(BundlePacker::Lz4),
+            "lzma" => Ok(BundlePacker::Lzma),
+            "lz4hc" => Ok(BundlePacker::Lz4Hc),
+            _ => Err(PyNotImplementedError::new_err((
+                "UnityFS - Packer:",
+                value.clone().unbind(),
+            ))),
         };
-        let value = value.bind(py);
-        if !value.is_truthy()? {
-            return Ok(BundlePacker::None);
-        }
-        if let Ok(s) = value.extract::<&str>() {
-            return match s {
-                "none" => Ok(BundlePacker::None),
-                "original" => Ok(BundlePacker::Original),
-                "lz4" => Ok(BundlePacker::Lz4),
-                "lzma" => Ok(BundlePacker::Lzma),
-                "lz4hc" => Ok(BundlePacker::Lz4Hc),
-                _ => Err(PyNotImplementedError::new_err((
-                    "UnityFS - Packer:",
-                    value.clone().unbind(),
-                ))),
-            };
-        }
-        if value.is_instance_of::<PyTuple>() {
-            let (data, blocks) = value.extract::<(u32, u16)>()?;
-            return Ok(BundlePacker::Flags { data, blocks });
-        }
-        Err(PyNotImplementedError::new_err((
-            "UnityFS - Packer:",
-            value.clone().unbind(),
-        )))
+    }
+    if value.is_instance_of::<PyTuple>() {
+        let (data, blocks) = value.extract::<(u32, u16)>()?;
+        return Ok(BundlePacker::Flags { data, blocks });
+    }
+    Err(PyNotImplementedError::new_err((
+        "UnityFS - Packer:",
+        value.clone().unbind(),
+    )))
+}
+
+fn web_packer(value: Option<&Bound<'_, PyAny>>, default: WebPacker) -> PyResult<WebPacker> {
+    let Some(value) = value else {
+        return Ok(default);
+    };
+    if !value.is_truthy()? {
+        return Ok(default);
+    }
+    Ok(match value.extract::<&str>().unwrap_or("") {
+        "gzip" => WebPacker::Gzip,
+        "brotli" => WebPacker::Brotli,
+        _ => WebPacker::None,
     })
 }
 
@@ -81,11 +91,25 @@ pub(crate) fn file_save(
     py: Python<'_>,
     file: &NativeFile,
     mode: &str,
-    value: Option<Py<PyAny>>,
+    value: Option<&Bound<'_, PyAny>>,
     data_flag: u32,
     block_info_flag: u16,
     signature: &str,
 ) -> PyResult<Py<PyAny>> {
+    let bundle_packer = match &file.inner {
+        File::Bundle(f)
+            if mode != "fs"
+                && mode != "web_raw"
+                && f.header().signature.as_bytes() == b"UnityFS" =>
+        {
+            packer(value)?
+        }
+        _ => BundlePacker::None,
+    };
+    let web_packer = match &file.inner {
+        File::Web(f) => web_packer(value, f.packer())?,
+        _ => WebPacker::None,
+    };
     py.detach(move || {
         let ctx = context(&file.inner)
             .ok_or_else(|| PyTypeError::new_err("raw readers have no save method"))?;
@@ -98,36 +122,16 @@ pub(crate) fn file_save(
                     "web_raw" => f.save_web_raw(SaveOptions { layout }),
                     _ => f.save(BundleSaveOptions {
                         layout,
-                        packer: if f.header().signature.as_bytes() == b"UnityFS" {
-                            packer(value.as_ref())?
-                        } else {
-                            BundlePacker::None
-                        },
+                        packer: bundle_packer,
                     }),
                 },
-                File::Web(f) => {
-                    let pack = Python::attach(|py| -> PyResult<WebPacker> {
-                        let Some(value) = &value else {
-                            return Ok(f.packer());
-                        };
-                        let value = value.bind(py);
-                        if !value.is_truthy()? {
-                            return Ok(f.packer());
-                        }
-                        Ok(match value.extract::<&str>().unwrap_or("") {
-                            "gzip" => WebPacker::Gzip,
-                            "brotli" => WebPacker::Brotli,
-                            _ => WebPacker::None,
-                        })
-                    })?;
-                    f.save_with_signature(
-                        WebSaveOptions {
-                            layout,
-                            packer: pack,
-                        },
-                        signature,
-                    )
-                }
+                File::Web(f) => f.save_with_signature(
+                    WebSaveOptions {
+                        layout,
+                        packer: web_packer,
+                    },
+                    signature,
+                ),
                 File::Raw(_) => {
                     return Err(PyTypeError::new_err("raw readers have no save method"));
                 }
@@ -272,11 +276,25 @@ pub(crate) struct NativeCab {
 
 #[pymethods]
 impl NativeCab {
-    fn write_bytes(&self, py: Python<'_>, value: PyBackedBytes, position: u64) -> PyResult<usize> {
+    fn write_bytes(
+        &self,
+        py: Python<'_>,
+        value: &Bound<'_, PyAny>,
+        position: u64,
+    ) -> PyResult<usize> {
+        let value = crate::buffer_snapshot::BufferSnapshot::new(value, &self.meter)?;
         py.detach(move || {
-            self.inner.write_at(position, &value).map_err(error)?;
-            Ok(value.len())
+            self.inner
+                .write_at(position, value.as_ref())
+                .map_err(error)?;
+            Ok(value.as_ref().len())
         })
+    }
+    fn length(&self, py: Python<'_>) -> usize {
+        py.detach(|| self.inner.len())
+    }
+    fn write_zeroes(&self, py: Python<'_>, position: u64, count: usize) -> PyResult<()> {
+        py.detach(|| self.inner.write_zeroes_at(position, count).map_err(error))
     }
     fn data(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         py.detach(|| {
@@ -329,9 +347,10 @@ impl NativeCab {
 pub(crate) fn file_get_writeable_cab(
     py: Python<'_>,
     file: &NativeFile,
-    name: PyBackedBytes,
+    name: &Bound<'_, PyAny>,
     guid: Option<[u8; 16]>,
 ) -> PyResult<Option<NativeCab>> {
+    let name = crate::buffer_snapshot::BufferSnapshot::new(name, file.inner.meter())?;
     py.detach(move || {
         let name = RawStr::charged(&name, file.inner.meter()).map_err(errors::charge)?;
         let cab = match &file.inner {
@@ -363,34 +382,39 @@ pub(crate) fn file_get_writeable_cab(
 pub(crate) fn save_web_entries(
     py: Python<'_>,
     file: &NativeFile,
-    rows: Py<PyAny>,
-    packer: Option<Py<PyAny>>,
-    signature: PyBackedBytes,
+    rows: &Bound<'_, PyAny>,
+    packer: Option<&Bound<'_, PyAny>>,
+    signature: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
+    let File::Web(web) = &file.inner else {
+        return Err(PyTypeError::new_err("not a WebFile"));
+    };
+    let meter = file.inner.meter();
+    let pack = web_packer(packer, web.packer())?;
+    let signature = crate::buffer_snapshot::BufferSnapshot::new(signature, meter)?;
+    let mut entries = unityrs_core::limits::MeteredVec::with_capacity(meter, rows.len()?)
+        .map_err(errors::charge)?;
+    for row in rows.try_iter()? {
+        let (name, data) = row?.extract::<(Py<PyAny>, Py<PyAny>)>()?;
+        entries
+            .push((
+                crate::buffer_snapshot::BufferSnapshot::new(name.bind(py), meter)?,
+                crate::buffer_snapshot::BufferSnapshot::new(data.bind(py), meter)?,
+            ))
+            .map_err(errors::charge)?;
+    }
     py.detach(move || {
-        let File::Web(web) = &file.inner else {
-            return Err(PyTypeError::new_err("not a WebFile"));
-        };
         crate::worker::run(crate::worker::load_stack(&web.context().limits), || {
             let meter = file.inner.meter();
-            let mut entries = unityrs_core::limits::MeteredVec::new(meter);
-            let count = Python::attach(|py| rows.bind(py).len())?;
-            entries.reserve_exact(count).map_err(errors::charge)?;
             let mut header = signature
                 .len()
                 .checked_add(5)
                 .ok_or_else(|| PyValueError::new_err("WebFile size"))?;
-            for index in 0..count {
-                let pair = Python::attach(|py| {
-                    rows.bind(py)
-                        .get_item(index)?
-                        .extract::<(PyBackedBytes, PyBackedBytes)>()
-                })?;
+            for (name, _) in entries.as_slice() {
                 header = header
                     .checked_add(12)
-                    .and_then(|n| n.checked_add(pair.0.len()))
+                    .and_then(|n| n.checked_add(name.as_ref().len()))
                     .ok_or_else(|| PyValueError::new_err("WebFile size"))?;
-                entries.push(pair).map_err(errors::charge)?;
             }
             let mut out = buffer(meter)?;
             append(&mut out, &signature)?;
@@ -399,31 +423,17 @@ pub(crate) fn save_web_entries(
             let mut offset = header;
             for (name, data) in entries.as_slice() {
                 append(&mut out, &web_i32(offset)?)?;
-                append(&mut out, &web_i32(data.len())?)?;
-                append(&mut out, &web_i32(name.len())?)?;
-                append(&mut out, name)?;
+                append(&mut out, &web_i32(data.as_ref().len())?)?;
+                append(&mut out, &web_i32(name.as_ref().len())?)?;
+                append(&mut out, name.as_ref())?;
                 offset = offset
-                    .checked_add(data.len())
+                    .checked_add(data.as_ref().len())
                     .ok_or_else(|| PyValueError::new_err("WebFile size"))?;
                 web_i32(offset)?;
             }
             for (_, data) in entries.as_slice() {
-                append(&mut out, data)?;
+                append(&mut out, data.as_ref())?;
             }
-            let pack = Python::attach(|py| -> PyResult<WebPacker> {
-                let Some(value) = &packer else {
-                    return Ok(web.packer());
-                };
-                let value = value.bind(py);
-                if !value.is_truthy()? {
-                    return Ok(web.packer());
-                }
-                Ok(match value.extract::<&str>().unwrap_or("") {
-                    "gzip" => WebPacker::Gzip,
-                    "brotli" => WebPacker::Brotli,
-                    _ => WebPacker::None,
-                })
-            })?;
             let bytes = web_compress(out, pack, meter)?
                 .into_bytes()
                 .map_err(errors::charge)?;
@@ -517,42 +527,50 @@ pub(crate) fn save_bundle_entries(
     py: Python<'_>,
     file: &NativeFile,
     mode: &str,
-    rows: Py<PyAny>,
-    value: Option<Py<PyAny>>,
+    rows: &Bound<'_, PyAny>,
+    value: Option<&Bound<'_, PyAny>>,
     flags: (u32, u16),
     header: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     let (data_flag, block_info_flag) = flags;
-    let (signature, version, player, engine, alignment, data_flags, block_flags) = header
-        .extract::<(
-            PyBackedBytes,
-            u32,
-            PyBackedBytes,
-            PyBackedBytes,
-            bool,
-            u32,
-            u16,
-        )>()?;
+    let (signature, version, player, engine, alignment, data_flags, block_flags) =
+        header.extract::<(Py<PyAny>, u32, Py<PyAny>, Py<PyAny>, bool, u32, u16)>()?;
+    let meter = file.inner.meter();
+    let signature = crate::buffer_snapshot::BufferSnapshot::new(signature.bind(py), meter)?;
+    let player = crate::buffer_snapshot::BufferSnapshot::new(player.bind(py), meter)?;
+    let engine = crate::buffer_snapshot::BufferSnapshot::new(engine.bind(py), meter)?;
+    let File::Bundle(bundle) = &file.inner else {
+        return Err(PyTypeError::new_err("not a bundle"));
+    };
+    let pack = if mode != "web_raw" && signature.as_ref() == b"UnityFS" {
+        packer(value)?
+    } else {
+        BundlePacker::None
+    };
+    let meter = file.inner.meter();
+    let mut snapshots = unityrs_core::limits::MeteredVec::with_capacity(meter, rows.len()?)
+        .map_err(errors::charge)?;
+    for row in rows.try_iter()? {
+        let (name, flags, data) = row?.extract::<(Py<PyAny>, u32, Py<PyAny>)>()?;
+        snapshots
+            .push((
+                crate::buffer_snapshot::BufferSnapshot::new(name.bind(py), meter)?,
+                flags,
+                crate::buffer_snapshot::BufferSnapshot::new(data.bind(py), meter)?,
+            ))
+            .map_err(errors::charge)?;
+    }
     py.detach(move || {
-        let File::Bundle(bundle) = &file.inner else {
-            return Err(PyTypeError::new_err("not a bundle"));
-        };
         crate::worker::run(crate::worker::load_stack(&bundle.context().limits), || {
-            let meter = file.inner.meter();
-            let mut entries = unityrs_core::limits::MeteredVec::new(meter);
-            let count = Python::attach(|py| rows.bind(py).len())?;
-            entries.reserve_exact(count).map_err(errors::charge)?;
-            for index in 0..count {
-                let (name, flags, data) = Python::attach(|py| {
-                    rows.bind(py)
-                        .get_item(index)?
-                        .extract::<(PyBackedBytes, u32, PyBackedBytes)>()
-                })?;
-                let name = RawStr::charged(&name, meter).map_err(errors::charge)?;
+            let mut entries =
+                unityrs_core::limits::MeteredVec::with_capacity(meter, snapshots.len())
+                    .map_err(errors::charge)?;
+            for (name, flags, data) in snapshots.as_slice() {
+                let name = RawStr::charged(name.as_ref(), meter).map_err(errors::charge)?;
                 let mut bytes = buffer(meter)?;
-                append(&mut bytes, &data)?;
+                append(&mut bytes, data.as_ref())?;
                 entries
-                    .push((name, flags, bytes.into_bytes().map_err(errors::charge)?))
+                    .push((name, *flags, bytes.into_bytes().map_err(errors::charge)?))
                     .map_err(errors::charge)?;
             }
             let engine_heap = bundle
@@ -585,11 +603,7 @@ pub(crate) fn save_bundle_entries(
                 bundle.save_with_snapshot(
                     BundleSaveOptions {
                         layout: options.layout,
-                        packer: if signature.as_ref() == b"UnityFS" {
-                            packer(value.as_ref())?
-                        } else {
-                            BundlePacker::None
-                        },
+                        packer: pack,
                     },
                     entries.as_slice(),
                     &header,
