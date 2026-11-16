@@ -93,6 +93,7 @@ const CALLS: &[(&str, Pool, &[&str])] = &[
     ("Environment::load_file", Pool::Inner, &[SETTLE]),
     ("Environment::load_zip_file", Pool::Inner, &[SETTLE]),
     ("Environment::load_reader", Pool::Inner, &[SETTLE]),
+    ("Environment::parse_reader", Pool::Inner, &[SETTLE]),
     ("Environment::load_path", Pool::Inner, &[SETTLE]),
     ("Environment::load_files", Pool::Inner, &[SETTLE]),
     ("Environment::load_folder", Pool::Inner, &[SETTLE]),
@@ -358,13 +359,14 @@ fn sorted_keys(env: &Environment) -> Vec<String> {
 }
 
 /// How a test drops the dependency `a.bundle`'s unread nested container
-/// `INNER`: a caller's load of `p.bundle`, whose entry `INNER` takes the
-/// key, or a registration of that entry through the registry.
+/// `INNER`: a caller's load or parse of `p.bundle`, whose entry `INNER`
+/// takes the key, or a registration of that entry through the registry.
 #[derive(Clone, Copy, Debug)]
 enum Dropper {
     Load,
     LoadFile,
     LoadReader,
+    ParseReader,
     LoadZip,
     LoadPath,
     LoadFiles,
@@ -386,6 +388,7 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
         Dropper::Load
         | Dropper::LoadFile
         | Dropper::LoadReader
+        | Dropper::ParseReader
         | Dropper::LoadZip
         | Dropper::LoadPath
         | Dropper::LoadFiles
@@ -416,6 +419,19 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
                     )
                     .unwrap(),
                 );
+            }
+            Dropper::ParseReader => {
+                let (name, bytes) = &d.scene.files[3];
+                let listed = env.files().count();
+                let file = env
+                    .parse_reader(
+                        &RawStr::from(name.as_slice()),
+                        Bytes::copy_from_slice(bytes),
+                        unityrs_core::stream::ReaderKind::Memory,
+                    )
+                    .unwrap();
+                assert!(matches!(file, File::Bundle(_)));
+                assert_eq!(env.files().count(), listed, "a parse lists no file");
             }
             Dropper::LoadZip => {
                 let (name, bytes) = &d.scene.files[3];
@@ -452,7 +468,7 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
 }
 
 /// A registration that drops a dependency's unread nested container (a
-/// caller's load, or the registry's own `register`) reaches it before it
+/// caller's load or parse, or the registry's own `register`) reaches it before it
 /// returns, as an eager load registered its entries at load; when the pool
 /// refuses that reach, the reach evicts the other dependencies and runs
 /// once more (`settle`'s reach takes the registry's retry, plan section
@@ -466,6 +482,7 @@ fn a_registration_that_drops_a_dependencys_container_makes_room_to_reach_it() {
         Dropper::Load,
         Dropper::LoadFile,
         Dropper::LoadReader,
+        Dropper::ParseReader,
         Dropper::LoadZip,
         Dropper::LoadPath,
         Dropper::LoadFiles,
