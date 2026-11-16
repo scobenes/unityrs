@@ -25,6 +25,7 @@ pub mod client;
 mod complete;
 pub mod connector;
 pub mod credentials;
+mod crypto;
 pub mod etag;
 mod finishing;
 pub mod head;

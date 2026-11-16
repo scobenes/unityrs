@@ -320,6 +320,31 @@ fn make_spec(kind: &str, scratch: &Scratch, peer: &Arc<Fake>) -> Value {
             drive(&spec, scratch, false, peer).unwrap().code,
             Code::Complete
         );
+        // A successful library run detaches its retiring workers. They can
+        // still own the spool lease after their last charge is released.
+        // Wait for that exact teardown boundary before the next run starts.
+        let deadline = std::time::Instant::now() + unityrs_testkit::guard::DEADLOCK_GUARD;
+        loop {
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(scratch.join("spool/lock"))
+                .unwrap();
+            match unityrs_batch::sys::lock_exclusive(file) {
+                Ok(lease) => {
+                    drop(lease);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "seed run retained its spool lock"
+                    );
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("seed spool lock: {error}"),
+            }
+        }
         spec["attempt"] = 2.into();
         spec["resume"] = true.into();
     }

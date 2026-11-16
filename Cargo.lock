@@ -1536,6 +1536,7 @@ dependencies = [
  "object_store",
  "proc-macro2",
  "quick-xml",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

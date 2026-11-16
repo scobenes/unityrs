@@ -109,10 +109,11 @@ pub struct TrySlot {
 }
 
 impl TrySlot {
-    /// One per request, allocated once for all its tries (`C_net`).
+    /// One per request, allocated once for all its tries (`C_net`). Construct
+    /// before the running head, including every spare finisher slot.
     #[must_use]
     pub fn new(permit: RequestPermit, kind: Kind) -> Arc<Self> {
-        Arc::new(Self {
+        let slot = Arc::new(Self {
             #[cfg(feature = "test-hooks")]
             probe: permit.charge_probe(),
             connected: AtomicBool::new(false),
@@ -123,7 +124,11 @@ impl TrySlot {
                 generation: 0,
                 record: Record::default(),
             }),
-        })
+        });
+        // Darwin boxes std's OS mutex on first lock. Keep that allocation
+        // with the retained slot, before any try can run after the head.
+        drop(slot.lock());
+        slot
     }
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
@@ -192,6 +197,16 @@ impl TrySlot {
     /// The slot of the try this task is running, if any.
     pub(crate) fn current() -> Option<Arc<Self>> {
         SLOT.try_with(Arc::clone).ok()
+    }
+    /// Signing runs before the connector borrows the permit. Each context
+    /// retains its own exact storage charge until its box is dropped.
+    pub(crate) fn charge(&self, bytes: u64) -> Result<crate::http::permit::Charge, Fault> {
+        self.lock()
+            .permit
+            .as_ref()
+            .ok_or(Fault::Internal)?
+            .charge(bytes)
+            .ok_or(Fault::Memory)
     }
     /// The connector's call starts: the try's one request. A second, or a
     /// call with no permit, is the engine's fault.
@@ -470,5 +485,34 @@ impl Tries<'_> {
             };
             tokio::time::sleep(wait).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+    use crate::http::permit::{FINISHER_BASE, PermitPool};
+
+    #[test]
+    fn retained_request_slots_first_use_does_not_allocate() {
+        // Include every controller and finisher slot, including the spare
+        // finisher that the running-head preflight never exercises.
+        let controller = PermitPool::new(3).unwrap();
+        let finisher = PermitPool::with_base(FINISHER_BASE, 4).unwrap();
+        let slots: Vec<_> = [&controller, &finisher]
+            .into_iter()
+            .flat_map(|pool| std::iter::from_fn(|| pool.acquire()))
+            .map(|permit| TrySlot::new(permit, Kind::Put))
+            .collect();
+        assert_eq!(slots.len(), 7);
+        let ((), measured) = crate::alloc::measured(|| {
+            for slot in &slots {
+                slot.begin(Kind::Put);
+                assert_eq!(slot.record().calls, 0);
+                assert_eq!(slot.generation(), 1);
+            }
+        });
+        assert_eq!(measured.peak, 0, "retained slot first-use allocation");
+        assert_eq!(measured.kept, 0);
     }
 }

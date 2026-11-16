@@ -91,7 +91,22 @@ impl PermitPool {
                 pool: waiter.clone(),
             }));
         }
-        Ok(Self { slots, waiter })
+        let pool = Self { slots, waiter };
+        // Darwin allocates std's mutex storage lazily. Prime every retained
+        // waiter before running; untouched finisher permits need this too.
+        drop(
+            pool.waiter
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for slot in &pool.slots {
+            drop(
+                slot.waiter
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+        }
+        Ok(pool)
     }
     /// Nonblocking admission. A live data buffer also keeps its slot occupied.
     #[must_use]
@@ -308,4 +323,33 @@ fn charge(slot: &Arc<Slot>, bytes: u64) -> Option<Charge> {
         slot: slot.clone(),
         bytes,
     })
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn retained_permit_waiters_first_use_does_not_allocate() {
+        let pool = PermitPool::with_base(FINISHER_BASE, 4).unwrap();
+        let mut permits: [_; 4] = std::array::from_fn(|_| pool.acquire().unwrap());
+        let mut cx = Context::from_waker(Waker::noop());
+        let ((), measured) = crate::alloc::measured(|| {
+            assert!(pool.poll_acquire(&mut cx).is_pending());
+            for permit in &mut permits {
+                assert!(permit.poll_available(&mut cx).is_ready());
+                let token = permit.begin(Operation::Lookup).unwrap();
+                assert!(permit.poll_available(&mut cx).is_pending());
+                drop(token);
+                assert!(permit.poll_available(&mut cx).is_ready());
+                drop(permit.charge(32).unwrap());
+            }
+            assert!(pool.poll_idle(&mut cx).is_ready());
+        });
+        assert_eq!(
+            measured.peak, 0,
+            "retained permit waiter first-use allocation"
+        );
+        assert_eq!(measured.kept, 0);
+    }
 }

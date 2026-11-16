@@ -144,6 +144,7 @@ pub fn normal(
         directory,
         identity,
         Some(ended_at),
+        None,
     ))
 }
 pub trait Head {
@@ -202,6 +203,7 @@ fn normal_into(
     directory: &dyn Head,
     identity: &Identity<'_>,
     ended_at: Option<&str>,
+    taken: Option<Stop>,
 ) -> ResultEnd {
     // Canonical stop was checked before the hand-over. Later stops cannot
     // reinterpret this snapshot. The finisher's own budget is a separate query.
@@ -220,6 +222,7 @@ fn normal_into(
             code: reduction.unwrap_or(Code::Complete),
             failure,
             stop: None,
+            taken,
             phase: Phase::Publish,
         },
     )
@@ -230,6 +233,9 @@ struct Ending {
     code: Code,
     failure: Option<RunFailure>,
     stop: Option<Stop>,
+    /// The immutable hand-over capture; normal rows ignore it, but a
+    /// superseded final head still meets its code by 9.1's precedence.
+    taken: Option<Stop>,
     phase: Phase,
 }
 /// Step 3: every row file the context allows, `syncfs`, then the head.
@@ -307,41 +313,51 @@ fn conclude(
                 sink_error(e)
             })
     });
+    let end = ResultEnd {
+        code,
+        status,
+        reason,
+        detail,
+    };
     match published {
-        Ok(()) => ResultEnd {
-            code,
-            status,
-            reason,
-            detail,
-        },
-        Err(error) => {
-            let failure_code = match error {
-                Error::Run(f) => f.code(),
-                Error::Stopped if superseded => Code::Superseded,
-                Error::Stopped => Code::Incomplete,
-            };
-            // Ordinary final-head filesystem failures contribute 4; allocation
-            // and internal failures keep their stronger classification.
-            let final_code = code.worst(failure_code);
-            let (reason, detail) = if final_code == code {
-                (reason, detail)
-            } else if final_code == Code::Superseded {
-                (Some("superseded"), None)
-            } else if final_code == Code::Incomplete {
-                (Some("publish_failed"), None)
-            } else {
-                match error {
-                    Error::Run(f) => (Some(f.name()), None),
-                    Error::Stopped => (reason, detail),
-                }
-            };
-            ResultEnd {
-                code: final_code,
-                status: if superseded { None } else { Some("running") },
-                reason,
-                detail,
-            }
+        Ok(()) => end,
+        Err(error) => failed_head(end, error, superseded, ending.taken),
+    }
+}
+fn failed_head(end: ResultEnd, error: Error, superseded: bool, taken: Option<Stop>) -> ResultEnd {
+    let failure_code = match error {
+        Error::Run(f) => f.code(),
+        Error::Stopped if superseded => Code::Superseded,
+        Error::Stopped => Code::Incomplete,
+    };
+    // Ordinary final-head filesystem failures contribute 4; allocation
+    // and internal failures keep their stronger classification.
+    let final_code = end.code.worst(failure_code);
+    let final_code = if superseded {
+        reduce(final_code, taken)
+    } else {
+        final_code
+    };
+    let by_stop = taken.filter(|stop| superseded && stop.reason.code() == final_code);
+    let (reason, detail) = if let Some(stop) = by_stop {
+        (Some(stop.reason.name()), stop.detail.map(SpoolDetail::name))
+    } else if final_code == end.code {
+        (end.reason, end.detail)
+    } else if final_code == Code::Superseded {
+        (Some("superseded"), None)
+    } else if final_code == Code::Incomplete {
+        (Some("publish_failed"), None)
+    } else {
+        match error {
+            Error::Run(f) => (Some(f.name()), None),
+            Error::Stopped => (end.reason, end.detail),
         }
+    };
+    ResultEnd {
+        code: final_code,
+        status: if superseded { None } else { Some("running") },
+        reason,
+        detail,
     }
 }
 fn sink_error(e: crate::sink::Error) -> Error {

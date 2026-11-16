@@ -151,56 +151,6 @@ pub const INVENTORY: &[Exclusion] = &[
     },
     Exclusion {
         scopes: super::STORE,
-        functions: &[
-            "unityrs_batch::store::abort::upload",
-            "unityrs_batch::store::head::Write::publish",
-            "unityrs_batch::store::list::Listing::page",
-            "unityrs_batch::store::multipart::Transfer::complete",
-            "unityrs_batch::store::multipart::Transfer::part",
-            "unityrs_batch::store::multipart::Transfer::start",
-            "unityrs_batch::store::put::Request::bytes",
-        ],
-        platform: Platform::All,
-        frame: Some(
-            "<object_store::client::crypto::ring::RingCryptoProvider as object_store::client::crypto::CryptoProvider>::digest",
-        ),
-        via: &[
-            "<object_store::aws::AmazonS3 as object_store::ObjectStore>::put_opts",
-            "<object_store::aws::AmazonS3 as object_store::list::PaginatedListStore>::list_paginated",
-            "<object_store::aws::AmazonS3 as object_store::multipart::MultipartStore>::abort_multipart",
-            "<object_store::aws::AmazonS3 as object_store::multipart::MultipartStore>::complete_multipart",
-            "<object_store::aws::AmazonS3 as object_store::multipart::MultipartStore>::create_multipart",
-            "<object_store::aws::AmazonS3 as object_store::multipart::MultipartStore>::put_part",
-        ],
-        name: "store dependency <object_store::client::crypto::ring::RingCryptoProvider as object_store::client::crypto::CryptoProvider>::digest",
-    },
-    Exclusion {
-        scopes: super::STORE,
-        functions: &[
-            "unityrs_batch::store::abort::upload",
-            "unityrs_batch::store::head::Write::publish",
-            "unityrs_batch::store::list::Listing::page",
-            "unityrs_batch::store::multipart::Transfer::complete",
-            "unityrs_batch::store::multipart::Transfer::part",
-            "unityrs_batch::store::multipart::Transfer::start",
-            "unityrs_batch::store::put::Request::bytes",
-        ],
-        platform: Platform::All,
-        frame: Some(
-            "<object_store::client::crypto::ring::RingCryptoProvider as object_store::client::crypto::CryptoProvider>::hmac",
-        ),
-        via: &[
-            "<object_store::aws::AmazonS3 as object_store::ObjectStore>::put_opts",
-            "<object_store::aws::AmazonS3 as object_store::list::PaginatedListStore>::list_paginated",
-            "<object_store::aws::AmazonS3 as object_store::multipart::MultipartStore>::abort_multipart",
-            "<object_store::aws::AmazonS3 as object_store::multipart::MultipartStore>::complete_multipart",
-            "<object_store::aws::AmazonS3 as object_store::multipart::MultipartStore>::create_multipart",
-            "<object_store::aws::AmazonS3 as object_store::multipart::MultipartStore>::put_part",
-        ],
-        name: "store dependency <object_store::client::crypto::ring::RingCryptoProvider as object_store::client::crypto::CryptoProvider>::hmac",
-    },
-    Exclusion {
-        scopes: super::STORE,
         functions: &["unityrs_batch::store::multipart::Transfer::complete"],
         platform: Platform::All,
         frame: Some(

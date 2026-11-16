@@ -45,8 +45,8 @@ pub struct Finished {
     pub settled: Settled,
 }
 /// Run the finisher once. `taken` is the stop it took (`State::take`): a
-/// normal end ignores it; a stop's head names it; a terminal code yields
-/// only to a more severe one.
+/// normal end ignores it unless its final head is superseded; a stop's
+/// head names it; a terminal code yields only to a more severe one.
 pub fn run(h: &HandOver, taken: Option<Stop>, fin: &mut Finisher<'_>) -> Finished {
     let mut finished = Finished {
         end: ResultEnd {
@@ -96,7 +96,7 @@ pub fn run(h: &HandOver, taken: Option<Stop>, fin: &mut Finisher<'_>) -> Finishe
         // A normal end always follows `running`; one that cannot read its
         // rows leaves that head, with the failure's code.
         FinishCause::Normal if h.running => {
-            finished.end = normal(h, fin).unwrap_or_else(|failure| ResultEnd {
+            finished.end = normal(h, taken, fin).unwrap_or_else(|failure| ResultEnd {
                 code: failure.code(),
                 status: Some("running"),
                 reason: Some(failure.name()),
@@ -128,7 +128,11 @@ fn ended_at(buffer: &mut [u8; 20]) -> Option<&str> {
     *buffer = crate::sys::utc_now().ok()?;
     std::str::from_utf8(buffer).ok()
 }
-fn normal(h: &HandOver, fin: &mut Finisher<'_>) -> Result<ResultEnd, RunFailure> {
+fn normal(
+    h: &HandOver,
+    taken: Option<Stop>,
+    fin: &mut Finisher<'_>,
+) -> Result<ResultEnd, RunFailure> {
     let Some(Selected::Owned(owned)) = &h.selected else {
         return Err(internal());
     };
@@ -163,6 +167,7 @@ fn normal(h: &HandOver, fin: &mut Finisher<'_>) -> Result<ResultEnd, RunFailure>
         directory,
         fin.identity,
         ended_at(&mut time),
+        taken,
     ))
 }
 enum Rows<'a> {
@@ -291,6 +296,7 @@ fn stopped(
             code: stop.reason.code(),
             failure: None,
             stop: Some(stop),
+            taken: Some(stop),
             phase: h.phase,
         },
     ))

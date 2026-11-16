@@ -2134,8 +2134,8 @@ positions.
 | `unityrs-export` | `ngui/register.rs` | `dependency_failed`: formatted dependency wrapper; `container`: container reclassification; `open`, `opened`, `own`, `internal`, `peeked`, `Peeked::member`, `Peeked::finish`, `same_open`: reason construction through classify's constructors and these wrappers | All |
 
 Store integration adds these two exact third-party call entries to the same
-inventory. With the whole-store census below it has 123 entries total:
-121 All and 2 Darwin. Engine buffers, key copies,
+inventory. With the whole-store census below it has 121 entries total:
+119 All and 2 Darwin. Engine buffers, key copies,
 future boxes and file adapters still reserve fallibly before allocating.
 The existing core/export sweep's 17 All function entries below are unchanged;
 the `store` entries identify the additional calls separately.
@@ -2148,7 +2148,7 @@ frame and the wake's `AsyncFd` drop callee. Its scope and count are unchanged.
 | `unityrs-batch` | `publish/store/transfer.rs` | `run` calls `object_store::path::Path::parse`: dependency-owned key segments and normalized path; exact dependency frame and callee required | All |
 | `unityrs-batch` | `sink/store/journal.rs` | `JournalBackend::abort` calls `object_store::path::Path::parse`: dependency-owned abort key; exact dependency frame and callee required | All |
 
-The whole-store census adds 75 further All entries. Their exact allocating
+The whole-store census adds 73 further All entries. Their exact allocating
 frames, owning functions and immediate dependency callees are in
 `controller_support/store_allocations.rs`, `store_multipart_allocations.rs`
 and `store_parsing_allocations.rs`, joined by `refusals::inventory()`. These
@@ -2159,17 +2159,30 @@ below count individual allocating-frame entries, not allocation ordinals.
 
 | dependency allocation group | entries | why listed |
 |---|---:|---|
-| `object_store` operation futures, request building, signing, payloads, paths and result conversion | 25 | the public operation APIs own their infallible allocations |
-| quick-xml, serde and query encoding | 29 | dependency-owned XML/query parsing and serialization expose no fallible storage |
-| bytes owners, buffers and copies | 6 | shared-owner construction and dependency copies expose no fallible constructor |
-| chrono signing-date formatting | 4 | the signer owns the formatted date storage |
-| HTTP header maps and URI formatting | 4 | map reservation reports size limits, not allocator refusal; URI formatting owns its text |
-| URL parsing | 2 | the parser and host parser expose no fallible storage |
-| attribute map storage | 1 | dependency-owned collection storage exposes no fallible insertion path |
-| Tokio response deregistration | 1 | the dependency's reactor owns the deregistration queue |
-| Tokio cooperative deferred-wake queue | 1 | each `block_on` creates an infallible wake queue; startup cannot prime a later context |
-| HTTP response body box | 1 | the dependency's body constructor boxes its body infallibly |
-| hyper queued body buffers | 1 | hyper owns its vectored body queue |
+| `object_store` operation futures, request building, signing, payloads, paths and result conversion | 23 | operation futures are boxed internally; request/signature/path/result strings, canonicalization collections and payload owners have no caller-supplied storage or fallible constructor |
+| quick-xml, serde and query encoding | 29 | `object_store` owns the XML/query readers, writers and deserializers; its public operation APIs accept neither pre-sized parsing/serialization buffers nor a fallible allocator |
+| bytes owners, buffers and copies | 6 | `Bytes::from_owner` always boxes its private owner; dependency-owned copies, `BytesMut` buffers and sharing metadata accept no preallocated storage or fallible constructor |
+| chrono signing-date formatting | 4 | `object_store` owns the formatter and formatted date strings; no date/buffer override reaches those internal calls |
+| HTTP header maps and URI formatting | 4 | `HeaderMap::try_with_capacity` and `try_reserve` return `MaxSizeReached` but use infallible `Vec` allocation internally; URI formatting owns its text inside `object_store` |
+| URL parsing | 2 | `Url::parse` and its host parser allocate their own normalized storage, accepting no caller buffer or fallible allocator |
+| attribute map storage | 1 | `Attributes` wraps a private `HashMap`, exposes only infallible capacity/insertion/collection and accepts no pre-reserved map |
+| Tokio response deregistration | 1 | the reactor's private deregistration queue has no reservation API |
+| Tokio cooperative deferred-wake queue | 1 | each `block_on` creates its private infallible wake queue; startup cannot prime a later context |
+| HTTP response body box | 1 | `HttpResponseBody` wraps a private `BoxBody`; `new` and the bytes conversion box infallibly and accept no existing box/storage |
+| hyper queued body buffers | 1 | hyper's private vectored body queue exposes no caller reservation or fallible allocator |
+
+This audit uses the pinned dependency sources, including
+`object_store` 0.14.2's `client/crypto.rs`, `client/http/body.rs`,
+`attributes.rs` and AWS operation implementations. Its
+`AmazonS3Builder::with_crypto_provider` does admit a fallible adapter:
+`store/crypto.rs` keeps ring's stack SHA-256/HMAC contexts, charges each
+context's exact boxed `heap_cost` against its request permit, and allocates
+the trait box fallibly. Either refusal records `Fault::Memory` on the
+current try before signing can send a request; dropping the context releases
+its charge. The former digest and HMAC exclusions are removed. A
+pre-sized fallible buffer cannot replace any remaining private owner or
+dependency-internal collection listed above; where the engine owns the
+buffer, it already reserves actual storage fallibly.
 
 `controller_alloc` runs three serialized whole-store scopes, armed at
 publication admission through `run::drive_with`'s finisher and teardown:
@@ -2185,9 +2198,12 @@ no open upload or remaining journal identity, an acknowledged exit line,
 and the specified head and all referenced row chunks. Normal-finisher
 failures keep a null `stop_reason`; a taken controller stop names
 `host_memory`. A failed final write leaves the acknowledged `running` head.
-The keyed census refuses every occurrence, then settles unseen stacks as
-the URL scopes do; every listed entry must be reached somewhere in its
-named scopes. Admission exhausts the remaining cooperative budget before
+The keyed census refuses every occurrence, retrying each missed `(key,
+occurrence)` independently up to 32 rounds even if another occurrence of
+that stack was covered. Any target still unreached fails the sweep. It
+then settles unseen stacks as the URL scopes do and reports reached/target
+counts per store scope; every listed entry must be reached somewhere in
+its named scopes. Admission exhausts the remaining cooperative budget before
 the next real operation, so Tokio's deferred-wake queue is exercised even
 when socket pacing would otherwise avoid it. The multipart fixture is
 generated once outside the child

@@ -7,7 +7,10 @@ use super::{
     etag::Etag,
     put::{self, Request},
 };
-use crate::manifest::head::{Identity, recognize};
+use crate::{
+    manifest::head::{Identity, recognize},
+    sys::Lock,
+};
 use futures_util::StreamExt;
 use hyper::body::Bytes;
 use object_store::{
@@ -15,7 +18,6 @@ use object_store::{
     list::{PaginatedListOptions, PaginatedListStore},
     path::Path,
 };
-use std::sync::{Mutex, PoisonError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -79,7 +81,9 @@ pub async fn read(
     if buffer.len() < cap {
         return Err(put::Error::Fault(super::attempt::Fault::Internal).into());
     }
-    let buffer = Mutex::new(buffer);
+    // This lock is created for each read after running, so it must not
+    // lazily allocate std's Darwin mutex storage at the first body chunk.
+    let buffer = Lock::new(buffer);
     let done = request
         .run(Kind::HeadRead, |_| async {
             let result = request.store.get(key).await.map_err(|_| Ended::Error)?;
@@ -91,7 +95,6 @@ pub async fn read(
                 let count = piece.len().min(cap - len);
                 buffer
                     .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
                     .get_mut(len..len + count)
                     .ok_or(Ended::Rejected)?
                     .copy_from_slice(piece.get(..count).ok_or(Ended::Rejected)?);
@@ -100,7 +103,7 @@ pub async fn read(
                     break;
                 }
             }
-            let buffer = buffer.lock().unwrap_or_else(PoisonError::into_inner);
+            let buffer = buffer.lock();
             Ok(recognize(buffer.get(..len).ok_or(Ended::Rejected)?, run_id)
                 .map(|identity| Head { identity, etag }))
         })

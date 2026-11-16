@@ -460,6 +460,91 @@ fn x8_preflight_supersession_writes_nothing_and_final_supersession_keeps_the_new
     });
 }
 
+struct SupersededAtHandover {
+    fake: Arc<Fake>,
+    newer: Vec<u8>,
+    lifetime: Arc<run::Lifetime>,
+    stop: Option<unityrs_batch::lifetime::Stop>,
+}
+impl run::Observer for SupersededAtHandover {
+    fn handed_over(&self, h: &unityrs_batch::finish::HandOver) {
+        assert_eq!(h.cause, unityrs_batch::finish::FinishCause::Normal);
+        self.fake
+            .seed("bucket", "p/_unityrs/r/manifest.json", &self.newer);
+        if let Some(stop) = self.stop {
+            self.lifetime.request(stop);
+        }
+    }
+    fn taken(&self, stop: Option<unityrs_batch::lifetime::Stop>) {
+        assert_eq!(stop, self.stop, "the stop is captured at normal handover");
+    }
+}
+#[test]
+fn x8_final_supersession_reduces_against_the_stop_captured_at_normal_handover() {
+    store_support::run(async {
+        use unityrs_batch::{
+            lifetime::{SpoolDetail, Stop},
+            reason::StopReason,
+        };
+        for (stop, code, reason) in [
+            (None, 7, "superseded"),
+            (
+                Some(Stop {
+                    detail: Some(SpoolDetail::Reserve),
+                    ..Stop::external(StopReason::SpoolFull)
+                }),
+                7,
+                "superseded",
+            ),
+            (
+                Some(Stop::external(StopReason::HostMemory)),
+                74,
+                "host_memory",
+            ),
+        ] {
+            let fake = Arc::new(Fake::start().await);
+            let scratch = Scratch::new("store-final-captured-stop");
+            let spec = make_spec(&scratch, &fake);
+            let newer = json!({"manifest_version":1,"run_id":"r","attempt":2,"write_seq":0,"binary_version":"x","spec_version":1,"spec_sha256":"00".repeat(32)});
+            let lifetime = Arc::new(run::Lifetime::default());
+            let observer = Arc::new(SupersededAtHandover {
+                fake: fake.clone(),
+                newer: serde_json::to_vec(&newer).unwrap(),
+                lifetime: lifetime.clone(),
+                stop,
+            });
+            let (send, receive) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = send.send(drive_options(
+                    &spec,
+                    &scratch,
+                    run::Options {
+                        observer,
+                        lifetime,
+                        ..Default::default()
+                    },
+                ));
+            });
+            let result = tokio::time::timeout(unityrs_testkit::guard::DEADLOCK_GUARD, receive)
+                .await
+                .expect("final supersession finishes")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (
+                    result.code.value(),
+                    result.status,
+                    result.reason,
+                    result.detail
+                ),
+                (code, None, Some(reason), None),
+                "captured stop {stop:?}"
+            );
+            assert_eq!(head(&fake), newer, "the newer head remains authoritative");
+        }
+    });
+}
+
 struct ChangeTag(Arc<Fake>);
 impl unityrs_batch::publish::Hooks for ChangeTag {
     fn point(&self, point: unityrs_batch::publish::Point) {

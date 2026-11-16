@@ -5,6 +5,8 @@ mod http_support;
 mod publication_support;
 #[path = "controller_support/refusals.rs"]
 mod refusals;
+#[path = "controller_support/retry.rs"]
+mod retry;
 #[cfg(feature = "test-hooks")]
 mod run_support;
 // Without the hooks there is no url scope, so nothing aims a child.
@@ -227,16 +229,17 @@ fn sweep(kinds: impl Iterator<Item = &'static str>) {
             sites::census(kind, &stdout).len()
         );
         let mut tally = Tally::default();
-        // The keys whose allocation some child refused.
-        let mut covered = std::collections::BTreeSet::new();
-        for ((site, aim), output) in children(kind, &targets) {
-            if tally.add(kind, site, &output, &expected) {
-                covered.extend(aim.map(|(key, _)| key));
-            }
-        }
+        let strict = kind.starts_with("store");
+        let (covered, missed) = retry::cover(kind, &targets, &expected, &mut tally);
         let mut sites = targets.len();
         if timed(kind) {
             sites += settle(kind, sites, covered, &expected, &mut tally);
+        }
+        if strict {
+            println!(
+                "CONTROLLER_TARGETS kind={kind} reached={} targets={sites}",
+                sites - missed
+            );
         }
         let Tally {
             reached,
