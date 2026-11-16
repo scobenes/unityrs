@@ -49,6 +49,28 @@ def observe_serialized_payload(module):
     return result
 
 
+def observe_buffer_payloads(module):
+    result = {}
+    for method in ("assigned", "set_raw_data"):
+        for kind in ("mutable", "readonly"):
+            file = _load(module, _asset())
+            payload = struct.pack("<i", 42) + S.s32("buffer")
+            source = bytearray(payload)
+            view = memoryview(source if kind == "mutable" else bytes(source))
+            try:
+                if method == "assigned":
+                    file.objects[1].data = view
+                else:
+                    file.objects[1].set_raw_data(view)
+                saved = file.save()
+                # Mutating live storage after save must not change its bytes.
+                source[0] = 99
+                result[method + ":" + kind] = _load(module, saved).objects[1].get_raw_data().hex()
+            except Exception as error:
+                result[method + ":" + kind] = {"error": type(error).__name__, "message": str(error)}
+    return result
+
+
 def observe_serialized_metadata(module):
     file = _load(module, _asset())
     file.unity_version = "2020.3.5f1"

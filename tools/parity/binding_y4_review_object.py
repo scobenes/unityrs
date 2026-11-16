@@ -95,3 +95,79 @@ def observe_numeric_writer(module):
                 outcomes[name] = {"error": type(error).__name__, "message": str(error)}
         result[kind] = outcomes
     return result
+
+
+def observe_sequence_writer(module):
+    """Getter order and child protocols follow the target shape."""
+    vector = S.Node("vector", "x", [S.Node("Array", "Array", [
+        S.Node("int", "size"), S.Node("Element", "data", [S.Node("int", "value")])])])
+    file = _load(module, S.serialized_file([S.Type(49, S.Node("Root", "Base", [vector]))],
+                                         [S.Obj(1, 0, bytes(12))]))
+    calls = []
+    caller = threading.get_ident()
+
+    class Element:
+        @property
+        def value(self):
+            assert threading.get_ident() == caller
+            calls.append(len(calls) + 1)
+            return calls[-1]
+
+    result = {"order": file.objects[1].save_typetree({"x": [Element(), Element()]}).hex(),
+              "calls": calls}
+
+    class Index:
+        def __index__(self):
+            assert threading.get_ident() == caller
+            return 3
+
+    class Float:
+        def __float__(self):
+            assert threading.get_ident() == caller
+            return 1.25
+
+    for label, node, value, raw in (
+        ("tuple_vector", S.Node("vector", "x", [S.Node("Array", "Array", [
+            S.Node("int", "size"), S.Node("int", "data")])]), (Index(), Index()), bytes(12)),
+        ("list_pair", S.Node("pair", "x", [S.Node("int", "first"), S.Node("int", "second")]),
+         [Index(), Index()], bytes(8)),
+        ("tuple_float_vector", S.Node("vector", "x", [S.Node("Array", "Array", [
+            S.Node("int", "size"), S.Node("float", "data")])]), (Float(), Float()), bytes(12)),
+    ):
+        file = _load(module, S.serialized_file([S.Type(49, S.Node("Root", "Base", [node]))],
+                                             [S.Obj(1, 0, raw)]))
+        try:
+            result[label] = {"bytes": file.objects[1].save_typetree({"x": value}).hex()}
+        except Exception as error:
+            result[label] = {"error": type(error).__name__, "message": str(error)}
+    return result
+
+
+def observe_nonnumeric_writer(module):
+    result = {}
+    caller = threading.get_ident()
+
+    class Encoded:
+        def __init__(self, result=b"encoded"):
+            self.result = result
+
+        def encode(self, encoding, errors):
+            assert threading.get_ident() == caller
+            assert (encoding, errors) == ("utf8", "surrogateescape")
+            return self.result
+    for kind in ("string", "TypelessData"):
+        tree = S.Node("Root", "Base", [S.Node(kind, "x")])
+        file = _load(module, S.serialized_file([S.Type(49, tree)], [S.Obj(1, 0, bytes(4))]))
+        outcomes = {}
+        for label, value in (("bytes", b"abc"), ("bytearray", bytearray(b"abc")),
+                             ("view", memoryview(b"abc")), ("string", "abc"),
+                             ("strided", memoryview(b"abcdef")[::2]),
+                             ("int", 3), ("none", None), ("list", [1, 2]), ("encoder", Encoded()),
+                             ("mutable_encoder", Encoded(bytearray(b"abc"))),
+                             ("bad_encoder", Encoded("abc")), ("none_encoder", Encoded(None))):
+            try:
+                outcomes[label] = {"bytes": file.objects[1].save_typetree({"x": value}).hex()}
+            except Exception as error:
+                outcomes[label] = {"error": type(error).__name__, "message": str(error)}
+        result[kind] = outcomes
+    return result

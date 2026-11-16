@@ -154,9 +154,10 @@ pub(crate) fn file_mark_changed(py: Python<'_>, file: &NativeFile) {
 pub(crate) fn object_set_raw_data(
     py: Python<'_>,
     object: &NativeObject,
-    data: PyBackedBytes,
+    data: &Bound<'_, PyAny>,
 ) -> PyResult<()> {
-    py.detach(move || object.inner.set_raw_data(&*data).map_err(error))
+    let data = crate::buffer_snapshot::BufferSnapshot::new(data, object.inner.file().meter())?;
+    py.detach(move || object.inner.set_raw_data(data.as_ref()).map_err(error))
 }
 
 pub(crate) fn object_metadata(py: Python<'_>, object: &NativeObject) -> PyResult<Py<PyAny>> {

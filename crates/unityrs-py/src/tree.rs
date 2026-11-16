@@ -138,16 +138,24 @@ pub(crate) fn compile_rows(object: &ObjectRef, input: &Py<PyAny>) -> PyResult<Ar
         let _encoding = meter
             .charge(256_u64.saturating_add(bytes))
             .map_err(errors::charge)?;
-        rows.reserve(1).map_err(errors::charge)?;
         let (ty, name) = Python::attach(|py| Ok::<_, PyErr>((ty.bytes(py)?, name.bytes(py)?)))?;
-        #[cfg(test)]
-        crate::row_copy_test::before_copy()?;
-        row.ty = RawStr::charged(&ty, meter).map_err(errors::charge)?;
-        row.name = RawStr::charged(&name, meter).map_err(errors::charge)?;
-        rows.push(row).map_err(errors::charge)?;
+        Python::attach(|py| {
+            py.detach(|| {
+                #[cfg(test)]
+                crate::row_copy_test::before_copy()?;
+                rows.reserve(1).map_err(errors::charge)?;
+                row.ty = RawStr::charged(&ty, meter).map_err(errors::charge)?;
+                row.name = RawStr::charged(&name, meter).map_err(errors::charge)?;
+                rows.push(row).map_err(errors::charge)
+            })
+        })?;
     }
-    let list = NodeList::from_rows(rows).map_err(tree_error)?;
-    Tree::compile(list.into_shared().map_err(tree_error)?, limits).map_err(tree_error)
+    Python::attach(|py| {
+        py.detach(move || {
+            let list = NodeList::from_rows(rows).map_err(tree_error)?;
+            Tree::compile(list.into_shared().map_err(tree_error)?, limits).map_err(tree_error)
+        })
+    })
 }
 
 enum RowText {

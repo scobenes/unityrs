@@ -1472,6 +1472,14 @@ Defects found while writing this file, each decided by `DESIGN.md` section 3's d
 Y4 review safety rows retain the unsafe UnityPy observation separately from the
 explicit refusal reference; native replay compares against the latter.
 
+Image coercion charges buffer `nbytes` before copying image data or platform
+blobs, including multidimensional views whose `len` counts only the first axis.
+UnityPy accepts these copies without a caller budget; the explicit safety
+reference refuses a 2 MB view under a 1 MB budget (`MemoryError`). Evidence:
+`binding_y4_review_images.observe_buffer_budgets` and its installed-wheel test.
+Renderer preflight also precedes directory creation, so a refused asset name
+leaves an initially missing destination absent.
+
 | Y4 review safety behavior | UnityPy 1.25.2 | unityrs | layer | evidence | status |
 |---|---|---|---|---|---|
 | Y4 renderer and environment output confinement | `MeshRendererExporter.py:48-103` joins mesh names and texture names or property keys directly; `environment.py:176-184` discards directory prefixes before opening saved asset names. Local opens follow symlinks and modify existing hardlink targets | Renderer asset leaves reject empty or dot names, absolute names, parent components, separators, backslashes, colon and NUL before any output opens. Environment save validates the original container-relative spelling before basename selection, retaining safe relative directory prefixes. Candidate paths must remain under the output directory. Local writes hold the destination directory descriptor and replace temporary siblings without following symlink leaves or modifying hardlink targets; a symlink destination directory is refused. Custom filesystems receive only validated leaf names and own their backend's open semantics. This deliberately refuses unsafe UnityPy behavior | L4, L7 | `binding_y4_review_exports.observe_output_security` (unsafe oracle confined to memory, explicit safety reference); `test_y4_review_exports.py` renderer unsafe leaves, texture names/fallbacks, local links, real PNG, and environment original-name checks | verified P3c Y4 installed-wheel review regressions |

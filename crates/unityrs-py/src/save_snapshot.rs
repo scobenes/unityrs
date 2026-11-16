@@ -30,7 +30,7 @@ type ObjectRow = (
     Option<u16>,
     Option<i8>,
     Option<i16>,
-    PyBackedBytes,
+    Py<PyAny>,
 );
 type ExternalRow = (
     Option<PyBackedBytes>,
@@ -57,6 +57,7 @@ pub(crate) fn serialized(
     for row in rows.try_iter()? {
         let (object, path_id, type_id, class_id, destroyed, stripped, script, data) =
             row?.extract::<ObjectRow>()?;
+        let data = crate::buffer_snapshot::BufferSnapshot::new(data.bind(py), meter)?;
         let mut info = object.borrow(py).inner.info().clone();
         info.path_id = path_id;
         info.type_id = type_id;
@@ -86,9 +87,11 @@ pub(crate) fn serialized(
                 )
                 .map_err(errors::charge)?;
                 meter
-                    .count_decode(payload.len() as u64)
+                    .count_decode(payload.as_ref().len() as u64)
                     .map_err(errors::charge)?;
-                bytes.extend_from_slice(payload).map_err(errors::charge)?;
+                bytes
+                    .extend_from_slice(payload.as_ref())
+                    .map_err(errors::charge)?;
                 entries
                     .push((info.clone(), bytes.into_bytes().map_err(errors::charge)?))
                     .map_err(errors::charge)?;

@@ -8,6 +8,24 @@ import binding_y4_review_save
 
 
 class ReviewSave(unittest.TestCase):
+    def test_live_buffer_payloads_match_oracle(self):
+        self.compare("observe_buffer_payloads")
+
+    def test_buffer_snapshots_charge_bytes_before_copy_and_recover(self):
+        file = unityrs.Environment(budget=unityrs.Budget(1_000_000)).load_file(
+            binding_y4_review_save._asset(), name="bounded.assets")
+        obj = file.objects[1]
+        original = file.save()
+        for view in (memoryview(bytearray(2_000_000)).cast("B", (1, 2_000_000)),
+                     memoryview(bytearray(4_000_000))[::2]):
+            obj.data = view
+            with self.assertRaises(MemoryError):
+                file.save()
+            obj.data = None
+            with self.assertRaises(MemoryError):
+                obj.set_raw_data(view)
+            self.assertEqual(file.save(), original)
+
     def compare(self, name):
         observe = getattr(binding_y4_review_save, name)
         self.assertEqual(observe(unityrs), observe(UnityPy))

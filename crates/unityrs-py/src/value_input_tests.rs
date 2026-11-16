@@ -53,6 +53,33 @@ fn current_python_values_roundtrip_without_generated_schema() -> PyResult<()> {
 }
 
 #[test]
+fn nested_lists_remap_current_fields_when_native_rows_move() -> PyResult<()> {
+    let _serial = crate::tests::serial();
+    Python::attach(|py| {
+        let input = py.eval(
+            c"{'items': [{'rows': [{'value': 1}, {'value': 2}], 'last': 11}, {'rows': [{'value': 3}, {'value': 4}], 'last': 12}]}",
+            None, None,
+        )?.unbind();
+        let meter = Meter::unlimited();
+        let parsed = crate::value_input::parsed(&input, &meter, &Limits::default())?;
+        let result = crate::value::convert(&parsed, &meter)?;
+        assert!(result.bind(py).eq(input.bind(py))?);
+        let nodes = &parsed.lists()[0];
+        for (index, row) in nodes.rows().iter().enumerate() {
+            if row.name.as_bytes() == b"data" && row.ty.as_bytes() == b"dict" {
+                let children: Vec<_> = nodes
+                    .children(unityrs_core::typetree::NodeId(u32::try_from(index)?))
+                    .iter()
+                    .map(|&id| nodes.name(id))
+                    .collect();
+                assert!(!children.contains(&b"data".as_slice()));
+            }
+        }
+        Ok(())
+    })
+}
+
+#[test]
 fn cyclic_and_deep_python_values_raise_before_unbounded_conversion() -> PyResult<()> {
     let _serial = crate::tests::serial();
     Python::attach(|py| {
@@ -145,6 +172,7 @@ fn class_lists_keep_a_vector_shape_and_each_elements_current_fields() -> PyResul
             .unwrap();
         assert_eq!(channels.len(), 3);
         for (i, channel) in channels.iter().enumerate() {
+            assert!(channel.as_ref().unwrap().built());
             assert_eq!(
                 channel.unwrap().uint("offset", 255).unwrap(),
                 Some(i as u64)

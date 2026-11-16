@@ -82,6 +82,15 @@ pub(crate) fn before_copy() -> PyResult<()> {
 
 #[test]
 fn row_copy_releases_gil_between_python_extractions() -> PyResult<()> {
+    check_row_copy(false)
+}
+
+#[test]
+fn writer_row_copy_releases_gil_on_calling_thread() -> PyResult<()> {
+    check_row_copy(true)
+}
+
+fn check_row_copy(save: bool) -> PyResult<()> {
     let _serial = crate::tests::serial();
     Python::attach(|py| {
         let module = PyModule::new(py, "unityrs._native")?;
@@ -96,7 +105,7 @@ fn row_copy_releases_gil_between_python_extractions() -> PyResult<()> {
         }
         py.import("test_helpers")?
             .getattr("test_row_copy_releases_gil_between_python_extractions")?
-            .call0()?;
+            .call1((save,))?;
         Ok(())
     })
 }

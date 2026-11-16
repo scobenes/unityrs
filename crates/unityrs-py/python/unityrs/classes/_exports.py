@@ -192,9 +192,9 @@ def _renderer_export(self, export_dir):
     env = self.object_reader.assets_file.environment
     guard = _guard(self)
     fs = getattr(env, "fs", _LocalFS)
-    fs.makedirs(export_dir, exist_ok=True)
     mesh = _get_mesh(self, guard)
     if not mesh:
+        fs.makedirs(export_dir, exist_ok=True)
         return
     mesh_name = output_name(mesh.m_Name)
     first = 0
@@ -216,12 +216,15 @@ def _renderer_export(self, export_dir):
             names.append(None)
             continue
         material = self.m_Materials[slot].deref_parse_as_object()
+        material_name = output_name(material.m_Name)
         exported = _native.export_material(material, _reader(material), _environment(material))
         guard.step(0, len(exported) * 4 + 256, 0)
         materials.append(exported)
-        names.append(material.m_Name)
+        names.append(material_name)
         for key, texture_env in material.m_SavedProperties.m_TexEnvs:
             guard.step(0, 0, 1)
+            if texture_env is None:
+                continue
             if not texture_env.m_Texture:
                 continue
             if not isinstance(key, str):
@@ -236,6 +239,7 @@ def _renderer_export(self, export_dir):
     # Preflight every asset-derived name before opening any output. Local
     # leaves are replaced against a held directory, so symlinks and hardlinks
     # cannot redirect writes outside the destination.
+    fs.makedirs(export_dir, exist_ok=True)
     with OutputDirectory(export_dir, fs) as directory:
         for name, texture in textures:
             with directory.open(name, "wb") as stream:

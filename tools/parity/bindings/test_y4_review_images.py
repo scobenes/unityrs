@@ -5,10 +5,14 @@ import unittest
 import UnityPy
 import unityrs
 
-from binding_y4_review_images import observe_mipmap_arguments
+from binding_y4_review_images import observe_mipmap_arguments, observe_buffer_budgets
 
 
 class MipmapArguments(unittest.TestCase):
+    def test_multidimensional_buffers_charge_nbytes_before_copy(self):
+        self.assertEqual(observe_buffer_budgets(unityrs),
+                         observe_buffer_budgets(UnityPy, corrected=True))
+
     def test_unbounded_and_float_mipmap_counts_match_oracle(self):
         self.assertEqual(UnityPy.__version__, "1.25.2")
         self.assertEqual(observe_mipmap_arguments(unityrs), observe_mipmap_arguments(UnityPy))

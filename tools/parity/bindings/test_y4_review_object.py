@@ -12,6 +12,22 @@ import child
 
 
 class ObjectWriterReview(unittest.TestCase):
+    def test_sequence_getters_run_in_source_order(self):
+        actual = binding_y4_review_object.observe_sequence_writer(unityrs)
+        expected = binding_y4_review_object.observe_sequence_writer(UnityPy)
+        self.assertEqual(actual["order"], expected["order"])
+        self.assertEqual(actual["calls"], [1, 2])
+
+    def test_sequence_child_protocols_follow_target_shape(self):
+        actual = binding_y4_review_object.observe_sequence_writer(unityrs)
+        expected = binding_y4_review_object.observe_sequence_writer(UnityPy)
+        for name in ("tuple_vector", "list_pair", "tuple_float_vector"):
+            self.assertEqual(actual[name], expected[name])
+
+    def test_nonnumeric_writer_exact_exceptions(self):
+        self.assertEqual(binding_y4_review_object.observe_nonnumeric_writer(unityrs),
+                         binding_y4_review_object.observe_nonnumeric_writer(UnityPy))
+
     def test_deep_writer_snapshot_on_small_python_stack(self):
         script = r'''
 import struct, sys, threading

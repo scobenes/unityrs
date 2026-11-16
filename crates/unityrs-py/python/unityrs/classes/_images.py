@@ -18,11 +18,19 @@ def _reader(obj):
     return getattr(getattr(obj, "object_reader", None), "_native", None)
 
 
+def _byte_size(data):
+    try:
+        return memoryview(data).nbytes
+    except TypeError:
+        return len(data)
+
+
 def _blob(obj):
     blob = getattr(obj, "m_PlatformBlob", None)
     if blob is not None:
         guard = _guard(obj)
-        guard.step(0, len(blob) * 4 + 256, len(blob))
+        size = _byte_size(blob)
+        guard.step(0, size * 4 + 256, size)
     return None if blob is None else bytes(blob)
 
 
@@ -55,7 +63,8 @@ def _decode(obj, data, width, height, texture_format, platform, blob, version):
     texture_format = TextureFormat(texture_format)
     version = tuple(version[:2]) if "Crunched" in texture_format.name else (0, 0)
     guard = _guard(obj)
-    guard.step(0, len(data) + 1024, len(data))
+    size = _byte_size(data)
+    guard.step(0, size + 1024, size)
     mode, w, h, pixels = _native._image_decode(
         bytes(data), width, height, int(texture_format), version,
         int(platform), blob, _reader(obj))

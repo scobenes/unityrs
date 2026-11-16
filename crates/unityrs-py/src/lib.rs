@@ -8,6 +8,7 @@
 )]
 
 use pyo3::prelude::*;
+mod buffer_snapshot;
 mod class_tpk;
 mod construction;
 mod environment;

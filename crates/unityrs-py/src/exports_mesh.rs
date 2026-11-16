@@ -171,14 +171,15 @@ fn attribute(
 #[pyfunction]
 pub(super) fn export_material(
     py: Python<'_>,
-    input: Py<PyAny>,
+    input: &Bound<'_, PyAny>,
     reader: &NativeObject,
     environment: &NativeEnvironment,
 ) -> PyResult<Py<PyAny>> {
     let (limits, meter) = context(Some(reader));
+    let snapshot = crate::value_input::material_snapshot(input.as_unbound(), &meter, &limits)?;
     py.detach(move || {
         crate::worker::run(limits.stack_needed(), || {
-            let parsed: Parsed = crate::value_input::parsed(&input, &meter, &limits)?;
+            let parsed: Parsed = snapshot.build()?;
             let material = unityrs_mesh::obj::MaterialView::new(
                 &parsed,
                 reader.inner.file(),

@@ -1,5 +1,5 @@
 //! Iterative Python inspection and a flat, metered snapshot for native workers.
-use super::{Inspect, State, next_depth, next_item, none_for_shape, numeric_for_shape};
+use super::{Inspect, State, next_depth, next_item, none_for_shape, scalar_for_shape};
 use crate::errors;
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -94,6 +94,25 @@ impl Arena {
         }
         self.take_built(root)
     }
+    fn remap_rows(&mut self, mapping: &[NodeId]) -> PyResult<()> {
+        for value in self.values.as_mut_slice() {
+            if let Some(Staged::Map(items)) = value {
+                for (node, _) in items.as_mut_slice() {
+                    *node = *mapping.get(node.index()).ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err("invalid snapshot row")
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Move only inferred rows, never Python evaluations or completed values.
+pub(super) struct Rotation {
+    start: usize,
+    first_end: usize,
+    end: usize,
 }
 
 /// No Python references and no nested native values; safe on the caller stack.
@@ -101,9 +120,62 @@ pub(crate) struct Snapshot {
     rows: MeteredVec<NodeRow>,
     values: Arena,
     root: usize,
+    rotations: MeteredVec<Rotation>,
 }
 impl Snapshot {
-    pub(crate) fn build(self) -> PyResult<Parsed> {
+    fn reorder_rows(&mut self) -> PyResult<()> {
+        if self.rotations.is_empty() {
+            return Ok(());
+        }
+        let meter = self.rows.charge().meter().clone();
+        let count = self.rows.len();
+        let mut order = MeteredVec::with_capacity(&meter, count).map_err(errors::charge)?;
+        let mut mapping = MeteredVec::with_capacity(&meter, count).map_err(errors::charge)?;
+        meter
+            .count_decode(count as u64 * 3 + (self.values.values.len() as u64).saturating_mul(2))
+            .map_err(errors::charge)?;
+        for index in 0..count {
+            order
+                .push(NodeId(u32::try_from(index)?))
+                .map_err(errors::charge)?;
+            mapping.push(NodeId(0)).map_err(errors::charge)?;
+        }
+        // Child rotations precede parent rotations and keep subtree lengths.
+        // Tails remain under the synthetic size node; only the first element
+        // supplies the vector's shared schema, just as before staging.
+        for rotation in self.rotations.as_slice() {
+            let range = rotation.start..rotation.end;
+            let pivot = rotation.first_end - rotation.start;
+            meter
+                .count_decode((range.len() as u64).saturating_mul(2))
+                .map_err(errors::charge)?;
+            self.rows
+                .as_mut_slice()
+                .get_mut(range.clone())
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err("invalid snapshot rotation")
+                })?
+                .rotate_left(pivot);
+            order
+                .as_mut_slice()
+                .get_mut(range)
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err("invalid snapshot rotation")
+                })?
+                .rotate_left(pivot);
+        }
+        for (index, old) in order.as_slice().iter().enumerate() {
+            *mapping
+                .as_mut_slice()
+                .get_mut(old.index())
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid snapshot row"))? =
+                NodeId(u32::try_from(index)?);
+        }
+        self.values.remap_rows(mapping.as_slice())
+    }
+
+    pub(crate) fn build(mut self) -> PyResult<Parsed> {
+        self.reorder_rows()?;
         let meter = self.rows.charge().meter().clone();
         let list = NodeList::from_rows(self.rows)
             .and_then(NodeList::into_shared)
@@ -126,15 +198,10 @@ enum Container {
     Sequence {
         iter: Py<pyo3::types::PyIterator>,
         tuple: bool,
-        first: Option<Py<PyAny>>,
-        phase: SequencePhase,
+        skip_null: bool,
+        first_rows: Option<(usize, usize)>,
         items: MeteredVec<usize>,
     },
-}
-enum SequencePhase {
-    Tail,
-    First,
-    Done,
 }
 struct Frame {
     node: NodeId,
@@ -144,10 +211,20 @@ struct Frame {
 }
 
 impl Frame {
-    fn accept(&mut self, node: NodeId, value: usize) -> PyResult<()> {
+    fn accept(&mut self, node: NodeId, value: usize, rows_end: usize) -> PyResult<()> {
         match &mut self.container {
             Container::Map(_, items) => items.push((node, value)),
-            Container::Sequence { items, .. } => items.push(value),
+            Container::Sequence {
+                items,
+                tuple,
+                first_rows,
+                ..
+            } => {
+                if !*tuple && items.is_empty() {
+                    *first_rows = Some((node.index(), rows_end));
+                }
+                items.push(value)
+            }
         }
         .map_err(errors::charge)
     }
@@ -159,50 +236,41 @@ impl Frame {
             Container::Sequence {
                 iter,
                 tuple,
-                first,
-                phase,
+                skip_null,
                 items,
+                ..
             } => {
-                match phase {
-                    SequencePhase::Done => return Ok(None),
-                    SequencePhase::First => {
-                        state
-                            .staging
-                            .meter()
-                            .count_decode(items.len() as u64)
-                            .map_err(errors::charge)?;
-                        items.as_mut_slice().rotate_right(1);
-                        *phase = SequencePhase::Done;
-                        return Ok(None);
-                    }
-                    SequencePhase::Tail => {}
-                }
                 items.reserve(1).map_err(errors::charge)?;
-                let (input, first_item) = if let Some(input) = next_item(iter)? {
-                    (input, false)
-                } else if *tuple {
-                    *phase = SequencePhase::Done;
-                    return Ok(None);
-                } else if let Some(input) = first.take() {
-                    *phase = SequencePhase::First;
-                    (input, true)
-                } else {
-                    state.row(
-                        next_depth(self.depth, 2)?,
-                        RawStr::from_static(b"Object"),
-                        RawStr::from_static(b"data"),
-                    )?;
-                    *phase = SequencePhase::Done;
-                    return Ok(None);
+                let input = loop {
+                    let Some(input) = next_item(iter)? else {
+                        if !*tuple && items.is_empty() {
+                            state.row(
+                                next_depth(self.depth, 2)?,
+                                RawStr::from_static(b"Object"),
+                                RawStr::from_static(b"data"),
+                            )?;
+                        }
+                        return Ok(None);
+                    };
+                    state
+                        .staging
+                        .meter()
+                        .count_decode(1)
+                        .map_err(errors::charge)?;
+                    if !*skip_null
+                        || !Python::attach(|py| input.bind(py).get_item(1).map(|v| v.is_none()))?
+                    {
+                        break input;
+                    }
                 };
+                let first_item = items.is_empty();
                 let shape = state.tree.zip(self.shape).and_then(|(tree, node)| {
-                    let kids = tree.list().children(node);
-                    if *tuple {
-                        kids.get(items.len()).copied()
-                    } else {
-                        kids.first()
-                            .and_then(|array| tree.list().children(*array).get(1))
-                            .copied()
+                    match tree.info(node)?.shape {
+                        unityrs_core::typetree::Shape::Vector { elem, .. } => Some(elem),
+                        unityrs_core::typetree::Shape::Pair => {
+                            tree.list().children(node).get(items.len()).copied()
+                        }
+                        _ => None,
                     }
                 });
                 let key = if *tuple {
@@ -290,6 +358,7 @@ impl State<'_> {
             rows: self.rows,
             values: self.values,
             root,
+            rotations: self.rotations,
         }
     }
     pub(super) fn stage(
@@ -318,7 +387,7 @@ impl State<'_> {
             }
             if let Some((node, value)) = completed.take() {
                 if let Some(frame) = frames.as_mut_slice().last_mut() {
-                    frame.accept(node, value)?;
+                    frame.accept(node, value, self.rows.len())?;
                 } else {
                     return Ok((node, value));
                 }
@@ -336,9 +405,55 @@ impl State<'_> {
                 .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("missing snapshot frame"))?;
             self.active.pop();
             let node = frame.node;
+            if let Container::Sequence {
+                first_rows: Some((start, first_end)),
+                ..
+            } = &frame.container
+                && *first_end < self.rows.len()
+            {
+                self.rotations
+                    .push(Rotation {
+                        start: *start,
+                        first_end: *first_end,
+                        end: self.rows.len(),
+                    })
+                    .map_err(errors::charge)?;
+            }
             completed = Some((node, self.values.push(frame.finish())?));
         }
     }
+    fn sequence_rows(&mut self, depth: u32, tuple: bool) -> PyResult<()> {
+        if !tuple {
+            self.row(
+                next_depth(depth, 1)?,
+                RawStr::from_static(b"Array"),
+                RawStr::from_static(b"Array"),
+            )?;
+            self.row(
+                next_depth(depth, 2)?,
+                RawStr::from_static(b"int"),
+                RawStr::from_static(b"size"),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn target_sequence(&self, ty: &mut RawStr, inspection: &mut Inspect, shape: Option<NodeId>) {
+        if let Inspect::Sequence(_, tuple) = inspection
+            && let Some(info) = self
+                .tree
+                .zip(shape)
+                .and_then(|(tree, node)| tree.info(node))
+        {
+            match info.shape {
+                unityrs_core::typetree::Shape::Pair => *tuple = true,
+                unityrs_core::typetree::Shape::Vector { .. } => *tuple = false,
+                _ => {}
+            }
+            *ty = RawStr::from_static(if *tuple { b"pair" } else { b"vector" });
+        }
+    }
+
     fn open(&mut self, visit: Visit) -> PyResult<Opened> {
         let Visit {
             input,
@@ -361,14 +476,16 @@ impl State<'_> {
             .meter()
             .count_decode(1)
             .map_err(errors::charge)?;
-        let numeric = self
+        let scalar = self
             .tree
             .zip(shape)
-            .map(|(tree, shape)| numeric_for_shape(tree, shape, &input, &mut self.staging))
+            .map(|(tree, shape)| {
+                scalar_for_shape(tree, shape, &input, &mut self.staging, self.limits)
+            })
             .transpose()?
             .flatten();
-        let (ty, inspection) = if let Some(numeric) = numeric {
-            numeric
+        let (mut ty, mut inspection) = if let Some(scalar) = scalar {
+            scalar
         } else if let Some((tree, shape)) = self.tree.zip(shape)
             && Python::attach(|py| input.bind(py).is_none())
         {
@@ -376,6 +493,9 @@ impl State<'_> {
         } else {
             self.inspect(&input)?
         };
+        self.target_sequence(&mut ty, &mut inspection, shape);
+        let skip_null = self.filter_null_properties
+            && matches!(name.as_bytes(), b"m_Colors" | b"m_Floats" | b"m_TexEnvs");
         let node = self.row(depth, ty, name)?;
         if let Inspect::Scalar(value) = inspection {
             return Ok(Opened::Scalar(node, value));
@@ -407,24 +527,12 @@ impl State<'_> {
                 Container::Map(fields, MeteredVec::new(self.staging.meter()))
             }
             Inspect::Sequence(iter, tuple) => {
-                if !tuple {
-                    self.row(
-                        next_depth(depth, 1)?,
-                        RawStr::from_static(b"Array"),
-                        RawStr::from_static(b"Array"),
-                    )?;
-                    self.row(
-                        next_depth(depth, 2)?,
-                        RawStr::from_static(b"int"),
-                        RawStr::from_static(b"size"),
-                    )?;
-                }
-                let first = if tuple { None } else { next_item(&iter)? };
+                self.sequence_rows(depth, tuple)?;
                 Container::Sequence {
                     iter,
                     tuple,
-                    first,
-                    phase: SequencePhase::Tail,
+                    skip_null,
+                    first_rows: None,
                     items: MeteredVec::new(self.staging.meter()),
                 }
             }

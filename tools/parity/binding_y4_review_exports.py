@@ -43,6 +43,11 @@ def observe_materials(module):
                                                 ("_SColor", (0, 1, 0, 1)),
                                                 ("_SpecularColor", (.1, .2, .3, 1))]),
         ("edited", [("_Shininess", 1), ("_Shininess", 33)], [("_Color", (.3, .4, .5, 1))]),
+        ("null", [("_Shininess", None)], [("_Color", None)]),
+        ("null_duplicate", [("_Shininess", 7), ("_Shininess", None)],
+         [("_Color", (1, .5, .25, 1)), ("_Color", None)]),
+        ("null_then_value", [("_Shininess", None), ("_Shininess", 11)],
+         [("_Color", None), ("_Color", (.1, .2, .3, 1))]),
     ):
         env, value = material(module, floats, colors)
         fs = _MemoryFS()
@@ -76,7 +81,7 @@ def observe_output_security(module, corrected=False):
     bad_names = ("", ".", "..", "../escape", "/absolute", "a/b", "a\\b", "C:escape", "a\0b")
     for name in bad_names:
         if corrected and module.__name__ == "UnityPy":
-            result[name] = {"error": "ValueError", "files": []}
+            result[name] = {"error": "ValueError", "files": [], "directories": []}
             continue
         geometry = mesh(module)
         geometry.m_Name = name
@@ -87,11 +92,11 @@ def observe_output_security(module, corrected=False):
             error = None
         except Exception as caught:
             error = type(caught).__name__
-        result[name] = {"error": error, "files": sorted(fs.files)}
+        result[name] = {"error": error, "files": sorted(fs.files), "directories": fs.directories}
     for name, key in (("../escape", "_MainTex"), ("", "../escape"), ("/absolute", "_MainTex")):
         label = "texture:" + name + ":" + key
         if corrected and module.__name__ == "UnityPy":
-            result[label] = {"error": "ValueError", "files": []}
+            result[label] = {"error": "ValueError", "files": [], "directories": []}
             continue
         env, value = material(module)
         # A fake image writes text to the in-memory filesystem, avoiding Pillow
@@ -109,7 +114,7 @@ def observe_output_security(module, corrected=False):
                 error = None
             except Exception as caught:
                 error = type(caught).__name__
-        result[label] = {"error": error, "files": sorted(fs.files)}
+        result[label] = {"error": error, "files": sorted(fs.files), "directories": fs.directories}
     for name in ("", ".", "..", "../escape", "/absolute", "a/../escape", "a\\b", "C:escape", "a\0b"):
         label = "environment:" + name
         if corrected and module.__name__ == "UnityPy":

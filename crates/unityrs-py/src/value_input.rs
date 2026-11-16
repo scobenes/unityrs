@@ -32,6 +32,8 @@ struct State<'a> {
     tree: Option<&'a Tree>,
     lookups: lookup::Lookups,
     values: staging::Arena,
+    filter_null_properties: bool,
+    rotations: MeteredVec<staging::Rotation>,
 }
 
 /// Export callers use a scoped worker. Python inspection alone attaches.
@@ -55,7 +57,7 @@ pub(crate) fn for_tree_snapshot(
     limits: &Limits,
     tree: &Tree,
 ) -> PyResult<Snapshot> {
-    snapshot_input(input, meter, limits, Some(tree))
+    snapshot_input(input, meter, limits, Some(tree), false)
 }
 
 fn snapshot(
@@ -64,7 +66,15 @@ fn snapshot(
     limits: &Limits,
     tree: Option<&Tree>,
 ) -> PyResult<Parsed> {
-    snapshot_input(input, meter, limits, tree)?.build()
+    snapshot_input(input, meter, limits, tree, false)?.build()
+}
+
+pub(crate) fn material_snapshot(
+    input: &Py<PyAny>,
+    meter: &Arc<Meter>,
+    limits: &Limits,
+) -> PyResult<Snapshot> {
+    snapshot_input(input, meter, limits, None, true)
 }
 
 fn snapshot_input(
@@ -72,6 +82,7 @@ fn snapshot_input(
     meter: &Arc<Meter>,
     limits: &Limits,
     tree: Option<&Tree>,
+    filter_null_properties: bool,
 ) -> PyResult<Snapshot> {
     let mut state = State {
         rows: MeteredVec::new(meter),
@@ -82,6 +93,8 @@ fn snapshot_input(
         tree,
         lookups: lookup::Lookups::new(tree, meter)?,
         values: staging::Arena::new(meter),
+        filter_null_properties,
+        rotations: MeteredVec::new(meter),
     };
     let (_, value) = state.stage(
         input,
@@ -391,15 +404,76 @@ fn optional_attr<'py>(
     }
 }
 
-fn numeric_for_shape(
+fn writer_buffer(
+    input: &Bound<'_, PyAny>,
+    meter: &Arc<Meter>,
+) -> PyResult<crate::buffer_snapshot::BufferSnapshot> {
+    // UnityPy measures the value before asking its writer for a buffer.
+    // Preserve both operations' Python errors without copying invalid input.
+    input.len()?;
+    let charge = meter.charge(256).map_err(errors::charge)?;
+    let py = input.py();
+    let view = match PyMemoryView::from(input) {
+        Err(error) if !error.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+            return Err(error);
+        }
+        Ok(view) if view.getattr("c_contiguous")?.is_truthy()? => view,
+        _ => {
+            // BytesIO produces the writer's exact TypeError or BufferError.
+            // This path only sees invalid buffers, so it allocates no payload.
+            py.import("io")?
+                .getattr("BytesIO")?
+                .call0()?
+                .call_method1("write", (input,))?;
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "invalid writer buffer",
+            ));
+        }
+    };
+    crate::buffer_snapshot::BufferSnapshot::from_view(input, &view, charge)
+}
+
+fn scalar_for_shape(
     tree: &Tree,
     node: NodeId,
     input: &Py<PyAny>,
     staging: &mut Charge,
+    limits: &Limits,
 ) -> PyResult<Option<(RawStr, Inspect)>> {
     use unityrs_core::typetree::{Kind, tree::py_kind_of};
     let ty = tree.list().type_name(node);
     let kind = py_kind_of(ty);
+    if matches!(kind, Kind::Str | Kind::Bytes) {
+        let value = Python::attach(|py| {
+            let input = input.bind(py);
+            if kind == Kind::Str {
+                // Charge the encoder's bound before invoking Python. Calling
+                // encode preserves AttributeError and subclass protocols.
+                let mut encoding = staging.meter().charge(256).map_err(errors::charge)?;
+                if input.is_instance_of::<PyString>() {
+                    let len = unsafe { ffi::PyUnicode_GetLength(input.as_ptr()) };
+                    encoding
+                        .grow(u64::try_from(len)?.saturating_mul(4))
+                        .map_err(errors::charge)?;
+                }
+                let encoded = input.call_method1("encode", ("utf8", "surrogateescape"))?;
+                let bytes = writer_buffer(&encoded, staging.meter())?;
+                staging
+                    .meter()
+                    .count_decode(bytes.as_ref().len() as u64)
+                    .map_err(errors::charge)?;
+                return RawStr::charged(bytes.as_ref(), staging.meter())
+                    .map(Value::Str)
+                    .map_err(errors::charge);
+            }
+            let bytes = writer_buffer(input, staging.meter())?;
+            copy_bytes(bytes.as_ref(), staging, limits)
+        })?;
+        return Ok(Some((
+            RawStr::charged(ty, staging.meter()).map_err(errors::charge)?,
+            Inspect::Scalar(value),
+        )));
+    }
     let format = match kind {
         Kind::Bool => "<?",
         Kind::S8 => "<b",

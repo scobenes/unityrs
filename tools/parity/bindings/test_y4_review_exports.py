@@ -13,6 +13,12 @@ from binding_y4_exports import mesh, _MemoryFS
 
 
 class ReviewExports(unittest.TestCase):
+    def test_nullable_material_entries_preserve_duplicate_semantics(self):
+        actual = review.observe_materials(unityrs)
+        expected = review.observe_materials(UnityPy)
+        for name in ("null", "null_duplicate", "null_then_value"):
+            self.assertEqual(actual[name], expected[name])
+
     def test_nonempty_material_current_values_match_oracle(self):
         self.assertEqual(UnityPy.__version__, "1.25.2")
         actual = review.observe_materials(unityrs)
@@ -39,6 +45,7 @@ class ReviewExports(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     value.export("safe")
                 self.assertEqual(fs.files, {})
+                self.assertEqual(fs.directories, [])
 
     def test_renderer_refuses_texture_name_and_fallback_before_any_open(self):
         for name, key in (("../escape", "_MainTex"), ("", "../escape"), ("/absolute", "_MainTex")):
@@ -53,6 +60,7 @@ class ReviewExports(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         value_renderer.export("safe")
                 self.assertEqual(fs.files, {})
+                self.assertEqual(fs.directories, [])
 
     def test_local_renderer_replaces_symlink_and_hardlink_leaves(self):
         from scratch import for_case
@@ -103,7 +111,7 @@ class ReviewExports(unittest.TestCase):
         outside = root / "outside"
         outside.write_text("retained")
         bad_names = ("", ".", "..", "../outside", str(outside), "a/b", "a\\b", "C:escape", "a\0b")
-        for kind in ("mesh", "texture", "fallback"):
+        for kind in ("mesh", "material", "texture", "fallback"):
             for index, name in enumerate(bad_names):
                 if kind == "texture" and name == "":
                     # An empty texture name with a safe key has a valid
@@ -111,11 +119,12 @@ class ReviewExports(unittest.TestCase):
                     continue
                 with self.subTest(kind=kind, name=name):
                     output = root / f"{kind}-{index}"
-                    output.mkdir()
                     geometry = mesh(unityrs)
                     env, value = review.material(unityrs)
                     if kind == "mesh":
                         geometry.m_Name = name
+                    elif kind == "material":
+                        value.m_Name = name
                     else:
                         good = texture(unityrs, m_Name="safe")
                         bad = texture(unityrs, m_Name=name if kind == "texture" else "")
@@ -129,7 +138,7 @@ class ReviewExports(unittest.TestCase):
                     with patch.object(unityrs._native, "export_material", return_value="newmtl paint"):
                         with self.assertRaises(ValueError):
                             value_renderer.export(str(output))
-                    self.assertEqual(list(output.iterdir()), [])
+                    self.assertFalse(output.exists())
                     self.assertEqual(outside.read_text(), "retained")
 
     def test_local_renderer_refuses_symlink_destination_directory(self):

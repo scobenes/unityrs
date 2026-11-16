@@ -122,6 +122,10 @@ def observe_mesh(module):
     value.m_SubMeshes[0].topology = 3
     result["lines"] = _call(value.export)
     result["empty"] = _call(mesh(module, False).export)
+    multiple = mesh(module)
+    multiple.m_SubMeshes *= 2
+    multiple.m_SubMeshes[0].topology = None
+    result["multiple_optional_fields"] = _call(multiple.export)
     value.object_reader = None
     result["missing_reader"] = _call(value.export)
     return result
