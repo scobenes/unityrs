@@ -250,6 +250,13 @@ fn run(phase: Option<u64>, operation: Option<Operation>, mode: &str) -> Report {
             cmd.env("X12_RESOLVE", format!("127.0.0.1={},peer.invalid={}+hold:{}", fake.address(), origin.address, root.join("lookup-release").display()));
         }
         if stopped { cmd.env("UNITYRS_TEST_TRACE", root.join("trace")); }
+        if stopped && !late {
+            // The lifecycle wakes the controller before tracing its stop.
+            // A frozen request does not hold the finisher: keep it alive
+            // until that trace has been read, then release both phase and
+            // finisher holds. Late scenes already hold a finisher response.
+            cmd.env("UNITYRS_TEST_POINT", format!("finisher=wait:{}", root.join("release").display()));
+        }
         if let Some(phase) = phase { cmd.env("X12_HOLD", phase.to_string()); }
         let engine = child::live(scene, &mut cmd, false)?;
         let (out, stdout) = child::drain(scene.take_stdout(engine).unwrap());
@@ -275,7 +282,7 @@ fn run(phase: Option<u64>, operation: Option<Operation>, mode: &str) -> Report {
                 scene.signal(engine, libc::SIGTERM)?;
                 while lifecycle.as_ref().unwrap().line_while(scene, engine)? != "lifecycle_stop_woken reached" {}
             }
-            if phase.is_some() { fs::write(root.join("release"), b"")?; }
+            if !late { fs::write(root.join("release"), b"")?; }
             if late || operation == Some(Operation::Abort) { response_gate.store(true, std::sync::atomic::Ordering::SeqCst); }
         }
         let status = scene.wait(engine)?;
