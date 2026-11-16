@@ -4,6 +4,24 @@ use pyo3::prelude::*;
 use unityrs_core::limits::{Limits, Meter};
 
 #[test]
+fn shader_stage_omits_none_clip_and_distinguishes_missing() -> PyResult<()> {
+    let _serial = crate::tests::serial();
+    Python::attach(|py| {
+        let input = py.eval(
+            c"(lambda N: {'value': N(m_Name='', m_LOD=0, m_Tags=N(tags=[]), alphaToMask=N(val=0), zClip=None, zTest=N(val=4), zWrite=N(val=1), culling=N(val=2), offsetFactor=N(val=0), offsetUnits=N(val=0), lighting=False, gpuProgramID=0), 'platforms': [], 'program_blobs': []})(__import__('types').SimpleNamespace)",
+            None,
+            None,
+        )?;
+        let result = crate::crypto_shader::shader_stage(py, &input, "state")?;
+        assert_eq!(result.extract::<String>(py)?, "  GpuProgramID 0\n");
+        input.get_item("value")?.delattr("zClip")?;
+        let error = crate::crypto_shader::shader_stage(py, &input, "state").unwrap_err();
+        assert!(error.is_instance_of::<pyo3::exceptions::PyAttributeError>(py));
+        Ok(())
+    })
+}
+
+#[test]
 fn writer_getter_reenters_owning_environment_without_deadlocking() -> PyResult<()> {
     let _serial = crate::tests::serial();
     unityrs_testkit::guard::finishes("writer getter reentering its owning environment", || {

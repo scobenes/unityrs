@@ -111,7 +111,7 @@ fn export_shader(
     reader: Option<&NativeObject>,
 ) -> PyResult<Py<PyAny>> {
     let (limits, meter) = context(reader);
-    let snapshot = crate::value_input::export_snapshot(input.as_unbound(), &meter, &limits)?;
+    let snapshot = crate::value_input::shader_snapshot(input.as_unbound(), &meter, &limits)?;
     py.detach(move || {
         crate::worker::run(limits.stack_needed(), || {
             let parsed = snapshot.build()?;

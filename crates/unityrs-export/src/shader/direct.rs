@@ -18,6 +18,7 @@ pub fn direct_stage(
         parsed,
         value: parsed.value(),
         meter,
+        is_none: false,
     };
     let value = root.field("value")?;
     let platforms = root.field("platforms")?.seq()?;

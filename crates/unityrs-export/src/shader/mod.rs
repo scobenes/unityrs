@@ -190,6 +190,7 @@ pub fn export_with_cap(
         parsed,
         value: parsed.value(),
         meter,
+        is_none: false,
     };
     if let Some(old) = root.optional("m_SubProgramBlob")?
         && !old.empty()

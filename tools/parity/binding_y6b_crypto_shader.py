@@ -106,6 +106,32 @@ def shader_state():
              lighting=True, gpuProgramID=7)
 
 
+def observe_shader_optional_clip(package):
+    module = _module(package, 'export.ShaderConverter')
+    from attrs import fields, NOTHING
+    # Use the generated record, including its valid optional None field.
+    cls = _module(package, 'classes').SerializedShaderState
+    supplied = vars(shader_state())
+    state = cls(**{field.name: supplied.get(field.name) for field in fields(cls)
+                   if field.default is NOTHING})
+    for name, value in supplied.items():
+        setattr(state, name, value)
+    normal = N(m_Type=0, m_State=state, **{name: N(m_SubPrograms=[]) for name in
+               ('progVertex', 'progFragment', 'progGeometry', 'progHull', 'progDomain')})
+    sub = N(m_LOD=0, m_Tags=N(tags=[]), m_Passes=[normal])
+    form = N(m_Name='Synthetic', m_PropInfo=N(m_Props=[]), m_SubShaders=[sub],
+             m_FallbackName='', m_CustomEditorName='')
+    result = {}
+    for name, clip in [('none', None), ('off', N(val=0)), ('on', N(val=1))]:
+        state.zClip = clip
+        result[name] = [
+            _call(lambda: module.ConvertSerializedShaderState(state)),
+            _call(lambda: module.ConvertSerializedPass(normal, [], [])),
+            _call(lambda: module.ConvertSerializedSubShader(sub, [], [])),
+            _call(lambda: module.ConvertSerializedShaderParsedForm(form, [], []))]
+    return result
+
+
 def observe_shader_stages(package):
     module = _module(package, 'export.ShaderConverter')
     props = N(m_Props=[property_value(k) for k in range(5)])

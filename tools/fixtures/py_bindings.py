@@ -101,13 +101,13 @@ INTERNALS = [("binding_y6b_codecs", "observe_" + name) for name in
              ("codec_failures", "codec_callbacks", "codec_compression", "reader_redirect", "reader_failures")] + [
     ("binding_y6b_tree", "observe_" + name) for name in
     ("tree_defaults", "tree_values", "tree_boost", "tree_arrays", "tree_failures", "tree_write_failures",
-     "tree_objects", "tree_namespace", "tree_depth", "tree_reference_lookup",
+     "tree_objects", "tree_namespace", "tree_depth", "tree_reference_lookup", "tree_pure_reference_lookup",
      "generator_discovery", "generator_backend", "update_tpk")
 ] + [("binding_y6b_crypto_shader", "observe_" + name) for name in
      ("crypto_keys", "crypto_decryptor", "crypto_block_indices", "crypto_bruteforce", "shader_stages", "shader_programs", "shader_platforms",
-      "shader_mutable_stages", "shader_unused_programs")] + [
+      "shader_mutable_stages", "shader_unused_programs", "shader_optional_clip")] + [
     ("binding_y6b_images", "observe_" + name) for name in
-    ("texture_dispatch", "astc_context", "sprite_geometry", "sprite_matrices", "astc_options", "sprite_bounds")
+    ("texture_dispatch", "switch_predicate", "astc_context", "sprite_geometry", "sprite_matrices", "astc_options", "sprite_bounds")
 ]
 
 

@@ -173,7 +173,7 @@ pub(super) fn state(v: View<'_>, out: &mut Output<'_>) -> Result<(), Error> {
         out.text(" AlphaToMask On\n")?;
     }
     let clip = v.optional("zClip")?.ok_or(Error::Attribute("zClip"))?;
-    if clip.field("val")?.num()? != 1. {
+    if !clip.is_none && clip.field("val")?.num()? != 1. {
         out.text(" ZClip Off\n")?;
     }
     let z = val("zTest")?;

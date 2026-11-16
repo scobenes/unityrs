@@ -7,6 +7,10 @@ import binding_y6b_images as observations
 
 
 class ImageExtensions(unittest.TestCase):
+    def test_switch_predicate_exponent_boundaries(self):
+        self.assertEqual(observations.observe_switch_predicate(unityrs),
+                         observations.observe_switch_predicate(UnityPy))
+
     def test_dispatch_preprocess_matches_oracle(self):
         actual = observations.observe_texture_dispatch(unityrs)
         self.assertEqual(actual, observations.observe_texture_dispatch(UnityPy))

@@ -10,6 +10,18 @@ def _module(package, name):
     return importlib.import_module(package.__name__ + '.export.' + name)
 
 
+def observe_switch_predicate(package):
+    helper = importlib.import_module(package.__name__ + '.helpers.TextureSwizzler')
+    result = []
+    for exponent in (0, 1, 2, 30, 31, 32, 63):
+        blob = bytes(8) + exponent.to_bytes(4, 'little')
+        result.append([exponent, helper.get_switch_gobs_per_block(blob),
+                       helper.is_switch_swizzled(38, blob), helper.is_switch_swizzled(0, blob),
+                       helper.is_switch_swizzled(38, blob[:11])])
+    result.append([helper.is_switch_swizzled(38, None), helper.is_switch_swizzled(38, [])])
+    return result
+
+
 def observe_texture_dispatch(package):
     from PIL import Image
     converter = _module(package, 'Texture2DConverter')

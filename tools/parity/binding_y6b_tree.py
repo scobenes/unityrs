@@ -39,6 +39,31 @@ def observe_tree_depth(package):
     return result
 
 
+def observe_tree_pure_reference_lookup(package):
+    helper = _module(package, 'helpers.TypeTreeHelper')
+    descriptor = _node(package, 'SyntheticType', 'type', [
+        _node(package, 'string', name) for name in ('class', 'ns', 'asm')])
+    root = _node(package, 'ReferencedObject', 'Base', [
+        descriptor, _node(package, 'ReferencedObjectData', 'data')])
+    value = {'type': {'class': 'Synthetic', 'ns': 'NS', 'asm': 'ASM'}, 'data': 23}
+    prefix = package.streams.EndianBinaryWriter(endian='<')
+    helper.write_typetree(value['type'], descriptor, prefix)
+    data = prefix.bytes + struct.pack('<i', 23)
+    result = []
+    for mismatch in [dict(m_ClassName='Other'),
+                     dict(m_ClassName='Synthetic', m_NameSpace='Other'),
+                     dict(m_ClassName='Synthetic', m_NameSpace='NS', m_AssemblyName='Other')]:
+        file = SimpleNamespace(ref_types=[SimpleNamespace(**mismatch), SimpleNamespace(
+            m_ClassName='Synthetic', m_NameSpace='NS', m_AssemblyName='ASM', node=_node(package))])
+        reader = package.streams.EndianBinaryReader(data, '<')
+        writer = package.streams.EndianBinaryWriter(endian='<')
+        from binding_y4_exports import _call
+        read = _call(lambda: helper.read_typetree(root, reader, check_read=False, assetsfile=file))
+        write = _call(lambda: helper.write_typetree(value, root, writer, assetsfile=file))
+        result.append([read, reader.Position, write, writer.bytes.hex()])
+    return result
+
+
 def observe_tree_reference_lookup(package):
     import threading
     helper = _module(package, 'helpers.TypeTreeHelper')

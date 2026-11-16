@@ -6,6 +6,13 @@ import binding_y6b_crypto_shader as observations
 
 
 class CryptoShader(unittest.TestCase):
+    def test_generated_shader_state_optional_clip(self):
+        self.compare('shader_optional_clip')
+        result = observations.observe_shader_optional_clip(unityrs)
+        for value in result['none']:
+            self.assertIn('value', value)
+            self.assertNotIn('ZClip', bytes.fromhex(value['value'][1]).decode())
+
     def test_block_indices_wrap_unsigned_64_bits(self):
         self.compare('crypto_block_indices')
 

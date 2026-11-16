@@ -38,6 +38,7 @@ struct State<'a> {
     refs: &'a [unityrs_core::files::SerializedType],
     values: staging::Arena,
     filter_null_properties: bool,
+    keep_none: bool,
     rotations: MeteredVec<staging::Rotation>,
     logical_lengths: MeteredVec<(u64, usize)>,
 }
@@ -68,7 +69,7 @@ pub(crate) fn for_tree_snapshot(
     tree: &Tree,
     refs: &[unityrs_core::files::SerializedType],
 ) -> PyResult<Snapshot> {
-    snapshot_input(input, meter, limits, Some(tree), false, refs)
+    snapshot_input(input, meter, limits, Some(tree), false, refs, false)
 }
 
 #[cfg(test)]
@@ -78,7 +79,7 @@ fn snapshot(
     limits: &Limits,
     tree: Option<&Tree>,
 ) -> PyResult<unityrs_core::Parsed> {
-    snapshot_input(input, meter, limits, tree, false, &[])?.build()
+    snapshot_input(input, meter, limits, tree, false, &[], false)?.build()
 }
 
 pub(crate) fn material_snapshot(
@@ -86,7 +87,7 @@ pub(crate) fn material_snapshot(
     meter: &Arc<Meter>,
     limits: &Limits,
 ) -> PyResult<Snapshot> {
-    snapshot_input(input, meter, limits, None, true, &[])
+    snapshot_input(input, meter, limits, None, true, &[], false)
 }
 
 pub(crate) fn export_snapshot(
@@ -94,7 +95,15 @@ pub(crate) fn export_snapshot(
     meter: &Arc<Meter>,
     limits: &Limits,
 ) -> PyResult<Snapshot> {
-    snapshot_input(input, meter, limits, None, false, &[])
+    snapshot_input(input, meter, limits, None, false, &[], false)
+}
+
+pub(crate) fn shader_snapshot(
+    input: &Py<PyAny>,
+    meter: &Arc<Meter>,
+    limits: &Limits,
+) -> PyResult<Snapshot> {
+    snapshot_input(input, meter, limits, None, false, &[], true)
 }
 
 fn snapshot_input(
@@ -104,10 +113,19 @@ fn snapshot_input(
     tree: Option<&Tree>,
     filter_null_properties: bool,
     refs: &[unityrs_core::files::SerializedType],
+    keep_none: bool,
 ) -> PyResult<Snapshot> {
     Python::attach(|py| {
         py.detach(|| {
-            snapshot_input_native(input, meter, limits, tree, filter_null_properties, refs)
+            snapshot_input_native(
+                input,
+                meter,
+                limits,
+                tree,
+                filter_null_properties,
+                refs,
+                keep_none,
+            )
         })
     })
 }
@@ -119,6 +137,7 @@ fn snapshot_input_native(
     tree: Option<&Tree>,
     filter_null_properties: bool,
     refs: &[unityrs_core::files::SerializedType],
+    keep_none: bool,
 ) -> PyResult<Snapshot> {
     let mut state = State {
         rows: MeteredVec::new(meter),
@@ -131,6 +150,7 @@ fn snapshot_input_native(
         refs,
         values: staging::Arena::new(meter),
         filter_null_properties,
+        keep_none,
         rotations: MeteredVec::new(meter),
         logical_lengths: MeteredVec::new(meter),
     };
@@ -177,13 +197,18 @@ enum Elements {
     Iter(Py<PyIterator>),
     Pair(Py<PyAny>),
 }
+enum NullFields {
+    Omit,
+    Preserve,
+    ShaderClip,
+}
 struct Fields {
     input: Py<PyAny>,
     attrs: Option<Py<PyIterator>>,
     keys: Option<Py<PyIterator>>,
     seen: Py<PySet>,
     dict: bool,
-    keep_none: bool,
+    nulls: NullFields,
     schema: Option<Py<PyIterator>>,
     raw_names: bool,
 }
@@ -221,7 +246,7 @@ impl Fields {
             rows.bind(py).try_iter().map(Bound::unbind)
         })?);
         self.raw_names = true;
-        self.keep_none = true;
+        self.nulls = NullFields::Preserve;
         Ok(())
     }
     fn next(
@@ -282,7 +307,13 @@ impl Fields {
             } else {
                 self.input.bind(py).getattr(key.cast::<PyString>()?)?
             };
-            if !self.dict && !self.keep_none && child.is_none() {
+            let keep_none = self.dict
+                || match self.nulls {
+                    NullFields::Omit => false,
+                    NullFields::Preserve => true,
+                    NullFields::ShaderClip => name.as_bytes() == b"zClip",
+                };
+            if !keep_none && child.is_none() {
                 continue;
             }
             return Ok(Some((name, child.unbind())));
@@ -301,6 +332,14 @@ impl State<'_> {
     fn inspect(&mut self, input: &Py<PyAny>) -> PyResult<(RawStr, Inspect)> {
         Python::attach(|py| {
             let value = input.bind(py);
+            if self.keep_none && value.is_none() {
+                // Parsed has no null variant. Preserve explicit Python None
+                // with a synthetic NoneType row and an allocation-free scalar.
+                return Ok((
+                    RawStr::from_static(b"NoneType"),
+                    Inspect::Scalar(Value::Bool(false)),
+                ));
+            }
             let scalar = if value.is_instance_of::<PyBool>() {
                 Some((b"bool".as_slice(), Value::Bool(value.extract()?)))
             } else if value.is_instance_of::<PyInt>() {
@@ -368,7 +407,13 @@ impl State<'_> {
                     keys,
                     seen: PySet::empty(py)?.unbind(),
                     dict,
-                    keep_none: self.tree.is_some(),
+                    nulls: if self.tree.is_some() {
+                        NullFields::Preserve
+                    } else if self.keep_none {
+                        NullFields::ShaderClip
+                    } else {
+                        NullFields::Omit
+                    },
                     schema: None,
                     raw_names: false,
                 }),

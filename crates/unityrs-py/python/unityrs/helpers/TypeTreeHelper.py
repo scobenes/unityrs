@@ -31,10 +31,14 @@ def get_ref_type_node(ref_object, assetfile, *, _guard=None):
         return None
     guard = guard_for(guard=_guard)
     for ref in assetfile.ref_types:
-        descriptor = (ref.m_ClassName, ref.m_NameSpace, ref.m_AssemblyName)
-        work = 1 + sum(text_bound(value) for value in (cls, ns, asm, *descriptor) if isinstance(value, str))
-        guard.step(0, 128, work)
-        if (cls, ns, asm) == descriptor:
+        guard.step(0, 128, 1)
+        for expected, name in ((cls, 'm_ClassName'), (ns, 'm_NameSpace'), (asm, 'm_AssemblyName')):
+            actual = getattr(ref, name)
+            work = sum(text_bound(value) for value in (expected, actual) if isinstance(value, str))
+            guard.step(0, 128, work)
+            if not expected == actual:
+                break
+        else:
             node = ref.node
             if node is not None:
                 for _ in walk(node, guard):

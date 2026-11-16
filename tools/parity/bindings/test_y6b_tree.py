@@ -6,6 +6,14 @@ import binding_y6b_tree as observations
 
 
 class StandaloneTrees(unittest.TestCase):
+    def test_pure_reference_lookup_skips_incomplete_nonmatches(self):
+        actual = observations.observe_tree_pure_reference_lookup(unityrs)
+        self.assertEqual(actual, observations.observe_tree_pure_reference_lookup(UnityPy))
+        for read, position, write, data in actual:
+            self.assertIn('value', read)
+            self.assertEqual(position * 2, len(data))
+            self.assertIn('value', write)
+
     def test_value_depth_is_independent_of_scheduler_frames(self):
         self.assertEqual(observations.observe_tree_depth(unityrs), observations.observe_tree_depth(UnityPy))
 

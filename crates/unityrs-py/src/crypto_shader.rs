@@ -77,7 +77,7 @@ pub(crate) fn shader_stage(
     stage: &str,
 ) -> PyResult<Py<PyAny>> {
     let (limits, meter) = crate::exports::context(None);
-    let snapshot = crate::value_input::export_snapshot(input.as_unbound(), &meter, &limits)?;
+    let snapshot = crate::value_input::shader_snapshot(input.as_unbound(), &meter, &limits)?;
     py.detach(|| {
         crate::worker::run(limits.stack_needed(), || {
             let parsed = snapshot.build()?;
