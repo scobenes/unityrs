@@ -60,11 +60,42 @@ class FinalEvidenceTests(unittest.TestCase):
         self.assertEqual(gen.generate(data)['coefficients']['c_base']['selected'], 331776)
 
     def test_whole_run_provenance_must_match_synthetic_build(self):
-        for field in ('revision', 'lockfile_sha256', 'native_libraries_sha256', 'native_flags_sha256'):
+        for field, value in (('revision', '4' * 40), ('lockfile_sha256', '4' * 64),
+                             ('rustc', [99, 0, 0]),
+                             ('native_libraries_sha256', '4' * 64),
+                             ('native_flags_sha256', '4' * 64)):
             data = document(True)
-            data['records'][-1]['provenance'][field] = '4' * len(data['records'][-1]['provenance'][field])
+            data['records'][-1]['provenance'][field] = value
             with self.subTest(field=field), self.assertRaises(gen.Invalid):
                 gen.generate(data)
+
+    def test_native_compiler_versions_must_match_across_all_evidence(self):
+        for index in (1, -1):
+            for compiler in ('c', 'cxx'):
+                data = document(True)
+                data['records'][index]['provenance']['native_compilers'][compiler] = [99, 0, 0]
+                with self.subTest(kind=data['records'][index]['kind'], compiler=compiler):
+                    with self.assertRaisesRegex(gen.Invalid, 'mismatched build provenance'):
+                        gen.generate(data)
+
+    def test_selected_evidence_cannot_bypass_native_compiler_comparison(self):
+        for compiler in ('c', 'cxx'):
+            result = gen.generate(document(True))
+            whole_run = next(r for r in result['records'] if r['kind'] == 'whole-run')
+            whole_run['provenance']['native_compilers'][compiler] = [99, 0, 0]
+            for consume in (gen.render, gen.rust_source):
+                with self.subTest(compiler=compiler, consumer=consume.__name__):
+                    with self.assertRaisesRegex(gen.Invalid, 'mismatched build provenance'):
+                        consume(result)
+
+    def test_native_hosts_may_have_different_kernel_and_glibc_versions(self):
+        for field, value in (('kernel', [6, 12, 0]), ('glibc', [2, 40])):
+            data = document(True)
+            for item in data['records']:
+                if item['target'] == gen.TARGETS[1]:
+                    item['provenance'][field] = value
+            with self.subTest(field=field):
+                self.assertTrue(gen.generate(data)['shipping_replacement'])
 
     def test_duplicate_whole_run_axis_is_rejected(self):
         data = document(True)

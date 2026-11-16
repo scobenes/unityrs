@@ -46,9 +46,9 @@ configuration manifest of library versions and build options, shared across the
 targets; it is not a hash of target-specific executable bytes. Keep the full
 configuration manifest with the measurement evidence for review.
 
-All records must agree on revision, lockfile, Rust version, native-library
-configuration and feature set. Host kernel and glibc versions may differ between
-native hosts. Features must be `test-hooks`; the allocator must be
+All records must agree on revision, lockfile, Rust and C/C++ compiler versions,
+native-library configuration, native build flags and feature set. Host kernel
+and glibc versions may differ between native hosts. Features must be `test-hooks`; the allocator must be
 `system-glibc`; `native` must be true; `page_size` must be 4,096;
 `mmap_threshold` must be 131,072; `arena_extra` must be 2, recording production
 `M_ARENA_MAX = threads + 2`. Emulated measurements and other page sizes are not
@@ -263,8 +263,8 @@ Until the native matrix, matching whole-run aggregate and independent candidate
 verification exist, the estimates and all existing provisional documentation
 remain. No diagnostic record is installed as a final constant set.
 
-Build provenance also records numeric C/C++ compiler versions per host; those
-may differ across hosts, as kernel and glibc versions may. The shared native
+Build provenance also records numeric C/C++ compiler versions per host; both
+must match across all synthetic and whole-run records. The shared native
 configuration digest covers source and locked options, including C++ headers
 and assembly. A second shared digest identifies the default locked profiles.
 The collector rejects ambient native/Rust/Cargo build overrides, test-driver controls, external

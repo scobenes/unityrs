@@ -150,10 +150,44 @@ class ValidationTests(unittest.TestCase):
 
     def test_emulation_and_wrong_allocator_configuration_are_refused(self):
         for field, value in (('native', False), ('native', 1), ('page_size', 65536),
-                             ('mmap_threshold', 0), ('arena_extra', 1)):
+                             ('mmap_threshold', 0), ('arena_extra', 1),
+                             ('allocator', 'other'), ('features', 'default')):
             data = document()
             data['records'][0]['provenance'][field] = value
-            self.rejected(data)
+            with self.subTest(field=field, value=value):
+                self.rejected(data)
+
+    def test_both_schemas_require_every_provenance_field_and_native_compiler(self):
+        paths = [(field,) for field in record()['provenance']]
+        paths.extend(('native_compilers', compiler) for compiler in ('c', 'cxx'))
+        for kind in ('input', 'output'):
+            schema = gen._schema('aggregate-' + kind + '-v1.schema.json')
+            for path in paths:
+                data = document()
+                if kind == 'output':
+                    data = gen.generate(data)
+                node = data['records'][-1]['provenance']
+                for field in path[:-1]:
+                    node = node[field]
+                del node[path[-1]]
+                with self.subTest(schema=kind, path=path):
+                    with self.assertRaises(gen.Invalid):
+                        gen._validate(data, schema, schema)
+
+    def test_native_compilers_require_three_unsigned_version_integers(self):
+        for compiler in ('c', 'cxx'):
+            for value in ([], [13, 3], [13, 3, 0, 1], '13.3.0',
+                          [True, 3, 0], [-1, 3, 0], [13.0, 3, 0],
+                          [gen.U64_MAX + 1, 3, 0]):
+                data = document()
+                data['records'][0]['provenance']['native_compilers'][compiler] = value
+                with self.subTest(compiler=compiler, value=value):
+                    self.rejected(data)
+
+    def test_unrecognized_native_toolchain_fields_are_refused(self):
+        data = document()
+        data['records'][0]['provenance']['native_compilers']['other'] = [1, 0, 0]
+        self.rejected(data)
 
     def test_mismatched_build_provenance_is_refused(self):
         for field, value in (('revision', '4' * 40), ('lockfile_sha256', '4' * 64),

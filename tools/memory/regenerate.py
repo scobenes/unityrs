@@ -124,7 +124,7 @@ def validate_input(data):
         # must describe one build configuration across the complete matrix.
         build = tuple(json.dumps(p[name], sort_keys=True) for name in (
             'revision', 'lockfile_sha256', 'rustc', 'features',
-            'native_libraries_sha256',
+            'native_compilers', 'native_libraries_sha256',
             'native_flags_sha256',
         ))
         if provenance is not None and build != provenance:
