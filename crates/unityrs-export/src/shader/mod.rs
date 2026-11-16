@@ -7,6 +7,8 @@ mod blob;
 #[cfg(test)]
 mod bytes_tests;
 mod convert;
+mod direct;
+pub use direct::direct_stage;
 mod layout;
 mod legacy;
 mod output;

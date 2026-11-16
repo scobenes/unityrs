@@ -95,7 +95,7 @@ fn _image_resource(
     })
 }
 
-fn meter(reader: Option<&NativeObject>) -> Arc<Meter> {
+pub(crate) fn meter(reader: Option<&NativeObject>) -> Arc<Meter> {
     reader.map_or_else(
         || Meter::for_input(&Limits::default(), Arc::new(Unbounded), Reservation::Input),
         |r| r.inner.file().meter().clone(),
@@ -121,7 +121,7 @@ fn exception(class: &str, message: String) -> PyErr {
     })
 }
 
-fn decode_error(error: DecodeError, format: i32) -> PyErr {
+pub(crate) fn decode_error(error: DecodeError, format: i32) -> PyErr {
     match error {
         DecodeError::Charge(e) => errors::charge(e),
         DecodeError::NoImageData => PyValueError::new_err("Texture2D has no image data"),
@@ -143,7 +143,7 @@ fn decode_error(error: DecodeError, format: i32) -> PyErr {
     }
 }
 
-fn write_error(error: unityrs_texture::write::WriteError) -> PyErr {
+pub(crate) fn write_error(error: unityrs_texture::write::WriteError) -> PyErr {
     use unityrs_texture::write::WriteError;
     match error {
         WriteError::Charge(e) => errors::charge(e),
@@ -152,7 +152,7 @@ fn write_error(error: unityrs_texture::write::WriteError) -> PyErr {
     }
 }
 
-fn sprite_error(error: unityrs_texture::sprite::SpriteError) -> PyErr {
+pub(crate) fn sprite_error(error: unityrs_texture::sprite::SpriteError) -> PyErr {
     if let unityrs_texture::sprite::SpriteError::Charge(e) = error {
         return errors::charge(e);
     }
@@ -162,7 +162,7 @@ fn sprite_error(error: unityrs_texture::sprite::SpriteError) -> PyErr {
     PyNotImplementedError::new_err(errors::message(&error))
 }
 
-fn output(image: &Image, meter: &Arc<Meter>) -> PyResult<Py<PyAny>> {
+pub(crate) fn output(image: &Image, meter: &Arc<Meter>) -> PyResult<Py<PyAny>> {
     let _charge = meter
         .charge((image.pixels().len() as u64).saturating_add(1024))
         .map_err(errors::charge)?;

@@ -130,7 +130,7 @@ fn export_shader(
     })
 }
 
-fn shader_error(error: unityrs_export::shader::Error, meter: &Arc<Meter>) -> PyErr {
+pub(crate) fn shader_error(error: unityrs_export::shader::Error, meter: &Arc<Meter>) -> PyErr {
     use unityrs_export::shader::Error;
     match error {
         Error::Charge(error) => errors::charge(error),
@@ -173,6 +173,8 @@ pub(super) fn named_error(name: &str, message: String) -> PyErr {
             "LZ4BlockError" => py
                 .import("unityrs._native")
                 .and_then(|m| m.getattr("LZ4BlockError")),
+            "LZMAError" => py.import("lzma").and_then(|m| m.getattr("LZMAError")),
+            "struct.error" => py.import("struct").and_then(|m| m.getattr("error")),
             _ => py.import("builtins").and_then(|m| m.getattr(name)),
         };
         match class.and_then(|class| class.cast_into::<pyo3::types::PyType>().map_err(Into::into)) {

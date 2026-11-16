@@ -33,6 +33,11 @@ impl std::fmt::Debug for UnityCnDecryptor {
 const _: () = crate::send_sync::<UnityCnDecryptor>();
 
 impl UnityCnDecryptor {
+    /// Construct caller-supplied tables for the standalone Python helper.
+    #[must_use]
+    pub fn from_tables(index: [u8; 16], substitute: [u8; 16]) -> Self {
+        Self { index, substitute }
+    }
     /// Reads the u32 and both vectors before checking the load-local key.
     /// UnityPy 1.25.2 helpers/ArchiveStorageManager.py:67-94.
     pub fn read(r: &mut Reader<'_>, key: Option<&[u8; 16]>) -> Result<Self, Error> {
@@ -66,9 +71,9 @@ impl UnityCnDecryptor {
     fn byte(&self, byte: u8, index: usize) -> u8 {
         let get = |table: &[u8; 16], i| table.get(i).copied().unwrap_or(0);
         let b = get(&self.substitute, ((index >> 2) & 3) + 4)
-            + get(&self.substitute, index & 3)
-            + get(&self.substitute, ((index >> 4) & 3) + 8)
-            + get(&self.substitute, ((index >> 6) & 3) + 12);
+            .wrapping_add(get(&self.substitute, index & 3))
+            .wrapping_add(get(&self.substitute, ((index >> 4) & 3) + 8))
+            .wrapping_add(get(&self.substitute, ((index >> 6) & 3) + 12));
         (get(&self.index, usize::from(byte & 15)).wrapping_sub(b) & 15)
             | (get(&self.index, usize::from(byte >> 4)).wrapping_sub(b) << 4)
     }
@@ -86,6 +91,44 @@ impl UnityCnDecryptor {
         *index = index.wrapping_add(1);
         Ok(value)
     }
+}
+
+/// Encrypt each AES-ECB vector block and XOR its prefix with the supplied data.
+/// The caller validates the AES key length; no key or decrypted table is retained.
+pub fn decrypt_key_bytes(
+    vector: &[u8],
+    data: &[u8],
+    key: &[u8],
+    meter: &std::sync::Arc<crate::limits::Meter>,
+) -> Result<crate::limits::MeteredVec<u8>, Error> {
+    use aes::{Aes192, Aes256};
+    if !vector.len().is_multiple_of(16) {
+        return Err(Error::UnityCnVectorLength {
+            length: vector.len(),
+        });
+    }
+    let mut out = crate::limits::MeteredVec::new(meter);
+    macro_rules! apply {
+        ($cipher:ty) => {{
+            let cipher = <$cipher>::new_from_slice(key).map_err(|_| Error::UnityCnSignature)?;
+            for (block, data) in vector.chunks_exact(16).zip(data.chunks(16)) {
+                meter.count_decode(16)?;
+                let mut bytes = aes::cipher::Block::<$cipher>::default();
+                bytes.copy_from_slice(block);
+                cipher.encrypt_block(&mut bytes);
+                for (mask, value) in bytes.iter().zip(data) {
+                    out.push(mask ^ value)?;
+                }
+            }
+        }};
+    }
+    match key.len() {
+        16 => apply!(Aes128),
+        24 => apply!(Aes192),
+        32 => apply!(Aes256),
+        _ => return Err(Error::UnityCnSignature),
+    }
+    Ok(out)
 }
 
 impl BlockDecryptor for UnityCnDecryptor {

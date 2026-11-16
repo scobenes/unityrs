@@ -323,6 +323,16 @@ pub(crate) fn parse_reader(error: &ParseError, boost: bool) -> PyErr {
     if error.is_meter_refusal() {
         return PyMemoryError::new_err(message(&error));
     }
+    match error {
+        ParseError::Tree(unityrs_core::typetree::TreeError::Charge(error))
+        | ParseError::Read(unityrs_core::walk::ReadError {
+            detail: ReadDetail::Charge(error),
+            ..
+        }) => {
+            return charge(error.clone());
+        }
+        _ => {}
+    }
     match &error {
         ParseError::NoTypeTree {
             why: Some(why),

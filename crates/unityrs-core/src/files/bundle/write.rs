@@ -207,16 +207,13 @@ impl BundleFile {
         } else {
             self.save_entries(options)?
         };
-        let packed = if named_hc || header.format >= 9 {
-            encode::head_chunk_based_compress(
-                &file_data,
-                block_info_flag,
-                header.format,
-                self.meter(),
-            )?
-        } else {
-            encode::chunk_based_compress(&file_data, block_info_flag, self.meter())?
-        };
+        let packed = encode::registered_chunks(
+            &file_data,
+            block_info_flag,
+            &self.context().codecs,
+            (named_hc || header.format >= 9).then_some(header.format),
+            self.meter(),
+        )?;
         let mut info = Writer::new(self.meter(), Endian::Big)?;
         info.bytes(&[0; 16])?;
         info.count(packed.blocks.len())?;
@@ -230,8 +227,12 @@ impl BundleFile {
         }
         info.bytes(&directory)?;
         let info_len = narrow(info.len(), "blocks-info size")?;
-        let compressed =
-            encode::compress(info.slice(), Codec::from_flags(data_flag), self.meter())?;
+        let compressed = encode::registered_compress(
+            info.slice(),
+            Codec::from_flags(data_flag),
+            &self.context().codecs,
+            self.meter(),
+        )?;
         let mut out = self.save_header(options, header)?;
         let extra = usize::from(header.signature.as_bytes() != b"UnityFS");
         let mut header_size = add(out.len(), 20 + extra)?;

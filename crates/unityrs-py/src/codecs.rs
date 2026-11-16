@@ -7,6 +7,7 @@ use unityrs_core::{
     budget::DecodeBuf,
     codec::{Codec, Lz4, Lzma, decode_block, encode},
     limits::Charge,
+    once::CellError,
 };
 
 #[pyfunction]
@@ -28,8 +29,25 @@ pub(crate) fn codec(
                         .map_err(crate::save::error)?
                 } else {
                     let context = unityrs_core::FileContext::unitypy();
-                    unityrs_core::files::web::decompress_brotli(&input, &meter, &context)
-                        .map_err(errors::core)?
+                    unityrs_core::files::web::decompress_brotli(&input, &meter, &context).map_err(
+                        |error| {
+                            if error.is_meter_refusal() {
+                                errors::core(error)
+                            } else {
+                                Python::attach(|py| {
+                                    let class = py
+                                        .import("unityrs.helpers.CompressionHelper")?
+                                        .getattr("_BrotliError")?
+                                        .cast_into::<pyo3::types::PyType>()?;
+                                    Ok::<_, PyErr>(PyErr::from_type(
+                                        class,
+                                        ("brotli: decoder failed",),
+                                    ))
+                                })
+                                .unwrap_or_else(|error| error)
+                            }
+                        },
+                    )?
                 };
                 let mut charge = Charge::zero(&meter);
                 charge.grow(result.len() as u64).map_err(errors::charge)?;
@@ -62,7 +80,13 @@ pub(crate) fn codec(
                 &mut out,
                 limits.max_block_output,
             )
-            .map_err(errors::core)?;
+            .map_err(|error| match error {
+                unityrs_core::Error::Decompress { detail, .. } => {
+                    let (name, text) = detail.split_once(": ").unwrap_or(("ValueError", &detail));
+                    crate::exports::named_error(name, errors::message(&text))
+                }
+                error => errors::core(error),
+            })?;
             let result = result.as_deref().unwrap_or_else(|| out.as_slice());
             let mut charge = Charge::zero(&meter);
             charge.grow(result.len() as u64).map_err(errors::charge)?;

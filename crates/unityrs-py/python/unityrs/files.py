@@ -9,6 +9,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from .enums import ClassIDType, BuildTarget
 from .helpers.UnityVersion import UnityVersion
+from ._reader_snapshot import reference_types, set_reference_types
 
 # files/File.py:13; files/__init__.py:1-14: the public legacy directory row.
 DirectoryInfo = namedtuple('DirectoryInfo', 'path offset size')
@@ -149,6 +150,8 @@ def _writer_text(value, guard):
 
 
 class SerializedFile(File):
+    ref_types = property(reference_types, set_reference_types)
+
     @property
     def reader(self):
         if '_reader' not in self.__dict__:
@@ -509,7 +512,8 @@ class ObjectReader:
         return self.assets_file.target_platform
 
     def get_raw_data(self):
-        return self._native.raw_data()
+        from ._reader_snapshot import raw_data
+        return raw_data(self)
 
     def set_raw_data(self, data):
         # files/ObjectReader.py:181-184: reads retain the original byte source.
@@ -597,22 +601,38 @@ class ObjectReader:
         if as_dict is not None:
             wrap = not as_dict
         with (self.assets_file.environment._lock if self.assets_file.environment is not None else nullcontext()):
+            from ._reader_snapshot import uses_original
+            from .helpers.TypeTreeHelper import read_typetree
+            reader = self.reader
+            original = uses_original(self)
+            if not original or not self.byte_size:
+                node = self._get_typetree_node(nodes)
+                self.reset()
+                result = read_typetree(node, reader, as_dict=not wrap,
+                                       assetsfile=self.assets_file, byte_size=self.byte_size,
+                                       check_read=check_read, _guard=self._native.tree_traversal())
+                if wrap:
+                    result.set_object_reader(self)
+                return result
             rows = None
             if (nodes is not None or (self.class_id == 114 and not self._has_embedded_nodes) or "_node" in self.__dict__
                     or self.type_id in self.assets_file._type_nodes or self.assets_file._head_nodes):
                 node = self._get_typetree_node(nodes)
                 rows = node._native_rows(
                     use_boost=bool(self.byte_size), _guard=self._native.tree_traversal())
+            # Boost consumes the entire object span before decoding it. Keep
+            # this cursor even when decoding or its check_read fails.
+            self.reset()
+            self.Position = self.byte_start + self.byte_size
             if not wrap:
                 value, count = self._native.parse_with_position(check_read, rows)
-                self.Position = self.byte_start + count
                 return value
             return self._read_object(rows, check_read)
 
     def _read_object(self, rows, check_read):
         from ._object import build
         data, lists, references, bytes_read, completed, error, charge = self._native.object_data(rows)
-        self.Position = self.byte_start + bytes_read
+        self.Position = self.byte_start + (self.byte_size or bytes_read)
         result = build(data, lists, self.assets_file, self.byte_size > 0, references, completed, error, charge)
         if check_read and bytes_read != self.byte_size:
             raise ValueError(f"Expected to read {self.byte_size} bytes, but only read {bytes_read} bytes")

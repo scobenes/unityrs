@@ -95,9 +95,19 @@ pub(crate) fn rows_to_python(
 }
 
 pub(crate) fn compile_rows(object: &ObjectRef, input: &Py<PyAny>) -> PyResult<Arc<Tree>> {
-    let meter = object.file().meter();
+    compile_rows_with(
+        object.file().meter(),
+        &object.file().context().limits,
+        input,
+    )
+}
+
+pub(crate) fn compile_rows_with(
+    meter: &Arc<unityrs_core::limits::Meter>,
+    limits: &unityrs_core::limits::Limits,
+    input: &Py<PyAny>,
+) -> PyResult<Arc<Tree>> {
     let mut rows = MeteredVec::new(meter);
-    let limits = &object.file().context().limits;
     let mut staging = TreeTraversal::on(meter, limits.max_tree_depth);
     let iter = Python::attach(|py| input.bind(py).try_iter().map(Bound::unbind))?;
     loop {

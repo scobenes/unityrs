@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=78
+python scripts/unittest-suites crates/unityrs-py/python/tests=104
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=228
+python ../../scripts/unittest-suites bindings=257
 ```
 
-The recorder writes 163 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups, 29 tools/module/loader groups and 20 Y6a groups),
+The recorder writes 191 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups, 29 tools/module/loader groups, 20 Y6a groups and 28 Y6b groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 78 tests and the oracle comparison has 228; CI enforces both
+The wheel suite has 104 tests and the oracle comparison has 257; CI enforces both
 minimum counts. Warning handlers run on the calling Python thread before a
 fallback load is published, including handlers that re-enter the environment.
 
@@ -207,9 +207,10 @@ Recordings contain synthetic values and output bytes, never runtime TPK schemas.
 Font, TextAsset, MonoBehaviour and VideoClip have no class `export()` in 1.25.2;
 their file exporters belong to the tools surface.
 
-The module completion table after PARITY.md 2.1 assigns the remaining helper APIs,
-codec callback integration and reader edge cases to Y6b. These are follow-ups, not
-verified by the namespace checks. Standalone Brotli uses the core's bounded
+Y6b implements the standalone helper APIs listed after PARITY.md 2.1, live
+codec callbacks and mutable reader parsing. Their synthetic observations replay
+through `replays_unitypy_internal_helper_observations`; namespace checks alone
+do not establish their parity. Standalone Brotli uses the core's bounded
 inflater and stored-metablock writer: decoded bytes replay against UnityPy;
 compressed bytes retain the existing Tier B difference from its quality-11 writer.
 
@@ -236,3 +237,37 @@ A nonzero parser cursor, or a non-default endian for Assets/Bundle parsing,
 raises a recorded `NotImplementedError` before parsing; this prevents silently
 parsing a different reader state. Raw-type selections preserve the original
 reader and cursor. PARITY.md 19.3 records both refusals beside the oracle results.
+
+
+Y6b adds standalone tree reads and writes, the accelerated callable, an explicit
+optional generator backend, decryptor/key helpers, shader converter stages and
+program classes, sprite geometry, and ASTC context/cache adapters. Object reader
+replacement, endian changes and failure cursors use the same bounded parsing
+policy. Codec map callbacks and compressor finalizers run on the calling Python
+thread outside native locks; a payload retains its selected compressor and chunk
+size while it is packed. Callback buffers are charged before copying.
+
+| behavior | UnityPy 1.25.2 source | PARITY.md rows |
+|---|---|---|
+| codec maps and standalone failures | helpers/CompressionHelper.py:17-155, helpers/CompressionHelper.py:158-258; files/BundleFile.py:489-521 | 6 |
+| reader replacement, endian and failure cursor | files/ObjectReader.py:244-262, files/ObjectReader.py:278-283 | 8 |
+| standalone tree read/write and accelerated callable | helpers/TypeTreeHelper.py:123-179; UnityPyBoost/TypeTreeHelper.cpp:962-1056 | 9.1, 23 |
+| optional generator backend and local discovery | helpers/TypeTreeGenerator.py:1-78 | 10 |
+| standalone decryptor, key and search helpers | helpers/ArchiveStorageManager.py:12-143 | 12 |
+| patched platform dispatch and ASTC contexts | export/Texture2DConverter.py:254-320, export/Texture2DConverter.py:356-397 | 15.1 |
+| sprite geometry and matrices | export/SpriteHelper.py:29-346 | 15.2 |
+| shader stages and mutable programs | export/ShaderConverter.py:58-689 | 15.5 |
+| explicit TPK update entry point | cli/update_tpk.py:1-27 | 2.1 |
+
+`unityrs.cli.update_tpk()` and the `unityrs update_tpk` command fetch only when
+called. Download and extracted TPK sizes are bounded at 256 MiB. The raw TPK goes
+to the caller's cache (or explicit destination), and class generation remains in
+memory. No generated source, schema or downloaded TPK is included in the wheel.
+Tests use a deterministic local HTTP peer with synthetic ZIP content.
+
+ASTC contexts are Python proxy objects with the oracle's thread/block cache
+policy; their native operations support all fourteen legal 2D footprints with U8
+RGBA storage. Other storage types and swizzles raise named `NotImplementedError`
+exceptions. Standalone sprite operations retain the renderer's singular-matrix
+correction and its RGB/RGBA sheet bound. PARITY.md 19.2 records the exact refusals
+beside the original oracle results. The threat model above applies unchanged.

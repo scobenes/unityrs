@@ -45,6 +45,19 @@ pub fn read(data: &Bytes, tree: &Arc<Tree>, ctx: &ReadCtx<'_>) -> Result<Parsed,
     read_with_fields(data, tree, ctx, None)
 }
 
+/// Read ordered class fields for a binding that must construct completed classes
+/// before surfacing a later reader error. Limits and allocation refusals remain
+/// immediate; the returned progress retains ordinary reader failures.
+pub fn read_object_fields(
+    data: &Bytes,
+    tree: &Arc<Tree>,
+    ctx: &ReadCtx<'_>,
+) -> Result<(Parsed, super::FieldProgress), ReadError> {
+    let mut progress = super::FieldProgress::default();
+    let parsed = read_with_fields(data, tree, ctx, Some(&mut progress))?;
+    Ok((parsed, progress))
+}
+
 pub(crate) fn read_with_fields(
     data: &Bytes,
     tree: &Arc<Tree>,

@@ -11,6 +11,7 @@ from ..enums.BundleFile import CompressionFlags
 ByteString = Union[bytes, bytearray, memoryview]
 GZIP_MAGIC: bytes = b"\x1f\x8b"
 BROTLI_MAGIC: bytes = b"brotli"
+_BrotliError = type('error', (Exception,), {'__module__': 'brotli'})
 
 
 # LZMA
@@ -63,6 +64,15 @@ def decompress_lz4(data: ByteString, uncompressed_size: int) -> bytes:  # LZ4M/L
     :return: uncompressed data
     :rtype: bytes
     """
+    if uncompressed_size < 0:
+        from .._buffers import snapshot_bytes
+        guard = _native.TreeTraversal()
+        data = snapshot_bytes(data, guard)
+        guard.step(0, len(data) + 64, len(data))
+        if len(data) < 4:
+            raise ValueError('Input source data size too small')
+        uncompressed_size = struct.unpack('<I', data[:4])[0]
+        data = data[4:]
     return _native.codec(data, 2, False, uncompressed_size)
 
 
@@ -228,6 +238,9 @@ COMPRESSION_CHUNK_SIZE_MAP: Dict[Union[int, CompressionFlags], int] = {
     CompressionFlags.LZ4: 0x00020000,
     CompressionFlags.LZ4HC: 0x00020000,
 }
+
+_DEFAULT_DECOMPRESSION_MAP = dict(DECOMPRESSION_MAP)
+_DEFAULT_COMPRESSION_MAP = dict(COMPRESSION_MAP)
 
 
 __all__ = (

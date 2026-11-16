@@ -1,4 +1,4 @@
-//! Synchronous warning callbacks run on the original Python caller thread.
+//! Synchronous callbacks run on the original Python caller thread.
 //! The relay is stack-owned by a scoped worker; it allocates no channel,
 //! closure or request buffer. No relay lock is held across Python code.
 use pyo3::{prelude::*, pybacked::PyBackedBytes, types::PyBytes};
@@ -8,10 +8,24 @@ use std::{
 };
 use unityrs_core::RawStr;
 
+pub(crate) enum Request {
+    Warning(RawStr, bool),
+    Codec(crate::codec_bridge::Call),
+    Release(Py<PyAny>),
+}
+
+pub(crate) enum Response {
+    Warning(RawStr, bool),
+    Codec(Option<crate::buffer_snapshot::BufferSnapshot>),
+    Encoder(Py<PyAny>, usize, bool),
+    Released,
+}
+
 #[derive(Default)]
 struct State {
-    request: Option<(RawStr, bool)>,
-    response: Option<PyResult<(RawStr, bool)>>,
+    request: Option<Request>,
+    response: Option<PyResult<Response>>,
+    error: Option<PyErr>,
     done: bool,
 }
 
@@ -61,11 +75,20 @@ impl Relay {
                     .wait(state)
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
-            let Some((value, bundle)) = state.request.take() else {
+            let Some(request) = state.request.take() else {
                 return;
             };
             drop(state);
-            let answer = emit(&value, bundle);
+            let answer = match request {
+                Request::Warning(value, bundle) => {
+                    emit(&value, bundle).map(|(v, b)| Response::Warning(v, b))
+                }
+                Request::Codec(call) => crate::codec_bridge::invoke(&call),
+                Request::Release(value) => Python::attach(|_| {
+                    drop(value);
+                    Ok(Response::Released)
+                }),
+            };
             self.state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -74,12 +97,20 @@ impl Relay {
         }
     }
 
-    fn request(&self, value: &RawStr, bundle: bool) -> PyResult<(RawStr, bool)> {
+    pub(crate) fn take_error(&self) -> Option<PyErr> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .error
+            .take()
+    }
+
+    fn request(&self, request: Request) -> PyResult<Response> {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.request = Some((value.clone(), bundle));
+        state.request = Some(request);
         self.changed.notify_all();
         loop {
             if let Some(answer) = state.response.take() {
@@ -111,14 +142,49 @@ fn emit(value: &RawStr, bundle: bool) -> PyResult<(RawStr, bool)> {
 }
 
 pub(crate) fn warning(value: &RawStr, bundle: bool) -> PyResult<(RawStr, bool)> {
+    match request(Request::Warning(value.clone(), bundle))? {
+        Response::Warning(value, bundle) => Ok((value, bundle)),
+        _ => Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "invalid warning relay response",
+        )),
+    }
+}
+
+pub(crate) fn request(request: Request) -> PyResult<Response> {
     CURRENT.with(|slot| {
         let pointer = slot.get();
         if pointer.is_null() {
-            return emit(value, bundle);
+            return match request {
+                Request::Warning(value, bundle) => {
+                    emit(&value, bundle).map(|(v, b)| Response::Warning(v, b))
+                }
+                Request::Codec(call) => crate::codec_bridge::invoke(&call),
+                Request::Release(value) => Python::attach(|_| {
+                    drop(value);
+                    Ok(Response::Released)
+                }),
+            };
         }
         // SAFETY: enter installs only its borrowed, stack-owned Relay. Its
         // guard restores the prior pointer before that borrow ends, also on
         // unwinding. The scoped worker cannot outlive the caller's Relay.
-        unsafe { &*pointer }.request(value, bundle)
+        unsafe { &*pointer }.request(request)
     })
+}
+
+pub(crate) fn fail(error: PyErr) {
+    CURRENT.with(|slot| {
+        let pointer = slot.get();
+        if !pointer.is_null() {
+            // SAFETY: the same scoped lifetime as request() above.
+            let relay = unsafe { &*pointer };
+            let mut state = relay
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.error.is_none() {
+                state.error = Some(error);
+            }
+        }
+    });
 }

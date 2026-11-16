@@ -203,6 +203,14 @@ fn replays_unitypy_residue_observations() -> PyResult<()> {
 }
 
 #[test]
+fn replays_unitypy_internal_helper_observations() -> PyResult<()> {
+    unityrs_testkit::guard::finishes(
+        "caller-thread helper callbacks and local update peer",
+        || replay_groups("binding_y6b_", 28),
+    )
+}
+
+#[test]
 fn replays_runtime_class_map_without_persisting_tpk_data() -> PyResult<()> {
     let _serial = serial();
     Python::attach(|py| {
@@ -295,6 +303,7 @@ fn replay_groups(prefix: &str, expected_count: usize) -> PyResult<()> {
                 "binding_y4_" => 18,
                 "binding_y5_" => 3,
                 "binding_y6_" => 8,
+                "binding_y6b_" => 2,
                 _ => 0,
             }
         );
@@ -309,7 +318,10 @@ fn first_difference(got: &Value, want: &Value, path: &str) -> Option<String> {
     match (got, want) {
         (Value::Object(g), Value::Object(w)) if g.len() == w.len() => {
             for (key, v) in w {
-                if let Some(found) = first_difference(&g[key], v, &format!("{path}.{key}")) {
+                let Some(got) = g.get(key) else {
+                    return Some(format!("{path}.{key}: missing key"));
+                };
+                if let Some(found) = first_difference(got, v, &format!("{path}.{key}")) {
                     return Some(found);
                 }
             }

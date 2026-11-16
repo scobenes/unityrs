@@ -37,7 +37,7 @@
 use std::sync::Arc;
 
 use unityrs_core::limits::{Meter, MeteredVec};
-use unityrs_meshdecode::{Component, Processed, VertexArray};
+use unityrs_meshdecode::{Component, Processed, Triangles, VertexArray};
 
 use super::affine::{Map, solve};
 use super::canvas::{
@@ -222,8 +222,23 @@ fn mask(
     ppu: f64,
     meter: &Arc<Meter>,
 ) -> Result<Canvas, SpriteError> {
-    let positions = mesh
-        .vertices()
+    mask_parts(
+        crop,
+        mesh.vertices(),
+        || mesh.get_triangles(meter),
+        ppu,
+        meter,
+    )
+}
+
+pub(super) fn mask_parts(
+    crop: &Canvas,
+    positions: Option<&VertexArray>,
+    triangles: impl FnOnce() -> Result<Triangles, MeshError>,
+    ppu: f64,
+    meter: &Arc<Meter>,
+) -> Result<Canvas, SpriteError> {
+    let positions = positions
         .filter(|p| !p.is_empty())
         .ok_or(SpriteError::NoVertices)?;
     unpack(positions, 3)?;
@@ -238,7 +253,7 @@ fn mask(
             comp(positions, t, 1).sub_mul(min_y, ppu),
         ))
     })?;
-    let triangles = mesh.get_triangles(meter)?;
+    let triangles = triangles()?;
     // The comprehension's checks, before any triangle is drawn (`:147-155`).
     for sm in triangles.submeshes() {
         meter.count_decode(sm.len())?;
@@ -334,15 +349,30 @@ fn mesh_render(
     ppu: f64,
     meter: &Arc<Meter>,
 ) -> Result<Canvas, SpriteError> {
-    let triangles = mesh.get_triangles(meter)?;
-    let positions = mesh.vertices().filter(|p| !p.is_empty());
+    mesh_parts(
+        sheet,
+        mesh.vertices(),
+        mesh.uv(0),
+        || mesh.get_triangles(meter),
+        ppu,
+        meter,
+    )
+}
+
+pub(super) fn mesh_parts(
+    sheet: &Sheet<'_>,
+    positions: Option<&VertexArray>,
+    uv: Option<&VertexArray>,
+    triangles: impl FnOnce() -> Result<Triangles, MeshError>,
+    ppu: f64,
+    meter: &Arc<Meter>,
+) -> Result<Canvas, SpriteError> {
+    let triangles = triangles()?;
+    let positions = positions.filter(|p| !p.is_empty());
     let (Some(first), Some(positions)) = (triangles.submeshes().first(), positions) else {
         return Err(SpriteError::NoTriangles);
     };
-    let uv = mesh
-        .uv(0)
-        .filter(|u| !u.is_empty())
-        .ok_or(SpriteError::NoTriangles)?;
+    let uv = uv.filter(|u| !u.is_empty()).ok_or(SpriteError::NoUv)?;
     if positions.dimension() < 3 {
         return Err(SpriteError::Index { tuple: true });
     }
@@ -372,6 +402,7 @@ fn mesh_render(
         ])
     })?;
     let (sw, sh) = (sheet.width(), sheet.height());
+    unpack(uv, 2)?;
     let uv_abs = collect(uv.len(), meter, |t| {
         let scaled = |c: usize, side: u32| -> Result<Int, SpriteError> {
             match comp(uv, t, c) {
@@ -442,7 +473,7 @@ fn to_float64(v: Int) -> Option<f64> {
 
 /// `copy_triangle` (`:227-301`): `src` the uv corners, `dst` the canvas
 /// corners (integral, inside the canvas's `int` sides).
-fn copy_triangle(
+pub(super) fn copy_triangle(
     sheet: &Sheet<'_>,
     src: [[Int; 2]; 3],
     out: &mut Canvas,
@@ -499,16 +530,12 @@ fn copy_triangle(
         i32::try_from(out.width).unwrap_or(i32::MAX),
         i32::try_from(out.height).unwrap_or(i32::MAX),
     );
-    let b = bpp(out.mode);
     contained(|| -> Result<(), SpriteError> {
         let mut span = |y: i32, x0: i32, x1: i32| -> Result<(), SpriteError> {
             meter.count_decode(u64::try_from(x1 - x0 + 1).unwrap_or(0))?;
             map.sample(sheet, y, x0, x1, meter, &mut |x, p| {
                 let o = out.get_mut(x.cast_unsigned(), y.cast_unsigned());
-                match p {
-                    Some(p) => o.copy_from_slice(p.get(..b).unwrap_or_default()),
-                    None => o.fill(0),
-                }
+                paste_pixel(o, p, sheet.mode());
             })
         };
         let mut work = |n: u64| meter.count_decode(n).map_err(SpriteError::from);
@@ -598,10 +625,7 @@ fn copy_unchanged(
             for x in a..=b {
                 let p = sheet.pixel(i64::from(x0) + i64::from(x), i64::from(y0) + i64::from(y));
                 let o = out.get_mut((dx + x).cast_unsigned(), (dy + y).cast_unsigned());
-                match p {
-                    Some(p) => o.copy_from_slice(p),
-                    None => o.fill(0),
-                }
+                paste_pixel(o, p, sheet.mode());
             }
             Ok(())
         };
@@ -616,4 +640,21 @@ fn copy_unchanged(
             },
         )
     })?
+}
+
+// Pillow paste converts RGB/RGBA source storage after the crop or transform,
+// so a missing RGB source pixel becomes opaque black in an RGBA destination.
+fn paste_pixel(out: &mut [u8], source: Option<&[u8]>, mode: Mode) {
+    out.fill(0);
+    let count = out.len().min(bpp(mode));
+    if let Some(source) = source.and_then(|p| p.get(..count))
+        && let Some(target) = out.get_mut(..count)
+    {
+        target.copy_from_slice(source);
+    }
+    if mode == Mode::Rgb
+        && let Some(alpha) = out.get_mut(3)
+    {
+        *alpha = 255;
+    }
 }

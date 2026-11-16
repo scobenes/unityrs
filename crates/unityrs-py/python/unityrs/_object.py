@@ -38,11 +38,18 @@ def _node_lists(lists, charge):
     return result
 
 
-def _construct(node, values, assetsfile, boost, array=False, charge=None, node_work=0):
-    from . import classes
-    from .classes import UnknownObject
+def _construct(node, values, assetsfile, boost, array=False, charge=None, node_work=0,
+               class_namespace=None):
+    if class_namespace is None:
+        from . import classes
+    else:
+        classes = class_namespace
+    UnknownObject = getattr(classes, 'UnknownObject', None)
     if node.m_Type.startswith('PPtr<'):
-        cls = classes.PPtr
+        try:
+            cls = classes.PPtr
+        except AttributeError:
+            raise ValueError('Failed to get PPtr class') from None
         _reserve(charge, 2048, 256)
         values['assetsfile'] = assetsfile
         if not boost:
@@ -60,6 +67,8 @@ def _construct(node, values, assetsfile, boost, array=False, charge=None, node_w
         if not isinstance(cls, type) or cls.__module__ == 'builtins':
             cls = UnknownObject
             missing = True
+        if missing and cls is None:
+            raise ValueError('Failed to get UnknownObject class')
         if missing and boost:
             values['__node__'] = node
     # attrs defaults can materialize many fields from a zero-field value.
@@ -120,7 +129,8 @@ def _construct(node, values, assetsfile, boost, array=False, charge=None, node_w
     return UnknownObject(**values)
 
 
-def build(data, lists, assetsfile, boost, references=(), completed=0, error=None, charge=None):
+def build(data, lists, assetsfile, boost, references=(), completed=0, error=None, charge=None,
+          class_namespace=None):
     """Postorder work stack keeps large arrays and deep trees off Python's stack."""
     from .classes._names import clean_name
     nodes = _node_lists(lists, charge)
@@ -146,11 +156,16 @@ def build(data, lists, assetsfile, boost, references=(), completed=0, error=None
         action, value, node, parent, key, array = tasks.pop()
         _reserve(charge, 256, 256)
         if action == 'reference':
-            from .classes import UnknownObject
+            if class_namespace is None:
+                from .classes import UnknownObject
+            else:
+                UnknownObject = getattr(class_namespace, 'UnknownObject', None)
+                if UnknownObject is None:
+                    raise ValueError('Failed to get class')
             parent[key] = UnknownObject(node, **value) if boost else value
             completed -= 1
         elif action == 'class':
-            parent[key] = _construct(node, value, assetsfile, boost, array, charge, costs[id(node)])
+            parent[key] = _construct(node, value, assetsfile, boost, array, charge, costs[id(node)], class_namespace)
             completed -= 1
         elif action == 'tuple':
             parent[key] = tuple(value)

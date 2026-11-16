@@ -144,9 +144,9 @@ impl NativeObject {
         p::bytes(data)
     }
     fn tree_traversal(&self) -> crate::traversal::TreeTraversal {
-        crate::traversal::TreeTraversal::on(
+        crate::traversal::TreeTraversal::with_limits(
             self.inner.file().meter(),
-            self.inner.file().context().limits.max_tree_depth,
+            &self.inner.file().context().limits,
         )
     }
     fn nodes(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, crate::traversal::TreeTraversal)> {

@@ -136,7 +136,12 @@ impl BundleFile {
     ) -> Result<Bytes, SaveError> {
         let uncompressed_size = directory.len();
         let data = if header.signature.as_bytes() == b"UnityWeb" {
-            let compressed = encode::compress(directory.slice(), Codec::Lzma, self.meter())?;
+            let compressed = encode::registered_compress(
+                directory.slice(),
+                Codec::Lzma,
+                &self.context().codecs,
+                self.meter(),
+            )?;
             let mut prefixed = Writer::new(self.meter(), Endian::Little)?;
             prefixed.bytes(required(compressed.get(..5), "LZMA properties")?)?;
             prefixed.u64(narrow(uncompressed_size, "LZMA content size")?)?;
