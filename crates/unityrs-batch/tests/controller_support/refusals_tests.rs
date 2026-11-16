@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+fn locationless_std_frames_do_not_mask_dependency_formatters() {
+    let frame = "<serde_core::de::Unexpected as core::fmt::Display>::fmt";
+    let via = "<object_store::aws::AmazonS3 as object_store::multipart::MultipartStore>::complete_multipart::{closure#0}";
+    for source in [
+        "",
+        "             at /rustc/hash/library/core/src/fmt/mod.rs:1:1\n",
+    ] {
+        let trace = format!(
+            "REFUSED_ALLOCATION site=424 size=100\n\
+            0: <unityrs_batch::alloc::Counting<controller_alloc::Refuse> as core::alloc::global::GlobalAlloc>::realloc\n\
+            1: __rustc::__rust_realloc\n\
+            2: alloc::alloc::realloc_nonnull\n\
+            3: core::fmt::write\n{source}\
+            4: {frame}\n\
+            5: core::fmt::write\n{source}\
+            6: {via}\n\
+            7: std::future::poll_fn\n\
+            8: <unityrs_batch::store::multipart::Transfer>::complete::{{closure#0}}\n\
+            END_REFUSED_ALLOCATION"
+        );
+        assert_eq!(allocating(&trace).as_deref(), Some(frame));
+        assert_eq!(callee(&trace).as_deref(), Some(via));
+        assert!(inventory().any(|e| {
+            e.applies("store-multipart") && e.admits(innermost(&trace).as_deref(), &trace)
+        }));
+        let ours = trace.replace(frame, "unityrs_batch::store::multipart::allocate");
+        assert!(!inventory().any(|e| {
+            e.applies("store-multipart") && e.admits(innermost(&ours).as_deref(), &ours)
+        }));
+    }
+}
+
+#[test]
+fn third_party_trait_implementations_on_alloc_types_are_allocating_frames() {
+    let frame =
+        "<alloc::borrow::Cow<str> as core::convert::From<serde_urlencoded::ser::key::Key>>::from";
+    let trace = format!(
+        "REFUSED_ALLOCATION site=1 size=32\n\
+        0: <unityrs_batch::alloc::Counting<controller_alloc::Refuse> as core::alloc::global::GlobalAlloc>::alloc\n\
+        1: {frame}\n\
+                 at /opt/.cargo/registry/src/serde_urlencoded/src/ser/key.rs:1:1\n\
+        2: <object_store::aws::AmazonS3 as object_store::list::PaginatedListStore>::list_paginated\n\
+        3: <unityrs_batch::store::list::Listing>::page\n\
+        END_REFUSED_ALLOCATION"
+    );
+    assert_eq!(allocating(&trace).as_deref(), Some(frame));
+    assert!(inventory().any(|e| e.admits(innermost(&trace).as_deref(), &trace)));
+}
+
+#[test]
 fn store_entries_name_the_public_attribute_and_abort_entry_points() {
     for (owner, frame, via) in [
         (
