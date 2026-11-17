@@ -9,6 +9,8 @@ use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, PermitHome, Res
 use unityrs_core::limits::{ChargeError, Meter};
 use unityrs_gltf::*;
 use unityrs_testkit::counted::{self, Allocator, Tally};
+mod collect_support;
+mod material_support;
 mod support;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
@@ -200,4 +202,71 @@ fn every_buffer_is_charged_first_and_every_refusal_returns_all_charges() {
         );
         assert_eq!(m.used(), 0);
     }
+}
+
+struct ImageWriteProbe<'a> {
+    meter: &'a Meter,
+    held: u64,
+    png: &'a [u8],
+    written: usize,
+    refuse: bool,
+}
+impl std::io::Write for ImageWriteProbe<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        // A separate meter for layout/output prevents temporary writer
+        // charges from hiding an early release of the encoded image.
+        assert_eq!(self.meter.used(), self.held);
+        let n = bytes.len().min(7);
+        if bytes == &self.png[self.written..] && !bytes.is_empty() {
+            if self.refuse {
+                return Err(std::io::Error::other("image sink refused"));
+            }
+            self.written += n;
+        }
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn encoded_png_charge_survives_layout_partial_writes_and_sink_failure() {
+    let image_meter = Meter::unlimited();
+    let (env, graph) = collect_support::graph(&material_support::simple());
+    let mut collected = collect(&env, &graph, &Profile::new(&image_meter), &image_meter).unwrap();
+    assert_eq!(collected.images.len(), 1);
+    let image = collected.images.pop().unwrap();
+    assert!(image.bytes.as_slice().starts_with(b"\x89PNG\r\n\x1a\n"));
+    drop(collected);
+    let held = image_meter.used();
+    assert!(held >= unityrs_core::limits::heap_cost(image.bytes.capacity() as u64));
+
+    let write_meter = Meter::unlimited();
+    let mut scene = Scene::new(&write_meter);
+    scene.images.push(image).unwrap();
+    for refuse in [false, true] {
+        let png = scene.images.as_slice()[0].bytes.as_slice();
+        let mut out = ImageWriteProbe {
+            meter: &image_meter,
+            held,
+            png,
+            written: 0,
+            refuse,
+        };
+        let result = write_glb(&scene, &Options::default(), &write_meter, &mut out);
+        if refuse {
+            assert!(matches!(result, Err(GltfError::Io(_))));
+            assert_eq!(out.written, 0);
+        } else {
+            drop(result.unwrap());
+            assert_eq!(out.written, png.len());
+        }
+        // write_glb borrows the scene: its image charge remains owned by
+        // the scene after both a completed write and a failed write.
+        assert_eq!(image_meter.used(), held);
+    }
+    drop(scene);
+    assert_eq!(image_meter.used(), 0);
+    assert_eq!(write_meter.used(), 0);
 }

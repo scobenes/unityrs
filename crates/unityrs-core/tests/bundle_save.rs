@@ -1,7 +1,9 @@
 //! Bundle writer invariants and refusals independent of oracle byte layout.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::sync::Arc;
-use unityrs_core::files::{BundleFile, BundlePacker, BundleSaveOptions, SaveError, SaveOptions};
+use unityrs_core::files::{
+    BundleFile, BundlePacker, BundleSaveOptions, SaveError, SaveLayout, SaveOptions,
+};
 use unityrs_core::limits::Meter;
 use unityrs_core::{Bytes, FileContext, RawStr};
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build};
@@ -59,6 +61,48 @@ fn fs_formats_and_packers_reload_and_save_identically() {
                 saved,
                 "format {format}, {packer:?}"
             );
+        }
+    }
+}
+
+#[test]
+fn original_without_blocks_reloads_declared_nonempty_entries_as_empty() {
+    // Rust-only structural acceptance: extending the 1.25.2 oracle inputs
+    // would require regenerating bundle_save.json with UnityPy.
+    for format in 6..=8 {
+        let name = b"missing.resS";
+        let input = BundleSpec {
+            entries: vec![EntrySpec {
+                name: name.to_vec(),
+                data: vec![],
+                flags: 7,
+            }],
+            ..spec(format)
+        };
+        let mut bytes = build(&input);
+        // With stored blocks-info and no payload, the directory ends the
+        // file: replace its size just before the flags and NUL-ended name.
+        let size_at = bytes.len() - (8 + 4 + name.len() + 1);
+        bytes[size_at..size_at + 8].copy_from_slice(&37i64.to_be_bytes());
+        let b = load(Bytes::from(bytes), &Meter::unlimited());
+        assert_eq!(b.blocks().len(), 0);
+        assert_eq!(b.directory()[0].size, 37);
+        assert!(b.entry_bytes(0).unwrap().is_empty());
+        for layout in [SaveLayout::UnityPy, SaveLayout::Semantic] {
+            let options = BundleSaveOptions {
+                packer: BundlePacker::Original,
+                layout,
+            };
+            let saved = b.save(options).unwrap();
+            let back = load(saved.clone(), &Meter::unlimited());
+            assert_eq!(back.header().format, format);
+            assert_eq!(back.header().data_flags, b.header().data_flags);
+            assert_eq!(back.directory().len(), 1);
+            assert_eq!(back.directory()[0].path.as_bytes(), name);
+            assert_eq!(back.directory()[0].flags, Some(7));
+            assert_eq!(back.directory()[0].size, 0);
+            assert!(back.entry_bytes(0).unwrap().is_empty());
+            assert_eq!(back.save(options).unwrap(), saved);
         }
     }
 }
