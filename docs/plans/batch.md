@@ -1933,9 +1933,9 @@ to the sink, so the disk ledger stays `6S + 2A`, including outcomes.
 
 The constants compiled in (`c_base`, `m_thread`, `m_pool`, `m_dispatch`, `m_end`, `c_env`) are **provisional** estimates until `extract.md` X12 measures them, and the bound built from them with them (`BATCH_SPEC.md` section 10's `memory_bound`). The calibration is certified for 4 KiB pages only (`heap_cost` rounds a mapped chunk to a 4 KiB page): on another page size `--check` and a run label the bound uncertified on stderr and go on (`BATCH_SPEC.md` section 10).
 
-Integrated directory/HTTP resource inventory, within the existing floors (no
+Integrated directory/HTTP/store resource inventory, within the existing floors (no
 term raised); [the ownership ledger](../memory/resources.md) records the owning
-modules, retained/frozen owners, named slopes and the pending store coverage:
+modules, retained/frozen owners and named slopes:
 
 | resource | lifetime inventory and allowance |
 |---|---|
@@ -1973,12 +1973,35 @@ export matrix and independent count-growth checks with multiple sort generations
 `tools/memory/regenerate.py` validates aggregate-only records and deterministically
 selects measured coefficients; its `--check` compares without writing. See
 [the schema and procedure](../memory/README.md). None of these gates freezes
-the provisional constants: store integration, the full native calibration
-matrix and final acceptance remain pending.
+the provisional constants: the full native calibration matrix, matching
+whole-run aggregate and independent candidate verification remain pending.
 
-B7c's normal-run preflight also provisionally uses `--check`'s 6 MiB
-environment-block allowance. B12 must measure the inherited block for normal
-runs; until then this conservative allowance can refuse a tight host with 69.
+`tests/store_memory_gate.rs` completes the store process scenes (spec 1.6,
+6.1, 7.2 and 7.4): signed maximum-length credentials, paginated LIST,
+multipart, startup journal abort/removal, resume, verification, error bodies,
+head read-back/rewrite, all-phase stops and frozen requests through finishing.
+Late stops inside finisher rows and the final head preserve the normal
+snapshot. Output/page-count growth is checked independently of the base.
+The store base retains both completed and stopped peaks. Its raw observation
+deducts nothing, so conservative overlap stays visible. Actual held lookup
+cells on both initialized pools and maximum-capacity store-owner tables enter
+the pool coefficient; fixtures and observation storage precede those windows.
+Step 1's production Rust heap is separately pinned at zero before its
+test-hook parsing is excluded from process observations.
+
+The native calibration workflow runs both supported profiles on x86_64 and
+aarch64 Linux and uploads aggregate JSON only. The generator requires all
+eight synthetic axes and a matching native whole-run profile/sink matrix on
+at least one architecture;
+emulation, modified source, incomplete coverage, mismatched provenance and
+overflow are refused. `bound/measured.rs` is generated explicitly and supplies
+one `SELECTED` value to execution, `--check` and independent gates. Its current
+bootstrap selects the estimates; no generation occurs during a build.
+
+Normal-run preflight counts Linux's initial argument/environment strings and
+their pointer slots by streaming procfs through fixed stack storage. Unavailable
+or oversized reads retain the conservative 6 MiB cap. `--check` always uses
+that cap and reads neither environment values nor procfs for this term.
 
 | term | value | source |
 |---|---|---|

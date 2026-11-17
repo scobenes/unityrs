@@ -1,11 +1,11 @@
-# Directory and HTTP resource inventory
+# Batch resource inventory
 
-This inventory covers the integrated directory sink and local/HTTP(S) sources.
+This inventory covers the integrated directory/store sinks and local/HTTP(S) sources.
 It reconciles `BATCH_SPEC.md` §§6/10 and `plans/batch.md` §§2.11, 5.1–5.4.
 The bound and `bound::PROVISIONAL` remain **provisional estimates**. A component
 measurement or a passing whole-process verification is not a calibrated constant.
-Store ownership and process coverage remain pending for B11d/B12c; complete
-store/stop calibration and final acceptance remain pending for B12c.
+Store ownership and process scenes are covered below; native store/stop
+calibration and final acceptance remain pending.
 
 ## Memory ownership
 
@@ -28,9 +28,9 @@ store/stop calibration and final acceptance remain pending for B12c.
 | Sort and winner/member streams (`sort`, `winners`) | Charged phase account of limit `I`; phase 6 separately retains its 40 MiB proof. Run files and merge generations live on disk, with bounded cursor buffers. |
 | Publication, resume hashing and ZIP (`publish`, `archive`, `outcomes`) | Dispatcher/task vector, reusable 16 MiB drive buffer and archive scratch charged to phase `I`. Resume hit drops hash scratch before a miss transfer. ZIP central directory, member streams and outcomes live on disk. |
 | Frozen work (`run::Parked`, `phase1::Owners`, `finish::Spool`) | Controller, workers and active tasks retain owners and spool leases through process exit. Frozen phase/attempt charges stay booked against `I`; the finisher allocates independently against `C_fin`. |
-| Finishing (`finish`, `manifest`, `run/process/threads`) | Separate 24 MiB account, rows streamed directly to sink, no full manifest row collection. The directory frozen-publication scene observes a live 16 MiB buffer through terminal finishing. Complete store finisher certification remains pending. |
+| Finishing (`finish`, `manifest`, `run/process/threads`) | Separate 24 MiB account, rows streamed directly to sink, no full manifest row collection. Frozen-publication scenes retain a live 16 MiB buffer through terminal finishing; independent row-chunk and store final-head scenes cover the finishing working set. Native calibration remains pending. |
 | Reset table, lifecycle/stop state, diagnostic ring and slots, progress mailbox/line, preflight head scratch and host-line scratch (`sys`, `lifetime`, `diagnostic`, `progress`, `start`) | Fixed capacities in `C_base`/`C_fin`, as applicable. No history accumulates per request or output. Successful startup warnings use main after controller spawn, preserving independent progress and avoiding an extra detached writer stack. Early failures write warning and error within one terminal writer budget. |
-| Startup journal IDs/line, archive resume metadata | Existing named slopes: `dc × 2080 B`, 16 KiB line and `archives × 160 B`. Directory runs do not exercise actual store abort, LIST, credential, signing or multipart holders. |
+| Startup journal IDs/line, archive resume metadata | Existing named slopes: `dc × 2080 B`, 16 KiB line and `archives × 160 B`. Store scenes exercise actual abort, LIST, credential, signing and multipart holders. |
 
 ## Descriptors, threads and address space
 
@@ -53,8 +53,9 @@ stacks agree. Test runners, local peers and FIFO drains are excluded.
 `Requirements::address` remains `ceil(1.5 bound) + 64 MiB (threads+2) +
 3 MiB (dc+1)`. Arena address space, native resolver heap, kernel socket buffers,
 dirty pages and allocator retention are provisioning assumptions, not live Rust
-heap deductions. Actual inherited environment/argument accounting still uses the
-conservative 6 MiB allowance for normal runs and for `--check`.
+heap deductions. Normal Linux runs count inherited argument/environment bytes
+and pointer slots from procfs without allocating. Unavailable or oversized
+reads retain the conservative 6 MiB allowance; `--check` always uses that cap.
 
 ## Evidence boundaries
 
@@ -78,6 +79,27 @@ peaks remain covered by their separate fixed network allowance. Nonmoving
 shrinks replace costs atomically; only moving reallocations count two blocks.
 Component probes serialize driver lifetimes and assign registrations to one
 observation generation; late pool cleanup cannot enter the next probe's ledger.
+
+Store owners add three controller clients and one finisher client, sharing a
+single credential provider with the masker. The strings move from the capped
+environment read into that provider; six-holder accounting is retained and
+maximum-length signed process scenes plus the isolated provider probe cover
+it. Per-concurrency permits, accounts, task slots and part-budget owners
+follow the pool slope, tested at the maximum declared concurrency without
+spawning hundreds of threads. Multipart part lists retain their 2 MiB share;
+request/response/signing state retains the connection and header shares.
+Journal cleanup retains only bounded ids and a single line; removal streams
+through a replacement file. LIST pages are reserved before parsing and released
+before subsequent pages can accumulate. Outcomes and tags remain on disk.
+
+Store process scenes retain frozen create/part/complete, verification and
+startup-abort requests through finishing. The independent finisher row-chunk
+probe includes a full 16 MiB chunk followed by another chunk within 24 MiB,
+and process scenes cover normal/stopped heads, lost-response read-back/rewrite,
+and a stop during final rows/head. No negative thread net is treated as
+finisher usage. Network state retains its separate allowance. The complete
+base observation keeps all overlap conservatively instead of deducting caps
+or unseen native charges.
 
 These Rust-heap checks do not certify native-only allocations or RSS. Native
 component tests, allocator retention, representative RSS and cgroup provisioning

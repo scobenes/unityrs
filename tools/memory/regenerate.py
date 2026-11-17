@@ -37,7 +37,7 @@ ENVELOPES = {
     'abort_pair': 2080, 'journal_line': 16 << 10, 'archive_resume_entry': 160,
 }
 PENDING = ('native-matrix', 'store-calibration', 'stop-calibration',
-           'scene-coverage', 'final-acceptance')
+           'scene-coverage', 'whole-run-matrix', 'final-acceptance')
 SCHEMA_DIR = Path(__file__).resolve().parents[2] / 'docs/memory'
 
 
@@ -112,17 +112,20 @@ def validate_input(data):
     seen = set()
     provenance = None
     for record in data['records']:
-        axis = tuple(record[name] for name in ('target', 'profile', 'sink'))
+        axis = tuple(record[name] for name in ('kind', 'target', 'profile', 'sink'))
         if axis in seen:
             raise Invalid('duplicate calibration axis')
         seen.add(axis)
         p = record['provenance']
+        if not p['native'] or not p['clean']:
+            raise Invalid('emulated or modified-source evidence is ineligible')
         # Kernel and glibc can differ between native architecture hosts. The
         # measured code, dependencies, toolchain, features and native libraries
         # must describe one build configuration across the complete matrix.
         build = tuple(json.dumps(p[name], sort_keys=True) for name in (
             'revision', 'lockfile_sha256', 'rustc', 'features',
-            'native_libraries_sha256',
+            'native_compilers', 'native_libraries_sha256',
+            'native_flags_sha256',
         ))
         if provenance is not None and build != provenance:
             raise Invalid('mismatched build provenance')
@@ -133,13 +136,21 @@ def validate_input(data):
             if record['fixed_envelopes'][name] > ceiling:
                 raise Invalid('fixed envelope breached; bound revision required')
     if data['status'] == 'final':
-        required = {(t, p, s) for t in TARGETS for p in PROFILES for s in SINKS}
-        if seen != required:
+        required = {('synthetic', t, p, s) for t in TARGETS for p in PROFILES for s in SINKS}
+        if not required <= seen:
             raise Invalid('incomplete native architecture/profile/sink matrix')
+        if not whole_complete(seen):
+            raise Invalid('complete native whole-run profile/sink coverage required')
         for record in data['records']:
             if any(not record['coverage'][scene] for scene in SCENES
                    if record['sink'] == 'store' or not scene.startswith('store-')):
                 raise Invalid('incomplete final scene/store/stop coverage')
+
+
+def whole_complete(axes):
+    return any({('whole-run', target, profile, sink)
+                for profile in PROFILES for sink in SINKS} <= axes
+               for target in TARGETS)
 
 
 def select(raw, minimum, quantum, floor):
@@ -162,10 +173,14 @@ def _pending(data):
     if data['status'] == 'final':
         return []
     records = data['records']
-    axes = {(r['target'], r['profile'], r['sink']) for r in records}
+    axes = {(r['target'], r['profile'], r['sink']) for r in records
+            if r['kind'] == 'synthetic'}
     result = {'store-calibration', 'stop-calibration', 'final-acceptance'}
     if len(axes) != len(TARGETS) * len(PROFILES) * len(SINKS):
         result.add('native-matrix')
+    if not whole_complete({tuple(r[name] for name in ('kind', 'target', 'profile', 'sink'))
+                           for r in records}):
+        result.add('whole-run-matrix')
     stores = [r for r in records if r['sink'] == 'store']
     if not stores or any(not r['coverage'][s] for r in stores for s in SCENES
                          if s.startswith('store-')):
@@ -185,7 +200,7 @@ def generate(data):
               'shipping_replacement': data['status'] == 'final',
               'pending': _pending(data), 'coefficients': {},
               'records': sorted(data['records'], key=lambda r: (
-                  r['target'], r['profile'], r['sink']))}
+                  r['kind'], r['target'], r['profile'], r['sink']))}
     for name in COEFFICIENTS:
         raw = max(r['coefficients'][name] for r in data['records'])
         floor = max(r['structural_floors'].get(name, 0) for r in data['records'])
@@ -232,26 +247,52 @@ def rust_source(result):
         lines.append(f"    {name}: {result['coefficients'][name]['selected']},")
     lines.extend([
         f"    c_net: {ENVELOPES['connection']},", '};', '',
-        'const _: () = assert!(',
-        '    MEASURED.m_end',
-        '        >= (size_of::<crate::job::End>() + super::END_SLOT_OVERHEAD) as u64',
-        ');',
+        'pub const SELECTED: Constants = MEASURED;',
+        'pub const CALIBRATED: bool = true;', '',
         'const _: () =',
-        '    assert!(MEASURED.m_dispatch >= size_of::<crate::worker::Dispatch>() as u64);',
+        '    assert!(MEASURED.m_end >= (size_of::<crate::job::End>() + super::END_SLOT_OVERHEAD) as u64);',
+        'const _: () = assert!(MEASURED.m_dispatch >= size_of::<crate::worker::Dispatch>() as u64);',
         '',
     ])
     return '\n'.join(lines).encode('utf-8')
 
 
+def bootstrap_source():
+    """Compiled fallback, explicitly containing no measurement claims."""
+    return ('// Generated by tools/memory/regenerate.py --bootstrap; no calibration evidence.\n'
+            'use super::Constants;\n\n'
+            'pub const SELECTED: Constants = super::PROVISIONAL;\n'
+            'pub const CALIBRATED: bool = false;\n').encode('utf-8')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('input', type=Path)
-    parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('input', nargs='*', type=Path)
+    parser.add_argument('--output', type=Path)
     parser.add_argument('--rust-output', type=Path)
+    parser.add_argument('--final', action='store_true', help='require complete eligible evidence')
+    parser.add_argument('--bootstrap', action='store_true', help='emit the provisional compiled fallback')
+    parser.add_argument('--compiled-evidence', type=Path,
+                        help='verify compiled Rust against a selected aggregate document')
     parser.add_argument('--check', action='store_true', help='compare only; never write')
     args = parser.parse_args(argv)
     try:
-        paths = [args.input.resolve(), args.output.resolve()]
+        if args.compiled_evidence is not None:
+            if args.input or args.output or args.final or args.bootstrap or not args.check or args.rust_output is None:
+                raise Invalid('compiled evidence requires only --check and a Rust output')
+            result = parse(args.compiled_evidence.read_text(encoding='utf-8'))
+            outputs = [(args.rust_output, rust_source(result))]
+        elif args.bootstrap:
+            if args.input or args.output or args.final or args.rust_output is None:
+                raise Invalid('bootstrap requires only a Rust output')
+            outputs = [(args.rust_output, bootstrap_source())]
+        elif not args.input or args.output is None:
+            raise Invalid('aggregate inputs and output required')
+        paths = [p.resolve() for p in args.input]
+        if args.compiled_evidence is not None:
+            paths.append(args.compiled_evidence.resolve())
+        if args.output is not None:
+            paths.append(args.output.resolve())
         if args.rust_output is not None:
             paths.append(args.rust_output.resolve())
         if len(paths) != len(set(paths)):
@@ -259,10 +300,18 @@ def main(argv=None):
         existing = [p for p in paths if p.exists()]
         if any(a.samefile(b) for i, a in enumerate(existing) for b in existing[i + 1:]):
             raise Invalid('input and output paths must be distinct')
-        result = generate(parse(args.input.read_text(encoding='utf-8')))
-        outputs = [(args.output, render(result))]
-        if args.rust_output is not None:
-            outputs.append((args.rust_output, rust_source(result)))
+        if not args.bootstrap and args.compiled_evidence is None:
+            documents = [parse(path.read_text(encoding='utf-8')) for path in args.input]
+            for doc in documents:
+                validate_input(doc)
+            data = {'schema_version': 1,
+                    'status': 'final' if args.final or any(d['status'] == 'final' for d in documents)
+                    else 'provisional-b12b',
+                    'records': [r for d in documents for r in d['records']]}
+            result = generate(data)
+            outputs = [(args.output, render(result))]
+            if args.rust_output is not None:
+                outputs.append((args.rust_output, rust_source(result)))
         if args.check:
             stale = any(not path.is_file() or path.read_bytes() != content
                         for path, content in outputs)

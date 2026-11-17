@@ -13,7 +13,8 @@
         "coefficients",
         "structural_floors",
         "fixed_envelopes",
-        "attribution"
+        "attribution",
+        "kind"
       ],
       "properties": {
         "target": {"type": "string", "enum": ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]},
@@ -34,17 +35,14 @@
             "native",
             "page_size",
             "mmap_threshold",
-            "arena_extra"
+            "arena_extra",
+            "clean",
+            "native_compilers",
+            "native_flags_sha256"
           ],
           "properties": {
-            "revision": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            "lockfile_sha256": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
+            "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "lockfile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "rustc": {
               "type": "array",
               "minItems": 3,
@@ -63,16 +61,34 @@
               "maxItems": 3,
               "items": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}
             },
-            "native_libraries_sha256": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
+            "native_libraries_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "features": {"type": "string", "const": "test-hooks"},
             "allocator": {"type": "string", "const": "system-glibc"},
-            "native": {"type": "boolean", "const": true},
+            "native": {"type": "boolean"},
             "page_size": {"type": "integer", "const": 4096},
             "mmap_threshold": {"type": "integer", "const": 131072},
-            "arena_extra": {"type": "integer", "const": 2}
+            "arena_extra": {"type": "integer", "const": 2},
+            "clean": {"type": "boolean"},
+            "native_flags_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "native_compilers": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["c", "cxx"],
+              "properties": {
+                "c": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}
+                },
+                "cxx": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}
+                }
+              }
+            }
           }
         },
         "coverage": {
@@ -114,118 +130,45 @@
             "stop-phase-7"
           ],
           "properties": {
-            "worker-count": {
-              "type": "boolean"
-            },
-            "pool-controller": {
-              "type": "boolean"
-            },
-            "pool-finisher": {
-              "type": "boolean"
-            },
-            "environment": {
-              "type": "boolean"
-            },
-            "full-dispatch-channel": {
-              "type": "boolean"
-            },
-            "full-end-channel": {
-              "type": "boolean"
-            },
-            "base-startup": {
-              "type": "boolean"
-            },
-            "base-failed-input": {
-              "type": "boolean"
-            },
-            "base-archive": {
-              "type": "boolean"
-            },
-            "base-old-journal": {
-              "type": "boolean"
-            },
-            "base-resume": {
-              "type": "boolean"
-            },
-            "base-lookup": {
-              "type": "boolean"
-            },
-            "normal-run": {
-              "type": "boolean"
-            },
-            "loose-publication": {
-              "type": "boolean"
-            },
-            "zip-publication": {
-              "type": "boolean"
-            },
-            "http-tls": {
-              "type": "boolean"
-            },
-            "view-paths": {
-              "type": "boolean"
-            },
-            "header-ownership": {
-              "type": "boolean"
-            },
-            "scale-residual": {
-              "type": "boolean"
-            },
-            "native-components": {
-              "type": "boolean"
-            },
-            "retention": {
-              "type": "boolean"
-            },
-            "store-multipart": {
-              "type": "boolean"
-            },
-            "store-list": {
-              "type": "boolean"
-            },
-            "store-verification": {
-              "type": "boolean"
-            },
-            "store-journal": {
-              "type": "boolean"
-            },
-            "store-final-head": {
-              "type": "boolean"
-            },
-            "stop-phase-1": {
-              "type": "boolean"
-            },
-            "stop-phase-2": {
-              "type": "boolean"
-            },
-            "stop-phase-3": {
-              "type": "boolean"
-            },
-            "stop-phase-4": {
-              "type": "boolean"
-            },
-            "stop-phase-5": {
-              "type": "boolean"
-            },
-            "stop-phase-6": {
-              "type": "boolean"
-            },
-            "stop-phase-7": {
-              "type": "boolean"
-            }
+            "worker-count": {"type": "boolean"},
+            "pool-controller": {"type": "boolean"},
+            "pool-finisher": {"type": "boolean"},
+            "environment": {"type": "boolean"},
+            "full-dispatch-channel": {"type": "boolean"},
+            "full-end-channel": {"type": "boolean"},
+            "base-startup": {"type": "boolean"},
+            "base-failed-input": {"type": "boolean"},
+            "base-archive": {"type": "boolean"},
+            "base-old-journal": {"type": "boolean"},
+            "base-resume": {"type": "boolean"},
+            "base-lookup": {"type": "boolean"},
+            "normal-run": {"type": "boolean"},
+            "loose-publication": {"type": "boolean"},
+            "zip-publication": {"type": "boolean"},
+            "http-tls": {"type": "boolean"},
+            "view-paths": {"type": "boolean"},
+            "header-ownership": {"type": "boolean"},
+            "scale-residual": {"type": "boolean"},
+            "native-components": {"type": "boolean"},
+            "retention": {"type": "boolean"},
+            "store-multipart": {"type": "boolean"},
+            "store-list": {"type": "boolean"},
+            "store-verification": {"type": "boolean"},
+            "store-journal": {"type": "boolean"},
+            "store-final-head": {"type": "boolean"},
+            "stop-phase-1": {"type": "boolean"},
+            "stop-phase-2": {"type": "boolean"},
+            "stop-phase-3": {"type": "boolean"},
+            "stop-phase-4": {"type": "boolean"},
+            "stop-phase-5": {"type": "boolean"},
+            "stop-phase-6": {"type": "boolean"},
+            "stop-phase-7": {"type": "boolean"}
           }
         },
         "coefficients": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "c_base",
-            "c_env",
-            "m_thread",
-            "m_pool",
-            "m_dispatch",
-            "m_end"
-          ],
+          "required": ["c_base", "c_env", "m_thread", "m_pool", "m_dispatch", "m_end"],
           "properties": {
             "c_base": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
             "c_env": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
@@ -238,10 +181,7 @@
         "structural_floors": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "m_dispatch",
-            "m_end"
-          ],
+          "required": ["m_dispatch", "m_end"],
           "properties": {
             "m_dispatch": {"type": "integer", "minimum": 64, "maximum": 18446744073709551615},
             "m_end": {"type": "integer", "minimum": 3328, "maximum": 18446744073709551615}
@@ -299,7 +239,7 @@
             "live_deductions_only",
             "raw_incremental_coefficients",
             "native_only_charges_excluded",
-            "instrumentation_excluded",
+            "observer_allocation_free",
             "coherent_observations",
             "peer_excluded",
             "parent_startup_included"
@@ -311,32 +251,22 @@
             "live_deductions_only": {"type": "boolean", "const": true},
             "raw_incremental_coefficients": {"type": "boolean", "const": true},
             "native_only_charges_excluded": {"type": "boolean", "const": true},
-            "instrumentation_excluded": {"type": "boolean", "const": true},
+            "observer_allocation_free": {"type": "boolean", "const": true},
             "coherent_observations": {"type": "boolean", "const": true},
             "peer_excluded": {"type": "boolean", "const": true},
             "parent_startup_included": {"type": "boolean", "const": true}
           }
-        }
+        },
+        "kind": {"type": "string", "enum": ["synthetic", "whole-run"]}
       }
     }
   },
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "status",
-    "records"
-  ],
+  "required": ["schema_version", "status", "records"],
   "properties": {
     "schema_version": {"type": "integer", "const": 1},
     "status": {"type": "string", "enum": ["provisional-b12b", "final"]},
-    "records": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 8,
-      "items": {
-        "$ref": "#/$defs/record"
-      }
-    }
+    "records": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/record"}}
   }
 }

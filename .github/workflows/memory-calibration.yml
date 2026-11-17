@@ -1,0 +1,115 @@
+name: Memory calibration
+on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'tools/memory/**'
+      - 'docs/memory/**'
+      - 'docs/BATCH_SPEC.md'
+      - 'docs/plans/batch.md'
+      - '.github/workflows/memory-calibration.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: memory-calibration-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  synthetic:
+    name: Native ${{ matrix.arch }} / ${{ matrix.profile }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    container:
+      image: debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
+    env:
+      CARGO_HOME: /opt/cargo
+      RUSTUP_HOME: /opt/rustup
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
+        arch: [x86_64, aarch64]
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Install Debian build and collector dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            gcc g++ make libc6-dev git curl ca-certificates python3 procps
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Trust the checked-out workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install checksum-verified rustup and the pinned toolchain
+        run: |
+          set -eu
+          arch=$(uname -m)
+          # Published SHA-256 values for rustup 1.28.2, by native architecture.
+          case "$arch" in
+            x86_64) sha256=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c ;;
+            aarch64) sha256=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c ;;
+            *) echo "Unsupported native architecture: $arch" >&2; exit 1 ;;
+          esac
+          installer="$RUNNER_TEMP/rustup-init"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            "https://static.rust-lang.org/rustup/archive/1.28.2/$arch-unknown-linux-gnu/rustup-init" \
+            --output "$installer"
+          printf '%s  %s\n' "$sha256" "$installer" | sha256sum --check --strict
+          chmod +x "$installer"
+          "$installer" -y --no-modify-path --default-toolchain none
+          export PATH="$CARGO_HOME/bin:$PATH"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          # With no argument, rustup reads the channel/components from rust-toolchain.toml.
+          rustup toolchain install --no-self-update
+      - name: Assert native architecture and the certified page size
+        env:
+          EXPECT_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(uname -m)" = "$EXPECT_ARCH"
+          test "$(getconf PAGESIZE)" = 4096
+      - name: Assert the certified C and C++ compiler versions
+        run: |
+          for compiler in cc c++; do
+            version=$("$compiler" -dumpfullversion)
+            if [ "$version" != 12.2.0 ]; then
+              echo "$compiler version mismatch: expected 12.2.0, got $version" >&2
+              exit 1
+            fi
+          done
+      - name: Check a committed selection without regenerating it
+        if: hashFiles('docs/memory/constants-v1.json') != ''
+        run: >-
+          python3 tools/memory/regenerate.py --compiled-evidence docs/memory/constants-v1.json
+          --rust-output crates/unityrs-batch/src/bound/measured.rs --check
+      - name: Check the provisional fallback while evidence is absent
+        if: hashFiles('docs/memory/constants-v1.json') == ''
+        run: >-
+          python3 tools/memory/regenerate.py --bootstrap
+          --rust-output crates/unityrs-batch/src/bound/measured.rs --check
+      # In a container job the runner.temp and github.workspace expressions
+      # name the host's paths; steps use the container's $RUNNER_TEMP, and the
+      # upload takes a path relative to the workspace, written only after the
+      # collector has checked the source is clean.
+      - name: Run synthetic measurements and independent gates
+        run: >-
+          python3 tools/memory/collect.py --native --profile ${{ matrix.profile }}
+          --output "$RUNNER_TEMP/aggregate.json"
+      - name: Stage the aggregate record for upload
+        run: cp "$RUNNER_TEMP/aggregate.json" calibration-aggregate.json
+      - name: Upload the aggregate record only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: memory-${{ matrix.arch }}-${{ matrix.profile }}
+          path: calibration-aggregate.json
+          if-no-files-found: error
+          retention-days: 14

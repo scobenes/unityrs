@@ -36,7 +36,7 @@ fn http_ip_literal_runs_match_local_synthetic_outputs_and_manifest_rows() {
         .unwrap();
         assert!(check.status.success(), "{check:?}");
         let (_, report) = common::line_of(&check);
-        let bound = report["detail"]
+        let bound: u64 = report["detail"]
             .as_str()
             .unwrap()
             .strip_prefix("memory_bound ")
@@ -52,7 +52,18 @@ fn http_ip_literal_runs_match_local_synthetic_outputs_and_manifest_rows() {
         )
         .unwrap();
         assert_eq!(output.status.code(), Some(0), "{output:?}");
-        let checked = run_support::check(&scratch, &spec, &case, expected, bound);
+        let head: Value = serde_json::from_slice(
+            &fs::read(scratch.join(format!(
+                "sink/_unityrs/{}/manifest.json",
+                spec["run_id"].as_str().unwrap()
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        let actual_bound = head["run"]["memory_bound"].as_u64().unwrap();
+        assert!(actual_bound <= bound);
+        assert!(bound - actual_bound <= unityrs_batch::bound::CHECK_ENV_BLOCK);
+        let checked = run_support::check(&scratch, &spec, &case, expected, actual_bound);
         if let Some(local) = &baseline {
             assert_eq!(&checked, local);
         } else {
