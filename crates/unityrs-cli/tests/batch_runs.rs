@@ -125,7 +125,18 @@ fn normal_cli_replays_the_versioned_synthetic_goldens() {
             }
             assert_eq!(lines.last().unwrap()["type"], "exit");
             assert_eq!(lines.last().unwrap()["code"], case["exit_code"]);
-            let actual = run_support::check(&scratch, &spec, &case, expected, bound);
+            let head: Value = serde_json::from_slice(
+                &fs::read(scratch.join(format!(
+                    "sink/_unityrs/{}/manifest.json",
+                    spec["run_id"].as_str().unwrap()
+                )))
+                .unwrap(),
+            )
+            .unwrap();
+            let actual_bound = head["run"]["memory_bound"].as_u64().unwrap();
+            assert!(actual_bound <= bound);
+            assert!(bound - actual_bound <= unityrs_batch::bound::CHECK_ENV_BLOCK);
+            let actual = run_support::check(&scratch, &spec, &case, expected, actual_bound);
             if let Some(baseline) = &baseline {
                 assert_eq!(&actual, baseline);
             } else {
@@ -133,6 +144,69 @@ fn normal_cli_replays_the_versioned_synthetic_goldens() {
             }
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn normal_bound_tracks_the_inherited_environment_while_check_uses_the_cap() {
+    let case = run_support::cases()
+        .into_iter()
+        .find(|c| c["name"] == "textures-five")
+        .unwrap();
+    let fixture = run_support::scene(&case);
+    let scratch = Scratch::new("cli-environment-bound");
+    fs::create_dir(scratch.join("spool")).unwrap();
+    fs::create_dir(scratch.join("sink")).unwrap();
+    let (mut spec, _) = run_support::instantiate(&case, &fixture, &scratch);
+    let job = scratch.join("job.json");
+    let mut bounds = Vec::new();
+    let mut checks = Vec::new();
+    for (index, padding) in [0, 65536].into_iter().enumerate() {
+        spec["attempt"] = json!(index + 1);
+        fs::write(&job, serde_json::to_vec(&spec).unwrap()).unwrap();
+        for checking in [true, false] {
+            let mut command = Command::new(common::BIN);
+            command.arg("batch");
+            if checking {
+                command.arg("--check");
+            }
+            command
+                .arg(&job)
+                .env_clear()
+                .env(unityrs_testkit::scratch::VAR, scratch.path())
+                .env("B12_MEMORY_PAD", "x".repeat(padding));
+            let output = child::output(&mut command).unwrap();
+            assert!(output.status.success(), "{output:?}");
+            if checking {
+                let (_, line) = common::line_of(&output);
+                checks.push(
+                    line["detail"]
+                        .as_str()
+                        .unwrap()
+                        .strip_prefix("memory_bound ")
+                        .unwrap()
+                        .parse::<u64>()
+                        .unwrap(),
+                );
+            } else {
+                let head: Value = serde_json::from_slice(
+                    &fs::read(scratch.join(format!(
+                        "sink/_unityrs/{}/manifest.json",
+                        spec["run_id"].as_str().unwrap()
+                    )))
+                    .unwrap(),
+                )
+                .unwrap();
+                bounds.push(head["run"]["memory_bound"].as_u64().unwrap());
+            }
+        }
+    }
+    assert_eq!(
+        checks[0], checks[1],
+        "--check must not read environment values"
+    );
+    assert_eq!(bounds[1] - bounds[0], 65536);
+    assert!(checks[0] >= bounds[1]);
 }
 
 /// A version 2 spec's UnityCN key variable, unset or malformed: a 69

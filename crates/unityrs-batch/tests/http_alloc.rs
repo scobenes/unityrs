@@ -26,6 +26,38 @@ use unityrs_testkit::guard::DEADLOCK_GUARD;
 static ALLOCATOR: Counting<count::Network> = Counting(count::Network);
 
 #[test]
+fn malformed_combined_flight_reaches_the_deframer_limit() {
+    let _serial = count::lock();
+    let peer = Peer::tls_stress();
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(rustls::pki_types::CertificateDer::from(
+            http_support::tls::ROOT,
+        ))
+        .unwrap();
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS12])
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let mut client = rustls::ClientConnection::new(
+        Arc::new(config),
+        rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+    )
+    .unwrap();
+    let mut socket = std::net::TcpStream::connect(peer.address).unwrap();
+    socket.set_read_timeout(Some(DEADLOCK_GUARD)).unwrap();
+    socket.set_write_timeout(Some(DEADLOCK_GUARD)).unwrap();
+    let error = client.complete_io(&mut socket).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "message buffer full");
+    drop(socket);
+    assert!(peer.finish().is_err());
+}
+
+#[test]
 #[cfg_attr(
     debug_assertions,
     ignore = "scale: run in release, as CI's `scale` job does"
@@ -143,7 +175,7 @@ fn tls_handshake_and_streaming_fit_the_network_allowance() {
         let peer = match scene {
             "certificates" => Peer::tls_large_chain(response),
             "authorities" => Peer::tls_many_authorities(response),
-            "malformed-combined" => Peer::tls_stress(response),
+            "malformed-combined" => Peer::tls_stress(),
             "ordinary" | "maximal-request" => Peer::tls(response, true),
             _ => Peer::with_aligned_config(response, http_support::stress::config(scene)),
         };

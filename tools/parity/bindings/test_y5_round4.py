@@ -19,9 +19,11 @@ class ReviewRound4(unittest.TestCase):
 
     def test_object_reader_cache_publication_holds_environment_lock(self):
         cases.check_object_reader_publication(unityrs)
+        cases.check_object_reader_publication(unityrs, detached=True)
 
     def test_sprite_cache_decodes_once_under_concurrent_first_access(self):
         cases.check_sprite_cache_publication(unityrs)
+        cases.check_sprite_cache_publication(unityrs, detached=True)
 
 
 def extension_test(name):

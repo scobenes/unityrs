@@ -74,6 +74,7 @@ pub(super) fn open(
     } else {
         packed
     };
+    let constructor_position = r.position();
     let mut r = Reader::new(&data, Endian::Big);
     let mut directory = MeteredVec::new(meter);
     for _ in 0..r.read_i32()?.max(0) {
@@ -118,6 +119,7 @@ pub(super) fn open(
         changed: std::sync::atomic::AtomicBool::new(false),
         name,
         source,
+        constructor_position,
         legacy_data: Some(data),
         header,
         blocks: Box::default(),

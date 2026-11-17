@@ -11,10 +11,7 @@ def export_mesh_renderer(renderer, export_dir):
 
 def export_material(mat):
     from .. import _native
-    from ..classes._exports import _reader, _environment, _guard
+    from ..classes._exports import _reader, _environment, _guard, _material_texture_names
     guard = _guard(mat)
-    for _, texture_env in mat.m_SavedProperties.m_TexEnvs:
-        guard.step(0, 0, 1)
-        if texture_env is not None and texture_env.m_Texture:
-            raise NotImplementedError("unsupported export_material: textured material")
-    return _native.export_material(mat, _reader(mat), _environment(mat), [])
+    texture_names, textures = _material_texture_names(mat, guard)
+    return _native.export_material(mat, _reader(mat), _environment(mat), texture_names)

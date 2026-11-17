@@ -22,6 +22,11 @@
 
 use std::collections::HashSet;
 
+mod environment;
+mod measured;
+pub use environment::execution_env_block;
+pub use measured::{CALIBRATED, SELECTED};
+
 use unityrs_core::limits::{Limits, heap_cost};
 
 use crate::alloc::Measured;
@@ -76,6 +81,8 @@ pub const CERTIFIED_PAGE: u64 = 4096;
 /// How far the bound's figure holds on this host (module docs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Certification {
+    /// Complete eligible evidence is compiled in, on 4 KiB pages.
+    Certified,
     /// 4 KiB pages: the bound is provisional, as [`PROVISIONAL`] is.
     Provisional,
     /// Another page size (`None`: unknown): no calibration covers it.
@@ -88,7 +95,11 @@ impl Certification {
     #[must_use]
     pub fn of(page_size: Option<u64>) -> Self {
         if page_size == Some(CERTIFIED_PAGE) {
-            Self::Provisional
+            if CALIBRATED {
+                Self::Certified
+            } else {
+                Self::Provisional
+            }
         } else {
             Self::Uncertified { page_size }
         }

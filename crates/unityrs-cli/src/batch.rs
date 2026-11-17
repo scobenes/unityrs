@@ -40,7 +40,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use unityrs_batch::alloc;
-use unityrs_batch::bound::{CHECK_ENV_BLOCK, Certification, PROVISIONAL, memory_bound};
+use unityrs_batch::bound::{CHECK_ENV_BLOCK, Certification, SELECTED, memory_bound};
 use unityrs_batch::phase1::{self, PreparedRun};
 use unityrs_batch::progress::clock::Clock;
 use unityrs_batch::progress::{Exit, Snapshot, early, rss};
@@ -245,7 +245,7 @@ fn phase1_failed(clock: &Clock, error: Phase1Error) -> ExitCode {
 /// `--check`'s line for a valid spec: code 0, `memory_bound <bytes>`.
 fn checked(clock: &Clock, v: &PreparedRun, m: alloc::Measured) -> ExitCode {
     let s = &v.spec;
-    let bound = memory_bound(s, m, CHECK_ENV_BLOCK, &PROVISIONAL);
+    let bound = memory_bound(s, m, CHECK_ENV_BLOCK, &SELECTED);
     let mut snap = Snapshot::validate(clock.ms());
     let inputs = s.input_count() as u64;
     snap.inputs.total = inputs;

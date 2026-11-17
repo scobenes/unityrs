@@ -16,6 +16,25 @@ impl NativeFile {
 }
 #[pymethods]
 impl NativeFile {
+    fn constructor_reader_state(&self, py: Python<'_>) -> (i128, Option<char>) {
+        py.detach(|| match &self.inner {
+            File::Serialized(file) => (
+                file.constructor_position(),
+                Some(
+                    if file.header().endian == unityrs_core::stream::Endian::Little {
+                        '<'
+                    } else {
+                        '>'
+                    },
+                ),
+            ),
+            File::Bundle(file) => (file.constructor_position(), None),
+            File::Web(file) if file.packer() == unityrs_core::files::WebPacker::None => {
+                (file.constructor_position(), Some('<'))
+            }
+            _ => (0, None),
+        })
+    }
     fn serialized_reader_info(&self, py: Python<'_>) -> PyResult<(usize, char, bool, i128)> {
         py.detach(|| {
             let File::Serialized(file) = &self.inner else {
@@ -30,8 +49,8 @@ impl NativeFile {
                 } else {
                     '>'
                 },
-                file.reader_kind() == unityrs_core::stream::ReaderKind::Stream,
-                file.reader_position(),
+                file.reader_kind() != unityrs_core::stream::ReaderKind::Memory,
+                file.constructor_position(),
             ))
         })
     }
@@ -172,10 +191,10 @@ impl NativeFile {
                 File::Bundle(f) => ("BundleFile", f.name()),
                 File::Web(f) => ("WebFile", f.name()),
                 File::Raw(f) => (
-                    if f.reader_kind() == unityrs_core::stream::ReaderKind::Stream {
-                        "EndianBinaryReader_Stream"
-                    } else {
+                    if f.reader_kind() == unityrs_core::stream::ReaderKind::Memory {
                         "EndianBinaryReader"
+                    } else {
+                        "EndianBinaryReader_Stream"
                     },
                     &f.name,
                 ),

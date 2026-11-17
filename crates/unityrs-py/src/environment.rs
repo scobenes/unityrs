@@ -1,5 +1,6 @@
-// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy 1.25.2 (MIT): UnityPy/environment.py, UnityPy/helpers/ImportHelper.py. See THIRD_PARTY_LICENSES.
 //! Eager Environment entry points (environment.py:37-73, environment.py:100-160).
+use crate::worker_error::Failure;
 use crate::{
     errors,
     files::NativeFile,
@@ -12,6 +13,19 @@ use unityrs_core::{
     FileContext, RawStr,
     env::{EnvOptions, Environment, Source},
 };
+
+// Error outcomes retain constructor reader state until the facade applies it
+// and publishes any successful child CABs, then raises on the caller thread.
+type ParsedFile = (Option<NativeFile>, i128, Option<char>, Option<PyErr>);
+
+fn reader_kind(kind: u8) -> unityrs_core::stream::ReaderKind {
+    use unityrs_core::stream::ReaderKind;
+    match kind {
+        0 => ReaderKind::Memory,
+        2 => ReaderKind::BytesIo,
+        _ => ReaderKind::Stream,
+    }
+}
 
 #[pyclass(frozen, module = "unityrs._native")]
 pub(crate) struct NativeEnvironment {
@@ -115,36 +129,36 @@ impl NativeEnvironment {
             ));
         };
         let path = crate::buffer_snapshot::BufferSnapshot::new(path, file.meter())?;
-        py.detach(move || {
-            crate::worker::run(crate::worker::load_stack(&file.context().limits), || {
-                let path = RawStr::charged(&path, file.meter()).map_err(errors::charge)?;
-                let stream = unityrs_texture::fetch::Stream { path, offset, size };
-                let (offset, size, slice) = match stream.span() {
-                    unityrs_texture::fetch::Span::Range(offset, size) => (offset, size, None),
-                    unityrs_texture::fetch::Span::Slice(start, stop) => {
-                        (0, u64::MAX, Some((start, stop)))
-                    }
-                };
-                let bytes = self
-                    .inner
-                    .resource(file, &stream.path, offset, size)
-                    .map_err(|error| errors::resource(error, &stream.path))?;
-                let bytes = if let Some((start, stop)) = slice {
-                    bytes.slice(unityrs_texture::fetch::python_slice(
-                        bytes.len(),
-                        start,
-                        stop,
-                    ))
-                } else {
-                    bytes
-                };
-                let _copy = file
-                    .meter()
-                    .charge(unityrs_core::limits::heap_cost(bytes.len() as u64))
-                    .map_err(errors::charge)?;
-                p::bytes(&bytes)
-            })
-        })
+
+        let path = RawStr::charged(&path, file.meter()).map_err(errors::charge)?;
+        let stream = unityrs_texture::fetch::Stream { path, offset, size };
+        let (offset, size, slice) = match stream.span() {
+            unityrs_texture::fetch::Span::Range(offset, size) => (offset, size, None),
+            unityrs_texture::fetch::Span::Slice(start, stop) => (0, u64::MAX, Some((start, stop))),
+        };
+        let bytes = py
+            .detach(|| {
+                crate::worker::run(crate::worker::load_stack(&file.context().limits), || {
+                    self.inner
+                        .resource(file, &stream.path, offset, size)
+                        .map_err(Failure::core)
+                })
+            })?
+            .map_err(|error: Failure| error.resource(&stream.path))?;
+        let bytes = if let Some((start, stop)) = slice {
+            bytes.slice(unityrs_texture::fetch::python_slice(
+                bytes.len(),
+                start,
+                stop,
+            ))
+        } else {
+            bytes
+        };
+        let _copy = file
+            .meter()
+            .charge(unityrs_core::limits::heap_cost(bytes.len() as u64))
+            .map_err(errors::charge)?;
+        p::bytes(&bytes)
     }
     #[new]
     #[pyo3(signature = (limits=None, budget=None, tpk=None))]
@@ -213,15 +227,16 @@ impl NativeEnvironment {
         });
         error.map_or(Ok(0), Err)
     }
-    #[pyo3(signature = (data, name, dependency, stream, register=true))]
+    #[pyo3(signature = (data, name, dependency, stream, position=0))]
+    #[allow(clippy::too_many_arguments)]
     fn load_bytes(
         &self,
         py: Python<'_>,
         data: &Bound<'_, PyAny>,
         name: &Bound<'_, PyAny>,
         dependency: bool,
-        stream: bool,
-        register: bool,
+        stream: u8,
+        position: i128,
     ) -> PyResult<Option<NativeFile>> {
         let meter = self.input_meter();
         let data = crate::buffer_snapshot::BufferSnapshot::source(
@@ -236,7 +251,7 @@ impl NativeEnvironment {
                 || {
                     let ctx = &self.inner.options().context;
                     if data.len() as u64 > ctx.limits.max_input_bytes {
-                        return Err(errors::core(
+                        return Err(Failure::Core(
                             unityrs_core::LimitError::refused(
                                 unityrs_core::LimitKind::InputBytes,
                                 data.len() as u64,
@@ -248,29 +263,114 @@ impl NativeEnvironment {
                     // Retain the caller's immutable Python buffer without a Rust
                     // input-sized copy or an independent input meter. Core tables and
                     // decoded buffers are all charged to the load's single meter.
-                    let reader = if stream {
-                        unityrs_core::stream::ReaderKind::Stream
-                    } else {
-                        unityrs_core::stream::ReaderKind::Memory
-                    };
-                    let name = RawStr::from(unityrs_core::Bytes::from_owner(name));
-                    let data = unityrs_core::Bytes::from_owner(data);
-                    if !register {
-                        return self
-                            .inner
-                            .parse_reader(&name, data, reader)
-                            .map(NativeFile::new)
-                            .map(Some)
-                            .map_err(errors::core);
-                    }
+                    let reader = reader_kind(stream);
                     let file = self
                         .inner
-                        .load_reader(name, data, reader, dependency)
-                        .map_err(errors::core)?;
+                        .load_reader_at_position(
+                            RawStr::from(unityrs_core::Bytes::from_owner(name)),
+                            unityrs_core::Bytes::from_owner(data),
+                            reader,
+                            dependency,
+                            position,
+                        )
+                        .map_err(Failure::core)?;
                     Ok(file.map(NativeFile::new))
                 },
             )
-        })
+        })?
+        .map_err(PyErr::from)
+    }
+    #[pyo3(signature = (data, name, typ, stream, parent=None))]
+    fn parse_bytes(
+        &self,
+        py: Python<'_>,
+        data: &Bound<'_, PyAny>,
+        name: &Bound<'_, PyAny>,
+        typ: u8,
+        stream: u8,
+        parent: Option<&NativeFile>,
+    ) -> PyResult<ParsedFile> {
+        use unityrs_core::detect::FileType;
+        let ty = match typ {
+            0 => FileType::AssetsFile,
+            1 => FileType::BundleFile,
+            2 => FileType::WebFile,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "invalid parser type",
+                ));
+            }
+        };
+        let meter = self.input_meter();
+        let data = crate::buffer_snapshot::BufferSnapshot::source(
+            data,
+            &meter,
+            self.inner.options().context.limits.max_input_bytes,
+        )?;
+        let name = crate::buffer_snapshot::BufferSnapshot::source(name, &meter, u64::MAX)?;
+        let data = unityrs_core::Bytes::from_owner(data);
+        let mut constructor_endian = None;
+        let file = py.detach(|| {
+            crate::worker::run(
+                crate::worker::load_stack(&self.inner.options().context.limits),
+                || {
+                    self.inner
+                        .parse_reader_with_state(
+                            &RawStr::from(unityrs_core::Bytes::from_owner(name)),
+                            data.clone(),
+                            reader_kind(stream),
+                            ty,
+                            parent.map(|file| &file.inner),
+                            &mut constructor_endian,
+                        )
+                        .map_err(Failure::core)
+                },
+            )
+        })?;
+        let file = match file {
+            Ok(file) => file,
+            Err(error) => {
+                let endian = constructor_endian.map(|endian| {
+                    if endian == unityrs_core::stream::Endian::Little {
+                        '<'
+                    } else {
+                        '>'
+                    }
+                });
+                return Ok((
+                    None,
+                    0,
+                    endian,
+                    // A fallback callback error otherwise escapes from
+                    // config._load's finally before the facade receives state.
+                    Some(
+                        self.take_fallback_warnings(py)
+                            .err()
+                            .unwrap_or_else(|| error.file_parse(&data, stream != 0, &meter)),
+                    ),
+                ));
+            }
+        };
+        let (position, endian) = match &file {
+            unityrs_core::File::Serialized(file) => (
+                file.constructor_position(),
+                Some(
+                    if file.header().endian == unityrs_core::stream::Endian::Little {
+                        '<'
+                    } else {
+                        '>'
+                    },
+                ),
+            ),
+            unityrs_core::File::Bundle(file) => (file.constructor_position(), None),
+            unityrs_core::File::Web(file)
+                if file.packer() == unityrs_core::files::WebPacker::None =>
+            {
+                (file.constructor_position(), Some('<'))
+            }
+            _ => (0, None),
+        };
+        Ok((Some(NativeFile::new(file)), position, endian, None))
     }
     #[pyo3(signature = (path, constructor, dependency, root=None))]
     fn load_path(
@@ -292,8 +392,8 @@ impl NativeEnvironment {
                 crate::worker::load_stack(&self.inner.options().context.limits),
                 || {
                     if constructor {
-                        self.inner.load_path(&path).map_err(errors::core)?;
-                        Ok(None)
+                        self.inner.load_path(&path).map_err(Failure::core)?;
+                        Ok::<_, Failure>(None)
                     } else {
                         let source = if let Some(root) = root {
                             Source::ConfinedPath { path, root }
@@ -305,21 +405,23 @@ impl NativeEnvironment {
                         } else {
                             self.inner.load_file(source)
                         }
-                        .map_err(errors::core)?;
+                        .map_err(Failure::core)?;
                         Ok(file.map(NativeFile::new))
                     }
                 },
             )
-        })
+        })?
+        .map_err(PyErr::from)
     }
     fn load_files(&self, py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<()> {
         let (path, _charge) = crate::path_snapshot::snapshot(path, &self.input_meter())?;
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),
-                || self.inner.load_files([path]).map_err(errors::core),
+                || self.inner.load_files([path]).map_err(Failure::core),
             )
-        })
+        })?
+        .map_err(PyErr::from)
     }
     fn load_zip_path(&self, py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<()> {
         let (path, _charge) = crate::path_snapshot::snapshot(path, &self.input_meter())?;
@@ -329,10 +431,11 @@ impl NativeEnvironment {
                 || {
                     self.inner
                         .load_zip_file(Source::Path(path))
-                        .map_err(errors::core)
+                        .map_err(Failure::core)
                 },
             )
-        })
+        })?
+        .map_err(PyErr::from)
     }
     fn load_zip_bytes(&self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
         let meter = self.input_meter();
@@ -350,19 +453,21 @@ impl NativeEnvironment {
                             name: "".into(),
                             data: unityrs_core::Bytes::from_owner(data),
                         })
-                        .map_err(errors::core)
+                        .map_err(Failure::core)
                 },
             )
-        })
+        })?
+        .map_err(PyErr::from)
     }
     fn load_folder(&self, py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<()> {
         let (path, _charge) = crate::path_snapshot::snapshot(path, &self.input_meter())?;
         py.detach(|| {
             crate::worker::run(
                 crate::worker::load_stack(&self.inner.options().context.limits),
-                || self.inner.load_folder(&path).map_err(errors::core),
+                || self.inner.load_folder(&path).map_err(Failure::core),
             )
-        })
+        })?
+        .map_err(PyErr::from)
     }
     fn files(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         py.detach(|| {
@@ -392,49 +497,51 @@ impl NativeEnvironment {
         })
     }
     fn cabs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        py.detach(|| {
-            crate::worker::run(
-                crate::worker::load_stack(&self.inner.options().context.limits),
-                || {
-                    use unityrs_core::{
-                        File,
-                        env::{Cab, RawCab},
-                    };
-                    let ctx = &self.inner.options().context;
-                    let meter = unityrs_core::limits::Meter::for_input(
-                        &ctx.limits,
-                        ctx.budget.clone(),
-                        unityrs_core::budget::Reservation::Input,
-                    );
-                    let mut staging = unityrs_core::limits::Charge::zero(&meter);
-                    staging.grow(64).map_err(errors::charge)?;
-                    let result = p::list()?;
-                    for key in self.inner.registry().keys() {
-                        staging
-                            .grow(256 + (key.as_bytes().len() as u64).saturating_mul(4))
-                            .map_err(errors::charge)?;
-                        let Some(cab) = self.inner.get_cab(&key, &meter).map_err(errors::core)?
-                        else {
-                            continue;
-                        };
-                        let file = match cab {
-                            Cab::Serialized(f) => File::Serialized(f),
-                            Cab::Raw(RawCab::File(f)) => File::Raw(f),
-                            Cab::Raw(RawCab::InBundle { bundle, dir_index }) => {
-                                bundle.entry(dir_index).map_err(errors::core)?
-                            }
-                        };
-                        let file = NativeFile::new(file);
-                        let row = p::list()?;
-                        p::push(&row, &p::string(key.as_bytes())?)?;
-                        let file =
-                            crate::python::relay::attach(|py| Py::new(py, file).map(Py::into_any))?;
-                        p::push(&row, &file)?;
-                        p::push(&result, &row)?;
-                    }
-                    Ok(result)
-                },
-            )
-        })
+        use unityrs_core::{
+            File,
+            env::{Cab, RawCab},
+            limits::MeteredVec,
+        };
+        let meter = self.input_meter();
+        let rows = py
+            .detach(|| {
+                crate::worker::run(
+                    crate::worker::load_stack(&self.inner.options().context.limits),
+                    || {
+                        let mut rows = MeteredVec::new(&meter);
+                        for key in self.inner.registry().keys() {
+                            let Some(cab) =
+                                self.inner.get_cab(&key, &meter).map_err(Failure::core)?
+                            else {
+                                continue;
+                            };
+                            let file = match cab {
+                                Cab::Serialized(file) => File::Serialized(file),
+                                Cab::Raw(RawCab::File(file)) => File::Raw(file),
+                                Cab::Raw(RawCab::InBundle { bundle, dir_index }) => {
+                                    bundle.entry(dir_index).map_err(Failure::core)?
+                                }
+                            };
+                            rows.push((key, file)).map_err(Failure::charge)?;
+                        }
+                        Ok::<_, Failure>(rows)
+                    },
+                )
+            })?
+            .map_err(PyErr::from)?;
+        let mut staging = unityrs_core::limits::Charge::zero(&meter);
+        staging.grow(64).map_err(errors::charge)?;
+        let result = p::list()?;
+        for (key, file) in rows.as_slice() {
+            staging
+                .grow(256 + (key.as_bytes().len() as u64).saturating_mul(4))
+                .map_err(errors::charge)?;
+            let row = p::list()?;
+            p::push(&row, &p::string(key.as_bytes())?)?;
+            let file = Py::new(py, NativeFile::new(file.clone()))?.into_any();
+            p::push(&row, &file)?;
+            p::push(&result, &row)?;
+        }
+        Ok(result)
     }
 }

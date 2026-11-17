@@ -85,6 +85,9 @@ pub enum DetectError {
     /// here, [`check_file_type_with_reader`]).
     #[error("unterminated signature in a 20-byte file")]
     Unterminated,
+    /// A positioned stream's signature read starts past EOF.
+    #[error("Unterminated string: [b'']")]
+    UnterminatedStream,
     /// A `1f 8b` file whose stream does not decompress in full.
     #[error("gzip: {0}")]
     Gzip(Arc<str>),
@@ -162,16 +165,32 @@ fn detect(
     work: Option<&Meter>,
     reader: ReaderKind,
 ) -> Result<FileType, DetectError> {
+    detect_at_position(data, limits, work, reader, 0)
+}
+
+pub(crate) fn detect_at_position(
+    data: &[u8],
+    limits: &Limits,
+    work: Option<&Meter>,
+    reader: ReaderKind,
+    position: i128,
+) -> Result<FileType, DetectError> {
     // UnityPy helpers/ImportHelper.py:54-55
     if data.len() < 20 {
         return Ok(FileType::ResourceFile);
     }
     // UnityPy helpers/ImportHelper.py:57: the reader's
-    // `read_string_to_null(20)` at 0, decoded with `surrogateescape`, which
+    // `read_string_to_null(20)` at the original cursor, then reset to zero.
+    // It is decoded with `surrogateescape`, which
     // is injective, so comparing the bytes compares the strings.
-    let (range, _) = reader
-        .string_to_null(data, 0, 20)
-        .ok_or(DetectError::Unterminated)?;
+    let (range, _) =
+        reader
+            .string_to_null(data, position, 20)
+            .ok_or(if reader == ReaderKind::Memory {
+                DetectError::Unterminated
+            } else {
+                DetectError::UnterminatedStream
+            })?;
     let signature = data.get(range).unwrap_or_default();
     // UnityPy helpers/ImportHelper.py:60-70
     if BUNDLE_SIGNATURES.contains(&signature) {

@@ -19,6 +19,9 @@
 //!   outside it, so 5.3 adds no per-bundle allowance.
 
 mod controller_support;
+#[cfg(feature = "test-hooks")]
+#[path = "memory_support/pools.rs"]
+mod pools;
 mod stage_support;
 
 use std::cell::Cell;
@@ -27,7 +30,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 
 use serde_json::json;
 use unityrs_batch::alloc::{self, Counting, Hook};
-use unityrs_batch::bound::{END_SLOT_OVERHEAD, PROVISIONAL};
+use unityrs_batch::bound::{END_SLOT_OVERHEAD, SELECTED as PROVISIONAL};
 use unityrs_batch::controller::{Boundary, Controller, NoHooks, PreparedSpool};
 use unityrs_batch::execution::Execution;
 use unityrs_batch::job::End;
@@ -126,6 +129,7 @@ fn alone<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) 
     }
     let (tx, rx) = std::sync::mpsc::channel();
     let driver = std::thread::spawn(move || {
+        unityrs_batch::sys::allocator(1).unwrap();
         register();
         let result = f();
         unityrs_testkit::counted::stop_counting_this_thread();
@@ -205,6 +209,13 @@ fn full_channel(cap: usize) -> (i64, bool) {
         assert!(more.try_send(end()).is_err(), "the channel holds {cap}");
         let o = LEDGER.observe();
         drop((tx, more, rx));
+        println!(
+            "\nB12_COEFFICIENT m_end {}",
+            u64::try_from(o.peak_above_arm)
+                .unwrap()
+                .div_ceil(cap as u64)
+        );
+        println!("\nB12_FLOOR m_end {}", size_of::<End>() + END_SLOT_OVERHEAD);
         (o.peak_above_arm, o.first_violation.is_none())
     })
 }
@@ -244,7 +255,7 @@ fn a_full_end_channel_fits_threads_times_m_end_at_every_capacity() {
 fn a_private_environments_fixed_parts_fit_c_env_whatever_d() {
     let mut kept = Vec::new();
     for d in [0, 1 << 30] {
-        let (k, fits) = alone("the Environment probe", move || {
+        let (k, peak, fits) = alone("the Environment probe", move || {
             LEDGER.arm(PROVISIONAL.c_env);
             let mut options = EnvOptions::batch(Arc::new(FileContext::unitypy()));
             options.dep_cache_bytes = d;
@@ -253,10 +264,12 @@ fn a_private_environments_fixed_parts_fit_c_env_whatever_d() {
             drop(env);
             (
                 o.heap - (LEDGER.observe().heap),
+                o.peak_above_arm,
                 o.first_violation.is_none(),
             )
         });
         assert!(fits, "d {d}: an Environment past c_env");
+        println!("\nB12_COEFFICIENT c_env {peak}");
         kept.push(k);
     }
     println!("c_env: one Environment keeps {} B", kept[0]);
@@ -310,6 +323,10 @@ fn initialized_pools_and_request_tables_fit_the_incremental_pool_coefficient() {
             (o.peak_above_arm, o.first_violation.is_none())
         });
         println!("initialized pool/table increment: dc {dc}, peak {peak} B");
+        println!(
+            "\nB12_COEFFICIENT m_pool {}",
+            u64::try_from(peak).unwrap().div_ceil(2 * u64::from(dc + 1))
+        );
         assert!(fits, "dc {dc}: initialized pools exceed m_pool");
     }
 }
@@ -417,4 +434,116 @@ fn the_controller_keeps_no_bundle_proportional_heap_past_phase_1() {
             2 * n
         );
     }
+}
+
+#[test]
+#[cfg(feature = "test-hooks")]
+fn full_dispatch_channels_include_fixed_overhead_at_small_capacities() {
+    for cap in [1, 2, 4, 16, 256, 1024] {
+        alone("full dispatch channel", move || {
+            LEDGER.arm(PROVISIONAL.m_dispatch * cap as u64);
+            let mut peak = 0;
+            let size = unityrs_batch::run::hooks::memory::probe_dispatch(cap, || {
+                let o = LEDGER.observe();
+                peak = o.peak_above_arm;
+                assert!(o.first_violation.is_none(), "dispatch channel: {o:?}");
+            })
+            .unwrap();
+            println!(
+                "\nB12_COEFFICIENT m_dispatch {}",
+                u64::try_from(peak).unwrap().div_ceil(cap as u64)
+            );
+            println!("\nB12_FLOOR m_dispatch {}", size.max(64));
+        });
+    }
+}
+
+/// Conservative isolated worker increment: includes both channels and startup
+/// bookkeeping again, rather than deducting unrelated peaks. Each worker runs
+/// initialized peeks/attempts before quiescence. Fixture/spec/runtime predate arm.
+#[test]
+#[cfg(feature = "test-hooks")]
+fn initialized_workers_fit_the_worker_increment() {
+    for n in [1_u32, 4, 16] {
+        alone("initialized worker increment", move || {
+            unityrs_batch::sys::allocator(n).unwrap();
+            let scratch = Scratch::new("worker-increment");
+            let root = scratch.join("spool");
+            for area in ["in", "attempts", "fail", "done"] {
+                std::fs::create_dir_all(root.join(area)).unwrap();
+            }
+            let source = scratch.join("source");
+            std::fs::write(&source, controller_support::clear(1)).unwrap();
+            let inputs: Vec<_> = (0..n)
+                .map(|i| json!({"id":format!("i{i:04}"), "path":source}))
+                .collect();
+            let mut spec = stage_support::from_bundles(&inputs, &[]);
+            spec.spec.threads = n;
+            let prepared = phase1::prepare(spec).unwrap();
+            let spool = PreparedSpool::new(
+                root,
+                Counter::new(1 << 30, 0, 4096).unwrap(),
+                Arc::new(Host),
+            )
+            .unwrap();
+            let control = Arc::new(AtomicBool::new(false));
+
+            let runtimes = unityrs_batch::lifetime::Runtimes::prepare_with(1, register).unwrap();
+            runtimes.prewarm().unwrap();
+            let wake = Arc::new(unityrs_batch::sys::Wake::new().unwrap());
+            LEDGER.arm(u64::from(n) * PROVISIONAL.m_thread);
+            let mut execution = Execution::prepare_hosted(
+                &prepared,
+                runtimes.controller.handle().clone(),
+                wake,
+                register,
+            )
+            .unwrap();
+            let mut controller =
+                Controller::new(prepared, spool, control, Arc::new(NoHooks)).unwrap();
+            execution.bind(&controller).unwrap();
+            assert_eq!(
+                controller.drive_local(&mut execution),
+                Boundary::ReadyForWinners
+            );
+            execution.quiesce().unwrap();
+            let o = LEDGER.observe();
+            assert!(o.first_violation.is_none(), "worker increment: {o:?}");
+            println!(
+                "\nB12_COEFFICIENT m_thread {}",
+                u64::try_from(o.peak_above_arm)
+                    .unwrap()
+                    .div_ceil(u64::from(n))
+            );
+        });
+    }
+}
+
+#[test]
+fn six_capped_credential_holders_share_one_bounded_provider() {
+    alone("credential holder ownership", || {
+        use unityrs_batch::store::credentials;
+        let cap = 6 * (heap_cost(128) * 2 + heap_cost(16384));
+        LEDGER.arm(cap);
+        let credentials = credentials::read(
+            |name| match name {
+                "AWS_ACCESS_KEY_ID" => Some("K".repeat(128).into()),
+                "AWS_SECRET_ACCESS_KEY" => Some("S".repeat(128).into()),
+                "AWS_SESSION_TOKEN" => Some("T".repeat(16384).into()),
+                _ => None,
+            },
+            None,
+        )
+        .unwrap();
+        let provider = credentials.into_shared_provider();
+        let holders = std::array::from_fn::<_, 6, _>(|_| provider.clone());
+        for holder in &holders {
+            assert!(Arc::ptr_eq(holder, &provider));
+            assert_eq!(holder.values().map(str::len), [128, 128, 16384]);
+        }
+        let o = LEDGER.observe();
+        assert!(o.first_violation.is_none(), "credentials: {o:?}");
+        println!("\nB12_ENVELOPE credential_holders 6");
+        drop((holders, provider));
+    });
 }

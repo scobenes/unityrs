@@ -96,8 +96,8 @@ fn staging_memory_refusal_preserves_work(stage: &str) -> PyResult<()> {
     let convert = || {
         let mut charge = Charge::zero(&meter);
         match stage {
-            "nodes" => super::object_nodes::convert(&parsed, &mut charge),
-            "references" => super::object_nodes::references(&parsed, None, &mut charge),
+            "nodes" => super::object_nodes::convert(parsed.lists(), &mut charge),
+            "references" => super::object_nodes::references(parsed.lists(), None, &mut charge),
             _ => super::value::convert(&parsed, &meter),
         }
     };
@@ -195,6 +195,68 @@ fn replays_unitypy_export_observations() -> PyResult<()> {
 #[test]
 fn replays_unitypy_tools_observations() -> PyResult<()> {
     replay_groups("binding_y5_", 52)
+}
+
+#[test]
+fn replays_unitypy_residue_observations() -> PyResult<()> {
+    replay_groups("binding_y6_", 36)
+}
+
+#[test]
+fn parser_bounds_match_struct_negative_offset_checks() -> PyResult<()> {
+    let _serial = serial();
+    Python::attach(|py| {
+        let meter = unityrs_core::limits::Meter::unlimited();
+        for length in [0, 1, 3, 99] {
+            let data = vec![0u8; length];
+            for pos in [-765, -100, -99, -4, -3, -1, 96, 99, 100] {
+                let reference = py.import("struct")?.getattr("unpack_from")?.call1((
+                    ">I",
+                    PyBytes::new(py, &data),
+                    pos,
+                ));
+                let Err(reference) = reference else { continue };
+                let mut reader =
+                    unityrs_core::stream::Reader::new(&data, unityrs_core::stream::Endian::Big);
+                reader.set_position(pos).unwrap();
+                let error =
+                    crate::errors::file_parse(reader.read_u32().unwrap_err(), &data, false, &meter);
+                assert!(error.get_type(py).is(reference.get_type(py)));
+                assert_eq!(
+                    error.value(py).str()?.to_str()?,
+                    reference.value(py).str()?.to_str()?
+                );
+            }
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn exception_translation_reenters_environment_on_calling_thread() -> PyResult<()> {
+    let _serial = serial();
+    unityrs_testkit::guard::finishes(
+        "exception lookup re-enters the caller's environment lock",
+        || {
+            Python::attach(|py| {
+                let module = PyModule::new(py, "unityrs._native")?;
+                super::native(&module)?;
+                py.import("sys")?
+                    .getattr("modules")?
+                    .set_item("unityrs._native", module)?;
+                let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+                for directory in [root.join("python"), root.join("../../tools/parity")] {
+                    py.import("sys")?
+                        .getattr("path")?
+                        .call_method1("insert", (0, directory.to_string_lossy().as_ref()))?;
+                }
+                py.import("binding_y6_review")?
+                    .getattr("exception_reentry")?
+                    .call1((py.import("unityrs")?,))?;
+                Ok(())
+            })
+        },
+    )
 }
 
 #[test]
@@ -311,7 +373,8 @@ fn replay_groups(prefix: &str, expected_count: usize) -> PyResult<()> {
             corrected,
             match prefix {
                 "binding_y4_" => 18,
-                "binding_y5_" => 6,
+                "binding_y5_" => 8,
+                "binding_y6_" => 9,
                 _ => 0,
             }
         );

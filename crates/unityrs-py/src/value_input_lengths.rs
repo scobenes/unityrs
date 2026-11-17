@@ -1,6 +1,5 @@
 //! Writer protocol lengths are independent of retained storage sizes.
-use crate::errors;
-use pyo3::prelude::*;
+use crate::worker_error::Failure;
 use unityrs_core::{Parsed, Value, limits::MeteredVec};
 
 pub(crate) struct Lengths {
@@ -11,7 +10,10 @@ pub(crate) struct Lengths {
     entries: MeteredVec<(usize, usize)>,
 }
 impl Lengths {
-    pub(super) fn resolve(parsed: &Parsed, logical: &MeteredVec<(u64, usize)>) -> PyResult<Self> {
+    pub(super) fn resolve(
+        parsed: &Parsed,
+        logical: &MeteredVec<(u64, usize)>,
+    ) -> crate::worker_error::Result<Self> {
         let meter = parsed.charge().meter();
         let mut result = Self {
             root: None,
@@ -21,11 +23,11 @@ impl Lengths {
             return Ok(result);
         }
         let mut pending = MeteredVec::new(meter);
-        pending.push(parsed.value()).map_err(errors::charge)?;
+        pending.push(parsed.value()).map_err(Failure::charge)?;
         let mut lengths = logical.as_slice().iter().peekable();
         let mut ordinal = 0;
         while let Some(value) = pending.pop() {
-            meter.count_decode(1).map_err(errors::charge)?;
+            meter.count_decode(1).map_err(Failure::charge)?;
             ordinal += 1;
             if let Some(&&(index, len)) = lengths.peek()
                 && index == ordinal
@@ -36,37 +38,38 @@ impl Lengths {
                     result
                         .entries
                         .push((std::ptr::from_ref(value).addr(), len))
-                        .map_err(errors::charge)?;
+                        .map_err(Failure::charge)?;
                 }
                 lengths.next();
             }
             match value {
                 Value::Dict(map) => {
                     for (_, child) in map.entries().iter().rev() {
-                        pending.push(child).map_err(errors::charge)?;
+                        pending.push(child).map_err(Failure::charge)?;
                     }
                 }
                 Value::List(items) => {
                     for child in items.iter().rev() {
-                        pending.push(child).map_err(errors::charge)?;
+                        pending.push(child).map_err(Failure::charge)?;
                     }
                 }
                 Value::Tuple(items) => {
                     for child in items.iter().rev() {
-                        pending.push(child).map_err(errors::charge)?;
+                        pending.push(child).map_err(Failure::charge)?;
                     }
                 }
                 _ => {}
             }
         }
         if lengths.next().is_some() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
+            return Err(Failure::Static(
+                "ValueError",
                 "invalid writer length snapshot",
             ));
         }
         meter
             .count_decode((result.entries.len() as u64).saturating_mul(u64::from(usize::BITS)))
-            .map_err(errors::charge)?;
+            .map_err(Failure::charge)?;
         result
             .entries
             .as_mut_slice()

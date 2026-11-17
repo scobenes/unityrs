@@ -53,20 +53,22 @@ class DocTiers(unittest.TestCase):
         """DESIGN.md section 3's Tier U bullet with its list."""
         return self.design.split(f"- **{UNSUPPORTED_RULE}.**", 1)[1].split("\n- **")[0]
 
-    def test_y5_forced_parsing_cases_remain_open_for_y6a(self):
+    def test_y6a_closes_y5_forced_parsing_cases(self):
         rows = [line for line in self.parity.splitlines() if line.startswith((
             '| 22 `ImportHelper.parse_file` |', '| `ImportHelper.parse_file` |'))]
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 1)
+        self.assertIn('binding_y6_review.py', rows[0])
+        self.assertIn('replays_unitypy_residue_observations', rows[0])
+        self.assertIn('failed constructors retain endian changes', rows[0])
+        self.assertNotIn('| 22 `ImportHelper.parse_file` |', self.parity)
         documents = [(f'parse_file row {index}', row) for index, row in enumerate(rows)]
         for path in ('README.md', 'crates/unityrs-py/README.md'):
             documents.append((path, ' '.join((ROOT / path).read_text(encoding='utf-8').split())))
         for name, text in documents:
             with self.subTest(document=name):
-                for term in ('read(None)', 'read(-2)', 'CAB', 'Y6a', 'open'):
+                for term in ('read(None)', 'read(-2)', 'CAB', 'Y6a'):
                     self.assertIn(term, text)
-                self.assertRegex(text, r'section 22|\| 22 `ImportHelper.parse_file`')
-        self.assertIn('normal dispatch', rows[1])
-        self.assertIn('successful containers only', rows[1])
+                self.assertNotIn('remain open', text)
 
     def test_semantic_save_short_fixed_fields_has_a_tier_c_acceptance_rule(self):
         rows = [cells for cells, tier in rows_by_tier(self.parity)

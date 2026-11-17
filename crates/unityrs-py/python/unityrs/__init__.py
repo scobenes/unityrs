@@ -14,8 +14,8 @@ ObjectReader and unityrs.classes provide runtime classes generated from an exter
 TPK (or the installed UnityPy resource). No Pillow dependency.
 """
 
+import io
 import ntpath
-from io import BytesIO as _BytesIO
 import os
 import re
 import sys
@@ -44,6 +44,15 @@ def _key(file, name):
         return name
     default = str(file.__hash__()) if hasattr(file, "__hash__") else ""
     return getattr(file, "name", default)
+
+
+def _name_text(name):
+    if isinstance(name, str):
+        return str.__str__(name)
+    if isinstance(name, os.PathLike):
+        from ._output import exact_string
+        return exact_string(name)
+    return os.fsdecode(name) if isinstance(name, bytes) else str(name)
 
 
 def _locked(method):
@@ -172,13 +181,26 @@ class Environment:
                     data, split_guard = self._split_input(physical, _root)
                     return self.load_file(data, parent, key, is_dependency)
                 if not os.path.exists(physical):
-                    physical = find_sensitive_path(self.path, physical)
+                    try:
+                        physical = find_sensitive_path(self.path, physical)
+                    except FileNotFoundError:
+                        if not self._custom_fs and os.fspath(self.path).startswith(("file:", "local:")):
+                            return None
+                        if self._custom_fs and self.fs.exists(physical):
+                            with self.fs.open(physical, "rb") as stream:
+                                return self.load_file(stream, parent, key, is_dependency)
+                        raise
                     if physical is None:
+                        if self._custom_fs and self.fs.exists(file):
+                            with self.fs.open(file, "rb") as stream:
+                                return self.load_file(stream, parent, key, is_dependency)
                         return None
             if self._custom_fs:
                 with self.fs.open(physical, "rb") as stream:
                     return self.load_file(stream, parent, key, is_dependency)
             self._keys[physical] = key
+            if os.path.isdir(physical):
+                raise IsADirectoryError(21, os.strerror(21), physical)
             match = re.match(r"(.*?([^/\\]+?))\.split\d+", physical)
             if match:
                 key = re.sub(r"\.split\d+.*$", "", key)
@@ -190,6 +212,22 @@ class Environment:
             result = self._wrap(native, parent, is_dependency)
             self._sync()
         else:
+            from .streams import EndianBinaryReader as ExplicitReader
+            explicit_reader = isinstance(file, ExplicitReader)
+            # PARITY.md 19.2: mutable buffers and read-only streams use the
+            # bytes reference. Keep every copy charged until native handoff.
+            input_guard = None
+            if hasattr(file, "read") and (not hasattr(file, "seek") or not hasattr(file, "tell")):
+                file, input_guard = self._read_stream(file, positioned=False)
+            if not name and isinstance(file, (bytearray, memoryview)) and (
+                    isinstance(file, bytearray) or not file.readonly):
+                if input_guard is None:
+                    input_guard = TreeTraversal(self._limits, self._budget)
+                size = memoryview(file).nbytes
+                if size > self._limits.max_input_bytes:
+                    raise LimitError("input exceeds max_input_bytes")
+                input_guard.step(0, size + 256, size)
+                file = bytes(file)
             key = _key(file, name)
             # Rust keys are byte strings; Python dict keys keep the stream's
             # original type (including None and integer file descriptors).
@@ -198,8 +236,6 @@ class Environment:
             self._names[native_key] = key if isinstance(key, str) else ""
             stream = hasattr(file, "read")
             if stream:
-                if not hasattr(file, "seek") or not hasattr(file, "tell"):
-                    raise TypeError(f"memoryview: a bytes-like object is required, not '{type(file).__name__}'")
                 data, input_guard = self._read_stream(file)
             else:
                 if not isinstance(file, (bytes, bytearray, memoryview)):
@@ -209,30 +245,42 @@ class Environment:
             name_guard.step(0, str.__len__(native_key) * 4 + 256, 0)
             encoded_name = native_key.encode("utf-8", "surrogateescape")
             del name_guard
-            native = config._load(self._native, self._native.load_bytes, data, encoded_name, is_dependency, stream)
-            if native is not None and not isinstance(key, str):
-                kind = native.metadata()["kind"]
-                if kind == "SerializedFile":
-                    key.endswith((".ress", ".resource"))
-                if kind.startswith("EndianBinaryReader"):
-                    simplify_name(key)
-            if native is not None:
-                result = self._wrap(native, parent, is_dependency)
-                if isinstance(result, SerializedFile):
-                    result._bytes_io_reader = isinstance(file, _BytesIO)
-                    # A nested load may have synced this core file and built
-                    # its lazy reader before the outer native call returned.
-                    reader = result.__dict__.get('_reader')
-                    if reader is not None:
-                        from ._object_reader import ObjectFileReader
-                        if isinstance(reader, ObjectFileReader):
-                            reader._bytes_io = result._bytes_io_reader
+            from .streams.EndianBinaryReader import EndianBinaryReader_Streamable as ExplicitStream
+            stream_kind = stream and (not explicit_reader or isinstance(file, ExplicitStream))
+            source = file.stream if explicit_reader and stream_kind else file
+            stream_kind = 2 if stream_kind and isinstance(source, io.BytesIO) else int(stream_kind)
+            position = file.Position if explicit_reader else 0
+            native = config._load(self._native, self._native.load_bytes, data, encoded_name,
+                                  is_dependency, stream_kind, position)
             self._sync()
             if native is None:
                 return None
-            if not isinstance(key, str) and kind.startswith("EndianBinaryReader"):
+            result = self._wrap(native, parent, is_dependency)
+            if isinstance(result, SerializedFile):
+                result._bytes_io_reader = isinstance(source, io.BytesIO)
+                # A reentrant load can already have published the lazy reader.
+                reader = result.__dict__.get('_reader')
+                if reader is not None:
+                    from ._object_reader import ObjectFileReader
+                    if isinstance(reader, ObjectFileReader):
+                        reader._bytes_io = result._bytes_io_reader
+            if explicit_reader:
+                # Detection resets readers of at least 20 bytes. Constructors
+                # then advance that same reader, including its endian change.
+                position, endian = native.constructor_reader_state()
+                if len(data) >= 20:
+                    file.Position = position
+                if endian is not None:
+                    file.endian = endian
+                if isinstance(result, SerializedFile):
+                    result.reader = file
+                elif isinstance(result, EndianBinaryReader):
+                    result = file
+                    self.cabs[simplify_name(native_key)] = result
+            if not isinstance(key, str) and isinstance(result, (SerializedFile, EndianBinaryReader, ExplicitReader)):
                 self.cabs.pop(simplify_name(native_key), None)
-                self.cabs[simplify_name(key)] = result
+                cab_key = key if isinstance(key, bytes) and not isinstance(result, SerializedFile) else _name_text(key)
+                self.cabs[simplify_name(cab_key)] = result
             self.files[key] = result
         self.files[key] = result
         return result
@@ -260,10 +308,11 @@ class Environment:
         guard.step(0, len(result) + 64, 0)
         return bytes(result), guard
 
-    def _read_stream(self, stream):
-        pos = stream.tell()
+    def _read_stream(self, stream, positioned=True):
+        pos = stream.tell() if positioned else None
         try:
-            stream.seek(0)
+            if positioned:
+                stream.seek(0)
             # Short reads need not mean EOF. Keep every request and the total
             # bounded, including Python's Py_ssize_t read-size limit.
             remaining = self._limits.max_input_bytes + 1
@@ -287,7 +336,8 @@ class Environment:
                 raise LimitError("input exceeds max_input_bytes")
             return data, guard
         finally:
-            stream.seek(pos)
+            if positioned:
+                stream.seek(pos)
 
     @property
     def objects(self):
@@ -326,7 +376,7 @@ class Environment:
 
     @_locked
     def load_files(self, files):
-        self.load_assets(files, lambda path: open(path, "rb"))
+        self.load_assets(files, lambda path: self.fs.open(path, "rb") if self._custom_fs else open(path, "rb"))
 
     @_locked
     def load_zip_file(self, value):
@@ -371,7 +421,13 @@ class Environment:
         found = self.get_cab(name)
         if found is not None:
             return found
-        root = os.path.realpath(self.path)
+        local_path = os.fspath(self.path)
+        if not self._custom_fs:
+            for prefix in ("file://", "file:", "local://", "local:"):
+                if local_path.startswith(prefix):
+                    local_path = local_path[len(prefix):]
+                    break
+        root = os.path.realpath(local_path)
         def inside(path):
             resolved = os.path.realpath(path)
             try:
@@ -395,13 +451,14 @@ class Environment:
                     return None
                 ancestor = parent
         direct = os.path.join(self.path, name)
-        if inside(direct) is not None and os.path.isfile(direct):
+        if (os.path.isfile(direct) or self.fs.exists(direct)) and (
+                inside(direct) is not None or local_path != os.fspath(self.path)):
             return self.load_file(direct, is_dependency=is_dependency, _root=root)
         if not self.local_files and self.path:
             guard = TreeTraversal(self._limits, self._budget)
             if not self._custom_fs:
                 from ._search import files
-                inventory = files(self.path)
+                inventory = files(local_path)
             else:
                 inventory = []
                 for directory, _, names in self.fs.walk(self.path):
@@ -414,17 +471,35 @@ class Environment:
                 simple_inventory.append(self.fs.sep.join((os.path.dirname(entry), simplify_name(entry))))
             self.local_files, self.local_files_simple = inventory, simple_inventory
         for path in self.local_files:
-            if path == name or path.endswith(name):
+            if path == name or path.endswith(self.fs.sep + name):
                 candidate = inside(path)
                 if candidate is not None:
                     return self.load_file(path, is_dependency=is_dependency, _root=root)
         for path in self.local_files:
             simple = os.path.join(os.path.dirname(path), ntpath.basename(path).lower())
-            if simple.endswith(name):
+            if simple == simplify_name(name) or simple.endswith(self.fs.sep + simplify_name(name)):
                 candidate = inside(simple)
                 if candidate is not None:
                     return self.load_file(simple, is_dependency=is_dependency, _root=root)
         raise FileNotFoundError(f"File {name} not found in {self.path}")
+
+    @_locked
+    def _find_file_exact(self, name, is_dependency=True):
+        # The inventory is the same files-first walk used by find_file. Retry
+        # only an exact basename, after the ordinary lookup has missed.
+        guard = TreeTraversal(self._limits, self._budget)
+        root_path = os.fspath(self.path)
+        guard.step(0, len(root_path) * 16 + 512, len(root_path))
+        root = os.path.realpath(root_path)
+        for path in self.local_files:
+            guard.step(0, len(path) * 16 + 512, len(path))
+            if ntpath.basename(path) == name:
+                try:
+                    confined_path(path, root)
+                except FileNotFoundError:
+                    continue
+                return self.load_file(path, is_dependency=is_dependency, _root=root)
+        return None
 
     @_locked
     def load_folder(self, path):
@@ -479,7 +554,7 @@ class Environment:
         pending = []
         for name, file in self.files.items():
             if getattr(file, "is_changed", False):
-                leaf = output_name(name, container=True, guard=guard)
+                leaf = output_name(_name_text(name), container=True, guard=guard)
                 guard.step(0, 128, 1)
                 pending.append((leaf, file))
         if not pending:

@@ -159,7 +159,7 @@ jobs:
   # ignored in debug builds and run here alone.
   scale:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -187,8 +187,8 @@ jobs:
           --test url_runs_scale --test store_runs
           --test controller_determinism
           --test finish_alloc --test publication_pool --test golden_runs --test pool_alloc --test controller_alloc
-          --test archive_publish --test limit_squeeze --test lifetime_process --test memory_gate --test memory_constants
-          -- --include-ignored --skip every_store_run_allocation_is_fallible_after_publication_admission
+          --test archive_publish --test limit_squeeze --test lifetime_process --test memory_gate --test memory_constants --test store_memory_gate --test memory_retention
+          -- --include-ignored --test-threads=1 --skip every_store_run_allocation_is_fallible_after_publication_admission
 
   # The whole-store CR10 census and refusal sweep (PUT, multipart, resume,
   # verification and finish): thousands of children, so a job of its own
@@ -386,9 +386,9 @@ jobs:
             -r scripts/requirements-tests.txt
       # A skipped test, or fewer tests than the minimum, fails the job.
       - name: Self-tests (scripts)
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=131'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=140'
       - name: Aggregate memory regeneration tooling
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/memory/tests=33'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/memory/tests=66'
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
   # section 3) and with UnityPy's samples, so the tests that need them run;
@@ -777,7 +777,7 @@ jobs:
       - name: Check the API oracle fixtures
         run: python tools/fixtures/py_bindings.py --check
       - name: Test the installed wheel
-        run: python scripts/unittest-suites crates/unityrs-py/python/tests=113
+        run: python scripts/unittest-suites crates/unityrs-py/python/tests=133
       - name: Compare the binding with UnityPy
         working-directory: tools/parity
-        run: python ../../scripts/unittest-suites bindings=269
+        run: python ../../scripts/unittest-suites bindings=317
