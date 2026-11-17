@@ -11,7 +11,7 @@ use super::registry::from_callers;
 use super::resource_data::top_container;
 use super::{Cab, DerefError, Environment, Found, HeldCab, PPtr, RawCab, pptr};
 use crate::error::{Error, NotFound};
-use crate::files::{File, ParentKind, SerializedFile};
+use crate::files::{File, FileSlot, ParentKind, SerializedFile};
 use crate::limits::Meter;
 use crate::object::ObjectRef;
 use crate::pystr::{clean_external_path, lower_eq, simplify_name};
@@ -47,6 +47,28 @@ pub(super) enum Reached {
     /// The resolver's file, loaded now: under the name it was asked for or
     /// another, which only the next lookup tells.
     Load,
+}
+
+pub(super) struct HeldLookup<'a> {
+    meter: &'a Meter,
+    container: Option<File>,
+}
+
+fn scan_siblings(
+    slots: &[FileSlot],
+    clean: &RawStr,
+    work: Option<&HeldLookup<'_>>,
+) -> Result<Option<usize>, Error> {
+    for slot in slots {
+        if let Some(work) = work {
+            work.meter
+                .count_decode((slot.name.as_bytes().len() as u64).saturating_add(1))?;
+        }
+        if lower_eq(slot.name.as_bytes(), clean.as_bytes()) {
+            return Ok(Some(slot.dir_index));
+        }
+    }
+    Ok(None)
 }
 
 impl Environment {
@@ -119,7 +141,7 @@ impl Environment {
         is_dependency: bool,
         meter: &Arc<Meter>,
     ) -> Result<Option<File>, Error> {
-        match self.find(name, is_dependency, meter)? {
+        match self.find(name, is_dependency, meter, None)? {
             None => Ok(None),
             Some((Found::File(file), _)) => Ok(Some(file)),
             // A raw entry the registry answered is in its bundle's cell, so
@@ -140,12 +162,20 @@ impl Environment {
         name: &RawStr,
         is_dependency: bool,
         meter: &Arc<Meter>,
+        mut work: Option<&mut HeldLookup<'_>>,
     ) -> Result<Option<(Found, Reached)>, Error> {
         // UnityPy environment.py:326-329: `get_cab(simplify_name(name))`,
         // which simplifies again.
         let found = self.room(|| {
             let simple = simplify_name(name, meter)?;
-            self.inner.registry.get(&simple, meter)
+            if let Some(work) = work.as_deref_mut() {
+                Ok(self.inner.registry.get_held(&simple, meter)?.map(|held| {
+                    work.container = held.hold;
+                    held.cab
+                }))
+            } else {
+                self.inner.registry.get(&simple, meter)
+            }
         })?;
         if let Some(cab) = found {
             return Ok(Some((Found::Cab(cab), Reached::Lookup)));
@@ -179,12 +209,44 @@ impl Environment {
     /// evicts the others and retries once, `from`'s top-level bundle held
     /// meanwhile (plan section 3.13; review round 8: it had no retry).
     pub fn deref(&self, from: &Arc<SerializedFile>, pptr: PPtr) -> Result<ObjectRef, DerefError> {
+        self.deref_inner(from, pptr, None)
+    }
+
+    /// Resolve as in [`Self::deref`], retaining the target's top-level
+    /// container when available. Hold the returned file to preserve access
+    /// to the target's siblings across dependency cache evictions.
+    ///
+    /// Charge the caller's work meter for the external path and each sibling
+    /// name examined, including any scan on retry.
+    pub fn deref_held(
+        &self,
+        from: &Arc<SerializedFile>,
+        pptr: PPtr,
+        meter: &Meter,
+    ) -> Result<(ObjectRef, Option<File>), DerefError> {
+        let mut work = HeldLookup {
+            meter,
+            container: None,
+        };
+        let object = self.deref_inner(from, pptr, Some(&mut work))?;
+        Ok((object, work.container))
+    }
+
+    fn deref_inner(
+        &self,
+        from: &Arc<SerializedFile>,
+        pptr: PPtr,
+        mut work: Option<&mut HeldLookup<'_>>,
+    ) -> Result<ObjectRef, DerefError> {
         // UnityPy classes/PPtr.py:49-50
         if pptr.path_id == 0 {
             return Err(DerefError::Null);
         }
         // :53-54
         if pptr.file_id == 0 {
+            if let Some(work) = work {
+                work.container = top_container(from);
+            }
             return object_in(from, pptr.path_id);
         }
         let _top = top_container(from);
@@ -192,8 +254,14 @@ impl Environment {
         // loads again what the first run loaded.
         self.room(|| {
             self.reach_chain(from)?;
-            let (target, _) = self.external(from, pptr.file_id, None)?;
-            Self::object_of(&target, pptr.path_id)
+            let (target, _) = self.external(from, pptr.file_id, None, work.as_deref_mut())?;
+            let object = Self::object_of(&target, pptr.path_id)?;
+            if let Some(work) = work.as_deref_mut()
+                && work.container.is_none()
+            {
+                work.container = top_container(object.file());
+            }
+            Ok(object)
         })
     }
 
@@ -207,6 +275,7 @@ impl Environment {
         from: &Arc<SerializedFile>,
         file_id: i32,
         siblings: Option<&mut Siblings>,
+        work: Option<&mut HeldLookup<'_>>,
     ) -> Result<(Found, Reached), DerefError> {
         // :57-60
         let externals = from.externals();
@@ -222,6 +291,11 @@ impl Environment {
         };
         let meter = from.meter();
         // :68-73
+        if let Some(work) = work.as_deref() {
+            work.meter
+                .count_decode(external.path.as_bytes().len() as u64)
+                .map_err(Error::from)?;
+        }
         let clean = clean_external_path(&external.path, meter).map_err(Error::from)?;
         // :63-78: the container's `files`, each key lower-cased, the first
         // equal one wins.
@@ -235,11 +309,7 @@ impl Environment {
                     };
                     let hit = match siblings {
                         Some(index) => index.find(&bundle, &clean)?,
-                        None => bundle
-                            .files()
-                            .iter()
-                            .find(|s| lower_eq(s.name.as_bytes(), clean.as_bytes()))
-                            .map(|s| s.dir_index),
+                        None => scan_siblings(bundle.files(), &clean, work.as_deref())?,
                     };
                     match hit {
                         Some(i) => {
@@ -258,12 +328,9 @@ impl Environment {
                     let web = web.upgrade().ok_or_else(|| DerefError::ContainerDropped {
                         name: parent.name.clone(),
                     })?;
-                    let hit = web
-                        .files()
-                        .iter()
-                        .find(|s| lower_eq(s.name.as_bytes(), clean.as_bytes()));
+                    let hit = scan_siblings(web.files(), &clean, work.as_deref())?;
                     match hit {
-                        Some(slot) => Some((web.entry(slot.dir_index)?, Reached::Sibling)),
+                        Some(i) => Some((web.entry(i)?, Reached::Sibling)),
                         None => None,
                     }
                 }
@@ -285,7 +352,7 @@ impl Environment {
             Some((f, reached)) => Ok((Found::File(f), reached)),
             // :80-85: `find_file`'s `None`, and its walk's
             // `FileNotFoundError`, are the pointer's `FileNotFoundError`.
-            None => match self.find(&clean, true, meter) {
+            None => match self.find(&clean, true, meter, work) {
                 Ok(Some(t)) => Ok(t),
                 Ok(None) | Err(Error::NotFound(NotFound::Cab(_))) => Err(DerefError::NotFound {
                     path: external.path.clone(),

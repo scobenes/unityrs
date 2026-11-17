@@ -1,10 +1,11 @@
 //! Ordered clip discovery through the caller's file view.
 use crate::AnimError;
 use crate::controller::{ControllerTable, read_leaves};
-use crate::read::{Dict, identity_key, same_object};
+use crate::read::{Dict, identity_key, same_object, version};
 use std::sync::Arc;
 use unityrs_core::ObjectRef;
 use unityrs_core::env::{Environment, PPtr};
+use unityrs_core::files::File;
 use unityrs_core::limits::{Meter, MeteredVec};
 use unityrs_core::value::{Parsed, Value};
 use unityrs_scene::{Component, Graph, NodeId};
@@ -40,13 +41,13 @@ pub struct ClipSlot {
     pub source: SourceSlot,
     /// The last replacement that supplied the effective clip, if any.
     pub replacement: Option<SourceSlot>,
-    result: Result<ObjectRef, SlotError>,
+    result: Result<ResolvedObject, SlotError>,
     first: bool,
 }
 
 impl ClipSlot {
     pub fn clip(&self) -> Result<&ObjectRef, &SlotError> {
-        self.result.as_ref()
+        self.result.as_ref().map(|resolved| &resolved.object)
     }
 
     /// Whether this is the first successful occurrence of its effective clip.
@@ -54,6 +55,13 @@ impl ClipSlot {
     pub fn is_first(&self) -> bool {
         self.first
     }
+}
+
+#[derive(Debug)]
+struct ResolvedObject {
+    object: ObjectRef,
+    // Keep the file's sibling scope and identity stable across eviction.
+    _container: Option<File>,
 }
 
 /// One Animation/Animator component and its original ordering.
@@ -239,21 +247,30 @@ fn resolve(
     from: &SourceSlot,
     accepts: impl FnOnce(i32) -> bool,
     meter: &Arc<Meter>,
-) -> Result<ObjectRef, AnimError> {
+) -> Result<ResolvedObject, AnimError> {
     let ptr = from.pointer.ok_or(AnimError::Malformed(from.field))?;
     meter.count_decode(1)?;
-    let object = env.deref(from.owner.file(), ptr)?;
+    // Unity uses zero for the owning file and positive one-based indices for
+    // externals. Core also supports UnityPy's negative indexing.
+    // https://github.com/Unity-Technologies/UnityDataTools/blob/main/Documentation/assetbundle-format.md#bundle-dependencies-and-object-references
+    if ptr.file_id < 0 {
+        return Err(AnimError::NegativeFileId(ptr.file_id));
+    }
+    let (object, container) = env.deref_held(from.owner.file(), ptr, meter)?;
     if !accepts(object.class_id()) {
         return Err(AnimError::WrongClass(object.class_id()));
     }
-    Ok(object)
+    Ok(ResolvedObject {
+        object,
+        _container: container,
+    })
 }
 
 fn clip_at(
     env: &Environment,
     from: &SourceSlot,
     meter: &Arc<Meter>,
-) -> Result<ObjectRef, AnimError> {
+) -> Result<ResolvedObject, AnimError> {
     resolve(env, from, |class| class == 74, meter)
 }
 
@@ -294,8 +311,8 @@ fn push_slots(
 
 fn stored_result(
     from: &SourceSlot,
-    result: Result<ObjectRef, AnimError>,
-) -> Result<Result<ObjectRef, SlotError>, AnimError> {
+    result: Result<ResolvedObject, AnimError>,
+) -> Result<Result<ResolvedObject, SlotError>, AnimError> {
     match result {
         Err(cause) if cause.resource_refusal() => Err(cause),
         Err(cause) => Ok(Err(SlotError {
@@ -328,22 +345,35 @@ fn controller(
         return Ok(());
     }
     let limit = rig.component.file().context().limits.max_tree_depth;
-    let mut chain: MeteredVec<(ObjectRef, Parsed)> = MeteredVec::new(meter);
+    let mut chain = MeteredVec::<(ResolvedObject, Parsed)>::new(meter);
     loop {
         if chain.len() as u64 >= u64::from(limit) {
             return note(&mut rig.issues, edge, AnimError::ControllerDepth(limit));
         }
-        let object = match resolve(env, &edge, |id| matches!(id, 91 | 93 | 221), meter) {
-            Ok(object) => object,
+        let resolved = match resolve(env, &edge, |id| matches!(id, 91 | 93 | 221), meter) {
+            Ok(resolved) => resolved,
             Err(cause) => return note(&mut rig.issues, edge, cause),
         };
+        let object = &resolved.object;
         meter.count_decode(chain.len() as u64)?;
         if chain
             .as_slice()
             .iter()
-            .any(|(ancestor, _)| same_object(ancestor, &object))
+            .any(|(ancestor, _)| same_object(&ancestor.object, object))
         {
             return note(&mut rig.issues, edge, AnimError::ControllerCycle);
+        }
+        // Unity documents the restriction as early as 2019.4.
+        // https://docs.unity3d.com/2019.4/Documentation/ScriptReference/AnimatorOverrideController-ctor.html
+        if object.class_id() == 221
+            && edge.owner.class_id() == 221
+            && version(&edge.owner).is_some_and(|v| v >= (2019, 4))
+        {
+            note(
+                &mut rig.issues,
+                source(&edge.owner, edge.field, edge.ordinal, edge.pointer),
+                AnimError::NestedOverrideController,
+            )?;
         }
         let parsed = match object.parse_as_dict(false) {
             Ok(parsed) => parsed,
@@ -355,14 +385,10 @@ fn controller(
         };
         if object.class_id() != 221 {
             let clips_field = "m_AnimationClips";
-            if let Err(cause) = push_slots(&mut rig.slots, env, &object, &dict, clips_field, true) {
-                return note(
-                    &mut rig.issues,
-                    source(&object, clips_field, 0, None),
-                    cause,
-                );
+            if let Err(cause) = push_slots(&mut rig.slots, env, object, &dict, clips_field, true) {
+                return note(&mut rig.issues, source(object, clips_field, 0, None), cause);
             }
-            let leaves = match read_leaves(&object, &dict, rig.slots.len()) {
+            let leaves = match read_leaves(object, &dict, rig.slots.len()) {
                 Ok(leaves) => leaves,
                 Err(cause) => {
                     note(&mut rig.issues, edge, cause)?;
@@ -370,25 +396,23 @@ fn controller(
                 }
             };
             rig.controller = Some(ControllerTable {
-                object,
+                object: resolved.object,
                 serialized: parsed,
                 leaves,
             });
             break;
         }
-        edge = match pointer_source(&dict, &object, parsed.value(), 0, field) {
+        edge = match pointer_source(&dict, object, parsed.value(), 0, field) {
             Ok(edge) => edge,
-            Err(cause) => return note(&mut rig.issues, source(&object, field, 0, None), cause),
+            Err(cause) => return note(&mut rig.issues, source(object, field, 0, None), cause),
         };
-        chain.push((object, parsed))?;
+        chain.push((resolved, parsed))?;
     }
-    while let Some((object, parsed)) = chain.pop() {
-        let dict = Dict {
-            parsed: &parsed,
-            meter,
-        };
-        if let Err(cause) = apply_overrides(env, rig, &object, &dict) {
-            note(&mut rig.issues, source(&object, "m_Clips", 0, None), cause)?;
+    for (resolved, parsed) in chain.as_slice().iter().rev() {
+        let object = &resolved.object;
+        let dict = Dict { parsed, meter };
+        if let Err(cause) = apply_overrides(env, rig, object, &dict) {
+            note(&mut rig.issues, source(object, "m_Clips", 0, None), cause)?;
         }
     }
     Ok(())
@@ -429,7 +453,7 @@ fn apply_overrides(
             }
         };
         match clip_at(env, &original, dict.meter) {
-            Ok(clip) => originals.push((identity_key(&clip), ordinal, clip))?,
+            Ok(clip) => originals.push((identity_key(&clip.object), ordinal, clip))?,
             Err(cause) => note(&mut rig.issues, original, cause)?,
         }
     }
@@ -459,6 +483,7 @@ fn apply_overrides(
             Ok(replacement) => replacement,
             Err(cause) => {
                 slot.result = stored_result(&source(owner, field, ordinal, None), Err(cause))?;
+                slot.replacement = None;
                 continue;
             }
         };
@@ -467,11 +492,10 @@ fn apply_overrides(
             .is_some_and(|(candidate, _, _)| *candidate == key)
         {
             slot.result = stored_result(&replacement, Err(AnimError::AmbiguousOverride))?;
+            slot.replacement = None;
         } else if replacement.pointer.is_some_and(|ptr| ptr.is_set()) {
             slot.result = stored_result(&replacement, clip_at(env, &replacement, dict.meter))?;
-            if slot.result.is_ok() {
-                slot.replacement = Some(replacement);
-            }
+            slot.replacement = slot.result.is_ok().then_some(replacement);
         }
     }
     Ok(())

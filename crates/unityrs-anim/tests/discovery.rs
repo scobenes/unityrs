@@ -1,10 +1,13 @@
 use std::sync::Arc;
 use unityrs_anim::{AnimError, ClipSelector, SelectionError, discover};
-use unityrs_core::env::{DerefError, EnvOptions, Environment, Source};
+use unityrs_core::budget::{Reservation, Unbounded};
+use unityrs_core::env::{CabResolver, DerefError, EnvOptions, Environment, Source};
+use unityrs_core::error::{Error, LimitKind};
 use unityrs_core::files::{File, SerializedFile};
 use unityrs_core::limits::Meter;
-use unityrs_core::{Bytes, RawStr};
+use unityrs_core::{Bytes, FileContext, RawStr};
 use unityrs_scene::{GraphOptions, graph_from_scene_file};
+use unityrs_testkit::env::bundle;
 use unityrs_testkit::ngui::{Object, V, set_field};
 use unityrs_testkit::scene3d::{self as s, Layout, anim as a};
 
@@ -135,6 +138,7 @@ fn ordered_scoped_slots_and_direct_selection() {
         assert_eq!(err.source.field, field);
         assert_eq!(err.source.owner.path_id(), owner);
         assert_eq!(slots[i].source.ordinal, i);
+        assert!(slots[i].replacement.is_none());
     }
     let leaves = controller.controller().unwrap().leaves();
     assert_eq!(leaves[0].slot.as_ref().unwrap(), &5);
@@ -187,6 +191,233 @@ fn ordered_scoped_slots_and_direct_selection() {
 }
 
 #[test]
+fn ambiguous_outer_override_does_not_name_the_inner_replacement() {
+    let env = Environment::new(EnvOptions::unitypy());
+    let file = load_layout(
+        &env,
+        b"overrides",
+        &[],
+        &[
+            Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
+            Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+            a::animator(3, (0, 4)),
+            a::overrides(4, (0, 5), &[((0, 8), (0, 9)), ((0, 8), (0, 0))]),
+            a::overrides(5, (0, 6), &[((0, 7), (0, 8))]),
+            a::controller(6, &[(0, 7)], &[0]),
+            a::clip(7),
+            a::clip(8),
+            a::clip(9),
+        ],
+        Layout::Unity6000,
+    );
+    let meter = Meter::unlimited();
+    let graph = graph_from_scene_file(&env, &file, &GraphOptions::default(), &meter).unwrap();
+    let catalog = discover(&env, &graph, &meter).unwrap();
+    let rig = &catalog.rigs()[0];
+    let [slot] = rig.slots() else {
+        panic!("one controller clip slot")
+    };
+    let failure = slot.clip().unwrap_err();
+    let [nested] = rig.issues() else {
+        panic!("one nested override diagnostic")
+    };
+    assert!(matches!(nested.cause, AnimError::NestedOverrideController));
+    assert_eq!(nested.source.owner.path_id(), 4);
+    assert_eq!(nested.source.field, "m_Controller");
+    assert_eq!(nested.source.pointer.unwrap().path_id, 5);
+    assert!(matches!(failure.cause, AnimError::AmbiguousOverride));
+    assert_eq!(failure.source.owner.path_id(), 4);
+    assert!(slot.replacement.is_none());
+}
+
+#[test]
+fn negative_file_id_cannot_select_the_first_of_two_externals() {
+    let env = Environment::new(EnvOptions::unitypy());
+    load(&env, b"first", &[], &[a::clip(42)]);
+    load(&env, b"second", &[], &[a::clip(42)]);
+    let file = load(
+        &env,
+        b"rig",
+        &["first", "second"],
+        &[
+            Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
+            Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+            a::animator(3, (0, 4)),
+            a::overrides(4, (0, 5), &[((0, 6), (-1, 42))]),
+            a::controller(5, &[(0, 6)], &[0]),
+            a::clip(6),
+        ],
+    );
+    let meter = Meter::unlimited();
+    let graph = graph_from_scene_file(&env, &file, &GraphOptions::default(), &meter).unwrap();
+    let catalog = discover(&env, &graph, &meter).unwrap();
+    let failure = catalog.rigs()[0].slots()[0].clip().unwrap_err();
+    assert!(matches!(failure.cause, AnimError::NegativeFileId(-1)));
+    assert_eq!(failure.source.pointer.unwrap().file_id, -1);
+}
+
+#[test]
+fn repeated_clips_charge_for_each_bundle_sibling_scan() {
+    for siblings in [0, 1024] {
+        let env = Environment::new(EnvOptions::batch(Arc::new(FileContext::unitypy())));
+        let rig = s::file(
+            Layout::Unity2022,
+            &["clips"],
+            &[
+                Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
+                Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+                a::legacy(3, (1, 42), &[(1, 42); 3]),
+            ],
+        )
+        .unwrap();
+        let names: Vec<_> = (0..siblings).map(|i| format!("{i}.resS")).collect();
+        let mut entries = vec![("rig", rig)];
+        entries.extend(names.iter().map(|name| (name.as_str(), vec![0])));
+        entries.push((
+            "clips",
+            s::file(Layout::Unity2022, &[], &[a::clip(42)]).unwrap(),
+        ));
+        let loaded = env
+            .load(Source::Bytes {
+                name: RawStr::from_static(b"rig.bundle"),
+                data: Bytes::from(bundle(&entries)),
+            })
+            .unwrap();
+        let File::Serialized(file) = loaded.container_entry(0).unwrap() else {
+            panic!("rig fixture");
+        };
+        let graph =
+            graph_from_scene_file(&env, &file, &GraphOptions::default(), &Meter::unlimited())
+                .unwrap();
+        let meter =
+            Meter::with_decode_work(u64::MAX, 3000, Arc::new(Unbounded), Reservation::Input);
+        let result = discover(&env, &graph, &meter);
+        if siblings == 0 {
+            let catalog = result.unwrap();
+            let rig = &catalog.rigs()[0];
+            assert_eq!(rig.clips().count(), 1);
+            assert_eq!(rig.slots().len(), 4);
+        } else {
+            assert!(matches!(
+                result,
+                Err(AnimError::Deref(DerefError::Load(Error::Limit(error))))
+                    if error.kind() == LimitKind::DecodeWork
+            ));
+        }
+    }
+}
+
+#[test]
+fn override_can_find_sibling_clips_after_its_dependency_is_evicted() {
+    #[derive(Debug)]
+    struct Pressure(Bytes);
+    impl CabResolver for Pressure {
+        fn resolve(&self, name: &[u8]) -> Option<Source> {
+            (name == b"pressure").then(|| Source::Bytes {
+                name: RawStr::from_static(b"pressure"),
+                data: self.0.clone(),
+            })
+        }
+    }
+
+    let controller = s::file(
+        Layout::Unity2022,
+        &["clips", "pressure"],
+        &[
+            a::overrides(4, (0, 5), &[((1, 6), (1, 7))]),
+            a::controller(5, &[(1, 6), (2, 8)], &[0, 1]),
+        ],
+    )
+    .unwrap();
+    let clips = s::file(Layout::Unity2022, &[], &[a::clip(6), a::clip(7)]).unwrap();
+    let pressure = s::file(Layout::Unity2022, &[], &[a::clip(8)]).unwrap();
+    let mut options = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+    options.dep_cache_bytes = 1;
+    options.resolver = Some(Arc::new(Pressure(Bytes::from(pressure))));
+    let env = Environment::new(options);
+    let dependency = bundle(&[("controller", controller), ("clips", clips)]);
+    drop(
+        env.load_dependency(Source::Bytes {
+            name: RawStr::from_static(b"controller.bundle"),
+            data: Bytes::from(dependency),
+        })
+        .unwrap(),
+    );
+    let file = load(
+        &env,
+        b"rig",
+        &["controller"],
+        &[
+            Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
+            Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+            a::animator(3, (1, 4)),
+        ],
+    );
+    let meter = Meter::unlimited();
+    let graph = graph_from_scene_file(&env, &file, &GraphOptions::default(), &meter).unwrap();
+    let before = env.stats().dependencies_evicted;
+    let catalog = discover(&env, &graph, &meter).unwrap();
+    assert!(env.stats().dependencies_evicted > before);
+    let rig = &catalog.rigs()[0];
+    assert!(rig.issues().is_empty(), "{:?}", rig.issues());
+    assert_eq!(
+        rig.clips()
+            .map(|slot| slot.clip().unwrap().path_id())
+            .collect::<Vec<_>>(),
+        [7, 8]
+    );
+    assert_eq!(
+        rig.slots()[0].replacement.as_ref().unwrap().owner.path_id(),
+        4
+    );
+}
+
+#[test]
+fn override_matches_base_clip_identity_after_its_bundle_is_evicted() {
+    let mut options = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+    options.dep_cache_bytes = 1;
+    let env = Environment::new(options);
+    for (name, cab, objects) in [
+        (
+            b"clips.bundle".as_slice(),
+            "clips",
+            vec![a::clip(6), a::clip(7)],
+        ),
+        (b"pressure.bundle".as_slice(), "pressure", vec![a::clip(8)]),
+    ] {
+        let data = s::file(Layout::Unity2022, &[], &objects).unwrap();
+        drop(
+            env.load_dependency(Source::Bytes {
+                name: RawStr::from_static(name),
+                data: Bytes::from(bundle(&[(cab, data)])),
+            })
+            .unwrap(),
+        );
+    }
+    let file = load(
+        &env,
+        b"rig",
+        &["clips", "pressure"],
+        &[
+            Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
+            Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+            a::animator(3, (0, 4)),
+            a::overrides(4, (0, 5), &[((1, 6), (1, 7))]),
+            a::controller(5, &[(1, 6), (2, 8)], &[0, 1]),
+        ],
+    );
+    let meter = Meter::unlimited();
+    let graph = graph_from_scene_file(&env, &file, &GraphOptions::default(), &meter).unwrap();
+    let before = env.stats().dependencies_evicted;
+    let catalog = discover(&env, &graph, &meter).unwrap();
+    assert!(env.stats().dependencies_evicted > before);
+    let rig = &catalog.rigs()[0];
+    assert!(rig.issues().is_empty(), "{:?}", rig.issues());
+    assert_eq!(rig.slots()[0].clip().unwrap().path_id(), 7);
+    assert_eq!(rig.slots()[1].clip().unwrap().path_id(), 8);
+}
+
+#[test]
 fn override_cycles_are_retained_as_rig_issues() {
     let env = Environment::new(EnvOptions::unitypy());
     let file = load(
@@ -204,7 +435,11 @@ fn override_cycles_are_retained_as_rig_issues() {
     let meter = Meter::unlimited();
     let graph = graph_from_scene_file(&env, &file, &GraphOptions::default(), &meter).unwrap();
     let catalog = discover(&env, &graph, &meter).unwrap();
-    let issue = &catalog.rigs()[0].issues()[0];
+    let issue = catalog.rigs()[0]
+        .issues()
+        .iter()
+        .find(|issue| matches!(issue.cause, AnimError::ControllerCycle))
+        .expect("cycle diagnostic");
     assert!(matches!(issue.cause, AnimError::ControllerCycle));
     assert_eq!(issue.source.owner.path_id(), 5);
     assert_eq!(issue.source.field, "m_Controller");

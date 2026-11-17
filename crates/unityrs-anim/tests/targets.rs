@@ -10,6 +10,10 @@ use unityrs_scene::{Graph, GraphOptions, graph_from_game_object};
 use unityrs_testkit::ngui::Object;
 use unityrs_testkit::scene3d::{self as s, Layout, anim as a};
 
+// IEEE CRC32 from zlib over the literal UTF-8 names.
+const SMILE_NAME_HASH: u32 = 0xc34b_2c0b; // Smile
+const SMILE_ATTRIBUTE_HASH: u32 = 0xa7cb_48af; // blendShape.Smile
+
 fn fixture(meter: &std::sync::Arc<Meter>) -> (Graph, std::sync::Arc<SerializedFile>) {
     let env = Environment::new(EnvOptions::unitypy());
     let mut objects = vec![
@@ -41,7 +45,7 @@ fn fixture(meter: &std::sync::Arc<Meter>) -> (Graph, std::sync::Arc<SerializedFi
                     class: 137,
                     custom: 20,
                     path: 3_583_462_788,
-                    attribute: 19,
+                    attribute: SMILE_ATTRIBUTE_HASH,
                     ..Default::default()
                 },
                 a::Binding {
@@ -169,7 +173,7 @@ fn morph_channels_are_bound_to_the_renderer_instance() {
     let other = file.object(53).unwrap();
     let channel = RendererChannel {
         name: b"Smile",
-        hash: 19,
+        hash: SMILE_NAME_HASH,
         target_slot: 3,
         frame: 7,
         full_weight: 80.0,
@@ -188,9 +192,11 @@ fn morph_channels_are_bound_to_the_renderer_instance() {
     let path = PathQuery::Name("骨".as_bytes());
     for property in [
         MorphProperty::Attribute(b"blendShape.Smile"),
-        MorphProperty::Hash(19),
+        MorphProperty::Hash(SMILE_ATTRIBUTE_HASH),
     ] {
-        let target = paths.bind_morph(path, property, &tables, &meter).unwrap();
+        let target = paths
+            .bind_morph(path, property, &[], &tables, &meter)
+            .unwrap();
         assert!(
             matches!(target, BindingTarget::Morph { node: 4, renderer, channel }
             if renderer.path_id() == 43 && channel.target_slot == 3 && channel.frame == 7)
@@ -199,20 +205,28 @@ fn morph_channels_are_bound_to_the_renderer_instance() {
     assert!(matches!(
         paths.bind_morph(
             PathQuery::Name(b"other"),
-            MorphProperty::Hash(19),
+            MorphProperty::Hash(SMILE_ATTRIBUTE_HASH),
+            &[],
             &tables,
             &meter
         ),
         Err(AnimError::FilteredTarget(5))
     ));
     assert!(matches!(
-        paths.bind_morph(path, MorphProperty::Hash(19), &[], &meter),
+        paths.bind_morph(
+            path,
+            MorphProperty::Hash(SMILE_ATTRIBUTE_HASH),
+            &[],
+            &[],
+            &meter
+        ),
         Err(AnimError::MissingAttachment(4))
     ));
     assert!(matches!(
         paths.bind_morph(
             PathQuery::Name(b"two"),
-            MorphProperty::Hash(19),
+            MorphProperty::Hash(SMILE_ATTRIBUTE_HASH),
+            &[],
             &tables,
             &meter
         ),
@@ -221,7 +235,7 @@ fn morph_channels_are_bound_to_the_renderer_instance() {
     let duplicate = [
         channel,
         RendererChannel {
-            name: b"Different",
+            target_slot: 4,
             ..channel
         },
     ];
@@ -230,7 +244,13 @@ fn morph_channels_are_bound_to_the_renderer_instance() {
         attachment: Attachment::Present(&duplicate),
     }];
     assert!(matches!(
-        paths.bind_morph(path, MorphProperty::Hash(19), &tables, &meter),
+        paths.bind_morph(
+            path,
+            MorphProperty::Hash(SMILE_ATTRIBUTE_HASH),
+            &[],
+            &tables,
+            &meter
+        ),
         Err(AnimError::AmbiguousChannel(4))
     ));
     assert!(matches!(
@@ -258,7 +278,7 @@ fn compiled_slots_bind_playable_targets_and_retain_metadata() {
     let renderer = file.object(43).unwrap();
     let channel = RendererChannel {
         name: b"Smile",
-        hash: 19,
+        hash: SMILE_NAME_HASH,
         target_slot: 3,
         frame: 7,
         full_weight: 80.0,
@@ -274,5 +294,26 @@ fn compiled_slots_bind_playable_targets_and_retain_metadata() {
     assert!(matches!(
         paths.bind_generic(&slots[1], &[], &[], &meter).unwrap(),
         BindingTarget::Metadata
+    ));
+    let path = PathQuery::Name("骨".as_bytes());
+    assert!(matches!(
+        paths.bind_morph(
+            path,
+            MorphProperty::Hash(SMILE_NAME_HASH),
+            &[],
+            &table,
+            &meter
+        ),
+        Err(AnimError::MissingChannel(4))
+    ));
+    assert!(matches!(
+        paths.bind_morph(
+            path,
+            MorphProperty::Attribute(b"blendShape.Smile"),
+            &[4],
+            &table,
+            &meter
+        ),
+        Err(AnimError::FilteredTarget(4))
     ));
 }

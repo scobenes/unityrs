@@ -48,8 +48,8 @@ fn reads_class_and_flag_layouts_with_multiple_records() {
                     class: if width == 2 { 65_535 } else { -7 },
                     attribute: 9,
                     script: (1, -8),
-                    pptr: 1,
-                    integer: 0,
+                    pptr: u8::from(!int_flag),
+                    integer: u8::from(int_flag && !managed_flag),
                     managed: u8::from(managed_flag),
                     ..Default::default()
                 },
@@ -73,7 +73,8 @@ fn reads_class_and_flag_layouts_with_multiple_records() {
                 path_id: -8
             }
         );
-        assert!(table.bindings()[1].flags.is_pptr);
+        assert_eq!(table.bindings()[1].flags.is_pptr, !int_flag);
+        assert_eq!(table.bindings()[1].flags.is_int, int_flag && !managed_flag);
         assert_eq!(table.bindings()[1].flags.is_managed_reference, managed_flag);
         assert_eq!(
             table.pptr_mapping(),
@@ -155,8 +156,8 @@ fn empty_mapping_still_requires_a_pointer_element() {
 }
 
 #[test]
-fn slot_widths_keep_metadata_in_place_and_refuse_unknowns_and_count_errors() {
-    let mut source = mixed_records();
+fn slot_widths_keep_metadata_in_place_and_refuse_count_errors() {
+    let source = mixed_records();
     let meter = Meter::unlimited();
     let table = read_bindings(&clip(Layout::Unity2022, &source), &meter).unwrap();
     let slots = table
@@ -212,16 +213,140 @@ fn slot_widths_keep_metadata_in_place_and_refuse_unknowns_and_count_errors() {
         ),
         Err(AnimError::SlotOverflow)
     ));
-    source[1].custom = 255;
+}
+
+#[test]
+fn ordinary_scalar_curves_and_rect_transform_trs_preserve_later_slots() {
+    use BindingKind::{Transform, UnsupportedScalar};
+    use TransformProperty::{Euler, Quaternion, Scale, Translation};
+
+    // Class/attribute pairs follow AssetStudio FindBinding and AssetRipper IsTransform.
+    let rows = [
+        (212, 23, UnsupportedScalar, 0, 1), // SpriteRenderer color
+        (108, 25, UnsupportedScalar, 1, 1), // Light
+        (224, 28, UnsupportedScalar, 2, 1), // RectTransform anchor
+        (225, 0, UnsupportedScalar, 3, 1),  // CanvasGroup
+        (224, 1, Transform(Translation), 4, 3),
+        (224, 2, Transform(Quaternion), 7, 4),
+        (224, 3, Transform(Scale), 11, 3),
+        (224, 4, Transform(Euler), 14, 3),
+        (4, 1, Transform(Translation), 17, 3),
+    ];
+    let source = rows.map(|(class, attribute, ..)| a::Binding {
+        class,
+        attribute,
+        ..Default::default()
+    });
+    let meter = Meter::unlimited();
+    let table = read_bindings(&clip(Layout::Unity2022, &source), &meter).unwrap();
+    let slots = table
+        .slots(
+            SlotCounts {
+                constant: 20,
+                ..Default::default()
+            },
+            &meter,
+        )
+        .unwrap();
+    assert_eq!(
+        slots
+            .as_slice()
+            .iter()
+            .map(|slot| (slot.kind, slot.first, slot.width))
+            .collect::<Vec<_>>(),
+        rows.map(|(_, _, kind, first, width)| (kind, first, width))
+    );
+}
+
+#[test]
+fn unknown_transform_attribute_refuses_slot_assignment() {
+    let meter = Meter::unlimited();
+    let source = [a::Binding {
+        class: 4,
+        attribute: 255,
+        ..Default::default()
+    }];
     let table = read_bindings(&clip(Layout::Unity2022, &source), &meter).unwrap();
     assert!(matches!(
         table.slots(SlotCounts::default(), &meter),
-        Err(AnimError::UnknownBindingWidth { binding: 1, .. })
+        Err(AnimError::UnknownBindingWidth {
+            binding: 0,
+            class_id: 4,
+            attribute: 255,
+            ..
+        })
     ));
-    source[1].custom = 22;
-    source[2].pptr = 1;
-    assert!(matches!(
-        read_bindings(&clip(Layout::Unity2022, &source), &meter),
-        Err(AnimError::ContradictoryFlags(2))
-    ));
+}
+
+#[test]
+fn conflicting_value_flags_are_refused_in_every_pair() {
+    let meter = Meter::unlimited();
+    for (pptr, integer, managed) in [(1, 1, 0), (1, 0, 1), (0, 1, 1)] {
+        let source = [a::Binding {
+            class: 114,
+            pptr,
+            integer,
+            managed,
+            ..Default::default()
+        }];
+        assert!(
+            matches!(
+                read_bindings(&clip(Layout::Unity2022, &source), &meter),
+                Err(AnimError::ContradictoryFlags(0))
+            ),
+            "flags {pptr}/{integer}/{managed}"
+        );
+    }
+}
+
+#[test]
+fn pre_56_binding_records_accept_an_aligned_final_flag() {
+    let layout = Layout::Unity55;
+    let rows = [
+        a::Binding {
+            class: 4,
+            attribute: 1,
+            ..Default::default()
+        },
+        a::Binding {
+            class: 114,
+            path: 42,
+            pptr: 1,
+            ..Default::default()
+        },
+    ];
+    let mut object = a::bound_clip(1, layout, &rows, &[(1, -9)]);
+    let V::Struct(_, root) = &mut object.value else {
+        panic!("clip fixture")
+    };
+    let V::Struct(_, fields) = &mut root[0].1 else {
+        panic!("binding fixture")
+    };
+    let V::Vector(_, element, records) = &mut fields[0].1 else {
+        panic!("record array")
+    };
+    for record in std::iter::once(element.as_mut()).chain(records) {
+        let V::Struct(_, fields) = record else {
+            panic!("binding record")
+        };
+        let (_, flag) = fields
+            .iter_mut()
+            .find(|(name, _)| name == "isPPtrCurve")
+            .unwrap();
+        let V::UInt8(value) = *flag else {
+            panic!("PPtr flag")
+        };
+        *flag = V::AlignedUInt8(value);
+    }
+    let table = read_bindings(&load(layout, object), &Meter::unlimited()).unwrap();
+    assert!(table.layout.aligns_record);
+    assert_eq!(table.bindings()[1].path, 42);
+    assert!(table.bindings()[1].flags.is_pptr);
+    assert_eq!(
+        table.pptr_mapping(),
+        &[PPtr {
+            file_id: 1,
+            path_id: -9
+        }]
+    );
 }

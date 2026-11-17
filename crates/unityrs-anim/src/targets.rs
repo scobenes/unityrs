@@ -7,6 +7,8 @@ use unityrs_core::{
 };
 use unityrs_scene::{Component, Graph, NodeId};
 
+const MORPH_PREFIX: &[u8] = b"blendShape.";
+
 #[derive(Clone, Copy, Debug)]
 pub enum PathQuery<'a> {
     Name(&'a [u8]),
@@ -18,6 +20,7 @@ pub enum PathQuery<'a> {
 #[derive(Clone, Copy, Debug)]
 pub enum MorphProperty<'a> {
     Attribute(&'a [u8]),
+    /// IEEE CRC32 of the full `blendShape.<name>` attribute.
     Hash(u32),
 }
 
@@ -25,6 +28,7 @@ pub enum MorphProperty<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct RendererChannel<'a> {
     pub name: &'a [u8],
+    /// The mesh's `nameHash`, the IEEE CRC32 of the bare channel name.
     pub hash: u32,
     pub target_slot: usize,
     pub frame: usize,
@@ -248,15 +252,13 @@ impl<'a> RigPaths<'a> {
             BindingKind::Transform(property) => {
                 self.bind_transform(path, property, filtered, meter)
             }
-            BindingKind::Morph => {
-                let node = self.available(path, filtered, meter)?;
-                self.morph_on(
-                    node,
-                    MorphProperty::Hash(slot.binding.attribute),
-                    table,
-                    meter,
-                )
-            }
+            BindingKind::Morph => self.bind_morph(
+                path,
+                MorphProperty::Hash(slot.binding.attribute),
+                filtered,
+                table,
+                meter,
+            ),
             BindingKind::UnsupportedScalar => Err(AnimError::UnsupportedBindingTarget),
             _ => Ok(BindingTarget::Metadata),
         }
@@ -279,10 +281,16 @@ impl<'a> RigPaths<'a> {
         &self,
         path: PathQuery<'_>,
         property: MorphProperty<'_>,
+        filtered: &[NodeId],
         table: &'r [RendererChannels<'r>],
         meter: &Arc<Meter>,
     ) -> Result<BindingTarget<'r>, AnimError> {
-        self.morph_on(self.resolve(path, meter)?, property, table, meter)
+        self.morph_on(
+            self.available(path, filtered, meter)?,
+            property,
+            table,
+            meter,
+        )
     }
 
     fn available(
@@ -338,20 +346,20 @@ impl<'a> RigPaths<'a> {
         let name = match property {
             MorphProperty::Attribute(attribute) => Some(
                 attribute
-                    .strip_prefix(b"blendShape.")
+                    .strip_prefix(MORPH_PREFIX)
                     .ok_or(AnimError::UnsupportedMorphProperty)?,
             ),
             MorphProperty::Hash(_) => None,
         };
+        // AssetStudio's ModelConverter hashes the full prefixed property.
+        // https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudioUtility/ModelConverter.cs#L480-L484
+        let prefix_crc = update_crc(!0, MORPH_PREFIX);
         let mut found = None;
         for channel in channels {
-            meter.count_decode(1)?;
+            meter.count_decode((channel.name.len() as u64).saturating_add(1))?;
             let matches = match property {
-                MorphProperty::Attribute(_) => {
-                    meter.count_decode(channel.name.len() as u64)?;
-                    name == Some(channel.name)
-                }
-                MorphProperty::Hash(hash) => hash == channel.hash,
+                MorphProperty::Attribute(_) => name == Some(channel.name),
+                MorphProperty::Hash(hash) => hash == !update_crc(prefix_crc, channel.name),
             };
             if matches && found.replace(channel).is_some() {
                 return Err(AnimError::AmbiguousChannel(node));

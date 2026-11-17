@@ -4,7 +4,7 @@
 //!
 //! | Engine version | Class field width | Byte flags | Alignment |
 //! |---|---|---|---|
-//! | 5.5 | unsigned 16-bit | `PPtr` | naturally aligned |
+//! | 5.5 | unsigned 16-bit | `PPtr` | naturally aligned, optional end flag |
 //! | 2019.4 | signed 32-bit | `PPtr` | end of record |
 //! | 2022.1 | signed 32-bit | `PPtr`, integer | end of record |
 //! | 2022.3 and 6000.0 | signed 32-bit | `PPtr`, integer, managed reference | end of record |
@@ -153,24 +153,35 @@ impl BindingTable {
 }
 
 impl GenericBinding {
+    fn is_transform(self) -> bool {
+        // AssetRipper GenericBindingExtensions.IsTransform includes RectTransform
+        // for the local TransformType attributes (format reference).
+        // https://github.com/AssetRipper/AssetRipper/blob/master/Source/AssetRipper.SourceGenerated.Extensions/GenericBindingExtensions.cs#L12-L21
+        matches!((self.class_id, self.attribute), (4, _) | (224, 1..=4))
+    }
+
     fn classify(self) -> Option<(BindingKind, u8)> {
         use BindingKind as K;
         use TransformProperty as T;
-        match (self.class_id, self.custom_type) {
-            (4, 0 | 4) => match self.attribute {
+        // AssetStudio's FindBinding uses widths 3/4/3/3 for local TRS/Euler
+        // and one slot for each non-Transform binding.
+        // https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudio/Classes/AnimationClip.cs#L792-L824
+        if self.is_transform() {
+            return match self.attribute {
                 1 => Some((K::Transform(T::Translation), 3)),
                 2 => Some((K::Transform(T::Quaternion), 4)),
                 3 => Some((K::Transform(T::Scale), 3)),
                 4 => Some((K::Transform(T::Euler), 3)),
                 _ => None,
-            },
+            };
+        }
+        match (self.class_id, self.custom_type) {
             _ if self.flags.is_managed_reference => Some((K::ManagedReference, 1)),
             _ if self.flags.is_pptr => Some((K::PPtr, 1)),
             _ if self.flags.is_int => Some((K::Integer, 1)),
             (137, 20) => Some((K::Morph, 1)),
             (23 | 137, 21 | 22) => Some((K::Material, 1)),
-            (1, 0) | (95, 8) | (114, 0 | 24) => Some((K::UnsupportedScalar, 1)),
-            _ => None,
+            _ => Some((K::UnsupportedScalar, 1)),
         }
     }
 }
@@ -202,11 +213,12 @@ pub fn read_bindings(clip: &ObjectRef, meter: &Arc<Meter>) -> Result<BindingTabl
     for (index, record) in records.iter().enumerate() {
         let binding = read_record(&dict, record, layout)?;
         let flags = binding.flags;
-        if flags.is_pptr && flags.is_int
-            || (matches!(
-                (binding.class_id, binding.custom_type),
-                (4, 0 | 4) | (137, 20)
-            ) && (flags.is_pptr || flags.is_int || flags.is_managed_reference))
+        let conflicting_flags = flags.is_pptr && flags.is_int
+            || flags.is_managed_reference && (flags.is_pptr || flags.is_int);
+        let continuous =
+            binding.is_transform() || (binding.class_id, binding.custom_type) == (137, 20);
+        if conflicting_flags
+            || continuous && (flags.is_pptr || flags.is_int || flags.is_managed_reference)
         {
             return Err(AnimError::ContradictoryFlags(index));
         }
@@ -285,7 +297,11 @@ fn layout(clip: &ObjectRef, tree: &Tree, meter: &Arc<Meter>) -> Result<BindingLa
         }
         aligns_record |= aligned;
     }
-    if wide != aligns_record {
+    // AssetStudio's GenericBinding calls AlignStream unconditionally. The
+    // narrower records already end on a four-byte boundary, so either tree
+    // marking describes the same bytes.
+    // https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudio/Classes/AnimationClip.cs#L748-L769
+    if wide && !aligns_record {
         return Err(AnimError::UnsupportedBindingLayout);
     }
     Ok(BindingLayout {

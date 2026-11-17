@@ -392,15 +392,18 @@ enum Phase {
     Pass,
     /// Every pointer of the dependencies' objects dereferenced.
     Derefs,
+    /// The same pointers dereferenced with a metered, held lookup.
+    HeldDerefs,
     /// Every resource of the dependencies' objects read.
     Resources,
 }
 
-const PHASES: [Phase; 5] = [
+const PHASES: [Phase; 6] = [
     Phase::Loads,
     Phase::Lookups,
     Phase::Pass,
     Phase::Derefs,
+    Phase::HeldDerefs,
     Phase::Resources,
 ];
 
@@ -442,6 +445,18 @@ fn run(phase: Phase, s: Setup, d: &DepScene, keys: &[String], k: Option<u64>) ->
         Phase::Loads | Phase::Pass => Got::Json(answers(&env, &objects)),
         Phase::Lookups => Got::Json(json!(lookups(&env, keys, &meter))),
         Phase::Derefs => Got::Targets(derefs(&env, &ptrs)),
+        Phase::HeldDerefs => {
+            let work = Meter::unlimited();
+            Got::Targets(
+                ptrs.iter()
+                    .map(|(file, ptr)| {
+                        env.deref_held(file, *ptr, &work)
+                            .map(|(object, _)| object)
+                            .map_err(|error| error.to_string())
+                    })
+                    .collect(),
+            )
+        }
         Phase::Resources => Got::Reads(reads(&env, &res)),
     };
     let asked = match phase {
@@ -455,7 +470,7 @@ fn run(phase: Phase, s: Setup, d: &DepScene, keys: &[String], k: Option<u64>) ->
         Got::Reads(r) => hex(&r),
     };
     let answer = match phase {
-        Phase::Derefs | Phase::Resources if s.keep => {
+        Phase::Derefs | Phase::HeldDerefs | Phase::Resources if s.keep => {
             let mut added = listed(&env);
             added.retain(|f| !before.contains(f));
             json!([answer, added])
@@ -494,7 +509,7 @@ fn a_pool_refusal_anywhere_evicts_the_others_and_retries_once() {
                 Phase::Loads | Phase::Pass => {
                     return json!([oracle(name, "container"), oracle(name, "paths")]);
                 }
-                Phase::Derefs => "dep_derefs",
+                Phase::Derefs | Phase::HeldDerefs => "dep_derefs",
                 Phase::Resources => "dep_resources",
                 Phase::Lookups => return J::Null,
             };
