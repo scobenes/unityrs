@@ -10,6 +10,7 @@ use unityrs_core::limits::{ChargeError, Meter, MeteredVec};
 
 pub(super) struct Output<'a> {
     pub bytes: MeteredVec<u8>,
+    pub int_properties: bool,
     meter: &'a Arc<Meter>,
     error: Option<ChargeError>,
 }
@@ -17,6 +18,7 @@ impl<'a> Output<'a> {
     pub fn new(meter: &'a Arc<Meter>) -> Self {
         Self {
             bytes: MeteredVec::new(meter),
+            int_properties: true,
             meter,
             error: None,
         }
@@ -37,6 +39,20 @@ impl<'a> Output<'a> {
         pyjson::int(n, self);
         self.check()?;
         Ok(())
+    }
+    pub fn integer_property(&mut self, n: f64) -> Result<(), Error> {
+        if !n.is_finite() || n.fract() != 0. {
+            return self.float(n, false);
+        }
+        if n == 0. {
+            return self.int(0);
+        }
+        // Fixed decimal formatting avoids saturating large values through an
+        // integer cast. The stack buffer needs no allocation; text charges the
+        // resulting bytes before growing the output, as for other numbers.
+        let mut fixed = Stack::default();
+        write!(fixed, "{n:.0}").map_err(|_| Error::Field("integer formatting"))?;
+        self.text(fixed.str())
     }
     pub fn float(&mut self, n: f64, general: bool) -> Result<(), Error> {
         if n.is_nan() {
@@ -92,13 +108,14 @@ impl Sink for Output<'_> {
     }
 }
 struct Stack {
-    data: [u8; 128],
+    // A finite f64 in fixed decimal needs at most 309 digits and a sign.
+    data: [u8; 384],
     len: usize,
 }
 impl Default for Stack {
     fn default() -> Self {
         Self {
-            data: [0; 128],
+            data: [0; 384],
             len: 0,
         }
     }

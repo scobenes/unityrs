@@ -9,6 +9,7 @@ use unityrs_core::{
 
 /// Convert a caller-supplied stage using the same metered field and output walk.
 /// `program_blobs` contains synthetic little-endian tables of current fields.
+/// Retains UnityPy's property-type refusals for Python helper compatibility.
 pub fn direct_stage(
     parsed: &Parsed,
     stage: &str,
@@ -35,6 +36,7 @@ pub fn direct_stage(
         programs.push(Program::decoded(decoded, (2018, 1), meter)?)?;
     }
     let mut out = Output::new(meter);
+    out.int_properties = false;
     match stage {
         "shader" => convert::shader(value, platforms, programs.as_slice(), &mut out, meter)?,
         "subshader" => convert::subshader(value, platforms, programs.as_slice(), &mut out, meter)?,

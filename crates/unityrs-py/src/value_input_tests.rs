@@ -4,6 +4,50 @@ use pyo3::prelude::*;
 use unityrs_core::limits::{Limits, Meter};
 
 #[test]
+fn shader_int_properties_keep_the_binding_value_error() -> PyResult<()> {
+    let _serial = crate::tests::serial();
+    Python::attach(|py| {
+        let locals = pyo3::types::PyDict::new(py);
+        py.run(
+            c"
+from types import SimpleNamespace as N
+prop = N(m_Attributes=['HDR'], m_Name='_Count', m_Description='Count',
+         m_Type=5, m_Flags=0, m_DefValue_0_=1.0)
+props = N(m_Props=[prop])
+form = N(m_Name='Synthetic/Int', m_PropInfo=props, m_SubShaders=[],
+         m_FallbackName='', m_CustomEditorName='')
+fields = dict(compressedBlob=b'x', platforms=[], m_ParsedForm=form)
+",
+            None,
+            Some(&locals),
+        )?;
+        for (stage, name) in [
+            ("property", "prop"),
+            ("properties", "props"),
+            ("shader", "form"),
+        ] {
+            let input = pyo3::types::PyDict::new(py);
+            input.set_item("value", locals.get_item(name)?.unwrap())?;
+            input.set_item("platforms", pyo3::types::PyList::empty(py))?;
+            input.set_item("program_blobs", pyo3::types::PyList::empty(py))?;
+            let error =
+                crate::crypto_shader::shader_stage(py, input.as_any(), stage, None).unwrap_err();
+            assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+            assert_eq!(error.value(py).str()?.to_str()?, "5");
+        }
+        let native = PyModule::new(py, "int_property_binding_test")?;
+        crate::native(&native)?;
+        let error = native
+            .getattr("export_shader")?
+            .call1((locals.get_item("fields")?.unwrap(), (2021, 3)))
+            .unwrap_err();
+        assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+        assert_eq!(error.value(py).str()?.to_str()?, "5");
+        Ok(())
+    })
+}
+
+#[test]
 fn shader_stage_omits_none_clip_and_distinguishes_missing() -> PyResult<()> {
     let _serial = crate::tests::serial();
     Python::attach(|py| {

@@ -116,7 +116,7 @@ fn export_shader(
     let native = py.detach(|| {
         crate::worker::run(limits.stack_needed(), || {
             let parsed = snapshot.build()?;
-            let bytes = unityrs_export::shader::export_with_cap(
+            let bytes = unityrs_export::shader::export_with_cap_unitypy_properties(
                 &parsed,
                 version,
                 &meter,

@@ -101,6 +101,9 @@ pub(super) fn property(prop: View<'_>, out: &mut Output<'_>) -> Result<(), Error
         0 => out.text("Color")?,
         1 => out.text("Vector")?,
         2 => out.text("Float")?,
+        // Tier C: serialized Int (5) uses ShaderLab's real Integer declaration.
+        // PARITY.md section 19.1 records the reference and binding exception.
+        5 if out.int_properties => out.text("Integer")?,
         3 => {
             out.text("Range(")?;
             out.float(prop.field("m_DefValue_1_")?.num()?, true)?;
@@ -143,6 +146,7 @@ pub(super) fn property(prop: View<'_>, out: &mut Output<'_>) -> Result<(), Error
             out.text(")")?;
         }
         2 | 3 => out.float(prop.field("m_DefValue_0_")?.num()?, false)?,
+        5 if out.int_properties => out.integer_property(prop.field("m_DefValue_0_")?.num()?)?,
         4 => {
             out.text("\"")?;
             out.text(prop.field("m_DefTexture")?.field("m_DefaultName")?.text()?)?;
