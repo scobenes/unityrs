@@ -1,4 +1,5 @@
 //! Shader output, LZ4, tables and sorting charge before every allocation.
+use std::fmt::Write;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -10,6 +11,8 @@ use unityrs_core::{
     limits::Meter,
 };
 use unityrs_testkit::counted::{self, Allocator, Tally};
+#[path = "support/shader_int.rs"]
+mod shader_int;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static HELD: AtomicU64 = AtomicU64::new(0);
@@ -67,6 +70,13 @@ fn shader_allocations_are_charged_and_allocator_refusals_propagate() {
         serde_json::from_str(include_str!("fixtures/shader_modern.json")).unwrap();
     let legacy: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/shader_legacy.json")).unwrap();
+    let ints = [false, true].map(|blob| {
+        let mut input = String::new();
+        for byte in shader_int::shader_with_properties(5, &[1., -0., 0.1], blob) {
+            write!(&mut input, "{byte:02x}").unwrap();
+        }
+        serde_json::json!({"case": format!("synthetic_int_blob_{blob}"), "input": input})
+    });
     for case in fixture["cases"]
         .as_array()
         .unwrap()
@@ -86,6 +96,7 @@ fn shader_allocations_are_charged_and_allocator_refusals_propagate() {
                 .chain(legacy["cases"].as_array().unwrap())
                 .filter(|c| c["rust"].get("text").is_some()),
         )
+        .chain(ints.iter())
     {
         let text = case["input"].as_str().unwrap();
         let input: Vec<u8> = text
@@ -151,6 +162,46 @@ fn work_meter(work: u64) -> Arc<Meter> {
         Arc::new(unityrs_core::budget::Unbounded),
         Reservation::Input,
     )
+}
+
+#[test]
+fn int_property_output_obeys_work_and_memory_bounds() {
+    for blob in [false, true] {
+        let env = Environment::new(EnvOptions::unitypy());
+        let File::Serialized(file) = env
+            .load(Source::Bytes {
+                name: RawStr::from("int.assets"),
+                data: Bytes::from(shader_int::shader_with_properties(5, &[1., -0., 0.1], blob)),
+            })
+            .unwrap()
+        else {
+            panic!("file")
+        };
+        let parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
+        let meter = work_meter(u64::MAX);
+        drop(unityrs_export::shader::export_parsed(&parsed, (2021, 3), &meter).unwrap());
+        let work = meter.decoded();
+        let short = work_meter(work - 1);
+        assert!(matches!(
+            unityrs_export::shader::export_parsed(&parsed, (2021, 3), &short),
+            Err(unityrs_export::shader::Error::Charge(unityrs_core::limits::ChargeError::Limit(ref e)))
+                if e.kind() == unityrs_core::error::LimitKind::DecodeWork
+        ));
+        assert_eq!(short.used(), 0);
+        let exact = work_meter(work);
+        drop(unityrs_export::shader::export_parsed(&parsed, (2021, 3), &exact).unwrap());
+        assert_eq!(exact.used(), 0);
+        let no_memory = Meter::new(
+            0,
+            Arc::new(unityrs_core::budget::Unbounded),
+            Reservation::Input,
+        );
+        assert!(matches!(
+            unityrs_export::shader::export_parsed(&parsed, (2021, 3), &no_memory),
+            Err(unityrs_export::shader::Error::Charge(_))
+        ));
+        assert_eq!(no_memory.used(), 0);
+    }
 }
 
 #[test]

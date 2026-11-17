@@ -1,5 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/export/ShaderConverter.py, UnityPy/classes/legacy_patch/Shader.py. See THIRD_PARTY_LICENSES.
-//! Tier A Shader export and Tier C no-blob and player/parameter corrections.
+//! Tier A Shader export and Tier C no-blob, Int and player/parameter corrections.
 //! Malformed legacy blobs and unfillable replacements have named Tier U refusals.
 //! Entry point: export/ShaderConverter.py:41-89;
 //! classes/legacy_patch/Shader.py:4-7.
@@ -186,6 +186,27 @@ pub fn export_with_cap(
     meter: &Arc<Meter>,
     max_block_output: u64,
 ) -> Result<MeteredVec<u8>, Error> {
+    export_impl(parsed, version, meter, max_block_output, true)
+}
+
+/// Binding adapter: retain UnityPy's `ValueError` for Int properties while using
+/// the same metered conversion and error ordering as the native exporter.
+pub fn export_with_cap_unitypy_properties(
+    parsed: &Parsed,
+    version: (u32, u32),
+    meter: &Arc<Meter>,
+    max_block_output: u64,
+) -> Result<MeteredVec<u8>, Error> {
+    export_impl(parsed, version, meter, max_block_output, false)
+}
+
+fn export_impl(
+    parsed: &Parsed,
+    version: (u32, u32),
+    meter: &Arc<Meter>,
+    max_block_output: u64,
+    int_properties: bool,
+) -> Result<MeteredVec<u8>, Error> {
     let root = View {
         parsed,
         value: parsed.value(),
@@ -198,6 +219,7 @@ pub fn export_with_cap(
         return legacy::export(root, version, meter, max_block_output);
     }
     let mut out = Output::new(meter);
+    out.int_properties = int_properties;
     out.text(HEADER)?;
     if let Some(blob) = root.optional("compressedBlob")?
         && !blob.empty()

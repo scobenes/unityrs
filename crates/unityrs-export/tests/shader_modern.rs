@@ -6,6 +6,52 @@ use unityrs_core::{
 };
 use unityrs_export::shader;
 
+#[path = "support/shader_int.rs"]
+mod shader_int;
+
+#[test]
+fn int_properties_follow_shaderlab_with_float_default_formatting() {
+    // Tier C reference: Unity 2021.3's SL-Properties manual, Int declaration.
+    // Preserve Float's str(float32 widened to f64), attributes and ignored flags.
+    // No type-5 recording exists in shader{,_modern,_legacy}.json; these are
+    // synthetic expectations, not a claim of a new UnityPy oracle observation.
+    let defaults = [1., -7., -0., 1.25, 0.1, 1e-5, 1e20];
+    let expected = concat!(
+        "Shader \"Synthetic/Int\" {\nProperties {\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = 1.0\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = -7.0\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = -0.0\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = 1.25\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = 0.10000000149011612\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = 9.999999747378752e-06\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = 1.0000000200408773e+20\n\n",
+        "}\n}",
+    );
+    for blob in [false, true] {
+        let env = Environment::new(EnvOptions::unitypy());
+        let File::Serialized(file) = env
+            .load(Source::Bytes {
+                name: RawStr::from("int.assets"),
+                data: Bytes::from(shader_int::shader_with_properties(5, &defaults, blob)),
+            })
+            .unwrap()
+        else {
+            panic!("file")
+        };
+        let parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
+        for version in [(2021, 1), (2021, 3), (6000, 3)] {
+            let meter = Meter::unlimited();
+            let output = shader::export_parsed(&parsed, version, &meter).unwrap();
+            assert_eq!(
+                output.as_slice(),
+                [shader::HEADER, expected].concat().as_bytes()
+            );
+            drop(output);
+            assert_eq!(meter.used(), 0);
+        }
+    }
+}
+
 #[test]
 fn plain_string_scripts_before_55_are_utf8() {
     use unityrs_testkit::{
