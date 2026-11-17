@@ -182,6 +182,14 @@ deny-multiple-versions = true
 
 [advisories]
 yanked = "deny"
+# Unmaintained notices, not vulnerabilities, on two crates that reach the
+# build only through object_store (=0.14.2, the engine's store client,
+# `docs/plans/batch.md` 2.9). Drop each entry once object_store no longer
+# depends on the crate.
+ignore = [
+    { id = "RUSTSEC-2026-0542", reason = "humantime is unmaintained; transitive through object_store 0.14.2; no known vulnerability" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained; transitive through object_store 0.14.2; no known vulnerability" },
+]
 
 [sources]
 unknown-registry = "deny"
