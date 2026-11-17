@@ -411,9 +411,10 @@ def _baseline_samples(spec, capture, comparison, baselines):
     def root_hips(samples):
         return [(row["pose"]["transforms"][root], row["pose"]["transforms"][hips]) for row in samples]
 
-    poses = root_hips(baseline["samples"])
-    require(poses != root_hips(capture["samples"]), "baseline root and hips-local samples are byte-identical to clip samples")
-    return poses
+    # A muscle-only clip may leave root and hips-local unchanged, so samples
+    # equal to the clip's are a valid zero residual. Distinctness comes from
+    # the separate known-vector capture checked above, not from the values.
+    return root_hips(baseline["samples"])
 
 
 def _validate_qualification(spec, capture, baselines):

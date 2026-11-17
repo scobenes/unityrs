@@ -434,14 +434,15 @@ class TestAnimReplay(unittest.TestCase):
                 replay.validate(m)
             section[field] = original
 
-    def test_qualification_rejects_a_baseline_with_copied_root_and_hips_bits(self):
+    def test_qualification_accepts_a_baseline_equal_to_the_clip_root_and_hips(self):
+        # A muscle-only clip that leaves root and hips-local unchanged has a
+        # zero residual against its independent known-vector capture.
         m = qualified_humanoid()
         baseline = m["baseline_captures"][0]
         for clip, vector in zip(m["capture"]["samples"], baseline["capture"]["samples"]):
             vector["pose"]["transforms"] = copy.deepcopy(clip["pose"]["transforms"])
         m["spec"]["evidence"]["humanoid"]["root_hips_comparison"]["baseline_capture_id"] = recording_id(baseline)
-        with self.assertRaisesRegex(ValueError, "byte-identical"):
-            replay.validate(m)
+        replay.validate(m)
 
     def test_qualification_baseline_requires_the_same_rig_and_schedule(self):
         for field, value, reason in (("avatar", identity(112), "same built rig"),

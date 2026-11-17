@@ -324,6 +324,8 @@ any L11 row.
    key bounds.
 5. Verify that every recorded stage range, including rotation output
    boxes, encloses the clip's actual values along the declared playback path.
+6. Verify that each budget's `track_kind`, and so its fixed stage path,
+   matches the playback path derived from the bundle for that track.
 
 ### Identity and evidence
 

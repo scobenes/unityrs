@@ -642,8 +642,8 @@ and source time. Run the generic and legacy comparison once the recordings
 are available. L11 rows stay planned until same-bundle playback and the
 Rust comparisons pass for their claimed layouts.
 
-- PR 6 cross-checks bundle key-time completeness and sample off-key status, the source origin and `m_StartTime` where present, endpoint fields and actual stage ranges, and verifies a held probe distinguishes the clocks before generic or legacy L11 promotion.
-- PR 8 cross-checks the same timing, endpoint, stage-range and clock-probe obligations plus the body, muscle, goal and translation inventory, mapping, absent sentinels and storage against the serialized Avatar and clip before humanoid L11 promotion.
+- PR 6 cross-checks bundle key-time completeness and sample off-key status, the source origin and `m_StartTime` where present, endpoint fields, actual stage ranges and each budget's `track_kind` against the bundle-derived playback path, and verifies a held probe distinguishes the clocks before generic or legacy L11 promotion.
+- PR 8 cross-checks the same timing, endpoint, stage-range, track-kind and clock-probe obligations plus the body, muscle, goal and translation inventory, mapping, absent sentinels and storage against the serialized Avatar and clip before humanoid L11 promotion.
 
 See the numbered [Rust-side cross-check obligations](../anim_reference.md#rust-side-cross-check-obligations).
 
