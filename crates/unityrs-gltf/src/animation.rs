@@ -1,7 +1,7 @@
 //! Editable animation tables and their glTF layout.
 use crate::json::Json;
 use crate::validate::{accessor, invalid};
-use crate::{Accessor, Data, Extras, GltfError, Kind, Layout, Options, Scene, Text};
+use crate::{Accessor, Data, Extras, GltfError, Kind, Layout, Scene, Text};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
 
@@ -101,7 +101,6 @@ pub(crate) struct AnimationLayout {
 pub(crate) fn layout_animations(
     scene: &Scene,
     layout: &mut Layout,
-    opts: Options,
     meter: &Arc<Meter>,
 ) -> Result<()> {
     let mut seen = MeteredVec::new(meter);
@@ -157,8 +156,20 @@ pub(crate) fn layout_animations(
             if id.is_some() {
                 *id = Some(next);
                 next += 1;
-                crate::layout::place(scene, layout, sampler.input, opts, meter)?;
-                crate::layout::place(scene, layout, sampler.output, opts, meter)?;
+                crate::layout::place_animation(
+                    scene,
+                    layout,
+                    sampler.input,
+                    sampler.interpolation,
+                    meter,
+                )?;
+                crate::layout::place_animation(
+                    scene,
+                    layout,
+                    sampler.output,
+                    sampler.interpolation,
+                    meter,
+                )?;
             }
         }
         layout.animations.push(AnimationLayout {
@@ -207,9 +218,12 @@ fn channel_arity(scene: &Scene, layout: &Layout, channel: &AnimationChannel) -> 
         .ok_or_else(|| invalid("animation weights need morph targets"))
 }
 
-/// Scan each placed animation accessor once. The streamer uses the same
-/// rounding function and leaves all validated keys unchanged.
-pub(crate) fn validate_keys(a: &Accessor, meter: &Meter) -> Result<Option<(f32, f32)>> {
+/// The streamer uses the same rounding function and leaves validated keys unchanged.
+pub(crate) fn validate_keys(
+    a: &Accessor,
+    meter: &Meter,
+    check_rotation_signs: bool,
+) -> Result<Option<(f32, f32)>> {
     let Data::Float(values) = &a.data else {
         return Err(invalid("animation accessor component type"));
     };
@@ -233,7 +247,7 @@ pub(crate) fn validate_keys(a: &Accessor, meter: &Meter) -> Result<Option<(f32, 
                 .map(|(&first, last)| (crate::normalise::round(first), last)))
         }
         Kind::AnimationRotation => {
-            let mut previous = [0.; 4];
+            let mut previous = None;
             for row in samples.as_chunks::<4>().0 {
                 let rounded = row.map(crate::normalise::round);
                 if rounded.iter().any(|x| !x.is_finite() || x.abs() > 1.) {
@@ -245,11 +259,15 @@ pub(crate) fn validate_keys(a: &Accessor, meter: &Meter) -> Result<Option<(f32, 
                 if (norm2 - 1.).abs() > 5e-7 {
                     return Err(invalid("animation rotation must be unit length"));
                 }
-                // Rounding nearly orthogonal keys can change the dot's sign.
-                if dot(previous, *row) < 0. {
-                    return Err(invalid("animation rotation signs must be continuous"));
+                if check_rotation_signs {
+                    // Rounding nearly orthogonal keys can change the dot's sign.
+                    if previous.is_some_and(|prev| dot(prev, q) < 0.) {
+                        return Err(invalid(
+                            "LINEAR animation rotation signs must be continuous in f32",
+                        ));
+                    }
+                    previous = Some(q);
                 }
-                previous = *row;
             }
             Ok(None)
         }
@@ -350,14 +368,14 @@ mod tests {
             data: Data::Float(crate::array(&meter, &[0., halfway]).unwrap()),
             sparse_indices: None,
         };
-        let (min, max) = validate_keys(&accessor, &meter).unwrap().unwrap();
+        let (min, max) = validate_keys(&accessor, &meter, false).unwrap().unwrap();
         assert_eq!(min.to_bits(), 0.0f32.to_bits());
         assert_eq!(max.to_bits(), 1.0f32.to_bits());
         if let Data::Float(data) = &mut accessor.data {
             data.as_mut_slice()[0] = 1.;
         }
         assert!(matches!(
-            validate_keys(&accessor, &meter),
+            validate_keys(&accessor, &meter, false),
             Err(GltfError::Invalid(
                 "animation times must be finite, nonnegative and strictly increasing in f32"
             ))

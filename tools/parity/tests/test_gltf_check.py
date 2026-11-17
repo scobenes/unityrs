@@ -111,6 +111,13 @@ class Checks(unittest.TestCase):
             for actual, expected in zip(result, [0., 0., math.sin(math.pi/16), math.cos(math.pi/16)]):
                 self.assertAlmostEqual(actual, expected, places=14)
 
+    def test_animation_reconstructs_step_rotations_with_opposite_signs(self):
+        rows = [[0., 0., 0., 1.], [0., 0., 0., -1.]]
+        doc, data = animation_fixture("rotation", rows, "STEP")
+        channel = g.decode_animation_channel(doc, data, 0, 0, "rotation")
+        self.assertEqual(g.sample_animation(channel, 0.75, rotation=True), rows[0])
+        self.assertEqual(g.sample_animation(channel, 1.25, rotation=True), rows[1])
+
     def test_animation_reconstruction_checks_time_bounds_order_and_output_count(self):
         doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])
         with self.assertRaisesRegex(ValueError, "time order"):

@@ -5,6 +5,8 @@ use unityrs_gltf::*;
 
 mod support;
 
+const ROTATION_SIGN_ERROR: &str = "LINEAR animation rotation signs must be continuous in f32";
+
 #[test]
 fn reconstructs_animated_instances_in_first_reach_order() {
     let scene = support::animated(&Meter::unlimited()).unwrap();
@@ -101,7 +103,10 @@ fn writes_animated_glb_for_parity() {
     let scratch = unityrs_testkit::scratch::Scratch::new("gltf-animation-parity");
     let path = std::env::var_os("UNITYRS_GLTF_PARITY_GLB")
         .map_or_else(|| scratch.path().join("animated.glb"), Into::into);
-    let scene = support::animated(&Meter::unlimited()).unwrap();
+    let mut scene = support::animated(&Meter::unlimited()).unwrap();
+    let half_angle = 179.9999_f64.to_radians() / 2.;
+    key(&mut scene, Kind::AnimationRotation, 6, half_angle.sin());
+    key(&mut scene, Kind::AnimationRotation, 7, half_angle.cos());
     let mut file = std::fs::File::create(path).unwrap();
     write_glb(&scene, &Options::default(), &Meter::unlimited(), &mut file).unwrap();
 }
@@ -203,7 +208,7 @@ fn malformed_animations_refuse_before_output_in_both_modes() {
         ),
         (
             |s| key(s, Kind::AnimationRotation, 3, -1.),
-            "animation rotation signs must be continuous",
+            ROTATION_SIGN_ERROR,
         ),
     ];
     for (mutate, message) in cases {
@@ -262,7 +267,7 @@ fn translation_targets_a_node_after_its_skinned_mesh_is_omitted() {
 }
 
 #[test]
-fn nearly_opposite_rotations_remain_valid_after_f32_rounding() {
+fn linear_rotation_refuses_a_negative_dot_product_after_f32_rounding() {
     let mut scene = support::animated(&Meter::unlimited()).unwrap();
     // Both quaternions have unit length to f64 precision. The first three
     // products cancel before rounding, leaving a small positive dot product.
@@ -277,23 +282,57 @@ fn nearly_opposite_rotations_remain_valid_after_f32_rounding() {
         -4. / root,
         1e-8 / root,
     ];
+    let dot = |keys: [f64; 8]| {
+        keys[..4]
+            .iter()
+            .zip(&keys[4..])
+            .map(|(a, b)| a * b)
+            .sum::<f64>()
+    };
+    assert!(dot(keys) > 0.);
+    #[allow(clippy::cast_possible_truncation)]
+    let rounded = keys.map(|value| f64::from(value as f32));
+    assert!(dot(rounded) < 0.);
     for (i, value) in keys.into_iter().enumerate() {
         key(&mut scene, Kind::AnimationRotation, i, value);
     }
-    let (bytes, _) = support::write(&scene, Options::default());
-    let doc = support::json(&bytes);
-    let output = doc["animations"][0]["samplers"][1]["output"]
-        .as_u64()
+    for normalise in [true, false] {
+        refuses(&scene, normalise, ROTATION_SIGN_ERROR);
+    }
+}
+
+#[test]
+fn step_rotation_preserves_opposite_signs_in_a_shared_accessor() {
+    let mut scene = support::animated(&Meter::unlimited()).unwrap();
+    let keys = [0_f32, 0., 0., 1., 0., 0., 0., -1.];
+    for (i, value) in keys.into_iter().enumerate() {
+        key(&mut scene, Kind::AnimationRotation, i, f64::from(value));
+    }
+    active(&mut scene).samplers.as_mut_slice()[2].interpolation = Interpolation::Step;
+    for normalise in [true, false] {
+        let (bytes, _) = support::write(&scene, Options { normalise });
+        let doc = support::json(&bytes);
+        let sampler = &doc["animations"][0]["samplers"][1];
+        assert_eq!(sampler["interpolation"], "STEP");
+        let output = usize::try_from(sampler["output"].as_u64().unwrap()).unwrap();
+        assert_eq!(support::f32s(&bytes, &doc, output), keys);
+    }
+
+    let clip = active(&mut scene);
+    let sampler = clip.samplers.len();
+    let mut linear = clip.samplers.as_slice()[2];
+    linear.interpolation = Interpolation::Linear;
+    clip.samplers.push(linear).unwrap();
+    clip.channels
+        .push(AnimationChannel {
+            sampler,
+            node: 2,
+            target: AnimationTarget::Rotation,
+        })
         .unwrap();
-    let rows = support::f32s(&bytes, &doc, usize::try_from(output).unwrap());
-    assert!(
-        rows[..4]
-            .iter()
-            .zip(&rows[4..])
-            .map(|(a, b)| f64::from(*a) * f64::from(*b))
-            .sum::<f64>()
-            < 0.
-    );
+    for normalise in [true, false] {
+        refuses(&scene, normalise, ROTATION_SIGN_ERROR);
+    }
 }
 
 #[test]

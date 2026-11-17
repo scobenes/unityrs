@@ -681,7 +681,7 @@ jobs:
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
         run: >-
           python scripts/unittest-suites
-          tools/parity/tests=606
+          tools/parity/tests=613
           tools/perf/tests=10
           crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6
@@ -744,7 +744,8 @@ jobs:
           UNITYRS_GLTF_PARITY_GLB="$RUNNER_TEMP/animated.glb" \
             cargo test --locked -p unityrs-gltf -- --nocapture
       # Reference times are the midpoint, quarter point, and the f64 immediately
-      # before the second f32 key. Quarter progress through a 90° turn gives 22.5°.
+      # before the second f32 key. Rotation samples are at 44.999975° and 89.99995°
+      # through a 179.9999° turn.
       - name: Reconstruct off-key samples from the Rust animation GLB
         run: |
           python3 -I tools/parity/gltf_check.py "$RUNNER_TEMP/animated.glb" \

@@ -112,16 +112,17 @@ Channels reference scene nodes and animation-local samplers. Samplers reference
 dense f32 accessors in the scene table and specify `STEP` or `LINEAR`. Supply
 baked keys in glTF space with finite, nonnegative clip-local seconds and
 strictly increasing times after rounding. Use `AnimationVec3` for translation
-and scale, unit XYZW `AnimationRotation` keys with continuous signs, and
-`AnimationWeights` scalars in key-major order with one row of weights per
-key, in the target mesh's morph order. TRS channels target transform and joint
-nodes. Morph channels target the node that instantiates the mesh.
+and scale, unit XYZW `AnimationRotation` keys, and `AnimationWeights` scalars
+in key-major order with one row of weights per key, in the target mesh's morph
+order. TRS channels target transform and joint nodes. Morph channels target the
+node that instantiates the mesh.
 
-The writer checks rotation sign continuity before rounding, validates rounded
-animation keys in both modes, and emits the rounded values directly. It keeps
-the order of clips, channels and referenced samplers, omits clips without
-channels, and writes time bounds from the actual f32 payload. Optional names
-and string extras use the existing metadata model.
+The writer validates rounded animation keys in both modes and emits those
+values directly. For LINEAR rotations it requires a nonnegative dot product
+between consecutive emitted keys. STEP rotations may use either sign at each
+key. The writer keeps the order of clips, channels and referenced samplers,
+omits clips without channels, and writes time bounds from the actual f32
+payload. Optional names and string extras use the existing metadata model.
 `tools/parity/gltf_check.py` can independently decode keys and reconstruct
 STEP, LINEAR and quaternion interpolation.
 

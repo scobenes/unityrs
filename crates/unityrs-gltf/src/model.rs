@@ -183,7 +183,8 @@ pub enum Kind {
     AnimationTime,
     /// One local translation or scale vector per key.
     AnimationVec3,
-    /// One unit XYZW quaternion per key, with continuous signs.
+    /// One unit XYZW quaternion per key. LINEAR samplers require continuous
+    /// signs after rounding to f32.
     AnimationRotation,
     /// One scalar per morph target per key, in key-major order.
     AnimationWeights,

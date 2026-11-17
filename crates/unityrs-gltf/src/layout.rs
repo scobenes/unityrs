@@ -1,5 +1,5 @@
 //! Fallible layout and G8 analysis; no payload copies are retained here.
-use crate::{Attribute, GltfError, Kind, Options, Scene, normalise, validate};
+use crate::{Attribute, GltfError, Interpolation, Kind, Options, Scene, normalise, validate};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
 
@@ -58,12 +58,18 @@ pub(crate) struct AccessorLayout {
     pub min: [f32; 16],
     pub max: [f32; 16],
     pub valid: bool,
-    pub analysed: bool,
+    analysis: AccessorAnalysis,
     pub joint_weights: Option<usize>,
     pub changes: u64,
     pub zeros: u64,
     pub joint_changes: u64,
     pub uv_filler: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessorAnalysis {
+    Pending,
+    Complete,
+    LinearRotation,
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PrimitiveLayout {
@@ -181,7 +187,7 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
             min: [0.; 16],
             max: [0.; 16],
             valid: true,
-            analysed: false,
+            analysis: AccessorAnalysis::Pending,
             joint_weights: None,
             changes: 0,
             zeros: 0,
@@ -399,7 +405,7 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
             place(s, &mut l, id, *opts, meter)?;
         }
     }
-    crate::animation::layout_animations(s, &mut l, *opts, meter)?;
+    crate::animation::layout_animations(s, &mut l, meter)?;
     for image in s.images.as_slice() {
         meter.count_decode(1)?;
         let view = l.view(image.bytes.len(), None)?;
@@ -408,7 +414,46 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
     Ok(l)
 }
 
-pub(crate) fn place(
+pub(crate) fn place_animation(
+    s: &Scene,
+    l: &mut Layout,
+    id: usize,
+    interpolation: Interpolation,
+    meter: &Meter,
+) -> Result<(), GltfError> {
+    let a = s
+        .accessors
+        .as_slice()
+        .get(id)
+        .ok_or_else(|| validate::invalid("accessor index"))?;
+    let al = l
+        .accessors
+        .as_mut_slice()
+        .get_mut(id)
+        .ok_or_else(|| validate::invalid("accessor layout"))?;
+    let check_signs = a.kind == Kind::AnimationRotation && interpolation == Interpolation::Linear;
+    // A LINEAR sampler may reuse keys previously validated for STEP.
+    if al.analysis == AccessorAnalysis::Pending
+        || (check_signs && al.analysis != AccessorAnalysis::LinearRotation)
+    {
+        if let Some((min, max)) = crate::animation::validate_keys(a, meter, check_signs)? {
+            *al.min
+                .first_mut()
+                .ok_or_else(|| validate::invalid("time bounds"))? = min;
+            *al.max
+                .first_mut()
+                .ok_or_else(|| validate::invalid("time bounds"))? = max;
+        }
+        al.analysis = if check_signs {
+            AccessorAnalysis::LinearRotation
+        } else {
+            AccessorAnalysis::Complete
+        };
+    }
+    place_analysed(s, l, id)
+}
+
+fn place(
     s: &Scene,
     l: &mut Layout,
     id: usize,
@@ -416,6 +461,10 @@ pub(crate) fn place(
     meter: &Meter,
 ) -> Result<(), GltfError> {
     analyse(s, l, id, opts, meter)?;
+    place_analysed(s, l, id)
+}
+
+fn place_analysed(s: &Scene, l: &mut Layout, id: usize) -> Result<(), GltfError> {
     let al = l
         .accessors
         .as_slice()
@@ -494,7 +543,7 @@ fn analyse(
         .as_mut_slice()
         .get_mut(id)
         .ok_or_else(|| validate::invalid("accessor layout"))?;
-    if al.analysed {
+    if al.analysis != AccessorAnalysis::Pending {
         return Ok(());
     }
     let a = s
@@ -502,18 +551,6 @@ fn analyse(
         .as_slice()
         .get(id)
         .ok_or_else(|| validate::invalid("accessor index"))?;
-    if a.kind.animation() {
-        if let Some((min, max)) = crate::animation::validate_keys(a, meter)? {
-            *al.min
-                .first_mut()
-                .ok_or_else(|| validate::invalid("time bounds"))? = min;
-            *al.max
-                .first_mut()
-                .ok_or_else(|| validate::invalid("time bounds"))? = max;
-        }
-        al.analysed = true;
-        return Ok(());
-    }
     let rows = a.sparse_indices.as_ref().map_or(a.count, MeteredVec::len);
     meter.count_decode(
         (rows as u64)
@@ -536,7 +573,7 @@ fn analyse(
             [f32::NEG_INFINITY; 16]
         },
         valid: true,
-        analysed: true,
+        analysis: AccessorAnalysis::Complete,
         joint_weights: None,
         changes: 0,
         zeros: 0,
