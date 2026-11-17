@@ -125,7 +125,15 @@ fn invalid_utf8_field_names_are_written_as_raw_surrogateescaped_bytes() {
 
 #[test]
 fn video_reads_only_the_external_resource_range() {
+    use std::sync::Arc;
+    use unityrs_core::{
+        budget::{Reservation, Unbounded},
+        limits::ChargeError,
+    };
     use unityrs_testkit::ngui::{V, st};
+    // Independent reference: StreamedResource's source/offset/size layout
+    // (PARITY.md section 15.7.1), applied to these known synthetic bytes.
+    // This verifies a payload copy, with no UnityPy video-export claim.
     for (offset, size, expected) in [
         (3, 4, &b"\0\xffab"[..]),
         (8, 20, &b"tail"[..]),
@@ -155,15 +163,34 @@ fn video_reads_only_the_external_resource_range() {
             data: Bytes::from_static(b"pre\0\xffab-tail"),
         })
         .unwrap();
-        let result = simple::export(&obj, &env, ".mp4", &Meter::unlimited())
-            .unwrap()
-            .unwrap();
-        assert_eq!(result.extension, ".mp4");
-        assert_eq!(result.bytes.as_slice(), expected);
-        let result = simple::export(&obj, &env, "", &Meter::unlimited())
-            .unwrap()
-            .unwrap();
-        assert_eq!(result.extension, ".video");
+        for (extension, want) in [(".mp4", ".mp4"), ("", ".video")] {
+            let meter = Meter::unlimited();
+            let result = simple::export(&obj, &env, extension, &meter)
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.extension, want);
+            assert_eq!(result.bytes.as_slice(), expected);
+            assert_eq!(result.fallback, None);
+            assert!(meter.used() >= expected.len() as u64);
+            assert_eq!(meter.decoded(), expected.len() as u64);
+            drop(result);
+            assert_eq!(meter.used(), 0);
+        }
+        if !expected.is_empty() {
+            let short = expected.len() as u64 - 1;
+            for meter in [
+                Meter::new(short, Arc::new(Unbounded), Reservation::Input),
+                Meter::with_decode_work(u64::MAX, short, Arc::new(Unbounded), Reservation::Input),
+            ] {
+                let error = simple::export(&obj, &env, ".mp4", &meter).unwrap_err();
+                assert!(matches!(
+                    error,
+                    simple::Error::Charge(ChargeError::Limit(_))
+                ));
+                drop(error);
+                assert_eq!(meter.used(), 0);
+            }
+        }
     }
     let (env, obj) = load(cases::build(
         329,

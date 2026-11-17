@@ -209,9 +209,10 @@ impl<'a> Program<'a> {
             capacity: usize::try_from(count.max(0)).map_err(|_| Error::Struct)?,
         })
     }
-    /// Render one table entry, using Python's signed list index convention.
+    /// Render one table entry with UnityPy's raises and signed list indices.
     pub fn export(&self, index: i64, meter: &Arc<Meter>) -> Result<MeteredVec<u8>, Error> {
         let mut out = Output::new(meter);
+        out.code_fallback = false;
         self.write(index, &mut out)?;
         Ok(out.bytes)
     }
@@ -261,36 +262,54 @@ impl<'a> Program<'a> {
             .ok_or(Error::Index)?;
         if !code.is_empty() {
             match sub.kind {
-                1..=8 | 26..=30 => utf8(code, out)?,
+                1..=8 | 26..=30 => utf8(code, sub.kind, out)?,
                 9..=22 => out.text("// shader disassembly not supported on DXBC")?,
                 23 | 24 => {
                     // Fixed reads, NUL search and entry-name decoding, including failures.
                     out.work((code.len() as u64).saturating_mul(2))?;
-                    let mut r = Reader::new(code, Endian::Little);
-                    let tag = r.read_u32().map_err(|_| Error::Struct)?;
-                    if tag == 0xf00d_cafe {
-                        let offset = r.read_i32().map_err(|_| Error::Struct)?;
-                        r.set_position(i128::from(offset))
-                            .map_err(|_| Error::Struct)?;
+                    match metal_source(code) {
+                        Ok(source) => utf8(source, sub.kind, out)?,
+                        Err(Error::Struct | Error::Unterminated) if out.code_fallback => {
+                            unsupported(sub.kind, out)?;
+                        }
+                        Err(error) => return Err(error),
                     }
-                    r.read_string_to_null().map_err(|_| Error::Unterminated)?;
-                    let remaining = code.len() as i128 - r.position();
-                    let remaining = i64::try_from(remaining).map_err(|_| Error::Struct)?;
-                    utf8(r.read(remaining).map_err(|_| Error::Struct)?, out)?;
                 }
                 25 => {}
-                n => {
-                    out.text("//shader disassembly not supported on ")?;
-                    out.int(i128::from(n))?;
-                }
+                n => unsupported(n, out)?,
             }
         }
         out.text("\"")
     }
 }
-fn utf8(code: &[u8], out: &mut Output<'_>) -> Result<(), Error> {
+fn metal_source(code: &[u8]) -> Result<&[u8], Error> {
+    let mut r = Reader::new(code, Endian::Little);
+    let tag = r.read_u32().map_err(|_| Error::Struct)?;
+    if tag == 0xf00d_cafe {
+        let offset = r.read_i32().map_err(|_| Error::Struct)?;
+        r.set_position(i128::from(offset))
+            .map_err(|_| Error::Struct)?;
+    }
+    r.read_string_to_null().map_err(|_| Error::Unterminated)?;
+    let remaining = code.len() as i128 - r.position();
+    let remaining = i64::try_from(remaining).map_err(|_| Error::Struct)?;
+    r.read(remaining).map_err(|_| Error::Struct)
+}
+
+fn unsupported(kind: i32, out: &mut Output<'_>) -> Result<(), Error> {
+    out.text("//shader disassembly not supported on ")?;
+    out.int(i128::from(kind))
+}
+
+fn utf8(code: &[u8], kind: i32, out: &mut Output<'_>) -> Result<(), Error> {
     out.work(code.len() as u64)?;
-    std::str::from_utf8(code).map_err(|_| out.utf8_error(code))?;
+    if std::str::from_utf8(code).is_err() {
+        return if out.code_fallback {
+            unsupported(kind, out)
+        } else {
+            Err(out.utf8_error(code))
+        };
+    }
     out.text(code)
 }
 

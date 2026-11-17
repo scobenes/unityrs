@@ -376,6 +376,105 @@ fn save_typetree_installs_the_reserialized_object() {
     );
 }
 
+/// Exercise the ObjectReader entry point with recorded UnityPy writer bytes,
+/// including its per-element padding and registry skip. The empty-class
+/// reference uses section 19.2's independent acceptance rule: original bytes.
+#[test]
+fn object_resave_replays_recorded_writes_and_empty_reference_acceptance() {
+    use serde_json::Value;
+    use unityrs_core::walk::WriteRules;
+    use unityrs_testkit::serialized::TypeSpec;
+
+    fn nodes(rows: &Value) -> Vec<NodeSpec> {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                let mut node = NodeSpec::new(
+                    u8::try_from(row[0].as_u64().unwrap()).unwrap(),
+                    row[1].as_str().unwrap(),
+                    row[2].as_str().unwrap(),
+                );
+                node.meta_flag = i32::try_from(row[3].as_i64().unwrap()).unwrap();
+                node
+            })
+            .collect()
+    }
+
+    let cases: Value = serde_json::from_str(include_str!("fixtures/walk/cases.json")).unwrap();
+    for name in [
+        "r01_every_primitive_name",
+        "w3_strings_align",
+        "w5_array_elements_align_each",
+        "w6_registry_scope",
+        "w7_empty_class",
+        "w7_match_writes",
+    ] {
+        let case = cases
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["name"] == name)
+            .unwrap();
+        let original = unhex(case["hex"].as_str().unwrap());
+        let mut spec = one_object(49, nodes(&case["nodes"]), original.clone());
+        if let Some(refs) = case["ref_types"].as_array() {
+            spec.ref_types = refs
+                .iter()
+                .map(|reference| TypeSpec {
+                    class_id: 114,
+                    nodes: nodes(&reference["nodes"]),
+                    ref_names: Some((
+                        reference["class"].as_str().unwrap().as_bytes().to_vec(),
+                        reference["ns"].as_str().unwrap().as_bytes().to_vec(),
+                        reference["asm"].as_str().unwrap().as_bytes().to_vec(),
+                    )),
+                    ..Default::default()
+                })
+                .collect();
+        }
+        let file = load(Bytes::from(build(&spec)));
+        let object = file.object(1).unwrap();
+        // The recorded registry case deliberately leaves trailing bytes:
+        // preserve its reader's cursor rather than requiring check_read.
+        let parsed = object.parse_as_dict(false).unwrap();
+        assert_eq!(parsed.bytes_read, case["boost"]["pos"].as_i64().unwrap());
+        let (rules, expected) = if name == "w7_empty_class" {
+            assert_eq!(case["boost_write"]["err"], "KeyError");
+            let unityrs_core::files::SaveError::Object(error) = object
+                .save_typetree(&parsed, None, WriteRules::UnityPy)
+                .unwrap_err()
+            else {
+                panic!("{name}: expected a typetree write error")
+            };
+            assert!(error.exceptions().contains(&"KeyError"));
+            assert!(!file.is_changed(), "failed writes install nothing");
+            (WriteRules::MirrorReader, original.clone())
+        } else {
+            (
+                WriteRules::UnityPy,
+                unhex(case["boost_write"]["hex"].as_str().unwrap()),
+            )
+        };
+        let before_work = file.meter().decoded();
+        let saved_object = object.save_typetree(&parsed, None, rules).unwrap();
+        assert_eq!(saved_object.as_ref(), expected, "{name}");
+        assert!(
+            file.meter().decoded() > before_work,
+            "{name}: metered write"
+        );
+        assert!(file.is_changed());
+        assert_eq!(object.raw_data().unwrap().as_ref(), original, "{name}");
+        let saved_file = file.save(SaveOptions::default()).unwrap();
+        let back = load(saved_file.clone());
+        assert_eq!(
+            back.object(1).unwrap().raw_data().unwrap().as_ref(),
+            expected
+        );
+        assert_eq!(back.save(SaveOptions::default()).unwrap(), saved_file);
+    }
+}
+
 #[test]
 fn mutations_propagate_through_bundle_and_web_parents() {
     use unityrs_core::files::{BundleFile, File};

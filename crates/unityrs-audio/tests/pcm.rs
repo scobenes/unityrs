@@ -155,3 +155,48 @@ fn short_widths_and_surround_channel_bits() {
         );
     }
 }
+
+#[test]
+fn gap_codecs_return_typed_unsupported_and_release_charges() {
+    // DESIGN section 3's deliberate gaps: GC ADPCM, VAG, HEVAG, XMA,
+    // CELT, ATRAC9, XWMA and an unknown codec. This verifies our refusal
+    // policy, not a claim about FMOD's ability to decode these banks.
+    for mode in [6, 8, 9, 10, 12, 13, 14, 99] {
+        let data = bank(mode, &[(&[0; 64], 32, 1, 8)]);
+        let m = meter();
+        assert!(
+            matches!(plan(&data, true, &m), Err(Error::Unsupported { codec }) if codec == mode),
+            "codec {mode}"
+        );
+        assert_eq!(m.used(), 0, "codec {mode}");
+    }
+}
+
+#[test]
+fn legacy_containers_are_explicitly_unsupported() {
+    // DESIGN section 3, Tier U: non-passthrough legacy audio is refused.
+    // These synthetic signatures exercise that policy only; no decoded
+    // samples or unrecorded UnityPy results are asserted.
+    let mut module = vec![0; 1084];
+    module[1080..].copy_from_slice(b"M.K.");
+    let mut s3m = vec![0; 48];
+    s3m[44..].copy_from_slice(b"SCRM");
+    let mut mp3 = vec![0xff, 0xfb, 0x90, 0x04];
+    mp3.resize(417, 0);
+    for data in [
+        b"IMPMsynthetic".as_slice(),
+        &module,
+        &s3m,
+        b"Extended Module: synthetic",
+        b"FORM\0\0\0\x04AIFF",
+        &mp3,
+    ] {
+        let m = meter();
+        assert!(matches!(
+            plan(data, true, &m),
+            Err(Error::UnsupportedContainer)
+        ));
+        assert_eq!(m.granted(), 0);
+        assert_eq!(m.used(), 0);
+    }
+}
