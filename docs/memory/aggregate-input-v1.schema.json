@@ -3,6 +3,9 @@
   "$defs": {
     "record": {
       "type": "object",
+      "if": {"type": "object", "properties": {"kind": {"const": "whole-run"}}},
+      "then": {"type": "object", "required": ["whole_run_coverage"]},
+      "else": {"type": "object", "properties": {"whole_run_coverage": false}},
       "additionalProperties": false,
       "required": [
         "target",
@@ -89,6 +92,25 @@
                 }
               }
             }
+          }
+        },
+        "whole_run_coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "both-builds", "one-worker", "eight-workers", "resume",
+            "loose", "archive", "phase-seven", "component-probes", "store-roundtrip"
+          ],
+          "properties": {
+            "both-builds": {"type": "boolean"},
+            "one-worker": {"type": "boolean"},
+            "eight-workers": {"type": "boolean"},
+            "resume": {"type": "boolean"},
+            "loose": {"type": "boolean"},
+            "archive": {"type": "boolean"},
+            "phase-seven": {"type": "boolean"},
+            "component-probes": {"type": "boolean"},
+            "store-roundtrip": {"type": "boolean"}
           }
         },
         "coverage": {

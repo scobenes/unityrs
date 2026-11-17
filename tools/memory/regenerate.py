@@ -36,6 +36,23 @@ ENVELOPES = {
     'response_body': 64 << 10, 'worker_state': 115344, 'panic_slot': 2048,
     'abort_pair': 2080, 'journal_line': 16 << 10, 'archive_resume_entry': 160,
 }
+# Separate facts about private corpus runs from the synthetic test catalogue.
+WHOLE_SCENES = ('both-builds', 'one-worker', 'eight-workers', 'resume',
+                'loose', 'archive', 'phase-seven', 'component-probes')
+WHOLE_STORE_SCENES = ('store-roundtrip',)
+
+
+def applicable_coverage(record):
+    if record['kind'] == 'whole-run':
+        evidence = record.get('whole_run_coverage', {})
+        if record['sink'] == 'directory' and evidence.get('store-roundtrip', False):
+            return False
+        names = WHOLE_SCENES + (WHOLE_STORE_SCENES if record['sink'] == 'store' else ())
+        return all(evidence.get(name, False) for name in names)
+    return all(record['coverage'][scene] for scene in SCENES
+               if record['sink'] == 'store' or not scene.startswith('store-'))
+
+
 PENDING = ('native-matrix', 'store-calibration', 'stop-calibration',
            'scene-coverage', 'whole-run-matrix', 'final-acceptance')
 SCHEMA_DIR = Path(__file__).resolve().parents[2] / 'docs/memory'
@@ -70,6 +87,19 @@ def _schema(name):
 
 def _validate(value, schema, root):
     """Small validator for the explicit subset used by the public schemas."""
+    if schema is False:
+        raise Invalid('inapplicable aggregate member')
+    if schema is True:
+        return
+    if 'if' in schema:
+        try:
+            _validate(value, schema['if'], root)
+        except Invalid:
+            branch = 'else'
+        else:
+            branch = 'then'
+        if branch in schema:
+            _validate(value, schema[branch], root)
     if '$ref' in schema:
         node = root
         for part in schema['$ref'].removeprefix('#/').split('/'):
@@ -92,11 +122,13 @@ def _validate(value, schema, root):
         if 'pattern' in schema and re.fullmatch(schema['pattern'], value) is None:
             raise Invalid('aggregate string has unsupported form')
     elif kind == 'object':
-        properties = schema['properties']
-        if set(value) - set(properties) or set(schema['required']) - set(value):
+        properties = schema.get('properties', {})
+        unknown = set(value) - set(properties) if schema.get('additionalProperties') is False else set()
+        if unknown or set(schema.get('required', [])) - set(value):
             raise Invalid('unknown or missing aggregate member')
         for key, child in value.items():
-            _validate(child, properties[key], root)
+            if key in properties:
+                _validate(child, properties[key], root)
     elif kind == 'array':
         if not schema.get('minItems', 0) <= len(value) <= schema.get('maxItems', U64_MAX):
             raise Invalid('aggregate array has invalid length')
@@ -116,6 +148,20 @@ def validate_input(data):
         if axis in seen:
             raise Invalid('duplicate calibration axis')
         seen.add(axis)
+        if record['kind'] == 'synthetic' and 'whole_run_coverage' in record:
+            raise Invalid('whole-run coverage on synthetic record')
+        if record['kind'] == 'whole-run':
+            if 'whole_run_coverage' not in record:
+                raise Invalid('missing whole-run coverage')
+            if any(record['coverage'].values()):
+                raise Invalid('whole-run record claims synthetic coverage')
+            if record['sink'] == 'directory' and record['whole_run_coverage']['store-roundtrip']:
+                raise Invalid('directory record claims store roundtrip')
+            # A claimed one-worker run must have an observer baseline: the
+            # protocol accepts only positive peaks in its signed ledger range.
+            if (record['whole_run_coverage']['one-worker']
+                    and not 0 < record['coefficients']['c_base'] < (1 << 63)):
+                raise Invalid('impossible whole-run one-worker baseline')
         p = record['provenance']
         if not p['native'] or not p['clean']:
             raise Invalid('emulated or modified-source evidence is ineligible')
@@ -135,6 +181,26 @@ def validate_input(data):
         for name, ceiling in ENVELOPES.items():
             if record['fixed_envelopes'][name] > ceiling:
                 raise Invalid('fixed envelope breached; bound revision required')
+    for record in data['records']:
+        if record['kind'] != 'whole-run':
+            continue
+        # The five independent increments and representation floors cannot
+        # be inferred from a corpus peak. Their same-build synthetic axis
+        # must be carried conservatively; the whole-run base is additional.
+        companion = next((r for r in data['records']
+                         if r['kind'] == 'synthetic' and all(
+                             r[key] == record[key] for key in ('target', 'profile', 'sink'))), None)
+        if companion is None:
+            continue
+        if any(record['coefficients'][key] < companion['coefficients'][key]
+               for key in COEFFICIENTS if key != 'c_base'):
+            raise Invalid('whole-run component evidence understates companion')
+        if any(record['structural_floors'][key] < companion['structural_floors'][key]
+               for key in ('m_dispatch', 'm_end')):
+            raise Invalid('whole-run floor understates companion')
+        if any(record['fixed_envelopes'][key] < companion['fixed_envelopes'][key]
+               for key in ENVELOPES):
+            raise Invalid('whole-run envelope understates companion')
     if data['status'] == 'final':
         required = {('synthetic', t, p, s) for t in TARGETS for p in PROFILES for s in SINKS}
         if not required <= seen:
@@ -142,9 +208,8 @@ def validate_input(data):
         if not whole_complete(seen):
             raise Invalid('complete native whole-run profile/sink coverage required')
         for record in data['records']:
-            if any(not record['coverage'][scene] for scene in SCENES
-                   if record['sink'] == 'store' or not scene.startswith('store-')):
-                raise Invalid('incomplete final scene/store/stop coverage')
+            if not applicable_coverage(record):
+                raise Invalid('incomplete final applicable coverage')
 
 
 def whole_complete(axes):
@@ -181,15 +246,17 @@ def _pending(data):
     if not whole_complete({tuple(r[name] for name in ('kind', 'target', 'profile', 'sink'))
                            for r in records}):
         result.add('whole-run-matrix')
-    stores = [r for r in records if r['sink'] == 'store']
+    synthetic = [r for r in records if r['kind'] == 'synthetic']
+    stores = [r for r in synthetic if r['sink'] == 'store']
     if not stores or any(not r['coverage'][s] for r in stores for s in SCENES
                          if s.startswith('store-')):
         result.add('store-calibration')
-    if any(not r['coverage'][s] for r in records for s in SCENES
+    if any(not r['coverage'][s] for r in synthetic for s in SCENES
            if s.startswith('stop-')):
         result.add('stop-calibration')
-    if any(not r['coverage'][s] for r in records for s in SCENES
-           if not s.startswith(('stop-', 'store-'))):
+    if (any(not r['coverage'][s] for r in synthetic for s in SCENES
+            if not s.startswith(('stop-', 'store-')))
+            or any(not applicable_coverage(r) for r in records if r['kind'] == 'whole-run')):
         result.add('scene-coverage')
     return sorted(result)
 
