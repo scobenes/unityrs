@@ -108,7 +108,9 @@
 //! that someone still holds (a nested bundle a resource read kept) goes on
 //! counting against the old open's, which nothing resets. A
 //! [`Source::Bytes`] dependency keeps its bytes, which are the caller's.
-//! An ordinary CAB lookup after reopening a dependency can see changed bytes.
+//! An ordinary CAB lookup after reopening a dependency can see changed bytes,
+//! and it follows the indices registered at the first open, so a source whose
+//! bundle directory was reordered can resolve a CAB name to a different entry.
 //! Retained-object reuse via [`Environment::deref_held_reusing`] assumes
 //! stable bytes across reopens. If the source changes after eviction, reuse
 //! may still return the previously retained object.

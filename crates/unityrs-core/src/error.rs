@@ -142,7 +142,9 @@ pub enum Error {
 
 impl Error {
     /// Whether the dependency budget refused a reservation, including when
-    /// an entry or object read wraps the refusal.
+    /// an entry or object read wraps the refusal. A refusal carried inside a
+    /// `ParseError::Provider` is not recognised here; callers that retry
+    /// provider reads classify that case themselves.
     #[must_use]
     pub fn is_dependency_budget_refusal(&self) -> bool {
         crate::env::registry::pool_refused(self)
