@@ -24,6 +24,15 @@ def bits(value):
     return struct.pack(">f", value).hex()
 
 
+def recording_id(recording):
+    encoded = json.dumps(recording, sort_keys=True, separators=(",", ":")).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def absent_slot(kind):
+    return dict(dof=f"Synthetic {kind}", kind=kind, index_value=-1, storage="absent")
+
+
 def probe(sample, value, *, target=0):
     return dict(sample=sample, property="weight", target=target, channel=0, component=0, value=bits(value))
 
@@ -88,10 +97,11 @@ def synthetic():
 def declare_budgets(manifest):
     def row(prop, target, channel=-1):
         stages = [dict(stage="rest", range=[[0, 1]])]
-        result = dict(property=prop, target=target, channel=channel, stages=stages)
+        result = dict(property=prop, target=target, channel=channel, track_kind="rest", stages=stages)
         if prop == "rotation":
-            result["norm_ranges"] = [[[0, 0], [0, 0], [0, 0], [1, 1]]]
+            stages[0]["norm_ranges"] = [[[0, 0], [0, 0], [0, 0], [1, 1]]]
         elif prop in ("translation", "weight"):
+            result["track_kind"] = "streamed"
             stages[:] = [dict(stage="streamed", range=[[0, 0], [0, 0], [2, 2], [6, 6], [0, 1]])]
             if prop == "weight":
                 result["weight_units"] = "editor"
@@ -134,22 +144,32 @@ def qualified_humanoid():
     slots += [dict(dof=row["name"], kind="muscle", index_value=-1, storage="absent")
               for row in human["muscles"]]
     slots[7].update(index_value=0, storage="constant")
+    slots[7:7] = [absent_slot("goal"), absent_slot("translation")]
     rest = capture["rest"]["transforms"]
-    baseline = dict(bundle_sha256=capture["bundle_sha256"][:],
-                    **{key: copy.deepcopy(spec[key]) for key in ("prefab", "binding", "avatar")},
-                    samples=[dict(local_f32=sample["local_f32"], root=copy.deepcopy(rest[0]),
-                                  hips_local=copy.deepcopy(rest[1])) for sample in capture["samples"]])
-    baseline_digest = hashlib.sha256(json.dumps(baseline, sort_keys=True, separators=(",", ":")).encode("ascii"))
     spec["evidence"]["humanoid"] = dict(
         absent_slot=-1, slots=slots, storage_counts=dict(streamed=0, dense=0, constant=1),
         axes=[dict(bone=0, axis_type=0, pre=rest[0]["rotation"], post=rest[0]["rotation"],
                    sign=[bits(1)] * 3, min=[bits(-40)] * 3, max=[bits(20)] * 3)],
-        disposition="qualified_muscle_only",
-        root_hips_comparison=dict(baseline_sha256=baseline_digest.hexdigest(), root_node=0, hips_node=1,
-                                  baseline=baseline))
+        disposition="pending")
     spec["evidence"]["import_settings"] = [
         dict(property=name, effective=value, serialized_path="m_" + name, serialized=value)
         for name, value in replay.NEUTRAL_SETTINGS.items()]
+    baseline = copy.deepcopy(m)
+    baseline_spec, baseline_capture = baseline["spec"], baseline["capture"]
+    baseline_spec.update(mode="human_pose", held_boundaries=[])
+    baseline_clock = baseline_spec["evidence"]["clock"]
+    baseline_clock.update(held=[], key_times=[2, 3])
+    baseline_clock["stop"]["probe"] = probe(3, 12.5)
+    baseline_capture["playback"]["api"] = "HumanPoseHandler.SetHumanPose"
+    for point, sample in zip(baseline_spec["schedule"], baseline_capture["samples"]):
+        point["muscles"] = [.25] + [0] * 94
+        sample.update(sides=[], muscles_f32=[bits(value) for value in point["muscles"]],
+                      pose=copy.deepcopy(baseline_capture["rest"]))
+        sample["pose"]["transforms"][0]["translation"][0] = bits(0)
+    spec["evidence"]["humanoid"].update(
+        disposition="qualified_muscle_only",
+        root_hips_comparison=dict(baseline_capture_id=recording_id(baseline), root_node=0, hips_node=1))
+    m["baseline_captures"] = [baseline]
     return declare_budgets(m)
 
 
@@ -224,6 +244,23 @@ class TestAnimReplay(unittest.TestCase):
         replay.validate(m)
         self.assertNotEqual(m["capture"]["samples"][1]["source"],
                             m["capture"]["samples"][1]["effective_source"])
+
+    def test_clock_discrimination_needs_a_held_probe_on_a_different_side(self):
+        m = declare_budgets(synthetic())
+        self.assertFalse(replay.derive(m)["clock_discriminated"])
+        # Rounded local time alone crosses this boundary. Only widened
+        # addition preserves that crossing when the sample reaches source time.
+        jump = 2.1000000007
+        m["spec"]["held_boundaries"] = [jump]
+        m["spec"]["evidence"]["clock"] = clock_evidence(jump, right=1)
+        m["capture"]["samples"][1]["sides"] = ["right"]
+        m["capture"]["samples"][1]["pose"]["weights"][0]["channels"][0] = bits(17.5)
+        self.assertTrue(replay.derive(m)["clock_discriminated"])
+        m["spec"]["source_clock"] = "f32_add"
+        m["spec"]["evidence"]["clock"] = clock_evidence(jump, right=2)
+        m["capture"]["samples"][1].update(effective_source=replay.f32_from_bits(bits(2.1)), sides=["left"])
+        m["capture"]["samples"][1]["pose"]["weights"][0]["channels"][0] = bits(12.5)
+        self.assertTrue(replay.derive(m)["clock_discriminated"])
 
     def test_sample_clock_and_endpoints_cannot_be_inferred_from_the_observations(self):
         m = synthetic()
@@ -301,6 +338,16 @@ class TestAnimReplay(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "complete muscle"):
             replay.validate(m)
 
+    def test_goal_and_translation_inventory_requires_explicit_rows(self):
+        for kind in ("goal", "translation"):
+            with self.subTest(kind=kind):
+                m = qualified_humanoid()
+                human = m["spec"]["evidence"]["humanoid"]
+                replay.validate_spec(m["spec"])
+                human["slots"] = [row for row in human["slots"] if row["kind"] != kind]
+                with self.assertRaisesRegex(ValueError, kind):
+                    replay.validate_spec(m["spec"])
+
     def test_qualification_requires_axes_and_independent_human_trait_order(self):
         m = qualified_humanoid()
         m["spec"]["evidence"]["humanoid"]["axes"] = []
@@ -347,25 +394,72 @@ class TestAnimReplay(unittest.TestCase):
         comparison["within_bounds"] = True
         with self.assertRaisesRegex(ValueError, "unknown member within_bounds"):
             replay.validate(m)
-        del comparison["within_bounds"]
-        comparison["baseline"]["samples"].pop()
-        with self.assertRaisesRegex(ValueError, "incomplete root and hips-local baseline"):
-            replay.validate(m)
-        for field, value, reason in (("bundle_sha256", [], "same built rig"),
-                                     ("local_f32", bits(.2), "schedule mismatch"),
-                                     ("root", dict(translation=[bits(1)] * 3, rotation=[bits(0)] * 3 + [bits(1)],
-                                                   scale=[bits(1)] * 3), "baseline digest mismatch")):
-            with self.subTest(field=field):
-                m = qualified_humanoid()
-                baseline = m["spec"]["evidence"]["humanoid"]["root_hips_comparison"]["baseline"]
-                target = baseline if field == "bundle_sha256" else baseline["samples"][1]
-                target[field] = value
-                with self.assertRaisesRegex(ValueError, reason):
-                    replay.validate(m)
         m = qualified_humanoid()
         m["capture"]["playback"]["clip_human_motion"] = False
         with self.assertRaisesRegex(ValueError, "observed human-motion clip"):
             replay.validate(m)
+
+    def test_qualification_requires_a_resolvable_known_vector_capture_id(self):
+        m = qualified_humanoid()
+        replay.validate(m)
+        baseline = m["baseline_captures"][0]
+        comparison = m["spec"]["evidence"]["humanoid"]["root_hips_comparison"]
+        standalone_clip = {k: v for k, v in m.items() if k != "baseline_captures"}
+        with self.assertRaisesRegex(ValueError, "unknown baseline capture"):
+            replay.validate(standalone_clip)
+        for absent_id in ("0" * 64, recording_id(standalone_clip)):
+            with self.subTest(absent_id=absent_id):
+                comparison["baseline_capture_id"] = absent_id
+                with self.assertRaisesRegex(ValueError, "unknown baseline capture"):
+                    replay.validate(m)
+        with scratch.folder("anim-baseline-") as root:
+            fixture = root / "known-vector.json"
+            fixture.write_text(json.dumps(baseline), encoding="utf-8")
+            cli = [sys.executable, "-I", str(HERE / "anim_replay.py"), "capture-id", str(fixture)]
+            result = child.run(cli, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            comparison["baseline_capture_id"] = result.stdout.strip()
+            replay.validate(m)
+        comparison["baseline"] = baseline
+        with self.assertRaisesRegex(ValueError, "unknown member baseline"):
+            replay.validate(m)
+        del comparison["baseline"]
+        for section, field, value in (
+                (baseline["spec"], "mode", "animator"),
+                (baseline["capture"]["playback"], "api", "AnimationClipPlayable")):
+            original = section[field]
+            section[field] = value
+            comparison["baseline_capture_id"] = recording_id(baseline)
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "known-vector SetHumanPose"):
+                replay.validate(m)
+            section[field] = original
+
+    def test_qualification_rejects_a_baseline_with_copied_root_and_hips_bits(self):
+        m = qualified_humanoid()
+        baseline = m["baseline_captures"][0]
+        for clip, vector in zip(m["capture"]["samples"], baseline["capture"]["samples"]):
+            vector["pose"]["transforms"] = copy.deepcopy(clip["pose"]["transforms"])
+        m["spec"]["evidence"]["humanoid"]["root_hips_comparison"]["baseline_capture_id"] = recording_id(baseline)
+        with self.assertRaisesRegex(ValueError, "byte-identical"):
+            replay.validate(m)
+
+    def test_qualification_baseline_requires_the_same_rig_and_schedule(self):
+        for field, value, reason in (("avatar", identity(112), "same built rig"),
+                                     ("schedule", [dict(local=t, muscles=[0] * 95) for t in (0, .2, .5, 1)],
+                                      "schedule mismatch")):
+            with self.subTest(field=field):
+                m = qualified_humanoid()
+                baseline = m["baseline_captures"][0]
+                baseline["spec"][field] = value
+                if field == "schedule":
+                    sample = baseline["capture"]["samples"][1]
+                    sample.update(local=.2, local_f32=bits(.2), source=2.2,
+                                  effective_source=2 + replay.f32_from_bits(bits(.2)))
+                    for sample in baseline["capture"]["samples"]:
+                        sample["muscles_f32"] = [bits(0)] * 95
+                m["spec"]["evidence"]["humanoid"]["root_hips_comparison"]["baseline_capture_id"] = recording_id(baseline)
+                with self.assertRaisesRegex(ValueError, reason):
+                    replay.validate(m)
 
     def test_budget_stage_requires_a_range_and_a_supported_stage(self):
         for field, value in (("stage", "unknown"), ("range", None), ("range", [[1, 0]] * 5),
@@ -382,8 +476,8 @@ class TestAnimReplay(unittest.TestCase):
     def test_rotation_bound_must_be_smaller_than_pi(self):
         m = declare_budgets(synthetic())
         budget = m["spec"]["budgets"][1]
-        budget["norm_ranges"][0][3] = [1e-12, 1e-12]
-        budget["stages"] = copy.deepcopy(m["spec"]["budgets"][0]["stages"])
+        budget.update(track_kind="streamed", stages=copy.deepcopy(m["spec"]["budgets"][0]["stages"]))
+        budget["stages"][0]["norm_ranges"] = [[[0, 0], [0, 0], [0, 0], [1e-12, 1e-12]]]
         with self.assertRaisesRegex(ValueError, "reaches pi"):
             replay.derive(m)
 
@@ -395,6 +489,7 @@ class TestAnimReplay(unittest.TestCase):
                 ("hermite", [[0, 0], [3, 3], [0, 0], [0, 0], [.5, .5]], 9)):
             with self.subTest(stage=stage):
                 m = declare_budgets(synthetic())
+                m["spec"]["budgets"][0]["track_kind"] = stage
                 m["spec"]["budgets"][0]["stages"] = [dict(stage=stage, range=ranges)]
                 first, off_key, *_ = replay.derive(m)["samples"]
                 dt = abs(off_key["source"] - off_key["effective_source"])
@@ -403,6 +498,7 @@ class TestAnimReplay(unittest.TestCase):
     def test_weighted_budget_encloses_flat_time_inverse(self):
         m = declare_budgets(synthetic())
         stages = m["spec"]["budgets"][0]["stages"]
+        m["spec"]["budgets"][0]["track_kind"] = "weighted"
         stages[:] = [dict(stage="weighted", range=[[0, 0], [1, 1], [0, 0], [0, 0],
                                                      [1, 1], [1, 1], [1, 1]])]
         flat = replay.derive(m)["samples"][1]["bounds"][0]
@@ -414,10 +510,14 @@ class TestAnimReplay(unittest.TestCase):
     def test_joint_budget_propagates_the_recorded_muscle_limit(self):
         m = qualified_humanoid()
         m["spec"]["evidence"]["humanoid"]["disposition"] = "pending"
+        del m["spec"]["evidence"]["humanoid"]["root_hips_comparison"]
+        m.pop("baseline_captures")
+        m["spec"]["budgets"][4]["track_kind"] = "muscle_streamed"
         stages = m["spec"]["budgets"][4]["stages"]
+        boxes = stages[0]["norm_ranges"]
         stages[:] = [dict(stage="streamed", range=[[0, 0], [0, 0], [1, 1], [0, 0], [0, 1]]),
                      dict(stage="muscle", range=[[0, 1], [-10, 10]]),
-                     dict(stage="joint", range=[[-40, 40]])]
+                     dict(stage="joint", range=[[-40, 40]], norm_ranges=boxes)]
         narrow = replay.derive(m)["samples"][1]["bounds"][4]
         stages[1]["range"][1] = [-40, 40]
         wide = replay.derive(m)["samples"][1]["bounds"][4]
@@ -425,6 +525,52 @@ class TestAnimReplay(unittest.TestCase):
         stages[1]["range"][1] = [-80, 80]
         with self.assertRaisesRegex(ValueError, "joint angle range"):
             replay.derive(m)
+
+    def test_budget_path_refuses_duplicate_or_wrong_stages(self):
+        m = declare_budgets(synthetic())
+        stages = m["spec"]["budgets"][0]["stages"]
+        stages.append(copy.deepcopy(stages[0]))
+        with self.assertRaisesRegex(ValueError, "duplicate budget stage"):
+            replay.derive(m)
+        stages[:] = [dict(stage="constant", range=[[0, 1]])]
+        with self.assertRaisesRegex(ValueError, "stage sequence"):
+            replay.derive(m)
+
+    def test_joint_path_requires_ordered_stages_and_its_own_unit_norm_box(self):
+        m = declare_budgets(synthetic())
+        budget = m["spec"]["budgets"][1]
+        boxes = budget["stages"][0]["norm_ranges"]
+        budget.update(track_kind="euler_hermite", stages=[
+            dict(stage="hermite", range=[[0, 0], [1, 1], [0, 0], [0, 0], [1, 1]]),
+            dict(stage="joint", range=[[0, 1]], norm_ranges=boxes)])
+        tight = replay.derive(m)["samples"][1]["bounds"][1]
+        boxes[0][3] = [.5, 1]
+        self.assertGreater(replay.derive(m)["samples"][1]["bounds"][1], tight)
+        budget["stages"].reverse()
+        with self.assertRaisesRegex(ValueError, "stage sequence"):
+            replay.derive(m)
+        budget["stages"].reverse()
+        budget["stages"][0]["norm_ranges"] = budget["stages"][1].pop("norm_ranges")
+        with self.assertRaisesRegex(ValueError, "rotation output stage"):
+            replay.derive(m)
+        budget["stages"][1]["norm_ranges"] = budget["stages"][0].pop("norm_ranges")
+        boxes[0][3] = [2, 3]
+        with self.assertRaisesRegex(ValueError, "unit quaternion"):
+            replay.derive(m)
+
+    def test_explicit_budgets_require_a_normal_f32_segment_duration(self):
+        m = declare_budgets(synthetic())
+        budget = m["spec"]["budgets"][0]
+        for stage, weights in (("hermite", []), ("weighted", [[.25, .25]] * 2)):
+            for duration in (0, 2**-149, 2**-126):
+                with self.subTest(stage=stage, duration=duration):
+                    budget.update(track_kind=stage, stages=[dict(
+                        stage=stage, range=[[0, 0]] * 4 + [[duration, 1]] + weights)])
+                    if duration < 2**-126:
+                        with self.assertRaisesRegex(ValueError, "normal f32 duration"):
+                            replay.derive(m)
+                    else:
+                        replay.derive(m)
 
     def test_invalid_f32_and_missing_renderer_weights_refuse(self):
         for value in ("7f800000", "7fc00000", "1234"):
@@ -487,6 +633,7 @@ class TestAnimReplay(unittest.TestCase):
 
         # The percent conversion can flush a subnormal result to zero.
         m["spec"]["budgets"][4].update(weight_units="fraction_of_100",
+                                      track_kind="constant",
                                       stages=[dict(stage="constant", range=[[2**-149, 2**-149]])])
         for sample in m["capture"]["samples"]:
             sample["pose"]["weights"][1]["channels"][0] = bits(0)
@@ -536,7 +683,7 @@ class TestAnimReplay(unittest.TestCase):
                          held_boundaries=[])
         m["spec"]["evidence"]["clock"].update(held=[], key_times=[2, 3])
         m["spec"]["evidence"]["humanoid"] = dict(
-            absent_slot=-1, slots=[dict(dof="RootT.x", kind="body", index_value=-1, storage="absent")],
+            absent_slot=-1, slots=[absent_slot(kind) for kind in ("body", "goal", "translation")],
             axes=[], disposition="pending")
         m["capture"]["playback"]["api"] = "HumanPoseHandler.SetHumanPose"
         m["capture"]["humanoid"] = human_capture()

@@ -61,19 +61,22 @@ def _same(a, b):
     return a == b and (type(a) is bool) == (type(b) is bool)
 
 
+def _matches(schema, value, path):
+    try:
+        _shape(schema, value, path)
+        return True
+    except ValueError:
+        return False
+
+
 def _shape(schema, value, path):
     """The small Draft 2020-12 subset used by this checked-in schema."""
     if "$ref" in schema:
         _shape(SCHEMA["$defs"][schema["$ref"].split("/")[-1]], value, path)
         return
     if "anyOf" in schema:
-        for choice in schema["anyOf"]:
-            try:
-                _shape(choice, value, path)
-                return
-            except ValueError:
-                pass
-        raise ValueError(f"{path}: no schema alternative matched")
+        require(any(_matches(choice, value, path) for choice in schema["anyOf"]),
+                f"{path}: no schema alternative matched")
     types = {"null": (type(None),), "object": (dict,), "array": (list,), "string": (str,),
              "boolean": (bool,), "number": (int, float), "integer": (int,)}
     if "type" in schema:
@@ -96,6 +99,9 @@ def _shape(schema, value, path):
         if type(value) is list:
             for index, item in enumerate(value):
                 _shape(schema.get("items", {}), item, f"{path}/{index}")
+            if "contains" in schema:
+                require(any(_matches(schema["contains"], item, path) for item in value),
+                        f"{path}: missing {schema['title']}")
         if "pattern" in schema:
             require(re.fullmatch(schema["pattern"], value) is not None, f"{path}: invalid spelling")
         if schema is SCHEMA["$defs"]["f32"]:
@@ -104,6 +110,8 @@ def _shape(schema, value, path):
         require(-math.inf < value < math.inf and schema.get("minimum", -math.inf) <= value
                 <= schema.get("maximum", math.inf) and value > schema.get("exclusiveMinimum", -math.inf),
                 f"{path}: number outside range")
+    for constraint in schema.get("allOf", ()):
+        _shape(constraint, value, path)
 
 
 def f32_bits(value):
@@ -185,6 +193,26 @@ def _validate_clock(spec, start, stop, length):
             require((_target_key(left), left["component"]) == (_target_key(right), right["component"])
                     and f32_from_bits(left["value"]) != f32_from_bits(right["value"]),
                     "held probes must distinguish both sides of the same component")
+    return _clock_discriminated(spec, times, length, effective_sources)
+
+
+def _clock_discriminated(spec, times, length, selected_sources):
+    boundaries = spec["held_boundaries"]
+    if not boundaries:
+        return False
+    other = "f32_add" if spec["source_clock"] == "widened" else "widened"
+    try:
+        if other == "f32_add" and f32_from_bits(f32_bits(spec["start"])) != spec["start"]:
+            return False
+        alternative = spec | {"source_clock": other}
+        other_sources = [clocks(alternative, time, length)[2] for time in times]
+    except ValueError:
+        # There is no f32-add prediction when source time overflows f32.
+        return False
+    # Different splits put at least one of the validated adjacent probes
+    # on the opposite side under the other model.
+    return any(bisect_left(selected_sources, jump) != bisect_left(other_sources, jump)
+               for jump in boundaries)
 
 
 def _validate_humanoid_spec(spec, human):
@@ -235,14 +263,6 @@ def _validate_humanoid_spec(spec, human):
     root, hips = (nodes[comparison[name]]["address"] for name in ("root_node", "hips_node"))
     require(root == spec["binding_address"] and hips != root and (not root or hips.startswith(root + "/")),
             "hips must be a distinct descendant of the Animator root")
-    baseline = comparison["baseline"]
-    require(baseline["bundle_sha256"] == [bundle["sha256"] for bundle in spec["bundles"]]
-            and all(baseline[key] == spec[key] for key in ("prefab", "binding", "avatar")),
-            "root and hips-local baseline must use the same built rig")
-    require(len(baseline["samples"]) == len(spec["schedule"]), "incomplete root and hips-local baseline")
-    require([row["local_f32"] for row in baseline["samples"]] == [f32_bits(row["local"]) for row in spec["schedule"]],
-            "root and hips-local baseline schedule mismatch")
-    require(_digest(baseline) == comparison["baseline_sha256"], "root and hips-local baseline digest mismatch")
 
 
 def validate_spec(spec):
@@ -309,7 +329,7 @@ def validate_spec(spec):
     require(f32_from_bits(f32_bits(spec["sample_rate"])) == spec["sample_rate"], "invalid serialized f32 rate")
     if spec["source_clock"] == "f32_add":
         require(f32_from_bits(f32_bits(start)) == start, "f32 source clock needs an exact f32 start")
-    _validate_clock(spec, start, stop, length)
+    clock_discriminated = _validate_clock(spec, start, stop, length)
     require(all(("muscles" in row) == (spec["mode"] == "human_pose") for row in spec["schedule"]),
             "only known-vector playback requires muscles in the schedule")
     if spec["mode"] == "human_pose":
@@ -327,6 +347,7 @@ def validate_spec(spec):
         require(len(set(keys)) == len(keys) and set(keys) == set(_targets(spec)), "invalid budget coverage")
         for row in budgets:
             budget_model(row)
+    return clock_discriminated
 
 
 def clocks(spec, local, length):
@@ -373,9 +394,35 @@ def _validate_probes(spec, samples):
         require(actual == probe["value"], "captured pose disagrees with independent clock probe")
 
 
-def _validate_qualification(spec, capture):
+def _baseline_samples(spec, capture, comparison, baselines):
+    recording = baselines.get(comparison["baseline_capture_id"])
+    require(recording is not None, "unknown baseline capture id")
+    baseline_spec, baseline = recording["spec"], recording["capture"]
+    require(all(baseline[key] == capture[key] for key in ("bundle_sha256", "editor_version", "build_target"))
+            and all(baseline_spec[key] == spec[key] for key in
+                    ("prefab", "binding", "avatar", "binding_address", "binding_component", "nodes")),
+            "root and hips-local baseline must use the same built rig and Editor")
+    require([row["local_f32"] for row in baseline["samples"]] == [row["local_f32"] for row in capture["samples"]],
+            "root and hips-local baseline schedule mismatch")
+    root, hips = comparison["root_node"], comparison["hips_node"]
+    require([bone["node"] for bone in baseline["humanoid"]["bones"] if bone["name"] == "Hips"] == [hips],
+            "hips node disagrees with the known-vector capture")
+
+    def root_hips(samples):
+        return [(row["pose"]["transforms"][root], row["pose"]["transforms"][hips]) for row in samples]
+
+    poses = root_hips(baseline["samples"])
+    require(poses != root_hips(capture["samples"]), "baseline root and hips-local samples are byte-identical to clip samples")
+    return poses
+
+
+def _validate_qualification(spec, capture, baselines):
     human = spec["evidence"].get("humanoid")
-    if human is None or human["disposition"] != "qualified_muscle_only":
+    if human is None:
+        return
+    comparison = human.get("root_hips_comparison")
+    baseline_poses = _baseline_samples(spec, capture, comparison, baselines) if comparison is not None else None
+    if human["disposition"] != "qualified_muscle_only":
         return
     require(capture["playback"]["clip_human_motion"], "qualified playback requires an observed human-motion clip")
     captured = capture["humanoid"]
@@ -397,7 +444,6 @@ def _validate_qualification(spec, capture):
                     and f32_from_bits(record["min"][axis]) <= 0 <= f32_from_bits(record["max"][axis]),
                     "invalid runtime axes for mapped muscle")
 
-    comparison = human["root_hips_comparison"]
     hips = comparison["hips_node"]
     require([bone["node"] for bone in bones if bone["name"] == "Hips"] == [hips],
             "hips node disagrees with the independent HumanTrait map")
@@ -408,22 +454,20 @@ def _validate_qualification(spec, capture):
             observed = f32_from_bits(observed)
         require(_same(observed, settings[name]), f"effective Avatar setting mismatch: {name}")
 
-    baselines = comparison["baseline"]["samples"]
-    for sample, baseline, bounds in zip(capture["samples"], baselines, _sample_bounds(spec, capture)):
-        for name, target in (("root", comparison["root_node"]), ("hips_local", hips)):
+    for sample, baseline, bounds in zip(capture["samples"], baseline_poses, _sample_bounds(spec, capture)):
+        targets = (("root", comparison["root_node"]), ("hips_local", hips))
+        for (name, target), expected_pose in zip(targets, baseline):
             actual = sample["pose"]["transforms"][target]
             for axis, prop in enumerate(TRS):
-                measured, expected = (tuple(map(f32_from_bits, pose[prop])) for pose in (actual, baseline[name]))
+                measured, expected = (tuple(map(f32_from_bits, pose[prop])) for pose in (actual, expected_pose))
                 residual = (angle(measured, expected) if prop == "rotation"
                             else max(abs(a - b) for a, b in zip(measured, expected)))
                 require(residual <= bounds[3 * target + axis],
                         f"{name} {prop} residual exceeds frozen replay bound at {sample['local']}")
 
 
-def validate(manifest, bundle_dir=None):
-    _shape(SCHEMA, manifest, "")
-    spec, capture = manifest["spec"], manifest["capture"]
-    validate_spec(spec)
+def _validate_recording(spec, capture, bundle_dir=None):
+    clock_discriminated = validate_spec(spec)
     require(spec["build_target"] == capture["build_target"], "build target mismatch")
     require([b["sha256"] for b in spec["bundles"]] == capture["bundle_sha256"], "bundle digest mismatch")
     if bundle_dir is not None:
@@ -485,7 +529,30 @@ def validate(manifest, bundle_dir=None):
                 "applied known-vector bits disagree with schedule")
         list(_pose_values(spec, sample["pose"]))
     _validate_probes(spec, capture["samples"])
-    _validate_qualification(spec, capture)
+    return clock_discriminated
+
+
+def _known_vector_id(recording):
+    spec, capture = recording["spec"], recording["capture"]
+    require(spec["mode"] == "human_pose" and capture["playback"]["api"] == API["human_pose"]
+            and "root_hips_comparison" not in spec["evidence"].get("humanoid", {}),
+            "baseline must be a standalone known-vector SetHumanPose capture")
+    return _digest(recording)
+
+
+def validate(manifest, bundle_dir=None):
+    """Check the recording and return whether a held probe discriminates the clock."""
+    _shape(SCHEMA, manifest, "")
+    spec, capture = manifest["spec"], manifest["capture"]
+    clock_discriminated = _validate_recording(spec, capture, bundle_dir)
+    baselines = {}
+    for baseline in manifest.get("baseline_captures", ()):
+        capture_id = _known_vector_id(baseline)
+        require(capture_id not in baselines, "duplicate known-vector baseline capture")
+        _validate_recording(baseline["spec"], baseline["capture"])
+        baselines[capture_id] = baseline
+    _validate_qualification(spec, capture, baselines)
+    return clock_discriminated
 
 
 def _sample_bounds(spec, capture):
@@ -513,19 +580,20 @@ def _sample_bounds(spec, capture):
 
 def derive(manifest, bundle_dir=None):
     """Return per-sample bounds in target order. Observations supply only the output ulp."""
-    validate(manifest, bundle_dir)
+    clock_discriminated = validate(manifest, bundle_dir)
     spec, capture = manifest["spec"], manifest["capture"]
     require("budgets" in spec, "derivation requires recorded budgets")
     result = [{k: sample[k] for k in ("source", "effective_source", "sides")} | {"bounds": bounds}
               for sample, bounds in zip(capture["samples"], _sample_bounds(spec, capture))]
     return {"format": "unityrs.anim_tolerances", "version": 1,
             "manifest_sha256": _digest(manifest),
+            "clock_discriminated": clock_discriminated,
             "targets": _targets(spec), "samples": result}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("validate", "validate-spec", "derive"))
+    parser.add_argument("mode", choices=("validate", "validate-spec", "derive", "capture-id"))
     parser.add_argument("file", type=Path)
     parser.add_argument("--bundle-dir", type=Path)
     args = parser.parse_args()
@@ -533,11 +601,19 @@ def main():
         value = read_json(args.file.read_text(encoding="utf-8"))
         if args.mode == "validate-spec":
             require(args.bundle_dir is None, "bundle verification requires a capture")
-            validate_spec(value)
-        elif args.mode == "validate":
-            validate(value, args.bundle_dir)
-        else:
+            discriminated = validate_spec(value)
+        elif args.mode == "derive":
             print(json.dumps(derive(value, args.bundle_dir), indent=2, allow_nan=False))
+            return
+        else:
+            discriminated = validate(value, args.bundle_dir)
+            if args.mode == "capture-id":
+                require("baseline_captures" not in value, "capture-id requires a standalone recording")
+                print(_known_vector_id(value))
+                return
+        spec = value if args.mode == "validate-spec" else value["spec"]
+        if spec["mode"] != "human_pose" and not discriminated:
+            print("anim_replay: clock not discriminated", file=sys.stderr)
     except (ValueError, OSError, OverflowError) as exc:
         parser.exit(1, f"anim_replay: {exc}\n")
 

@@ -5,15 +5,22 @@ from dataclasses import dataclass
 from anim_reference import BOUNDS, gamma
 
 U32 = 2**-24
+MIN_NORMAL_F32 = 2**-126
 OPERATIONS = BOUNDS["transcription"]["operations"]
 RANGE_LENGTHS = {"rest": 1, "constant": 1, "held": 1, "streamed": 5, "dense": 6,
                  "hermite": 5, "weighted": 7, "muscle": 2, "joint": 1}
+INPUT_STAGES = ("rest", "constant", "held", "streamed", "dense", "hermite", "weighted")
+TRACK_STAGES = (
+    {stage: (stage,) for stage in INPUT_STAGES}
+    | {f"euler_{stage}": (stage, "joint") for stage in INPUT_STAGES if stage != "rest"}
+    | {f"muscle_{stage}": (stage, "muscle", "joint") for stage in ("constant", "streamed", "dense")}
+)
 
 
 def roundoff(operations, scale, flush_gain=1):
     if not 0 <= scale <= BOUNDS["transcription"]["max_operation_scale"]:
         raise ValueError("budget operation scale is outside the frozen range")
-    return gamma(operations, U32) * scale + operations * 2**-126 * flush_gain
+    return gamma(operations, U32) * scale + operations * MIN_NORMAL_F32 * flush_gain
 
 
 def magnitude(interval):
@@ -71,8 +78,8 @@ def _curve_error(stage, ranges):
 
     a, b, outgoing, incoming, h = bounds[:5]
     shortest = ranges[4][0]
-    if shortest <= 0:
-        raise ValueError("explicit duration range must be positive")
+    if shortest < MIN_NORMAL_F32:
+        raise ValueError("explicit segment needs a normal f32 duration")
     delta = difference(*ranges[:2])
     slopes = outgoing + incoming
     if stage == "hermite":
@@ -96,49 +103,63 @@ def _curve_error(stage, ranges):
                       time_derivative=time_derivative, time_error=time_error)
 
 
-def _norm_floor(boxes):
+def _norm_floor(boxes, *, unit_space):
     # Each box encloses the raw quaternion over a part of the playback path.
     # Its largest guaranteed component magnitude is a lower bound on its norm.
     floors = []
     for box in boxes:
-        if max(map(magnitude, box)) > 2**60:
+        maxima = [magnitude(interval) for interval in box]
+        minima = [max(0., lo, -hi) for lo, hi in box]
+        if max(maxima) > 2**60:
             raise ValueError("raw quaternion range exceeds safe f32 normalization")
-        floors.append(max(max(0., lo, -hi) for lo, hi in box))
+        if unit_space and not math.hypot(*minima) <= 1 <= math.hypot(*maxima):
+            raise ValueError("joint output box must admit a unit quaternion")
+        floors.append(max(minima))
     floor = min(floors)
     if floor < 2**-60:
         raise ValueError("raw quaternion range cannot establish a safe positive norm floor")
-    return floor
+    return min(floor, 1.) if unit_space else floor
 
 
 @dataclass(frozen=True)
 class BudgetModel:
-    curves: tuple
+    curve: CurveError
     gain: float
     extra_error: float
     min_norm: float | None
 
     def error(self, dt):
-        return math.fsum(curve.error(dt) for curve in self.curves) * self.gain + self.extra_error
+        return self.curve.error(dt) * self.gain + self.extra_error
 
 
 def budget_model(row):
     prop = row["property"]
     stages = row["stages"]
+    sequence = tuple(stage["stage"] for stage in stages)
+    if len(set(sequence)) != len(sequence):
+        raise ValueError("duplicate budget stage")
+    if sequence != TRACK_STAGES[row["track_kind"]]:
+        raise ValueError("budget stage sequence does not match the track kind")
+    if any(("norm_ranges" in stage) != (prop == "rotation" and index == len(stages) - 1)
+           for index, stage in enumerate(stages)):
+        raise ValueError("norm ranges are required only on the rotation output stage")
+    if ("weight_units" in row) != (prop == "weight"):
+        raise ValueError("weight units are required only for weights")
+    joint = sequence[-1] == "joint"
+    if joint and prop != "rotation":
+        raise ValueError("joint composition requires a rotation budget")
     for stage in stages:
         if len(stage["range"]) != RANGE_LENGTHS[stage["stage"]]:
             raise ValueError(f"wrong budget range width for {stage['stage']}")
         for interval in stage["range"]:
             magnitude(interval)
-    if ("norm_ranges" in row) != (prop == "rotation") or ("weight_units" in row) != (prop == "weight"):
-        raise ValueError("budget requires norm ranges only for rotation and units only for weights")
+    floor = _norm_floor(stages[-1]["norm_ranges"], unit_space=joint) if prop == "rotation" else None
 
     gain = 100. if row.get("weight_units") == "fraction_of_100" else 1.
     # A native percent multiply may flush its input or result. Its normal
     # rounding is covered by the final output ulp.
-    extra = (gain + 1) * 2**-126 if gain == 100. else 0.
-    if stages[-1]["stage"] == "joint":
-        if prop != "rotation":
-            raise ValueError("joint composition requires a rotation budget")
+    extra = (gain + 1) * MIN_NORMAL_F32 if gain == 100. else 0.
+    if joint:
         degrees = magnitude(stages[-1]["range"][0])
         if degrees > BOUNDS["transcription"]["max_abs_degrees"]:
             raise ValueError("joint angle range exceeds the frozen equation domain")
@@ -146,17 +167,12 @@ def budget_model(row):
         # at most one half-angle of chord displacement.
         gain = 3 * math.pi / 360
         extra = roundoff(OPERATIONS["joint"], 8 * (1 + degrees * math.pi / 360)) + 24 * 2**-23
-        stages = stages[:-1]
-        if stages and stages[-1]["stage"] == "muscle":
-            muscle_range, limit_range = stages[-1]["range"]
+        if sequence[-2] == "muscle":
+            muscle_range, limit_range = stages[1]["range"]
             max_muscle, max_limit = magnitude(muscle_range), magnitude(limit_range)
             if max_muscle * max_limit > degrees:
                 raise ValueError("joint angle range does not cover the muscle range and limits")
             extra += gain * roundoff(OPERATIONS["muscle"], max_muscle * max_limit)
             gain *= max_limit
-            stages = stages[:-1]
-    if not stages or any(stage["stage"] in ("muscle", "joint") for stage in stages):
-        raise ValueError("budget path needs input stages followed by optional muscle and joint composition")
-    curves = tuple(_curve_error(stage["stage"], stage["range"]) for stage in stages)
-    floor = _norm_floor(row["norm_ranges"]) if prop == "rotation" else None
-    return BudgetModel(curves, gain, extra, floor)
+    curve = _curve_error(sequence[0], stages[0]["range"])
+    return BudgetModel(curve, gain, extra, floor)

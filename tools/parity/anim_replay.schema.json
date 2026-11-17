@@ -8,9 +8,18 @@
     "format": {"const": "unityrs.anim_replay"},
     "version": {"const": 1},
     "spec": {"$ref": "#/$defs/spec"},
-    "capture": {"$ref": "#/$defs/capture"}
+    "capture": {"$ref": "#/$defs/capture"},
+    "baseline_captures": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/recording"}}
   },
   "$defs": {
+    "recording": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "version", "spec", "capture"],
+      "properties": {
+        "format": {"const": "unityrs.anim_replay"}, "version": {"const": 1},
+        "spec": {"$ref": "#/$defs/spec"}, "capture": {"$ref": "#/$defs/capture"}
+      }
+    },
     "name": {"type": "string", "minLength": 1},
     "index": {"type": "integer", "minimum": 0, "maximum": 2147483647},
     "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -75,29 +84,23 @@
       "type": "object", "additionalProperties": false,
       "required": ["absent_slot", "slots", "axes", "disposition"],
       "properties": {
-        "absent_slot": {"type": "integer"}, "slots": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/slot"}},
+        "absent_slot": {"type": "integer"},
+        "slots": {
+          "type": "array", "items": {"$ref": "#/$defs/slot"},
+          "allOf": [
+            {"title": "goal inventory row", "contains": {"required": ["kind"], "properties": {"kind": {"const": "goal"}}}},
+            {"title": "translation inventory row", "contains": {"required": ["kind"], "properties": {"kind": {"const": "translation"}}}}
+          ]
+        },
         "axes": {"type": "array", "items": {"$ref": "#/$defs/axis"}},
         "disposition": {"type": "string", "pattern": "^(pending|qualified_muscle_only|unsupported_[a-z_]+)$"},
         "storage_counts": {"type": "object", "additionalProperties": false,
           "required": ["streamed", "dense", "constant"], "properties": {
             "streamed": {"$ref": "#/$defs/index"}, "dense": {"$ref": "#/$defs/index"}, "constant": {"$ref": "#/$defs/index"}}},
         "root_hips_comparison": {"type": "object", "additionalProperties": false,
-          "required": ["baseline_sha256", "root_node", "hips_node", "baseline"],
-          "properties": {"baseline_sha256": {"$ref": "#/$defs/digest"}, "root_node": {"$ref": "#/$defs/index"},
-            "hips_node": {"$ref": "#/$defs/index"},
-            "baseline": {"$ref": "#/$defs/humanoid_baseline"}}}
-      }
-    },
-    "humanoid_baseline": {
-      "type": "object", "additionalProperties": false,
-      "required": ["bundle_sha256", "prefab", "binding", "avatar", "samples"],
-      "properties": {
-        "bundle_sha256": {"type": "array", "items": {"$ref": "#/$defs/digest"}},
-        "prefab": {"$ref": "#/$defs/id"}, "binding": {"$ref": "#/$defs/id"}, "avatar": {"$ref": "#/$defs/id"},
-        "samples": {"type": "array", "minItems": 1, "items": {
-          "type": "object", "additionalProperties": false, "required": ["local_f32", "root", "hips_local"],
-          "properties": {"local_f32": {"$ref": "#/$defs/f32"}, "root": {"$ref": "#/$defs/trs"},
-            "hips_local": {"$ref": "#/$defs/trs"}}}}
+          "required": ["baseline_capture_id", "root_node", "hips_node"],
+          "properties": {"baseline_capture_id": {"$ref": "#/$defs/digest"}, "root_node": {"$ref": "#/$defs/index"},
+            "hips_node": {"$ref": "#/$defs/index"}}}
       }
     },
     "slot": {
@@ -153,18 +156,21 @@
       "type": "object", "additionalProperties": false, "required": ["stage", "range"],
       "properties": {
         "stage": {"enum": ["rest", "constant", "held", "streamed", "dense", "hermite", "weighted", "muscle", "joint"]},
-        "range": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/interval"}}
+        "range": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/interval"}},
+        "norm_ranges": {"type": "array", "minItems": 1, "items": {
+          "type": "array", "minItems": 4, "maxItems": 4, "items": {"$ref": "#/$defs/interval"}}}
       }
     },
     "budget": {
       "type": "object", "additionalProperties": false,
-      "required": ["property", "target", "channel", "stages"],
+      "required": ["property", "target", "channel", "track_kind", "stages"],
       "properties": {
         "property": {"enum": ["translation", "rotation", "scale", "weight"]},
         "target": {"$ref": "#/$defs/index"}, "channel": {"type": "integer", "minimum": -1, "maximum": 2147483647},
         "weight_units": {"enum": ["editor", "fraction_of_100"]},
-        "norm_ranges": {"type": "array", "minItems": 1, "items": {
-          "type": "array", "minItems": 4, "maxItems": 4, "items": {"$ref": "#/$defs/interval"}}},
+        "track_kind": {"enum": ["rest", "constant", "held", "streamed", "dense", "hermite", "weighted",
+          "euler_constant", "euler_held", "euler_streamed", "euler_dense", "euler_hermite", "euler_weighted",
+          "muscle_constant", "muscle_streamed", "muscle_dense"]},
         "stages": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stage"}}
       }
     },

@@ -297,6 +297,34 @@ A replay document has an owner-prepared `spec` and recorder-generated
 The [synthetic replay test](../tools/parity/tests/test_anim_replay.py) shows
 both halves on a one-node prefab with two renderers sharing a mesh.
 
+### Trust model
+
+The replay manifest is trusted provenance from our own recorder and
+digest-pinned bundles. The Python validator checks internal consistency
+to catch recorder and operator mistakes. Deliberate manifest forgery is
+outside this threat model.
+
+#### Rust-side cross-check obligations
+
+PR 6 (generic and legacy) and PR 8 (humanoid) must read those same
+digest-pinned bundles and perform the applicable checks before promoting
+any L11 row.
+
+1. Derive the complete key-time inventory from the bundle and compare it
+   with the manifest. Use the bundle keys to determine the off-key status
+   of each requested and effective sample time, including after f32
+   rounding, and confirm the required interior probe.
+2. Verify the source origin against the clip layout, including serialized
+   `m_StartTime` where present.
+3. Verify the recorded body, muscle, goal and translation slot inventory,
+   mapping, absent sentinels and storage counts and ranges against the
+   serialized Avatar and clip.
+4. Verify the identities and values of the start and stop fields used
+   for endpoint replay, or the endpoint derivation for layouts that use
+   key bounds.
+5. Verify that every recorded stage range, including rotation output
+   boxes, encloses the clip's actual values along the declared playback path.
+
 ### Identity and evidence
 
 - The ordered `bundles` list describes the loaded view, including
@@ -374,7 +402,7 @@ interval. At `float(l) == clip.length`, the endpoint convention selects
 the exact stored stop.
 
 The public playable or legacy time checks the supplied time. Use the
-`source_clock` enum to select the confirmed clock. Inspect the source
+`source_clock` enum to declare the clock model. Inspect the source
 endpoints independently and record their source seconds and field names
 in `evidence.clock.start` and `stop`. Include all inspected key times
 inside the source interval, held boundaries and both endpoints in
@@ -391,8 +419,12 @@ per boundary with its source time and probes at the last effective sample
 before the jump and the first one at or after it. A jump at the clip
 start needs only the right probe. Use a held component with distinct,
 independently known values on its two sides. The validator compares the
-expected values with the captured pose. In the fixture matrix include a
-probe that changes sides after f32 rounding to discriminate clock models.
+expected values with the captured pose and predicts the held sides under
+both clock models. When no held probe changes sides between the models,
+`validate` reports `clock not discriminated` for clip playback and
+`derive` sets `clock_discriminated` to false. Promotion requires at least
+one held probe whose independently observed side distinguishes the models
+and a true `clock_discriminated` in the frozen tolerances used as clock evidence.
 
 Include the cases in [plan section 8](plans/anim.md#8-editor-fixture-project-owner-built).
 All local TRS and renderer weights are eight-digit IEEE 754 f32 bit
@@ -411,7 +443,9 @@ and limits. Use `RootT.x` through `RootT.z` and `RootQ.x` through
 `RootQ.w` as the canonical body DOF labels. Include all 95 muscle slots
 in the supported HumanTrait order, including absent slots. The validator
 matches their names to the recorded inventory and checks runtime axes for
-mapped muscles. For axis fields exposed by
+mapped muscles. Both the goal and translation kinds require explicit rows,
+using the absent sentinel and `storage: "absent"` for each unmapped slot.
+For axis fields exposed by
 the loaded Avatar's Editor SerializedObject, list their property paths in `editor_axis_properties`
 to capture integer, f32, Vector3 or quaternion values independently.
 The recorder also captures the human bone-to-node map, optional
@@ -431,15 +465,21 @@ records. [Unity GetHumanPose](https://docs.unity3d.com/2022.3/Documentation/Scri
 
 Start with `disposition: "pending"`. For qualification, identify the
 distinct Animator root and mapped hips node indexes on an observed
-human-motion clip. From the separately recorded known-vector or
-reset/muscle-only capture, copy the ordered bundle SHA-256 values, prefab,
-binding and Avatar IDs, plus the measured `root` and `hips_local` TRS
-and `local_f32` for each corresponding schedule point into `baseline`.
-Use the SHA-256 of that object as sorted compact ASCII JSON for
-`baseline_sha256`. Retain the separate capture with the fixture.
-The validator checks the digest, rig identities and sample clocks,
-then measures componentwise and angular residuals from the two poses
-against the frozen replay budgets.
+human-motion clip. Record a separate `human_pose` replay on the same
+built rig and Editor version with the same f32 sample schedule. Run
+`python3 -I tools/parity/anim_replay.py capture-id known-vector-replay.json`
+to get its ID, the SHA-256 of the complete standalone recording as sorted
+compact ASCII JSON. Put this ID in
+`evidence.humanoid.root_hips_comparison.baseline_capture_id` in the clip
+spec. Once the clip is recorded, attach the complete known-vector replay
+document as an entry in the clip manifest's top-level `baseline_captures`
+array. Keep the original recorder output with the fixture.
+
+The validator resolves the ID, checks `SetHumanPose` playback, rig
+identities and sample times, and reads the root and hips-local poses
+directly from the referenced capture. It rejects a byte-identical
+sequence of root and hips-local samples and measures componentwise and
+angular residuals against the frozen replay budgets.
 
 The `qualified_muscle_only` profile requires absent body slots (including
 mapped constant slots as present), only muscle writers, and neutral
@@ -492,12 +532,24 @@ order. Derive the ranges from the inspected inputs and rest pose across
 the complete playback path, including all covered components and both
 clock times. Retain the inspected sources used to establish coverage.
 
+Set `track_kind` on every budget row. Each kind fixes one ordered stage
+sequence, with each stage appearing once.
+
+| Track kind | Stage sequence |
+|---|---|
+| `rest`, `constant`, `held`, `streamed`, `dense`, `hermite`, `weighted` | The single stage of the same name. |
+| `euler_constant`, `euler_held`, `euler_streamed`, `euler_dense`, `euler_hermite`, `euler_weighted` | The named input stage, then `joint`, for rotation. |
+| `muscle_constant`, `muscle_streamed`, `muscle_dense` | The named input stage, then `muscle`, then `joint`, for rotation. |
+
+Mixed-stage inputs need a documented track kind and a matching budget
+derivation before promotion.
+
 | Stage | Recorded ranges in order | Continuous derivative bound |
 |---|---|---|
 | `rest`, `constant`, `held` | Value | Zero on the selected side. |
 | `streamed` | `c3, c2, c1, c0, d` with nonnegative key-relative time `d` | `3*abs(c3)*D² + 2*abs(c2)*D + abs(c1)` with `D = max(d)`. |
 | `dense` | Adjacent values `a, b`, grid rate, sample time, grid begin, grid offset `i/rate` | `max(abs(b-a))*max(rate)`. |
-| `hermite` | `v0, v1, outSlope, inSlope, h` | `1.5*max(abs(v1-v0))/min(h) + max(abs(outSlope)) + max(abs(inSlope))` from the derivatives of the Hermite bases. |
+| `hermite` | `v0, v1, outSlope, inSlope, h`, with `min(h) >= 2^-126` | `1.5*max(abs(v1-v0))/min(h) + max(abs(outSlope)) + max(abs(inSlope))` from the derivatives of the Hermite bases. |
 | `weighted` | Hermite ranges followed by `outWeight, inWeight` | Use the time inverse enclosure below. |
 | `muscle` | Normalized muscle value and signed degree limits | Forward component error and rate with gain `max(abs(limit))`. |
 | `joint` | Euler angles in degrees | Forward the maximum input component error and rate with gain `3π/360` into raw quaternion components. |
@@ -508,10 +560,12 @@ and the largest difference between opposite interval endpoints. Use
 `γ32(n) = n*2^-24 / (1-n*2^-24)` and add `n*2^-126` for
 flush-to-zero, scaled by conservative propagation through the stage
 for time subtraction, Horner multiplies, grid interpolation or Hermite
-time division. The exact rest, constant and held stages contribute
-zero. Multiply each continuous rate by the clock displacement
-`abs(effective_source-source)`. At a held crossing compare the reference
-on the effective side and budget continuous motion only.
+time division. Hermite and weighted budgets require normal f32 segment
+durations so their divisors survive flush-to-zero. The exact rest,
+constant and held stages contribute zero. Multiply each continuous rate
+by the clock displacement `abs(effective_source-source)`. At a held
+crossing compare the reference on the effective side and budget
+continuous motion only.
 
 For a confirmed weighted solver, add its normalized time uncertainty
 to clock displacement divided by the shortest segment. The budget
@@ -532,8 +586,8 @@ which bounds the value derivative by the largest adjacent Bézier
 control difference. Confirm the native f32 solver fits this time
 enclosure before using the stage for L11.
 
-Sum input stage errors and forward them through the optional muscle
-and joint stages. Add their local roundoff and the joint elementary
+Forward the input stage error through any muscle and joint stages in the
+track kind. Add their local roundoff and the joint elementary
 error (six trig evaluations at up to two f32 ulps each with conservative
 propagation). The joint formula assumes normalized rest and axis
 quaternions whose multiplication preserves Euclidean length. Each of
@@ -542,23 +596,26 @@ displacement. Set `weight_units` to `editor` or `fraction_of_100` to
 select the conversion gain of one or 100. The percent multiply has
 an additional `(100+1)*2^-126` allowance for input and result flushing.
 
-For rotation, `norm_ranges` lists four-component XYZW boxes covering
-the raw quaternion after interpolation or joint composition, including
-off-key values. Subdivide the path if a single box includes zero.
+For rotation, put `norm_ranges` on the final stage of that same budget
+path. The four-component XYZW boxes cover that stage's raw quaternion
+output, including off-key values. Subdivide the path if a single box
+includes zero.
 Within each box the largest guaranteed absolute component is a lower
 bound on the norm. Use the smallest such bound across the path.
 The boxes must establish a floor of at least `2^-60` and an upper
 component magnitude no greater than `2^60` to keep f32 length
-arithmetic in range. Convert propagated raw component error with
-this norm floor. Budget normalization with 32 operations in unit
-space. Add half an f32 ulp at the largest captured component for
-final storage. For rotation, convert the normalization and storage
+arithmetic in range. For a `joint` output each box must admit a unit
+quaternion, and the floor is capped at one. Convert propagated raw
+component error with this norm floor. Budget normalization with 32
+operations in unit space. Add half an f32 ulp at the largest captured
+component for final storage. For rotation, convert the normalization and storage
 errors with norm one, sum the two angular budgets and include the f64
 angle metric floor. Refuse any rotation tolerance that reaches π.
 
 Run `python3 -I tools/parity/anim_replay.py derive synthetic-replay.json --bundle-dir . > synthetic-tolerances.json`.
 The result contains the manifest SHA-256 (sorted compact ASCII JSON),
-ordered property, target and channel keys, and per-sample clocks, held
-sides and bounds. Freeze it alongside the inputs before comparison.
+`clock_discriminated`, ordered property, target and channel keys, and
+per-sample clocks, held sides and bounds. Freeze it alongside the inputs
+before comparison.
 Investigate discrepancies against the recorded layout, settings and
 equations.
