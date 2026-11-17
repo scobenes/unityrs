@@ -73,7 +73,10 @@ fn shader_allocations_are_charged_and_allocator_refusals_propagate() {
         .iter()
         .filter(|c| {
             c["oracle"].get("text").is_some()
-                || matches!(c["case"].as_str(), Some("script_missing" | "script_string"))
+                || matches!(
+                    c["case"].as_str(),
+                    Some("script_missing" | "script_string" | "script_invalid_utf8")
+                )
         })
         .chain(
             modern["cases"]
@@ -154,7 +157,13 @@ fn work_meter(work: u64) -> Arc<Meter> {
 fn no_blob_outputs_obey_the_work_bound() {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/shader.json")).unwrap();
-    for name in ["script_missing", "script_string"] {
+    for name in [
+        "script_missing",
+        "script_string",
+        "script_empty",
+        "script_utf8",
+        "script_invalid_utf8",
+    ] {
         let case = fixture["cases"]
             .as_array()
             .unwrap()
@@ -180,20 +189,26 @@ fn no_blob_outputs_obey_the_work_bound() {
         else {
             panic!("file")
         };
-        let object = file.object(1).unwrap();
-        let meter = work_meter(u64::MAX);
-        drop(unityrs_export::shader::export(&object, &env, &meter).unwrap());
-        let work = meter.decoded();
-        let short = work_meter(work - 1);
-        assert!(
-            matches!(unityrs_export::shader::export(&object, &env, &short),
+        let parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
+        for version in [(5, 4), (5, 5), (2021, 3)] {
+            if version < (5, 5) && matches!(name, "script_missing" | "script_invalid_utf8") {
+                continue;
+            }
+
+            let meter = work_meter(u64::MAX);
+            drop(unityrs_export::shader::export_parsed(&parsed, version, &meter).unwrap());
+            let work = meter.decoded();
+            let short = work_meter(work - 1);
+            assert!(
+                matches!(unityrs_export::shader::export_parsed(&parsed, version, &short),
             Err(unityrs_export::shader::Error::Charge(unityrs_core::limits::ChargeError::Limit(ref e)))
                 if e.kind() == unityrs_core::error::LimitKind::DecodeWork)
-        );
-        assert_eq!(short.used(), 0);
-        let exact = work_meter(work);
-        drop(unityrs_export::shader::export(&object, &env, &exact).unwrap());
-        assert_eq!(exact.used(), 0);
+            );
+            assert_eq!(short.used(), 0);
+            let exact = work_meter(work);
+            drop(unityrs_export::shader::export_parsed(&parsed, version, &exact).unwrap());
+            assert_eq!(exact.used(), 0);
+        }
     }
 }
 
@@ -248,9 +263,10 @@ fn malformed_block_and_invalid_script_are_charged_before_scanning() {
         else {
             panic!("file")
         };
-        let obj = file.object(1).unwrap();
+        let parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
+        let version = if script { (5, 4) } else { (2022, 3) };
         let meter = work_meter(u64::MAX);
-        let error = shader::export(&obj, &env, &meter).unwrap_err();
+        let error = shader::export_parsed(&parsed, version, &meter).unwrap_err();
         if script {
             assert!(matches!(error, Error::Utf8 | Error::Utf8Bytes(_)));
         } else {
@@ -263,7 +279,7 @@ fn malformed_block_and_invalid_script_are_charged_before_scanning() {
         assert!(charged >= (1 << 20), "unaccounted scan: {charged}");
         for work in [shader::HEADER.len() as u64, charged - 1] {
             let meter = work_meter(work);
-            let error = shader::export(&obj, &env, &meter).unwrap_err();
+            let error = shader::export_parsed(&parsed, version, &meter).unwrap_err();
             assert!(
                 matches!(error, Error::Charge(unityrs_core::limits::ChargeError::Limit(ref e)) if e.kind() == unityrs_core::error::LimitKind::DecodeWork),
                 "{error}"
@@ -271,7 +287,7 @@ fn malformed_block_and_invalid_script_are_charged_before_scanning() {
             assert_eq!(meter.used(), 0);
         }
         let meter = work_meter(charged);
-        let error = shader::export(&obj, &env, &meter).unwrap_err();
+        let error = shader::export_parsed(&parsed, version, &meter).unwrap_err();
         assert!(
             !matches!(error, Error::Charge(_)),
             "exact work allowance refused: {error}"
@@ -308,9 +324,11 @@ fn field_name_searches_charge_hits_and_misses_at_the_work_bound() {
         else {
             panic!("file")
         };
-        let object = file.object(1).unwrap();
+        // This search exercises the legacy script path; modern shaders require
+        // m_ParsedForm even when a script field is retained.
+        let parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
         let meter = work_meter(u64::MAX);
-        let answer = shader::export(&object, &env, &meter);
+        let answer = shader::export_parsed(&parsed, (5, 4), &meter);
         assert_eq!(answer.is_ok(), hit);
         let work = meter.decoded();
         assert!(
@@ -320,15 +338,15 @@ fn field_name_searches_charge_hits_and_misses_at_the_work_bound() {
         drop(answer);
         let bounded = work_meter(work - 1);
         assert!(matches!(
-            shader::export(&object, &env, &bounded),
+            shader::export_parsed(&parsed, (5, 4), &bounded),
             Err(Error::Charge(_))
         ));
         let exact = work_meter(work);
-        let answer = shader::export(&object, &env, &exact);
+        let answer = shader::export_parsed(&parsed, (5, 4), &exact);
         if hit {
             drop(answer.unwrap());
         } else {
-            assert!(matches!(answer, Err(Error::Field("m_ParsedForm"))));
+            assert!(matches!(answer, Err(Error::NoneBytes)));
         }
         assert_eq!(exact.used(), 0);
     }

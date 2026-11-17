@@ -171,11 +171,7 @@ fn no_blob_shaders_are_written_and_reported_as_successes() {
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
-        let expected = if name == "script_string" {
-            [unityrs_export::shader::HEADER, "synthetic"].concat()
-        } else {
-            no_programs.to_owned()
-        };
+        let expected = no_programs;
         assert_eq!(
             std::fs::read(output.join("Synthetic Shader.txt")).unwrap(),
             expected.as_bytes()

@@ -291,7 +291,19 @@ fn no_blob(
     out: &mut Output<'_>,
     meter: &Arc<Meter>,
 ) -> Result<(), Error> {
-    if let Some(script) = root.optional("m_Script")? {
+    if version >= (5, 5) {
+        // Tier C: 5.5+ ignores any retained script. Convert the parsed form
+        // exactly as a blob with no platforms would, without reading metadata
+        // for nonexistent programs or constructing platform/program buffers.
+        let platforms = Value::List(Vec::new());
+        convert::shader(
+            root.field("m_ParsedForm")?,
+            view::Seq::new(&platforms)?,
+            &[],
+            out,
+            meter,
+        )?;
+    } else if let Some(script) = root.optional("m_Script")? {
         // Tier C: legacy strings are already UTF-8; bytes(str) is UnityPy's
         // missing-encoding error, not a reason to discard a valid script.
         let converted;
@@ -304,18 +316,6 @@ fn no_blob(
         meter.count_decode(script.len() as u64)?;
         std::str::from_utf8(script).map_err(|_| utf8_error(script, meter))?;
         out.text(script)?;
-    } else if version >= (5, 5) {
-        // Tier C: 5.5+ has no script. With no blob, convert the parsed form
-        // exactly as a blob with no platforms would, without reading metadata
-        // for nonexistent programs or constructing platform/program buffers.
-        let platforms = Value::List(Vec::new());
-        convert::shader(
-            root.field("m_ParsedForm")?,
-            view::Seq::new(&platforms)?,
-            &[],
-            out,
-            meter,
-        )?;
     } else {
         return Err(Error::NoneBytes);
     }

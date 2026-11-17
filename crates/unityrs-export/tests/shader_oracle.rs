@@ -78,24 +78,34 @@ fn every_shader_export_matches_the_pinned_oracle() {
         };
         let result = shader::export(&file.object(1).unwrap(), &env, &Meter::unlimited());
         let oracle = &case["oracle"];
-        if matches!(name, "script_missing" | "script_string") {
-            // Tier C: retain UnityPy's exact failure beside the corrected output.
-            assert_eq!(oracle["exception"], "TypeError", "{name}");
-            let (message, expected) = if name == "script_string" {
-                (
-                    "string argument without an encoding",
-                    [shader::HEADER, "synthetic"].concat().into_bytes(),
-                )
-            } else {
-                (
-                    "cannot convert 'NoneType' object to bytes",
-                    no_programs_text.as_slice().to_vec(),
-                )
-            };
-            assert_eq!(oracle["message"], message, "{name}");
+        if matches!(
+            name,
+            "script_missing"
+                | "script_string"
+                | "script_empty"
+                | "script_utf8"
+                | "script_invalid_utf8"
+        ) {
+            // Tier C: retain UnityPy's answer beside the version-first correction.
+            match name {
+                "script_empty" => assert_eq!(oracle["text"], shader::HEADER),
+                "script_utf8" => {
+                    assert_eq!(oracle["text"], shader::HEADER.to_owned() + "// Shader É\n");
+                }
+                "script_invalid_utf8" => assert_eq!(oracle["exception"], "UnicodeDecodeError"),
+                _ => {
+                    assert_eq!(oracle["exception"], "TypeError", "{name}");
+                    let message = if name == "script_string" {
+                        "string argument without an encoding"
+                    } else {
+                        "cannot convert 'NoneType' object to bytes"
+                    };
+                    assert_eq!(oracle["message"], message, "{name}");
+                }
+            }
             assert_eq!(
                 result.unwrap().as_slice(),
-                expected,
+                no_programs_text.as_slice(),
                 "{name}: Tier C divergence"
             );
             continue;
