@@ -16,6 +16,8 @@ use unityrs_batch::{
     sys::reset::SocketTable,
 };
 use unityrs_testkit::guard::{self, DEADLOCK_GUARD};
+#[path = "malformed.rs"]
+mod malformed;
 #[path = "reframe.rs"]
 mod reframe;
 
@@ -128,8 +130,15 @@ impl Peer {
     pub fn certificate(response: Vec<u8>, leaf: &'static [u8]) -> Self {
         Self::start(response, false, false, false, leaf)
     }
-    pub fn tls_stress(response: Vec<u8>) -> Self {
-        Self::start(response, true, true, true, LEAF)
+    pub fn tls_stress() -> Self {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (send, done) = mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let result = malformed::peer(&listener, server_config(true, true, LEAF));
+            let _ = send.send(result);
+        });
+        Self { address, done }
     }
     pub fn tls_large_chain(response: Vec<u8>) -> Self {
         Self::start(response, true, true, false, LEAF)
@@ -337,16 +346,10 @@ fn server_config(large_chain: bool, many_authorities: bool, leaf: &[u8]) -> Serv
             rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider)
                 .clear_root_hint_subjects()
                 .add_root_hint_subjects(
-                    std::iter::repeat_with(|| {
-                        // Keep the original malformed stress input as a
-                        // rejection case. Accepted names carry a DER SEQUENCE.
-                        rustls::DistinguishedName::from(if large_chain {
-                            Vec::new()
-                        } else {
-                            vec![0x30, 0]
-                        })
-                    })
-                    .take(if large_chain { 32_600 } else { 16_000 }),
+                    // The malformed peer replaces this valid list on the
+                    // wire, without constructing empty DistinguishedNames.
+                    std::iter::repeat_with(|| rustls::DistinguishedName::from(vec![0x30, 0]))
+                        .take(if large_chain { 1 } else { 16_000 }),
                 )
                 .allow_unauthenticated()
                 .build()
