@@ -6,6 +6,8 @@ mod contracts;
 mod edges;
 #[path = "agent/inventory.rs"]
 mod inventory;
+#[path = "agent/rendering.rs"]
+mod rendering;
 #[path = "agent/support.rs"]
 mod support;
 #[path = "agent/usage.rs"]

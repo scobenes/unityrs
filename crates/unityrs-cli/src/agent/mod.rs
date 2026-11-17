@@ -116,7 +116,11 @@ fn document(text: Text) -> Result<Document> {
     Ok(Document { json, charge })
 }
 fn name(out: &mut impl Sink, bytes: &[u8]) {
-    json::write_name(out, bytes);
+    // UTF-8 validation plus scanning/escaping (at most six output bytes per
+    // input byte), charged before either pass or hex encoding starts.
+    if out.count_work(bytes.len().saturating_mul(7)) {
+        json::write_name(out, bytes);
+    }
 }
 fn write_error(out: &mut impl Sink, e: &Error) {
     out.push_str("{\"format\":\"unityrs.error\",\"version\":1,\"code\":");

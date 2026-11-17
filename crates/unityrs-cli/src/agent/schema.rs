@@ -38,6 +38,44 @@ fn base(name: &str, required: &[&str], mut properties: Value) -> Value {
     keys.extend_from_slice(required);
     object(&keys, properties)
 }
+fn value_schema(raw_string: &Value) -> Value {
+    let string = json!({"type":"string"});
+    let hex = json!({"type":"string","pattern":"^([0-9a-f]{2})*$"});
+    let count = json!({"type":"integer","minimum":0});
+    let mut dict = tagged("dict", "v", array(reference("pair")));
+    if let Some(map) = dict.get_mut("properties").and_then(Value::as_object_mut) {
+        map.insert("cut".into(), reference("cut"));
+    }
+    let mut map = tagged("map", "v", array(reference("map_pair")));
+    if let Some(properties) = map.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert("cut".into(), reference("cut"));
+    }
+    let tuple = tagged("tuple", "v", array(reference("value")));
+    let hashed = |kind| {
+        let mut tag = object(
+            &["t", "len", "sha256"],
+            json!({"t":{"const":kind},"len":count,"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}}),
+        );
+        if let Some(map) = tag.as_object_mut() {
+            map.insert("additionalProperties".into(), json!(false));
+        }
+        tag
+    };
+    json!({"anyOf":[
+        {"type":"boolean"}, {"type":"number"}, string.clone(),
+        array(reference("value")),
+        {"type":"object","propertyNames":{"not":{"enum":["t","$unityrs"]}},"additionalProperties":reference("value")},
+        reference("cut"), reference("binary"), dict, map, tuple, raw_string,
+        tagged("bytes", "hex", hex.clone()), tagged("u8s", "hex", hex.clone()),
+        hashed("bytes"), hashed("u8s"), hashed("str"),
+        tagged("f32s", "v", json!({"type":"string","pattern":"^([0-9a-f]{8})*$"})),
+        tagged("f64s", "v", json!({"type":"string","pattern":"^([0-9a-f]{16})*$"})),
+        tagged("f32", "v", json!({"type":"string","pattern":"^[0-9a-f]{8}$"})),
+        tagged("f64", "v", json!({"type":"string","pattern":"^[0-9a-f]{16}$"})),
+        tagged("i64", "v", json!({"type":"string","pattern":"^-?(0|[1-9][0-9]*)$","maxLength":20})),
+        tagged("u64", "v", json!({"type":"string","pattern":"^(0|[1-9][0-9]*)$","maxLength":20}))
+    ]})
+}
 pub fn run(name: &str) -> Result<Document> {
     let integer = json!({"type":"integer"});
     let string = json!({"type":"string"});
@@ -49,6 +87,7 @@ pub fn run(name: &str) -> Result<Document> {
     let header = object(
         &[
             "input",
+            "file_index",
             "file",
             "path_id",
             "class_id",
@@ -57,7 +96,7 @@ pub fn run(name: &str) -> Result<Document> {
             "container_path",
             "byte_size",
         ],
-        json!({"input":integer,"file":reference("rawstr"),"path_id":integer,"class_id":integer,"class_name":string,"name":nullable(reference("rawstr")),"container_path":nullable(reference("rawstr")),"byte_size":integer}),
+        json!({"input":count,"file_index":count,"file":reference("rawstr"),"path_id":integer,"class_id":integer,"class_name":string,"name":nullable(reference("rawstr")),"container_path":nullable(reference("rawstr")),"byte_size":integer}),
     );
     let error = base(
         "error",
@@ -65,8 +104,14 @@ pub fn run(name: &str) -> Result<Document> {
         json!({"code":{"enum":["usage","input","budget","not_found","ambiguous","bad_cursor"]},"message":string,"detail":{}}),
     );
     let metadata = object(
-        &["file", "kind", "unity_version", "target_platform"],
-        json!({"file":reference("rawstr"),"kind":string,"unity_version":nullable(reference("rawstr")),"target_platform":nullable(integer.clone())}),
+        &[
+            "file",
+            "file_index",
+            "kind",
+            "unity_version",
+            "target_platform",
+        ],
+        json!({"file":reference("rawstr"),"file_index":count,"kind":string,"unity_version":nullable(reference("rawstr")),"target_platform":nullable(integer.clone())}),
     );
     let cut = object(
         &["$unityrs", "reason", "omitted"],
@@ -76,26 +121,7 @@ pub fn run(name: &str) -> Result<Document> {
         &["$unityrs", "kind", "length", "sha256", "prefix_hex"],
         json!({"$unityrs":{"const":"bytes"},"kind":{"enum":["bytes","u8s"]},"length":count,"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"prefix_hex":hex}),
     );
-    let mut dict = tagged("dict", "v", array(reference("pair")));
-    if let Some(map) = dict.get_mut("properties").and_then(Value::as_object_mut) {
-        map.insert("cut".into(), reference("cut"));
-    }
-    let mut map = tagged("map", "v", array(reference("map_pair")));
-    if let Some(properties) = map.get_mut("properties").and_then(Value::as_object_mut) {
-        properties.insert("cut".into(), reference("cut"));
-    }
-    let tuple = tagged("tuple", "v", array(reference("value")));
-    let value = json!({"anyOf":[
-        {"type":"boolean"}, {"type":"number"}, string.clone(),
-        array(reference("value")),
-        {"type":"object","propertyNames":{"not":{"enum":["t","$unityrs"]}},"additionalProperties":reference("value")},
-        reference("cut"), reference("binary"), dict, map, tuple, raw_string,
-        tagged("bytes", "hex", hex.clone()), tagged("u8s", "hex", hex.clone()),
-        tagged("f32", "v", json!({"type":"string","pattern":"^[0-9a-f]{8}$"})),
-        tagged("f64", "v", json!({"type":"string","pattern":"^[0-9a-f]{16}$"})),
-        tagged("i64", "v", json!({"type":"string","pattern":"^-?(0|[1-9][0-9]*)$","maxLength":20})),
-        tagged("u64", "v", json!({"type":"string","pattern":"^(0|[1-9][0-9]*)$","maxLength":20}))
-    ]});
+    let value = value_schema(&raw_string);
     let pair = json!({"type":"array","prefixItems":[reference("rawstr"),reference("value")],"minItems":2,"maxItems":2});
     let map_pair = json!({"type":"array","prefixItems":[reference("value"),reference("value")],"minItems":2,"maxItems":2});
     let mut schema = match name {

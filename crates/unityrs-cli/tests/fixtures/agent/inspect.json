@@ -5,6 +5,7 @@
       "files": [
         {
           "file": "synthetic.assets",
+          "file_index": 0,
           "kind": "AssetsFile",
           "target_platform": 13,
           "unity_version": "2022.3.0f1"
@@ -21,6 +22,7 @@
       "class_name": "TextAsset",
       "container_path": null,
       "file": "synthetic.assets",
+      "file_index": 0,
       "input": 0,
       "name": "alpha",
       "path_id": -2

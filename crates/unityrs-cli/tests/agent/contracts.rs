@@ -171,6 +171,7 @@ fn every_advertised_option_has_its_declared_arity() {
                     "--scene" | "--prefab" | "--tpk" | "--profile" | "--builtin-file"
                     | "--vorbis-headers" => "arity-missing.assets",
                     "--file" => "synthetic.assets",
+                    "--file-index" => "0:0",
                     "--cursor" => &cursor,
                     "--levels" => "L0",
                     "--unbounded" => "TreeDepth",

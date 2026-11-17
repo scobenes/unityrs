@@ -94,8 +94,11 @@ fn file_name(file: &File) -> &[u8] {
         File::Raw(f) => f.name.as_bytes(),
     }
 }
-fn metadata(out: &mut Text, file: &File) {
-    out.push_str("{\"file\":");
+fn metadata(out: &mut Text, file: &File, file_index: usize) {
+    if !out.count_work(256) {
+        return;
+    }
+    let _ = write!(out, "{{\"file_index\":{file_index},\"file\":");
     name(out, file_name(file));
     let _ = write!(
         out,
@@ -141,11 +144,18 @@ fn read_name(obj: &ObjectRef) -> Result<Option<Parsed>> {
 fn header(
     out: &mut impl Sink,
     index: usize,
+    file_index: usize,
     obj: &ObjectRef,
     env: &Environment,
     parsed: Option<&Parsed>,
 ) -> Result<()> {
-    let _ = write!(out, "{{\"input\":{index},\"file\":");
+    if !out.count_work(256) {
+        return Ok(());
+    }
+    let _ = write!(
+        out,
+        "{{\"input\":{index},\"file_index\":{file_index},\"file\":"
+    );
     name(out, obj.file().name().as_bytes());
     let _ = write!(
         out,
@@ -271,7 +281,7 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
                     files.push(',');
                 }
                 first_file = false;
-                metadata(&mut files, file);
+                metadata(&mut files, file, occurrence);
                 if let File::Serialized(f) = file {
                     for obj in f.objects_by_path() {
                         if !classes.is_empty() && !classes.contains(&obj.class_id()) {
@@ -306,7 +316,7 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
                             if kept > 0 {
                                 page.push(',');
                             }
-                            header(&mut page, index, &obj, &env, p.as_ref())?;
+                            header(&mut page, index, occurrence, &obj, &env, p.as_ref())?;
                             kept += 1;
                             page_last = Some(cursor::Key::new(
                                 index,
@@ -404,6 +414,7 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
 }
 pub fn show(args: &Args<'_>) -> Result<Document> {
     let path_id = args.path_id()?;
+    let address = args.file_index()?;
     let meter = meter(args);
     let provider = provider(args, &meter)?;
     let mut candidates = Text::on(&meter);
@@ -418,7 +429,13 @@ pub fn show(args: &Args<'_>) -> Result<Document> {
                 Error::new("input", "input is not a Unity object container").at_input(index, path)
             );
         }
+        let mut file_index = 0usize;
         walk(root, |file| {
+            let occurrence = file_index;
+            file_index += 1;
+            if address.is_some_and(|selected| selected != (index, occurrence)) {
+                return Ok(());
+            }
             if let File::Serialized(f) = file {
                 if args
                     .get("--file")
@@ -430,12 +447,15 @@ pub fn show(args: &Args<'_>) -> Result<Document> {
                     if count > 0 {
                         candidates.push(',');
                     }
-                    let _ = write!(candidates, "{{\"input\":{index},\"file\":");
+                    let _ = write!(
+                        candidates,
+                        "{{\"input\":{index},\"file_index\":{occurrence},\"file\":"
+                    );
                     name(&mut candidates, f.name().as_bytes());
                     candidates.push('}');
                     count += 1;
                     if selected.is_none() {
-                        selected = Some((index, obj, env.clone(), *path));
+                        selected = Some((index, occurrence, obj, env.clone(), *path));
                     }
                 }
             }
@@ -447,25 +467,28 @@ pub fn show(args: &Args<'_>) -> Result<Document> {
         candidates.push(']');
         let mut e = Error::new(
             "ambiguous",
-            "path ID has multiple candidates; select --file",
+            "path ID has multiple candidates; select --file-index INPUT:FILE from detail (or --file NAME when unique)",
         );
         e.detail = Some(Box::new(document(candidates)?));
         return Err(e);
     }
-    let (index, object, env, path) =
+    let (index, file_index, object, env, path) =
         selected.ok_or_else(|| Error::new("not_found", "no object with that path ID and file"))?;
     let parsed = object
         .parse_as_dict(false)
         .map_err(|e| Error::from(e).at_input(index, path))?;
     let mut length = render::Length::on(&meter);
-    header(&mut length, index, &object, &env, Some(&parsed))
+    header(&mut length, index, file_index, &object, &env, Some(&parsed))
         .map_err(|e| e.at_input(index, path))?;
     let header_len = length.finish()?;
     render::show(
         args,
         &parsed,
         header_len,
-        |out| header(out, index, &object, &env, Some(&parsed)).map_err(|e| e.at_input(index, path)),
+        |out| {
+            header(out, index, file_index, &object, &env, Some(&parsed))
+                .map_err(|e| e.at_input(index, path))
+        },
         &meter,
     )
     .map_err(|e| {

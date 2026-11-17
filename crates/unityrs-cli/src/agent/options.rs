@@ -84,6 +84,12 @@ pub const SHOW: &[OptionSpec] = &[
         "Exact SerializedFile name to disambiguate the path ID.",
     ),
     opt(
+        "--file-index",
+        "INPUT:FILE",
+        None,
+        "Zero-based input index and file occurrence from inspect; selects one file even with repeated names.",
+    ),
+    opt(
         "--max-bytes",
         "N",
         Some("65536"),
@@ -105,13 +111,13 @@ pub const SHOW: &[OptionSpec] = &[
         "--value",
         "natural|canonical",
         Some("natural"),
-        "Value JSON representation; canonical preserves tagged types.",
+        "Value JSON representation; untruncated canonical values match the dump encoder.",
     ),
     opt(
         "--bytes",
         "summary|full",
         Some("summary"),
-        "Byte runs are summaries unless full hex fits.",
+        "Natural-view byte runs are summaries unless full hex fits; canonical uses the dump's raw-byte rule.",
     ),
 ];
 pub const DESCRIBE: &[OptionSpec] = &[opt(
@@ -270,6 +276,7 @@ impl<'a> Args<'a> {
         }
         if command == "show" {
             self.path_id()?;
+            self.file_index()?;
             for key in ["--max-bytes", "--max-items", "--max-depth"] {
                 self.number(command, key)?;
             }
@@ -333,5 +340,31 @@ impl<'a> Args<'a> {
                     "a signed integer from -9223372036854775808 through 9223372036854775807",
                 )
             })
+    }
+    pub fn file_index(&self) -> Result<Option<(usize, usize)>> {
+        let Some(raw) = self.get("--file-index") else {
+            return Ok(None);
+        };
+        let bad = || {
+            bad_value(
+                "--file-index",
+                raw,
+                "INPUT:FILE (two zero-based integer indices)",
+            )
+        };
+        let (input, file) = std::str::from_utf8(raw)
+            .ok()
+            .and_then(|s| s.split_once(':'))
+            .ok_or_else(bad)?;
+        if ![input, file]
+            .iter()
+            .all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return Err(bad());
+        }
+        Ok(Some((
+            input.parse().map_err(|_| bad())?,
+            file.parse().map_err(|_| bad())?,
+        )))
     }
 }

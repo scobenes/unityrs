@@ -2,7 +2,7 @@
 //! not a count of objects that a later read might interpret differently.
 use super::{Args, Document, Error, Result, document};
 use sha2::{Digest, Sha256};
-use std::{fmt::Write as _, os::unix::ffi::OsStrExt, sync::Arc};
+use std::{fmt::Write as _, sync::Arc};
 use unityrs_core::limits::{Meter, MeteredVec};
 use unityrs_dump::{
     json,
@@ -27,12 +27,6 @@ impl Fingerprint {
         if let Some(bytes) = provider {
             digest.field(b"tpk-digest", bytes, meter)?;
         }
-        let directory = std::env::current_dir().map_err(Error::input)?;
-        digest.field(
-            b"working-directory",
-            directory.as_os_str().as_bytes(),
-            meter,
-        )?;
         Ok(digest)
     }
     pub fn field(&mut self, role: &[u8], bytes: &[u8], meter: &Arc<Meter>) -> Result<()> {

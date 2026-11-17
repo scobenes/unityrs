@@ -111,15 +111,19 @@ struct Cuts {
     binary: usize,
 }
 impl Cuts {
-    fn json(self) -> String {
-        format!(
+    fn write(self, out: &mut impl Sink) {
+        if !out.count_work(256) {
+            return;
+        }
+        let _ = write!(
+            out,
             "{{\"cuts\":{},\"bytes\":{},\"items\":{},\"depth\":{},\"binary\":{}}}",
             self.bytes + self.items + self.depth + self.binary,
             self.bytes,
             self.items,
             self.depth,
             self.binary
-        )
+        );
     }
 }
 struct View<'a> {
@@ -139,11 +143,18 @@ struct Limited {
 impl std::fmt::Write for Limited {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
         Sink::push_str(self, s);
-        Ok(())
+        if self.overflow || self.text.refused().is_some() {
+            Err(std::fmt::Error)
+        } else {
+            Ok(())
+        }
     }
 }
 impl Sink for Limited {
     fn push_str(&mut self, s: &str) {
+        if !self.text.count_work(s.len()) {
+            return;
+        }
         if s.len() > self.cap.saturating_sub(self.text.as_str().len()) {
             self.overflow = true;
         } else if !self.overflow {
@@ -167,6 +178,9 @@ impl Sink for Limited {
     }
 }
 fn marker(out: &mut impl Sink, reason: &str, omitted: usize) {
+    if !out.count_work(128) {
+        return;
+    }
     let _ = write!(
         out,
         "{{\"$unityrs\":\"cut\",\"reason\":\"{reason}\",\"omitted\":{omitted}}}"
@@ -195,7 +209,8 @@ impl View<'_> {
         cap: usize,
         context: Option<Context<'_>>,
     ) -> Result<Document> {
-        self.meter.count_decode(8)?;
+        // Reserve bounded scalar formatting work before invoking formatters.
+        self.meter.count_decode(64)?;
         let before = self.cuts;
         let mut out = Limited {
             text: Text::on(self.meter),
@@ -211,6 +226,7 @@ impl View<'_> {
             marker(&mut out, "depth", 1);
         } else {
             match value {
+                Value::Prims(run) if self.canonical && run.is_empty() => out.push_str("[]"),
                 Value::Bytes(b) | Value::Prims(PrimArray::U8(b)) => self.binary(
                     &mut out,
                     if matches!(value, Value::Bytes(_)) {
@@ -227,10 +243,15 @@ impl View<'_> {
                 Value::List(items) => self.sequence(&mut out, items, depth, false, context)?,
                 Value::Tuple(items) => self.sequence(&mut out, items, depth, true, context)?,
                 Value::Prims(run) => self.prims(&mut out, run, depth)?,
-                Value::Str(s) if s.as_bytes().len().saturating_mul(6) > cap => {
-                    out.overflow = true;
+                Value::Str(s) => {
+                    if self.canonical {
+                        if out.count_work(s.as_bytes().len().saturating_mul(7)) {
+                            json::write_value_str(&mut out, s.as_bytes());
+                        }
+                    } else {
+                        super::name(&mut out, s.as_bytes());
+                    }
                 }
-                Value::Str(s) => json::write_name(&mut out, s.as_bytes()),
                 Value::Int(i) if !self.canonical && i.unsigned_abs() > (1_u64 << 53) => {
                     let _ = write!(out, "{{\"t\":\"i64\",\"v\":\"{i}\"}}");
                 }
@@ -245,6 +266,10 @@ impl View<'_> {
                 }
                 _ => encode_value_into(&mut out, self.parsed, value).map_err(Error::input)?,
             }
+        }
+        // Never let a display cut hide a work or memory refusal.
+        if out.text.refused().is_some() {
+            return document(out.text);
         }
         if out.overflow {
             self.cuts = before;
@@ -275,7 +300,7 @@ impl View<'_> {
             if !natural {
                 out.push('[');
             }
-            json::write_name(out, self.parsed.key_name(map, *key));
+            super::name(out, self.parsed.key_name(map, *key));
             out.push(if natural { ':' } else { ',' });
             let context = parsed
                 .lists()
@@ -321,7 +346,7 @@ impl View<'_> {
             }
             if natural {
                 if let Value::Str(key) = key {
-                    json::write_name(out, key.as_bytes());
+                    super::name(out, key.as_bytes());
                 }
                 out.push(':');
             } else {
@@ -421,6 +446,30 @@ impl View<'_> {
         tuple: bool,
         context: Option<Context<'_>>,
     ) -> Result<()> {
+        if !tuple && self.canonical && !items.is_empty() && items.len() <= self.max_items {
+            self.meter
+                .count_decode(items.len().saturating_mul(16) as u64)?;
+            let width = if items.iter().all(|v| matches!(v, Value::F32(_))) {
+                8
+            } else if items.iter().all(|v| matches!(v, Value::F64(_))) {
+                16
+            } else {
+                0
+            };
+            if width != 0 {
+                self.packed(
+                    out,
+                    items.len(),
+                    width,
+                    items.iter().map(|v| match v {
+                        Value::F32(bits) => u64::from(*bits),
+                        Value::F64(bits) => *bits,
+                        _ => 0,
+                    }),
+                )?;
+                return Ok(());
+            }
+        }
         let tagged = tuple && self.canonical;
         if tagged {
             out.push_str("{\"t\":\"tuple\",\"v\":");
@@ -456,13 +505,22 @@ impl View<'_> {
         Ok(())
     }
     fn binary(&mut self, out: &mut Limited, kind: &str, bytes: &[u8]) -> Result<()> {
+        if self.canonical {
+            self.meter
+                .count_decode(128 + bytes.len().min(64) as u64 * 2)?;
+            json::write_raw(out, kind, bytes);
+            return Ok(());
+        }
         let available = out.cap.saturating_sub(out.text.as_str().len());
         if self.full && bytes.len().saturating_mul(2).saturating_add(32) <= available {
+            self.meter
+                .count_decode(bytes.len().saturating_mul(2) as u64)?;
             let _ = write!(out, "{{\"t\":\"{kind}\",\"hex\":\"");
             json::push_hex(out, bytes);
             out.push_str("\"}");
         } else {
-            self.meter.count_decode(bytes.len() as u64)?;
+            self.meter
+                .count_decode((bytes.len() as u64).saturating_add(512))?;
             self.cuts.binary += 1;
             let _ = write!(
                 out,
@@ -475,7 +533,48 @@ impl View<'_> {
         }
         Ok(())
     }
+    fn packed(
+        &self,
+        out: &mut Limited,
+        len: usize,
+        width: usize,
+        bits: impl Iterator<Item = u64>,
+    ) -> Result<()> {
+        let size = len.saturating_mul(width).saturating_add(19);
+        if size > out.cap.saturating_sub(out.text.as_str().len()) {
+            out.overflow = true;
+            return Ok(());
+        }
+        self.meter.count_decode(size as u64)?;
+        out.push_str(if width == 8 {
+            "{\"t\":\"f32s\",\"v\":\""
+        } else {
+            "{\"t\":\"f64s\",\"v\":\""
+        });
+        for bits in bits {
+            let _ = write!(out, "{bits:0width$x}");
+        }
+        out.push_str("\"}");
+        Ok(())
+    }
     fn prims(&mut self, out: &mut Limited, run: &PrimArray, depth: usize) -> Result<()> {
+        if self.canonical && !run.is_empty() && run.len() <= self.max_items {
+            let width = match run {
+                PrimArray::F32(_) => 8,
+                PrimArray::F64(_) => 16,
+                _ => 0,
+            };
+            if width != 0 {
+                match run {
+                    PrimArray::F32(v) => {
+                        self.packed(out, v.len(), width, v.iter().map(|b| u64::from(*b)))?;
+                    }
+                    PrimArray::F64(v) => self.packed(out, v.len(), width, v.iter().copied())?,
+                    _ => {}
+                }
+                return Ok(());
+            }
+        }
         out.push('[');
         // Primitive runs use the same scalar encoder as every other value.
         macro_rules! emit {
@@ -551,12 +650,19 @@ pub fn show(
         0,
         max.saturating_sub(prefix_len).saturating_sub(160),
     )?;
+    meter.count_decode(
+        prefix_len
+            .saturating_add(value.json.len())
+            .saturating_add(32) as u64,
+    )?;
     let mut out = Text::on(meter);
     out.push_str(PREFIX);
     write_header(&mut out)?;
     out.push_str(VALUE);
     out.push_str(&value.json);
-    let _ = writeln!(out, ",\"truncated\":{}}}", view.cuts.json());
+    out.push_str(",\"truncated\":");
+    view.cuts.write(&mut out);
+    out.push_str("}\n");
     if out.as_str().len() > max {
         return Err(Error::new(
             "budget",
@@ -567,97 +673,4 @@ pub fn show(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use unityrs_core::{
-        ValueBuilder,
-        typetree::{NodeList, NodeRow},
-    };
-    #[test]
-    fn oversized_header_refuses_before_copying_or_rendering() {
-        let meter = Meter::unlimited();
-        let nodes = NodeList::trusted(vec![NodeRow::new(0, "int", "Base")])
-            .unwrap()
-            .into_shared()
-            .unwrap();
-        let builder = ValueBuilder::new(&meter, nodes).unwrap();
-        let scalar = builder.scalar(Value::Int(1)).unwrap();
-        let parsed = builder.finish(scalar, 0);
-        let raw = [
-            b"input".to_vec(),
-            b"--path-id".to_vec(),
-            b"1".to_vec(),
-            b"--max-bytes".to_vec(),
-            b"512".to_vec(),
-        ];
-        let args = Args::parse("show", &raw).unwrap();
-        let header = format!("{{\"name\":\"{}\"}}", "x".repeat(4 << 20));
-        let before = meter.decoded();
-        crate::test_alloc::LARGEST.set(Some(0));
-        let result = show(
-            &args,
-            &parsed,
-            header.len(),
-            |out| {
-                out.push_str(&header);
-                Ok(())
-            },
-            &meter,
-        );
-        let largest = crate::test_alloc::LARGEST.replace(None).unwrap();
-        assert_eq!(result.unwrap_err().code, "budget");
-        assert!(
-            largest < 16_384,
-            "small cap copied a huge header: {largest} bytes"
-        );
-        assert_eq!(meter.decoded(), before, "refuse before rendering the value");
-    }
-    #[test]
-    fn duplicate_and_raw_field_names_preserve_pairs() {
-        use unityrs_core::typetree::NodeId;
-        let meter = Meter::unlimited();
-        for (second_name, expected) in [
-            (
-                unityrs_core::RawStr::from("key"),
-                serde_json::json!({"t":"dict","v":[["key",1],["key",2]]}),
-            ),
-            (
-                unityrs_core::RawStr::from(&b"\xff"[..]),
-                serde_json::json!({"t":"dict","v":[["key",1],[{"t":"str","hex":"ff"},2]]}),
-            ),
-        ] {
-            let nodes = NodeList::trusted(vec![
-                NodeRow::new(0, "Base", "Base"),
-                NodeRow::new(1, "int", "key"),
-                NodeRow::new(1, "int", second_name),
-            ])
-            .unwrap()
-            .into_shared()
-            .unwrap();
-            let builder = ValueBuilder::new(&meter, nodes).unwrap();
-            let mut entries = builder.vec();
-            entries
-                .push_entry(NodeId(1), builder.scalar(Value::Int(1)).unwrap())
-                .unwrap();
-            entries
-                .push_entry(NodeId(2), builder.scalar(Value::Int(2)).unwrap())
-                .unwrap();
-            let value = builder.map(0, entries);
-            let parsed = builder.finish(value, 0);
-            let mut view = View {
-                parsed: &parsed,
-                meter: &meter,
-                max_items: 100,
-                max_depth: 32,
-                full: false,
-                canonical: false,
-                cuts: Cuts::default(),
-            };
-            let rendered = view.render(parsed.value(), 0, 10000).unwrap();
-            assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&rendered.json).unwrap(),
-                expected
-            );
-        }
-    }
-}
+mod tests;

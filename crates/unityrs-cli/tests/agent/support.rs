@@ -267,6 +267,8 @@ fn scalar_limits(v: &Value, s: &Value) -> bool {
             let matches = match pattern {
                 "^([0-9a-f]{2})*$" => text.len() % 2 == 0 && hex(text.len()),
                 "^[0-9a-f]{8}$" => hex(8),
+                "^([0-9a-f]{8})*$" => text.len() % 8 == 0 && hex(text.len()),
+                "^([0-9a-f]{16})*$" => text.len() % 16 == 0 && hex(text.len()),
                 "^[0-9a-f]{16}$" => hex(16),
                 "^[0-9a-f]{64}$" => hex(64),
                 "^-?(0|[1-9][0-9]*)$" => decimal(text.strip_prefix('-').unwrap_or(text)),

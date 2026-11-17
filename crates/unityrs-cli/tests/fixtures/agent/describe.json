@@ -520,6 +520,12 @@
           "value": "NAME"
         },
         {
+          "default": null,
+          "help": "Zero-based input index and file occurrence from inspect; selects one file even with repeated names.",
+          "name": "--file-index",
+          "value": "INPUT:FILE"
+        },
+        {
           "default": "65536",
           "help": "Maximum compact JSON document bytes, including its newline.",
           "name": "--max-bytes",
@@ -539,13 +545,13 @@
         },
         {
           "default": "natural",
-          "help": "Value JSON representation; canonical preserves tagged types.",
+          "help": "Value JSON representation; untruncated canonical values match the dump encoder.",
           "name": "--value",
           "value": "natural|canonical"
         },
         {
           "default": "summary",
-          "help": "Byte runs are summaries unless full hex fits.",
+          "help": "Natural-view byte runs are summaries unless full hex fits; canonical uses the dump's raw-byte rule.",
           "name": "--bytes",
           "value": "summary|full"
         },

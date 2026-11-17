@@ -202,6 +202,47 @@ fn nested_files_with_the_same_name_and_path_ids_page_once() {
         let objects = page["objects"].as_array().unwrap();
         assert_eq!(objects.len(), 1);
         assert_eq!(objects[0]["file"], "CAB-a");
+        let file_index = objects[0]["file_index"].as_u64().unwrap();
+        let address = format!("0:{file_index}");
+        let path_id = objects[0]["path_id"].to_string();
+        let shown = json(
+            &tmp,
+            &[
+                "show",
+                "nested.bundle",
+                "--path-id",
+                &path_id,
+                "--file",
+                "CAB-a",
+                "--file-index",
+                &address,
+            ],
+            0,
+        );
+        assert_eq!(shown["object"], objects[0]);
+        let ambiguous = json(
+            &tmp,
+            &[
+                "show",
+                "nested.bundle",
+                "--path-id",
+                &path_id,
+                "--file",
+                "CAB-a",
+            ],
+            1,
+        );
+        assert_eq!(ambiguous["code"], "ambiguous");
+        let candidates = ambiguous["detail"].as_array().unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert_ne!(candidates[0]["file_index"], candidates[1]["file_index"]);
+        assert!(candidates.iter().any(|c| c["file_index"] == file_index));
+        assert!(
+            ambiguous["message"]
+                .as_str()
+                .unwrap()
+                .contains("--file-index")
+        );
         ids.push(objects[0]["path_id"].as_i64().unwrap());
         cursor = page["next_cursor"].as_str().map(str::to_owned);
         if let Some(token) = &cursor {
@@ -216,6 +257,30 @@ fn nested_files_with_the_same_name_and_path_ids_page_once() {
         cursor.is_none(),
         "every object must have been emitted exactly once"
     );
+}
+
+#[test]
+fn absolute_input_cursor_works_from_two_directories() {
+    let tmp = fixture();
+    let other = unityrs_testkit::scratch::Scratch::new("agent-other-directory");
+    let absolute = tmp.join("synthetic.assets");
+    let input = absolute.to_str().unwrap();
+    let first = json(&tmp, &["inspect", input, "--limit", "1"], 0);
+    let other_first = json(&other, &["inspect", input, "--limit", "1"], 0);
+    assert_eq!(first, other_first);
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let here = json(
+        &tmp,
+        &["inspect", input, "--limit", "1", "--cursor", cursor],
+        0,
+    );
+    let there = json(
+        &other,
+        &["inspect", input, "--limit", "1", "--cursor", cursor],
+        0,
+    );
+    assert_eq!(here, there);
+    assert_eq!(there["objects"][0]["path_id"], 10);
 }
 
 #[test]

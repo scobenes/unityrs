@@ -13,8 +13,9 @@ document plus a newline to stdout. Their successful documents have
 `"format": "unityrs.error"` and `"version": 1`. Fields are only added within a
 version; readers ignore unknown fields. Ordering and content are deterministic:
 no timestamps or canonicalized host paths. Paths retain the caller's spelling;
-file names inside containers retain their stored spelling. Invalid UTF-8 paths,
-names and strings use the canonical `{"t":"str","hex":"..."}` representation.
+file names inside containers retain their stored spelling. Invalid UTF-8 paths
+and names use the canonical `{"t":"str","hex":"..."}` representation.
+Value strings follow the rules for the selected view below.
 
 `describe` lists all nine subcommands, each option's value form, default (a
 string, or null when absent), help, usage, stdout behavior and exit codes.
@@ -55,12 +56,12 @@ payload shapes, recursively. For the existing batch job schema, use
 `inspect INPUT... [--class CLASS]... [--name GLOB]... [--limit N] [--cursor TOKEN]`
 lists each input with a `files` array or an error, plus object headers.
 `files` lists the root and its descendants once in container order, including
-resource files. Each entry carries its kind, Unity version and platform
-(null where inapplicable). Each SerializedFile carries its own version and
+resource files. Each entry carries its `file_index`, kind, Unity version and
+platform (null where inapplicable). Each SerializedFile carries its own version and
 platform, so mixed-version containers need no guessed aggregate platform.
 
-Headers carry the input's zero-based index, SerializedFile name, signed path ID,
-class ID and name (`Unknown` for an unmapped ID), object name, container path,
+Headers carry the input's zero-based index, the file's zero-based `file_index`,
+SerializedFile name, signed path ID, class ID and name (`Unknown` for an unmapped ID), object name, container path,
 and serialized byte size. Absent names and paths are null. Names come from a
 bounded typetree read's `m_Name`; objects with unavailable or unreadable trees
 have null names. Budget refusals fail that input. Inspection does not decode
@@ -85,6 +86,7 @@ are sorted by signed path ID within each file.
       "files": [
         {
           "file": "synthetic.assets",
+          "file_index": 0,
           "kind": "AssetsFile",
           "target_platform": 13,
           "unity_version": "2022.3.0f1"
@@ -101,6 +103,7 @@ are sorted by signed path ID within each file.
       "class_name": "TextAsset",
       "container_path": null,
       "file": "synthetic.assets",
+      "file_index": 0,
       "input": 0,
       "name": "alpha",
       "path_id": -2
@@ -116,8 +119,9 @@ are sorted by signed path ID within each file.
 page. The page limit defaults to 200 and accepts 1 through 10,000. Pass a non-null
 `next_cursor` unchanged to the next call; null means the last page. Cursors bind
 the exact input spellings, their order, contents, filters, explicitly supplied
-budget/TPK options, working directory and provider bytes. Keep these unchanged;
-page size may change.
+budget/TPK options and provider bytes. Keep these unchanged;
+page size and working directory may change. Relative paths must still resolve
+to the same loaded bytes.
 The cursor resumes after an object key (input index, exact file name, signed path
 ID), with a file-occurrence tie-breaker for repeated names in nested containers,
 rather than a numeric offset. Role-tagged fingerprint fields prevent an input
@@ -139,13 +143,20 @@ error document.
 
 ## Show and bounded values
 
-`show INPUT... --path-id N [--file NAME] [--max-bytes N] [--max-items N]`
+`show INPUT... --path-id N [--file NAME] [--file-index INPUT:FILE]`
+`[--max-bytes N] [--max-items N]`
 `[--max-depth N] [--bytes summary|full] [--value natural|canonical]` returns a
 header and one typetree value.
 Path IDs are signed integers. If several files contain the ID, the error's
-`detail` array lists each candidate's input index and exact file name. Supply
-`--file` to select a file. If input files themselves share that name, narrow the
-input list. No match is `not_found`. A malformed target input is `input`.
+`detail` array lists each candidate's `input`, `file_index` and exact `file` name.
+Supply `--file NAME` when the name is unique, or `--file-index INPUT:FILE` to
+select the exact occurrence even inside nested containers or repeated inputs.
+Both indices are zero-based; FILE is the position in that input's `files` array,
+including the root and resource files. With both selectors, both must match.
+For example, a header with `input: 0`, `file_index: 2`, `file: "CAB-a"` and
+`path_id: -2` can be read with
+`unityrs show nested.bundle --path-id -2 --file-index 0:2`.
+No match is `not_found`. A malformed target input is `input`.
 
 `unityrs show synthetic.assets --path-id -2` produces:
 
@@ -159,6 +170,7 @@ input list. No match is `not_found`. A malformed target input is `input`.
     "class_name": "TextAsset",
     "container_path": null,
     "file": "synthetic.assets",
+    "file_index": 0,
     "input": 0,
     "name": "alpha",
     "path_id": -2
@@ -203,9 +215,17 @@ Exceptional values preserve their data with these small tags:
 
 Use `--value canonical` for [the canonical dump model](CANONICAL_DUMP.md): field
 dictionaries use `t: dict`, tuples use `t: tuple`, integers remain bare, and all
-floats retain bit tags. Unity maps retain the canonical array of tagged pairs. Primitive arrays use bounded arrays of canonical scalar values.
-Both views share display limits and truncation markers. This option affects
-only `show`; the parity dump and value-case protocols retain their contracts.
+floats retain bit tags. Unity maps retain the canonical array of tagged pairs.
+Nonempty float vectors pack into `{"t":"f32s","v":"3fc0000040200000"}`
+for `[1.5, 2.5]` (or `f64s` for doubles). Empty vectors are `[]`. Invalid UTF-8
+value strings, bytes and byte vectors use inline hex through 64 bytes, then
+`{"t":"str|bytes|u8s","len":N,"sha256":"..."}` with the actual kind in `t`.
+These canonical summaries are part of the dump model and do not count as cuts;
+`--bytes` controls only the natural view. An untruncated canonical value is
+byte-identical to the dump encoder.
+Both views share display limits and truncation markers. Item-clipped float
+vectors use arrays of canonical scalar tags followed by the item marker.
+This option affects only `show`; the parity dump and value-case protocols retain their contracts.
 
 Default limits are 65,536 bytes for the **whole compact success document including
 its newline**, 256 retained data entries per array/map, and 32 nesting levels
@@ -223,12 +243,15 @@ or map wrapper, keeping data unambiguous in either view:
 - `{"$unityrs":"cut","reason":"items","omitted":N}` marks N omitted entries.
   It is appended to a sequence, or stored as a map wrapper's `cut` property.
   Markers do not count toward the retained-data item limit.
-- Byte runs (`TypelessData` and UInt8/char vectors) normally become
+- In the natural view, byte runs (`TypelessData` and UInt8/char vectors) use
   `{"$unityrs":"bytes","kind":"bytes","length":100,"sha256":"...","prefix_hex":"..."}`.
   `kind` is `u8s` for byte vectors; the prefix is the first min(64, length) bytes.
   This is also a cut, even if the prefix includes the entire small byte run.
-  Hashing counts against decode work. `--bytes full` emits canonical
+  `--bytes full` emits
   `{"t":"bytes","hex":"..."}` / `u8s` when they fit, otherwise the same summary.
+
+String validation, scanning and escaping, hex encoding, number formatting,
+marker construction and hashing count against decode work before they run.
 
 The top-level `truncated` object counts **visible marker objects** by `bytes`,
 `items`, `depth`, and `binary`; `cuts` is their sum. Cuts inside a replaced

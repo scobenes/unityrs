@@ -142,6 +142,11 @@ fn container_path_unnamed_objects_and_repeated_inputs() {
     assert_eq!(v["objects"][2]["class_name"], "Unknown");
     let s = json(&tmp, &["show", "paths.assets", "--path-id", "5"], 0);
     assert_eq!(s["object"], v["objects"][1]);
+}
+
+#[test]
+fn repeated_input_addresses_select_the_exact_object() {
+    let tmp = fixture();
     let repeats = json(
         &tmp,
         &["inspect", "synthetic.assets", "synthetic.assets"],
@@ -149,6 +154,35 @@ fn container_path_unnamed_objects_and_repeated_inputs() {
     );
     assert_eq!(repeats["total_objects"], 6);
     assert_eq!(repeats["objects"][3]["input"], 1);
+    let selected = json(
+        &tmp,
+        &[
+            "show",
+            "synthetic.assets",
+            "synthetic.assets",
+            "--path-id",
+            "-2",
+            "--file-index",
+            "1:0",
+        ],
+        0,
+    );
+    assert_eq!(selected["object"], repeats["objects"][3]);
+    for selector in ["0:99", "2:0"] {
+        let missing = json(
+            &tmp,
+            &[
+                "show",
+                "synthetic.assets",
+                "--path-id",
+                "-2",
+                "--file-index",
+                selector,
+            ],
+            1,
+        );
+        assert_eq!(missing["code"], "not_found");
+    }
     assert_eq!(
         json(
             &tmp,
@@ -336,7 +370,7 @@ fn natural_values_and_exact_exceptions() {
     let floats = fields.iter().find(|row| row[0] == "float_array").unwrap();
     assert_eq!(
         floats[1],
-        serde_json::json!([{"t":"f32","v":"3fc00000"},{"t":"f32","v":"ff800000"}])
+        serde_json::json!({"t":"f32s","v":"3fc00000ff800000"})
     );
     assert_eq!(
         canonical["value"]["v"][6][1],
