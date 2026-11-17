@@ -2134,6 +2134,24 @@ shader source links, sampler constants and the resampling boundary when albedo
 and metallic image sizes differ. The reviewer harness's negative ST,
 asymmetric texels and huge-header scenarios are retained as regression cases.
 
+### 24.1 P2b animation
+
+P2b's typed animation behaviour is tier X. The existing UnityPy dict,
+object-mode, PPtr and packed-scalar checks retain their own rows. L11 here
+compares local TRS in Unity space against a recording from the same built
+bundle and rig. See [the animation plan](docs/plans/anim.md) for the acceptance
+conditions and the reference and recorder PR.
+
+| item | unityrs | tier | level | reference | test | status |
+|---|---|---|---|---|---|---|
+| Typed animation decoding | Source choice, versioned binding widths and flags, runtime slot order, packed rotation and sentinel handling | X | L2 (fields) | Known serialized fixture layouts and independently recorded binding and source tables | Planned slot-table, source precedence, timing, packed rotation and PPtr/integer encoding cases (anim sections 2.2–2.3, 4.1 and 8) | planned (P2b) |
+| Clip discovery identity and order | Component-scoped PPtr traversal, controller discovery, override substitution and direct clip selection | X | L1 (env) | Explicit ordered source identities from synthetic cross-file graphs and Editor records | Planned repeated IDs, same-name roots, null and broken overrides and outside-view pointers (anim sections 2.3, 4.1 and 8) | planned (P2b) |
+| Rig and renderer binding | Relative path and CRC targets, Transform bindings and per-renderer morph targets | X | L2 (binding tables) | Recorded paths, hashes and rig identities, and known synthetic renderer channel tables | Planned ambiguous path and CRC cases, known and unknown slot widths and renderer instances (anim sections 2.3, 4.1 and 4.3) | planned (P2b) |
+| Generic and legacy local poses | Direct clip playback of bound runtime or explicit TRS, including off-key and nonzero-start samples | X | L11 | Same-built-bundle Editor playback with pinned settings and f32 tolerances | Planned Rust replay of runtime and legacy clips (anim sections 4.2 and 8) | planned (P2b) |
+| Humanoid local poses | Runtime Avatar and muscle mapping to local TRS on supported recorded rigs and configurations | X | L11 | Same-built-bundle Editor playback on two rigs, with supplementary known-muscle recordings | Planned Rust pose replay and typed refusal cases (anim sections 2.4, 4.2 and 8) | planned (P2b) |
+| Animated GLB and deformation | TRS and morph channels, baked interpolation, instanced weights and animated four-influence skinning | X | L6g | Pinned glTF-Validator, independent accessor reconstruction against bounded source samples and hand-computed mirrored deformations | Planned GLB interpolation, morph instance and animated skin checks (anim sections 2.5 and 4.3) | planned (P2b) |
+| Sealed prefab GLB batch | Spec/manifest 3, output-backed units, winner selection and typed failure outcomes | X | L9 | Revised BATCH_SPEC contract and standalone GLB candidate bytes | Planned L9 head, collision, failure, publication and resume goldens (anim sections 2.7 and 4.4) | planned (P2b) |
+
 ## Appendix A. Generated classes
 
 Every class in `classes/generated.py` (869), with its bases, the class ids `classes/ClassIDTypeToClassMap.py` maps to it, and the attrs fields it declares (`inventory.py` group `fields`; a generated class declares every one of its fields itself, so none is inherited). They are read through the typetree: Tier A at L2 through the dict (verified in P0 wherever the samples and the corpus hold them), and at the API level in object mode (planned P3c, section 9.2).

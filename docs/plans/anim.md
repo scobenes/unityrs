@@ -1,227 +1,617 @@
 # P2b plan: animation
 
-**Status:** draft, 2026-11-17, with nine PRs (section 6) and the proposed decisions of section 0. The clip reader, discovery, the glTF writer and the fixture recorder can start in parallel. Humanoid verification and variable bone weights need the Editor fixtures (section 8).
+**Status.** Draft, 2026-11-17, with the round 1 review folded into the decisions
+and eight PRs in section 6. Generic export and batch have synthetic integration
+gates. Serialized playback and humanoid L11 depend on Editor recordings.
 
-**What it builds on.**
+**Deliverables.** Discover clips by PPtr and bind them to a prefab or scene.
+Sample generic and legacy TRS and morph weights, and retarget supported humanoid
+clips to local TRS. The library and `unityrs gltf` write editable animated GLBs.
+Batch spec 3 writes one loose GLB per selected prefab. Section 2.6 names the
+deferred slices.
 
-- The core's checked `ObjectRef::parse_as_dict`, embedded and provider typetrees, `Environment::deref` across files, and the allocation and work meter.
-- P2a's `unityrs-scene` graph and units (static3d decision 3 and sections 2.3 and 2.5), `unityrs-mesh`'s geometry, skins, blend shapes and OBJ/MTL, and `unityrs-gltf`'s editable scene, collect, profile and GLB writer (static3d section 2.4).
-- The sealed batch attempt, candidate records, winners and run manifest in `docs/BATCH_SPEC.md` and `docs/plans/batch.md`, with P3a's opt-in version 2 fields already built (`docs/plans/rest.md` decision 3 and section 2.2).
-
-**What it delivers.** `unityrs-anim` reads clips, finds them by PPtr, binds them to a prefab or scene, and samples generic, legacy and humanoid animation. The library and `unityrs gltf` can write the resulting editable scene as an animated GLB with local TRS and morph-weight channels. Batch version 2 gains `glb` and `obj` outputs keyed on P2a's prefab container entries. OBJ is a static export with its MTL and texture files.
-
-**How it is checked.** UnityPy 1.25.2 is the reference for L2 reads and P1's PPtr behaviour. `PARITY.md` section 14.2's animation row already has its L2 status. Sampling, retargeting and GLB are tier X. L11 compares local poses in f64 before glTF conversion, with a reference to build and Editor samples to record. The pinned glTF-Validator and an independent GLB reader check the written channels and accessors. Batch replays the rules as written at L9.
-
-**Citations.** UnityPy behaviour is cited by `PARITY.md` section and item. The pinned 1.25.2 distribution has generated animation classes and the GameObject component patches. Its `export` package, legacy patches and extractor dispatch have no animation exporter, curve sampler, controller evaluator or humanoid retargeter. [UnityPy 1.25.2 release](https://pypi.org/project/UnityPy/1.25.2/)
-
----
+**Starting point.** Core supplies checked dict reads, embedded and provider
+typetrees, file-scoped PPtr resolution and meters. P2a supplies the scene graph
+and units, mesh, skin and morph data, and the editable glTF model, collector and
+streaming writer. Batch already has sealed attempts, private dependency views,
+output-backed units and spec 2 (`docs/plans/rest.md` decision 3).
 
 ## 0. Decisions
 
-| # | decision | why | reversibility |
-|---|---|---|---|
-| 1 | Keep UnityPy parity at the existing typetree, object and PPtr surfaces and the packed scalar helpers where they apply. Add animation semantics to tier X in `PARITY.md` section 24. | The pinned release exposes stored animation data. L2 and L11 answer different questions. | More read fixtures can be added without changing either tier. |
-| 2 | Put the readers, binding and f64 sampler in `unityrs-anim` on core and scene. Extend P2a's editable glTF `Scene` with animations and add a sampling entry point. | This uses the graph split in static3d decision 3 and the model extension in its section 2.4. Sampling also serves callers without a writer. | The static entry points keep their contracts. New clip forms fit behind the same sampler. |
-| 3 | For each supported binding, use populated runtime muscle-clip data when present, and use explicit curves for legacy clips, clips with no runtime data and supplemental bindings confirmed by fixtures. Record the chosen source. | A clip may carry more than one representation of a curve. The binding and its samples must have a single owner. | Versioned format rules can be extended. A malformed runtime binding gets a reason, with any fallback requiring a fixture. |
-| 4 | Discover clips per Animation or Animator root, in stored order, through the attempt's existing Environment. Provide explicit clip selection and a bounded offline controller-state sampler (Q2). | The same clip can animate different roots or Avatars. The controller's PPtrs are sufficient for discovery. State evaluation is a separate operation. | Selection can expand through the profile. The direct-clip API needs no controller. |
-| 5 | Bind explicit paths exactly and runtime paths by CRC32 within the component's subtree. Resolve ambiguous paths, hashes and properties as issues. | Path ids are file-local, names can repeat and CRC32 can collide. Choosing the first match can animate the wrong bone. | Additional disambiguation must come from serialized identity or a fixture-backed rule. |
-| 6 | Verify humanoid rotations and the resulting local TRS in f64 against an independent implementation to build. Also require Editor recordings for supported Avatar layouts (Q1, Q3). | UnityPy supplies the fields. The independent reference checks the math and the Editor checks the meaning of the fields. | The rig and clip matrix can grow. Each verified row names the reference and coverage it earned. |
-| 7 | Emit baked `LINEAR` channels, exact `STEP` channels where the whole property is discrete, and one `weights` channel per animated renderer attachment. Keep events and other sampled properties in the editable model (Q4, Q5). | A node/property pair occurs once per glTF animation. Weighted tangents and humanoid remapping are evaluated in Unity space before export. | The writer can gain other encodings behind explicit profile choices. |
-| 8 | Keep P2a's last-frame morph policy. Take on `m_VariableBoneCountWeights` and paired `JOINTS_1`/`WEIGHTS_1` from static3d decision 9 once the Editor fixtures pin the layout (Q6). | Morph weights need the same endpoint scale as P2a's static node weights. Extra skin influences need a confirmed order and palette. | The top-four path remains available. Enabling eight influences can be an explicit profile choice. |
-| 9 | Add the two batch output kinds as version 2 opt-ins, as static3d decision 11 says. Use each own container entry whose PPtr resolves to a GameObject as one prefab export unit. Update the manifest contract for the new kinds (Q7, Q8). | The job spec and manifest have separate compatibility rules. P2a's prefab unit is the boundary for winner selection and OBJ sidecar ownership. | Jobs without the new options keep their existing manifests and output selection. |
-| 10 | Budget about 10–14k non-test lines (section 6) against the 4–6k in `docs/DESIGN.md` section 5. | Curve decoding and collection alone omit humanoid semantics, the independent reference, controller sampling, extra skin influences and batch publication. | Each PR has its own acceptance. The plan records any slice that still waits on evidence. |
-
----
+| # | Decision | Reason |
+|---|---|---|
+| 1 | Keep Tier A at UnityPy's existing read surfaces. File the planned animation rows in `PARITY.md` section 24 as tier X, with discovery identity and order checked separately from poses. | UnityPy exposes serialized animation data. |
+| 2 | Put animation reading, binding and sampling in `unityrs-anim`, on core and scene. The glTF collector supplies mesh channel facts and the caller supplies the animation callback (2.1, 2.5). | P2a decision 3 and DESIGN section 4 keep animation and glTF independent of each other. |
+| 3 | Give each target property one playback source under 2.2. Keep `m_EditorCurves` and `m_EulerEditorCurves` as authoring metadata only. | Compiled, explicit and authoring representations can coexist. |
+| 4 | Discover clips in stored order per Animation or Animator component and select a clip directly by its rig-scoped identity. Read controller tables for discovery and direct selection only. | A shared clip can bind to several different rigs. |
+| 5 | Bind paths relative to the owning component. Diagnose duplicate paths, CRC collisions and ambiguous targets (2.3). | A guess can move the wrong Transform or renderer. |
+| 6 | Use same-bundle Editor playback for L11. Land the recorder and the f64 transcription check before the Rust playback and retargeting code they check (4.2). | Two evaluators transcribed from the same equations can share a mistake. |
+| 7 | Emit held `STEP` or bounded `LINEAR` channels for TRS and morph weights. Keep serialized non-glTF properties and inert events as metadata (2.5–2.6). | Each glTF target has one channel per animation. |
+| 8 | Keep P2a's last-frame morph policy and four-influence skinning. Amend static3d decision 9 by assigning variable bone weights to the later slice in 2.6. | Layout and deformation still need recorded evidence. |
+| 9 | Amend static3d decision 11, which assigned `glb` and `obj` to spec 2. P2b adds GLB-only prefab export in new spec 3 with manifest 3. The GLB's output key is its unit key (2.7). | E32 uses output-backed unit keys and the output's byte MD5. |
+| 10 | Revise DESIGN section 5's P2b estimate to 7.3–10.0k non-test lines (section 6). Defer controller state/blend-tree evaluation, variable bone weights and sampled non-glTF properties (2.6). | The remaining work includes versioned playback, generic and humanoid collection, reference tooling and sealed GLB publication. |
 
 ## 1. Where it starts
 
-### 1.1 Done
-
-- **`unityrs-scene`.** `Unit::Prefab`, `Unit::Scene`, `unit_from_container` and `Unit::graph`. `Graph` retains stored names, parent and child order, file-scoped object refs, local TRS, and renderer components. Animation and Animator already appear as `Component::Other`, and `accessors` has `m_animation` and `m_animator`.
-- **`unityrs-mesh`.** `read_mesh` supplies bone hashes, bind poses, and `BlendShapes` with channel name hashes, frame ranges and `fullWeights`. `export_mesh_renderer` writes through `ObjSink` using the existing OBJ/MTL rules. Its corrected-oracle checks stay the L6 reference for renderer output.
-- **`unityrs-gltf`.** `collect` and `collect_with_mapper` build a metered `Scene` with accessors and node-instance weights. The collector maps graph nodes to scene nodes and can make separate identity-root skin attachments. `to_glb` lays out and streams the GLB. `Profile` is strict version 1 JSON and currently refuses a nonempty `clip_states`.
-- **Batch.** P3a's version 2 parser, schemas and golden jobs cover `outputs.formats`, `outputs.image` and `unitycn_key`. The attempt has its own dependency view and the copy-out path already records hashes, sizes, skips and unit membership.
-
-### 1.2 Not done
-
-- No animation crate, sampled pose reference or checked-in Editor recordings for L11. The existing `tools/parity/gltf_check.py` reads static GLBs.
-- No animation tables in the glTF model, no retained collector map for animation targets, and no decoded variable bone weights in `unityrs-mesh`.
-- No prefab dispatch or 3D output kinds in `BATCH_SPEC.md`.
-
----
+- `unityrs-scene` already exposes `Unit::Prefab`, `Unit::Scene`, container
+  selection, the ordered graph and `m_animation`/`m_animator` accessors.
+  Graph nodes preserve stored names, file-scoped refs, local TRS and components.
+- `unityrs-mesh` already supplies bind poses, joint palettes and `BlendShapes`
+  with channel names, hashes, frame ranges and `fullWeights`.
+- `unityrs-gltf` already maps graph nodes to scene nodes and can attach a skin
+  to a separate identity-root node. Profile v1 currently refuses nonempty
+  `clip_states`. The scene has no animation tables today.
+- Batch spec 2 has the P3a image options and its own versioned schema. It has
+  no prefab dispatch or 3D output kinds. There are no checked-in animation
+  recordings for L11.
 
 ## 2. Crates, modules and APIs
 
 ### 2.1 Layout
 
-| crate | new? | depends on | holds |
-|---|---|---|---|
-| `unityrs-anim` | new | core, scene | `clip` (editor, packed rotation, streamed, dense, constant), `binding`, `discover`, `controller`, `avatar`, `humanoid`, `sample` |
-| `unityrs-scene` | exists | core | the existing graph, raw node names, component refs and units |
-| `unityrs-mesh` | exists | core, meshdecode, scene | the variable-weight reader and source influence rows, once verified |
-| `unityrs-gltf` | exists | core, scene, mesh, texture, imageio; adds anim | the editable animation model, target mapping in collect, profile selection, layout and writer |
-| `unityrs-testkit` | exists | — | clip, controller, Avatar and prefab builders alongside the scene fixtures |
-| `unityrs-cli`, `unityrs-batch` | exist | scene, gltf, mesh on the new paths | CLI sampling through the glTF profile, and sealed batch unit export |
+| Crate | Dependencies on the new path | Responsibility |
+|---|---|---|
+| `unityrs-anim` (new) | core, scene | Clip reads, discovery, binding, Avatar reads and f64 sampling. Accept renderer channel facts keyed by scene component identity. |
+| `unityrs-scene`, `unityrs-mesh` | P2a | Graph, units and source mesh data. |
+| `unityrs-gltf` | P2a | The editable animation model, collector maps, morph channel facts and GLB writer. Define the collector callback over scene identities and collector-owned facts. |
+| `unityrs-cli`, `unityrs-batch` and library callers | scene, glTF, anim on their animation paths | Caller-side glue adapts the channel table to anim's binding input and maps the returned samples to glTF's model. Reuse this path in standalone and sealed export. |
+| `unityrs-testkit` | Existing fixture dependencies | Synthetic clips, controllers, Avatars and prefab units. |
 
-The new crate keeps P2a's rules (static3d section 2.1): `forbid(unsafe_code)`, no-panic lints, Send + Sync and waits tests, and files under the repository size limit. License a port with its source and notices as `CLAUDE.md` requires. AssetStudio's MIT readers give format evidence for the clip words and transform binding widths. They do not give L11's humanoid reference. [AssetStudio AnimationClip reader](https://github.com/Perfare/AssetStudio/blob/master/AssetStudio/Classes/AnimationClip.cs)
+Use the same checked allocation, work, Send + Sync and no-panic rules as P2a.
+Follow `CLAUDE.md` for source and notices on any MIT port. The pinned AssetStudio
+reader is format evidence. [AssetStudio AnimationClip v0.16.47](https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudio/Classes/AnimationClip.cs)
 
-### 2.2 `unityrs-anim`: clips and samples
+### 2.2 Clip readers and playback
 
-**Read.** `read_clip` takes an `ObjectRef` and meter. It returns source timing, typed bindings, key or sample data, events and issues. Legacy and editor-form reads cover position, quaternion, Euler and scale curves, scalar float curves and object-reference (`m_PPtrCurves`) keys. Read `m_EditorCurves` and `m_EulerEditorCurves` where the tree has them, and distinguish them from the ordinary explicit runtime fields. Use key times, tangents, weighted modes and rotation order to evaluate continuous curves, and retain held keys and typed PPtrs. Decode `m_CompressedRotationCurves` with checked time, quaternion and slope unpacking for the fixture-backed layouts. Share the existing packed scalar decoder if the field semantics match, with any shared code below `anim` and `meshdecode`.
+**Read.** `read_clip` takes an `ObjectRef` and meter. Retain timing, serialized
+bindings, keys, events and issues. Read the explicit runtime position, rotation,
+Euler, scale, float and `m_PPtrCurves` fields separately from the two authoring
+arrays. Retain the serialized payloads and type information of non-glTF
+properties for later use. Events are inert records.
 
-**Runtime.** In `m_MuscleClip.m_Clip`, the streamed section is a word stream with frame times, key counts, scalar slot indices and polynomial coefficients. Decode words by their bit patterns. Classify the sentinel frames separately, retain the previous key for each sparse slot, and evaluate its polynomial at time since that key. The dense section is frame-major with `m_BeginTime + frame / m_SampleRate`; validate the frame × curve product and sample rate before reading. The constant section holds one value per remaining slot. Map the concatenated streamed, dense and constant slot ranges through the binding table, including a binding whose components sit in different ranges. Read the legacy value-array binding where fixtures confirm it. Check discrete flags and indices into `pptrCurveMapping` before dereferencing a PPtr from the clip's own file. Unknown custom or compressed forms get a typed issue; malformed counts, indices or times cannot become arbitrary values.
+**Playback source.** Per resolved target property, a populated, supported
+compiled binding in `m_MuscleClip.m_Clip` owns the property on a runtime clip.
+A malformed or unsupported compiled binding that claims the property refuses
+it with the original cause. On explicit/legacy layouts, use the runtime fields.
+For rotation on such a layout, use `m_CompressedRotationCurves` when the
+fixture-confirmed compression flag (`m_Compressed` where present) selects it
+and supplies a channel for that path. Otherwise prefer explicit
+`m_RotationCurves` to explicit `m_EulerCurves`. Accept supplemental runtime
+properties alongside compiled data only where same-bundle fixtures demonstrate
+that the property is genuinely unclaimed by the compiled table and played from
+the explicit field. Treat the entire rotation as one property, even when
+one source is Euler and another is quaternion. An ambiguous owner or a
+malformed chosen source gives a typed refusal. Record the chosen field.
 
-**Sample.** `sample_clip` takes a bound clip, an explicit time schedule and a rest pose. It returns f64 local TRS and scalar tracks, held object-reference tracks, active bindings and inert event records. The default schedule uses the clip's finite positive rate (with a documented fallback for absent rates), includes both ends once and samples in source seconds. Clip output uses a zero-based clock. Fill unanimated components from the bound rest pose, preserve exact held transitions, and keep wrap metadata for callers. The exported interval is one pass of the clip. A malformed rate or impossible interval is a typed refusal. Time, frame, component and quaternion conventions are pinned between keys as well as at keys.
+**Explicit interpolation and rotation.**
+
+- Evaluate ordinary continuous values with time-scaled Hermite tangents
+  (`outSlope` of the left key and `inSlope` of the right). Evaluate supported
+  weighted tangents on the time/value Bézier segment by solving its time
+  coordinate. Keep held segments discrete. Require fixtures for versioned
+  weighted or held encodings.
+- For supported explicit quaternion curves, evaluate XYZW key components and
+  their component derivatives in the same representation, then normalize the
+  evaluated vector. Tangents are derivatives per second, with values and
+  tangents kept in the serialized hemisphere for source evaluation. A
+  fixture-backed antipodal rule, if needed, flips the key and both tangents
+  together. Normalization and sign continuity of exported keys follow
+  evaluation. Refuse invalid quaternions or an unconfirmed quaternion tangent
+  mode.
+- Evaluate explicit or compiled Euler components in degrees, preserving their
+  authored revolutions until conversion. For the layout matching Unity's
+  rotation-order enum, confirm `m_RotationOrder` values 0–5 as XYZ, XZY, YZX,
+  YXZ, ZXY and ZYX in application order. For a layout without a stored order,
+  use Z-X-Y only where the default is confirmed. Refuse an unknown order.
+  Keep full-turn and off-key fixtures with both the runtime and authoring
+  curves present. [Unity Quaternion.Euler](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/Quaternion.Euler.html) · [Unity rotation-order enum](https://github.com/Unity-Technologies/UnityCsReference/blob/9778aaee88c7de7656c15184ba5c91ca66db7e94/Runtime/Transform/ScriptBindings/Transform.bindings.cs)
+- For packed legacy rotations, unpack `m_Times` integer deltas, accumulate in a
+  checked integer from zero in source time, and convert centiseconds to
+  seconds. Read packed XYZW quaternions in `m_Values` and the packed float
+  vector in `m_Slopes` separately. Only a
+  fixture-confirmed slope layout may supply component in/out derivatives. Pin
+  counts, key association, units and scaling against off-key playback and
+  convert derivatives to per second before Hermite evaluation if that encoding
+  is confirmed. Until then, refuse packed playback as
+  `unsupported_packed_rotation_slope`, including when slope data is absent
+  and its absence has no confirmed meaning. AssetStudio's exporter documents
+  the time accumulation and leaves slope playback unverified. [AssetStudio ModelConverter v0.16.47](https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudioUtility/ModelConverter.cs#L747-L767)
+
+**Compiled channels.** Use streamed, dense and constant scalar slot ranges in
+that order. Build the slot table before interpreting values (2.3).
+
+- Decode the streamed words as typed frame times, key counts, slot indices
+  and coefficient payloads. In the known sentinel layout, the initial
+  sentinel may seed a held PPtr at the clip start, with each index validated
+  against the mapping table. Preserve the seed until its first real key.
+  Before the first real continuous key, clamp to that slot's first key value.
+  A slot with neither a real key nor a supported initializer refuses playback.
+  Distinguish a fixture-confirmed terminal dummy (such as a positive-infinity
+  sentinel) from a real final key, check the dummy's shape, and exclude it from
+  evaluation and duration. Evaluate the last key at or before the sample using
+  its cubic at time since the key up to the next key. Hold the last real key
+  afterward. Pin pre-roll, held boundaries and both sentinel rules against
+  fixtures. [AssetRipper AnimationClipConverter 1.3.0, format reading only](https://github.com/AssetRipper/AssetRipper/blob/1.3.0/Source/AssetRipper.Processing/AnimationClips/AnimationClipConverter.cs)
+- Dense samples are frame-major at `m_BeginTime + frame / m_SampleRate`.
+  Check the frame × curve product, finite begin time and positive finite rate.
+  Interpolate continuous scalar slots linearly between adjacent frames and
+  clamp to the first or last sample outside the grid. A one-frame dense slot
+  holds its single sample. Discrete slots hold the value of the preceding
+  frame, with the first frame used before the grid. Evaluate a supported
+  quaternion from its four components and normalize the result.
+- Constant slots hold one value throughout the runtime interval, including for
+  constant-only clips. For a Transform binding crossing storage ranges, allow
+  slot-by-slot sampling only for a fixture-confirmed layout. Otherwise refuse
+  the binding as `unsupported_mixed_transform_storage`.
+
+**Time and result.** For compiled clips take finite, ordered `m_StartTime`
+and `m_StopTime` in source seconds from `m_MuscleClip`, including for
+constant-only clips. Dense grid bounds and streamed sentinels have separate
+roles. For explicit-only layouts use the bounds defined by the layout or, when
+no interval is stored, the first and last real runtime key times. A
+metadata-only clip has no playable tracks. `sample_clip` takes a bound clip,
+rest pose and an explicit schedule of source times within the closed interval.
+The default samples at the positive finite clip rate (30 Hz when absent) and
+includes both endpoints once. A zero-duration clip gets one sample. Refuse
+invalid rates, intervals or schedules. Work in source seconds until output,
+where the clock is `source_time - start`, also for nonzero starts. Fill
+unanimated components from rest. Return f64 local TRS, resolved morph scalars
+and the typed issues and source metadata. Export one pass, retaining wrap
+metadata.
 
 ### 2.3 Discovery and binding
 
-- From each graph node's stored components, `Animation` (111) contributes `m_Animation` then `m_Animations`. `Animator` (95) gives its `m_Avatar` and `m_Controller`; `AnimatorController` (91), or a supported `RuntimeAnimatorController` layout, supplies `m_AnimationClips`. Follow these pointers with the file that owns each field. For `AnimatorOverrideController` (221), substitute clips by resolved original identity, report broken overrides, and bound and cycle-check the controller chain. Deduplicate on (component root and identity, clip file identity and signed path id). Preserve the same clip bound at distinct roots. Null slots, wrong classes and missing dependencies have distinct outcomes.
-- Explicit paths are slash-separated, case-sensitive stored names relative to the Animation or Animator node. The empty path targets that node. For runtime bindings index those same raw-byte paths by Unity's CRC32 (IEEE, tested against serialized path/hash pairs, including non-ASCII). Path hash zero is the empty-path binding where the binding kind says so. `Avatar.m_TOS` and controller TOS entries supply hash-to-string evidence in their own domains. Check a candidate path against the graph and retain all matches until the target is unambiguous. A filename, node display name or globally hashed bone basename cannot substitute for a relative path.
-- `GenericBinding` keys on path, attribute, class (`typeID` or `classID`), `customType`, script identity and discrete/PPtr flags. For supported Transform records, attributes 1, 2, 3 and 4 are translation (3), quaternion rotation (4), scale (3) and Euler rotation (3). Build the scalar-slot table once with checked widths. Class, custom type and flags decide the meanings of other attributes, including humanoid and blend-shape properties. Resolve explicit `blendShape.<name>` curves and supported hashed equivalents against the target renderer's own mesh channels, with collision checks. Retain other float and PPtr properties as typed tracks. Filtered nodes and dropped renderer attachments are reported during glTF collection.
-- For `clip_states`, use the Animator's layer and state identity, controller clip indices and parameter defaults plus typed overrides. Evaluate the selected state's supported motion and time mapping at a bounded schedule. Validate state/clip indices, nested state and tree depth, parameter types and blend weights. PR 5 covers direct states and fixture-backed 1D/2D or direct blend trees as specified in Q2. Discovery still returns each referenced clip on a controller whose state features the sampler cannot evaluate.
+**Discovery.** Traverse the unit graph in stored order and each node's
+components in component order. `Animation` contributes `m_Animation` then
+`m_Animations`. `Animator` contributes the clip slots in its
+`RuntimeAnimatorController`'s `m_AnimationClips`. Read compiled controller
+tables for clip discovery and direct clip selection only, resolving supported
+leaf indices to clip slots by layout and retaining table metadata. Follow each
+PPtr from its owning file. Bound and cycle-check override chains. Apply
+`AnimatorOverrideController` substitutions by resolved original identity,
+innermost first, retaining the base slot's order. A missing or null override
+retains the incoming clip. A non-null broken override records its typed error
+and leaves that slot unresolved. Retain source-slot identity (owning object,
+field and ordinal) with its original PPtr or override error, including on
+outside-view slots. Deduplicate resolved clips by component/root identity and
+resolved clip file identity plus signed path ID, keeping the first surviving
+occurrence. Keep the same clip on different roots or components, even when
+their names match.
+
+**Paths and renderer targets.** Resolve explicit paths against case-sensitive,
+slash-separated stored names relative to the Animation or Animator node.
+The empty path is that node and `CRC32("") = 0` (IEEE). Check hashes of raw
+relative path bytes against recorded bindings, including non-ASCII. Preserve
+all collision candidates, including a nonempty path hashing to zero. Use
+Avatar and controller TOS strings as evidence in their own domains and check
+them against the graph. For explicit `blendShape.<name>` and supported hashes,
+use the table of resolved mesh channels supplied by the collector for the
+bound renderer. Ambiguous names or hashes, targets removed by filters and
+missing attachments give typed issues.
+
+**Versioned binding records.** Read
+`m_ClipBindingConstant.genericBindings` and `pptrCurveMapping` from the
+clip's serialized layout. Keep path, attribute, script PPtr, class and
+`customType` together with the value flags.
+
+| Layout evidence | Interpretation |
+|---|---|
+| Legacy value array | Use a fixture-confirmed adapter to the same typed slots. Unmapped layouts refuse playback. |
+| GenericBinding before 5.6 where present, and 5.6 onward | Read the version's class field (`classID` or `typeID` as named by the tree), unsigned 16-bit before 5.6 and signed 32-bit from 5.6 in the documented reader layouts. `customType` is the layout's byte discriminator, including ordinary 0. `isPPtrCurve` is the object-reference flag. |
+| Layouts with discrete integers | `isIntCurve` is a byte in the reader's 2022.1-and-later layouts. Verified older layouts lacking the field default it to false. |
+| Layouts with managed reference flags | Read `isSerializeReferenceCurve` where the versioned tree defines it as the managed-reference flag. Default false only in a confirmed older layout without the field. Record the flag's presence, width and alignment in the fixture/version matrix before accepting a layout. Retain these bindings as metadata. |
+
+Contradictory flags or a layout outside the verified table give a typed refusal.
+For an ordinary supported Transform, attributes 1–4 consume respectively 3
+translation, 4 quaternion, 3 scale and 3 Euler slots. Known scalar families,
+including confirmed custom classes, consume their recorded width (one for
+scalar morph weights, integer and PPtr slots). Preserve the recorded width
+even when the property is unsupported, so subsequent bindings keep their slot
+indices. Refuse an unknown width as `unknown_binding_width` before assigning
+any following slots. Require the summed widths to match the storage counts.
+Decode continuous values as finite floats. For a PPtr slot, validate the
+layout's numeric index as finite, integral and in bounds, handling a sentinel
+only where recorded, then take the PPtr from the clip-owned table. For a
+bit-encoded discrete integer slot, reinterpret the word as the layout's
+integer bits before float checks. It is neither a mapping index nor a floating
+point sample. Discrete validation preserves the initial PPtr and later changes,
+but resolving or exporting non-glTF property tracks belongs to 2.6.
+[AssetStudio GenericBinding v0.16.47](https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudio/Classes/AnimationClip.cs#L737-L824) · [Unity GenericBinding value kinds](https://docs.unity.com/en-us/engine/6000.0/script-reference/unityengine/animations/genericbinding)
 
 ### 2.4 Avatar and humanoid
 
-**Read.** Resolve the target Avatar and validate its `m_TOS`, skeleton, default/reference poses, human-to-skeleton mappings, axes and limits. Build the humanoid slot table from the clip's muscle indices and the versioned DOF mapping. Bind each supported human bone through the target Avatar's skeleton identity and map it to the graph. Missing required bones, duplicate mappings and unreconstructable optimized hierarchies give a typed issue.
+Use the target `Avatar.m_Avatar` runtime data. Read `m_AvatarSkeleton`,
+`m_AvatarSkeletonPose`, `m_DefaultPose`, skeleton name IDs, `m_Human`,
+human-to-skeleton and reverse index arrays, and the root-motion data. Resolve
+skeleton identities through `m_TOS` and the materialized graph. Validate
+parent and axis indices and read the referenced axis records (pre/post
+quaternions, signs, limits and axis type). Keep `HumanDescription` as
+authoring/import evidence. The runtime tables control binding. Read the
+versioned `m_IndexArray` mapping from humanoid DOF to `m_Clip` slot,
+including its absent sentinel, and check it against the recorded DOF and
+`HumanTrait` muscle-to-bone/axis order. Distinguish body, muscle, goal and
+translation slots before binding. Refuse missing required bones, conflicting
+mappings, unknown DOFs or an optimized hierarchy that cannot be reconstructed.
+[AssetStudio Avatar v0.16.47](https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudio/Classes/Avatar.cs) · [Unity HumanDescription](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanDescription.html) · [Unity HumanTrait](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanTrait.html)
 
-**Retarget.** Sample the muscle values in f64. Map signed normalized muscle values through the correct per-axis limits around neutral, compose the Avatar's joint-axis and rest-orientation transforms in fixture-pinned order, and derive local bone rotations in Unity space. Use the target rig's rest TRS for untouched components and apply the supported body/hips transform using the target Avatar's scale and reference data. Generic curves drive properties outside the retargeted set. Report an overlapping writer unless a fixture establishes precedence for that binding. Isolate unsupported root motion, translation DOFs, additive poses, or IK according to Q3. A missing Avatar can leave independent generic tracks usable.
+| Feature | P2b behaviour and evidence |
+|---|---|
+| Muscle rotations | Use the documented normalized muscle range relative to neutral and axis limits. Apply the recorded runtime signs, reference pose and pre/post axis transforms in the order validated by single-muscle and noncommuting multi-axis recordings. Leave untouched components at rest. A missing axis convention gives `unsupported_humanoid_axes`. A conflicting generic writer gives a typed binding error. [Mecanim Humanoids](https://unity.com/blog/engine-platform/mecanim-humanoids) |
+| Body position and rotation | `RootT` and `RootQ` describe the approximate centre-of-mass body pose in the Animator root frame. Position is divided by human scale. Recovering hips-local TRS requires the pose-dependent humanoid mass/body-orientation model and the clip's root-motion projection. Refuse `unsupported_body_motion` for a body-bearing clip until the model and import configuration are recorded and verified. A muscle-only clip is supported only where the recordings establish that no body-to-hips correction is needed. [Unity internal human pose](https://docs.unity.cn/2023.1/Documentation/ScriptReference/HumanPoseHandler.SetInternalHumanPose.html) · [Unity root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html) |
+| Nonidentity Animator root | For any future supported body configuration, denormalize body position by the target Avatar's human scale, express the reconstructed hips in the Animator root frame, compose with its world transform, then convert through the inverse of the actual hips parent's world transform. Refuse that body case until this conversion passes a translated and rotated root fixture as well as an identity case. For muscle-only clips, accept a nonidentity root only on a recorded matching layout/configuration, otherwise return `unsupported_animator_root`. Singular or non-TRS conversions refuse explicitly. |
+| Twist distribution | Read the runtime `m_Human` upper/lower arm and leg twist settings (`m_ArmTwist`, `m_ForeArmTwist`, `m_UpperLegTwist`, `m_LegTwist`) and record the import values. Refuse `unsupported_humanoid_twist` for a pose that needs twist redistribution until its joint order and split are confirmed on limb fixtures. The supported subset must show that redistribution is inactive for the recorded motion. [Unity HumanDescription](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanDescription.html) |
+| Clip settings | Read the versioned clip settings, including `m_Mirror`, `m_CycleOffset`, loop time, `m_LoopBlend*`, and the rotation, Y and XZ bake-into-pose flags (including the corresponding runtime blend fields), original/feet basis flags, start-at-origin, height and orientation offsets. Pin the exact neutral settings and mapping in the fixture metadata. Mirror, nonzero cycle/height/orientation offsets and unverified loop-blend, bake or basis settings refuse as `unsupported_humanoid_clip_settings` with the offending field. Missing settings without a confirmed layout default refuse too. [Unity clip import settings](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/ModelImporterClipAnimation.html) · [Unity root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html) |
+| Other pose features | Refuse unsupported locomotion extraction, translation DOFs, additive poses and IK with distinct causes. Missing Avatar or any humanoid refusal prevents a successful export of that selected animation. |
 
-### 2.5 `unityrs-gltf`: model, collect and profile
+The humanoid PR must demonstrate a real, supported serialized clip on each of
+two rigs. If the recordings expose a required semantic outside the supported
+subset, retain the typed refusal and keep the corresponding pose row planned
+until the gap is resolved.
 
-**The model.** Extend the existing editable `Scene` with animations, each with local animation sampler and channel tables. A sampler points to scene accessors. A channel points to a scene node and one of `translation`, `rotation`, `scale` and `weights`. Animation samplers are distinct from texture samplers. The sampling entry point can also return the bound events, active curves, STEP tracks and non-glTF properties for callers to inspect or edit before writing. Static collection and empty-animation GLB goldens still run.
+### 2.5 glTF animation, collection and profile
 
-**Collect.** Keep the graph-node to glTF-node map and a renderer-ref to attachment map from the collector. TRS targets the original transform or joint node. Weights target the actual mesh instance, including its separate skin attachment. Keep stable source order under filtering, and apply P2a's mirror once: translation `(-x, y, z)`, quaternion `(x, -y, -z, w)`, and scale as read. Normalize valid quaternion samples and choose consistent signs across keys. A zero or non-finite quaternion, or a value that overflows f32, gets a typed refusal for the affected channel or clip. These structural checks apply in raw mode too.
+**Model and collection.** Extend the editable glTF `Scene` with distinct
+animation samplers and channels targeting local TRS or weights. The collector
+resolves mesh channels once. Pass renderer identity, channel name and hash,
+target slot, selected frame and full weight to the sampling callback. Preserve
+graph-node-to-scene-node and renderer-to-attachment maps. TRS targets original
+Transform or joint nodes, while weights target the actual mesh instance. For
+a detached world-space static batch, refuse a selected clip with TRS on its
+original renderer Transform or an ancestor that would move it as
+`animated_static_batch`. Apply that rule to combined batches too. The
+collector returns typed failures before creating a misleading channel.
 
-**Morphs.** Each attachment gets one weight vector per time, in the emitted mesh's target order. Baseline slots come from P2a's node weights, or the mesh defaults when applicable. Animated slots are the Unity weight divided by the selected last frame's `fullWeight`, just as P2a's static collector does. Use the union of member key times and the bake schedule when combining curves. Keep P2a's endpoint approximation for multi-frame shapes and report its use. Verify two renderers sharing geometry with different default weights and different animation.
+Apply P2a's change of basis once, using translation `(-x, y, z)`, quaternion
+`(x, -y, -z, w)` and unchanged scale components. Normalize quaternions and
+choose consistent signs across exported samples. A zero or nonfinite
+quaternion or f32 overflow is a typed refusal, including in raw mode. Use one
+weight vector per animated attachment and time, in emitted target order. Fill
+untouched slots from P2a's node weights or mesh defaults. Divide animated
+weights by the selected last frame's `fullWeight`, and report the existing
+in-between approximation.
 
-**Write.** Animation times are finite f32 SCALAR seconds, non-negative and strictly increasing after rounding, with min and max. Outputs are f32 VEC3 for translation/scale, VEC4 in XYZW order for rotation and SCALAR for weights, flattened in key-major order with `key_count × target_count` elements. `LINEAR` uses glTF's quaternion interpolation for rotation. For mixed held and continuous components, bake at the transition and the preceding representable output time when it fits, with a reported approximation (Q4). Deduplicate only coincident rounded time/value pairs with the same transition semantics. Report an unrepresentable discontinuity instead of silently overwriting a key. The layout includes the new accessors in its aligned BIN first-reach order. Validate dimensions, references, values and duplicate targets before writing. Omit empty animations. [Khronos glTF 2.0 specification, Animations](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#animations)
+**Write and baking.** Times are finite f32 SCALAR seconds with min/max and are
+nonnegative and strictly increasing after rounding. Outputs are f32 VEC3 for
+translation and scale, VEC4 in XYZW order for rotation, and SCALAR weights in
+key-major order with `key_count × target_count` elements. Use exact `STEP` for
+wholly held properties and `LINEAR` otherwise (glTF quaternion interpolation
+for rotation). Include source key boundaries and schedule samples. For mixed
+held and continuous components bracket each jump with its rounded time and
+the preceding representable time, when distinct and in range. Check both
+sides. Deduplicate coincident rounded keys only when their values and
+transition semantics agree. Refuse a collapsed or unrepresentable jump.
+Validate dimensions, values, references and unique targets before writing.
+Omit empty animations and stream the aligned BIN in first-reach order.
 
-**The profile.** Keep version 1's strict parser. Missing or empty `clip_states` keeps the static export. Add a typed selection for discovered clips and selected controller states with parameters, a finite bounded sample-rate override and the skin-influence choice once available. Use the same parsed profile in the CLI and batch. An unsupported source condition is a report entry. A bad profile shape is a validation error.
+For baked output, compare a reconstruction of emitted f32 glTF interpolation
+with the source pose or intended last-frame morph weights. Per interval allow
+at most `1e-4` absolute Unity units per translation component, `1e-4` per scale
+or weight component and `1e-3` radians of quaternion angular error. Include the
+first/last times, source breakpoints, off-key quarter/mid/three-quarter points
+and extrema or conservative subdivision bounds that cover narrow spikes and
+fast turns. Evaluate the intentional jump bracket at its two representable
+sides. Refine within the work/sample caps. If the cap prevents meeting or
+establishing the bound, return `animation_bake_error`. These are export
+thresholds, separate from L11. Later, glTF `CUBICSPLINE` can carry compatible
+unweighted Hermite and streamed polynomial segments with the same derivatives
+and normalized quaternion results, subject to equivalent interpolation and
+continuity tests. [Khronos glTF interpolation](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-c-animation-sampler-interpolation-modes)
 
-### 2.6 Variable skin weights
+**Profile.** Extend the strict v1 profile with `clips` and a finite bounded
+sample-rate override. Each selector uses unit-scoped root Transform and
+Animation/Animator component identities plus either the resolved clip identity
+or the discovery source-slot identity. Address objects by SerializedFile
+occurrence in the loaded view and signed path ID. A selected unresolved slot
+returns its original cause. Reuse discovery's addressing and refuse missing
+or ambiguous matches. Display
+names are optional labels, so two same-name clips on different roots can be
+selected independently. Missing or empty `clips` selects static GLB. Nonempty
+`clip_states` remains a typed refusal. CLI and batch use the same profile and
+collect/write path. Report typed conditions and fixture-backed approximations.
+A selected clip with refused channels or no playable channels fails its
+animation request. Section 2.7 defines the batch outcome.
 
-Confirm the version-specific storage behind `m_VariableBoneCountWeights` with counts, indices and weights recorded from the Editor. Expose source rows in `unityrs-mesh` and validate their ranges and palette references. For the eight-influence path, keep the top eight in a fixed order (source order breaks weight ties), normalize across both sets, then pad and remap both sets through P2a's joint palette handling. Count truncation and repairs. Check skinned positions at a non-rest pose as well as the two accessor pairs. Keep the top-four path for fixtures without a supported variable layout. The Editor API provides decoded counts and weights, and section 8 asks for the serialized layout beside them. [Unity Mesh.GetAllBoneWeights](https://docs.unity3d.com/6000.0/Documentation/ScriptReference/Mesh.GetAllBoneWeights.html)
+### 2.6 Later slices
 
-### 2.7 Batch units
+| Later slice | Preconditions and policy |
+|---|---|
+| Controller state and blend-tree evaluation | Start from P2b's discovery tables and direct-clip sampler. Require versioned layer/state-machine/motion and leaf-to-clip resolution, recorded state time, speed, cycle offset, mirror, write defaults and null overrides, plus child duration synchronization and missing-channel rules. Verify 1D, Simple Directional 2D, Freeform Directional 2D, Freeform Cartesian 2D and Direct separately before enabling each. Humanoid states also need verified humanoid playback. [Unity 2D blending](https://docs.unity3d.com/2022.3/Documentation/Manual/BlendTree-2DBlending.html) |
+| Variable bone weights (eight influences) | Record serialized `m_VariableBoneCountWeights`, counts, palette indices and weights against Editor APIs by version and validate deformed positions and both joint/weight sets. Four stays the default. An explicit eight-influence request on an unverified layout fails. Remap into the palette and merge duplicate joints before ranking and truncation, breaking ties by first source occurrence. Normalize across both sets then pad in normal mode. For eight influences with `normalise: false`, refuse explicitly until a raw contract for merged rows and both sets is verified. [Unity Mesh.GetAllBoneWeights](https://docs.unity3d.com/6000.0/Documentation/ScriptReference/Mesh.GetAllBoneWeights.html) |
+| Sampled non-glTF properties | Start from retained serialized keys, bindings, value kinds, PPtr mappings, authoring curves and events. Require fixtures for typed integer and PPtr hold semantics, reference validation, scalar interpolation and custom width, and a consumer API for these sampled values. Keep event execution and any glTF extension for those properties outside this slice. |
 
-**Spec.** Proposed version 2 fields are opt-in `outputs.glb` (with an inline versioned glTF profile) and `outputs.obj`, under one shared prefab key template when either is set. Allow a 3D-only job. Validate in phase 1 with version 2's duplicate, unknown, type and range rules, and bound the profile and template against the spec budget. Version 1 rejects the new fields with `unknown_field`. Texture format and image options keep their 2D meanings, and GLB embeds textures with its own profile and writer. Add schemas, parser/golden cases and CLI discovery in the implementation PR (Q7).
+### 2.7 Batch prefab units
 
-**Selection and keys.** Walk the input's own eligible SerializedFiles and container rows in the batch attempt's existing order and scope (`BATCH_SPEC.md` 4.3–4.4). One GameObject-targeting row is one prefab instance, even when two rows resolve to the same object. Resolve geometry, clips and textures only through the private view. Dependency objects may supply data for a selected row. Batch does not enumerate dependency rows or infer scene units from unmarked files. Expose container path and a safe form for the new template, with the existing name/path-id conventions and section 2 checks. The template expands to a stable logical unit key and output base. Preflight within the attempt checks duplicate/bad keys in plan order and keeps each renderer's OBJ with the sidecars it references, in collision-free renderer subdirectories. Write the GLB and the OBJ family under that unit. The existing writer supplies OBJ/MTL text. Check every emitted relative reference and key before committing that family.
+**Spec 3.** Add opt-in `outputs.glb` with a required `prefab_key_template` and
+an optional inline `profile` that defaults to static export. The profile
+applies per selected prefab and its clip selections are required in that
+prefab. The template expands the complete GLB key. Validate presence, sizes,
+duplicate members, unknown fields, types and ranges in phase 1, with a
+charged profile and template parse. Allow GLB-only jobs. Spec 1 and 2 reject
+`outputs.glb` as `unknown_field`. Texture and image options apply to 2D outputs. GLBs embed
+textures through the glTF writer. Keep loose prefab units in this slice.
+The batch PR updates BATCH_SPEC, schemas, examples and CLI schema discovery.
 
-**Candidates and winners.** Stream to the existing attempt sinks and make candidate records eligible only after successful copy-out and seal. Use the same deterministic plan order, artifact digests and E31/E32/E61 winners, reservation and withholding rules (`BATCH_SPEC.md` 4.5–4.6). The 3D unit key identifies the group regardless of which outputs survived attempt-time skips. Extend E32's output-backed unit keys with an explicit anchor record for each nonempty 3D group. The anchor participates in unit selection and has no published object or member-key claim. Use `prefer[unit_key]` with input and an MD5 over a canonical key/size/digest list for group matching and flip detection, with published member hashes remaining byte digests (Q7). Specify the digest framing and disambiguate the anchor from a plain output with the same key in the batch PR. Every produced member of the winning attempt travels together through winner selection. A failed sidecar withholds its referencing OBJ family before selection. Publication is still per key, so a sink failure can leave an incomplete family, with per-key outcomes and a resumable run.
+**Row identity and key ownership.** Visit the input's own eligible
+SerializedFiles in 4.4 file order and each file's stored container rows in
+ordinal order. Identify a row by input, SerializedFile occurrence and
+container-row ordinal, with path and resolved root as provenance. Two rows
+targeting the same GameObject are separate selections. Ignore successfully
+resolved non-GameObject rows. For failures retain the row identity and typed
+cause. Dependents can supply data by PPtr within the private view.
+Dependency rows and unmarked scene files supply no prefab selections.
 
-**Manifest and failures.** Keep section 7's fenced head and sorted row files at the existing locations. Propose `manifest_version: 3` for jobs that request either 3D kind while the job's `spec_version` is 2. Section 7.3 requires a new manifest version for closed values. Define `outputs.kind` and `skips.output` for `glb` and `obj`, using the latter for OBJ, MTL and required texture sidecars, with a role and root provenance for the family and null image-only fields in the manifest. Record recoverable dropped animation or renderer content with typed reasons and preserve the output when usable. Preserve the original failure provenance through the classifier: object failures and outside-view required reads are skips (exit 3 unless expected), budget refusals follow the existing object/input split and exit 5, container or dependency failures keep the existing input rules (4 or 5), publication failures exit 4, and spool/allocator/internal failures retain their run-level treatment (5, 74, 70). Reuse `publish_incomplete`, resume, verification, stop and precedence as written. Add the closed reason and detail vocabulary and progress version changes where section 10 requires them. Leave archives' existing membership kinds for the first PR (Q8).
+Append GLBs after textures, sprites and atlases in the existing key plan.
+Expand and validate keys before export, with container path and its safe form
+as well as the existing name/path-ID fields. A valid expanded key is owned
+by the first row or 2D output in plan order, even if that owner's export
+fails. Later identical keys in the same input are `duplicate_key` skips, with
+no promotion, merge or GLB candidate. When a broken row cannot supply the
+fields needed to expand a valid key, record its pointer skip without a claim.
+A broken row with a valid independently expanded key retains the claim.
+Keep row identity independent of the string key and of the resolved object's
+identity.
 
----
+**Sealing and winners.** A successful GLB copy-out and seal supplies one
+candidate and one unit. Its unit key is exactly its GLB output key, with
+`prefer.md5` comparing the artifact's byte digest. Use E31/E32/E61 and the
+existing prefix and archive-key checks. Across inputs, a GLB and a 2D unit
+with the same unit key compete as units. A 2D plain candidate at a reserved
+GLB key loses by `unit`. If a GLB key is also a member key of a differently
+keyed 2D unit, E32 reserves the key for the first unit key in bytewise order
+and withholds the losing unit whole. No anchor records or group digests enter
+the winner pass. The existing archive membership kinds stay 2D.
+
+**Failure policy.** Carry typed causes through standalone and batch collect
+and write, preserving input or dependency provenance before deriving report
+strings. For a normal end with no higher-priority outcome, apply this table.
+
+| Cause | Prefab artifact | Record and input status | Exit |
+|---|---|---|---|
+| Broken container-row PPtr | No candidate | Unexpected `bad_pointer` skip (or the original `outside_view` or decode cause), input `complete_with_skips` | 3 |
+| Caller-selected clip outside the view, including through an override | No candidate, even if static geometry is usable | Unexpected `outside_view` skip with clip identity, input `complete_with_skips` | 3 |
+| Missing optional renderer resource, such as a texture with a usable factor-only material | Keep the degraded GLB when the selected animation and remaining scene are usable | Unexpected skip retaining the renderer/resource identity and cause, input `complete_with_skips` | 3 |
+| Any dropped selected animation or selected animation channel, including an unavailable humanoid path or lost renderer target | No candidate for that prefab | Unexpected GLB skip with the typed cause, input `complete_with_skips` | 3 |
+| Object-scoped input budget refusal | No candidate for that prefab | Existing budget skip, input `complete_with_skips` | 5 |
+| `budget(dependency)` anywhere in the export, even on an optional resource | Discard the input's attempt candidates | Failed input with `budget(dependency)` | 5 |
+| Other input-scoped container, dependency or budget failure | Discard the input's attempt candidates | Existing failed-input classifier | 4 or 5 |
+
+No selected animation loss can be classified as an expected skip. A missing
+required renderer resource that makes a prefab unusable has no candidate and
+retains its typed object skip or input failure as applicable. Preserve the
+existing sink and run-level outcomes for publication, spool, allocation and
+internal failures. If an input fails and `publish_incomplete: false`, withhold
+all otherwise eligible winners and nonempty archives under the existing rule.
+With it true, candidates from successful inputs can publish. Unexpected skips
+alone leave the input eligible for publication and still set exit 3 (or 5
+for an object budget). Reuse stop, resume, verification and exit precedence.
+
+**Versioned records.** Preserve BATCH_SPEC 7.3's one-to-one spec-to-manifest
+mapping for running and final fenced heads, including spec 3 runs with no GLB
+request or no 3D artifacts. Version 3 adds the GLB request provenance, closed
+`outputs.kind` and `skips.output` value `glb`, bounded container-row and root
+provenance, and typed skip details. Image-only fields are null for GLB.
+Update the reason, detail and count vocabulary in the manifest contract.
+Keep progress at `p: 1` using existing progress fields, counters and
+`bad_spec` rule/pointer vocabulary. New per-prefab outcomes appear in manifest
+rows. New readers accept v1, v2 and v3. Older readers follow 7.3 by ignoring
+added fields and treating unknown closed values as other. Preserve fencing's
+seven-field identity envelope for all versions. Test running and final heads,
+including a zero-artifact job and resume from a v3 head.
 
 ## 3. Parity targets
 
-### 3.1 UnityPy's rows P2b uses
+### 3.1 UnityPy's existing surfaces
 
-| row (`PARITY.md` section) | tier | level | P2b work |
-|---|---|---|---|
-| `AnimationClip`, `Avatar`, `Animator`, `AnimatorController` (14.2) | A | L2 | Keep the existing verified P0 dict result. Exercise the classes on fixture reads, including nested clip and Avatar fields. |
-| `Animation`, `AnimatorOverrideController`, `RuntimeAnimatorController`, clip/binding/Avatar/controller records (2 and Appendix A) | A for the existing read surfaces | API, L2 | Generated class and field inventory; compare the checked dicts and, where exposed, object-mode shapes through the existing harness. |
-| `GameObject.m_Animator`, `GameObject.m_Animation` (14.2, 19.2) and `PPtr.deref` (14.1) | A and recorded B cases | API, L1 (env) | Reuse the existing component accessors and `deref` behaviour. Discovery of a clip set gets its own X row. |
-| `PackedBitVector.unpack_ints` and `unpack_floats` (15.3) | A as filed | L6 | Reuse the pinned unpacking checks for any shared scalar format. Animation timing and packed quaternion evaluation are X. |
-| Renderer OBJ/MTL (14.2, 15.4, 19.1–19.2) | A and C as filed | L6 | Reuse P2a writers and corrected-oracle cases. Batch selection, relative keys and unit winners get a separate X row. |
-
-The current plan adds no rows to `PARITY.md`. The implementation PRs add their section 24 rows with named references and tests. The existing L2 row's P2b marker can point there. Only the result actually pinned by a test moves to verified.
-
-### 3.2 Beyond UnityPy: tier X
-
-| proposed section 24 row | level | reference |
+| Row in `PARITY.md` | Existing level | P2b use |
 |---|---|---|
-| clip decoding and sampling | L11 for local TRS | generated known curves, the independent f64 evaluator, and Editor clip recordings for serialized semantics |
-| clip discovery, binding and controller states | L11 for resulting local TRS | synthetic graphs and reference identities, recorded path CRCs, and Editor state and blend samples |
-| Avatar and humanoid local TRS | L11 | independent f64 retargeter and Editor pose recordings on two rigs (sections 4.2 and 8) |
-| animation channels and morph weights | L6g writer checks plus L11 source samples | Khronos validator, independent accessor reconstruction from L11 and the expected morph vectors, including the last-frame approximation |
-| variable skin weights | L6g | recorded Editor rows, hand-computed skinning, and the glTF validator |
-| batch prefab export | L9 | `BATCH_SPEC.md` as amended; candidate bytes against standalone writers, OBJ/MTL text checked at L6 |
+| `AnimationClip`, `Avatar`, `Animator`, `AnimatorController` (14.2) | Tier A, L2 | Retain the verified P0 dict result and compare nested serialized fields. |
+| `Animation`, `AnimatorOverrideController`, `RuntimeAnimatorController` and generated clip, binding, Avatar and controller records (2 and Appendix A) | Existing API inventory and L2 | Check stored dicts and object-mode field shapes UnityPy exposes. |
+| `GameObject.m_Animator`, `GameObject.m_Animation` (14.2, 19.2) and `PPtr.deref` (14.1) | Existing API and L1 (env), including recorded B cases | Reuse the component accessors and scoped dereference tests. |
+| `PackedBitVector.unpack_ints` and `unpack_floats` (15.3) | Tier A as filed, L6 | Reuse shared packed scalar checks where the formats match. |
 
----
+UnityPy 1.25.2 exposes the stored data through its generated classes and
+component patches. [UnityPy 1.25.2](https://pypi.org/project/UnityPy/1.25.2/)
+
+### 3.2 Tier X
+
+The plan records `planned (P2b)` rows in `PARITY.md` section 24. Typed
+decoding and bindings have their own checks. Discovery identity and order
+use expected lists of source identities. L11 is the per-frame pose result
+from the same serialized clip and rig as the Editor recording. GLB and
+batch have separate L6g and L9 checks. Advance each row only when its own
+named reference and test cover the stated scope.
 
 ## 4. Verification
 
-### 4.1 L2 fields and references (CI)
+### 4.1 Field reads, discovery and bindings
 
-Use synthetic serialized classes with embedded trees and the existing oracle harness. Include explicit versus muscle forms, `Animation`'s default and list, controller and Avatar PPtrs across files, and class/version differences in binding fields. Record canonical UnityPy 1.25.2 values for Rust replay. Run the supported stripped cases with TPK at run time under the existing no-write guard. No TPK-derived tree is committed. Use repeated signed path ids across files and null, bad and outside-view pointers to pin discovery's scope and order.
+Use synthetic serialized objects with embedded trees and the existing
+UnityPy 1.25.2 L2 harness. Cover explicit and muscle forms, nested Avatar and
+controller fields, and versioned binding flags and widths. Exercise supported
+stripped objects with the runtime TPK and its existing no-write guard.
 
-### 4.2 L11 per-frame local TRS in f64 (CI)
+Separately pin discovery's ordered list of clip and rig identities across
+files with repeated signed path IDs, duplicate names, null and broken
+overrides, controller cycles and outside-view references. Check the exact
+binding/slot table, including unsupported known widths before healthy
+bindings, unknown widths, malformed counts, mixed Transform storage, distinct
+PPtr and integer encodings, the streamed initial PPtr seed and terminal dummy.
+Exercise a nonzero start, a constant-only clip, sparse slots before their
+first real key, and dense samples between frames and beyond both grid ends.
 
-**To build.** `tools/fixtures/anim_reference.py`, a standard-library Python f64 evaluator and retargeter with independent equations and fixture input tables. It takes independently recorded bindings, rest/axis data and test curves or muscle samples, and computes expected local TRS. It consumes no Rust-produced poses or binding tables. Test identity and single-axis poses analytically, and include a noncommuting two-axis case, asymmetric limits, default/rest pose, missing optional bones, and the same motion on different proportioned rigs. Include generic scale and a non-root translation so a rotation-only check cannot pass L11.
+### 4.2 L11 and f64 transcription
 
-**To record.** The Editor project (section 8) saves local poses for authored generic clips and humanoid clips, and saves explicit muscle vectors and corresponding local poses by applying them with `HumanPoseHandler.SetHumanPose` to the target hierarchy. Record rest pose, rig mapping, limits, sample times, Unity version and settings alongside the arrays. Editor TRS is f32 captured and widened exactly, with its own tolerance. The independent f64 reference must agree with it within that envelope before its fixture is used to verify the supported retargeting semantics. [Unity HumanPoseHandler.SetHumanPose](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanPoseHandler.SetHumanPose.html)
+**Equations and transcription.** PR 2 lands a standard-library f64 Python
+evaluator, `tools/fixtures/anim_reference.py`, and its notes before the Rust
+playback and retargeting PRs. Use public descriptions only. For curve math,
+cite the Khronos interpolation appendix for Hermite and normalized
+quaternion results, Unity's Euler API for the documented rotation
+convention and the Bézier formula for weighted segments. For humanoids,
+cite Unity's Mecanim muscle-range description and the public HumanTrait and
+HumanPose APIs for indexing and body-space semantics. Derive the candidate
+equations from those descriptions and ordinary quaternion/matrix composition.
+Document the source and assumptions of each equation, including the neutral
+limit map and any joint-axis composition. Unity's native retargeting equations
+are unpublished. Any convention the descriptions leave open needs an explicit
+hypothesis guarded by Editor evidence, or a typed refusal. Read AssetRipper
+(GPL) for understanding only. Copy no code. [glTF interpolation](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-c-animation-sampler-interpolation-modes) · [Bézier easing functions](https://www.w3.org/TR/css-easing-1/#cubic-bezier-easing-functions) · [Unity Quaternion.Euler](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/Quaternion.Euler.html) · [Mecanim Humanoids](https://unity.com/blog/engine-platform/mecanim-humanoids) · [Unity HumanTrait](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanTrait.html) · [Unity internal human pose](https://docs.unity.cn/2023.1/Documentation/ScriptReference/HumanPoseHandler.SetInternalHumanPose.html) · [AssetRipper licensing](https://assetripper.github.io/AssetRipper/)
 
-**Rust replay.** Compare every expected node and frame, including first/last and off-key times, in Unity space before f32 GLB conversion. Compare translations and scales componentwise and rotations by normalized quaternion angular distance, treating q and −q identically. Pin initial same-input f64 gates of `1e-9` absolute plus `1e-9` relative for vector components and `1e-8` radians for rotation, using a stable relative-quaternion angle. Set separate Editor tolerances from the fixtures before accepting L11 (Q1). Track the worst error with rig, bone, time and property. There is no independent f64 implementation or Editor recording in the tree today. The L11 semantic rows stay planned until both references exist and the comparisons pass.
+Give Python analytic cases and independently recorded binding, axis, rest and
+curve/muscle inputs. The same-input f64 gates of `1e-9` absolute plus `1e-9`
+relative for vector components and `1e-8` radians for rotation check
+transcription. Shared equations can reproduce the same semantic error.
+Include neutral/identity, single-axis, noncommuting multi-axis and asymmetric
+limits, an optional missing bone, differing rig proportions, generic scale
+and non-root translation.
 
-### 4.3 GLB, skin and profile (CI)
+**Editor playback.** The actual L11 reference is Editor playback using
+the **same built bundle set, serialized clip and instantiated rig/Avatar**
+that Rust reads. Land the recorder, replay manifest format and tolerance
+procedure with the Python evaluator in their own PR. Record bundle digests
+and the serialized identities of the prefab, clip, Animator and Avatar,
+the exact Editor version and build target, import settings, rig transforms,
+and playback configuration. Capture f32 local TRS and widen exactly.
+A supplementary `HumanPoseHandler.SetHumanPose` recording applies known
+muscle vectors on the reset rig and isolates muscle-to-pose evaluation.
+Same-bundle playback supplies the separate evidence for clip decoding and
+muscle binding. [Unity SetHumanPose](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanPoseHandler.SetHumanPose.html)
 
-- Run the existing pinned glTF-Validator and allowlist on static and animated fixtures. Extend `tools/parity/gltf_check.py` to reconstruct times, channels and values from GLBs, test their interpolation between samples, and check both source-to-glTF handedness and the expected f32 rounding. Include one sample, all-held and mixed segments, timestamp collapse, invalid channels, animated joints, a filtered node and two morph instances over one mesh.
-- Pin `JOINTS_0`/`WEIGHTS_0` and `JOINTS_1`/`WEIGHTS_1` in the eight-influence case, normalization across sets and palette remaps. Keep the existing OBJ, static GLB and orientation gates.
-- Write the same profiles and units twice and under multiple caller threads. Compare bytes and deterministic report fields. Exercise CLI selection through the normal prefab and scene options.
+**Replay and tolerances.** Freeze Editor tolerances per property and unit
+before comparing any implementation results, using documented f32 error
+analysis or repeated Editor recordings of the same fixture. Commit the
+tolerances and derivation alongside the recording. Resolve discrepancies by
+investigating the implementation, format or fixture. Never fit tolerances to
+the observed Rust or Python errors. Rust replays the same sample times and
+compares every expected node before glTF conversion. Check translations and
+scales componentwise and rotations by a stable normalized quaternion angle
+that treats q and −q identically. Report worst errors with rig, bone,
+property and source time. L11 rows stay planned until same-bundle playback
+and the Rust comparisons pass for their claimed layouts.
 
-### 4.4 Batch (CI)
+### 4.3 GLB, skin and profile
 
-Replay a prefab whose Animator, clip and textures cross bundle boundaries, plus an OBJ family with MTL and PNG, a GLB-only job and a version 1 and pre-3D version 2 job. Compare the actual candidate bytes with standalone output. Test repeated container rows, same-name CABs, missing clips, duplicate and invalid keys, `prefer`, prefix conflicts, withheld units, tight budgets, and interrupted publication with resume. Check exact manifest shapes, null fields and exit outcomes at L9. Compare stable records with 1 and N workers as in batch's determinism check. Testkit mutations and fuzz seeds cover streamed key counts, dense products, binding slots, controller cycles and invalid Avatar indices.
+- Run the pinned glTF-Validator and existing allowlist and orientation checks.
+  Extend `tools/parity/gltf_check.py` to reconstruct accessors and interpolation
+  independently and enforce section 2.5's baking thresholds. Include nonlinear
+  and held segments, a fast turn, single-sample clips, a collapsed timestamp,
+  malformed channels, two morph instances sharing a mesh and a filtered node.
+- In a non-rest four-influence skin fixture with animated joints, compute
+  the Unity-space positions using all four joint transforms, inverse binds
+  and weights. With `D = diag(-1, 1, 1, 1)`, independently reconstruct the
+  glTF positions using the emitted animation and `D · M · D` for transforms
+  and inverse binds. Compare to the mirrored Unity positions within the
+  declared f32 tolerance. Include a separate skin attachment and a detached
+  static-batch refusal.
+- Compare writes under repeated calls and multiple caller threads. Exercise
+  prefab and scene selection from the CLI, including same-name clips on
+  different roots, source refusals and static profile compatibility. Keep
+  the static GLB and OBJ baseline checks.
 
----
+### 4.4 Batch
+
+Replay synthetic GLB-only and mixed 2D/GLB jobs, with Animator, clip and
+renderer resources crossing bundle boundaries in the private view. Compare
+candidate GLB bytes with the standalone writer's. Cover two rows pointing
+to one GameObject, two rows to one key with a failing first owner, a broken
+row with and without an expandable key, same-name CABs, invalid keys, and
+within-input and across-input 2D collisions. Test `prefer.md5` against byte
+digests, prefix conflicts and withholding. For each failure in 2.7, pin
+candidate eligibility, typed row, input status and exit together. Exercise
+both `publish_incomplete` settings with another successful input, including a
+dependency-budget refusal from an optional resource. Check exact L9
+manifest shapes, running and final heads for v1/v2/v3, a zero-artifact v3
+job, the progress protocol, interrupted publication and resume, and stable
+records with 1 and N workers.
 
 ## 5. Performance and memory
 
-- **Charges.** Read and sample on the caller's thread. Before allocating, charge counts, paths, binding maps, Avatar tables, per-track samples, collector maps and output accessors. Count work for each traversal, polynomial evaluation, pose composition, sort and emitted byte. Check sample count × tracks × arity, and frame/target products, before growth. Declared sizes and controller depth cannot produce unbounded work.
-- **Peak.** Cache decoded clips by file/object identity within the current unit. Store bindings and samples by rig/component as well as clip identity. Release source and retargeting scratch as clips finish and retain only model data needed for editing and writing. Measure peak with geometry, encoded PNGs and retained animation together, and keep GLB BIN streaming.
-- **Batch.** Charges for export belong to the sealed attempt; reads across its view retain dependency provenance. Use the existing export-work and spool budgets, stop checks and copy-out hash accounting. Measure time, charged peak and spool work for high curve counts, long clips, large target vectors and OBJ families. Run the attempt's squeeze, allocator refusal and zero-charge checks on the new path.
-
----
+- Read and sample on the caller's thread. Meter counts, identity/path maps,
+  Avatar arrays, track samples and output accessors before growth. Check
+  sample count × tracks × arity and frame/target products. Charge traversal,
+  polynomial evaluation, subdivision, pose composition, sorting and
+  emitted bytes. Fuzz streamed counts, dense products, binding slots,
+  controller cycles and Avatar indices.
+- Cache decoded clips by file/object identity per unit. Key bindings
+  and samples by clip and rig/component. Release scratch when each clip
+  finishes. Measure coexistence of animation, geometry and embedded PNGs
+  with the streamed BIN writer.
+- Charge sealed export to the existing attempt, export-work and spool
+  budgets and preserve dependency provenance on reads. Keep stop checks
+  and copy-out digest accounting. Measure high curve counts, long clips and
+  large morph vectors. Run squeeze, allocator refusal and zero-charge checks.
 
 ## 6. PRs
 
-About 1–2.3k non-test lines each, including the new reference and recorder tools.
-
-| # | PR | contents | ~non-test lines | depends on |
+| # | PR | Contents | ~Non-test lines | Depends on |
 |---|---|---|---|---|
-| 1 | plan | this document | docs | — |
-| 2 | clip model, readers and sampler | the new crate; editor and compressed rotation curves, streamed/dense/constant slots, PPtr and float tracks, events, checked time schedules, L2 recordings and known-curve fixtures | 1.8–2.3k | 1 |
-| 3 | PPtr discovery and binding | Animation, Animator, controller and overrides; graph path/TOS/CRC32 matching, typed bindings, rig-scoped identities and fixtures | 1.0–1.4k | 1; joins 2 at sampled tracks |
-| 4 | glTF animation model and writer | editable tables, channel/sampler validation, accessors, layout, deterministic JSON/BIN, validator and independent reader extensions | 1.0–1.4k | 1 |
-| 5 | controller state sampling | selected layers/states, typed parameters, direct motions and supported blend trees, controller fixtures and refusals | 1.1–1.6k | 2, 3; supported cases need section 8 |
-| 6 | Avatar, retargeting and L11 | Avatar and muscle data, f64 local pose, independent evaluator, Editor pose recorder and replay, L11 rows | 1.6–2.3k | 2, 3; verification needs section 8 |
-| 7 | animated collection, profile and CLI | collection maps, mirrored TRS, morph vectors, held and baked interpolation, clip-state profile, CLI, animation rows in `PARITY.md` | 1.3–1.8k | 2, 3, 4; 5 and 6 for state and humanoid completion |
-| 8 | variable skin influences | verified mesh decode, two joint/weight sets, palette and normalization, profile choice, skin fixtures | 0.8–1.2k | 1, section 8 layout recording; joins 7 at the profile |
-| 9 | batch prefab units | v2 spec and schema, sealed OBJ/GLB writers, keys and group anchors, winners, manifest and failure mapping, L9 goldens | 1.5–2.1k | 7 and P3a's T3 (merged); 8 for eight-influence coverage |
+| 1 | Plan | Plan, DESIGN estimate, static3d cross-reference and planned PARITY rows | docs | — |
+| 2 | Reference and recorder | Public equation notes, Python f64 transcription check, Editor recorder, replay identity and time contract, tolerance procedure | 0.7–1.0k | 1 |
+| 3 | Discovery and binding types | PPtrs, controller tables and overrides, versioned GenericBinding types and widths, graph path/CRC binding, renderer channel input and synthetic fixtures | 0.9–1.2k | 1 |
+| 4 | Clip reader and bound sampler | Runtime/source precedence, explicit and packed curves, compiled slots, timing and generic/legacy TRS and morph sampling, L2 and synthetic replay | 1.6–2.1k | 2, 3 |
+| 5 | glTF animation model and writer | Editable tables, validation, deterministic JSON/BIN, accessors, validator and reconstruction checks | 0.9–1.2k | 1 |
+| 6 | Generic collection, profile and CLI | Collector callback and morph map, selection, mirrored TRS, baking, four-influence deformation test and standalone generic/legacy GLB | 1.2–1.6k | 3, 4, 5 |
+| 7 | Sealed GLB prefab batch | Spec/schema/manifest v3, row identity, key ownership, attempt/winner integration and typed failure L9 cases | 1.0–1.4k | 6 and P3a T3 (merged) |
+| 8 | Avatar and humanoid integration | Runtime Avatar tables, supported retargeting, typed refusals, same-bundle L11 replay and collector integration | 1.0–1.5k | 2, 3, 4, 6 and section 8 recordings |
 
-**Total: about 10.1–14.1k non-test lines.** PRs 2, 3 and 4 can start together after the plan. The Editor fixture work starts then too. PR 7 can bring up generic animation before the controller and humanoid checks land. PR 9 depends on the completed profile and animated collection.
+**Total estimate.** 7.3–10.0k non-test lines, including the recorder and
+reference. PRs 2, 3 and 5 can start together. Merge PR 2 before the code it
+checks and PR 3 before the bound sampler. Generic collection has a synthetic
+integration gate. The batch PR can prepare keys and schema once the plan
+lands, and merge after generic collection without waiting for Editor
+fixtures or humanoid retargeting. Once verified, humanoid uses the same
+collection path.
 
----
+## 7. Risks and gates
 
-## 7. Risks and open questions
+- A passing field read can still assign the wrong slots or select the wrong
+  rotation source. Compare the chosen source and slot table separately and
+  use off-key same-bundle playback for the pose.
+- Runtime Avatar scope stays tied to recorded layouts, axes and effective
+  clip settings. Body motion, twist or other unverified semantics produce
+  the typed outcomes in 2.4.
+- Bone, renderer and attachment identity survive filtering and reuse of
+  meshes. Deformation and morph fixtures check the affected instance.
+- A prefab can exceed a sealed attempt while following otherwise optional
+  references. Preserve typed budget provenance through collection and output.
+- Whole scenes in batch and 3D archive membership can be considered after
+  loose prefab GLB has L9 coverage.
 
-1. **Mixed curve encodings.** Sparse streamed slots and dense or constant companions can drive one TRS property. Fixtures pin the slot table, sentinel and step interpretation, and the priority where editor and runtime curves coexist.
-2. **Binding collisions and skin attachments.** Hash collisions, duplicate paths, profile filtering and separate renderer attachments can silently send motion to the wrong target. Pin component-scoped identity and the collector maps independently of displayed names.
-3. **Editor coverage.** An independent numerical implementation can confirm a wrong layout if both read the same mistaken data. Compare independently extracted fields and record poses on two rigs at two Unity releases.
-4. **Sealed attempt amplification.** A single prefab can hold several texture sets and long clips. Measure coexistence, bound every growth and keep dependency refusals distinct from a recoverable animation skip.
+## 8. Editor fixture project (owner-built)
 
-| open question | recommended answer |
-|---|---|
-| **Q1. L11 fixtures and tolerances.** Which independent artifact and what precision can the Editor justify? | Build the f64 Python evaluator and record Editor TRS in section 8. Freeze the f64 gates in 4.2 and record separate Editor tolerances per property after the first fixture run. An initial target is `1e-5` Unity units/scale components and `1e-4` radians. Explain any change with the measured discrepancy. |
-| **Q2. Controller evaluation.** How much of the state machine and blend tree does the profile promise? | Explicit single-state evaluation at fixed caller-supplied parameters, with direct clips and fixture-backed 1D, 2D and direct tree modes. Read state and tree tables and enumerate referenced clips even when a mode is unsupported. Leave transition simulation, triggers, layer mixing, masks and behaviour execution outside this slice. |
-| **Q3. Humanoid scope.** How should root motion and optimized rigs be handled? | Verify muscle rotations and supported body/hips TRS on a materialized skeleton first. Preserve generic root TRS when it is authored directly. Keep locomotion extraction, IK, additive poses and unsupported translation DOFs out of the verified scope, with specific reasons. An optimized rig whose bones cannot be mapped refuses humanoid sampling. |
-| **Q4. Sampling fidelity.** How should a continuous property with held components travel through glTF? | Use exact STEP when the entire target is held, and explicit LINEAR baking with both sides of each representable jump otherwise. Report collapsed transitions or approximations. Measure mid-interval errors separately from L11. Consider CUBICSPLINE only when its derivatives preserve the source evaluation. |
-| **Q5. Morph in-betweens and other properties.** How much can GLB carry? | Keep P2a's last-frame shapes and their full-weight scaling. Report in-between approximation. Keep non-morph float properties, PPtr curves and events available from the sampled model. Core glTF channels carry TRS and weights. |
-| **Q6. Extra influences.** When can eight be enabled? | Opt in after the serialized layout and both sets agree with recorded Editor rows. Keep top four as the default, and report unsupported layouts on eight-influence requests. |
-| **Q7. Batch keys and manifest version.** What anchors an OBJ-only prefab and how does the reader recognize new kinds? | Use the explicit shared unit key and canonical group digest of 2.7, with byte digests on each artifact. Use manifest 3 only for specs that opt into the new kinds. Document the new head/row and preference semantics in the batch PR, and pin compatibility with old manifests and readers. |
-| **Q8. Archives and scene units.** Should the new kinds also appear in ZIPs or select whole scenes? | Start with loose prefab units. Keep scene animation on the library/CLI path. Revisit 3D archive membership with a rule preserving OBJ/MTL relative references and whole-family inclusion. |
+Extend the project in `docs/plans/static3d.md` section 8 with small original
+assets. Record actual Unity 2022.3 and 6000.x patch releases, build target,
+loaded bundle hashes, rig/asset identities and import settings. Use the
+repository's fixture rules for the built assets and numeric records.
 
----
+For each sample, instantiate a fresh rig from the loaded bundle or reset it
+to the documented identical rest and Animator state. Use an explicit
+one-clip evaluation at speed one, with no controller state blending,
+transitions or accumulated delta. Set `Animator.applyRootMotion = false`
+before evaluation, disable foot IK and playable IK, and do not apply
+`OnAnimatorMove` deltas. Pin loop settings, time origin and endpoint handling.
+Log both the clip-local time given to the recorder and serialized source
+time (including the nonzero `m_StartTime` offset), and the reset procedure.
+Record local TRS at the first/last times and off-key times in Unity space.
 
-## 8. The Editor fixture project (owner-built)
+- A legacy explicit clip and generic runtime clips with recorded
+  streamed, dense and constant layouts, including constant-only and nonzero
+  start. Include precedence with authoring curves, quaternion tangents,
+  Euler order/full turns, packed rotation slopes and between-key samples,
+  initial and changing object references, discrete flags, and non-ASCII
+  path hashes. Record whether mixed Transform storage is present.
+- A legacy Animation and an Animator with a controller and overrides.
+  Record direct clip identities and order, including null substitution,
+  separately from poses. Use a direct clip for the pose recording.
+- Two humanoid rigs with different proportions, asymmetric limits or axes
+  and a materialized hierarchy, including a missing optional bone. Record
+  supported muscle-only playback and known-vector `SetHumanPose` cases.
+  Record identity and nonidentity Animator roots. Include body motion,
+  twist and non-neutral clip settings as probe/refusal cases until 2.4's
+  preconditions are met. Capture rest poses, mappings, axes and effective
+  import settings from the Editor independently of the Rust decoder.
+- Four-influence animated skinning and two instances of a mesh with
+  animated blend shapes, including non-100 full weight and in-between
+  frames. Extra-influence layout recordings belong to the later slice.
 
-Extend the project planned in `docs/plans/static3d.md` section 8. No animation bundles or pose recordings for it are checked in today. Build small original assets in 2022.3 and 6000.x and commit only the project fixtures, built bundles and numeric records the repository allows.
-
-- An explicit legacy clip and a generic runtime clip with streamed, dense and constant curves, confirming which forms were actually serialized. Include compressed rotations, weighted and held keys, an object-reference change, an event, and a non-ASCII relative path with its recorded binding hash.
-- A legacy Animation component, an Animator with a controller, an override and known direct and blend-tree states. Record clip identities, parameter values, state times and local poses with the same sample schedule used by L11.
-- Two humanoid Avatars with different proportions and asymmetric axes or limits, including neutral, single-muscle and combined rotations, body/hips motion and an optional bone missing. Record both clip-driven local TRS and local TRS from known muscle inputs on reset rigs. Record the mapping, reference poses and axes independently of the Rust decoder.
-- A mesh with more than four influences and a separate mesh instance with animated blend shapes, including non-100 full weight and in-between frames. Save per-vertex counts, indices and weights beside the serialized fields, and record local poses and shape weights at the chosen times.
-
-What waits on it: verified L11 for serialized playback and humanoid retargeting, the supported controller blend modes, and the eight-influence layout. Synthetic curve, binding, writer and batch fixtures can proceed first.
+The recordings gate serialized-playback and humanoid L11 status. Synthetic
+curve, binding, writer, generic collection and batch tests can run first.
