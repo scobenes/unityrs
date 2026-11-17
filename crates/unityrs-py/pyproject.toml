@@ -12,6 +12,9 @@ description = "Read Unity asset files through the unityrs Rust core."
 license = "(MIT OR Apache-2.0) AND MIT"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE", "LICENSE-UNITYPY", "LICENSE-UNITYPY-HEAD", "THIRD_PARTY_LICENSES"]
 
+[project.scripts]
+unityrs = "unityrs.cli:main"
+
 [tool.maturin]
 python-source = "python"
 module-name = "unityrs._native"

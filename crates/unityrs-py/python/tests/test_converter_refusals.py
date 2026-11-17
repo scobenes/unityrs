@@ -4,7 +4,6 @@ import sys
 import unittest
 from pathlib import Path
 
-from PIL import Image
 import unityrs
 from unityrs import classes
 
@@ -29,23 +28,19 @@ class ConverterRefusals(unittest.TestCase):
         material, _, _, _ = textured_material(unityrs)
         self.assertIn("map_Kd diffuse.png", exporter.export_material(material))
 
-    def test_replacement_callbacks_refuse_preprocessing_gaps(self):
-        converter = importlib.import_module("unityrs.export.Texture2DConverter")
-        for key, platform, blob, reason in (
-            (unityrs.enums.TextureFormat.RGBA32, unityrs.enums.BuildTarget.Switch,
-             bytes(8) + b"\x01\x00\x00\x00", "Switch-swizzled"),
-            (unityrs.enums.TextureFormat.DXT1Crunched, 0, None, "crunch"),
-        ):
-            with self.subTest(reason=reason):
-                previous = converter.CONV_TABLE[key]
-                calls = []
-                def convert(data, width, height):
-                    calls.append(data)
-                    return Image.new("RGBA", (width, height))
-                try:
-                    converter.CONV_TABLE[key] = (convert, ())
-                    with self.assertRaisesRegex(NotImplementedError, "CONV_TABLE replacement.*" + reason):
-                        converter.parse_image_data(bytes(16), 2, 2, key, (2020, 3, 0, 0), platform, blob)
-                    self.assertEqual(calls, [])
-                finally:
-                    converter.CONV_TABLE[key] = previous
+    def test_replacement_callbacks_receive_preprocessed_data(self):
+        from binding_y6b_images import observe_texture_dispatch
+        actual = observe_texture_dispatch(unityrs)
+        for label in ("switch-rgb", "switch-bgr"):
+            with self.subTest(label=label):
+                output, calls = actual[label]
+                self.assertIn("value", output)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][0], "bytes")
+        for label, (output, calls) in actual.items():
+            if "native.json" in label:
+                with self.subTest(label=label):
+                    self.assertIn("value", output)
+                    self.assertEqual(len(calls), 1)
+        self.assertEqual(actual["bad-crunch"][1], [])
+        self.assertEqual(actual["bad-crunch"][0]["error"], "SystemError")

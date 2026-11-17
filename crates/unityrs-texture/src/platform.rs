@@ -206,6 +206,34 @@ pub fn swap_bytes_for_xbox(data: &[u8], meter: &Arc<Meter>) -> Result<MeteredVec
     Ok(out)
 }
 
+/// Unpacks mip zero before an extension-supplied texture converter is called.
+/// The format selects the same Crunch fork as the ordinary decode path.
+pub fn unpack_crunch(
+    data: &[u8],
+    format: Format,
+    width: usize,
+    height: usize,
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<u8>, DecodeError> {
+    if format.is_unity_crunched() {
+        Ok(crate::crunch::unity::unpack(
+            data,
+            format,
+            (width, height),
+            0,
+            meter,
+        )?)
+    } else {
+        Ok(crate::crunch::unpack(
+            data,
+            format == Format::Dxt5Crunched,
+            (width, height),
+            0,
+            meter,
+        )?)
+    }
+}
+
 fn effective(format: i32) -> i32 {
     match format {
         3 => 4,
@@ -385,4 +413,55 @@ fn platform_decode(
     // The decoder already flipped the padded image. Its bottom h rows are
     // the top-left crop flipped, preserving crop-before-flip ordering.
     crate::image::crop_flipped(&image, p.width, p.height, meter)
+}
+
+/// Standalone ASTC context decompression with top-down output, for all legal 2D footprints.
+pub fn astc_context_decode(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    block: (u8, u8),
+    meter: &Arc<Meter>,
+) -> Result<Image, DecodeError> {
+    let footprint =
+        crate::astc::Footprint::new(block.0, block.1).ok_or(PlatformError::SizeOverflow)?;
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > MAX_PIXELS {
+        return Err(DecodeError::TooLarge {
+            pixels,
+            max: MAX_PIXELS,
+        });
+    }
+    let needed = u64::from(width.div_ceil(u32::from(block.0)))
+        * u64::from(height.div_ceil(u32::from(block.1)))
+        * 16;
+    if (data.len() as u64) < needed {
+        return Err(DecodeError::NotEnoughData {
+            needed,
+            got: data.len() as u64,
+        });
+    }
+    meter.count_decode(pixels.saturating_mul(4))?;
+    let length = usize::try_from(pixels * 4).map_err(|_| PlatformError::SizeOverflow)?;
+    let (mut output, charge) = MeteredVec::<u8>::with_capacity(meter, length)?.into_parts();
+    output.resize(length, 0);
+    let mut tables = crate::astc::Tables::new(footprint, meter)?;
+    crate::contain(std::panic::AssertUnwindSafe(|| {
+        crate::astc::decode_image(
+            &mut tables,
+            data,
+            (width as usize, height as usize),
+            false,
+            crate::astc::ERROR,
+            &mut output,
+        );
+        Ok(())
+    }))?;
+    Ok(Image::from_parts(
+        crate::Mode::Rgba,
+        width,
+        height,
+        output,
+        charge,
+    ))
 }

@@ -74,7 +74,7 @@ extern "C" int unityrs_etcpak_encode(std::uint32_t f,const std::uint8_t* rgba,st
 }
 extern "C" int unityrs_astc_encode(const std::uint8_t* rgba,std::size_t len,std::uint32_t w,std::uint32_t h,std::uint32_t bx,std::uint32_t by,std::uint8_t* out,std::size_t cap,void* user,Alloc alloc,Free free) noexcept {
     if(!input_size(rgba,len,w,h)||!out||!alloc||!free||active)return 1;
-    if(bx!=by || !(bx==4||bx==5||bx==6||bx==8||bx==10||bx==12))return 1;
+    if(!bx||!by||bx>12||by>12)return 1;
     const auto blocks=((std::uint64_t(w)+bx-1)/bx)*((std::uint64_t(h)+by-1)/by);
     if(blocks>std::numeric_limits<std::size_t>::max()/16||blocks*16!=cap)return 1;
     Allocator state{user,alloc,free};Active scope(state);

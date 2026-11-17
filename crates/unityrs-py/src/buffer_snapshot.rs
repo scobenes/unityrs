@@ -17,7 +17,8 @@ impl BufferSnapshot {
     /// Loaded immutable input is charged by the core's source owner. Only a
     /// mutable snapshot needs an additional payload allocation at this layer.
     pub(crate) fn source(input: &Bound<'_, PyAny>, meter: &Arc<Meter>, cap: u64) -> PyResult<Self> {
-        if let Ok(bytes) = input.cast::<PyBytes>() {
+        if input.is_exact_instance_of::<PyBytes>() {
+            let bytes = input.cast::<PyBytes>()?;
             check_size(bytes.as_bytes().len() as u64, cap)?;
             // Retaining an immutable owner only increments its reference count.
             return Ok(Self {
@@ -70,9 +71,10 @@ impl BufferSnapshot {
         let meter = charge.meter().clone();
         let size = view.getattr("nbytes")?.extract::<u64>()?;
         charge.grow(size).map_err(errors::charge)?;
-        // Retain immutable bytes directly; every mutable or indirect buffer is
-        // copied while attached. No Python storage is read on the worker.
-        let bytes = if input.is_instance_of::<PyBytes>() {
+        // Only exact bytes have no caller-defined finalizer. Normalize buffer
+        // subclasses while attached, so their finalizers also run on the
+        // caller rather than during a later worker-side Python handoff.
+        let bytes = if input.is_exact_instance_of::<PyBytes>() {
             input.extract()?
         } else {
             meter.count_decode(size).map_err(errors::charge)?;
@@ -115,7 +117,7 @@ mod tests {
     #[test]
     fn mutable_strided_and_multidimensional_snapshots_are_immutable() -> PyResult<()> {
         let _serial = crate::tests::serial();
-        Python::attach(|py| {
+        crate::python::relay::attach(|py| {
             for expression in [
                 c"memoryview(data)",
                 c"memoryview(data)[::2]",
@@ -141,7 +143,7 @@ mod tests {
     #[test]
     fn snapshot_refuses_nbytes_before_copying_and_releases_charge() -> PyResult<()> {
         let _serial = crate::tests::serial();
-        Python::attach(|py| {
+        crate::python::relay::attach(|py| {
             let input = py.eval(
                 c"memoryview(bytearray(2_000_000)).cast('B', (1, 2_000_000))",
                 None,

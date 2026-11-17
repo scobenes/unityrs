@@ -28,6 +28,8 @@ pub(super) fn run(
             &format!("{}\n", super::USAGE),
         );
     }
+    #[cfg(feature = "test-hooks")]
+    crate::whole_memory::configure(prepared.spec.threads, prepared.spec.download_concurrency);
     let bound = memory_bound(
         &prepared.spec,
         measured,

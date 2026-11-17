@@ -127,7 +127,7 @@ pub(super) fn encode(
     width: u32,
     height: u32,
     format: i32,
-    block: u32,
+    block: (u32, u32),
     output: &mut [u8],
     meter: &Arc<Meter>,
 ) -> Result<(), WriteError> {
@@ -136,8 +136,9 @@ pub(super) fn encode(
         error: None,
         live: 0,
     };
-    // SAFETY: encoders::encode checked nonzero bounded dimensions, whole
-    // blocks, exact RGBA length and exact output size before allocating.
+    // SAFETY: encoders::encode and astc_context checked nonzero bounded
+    // dimensions, legal blocks, exact RGBA length and exact output size.
+    // astcenc handles partial edge blocks; etcpak receives whole blocks.
     // These disjoint borrowed buffers and the callback context stay alive
     // throughout this synchronous, single-threaded call. The C++ bridges
     // validate the lengths again and catch exceptions before returning.
@@ -148,8 +149,8 @@ pub(super) fn encode(
                 rgba.len(),
                 width,
                 height,
-                block,
-                block,
+                block.0,
+                block.1,
                 output.as_mut_ptr(),
                 output.len(),
                 (&raw mut state).cast(),

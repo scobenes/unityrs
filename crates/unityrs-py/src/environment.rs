@@ -170,6 +170,7 @@ impl NativeEnvironment {
     ) -> PyResult<Self> {
         py.detach(|| {
             let mut context = FileContext::unitypy();
+            context.codecs = crate::codec_bridge::registry();
             let config = Arc::new(unityrs_core::config::RuntimeConfig::unitypy());
             let fallback_warnings = Arc::new(FallbackWarning {
                 error: Arc::new(Mutex::new(None)),

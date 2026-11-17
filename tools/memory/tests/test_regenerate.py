@@ -30,7 +30,11 @@ def record(target='x86_64-unknown-linux-gnu', profile='debug', sink='directory',
             'clean': True,
             'mmap_threshold': 131072, 'arena_extra': 2,
         },
-        'coverage': {scene: True for scene in gen.SCENES},
+        'coverage': {scene: kind == 'synthetic' for scene in gen.SCENES},
+        **({'whole_run_coverage': {
+            name: (name != 'store-roundtrip' or sink == 'store')
+            for name in (*gen.WHOLE_SCENES, *gen.WHOLE_STORE_SCENES)
+        }} if kind == 'whole-run' else {}),
         'coefficients': {name: 4096 for name in gen.COEFFICIENTS},
         'structural_floors': {'m_dispatch': 128, 'm_end': 4096},
         'fixed_envelopes': {name: limit for name, limit in gen.ENVELOPES.items()},
@@ -217,6 +221,34 @@ class ValidationTests(unittest.TestCase):
             data['records'][1 if scene.startswith('store-') else 0]['coverage'][scene] = False
             with self.subTest(scene=scene):
                 self.rejected(data)
+
+        # Whole-run flags are independent; synthetic false flags are honest.
+        gen.generate(document(True))
+        for scene in (*gen.WHOLE_SCENES, *gen.WHOLE_STORE_SCENES):
+            data = document(True)
+            whole = next(r for r in data['records']
+                         if r['kind'] == 'whole-run' and r['sink'] == 'store')
+            whole['whole_run_coverage'][scene] = False
+            with self.subTest(whole_scene=scene):
+                self.rejected(data)
+        data = document(True)
+        whole = next(r for r in data['records']
+                     if r['kind'] == 'whole-run' and r['sink'] == 'directory')
+        whole['whole_run_coverage']['store-roundtrip'] = True
+        self.rejected(data)
+        data = document()
+        data['records'][0]['whole_run_coverage'] = record(kind='whole-run')['whole_run_coverage']
+        self.rejected(data)
+        for group, keys in (
+            ('coefficients', [k for k in gen.COEFFICIENTS if k != 'c_base']),
+            ('structural_floors', ['m_dispatch', 'm_end']),
+            ('fixed_envelopes', list(gen.ENVELOPES)),
+        ):
+            for key in keys:
+                data = document(True)
+                data['records'][8][group][key] -= 1
+                with self.subTest(companion_group=group, key=key):
+                    self.rejected(data)
 
     def test_pending_stop_and_store_labels_cannot_disappear_in_partial(self):
         data = document()

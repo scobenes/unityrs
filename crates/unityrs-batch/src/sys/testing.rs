@@ -6,6 +6,15 @@ use std::{os::unix::net::UnixStream, sync::Arc, time::Duration};
 #[path = "testing_tests.rs"]
 mod tests;
 
+/// Write a small test-observer report to the already-open stderr descriptor.
+/// Uses the existing syscall route without stdio's lazy initialization, locks,
+/// allocation or descriptor ownership changes. A failed or partial write is
+/// incomplete telemetry; the observer's consumer must refuse it.
+#[must_use]
+pub fn write_stderr(bytes: &[u8]) -> bool {
+    super::stderr::write(super::stderr::Route::Ordinary, bytes, false)
+}
+
 /// Shutting down on drop releases a child even if the replying thread panics.
 /// The callback retains the same parent fd so it cannot be reused before fork.
 pub struct Rendezvous(Arc<UnixStream>);

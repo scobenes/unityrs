@@ -123,7 +123,7 @@ Interrupted runs may leave
 the nine exporters and extraction helpers with the same destination confinement.
 It validates names and extensions before creating output, opens destinations only
 when dispatch and filters reach an export, and preserves existing files on failed
-image exports through atomic publication. Its 317 oracle comparisons and 133 wheel
+image exports through atomic publication. Its 366 oracle comparisons and 197 wheel
 tests include hostile path, shared-reader cursor and concurrency regressions,
 primitive-map decoding budgets, empty and legacy GameObject components, and
 decryption-key conversion deferred until encrypted bundle processing. Generated
@@ -152,8 +152,22 @@ after a later container failure, with reader identity, cursor and endian checks.
 Runtime configuration retains a context's
 decryption key unless it supplies an override.
 Standalone textured materials resolve current texture names through Y6a’s bounded
-adapter. Replacement texture converters requiring Switch or crunch preprocessing
-have named refusals pending Y6b.
+adapter. Y6b adds standalone helpers and Switch/crunch preprocessing for replacement
+texture converters. Seven helper review recordings cover schema-error cursors,
+truncated stream-object cursors, live primitive callbacks on the caller, empty
+shader blobs with declared platforms, signed LZ4 arguments and embedded sizes,
+shader construction from native asset readers, and memoryview string decoding
+with cursor alignment. Shader constructors retain the owning reader's traversal
+guard through construction; one-byte budget boundaries and the 20,000-keyword
+case with 4 KiB remaining have wheel regressions.
+Detached-schema tree reads inherit the native reader's meter and limits through
+accelerated parsing. Direct reference lookup, decryptor AES staging and
+empty-blob shader stages also retain their owning input account. The helper audit in the binding README lists
+every Y6b byte-consuming entry, guard route and small-budget boundary test;
+five new oracle groups replay successful tree, reference, decryptor and shader
+behavior.
+The 250 API fixtures and 90 object observations replay in 42 Rust binding tests;
+the threat model in `crates/unityrs-py/README.md` applies unchanged.
 
 ## Licence
 

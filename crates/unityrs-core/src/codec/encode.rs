@@ -86,13 +86,73 @@ fn chunks(
     head: Option<u32>,
     meter: &Arc<Meter>,
 ) -> Result<PackedBlocks, SaveError> {
+    chunks_with_registry(data, flags, head, meter, None)
+}
+
+/// Compress through the context's registered block codecs and chunk policy.
+/// `head` selects the later bundle layout when explicitly requested.
+pub fn registered_chunks(
+    data: &[u8],
+    flags: u16,
+    codecs: &super::Codecs,
+    head: Option<u32>,
+    meter: &Arc<Meter>,
+) -> Result<PackedBlocks, SaveError> {
+    chunks_with_registry(data, flags, head, meter, Some(codecs))
+}
+
+/// Compress a single registered block, such as a bundle's directory table.
+pub fn registered_compress(
+    data: &[u8],
+    codec: Codec,
+    codecs: &super::Codecs,
+    meter: &Arc<Meter>,
+) -> Result<Bytes, SaveError> {
+    codecs
+        .get(codec)
+        .ok_or(SaveError::UnsupportedCodec(codec))?
+        .compress(data, codec, meter)
+}
+
+fn chunks_with_registry(
+    data: &[u8],
+    flags: u16,
+    head: Option<u32>,
+    meter: &Arc<Meter>,
+    codecs: Option<&super::Codecs>,
+) -> Result<PackedBlocks, SaveError> {
     let codec = Codec::from_flags(u32::from(flags));
-    let chunk = match codec {
-        Codec::None => data.len().max(1),
-        Codec::Lzma => usize::try_from(u32::MAX).unwrap_or(usize::MAX),
-        Codec::Lz4 | Codec::Lz4Hc => 0x20000,
-        _ => return Err(SaveError::UnsupportedCodec(codec)),
+    let registered = if codec == Codec::None {
+        None
+    } else {
+        codecs
+            .map(|codecs| {
+                codecs
+                    .get(codec)
+                    .cloned()
+                    .ok_or(SaveError::UnsupportedCodec(codec))
+            })
+            .transpose()?
     };
+    let captured = registered
+        .as_ref()
+        .map(|encoder| encoder.compressor(codec, meter))
+        .transpose()?
+        .flatten();
+    let encoder = captured.as_ref().or(registered.as_ref());
+    let chunk = if let Some(encoder) = encoder {
+        encoder.chunk_size(codec, meter)?
+    } else {
+        match codec {
+            Codec::None => data.len().max(1),
+            Codec::Lzma => usize::try_from(u32::MAX).unwrap_or(usize::MAX),
+            Codec::Lz4 | Codec::Lz4Hc => 0x20000,
+            _ => return Err(SaveError::UnsupportedCodec(codec)),
+        }
+    };
+    if chunk == 0 {
+        return Err(SaveError::Range("zero codec chunk size"));
+    }
     let mut blocks = MeteredVec::new(meter);
     if codec == Codec::None {
         let len = narrow(data.len(), "stored block length")?;
@@ -109,7 +169,11 @@ fn chunks(
     }
     let mut out = Writer::new(meter, Endian::Big)?;
     for part in data.chunks(chunk) {
-        let packed = compress(part, codec, meter)?;
+        let packed = if let Some(encoder) = encoder {
+            encoder.compress(part, codec, meter)?
+        } else {
+            compress(part, codec, meter)?
+        };
         let store = if head.is_some() {
             out.len() >= chunk
         } else {

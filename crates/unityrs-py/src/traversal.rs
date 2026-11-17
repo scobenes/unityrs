@@ -13,6 +13,11 @@ use unityrs_core::{
 #[pyclass(module = "unityrs._native")]
 pub(crate) struct TreeTraversal {
     inner: CoreTraversal,
+    value_limit: u64,
+    zero_limit: u64,
+    depth_limit: u32,
+    pub(crate) meter: Arc<Meter>,
+    pub(crate) limits: unityrs_core::limits::Limits,
 }
 
 impl TreeTraversal {
@@ -25,8 +30,19 @@ impl TreeTraversal {
     }
 
     pub(crate) fn on(meter: &Arc<Meter>, depth_limit: u32) -> Self {
+        let mut limits = unityrs_core::limits::Limits::default();
+        limits.max_tree_depth = depth_limit;
+        Self::with_limits(meter, &limits)
+    }
+
+    pub(crate) fn with_limits(meter: &Arc<Meter>, limits: &unityrs_core::limits::Limits) -> Self {
         Self {
-            inner: CoreTraversal::new(meter, depth_limit),
+            inner: CoreTraversal::new(meter, limits.max_tree_depth),
+            value_limit: limits.max_values_per_object,
+            zero_limit: limits.max_zero_size_elements,
+            depth_limit: limits.max_value_depth,
+            meter: meter.clone(),
+            limits: *limits,
         }
     }
 
@@ -45,13 +61,59 @@ impl TreeTraversal {
             || Arc::new(Unbounded) as Arc<dyn unityrs_core::budget::MemoryBudget>,
             |v| v.inner.clone(),
         );
-        Self::on(
+        Self::with_limits(
             &Meter::for_input(&limits, budget, Reservation::Input),
-            limits.max_tree_depth,
+            &limits,
         )
     }
 
     fn step(&mut self, depth: u64, memory: u64, work: u64) -> PyResult<()> {
         self.expand(depth, memory, work)
+    }
+
+    fn value_depth(&self, depth: u64) -> PyResult<()> {
+        if depth > u64::from(self.depth_limit) {
+            return Err(errors::core(
+                unityrs_core::LimitError::refused(
+                    unityrs_core::LimitKind::ValueDepth,
+                    depth,
+                    u64::from(self.depth_limit),
+                )
+                .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn read_values(&mut self, py: Python<'_>, total: u64, added: u64) -> PyResult<()> {
+        py.detach(|| {
+            if total > self.value_limit {
+                return Err(errors::core(
+                    unityrs_core::LimitError::refused(
+                        unityrs_core::LimitKind::ValuesPerObject,
+                        total,
+                        self.value_limit,
+                    )
+                    .into(),
+                ));
+            }
+            self.expand(0, 0, added.saturating_mul(unityrs_core::walk::VALUE_WORK))
+        })
+    }
+
+    fn read_zero_size(&mut self, py: Python<'_>, total: u64) -> PyResult<()> {
+        py.detach(|| {
+            if total > self.zero_limit {
+                return Err(errors::core(
+                    unityrs_core::LimitError::refused(
+                        unityrs_core::LimitKind::ZeroSizeElements,
+                        total,
+                        self.zero_limit,
+                    )
+                    .into(),
+                ));
+            }
+            Ok(())
+        })
     }
 }

@@ -28,9 +28,10 @@ class FinalEvidenceTests(unittest.TestCase):
 
     def test_whole_run_cannot_substitute_for_a_synthetic_axis(self):
         data = document(True)
-        data['records'][0]['kind'] = 'whole-run'
-        data['records'].pop()
-        with self.assertRaises(gen.Invalid):
+        # This target has no whole-run records yet: replacing its synthetic
+        # axis adds a valid, unique record and leaves the whole-run matrix intact.
+        data['records'][0] = record(kind='whole-run')
+        with self.assertRaisesRegex(gen.Invalid, 'incomplete native architecture/profile/sink matrix'):
             gen.generate(data)
 
     def test_emulated_whole_run_is_ineligible(self):
@@ -40,9 +41,9 @@ class FinalEvidenceTests(unittest.TestCase):
             gen.generate(data)
 
     def test_whole_run_requires_complete_applicable_coverage(self):
-        for scene in gen.SCENES:
+        for scene in (*gen.WHOLE_SCENES, *gen.WHOLE_STORE_SCENES):
             data = document(True)
-            data['records'][-1]['coverage'][scene] = False
+            data['records'][-1]['whole_run_coverage'][scene] = False
             with self.subTest(scene=scene), self.assertRaises(gen.Invalid):
                 gen.generate(data)
 

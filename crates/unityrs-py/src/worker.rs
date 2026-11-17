@@ -32,9 +32,13 @@ pub(crate) fn run<T: Send>(stack: usize, f: impl FnOnce() -> T + Send) -> PyResu
             .spawn_scoped(scope, || relay.enter(f))
             .map_err(|_| PyOSError::new_err("could not create core worker"))?;
         relay.dispatch();
-        thread
+        let result = thread
             .join()
-            .map_err(|_| PyRuntimeError::new_err("core worker failed"))
+            .map_err(|_| PyRuntimeError::new_err("core worker failed"))?;
+        match relay.take_error() {
+            Some(error) => Err(error),
+            None => Ok(result),
+        }
     })
 }
 

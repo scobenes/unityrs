@@ -7,6 +7,8 @@ mod blob;
 #[cfg(test)]
 mod bytes_tests;
 mod convert;
+mod direct;
+pub use direct::direct_stage;
 mod layout;
 mod legacy;
 mod output;
@@ -188,6 +190,7 @@ pub fn export_with_cap(
         parsed,
         value: parsed.value(),
         meter,
+        is_none: false,
     };
     if let Some(old) = root.optional("m_SubProgramBlob")?
         && !old.empty()

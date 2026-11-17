@@ -19,6 +19,9 @@ def path():
     configured = os.environ.get("UNITYRS_TPK")
     if configured:
         return configured
+    cached = Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'unityrs' / 'lzma.tpk'
+    if cached.is_file():
+        return str(cached)
     spec = importlib.util.find_spec("UnityPy")
     if spec is not None and spec.submodule_search_locations:
         for directory in spec.submodule_search_locations:

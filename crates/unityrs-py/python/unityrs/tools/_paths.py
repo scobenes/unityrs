@@ -4,7 +4,7 @@ import contextvars
 import os
 from functools import wraps
 
-from .._output import OutputDirectory, output_name, exact_string
+from .._output import OutputDirectory, output_name, exact_string, walk_directory as _walk
 from ._bounded import guard_for, text
 
 _root = contextvars.ContextVar("unityrs_extractor_root", default=None)
@@ -79,30 +79,6 @@ def relative(value, guard):
     # Normalize subclasses before joins and f-strings can invoke their
     # concatenation or formatting protocols with a different path spelling.
     return str.__getitem__(value, slice(None))
-
-
-def _walk(path, guard, create=False, parent=None):
-    path = destination(path, guard)
-    guard.step(0, len(path) * 256 + 512, len(path))
-    parts = path.split("/")
-    fd = os.dup(parent) if parent is not None else os.open(
-        "/" if os.path.isabs(path) else ".", os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        for part in parts:
-            if part in ("", "."):
-                continue
-            if create:
-                try:
-                    os.mkdir(part, dir_fd=fd)
-                except FileExistsError:
-                    pass
-            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-            os.close(fd)
-            fd = next_fd
-        return fd
-    except BaseException:
-        os.close(fd)
-        raise
 
 
 @contextlib.contextmanager
