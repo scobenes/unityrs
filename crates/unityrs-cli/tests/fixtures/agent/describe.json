@@ -211,31 +211,31 @@
         },
         {
           "default": "8589934592",
-          "help": "Charged bytes per input and response.",
+          "help": "Maximum charged memory in bytes per input and for the separate response or extraction budget.",
           "name": "--max-input-memory",
           "value": "N"
         },
         {
           "default": "4294967296",
-          "help": "Source bytes per input.",
+          "help": "Maximum source file size in bytes per input, checked before and during loading.",
           "name": "--max-input-bytes",
           "value": "N"
         },
         {
           "default": "34359738368",
-          "help": "Work bytes per input and response.",
+          "help": "Maximum cumulative work in byte units per input and for response rendering or extraction, including decoding and hashing.",
           "name": "--max-decode-work",
           "value": "N"
         },
         {
           "default": "256",
-          "help": "Compiled typetree depth.",
+          "help": "Maximum compiled typetree nesting depth in levels; separate from display depth and fixed runtime reader limits.",
           "name": "--max-tree-depth",
           "value": "N"
         },
         {
           "default": null,
-          "help": "Optional schema provider for stripped trees.",
+          "help": "Optional local TPK schema-provider file for assets with stripped typetrees; no provider is loaded by default.",
           "name": "--tpk",
           "value": "FILE"
         },
@@ -301,85 +301,85 @@
         },
         {
           "default": "false",
-          "help": "Export every object by name.",
+          "help": "Consider every object for export by name instead of requiring a container path; class filters and supported export types still apply.",
           "name": "--no-container",
           "value": null
         },
         {
           "default": "false",
-          "help": "Alias for --no-container.",
+          "help": "Alias for no_container: consider every object for export by name instead of requiring a container path.",
           "name": "--no-use-container",
           "value": null
         },
         {
           "default": "true",
-          "help": "Export container assets.",
+          "help": "Export only assets referenced by container paths, using those paths for output names; enabled by default.",
           "name": "--use-container",
           "value": null
         },
         {
           "default": "0",
-          "help": "Drop slash components from container paths.",
+          "help": "Number of leading slash-separated components to drop from container paths; zero keeps all, and negative values keep that many trailing components.",
           "name": "--ignore-first-container-dirs",
           "value": "N"
         },
         {
           "default": "false",
-          "help": "Append UnityPy's _None suffix.",
+          "help": "Append the literal _None suffix to output stems, matching UnityPy's naming behavior; this does not append the numeric path ID.",
           "name": "--append-path-id",
           "value": null
         },
         {
           "default": "false",
-          "help": "Other classes as JSON or raw binary.",
+          "help": "Export otherwise unsupported classes as typetree JSON when readable, falling back to raw binary.",
           "name": "--export-unknown-as-typetree",
           "value": null
         },
         {
           "default": null,
-          "help": "Repeatable class name or integer ID.",
+          "help": "Class names or integer IDs to export; multiple values form a union. Omit or supply no values to allow all supported classes.",
           "name": "--asset-filter",
           "value": "CLASS"
         },
         {
           "default": null,
-          "help": "Runtime VST1 headers; never fetched.",
+          "help": "Optional local VST1 Vorbis setup-header table for audio decoding; no default table is loaded or fetched.",
           "name": "--vorbis-headers",
           "value": "FILE"
         },
         {
           "default": null,
-          "help": "Also save JSON beneath output directory.",
+          "help": "Optional relative filename beneath the extraction output directory for saving the JSON report; omit to return the report only.",
           "name": "--report",
           "value": "PATH"
         },
         {
           "default": "8589934592",
-          "help": "Charged bytes per input and response.",
+          "help": "Maximum charged memory in bytes per input and for the separate response or extraction budget.",
           "name": "--max-input-memory",
           "value": "N"
         },
         {
           "default": "4294967296",
-          "help": "Source bytes per input.",
+          "help": "Maximum source file size in bytes per input, checked before and during loading.",
           "name": "--max-input-bytes",
           "value": "N"
         },
         {
           "default": "34359738368",
-          "help": "Work bytes per input and response.",
+          "help": "Maximum cumulative work in byte units per input and for response rendering or extraction, including decoding and hashing.",
           "name": "--max-decode-work",
           "value": "N"
         },
         {
           "default": "256",
-          "help": "Compiled typetree depth.",
+          "help": "Maximum compiled typetree nesting depth in levels; separate from display depth and fixed runtime reader limits.",
           "name": "--max-tree-depth",
           "value": "N"
         },
         {
           "default": null,
-          "help": "Optional schema provider for stripped trees.",
+          "help": "Optional local TPK schema-provider file for assets with stripped typetrees; no provider is loaded by default.",
           "name": "--tpk",
           "value": "FILE"
         },
@@ -436,19 +436,19 @@
       "options": [
         {
           "default": null,
-          "help": "Class name or integer ID; repeat for a union.",
+          "help": "Class names or integer IDs to include; multiple values form a union, intersected with any name filters. Omit to include all classes.",
           "name": "--class",
           "value": "CLASS"
         },
         {
           "default": null,
-          "help": "Object name, using dump's case-sensitive glob syntax; repeat for a union.",
+          "help": "Case-sensitive object-name globs (*, ?, [abc], [!abc]); multiple values form a union, intersected with any class filters. Omit to include unnamed objects too.",
           "name": "--name",
           "value": "GLOB"
         },
         {
           "default": "200",
-          "help": "Page size, 1 through 10000.",
+          "help": "Maximum objects returned per page, 1 through 10000; the response byte cap may reduce the page further.",
           "name": "--limit",
           "value": "N"
         },
@@ -460,37 +460,37 @@
         },
         {
           "default": null,
-          "help": "Continue this inventory with the same inputs and filters.",
+          "help": "Pass the previous response's non-null next_cursor string unchanged; omit for the first page and stop when next_cursor is null. Keep input spellings, order, contents, filters and explicitly supplied budget/provider options unchanged.",
           "name": "--cursor",
           "value": "TOKEN"
         },
         {
           "default": "8589934592",
-          "help": "Charged bytes per input and response.",
+          "help": "Maximum charged memory in bytes per input and for the separate response or extraction budget.",
           "name": "--max-input-memory",
           "value": "N"
         },
         {
           "default": "4294967296",
-          "help": "Source bytes per input.",
+          "help": "Maximum source file size in bytes per input, checked before and during loading.",
           "name": "--max-input-bytes",
           "value": "N"
         },
         {
           "default": "34359738368",
-          "help": "Work bytes per input and response.",
+          "help": "Maximum cumulative work in byte units per input and for response rendering or extraction, including decoding and hashing.",
           "name": "--max-decode-work",
           "value": "N"
         },
         {
           "default": "256",
-          "help": "Compiled typetree depth.",
+          "help": "Maximum compiled typetree nesting depth in levels; separate from display depth and fixed runtime reader limits.",
           "name": "--max-tree-depth",
           "value": "N"
         },
         {
           "default": null,
-          "help": "Optional schema provider for stripped trees.",
+          "help": "Optional local TPK schema-provider file for assets with stripped typetrees; no provider is loaded by default.",
           "name": "--tpk",
           "value": "FILE"
         },
@@ -515,19 +515,19 @@
       "options": [
         {
           "default": null,
-          "help": "Required signed object path ID.",
+          "help": "Required signed object path_id from inspect; use a file selector if several files contain the same ID.",
           "name": "--path-id",
           "value": "N"
         },
         {
           "default": null,
-          "help": "Exact SerializedFile name to disambiguate the path ID.",
+          "help": "Optional exact SerializedFile name from inspect's file field, not an input path; use file_index if names repeat. If both selectors are supplied, both must match.",
           "name": "--file",
           "value": "NAME"
         },
         {
           "default": null,
-          "help": "Zero-based input index and file occurrence from inspect; selects one file even with repeated names.",
+          "help": "Optional INPUT:FILE string using inspect's zero-based input and file_index numbers (for example 0:2); selects one exact file occurrence even when names repeat. Other inputs are not loaded.",
           "name": "--file-index",
           "value": "INPUT:FILE"
         },
@@ -539,55 +539,55 @@
         },
         {
           "default": "256",
-          "help": "Maximum retained entries in each array or map.",
+          "help": "Maximum retained data entries per array or map; zero shows only a summary and cuts are marked.",
           "name": "--max-items",
           "value": "N"
         },
         {
           "default": "32",
-          "help": "Maximum value nesting, 0 through 128.",
+          "help": "Maximum displayed value nesting depth in levels, 0 through 128, with root at zero; deeper subtrees are replaced by cut markers.",
           "name": "--max-depth",
           "value": "N"
         },
         {
           "default": "natural",
-          "help": "Value JSON representation; untruncated canonical values match the dump encoder.",
+          "help": "Natural emits ordinary JSON with tags for exceptional values; canonical uses the dump encoder's tagged dictionaries, tuples and float bits. Untruncated canonical values match the dump encoder.",
           "name": "--value",
           "value": "natural|canonical"
         },
         {
           "default": "summary",
-          "help": "Natural-view byte runs are summaries unless full hex fits; canonical uses the dump's raw-byte rule.",
+          "help": "In the natural view, summary returns byte length, SHA-256 and a hex prefix; full returns all hex only when it fits the byte cap. Canonical ignores this option and uses the dump's raw-byte rule.",
           "name": "--bytes",
           "value": "summary|full"
         },
         {
           "default": "8589934592",
-          "help": "Charged bytes per input and response.",
+          "help": "Maximum charged memory in bytes per input and for the separate response or extraction budget.",
           "name": "--max-input-memory",
           "value": "N"
         },
         {
           "default": "4294967296",
-          "help": "Source bytes per input.",
+          "help": "Maximum source file size in bytes per input, checked before and during loading.",
           "name": "--max-input-bytes",
           "value": "N"
         },
         {
           "default": "34359738368",
-          "help": "Work bytes per input and response.",
+          "help": "Maximum cumulative work in byte units per input and for response rendering or extraction, including decoding and hashing.",
           "name": "--max-decode-work",
           "value": "N"
         },
         {
           "default": "256",
-          "help": "Compiled typetree depth.",
+          "help": "Maximum compiled typetree nesting depth in levels; separate from display depth and fixed runtime reader limits.",
           "name": "--max-tree-depth",
           "value": "N"
         },
         {
           "default": null,
-          "help": "Optional schema provider for stripped trees.",
+          "help": "Optional local TPK schema-provider file for assets with stripped typetrees; no provider is loaded by default.",
           "name": "--tpk",
           "value": "FILE"
         },
@@ -660,25 +660,25 @@
         },
         {
           "default": "8589934592",
-          "help": "Charged bytes per input and response.",
+          "help": "Maximum charged memory in bytes per input and for the separate response or extraction budget.",
           "name": "--max-input-memory",
           "value": "N"
         },
         {
           "default": "4294967296",
-          "help": "Source bytes per input.",
+          "help": "Maximum source file size in bytes per input, checked before and during loading.",
           "name": "--max-input-bytes",
           "value": "N"
         },
         {
           "default": "34359738368",
-          "help": "Work bytes per input and response.",
+          "help": "Maximum cumulative work in byte units per input and for response rendering or extraction, including decoding and hashing.",
           "name": "--max-decode-work",
           "value": "N"
         },
         {
           "default": "256",
-          "help": "Compiled typetree depth.",
+          "help": "Maximum compiled typetree nesting depth in levels; separate from display depth and fixed runtime reader limits.",
           "name": "--max-tree-depth",
           "value": "N"
         },
@@ -703,7 +703,7 @@
       "options": [
         {
           "default": null,
-          "help": "Print the named draft 2020-12 output schema.",
+          "help": "Return the named draft 2020-12 output JSON Schema; omit to get the command and option reference instead.",
           "name": "--schema",
           "value": "inspect|show|describe|error"
         },

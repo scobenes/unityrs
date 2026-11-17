@@ -9,7 +9,15 @@ pub fn specs(command: &str) -> Vec<OptionSpec> {
     };
     specs
         .into_iter()
-        .filter(|s| !matches!(s.name, "--help" | "-o"))
+        // MCP switches are booleans that only add a flag, so a false value
+        // cannot undo a default: extract offers `no_container` alone, not the
+        // CLI's `--use-container`/`--no-use-container` aliases.
+        .filter(|s| {
+            !matches!(
+                s.name,
+                "--help" | "-o" | "--use-container" | "--no-use-container"
+            )
+        })
         .collect()
 }
 pub fn key(name: &str) -> String {
@@ -40,7 +48,26 @@ fn property(spec: OptionSpec) -> Value {
         if spec.name == "--asset-filter" {
             map.insert("maxItems".into(), json!(1024));
         }
-        map.insert("description".into(), json!(spec.help));
+        let mut description = spec.help.to_owned();
+        if let Some(default) = spec.default {
+            description.push_str(" Default: ");
+            description.push_str(default);
+            description.push('.');
+        }
+        if matches!(
+            spec.name,
+            "--max-input-memory"
+                | "--max-input-bytes"
+                | "--max-decode-work"
+                | "--max-tree-depth"
+                | "--max-bytes"
+                | "--max-items"
+                | "--max-depth"
+                | "--limit"
+        ) {
+            description.push_str(" Omitted requests use the smaller of this default and the server ceiling; explicit values cannot exceed that ceiling.");
+        }
+        map.insert("description".into(), json!(description));
         if let Some(default) = spec.default {
             let value = match schema_type(spec) {
                 "integer" => default.parse::<u64>().ok().map(Value::from),
@@ -71,7 +98,7 @@ pub fn input(command: &str) -> Value {
         if command != "describe" {
             properties.insert(
                 "inputs".into(),
-                json!({"type":"array","minItems":1,"items":{"type":"string"}}),
+                json!({"type":"array","minItems":1,"items":{"type":"string"},"description":"Input file paths in caller order, inside the directories the server was started with; relative paths resolve from the server's working directory. Use the same order when reusing inspect addresses or cursors."}),
             );
             required.push("inputs");
         }
@@ -136,7 +163,20 @@ pub fn output(command: &str) -> Value {
     json!({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","anyOf":variants,"$defs":defs})
 }
 pub fn tools(extract: bool) -> Vec<Value> {
-    ["describe", "inspect", "show", "batch_check", "extract"].into_iter().filter(|c| *c != "extract" || extract).map(|command| json!({"name":format!("unityrs_{command}"),"description":format!("Run unityrs {command} in process with server confinement and budget ceilings."),"inputSchema":input(command),"outputSchema":output(command)})).collect()
+    ["describe", "inspect", "show", "batch_check", "extract"]
+        .into_iter()
+        .filter(|c| *c != "extract" || extract)
+        .map(|command| {
+            let description = match command {
+                "describe" => "Look up unityrs commands, options, default limits and output schemas when a field or error is unclear. Omit schema for the command reference, or select an output JSON Schema; request limits remain bounded by the server's startup ceilings.",
+                "inspect" => "Start here to list what the input files contain, including each object's address (input, file_index, path_id), class, name and container path. Filter by class and name, and pass each non-null next_cursor back as cursor until next_cursor is null. Names and paths may be absent or shortened to previews; numeric addresses remain complete, and input failures are reported per input. Use these addresses with unityrs_show, or use unityrs_extract to export assets.",
+                "show" => "Read one object's fields as JSON using its path_id from unityrs_inspect. If several files share that ID, pass file_index as INPUT:FILE from inspect's input and file_index fields to select the exact occurrence. Large values are cut and marked; raise max_bytes, max_items or max_depth within server ceilings, or use bytes: full for more natural-view binary data.",
+                "extract" => "Write exportable assets (textures, audio, text, meshes, fonts and others) beneath the server's output root and return written files and per-asset failures. Use unityrs_inspect first to discover classes and container paths; asset_filter limits the classes to export. By default, as in UnityPy, only objects with a container path are exported, so an empty written list is expected for a file without container paths. Set no_container to true to consider every object for export by name; only supported types are exported unless export_unknown_as_typetree is enabled.",
+                _ => "Validate a batch job document before running it elsewhere. Uses the batch check parser and phase-one preparation under server budgets, without executing the job or accessing its input and output files.",
+            };
+            json!({"name":format!("unityrs_{command}"),"description":description,"inputSchema":input(command),"outputSchema":output(command)})
+        })
+        .collect()
 }
 /// Only the small input-schema vocabulary above is accepted here. Semantic
 /// errors (bad class, cursor, job, or file selector) remain operation failures.

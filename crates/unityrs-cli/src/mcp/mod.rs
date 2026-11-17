@@ -17,6 +17,7 @@ use std::{
     process::ExitCode,
 };
 const VERSION: &str = "2025-11-25";
+const INSTRUCTIONS: &str = "unityrs reads Unity asset files: bundles, serialized files and web files. Start with unityrs_inspect, then use unityrs_show to read object fields or unityrs_extract to export assets when available. Inputs must be inside the directories the server was started with; a refusal names the rule that blocked the request. Every tool result contains a JSON document. Inspect, show, describe and error documents are versioned, with format naming their schema; extract and batch-check successes use their report schemas, and describe can return a JSON Schema.";
 fn error(id: Id, code: i32, message: &str) -> Response {
     Response::Json {
         id,
@@ -92,7 +93,7 @@ impl State {
                     return Some(error(id, -32602, "Invalid initialize parameters"));
                 }
                 self.initialized = true;
-                json!({"protocolVersion":VERSION,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"unityrs","version":env!("CARGO_PKG_VERSION")}})
+                json!({"protocolVersion":VERSION,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"unityrs","version":env!("CARGO_PKG_VERSION")},"instructions":INSTRUCTIONS})
             }
             "ping" => json!({}),
             "tools/list" | "tools/call" if !self.ready => {

@@ -125,12 +125,18 @@ fn container_directory_counts_have_exact_signed_parser_bounds() {
         let extract = commands.iter().find(|c| c["name"] == "extract").unwrap();
         for option in extract["options"].as_array().unwrap() {
             let name = option["name"].as_str().unwrap();
-            if ["--help", "-o"].contains(&name) {
+            // The CLI-only container aliases are not MCP switches (schema.rs).
+            if ["--help", "-o", "--use-container", "--no-use-container"].contains(&name) {
                 continue;
             }
             let key = name.trim_start_matches('-').replace('-', "_");
             let property = &tool["inputSchema"]["properties"][key];
-            assert_eq!(property["description"], option["help"]);
+            assert!(
+                property["description"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(option["help"].as_str().unwrap())
+            );
             let kind = match option["value"].as_str() {
                 None => "boolean",
                 Some("N") => "integer",

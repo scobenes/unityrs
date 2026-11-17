@@ -3,6 +3,8 @@
 mod confinement_review;
 #[path = "mcp/decoder_review.rs"]
 mod decoder_review;
+#[path = "mcp/discovery.rs"]
+mod discovery;
 #[path = "mcp/extract_review.rs"]
 mod extract_review;
 #[path = "mcp/framing_review.rs"]
@@ -159,13 +161,27 @@ fn tools_documents_schemas_and_pagination() {
                 .unwrap();
             for opt in command["options"].as_array().unwrap() {
                 let flag = opt["name"].as_str().unwrap();
-                if ["--help", "-o"].contains(&flag) {
+                // The CLI-only container aliases are not MCP switches (schema.rs).
+                if ["--help", "-o", "--use-container", "--no-use-container"].contains(&flag) {
                     continue;
                 }
                 let key = flag.trim_start_matches('-').replace('-', "_");
                 let property = &tool["inputSchema"]["properties"][&key];
                 assert!(!property.is_null(), "{name}: {key}");
-                assert_eq!(property["description"], opt["help"]);
+                assert!(
+                    property["description"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with(opt["help"].as_str().unwrap())
+                );
+                if let Some(default) = opt["default"].as_str() {
+                    assert!(
+                        property["description"]
+                            .as_str()
+                            .unwrap()
+                            .contains(&format!("Default: {default}."))
+                    );
+                }
             }
         }
     });

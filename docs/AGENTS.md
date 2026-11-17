@@ -421,7 +421,16 @@ and oversized messages are refused and the next line is served. Calls execute
 serially. No network, shell, subprocess, or environment-variable expansion is
 used by tool calls.
 
+`initialize` includes these model-facing `instructions`:
+
+> unityrs reads Unity asset files: bundles, serialized files and web files. Start with unityrs_inspect, then use unityrs_show to read object fields or unityrs_extract to export assets when available. Inputs must be inside the directories the server was started with; a refusal names the rule that blocked the request. Every tool result contains a JSON document. Inspect, show, describe and error documents are versioned, with format naming their schema; extract and batch-check successes use their report schemas, and describe can return a JSON Schema.
+
 `tools/list` supplies draft 2020-12 `inputSchema` and `outputSchema` for each tool.
+It is also the authoritative source for each tool's usage description and every
+argument's description, units and defaults; these are kept there rather than
+copied into the tool table below. Descriptions explain the inspect-to-show/extract
+flow, pagination and truncation, including extract's default container-only
+selection and the `no_container` option for exporting objects by name.
 Input names replace CLI hyphens with underscores. Each result has a single
 `content` text item containing the JSON document, and the same object in
 `structuredContent`. Operation and tool argument failures set `isError: true` with a
