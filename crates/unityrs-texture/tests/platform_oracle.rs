@@ -1,7 +1,11 @@
 //! Replays the pinned UnityPy platform helpers, conversion and array property.
 use serde_json::Value as J;
 use sha2::{Digest, Sha256};
-use unityrs_core::limits::Meter;
+use std::sync::Arc;
+use unityrs_core::{
+    budget::{Reservation, Unbounded},
+    limits::{Meter, heap_cost},
+};
 use unityrs_texture::array::ArrayError as E;
 use unityrs_texture::{Mode, TextureFields, array, decode_in, pad_image, plan_in, platform};
 
@@ -65,6 +69,69 @@ fn switch_gob_constants_and_all_29_texel_blocks_replay_the_oracle() {
         assert_eq!(meter.used(), 0);
     }
     assert_eq!(formats.len(), 29);
+}
+
+#[test]
+fn switch_swizzle_replays_oracle_bytes_and_round_trips_all_29_layouts() {
+    let doc = doc();
+    assert_eq!(doc["unitypy"], "1.25.2");
+    let mut cases = std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
+    for c in doc["textures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| !c["block"].is_null())
+    {
+        let id = c["id"].as_str().unwrap();
+        let fmt = int(&c["format"]);
+        let blob = bytes(&c["blob"]);
+        let exponent = u32::from_le_bytes(blob[8..12].try_into().unwrap());
+        assert!(cases.entry(fmt).or_default().insert(exponent), "{id}");
+        let layout =
+            platform::switch_layout(fmt, int(&c["width"]), int(&c["height"]), exponent).unwrap();
+        assert_eq!(serde_json::json!(layout.padded_size()), c["padded"], "{id}");
+        assert_eq!(serde_json::json!(layout.block()), c["block"], "{id}");
+
+        // Rebuild texture_platform.py's synthetic input from recorded sizes,
+        // without using deswizzle to manufacture the writer's input. The
+        // fixture records UnityPy's swizzle bytes and the original input hash.
+        let texels_x = c["padded"][0].as_u64().unwrap() / c["block"][0].as_u64().unwrap();
+        let texels_y = c["padded"][1].as_u64().unwrap() / c["block"][1].as_u64().unwrap();
+        let len = usize::try_from(texels_x * texels_y * 16).unwrap();
+        assert_eq!(layout.input_bytes(), len, "{id}");
+        let mut linear: Vec<_> = (0..len)
+            .map(|i| u8::try_from((i * 37 + i / 17 + 11) % 256).unwrap())
+            .collect();
+        if (48..=59).contains(&fmt) {
+            // The recorder makes valid ASTC UNORM16 void-extent blocks.
+            for texel in linear.as_chunks_mut::<16>().0 {
+                texel[..8].copy_from_slice(&[0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+            }
+        }
+        assert_eq!(digest(&linear), c["linear_sha256"], "{id}");
+
+        let charge = heap_cost(len as u64);
+        let meter = Meter::with_decode_work(
+            2 * charge,
+            3 * len as u64,
+            Arc::new(Unbounded),
+            Reservation::Input,
+        );
+        let swizzled = platform::swizzle(&linear, &layout, &meter).unwrap();
+        assert_eq!(swizzled.as_slice(), bytes(&c["data"]), "{id}");
+        assert_eq!(meter.used(), charge, "{id}");
+        assert_eq!(meter.decoded(), len as u64, "{id}");
+        let back = platform::deswizzle(swizzled.as_slice(), &layout, &meter).unwrap();
+        assert_eq!(back.as_slice(), linear, "{id}");
+        assert_eq!(meter.used(), 2 * charge, "{id}");
+        assert_eq!(meter.decoded(), 3 * len as u64, "{id}");
+        drop((back, swizzled));
+        assert_eq!(meter.used(), 0, "{id}");
+    }
+    assert_eq!(cases.len(), 29);
+    for exponents in cases.values() {
+        assert_eq!(*exponents, [1, 2, 3].into_iter().collect());
+    }
 }
 
 #[test]
