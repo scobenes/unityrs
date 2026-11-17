@@ -115,7 +115,7 @@ impl Plan {
                 .ok_or_else(|| {
                     pyo3::exceptions::PyValueError::new_err("invalid handoff reference")
                 })?;
-            Python::attach(|py| Ok(value.clone_ref(py)))
+            crate::python::relay::attach(|py| Ok(value.clone_ref(py)))
         };
         let data = self.data.borrow();
         let bytes = |id: Id| -> PyResult<&[u8]> {

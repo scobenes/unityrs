@@ -127,7 +127,48 @@ pub(super) fn encode(
         width,
         height,
         format,
-        block,
+        (block, block),
+        output.as_mut_slice(),
+        meter,
+    )?;
+    Ok(output)
+}
+
+/// Standalone ASTC context compression, including partial edge blocks.
+pub(super) fn astc_context(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    block: (u8, u8),
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<u8>, WriteError> {
+    crate::astc::Footprint::new(block.0, block.1).ok_or(WriteError::Invalid("ASTC footprint"))?;
+    let pixels = u64::from(width) * u64::from(height);
+    if width == 0 || height == 0 || pixels > crate::MAX_PIXELS || pixels * 4 != rgba.len() as u64 {
+        return Err(WriteError::Invalid(
+            "ASTC context dimensions or RGBA length",
+        ));
+    }
+    let length = u64::from(width.div_ceil(u32::from(block.0)))
+        * u64::from(height.div_ceil(u32::from(block.1)))
+        * 16;
+    meter.count_decode(pixels.saturating_mul(13224))?;
+    let (mut output, charge) = MeteredVec::<u8>::with_capacity(
+        meter,
+        usize::try_from(length).map_err(|_| WriteError::Invalid("ASTC output size"))?,
+    )?
+    .into_parts();
+    output.resize(
+        usize::try_from(length).map_err(|_| WriteError::Invalid("ASTC output size"))?,
+        0,
+    );
+    let mut output = MeteredVec::from_charged_parts(output, charge)?;
+    ffi::encode(
+        rgba,
+        width,
+        height,
+        54,
+        (u32::from(block.0), u32::from(block.1)),
         output.as_mut_slice(),
         meter,
     )?;

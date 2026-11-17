@@ -50,8 +50,14 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `binding_y6_objects.py` | Referenced arrays, isolated non-class names, synthetic Transform and damaged preloads |
 | `binding_y6_exports.py` | Standalone material texture names, renderer duplicate-property PNG write order and filename collision pixels against the corrected oracle, and optional PCM float conversion |
 | `binding_y6_parse.py` | Forced file-type parsing, raw reader identity and mismatch failures |
+| `binding_y6b_codecs.py` | Live codec-map callbacks, malformed codec exceptions and mutable object readers |
+| `binding_y6b_tree.py` | Standalone tree reads/writes, deep values, accelerated and pure short-circuit references, optional generator backend and local download peer |
+| `binding_y6b_crypto_shader.py` | Standalone decryptor/key helpers, wrapping block indices, direct shader stages/programs and generated states with optional ZClip |
+| `binding_y6b_images.py` | ASTC contexts, patched platform dispatch, Switch exponent boundaries and standalone sprite geometry |
+| `binding_y6b_review.py` | Schema-failure and truncated-object cursors, live scalar primitive callbacks, empty shader platform blobs and signed LZ4/header validation |
+| `binding_y6b_meter.py` | Native-reader tree schema/file combinations, detached count expansion, direct reference lookup, decryptor AES staging and empty-blob shader stages |
 | `binding_y6_review.py` | Detached saves and mutations, successful and partial constructor reader state, explicit-reader detection from the original cursor, load cursor/endian and identity, oversized stream members, negative member sizes for BytesIO and buffered files, partial CAB publication, negative-offset bounds and rejected bundle signatures, compressed-reader failures and caller-thread exception lookup |
-| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=317`); requires `unityrs` and UnityPy 1.25.2, and never skips |
+| `bindings/` | Explicit installed-wheel comparison suite (`python ../../scripts/unittest-suites bindings=366`); requires `unityrs` and UnityPy 1.25.2, and never skips |
 | `encoder_probe.py` | B3b's encoder ISA probe (decision 16): replays the native builds of the vendored etcpak, bc7enc and astcenc against the pinned amd64 wheels' raw output, frozen in `crates/unityrs-texture/tests/fixtures/encoder_isa.json` (`--check`, `--oracle`); runs only in the development containers |
 | `encoder_probe.cpp` | `encoder_probe.py`'s native side: the vendored encoders' entry points, compiled with each recorded set of flags and run on framed inputs |
 | `value_cases.py` | G2 (`docs/plans/core.md` section 6): synthetic typetree cases, each read and resaved by UnityPyBoost and by `unityrs values`; exits 0 when every case's L2 verdict is `match` and none's L3 verdict is `differs` or `one_side`; needs the oracle stack |

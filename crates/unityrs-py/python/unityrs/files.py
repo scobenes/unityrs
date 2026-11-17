@@ -8,6 +8,7 @@ from collections import namedtuple
 from types import SimpleNamespace
 from .enums import ClassIDType, BuildTarget
 from .helpers.UnityVersion import UnityVersion
+from ._reader_snapshot import reference_types, set_reference_types
 from ._output import exact_string
 
 # files/File.py:13; files/__init__.py:1-14: the public legacy directory row.
@@ -154,6 +155,8 @@ def _writer_text(value, guard):
 
 
 class SerializedFile(File):
+    ref_types = property(reference_types, set_reference_types)
+
     @property
     def reader(self):
         with self._sync_owner._lock:
@@ -524,7 +527,8 @@ class ObjectReader:
         return self.assets_file.target_platform
 
     def get_raw_data(self):
-        return self._native.raw_data()
+        from ._reader_snapshot import raw_data
+        return raw_data(self)
 
     def set_raw_data(self, data):
         # files/ObjectReader.py:181-184: reads retain the original byte source.
@@ -612,22 +616,34 @@ class ObjectReader:
         if as_dict is not None:
             wrap = not as_dict
         with self.assets_file._sync_owner._lock:
+            from ._reader_snapshot import uses_original, read_replacement
+            if not uses_original(self) or not self.byte_size:
+                return read_replacement(self, nodes, wrap, check_read)
             rows = None
-            if (nodes is not None or (self.class_id == 114 and not self._has_embedded_nodes) or "_node" in self.__dict__
+            if (nodes is not None or not self._has_embedded_nodes or "_node" in self.__dict__
                     or self.type_id in self.assets_file._type_nodes or self.assets_file._head_nodes):
                 node = self._get_typetree_node(nodes)
                 rows = node._native_rows(
                     use_boost=bool(self.byte_size), _guard=self._native.tree_traversal())
+            # Boost reads the object span before decoding. Memory readers
+            # advance by the requested size; streams advance by available
+            # bytes. Keep that position even when decode/check_read fails.
+            self.reset()
+            end = self.byte_start + self.byte_size
+            length, _, stream, _ = self.assets_file._native.serialized_reader_info()
+            if stream:
+                end = max(self.byte_start, min(end, length))
+            self.Position = end
             if not wrap:
                 value, count = self._native.parse_with_position(check_read, rows)
-                self.Position = self.byte_start + count
                 return value
             return self._read_object(rows, check_read)
 
     def _read_object(self, rows, check_read):
         from ._object import build
         data, lists, references, bytes_read, completed, error, charge = self._native.object_data(rows)
-        self.Position = self.byte_start + bytes_read
+        if not self.byte_size:
+            self.Position = self.byte_start + bytes_read
         result = build(data, lists, self.assets_file, self.byte_size > 0, references, completed, error, charge)
         if check_read and bytes_read != self.byte_size:
             raise ValueError(f"Expected to read {self.byte_size} bytes, but only read {bytes_read} bytes")

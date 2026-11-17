@@ -142,9 +142,9 @@ impl NativeObject {
         p::bytes(data)
     }
     fn tree_traversal(&self) -> crate::traversal::TreeTraversal {
-        crate::traversal::TreeTraversal::on(
+        crate::traversal::TreeTraversal::with_limits(
             self.inner.file().meter(),
-            self.inner.file().context().limits.max_tree_depth,
+            &self.inner.file().context().limits,
         )
     }
     fn nodes(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, crate::traversal::TreeTraversal)> {
@@ -304,7 +304,7 @@ impl NativeObject {
                         p::string(namespace.as_bytes())?,
                         p::string(assembly.as_bytes())?,
                     );
-                    Python::attach(|py| -> PyResult<PyErr> {
+                    crate::python::relay::attach(|py| -> PyResult<PyErr> {
                         let message =
                             pyo3::types::PyString::new(py, "Referenced type not found: {} {} {}")
                                 .call_method1("format", args)?;
@@ -316,12 +316,12 @@ impl NativeObject {
                         self.inner.info().byte_size > 0,
                     )
                 };
-                Python::attach(|py| error.value(py).clone().into_any().unbind())
+                crate::python::relay::attach(|py| error.value(py).clone().into_any().unbind())
             } else {
                 p::none()
             };
             p::push(&result, &error)?;
-            let construction = Python::attach(|py| {
+            let construction = crate::python::relay::attach(|py| {
                 Py::new(py, crate::construction::Construction { charge }).map(Py::into_any)
             })?;
             p::push(&result, &construction)?;

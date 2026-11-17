@@ -336,3 +336,22 @@ fn write_level(
     }
     Ok(())
 }
+
+/// Compresses standalone U8 RGBA context storage at a legal 2D ASTC footprint.
+pub fn astc_context(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    block: (u8, u8),
+    meter: &Arc<Meter>,
+) -> Result<unityrs_core::limits::MeteredVec<u8>, WriteError> {
+    #[cfg(feature = "encode")]
+    {
+        encoders::astc_context(rgba, width, height, block, meter)
+    }
+    #[cfg(not(feature = "encode"))]
+    {
+        let _ = (rgba, width, height, block, meter);
+        Err(WriteError::EncoderUnavailable(54))
+    }
+}

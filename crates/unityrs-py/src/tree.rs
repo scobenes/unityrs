@@ -105,15 +105,25 @@ fn rows_to_python_detached(
 }
 
 pub(crate) fn compile_rows(object: &ObjectRef, input: &Py<PyAny>) -> PyResult<Arc<Tree>> {
-    let meter = object.file().meter();
+    compile_rows_with(
+        object.file().meter(),
+        &object.file().context().limits,
+        input,
+    )
+}
+
+pub(crate) fn compile_rows_with(
+    meter: &Arc<unityrs_core::limits::Meter>,
+    limits: &unityrs_core::limits::Limits,
+    input: &Py<PyAny>,
+) -> PyResult<Arc<Tree>> {
     let mut rows = MeteredVec::new(meter);
-    let limits = &object.file().context().limits;
     let mut staging = TreeTraversal::on(meter, limits.max_tree_depth);
-    let iter = Python::attach(|py| input.bind(py).try_iter().map(Bound::unbind))?;
+    let iter = crate::python::relay::attach(|py| input.bind(py).try_iter().map(Bound::unbind))?;
     loop {
         // Only Python iteration, field extraction and encoding hold the GIL.
         // The iterator owns no flattened graph or encoded string snapshot.
-        let row = Python::attach(|py| {
+        let row = crate::python::relay::attach(|py| {
             iter.bind(py)
                 .clone()
                 .next()
@@ -148,8 +158,9 @@ pub(crate) fn compile_rows(object: &ObjectRef, input: &Py<PyAny>) -> PyResult<Ar
         let _encoding = meter
             .charge(256_u64.saturating_add(bytes))
             .map_err(errors::charge)?;
-        let (ty, name) = Python::attach(|py| Ok::<_, PyErr>((ty.bytes(py)?, name.bytes(py)?)))?;
-        Python::attach(|py| {
+        let (ty, name) =
+            crate::python::relay::attach(|py| Ok::<_, PyErr>((ty.bytes(py)?, name.bytes(py)?)))?;
+        crate::python::relay::attach(|py| {
             py.detach(|| {
                 #[cfg(test)]
                 crate::row_copy_test::before_copy()?;
@@ -160,7 +171,7 @@ pub(crate) fn compile_rows(object: &ObjectRef, input: &Py<PyAny>) -> PyResult<Ar
             })
         })?;
     }
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         py.detach(move || {
             let list = NodeList::from_rows(rows).map_err(tree_error)?;
             Tree::compile(list.into_shared().map_err(tree_error)?, limits).map_err(tree_error)

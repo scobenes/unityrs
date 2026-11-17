@@ -44,6 +44,10 @@ def source():
     if value is None:
         value = os.environ.get('UNITYRS_TPK')
     if value is None:
+        cached = Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'unityrs' / 'lzma.tpk'
+        if cached.is_file():
+            value = cached
+    if value is None:
         spec = importlib.util.find_spec('UnityPy')
         if spec is not None and spec.submodule_search_locations:
             value = Path(next(iter(spec.submodule_search_locations))) / 'resources' / 'lzma.tpk'

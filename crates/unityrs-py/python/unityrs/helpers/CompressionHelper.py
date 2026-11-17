@@ -11,6 +11,7 @@ from ..enums.BundleFile import CompressionFlags
 ByteString = Union[bytes, bytearray, memoryview]
 GZIP_MAGIC: bytes = b"\x1f\x8b"
 BROTLI_MAGIC: bytes = b"brotli"
+_BrotliError = type('error', (Exception,), {'__module__': 'brotli'})
 
 
 # LZMA
@@ -63,7 +64,29 @@ def decompress_lz4(data: ByteString, uncompressed_size: int) -> bytes:  # LZ4M/L
     :return: uncompressed data
     :rtype: bytes
     """
-    return _native.codec(data, 2, False, uncompressed_size)
+    from operator import index
+    uncompressed_size = index(uncompressed_size)
+    if uncompressed_size < -(1 << 31):
+        raise OverflowError('signed integer is less than minimum')
+    if uncompressed_size >= 1 << 31:
+        raise OverflowError('signed integer is greater than maximum')
+    from_header = uncompressed_size < 0
+    if from_header:
+        from .._buffers import snapshot_bytes
+        guard = _native.TreeTraversal()
+        data = snapshot_bytes(data, guard)
+        guard.step(0, len(data) + 64, len(data))
+        if len(data) < 4:
+            raise ValueError('Input source data size too small')
+        uncompressed_size = struct.unpack('<I', data[:4])[0]
+        if uncompressed_size >= 1 << 31:
+            raise ValueError(f'Invalid size: 0x{uncompressed_size}')
+        data = data[4:]
+    result = _native.codec(data, 2, False, uncompressed_size)
+    if from_header and len(result) != uncompressed_size:
+        raise _native.LZ4BlockError(
+            f'Decompressor wrote {len(result)} bytes, but {uncompressed_size} bytes expected from header')
+    return result
 
 
 def compress_lz4(data: ByteString) -> bytes:  # LZ4M/LZ4HC
@@ -228,6 +251,9 @@ COMPRESSION_CHUNK_SIZE_MAP: Dict[Union[int, CompressionFlags], int] = {
     CompressionFlags.LZ4: 0x00020000,
     CompressionFlags.LZ4HC: 0x00020000,
 }
+
+_DEFAULT_DECOMPRESSION_MAP = dict(DECOMPRESSION_MAP)
+_DEFAULT_COMPRESSION_MAP = dict(COMPRESSION_MAP)
 
 
 __all__ = (

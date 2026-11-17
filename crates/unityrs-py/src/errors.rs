@@ -139,7 +139,7 @@ fn file_parse_bounds(
             "unpack_from requires a buffer of at least {end} bytes for unpacking {need} bytes at offset {pos} (actual buffer size is {length})"
         ))
     };
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         match py
             .import("struct")
             .and_then(|module| module.getattr("error"))
@@ -193,7 +193,7 @@ fn signature_error(
         Ok(charge) => charge,
         Err(error) => return charge(error),
     };
-    Python::attach(|py| {
+    crate::python::relay::attach(|py| {
         let rendered = (|| {
             let signature = crate::python::string(signature)?;
             let text =
@@ -381,6 +381,16 @@ pub(crate) fn parse_reader(error: &ParseError, boost: bool) -> PyErr {
     // helpers/TypeTreeHelper.py:123-158. Boost's short read is EOFError.
     if error.is_meter_refusal() {
         return PyMemoryError::new_err(message(&error));
+    }
+    match error {
+        ParseError::Tree(unityrs_core::typetree::TreeError::Charge(error))
+        | ParseError::Read(unityrs_core::walk::ReadError {
+            detail: ReadDetail::Charge(error),
+            ..
+        }) => {
+            return charge(error.clone());
+        }
+        _ => {}
     }
     match &error {
         ParseError::NoTypeTree {

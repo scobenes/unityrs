@@ -121,9 +121,29 @@ RESIDUE = [("binding_y6_loader", "observe_" + name) for name in
 ]
 
 
+INTERNALS = [("binding_y6b_meter", "observe_" + name) for name in
+             ("tree_asset_meter", "tree_count_expansion", "reference_asset_meter", "shader_asset_stages",
+              "decryptor_asset_meter")] + [("binding_y6b_review", "observe_" + name) for name in
+             ("schema_failure_cursor", "truncated_object_cursor", "tree_live_callbacks",
+              "shader_empty_blob", "lz4_signed_sizes", "shader_asset_readers", "tree_memoryview_strings")] + [("binding_y6b_codecs", "observe_" + name) for name in
+             ("codec_failures", "codec_callbacks", "codec_compression", "reader_redirect", "reader_failures")] + [
+    ("binding_y6b_tree", "observe_" + name) for name in
+    ("tree_defaults", "tree_values", "tree_boost", "tree_arrays", "tree_failures", "tree_write_failures",
+     "tree_objects", "tree_namespace", "tree_depth", "tree_reference_lookup", "tree_pure_reference_lookup",
+     "generator_discovery", "generator_backend", "update_tpk")
+] + [("binding_y6b_crypto_shader", "observe_" + name) for name in
+     ("crypto_keys", "crypto_decryptor", "crypto_block_indices", "crypto_bruteforce", "shader_stages", "shader_programs", "shader_platforms",
+      "shader_mutable_stages", "shader_unused_programs", "shader_optional_clip")] + [
+    ("binding_y6b_images", "observe_" + name) for name in
+    ("texture_dispatch", "switch_predicate", "astc_context", "sprite_geometry", "sprite_matrices", "astc_options", "sprite_bounds")
+]
+
+
 def helper_records():
     import importlib
     references = {
+        ("binding_y6b_images", "observe_astc_options"): "PARITY.md 19.2: ASTC context facade supports 2D U8 RGBA storage",
+        ("binding_y6b_images", "observe_sprite_bounds"): "PARITY.md 19.2: standalone sprite helpers retain the native singular-matrix correction and RGB/RGBA sheet bound",
         ("binding_y5_objects", "observe_gameobject"): "PARITY.md 19.2: empty components and actual legacy PPtrs follow the supplied component list",
         ("binding_y5_round2", "observe_primitive_string_budget"): "PARITY.md 19.3: primitive map strings dispatch through the bounded reader",
         ("binding_y5_round3", "observe_negative_string_budget"): "PARITY.md 19.3: negative string reads retain decoding staging for the remaining input span",
@@ -164,7 +184,7 @@ def helper_records():
     ):
         references["binding_y4_round5", name] = "PARITY.md 19.3: " + reason
     records = []
-    for observer, function in HELPERS + EXPORTS + TOOLS + RESIDUE:
+    for observer, function in HELPERS + EXPORTS + TOOLS + RESIDUE + INTERNALS:
         call = getattr(importlib.import_module(observer), function)
         observed = call(UnityPy)
         record = {"name": f"{observer}.{function}", "observer": observer,

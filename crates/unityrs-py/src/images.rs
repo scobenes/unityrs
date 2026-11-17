@@ -92,7 +92,7 @@ fn _image_resource(
     p::bytes(data)
 }
 
-fn meter(reader: Option<&NativeObject>) -> Arc<Meter> {
+pub(crate) fn meter(reader: Option<&NativeObject>) -> Arc<Meter> {
     reader.map_or_else(
         || Meter::for_input(&Limits::default(), Arc::new(Unbounded), Reservation::Input),
         |r| r.inner.file().meter().clone(),
@@ -159,7 +159,7 @@ pub(crate) fn sprite_error(error: unityrs_texture::sprite::SpriteError) -> PyErr
     PyNotImplementedError::new_err(errors::message(&error))
 }
 
-fn output(image: &Image, meter: &Arc<Meter>) -> PyResult<Py<PyAny>> {
+pub(crate) fn output(image: &Image, meter: &Arc<Meter>) -> PyResult<Py<PyAny>> {
     let _charge = meter
         .charge((image.pixels().len() as u64).saturating_add(1024))
         .map_err(errors::charge)?;
