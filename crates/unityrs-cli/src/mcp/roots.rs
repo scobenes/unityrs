@@ -15,6 +15,7 @@ use unityrs_core::{
     budget::{DecodeBuf, MemoryBudget, Reservation},
     env::{Fetch, Source},
     limits::{Limits, Meter},
+    stream::ReaderKind,
 };
 #[derive(Debug)]
 pub struct Roots(Vec<(PathBuf, File)>);
@@ -159,6 +160,9 @@ struct Input {
 }
 impl Fetch for Input {
     fn fetch(&self) -> Result<Bytes, Error> {
+        self.fetch_with_reader().map(|(bytes, _)| bytes)
+    }
+    fn fetch_with_reader(&self) -> Result<(Bytes, ReaderKind), Error> {
         let meter = Meter::for_input(&self.limits, self.budget.clone(), Reservation::Input);
         let raw = self.path.as_os_str().as_bytes();
         let base = split_base(raw);
@@ -172,9 +176,19 @@ impl Fetch for Input {
                         LimitKind::InputBytes,
                     )?;
                     read_file(file, &mut out)?;
-                    return Ok(out.into_bytes()?);
+                    return Ok((out.into_bytes()?, ReaderKind::Stream));
                 }
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    let mut first = raw.to_vec();
+                    first.extend_from_slice(b".split0");
+                    match self.roots.open(Path::new(OsStr::from_bytes(&first))) {
+                        Ok(_) => {}
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                            return Err(e.into());
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                }
                 Err(e) => return Err(e.into()),
             }
         }
@@ -185,13 +199,11 @@ impl Fetch for Input {
             self.limits.max_input_bytes,
             LimitKind::InputBytes,
         )?;
-        let mut found = false;
         for index in 0..999 {
             let mut part = base.to_vec();
             part.extend_from_slice(format!(".split{index}").as_bytes());
             match self.roots.open(Path::new(OsStr::from_bytes(&part))) {
                 Ok(file) => {
-                    found = true;
                     read_file(file, &mut out)?;
                 }
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -202,13 +214,6 @@ impl Fetch for Input {
                 Err(e) => return Err(e.into()),
             }
         }
-        if !found {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "input and split companions absent",
-            )
-            .into());
-        }
-        Ok(out.into_bytes()?)
+        Ok((out.into_bytes()?, ReaderKind::Memory))
     }
 }

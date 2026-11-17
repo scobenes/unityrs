@@ -464,7 +464,11 @@ split companion follow the same rules. Input leaves must be regular files;
 nonblocking opens refuse FIFOs, sockets and device nodes without waiting for
 a writer. Loaded bytes retain their input budget. TPK decompression, provider
 tables and lazy tree compilation share the request memory and decode-work
-limits; the provider's fixed decompression bound also remains in force.
+limits. Before reading, held-descriptor metadata must fit both the request's
+input-byte limit and the provider's 16 MiB file cap; bounded reads also refuse
+files that grow past either cap. The provider's fixed decompression bound
+remains in force. Unsplit files use the native commands' stream-reader rules;
+joined split files use their memory-reader rules.
 No implicit dependencies are fetched. Batch check validates path and URL strings
 as job data without opening, downloading, resolving credentials, or executing them.
 
@@ -477,6 +481,13 @@ a concurrent directory rename moves those inodes and their files together,
 including outside the original root pathname. A directory moved after opening
 stays reachable through its held descriptor. Files already hard-linked inside
 a root are readable; confinement does not establish their provenance.
+Overlapping roots are permitted. The first configured root whose spelling is
+a prefix of the input path supplies the held descriptor.
+Case-insensitive leaf aliases follow the underlying filesystem's behavior
+within the selected root; root-prefix matching uses the configured spelling.
+Asset-derived invalid UTF-8 output names remain raw filesystem bytes and use
+the tagged string form in reports; a filesystem that cannot store those names
+reports an ordinary per-asset I/O failure.
 
 Startup budget maxima use the ordinary `--max-input-memory`, `--max-input-bytes`,
 `--max-decode-work`, and `--max-tree-depth` options and defaults above. Startup
@@ -504,8 +515,12 @@ amplification to a small constant of the line cap, before dispatch and before
 any unrestricted JSON tree can be built. Cap refusals are invalid requests
 (`-32600`). Duplicate keys anywhere, including batch jobs, are refused before
 values can collapse: envelope duplicates use `-32600`, nested parameter
-and argument duplicates use `-32602`. Decoder refusals use a null ID because
-an unambiguous request has not been decoded. These caps are startup-derived;
+and argument duplicates use `-32602`. The envelope is identified before decoding
+params, independent of member order: parameter refusals retain the request ID,
+and identified notifications never receive a response, even with invalid params.
+An ambiguous envelope (including duplicate `id` or `method`) is an invalid
+request with a null ID. Unidentifiable envelopes and framing refusals also use
+null IDs. These caps are startup-derived;
 requests cannot raise them. `--max-response-bytes`
 defaults to 4,194,304 bytes per complete protocol response including newline.
 Both are at most 67,108,864; request cap is at least 256, and response cap must
@@ -513,6 +528,14 @@ be at least request cap + 1024 so even a large request ID fits a bounded error.
 A response that cannot fit is replaced by a budget tool failure (or JSON-RPC
 internal error for non-tool responses), preserving its ID. Framing caps are
 startup-only. `unityrs mcp --help` lists the startup options on stderr.
+
+A tool panic follows the build's panic strategy. With unwinding enabled, the
+server catches it at the tool boundary, returns JSON-RPC internal error
+(`-32603`) with that request's ID, and continues serving. The panic hook may
+write a diagnostic to stderr. With `panic=abort`, the process terminates;
+no response or continuation is guaranteed. A client closing stdout ends the
+server quietly without redirecting responses or writing fallback files.
+
 
 ## Golden examples and regeneration
 
@@ -528,3 +551,12 @@ UNITYRS_UPDATE_AGENT_GOLDENS=1 cargo test -p unityrs-cli --test agent goldens
 
 Review the changed golden files and guide together, then run the test without
 the environment variable to check them.
+
+The MCP `legacy_parity` test records default-limit command snapshots from
+A1a head `4a15f9f9` in `tpk-default-parity.json`, with stored, LZ4 and LZMA
+synthetic TPKs. It compares artifact sizes/digests and complete stdout/stderr,
+excluding dump wall time and the platform-dependent glTF peak-byte count from
+portable goldens. Set `UNITYRS_A1A_BIN` to a separately built A1a binary to
+repeat the live comparison, including the exact same-platform peak diagnostic.
+`values` has no TPK option; its case protocol is checked alongside the four
+commands that load a provider.

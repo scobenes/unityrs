@@ -226,3 +226,118 @@ fn duplicate_error_channel_tracks_the_params_subtree() {
         }
     });
 }
+
+#[test]
+fn decoder_keeps_envelope_identity_and_never_answers_known_notifications() {
+    session(&[], |s| {
+        s.ready();
+        for body in [
+            r#"{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"unityrs_show","arguments":{"max_depth":0,"max_depth":1}}}"#,
+            r#"{"params":{"name":"unityrs_show","arguments":{"max_depth":0,"max_depth":1}},"method":"tools/call","id":42,"jsonrpc":"2.0"}"#,
+        ] {
+            s.send(&format!("{body}\n"));
+            let response = s.read();
+            assert_eq!(response["id"], 42, "{response}");
+            assert_eq!(response["error"]["code"], -32602);
+        }
+        for params in [
+            r#"{"_meta":{},"_meta":{}}"#,
+            "false",
+            r#"{"deep":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}"#,
+        ] {
+            s.send(&format!(
+                r#"{{"params":{params},"jsonrpc":"2.0","method":"notifications/initialized"}}
+"#
+            ));
+            assert_eq!(s.request("ping", json!({}))["result"], json!({}));
+        }
+        for body in [
+            r#"{"jsonrpc":"2.0","id":42,"id":43,"method":"ping"}"#,
+            r#"{"jsonrpc":"2.0","id":42,"method":"ping","method":"ping"}"#,
+        ] {
+            s.send(&format!("{body}\n"));
+            let response = s.read();
+            assert_eq!(response["id"], serde_json::Value::Null);
+            assert_eq!(response["error"]["code"], -32600);
+        }
+    });
+}
+
+#[test]
+fn integral_number_spellings_are_exact_before_argument_and_ceiling_checks() {
+    session(
+        &[
+            "--out",
+            "out",
+            "--limit",
+            "10000",
+            "--max-input-bytes",
+            "18446744073709551615",
+        ],
+        |s| {
+            s.ready();
+            for (key, number, valid) in [
+                ("limit", "1.0", true),
+                ("limit", "1e2", true),
+                ("limit", "1.5", false),
+                ("limit", "10001.0", false),
+                ("ignore_first_container_dirs", "-0.0", true),
+                (
+                    "ignore_first_container_dirs",
+                    "-9223372036854775808.0",
+                    true,
+                ),
+                ("ignore_first_container_dirs", "9223372036854775807e0", true),
+                (
+                    "ignore_first_container_dirs",
+                    "-9223372036854775809.0",
+                    false,
+                ),
+                (
+                    "ignore_first_container_dirs",
+                    "9223372036854775808e0",
+                    false,
+                ),
+                ("max_input_bytes", "-0e100", true),
+                ("max_input_bytes", "18446744073709551615.0", true),
+                ("max_input_bytes", "18446744073709551616.0", false),
+                ("max_input_bytes", "-1e0", false),
+                ("limit", "1e999999999999999999999", false),
+                ("limit", "1e-999999999999999999999", false),
+            ] {
+                let (tool, extra) = if key == "ignore_first_container_dirs" {
+                    ("extract", r#", "output":"integers", "no_container":true"#)
+                } else {
+                    ("inspect", "")
+                };
+                s.send(&format!(r#"{{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{{"name":"unityrs_{tool}","arguments":{{"inputs":["synthetic.assets"],"{key}":{number}{extra}}}}}}}
+"#));
+                let response = s.read();
+                assert_eq!(response["id"], 42);
+                // Zero input bytes is a valid argument; the per-input load is refused.
+                assert_eq!(
+                    response["result"]["isError"], !valid,
+                    "{key}={number}: {response}"
+                );
+                if !valid {
+                    assert!(
+                        response["result"]["structuredContent"]["message"]
+                            .as_str()
+                            .unwrap()
+                            .contains(key),
+                        "{response}"
+                    );
+                }
+                if key == "limit" && valid {
+                    assert_eq!(
+                        response["result"]["structuredContent"]["objects"]
+                            .as_array()
+                            .unwrap()
+                            .len(),
+                        if number == "1.0" { 1 } else { 3 }
+                    );
+                }
+            }
+        },
+    );
+}

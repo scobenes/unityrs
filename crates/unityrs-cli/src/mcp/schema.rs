@@ -144,7 +144,7 @@ pub fn valid(value: &Value, schema: &Value) -> bool {
         Some("array") => value.is_array(),
         Some("string") => value.is_string(),
         Some("boolean") => value.is_boolean(),
-        Some("integer") => value.is_i64() || value.is_u64(),
+        Some("integer") => super::integer::parse(value).is_some(),
         _ => true,
     } {
         return false;
@@ -156,10 +156,7 @@ pub fn valid(value: &Value, schema: &Value) -> bool {
     }
     if let Some(n) = value.as_number() {
         // Compare integers exactly, including signed path IDs and u64 budgets.
-        let integer = n
-            .as_i64()
-            .map(i128::from)
-            .or_else(|| n.as_u64().map(i128::from));
+        let integer = super::integer::parse(&Value::Number(n.clone()));
         for (key, lower) in [("minimum", true), ("maximum", false)] {
             let bound = schema.get(key).and_then(|v| {
                 v.as_i64()

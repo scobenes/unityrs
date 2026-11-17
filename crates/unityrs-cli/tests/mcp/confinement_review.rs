@@ -157,3 +157,106 @@ fn special_inputs_are_refused_without_blocking() {
         Ok(())
     }).unwrap();
 }
+
+#[test]
+fn overlapping_roots_open_the_same_file_through_either_root() {
+    use crate::mcp_support::configured_session;
+    for roots in [
+        &[".", "nested"][..],
+        &["nested", "."][..],
+        &["nested"][..],
+        &["."][..],
+    ] {
+        configured_session(
+            roots,
+            &[],
+            |directory| {
+                std::fs::create_dir(directory.join("nested")).unwrap();
+                std::fs::copy(
+                    directory.join("synthetic.assets"),
+                    directory.join("nested/input.assets"),
+                )
+                .unwrap();
+            },
+            |s| {
+                s.ready();
+                for input in [
+                    "nested/input.assets".to_owned(),
+                    s.directory
+                        .join("nested/input.assets")
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                ] {
+                    let response = s.request(
+                        "tools/call",
+                        json!({"name":"unityrs_show","arguments":{"inputs":[input],"path_id":-2}}),
+                    );
+                    assert_eq!(
+                        response["result"]["isError"], false,
+                        "{roots:?}: {response}"
+                    );
+                    assert_eq!(
+                        response["result"]["structuredContent"]["value"]["m_Script"],
+                        "hello"
+                    );
+                }
+            },
+        );
+    }
+}
+
+#[test]
+fn a_hard_link_inside_a_root_is_readable_regardless_of_provenance() {
+    session(&[], |s| {
+        let outside = unityrs_testkit::scratch::Scratch::new("mcp-hardlink");
+        std::fs::copy(
+            s.directory.join("synthetic.assets"),
+            outside.join("outside.assets"),
+        )
+        .unwrap();
+        std::fs::hard_link(
+            outside.join("outside.assets"),
+            s.directory.join("inside.assets"),
+        )
+        .unwrap();
+        s.ready();
+        let response = s.request(
+            "tools/call",
+            json!({"name":"unityrs_show","arguments":{"inputs":["inside.assets"],"path_id":-2}}),
+        );
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        assert_eq!(
+            response["result"]["structuredContent"]["value"]["m_Script"],
+            "hello"
+        );
+        let response = s.request("tools/call", json!({"name":"unityrs_show","arguments":{"inputs":[outside.join("outside.assets").to_str().unwrap()],"path_id":-2}}));
+        assert_eq!(response["result"]["isError"], true);
+    });
+}
+
+#[test]
+fn case_insensitive_leaf_alias_is_readable_when_the_filesystem_supports_it() {
+    use std::os::unix::fs::MetadataExt;
+    session(&[], |s| {
+        let original = std::fs::metadata(s.directory.join("synthetic.assets")).unwrap();
+        let Ok(alias) = std::fs::metadata(s.directory.join("SYNTHETIC.ASSETS")) else {
+            eprintln!("skipped case-insensitive alias: filesystem is case-sensitive");
+            return;
+        };
+        if (original.dev(), original.ino()) != (alias.dev(), alias.ino()) {
+            eprintln!("skipped case-insensitive alias: distinct file");
+            return;
+        }
+        s.ready();
+        let response = s.request(
+            "tools/call",
+            json!({"name":"unityrs_show","arguments":{"inputs":["SYNTHETIC.ASSETS"],"path_id":-2}}),
+        );
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        assert_eq!(
+            response["result"]["structuredContent"]["value"]["m_Script"],
+            "hello"
+        );
+    });
+}

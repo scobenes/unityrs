@@ -23,12 +23,21 @@ fn provider(args: &Args<'_>, meter: &Arc<Meter>) -> Result<Option<Provider>> {
         return Ok(None);
     };
     let context = |error: Error| error.at_tpk(path);
-    let data = if let Some(roots) = &args.roots {
-        roots.read(Path::new(OsStr::from_bytes(path)), &args.limits, meter)
+    let file = if let Some(roots) = &args.roots {
+        roots.open(Path::new(OsStr::from_bytes(path)))
     } else {
-        unityrs_core::env::read_path(Path::new(OsStr::from_bytes(path)), &args.limits, meter)
+        std::fs::File::open(Path::new(OsStr::from_bytes(path)))
     }
-    .map_err(|e| context(Error::from(e)))?;
+    .map_err(|e| context(Error::from(unityrs_core::Error::from(e))))?;
+    let data = crate::provider_input::read(file, &args.limits, meter).map_err(|e| {
+        context(if let Some(e) = e.downcast_ref::<unityrs_tpk::TpkError>() {
+            Error::tpk(e)
+        } else if let Some(e) = e.downcast_ref::<unityrs_core::Error>() {
+            Error::from(e.clone())
+        } else {
+            Error::input(e)
+        })
+    })?;
     meter
         .count_decode(data.len() as u64)
         .map_err(|e| context(Error::from(e)))?;

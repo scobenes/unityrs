@@ -2,6 +2,7 @@
 mod arguments;
 mod config;
 mod decode;
+mod integer;
 mod reply;
 use reply::Response;
 pub(crate) mod roots;
@@ -106,9 +107,12 @@ impl State {
                 }
                 json!({"tools":schema::tools(config.output.is_some())})
             }
-            "tools/call" => match tools::call(params, config) {
-                Ok(result) => return Some(Response::Tool { id, result }),
-                Err(message) => return Some(error(id, -32602, &message)),
+            "tools/call" => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tools::call(params, config)
+            })) {
+                Ok(Ok(result)) => return Some(Response::Tool { id, result }),
+                Ok(Err(message)) => return Some(error(id, -32602, &message)),
+                Err(_) => return Some(error(id, -32603, "Internal error")),
             },
             _ => return Some(error(id, -32601, "Method not found")),
         };
@@ -159,15 +163,8 @@ fn serve(config: &Config, input: &mut impl BufRead, output: &mut impl Write) -> 
                 "Request line exceeds --max-request-bytes",
             )),
             Ok(bytes) => match decode::request(&bytes, config.request_bytes) {
-                Err(e) => Some(error(Value::Null, e.code, e.message)),
-                Ok(value) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    state.handle(&value, config)
-                }))
-                .unwrap_or_else(|_| {
-                    value
-                        .get("id")
-                        .map(|id| error(id.clone(), -32603, "Internal error"))
-                }),
+                Err(e) => e.id.map(|id| error(id, e.code, e.message)),
+                Ok(value) => state.handle(&value, config),
             },
         };
         if let Some(response) = response {
@@ -193,6 +190,7 @@ pub(crate) fn main(raw: &[Vec<u8>]) -> ExitCode {
     };
     match serve(&config, &mut io::stdin().lock(), &mut io::stdout().lock()) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("unityrs mcp: {e}");
             ExitCode::from(1)

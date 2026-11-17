@@ -4,18 +4,21 @@
 use serde_json::{Map, Value};
 
 pub struct Error {
+    pub id: Option<Value>,
     pub code: i32,
     pub message: &'static str,
 }
 type Result<T> = std::result::Result<T, Error>;
 fn syntax() -> Error {
     Error {
+        id: Some(Value::Null),
         code: -32700,
         message: "Parse error",
     }
 }
 fn limit(message: &'static str) -> Error {
     Error {
+        id: Some(Value::Null),
         code: -32600,
         message,
     }
@@ -26,11 +29,40 @@ pub fn request(bytes: &[u8], cap: usize) -> Result<Value> {
         at: 0,
         nodes: (cap / 64).max(32),
         strings: cap / 2,
+        params: None,
     };
-    let value = decoder.value(0, false)?;
+    let mut value = decoder.value(0, false)?;
     decoder.space();
     if decoder.at != bytes.len() {
         return Err(syntax());
+    }
+    if let Some((start, end)) = decoder.params {
+        let identified = value.get("jsonrpc").is_some_and(|v| v == "2.0")
+            && value.get("method").is_some_and(Value::is_string)
+            && value
+                .get("id")
+                .is_none_or(|v| v.is_string() || v.is_i64() || v.is_u64());
+        decoder.bytes = bytes.get(start..end).ok_or_else(syntax)?;
+        decoder.at = 0;
+        let params = decoder
+            .value(1, true)
+            .and_then(|params| {
+                decoder.space();
+                if decoder.at == decoder.bytes.len() {
+                    Ok(params)
+                } else {
+                    Err(syntax())
+                }
+            })
+            .map_err(|mut e| {
+                if identified {
+                    e.id = value.get("id").cloned();
+                }
+                e
+            })?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert("params".into(), params);
+        }
     }
     Ok(value)
 }
@@ -39,6 +71,7 @@ struct Decoder<'a> {
     at: usize,
     nodes: usize,
     strings: usize,
+    params: Option<(usize, usize)>,
 }
 impl Decoder<'_> {
     fn space(&mut self) {
@@ -144,6 +177,32 @@ impl Decoder<'_> {
         }
         Ok(Value::Array(values))
     }
+    // Locate params without building its tree, so envelope members after it
+    // can establish identity. The bounded decoder validates this slice next,
+    // using the remaining node/string budget and the original depth.
+    fn skip_params(&mut self) -> Result<()> {
+        let mut nesting = 0usize;
+        let mut quoted = false;
+        while let Some(&byte) = self.bytes.get(self.at) {
+            if quoted {
+                match byte {
+                    b'\\' => self.at += 1,
+                    b'"' => quoted = false,
+                    _ => {}
+                }
+            } else {
+                match byte {
+                    b'"' => quoted = true,
+                    b'{' | b'[' => nesting += 1,
+                    b'}' | b']' if nesting > 0 => nesting -= 1,
+                    b'}' | b',' if nesting == 0 => return Ok(()),
+                    _ => {}
+                }
+            }
+            self.at += 1;
+        }
+        Err(syntax())
+    }
     fn object(&mut self, depth: usize, under_params: bool) -> Result<Value> {
         self.at += 1;
         let mut values = Map::new();
@@ -155,6 +214,7 @@ impl Decoder<'_> {
             let key = self.string()?;
             if values.contains_key(&key) {
                 return Err(Error {
+                    id: Some(Value::Null),
                     code: if under_params { -32602 } else { -32600 },
                     message: "Duplicate object key in request",
                 });
@@ -162,7 +222,15 @@ impl Decoder<'_> {
             if !self.take(b':') {
                 return Err(syntax());
             }
-            let value = self.value(depth + 1, under_params || (depth == 0 && key == "params"))?;
+            let value = if depth == 0 && key == "params" && !under_params {
+                self.space();
+                let start = self.at;
+                self.skip_params()?;
+                self.params = Some((start, self.at));
+                Value::Null
+            } else {
+                self.value(depth + 1, under_params)?
+            };
             values.insert(key, value);
             if self.take(b'}') {
                 break;

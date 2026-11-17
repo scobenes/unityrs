@@ -7,8 +7,14 @@ mod decoder_review;
 mod extract_review;
 #[path = "mcp/framing_review.rs"]
 mod framing_review;
+#[path = "mcp/legacy_parity.rs"]
+mod legacy_parity;
+#[path = "agent/mcp_parity.rs"]
+mod mcp_parity;
 #[path = "mcp/support.rs"]
 mod mcp_support;
+#[path = "mcp/reader_review.rs"]
+mod reader_review;
 #[path = "agent/support.rs"]
 mod support;
 #[path = "mcp/tpk_review.rs"]

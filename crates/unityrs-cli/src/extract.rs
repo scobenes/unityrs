@@ -216,19 +216,19 @@ pub(crate) fn execute(
     }
     if let Some(tpk) = tpk {
         context.providers = Arc::new(ProviderChain::new(vec![Arc::new(
-            if let Some(roots) = roots {
-                unityrs_tpk::TpkProvider::from_bytes_metered(
-                    &roots.read(tpk, &limits, &meter)?,
+            unityrs_tpk::TpkProvider::from_bytes_metered(
+                &crate::provider_input::read(
+                    if let Some(roots) = roots {
+                        roots.open(tpk)?
+                    } else {
+                        std::fs::File::open(tpk).map_err(unityrs_tpk::TpkError::from)?
+                    },
                     &limits,
                     &meter,
-                )?
-            } else {
-                unityrs_tpk::TpkProvider::from_bytes_metered(
-                    &unityrs_core::env::read_path(tpk, &limits, &meter)?,
-                    &limits,
-                    &meter,
-                )?
-            },
+                )?,
+                &limits,
+                &meter,
+            )?,
         )]));
     }
     env_options.context = Arc::new(context);

@@ -72,7 +72,8 @@ pub fn call(params: &Value, config: &Config) -> Result<Tool, String> {
     }
     for spec in ["--tpk", "--vorbis-headers"] {
         if let Some(value) = arguments.get(schema::key(spec)).and_then(Value::as_str)
-            && config.roots.open(Path::new(value)).is_err()
+            && let Err(error) = config.roots.open(Path::new(value))
+            && error.kind() != std::io::ErrorKind::NotFound
         {
             return Ok(failure("input", "Provider refused by root confinement"));
         }
@@ -117,19 +118,36 @@ fn options(command: &str, arguments: &Value, config: &Config) -> Result<Vec<Vec<
         let ceiling = config.maxima.get(spec.name).copied();
         let owned;
         let value = if let Some(max) = ceiling {
-            if supplied.and_then(Value::as_u64).is_some_and(|n| n > max) {
+            // Omitted defaults must stay omitted: inventory cursors bind
+            // explicitly supplied budget options as well as their values.
+            if supplied.is_none()
+                && spec
+                    .default
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .is_some_and(|default| default <= max)
+            {
+                continue;
+            }
+            if supplied
+                .and_then(super::integer::unsigned)
+                .is_some_and(|n| n > max)
+            {
                 return Err(format!(
                     "Argument {key}={}; allowed range 0..={max} (server ceiling {})",
                     supplied.unwrap_or(&Value::Null),
                     spec.name
                 ));
             }
-            owned = json!(supplied.and_then(Value::as_u64).unwrap_or_else(|| {
-                spec.default
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(max)
-                    .min(max)
-            }));
+            owned = json!(
+                supplied
+                    .and_then(super::integer::unsigned)
+                    .unwrap_or_else(|| {
+                        spec.default
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(max)
+                            .min(max)
+                    })
+            );
             Some(&owned)
         } else {
             supplied
@@ -148,11 +166,14 @@ fn options(command: &str, arguments: &Value, config: &Config) -> Result<Vec<Vec<
             .map_or_else(|| vec![value], |values| values.iter().collect());
         for value in values {
             raw.push(spec.name.as_bytes().to_vec());
-            raw.push(
-                value
-                    .as_str()
-                    .map_or_else(|| value.to_string().into_bytes(), |s| s.as_bytes().to_vec()),
-            );
+            raw.push(value.as_str().map_or_else(
+                || {
+                    super::integer::parse(value)
+                        .map_or_else(|| value.to_string(), |n| n.to_string())
+                        .into_bytes()
+                },
+                |s| s.as_bytes().to_vec(),
+            ));
         }
     }
     Ok(raw)

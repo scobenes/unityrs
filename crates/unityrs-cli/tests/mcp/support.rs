@@ -15,12 +15,23 @@ pub fn initialize(version: &str) -> Value {
     json!({"protocolVersion": version,"capabilities":{},"clientInfo":{"name":"synthetic","version":"1"}})
 }
 pub fn session(options: &[&str], run: impl Fn(&mut Session)) {
+    configured_session(&["."], options, |_| {}, run);
+}
+pub fn configured_session(
+    roots: &[&str],
+    options: &[&str],
+    prepare: impl Fn(&std::path::Path),
+    run: impl Fn(&mut Session),
+) {
     child::scene(|scene| {
         let tmp = crate::support::fixture();
+        prepare(tmp.path());
         let mut cmd = Command::new(crate::support::BIN);
-        cmd.current_dir(tmp.path())
-            .args(["mcp", "--root", "."])
-            .args(options)
+        cmd.current_dir(tmp.path()).arg("mcp");
+        for root in roots {
+            cmd.args(["--root", root]);
+        }
+        cmd.args(options)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

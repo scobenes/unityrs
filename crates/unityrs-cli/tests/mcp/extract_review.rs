@@ -212,3 +212,94 @@ fn hostile_asset_names_remain_confined_and_report_failures() {
         assert!(!s.directory.join("out/escaped.txt").exists());
     });
 }
+
+#[test]
+fn invalid_utf8_container_output_name_is_tagged_and_written_beneath_output() {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+    use unityrs_testkit::ngui::{pair, pptr, s as string, vector};
+    session(&["--out", "out"], |s| {
+        let info = st(
+            "AssetInfo",
+            vec![
+                ("preloadIndex", V::Int(0)),
+                ("preloadSize", V::Int(0)),
+                ("asset", pptr("Object", (0, 1))),
+            ],
+        );
+        let bundle = Object::new(
+            2,
+            142,
+            st(
+                "AssetBundle",
+                vec![
+                    ("m_Name", string("synthetic")),
+                    ("m_PreloadTable", vector(pptr("Object", (0, 0)), vec![])),
+                    (
+                        "m_Container",
+                        V::Vector(
+                            "map".into(),
+                            Box::new(pair(string(""), info.clone())),
+                            vec![pair(V::Str(b"folder/\xff".to_vec()), info)],
+                        ),
+                    ),
+                ],
+            ),
+        );
+        let text = Object::new(
+            1,
+            49,
+            st(
+                "TextAsset",
+                vec![("m_Name", string("leaf")), ("m_Script", string("payload"))],
+            ),
+        );
+        std::fs::write(
+            s.directory.join("raw-container.assets"),
+            scene3d::file(Layout::Unity2022, &[], &[bundle, text]).unwrap(),
+        )
+        .unwrap();
+        let probe = s.directory.join(OsStr::from_bytes(b"raw-\xff-probe"));
+        let raw_names_supported = match std::fs::write(&probe, b"probe") {
+            Ok(()) => {
+                std::fs::remove_file(probe).unwrap();
+                true
+            }
+            Err(error) => {
+                assert!(
+                    matches!(error.raw_os_error(), Some(libc::EILSEQ | libc::EINVAL)),
+                    "{error}"
+                );
+                false
+            }
+        };
+        s.ready();
+        let response = s.request("tools/call", json!({"name":"unityrs_extract","arguments":{"inputs":["raw-container.assets"],"output":"raw-container","report":"report.json"}}));
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        let report = &response["result"]["structuredContent"];
+        if !raw_names_supported {
+            assert_eq!(report["written"], json!([]));
+            assert_eq!(
+                report["failures"][0]["path"],
+                json!({"t":"str","hex":"666f6c6465722fff"})
+            );
+            assert_eq!(report["failures"][0]["reason"], "io");
+            eprintln!("raw output filename unsupported by this filesystem; tagged refusal checked");
+            return;
+        }
+        assert_eq!(report["failures"], json!([]));
+        assert_eq!(
+            report["written"][0]["path"],
+            json!({"t":"str","hex":"666f6c6465722fff2e747874"})
+        );
+        let directory = s.directory.join("out/raw-container");
+        assert_eq!(
+            std::fs::read(directory.join(OsStr::from_bytes(b"folder/\xff.txt"))).unwrap(),
+            b"payload"
+        );
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(directory.join("report.json")).unwrap()).unwrap();
+        assert_eq!(&saved, report);
+        assert!(!s.directory.join("folder").exists());
+        assert!(!s.directory.join("out/folder").exists());
+    });
+}

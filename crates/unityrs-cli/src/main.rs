@@ -50,6 +50,7 @@ mod extract;
 mod gltf;
 mod mcp;
 mod obj;
+mod provider_input;
 
 use std::ffi::OsStr;
 use std::io::Write;
