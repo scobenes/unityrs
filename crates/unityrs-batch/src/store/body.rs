@@ -14,7 +14,10 @@ use super::{
     connector::{decimal, refused},
     scan::{CodeScan, TagScan},
 };
-use crate::http::{self, Data, Response, permit::Charge};
+use crate::{
+    http::{self, Data, Response, permit::Charge},
+    sys::Lock,
+};
 use hyper::{
     body::{Body, Bytes, Frame, SizeHint},
     http::header::CONTENT_LENGTH,
@@ -23,7 +26,7 @@ use object_store::client::{HttpError, HttpResponseBody};
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex, PoisonError},
+    sync::Arc,
     task::{Context, Poll},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -50,6 +53,51 @@ pub(super) struct Owned {
 impl AsRef<[u8]> for Owned {
     fn as_ref(&self) -> &[u8] {
         &self.bytes
+    }
+}
+
+/// A successful create's id must remain readable without another engine
+/// allocation: refusal after the request could otherwise orphan its upload.
+pub(super) fn create_storage(permit: &crate::http::permit::RequestPermit) -> Result<Owned, Fault> {
+    let size = usize::try_from(super::SMALL_CAP).map_err(|_| Fault::Internal)?;
+    let charge = permit
+        .charge(unityrs_core::limits::heap_cost(size as u64))
+        .ok_or(Fault::Memory)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).map_err(|_| Fault::Memory)?;
+    Ok(Owned {
+        bytes,
+        _charge: Some(charge),
+    })
+}
+pub(super) async fn created<I: AsyncRead + AsyncWrite + Unpin>(
+    slot: &TrySlot,
+    mut storage: Owned,
+    response: &mut Response<I>,
+) -> HttpResponseBody {
+    let mut code = CodeScan::default();
+    loop {
+        match std::future::poll_fn(|cx| response.poll_frame(cx)).await {
+            Ok(Some(frame)) => {
+                let Ok(data) = frame.into_data() else {
+                    continue;
+                };
+                if data.len() as u64 + storage.bytes.len() as u64 > super::SMALL_CAP {
+                    slot.update(|r| r.body = Some(BodyFault::OverCap));
+                    return HttpResponseBody::new(Refusing);
+                }
+                code.feed(&data);
+                storage.bytes.extend_from_slice(&data);
+            }
+            Ok(None) => {
+                slot.update(|r| r.code = code.code());
+                return HttpResponseBody::from(Bytes::from_owner(storage));
+            }
+            Err(error) => {
+                body_failed(slot, error);
+                return HttpResponseBody::new(Refusing);
+            }
+        }
     }
 }
 
@@ -152,10 +200,10 @@ struct Inner<I: AsyncRead + AsyncWrite + Unpin> {
     done: bool,
 }
 
-/// A 2xx body under its kind's cap. The mutex makes it `Sync`, which
-/// `object_store` asks of a body; it is never contended.
+/// A 2xx body under its kind's cap. The allocation-free lock makes it `Sync`,
+/// which `object_store` asks of a body; it is never contended.
 pub(super) struct Capped<I: AsyncRead + AsyncWrite + Unpin> {
-    inner: Mutex<Inner<I>>,
+    inner: Lock<Inner<I>>,
     hint: SizeHint,
 }
 
@@ -174,7 +222,7 @@ pub(super) fn capped<I: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         }
     }
     HttpResponseBody::new(Capped {
-        inner: Mutex::new(Inner {
+        inner: Lock::new(Inner {
             response: Some(response),
             read: None,
             slot: Arc::clone(slot),
@@ -297,19 +345,44 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Body for Capped<I> {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, HttpError>>> {
-        self.get_mut()
-            .inner
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .poll_next(cx)
+        self.get_mut().inner.lock().poll_next(cx)
     }
     fn is_end_stream(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .done
+        self.inner.lock().done
     }
     fn size_hint(&self) -> SizeHint {
         self.hint
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+    use crate::http::{Stream, permit::PermitPool};
+
+    #[test]
+    fn response_body_first_end_stream_query_does_not_allocate() {
+        let pool = PermitPool::new(1).unwrap();
+        let slot = TrySlot::new(pool.acquire().unwrap(), Kind::HeadRead);
+        // No response is polled: isolate the body state lock from the
+        // separately charged transport and dependency body allocations.
+        let body = Capped::<Stream> {
+            inner: Lock::new(Inner {
+                response: None,
+                read: None,
+                slot,
+                generation: 0,
+                kind: Kind::HeadRead,
+                passed: 0,
+                scan: None,
+                code: CodeScan::default(),
+                done: false,
+            }),
+            hint: SizeHint::new(),
+        };
+        let (ended, measured) = crate::alloc::measured(|| body.is_end_stream());
+        assert!(!ended);
+        assert_eq!(measured.peak, 0, "per-response body state allocation");
+        assert_eq!(measured.kept, 0);
     }
 }

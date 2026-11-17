@@ -300,6 +300,20 @@ impl Fake {
     pub fn open_uploads(&self) -> usize {
         self.state.lock().unwrap().uploads.len()
     }
+    /// An upload already acknowledged and durably journaled by a test scene.
+    pub fn seed_upload(&self, key: &str, id: &str) {
+        let mut state = self.state.lock().unwrap();
+        let bucket = state.bucket.clone();
+        state.uploads.insert(
+            id.into(),
+            Upload {
+                bucket,
+                key: key.into(),
+                parts: BTreeMap::new(),
+                content_type: None,
+            },
+        );
+    }
     pub fn address(&self) -> std::net::SocketAddr {
         (std::net::Ipv4Addr::LOCALHOST, self.endpoint.port().unwrap()).into()
     }

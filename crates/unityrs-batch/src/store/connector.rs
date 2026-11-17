@@ -177,7 +177,17 @@ impl<T: Transport> HttpService for Engine<T> {
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        Box::pin(self.serve(request))
+        if let Ok(future) = crate::alloc::try_box(self.serve(request)) {
+            Box::into_pin(future)
+        } else {
+            if let Some(slot) = TrySlot::current() {
+                slot.fail(Fault::Memory);
+            }
+            // The trait requires a boxed future even on refusal. This
+            // capture-free fallback is zero-sized, so boxing it allocates
+            // nothing; the try retains the original memory fault.
+            Box::pin(std::future::poll_fn(|_| Poll::Ready(Err(refused()))))
+        }
     }
 }
 
@@ -250,6 +260,15 @@ impl<T: Transport> Engine<T> {
                 _ => Fault::Internal,
             },
         )?;
+        // A create can leave a remote upload before its id is known. Reserve
+        // all engine-owned response storage before sending that request.
+        let create = if kind == Kind::Create {
+            Some(body::create_storage(
+                guard.permit().ok_or(Fault::Internal)?,
+            )?)
+        } else {
+            None
+        };
         let (permit, token) = guard.request().ok_or(Fault::Internal)?;
         let mut response = self
             .shared
@@ -279,6 +298,8 @@ impl<T: Transport> Engine<T> {
         }
         let body = if !(200..300).contains(&status) {
             body::error_body(slot, &mut response).await
+        } else if let Some(storage) = create {
+            body::created(slot, storage, &mut response).await
         } else if kind == Kind::Complete {
             // Its body can change length; `object_store` reads no
             // `Content-Length` of a complete's.

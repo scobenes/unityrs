@@ -7,7 +7,10 @@ use super::{
     etag::Etag,
     put::{self, Request},
 };
-use crate::manifest::head::{Identity, recognize};
+use crate::{
+    manifest::head::{Identity, recognize},
+    sys::Lock,
+};
 use futures_util::StreamExt;
 use hyper::body::Bytes;
 use object_store::{
@@ -15,7 +18,6 @@ use object_store::{
     list::{PaginatedListOptions, PaginatedListStore},
     path::Path,
 };
-use std::sync::{Mutex, PoisonError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -79,7 +81,9 @@ pub async fn read(
     if buffer.len() < cap {
         return Err(put::Error::Fault(super::attempt::Fault::Internal).into());
     }
-    let buffer = Mutex::new(buffer);
+    // This lock is created for each read after running, so it must not
+    // lazily allocate std's Darwin mutex storage at the first body chunk.
+    let buffer = Lock::new(buffer);
     let done = request
         .run(Kind::HeadRead, |_| async {
             let result = request.store.get(key).await.map_err(|_| Ended::Error)?;
@@ -91,7 +95,6 @@ pub async fn read(
                 let count = piece.len().min(cap - len);
                 buffer
                     .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
                     .get_mut(len..len + count)
                     .ok_or(Ended::Rejected)?
                     .copy_from_slice(piece.get(..count).ok_or(Ended::Rejected)?);
@@ -100,7 +103,7 @@ pub async fn read(
                     break;
                 }
             }
-            let buffer = buffer.lock().unwrap_or_else(PoisonError::into_inner);
+            let buffer = buffer.lock();
             Ok(recognize(buffer.get(..len).ok_or(Ended::Rejected)?, run_id)
                 .map(|identity| Head { identity, etag }))
         })
@@ -177,6 +180,9 @@ impl Write<'_> {
     ) -> Result<Etag, Error> {
         let mut next = fence.last();
         for rewrite in 0..=4 {
+            if rewrite != 0 && !request.reconcile_open() {
+                return Err(self.failure(Error::SinkUnreachable));
+            }
             let precondition = next;
             let observer = fence.observer(precondition);
             let kind = Kind::HeadWrite {
@@ -213,6 +219,9 @@ impl Write<'_> {
                 }
                 Some(Action::ReadBack) if self.conditional => (),
                 _ => return Err(self.failure(Error::SinkUnreachable)),
+            }
+            if !request.reconcile_open() {
+                return Err(self.failure(Error::SinkUnreachable));
             }
             let head = match read(request, self.key, self.run_id, buffer).await {
                 Ok(head) => head,

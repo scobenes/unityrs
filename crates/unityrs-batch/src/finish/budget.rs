@@ -28,8 +28,24 @@ impl Clock for BootClock {
 
 /// Where the budget reads `T_hard`: on every question, so a deadline armed
 /// after the finisher began bounds every try that starts after it.
-pub trait Hard {
+pub trait Hard: Sync {
     fn hard(&self) -> Option<Boot>;
+    fn poll_change(&self, _: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Pending
+    }
+}
+pub(crate) struct Live<'a> {
+    pub state: &'a State,
+    pub wake: Option<&'a crate::sys::RegisteredWake>,
+}
+impl Hard for Live<'_> {
+    fn hard(&self) -> Option<Boot> {
+        self.state.hard()
+    }
+    fn poll_change(&self, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        self.wake
+            .map_or(std::task::Poll::Pending, |w| w.poll_wait(cx))
+    }
 }
 /// The stop word's own `T_hard`, live.
 impl Hard for State {
@@ -104,6 +120,11 @@ pub trait Backend {
     fn next_upload(&mut self) -> Option<u64>;
     /// Abort one upload within `timeout`; false when it failed.
     fn abort(&mut self, upload: u64, timeout: Duration) -> bool;
+    /// A host/allocator/internal failure is a run failure, even when a remote
+    /// abort failure would only warn. Taking this keeps the old bool seam.
+    fn failure(&mut self) -> Option<crate::job::RunFailure> {
+        None
+    }
 }
 pub struct NoJournal;
 impl Backend for NoJournal {
@@ -163,8 +184,27 @@ pub trait Rows {
         bytes: &[u8],
         deadline: Option<Boot>,
     ) -> Result<(), WriteError>;
+    fn put_owned(
+        &mut self,
+        family: Family,
+        chunk: u64,
+        bytes: crate::phase::Buffer<u8>,
+        deadline: Option<Boot>,
+    ) -> Result<Option<crate::phase::Buffer<u8>>, WriteError> {
+        self.put(family, chunk, &bytes, deadline)?;
+        Ok(Some(bytes))
+    }
 }
 impl<D: Destination> Rows for D {
+    fn put_owned(
+        &mut self,
+        family: Family,
+        chunk: u64,
+        bytes: crate::phase::Buffer<u8>,
+        _: Option<Boot>,
+    ) -> Result<Option<crate::phase::Buffer<u8>>, WriteError> {
+        self.publish_owned(family, chunk, bytes)
+    }
     /// A directory write cannot be ended early; its start is what the
     /// budget bounds, and `_exit` at `T_hard` ends a held one.
     fn put(
@@ -187,6 +227,19 @@ pub struct Budgeted<'a> {
     pub cut: bool,
 }
 impl Destination for Budgeted<'_> {
+    fn publish_owned(
+        &mut self,
+        family: Family,
+        chunk: u64,
+        bytes: crate::phase::Buffer<u8>,
+    ) -> Result<Option<crate::phase::Buffer<u8>>, WriteError> {
+        let deadline = self.budget.row_deadline();
+        if deadline.is_some_and(|d| self.clock.now() >= d) {
+            self.cut = true;
+            return Err(WriteError::Publish);
+        }
+        self.rows.put_owned(family, chunk, bytes, deadline)
+    }
     fn publish(&mut self, family: Family, chunk: u64, bytes: &[u8]) -> Result<(), WriteError> {
         // One read of `T_hard` per chunk: the check and the deadline agree.
         let deadline = self.budget.row_deadline();

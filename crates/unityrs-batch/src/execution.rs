@@ -8,6 +8,9 @@ use crate::{
     sys::Wake,
     worker::{self, Dispatch},
 };
+#[cfg(feature = "test-hooks")]
+pub mod schedule;
+pub(crate) mod startup;
 use std::{
     io,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -110,6 +113,7 @@ impl Execution {
             .thread_keep_alive(std::time::Duration::MAX)
             .build()
             .map_err(|_| SetupError::Execution)?;
+        startup::prime(&runtime).map_err(|_| SetupError::Execution)?;
         prewarm(runtime.handle(), threads).map_err(|_| SetupError::Execution)?;
         let wake = Arc::new(Wake::new().map_err(|_| SetupError::Execution)?);
         let mut execution = Self::prepare_on(p, runtime.handle().clone(), wake)?;
@@ -317,13 +321,23 @@ impl Execution {
     /// Explicit test/host quiescence, after all held work has been released.
     /// This can wait; it must never be called on the stop/handover path.
     pub fn quiesce(&mut self) -> Result<(), SetupError> {
+        self.retire_workers()?;
+        // An owned runtime's drop waits for released pool work, including
+        // late results still owned by the controller's measured slots.
+        drop(self.runtime.take());
+        Ok(())
+    }
+    /// Test-only retirement after the finisher, retaining the reactor while
+    /// the harness drops parked IO owners in a deterministic order.
+    #[cfg(feature = "test-hooks")]
+    pub fn test_retire_workers(&mut self) -> Result<(), SetupError> {
+        self.retire_workers()
+    }
+    fn retire_workers(&mut self) -> Result<(), SetupError> {
         self.dispatch.take();
         for worker in self.workers.drain(..) {
             worker.join().map_err(|_| SetupError::Execution)?;
         }
-        // An owned runtime's drop waits for released pool work, including
-        // late results still owned by the controller's measured slots.
-        drop(self.runtime.take());
         Ok(())
     }
 }
@@ -363,7 +377,7 @@ fn pool_size(spec: &Spec) -> Result<usize, SetupError> {
 /// Start every blocking thread before the head, then widen tokio's queue to
 /// the pool's size while every thread is held, so a later submission neither
 /// starts a thread nor grows the queue. Shares one absolute second.
-fn prewarm(pool: &tokio::runtime::Handle, threads: usize) -> io::Result<()> {
+pub(crate) fn prewarm(pool: &tokio::runtime::Handle, threads: usize) -> io::Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     let held = Arc::new((Mutex::new((0_usize, false)), Condvar::new()));
     let ran = Arc::new(AtomicUsize::new(0));

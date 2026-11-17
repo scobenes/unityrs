@@ -892,6 +892,38 @@ Authorized rename and outcome writes have no intervening stop check. A rename
 error, including perform-then-fail, leaves the outcome unknown. Archive
 execution remains refused by capability validation.
 
+**Whole store runs.** The closed `sink::Sink` selects directory pool work or
+store futures through startup, publication and the finisher. Store publication
+keeps a fixed owning future slab outside the controller's unwind boundary;
+no transfer is spawned. Admission waits for a slot's quarantined lookup before
+taking phase room or submitting payload work. Loose winners drain before
+archives. Both use one PUT through 16 MiB and sequential multipart above it;
+archive pulls run on the existing blocking pool, one outstanding per slot,
+with central scratch retired before acknowledgment or a resume miss's reopen.
+
+Resume and verification use the bounded key-order merges above, before and
+after transfers respectively. Outcome 7 keeps a loose key's returned tag in
+`store_tags`, a charged disk sidecar of `101 * winners` bytes (spec 6.1), and
+an archive's in its existing outcome record. The hand-over retains verification
+figures and warnings; the final encoder samples unsettled row requests last.
+A stopped running-head future retains its fence history and last precondition
+for spec 7.4's second row. Finisher head and row adapters use the independent
+finisher runtime from its ordinary thread. Requests read B9's live budgets
+through pending I/O and stop retrying after a stop; head reconciliation keeps
+its one-second floor. The finisher selects any idle lookup token from its
+`download_concurrency + 1` prepared slots. Its journal backend closes without
+waiting on a mutation lock, then streams aborts, preserving allocator and
+internal failures as run failures.
+Startup reads old journals before cleanup. The CLI still refuses store sinks
+unless a build with `test-hooks` explicitly sets `UNITYRS_TEST_STORE=1`.
+
+`store_runs` exercises empty and nonempty whole runs, small ZIP PUTs, opaque
+tags, LIST degradation, verification mismatches, stops and head supersession.
+Its scale scene kills loose and archive multipart uploads, then resumes local
+and URL sources, with URL cases also using the process host's two runtimes
+under `test-hooks`. B12c still owns the final combined memory calibration;
+owner-store consistency and publish timing remain outside these fake scenes.
+
 ### 2.10 Why D holds
 
 Concurrent publication reads the same sealed winner order and assigns outcome
@@ -2101,6 +2133,169 @@ positions.
 | `unityrs-export` | `ngui/classify.rs` | `Reason::plain`, `Reason::decode_error`, `text`, `with_argument`: owned reason/detail strings; `limit`, `decode`, `render`: formatted limits; `panicked`, `entry_error`: owned reason/detail construction. Their `budget`, `charge`, `tree`, `parse`, `deref`, `error`, `resource`, `outside_view`, `outside_view_cab`, `internal` and `mesh` wrappers reach these constructors | All |
 | `unityrs-export` | `ngui/register.rs` | `dependency_failed`: formatted dependency wrapper; `container`: container reclassification; `open`, `opened`, `own`, `internal`, `peeked`, `Peeked::member`, `Peeked::finish`, `same_open`: reason construction through classify's constructors and these wrappers | All |
 
+Store integration adds these two exact third-party call entries to the same
+inventory. With the whole-store census and Darwin entries below it has
+128 entries total: 119 All and 9 Darwin. Engine buffers, key copies,
+future boxes and file adapters still reserve fallibly before allocating.
+The existing core/export sweep's 17 All function entries below are unchanged;
+the `store` entries identify the additional calls separately.
+The existing wake-drop entry now names `sys::shared::Shared::drop`, which
+owns the shared registered wake; it still requires Tokio's exact deregister
+frame and the wake's `AsyncFd` drop callee. Its scope and count are unchanged.
+
+| crate | module | function and allocation | platform |
+|---|---|---|---|
+| `unityrs-batch` | `publish/store/transfer.rs` | `run` calls `object_store::path::Path::parse`: dependency-owned key segments and normalized path; exact dependency frame and callee required | All |
+| `unityrs-batch` | `sink/store/journal.rs` | `JournalBackend::abort` calls `object_store::path::Path::parse`: dependency-owned abort key; exact dependency frame and callee required | All |
+
+The whole-store census adds 73 further All entries. Their exact allocating
+frames, owning functions and immediate dependency callees are in
+`controller_support/store_allocations.rs`, `store_multipart_allocations.rs`
+and `store_parsing_allocations.rs`, joined by `refusals::inventory()`;
+`darwin_allocations.rs` adds seven exact Darwin entries. These
+are dependency APIs without fallible storage constructors; their bounded
+storage belongs to the existing network and phase envelopes. A refusal is
+the documented A13 abort, never an admitted engine allocation. The groups
+below count individual allocating-frame entries, not allocation ordinals.
+
+| dependency allocation group | entries | why listed |
+|---|---:|---|
+| `object_store` operation futures, request building, signing, payloads, paths and result conversion | 23 | operation futures are boxed internally; request/signature/path/result strings, canonicalization collections and payload owners have no caller-supplied storage or fallible constructor |
+| quick-xml, serde and query encoding | 29 | `object_store` owns the XML/query readers, writers and deserializers; its public operation APIs accept neither pre-sized parsing/serialization buffers nor a fallible allocator |
+| bytes owners, buffers and copies | 6 | `Bytes::from_owner` always boxes its private owner; dependency-owned copies, `BytesMut` buffers and sharing metadata accept no preallocated storage or fallible constructor |
+| chrono signing-date formatting | 4 | `object_store` owns the formatter and formatted date strings; no date/buffer override reaches those internal calls |
+| HTTP header maps and URI formatting | 4 | `HeaderMap::try_with_capacity` and `try_reserve` return `MaxSizeReached` but use infallible `Vec` allocation internally; URI formatting owns its text inside `object_store` |
+| URL parsing | 2 | `Url::parse` and its host parser allocate their own normalized storage, accepting no caller buffer or fallible allocator |
+| attribute map storage | 1 | `Attributes` wraps a private `HashMap`, exposes only infallible capacity/insertion/collection and accepts no pre-reserved map |
+| Tokio response deregistration | 1 | the reactor's private deregistration queue has no reservation API |
+| Tokio cooperative deferred-wake queue | 1 | each `block_on` creates its private infallible wake queue; startup cannot prime a later context |
+| HTTP response body box | 1 | `HttpResponseBody` wraps a private `BoxBody`; `new` and the bytes conversion box infallibly and accept no existing box/storage |
+| hyper queued body buffers | 1 | hyper's private vectored body queue exposes no caller reservation or fallible allocator |
+| Darwin Tokio socket waiters mutex | 1 Darwin only | Tokio 1.53.3 creates a fresh `ScheduledIo` and private `Mutex<scheduled_io::Waiters>` for every registration; neither a fallible constructor nor caller-supplied/reusable registration storage is exposed. The entry requires the full `tokio::loom::std::mutex::Mutex<tokio::runtime::io::scheduled_io::Waiters>>::lock` frame, `RegisteredSocket::connected` owner and `AsyncFd<Socket>::async_io` callee. A startup registration cannot initialize later sockets' private locks. |
+| Darwin Hyper dispatch-close notification mutex | 5 Darwin only | Each handshake creates a fresh private Tokio unbounded dispatch channel. Its `notify_rx_closed` owns `Mutex<LinkedList<notify::Waiter>>`, first locked by receiver close/drop. Hyper exposes neither that Notify nor caller-supplied channel storage. Separate full stack keys require the payload PUT, head PUT, multipart part, abort or response-completion engine owner and its exact dependency callee; startup cannot initialize future connections' channels. |
+| Darwin Hyper incoming-body channel mutex | 1 Darwin only | Each nonempty response creates a fresh private `Mutex<hyper::body::chan::State>`. The channel and its sender/receiver types expose no public storage or initialization API; the exact entry requires `Sender::poll_ready`, `exchange_charged`, and the fully typed Hyper connection poll callee. |
+
+Retained Tokio state is initialized before `running`, rather than excluded:
+on Darwin, `execution::startup::prime` exercises registration and deregistration, the
+remote inject queue, all four current-thread task-list shards (observing
+task IDs in serialized bursts, with a one-second retry deadline so concurrent
+callers cannot strand a primer on only odd or even IDs), and
+the timer driver. Library controller and store-finisher runtimes and both
+process runtimes use this preparation. The disposable registration's own
+waiters lock is initialized before it is retired. In particular, the
+Darwin `Mutex<inject::synced::Synced>` allocation at first runtime shutdown
+moves to startup. `runtime_alloc` guards the first shutdown of freshly
+prepared library and process runtimes against retained Tokio lock
+allocations, preserves async-host preparation, and uses barriers to verify
+concurrent preparation; the exact-stack regression in `refusals_tests` rejects a
+different mutex type, engine owner or dependency callee and checks the
+socket entry applies only on Darwin.
+Linux's inline mutexes need no warm-up; leaving its runtime untouched also
+preserves the reactor's initial deregistration capacity for stopped requests.
+The existing attribute-map entry names the public `Attributes::insert`
+callee, and the existing response-deregistration entry also names abort's
+`abort_multipart` call; full inline information exposes those exact keys.
+Their entry counts are unchanged. A separate regression requires both
+public dependency entry points and rejects an unlisted callee.
+
+This audit uses the pinned dependency sources, including
+`object_store` 0.14.2's `client/crypto.rs`, `client/http/body.rs`,
+`attributes.rs` and AWS operation implementations. Its
+`AmazonS3Builder::with_crypto_provider` does admit a fallible adapter:
+`store/crypto.rs` keeps ring's stack SHA-256/HMAC contexts, charges each
+context's exact boxed `heap_cost` against its request permit, and allocates
+the trait box fallibly. Either refusal records `Fault::Memory` on the
+current try before signing can send a request; dropping the context releases
+its charge. The former digest and HMAC exclusions are removed. A
+pre-sized fallible buffer cannot replace any remaining private owner or
+dependency-internal collection listed above; where the engine owns the
+buffer, it already reserves actual storage fallibly.
+
+`controller_alloc` runs three serialized whole-store scopes, armed at
+publication admission through `run::drive_with`'s finisher and teardown:
+`store` publishes a loose PNG and archive by single PUT; `store-resume`
+first publishes them unarmed, then sweeps resume's LIST/merge and archive
+hashing without re-upload; `store-multipart` publishes both above 16 MiB
+through create, parts and complete. Each scope verifies the result by LIST,
+writes the finisher's store rows and head, and retires a seeded, durably
+journaled upload in the finisher. The fake S3 runs on an exempt thread.
+Successful census runs assert the actual operations and sizes. Handled
+refusals require `host_memory`/74, zero retained charges after teardown,
+no open upload or remaining journal identity, an acknowledged exit line,
+and the specified head and all referenced row chunks. Normal-finisher
+failures keep a null `stop_reason`; a taken controller stop names
+`host_memory`. A failed final write leaves the acknowledged `running` head.
+The keyed census refuses every occurrence, retrying each missed `(key,
+occurrence)` independently up to 32 rounds even if another occurrence of
+that stack was covered. Any target still unreached fails the sweep. It
+then settles unseen stacks as the URL scopes do and reports reached/target
+counts per store scope; every listed entry must be reached somewhere in
+its named scopes. Admission exhausts the remaining cooperative budget before
+the next real operation, so Tokio's deferred-wake queue is exercised even
+when socket pacing would otherwise avoid it. The multipart fixture is
+generated once outside the child
+runs, and uses fast PNG encoding to keep the scale sweep bounded in time.
+
+The store sweep also fixes its blocking-completion schedule, without changing
+the stack hash or weakening occurrence coverage. The publication scheduler
+polls transfers both after admission and on later turns. An already completed
+payload-open or chunk task could continue in the admission poll; otherwise
+the same request allocations ran from the later poll's distinct return
+address. The test-only `execution::schedule` hook makes payload open, chunk
+and reopen tasks yield once before observing their result. Every child thus
+continues those tasks from the same poll site, independently of worker speed.
+URL staging already has one transfer poll site; its explicit read schedules
+remain separate from this store payload schedule.
+
+Teardown has its own deterministic custody schedule
+(`controller_support/store_schedule.rs`). The exempt observer retains the
+store until retiring workers release their references, then the sweep thread
+drops it while allocation refusal is still armed. An idle finisher reactor
+registration, including its primed Darwin waiters mutex, remains alive through
+that drop. Tokio's existing inventoried shutdown collection must therefore
+run, instead of depending on whether the last real socket was purged or a
+worker happened to drop the last owner. Only the test descriptors are dropped
+after disarming. Both schedules use state transitions, with the testkit's
+deadlock guard bounding the wait for retiring owners. No exclusion is added.
+
+On Linux, `UNITYRS_CONTROLLER_STACKS=1` enables exact key diagnostics. The
+child records each census stack and every newly refused settling stack behind
+the allocator's tracing pass-through. The parent uses binutils `addr2line`
+against each frame's owning image to print symbol names for census-only keys
+and every settling key, with the closest census stack for comparison.
+Symbolization never enters the counted child allocator.
+
+The through-teardown `url-fail` scope also controls reactor retirement.
+Tokio's IO turn takes its pending-release vector, including the capacity;
+whether the last socket was purged therefore used to decide whether dropping
+the real registered wakes grew that vector. Its opt-in observer now retires
+completed workers and stage/socket owners after the finisher, runs one exempt
+current-thread reactor yield, then drops the real residue wakes and runtime
+while refusal remains armed. The exempt yield runs only harness work: engine
+URL futures are manually polled and are no longer runnable. This holds the
+existing wake-deregistration and runtime-shutdown entries to staleness in
+every child without adding an exclusion or accepting a missing entry.
+
+The Linux `sweep`-profile census with these schedules, including counted
+teardown, is below. The executable exclusion inventory remains 128 entries
+(119 All and 9 Darwin); neither the hash algorithm nor the exclusions changed.
+
+| scope | census allocations | census keys |
+|---|---:|---:|
+| `store` | 1,456 | 835 |
+| `store-resume` | 1,776 | 820 |
+| `store-multipart` | 2,377 | 1,446 |
+
+The sweep also fixes three engine allocation paths: connector and
+credential-provider futures use fallible boxes with zero-sized error
+fallbacks; create-response storage is charged and allocated before the
+request, then filled from raw frames without another engine allocation
+before the upload id is known. Journal reader failure terminates enumeration
+instead of repeating a failure sentinel forever. A transient cleanup
+allocation refusal gets one retry within the original abort deadline,
+while still deciding the run as `host_memory`; repeated refusal leaves the
+durable identity for startup recovery.
+
 The `NodeList` shared owner is charged once in `NodeList::from_preorder`,
 which serves both stored-row trees and `TypeTreeNode::node_list` snapshots.
 `NodeList::into_shared` allocates it fallibly; neither path needs an abort
@@ -2110,12 +2305,18 @@ The executable exclusion inventory is
 `crates/unityrs-batch/tests/controller_support/refusals.rs`. Its keys are the
 **innermost owning `unityrs_core::` or `unityrs_export::` functions** on the
 allocating backtrace, including inline frames. Closure numbers, generic
-arguments, allocation sizes and ordinals are not keys. A std generic function
+arguments, allocation sizes and ordinals are not keys. Dependency callees may
+also name the exact method without its type arguments; `Timeout<T>::poll`
+remains distinct from every other method. A std generic function
 that mentions a core/export type does not own that allocation. The test
 rejects an innermost batch/CLI function even when a core/export ancestor is
 listed, and rejects an unsymbolized abort. `Cargo.toml` defines
-`[profile.sweep]` with `inherits = "release"` and `debug = "limited"`:
-qualified inline function names as well as line tables;
+`[profile.sweep]` with `inherits = "release"` and `debug = "full"`:
+Darwin's finisher async monomorphizations under limited debug information
+otherwise omit engine closures and dependency poll
+frames, so an exact owner/callee cannot be proven. Full package debug
+restores that evidence without treating wrapper polls as transparent.
+Both engine and dependencies need the full inline information;
 `line-tables-only` alone produced unqualified names on Darwin. CI's `scale`
 command includes `--test controller_alloc` under `--profile sweep`; use
 that profile for manual refusal sweeps too. The release profile is unchanged.

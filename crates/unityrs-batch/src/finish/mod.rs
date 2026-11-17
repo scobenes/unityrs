@@ -94,9 +94,25 @@ pub fn running(
             identity,
             None,
             None,
+            None,
         )?;
         directory.write_head(json.end()?, true).map_err(sink_error)
     })
+}
+pub(crate) fn running_bytes(
+    prepared: &dyn Header,
+    account: &Account,
+    identity: &Identity<'_>,
+) -> Result<crate::winners::json::Json, Error> {
+    encode::head(
+        prepared.spec(),
+        prepared.spec_sha256(),
+        account,
+        identity,
+        None,
+        None,
+        None,
+    )
 }
 /// A hand-over's code against the stop the finisher took (9.1): a 7 yields
 /// to a more severe stop, a 74 only to 70, a 69 to none. Equal to taking
@@ -128,14 +144,66 @@ pub fn normal(
         directory,
         identity,
         Some(ended_at),
+        None,
     ))
+}
+pub trait Head {
+    fn write(
+        &self,
+        bytes: &[u8],
+        account: &Account,
+        budget: budget::Budget<'_>,
+    ) -> Result<(), crate::sink::Error>;
+    fn sync(&self) -> Result<(), crate::sink::Error>;
+    fn figures(&self) -> Option<(crate::sink::store::Figures, u64)> {
+        None
+    }
+}
+impl Head for Directory {
+    fn write(
+        &self,
+        bytes: &[u8],
+        _: &Account,
+        _: budget::Budget<'_>,
+    ) -> Result<(), crate::sink::Error> {
+        self.write_head(bytes, false)
+    }
+    fn sync(&self) -> Result<(), crate::sink::Error> {
+        self.syncfs()
+    }
+}
+impl Head for crate::sink::Sink {
+    fn write(
+        &self,
+        bytes: &[u8],
+        account: &Account,
+        budget: budget::Budget<'_>,
+    ) -> Result<(), crate::sink::Error> {
+        match self {
+            Self::Directory(d) => d.write_head(bytes, false),
+            Self::Store(s) => s.final_head(bytes, account, budget),
+        }
+    }
+    fn sync(&self) -> Result<(), crate::sink::Error> {
+        match self {
+            Self::Directory(d) => d.syncfs(),
+            Self::Store(_) => Ok(()),
+        }
+    }
+    fn figures(&self) -> Option<(crate::sink::store::Figures, u64)> {
+        match self {
+            Self::Store(s) => Some((s.figures(), s.unsettled())),
+            Self::Directory(_) => None,
+        }
+    }
 }
 fn normal_into(
     cx: &manifest::rows::Context<'_>,
     destination: &mut budget::Budgeted<'_>,
-    directory: &Directory,
+    directory: &dyn Head,
     identity: &Identity<'_>,
     ended_at: Option<&str>,
+    taken: Option<Stop>,
 ) -> ResultEnd {
     // Canonical stop was checked before the hand-over. Later stops cannot
     // reinterpret this snapshot. The finisher's own budget is a separate query.
@@ -154,6 +222,7 @@ fn normal_into(
             code: reduction.unwrap_or(Code::Complete),
             failure,
             stop: None,
+            taken,
             phase: Phase::Publish,
         },
     )
@@ -164,13 +233,16 @@ struct Ending {
     code: Code,
     failure: Option<RunFailure>,
     stop: Option<Stop>,
+    /// The immutable hand-over capture; normal rows ignore it, but a
+    /// superseded final head still meets its code by 9.1's precedence.
+    taken: Option<Stop>,
     phase: Phase,
 }
 /// Step 3: every row file the context allows, `syncfs`, then the head.
 fn conclude(
     cx: &manifest::rows::Context<'_>,
     destination: &mut budget::Budgeted<'_>,
-    directory: &Directory,
+    directory: &dyn Head,
     identity: &Identity<'_>,
     ended_at: Option<&str>,
     ending: Ending,
@@ -194,7 +266,7 @@ fn conclude(
     if report.publication_failed {
         code = code.worst(Code::Incomplete);
     }
-    if directory.syncfs().is_err() {
+    if directory.sync().is_err() {
         report.sync_failed();
     }
     if let Some(failure) = report.failure {
@@ -218,6 +290,7 @@ fn conclude(
         _ => (report.failure.map(RunFailure::name), None),
     };
     let status = code.status();
+    let mut superseded = false;
     let published = cx.account.publication(|| {
         let mut json = encode::head(
             &cx.facts.spec,
@@ -231,46 +304,67 @@ fn conclude(
                 stop: shown,
             }),
             ended_at,
+            directory.figures(),
         )?;
-        directory.write_head(json.end()?, false).map_err(sink_error)
+        directory
+            .write(json.end()?, cx.account, destination.budget)
+            .map_err(|e| {
+                superseded = e.class == crate::sink::Class::Superseded;
+                sink_error(e)
+            })
     });
+    let end = ResultEnd {
+        code,
+        status,
+        reason,
+        detail,
+    };
     match published {
-        Ok(()) => ResultEnd {
-            code,
-            status,
-            reason,
-            detail,
-        },
-        Err(error) => {
-            let failure_code = match error {
-                Error::Run(f) => f.code(),
-                Error::Stopped => Code::Incomplete,
-            };
-            // Ordinary final-head filesystem failures contribute 4; allocation
-            // and internal failures keep their stronger classification.
-            let final_code = code.worst(Code::Incomplete).worst(failure_code);
-            let (reason, detail) = if final_code == code {
-                (reason, detail)
-            } else if final_code == Code::Incomplete {
-                (Some("publish_failed"), None)
-            } else {
-                match error {
-                    Error::Run(f) => (Some(f.name()), None),
-                    Error::Stopped => (reason, detail),
-                }
-            };
-            ResultEnd {
-                code: final_code,
-                status: Some("running"),
-                reason,
-                detail,
-            }
+        Ok(()) => end,
+        Err(error) => failed_head(end, error, superseded, ending.taken),
+    }
+}
+fn failed_head(end: ResultEnd, error: Error, superseded: bool, taken: Option<Stop>) -> ResultEnd {
+    let failure_code = match error {
+        Error::Run(f) => f.code(),
+        Error::Stopped if superseded => Code::Superseded,
+        Error::Stopped => Code::Incomplete,
+    };
+    // Ordinary final-head filesystem failures contribute 4; allocation
+    // and internal failures keep their stronger classification.
+    let final_code = end.code.worst(failure_code);
+    let final_code = if superseded {
+        reduce(final_code, taken)
+    } else {
+        final_code
+    };
+    let by_stop = taken.filter(|stop| superseded && stop.reason.code() == final_code);
+    let (reason, detail) = if let Some(stop) = by_stop {
+        (Some(stop.reason.name()), stop.detail.map(SpoolDetail::name))
+    } else if final_code == end.code {
+        (end.reason, end.detail)
+    } else if final_code == Code::Superseded {
+        (Some("superseded"), None)
+    } else if final_code == Code::Incomplete {
+        (Some("publish_failed"), None)
+    } else {
+        match error {
+            Error::Run(f) => (Some(f.name()), None),
+            Error::Stopped => (end.reason, end.detail),
         }
+    };
+    ResultEnd {
+        code: final_code,
+        status: if superseded { None } else { Some("running") },
+        reason,
+        detail,
     }
 }
 fn sink_error(e: crate::sink::Error) -> Error {
     match e.class {
-        crate::sink::Class::PublishFailed => Error::Stopped,
+        crate::sink::Class::PublishFailed
+        | crate::sink::Class::Superseded
+        | crate::sink::Class::SinkUnreachable => Error::Stopped,
         crate::sink::Class::HostMemory => Error::memory(),
         crate::sink::Class::InvalidPath => Error::internal(),
         _ => Error::Run(RunFailure::new(crate::attempt::ReasonCode::HostIo)),

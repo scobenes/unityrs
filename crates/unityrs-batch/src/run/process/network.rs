@@ -31,7 +31,7 @@ fn transport_setup(error: http::Error) -> Error {
 /// to fixed `C_base`; both request tables follow the `m_pool` slope.
 pub(super) struct Resources {
     controller: Arc<http::Service>,
-    _finisher: http::Service,
+    finisher: http::Service,
     _permits: PermitPool,
 }
 impl Resources {
@@ -62,7 +62,7 @@ impl Resources {
         Ok((
             Self {
                 controller: Arc::new(controller),
-                _finisher: finisher,
+                finisher,
                 _permits: finisher_permits,
             },
             controller_permits,
@@ -71,9 +71,39 @@ impl Resources {
 }
 
 impl Host {
+    pub(super) fn store_services(
+        &'static self,
+        cutoff: Option<crate::lifetime::Boot>,
+    ) -> Result<super::super::store::Services, Error> {
+        let network = self.network.get().ok_or_else(Error::internal)?;
+        let runtimes = super::HELD.runtimes.get().ok_or_else(Error::internal)?;
+        Ok(super::super::store::Services {
+            controller: network
+                .controller
+                .on_runtime(runtimes.controller.handle().clone()),
+            finisher: network
+                .finisher
+                .on_runtime(runtimes.finisher.handle().clone()),
+            runtime: &runtimes.finisher,
+            cutoff,
+            credentials: self
+                .store_provider
+                .get()
+                .map(|p| p.clone() as object_store::aws::AwsCredentialProvider),
+        })
+    }
     /// Step 6, before host checks and spawns. The immutable values and spec
     /// live in the process host so the masker borrows them without copies.
     pub(super) fn headers(&'static self) -> Result<(), Error> {
+        if matches!(self.spec.sink, crate::spec::model::Sink::ObjectStore(_)) {
+            let provider = crate::store::credentials::Credentials::preflight(
+                self.spec.deadline.as_ref().map(|d| &d.at),
+            )
+            .map_err(|reason| Error::could_not_start(reason.name()))?
+            .into_shared_provider();
+            let provider = self.store_provider.get_or_init(|| provider);
+            let _ = self.credentials.set(provider.values());
+        }
         let mut values = env::Values::default();
         let resolved = values
             .resolve_into(&self.spec, &env::System)
@@ -114,6 +144,11 @@ impl Host {
             control: Arc::new(super::super::Lifetime::process(&self.process)),
             cutoff: BootClock::cutoff(policy.cutoff),
         });
+        let [stop, end] = wakes;
+        let wakes = [
+            crate::sys::Shared::new(stop).map_err(|_| Error::memory())?,
+            crate::sys::Shared::new(end).map_err(|_| Error::memory())?,
+        ];
         Ok(Staging {
             launch: Arc::new(Urls {
                 parsed: prepared.urls.clone(),

@@ -260,7 +260,7 @@ fn stopped_scope(keys: &[&str], archives: bool) {
         let account = Account::new(unityrs_batch::bound::C_FIN);
         let facts = h.facts.as_deref().unwrap();
         finish::running(facts, &directory, &account, &identity).unwrap();
-        h.directory = Some(directory);
+        h.sink = Some(directory.into());
         SEEN.with(|s| s.set(0));
         SITE.with(|s| s.set(site));
         ACTIVE.with(|s| s.set(true));

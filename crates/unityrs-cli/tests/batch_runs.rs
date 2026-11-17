@@ -36,6 +36,32 @@ fn an_object_store_is_refused_before_mutation_but_check_accepts_it() {
     assert_eq!(fs::read_dir(scratch.join("sink")).unwrap().count(), 0);
     assert_eq!(fs::read_dir(scratch.join("spool")).unwrap().count(), 1);
 }
+#[cfg(all(feature = "test-hooks", target_os = "linux"))]
+#[test]
+fn the_store_test_hook_reaches_credential_preflight_before_spool_mutation() {
+    let scratch = Scratch::new("batch-store-hook");
+    fs::create_dir(scratch.join("spool")).unwrap();
+    fs::write(scratch.join("spool/sentinel"), b"keep").unwrap();
+    let mut spec: Value = serde_json::from_str(&common::job(common::INPUTS)).unwrap();
+    spec["spool"]["dir"] = json!(scratch.join("spool"));
+    spec["sink"] = json!({"kind":"object_store","bucket":"bucket","region":"region","endpoint":"http://127.0.0.1:1","path_style":true});
+    spec["deadline"] = "2099-01-01T00:00:00Z".into();
+    let path = scratch.join("job.json");
+    fs::write(&path, serde_json::to_vec(&spec).unwrap()).unwrap();
+    let output = child::output(
+        Command::new(common::BIN)
+            .arg("batch")
+            .arg(&path)
+            .env("UNITYRS_TEST_STORE", "1")
+            .env_remove("AWS_ACCESS_KEY_ID")
+            .env_remove("AWS_SECRET_ACCESS_KEY"),
+    )
+    .unwrap();
+    assert_eq!(output.status.code(), Some(69), "{output:?}");
+    let (_, line) = common::line_of(&output);
+    assert_eq!(line["reason"], "credentials_missing");
+    assert_eq!(fs::read(scratch.join("spool/sentinel")).unwrap(), b"keep");
+}
 #[cfg(target_os = "linux")]
 #[test]
 fn normal_cli_replays_the_versioned_synthetic_goldens() {

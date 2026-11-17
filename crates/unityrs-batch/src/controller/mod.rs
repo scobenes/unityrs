@@ -87,10 +87,7 @@ pub struct PreparedSpool {
     pub counter: Arc<Counter>,
     pub fs: Arc<dyn FileSystem>,
     held: Arc<std::fs::File>,
-    lease: Option<(
-        Arc<crate::start::spool::Started>,
-        Arc<crate::sink::directory::Directory>,
-    )>,
+    lease: Option<(Arc<crate::start::spool::Started>, crate::sink::Sink)>,
 }
 impl PreparedSpool {
     pub fn new(
@@ -111,9 +108,9 @@ impl PreparedSpool {
     pub fn retained(
         mut self,
         spool: Arc<crate::start::spool::Started>,
-        sink: Arc<crate::sink::directory::Directory>,
+        sink: impl Into<crate::sink::Sink>,
     ) -> Self {
-        self.lease = Some((spool, sink));
+        self.lease = Some((spool, sink.into()));
         self
     }
     pub(crate) fn create_directory(

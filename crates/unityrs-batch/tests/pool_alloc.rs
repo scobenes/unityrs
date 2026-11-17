@@ -191,7 +191,7 @@ impl Tail {
             done: self.done,
             workspace,
             handoff,
-            directory: self.directory,
+            sink: self.directory.into(),
             outcomes,
             account: self.account,
             gate: publish::Gate::default(),

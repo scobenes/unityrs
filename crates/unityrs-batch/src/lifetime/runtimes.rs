@@ -56,6 +56,9 @@ impl Runtimes {
         self.prewarm_with(idle)
     }
     fn prewarm_with(&self, idle: usize) -> io::Result<()> {
+        for runtime in [&self.controller, &self.finisher] {
+            crate::execution::startup::prime(runtime)?;
+        }
         let mut idle = idle;
         let target = 2 * self.per_runtime;
         let count = Arc::new((
