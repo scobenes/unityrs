@@ -14,10 +14,13 @@ fuzz_target!(|data: &[u8]| {
     let Some(case) = unityrs_fuzz::Case::new(data) else {
         return;
     };
-    let kind = if case.case.has(TreeCase::STREAM) {
-        ReaderKind::Stream
-    } else {
-        ReaderKind::Memory
+    let kind = match (
+        case.case.has(TreeCase::STREAM),
+        case.case.has(TreeCase::BYTES_IO),
+    ) {
+        (true, true) => ReaderKind::BytesIo,
+        (true, false) => ReaderKind::Stream,
+        (false, _) => ReaderKind::Memory,
     };
     unityrs_fuzz::with_stack(|| {
         let read = ReadCtx {
@@ -28,7 +31,7 @@ fuzz_target!(|data: &[u8]| {
         };
         let start = match kind {
             ReaderKind::Memory => i128::from(case.case.start),
-            ReaderKind::Stream => i128::from(case.case.start.unsigned_abs()),
+            ReaderKind::Stream | ReaderKind::BytesIo => i128::from(case.case.start.unsigned_abs()),
         };
         let _ = python::read_with_reader(&case.data, start, &case.tree, &read, kind);
     });

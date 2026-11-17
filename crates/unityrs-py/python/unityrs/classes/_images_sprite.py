@@ -41,7 +41,8 @@ def get_sprite_image(self):
     cache = self.assets_file._cache
     key = (texture.path_id, alpha.path_id) if alpha else texture.path_id
     environment = getattr(self.assets_file, 'environment', None)
-    with (environment._lock if environment is not None else nullcontext()):
+    owner = getattr(self.assets_file, '_sync_owner', environment)
+    with (owner._lock if owner is not None else nullcontext()):
         if key not in cache:
             original = get_image(texture.deref_parse_as_object())
             guard.step(0, original.width * original.height * 8 + 1024, original.width * original.height)

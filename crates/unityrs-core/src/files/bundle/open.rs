@@ -153,11 +153,13 @@ impl BundleFile {
         let (ends, c) = Ends::new(blocks.len(), meter)?;
         charge.absorb(c);
         let runs = RunIndex::mutex(&mut charge)?;
+        let constructor_position = r.position();
         Ok(Arc::new_cyclic(|this| Self {
             writable: crate::files::cab::WritableCabs::new(meter),
             changed: std::sync::atomic::AtomicBool::new(false),
             name,
             source: data,
+            constructor_position,
             legacy_data: None,
             header,
             blocks,
@@ -256,7 +258,7 @@ fn read_fs_header(
     ctx: &FileContext,
 ) -> Result<FsHeader, Error> {
     let meter = charge.meter().clone();
-    let meter = &*meter;
+    let meter = &meter;
     // UnityPy files/BundleFile.py:36-39
     let signature = string_to_null(r, data, meter)?;
     let format = r.read_u32()?;
@@ -270,10 +272,10 @@ fn read_fs_header(
         }
         b"UnityWeb" | b"UnityRaw" | b"UnityFS" => {}
         _ => {
-            return Err(Error::Malformed {
-                what: "bundle signature",
-                detail: "Unknown Bundle signature".into(),
-            });
+            return Err(Error::BundleSignature(RawStr::charged(
+                signature.as_bytes(),
+                meter,
+            )?));
         }
     }
     // :97-106

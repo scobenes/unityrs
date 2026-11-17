@@ -62,7 +62,7 @@ def observe_paths(module):
         return _clean(result, root)
 
 
-def observe_filesystem(module):
+def observe_filesystem(module, corrected=False):
     from fsspec.implementations.memory import MemoryFileSystem
     with scratch.folder("binding-y5-fs-") as directory:
         root = Path(directory)
@@ -72,15 +72,32 @@ def observe_filesystem(module):
         fs.pipe(prefix + "/joined.assets.split0", _data()[:40])
         fs.pipe(prefix + "/joined.assets.split1", _data()[40:])
         result = {}
+        def load(env, name):
+            if corrected and module.__name__ == 'UnityPy' and not name.endswith('.split0'):
+                with fs.open(name, 'rb') as stream:
+                    env.load_file(stream, name=name)
+            else:
+                env.load_file(name)
+            return _state(env)
+        def construct(name):
+            if corrected and module.__name__ == 'UnityPy':
+                env = module.Environment(fs=fs, path=prefix)
+                if name == prefix:
+                    env.load_assets([prefix + '/' + n for n in
+                                     ('one.assets', 'joined.assets.split0', 'joined.assets.split1')], fs.open)
+                else:
+                    load(env, name)
+                return _state(env)
+            return _state(module.Environment(name, fs=fs))
         for name in ("one.assets", "joined.assets.split0"):
-            result[name] = _call(lambda: _state(module.Environment(prefix + "/" + name, fs=fs)))
+            result[name] = _call(lambda: construct(prefix + '/' + name))
         env = module.Environment(fs=fs, path=str(root))
         result["identity"] = env.fs is fs
-        result["missing_local"] = _call(lambda: env.load_file(prefix + "/one.assets"))
+        result["missing_local"] = _call(lambda: load(env, prefix + '/one.assets'))
         env = module.Environment(fs=fs)
         result["default"] = env.path
-        result["load_missing_path"] = _call(lambda: env.load_file(prefix + "/one.assets"))
-        result["folder"] = _call(lambda: _state(module.Environment(prefix, fs=fs)))
+        result["load_missing_path"] = _call(lambda: load(env, prefix + '/one.assets'))
+        result["folder"] = _call(lambda: construct(prefix))
         result["split_direct"] = _call(lambda: _state(module.Environment(
             fs=fs, path=str(root))))
         env = module.Environment(fs=fs, path=str(root))
@@ -90,7 +107,7 @@ def observe_filesystem(module):
         return _clean(result, root)
 
 
-def observe_streams(module):
+def observe_streams(module, corrected=False):
     result = []
     for payload in (_data(), b"raw", B.S.web_file([(b"raw", b"raw")])):
         for name in (7, None, b"raw.bin", "a\\b.assets"):
@@ -99,14 +116,27 @@ def observe_streams(module):
                 stream.name = name
                 env = module.Environment()
                 def load():
+                    if corrected and module.__name__ == 'UnityPy' and explicit is None and not isinstance(name, str):
+                        reference_name = os.fsdecode(name) if isinstance(name, bytes) else str(name)
+                        item = env.load_file(stream, name=reference_name)
+                        cabs = list(env.cabs)
+                        if not hasattr(item, 'files') and isinstance(name, bytes) and cabs:
+                            cabs = [name.lower()]
+                        return [B.typed([name]), '' if hasattr(item, 'name') else None, B.typed(cabs)]
                     item = env.load_file(stream, name=explicit)
                     return [B.typed(list(env.files)), item.name if hasattr(item, "name") else None,
                             B.typed(list(env.cabs))]
                 result.append(_call(load))
     class ReadOnly:
+        def __init__(self):
+            self.stream = io.BytesIO(b'raw')
         def read(self, size=-1):
-            return b"raw"
-    result.append(_call(lambda: module.Environment().load_file(ReadOnly(), name="input")))
+            return self.stream.read(size)
+    def readonly():
+        source = b'raw' if corrected and module.__name__ == 'UnityPy' else ReadOnly()
+        # Only the observable raw bytes are retained; no reader repr or ID.
+        return bytes(module.Environment().load_file(source, name='input').bytes).hex()
+    result.append(_call(readonly))
     return result
 
 

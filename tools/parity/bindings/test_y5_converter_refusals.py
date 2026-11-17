@@ -16,7 +16,7 @@ class ConverterRefusals(unittest.TestCase):
         self.assertEqual(UnityPy.__version__, "1.25.2")
         self.assertEqual(observe_untextured_material(unityrs), observe_untextured_material(UnityPy))
 
-    def test_textured_material_is_refused_before_resolution(self):
+    def test_textured_material_requires_resolvable_pointers(self):
         exporter = importlib.import_module("unityrs.export.MeshRendererExporter")
         for key in ("_MainTex", "_BumpMap", "_SpecularTex", "_NormalMap"):
             with self.subTest(key=key):
@@ -27,8 +27,11 @@ class ConverterRefusals(unittest.TestCase):
                             m_Texture=classes.PPtr(m_FileID=0, m_PathID=1),
                             m_Offset=classes.Vector2f(0, 0), m_Scale=classes.Vector2f(1, 1)))],
                         m_Colors=[], m_Floats=[]))
-                with self.assertRaisesRegex(NotImplementedError, "export_material.*textured material"):
+                with self.assertRaisesRegex(ValueError, "PPtr can't deref without an assetsfile"):
                     exporter.export_material(material)
+        from binding_y6_exports import observe_material_textures
+        self.assertEqual(observe_material_textures(unityrs),
+                         observe_material_textures(UnityPy, corrected=True))
 
     def test_plain_replacement_converter_matches_oracle(self):
         self.assertEqual(observe_texture_extension(unityrs), observe_texture_extension(UnityPy))

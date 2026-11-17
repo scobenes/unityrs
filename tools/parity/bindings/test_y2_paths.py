@@ -118,5 +118,33 @@ class FindFilePaths(unittest.TestCase):
             expected = UnityPy.Environment(path=str(root)).find_file(str(candidate))
             self.assertEqual(result.bytes, expected.bytes)
         else:
+            self.assert_find_file_matches_unitypy(root, str(candidate))
+
+    def test_case_sensitive_alias_follows_the_suffix_fallback(self):
+        # The branch above that a case-sensitive file system takes, on a
+        # tree it controls (scratch lives under the temporary directory): the
+        # alias is not the root, so the lookup falls back to UnityPy's suffix
+        # match, or raises when nothing matches.
+        root = scratch.for_case(self) / 'proj'
+        (root / 'sub').mkdir(parents=True)
+        (root / 'Cargo.toml').write_bytes(b'toml')
+        (root / 'Cargo.lock').write_bytes(b'lock')
+        (root / 'sub' / 'x.bin').write_bytes(b'x')
+        alias = root.with_name('PROJ')
+        if alias.exists():
+            self.skipTest('case-insensitive file system')
+        for name in ('Cargo.toml', 'zzz.toml'):
+            self.assert_find_file_matches_unitypy(root, str(alias / name))
+
+    def assert_find_file_matches_unitypy(self, root, candidate):
+        import UnityPy
+        import unityrs
+        try:
+            expected = UnityPy.Environment(path=str(root)).find_file(candidate)
+        except FileNotFoundError:
             with self.assertRaises(FileNotFoundError):
-                env.find_file(str(candidate))
+                unityrs.Environment(path=str(root)).find_file(candidate)
+            return
+        result = unityrs.Environment(path=str(root)).find_file(candidate)
+        self.assertEqual(result is None, expected is None)
+        self.assertEqual(getattr(result, 'bytes', None), getattr(expected, 'bytes', None))

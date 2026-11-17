@@ -249,6 +249,7 @@ pub struct BundleFile {
     pub(super) changed: std::sync::atomic::AtomicBool,
     name: RawStr,
     source: Bytes,
+    constructor_position: i128,
     legacy_data: Option<Bytes>,
     header: BundleHeader,
     blocks: Box<[BlockInfo]>,
@@ -319,6 +320,12 @@ impl std::fmt::Debug for BundleFile {
 }
 
 impl BundleFile {
+    /// Final cursor of the constructor's outer input reader.
+    #[must_use]
+    pub fn constructor_position(&self) -> i128 {
+        self.constructor_position
+    }
+
     /// The meter of the input it belongs to (of this open of it); its
     /// entries, nested bundles included, charge it too.
     #[must_use]

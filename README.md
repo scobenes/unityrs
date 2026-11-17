@@ -121,7 +121,7 @@ Interrupted runs may leave
 the nine exporters and extraction helpers with the same destination confinement.
 It validates names and extensions before creating output, opens destinations only
 when dispatch and filters reach an export, and preserves existing files on failed
-image exports through atomic publication. Its 269 oracle comparisons and 113 wheel
+image exports through atomic publication. Its 317 oracle comparisons and 133 wheel
 tests include hostile path, shared-reader cursor and concurrency regressions,
 primitive-map decoding budgets, empty and legacy GameObject components, and
 decryption-key conversion deferred until encrypted bundle processing. Generated
@@ -144,13 +144,14 @@ conversion; source-loading errors take precedence. Non-container extraction
 accepts an empty destination as the current directory while validating names.
 These cases have oracle comparisons and recorded replay. Standalone
 SerializedFile parsing leaves the environment's file and CAB mappings unchanged.
-Forced-parsing stream semantics (memory-reader `read(None)` and BytesIO
-`read(-2)`) and an earlier child's CAB surviving a later container failure remain
-open under PARITY section 22 for Y6a; Y5 does not verify them.
+Y6a’s recorded forced-parsing cases close PARITY section 22’s stream semantics
+(memory-reader `read(None)` and BytesIO `read(-2)`) and earlier-child CAB retention
+after a later container failure, with reader identity, cursor and endian checks.
 Runtime configuration retains a context's
 decryption key unless it supplies an override.
-Textured material adapters and replacement texture converters requiring Switch
-or crunch preprocessing have named refusals pending Y6a/Y6b.
+Standalone textured materials resolve current texture names through Y6a’s bounded
+adapter. Replacement texture converters requiring Switch or crunch preprocessing
+have named refusals pending Y6b.
 
 ## Licence
 

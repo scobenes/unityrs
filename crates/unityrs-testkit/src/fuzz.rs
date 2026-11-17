@@ -156,6 +156,9 @@ impl TreeCase {
     /// no value read reaches. Without it the code that grows a charged
     /// buffer at the memory bound never runs in the value targets.
     pub const SMALL_MEMORY: u8 = 64;
+    /// With [`Self::STREAM`], the stream reader is backed by `io.BytesIO`,
+    /// where a negative read size reads to the end.
+    pub const BYTES_IO: u8 = 128;
 
     /// Whether `flags` holds `bit`.
     #[must_use]

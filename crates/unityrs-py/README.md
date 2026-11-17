@@ -14,7 +14,7 @@ From the repository root, with maturin installed in a build venv:
 ```sh
 maturin build --locked --release --manifest-path crates/unityrs-py/Cargo.toml --out /tmp/unityrs-wheels
 python -m pip install --no-deps /tmp/unityrs-wheels/*.whl
-python scripts/unittest-suites crates/unityrs-py/python/tests=113
+python scripts/unittest-suites crates/unityrs-py/python/tests=133
 ```
 
 Build a Linux wheel in the oracle container to test there; a macOS wheel cannot
@@ -24,11 +24,11 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=269
+python ../../scripts/unittest-suites bindings=317
 ```
 
-The recorder writes 166 synthetic API records (34 Y1 records, 10 Y3 groups and
-70 Y4 groups and 52 tools/module/loader groups),
+The recorder writes 202 synthetic API records (34 Y1 records, 10 Y3 groups and
+70 Y4 groups, 52 tools/module/loader groups and 36 Y6a groups),
 including exception text, all enum member names and values, version edge cases
 and mutable helper behavior, plus 90 Y2 object-mode observations. Object
 recordings select only fields from the synthetic input, never generated defaults
@@ -40,10 +40,12 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 113 tests and the oracle comparison has 269; CI enforces both
-minimum counts. Warning handlers run on the calling Python thread before a
-fallback load is published, including handlers that re-enter the environment.
-The Rust binding suite has 33 tests, including guarded finalization and unwind
+The wheel suite has 133 tests and the oracle comparison has 317; CI enforces both
+minimum counts. Exception translation and object-value handoff run on the calling
+thread after the native worker joins. Other worker sites relay Python callbacks,
+allocations and finalizers to that caller. Warning handlers run on that thread
+before a fallback load is published, including handlers that re-enter the environment.
+The Rust binding suite has 37 tests, including guarded finalization and unwind
 regressions and replay of the synthetic API observations.
 
 ```python
@@ -73,8 +75,10 @@ including when a Python thread has a small stack. Native container destruction
 is iterative on the releasing thread, including wrapper failure cleanup.
 The already charged entry tables form its work list: teardown allocates no
 storage and creates no workers, even with a full budget or refused allocator.
-Conversion uses an explicit metered work stack. Files and objects retain strong
-parent links, and a weak wrapper cache preserves identity without retaining
+Conversion uses an explicit metered work stack. Object reads hand a flat, metered
+construction plan to the caller; recursive native values are destroyed on the
+parser worker, including failed `check_read` results. Files and objects retain
+strong parent links, and a weak wrapper cache preserves identity without retaining
 replaced files forever. An environment lock serializes loads and wrapper
 publication. Stream reads accumulate bounded chunks up to `max_input_bytes + 1` bytes, restore
 the original position, and refuse oversized input before parsing. ZIP members
@@ -230,17 +234,17 @@ streamed-resource lookup through duplicate nested container entries.
 Oracle comparisons check `Environment.files` and `cabs` before and after,
 including replacement names and a later load. All three behaviors are recorded
 and replayed through `binding_y5_round6`.
-Stream semantics for standalone forced parsing (memory-reader `read(None)` and
-BytesIO `read(-2)`) and preservation of an earlier child's CAB after a later
-container child fails remain open in PARITY section 22, owned by Y6a's forced-parsing
-follow-up. Y5's normal parsing observations do not verify these cases.
+Y6a's recorded forced-parser cases verify memory-reader `read(None)`, BytesIO
+`read(-2)`, and publication of earlier child CABs when a later container child
+fails. Successful and partial constructors retain the reader kind, cursor and
+endian; these close Y5's standalone parsing follow-ups in PARITY section 22.
 
 Failed image exports retain the previous file and remove their temporary sibling.
 This is a documented safety divergence: Pillow can leave a partial destination
 in UnityPy (33 bytes for a zero-height RGBA PNG). The oracle observation and our
-preserved file both replay. The deferred material adapter refuses textured
-materials with `NotImplementedError` naming `export_material` until Y6a; untextured
-materials replay. Replaced `CONV_TABLE` converters similarly refuse Switch-swizzled
+preserved file both replay. Standalone material exports resolve current texture
+names through Y6a’s bounded adapter; textured and untextured materials replay.
+Replaced `CONV_TABLE` converters similarly refuse Switch-swizzled
 and crunch inputs with a named refusal until Y6b supplies their preprocessing.
 
 | behavior | UnityPy 1.25.2 source | PARITY.md rows |
@@ -292,8 +296,68 @@ key comparisons cover these settings.
 Font, TextAsset, MonoBehaviour and VideoClip have no class `export()` in 1.25.2;
 their file exporters belong to the tools surface.
 
-The module completion table after PARITY.md 2.1 names the remaining helper APIs,
-codec callback integration and reader edge cases. These are follow-ups, not
+The module completion table after PARITY.md 2.1 assigns the remaining helper APIs,
+codec callback integration and reader edge cases to Y6b. These are follow-ups, not
 verified by the namespace checks. Standalone Brotli uses the core's bounded
 inflater and stored-metablock writer: decoded bytes replay against UnityPy;
 compressed bytes retain the existing Tier B difference from its quality-11 writer.
+
+Y6a's `replays_unitypy_residue_observations` replays 36 additional groups.
+They cover the loader edge cases, synthetic object-mode residue and Transform,
+damaged AssetInfo preloads, current material texture names, raw float WAVs and
+forced helper parsing, detached saves and mutations, constructor reader state
+and compressed-reader failures. Original oracle failures remain beside each
+corrected reference; non-class module attributes are probed in isolated oracle children.
+The input limits, charged staging and dependency confinement above apply to
+these adapters too. No dependency or bundled runtime schema is added.
+
+| behavior | UnityPy 1.25.2 source | PARITY.md rows |
+|---|---|---|
+| loader path, key and reader observations | helpers/ImportHelper.py:159-173; environment.py:100-160, environment.py:310-354; classes/PPtr.py:43-90 | 3, 19.2 |
+| referenced arrays and non-class names | helpers/TypeTreeHelper.py:182-263, helpers/TypeTreeHelper.py:266-361; UnityPyBoost/TypeTreeHelper.cpp:458-583 | 9.2, 19.2 |
+| synthetic Transform reader | files/ObjectReader.py:186-187, files/ObjectReader.py:217-218, files/ObjectReader.py:244-262 | 14.3 |
+| damaged preload tables and external lookup | helpers/ContainerHelper.py:31-49; classes/PPtr.py:43-90 | 19.3 |
+| standalone material texture names and renderer PNG write order | export/MeshRendererExporter.py:48-103, export/MeshRendererExporter.py:106-189 | 15.4, 19.1 |
+| optional PCM float conversion | export/AudioClipConverter.py:13-49 | 16 |
+| forced file-type parsing | helpers/ImportHelper.py:127-156 | 22 |
+
+Forced parsers accept the default big-endian, zero-position reader state.
+A nonzero parser cursor, or a non-default endian for Assets/Bundle parsing,
+raises a recorded `NotImplementedError` before parsing; this prevents silently
+parsing a different reader state. Raw-type selections preserve the original
+reader and cursor. PARITY.md 19.3 records both refusals beside the oracle results.
+
+Successful forced constructors apply their final cursor and endian to the input
+reader, including stream short reads of oversized members. Failed constructors
+retain endian assignments and publish earlier successful child CABs before
+re-raising; nested bounds failures use the child reader kind and buffer size.
+Compressed WebFiles keep the outer reader at its constructor state;
+short-read errors use the decoded reader's kind and size. Detached files and
+descendants expose `environment=None` while retaining a private synchronization
+owner for saves, object edits and lazy node publication. These cases replay
+`binding_y6_review` and compare with the pinned oracle; exception lookup
+reentrancy also runs under the Rust `DEADLOCK_GUARD`.
+
+Explicit readers passed to `Environment.load_file` keep their identity and
+receive the detection reset and final constructor cursor and endian: short raw
+inputs keep their cursor, a 20-byte raw stream resets to zero, and the synthetic
+TextAsset finishes at 281. Nested bundle-signature errors retain a charged copy
+of the rejected child's signature instead of rereading the outer container.
+Both observations are oracle-compared and replayed in `binding_y6_review`.
+
+Detection probes an explicit reader at its original cursor before resetting it:
+the synthetic WebFile positioned at byte 2 stays the original raw reader at zero.
+Probes past EOF retain the original cursor and each reader kind's exception.
+Forced WebFile parsing distinguishes `BytesIO` reads from buffered-file reads;
+a member size of -2 reads to EOF only for `BytesIO`, retaining its final cursor
+and child CAB. Negative legacy-bundle offsets follow `struct.unpack_from`'s
+normalization and range messages. These three observations are oracle-compared
+and replayed in `binding_y6_review`; native bounds tests also compare directly
+with `struct.unpack_from`. The Rust binding suite has 37 tests, including guarded
+caller-thread finalization and callback-unwind regressions.
+
+Renderer PNG writes preserve every `m_TexEnvs` entry in source order, including
+duplicate property names and filename collisions; MTL references use the last
+value for each property in first-key order. The duplicate `_MainTex` regression
+keeps `old.png` and verifies the final pixels of `shared.png` against the
+corrected 1.25.2 oracle, recorded and replayed in `binding_y6_exports`.

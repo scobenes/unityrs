@@ -102,6 +102,24 @@ TOOLS = [("binding_y5_loader", "observe_" + name) for name in
     ("binding_y5_round8", "observe_" + name) for name in ("array_reads", "aggregate_bytes")
 ]
 
+RESIDUE = [("binding_y6_loader", "observe_" + name) for name in
+           ("sensitive_path", "case_lookup", "hashes", "readers", "buffers",
+            "pointer_case", "suffix", "urls", "symlinks")] + [
+    ("binding_y6_objects", "observe_" + name) for name in
+    ("references", "nonclass", "transform", "preload")
+] + [("binding_y6_exports", "observe_" + name) for name in
+     ("material_textures", "renderer_texture_collisions", "audio_float", "audio_options")] + [
+    ("binding_y6_parse", "observe_" + name) for name in
+    ("forced_raw", "forced_parsers", "forced_failures", "forced_positions")
+] + [
+    ("binding_y6_review", "observe_" + name) for name in
+    ("detached_save", "detached_mark", "detached_raw", "detached_patch",
+     "constructor_states", "compressed_failures", "oversized_member_states",
+     "failed_constructor_endian", "partial_child_registration", "nested_bounds_failures",
+     "explicit_reader_states", "nested_bundle_signatures", "positioned_detection",
+     "negative_member_readers", "negative_bundle_offsets")
+]
+
 
 def helper_records():
     import importlib
@@ -111,6 +129,17 @@ def helper_records():
         ("binding_y5_round3", "observe_negative_string_budget"): "PARITY.md 19.3: negative string reads retain decoding staging for the remaining input span",
         ("binding_y5_round8", "observe_aggregate_bytes"): "PARITY.md 19.3: retain byte spans in every enclosing array until handoff",
         ("binding_y5_review", "observe_failed_image"): "PARITY.md 19.3: failed image exports preserve existing files with atomic publication",
+        ("binding_y5_loader", "observe_filesystem"): "PARITY.md 19.2: custom filesystem reads use the same file opened as a stream",
+        ("binding_y5_loader", "observe_streams"): "PARITY.md 19.2: non-string names retain keys and register textual CAB names; read-only streams load their bytes",
+        ("binding_y6_loader", "observe_buffers"): "PARITY.md 19.2: mutable nameless buffers and read-only streams load their bytes reference",
+        ("binding_y6_loader", "observe_pointer_case"): "PARITY.md 19.2: exact-case PPtr basename retry skips non-string keys",
+        ("binding_y6_loader", "observe_suffix"): "PARITY.md 19.2: suffix lookup requires a separator boundary",
+        ("binding_y6_loader", "observe_urls"): "PARITY.md 19.2: URL-prefixed environment paths retain the literal existence gate",
+        ("binding_y6_objects", "observe_nonclass"): "PARITY.md 19.2: non-class attributes use the missing-type UnknownObject reference",
+        ("binding_y6_exports", "observe_material_textures"): "PARITY.md 19.1: iterate material texture dictionary items and snapshot current resolved texture names",
+        ("binding_y6_exports", "observe_renderer_texture_collisions"): "PARITY.md 19.1: correct material texture dictionary iteration while retaining source-order PNG writes",
+        ("binding_y6_exports", "observe_audio_float"): "PARITY.md 16: PCM float bank VERSION refusal retains the fmod_toolkit subsound WAV reference",
+        ("binding_y6_parse", "observe_forced_positions"): "PARITY.md 19.3: forced parsers explicitly refuse a nonzero cursor or non-default Assets/Bundle endian",
         ("binding_y5_objects", "observe_iteration"): "PARITY.md 19.2: file iteration follows nested containers and yields requested objects",
         ("binding_y4_images", "observe_set_image"): "PARITY.md 18.1: convert unsupported packer modes to RGBA",
         ("binding_y4_images", "observe_image_formats"): "PARITY.md 18.1: convert unsupported packer modes to RGBA",
@@ -135,7 +164,7 @@ def helper_records():
     ):
         references["binding_y4_round5", name] = "PARITY.md 19.3: " + reason
     records = []
-    for observer, function in HELPERS + EXPORTS + TOOLS:
+    for observer, function in HELPERS + EXPORTS + TOOLS + RESIDUE:
         call = getattr(importlib.import_module(observer), function)
         observed = call(UnityPy)
         record = {"name": f"{observer}.{function}", "observer": observer,

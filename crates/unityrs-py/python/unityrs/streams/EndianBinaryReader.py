@@ -57,7 +57,6 @@ class EndianBinaryReader:
             if hasattr(item, "seek") and hasattr(item, "tell"):
                 obj = super(EndianBinaryReader, cls).__new__(EndianBinaryReader_Streamable)
             else:
-                item = item.read()
                 obj = super(EndianBinaryReader, cls).__new__(EndianBinaryReader_Memoryview)
         else:
             raise TypeError("Unsupported type for EndianBinaryReader: %s" % type(item))
@@ -236,6 +235,10 @@ class EndianBinaryReader_Memoryview(EndianBinaryReader):
     _function_map = MEMORY_FUNCTIONS
 
     def __init__(self, view, endian: Endianess = ">", offset: int = 0):
+        if isinstance(view, EndianBinaryReader_Memoryview):
+            view = view.view
+        elif hasattr(view, "read") and not hasattr(view, "seek"):
+            view = view.read()
         super().__init__(view, endian=endian, offset=offset)
         self.view = memoryview(view)
         self.Length = len(view)

@@ -30,7 +30,11 @@ class ContainerHelper:
             size = info.preloadSize
             if start < 0 or size <= 0 or start + size > len(self._preload_table):
                 continue
-            for index in range(start, start + size):
+            # Preserve the slice's index protocol and diagnostics without
+            # allocating a copy of the whole span (helpers/ContainerHelper.py:31-49).
+            guard.step(0, 512, 1)
+            span = slice(start, start + size).indices(len(self._preload_table))
+            for index in range(*span):
                 guard.step(0, 0, 1)
                 pptr = self._preload_table[index]
                 if not pptr:

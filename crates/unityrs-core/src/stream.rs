@@ -356,6 +356,8 @@ impl<'a> Reader<'a> {
             pos,
             need: u64::try_from(need).unwrap_or(u64::MAX),
             have: self.have(),
+            reader: self.kind,
+            length: self.data.len(),
         }
     }
 
@@ -551,6 +553,8 @@ impl<'a> Reader<'a> {
                 pos: self.pos,
                 need: 4,
                 have,
+                reader: self.kind,
+                length: self.data.len(),
             };
             self.pos = next;
             return Err(e);
@@ -572,6 +576,8 @@ impl<'a> Reader<'a> {
                 pos: self.pos,
                 need: u64::try_from(n).unwrap_or(u64::MAX).saturating_mul(4),
                 have: self.have(),
+                reader: self.kind,
+                length: self.data.len(),
             };
             self.pos = next;
             return Err(e);
