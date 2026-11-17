@@ -19,7 +19,9 @@ use crate::env::{Fetch, Source};
 use crate::error::{Error, LimitKind};
 use crate::limits::{Limits, Meter, pool_refusals};
 use crate::options::FileContext;
+use crate::provider::ProviderError;
 use crate::raw::RawStr;
+use crate::walk::ParseError;
 
 /// A budget that refuses every reservation.
 #[derive(Debug)]
@@ -168,6 +170,24 @@ fn refused_once(cache: &DepCache, refusal: impl Fn() -> Error) -> (Result<(), Er
         Ok(())
     });
     (r, runs.get())
+}
+
+#[test]
+fn only_a_dependency_budget_refusal_from_a_provider_is_retried() {
+    let cache = cache();
+    for (reservation, retry) in [
+        (Some(Reservation::Dependency), true),
+        (Some(Reservation::Input), false),
+        (None, false),
+    ] {
+        let (result, runs) = refused_once(&cache, || {
+            let mut provider = ProviderError::new("fixture", "provider failure".into());
+            provider.memory = reservation.map(|what| BudgetExceeded { requested: 8, what });
+            Error::AssetBundle(Arc::new(ParseError::Provider(provider)))
+        });
+        assert_eq!(result.is_ok(), retry);
+        assert_eq!(runs, 1 + u32::from(retry));
+    }
 }
 
 /// Whether a refusal is retried depends on the current call alone: the

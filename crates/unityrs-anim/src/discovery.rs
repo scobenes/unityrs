@@ -311,6 +311,10 @@ impl Discovery {
 }
 
 /// Visit the graph and each component in their stored order.
+///
+/// Dependency sources must not change during the Environment's lifetime.
+/// A source changed between eviction and reopen may yield the previously
+/// retained clip.
 pub fn discover(
     env: &Environment,
     graph: &Graph,

@@ -108,6 +108,10 @@
 //! that someone still holds (a nested bundle a resource read kept) goes on
 //! counting against the old open's, which nothing resets. A
 //! [`Source::Bytes`] dependency keeps its bytes, which are the caller's.
+//! Dependency sources must not change during the Environment's lifetime.
+//! The registry follows the original directory indices after reopening a
+//! source. A source changed between eviction and reopen may yield the
+//! previously retained object when using [`Environment::deref_held_reusing`].
 //! The files a caller loaded are never evicted. Every call that reads or
 //! registers through a dependency's meter (a load, a lookup, a dereference,
 //! a resource read, an object's tree with the script hook, the container
@@ -310,6 +314,52 @@ pub enum Source {
         /// The fetcher.
         fetch: Arc<dyn Fetch>,
     },
+}
+
+impl Source {
+    fn name_bytes(&self) -> &[u8] {
+        match self {
+            Self::Bytes { name, .. } | Self::Fetch { name, .. } => name.as_bytes(),
+            Self::Path(path) | Self::ConfinedPath { path, .. } => {
+                let name = path.as_os_str().as_encoded_bytes();
+                split::base(name).unwrap_or(name)
+            }
+        }
+    }
+
+    /// Whether these handles refer to the same source, without reading it.
+    fn same_origin(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Path(path), Self::Path(other_path)) => {
+                path.as_os_str() == other_path.as_os_str()
+            }
+            (
+                Self::ConfinedPath { path, root },
+                Self::ConfinedPath {
+                    path: other_path,
+                    root: other_root,
+                },
+            ) => {
+                path.as_os_str() == other_path.as_os_str()
+                    && root.as_os_str() == other_root.as_os_str()
+            }
+            (
+                Self::Fetch { name, fetch },
+                Self::Fetch {
+                    name: other_name,
+                    fetch: other_fetch,
+                },
+            ) => name == other_name && Arc::ptr_eq(fetch, other_fetch),
+            (
+                Self::Bytes { name, data },
+                Self::Bytes {
+                    name: other_name,
+                    data: other_data,
+                },
+            ) => name == other_name && std::ptr::eq(data.as_ref(), other_data.as_ref()),
+            _ => false,
+        }
+    }
 }
 
 /// Reads `path` whole for [`Source::Path`]. A file whose length is above
@@ -560,10 +610,7 @@ enum Found {
 fn source_name(source: &Source) -> RawStr {
     match source {
         Source::Bytes { name, .. } | Source::Fetch { name, .. } => name.clone(),
-        Source::Path(p) | Source::ConfinedPath { path: p, .. } => {
-            let name = p.as_os_str().as_encoded_bytes();
-            RawStr::from(split::base(name).unwrap_or(name))
-        }
+        Source::Path(_) | Source::ConfinedPath { .. } => RawStr::from(source.name_bytes()),
     }
 }
 

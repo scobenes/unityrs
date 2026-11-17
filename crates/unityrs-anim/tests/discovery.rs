@@ -8,6 +8,8 @@ use unityrs_core::env::{CabResolver, DerefError, EnvOptions, Environment, Fetch,
 use unityrs_core::error::{Error, LimitKind};
 use unityrs_core::files::{BundleFile, File, ParentKind, SerializedFile};
 use unityrs_core::limits::Meter;
+use unityrs_core::provider::{ProviderChain, ProviderError, TreeRequest, TypeTreeProvider};
+use unityrs_core::typetree::Tree;
 use unityrs_core::{Bytes, FileContext, RawStr};
 use unityrs_scene::{GraphOptions, graph_from_scene_file};
 use unityrs_testkit::env::bundle;
@@ -667,6 +669,60 @@ fn alternating_dependency_slots_share_two_retained_clips() {
 }
 
 #[test]
+fn resolver_alias_reuses_the_retained_clip() {
+    #[derive(Debug)]
+    struct ClipSource {
+        data: Bytes,
+        fetches: AtomicU64,
+    }
+    impl Fetch for ClipSource {
+        fn fetch(&self) -> Result<Bytes, Error> {
+            self.fetches.fetch_add(1, Ordering::Relaxed);
+            Ok(self.data.clone())
+        }
+    }
+    #[derive(Debug)]
+    struct Aliases(Arc<ClipSource>);
+    impl CabResolver for Aliases {
+        fn resolve(&self, name: &[u8]) -> Option<Source> {
+            matches!(name, b"clips.assets" | b"alias").then(|| Source::Fetch {
+                name: RawStr::from_static(b"clips.assets"),
+                fetch: self.0.clone(),
+            })
+        }
+    }
+
+    let source = Arc::new(ClipSource {
+        data: Bytes::from(s::file(Layout::Unity2022, &[], &[a::clip(9), a::clip(10)]).unwrap()),
+        fetches: AtomicU64::new(0),
+    });
+    let mut options = EnvOptions::batch(Arc::new(FileContext::unitypy()));
+    options.resolver = Some(Arc::new(Aliases(source.clone())));
+    let env = Environment::new(options);
+    let file = load(
+        &env,
+        b"rig",
+        &["clips.assets", "alias"],
+        &[
+            Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
+            Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+            a::legacy(3, (1, 9), &[(2, 9), (2, 10)]),
+        ],
+    );
+    let meter = Meter::unlimited();
+    let graph = graph_from_scene_file(&env, &file, &GraphOptions::default(), &meter).unwrap();
+    let catalog = discover(&env, &graph, &meter).unwrap();
+    let rig = &catalog.rigs()[0];
+    let [first, second, third] = rig.slots() else {
+        panic!("three clip slots");
+    };
+    assert_eq!(source.fetches.load(Ordering::Relaxed), 1);
+    assert!(std::ptr::eq(first.clip().unwrap(), second.clip().unwrap()));
+    assert_eq!(third.clip().unwrap().path_id(), 10);
+    assert_eq!(rig.clips().count(), 2);
+}
+
+#[test]
 fn eager_asset_bundle_budget_refusal_retries_after_releasing_the_pinned_bundle() {
     #[derive(Debug, Default)]
     struct RefuseWhilePinned {
@@ -746,6 +802,107 @@ fn eager_asset_bundle_budget_refusal_retries_after_releasing_the_pinned_bundle()
     };
     assert!(budget.refusals.load(Ordering::Relaxed) > 0);
     assert_eq!(budget.pinned.get().unwrap().strong_count(), 0);
+    assert_eq!(first.clip().unwrap().path_id(), 9);
+    assert_eq!(second.clip().unwrap().path_id(), 10);
+}
+
+#[test]
+fn stripped_asset_bundle_provider_refusal_retries_after_releasing_the_pinned_bundle() {
+    #[derive(Debug)]
+    struct AssetBundleProvider {
+        tree: Arc<Tree>,
+        pinned: OnceLock<Weak<BundleFile>>,
+        requests: AtomicU64,
+    }
+    impl TypeTreeProvider for AssetBundleProvider {
+        fn name(&self) -> &'static str {
+            "asset-bundle-fixture"
+        }
+
+        fn tree(&self, request: &TreeRequest<'_>) -> Result<Option<Arc<Tree>>, ProviderError> {
+            assert_eq!(request.class_id, 142);
+            self.requests.fetch_add(1, Ordering::Relaxed);
+            if self.pinned.get().unwrap().strong_count() > 0 {
+                let mut error = ProviderError::new(self.name(), "dependency pool full".into());
+                error.memory = Some(BudgetExceeded {
+                    requested: 1,
+                    what: Reservation::Dependency,
+                });
+                return Err(error);
+            }
+            Ok(Some(self.tree.clone()))
+        }
+    }
+
+    let null = pptr("Object", (0, 0));
+    let objects = [
+        a::clip(10),
+        Object::new(
+            11,
+            142,
+            st(
+                "AssetBundle",
+                vec![
+                    ("m_PreloadTable", vector(null.clone(), vec![])),
+                    ("m_Container", vector(null, vec![])),
+                ],
+            ),
+        ),
+    ];
+    let typed_env = Environment::new(EnvOptions::unitypy());
+    let typed = load(&typed_env, b"typed", &[], &objects);
+    let tree = typed.object(11).unwrap().tree(None).unwrap().unwrap().tree;
+    let provider = Arc::new(AssetBundleProvider {
+        tree,
+        pinned: OnceLock::new(),
+        requests: AtomicU64::new(0),
+    });
+    let mut context = FileContext::unitypy();
+    context.providers = Arc::new(ProviderChain::new(vec![provider.clone()]));
+    let mut options = EnvOptions::batch(Arc::new(context));
+    options.dep_cache_bytes = 1;
+    let env = Environment::new(options);
+    let stripped = unityrs_testkit::ngui::file(&[], &objects, false).unwrap();
+    drop(
+        env.load_dependency(Source::Bytes {
+            name: RawStr::from_static(b"clips-b.bundle"),
+            data: Bytes::from(bundle(&[("clips-b", stripped)])),
+        })
+        .unwrap(),
+    );
+    let clips = s::file(Layout::Unity2022, &[], &[a::clip(9)]).unwrap();
+    let File::Bundle(pinned) = env
+        .load_dependency(Source::Bytes {
+            name: RawStr::from_static(b"clips-a.bundle"),
+            data: Bytes::from(bundle(&[("clips-a", clips)])),
+        })
+        .unwrap()
+    else {
+        panic!("clip bundle");
+    };
+    provider.pinned.set(Arc::downgrade(&pinned)).unwrap();
+    drop(pinned);
+
+    let file = load(
+        &env,
+        b"rig",
+        &["clips-a", "clips-b"],
+        &[
+            Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
+            Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+            a::legacy(3, (1, 9), &[(2, 10)]),
+        ],
+    );
+    let meter = Meter::unlimited();
+    let graph = graph_from_scene_file(&env, &file, &GraphOptions::default(), &meter).unwrap();
+    let catalog = discover(&env, &graph, &meter).unwrap();
+    let [first, second] = catalog.rigs()[0].slots() else {
+        panic!("two clip slots");
+    };
+    // The first lookup and core's retry both see the pin. Discovery
+    // releases it and asks once more.
+    assert_eq!(provider.requests.load(Ordering::Relaxed), 3);
+    assert_eq!(provider.pinned.get().unwrap().strong_count(), 0);
     assert_eq!(first.clip().unwrap().path_id(), 9);
     assert_eq!(second.clip().unwrap().path_id(), 10);
 }
