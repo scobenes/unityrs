@@ -104,6 +104,10 @@ fn run(m: &Arc<Meter>) -> Result<(), GltfError> {
     )?;
     drop(scene);
     drop(report);
+    let scene = support::animated(m)?;
+    let report = write_glb(&scene, &Options::default(), m, &mut std::io::sink())?;
+    drop(scene);
+    drop(report);
     Ok(())
 }
 #[test]

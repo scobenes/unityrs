@@ -56,7 +56,7 @@ fn node_extras(j: &mut Json<'_>, n: &crate::Node) -> Result<()> {
     }
     j.raw("]}")
 }
-fn aid(l: &Layout, id: usize) -> Result<usize> {
+pub(crate) fn aid(l: &Layout, id: usize) -> Result<usize> {
     l.accessors
         .as_slice()
         .get(id)
@@ -199,6 +199,7 @@ pub(crate) fn document(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
         }
         j.raw("]")?;
     }
+    crate::animation::document(s, l, j)?;
     crate::material_schema::materials(s, l, j)?;
     crate::material_schema::extensions(s, j)?;
     if !s.images.is_empty() {
@@ -281,10 +282,7 @@ fn nodes(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
         )?;
         j.raw(",\"scale\":")?;
         j.floats(&n.scale)?;
-        let mesh = n
-            .mesh
-            .and_then(|id| l.meshes.as_slice().get(id))
-            .and_then(|m| m.id);
+        let mesh = n.mesh.and_then(|id| l.mesh_id(id));
         if let Some(id) = mesh {
             j.raw(",\"mesh\":")?;
             j.number(id)?;
@@ -476,10 +474,13 @@ fn accessors(s: &Scene, l: &Layout, j: &mut Json<'_>) -> Result<()> {
             j.raw(",\"bufferView\":")?;
             j.number(view)?;
         }
-        if matches!(a.kind, Kind::Position | Kind::MorphPosition)
-            || a.sparse_indices
-                .as_ref()
-                .is_some_and(unityrs_core::limits::MeteredVec::is_empty)
+        if matches!(
+            a.kind,
+            Kind::Position | Kind::MorphPosition | Kind::AnimationTime
+        ) || a
+            .sparse_indices
+            .as_ref()
+            .is_some_and(unityrs_core::limits::MeteredVec::is_empty)
         {
             for (key, values) in [("min", &al.min), ("max", &al.max)] {
                 j.raw(",")?;

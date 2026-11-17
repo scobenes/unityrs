@@ -107,7 +107,7 @@ pub(crate) fn joints(
 // Rust leaves NaN cast payloads unspecified. Preserve the sign and the high
 // payload bits explicitly and quiet them, so raw-mode bytes are host-stable.
 #[allow(clippy::cast_possible_truncation)]
-fn round(value: f64) -> f32 {
+pub(crate) fn round(value: f64) -> f32 {
     if value.is_nan() {
         let bits = value.to_bits();
         let sign = ((bits >> 32) as u32) & 0x8000_0000;
