@@ -23,6 +23,31 @@ fn unhex(text: &str) -> Vec<u8> {
         .collect()
 }
 
+fn no_programs_text(cases: &[serde_json::Value]) -> unityrs_core::limits::MeteredVec<u8> {
+    // The specified 5.5+ correction is the existing converter with no programs.
+    // This case has the same parsed form and no platforms, and already pins it.
+    let no_programs = cases
+        .iter()
+        .find(|c| c["case"] == "empty_platforms")
+        .unwrap();
+    let env = Environment::new(EnvOptions::unitypy());
+    let File::Serialized(file) = env
+        .load(Source::Bytes {
+            name: RawStr::from("no-programs.assets"),
+            data: Bytes::from(unhex(no_programs["input"].as_str().unwrap())),
+        })
+        .unwrap()
+    else {
+        panic!("file")
+    };
+    let output = shader::export(&file.object(1).unwrap(), &env, &Meter::unlimited()).unwrap();
+    assert_eq!(
+        output.as_slice(),
+        no_programs["oracle"]["text"].as_str().unwrap().as_bytes()
+    );
+    output
+}
+
 #[test]
 fn every_shader_export_matches_the_pinned_oracle() {
     let recorded: serde_json::Value =
@@ -30,6 +55,7 @@ fn every_shader_export_matches_the_pinned_oracle() {
     assert_eq!(recorded["reference"], "UnityPy 1.25.2");
     assert_eq!(recorded["tier"], "A");
     let cases = recorded["cases"].as_array().unwrap();
+    let no_programs_text = no_programs_text(cases);
     assert!(cases.len() >= 159, "shader oracle coverage shrank");
     let mut names = std::collections::HashSet::new();
     for case in cases {
@@ -52,6 +78,38 @@ fn every_shader_export_matches_the_pinned_oracle() {
         };
         let result = shader::export(&file.object(1).unwrap(), &env, &Meter::unlimited());
         let oracle = &case["oracle"];
+        if matches!(
+            name,
+            "script_missing"
+                | "script_string"
+                | "script_empty"
+                | "script_utf8"
+                | "script_invalid_utf8"
+        ) {
+            // Tier C: retain UnityPy's answer beside the version-first correction.
+            match name {
+                "script_empty" => assert_eq!(oracle["text"], shader::HEADER),
+                "script_utf8" => {
+                    assert_eq!(oracle["text"], shader::HEADER.to_owned() + "// Shader É\n");
+                }
+                "script_invalid_utf8" => assert_eq!(oracle["exception"], "UnicodeDecodeError"),
+                _ => {
+                    assert_eq!(oracle["exception"], "TypeError", "{name}");
+                    let message = if name == "script_string" {
+                        "string argument without an encoding"
+                    } else {
+                        "cannot convert 'NoneType' object to bytes"
+                    };
+                    assert_eq!(oracle["message"], message, "{name}");
+                }
+            }
+            assert_eq!(
+                result.unwrap().as_slice(),
+                no_programs_text.as_slice(),
+                "{name}: Tier C divergence"
+            );
+            continue;
+        }
         if let Some(text) = oracle.get("text") {
             let output = result.unwrap_or_else(|error| panic!("{name}: {error}"));
             assert_eq!(
