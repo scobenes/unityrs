@@ -2149,6 +2149,8 @@ P2b's animation and prefab batch checks have their own references. L11
 compares local TRS and per-renderer morph weights in Unity space against a
 recording from the same built bundle and rig. L6g (animation) checks emitted
 animation accessors against the source playback and verifies deformation.
+PR 2 supplies the [public equations, frozen bounds and replay procedure](docs/anim_reference.md).
+Its analytic transcription and synthetic manifest tests exercise that tooling.
 The acceptance conditions and PR ownership are in the [animation plan](docs/plans/anim.md).
 
 | item | unityrs | tier | level | reference | test | status |

@@ -278,3 +278,210 @@ Use the sided value and time tests inside the transition window
 for STEP), even if `b` rounded down. Check continuous error outside it.
 An invalid interval, an intervening key, overlapping windows or
 conflicting/collapsed sides refuses the jump.
+
+## Same-bundle recorder and replay contract
+
+A replay document has an owner-prepared `spec` and recorder-generated
+`capture` under a versioned [JSON Schema](../tools/parity/anim_replay.schema.json).
+The [synthetic replay test](../tools/parity/tests/test_anim_replay.py) shows
+both halves on a one-node prefab with two renderers sharing a mesh.
+
+### Identity and evidence
+
+- The ordered `bundles` list describes the loaded view, including
+  dependencies. Each entry gives a relative bundle basename and SHA-256.
+  The recorder checks the digest of the same bytes it gives to Unity.
+- An object ID has a zero-based `bundle` and a `file_index` for the
+  SerializedFile occurrence within that bundle's inspection view. Root and
+  resource entries also consume file indices, as in [the CLI inspect
+  contract](AGENTS.md#inspect-and-pagination). `file` is the exact stored
+  name. `path_id` is a canonical signed 64-bit decimal string, which
+  survives JSON number conversions.
+- Inspect the exact hashed artifacts before recording. Check the bundle
+  container PPtr for each selected prefab, clip and Avatar asset key.
+  From the prefab GameObject, walk Transform child and GameObject
+  component PPtrs in stored order to establish the address-to-ID crosswalk
+  for the Transform nodes, Animation or Animator and SkinnedMeshRenderers.
+  Follow the Animator's Avatar and each renderer's mesh PPtr. Retain this
+  mapping in the spec as the built-ID evidence. Public playback APIs select
+  objects by asset key and hierarchy without exposing built file/path IDs.
+  Use one object of the needed type per asset key. Capture checks those
+  lookups, the selected clip and node names, the bound Avatar object and
+  shared mesh relationships.
+- An address is a sequence of zero-based child indices separated by slashes
+  from the prefab root. The empty address denotes the root. Component
+  ordinals count components of the same type on that Transform. This
+  preserves identity with duplicate or non-ASCII names. Pose arrays
+  follow `spec.nodes` and `spec.renderers` in order. Each weight belongs to
+  a renderer ID and its mesh channel index/name. Include every frame's
+  `full_weights` in frame order. For example, two renderers can share
+  channel 0, `Lift`, with frame thresholds 25 and 80 and yield different
+  weights at the same instant.
+- `evidence` labels the layout and justifies the clock with probe results.
+  Attach independently inspected bindings, chosen runtime fields, slot
+  ranges, packed and discrete encodings, sentinel shapes and path hashes as
+  appropriate. Record discovery in stored order as owner ID, field,
+  ordinal, original and resolved IDs and outcome. Include null, broken and
+  override cases where relevant. This preserves order and provenance when
+  an Editor controller API flattens the list.
+- `import_settings` pairs effective values with the serialized fields.
+  Record absence and justify any version-specific default. For human
+  clips include rotation, Y and XZ bake and blend flags, original and
+  feet bases, start at origin, mirror, offsets, loop, twist and the
+  remaining [plan section 2.4](plans/anim.md#24-avatar-and-humanoid)
+  settings. The recorder captures the built-clip settings reported by
+  `AnimationUtility` and the human limits and twist from the Avatar.
+  A matching clip setting name in the spec must agree with the captured
+  effective value. Use distinct labels for an authoring setting and a
+  built setting that report different quantities.
+
+### Playback and clocks
+
+The recorder accepts one selected clip on one rig per manifest. Use
+nonlooping Animator clips for endpoint replay. The recorder removes the
+controller from the fresh instance and evaluates a manual one-clip graph
+at speed one and zero delta. It disables foot and playable IK, sets
+`Animator.applyRootMotion = false` before evaluation, turns off animation
+events and excludes fixture scripts so `OnAnimatorMove` cannot apply
+deltas. The legacy path stops other states and uses `Animation.Sample` on
+a single enabled state at weight and speed one with `ClampForever`.
+Use active playback components on a fully materialized hierarchy.
+The capture pins the API, wrap configuration, built loop flag, clip
+length and frame rate. Each sample uses a fresh bundle prefab instance.
+[Unity AnimationClipPlayable](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/Animations.AnimationClipPlayable.html)
+· [Unity Animation.Sample](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/Animation.Sample.html)
+
+For each requested local time `l`, record `local`, the f32 bits
+`local_f32` given to Unity, the requested `source`, the modeled
+`effective_source` and one side for each sorted `held_boundaries` entry.
+The boundaries are source seconds for all held tracks. The recorder uses
+`source = start + l`, substituting the exact serialized stop for the last
+sample. The API receives `float(l)`. For `source_clock = widened`, add
+that f32 value to the serialized start in f64. For `f32_add` round that
+sum to f32 and require an exact f32 start. Clamp to the serialized
+interval. At `float(l) == clip.length`, the endpoint convention selects
+the exact stored stop.
+
+The public playable or legacy time checks the supplied time. The
+effective time and side labels express the selected fixture clock model.
+The model selects `left` before a boundary and `right` on equality or
+after it. Confirm both the endpoint behavior and the native clock with
+independent Editor probes. Use recognizable held values on both sides,
+including a time that changes sides after f32 rounding. Record the
+observed values that justify the clock and side labels in `evidence`.
+Unknown clock behavior needs more evidence before L11 comparison.
+
+Record the first and last samples and off-key times for nonzero duration.
+Include the cases in [plan section 8](plans/anim.md#8-editor-fixture-project-owner-built).
+All local TRS and renderer weights are eight-digit IEEE 754 f32 bit
+strings, widened exactly on read. Include the pose of the reset rig.
+Quaternions are XYZW, transforms are in Unity space and weights keep
+the Editor's units.
+
+### Humanoid qualification
+
+Record each candidate's complete body, muscle, goal and translation slot
+inventory with `dof`, `kind`, serialized `index_value` and `storage`
+(`streamed`, `dense`, `constant` or `absent`). Record the absent sentinel,
+the storage ranges, and stored axis types, pre/post quaternions, signs
+and limits. Use `RootT.x` through `RootT.z` and `RootQ.x` through
+`RootQ.w` as the canonical body DOF labels. For axis fields exposed by
+the loaded Avatar's Editor SerializedObject, list their property paths in `editor_axis_properties`
+to capture integer, f32, Vector3 or quaternion values independently.
+The recorder also captures the human bone-to-node map, optional
+absences, public muscle-to-bone and axis map, limits and rest body pose.
+
+For supplemental playback use `mode: "human_pose"` and place a known
+muscle vector on each schedule point in `HumanTrait` order. The clocks
+label these probes. The recorder converts the fresh rig's body pose from
+normalized world space to normalized Animator-root space before applying
+the muscles with `HumanPoseHandler.SetHumanPose`. It records the exact
+vector bits applied. Use neutral, single-axis and noncommuting multi-axis
+vectors across rigs of different proportions, with asymmetric limits,
+an optional absent bone, and identity and nonidentity Animator roots.
+Use the effective axes from those probes to interpret the runtime
+records. [Unity GetHumanPose](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanPoseHandler.GetHumanPose.html)
+· [Unity SetHumanPose](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanPoseHandler.SetHumanPose.html)
+
+Start with `disposition: "pending"`. Qualification references the
+known-vector or reset/muscle-only baseline by digest, root and hips
+node indexes, and comparison result. Preserve the root and hips-local
+component and angular residuals and their bounds with the evidence.
+Use `qualified_muscle_only` only when the complete body inventory
+is absent and the settings and playback require neither projection nor
+body-to-hips correction. A mapped constant body slot counts as
+present. Record the typed `unsupported_…` causes for refusal probes.
+
+### Owner workflow
+
+1. Build original fixture bundles in the [owner-built project](plans/static3d.md#8-the-editor-fixture-project-owner-built)
+   with a documented 2022.3 or 6000.x patch and active target. Place the
+   ordered bundle set beside the recording spec. Check the identity
+   crosswalk, timing and settings against these exact artifacts.
+2. Prepare the spec and include endpoints, off-key and held-boundary
+   times. Run `python3 -I tools/parity/anim_replay.py validate-spec synthetic-spec.json`.
+3. Copy [AnimReplayRecorder.cs](../tools/fixtures/AnimReplayRecorder.cs)
+   into `Assets/Editor`. In Edit Mode choose **Tools → unityrs → Record
+   animation replay**. Open the validated spec and save a new replay file.
+   Verify the endpoint behavior and held probes. Run
+   `python3 -I tools/parity/anim_replay.py validate synthetic-replay.json --bundle-dir .`
+   with the bundle directory to recheck the artifact bytes.
+4. Freeze the budgets and the resulting tolerance document as described
+   below. Keep the original fixture bundles and numeric records under
+   the repository's fixture rules. Record digest and project-relative
+   keys without machine-specific paths.
+
+### Per-recording f32 tolerances
+
+Before comparing Rust output, bound each recorded property along its
+layout-specific playback path. For each Transform give three budget rows
+(`translation`, `rotation`, `scale`) with `target` equal to the node index
+and `channel: -1`. Each weight budget targets a renderer index and its
+channel index. Include held, constant and rest-valued properties. Use one
+conservative envelope per row for the rest-to-output arithmetic and
+scheduled continuous intervals. Preserve the path and range proof with
+the budget. Repeat capture can check determinism independently of the
+tolerance.
+
+For each stage give the operation count `n`, a cancellation-safe
+absolute scale `M`, downstream amplification `gain` and a bound for
+additional elementary-function or solver error. The stage contributes
+`(γ32(n)*M + n*2^-126 + elementary_error)*gain`, where
+`γ32(n) = n*2^-24 / (1-n*2^-24)`. The absolute term allows underflow
+flush-to-zero. Scale and gain must bound propagation of intermediate
+errors to the stage output. Use the equations above to identify stages
+for interpolation, axis and pose composition, and normalization. For
+example, a streamed cubic has six Horner operations after time
+subtraction, with scale bounded by
+`abs(c3)*D³ + abs(c2)*D² + abs(c1)*D + abs(c0)`. If the native evaluator
+rounds key-time subtraction, count that separately. For a weighted
+segment near a flat inverse, enclose time parameters with the bounds
+for the actual f32 solver and include the value enclosure. Justify the
+native elementary-function bounds over the recorded ranges.
+
+The per-sample clock displacement is `abs(effective_source-source)`.
+Multiply by `rate`, the bound on the continuous derivative magnitude
+over that displacement. For a cubic, use
+`3*abs(c3)*D² + 2*abs(c2)*D + abs(c1)`. At a held crossing compare the
+reference side selected by the effective time and budget only continuous
+motion in the derivative term. Replaying all tracks at the effective time
+also fits that budget. For an unbounded rate use an interval-based value
+enclosure as a stage error. Establish how further native time rounding
+affects the selected side before certifying the model.
+
+Add the stages and time contributions. Apply `output_gain` for conversion
+of internal weight units to Editor weight units, or use one for values
+already in the output units. Add half an f32 ulp at the largest absolute
+captured component for final storage. For rotation use raw component
+error with a positive `min_norm` before normalization. Include the
+arithmetic of native normalization and pose composition in the stage
+proof. If the full path is bounded in unit quaternion space, use
+`min_norm = 1`. Convert the final store separately with norm one,
+sum the two angular bounds, and include the f64 angle metric floor.
+
+Run `python3 -I tools/parity/anim_replay.py derive synthetic-replay.json --bundle-dir . > synthetic-tolerances.json`.
+The result contains the manifest SHA-256 (sorted compact ASCII JSON),
+ordered property, target and channel keys, and per-sample clocks, held
+sides and bounds. Freeze it alongside the inputs before comparison.
+Investigate discrepancies against the recorded layout, settings and
+equations.

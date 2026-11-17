@@ -2,7 +2,9 @@
 
 **Status.** Draft, 2026-11-17, with both review rounds folded into the decisions
 and eight PRs in section 6. Generic export and batch have synthetic integration
-gates. Serialized playback and humanoid L11 depend on Editor recordings.
+gates. PR 2's [reference equations, bounds, replay format and recorder](../anim_reference.md)
+are in the tree. Serialized playback and humanoid L11 depend on Editor
+recordings and Rust comparisons.
 
 **Deliverables.** Discover clips by PPtr and bind them to a prefab or scene.
 Sample generic and legacy TRS and morph weights, and provide humanoid retargeting
@@ -554,7 +556,8 @@ samples between frames and beyond both grid ends.
 ### 4.2 L11 and f64 transcription
 
 **Equations and transcription.** PR 2 lands a standard-library f64 Python
-evaluator, `tools/fixtures/anim_reference.py`, and its notes before the Rust
+evaluator, [`tools/parity/anim_reference.py`](../../tools/parity/anim_reference.py), and
+[its notes](../anim_reference.md) before the Rust
 playback and retargeting PRs. Use public descriptions only. For curve math,
 cite the Khronos interpolation appendix for Hermite and normalized
 quaternion results, Unity's Euler API for the documented rotation

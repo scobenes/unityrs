@@ -1,0 +1,476 @@
+// Copy to Assets/Editor in the owner-built fixture project. See docs/anim_reference.md.
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Security.Cryptography;
+using UnityEditor;
+using UnityEditor.SceneManagement;
+using UnityEngine;
+using UnityEngine.Animations;
+using UnityEngine.Playables;
+using UnityEngine.SceneManagement;
+using Object = UnityEngine.Object;
+
+public static class AnimReplayRecorder
+{
+    // JsonUtility reads only the fields used to drive capture. Preserve the complete
+    // validated specification verbatim, including the owner-inspected serialized evidence.
+    [Serializable] class Id { public int bundle, file_index; public string file, path_id; }
+    [Serializable] class Bundle { public string name, sha256; }
+    [Serializable] class Node { public string address, name; }
+    [Serializable] class Channel { public int index; public string name; public float[] full_weights; }
+    [Serializable] class RendererSpec { public string address; public int component; public Id mesh; public Channel[] channels; }
+    [Serializable] class Point { public double local; public float[] muscles; }
+    [Serializable] class Spec
+    {
+        public Bundle[] bundles;
+        public Id prefab, clip, avatar;
+        public string prefab_asset, clip_asset, avatar_asset, clip_name, binding_address, build_target, mode, source_clock;
+        public int binding_component;
+        public double start, stop, sample_rate;
+        public double[] held_boundaries;
+        public Point[] schedule;
+        public Node[] nodes;
+        public RendererSpec[] renderers;
+        public string[] editor_axis_properties;
+    }
+
+    [Serializable] class Trs { public string[] translation, rotation, scale; }
+    [Serializable] class Weights { public string[] channels; }
+    [Serializable] class Pose { public Trs[] transforms; public Weights[] weights; }
+    [Serializable] class Sample
+    {
+        public double local, source, effective_source;
+        public string local_f32;
+        public string[] sides, muscles_f32;
+        public Pose pose;
+    }
+    [Serializable] class Playback
+    {
+        public string api, wrap_mode, clip_length_f32, frame_rate_f32, legacy_state;
+        public string reset = "fresh_prefab";
+        public int speed = 1, delta_time = 0;
+        public bool clip_looping, apply_root_motion = false, foot_ik = false, playable_ik = false,
+            animator_move = false, controller_blending = false, events = false;
+    }
+    [Serializable] class ClipSettings
+    {
+        public string startTime, stopTime, orientationOffsetY, level, cycleOffset, additiveReferencePoseTime,
+            additiveReferencePoseClipName;
+        public bool loopTime, loopBlend, loopBlendOrientation, loopBlendPositionY, loopBlendPositionXZ,
+            keepOriginalOrientation, keepOriginalPositionY, keepOriginalPositionXZ, heightFromFeet,
+            mirror, hasAdditiveReferencePose;
+    }
+    [Serializable] class Bone { public string name; public int node; public bool required; }
+    [Serializable] class Muscle { public string name, min, max; public int bone, axis; }
+    [Serializable] class Limit { public string bone, human, axis_length; public string[] min, max, center; public bool defaults; }
+    [Serializable] class AxisProperty { public string path, kind; public string[] value; }
+    [Serializable] class Humanoid
+    {
+        public Bone[] bones;
+        public Muscle[] muscles;
+        public Limit[] limits;
+        public AxisProperty[] axis_properties;
+        public string[] rest_body_position, rest_body_rotation, rest_muscles;
+        public string human_scale, upper_arm_twist, lower_arm_twist, upper_leg_twist, lower_leg_twist,
+            arm_stretch, leg_stretch, feet_spacing;
+        public bool translation_dof;
+    }
+    [Serializable] class Capture
+    {
+        public string editor_version, build_target;
+        public string[] bundle_sha256;
+        public Playback playback;
+        public ClipSettings clip_settings;
+        public Pose rest;
+        public Sample[] samples;
+    }
+    // Separate DTO so JsonUtility never substitutes an empty object for an absent humanoid.
+    [Serializable] class HumanCapture : Capture { public Humanoid humanoid; }
+
+    [MenuItem("Tools/unityrs/Record animation replay")]
+    public static void Record()
+    {
+        Need(!EditorApplication.isPlayingOrWillChangePlaymode && !AnimationMode.InAnimationMode(),
+            "Exit Play Mode and animation preview before recording.");
+        string input = EditorUtility.OpenFilePanel("Select validated recording specification", "", "json");
+        if (input.Length == 0) return;
+        string output = EditorUtility.SaveFilePanel("Save animation replay", Path.GetDirectoryName(input), "replay", "json");
+        if (output.Length == 0) return;
+        Need(!File.Exists(output), "Choose a new replay filename.");
+        string json = File.ReadAllText(input);
+        var spec = JsonUtility.FromJson<Spec>(json);
+        var bundles = new List<AssetBundle>();
+        var digests = new List<string>();
+        try
+        {
+            Need(spec.build_target == EditorUserBuildSettings.activeBuildTarget.ToString(), "Build target mismatch.");
+            foreach (var row in spec.bundles)
+            {
+                Need(!string.IsNullOrEmpty(row.name) && row.name != "." && row.name != ".."
+                    && row.name.IndexOfAny(new[] { '/', '\\', ':' }) < 0, "Expected a bundle basename.");
+                // Hash the very bytes handed to Unity, including dependency bundles.
+                byte[] bytes = File.ReadAllBytes(Path.Combine(Path.GetDirectoryName(input), row.name));
+                using (var sha = SHA256.Create())
+                    digests.Add(BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant());
+                Need(digests[digests.Count - 1] == row.sha256, "Bundle digest mismatch: " + row.name);
+                var bundle = AssetBundle.LoadFromMemory(bytes);
+                Need(bundle != null, "Cannot load bundle: " + row.name);
+                bundles.Add(bundle);
+            }
+
+            var prefab = Load<GameObject>(bundles, spec.prefab, spec.prefab_asset);
+            var clip = Load<AnimationClip>(bundles, spec.clip, spec.clip_asset);
+            Need(clip.name == spec.clip_name, "Built clip name disagrees with the inspected clip.");
+            foreach (var node in spec.nodes)
+                Need(At(prefab.transform, node.address).name == node.name, "Built node name disagrees with the inspected node.");
+            var avatar = string.IsNullOrEmpty(spec.avatar_asset) ? null : Load<Avatar>(bundles, spec.avatar, spec.avatar_asset);
+            bool legacy = spec.mode == "legacy", knownPose = spec.mode == "human_pose";
+            Need(legacy || knownPose || spec.mode == "animator", "Unknown playback mode.");
+            Need(legacy == clip.legacy, "Clip legacy flag disagrees with playback mode.");
+            Need(spec.mode != "animator" || !clip.isLooping, "Build a nonlooping Animator fixture for endpoint replay.");
+            Need(clip.length == (float)(spec.stop - spec.start) && clip.frameRate == spec.sample_rate,
+                "Built clip length or rate disagrees with the inspected source clock.");
+            Need(prefab.GetComponentsInChildren<MonoBehaviour>(true).Length == 0,
+                "Use a fixture prefab without scripts, including root-motion and IK callbacks.");
+            bool humanClip = avatar != null && avatar.isHuman;
+            Need(!knownPose || humanClip, "Known muscle vectors require a human Avatar.");
+            Need(!clip.humanMotion || humanClip, "Human motion requires the bound human Avatar.");
+
+            var capture = humanClip ? new HumanCapture() : new Capture();
+            capture.editor_version = Application.unityVersion;
+            capture.build_target = EditorUserBuildSettings.activeBuildTarget.ToString();
+            capture.bundle_sha256 = digests.ToArray();
+            capture.playback = new Playback {
+                api = legacy ? "Animation.Sample" : knownPose ? "HumanPoseHandler.SetHumanPose" : "AnimationClipPlayable",
+                wrap_mode = (legacy ? WrapMode.ClampForever : clip.wrapMode).ToString(),
+                legacy_state = legacy ? "enabled_weight_one_clamp_forever" : "unused",
+                clip_looping = clip.isLooping, clip_length_f32 = Bits(clip.length), frame_rate_f32 = Bits(clip.frameRate)
+            };
+            capture.clip_settings = ReadSettings(clip);
+            capture.samples = new Sample[spec.schedule.Length];
+
+            Scene scene = EditorSceneManager.NewPreviewScene();
+            try
+            {
+                var anchor = new GameObject("Recorder");
+                SceneManager.MoveGameObjectToScene(anchor, scene);
+                for (int i = 0; i < spec.schedule.Length; ++i)
+                {
+                    var rig = Object.Instantiate(prefab, anchor.transform, false);
+                    try
+                    {
+                        var root = rig.transform;
+                        var nodes = spec.nodes.Select(n => At(root, n.address)).ToArray();
+                        var renderers = spec.renderers.Select(r => At<SkinnedMeshRenderer>(root, r.address, r.component)).ToArray();
+                        Need(nodes.Distinct().Count() == rig.GetComponentsInChildren<Transform>(true).Length
+                            && nodes.Distinct().Count() == nodes.Length, "Node table differs from built hierarchy.");
+                        Need(renderers.Distinct().Count() == rig.GetComponentsInChildren<SkinnedMeshRenderer>(true).Length
+                            && renderers.Distinct().Count() == renderers.Length, "Renderer table differs from built hierarchy.");
+
+                        var binding = legacy ? (Behaviour)At<Animation>(root, spec.binding_address, spec.binding_component)
+                            : At<Animator>(root, spec.binding_address, spec.binding_component);
+                        Need(binding.gameObject.activeInHierarchy, "Playback component must be on an active node.");
+                        foreach (var animation in rig.GetComponentsInChildren<Animation>(true))
+                        {
+                            animation.playAutomatically = false;
+                            animation.Stop();
+                            animation.enabled = animation == binding;
+                        }
+                        foreach (var animator in rig.GetComponentsInChildren<Animator>(true))
+                        {
+                            animator.enabled = animator == binding;
+                            animator.applyRootMotion = false;
+                            animator.fireEvents = false;
+                            animator.runtimeAnimatorController = null;
+                            animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+                            animator.speed = 1;
+                        }
+
+                        var target = binding as Animator;
+                        if (target != null)
+                            Need(target.avatar == avatar && target.hasTransformHierarchy, "Avatar or materialized hierarchy mismatch.");
+                        var rest = ReadPose(nodes, renderers, spec.renderers);
+                        if (i == 0)
+                        {
+                            capture.rest = rest;
+                            if (capture is HumanCapture h)
+                                h.humanoid = ReadHumanoid(target, nodes, spec.editor_axis_properties);
+                        }
+                        else
+                            Need(JsonUtility.ToJson(rest) == JsonUtility.ToJson(capture.rest), "Fresh instances have different rest poses.");
+
+                        var point = spec.schedule[i];
+                        float time = (float)point.local;
+                        var sample = ReadClock(spec, clip.length, point.local, time);
+                        sample.muscles_f32 = Array.Empty<string>();
+                        if (legacy)
+                        {
+                            SampleLegacy((Animation)binding, clip, time);
+                            sample.pose = ReadPose(nodes, renderers, spec.renderers);
+                        }
+                        else if (knownPose)
+                        {
+                            SampleMuscles(target, point.muscles);
+                            sample.muscles_f32 = point.muscles.Select(Bits).ToArray();
+                            sample.pose = ReadPose(nodes, renderers, spec.renderers);
+                        }
+                        else
+                        {
+                            sample.pose = SampleAnimator(target, clip, time,
+                                () => ReadPose(nodes, renderers, spec.renderers));
+                        }
+                        capture.samples[i] = sample;
+                    }
+                    finally { Object.DestroyImmediate(rig); }
+                }
+            }
+            finally { EditorSceneManager.ClosePreviewScene(scene); }
+
+            string record = "{\"format\":\"unityrs.anim_replay\",\"version\":1,\"spec\":" + json
+                + ",\"capture\":" + JsonUtility.ToJson(capture, true) + "}\n";
+            using (var outputStream = new FileStream(output, FileMode.CreateNew))
+            using (var writer = new StreamWriter(outputStream))
+                writer.Write(record);
+            Debug.Log("Animation replay captured. Validate it before freezing tolerances.");
+        }
+        finally
+        {
+            for (int i = bundles.Count - 1; i >= 0; --i) bundles[i].Unload(true);
+        }
+    }
+
+    static T Load<T>(List<AssetBundle> bundles, Id id, string key) where T : Object
+    {
+        Need(id != null && id.bundle >= 0 && id.bundle < bundles.Count, "Invalid bundle index.");
+        var bundle = bundles[id.bundle];
+        Need(bundle.GetAllAssetNames().Contains(key, StringComparer.Ordinal), "Unknown exact asset key: " + key);
+        var matches = bundle.LoadAssetWithSubAssets<T>(key);
+        Need(matches.Length == 1, "Use an unambiguous typed asset key: " + key);
+        return matches[0];
+    }
+
+    static Transform At(Transform root, string address)
+    {
+        if (address.Length == 0) return root;
+        foreach (var part in address.Split('/'))
+            root = root.GetChild(int.Parse(part, CultureInfo.InvariantCulture));
+        return root;
+    }
+
+    static T At<T>(Transform root, string address, int component) where T : Component
+    {
+        return At(root, address).GetComponents<T>()[component];
+    }
+
+    static Sample ReadClock(Spec spec, float length, double local, float time)
+    {
+        Need(0 <= local && local <= spec.stop - spec.start, "Sample outside source interval.");
+        double source = local == spec.stop - spec.start ? spec.stop : spec.start + local;
+        double effective = spec.start + time;
+        if (spec.source_clock == "f32_add") effective = (float)effective;
+        effective = time == length ? spec.stop : Math.Max(spec.start, Math.Min(spec.stop, effective));
+        return new Sample {
+            local = local, source = source, local_f32 = Bits(time), effective_source = effective,
+            sides = spec.held_boundaries.Select(t => effective < t ? "left" : "right").ToArray()
+        };
+    }
+
+    static Pose SampleAnimator(Animator animator, AnimationClip clip, float time, Func<Pose> readPose)
+    {
+        var graph = PlayableGraph.Create("unityrs single clip");
+        try
+        {
+            graph.SetTimeUpdateMode(DirectorUpdateMode.Manual);
+            var playable = AnimationClipPlayable.Create(graph, clip);
+            playable.SetApplyFootIK(false);
+            playable.SetApplyPlayableIK(false);
+            playable.SetSpeed(1);
+            var output = AnimationPlayableOutput.Create(graph, "Fixture", animator);
+            output.SetSourcePlayable(playable);
+            graph.Play();
+            playable.SetTime(time);
+            // Graph destruction may restore animated properties. Capture while the graph owns the pose.
+            graph.Evaluate(0);
+            Need(playable.GetTime() == time, "Playable did not retain the requested time.");
+            return readPose();
+        }
+        finally { graph.Destroy(); }
+    }
+
+    static void SampleLegacy(Animation animation, AnimationClip clip, float time)
+    {
+        const string key = "unityrs-direct-clip";
+        Need(animation.GetClip(key) == null, "Reserved legacy state name is already in use.");
+        animation.AddClip(clip, key);
+        foreach (AnimationState other in animation)
+        {
+            other.enabled = false;
+            other.weight = 0;
+        }
+        var state = animation[key];
+        state.wrapMode = WrapMode.ClampForever;
+        state.blendMode = AnimationBlendMode.Blend;
+        state.layer = 0;
+        state.speed = 1;
+        state.weight = 1;
+        state.time = time;
+        state.enabled = true;
+        Need(state.time == time, "Legacy state did not retain the requested time.");
+        animation.Sample();
+    }
+
+    static void SampleMuscles(Animator animator, float[] values)
+    {
+        Need(values != null && values.Length == HumanTrait.MuscleCount
+            && values.All(v => -1 <= v && v <= 1), "Invalid known muscle vector.");
+        using (var handler = new HumanPoseHandler(animator.avatar, animator.transform))
+        {
+            var pose = ReadRestBody(animator, handler);
+            pose.muscles = (float[])values.Clone();
+            handler.SetHumanPose(ref pose);
+        }
+    }
+
+    static HumanPose ReadRestBody(Animator animator, HumanPoseHandler handler)
+    {
+        // GetHumanPose returns a world pose, with position divided by human scale.
+        // SetHumanPose takes the corresponding normalized pose in Animator root space.
+        var pose = new HumanPose();
+        handler.GetHumanPose(ref pose);
+        var root = animator.transform;
+        float scale = animator.humanScale;
+        float determinant = root.localToWorldMatrix.determinant;
+        Need(scale > 0 && !float.IsInfinity(scale) && determinant != 0
+            && !float.IsNaN(determinant) && !float.IsInfinity(determinant),
+            "Cannot express the body pose in the Animator root.");
+        pose.bodyPosition = root.InverseTransformPoint(pose.bodyPosition * scale) / scale;
+        pose.bodyRotation = Quaternion.Inverse(root.rotation) * pose.bodyRotation;
+        return pose;
+    }
+
+    static Pose ReadPose(Transform[] nodes, SkinnedMeshRenderer[] renderers, RendererSpec[] specs)
+    {
+        var meshIds = new Dictionary<Mesh, string>();
+        var meshes = new Dictionary<string, Mesh>();
+        var weights = new Weights[renderers.Length];
+        for (int i = 0; i < renderers.Length; ++i)
+        {
+            var renderer = renderers[i];
+            var mesh = renderer.sharedMesh;
+            var spec = specs[i];
+            Need(mesh != null && mesh.blendShapeCount == spec.channels.Length, "Built mesh channel count mismatch.");
+            string id = spec.mesh.bundle + ":" + spec.mesh.file_index + ":" + spec.mesh.path_id;
+            Need(!meshIds.TryGetValue(mesh, out var prior) || prior == id, "Shared mesh identity mismatch.");
+            Need(!meshes.TryGetValue(id, out var previous) || previous == mesh, "Mesh ID aliases two objects.");
+            meshIds[mesh] = id;
+            meshes[id] = mesh;
+            var values = new string[spec.channels.Length];
+            for (int j = 0; j < values.Length; ++j)
+            {
+                var channel = spec.channels[j];
+                Need(channel.index == j && channel.name == mesh.GetBlendShapeName(j)
+                    && channel.full_weights.Length == mesh.GetBlendShapeFrameCount(j), "Blend-shape layout mismatch.");
+                for (int k = 0; k < channel.full_weights.Length; ++k)
+                    Need(channel.full_weights[k] == mesh.GetBlendShapeFrameWeight(j, k), "Blend-shape full weight mismatch.");
+                values[j] = Bits(renderer.GetBlendShapeWeight(j));
+            }
+            weights[i] = new Weights { channels = values };
+        }
+        return new Pose { transforms = nodes.Select(n => new Trs {
+            translation = Bits(n.localPosition), rotation = Bits(n.localRotation), scale = Bits(n.localScale)
+        }).ToArray(), weights = weights };
+    }
+
+    static ClipSettings ReadSettings(AnimationClip clip)
+    {
+        var s = AnimationUtility.GetAnimationClipSettings(clip);
+        return new ClipSettings {
+            startTime = Bits(s.startTime), stopTime = Bits(s.stopTime), orientationOffsetY = Bits(s.orientationOffsetY),
+            level = Bits(s.level), cycleOffset = Bits(s.cycleOffset), additiveReferencePoseTime = Bits(s.additiveReferencePoseTime),
+            additiveReferencePoseClipName = s.additiveReferencePoseClip == null ? "" : s.additiveReferencePoseClip.name,
+            loopTime = s.loopTime, loopBlend = s.loopBlend, loopBlendOrientation = s.loopBlendOrientation,
+            loopBlendPositionY = s.loopBlendPositionY, loopBlendPositionXZ = s.loopBlendPositionXZ,
+            keepOriginalOrientation = s.keepOriginalOrientation, keepOriginalPositionY = s.keepOriginalPositionY,
+            keepOriginalPositionXZ = s.keepOriginalPositionXZ, heightFromFeet = s.heightFromFeet,
+            mirror = s.mirror, hasAdditiveReferencePose = s.hasAdditiveReferencePose
+        };
+    }
+
+    static Humanoid ReadHumanoid(Animator animator, Transform[] nodes, string[] axisProperties)
+    {
+        var result = new Humanoid();
+        var boneNames = HumanTrait.BoneName;
+        result.bones = Enumerable.Range(0, (int)HumanBodyBones.LastBone).Select(i => {
+            var bone = animator.GetBoneTransform((HumanBodyBones)i);
+            int node = bone == null ? -1 : Array.IndexOf(nodes, bone);
+            Need(!HumanTrait.RequiredBone(i) || node >= 0, "Missing required human bone.");
+            return new Bone { name = boneNames[i], node = node, required = HumanTrait.RequiredBone(i) };
+        }).ToArray();
+        var muscleNames = HumanTrait.MuscleName;
+        result.muscles = Enumerable.Range(0, HumanTrait.MuscleCount).Select(i => {
+            int bone = HumanTrait.BoneFromMuscle(i);
+            int axis = Enumerable.Range(0, 3).Single(a => HumanTrait.MuscleFromBone(bone, a) == i);
+            return new Muscle { name = muscleNames[i], bone = bone, axis = axis,
+                min = Bits(HumanTrait.GetMuscleDefaultMin(i)), max = Bits(HumanTrait.GetMuscleDefaultMax(i)) };
+        }).ToArray();
+        var description = animator.avatar.humanDescription;
+        result.limits = (description.human ?? Array.Empty<HumanBone>()).Select(b => new Limit {
+            bone = b.boneName, human = b.humanName, axis_length = Bits(b.limit.axisLength),
+            min = Bits(b.limit.min), max = Bits(b.limit.max), center = Bits(b.limit.center), defaults = b.limit.useDefaultValues
+        }).ToArray();
+        result.human_scale = Bits(animator.humanScale);
+        result.upper_arm_twist = Bits(description.upperArmTwist);
+        result.lower_arm_twist = Bits(description.lowerArmTwist);
+        result.upper_leg_twist = Bits(description.upperLegTwist);
+        result.lower_leg_twist = Bits(description.lowerLegTwist);
+        result.arm_stretch = Bits(description.armStretch);
+        result.leg_stretch = Bits(description.legStretch);
+        result.feet_spacing = Bits(description.feetSpacing);
+        result.translation_dof = description.hasTranslationDoF;
+        result.axis_properties = ReadAxisProperties(animator.avatar, axisProperties ?? Array.Empty<string>());
+        using (var handler = new HumanPoseHandler(animator.avatar, animator.transform))
+        {
+            var pose = ReadRestBody(animator, handler);
+            result.rest_body_position = Bits(pose.bodyPosition);
+            result.rest_body_rotation = Bits(pose.bodyRotation);
+            result.rest_muscles = pose.muscles.Select(Bits).ToArray();
+        }
+        return result;
+    }
+
+    static AxisProperty[] ReadAxisProperties(Avatar avatar, string[] paths)
+    {
+        using (var serialized = new SerializedObject(avatar))
+            return paths.Select(path => {
+                var p = serialized.FindProperty(path);
+                Need(p != null, "No Editor property for Avatar field: " + path);
+                var result = new AxisProperty { path = path, kind = p.propertyType.ToString() };
+                switch (p.propertyType)
+                {
+                    case SerializedPropertyType.Float: result.value = new[] { Bits(p.floatValue) }; break;
+                    case SerializedPropertyType.Vector3: result.value = Bits(p.vector3Value); break;
+                    case SerializedPropertyType.Quaternion: result.value = Bits(p.quaternionValue); break;
+                    case SerializedPropertyType.Integer:
+                        result.value = new[] { p.longValue.ToString(CultureInfo.InvariantCulture) };
+                        break;
+                    default: throw new InvalidOperationException("Unsupported Editor axis property type: " + path);
+                }
+                return result;
+            }).ToArray();
+    }
+
+    static string[] Bits(Vector3 v) => new[] { Bits(v.x), Bits(v.y), Bits(v.z) };
+    static string[] Bits(Quaternion q) => new[] { Bits(q.x), Bits(q.y), Bits(q.z), Bits(q.w) };
+    static string Bits(float f)
+    {
+        Need(!float.IsNaN(f) && !float.IsInfinity(f), "Nonfinite f32 in fixture capture.");
+        return BitConverter.ToUInt32(BitConverter.GetBytes(f), 0).ToString("x8", CultureInfo.InvariantCulture);
+    }
+    static void Need(bool condition, string message)
+    {
+        if (!condition) throw new InvalidOperationException(message);
+    }
+}
