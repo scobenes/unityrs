@@ -287,8 +287,7 @@ pub struct SerializedFile {
     parent: Option<Parent>,
     /// The reader UnityPy reads it with, for its metadata and its objects.
     reader: ReaderKind,
-    /// Where metadata and eager container parsing left the shared reader.
-    reader_position: i128,
+    constructor_position: i128,
     /// What its reads and its parse copied out of the buffer its bytes are
     /// a slice of ([`Self::copies`]).
     copies: CopyCounts,
@@ -356,16 +355,21 @@ impl SerializedFile {
         n
     }
 
-    /// The reader UnityPy reads it with: the stream reader for a file loaded
-    /// from a path, else the memory reader (module docs). Its objects are
-    /// read by its rules ([`ObjectRef::read_typetree`], [`ObjectRef::raw_data`]).
+    /// Final metadata cursor of the constructor's input reader.
+    #[must_use]
+    pub fn constructor_position(&self) -> i128 {
+        self.constructor_position
+    }
+
+    /// The reader used for metadata and object reads: stream for paths,
+    /// otherwise memory ([`ObjectRef::read_typetree`], [`ObjectRef::raw_data`]).
     pub fn reader_kind(&self) -> ReaderKind {
         self.reader
     }
 
     /// The shared reader's position after loading metadata and the eager container.
     pub fn reader_position(&self) -> i128 {
-        self.reader_position
+        self.constructor_position
     }
 
     /// The header.
@@ -556,7 +560,7 @@ impl SerializedFile {
             container: ResultCell::new(),
             parent: None,
             reader: ReaderKind::Memory,
-            reader_position: 0,
+            constructor_position: 0,
             copies: CopyCounts::default(),
             charge: Charge::zero(&meter),
             ctx: Arc::new(FileContext::unitypy()),

@@ -33,7 +33,7 @@ lock.acquire()
                     drop(owner);
                     crate::python::list()
                 })
-            })?;
+            })??;
             py.run(
                 c"lock.release(); assert seen == [True, True], seen",
                 Some(&scope),
@@ -48,23 +48,23 @@ fn python_callback_unwind_returns_worker_error_without_deadlock() -> PyResult<()
     let _serial = crate::tests::serial();
     unityrs_testkit::guard::finishes("relay unwind under DEADLOCK_GUARD", || {
         Python::attach(|py| {
-            let error: PyResult<()> = py.detach(|| {
-                crate::worker::run(2 << 20, || {
-                    super::attach(|py| {
-                        // Unwind from a Rust callback, after a Python reentry.
-                        py.eval(c"__import__('threading').get_ident()", None, None)?;
-                        std::panic::resume_unwind(Box::new("synthetic callback unwind"))
+            let error: PyResult<()> = py
+                .detach(|| {
+                    crate::worker::run(2 << 20, || {
+                        super::attach(|py| -> PyResult<()> {
+                            // Unwind from a Rust callback, after a Python reentry.
+                            py.eval(c"__import__('threading').get_ident()", None, None)?;
+                            std::panic::resume_unwind(Box::new("synthetic callback unwind"))
+                        })
                     })
                 })
-            });
+                .and_then(std::convert::identity);
             assert!(
                 matches!(error, Err(error) if error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py))
             );
             let caller = std::thread::current().id();
             let thread = py.detach(|| {
-                crate::worker::run(2 << 20, || {
-                    Ok(super::attach(|_| std::thread::current().id()))
-                })
+                crate::worker::run(2 << 20, || super::attach(|_| std::thread::current().id()))
             })?;
             assert_eq!(thread, caller);
             Ok(())

@@ -14,7 +14,7 @@ from binding_y4_exports import _new
 
 
 class ConverterRefusals(unittest.TestCase):
-    def test_material_maps_are_explicitly_refused(self):
+    def test_material_maps_resolve_current_pointers(self):
         exporter = importlib.import_module("unityrs.export.MeshRendererExporter")
         material = _new(classes.Material, m_Name="mapped",
             m_Shader=classes.PPtr(m_FileID=0, m_PathID=0),
@@ -23,8 +23,11 @@ class ConverterRefusals(unittest.TestCase):
                     m_Texture=classes.PPtr(m_FileID=0, m_PathID=1),
                     m_Offset=classes.Vector2f(0, 0), m_Scale=classes.Vector2f(1, 1)))],
                 m_Colors=[], m_Floats=[]))
-        with self.assertRaisesRegex(NotImplementedError, "export_material.*textured material"):
+        with self.assertRaisesRegex(ValueError, "PPtr can't deref without an assetsfile"):
             exporter.export_material(material)
+        from binding_y6_exports import textured_material
+        material, _, _, _ = textured_material(unityrs)
+        self.assertIn("map_Kd diffuse.png", exporter.export_material(material))
 
     def test_replacement_callbacks_refuse_preprocessing_gaps(self):
         converter = importlib.import_module("unityrs.export.Texture2DConverter")

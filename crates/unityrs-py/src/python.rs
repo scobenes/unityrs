@@ -2,6 +2,7 @@
 //! All pointers are borrowed for the duration of the call with the GIL held;
 //! a non-null owned result is transferred exactly once to PyO3.
 use pyo3::{ffi, prelude::*};
+pub(crate) mod plan;
 pub(crate) mod relay;
 
 pub(crate) fn bytes(data: &[u8]) -> PyResult<Py<PyAny>> {

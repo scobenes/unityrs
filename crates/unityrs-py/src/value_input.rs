@@ -78,7 +78,9 @@ fn snapshot(
     limits: &Limits,
     tree: Option<&Tree>,
 ) -> PyResult<unityrs_core::Parsed> {
-    snapshot_input(input, meter, limits, tree, false, &[])?.build()
+    snapshot_input(input, meter, limits, tree, false, &[])?
+        .build()
+        .map_err(Into::into)
 }
 
 pub(crate) fn material_snapshot(

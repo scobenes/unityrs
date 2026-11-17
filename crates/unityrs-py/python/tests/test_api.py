@@ -68,8 +68,9 @@ class API(unittest.TestCase):
         env = unityrs.Environment(data)
         self.assertEqual(list(env.files), [str(hash(data))])
         self.assertEqual(list(unityrs.Environment().files), [])
-        with self.assertRaises(TypeError):
-            unityrs.Environment(bytearray(data))
+        mutable = unityrs.Environment(bytearray(data))
+        self.assertEqual(list(mutable.files), [str(hash(data))])
+        self.assertEqual(mutable.objects[0].parse_as_dict()["m_Script"], "body")
 
 
 class EdgeCases(unittest.TestCase):
@@ -271,13 +272,14 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import synth as S
 import unityrs
-sys.setrecursionlimit(20000)
+sys.setrecursionlimit(100000)
 depth = int(sys.argv[2])
 node = S.Node("int", "leaf")
 for _ in range(depth):
     node = S.Node("Thing", "x", [node])
 data = S.serialized_file([S.Type(49, node)], [S.Obj(1, 49, b"\x01\x00\x00\x00")], version=11)
-threading.stack_size(512 * 1024)
+bad_data = S.serialized_file([S.Type(49, node)], [S.Obj(1, 49, b"\x01\x00\x00\x00" + bytes(4))], version=11)
+threading.stack_size(64 * 1024)
 result = []
 def read():
     budget = unityrs.Budget(1 << 30)
@@ -287,6 +289,14 @@ def read():
         value = value["x"]
     answer = value["leaf"]
     del obj, value
+    obj = unityrs.Environment(bad_data, limits=unityrs.Limits(max_tree_depth=depth+1, max_value_depth=depth+1), budget=budget).objects[0]
+    try:
+        obj.parse_as_dict()
+    except ValueError as error:
+        assert str(error) == "Expected to read 8 bytes, but only read 4 bytes", str(error)
+    else:
+        raise AssertionError("deep check_read mismatch was accepted")
+    del obj
     gc.collect()
     assert budget.used == 0, budget.used
     result.append(answer)
@@ -295,7 +305,7 @@ t.start()
 t.join()
 assert result == [1], result
 """
-        for depth in (250, 2000):
+        for depth in (250, 2000, 10000):
             with self.subTest(depth=depth):
                 proc = child.run([sys.executable, "-c", script, str(ROOT / "tools/parity/tests"), str(depth)],
                                  stdout=child.PIPE, stderr=child.PIPE, text=True, timeout=45)

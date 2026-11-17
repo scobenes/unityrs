@@ -96,10 +96,12 @@ def observe_none_extensions(module):
     return result
 
 
-def check_object_reader_publication(module):
+def check_object_reader_publication(module, *, detached=False):
     obj = _reader_file(module).objects[1]
     original_type = type(obj)
     lock = obj.assets_file.environment._lock
+    if detached:
+        obj.assets_file.environment = None
 
     class Reader(original_type):
         def __setattr__(self, name, value):
@@ -117,10 +119,12 @@ def check_object_reader_publication(module):
         obj.__class__ = original_type
 
 
-def check_sprite_cache_publication(module):
+def check_sprite_cache_publication(module, *, detached=False):
     from binding_y4_images import texture, image
     helper = importlib.import_module(module.__name__ + '.classes._images_sprite')
     file = _reader_file(module)
+    if detached:
+        file.environment = None
     native_image = helper.get_image
     entered = threading.Barrier(4)
     decoded = []

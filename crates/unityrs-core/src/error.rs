@@ -40,6 +40,10 @@ pub enum Error {
         need: u64,
         /// Bytes left.
         have: u64,
+        /// Rules of the reader whose read failed.
+        reader: crate::stream::ReaderKind,
+        /// Size of that reader's buffer, including after decompression.
+        length: usize,
     },
     /// Input UnityPy rejects with an exception other than a short read.
     #[error("malformed {what}: {detail}")]
@@ -49,6 +53,14 @@ pub enum Error {
         /// The detail, for people. Shared, so a clone allocates nothing.
         detail: Arc<str>,
     },
+    /// The decoded signature rejected by the `WebFile` constructor. Keep only
+    /// a charged copy, so an error cannot retain an entire inflated input.
+    #[error("malformed WebFile: invalid signature")]
+    WebSignature(RawStr),
+    /// The rejected bundle signature, copied into charged storage so nested
+    /// failures identify their own input without retaining its whole buffer.
+    #[error("malformed bundle signature: Unknown Bundle signature")]
+    BundleSignature(RawStr),
     /// A format or feature unityrs does not read (yet), each named.
     #[error("unsupported: {0}")]
     Unsupported(Unsupported),
@@ -225,6 +237,8 @@ impl CellError for Error {
                 arc_heap_of(detail.len())
             }
             Self::Version(VersionError::NoMatch(r))
+            | Self::WebSignature(r)
+            | Self::BundleSignature(r)
             | Self::NotFound(NotFound::Cab(r) | NotFound::Resource(r)) => heap_of(r.len()),
             Self::Tree(t) => t.heap_bytes(),
             Self::AssetBundle(p) => {
@@ -393,6 +407,8 @@ mod tests {
             pos: -1,
             need: 1,
             have: 0,
+            reader: crate::stream::ReaderKind::Memory,
+            length: 0,
         };
         assert_eq!(e.to_string(), "u8: out of bounds at -1 (need 1, have 0)");
         let far = Error::OutOfBounds {
@@ -400,6 +416,8 @@ mod tests {
             pos: i128::from(i64::MAX) + 144,
             need: 1,
             have: 0,
+            reader: crate::stream::ReaderKind::Memory,
+            length: 0,
         };
         assert!(far.to_string().contains("9223372036854775951"));
     }

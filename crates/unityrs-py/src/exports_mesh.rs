@@ -1,9 +1,10 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/export/MeshExporter.py, UnityPy/export/MeshRendererExporter.py. See LICENSE-UNITYPY and THIRD_PARTY_LICENSES.
 //! OBJ formatting over the existing geometry decoder and metered writer.
 use super::{NativeEnvironment, NativeObject, context, named_error};
+use crate::worker_error::Failure;
 use crate::{errors, python as p};
 use pyo3::{
-    exceptions::{PyIndexError, PyNotImplementedError, PyTypeError, PyValueError},
+    exceptions::{PyNotImplementedError, PyValueError},
     prelude::*,
 };
 use std::sync::Arc;
@@ -31,7 +32,7 @@ pub(super) fn export_mesh(
     let (limits, meter) = context(reader);
     let snapshot = crate::value_input::export_snapshot(input.as_unbound(), &meter, &limits)?;
     let names = names(material_names, &meter)?;
-    py.detach(move || {
+    let native = py.detach(|| {
         crate::worker::run(limits.stack_needed(), || {
             let parsed = snapshot.build()?;
             let resources = reader
@@ -48,27 +49,27 @@ pub(super) fn export_mesh(
                         .map(|v| v as &dyn unityrs_meshdecode::Resources),
                     &meter,
                 )
-                .map_err(decode_error)?;
+                .map_err(Failure::MeshDecode)?;
             if processed.vertex_count() == 0
                 || processed.vertices().is_none_or(VertexArray::is_empty)
             {
-                return p::boolean(false);
+                return Ok(None);
             }
             let mut out = ChargedBytes::new(&meter);
             let root = parsed
                 .value()
                 .as_dict()
-                .ok_or_else(|| PyTypeError::new_err("Mesh fields"))?;
+                .ok_or_else(|| Failure::Static("TypeError", "Mesh fields"))?;
             let Some(Value::Str(name)) = parsed.attr(root, b"m_Name") else {
-                return Err(PyTypeError::new_err("Mesh.m_Name must be str"));
+                return Err(Failure::Static("TypeError", "Mesh.m_Name must be str"));
             };
-            out.write_bytes(b"g ").map_err(mesh_error)?;
-            out.write_bytes(name.as_bytes()).map_err(mesh_error)?;
-            out.write_bytes(b"\n").map_err(mesh_error)?;
+            out.write_bytes(b"g ").map_err(Failure::Mesh)?;
+            out.write_bytes(name.as_bytes()).map_err(Failure::Mesh)?;
+            out.write_bytes(b"\n").map_err(Failure::Mesh)?;
             if !names.is_empty() {
-                out.write_bytes(b"mtllib ").map_err(mesh_error)?;
-                out.write_bytes(name.as_bytes()).map_err(mesh_error)?;
-                out.write_bytes(b".mtl\n").map_err(mesh_error)?;
+                out.write_bytes(b"mtllib ").map_err(Failure::Mesh)?;
+                out.write_bytes(name.as_bytes()).map_err(Failure::Mesh)?;
+                out.write_bytes(b".mtl\n").map_err(Failure::Mesh)?;
             }
             if let Some(array) = processed.vertices() {
                 attribute(array, b"v ", 3, true, &mut out)?;
@@ -79,38 +80,49 @@ pub(super) fn export_mesh(
             if let Some(array) = processed.normals() {
                 attribute(array, b"vn ", 3, true, &mut out)?;
             }
-            let triangles = processed.get_triangles(&meter).map_err(decode_error)?;
+            let triangles = processed
+                .get_triangles(&meter)
+                .map_err(Failure::MeshDecode)?;
             meter
                 .count_decode(triangles.submeshes().len() as u64)
-                .map_err(errors::charge)?;
+                .map_err(Failure::charge)?;
             for (i, sub) in triangles.submeshes().iter().enumerate() {
-                out.write_bytes(b"g ").map_err(mesh_error)?;
-                out.write_bytes(name.as_bytes()).map_err(mesh_error)?;
-                out.write_args(format_args!("_{i}\n")).map_err(mesh_error)?;
+                out.write_bytes(b"g ").map_err(Failure::Mesh)?;
+                out.write_bytes(name.as_bytes()).map_err(Failure::Mesh)?;
+                out.write_args(format_args!("_{i}\n"))
+                    .map_err(Failure::Mesh)?;
                 if let Some(name) = names.as_slice().get(i).filter(|name| !name.is_empty()) {
-                    out.write_bytes(b"usemtl ").map_err(mesh_error)?;
-                    out.write_bytes(name.as_bytes()).map_err(mesh_error)?;
-                    out.write_bytes(b"\n").map_err(mesh_error)?;
+                    out.write_bytes(b"usemtl ").map_err(Failure::Mesh)?;
+                    out.write_bytes(name.as_bytes()).map_err(Failure::Mesh)?;
+                    out.write_bytes(b"\n").map_err(Failure::Mesh)?;
                 }
-                meter.count_decode(sub.len()).map_err(errors::charge)?;
+                meter.count_decode(sub.len()).map_err(Failure::charge)?;
                 for &[a, b, c] in sub.triangles() {
                     let (a, b, c) = (u64::from(a) + 1, u64::from(b) + 1, u64::from(c) + 1);
                     out.write_args(format_args!("f {c}/{c}/{c} {b}/{b}/{b} {a}/{a}/{a}\n"))
-                        .map_err(mesh_error)?;
+                        .map_err(Failure::Mesh)?;
                 }
                 if !sub.cut().is_empty() || sub.empty() > 0 {
                     let got = sub.cut().len();
-                    return Err(PyValueError::new_err(errors::message(&format_args!(
-                        "not enough values to unpack (expected 3, got {got})"
-                    ))));
+                    return Err(Failure::Message(
+                        "ValueError",
+                        errors::message(&format_args!(
+                            "not enough values to unpack (expected 3, got {got})"
+                        )),
+                    ));
                 }
             }
-            let _handoff = meter
-                .charge((out.as_bytes().len() as u64).saturating_mul(4))
-                .map_err(errors::charge)?;
-            p::string(out.as_bytes())
+            Ok::<_, Failure>(Some(out))
         })
-    })
+    })?;
+    let native = crate::worker_error::finish(native)?;
+    let Some(native) = native else {
+        return p::boolean(false);
+    };
+    let _handoff = meter
+        .charge((native.as_bytes().len() as u64).saturating_mul(4))
+        .map_err(errors::charge)?;
+    p::string(native.as_bytes())
 }
 
 fn names(input: Option<&Bound<'_, PyAny>>, meter: &Arc<Meter>) -> PyResult<MeteredVec<RawStr>> {
@@ -138,20 +150,20 @@ fn attribute(
     width: usize,
     negate: bool,
     out: &mut ChargedBytes,
-) -> PyResult<()> {
+) -> crate::worker_error::Result<()> {
     out.meter()
         .count_decode(a.len() as u64)
-        .map_err(errors::charge)?;
+        .map_err(Failure::charge)?;
     let mut buf = PyFmtBuf::default();
     for i in 0..a.len() {
-        out.write_bytes(prefix).map_err(mesh_error)?;
+        out.write_bytes(prefix).map_err(Failure::Mesh)?;
         for j in 0..width {
             if j > 0 {
-                out.write_bytes(b" ").map_err(mesh_error)?;
+                out.write_bytes(b" ").map_err(Failure::Mesh)?;
             }
             let n = a
                 .component(i, j)
-                .ok_or_else(|| PyIndexError::new_err("tuple index out of range"))?;
+                .ok_or_else(|| Failure::Static("IndexError", "tuple index out of range"))?;
             let n = if negate && j == 0 {
                 PyNum::Float(match n {
                     PyNum::Int(0) => 0.,
@@ -161,9 +173,9 @@ fn attribute(
                 n
             };
             out.write_bytes(pyfmt::g9(n, &mut buf).as_bytes())
-                .map_err(mesh_error)?;
+                .map_err(Failure::Mesh)?;
         }
-        out.write_bytes(b"\n").map_err(mesh_error)?;
+        out.write_bytes(b"\n").map_err(Failure::Mesh)?;
     }
     Ok(())
 }
@@ -182,7 +194,7 @@ pub(super) fn export_material(
     let texture_names = texture_names
         .map(|input| resolved_names(input, &meter))
         .transpose()?;
-    py.detach(move || {
+    let native = py.detach(|| {
         crate::worker::run(limits.stack_needed(), || {
             let parsed: Parsed = snapshot.build()?;
             let material = if let Some(names) = &texture_names {
@@ -201,15 +213,17 @@ pub(super) fn export_material(
             } else {
                 unityrs_mesh::obj::MaterialView::with_texture_names(&parsed, &[], &meter)
             }
-            .map_err(mesh_error)?;
+            .map_err(Failure::Mesh)?;
             let mut out = ChargedBytes::new(&meter);
-            unityrs_mesh::obj::export_material(&material, &mut out).map_err(mesh_error)?;
-            let _handoff = meter
-                .charge((out.as_bytes().len() as u64).saturating_mul(4))
-                .map_err(errors::charge)?;
-            p::string(out.as_bytes())
+            unityrs_mesh::obj::export_material(&material, &mut out).map_err(Failure::Mesh)?;
+            Ok::<_, Failure>(out)
         })
-    })
+    })?;
+    let native = crate::worker_error::finish(native)?;
+    let _handoff = meter
+        .charge((native.as_bytes().len() as u64).saturating_mul(4))
+        .map_err(errors::charge)?;
+    p::string(native.as_bytes())
 }
 
 fn resolved_names(
@@ -232,7 +246,7 @@ fn resolved_names(
     Ok(out)
 }
 
-fn decode_error(error: unityrs_meshdecode::MeshError) -> PyErr {
+pub(crate) fn decode_error(error: unityrs_meshdecode::MeshError) -> PyErr {
     match error {
         unityrs_meshdecode::MeshError::Charge(error) => errors::charge(error),
         unityrs_meshdecode::MeshError::Resource(error) => errors::core(error),
@@ -246,7 +260,7 @@ fn decode_error(error: unityrs_meshdecode::MeshError) -> PyErr {
     }
 }
 
-fn mesh_error(error: MeshError) -> PyErr {
+pub(crate) fn mesh_error(error: MeshError) -> PyErr {
     match error {
         MeshError::Decode(error) => decode_error(error),
         MeshError::Charge(error) => errors::charge(error),

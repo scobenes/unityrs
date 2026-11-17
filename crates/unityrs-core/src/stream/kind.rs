@@ -83,6 +83,8 @@ pub enum ReaderKind {
     /// `EndianBinaryReader_Streamable` over the buffered file `Environment`
     /// opens for a path: a top-level [`crate::env::Source::Path`].
     Stream,
+    /// Stream reader backed by `io.BytesIO`: any negative read size means EOF.
+    BytesIo,
 }
 
 /// An exception the stream reader raises where the memory reader reads on
@@ -161,9 +163,11 @@ impl ReaderKind {
     /// refusal of a negative one or one at or above 2^63.
     pub fn seek(self, pos: i128) -> Result<i128, StreamRefusal> {
         match self {
-            Self::Stream if pos < 0 => Err(StreamRefusal::NegativePosition),
-            Self::Stream if pos > i128::from(i64::MAX) => Err(StreamRefusal::PositionTooLarge),
-            Self::Memory | Self::Stream => Ok(pos),
+            Self::Stream | Self::BytesIo if pos < 0 => Err(StreamRefusal::NegativePosition),
+            Self::Stream | Self::BytesIo if pos > i128::from(i64::MAX) => {
+                Err(StreamRefusal::PositionTooLarge)
+            }
+            Self::Memory | Self::Stream | Self::BytesIo => Ok(pos),
         }
     }
 
@@ -189,6 +193,7 @@ impl ReaderKind {
         match self {
             Self::Memory => Ok(py_read(len, pos, size)),
             Self::Stream => stream_read(len, pos, size),
+            Self::BytesIo => Ok(stream_read_range(len, pos, size.max(-1))),
         }
     }
 
@@ -204,7 +209,7 @@ impl ReaderKind {
         match (i64::try_from(size), self) {
             (Ok(size), _) => self.read(len, pos, size),
             (Err(_), Self::Memory) => Ok(py_read(len, pos, i64::MAX)),
-            (Err(_), Self::Stream) => Err(StreamRefusal::ReadSizeOverflow),
+            (Err(_), Self::Stream | Self::BytesIo) => Err(StreamRefusal::ReadSizeOverflow),
         }
     }
 
@@ -222,7 +227,7 @@ impl ReaderKind {
                 Some(at) => (Some(at), pos.saturating_add(step)),
                 None => (None, pos),
             },
-            Self::Stream => {
+            Self::Stream | Self::BytesIo => {
                 let size = i64::try_from(n).unwrap_or(i64::MAX);
                 match stream_read(len, pos, size) {
                     Ok((range, next)) if range.len() == n => (Some(range.start), next),
@@ -267,7 +272,7 @@ impl ReaderKind {
     ) -> Option<(Range<usize>, i128)> {
         match self {
             Self::Memory => py_string_to_null_found(len, pos, max_length, nul),
-            Self::Stream => stream_string_to_null(len, pos, max_length, nul),
+            Self::Stream | Self::BytesIo => stream_string_to_null(len, pos, max_length, nul),
         }
     }
 }
@@ -280,12 +285,16 @@ fn stream_read(len: usize, pos: i128, size: i64) -> Result<(Range<usize>, i128),
     if size >= READ_TOO_LARGE {
         return Err(StreamRefusal::ReadTooLarge);
     }
+    Ok(stream_read_range(len, pos, size))
+}
+
+fn stream_read_range(len: usize, pos: i128, size: i64) -> (Range<usize>, i128) {
     let l = i128::try_from(len).unwrap_or(i128::MAX);
     let start = pos.clamp(0, l);
     if size == 0 || pos >= l {
         // Nothing to read: the position stays, past the end included.
         let at = usize::try_from(start).unwrap_or(len);
-        return Ok((at..at, pos));
+        return (at..at, pos);
     }
     let end = if size == -1 {
         l
@@ -293,7 +302,7 @@ fn stream_read(len: usize, pos: i128, size: i64) -> Result<(Range<usize>, i128),
         start.saturating_add(i128::from(size)).min(l)
     };
     let range = usize::try_from(start).unwrap_or(len)..usize::try_from(end).unwrap_or(len);
-    Ok((range, end))
+    (range, end)
 }
 
 /// The stream reader's `read_string_to_null` (`:136-144`, module docs):
