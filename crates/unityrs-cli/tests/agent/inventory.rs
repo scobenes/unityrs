@@ -107,21 +107,6 @@ fn input_errors_identify_argument_and_index() {
     let e = json(&tmp, &["show", "broken.bundle", "--path-id", "1"], 1);
     assert!(e["message"].as_str().unwrap().contains("broken.bundle"));
     assert_eq!(e["detail"]["input"], 0);
-    let e = json(
-        &tmp,
-        &[
-            "show",
-            "synthetic.assets",
-            "--path-id",
-            "1",
-            "--tpk",
-            "missing.tpk",
-        ],
-        1,
-    );
-    assert!(e["message"].as_str().unwrap().contains("synthetic.assets"));
-    assert!(e["message"].as_str().unwrap().contains("missing.tpk"));
-    assert_eq!(e["detail"]["input"], 0);
 }
 
 #[test]

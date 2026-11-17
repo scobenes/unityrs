@@ -1,6 +1,6 @@
 # unityrs
 
-> unityrs is a Rust port of UnityPy 1.25.2 for exploring, reading and extracting Unity files. Agents and scripts can discover the CLI with describe, page through a byte-bounded inventory with inspect, read a bounded natural JSON value with show (or --value canonical for dump-compatible encoding), and export assets with extract or the budgeted batch engine. Inspect and show default to a 65,536-byte response cap (--max-bytes); inspect previews long strings and preserves exact numeric object addresses.
+> unityrs is a Rust port of UnityPy 1.25.2 for exploring, reading and extracting Unity files. Agents and scripts can discover the CLI with describe, page through a byte-bounded inventory with inspect, read a bounded natural JSON value with show (or --value canonical for dump-compatible encoding), and export assets with extract or the budgeted batch engine. Inspect and show default to a 65,536-byte response cap (--max-bytes); inspect previews long strings and preserves exact numeric object addresses. Object failures retain that address; budget errors identify the option and current value, and shared provider failures identify --tpk.
 
 ## Guides
 

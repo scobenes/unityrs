@@ -125,8 +125,8 @@ compact success document, including its newline, is also bounded by
 Every listed object retains its full numeric `input`, `file_index` and `path_id`;
 use those to address it even when its file name is a preview.
 
-Input paths, metadata file names and Unity versions, and object file names,
-names and container paths longer than 128 source bytes use a
+Input paths (including provider paths in errors), metadata file names and Unity
+versions, and object file names, names and container paths longer than 128 source bytes use a
 `"$unityrs":"preview"` object with the original byte `length`, retained `prefix`,
 and omitted byte count `omitted`.
 The prefix contains at most 128 source bytes without splitting a UTF-8 code
@@ -254,6 +254,8 @@ value strings, bytes and byte vectors use inline hex through 64 bytes, then
 These canonical summaries are part of the dump model and do not count as cuts;
 `--bytes` controls only the natural view. An untruncated canonical value is
 byte-identical to the dump encoder.
+For example, `unityrs show synthetic.assets --path-id -2 --value canonical`
+returns `{"t":"dict","v":[["m_Name","alpha"],["m_Script","hello"]]}` in `value`.
 Both views share display limits and truncation markers. Item-clipped float
 vectors use arrays of canonical scalar tags followed by the item marker.
 This option affects only `show`; the parity dump and value-case protocols retain their contracts.
@@ -311,7 +313,7 @@ A missing object produces this complete error document:
 {
   "code": "not_found",
   "format": "unityrs.error",
-  "message": "no object with that path ID and file",
+  "message": "show: input 0 'synthetic.assets' --path-id '999': no object with that path ID and file",
   "version": 1
 }
 ```
@@ -320,10 +322,25 @@ A missing object produces this complete error document:
 New commands exit 0 on success, 1 on operation failure, 2 on usage error. A
 failure writes that JSON to stdout and one escaped human-readable line to
 stderr. Input failures identify the input index and escaped caller path in their
-message, with `detail.input` carrying the zero-based index. Inspect's per-input
-failures remain exit 0. Usage errors identify the option, bad value and accepted
-forms or range. Existing commands keep their own exit meanings; `describe` lists
-them, including batch's distinct codes from [BATCH_SPEC.md](BATCH_SPEC.md).
+message, with `detail.input` carrying the zero-based index. Once an object is
+known, read and rendering failures also carry `detail.file_index` and
+`detail.path_id`. A shared provider failure identifies `--tpk` and its current
+path in the message and `detail.tpk`; it is not attributed to an input, including
+when `--file-index` skips other inputs. Provider paths use the same bounded
+preview rule as inventory paths.
+Inspect's per-input failures remain exit 0 when its response can be written.
+Budget errors name the option to raise and its current numeric value, including
+refusals during rendering after parsing succeeds. Response-wide errors identify
+the first addressed object when available, otherwise the command and inputs. Fixed reader and
+provider bounds explicitly say that no CLI option raises them; allocator
+refusals advise reducing the input or response size or freeing host memory.
+Selection errors repeat the requested `--path-id`, `--file` and `--file-index`
+values when supplied. Cursor errors name `--cursor` and its bounded token
+spelling, retain any provider or input context, and advise restarting without
+the cursor. A resource refusal remains `budget` even during cursor replay.
+Usage errors identify the option, bad value and accepted forms or range;
+duplicate options report both values. Existing commands keep their own exit
+meanings; `describe` lists them, including batch's distinct codes from [BATCH_SPEC.md](BATCH_SPEC.md).
 
 Inspect and show use extract's budget option names and defaults:
 
@@ -332,10 +349,12 @@ Inspect and show use extract's budget option names and defaults:
 | `--max-input-memory` | 8589934592 | Charged bytes per input, and a separate response budget. |
 | `--max-input-bytes` | 4294967296 | Source bytes per input, before loading. |
 | `--max-decode-work` | 34359738368 | Work per input, and response rendering/hashing work. |
-| `--max-tree-depth` | 256 | Reader graph/tree depth. |
+| `--max-tree-depth` | 256 | Compiled typetree depth. |
 | `--tpk FILE` | absent | Optional bounded schema provider for stripped trees. |
 
-Pass larger numeric limits explicitly when needed. The input loader and JSON
+Pass larger numeric limits explicitly when needed. `--max-tree-depth` controls
+compiled typetrees; runtime value depth and container depth retain the reader's
+fixed defaults and have no agent CLI override. The input loader and JSON
 text writer charge allocations before growth and use fallible allocation.
 Show checks borrowed header and framing lengths against the output cap before
 copying the header or rendering a value. An inspect response also retains input

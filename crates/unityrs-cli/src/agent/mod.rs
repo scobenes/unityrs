@@ -1,11 +1,13 @@
 //! Versioned agent documents. Operations return charged JSON, never print.
 mod cursor;
 mod describe;
+mod error;
 mod inventory;
 mod listing;
 pub(crate) mod options;
 mod render;
 mod schema;
+pub use error::Error;
 use options::Args;
 use std::{io::Write, process::ExitCode, sync::Arc};
 use unityrs_core::limits::{Charge, Meter};
@@ -14,72 +16,6 @@ use unityrs_dump::{
     text::{Sink, Text},
 };
 pub type Result<T> = std::result::Result<T, Error>;
-#[derive(Debug)]
-pub struct Error {
-    pub code: &'static str,
-    pub message: String,
-    pub detail: Option<Box<Document>>,
-}
-impl Error {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-            detail: None,
-        }
-    }
-    fn formatted(code: &'static str, value: &impl std::fmt::Display) -> Self {
-        Self::new(code, bounded_message(value))
-    }
-    fn usage(message: impl Into<String>) -> Self {
-        Self::new("usage", message)
-    }
-    fn input(e: impl std::fmt::Display) -> Self {
-        Self::formatted("input", &e)
-    }
-    fn at_input(mut self, index: usize, path: &[u8]) -> Self {
-        self.message = bounded_message(&format_args!(
-            "input {index} {}: {}",
-            options::spelling(path),
-            self.message
-        ));
-        self.detail = fixed(&serde_json::json!({"input":index}))
-            .ok()
-            .map(Box::new);
-        self
-    }
-}
-impl From<unityrs_core::Error> for Error {
-    fn from(e: unityrs_core::Error) -> Self {
-        let e = unityrs_export::extractor::Error::Core(e);
-        Self::new(
-            if e.resource_refusal() {
-                "budget"
-            } else {
-                "input"
-            },
-            bounded_message(&e),
-        )
-    }
-}
-impl From<unityrs_core::limits::ChargeError> for Error {
-    fn from(e: unityrs_core::limits::ChargeError) -> Self {
-        Self::formatted("budget", &e)
-    }
-}
-impl From<unityrs_core::walk::ParseError> for Error {
-    fn from(e: unityrs_core::walk::ParseError) -> Self {
-        let e = unityrs_export::extractor::Error::Simple(unityrs_export::simple::Error::Parse(e));
-        Self::new(
-            if e.resource_refusal() {
-                "budget"
-            } else {
-                "input"
-            },
-            bounded_message(&e),
-        )
-    }
-}
 // Formatting attacker-controlled names into an error must not make an
 // unbounded intermediate String before the charged JSON writer sees it.
 fn bounded_message(value: &impl std::fmt::Display) -> String {
@@ -147,7 +83,7 @@ pub fn execute(command: &str, raw: &[Vec<u8>]) -> Result<Document> {
     if args.get("--help").is_some() {
         return describe::run();
     }
-    match command {
+    let result = match command {
         "inspect" => inventory::inspect(&args),
         "show" => inventory::show(&args),
         "describe" => match args.get("--schema") {
@@ -155,7 +91,8 @@ pub fn execute(command: &str, raw: &[Vec<u8>]) -> Result<Document> {
             None => describe::run(),
         },
         _ => Err(Error::usage("unknown command")),
-    }
+    };
+    result.map_err(|e| e.for_args(command, &args))
 }
 fn fixed(value: &serde_json::Value) -> Result<Document> {
     let meter = crate::extract::limits::extraction(&unityrs_core::limits::Limits::default());

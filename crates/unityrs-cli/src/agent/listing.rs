@@ -87,9 +87,9 @@ impl Page {
             let _ = write!(tail, "],\"total_objects\":{total},\"next_cursor\":");
             if more {
                 let Some(last) = self.entries.as_slice().last() else {
-                    return Err(Error::new(
-                        "budget",
-                        "--max-bytes cannot hold input metadata, object addressing and pagination",
+                    return Err(Error::response_cap(
+                        "cannot hold input metadata, object addressing and pagination",
+                        self.cap,
                     ));
                 };
                 let token = last.key.token(fingerprint, meter)?;
@@ -121,9 +121,9 @@ impl Page {
                 return document(out);
             }
             let Some(removed) = self.entries.pop() else {
-                return Err(Error::new(
-                    "budget",
-                    "--max-bytes cannot hold input metadata and object addressing",
+                return Err(Error::response_cap(
+                    "cannot hold input metadata and object addressing",
+                    self.cap,
                 ));
             };
             self.bytes -= removed.header.json.len() + usize::from(self.len() > 0);

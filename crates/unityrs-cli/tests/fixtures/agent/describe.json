@@ -229,7 +229,7 @@
         },
         {
           "default": "256",
-          "help": "Reader tree and graph depth.",
+          "help": "Compiled typetree depth.",
           "name": "--max-tree-depth",
           "value": "N"
         },
@@ -373,7 +373,7 @@
         },
         {
           "default": "256",
-          "help": "Reader tree and graph depth.",
+          "help": "Compiled typetree depth.",
           "name": "--max-tree-depth",
           "value": "N"
         },
@@ -484,7 +484,7 @@
         },
         {
           "default": "256",
-          "help": "Reader tree and graph depth.",
+          "help": "Compiled typetree depth.",
           "name": "--max-tree-depth",
           "value": "N"
         },
@@ -581,7 +581,7 @@
         },
         {
           "default": "256",
-          "help": "Reader tree and graph depth.",
+          "help": "Compiled typetree depth.",
           "name": "--max-tree-depth",
           "value": "N"
         },

@@ -22,14 +22,7 @@ fn provider(args: &Args<'_>, meter: &Arc<Meter>) -> Result<Option<Provider>> {
     let Some(path) = args.get("--tpk") else {
         return Ok(None);
     };
-    let context = |mut error: Error| {
-        error.message = super::bounded_message(&format_args!(
-            "--tpk {}: {}",
-            super::options::spelling(path),
-            error.message
-        ));
-        error.at_input(0, args.inputs.first().copied().unwrap_or(path))
-    };
+    let context = |error: Error| error.at_tpk(path);
     let data =
         unityrs_core::env::read_path(Path::new(OsStr::from_bytes(path)), &args.limits, meter)
             .map_err(|e| context(Error::from(e)))?;
@@ -38,19 +31,8 @@ fn provider(args: &Args<'_>, meter: &Arc<Meter>) -> Result<Option<Provider>> {
         .map_err(|e| context(Error::from(e)))?;
     let digest = json::sha256(&data);
     // Parse exactly the bytes whose digest was computed, without reopening.
-    let tree = unityrs_tpk::TpkProvider::from_bytes(&data, &args.limits).map_err(|e| {
-        context(Error::new(
-            if matches!(
-                e,
-                unityrs_tpk::TpkError::TooLarge { .. } | unityrs_tpk::TpkError::Allocator(_)
-            ) {
-                "budget"
-            } else {
-                "input"
-            },
-            super::bounded_message(&e),
-        ))
-    })?;
+    let tree = unityrs_tpk::TpkProvider::from_bytes(&data, &args.limits)
+        .map_err(|e| context(Error::tpk(e)))?;
     Ok(Some(Provider {
         tree: Arc::new(tree),
         digest,
@@ -232,15 +214,15 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
         .collect::<Result<Vec<_>>>()?;
     let limit = args.number("inspect", "--limit")?;
     let meter = meter(args);
-    let provider = provider(args, &meter).map_err(|e| {
-        if args.get("--cursor").is_some() {
-            Error::new(
-                "bad_cursor",
-                "cursor refused: inputs changed or TPK cannot be read",
-            )
-        } else {
-            e
+    let provider = provider(args, &meter).map_err(|mut e| {
+        if args.get("--cursor").is_some() && e.code != "budget" {
+            e.code = "bad_cursor";
+            e.message = super::bounded_message(&format_args!(
+                "cursor refused: inputs changed or TPK cannot be read: {}",
+                e.message
+            ));
         }
+        e
     })?;
     let mut fingerprint =
         cursor::Fingerprint::new(args, &meter, provider.as_ref().map(|p| &p.digest))?;
@@ -251,6 +233,7 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
     let mut inputs = Text::on(&meter);
     let mut objects = listing::Page::new(&meter, args.number("inspect", "--max-bytes")?);
     let mut total = 0usize;
+    let mut response_object = None;
     for (index, path) in args.inputs.iter().enumerate() {
         if index > 0 {
             inputs.push(',');
@@ -272,7 +255,13 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
                     source_digest = Some(json::sha256(data));
                     Ok(())
                 },
-            )?;
+            );
+            // Bind the loaded snapshot before object work. A fingerprint
+            // refusal then cannot replace an object's contextual failure.
+            if let Some(digest) = &source_digest {
+                fingerprint.field(b"input-digest", digest, &meter)?;
+            }
+            let root = root?;
             let mut first_file = true;
             let mut file_index = 0usize;
             walk(root, |file| {
@@ -283,76 +272,88 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
                 }
                 first_file = false;
                 metadata(&mut files, file, occurrence);
+                if let Some(e) = files.refused() {
+                    return Err(Error::from(e.clone()));
+                }
                 if let File::Serialized(f) = file {
                     for obj in f.objects_by_path() {
-                        if !classes.is_empty() {
-                            // Reserve the binary search's worst-case comparisons
-                            // before comparing, even for non-matching objects.
-                            obj.file()
-                                .meter()
-                                .count_decode(u64::from(classes.len().ilog2()) + 2)?;
-                            if classes.binary_search(&obj.class_id()).is_err() {
-                                continue;
-                            }
-                        }
-                        let p = read_name(&obj)?;
-                        if !globs.is_empty() {
-                            let mut matches = false;
-                            if let Some(n) = p.as_ref().and_then(parsed_name) {
-                                for glob in &globs {
-                                    if glob.matches_metered(n, obj.file().meter())? {
-                                        matches = true;
-                                        break;
-                                    }
+                        let result = (|| {
+                            if !classes.is_empty() {
+                                // Reserve the binary search's worst-case comparisons
+                                // before comparing, even for non-matching objects.
+                                obj.file()
+                                    .meter()
+                                    .count_decode(u64::from(classes.len().ilog2()) + 2)?;
+                                if classes.binary_search(&obj.class_id()).is_err() {
+                                    return Ok(());
                                 }
                             }
-                            if !matches {
-                                continue;
+                            let p = read_name(&obj)?;
+                            if !globs.is_empty() {
+                                let mut matches = false;
+                                if let Some(n) = p.as_ref().and_then(parsed_name) {
+                                    for glob in &globs {
+                                        if glob.matches_metered(n, obj.file().meter())? {
+                                            matches = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if !matches {
+                                    return Ok(());
+                                }
                             }
-                        }
-                        count += 1;
-                        if !resumed {
-                            if let Some(r) = &resume
-                                && r.key.matches(
+                            count += 1;
+                            if !resumed {
+                                if let Some(r) = &resume
+                                    && r.key.matches(
+                                        index,
+                                        occurrence,
+                                        f.name().as_bytes(),
+                                        obj.path_id(),
+                                        &meter,
+                                    )?
+                                {
+                                    resumed = true;
+                                }
+                                return Ok(());
+                            }
+                            if !more && objects.len() < limit {
+                                response_object.get_or_insert((
+                                    index,
+                                    *path,
+                                    occurrence,
+                                    obj.path_id(),
+                                ));
+                                let mut text = Text::on(&meter);
+                                header(&mut text, index, occurrence, &obj, &env, p.as_ref(), true)?;
+                                let key = cursor::Key::new(
                                     index,
                                     occurrence,
                                     f.name().as_bytes(),
                                     obj.path_id(),
                                     &meter,
-                                )?
-                            {
-                                resumed = true;
-                            }
-                            continue;
-                        }
-                        if !more && objects.len() < limit {
-                            let mut text = Text::on(&meter);
-                            header(&mut text, index, occurrence, &obj, &env, p.as_ref(), true)?;
-                            let key = cursor::Key::new(
-                                index,
-                                occurrence,
-                                f.name().as_bytes(),
-                                obj.path_id(),
-                                &meter,
-                            )?;
-                            if !objects.push(document(text)?, key)? {
+                                )?;
+                                if !objects.push(document(text)?, key)? {
+                                    more = true;
+                                }
+                            } else {
                                 more = true;
                             }
-                        } else {
-                            more = true;
-                        }
+                            Ok(())
+                        })();
+                        result.map_err(|e: Error| {
+                            e.at_object(index, path, occurrence, obj.path_id())
+                        })?;
                     }
                 }
                 Ok(())
             })?;
             if let Some(e) = files.refused() {
-                return Err(Error::formatted("budget", e));
+                return Err(Error::from(e.clone()));
             }
             Ok(())
         })();
-        if let Some(digest) = &source_digest {
-            fingerprint.field(b"input-digest", digest, &meter)?;
-        }
         match result {
             Ok(()) => {
                 inputs.push_str(",\"files\":[");
@@ -365,34 +366,61 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
                 resumed = before_resumed;
                 more = before_more;
                 if source_digest.is_none() {
-                    unbound = Some((index, *path, e.code));
+                    unbound = Some(Error {
+                        code: e.code,
+                        message: super::bounded_message(&format_args!("cannot issue a cursor: input bytes unavailable for fingerprinting: {}", e.message)),
+                        detail: None,
+                    }.at_input(index, path));
                 }
-                fingerprint.field(b"input-error", e.code.as_bytes(), &meter)?;
                 let e = e.at_input(index, path);
+                if let Err(error) = fingerprint.field(b"input-error", e.code.as_bytes(), &meter) {
+                    return Err(if e.code == "budget" {
+                        e
+                    } else {
+                        error.at_input(index, path)
+                    });
+                }
                 inputs.push_str(",\"error\":");
                 super::write_error(&mut inputs, &e);
+                if let Some(error) = inputs.refused() {
+                    return Err(if e.code == "budget" {
+                        e
+                    } else {
+                        Error::from(error.clone()).at_input(index, path)
+                    });
+                }
             }
         }
         inputs.push('}');
     }
-    if unbound.is_some() && resume.is_some() {
-        return Err(Error::new(
-            "bad_cursor",
-            "cursor refused: inputs changed or cannot be read within budgets",
-        ));
+    if resume.is_some()
+        && let Some(mut error) = unbound.take()
+    {
+        if error.code != "budget" {
+            error.code = "bad_cursor";
+            error.message = super::bounded_message(&format_args!(
+                "cursor refused: inputs changed: {}",
+                error.message
+            ));
+        }
+        return Err(error);
     }
     let key = fingerprint.finish();
     if let Some(resume) = &resume {
         resume.verify(&key, resumed)?;
     }
-    let cursor_error = unbound.map(|(index, path, code)| {
-        Error::new(
-            code,
-            "cannot issue a cursor: input bytes unavailable for fingerprinting",
-        )
-        .at_input(index, path)
-    });
-    objects.finish(&document(inputs)?, total, more, &key, cursor_error, &meter)
+    let cursor_error = unbound;
+    let result = (|| objects.finish(&document(inputs)?, total, more, &key, cursor_error, &meter))();
+    result.map_err(|error| {
+        if error.code == "budget"
+            && error.detail.is_none()
+            && let Some((index, path, file_index, path_id)) = response_object
+        {
+            error.at_object(index, path, file_index, path_id)
+        } else {
+            error
+        }
+    })
 }
 pub fn show(args: &Args<'_>) -> Result<Document> {
     let path_id = args.path_id()?;
@@ -438,6 +466,11 @@ pub fn show(args: &Args<'_>) -> Result<Document> {
                     );
                     name(&mut candidates, f.name().as_bytes());
                     candidates.push('}');
+                    if let Some(e) = candidates.refused() {
+                        return Err(
+                            Error::from(e.clone()).at_object(index, path, occurrence, path_id)
+                        );
+                    }
                     count += 1;
                     if selected.is_none() {
                         selected = Some((index, occurrence, obj, env.clone(), *path));
@@ -459,36 +492,34 @@ pub fn show(args: &Args<'_>) -> Result<Document> {
     }
     let (index, file_index, object, env, path) =
         selected.ok_or_else(|| Error::new("not_found", "no object with that path ID and file"))?;
-    let parsed = object
-        .parse_as_dict(false)
-        .map_err(|e| Error::from(e).at_input(index, path))?;
-    let mut length = render::Length::on(&meter);
-    header(
-        &mut length,
-        index,
-        file_index,
-        &object,
-        &env,
-        Some(&parsed),
-        false,
-    )
-    .map_err(|e| e.at_input(index, path))?;
-    let header_len = length.finish()?;
-    render::show(
-        args,
-        &parsed,
-        header_len,
-        |out| {
-            header(out, index, file_index, &object, &env, Some(&parsed), false)
-                .map_err(|e| e.at_input(index, path))
-        },
-        &meter,
-    )
-    .map_err(|e| {
-        if e.code == "input" && e.detail.is_none() {
-            e.at_input(index, path)
-        } else {
-            e
-        }
-    })
+    let result = (|| {
+        let parsed = object.parse_as_dict(false).map_err(|error| {
+            let missing_tree = matches!(error, unityrs_core::walk::ParseError::NoTypeTree { .. });
+            let error = Error::from(error);
+            if missing_tree {
+                error.missing_tree(args)
+            } else {
+                error
+            }
+        })?;
+        let mut length = render::Length::on(&meter);
+        header(
+            &mut length,
+            index,
+            file_index,
+            &object,
+            &env,
+            Some(&parsed),
+            false,
+        )?;
+        let header_len = length.finish()?;
+        render::show(
+            args,
+            &parsed,
+            header_len,
+            |out| header(out, index, file_index, &object, &env, Some(&parsed), false),
+            &meter,
+        )
+    })();
+    result.map_err(|e: Error| e.at_object(index, path, file_index, path_id))
 }

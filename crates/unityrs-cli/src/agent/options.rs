@@ -45,7 +45,7 @@ pub const BUDGET: &[OptionSpec] = &[
         "--max-tree-depth",
         "N",
         Some("256"),
-        "Reader tree and graph depth.",
+        "Compiled typetree depth.",
     ),
     opt(
         "--tpk",
@@ -213,7 +213,17 @@ impl<'a> Args<'a> {
                 if !matches!(spec.name, "--class" | "--name")
                     && options.iter().any(|(k, _)| *k == spec.name)
                 {
-                    return Err(Error::usage(format!("duplicate option {}", spec.name)));
+                    return Err(Error::usage(format!(
+                        "duplicate option {} value {}; first value {}",
+                        spec.name,
+                        spelling(value),
+                        spelling(
+                            options
+                                .iter()
+                                .find(|(key, _)| *key == spec.name)
+                                .map_or(b"", |(_, value)| *value)
+                        )
+                    )));
                 }
                 options.push((spec.name, value));
                 match spec.name {

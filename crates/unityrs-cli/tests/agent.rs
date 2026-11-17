@@ -4,6 +4,8 @@
 mod bounds;
 #[path = "agent/contracts.rs"]
 mod contracts;
+#[path = "agent/diagnostics.rs"]
+mod diagnostics;
 #[path = "agent/edges.rs"]
 mod edges;
 #[path = "agent/inventory.rs"]

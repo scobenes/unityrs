@@ -631,9 +631,9 @@ pub fn show(
         .saturating_add(header_len)
         .saturating_add(VALUE.len());
     if prefix_len.saturating_add(MIN_TAIL.len()) > max {
-        return Err(Error::new(
-            "budget",
-            "--max-bytes cannot hold the object header and a truncation marker",
+        return Err(Error::response_cap(
+            "cannot hold the object header and a truncation marker",
+            max,
         ));
     }
     let mut view = View {
@@ -664,9 +664,9 @@ pub fn show(
     view.cuts.write(&mut out);
     out.push_str("}\n");
     if out.as_str().len() > max {
-        return Err(Error::new(
-            "budget",
-            "--max-bytes cannot hold the object header and a truncation marker",
+        return Err(Error::response_cap(
+            "cannot hold the object header and a truncation marker",
+            max,
         ));
     }
     document(out)
