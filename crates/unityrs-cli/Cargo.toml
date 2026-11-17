@@ -33,10 +33,12 @@ unityrs-mesh = { path = "../unityrs-mesh" }
 unityrs-tpk = { path = "../unityrs-tpk" }
 unityrs-dump = { path = "../unityrs-dump" }
 
+unityrs-testkit = { path = "../unityrs-testkit", optional = true }
+
 [features]
 # The engine's official test hooks (`docs/plans/batch.md` 2.11), read from
-# their variables at step 1. Never in a release build.
-test-hooks = ["unityrs-batch/test-hooks"]
+# their variables at step 1. Excluded from shipping builds.
+test-hooks = ["unityrs-batch/test-hooks", "dep:unityrs-testkit"]
 
 [[test]]
 name = "batch_lifetime"

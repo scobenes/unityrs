@@ -388,7 +388,7 @@ jobs:
       - name: Self-tests (scripts)
         run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=140'
       - name: Aggregate memory regeneration tooling
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/memory/tests=66'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/memory/tests=81'
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
   # section 3) and with UnityPy's samples, so the tests that need them run;
@@ -777,7 +777,7 @@ jobs:
       - name: Check the API oracle fixtures
         run: python tools/fixtures/py_bindings.py --check
       - name: Test the installed wheel
-        run: python scripts/unittest-suites crates/unityrs-py/python/tests=133
+        run: python scripts/unittest-suites crates/unityrs-py/python/tests=197
       - name: Compare the binding with UnityPy
         working-directory: tools/parity
-        run: python ../../scripts/unittest-suites bindings=317
+        run: python ../../scripts/unittest-suites bindings=366

@@ -134,6 +134,49 @@ pub enum Decoded {
 
 /// Decodes one block.
 pub trait BlockCodec: Send + Sync {
+    /// Capture a compressor and chunk policy for one payload, when needed.
+    /// The default uses this registered codec directly.
+    fn compressor(
+        &self,
+        _which: Codec,
+        _meter: &Arc<crate::limits::Meter>,
+    ) -> Result<Option<Arc<dyn BlockCodec>>, crate::files::SaveError> {
+        Ok(None)
+    }
+    /// Decode with the original bundle flags available to extension callbacks.
+    /// Native codecs use only their registered compression type.
+    fn decode_with_flags(
+        &self,
+        input: &Bytes,
+        uncompressed: u32,
+        _flags: u32,
+        out: &mut DecodeBuf,
+    ) -> Result<Decoded, Error> {
+        self.decode(input, uncompressed, out)
+    }
+
+    /// Compress a bundle block. The default preserves the native packer.
+    fn compress(
+        &self,
+        data: &[u8],
+        which: Codec,
+        meter: &Arc<crate::limits::Meter>,
+    ) -> Result<Bytes, crate::files::SaveError> {
+        encode::compress(data, which, meter)
+    }
+
+    /// The writer's chunk bound, looked up once before writing the payload.
+    fn chunk_size(
+        &self,
+        which: Codec,
+        _meter: &Arc<crate::limits::Meter>,
+    ) -> Result<usize, crate::files::SaveError> {
+        match which {
+            Codec::None | Codec::Lzma => Ok(usize::try_from(u32::MAX).unwrap_or(usize::MAX)),
+            Codec::Lz4 | Codec::Lz4Hc => Ok(0x20000),
+            _ => Err(crate::files::SaveError::UnsupportedCodec(which)),
+        }
+    }
     /// Decodes `input`, a block's stored bytes (a slice of the bundle).
     /// `uncompressed` is blocks-info's declared size; each codec treats it as
     /// UnityPy does (module docs). The output goes into `out`, which pays and
@@ -187,11 +230,36 @@ pub fn decode_block(
     out: &mut DecodeBuf,
     cap: u64,
 ) -> Result<Option<Bytes>, Error> {
+    decode_flagged(
+        which,
+        codec,
+        input,
+        uncompressed,
+        out,
+        cap,
+        u32::from(which.id()),
+    )
+}
+
+pub(crate) fn decode_flagged(
+    which: Codec,
+    codec: &dyn BlockCodec,
+    input: &Bytes,
+    uncompressed: u32,
+    out: &mut DecodeBuf,
+    cap: u64,
+    flags: u32,
+) -> Result<Option<Bytes>, Error> {
     out.begin_block(cap, LimitKind::BlockOutput, u64::from(uncompressed));
     let epoch = out.segment_epoch();
     // A pool refusal the codec returns is counted for the Environment's
     // retry (`env::registry::from_callers`).
-    let decoded = crate::env::registry::from_callers(codec.decode(input, uncompressed, out))?;
+    let decoded = crate::env::registry::from_callers(codec.decode_with_flags(
+        input,
+        uncompressed,
+        flags,
+        out,
+    ))?;
     let bad = |detail: String| Error::Decompress {
         codec: which,
         detail: detail.into(),

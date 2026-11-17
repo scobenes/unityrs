@@ -38,11 +38,18 @@ def _node_lists(lists, charge):
     return result
 
 
-def _construct(node, values, assetsfile, boost, array=False, charge=None, node_work=0):
-    from . import classes
-    from .classes import UnknownObject
+def _construct(node, values, assetsfile, boost, array=False, charge=None, node_work=0,
+               class_namespace=None):
+    if class_namespace is None:
+        from . import classes
+    else:
+        classes = class_namespace
+    UnknownObject = getattr(classes, 'UnknownObject', None)
     if node.m_Type.startswith('PPtr<'):
-        cls = classes.PPtr
+        try:
+            cls = classes.PPtr
+        except AttributeError:
+            raise ValueError('Failed to get PPtr class') from None
         _reserve(charge, 2048, 256)
         values['assetsfile'] = assetsfile
         if not boost:
@@ -60,6 +67,8 @@ def _construct(node, values, assetsfile, boost, array=False, charge=None, node_w
         if not isinstance(cls, type) or cls.__module__ == 'builtins':
             cls = UnknownObject
             missing = True
+        if missing and cls is None:
+            raise ValueError('Failed to get UnknownObject class')
         if missing and boost:
             values['__node__'] = node
     # attrs defaults can materialize many fields from a zero-field value.
@@ -120,7 +129,8 @@ def _construct(node, values, assetsfile, boost, array=False, charge=None, node_w
     return UnknownObject(**values)
 
 
-def build(data, lists, assetsfile, boost, references=(), completed=0, error=None, charge=None):
+def build(data, lists, assetsfile, boost, references=(), completed=0, error=None, charge=None,
+          class_namespace=None, reference_occurrences=False):
     """Postorder work stack keeps large arrays and deep trees off Python's stack."""
     from .classes._names import clean_name
     nodes = _node_lists(lists, charge)
@@ -137,7 +147,15 @@ def build(data, lists, assetsfile, boost, references=(), completed=0, error=None
     _reserve(charge, 256 * len(references), 256 * len(references))
     for cls, ns, asm, index in references:
         _reserve(charge, 0, 4 * (len(cls) + len(ns) + len(asm)))
-        ref_roots.setdefault((cls,ns,asm), nodes[index][0])
+        if reference_occurrences:
+            from collections import deque
+            descriptor = (cls,ns,asm)
+            if descriptor not in ref_roots:
+                _reserve(charge, 1024, 1)
+                ref_roots[descriptor] = deque()
+            ref_roots[descriptor].append(nodes[index][0])
+        else:
+            ref_roots.setdefault((cls,ns,asm), nodes[index][0])
     root = [None]
     tasks = [('value', data, nodes[0][0], root, 0, False)]
     while tasks:
@@ -145,12 +163,25 @@ def build(data, lists, assetsfile, boost, references=(), completed=0, error=None
             raise error
         action, value, node, parent, key, array = tasks.pop()
         _reserve(charge, 256, 256)
+        if action == 'resolved_value':
+            node, resolution = node
+            descriptor, selected = resolution
+            if selected is None:
+                roots = ref_roots.get(descriptor)
+                selected = roots.popleft() if roots else node
+                resolution[1] = selected
+            node = selected
         if action == 'reference':
-            from .classes import UnknownObject
+            if class_namespace is None:
+                from .classes import UnknownObject
+            else:
+                UnknownObject = getattr(class_namespace, 'UnknownObject', None)
+                if UnknownObject is None:
+                    raise ValueError('Failed to get class')
             parent[key] = UnknownObject(node, **value) if boost else value
             completed -= 1
         elif action == 'class':
-            parent[key] = _construct(node, value, assetsfile, boost, array, charge, costs[id(node)])
+            parent[key] = _construct(node, value, assetsfile, boost, array, charge, costs[id(node)], class_namespace)
             completed -= 1
         elif action == 'tuple':
             parent[key] = tuple(value)
@@ -160,23 +191,32 @@ def build(data, lists, assetsfile, boost, references=(), completed=0, error=None
             reference = node.m_Type == 'ReferencedObject'
             tasks.append(('reference' if reference else 'class', out, node, parent, key, array))
             ref_root = None
+            resolution = None
 
             # Reverse scheduling, forward key insertion (duplicates last win).
             children = []
             for child, raw_value in fields(node,value):
                 if reference and child.m_Name == 'type':
+                    ref_root = None
                     names = {(part.m_Name if child.m_Type == 'ReferencedObject'
                               else clean_name(part.m_Name, ascii_digit=True)):v
                              for part,v in fields(child,raw_value)} if isinstance(raw_value,dict) else {}
                     descriptor = tuple(names.get(k) for k in ('class','ns','asm'))
-                    ref_root = ref_roots.get(descriptor) if all(isinstance(v,str) for v in descriptor) else None
+                    if reference_occurrences:
+                        resolution = [descriptor, None] if all(isinstance(v,str) for v in descriptor) else None
+                    else:
+                        ref_root = ref_roots.get(descriptor) if all(isinstance(v,str) for v in descriptor) else None
                 raw_names = reference or (not boost and array and node.m_Type.startswith('PPtr<'))
                 name = child.m_Name if raw_names else clean_name(child.m_Name, ascii_digit=True)
                 out[name] = None
                 target_node = ref_root if ref_root is not None and child.m_Type == 'ReferencedObjectData' else child
-                children.append((target_node,name,raw_value))
-            for child, name, raw_value in reversed(children):
-                tasks.append(('value', raw_value, child, out, name, False))
+                action = 'value'
+                if resolution is not None and child.m_Type == 'ReferencedObjectData':
+                    target_node = (child, resolution)
+                    action = 'resolved_value'
+                children.append((action,target_node,name,raw_value))
+            for action, child, name, raw_value in reversed(children):
+                tasks.append((action, raw_value, child, out, name, False))
         elif isinstance(value, (tuple,list)):
             _reserve(charge, 256 * len(value), 256 * len(value))
             out = [None] * len(value)

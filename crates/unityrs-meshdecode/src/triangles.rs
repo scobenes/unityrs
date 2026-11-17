@@ -55,6 +55,16 @@ pub struct Triangles {
 const _: () = crate::send_sync::<Triangles>();
 
 impl Triangles {
+    /// Takes ownership of already charged submeshes from an API adapter.
+    #[must_use]
+    pub fn from_submeshes(submeshes: MeteredVec<SubMeshTriangles>) -> Self {
+        let (submeshes, charge) = submeshes.into_parts();
+        Self {
+            submeshes,
+            _charge: charge,
+        }
+    }
+
     /// No triangle evaluation, for exporters that return before faces when
     /// positions are absent. Allocates nothing; retains the caller's meter.
     #[must_use]
@@ -89,6 +99,21 @@ pub struct SubMeshTriangles {
 const _: () = crate::send_sync::<SubMeshTriangles>();
 
 impl SubMeshTriangles {
+    /// Takes ownership of an already charged list of complete triangles.
+    #[must_use]
+    pub fn from_triangles(triangles: MeteredVec<[u32; 3]>) -> Self {
+        let (triangles, charge) = triangles.into_parts();
+        let index_count = (triangles.len() as u64).saturating_mul(3);
+        Self {
+            triangles,
+            cut: [0; 2],
+            cut_len: 0,
+            empty: 0,
+            index_count,
+            _charge: charge,
+        }
+    }
+
     /// The tuples of three, first in the list.
     #[must_use]
     pub fn triangles(&self) -> &[[u32; 3]] {

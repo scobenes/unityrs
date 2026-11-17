@@ -112,7 +112,7 @@ fn export_shader(
     reader: Option<&NativeObject>,
 ) -> PyResult<Py<PyAny>> {
     let (limits, meter) = context(reader);
-    let snapshot = crate::value_input::export_snapshot(input.as_unbound(), &meter, &limits)?;
+    let snapshot = crate::value_input::shader_snapshot(input.as_unbound(), &meter, &limits)?;
     let native = py.detach(|| {
         crate::worker::run(limits.stack_needed(), || {
             let parsed = snapshot.build()?;
@@ -168,10 +168,15 @@ pub(crate) fn shader_error(error: unityrs_export::shader::Error, meter: &Arc<Met
 pub(super) fn named_error(name: &str, message: String) -> PyErr {
     crate::python::relay::attach(|py| {
         let class = match name {
+            "brotli.error" => py
+                .import("unityrs.helpers.CompressionHelper")
+                .and_then(|m| m.getattr("_BrotliError")),
             "error" => py.import("struct").and_then(|m| m.getattr("error")),
             "LZ4BlockError" => py
                 .import("unityrs._native")
                 .and_then(|m| m.getattr("LZ4BlockError")),
+            "LZMAError" => py.import("lzma").and_then(|m| m.getattr("LZMAError")),
+            "struct.error" => py.import("struct").and_then(|m| m.getattr("error")),
             _ => py.import("builtins").and_then(|m| m.getattr(name)),
         };
         match class.and_then(|class| class.cast_into::<pyo3::types::PyType>().map_err(Into::into)) {
@@ -200,7 +205,7 @@ mod tests {
     #[test]
     fn raw_float_wav_bytes_and_default_conversion() -> PyResult<()> {
         let _serial = crate::tests::serial();
-        Python::attach(|py| {
+        crate::python::relay::attach(|py| {
             let module = PyModule::new(py, "export_adapter_test")?;
             register(&module)?;
             let scope = PyDict::new(py);

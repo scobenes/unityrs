@@ -93,6 +93,13 @@ pub enum Values {
 const _: () = crate::send_sync::<Values>();
 
 impl VertexArray {
+    /// Takes ownership of already charged components supplied by an API adapter.
+    #[must_use]
+    pub fn from_components(dimension: usize, values: MeteredVec<Component>) -> Self {
+        let (values, charge) = values.into_parts();
+        Self::new(dimension, Values::Mixed(values), charge)
+    }
+
     /// An array of `values`, `dimension` to a tuple, holding the charge
     /// for their memory.
     pub(crate) fn new(dimension: usize, values: Values, charge: Charge) -> Self {

@@ -7,6 +7,7 @@ use unityrs_core::{
     Bytes, LimitKind,
     budget::DecodeBuf,
     codec::{Codec, Lz4, Lzma, decode_block, encode},
+    once::CellError,
 };
 
 #[pyfunction]
@@ -28,8 +29,15 @@ pub(crate) fn codec(
                         .map_err(Failure::save)?
                 } else {
                     let context = unityrs_core::FileContext::unitypy();
-                    unityrs_core::files::web::decompress_brotli(&input, &meter, &context)
-                        .map_err(Failure::core)?
+                    unityrs_core::files::web::decompress_brotli(&input, &meter, &context).map_err(
+                        |error| {
+                            if error.is_meter_refusal() {
+                                Failure::core(error)
+                            } else {
+                                Failure::Static("brotli.error", "brotli: decoder failed")
+                            }
+                        },
+                    )?
                 };
                 return Ok(result);
             }
@@ -65,7 +73,14 @@ pub(crate) fn codec(
                 .map_err(Failure::charge)
         })
     })?;
-    let native = crate::worker_error::finish(native)?;
+    let native = native.map_err(|error| match error {
+        Failure::Core(unityrs_core::Error::Decompress { detail, .. }) => {
+            let (name, text) = detail.split_once(": ").unwrap_or(("ValueError", &detail));
+            crate::exports::named_error(name, errors::message(&text))
+        }
+        error => error.python(),
+    })?;
+
     let _copy = meter.charge(native.len() as u64).map_err(errors::charge)?;
     p::bytes(&native)
 }

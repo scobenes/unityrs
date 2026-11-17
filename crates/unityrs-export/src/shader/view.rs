@@ -10,6 +10,7 @@ pub(super) struct View<'a> {
     pub parsed: &'a Parsed,
     pub value: &'a Value,
     pub meter: &'a Arc<Meter>,
+    pub is_none: bool,
 }
 impl<'a> View<'a> {
     pub fn optional(self, key: &str) -> Result<Option<Self>, Error> {
@@ -41,7 +42,7 @@ impl<'a> View<'a> {
                     for (raw, value) in self.parsed.entries(map) {
                         self.name_work(raw, name)?;
                         if raw == name {
-                            found = Some(value);
+                            found = Some((value, *child));
                             break;
                         }
                     }
@@ -49,14 +50,19 @@ impl<'a> View<'a> {
                 }
             }
         } else {
-            for (name, value) in self.parsed.entries(map) {
+            for ((node, _), (name, value)) in map.entries().iter().zip(self.parsed.entries(map)) {
                 self.name_work(name, key.as_bytes())?;
                 if cleans_to(name, key.as_bytes()) {
-                    found = Some(value);
+                    found = Some((value, *node));
                 }
             }
         }
-        Ok(found.map(|value| Self { value, ..self }))
+        Ok(found.map(|(value, node)| Self {
+            value,
+            is_none: matches!(value, Value::Bool(false))
+                && list.is_some_and(|list| list.type_name(node) == b"NoneType"),
+            ..self
+        }))
     }
     fn name_work(self, name: &[u8], key: &[u8]) -> Result<(), Error> {
         // NUL search, cleaning, equality and the visited element.
@@ -101,6 +107,7 @@ impl<'a> View<'a> {
             parsed: self.parsed,
             value,
             meter: self.meter,
+            is_none: false,
         }))
     }
     pub fn empty(self) -> bool {

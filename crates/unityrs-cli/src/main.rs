@@ -51,6 +51,8 @@ mod gltf;
 mod mcp;
 mod obj;
 mod provider_input;
+#[cfg(feature = "test-hooks")]
+mod whole_memory;
 
 use std::ffi::OsStr;
 use std::io::Write;
@@ -71,9 +73,13 @@ use unityrs_dump::select::{PyStr, Selection};
 #[cfg(test)]
 mod test_alloc;
 
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "test-hooks")))]
 #[global_allocator]
 static ALLOCATOR: Counting = Counting::new();
+
+#[cfg(all(not(test), feature = "test-hooks"))]
+#[global_allocator]
+static ALLOCATOR: Counting<whole_memory::Bridge> = Counting(whole_memory::Bridge);
 
 const USAGE: &str = "usage: unityrs {dump,values,batch,obj,gltf,extract,inspect,show,describe,mcp} ...\n\n\
   unityrs dump INPUT... -o OUT.jsonl[.gz] [options]   the canonical dump (dump -h)\n\
@@ -206,6 +212,10 @@ fn engine(main_start: Instant, run: impl FnOnce(&Clock) -> ExitCode) -> ExitCode
 fn main() -> ExitCode {
     // `ms`'s origin: the process's start on the boot clock, else this.
     let main_start = Instant::now();
+    #[cfg(feature = "test-hooks")]
+    if !whole_memory::install() {
+        return ExitCode::from(Code::Internal.value());
+    }
     let argv: Vec<Vec<u8>> = std::env::args_os()
         .skip(1)
         .map(OsStringExt::into_vec)

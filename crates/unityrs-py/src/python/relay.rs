@@ -9,20 +9,28 @@ use std::{
 use unityrs_core::RawStr;
 use unityrs_core::limits::Meter;
 
-enum Request {
+pub(crate) enum Request {
     Warning(RawStr, bool),
     DecryptKey(Arc<Meter>),
+    Codec(crate::codec_bridge::Call),
+    Reference(crate::reference_input::Call),
+    Release(Py<PyAny>),
     Python(PythonRequest),
 }
 
-enum Response {
+pub(crate) enum Response {
     Warning(RawStr, bool),
     DecryptKey(Option<[u8; 16]>),
+    Codec(Option<crate::buffer_snapshot::BufferSnapshot>),
+    Reference(Option<std::sync::Arc<unityrs_core::typetree::Tree>>),
+    ReferenceMissing,
+    Encoder(Py<PyAny>, usize, bool),
+    Released,
     Python,
 }
 
 /// A stack-owned operation whose worker waits for dispatch before continuing.
-struct PythonRequest {
+pub(crate) struct PythonRequest {
     data: *mut (),
     invoke: unsafe fn(*mut ()),
 }
@@ -86,6 +94,7 @@ pub(crate) fn attach<T: Send>(operation: impl for<'py> FnOnce(Python<'py>) -> T 
 struct State {
     request: Option<Request>,
     response: Option<PyResult<Response>>,
+    error: Option<PyErr>,
     done: bool,
 }
 
@@ -148,6 +157,14 @@ impl Relay {
         }
     }
 
+    pub(crate) fn take_error(&self) -> Option<PyErr> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .error
+            .take()
+    }
+
     fn request(&self, request: Request) -> PyResult<Response> {
         let mut state = self
             .state
@@ -174,6 +191,14 @@ fn emit(request: Request) -> PyResult<Response> {
             // dispatch holds no locks and invokes it exactly once.
             unsafe { (request.invoke)(request.data) };
             return Ok(Response::Python);
+        }
+        Request::Codec(call) => return crate::codec_bridge::invoke(&call),
+        Request::Reference(call) => return crate::reference_input::invoke(&call),
+        Request::Release(value) => {
+            return Python::attach(|_| {
+                drop(value);
+                Ok(Response::Released)
+            });
         }
         request => request,
     };
@@ -211,7 +236,7 @@ fn emit(request: Request) -> PyResult<Response> {
     })
 }
 
-fn request(request: Request) -> PyResult<Response> {
+pub(crate) fn request(request: Request) -> PyResult<Response> {
     CURRENT.with(|slot| {
         let pointer = slot.get();
         if pointer.is_null() {
@@ -227,16 +252,16 @@ fn request(request: Request) -> PyResult<Response> {
 pub(crate) fn warning(value: &RawStr, bundle: bool) -> PyResult<(RawStr, bool)> {
     match request(Request::Warning(value.clone(), bundle))? {
         Response::Warning(value, bundle) => Ok((value, bundle)),
-        Response::DecryptKey(_) | Response::Python => Err(
-            pyo3::exceptions::PyRuntimeError::new_err("invalid relay response"),
-        ),
+        _ => Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "invalid relay response",
+        )),
     }
 }
 
 pub(crate) fn decrypt_key(meter: &Arc<Meter>) -> PyResult<Option<[u8; 16]>> {
     match request(Request::DecryptKey(meter.clone()))? {
         Response::DecryptKey(key) => Ok(key),
-        Response::Warning(..) | Response::Python => Err(pyo3::exceptions::PyRuntimeError::new_err(
+        _ => Err(pyo3::exceptions::PyRuntimeError::new_err(
             "invalid relay response",
         )),
     }
@@ -245,3 +270,20 @@ pub(crate) fn decrypt_key(meter: &Arc<Meter>) -> PyResult<Option<[u8; 16]>> {
 #[cfg(test)]
 #[path = "relay_tests.rs"]
 mod tests;
+
+pub(crate) fn fail(error: PyErr) {
+    CURRENT.with(|slot| {
+        let pointer = slot.get();
+        if !pointer.is_null() {
+            // SAFETY: the same scoped lifetime as request() above.
+            let relay = unsafe { &*pointer };
+            let mut state = relay
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.error.is_none() {
+                state.error = Some(error);
+            }
+        }
+    });
+}

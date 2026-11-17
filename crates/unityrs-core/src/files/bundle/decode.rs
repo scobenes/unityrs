@@ -27,7 +27,7 @@ use bytes::Bytes;
 
 use crate::budget::DecodeBuf;
 use crate::codec::unitycn::UnityCnDecryptor;
-use crate::codec::{BlockDecryptor, Codec, decode_block};
+use crate::codec::{BlockDecryptor, Codec, decode_flagged};
 use crate::error::{Error, LimitKind, Unsupported};
 use crate::limits::Meter;
 use crate::options::FileContext;
@@ -88,13 +88,14 @@ pub(super) fn decode_one(
     let (which, codec) = codec_for(ctx, flags)?;
     let decoded = reading(ctx, which, input.len(), &mut out, |out| {
         let input = decrypted(ctx, meter, input, flags, which, index)?;
-        decode_block(
+        decode_flagged(
             which,
             codec.as_ref(),
             &input,
             uncompressed,
             out,
             ctx.limits.max_block_output,
+            flags,
         )
         .map_err(|e| with_codec(e, which))
     })?;
@@ -117,13 +118,14 @@ pub(super) fn decode_block_into(
     let (which, codec) = codec_for(ctx, flags)?;
     reading(ctx, which, input.len(), out, |out| {
         let input = decrypted(ctx, meter, input, flags, which, index)?;
-        if let Some(slice) = decode_block(
+        if let Some(slice) = decode_flagged(
             which,
             codec.as_ref(),
             &input,
             uncompressed,
             out,
             ctx.limits.max_block_output,
+            flags,
         )
         .map_err(|e| with_codec(e, which))?
         {

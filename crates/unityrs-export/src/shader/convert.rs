@@ -20,18 +20,7 @@ pub(super) fn shader(
     out.text("\" {\n")?;
     properties(v.field("m_PropInfo")?, out)?;
     for sub in v.field("m_SubShaders")?.list()? {
-        out.text("SubShader {\n")?;
-        let lod = sub.field("m_LOD")?.int()?;
-        if lod != 0 {
-            out.text(" LOD ")?;
-            out.int(i128::from(lod))?;
-            out.text("\n")?;
-        }
-        tags(sub.field("m_Tags")?, 1, out)?;
-        for pass in sub.field("m_Passes")?.list()? {
-            pass_write(pass, platforms, programs, out, meter)?;
-        }
-        out.text("}\n")?;
+        subshader(sub, platforms, programs, out, meter)?;
     }
     for (key, label) in [
         ("m_FallbackName", "Fall back"),
@@ -47,7 +36,27 @@ pub(super) fn shader(
     }
     out.text("}")
 }
-fn tags(v: View<'_>, indent: usize, out: &mut Output<'_>) -> Result<(), Error> {
+pub(super) fn subshader(
+    v: View<'_>,
+    platforms: Seq<'_>,
+    programs: &[Program<'_>],
+    out: &mut Output<'_>,
+    meter: &Arc<Meter>,
+) -> Result<(), Error> {
+    out.text("SubShader {\n")?;
+    let lod = v.field("m_LOD")?.int()?;
+    if lod != 0 {
+        out.text(" LOD ")?;
+        out.int(i128::from(lod))?;
+        out.text("\n")?;
+    }
+    tags(v.field("m_Tags")?, 1, out)?;
+    for pass in v.field("m_Passes")?.list()? {
+        pass_write(pass, platforms, programs, out, meter)?;
+    }
+    out.text("}\n")
+}
+pub(super) fn tags(v: View<'_>, indent: usize, out: &mut Output<'_>) -> Result<(), Error> {
     let tags = v.field("tags")?;
     if tags.empty() {
         return Ok(());
@@ -68,80 +77,84 @@ fn tags(v: View<'_>, indent: usize, out: &mut Output<'_>) -> Result<(), Error> {
     }
     out.text("}\n")
 }
-fn properties(v: View<'_>, out: &mut Output<'_>) -> Result<(), Error> {
+pub(super) fn properties(v: View<'_>, out: &mut Output<'_>) -> Result<(), Error> {
     // Python joins a first element already ending in a newline with '\n'.
     out.text("Properties {\n")?;
     for prop in v.field("m_Props")?.list()? {
         out.text("\n")?;
-        for attr in prop.field("m_Attributes")?.list()? {
-            out.text("[")?;
-            out.text(attr.text()?)?;
-            out.text("] ")?;
-        }
-        out.text(prop.field("m_Name")?.text()?)?;
-        out.text(" (\"")?;
-        out.text(prop.field("m_Description")?.text()?)?;
-        out.text("\", ")?;
-        let kind = prop.field("m_Type")?.int()?;
-        match kind {
-            0 => out.text("Color")?,
-            1 => out.text("Vector")?,
-            2 => out.text("Float")?,
-            3 => {
-                out.text("Range(")?;
-                out.float(prop.field("m_DefValue_1_")?.num()?, true)?;
-                out.text(", ")?;
-                out.float(prop.field("m_DefValue_2_")?.num()?, true)?;
-                out.text(")")?;
-            }
-            4 => {
-                let dim = prop.field("m_DefTexture")?.field("m_TexDim")?.int()?;
-                out.text(match dim {
-                    1 => "any",
-                    2 => "2D",
-                    3 => "3D",
-                    4 => "Cube",
-                    5 => "2DArray",
-                    6 => "CubeArray",
-                    _ => "",
-                })?;
-            }
-            _ => {}
-        }
-        out.text(") = ")?;
-        match kind {
-            0 | 1 => {
-                out.text("(")?;
-                for (i, key) in [
-                    "m_DefValue_0_",
-                    "m_DefValue_1_",
-                    "m_DefValue_2_",
-                    "m_DefValue_3_",
-                ]
-                .iter()
-                .enumerate()
-                {
-                    if i > 0 {
-                        out.text(",")?;
-                    }
-                    out.float(prop.field(key)?.num()?, true)?;
-                }
-                out.text(")")?;
-            }
-            2 | 3 => out.float(prop.field("m_DefValue_0_")?.num()?, false)?,
-            4 => {
-                out.text("\"")?;
-                out.text(prop.field("m_DefTexture")?.field("m_DefaultName")?.text()?)?;
-                out.text("\" { }")?;
-            }
-            n => return Err(Error::PropertyType(n)),
-        }
-        out.text("\n")?;
+        property(prop, out)?;
     }
     out.text("\n}\n")
 }
+pub(super) fn property(prop: View<'_>, out: &mut Output<'_>) -> Result<(), Error> {
+    for attr in prop.field("m_Attributes")?.list()? {
+        out.text("[")?;
+        out.text(attr.text()?)?;
+        out.text("] ")?;
+    }
+    out.text(prop.field("m_Name")?.text()?)?;
+    out.text(" (\"")?;
+    out.text(prop.field("m_Description")?.text()?)?;
+    out.text("\", ")?;
+    let kind = prop.field("m_Type")?.int()?;
+    match kind {
+        0 => out.text("Color")?,
+        1 => out.text("Vector")?,
+        2 => out.text("Float")?,
+        3 => {
+            out.text("Range(")?;
+            out.float(prop.field("m_DefValue_1_")?.num()?, true)?;
+            out.text(", ")?;
+            out.float(prop.field("m_DefValue_2_")?.num()?, true)?;
+            out.text(")")?;
+        }
+        4 => {
+            let dim = prop.field("m_DefTexture")?.field("m_TexDim")?.int()?;
+            out.text(match dim {
+                1 => "any",
+                2 => "2D",
+                3 => "3D",
+                4 => "Cube",
+                5 => "2DArray",
+                6 => "CubeArray",
+                _ => "",
+            })?;
+        }
+        _ => {}
+    }
+    out.text(") = ")?;
+    match kind {
+        0 | 1 => {
+            out.text("(")?;
+            for (i, key) in [
+                "m_DefValue_0_",
+                "m_DefValue_1_",
+                "m_DefValue_2_",
+                "m_DefValue_3_",
+            ]
+            .iter()
+            .enumerate()
+            {
+                if i > 0 {
+                    out.text(",")?;
+                }
+                out.float(prop.field(key)?.num()?, true)?;
+            }
+            out.text(")")?;
+        }
+        2 | 3 => out.float(prop.field("m_DefValue_0_")?.num()?, false)?,
+        4 => {
+            out.text("\"")?;
+            out.text(prop.field("m_DefTexture")?.field("m_DefaultName")?.text()?)?;
+            out.text("\" { }")?;
+        }
+        n => return Err(Error::PropertyType(n)),
+    }
+    out.text("\n")?;
+    Ok(())
+}
 #[allow(clippy::float_cmp)] // UnityPy compares exact serialized state constants.
-fn state(v: View<'_>, out: &mut Output<'_>) -> Result<(), Error> {
+pub(super) fn state(v: View<'_>, out: &mut Output<'_>) -> Result<(), Error> {
     let name = v.field("m_Name")?.text()?;
     if !name.is_empty() {
         out.text(" Name \"")?;
@@ -160,7 +173,7 @@ fn state(v: View<'_>, out: &mut Output<'_>) -> Result<(), Error> {
         out.text(" AlphaToMask On\n")?;
     }
     let clip = v.optional("zClip")?.ok_or(Error::Attribute("zClip"))?;
-    if clip.field("val")?.num()? != 1. {
+    if !clip.is_none && clip.field("val")?.num()? != 1. {
         out.text(" ZClip Off\n")?;
     }
     let z = val("zTest")?;
@@ -208,7 +221,7 @@ fn state(v: View<'_>, out: &mut Output<'_>) -> Result<(), Error> {
     out.int(i128::from(v.field("gpuProgramID")?.int()?))?;
     out.text("\n")
 }
-fn pass_write(
+pub(super) fn pass_write(
     v: View<'_>,
     platforms: Seq<'_>,
     programs: &[Program<'_>],
@@ -262,7 +275,7 @@ fn pass_write(
     }
     out.text("}\n")
 }
-fn subprograms<'a>(
+pub(super) fn subprograms<'a>(
     v: View<'a>,
     player: bool,
     platforms: Seq<'_>,

@@ -116,7 +116,14 @@ def get_padded_texture_size(width: int, height: int, block_width: int, block_hei
 
 
 def get_switch_gobs_per_block(platform_blob: List[int]) -> int:
-    return 1 << int.from_bytes(platform_blob[8:12], "little")
+    from .. import _native
+    exponent = int.from_bytes(platform_blob[8:12], "little")
+    guard = _native.TreeTraversal()
+    # Python integers use 30-bit digits on 64-bit CPython (15 on 32-bit).
+    # Bound either layout, including the handoff, before shifting asset bytes.
+    size = (exponent // 15 + 1) * 4 + 32
+    guard.step(0, size * 2, size)
+    return 1 << exponent
 
 
 def is_switch_swizzled(platform: Union[BuildTarget, int], platform_blob: Optional[List[int]]) -> bool:
@@ -124,5 +131,4 @@ def is_switch_swizzled(platform: Union[BuildTarget, int], platform_blob: Optiona
         return False
     if not platform_blob or len(platform_blob) < 12:
         return False
-    gobs_per_block = get_switch_gobs_per_block(platform_blob)
-    return gobs_per_block > 1
+    return int.from_bytes(platform_blob[8:12], "little") > 0

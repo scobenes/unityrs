@@ -52,6 +52,7 @@ pub mod affine;
 mod canvas;
 mod exact;
 pub mod fields;
+pub mod helpers;
 mod raster;
 mod render;
 
@@ -253,6 +254,9 @@ pub enum SpriteError {
     /// `render_sprite_mesh`: no submesh with vertices (`ValueError`).
     #[error("No triangles found in mesh!")]
     NoTriangles,
+    /// The standalone mesh renderer was given no UV coordinates.
+    #[error("No UV coordinates found in sprite mesh!")]
+    NoUv,
     /// `Image.new` of a negative side (`ValueError`).
     #[error("Width and height must be >= 0")]
     NegativeSize,
@@ -311,6 +315,7 @@ impl SpriteError {
             | Self::Unpack { .. }
             | Self::Sprite3d
             | Self::NoTriangles
+            | Self::NoUv
             | Self::NegativeSize
             | Self::AlphaSizeMismatch
             | Self::AlphaBandCount => "ValueError",

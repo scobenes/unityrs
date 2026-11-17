@@ -284,7 +284,9 @@ impl Frame {
                         .count_decode(1)
                         .map_err(errors::charge)?;
                     if !*skip_null
-                        || !Python::attach(|py| input.bind(py).get_item(1).map(|v| v.is_none()))?
+                        || !crate::python::relay::attach(|py| {
+                            input.bind(py).get_item(1).map(|v| v.is_none())
+                        })?
                     {
                         break input;
                     }
@@ -334,7 +336,9 @@ impl Frame {
         depth: u32,
         parent: Option<Shape>,
     ) -> PyResult<Option<Visit>> {
-        let Some((key, input)) = Python::attach(|py| fields.next(py, &mut state.staging))? else {
+        let Some((key, input)) =
+            crate::python::relay::attach(|py| fields.next(py, &mut state.staging))?
+        else {
             return Ok(None);
         };
         items.reserve(1).map_err(errors::charge)?;
@@ -414,7 +418,7 @@ impl State<'_> {
     ) -> PyResult<(NodeId, usize)> {
         let mut frames = MeteredVec::new(self.staging.meter());
         let mut next = Some(Visit {
-            input: Python::attach(|py| input.clone_ref(py)),
+            input: crate::python::relay::attach(|py| input.clone_ref(py)),
             name,
             depth,
             shape,
@@ -498,7 +502,7 @@ impl State<'_> {
         let result = if let Some(scalar) = scalar {
             scalar
         } else if let Some((tree, shape)) = self.schemas.target(shape)
-            && Python::attach(|py| input.bind(py).is_none())
+            && crate::python::relay::attach(|py| input.bind(py).is_none())
         {
             none_for_shape(tree, shape, input, self.staging.meter())?
         } else if let Some(info) = self
@@ -516,12 +520,12 @@ impl State<'_> {
             let logical_len = if tuple {
                 None
             } else {
-                Some(Python::attach(|py| input.bind(py).len())?)
+                Some(crate::python::relay::attach(|py| input.bind(py).len())?)
             };
             let iter = if tuple {
-                super::Elements::Pair(Python::attach(|py| input.clone_ref(py)))
+                super::Elements::Pair(crate::python::relay::attach(|py| input.clone_ref(py)))
             } else {
-                super::Elements::Iter(Python::attach(|py| {
+                super::Elements::Iter(crate::python::relay::attach(|py| {
                     input.bind(py).try_iter().map(Bound::unbind)
                 })?)
             };

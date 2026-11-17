@@ -16,6 +16,12 @@ impl NativeFile {
 }
 #[pymethods]
 impl NativeFile {
+    fn reference_types(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<(Py<PyAny>, crate::traversal::TreeTraversal)> {
+        py.detach(|| crate::reference_types::snapshot(self))
+    }
     fn constructor_reader_state(&self, py: Python<'_>) -> (i128, Option<char>) {
         py.detach(|| match &self.inner {
             File::Serialized(file) => (
@@ -164,13 +170,13 @@ impl NativeFile {
         crate::save::file_create_cab(py, self, name, flags, endian)
     }
     fn tree_traversal(&self) -> crate::traversal::TreeTraversal {
-        let depth = match &self.inner {
-            File::Serialized(f) => f.context().limits.max_tree_depth,
-            File::Bundle(f) => f.context().limits.max_tree_depth,
-            File::Web(f) => f.context().limits.max_tree_depth,
-            File::Raw(_) => unityrs_core::limits::Limits::default().max_tree_depth,
+        let limits = match &self.inner {
+            File::Serialized(f) => f.context().limits,
+            File::Bundle(f) => f.context().limits,
+            File::Web(f) => f.context().limits,
+            File::Raw(_) => unityrs_core::limits::Limits::default(),
         };
-        crate::traversal::TreeTraversal::on(self.inner.meter(), depth)
+        crate::traversal::TreeTraversal::with_limits(self.inner.meter(), &limits)
     }
     #[getter]
     fn identity(&self, py: Python<'_>) -> usize {

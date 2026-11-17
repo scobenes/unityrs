@@ -1,8 +1,7 @@
-"""Material parity and explicit gaps in callback preprocessing."""
+"""Material parity and callback preprocessing."""
 import importlib
 import unittest
 
-from PIL import Image
 import UnityPy
 import unityrs
 from unityrs import classes
@@ -42,30 +41,21 @@ class ConverterRefusals(unittest.TestCase):
                 self.assertEqual(observe_texture_extension(unityrs, unityrs.enums.BuildTarget.Switch, blob),
                                  observe_texture_extension(UnityPy, UnityPy.enums.BuildTarget.Switch, blob))
 
-    def replacement(self, texture_format, platform, blob=None):
-        converter = importlib.import_module("unityrs.export.Texture2DConverter")
-        previous = converter.CONV_TABLE[texture_format]
-        calls = []
-        def convert(data, width, height):
-            calls.append((data, width, height))
-            return Image.new("RGBA", (width, height))
-        try:
-            converter.CONV_TABLE[texture_format] = (convert, ())
-            with self.assertRaisesRegex(NotImplementedError, "CONV_TABLE replacement.*(Switch-swizzled|crunch)"):
-                converter.parse_image_data(bytes(16), 2, 2, texture_format,
-                                           (2020, 3, 0, 0), platform, blob)
-            self.assertEqual(calls, [])
-        finally:
-            converter.CONV_TABLE[texture_format] = previous
+    def test_switch_replacement_preprocessing_matches_oracle(self):
+        from binding_y6b_images import observe_texture_dispatch
+        actual = observe_texture_dispatch(unityrs)
+        expected = observe_texture_dispatch(UnityPy)
+        for label in ("switch-rgb", "switch-bgr"):
+            with self.subTest(label=label):
+                self.assertEqual(actual[label], expected[label])
+                self.assertEqual(len(actual[label][1]), 1)
 
-    def test_switch_replacement_is_refused_before_callback(self):
-        for name in ("RGBA32", "RGB24"):
-            for exponent in (b"\x01\x00\x00\x00", b"\xff\xff\xff\xff"):
-                with self.subTest(format=name, exponent=exponent):
-                    self.replacement(getattr(unityrs.enums.TextureFormat, name),
-                                     unityrs.enums.BuildTarget.Switch, bytes(8) + exponent)
-
-    def test_crunch_replacement_is_refused_before_callback(self):
-        for name in ("DXT1Crunched", "DXT5Crunched", "ETC_RGB4Crunched", "ETC2_RGBA8Crunched"):
-            with self.subTest(format=name):
-                self.replacement(getattr(unityrs.enums.TextureFormat, name), 0)
+    def test_crunch_replacement_preprocessing_matches_oracle(self):
+        from binding_y6b_images import observe_texture_dispatch
+        actual = observe_texture_dispatch(unityrs)
+        expected = observe_texture_dispatch(UnityPy)
+        labels = [label for label in actual if "native.json" in label]
+        self.assertTrue(labels)
+        for label in labels + ["bad-crunch", "bad-legacy"]:
+            with self.subTest(label=label):
+                self.assertEqual(actual[label], expected[label])

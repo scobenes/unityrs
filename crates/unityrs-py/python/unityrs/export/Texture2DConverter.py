@@ -1,4 +1,4 @@
-# Ported from UnityPy 1.25.2 (MIT): export/Texture2DConverter.py:20-80, export/Texture2DConverter.py:237-344, export/Texture2DConverter.py:390-397, export/Texture2DConverter.py:488-569. See LICENSE-UNITYPY and THIRD_PARTY_LICENSES.
+# Ported from UnityPy 1.25.2 (MIT): export/Texture2DConverter.py:20-80, export/Texture2DConverter.py:106-115, export/Texture2DConverter.py:237-344, export/Texture2DConverter.py:356-397, export/Texture2DConverter.py:488-569. See LICENSE-UNITYPY and THIRD_PARTY_LICENSES.
 """Optional Pillow facade backed by the existing native texture codecs."""
 from types import SimpleNamespace
 from io import BytesIO
@@ -6,7 +6,14 @@ import struct
 from ..enums import TextureFormat, BuildTarget
 from .. import _native
 
+from ._astc_context import _get_astc_context
+from threading import get_ident
+
 TF = TextureFormat
+
+
+def get_astc_context(block_size):
+    return _get_astc_context(get_ident(), block_size)
 
 
 def _decode(data, width, height, texture_format, version=(0, 0), platform=0, platform_blob=None, *, _guard=None, _reader=None):
@@ -15,7 +22,8 @@ def _decode(data, width, height, texture_format, version=(0, 0), platform=0, pla
     guard = _native.TreeTraversal() if _guard is None else _guard
     data = snapshot_bytes(data, guard)
     blob = None if platform_blob is None else snapshot_bytes(platform_blob, guard)
-    mode, width, height, pixels = _native._image_decode(data, width, height, int(texture_format), tuple(version[:2]), int(platform), blob, _reader)
+    version = tuple(version[:2]) if "Crunched" in TextureFormat(texture_format).name else (0, 0)
+    mode, width, height, pixels = _native._image_decode(data, width, height, int(texture_format), version, int(platform), blob, _reader)
     guard.step(0, len(pixels) + 1024, len(pixels))
     return Image.frombytes(mode, (width, height), pixels).transpose(Image.Transpose.FLIP_TOP_BOTTOM)
 
@@ -34,7 +42,14 @@ def atc(image_data, width, height, alpha):
 
 
 def astc(image_data, width, height, block_size):
-    return _decode(image_data, width, height, getattr(TF, f"ASTC_RGBA_{block_size[0]}x{block_size[1]}"))
+    from PIL import Image
+    size = calculate_astc_compressed_size(width, height, block_size)
+    if len(image_data) < size:
+        raise ValueError(f"Invalid ASTC data size: {len(image_data)} < {size}")
+    image = SimpleNamespace(data_type=0, dim_x=width, dim_y=height, dim_z=1, data=None)
+    get_astc_context(block_size).decompress(image_data[:size], image, SimpleNamespace(r=0, g=1, b=2, a=3))
+    assert image.data is not None, "Decompression failed, image data is None"
+    return Image.frombytes("RGBA", (width, height), image.data, "raw", "RGBA")
 
 
 def pvrtc(image_data, width, height, fmt):
@@ -111,25 +126,26 @@ def _parse_image_data(image_data, width, height, texture_format, version, platfo
     if not image_data:
         raise ValueError("Texture2D has no image data")
     texture_format = TextureFormat(texture_format)
-    if texture_format not in CONV_TABLE:
-        raise NotImplementedError(f"Not implemented texture format: {texture_format.name}")
-    selected = CONV_TABLE[texture_format]
-    if selected != _DEFAULT_CONV_TABLE.get(texture_format):
+    from ..helpers import TextureSwizzler
+    promoted = texture_format
+    if TextureSwizzler.is_switch_swizzled(platform, platform_blob):
+        promoted = {TF.RGB24: TF.RGBA32, TF.BGR24: TF.BGRA32}.get(texture_format, texture_format)
+    selected = CONV_TABLE.get(promoted)
+    if promoted not in CONV_TABLE or promoted not in _DEFAULT_CONV_TABLE or selected != _DEFAULT_CONV_TABLE.get(promoted):
         from .._buffers import snapshot_bytes
         guard = _native.TreeTraversal() if _guard is None else _guard
-        if "Crunched" in texture_format.name:
-            raise NotImplementedError(f"unsupported CONV_TABLE replacement: crunch texture {texture_format.name}")
-        if platform == BuildTarget.Switch and platform_blob is not None:
-            blob = snapshot_bytes(platform_blob, guard)
-            # A nonzero exponent means more than one GOB per block. Avoid
-            # constructing 1 << exponent just to decide whether to refuse.
-            if len(blob) >= 12 and any(blob[8:12]):
-                raise NotImplementedError("unsupported CONV_TABLE replacement: Switch-swizzled texture")
         image_data = snapshot_bytes(image_data, guard)
-        func, args = selected
-        padded_width, padded_height = get_compressed_image_size(width, height, texture_format)
-        data = swap_bytes_for_xbox(image_data) if platform == BuildTarget.XBOX360 and texture_format in XBOX_SWAP_FORMATS else image_data
-        image = func(bytes(data), padded_width, padded_height, *args)
+        blob = None if platform_blob is None else snapshot_bytes(platform_blob, guard)
+        data, padded_width, padded_height, prepared_format = _native._texture_preprocess(
+            image_data, width, height, int(texture_format),
+            tuple(version[:2]) if "Crunched" in texture_format.name else (0, 0), int(platform), blob, _reader)
+        if not TextureSwizzler.is_switch_swizzled(platform, platform_blob):
+            padded_width, padded_height = get_compressed_image_size(width, height, promoted)
+        guard.step(0, len(data) + padded_width * padded_height * 8 + 1024, len(data))
+        if TF(prepared_format) not in CONV_TABLE:
+            raise NotImplementedError(f"Not implemented texture format: {TF(prepared_format).name}")
+        func, args = CONV_TABLE[TF(prepared_format)]
+        image = func(data, padded_width, padded_height, *args)
         if image and (width, height) != (padded_width, padded_height):
             image = image.crop((0, 0, width, height))
     else:
@@ -173,7 +189,10 @@ def compress_etcpak(data, width, height, target_texture_format):
 
 
 def compress_astc(data, width, height, target_texture_format):
-    return _native._image_encode(data, width, height, "RGBA", int(target_texture_format), 0, None, None)[0]
+    block_size = TEXTURE_FORMAT_BLOCK_SIZE_TABLE[target_texture_format]
+    assert block_size is not None, f"failed to get block size for {target_texture_format.name}"
+    image = SimpleNamespace(data_type=0, dim_x=width, dim_y=height, dim_z=1, data=data)
+    return get_astc_context(block_size).compress(image, SimpleNamespace(r=0, g=1, b=2, a=3))
 
 
 def swap_bytes_for_xbox(image_data):
