@@ -499,9 +499,12 @@ provenance, and typed skip details. A GLB has null `visible_hash` and `mode`.
 Collision rows keep `pixels_differ` boolean. It is false when either visible
 hash is absent, including collisions involving a GLB.
 Update the reason, detail and count vocabulary in the manifest contract.
-Keep progress at `p: 1` using existing progress fields, counters and
-`bad_spec` rule/pointer vocabulary. New per-prefab outcomes appear in manifest
-rows. New readers accept v1, v2 and v3. Older readers follow 7.3 by ignoring
+Raise the progress stream to `p: 2`. Section 10 bumps `p` for any new
+value of a closed set, whatever the `spec_version`, and the `exit` line's
+`reason` gains `unknown_prefab_key`. The batch PR's binary emits `p: 2` for
+every job. Snapshot fields, counters and the `bad_spec` rule/pointer
+vocabulary are otherwise unchanged. New per-prefab outcomes appear in
+manifest rows, not on the stream. New readers accept v1, v2 and v3. Older readers follow 7.3 by ignoring
 added fields and treating unknown closed values as other. Preserve fencing's
 seven-field identity envelope for all versions. Test running and final heads,
 including a zero-artifact job and resume from a v3 head.
