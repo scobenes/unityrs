@@ -11,6 +11,7 @@ pub mod hooks;
 mod network;
 mod phases;
 pub mod process;
+mod store;
 use crate::{
     control::{Control, Culprit},
     controller::{self, Boundary, Controller, PreparedSpool},
@@ -89,6 +90,13 @@ pub trait Observer: Send + Sync {
     fn taken(&self, _: Option<Stop>) {}
     /// After the finisher, while the parked owners are still alive.
     fn finished(&self, _: &finish::Finished) {}
+    /// Test-only teardown schedule. Completed workers and stage owners retire
+    /// first; the callback can drive the still-live reactor before the real
+    /// registered wakes and runtime are dropped. Production never installs it.
+    #[cfg(feature = "test-hooks")]
+    fn test_before_wake_drop(&self) -> Option<fn(&tokio::runtime::Runtime)> {
+        None
+    }
 }
 /// The library body's own seams, between the controller's and publication's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,7 +176,6 @@ pub fn host_check(
     bound: u64,
     host: &dyn start::host::Host,
 ) -> Result<(), Error> {
-    start::supported(&prepared.spec).map_err(|_| Error::usage())?;
     let needs =
         start::host::Requirements::new(&prepared.spec, bound).map_err(|e| errors::host(&e))?;
     start::host::check(host, needs).map_err(|e| errors::host(&e))
@@ -243,7 +250,6 @@ pub fn drive_with(
     ),
     options: &Options,
 ) -> Result<ResultEnd, Error> {
-    start::supported(&prepared.spec).map_err(|_| Error::usage())?;
     if options.network.is_none() && prepared.spec.bundles().any(|b| b.url().is_some()) {
         return Err(Error::usage());
     }
@@ -277,12 +283,31 @@ pub fn drive_with(
             bound,
             progress,
             warnings: options.warnings,
+            wake: None,
         },
     );
     // The library's caller writes its `exit` line from the last snapshot.
     phases::post_finish(progress, &handover, found(&finished), true);
     options.observer.finished(&finished);
+    if let Some(crate::sink::Sink::Store(store)) = &handover.sink {
+        store.runs.lock().clear();
+        store.head_run.lock().take();
+    }
     drop(handover);
+    #[cfg(feature = "test-hooks")]
+    if let Some(before_wakes) = options.observer.test_before_wake_drop() {
+        if let Some(execution) = parked.execution.as_mut() {
+            execution
+                .test_retire_workers()
+                .map_err(|_| Error::internal())?;
+        }
+        drop(parked.owners.take());
+        drop(parked.owned.take());
+        if let Some(runtime) = parked.execution.as_ref().and_then(Execution::runtime) {
+            before_wakes(runtime);
+        }
+        drop(parked.residue.take());
+    }
     // The owners outlive the finisher, as the process host's do until _exit.
     drop(parked);
     Ok(finished.end)
@@ -295,6 +320,7 @@ struct Ending<'a> {
     bound: u64,
     progress: &'a Sender,
     warnings: finish::Warnings,
+    wake: Option<&'a crate::sys::RegisteredWake>,
 }
 /// The finisher's part, after its take: the finish's progress, the 7.4
 /// finish and the counts it posts, a dispatched input not committed still
@@ -315,6 +341,25 @@ fn finish_handover(handover: &HandOver, taken: Option<Stop>, e: &Ending<'_>) -> 
         vm_hwm: crate::progress::proc_memory("VmHWM:"),
         warnings: e.warnings,
     };
+    let hard = finish::budget::Live {
+        state: e.state,
+        wake: e.wake,
+    };
+    let budget = finish::budget::Budget {
+        hard: &hard,
+        reconcile: matches!(&handover.sink, Some(crate::sink::Sink::Store(store)) if store.reconcile()),
+    };
+    let mut journal = handover.sink.as_ref().and_then(|s| match s {
+        crate::sink::Sink::Store(store) => Some(crate::sink::store::journal::JournalBackend::new(
+            store, budget,
+        )),
+        crate::sink::Sink::Directory(_) => None,
+    });
+    let mut no_journal = finish::budget::NoJournal;
+    let backend: &mut dyn finish::budget::Backend = match journal.as_mut() {
+        Some(j) => j,
+        None => &mut no_journal,
+    };
     let finished = finish::run(
         handover,
         taken,
@@ -322,12 +367,9 @@ fn finish_handover(handover: &HandOver, taken: Option<Stop>, e: &Ending<'_>) -> 
             account: e.fin,
             identity: &identity,
             // `T_hard` read live: unarmed until a deadline is armed.
-            budget: finish::budget::Budget {
-                hard: e.state,
-                reconcile: false,
-            },
+            budget,
             clock: &finish::budget::BootClock,
-            backend: &mut finish::budget::NoJournal,
+            backend,
         },
     );
     phases::post_finish(e.progress, handover, found(&finished), false);
@@ -377,7 +419,7 @@ impl Body<'_> {
         parked: &mut Parked,
         execution: Option<Execution>,
     ) -> Result<HandOver, Error> {
-        self.body(prepared, parked, execution, None)?;
+        self.body(prepared, parked, execution, None, None)?;
         parked.handover.take().ok_or_else(Error::internal)
     }
     /// [`Self::run`]'s steps, building the hand-over in `parked`.
@@ -388,9 +430,10 @@ impl Body<'_> {
         parked: &mut Parked,
         execution: Option<Execution>,
         staging: Option<controller::Staging>,
+        store_services: Option<store::Services>,
     ) -> Result<(), Error> {
         let network = self.options.network.as_ref();
-        let local = start::supported(&prepared.spec).map_err(|_| Error::usage())?;
+        let local = start::execution(&prepared.spec);
         // The host reads a named key at preflight ([`unitycn_key`]).
         if local.spec().unitycn_key.is_some() && prepared.memory.key.is_none() {
             return Err(Error::internal());
@@ -428,9 +471,36 @@ impl Body<'_> {
             )?),
             _ => None,
         };
-        let directory = phases::preflight(&local, self.sink_fs.clone(), self.fin)?;
+        let sink = match &prepared.spec.sink {
+            crate::spec::model::Sink::Directory { .. } => crate::sink::Sink::Directory(
+                phases::preflight(&local, self.sink_fs.clone(), self.fin)?,
+            ),
+            crate::spec::model::Sink::ObjectStore(_) => store::preflight(
+                prepared.spec.clone(),
+                network,
+                execution,
+                self.fin,
+                &*control,
+                store_services,
+                staging
+                    .as_ref()
+                    .and_then(|s| s.wakes.as_ref())
+                    .map(|w| w[0].clone()),
+            )?,
+        };
         progress.update(|s| s.phase = Phase::Start);
-        let started = match start::spool::start(&local, self.spool_fs, &|| control.stopped()) {
+        let started = match start::spool::start_recover(
+            &local,
+            self.spool_fs,
+            &|| control.stopped(),
+            &|root, canonical| {
+                if let crate::sink::Sink::Store(store) = &sink
+                    && let Some(runtime) = execution.runtime()
+                {
+                    store.recover(root, canonical, runtime, &*control);
+                }
+            },
+        ) {
             Ok(started) => Arc::new(started),
             // A stop before or during the spool's startup or cleanup is
             // 7.4's first row, decided by the finisher like any later stop.
@@ -438,11 +508,19 @@ impl Body<'_> {
                 let handover = parked
                     .handover
                     .insert(HandOver::new(FinishCause::Stop, Phase::Start));
-                handover.directory = Some(directory);
+                handover.sink = Some(sink);
                 return Ok(());
             }
             Err(e) => return Err(errors::spool(&e)),
         };
+        if let crate::sink::Sink::Store(store) = &sink {
+            *store.journal.lock() = Some(
+                Shared::new(
+                    crate::spool::journal::Journal::new(&started.run).map_err(Error::from)?,
+                )
+                .map_err(|_| Error::memory())?,
+            );
+        }
         progress.spool(started.counter.clone());
         let fs = match &self.options.spool {
             Some(fs) => fs.clone(),
@@ -455,7 +533,7 @@ impl Body<'_> {
             fs.clone(),
         )
         .map_err(|_| Error::host_io())?
-        .retained(started.clone(), directory.clone());
+        .retained(started.clone(), sink.clone());
         let hooks = self.options.controller_hooks.clone();
         let mut controller = match staging {
             Some(staging) => {
@@ -477,7 +555,7 @@ impl Body<'_> {
         let handover = parked
             .handover
             .insert(HandOver::new(FinishCause::Stop, Phase::Start));
-        handover.directory = Some(directory.clone());
+        handover.sink = Some(sink.clone());
         handover.spool = Some(finish::Spool {
             run: started.run.clone(),
             done: done.clone(),
@@ -488,9 +566,9 @@ impl Body<'_> {
             // 7.4's first row: the `running` write was never sent.
             return Ok(());
         }
-        finish::running(
+        let acknowledged = store::running(
             controller.state(),
-            &directory,
+            &sink,
             self.fin,
             &Identity {
                 started_at: self.started_at,
@@ -499,9 +577,14 @@ impl Body<'_> {
                 vm_hwm: 0,
                 warnings: self.options.warnings,
             },
-        )
-        .map_err(errors::running)?;
-        handover.running = true;
+            execution,
+            &(control.clone() as Arc<dyn Control>),
+        )?;
+        handover.running =
+            acknowledged || matches!(&sink, crate::sink::Sink::Store(store) if store.reconcile());
+        if !handover.running {
+            return Ok(());
+        }
         let boundary = controller.drive_local(execution);
         let reached = controller.reached();
         let pending = controller.pending_commit();
@@ -529,7 +612,7 @@ impl Body<'_> {
             &account,
             &control,
             execution,
-            &directory,
+            &sink,
             &fs,
             #[cfg(feature = "test-hooks")]
             self.options.observer.sort_options(),
@@ -564,7 +647,7 @@ impl Body<'_> {
             done,
             workspace,
             handoff,
-            directory,
+            sink,
             outcomes,
             account,
             gate: publish::Gate::default(),
@@ -577,7 +660,10 @@ impl Body<'_> {
         parked.owned = Some(owned.clone());
         // Here before publication, so a panic's hand-over reads its outcomes.
         handover.selected = Some(Selected::Owned(owned.clone()));
-        let published = publish::parallel(&owned, execution, concurrency);
+        let published = match &owned.sink {
+            crate::sink::Sink::Directory(_) => publish::parallel(&owned, execution, concurrency),
+            crate::sink::Sink::Store(store) => publish::store::run(&owned, store, execution),
+        };
         if published.is_ok() {
             self.options.observer.seam(Seam::Verified);
         }

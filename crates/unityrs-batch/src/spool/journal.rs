@@ -36,7 +36,7 @@ impl std::fmt::Debug for Entry<'_> {
 /// A journal owned by a trusted, already prepared run directory.
 pub struct Journal {
     directory: PathBuf,
-    mutation: Mutex<()>,
+    mutation: Mutex<bool>,
 }
 
 impl Journal {
@@ -47,9 +47,12 @@ impl Journal {
             .try_reserve_exact(directory.as_os_str().len())
             .map_err(|_| Error::HostMemory)?;
         owned.push(directory);
+        let mutation = Mutex::new(false);
+        // Prime any platform's lazy mutex storage before running is written.
+        drop(mutation.lock().unwrap_or_else(PoisonError::into_inner));
         Ok(Self {
             directory: owned,
-            mutation: Mutex::new(()),
+            mutation,
         })
     }
 
@@ -62,7 +65,10 @@ impl Journal {
     fn append_using(&self, entry: Entry<'_>, io: &impl JournalIo) -> Result<(), Error> {
         let mut encoded = [0; LINE_LIMIT];
         let len = encode(entry, &mut encoded)?;
-        let _guard = self.mutation.lock().unwrap_or_else(PoisonError::into_inner);
+        let guard = self.mutation.lock().unwrap_or_else(PoisonError::into_inner);
+        if *guard {
+            return Err(Error::Stopped);
+        }
         let journal = path::join(&self.directory, Path::new("journal"))?;
         let mut file = match io.open(&journal, false) {
             Ok(file) => file,
@@ -94,7 +100,37 @@ impl Journal {
     }
 
     fn remove_using(&self, entry: Entry<'_>, io: &impl JournalIo) -> Result<(), Error> {
-        let _guard = self.mutation.lock().unwrap_or_else(PoisonError::into_inner);
+        let guard = self.mutation.lock().unwrap_or_else(PoisonError::into_inner);
+        if *guard {
+            return Err(Error::Stopped);
+        }
+        self.rewrite(entry, io)
+    }
+    /// Nonblocking close under the same mutation lock. Once closed, a late
+    /// controller completion cannot remove an identity the finisher reads.
+    pub fn try_close(&self) -> bool {
+        match self.mutation.try_lock() {
+            Ok(mut closed) => {
+                *closed = true;
+                true
+            }
+            Err(std::sync::TryLockError::Poisoned(e)) => {
+                *e.into_inner() = true;
+                true
+            }
+            Err(std::sync::TryLockError::WouldBlock) => false,
+        }
+    }
+    /// The finisher's acknowledged abort, after close excludes all controller
+    /// mutations. No mutex is held across a read or network operation.
+    pub fn remove_closed(&self, entry: Entry<'_>) -> Result<(), Error> {
+        let closed = self.mutation.lock().unwrap_or_else(PoisonError::into_inner);
+        if !*closed {
+            return Err(Error::Internal);
+        }
+        self.rewrite(entry, &Host)
+    }
+    fn rewrite(&self, entry: Entry<'_>, io: &impl JournalIo) -> Result<(), Error> {
         let journal = path::join(&self.directory, Path::new("journal"))?;
         let Some(input) = open_read(&journal)? else {
             return Ok(());

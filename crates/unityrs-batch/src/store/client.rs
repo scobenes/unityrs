@@ -139,6 +139,7 @@ pub fn build<T: Transport>(
         .with_bucket_name(settings.bucket)
         .with_region(settings.region)
         .with_credentials(credentials.clone())
+        .with_crypto_provider(std::sync::Arc::new(super::crypto::Provider))
         .with_virtual_hosted_style_request(!settings.path_style)
         .with_conditional_put(S3ConditionalPut::ETagMatch)
         .with_retry(RetryConfig {

@@ -76,12 +76,13 @@ pub struct Written {
 }
 
 /// One borrowed permit and try policy. Every operation requires a live hard
-/// boundary, including aborts. This borrows no finisher-specific interface.
+/// boundary, including aborts. Finisher requests read B9's live budget.
 pub struct Request<'a> {
     pub store: &'a Store,
     pub tries: &'a Tries<'a>,
     pub slot: &'a Arc<TrySlot>,
     pub deadline: Instant,
+    finish: Option<(crate::finish::budget::Budget<'a>, bool)>,
 }
 impl<'a> Request<'a> {
     #[must_use]
@@ -96,7 +97,22 @@ impl<'a> Request<'a> {
             tries,
             slot,
             deadline,
+            finish: None,
         }
+    }
+    #[must_use]
+    pub fn finishing(mut self, budget: crate::finish::budget::Budget<'a>, head: bool) -> Self {
+        self.finish = Some((budget, head));
+        self
+    }
+    pub(crate) fn reconcile_open(&self) -> bool {
+        self.finish.is_none_or(|(budget, head)| {
+            !head
+                || budget.head_deadline().is_none_or(|cut| {
+                    crate::lifetime::Boot::now()
+                        .is_ok_and(|now| cut.0.saturating_sub(now.0) >= 1000)
+                })
+        })
     }
     /// Includes waits for quarantined lookups and backoff in the deadline.
     pub async fn run<T, F, Fut>(&self, kind: Kind, op: F) -> Result<Done<T>, Error>
@@ -116,20 +132,39 @@ impl<'a> Request<'a> {
         F: FnMut(u32) -> Fut,
         Fut: Future<Output = Result<T, Ended>>,
     {
-        if Instant::now() >= self.deadline {
+        if self.finish.is_none() && Instant::now() >= self.deadline {
             return Err(Error::Stopped);
         }
         let mut policy = self.tries.policy;
-        policy.cutoff = Some(
-            policy
-                .cutoff
-                .map_or(self.deadline, |t| t.min(self.deadline)),
-        );
+        if self.finish.is_some() {
+            policy.cutoff = None;
+        } else {
+            policy.cutoff = Some(
+                policy
+                    .cutoff
+                    .map_or(self.deadline, |t| t.min(self.deadline)),
+            );
+        }
         let tries = Tries {
             policy,
             control: self.tries.control,
             unsettled: self.tries.unsettled,
         };
+        if let Some((budget, head)) = self.finish {
+            let control = super::finishing::ControlAt::new(budget.hard);
+            let tracking = super::finishing::Observed {
+                control: &control,
+                observer,
+            };
+            let tries = super::finishing::tries(&tries, &control);
+            return super::finishing::drive(
+                budget,
+                head,
+                tries.run_observed(self.slot, kind, &tracking, op),
+            )
+            .await?
+            .map_err(Into::into);
+        }
         tokio::time::timeout_at(
             self.deadline,
             tries.run_observed(self.slot, kind, observer, op),

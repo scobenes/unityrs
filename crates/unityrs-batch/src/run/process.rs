@@ -147,6 +147,7 @@ struct Host {
     slot: Mutex<Option<Result<HandOver, Error>>>,
     stdin_ended: AtomicBool,
     credentials: OnceLock<[&'static str; 3]>,
+    store_provider: OnceLock<Arc<crate::store::credentials::Provider>>,
     /// The finisher's code so far (0 for none), outside its unwind.
     finishing: AtomicU8,
     early: Early,
@@ -414,6 +415,7 @@ fn steps(
         slot: Mutex::new(None),
         stdin_ended: AtomicBool::new(false),
         credentials: OnceLock::new(),
+        store_provider: OnceLock::new(),
         finishing: AtomicU8::new(0),
         early,
         bound,

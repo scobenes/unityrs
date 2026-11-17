@@ -18,7 +18,10 @@ struct Slot {
     /// plus its position. One table entry per permit, never shared.
     index: usize,
     state: AtomicU64,
+    #[cfg(not(feature = "test-hooks"))]
     bytes: AtomicU64,
+    #[cfg(feature = "test-hooks")]
+    bytes: Arc<AtomicU64>,
     waiter: Mutex<Option<Waker>>,
     /// The pool's waiter, shared by every slot: whatever frees a slot or
     /// ends an operation (a permit's, a token's or a charge's drop) wakes
@@ -80,12 +83,30 @@ impl PermitPool {
             slots.push(Arc::new(Slot {
                 index,
                 state: AtomicU64::new(0),
+                #[cfg(not(feature = "test-hooks"))]
                 bytes: AtomicU64::new(0),
+                #[cfg(feature = "test-hooks")]
+                bytes: Arc::new(AtomicU64::new(0)),
                 waiter: Mutex::new(None),
                 pool: waiter.clone(),
             }));
         }
-        Ok(Self { slots, waiter })
+        let pool = Self { slots, waiter };
+        // Darwin allocates std's mutex storage lazily. Prime every retained
+        // waiter before running; untouched finisher permits need this too.
+        drop(
+            pool.waiter
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for slot in &pool.slots {
+            drop(
+                slot.waiter
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+        }
+        Ok(pool)
     }
     /// Nonblocking admission. A live data buffer also keeps its slot occupied.
     #[must_use]
@@ -153,7 +174,22 @@ impl Operation {
 pub struct RequestPermit {
     slot: Arc<Slot>,
 }
+/// Test-only observation that keeps a counter alive without retaining a charge.
+#[cfg(feature = "test-hooks")]
+#[derive(Clone)]
+pub struct ChargeProbe(Arc<AtomicU64>);
+#[cfg(feature = "test-hooks")]
+impl ChargeProbe {
+    #[must_use]
+    pub fn used(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+}
 impl RequestPermit {
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn charge_probe(&self) -> ChargeProbe {
+        ChargeProbe(self.slot.bytes.clone())
+    }
     /// This permit's socket-table entry.
     #[must_use]
     pub fn index(&self) -> usize {
@@ -287,4 +323,33 @@ fn charge(slot: &Arc<Slot>, bytes: u64) -> Option<Charge> {
         slot: slot.clone(),
         bytes,
     })
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn retained_permit_waiters_first_use_does_not_allocate() {
+        let pool = PermitPool::with_base(FINISHER_BASE, 4).unwrap();
+        let mut permits: [_; 4] = std::array::from_fn(|_| pool.acquire().unwrap());
+        let mut cx = Context::from_waker(Waker::noop());
+        let ((), measured) = crate::alloc::measured(|| {
+            assert!(pool.poll_acquire(&mut cx).is_pending());
+            for permit in &mut permits {
+                assert!(permit.poll_available(&mut cx).is_ready());
+                let token = permit.begin(Operation::Lookup).unwrap();
+                assert!(permit.poll_available(&mut cx).is_pending());
+                drop(token);
+                assert!(permit.poll_available(&mut cx).is_ready());
+                drop(permit.charge(32).unwrap());
+            }
+            assert!(pool.poll_idle(&mut cx).is_ready());
+        });
+        assert_eq!(
+            measured.peak, 0,
+            "retained permit waiter first-use allocation"
+        );
+        assert_eq!(measured.kept, 0);
+    }
 }

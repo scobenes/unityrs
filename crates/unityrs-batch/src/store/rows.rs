@@ -55,7 +55,7 @@ impl Destination<'_> {
             .map_err(map)
     }
 }
-fn map(error: put::Error) -> WriteError {
+pub(crate) fn map(error: put::Error) -> WriteError {
     match error {
         put::Error::Fault(Fault::Memory) => Error::memory().into(),
         put::Error::Fault(Fault::Internal) => Error::internal().into(),

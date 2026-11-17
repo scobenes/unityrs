@@ -1,5 +1,9 @@
 //! Store publication components only; scheduling and run activation are separate.
 //! Expected rows are streamed in key order. No per-key in-memory inventory.
+mod scheduler;
+mod source;
+mod transfer;
+pub(crate) use scheduler::{Run, run};
 pub mod resume;
 mod staged;
 pub mod verify;
@@ -28,7 +32,7 @@ pub struct Expected<'a> {
 }
 /// A charged cursor over winners and archives merged in strict bytewise order.
 /// Resume archive rows need no expected tag: their hashing pass runs later.
-pub trait Source {
+pub trait Source: Send {
     fn current(&self) -> Result<Option<Expected<'_>>, Error>;
     fn advance(&mut self) -> Result<(), Error>;
 }
@@ -37,7 +41,7 @@ pub struct Context<'a, 'r> {
     pub account: &'a Account,
     pub workspace: &'a Workspace,
     pub prefix: &'a str,
-    pub stopped: &'a dyn Fn() -> bool,
+    pub stopped: &'a (dyn Fn() -> bool + Sync),
 }
 /// Fixed archive handoff, in the preallocated per-archive startup storage.
 /// No archive becomes present until a fresh expected-hash pass matches it.

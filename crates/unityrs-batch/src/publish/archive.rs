@@ -52,7 +52,7 @@ impl Descriptor {
         (self.index, self.members, self.size, self.list) = (index, members, size, list);
         Ok(())
     }
-    pub(super) fn take(&mut self, archive: archives::Archive<'_>) -> Result<(), Error> {
+    pub(crate) fn take(&mut self, archive: archives::Archive<'_>) -> Result<(), Error> {
         self.set(
             archive.key,
             archive.index,
@@ -61,11 +61,26 @@ impl Descriptor {
             archive.list,
         )
     }
+    pub(crate) fn input(&self) -> Result<archive::Input<'_>, Error> {
+        Ok(archive::Input {
+            key: self.key()?,
+            index: self.index,
+            members: self.members,
+            size: self.size,
+            list: self.list.as_ref().ok_or_else(Error::internal)?,
+        })
+    }
+    pub(crate) const fn index(&self) -> u32 {
+        self.index
+    }
+    pub(crate) const fn size(&self) -> u64 {
+        self.size
+    }
     #[must_use]
     pub const fn eligibility(&self, blocked: bool) -> Eligibility {
         archive::eligibility(self.members, blocked, self.size)
     }
-    fn key(&self) -> Result<&str, Error> {
+    pub(crate) fn key(&self) -> Result<&str, Error> {
         std::str::from_utf8(&self.key).map_err(|_| Error::internal())
     }
 }

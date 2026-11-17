@@ -55,6 +55,9 @@ webpki-roots = { version = "=1.0.11", default-features = false }
 # `ring` (its signing), so no reqwest and no aws-lc-rs, which `aws` forces.
 # Every client is built in store/client.rs with the engine's own connector.
 object_store = { version = "=0.14.2", default-features = false, features = ["aws-base", "ring"] }
+# The store's fallible signing adapter uses the same stack contexts as its
+# default provider, replacing that provider's infallible context boxes.
+ring = "=0.17.14"
 # Already locked and used by store tests; head reads poll the bounded stream
 # into the caller's charged buffer rather than collecting a second body.
 futures-util = { version = "=0.3.34", default-features = false }

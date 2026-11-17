@@ -15,7 +15,11 @@ pub(super) fn run(
     prepared: PreparedRun,
     measured: alloc::Measured,
 ) -> ExitCode {
-    if unityrs_batch::start::supported(&prepared.spec).is_err() {
+    #[cfg(feature = "test-hooks")]
+    let store_hook = std::env::var_os("UNITYRS_TEST_STORE").is_some_and(|v| v == "1");
+    #[cfg(not(feature = "test-hooks"))]
+    let store_hook = false;
+    if unityrs_batch::start::supported(&prepared.spec).is_err() && !store_hook {
         drop(startup);
         return super::refused(
             clock,

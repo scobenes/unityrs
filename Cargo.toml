@@ -53,4 +53,6 @@ opt-level = 3
 # release binaries keep `[profile.release]`, which carries no debug info.
 [profile.sweep]
 inherits = "release"
-debug = "limited"
+# Darwin otherwise loses engine and dependency async inline frames in finisher
+# monomorphizations, preventing exact CR10 owner/callee classification.
+debug = "full"

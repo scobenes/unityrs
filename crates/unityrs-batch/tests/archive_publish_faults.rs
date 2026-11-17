@@ -434,7 +434,7 @@ fn pool_archives_wait_for_the_final_winner_transfer_not_the_cursor() {
         done: scene.done,
         workspace: scene.workspace,
         handoff: scene.handoff,
-        directory: Arc::new(directory),
+        sink: Arc::new(directory).into(),
         outcomes,
         account: Arc::new(Account::new(64 << 20)),
         gate: Gate::default(),

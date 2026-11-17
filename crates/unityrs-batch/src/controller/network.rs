@@ -37,7 +37,7 @@ pub(crate) struct Staging {
     /// The Execution's stop and end wakes, registered with its runtime
     /// before the running head, since registration allocates.
     /// Out of here only during the pass, and put back after it.
-    pub wakes: Option<[RegisteredWake; 2]>,
+    pub wakes: Option<[crate::sys::Shared<RegisteredWake>; 2]>,
 }
 impl Controller {
     pub(super) fn stage_network(&mut self, execution: &Execution) -> Result<(), Halt> {
@@ -70,7 +70,7 @@ impl Controller {
         &mut self,
         cx: &mut Context<'_>,
         execution: &Execution,
-        wakes: &[RegisteredWake; 2],
+        wakes: &[crate::sys::Shared<RegisteredWake>; 2],
         next: &mut usize,
     ) -> Result<bool, Halt> {
         loop {
