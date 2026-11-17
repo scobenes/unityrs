@@ -38,7 +38,7 @@ component types.
 
 Layout reaches meshes in table order, their primitives in order, attributes
 in semantic order, indices, then morph POSITION/NORMAL/TANGENT slots, followed
-by skin inverse binds and images. Shared accessors are placed on first reach;
+by skin inverse binds, animation sampler inputs and outputs, and images. Shared accessors are placed on first reach;
 unreferenced accessors are omitted. Value checks run only for emitted data,
 with POSITION/NORMAL/TANGENT, colours and UVs analysed to decide omissions. Each view
 starts at a multiple of four.
@@ -106,6 +106,23 @@ JSON itself remains valid. Morph deltas are never unit-normalized.
 
 The model already uses glTF coordinates and UVs. `collect` performs the Unity
 conversion described below. Material mapping is described below.
+
+Add an `Animation` to `Scene::animations` with sampler and channel tables.
+Channels reference scene nodes and animation-local samplers. Samplers reference
+dense f32 accessors in the scene table and specify `STEP` or `LINEAR`. Supply
+baked keys in glTF space with finite, nonnegative clip-local seconds and
+strictly increasing times after rounding. Use `AnimationVec3` for translation
+and scale, unit XYZW `AnimationRotation` keys with continuous signs, and
+`AnimationWeights` scalars in key-major order with one row of weights per
+key, in the target mesh's morph order. TRS channels target transform and joint
+nodes. Morph channels target the node that instantiates the mesh.
+
+The writer validates rounded animation keys in both modes and emits the
+rounded values directly. It keeps the order of clips, channels and referenced
+samplers, omits clips without channels, and writes time bounds from the actual
+f32 payload. Optional names and string extras use the existing metadata model.
+`tools/parity/gltf_check.py` can independently decode keys and reconstruct
+STEP, LINEAR and quaternion interpolation.
 
 Writer tests use hand-built scenes; collector tests use `testkit::scene3d`. The committed empty, triangle and skinned
 sparse-morph GLBs are byte goldens; `UNITYRS_GLTF_UPDATE_GOLDENS=1 cargo test

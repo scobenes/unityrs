@@ -1,5 +1,5 @@
 //! All indices refer to the corresponding scene table, never to layout IDs.
-use crate::Material;
+use crate::{Animation, Material};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
 
@@ -36,6 +36,7 @@ pub struct Scene {
     pub meshes: MeteredVec<Mesh>,
     pub accessors: MeteredVec<Accessor>,
     pub skins: MeteredVec<Skin>,
+    pub animations: MeteredVec<Animation>,
     pub materials: MeteredVec<Material>,
     pub images: MeteredVec<Image>,
     pub textures: MeteredVec<Texture>,
@@ -61,6 +62,7 @@ impl Scene {
             meshes: MeteredVec::new(meter),
             accessors: MeteredVec::new(meter),
             skins: MeteredVec::new(meter),
+            animations: MeteredVec::new(meter),
             materials: MeteredVec::new(meter),
             images: MeteredVec::new(meter),
             textures: MeteredVec::new(meter),
@@ -177,14 +179,26 @@ pub enum Kind {
     MorphPosition,
     MorphNormal,
     MorphTangent,
+    /// Clip-local seconds. The rounded payload must strictly increase.
+    AnimationTime,
+    /// One local translation or scale vector per key.
+    AnimationVec3,
+    /// One unit XYZW quaternion per key, with continuous signs.
+    AnimationRotation,
+    /// One scalar per morph target per key, in key-major order.
+    AnimationWeights,
 }
 const _: () = crate::send_sync::<Kind>();
 impl Kind {
     pub(crate) fn width(self) -> usize {
         match self {
-            Self::Indices => 1,
+            Self::Indices | Self::AnimationTime | Self::AnimationWeights => 1,
             Self::TexCoord => 2,
-            Self::Tangent | Self::Color | Self::Joints | Self::Weights => 4,
+            Self::Tangent
+            | Self::Color
+            | Self::Joints
+            | Self::Weights
+            | Self::AnimationRotation => 4,
             Self::InverseBind => 16,
             _ => 3,
         }
@@ -202,6 +216,15 @@ impl Kind {
         matches!(
             self,
             Self::MorphPosition | Self::MorphNormal | Self::MorphTangent
+        )
+    }
+    pub(crate) fn animation(self) -> bool {
+        matches!(
+            self,
+            Self::AnimationTime
+                | Self::AnimationVec3
+                | Self::AnimationRotation
+                | Self::AnimationWeights
         )
     }
 }

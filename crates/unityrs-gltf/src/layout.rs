@@ -90,6 +90,7 @@ pub struct Layout {
     pub(crate) meshes: MeteredVec<MeshLayout>,
     pub(crate) rotations: MeteredVec<[f64; 4]>,
     pub(crate) image_views: MeteredVec<usize>,
+    pub(crate) animations: MeteredVec<crate::animation::AnimationLayout>,
     /// Source material ids for variants whose texture references are omitted.
     pub(crate) textureless_materials: MeteredVec<usize>,
 }
@@ -142,6 +143,7 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
         accessor_order: MeteredVec::new(meter),
         meshes: MeteredVec::with_capacity(meter, s.meshes.len())?,
         image_views: MeteredVec::new(meter),
+        animations: MeteredVec::new(meter),
         textureless_materials: MeteredVec::new(meter),
         rotations: MeteredVec::with_capacity(meter, s.nodes.len())?,
     };
@@ -351,7 +353,8 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
     }
     validate::skin_attributes(s, &l, *opts, meter)?;
     // First reach: meshes/primitives, semantic attribute order, indices,
-    // morph slots, then inverse binds and images. Unreferenced data is omitted.
+    // morph slots, then inverse binds, animation samplers and images.
+    // Unreferenced data is omitted.
     for (m, mi) in s.meshes.as_slice().iter().enumerate() {
         for (pi, p) in mi.primitives.as_slice().iter().enumerate() {
             meter.count_decode(p.attributes.len() as u64 + p.targets.len() as u64 * 3 + 1)?;
@@ -392,6 +395,7 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
             place(s, &mut l, id, *opts, meter)?;
         }
     }
+    crate::animation::layout_animations(s, &mut l, *opts, meter)?;
     for image in s.images.as_slice() {
         meter.count_decode(1)?;
         let view = l.view(image.bytes.len(), None)?;
@@ -400,7 +404,7 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
     Ok(l)
 }
 
-fn place(
+pub(crate) fn place(
     s: &Scene,
     l: &mut Layout,
     id: usize,
@@ -456,7 +460,7 @@ fn place(
         let target = match a.kind {
             Kind::Indices => Some(34963),
             Kind::InverseBind => None,
-            k if k.morph() => None,
+            k if k.morph() || k.animation() => None,
             _ => Some(34962),
         };
         (Some(l.view(bytes, target)?), None)
@@ -494,6 +498,18 @@ fn analyse(
         .as_slice()
         .get(id)
         .ok_or_else(|| validate::invalid("accessor index"))?;
+    if a.kind.animation() {
+        if let Some((min, max)) = crate::animation::validate_keys(a, meter)? {
+            *al.min
+                .first_mut()
+                .ok_or_else(|| validate::invalid("time bounds"))? = min;
+            *al.max
+                .first_mut()
+                .ok_or_else(|| validate::invalid("time bounds"))? = max;
+        }
+        al.analysed = true;
+        return Ok(());
+    }
     let rows = a.sparse_indices.as_ref().map_or(a.count, MeteredVec::len);
     meter.count_decode(
         (rows as u64)

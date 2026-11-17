@@ -3,15 +3,21 @@ use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
 use unityrs_gltf::*;
 
+mod animation;
+pub fn animated(m: &Arc<Meter>) -> Result<Scene, GltfError> {
+    animation::animated(m)
+}
+
 pub fn floats(m: &Arc<Meter>, kind: Kind, values: &[f64]) -> Result<Accessor, GltfError> {
     let width = match kind {
         Kind::Position
         | Kind::Normal
         | Kind::MorphPosition
         | Kind::MorphNormal
-        | Kind::MorphTangent => 3,
+        | Kind::MorphTangent
+        | Kind::AnimationVec3 => 3,
         Kind::TexCoord => 2,
-        Kind::Indices => 1,
+        Kind::Indices | Kind::AnimationTime | Kind::AnimationWeights => 1,
         Kind::InverseBind => 16,
         _ => 4,
     };

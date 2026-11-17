@@ -27,6 +27,8 @@
 //! converts Unity coordinates and UVs into this model using a typed [`Profile`].
 //! Material mapping uses [`UnlitExtras`] or an injected [`MaterialMapper`],
 //! including [`CorePbr`]. Per-instance morph weights live on nodes.
+//! Animation tables accept output-ready keys in glTF space. The writer rounds
+//! their payloads to f32 and validates them in both normalisation modes.
 #![forbid(unsafe_code)]
 #![cfg_attr(
     not(test),
@@ -39,6 +41,10 @@
     )
 )]
 
+mod animation;
+pub use animation::{
+    Animation, AnimationChannel, AnimationSampler, AnimationTarget, Interpolation,
+};
 mod attribute_policy;
 mod collect;
 pub use collect::{collect, collect_with_mapper};
