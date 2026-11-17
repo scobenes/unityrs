@@ -139,6 +139,49 @@ def numeric_protocol(text):
     return values
 
 
+def whole_memory_protocol(text, *, workers, download_concurrency):
+    """Validate one complete opt-in CLI report, without retaining other output.
+
+    This parses telemetry only. Successful process exit, provenance and corpus
+    coverage must be verified separately before a whole-run record is eligible.
+    """
+    fields = ('peak', 'events', 'phases', 'workers', 'download_concurrency',
+              'network', 'heap_negative', 'heap', 'charged_negative', 'charged',
+              'residual_negative', 'residual')
+    reports = []
+    base_lines = []
+    for line in text.splitlines(keepends=True):
+        if line.startswith('B12_'):
+            base_lines.append(line)
+        if not line.startswith('WHOLE_MEMORY'):
+            continue
+        if re.fullmatch(r'WHOLE_MEMORY_V1(?: [0-9]{1,20}){12}\n', line) is None:
+            raise gen.Invalid('invalid whole-memory protocol')
+        numbers = [int(value) for value in line.split()[1:]]
+        if any(value > gen.U64_MAX for value in numbers):
+            raise gen.Invalid('invalid whole-memory observation')
+        reports.append(dict(zip(fields, numbers)))
+    if len(reports) != 1:
+        raise gen.Invalid('missing or duplicate whole-memory report')
+    report = reports[0]
+    if (workers < 1 or download_concurrency < 1
+            or report['workers'] != workers
+            or report['download_concurrency'] != download_concurrency
+            or report['events'] == 0 or report['phases'] != 255
+            or report['heap_negative'] != 0 or report['charged_negative'] != 0
+            or report['residual_negative'] != 0
+            or not 0 < report['peak'] < (1 << 63)
+            or any(report[key] >= (1 << 63) for key in ('heap', 'charged', 'residual'))):
+        raise gen.Invalid('incomplete or inconsistent whole-memory observation')
+    expected = ([f"B12_COEFFICIENT c_base {report['peak']}\n"]
+                if workers == download_concurrency == 1 else [])
+    if base_lines != expected:
+        raise gen.Invalid('missing or inconsistent whole-memory base')
+    # Keep the shared B12 grammar authoritative as well.
+    numeric_protocol(''.join(base_lines))
+    return report
+
+
 def native_fingerprint():
     """Canonical native source/configuration identity, identical across targets."""
     paths = ['Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml']

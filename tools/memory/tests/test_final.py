@@ -40,9 +40,9 @@ class FinalEvidenceTests(unittest.TestCase):
             gen.generate(data)
 
     def test_whole_run_requires_complete_applicable_coverage(self):
-        for scene in gen.SCENES:
+        for scene in (*gen.WHOLE_SCENES, *gen.WHOLE_STORE_SCENES):
             data = document(True)
-            data['records'][-1]['coverage'][scene] = False
+            data['records'][-1]['whole_run_coverage'][scene] = False
             with self.subTest(scene=scene), self.assertRaises(gen.Invalid):
                 gen.generate(data)
 

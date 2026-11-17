@@ -87,6 +87,10 @@ pub fn main(clock: &Clock, args: &[Vec<u8>]) -> ExitCode {
             (Err(error), _) => phase1_failed(clock, error),
         },
         Some(Command::Run(p)) => {
+            #[cfg(feature = "test-hooks")]
+            unityrs_batch::run::hooks::memory::at(unityrs_batch::run::hooks::memory::Point::Phase(
+                unityrs_batch::progress::Phase::Validate,
+            ));
             // 2.11 step 1's services, before phase 1.
             let mut startup = match unityrs_batch::run::process::Startup::prepare() {
                 Ok(startup) => startup,

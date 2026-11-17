@@ -25,10 +25,11 @@ The root has exactly `schema_version` (1), `status` (`provisional-b12b` or
 | `profile` | `debug` or `release` |
 | `sink` | `directory` or `store` |
 | `provenance` | Structured build and native host configuration |
-| `coverage` | Required boolean for each synthetic scene ID in the schema |
+| `coverage` | Required booleans for the synthetic catalogue; all false on whole-run records |
+| `whole_run_coverage` | Closed facts required on whole-run records; true as applicable in final mode |
 | `coefficients` | Raw maximum bytes for all six empirical coefficients |
 | `structural_floors` | Measured representation floors for `m_dispatch` and `m_end` |
-| `fixed_envelopes` | Maximum observed bytes or holder counts for each fixed allowance |
+| `fixed_envelopes` | Certified upper bounds, overlaid with protocol observations where emitted; bytes or holder counts |
 | `attribution` | Required attestations about the measurements' accounting |
 
 The kind/target/profile/sink axes must be unique. Coefficients are `c_base`, `c_env`, `m_thread`, `m_pool`,
@@ -64,10 +65,23 @@ subtract unused reservations, padded selected coefficients, network/header/
 credential/finisher caps or unseen native heap. Both runtimes' initialized pool
 threads and outstanding task cells require independent probes.
 
-The schema lists the complete closed scene vocabulary. Set a flag only when its
-measurement and scale/ownership argument have been reviewed. Store flags are
-required for store records in final mode; other scene flags, including stopping
-in every phase, are required for every final record. A flag describes coverage,
+Whole-run records combine a directly observed zero-deduction one-worker,
+one-download base with the five independent component increments, representation
+floors and fixed-envelope certificates from the matching synthetic axis. They
+must not understate that axis's component/floor/envelope evidence. This is
+explicitly mixed evidence, not six slopes fitted from a corpus run.
+`whole_run_coverage` names both-builds, one-worker, eight-workers, resume, loose,
+archive, phase-seven and component-probes, plus store-roundtrip for a store
+record. All are required true in final mode, with store-roundtrip false and
+inapplicable for directory records. A real run's full peak or RSS cannot replace
+component isolation, full-capacity synthetic scenes or their scale arguments.
+
+The schema lists the complete closed synthetic scene vocabulary. Set a synthetic
+flag only when its measurement and scale/ownership argument have been reviewed.
+Store flags are required for synthetic store records in final mode; other
+synthetic scene flags, including stopping in every phase, are required for every
+final synthetic record. Whole-run records require their separate closed coverage
+object in every mode and must keep every synthetic flag false. A flag describes coverage,
 not a path, test log, report attachment or arbitrary input identifier. Publish
 only the structured aggregates. Input identities and detailed reports stay
 outside this repository and CI artifacts. Validation diagnostics do not echo
@@ -99,9 +113,10 @@ Fixed envelopes are retained without padding or fitting. The schema's
 header copies per download slot; six credential holders with 128/128/16384-byte
 credential caps; 2 MiB multipart lists; 64 KiB response collection; 115344-byte
 worker state; 2048-byte panic slots; 2080-byte abort pairs; 16 KiB journal lines;
-and 160-byte archive resume entries. Report observed holder counts for
-`header_copies` and `credential_holders`, bytes for the remaining keys. A breach
-in any mode is refused and requires a bound revision. Moving the excess into
+and 160-byte archive resume entries. The collector retains certified ceilings
+unless a numeric envelope observation is emitted. Units are holder counts for `header_copies` and
+`credential_holders`, bytes for the remaining keys; the current protocol emits
+only the credential-holder count. A breach in any mode is refused and requires a bound revision. Moving the excess into
 `c_base` does not resolve it.
 
 ## Provisional and final generation
@@ -312,3 +327,42 @@ For a development diagnostic, add `--smoke --allow-dirty`. It runs active
 correctness/component scenes and leaves scale-only coverage false. Ignored
 tests never supply coverage. These records remain ineligible for final
 selection; their native/emulated and source-cleanliness labels are preserved.
+
+The CLI observer exists only with `unityrs-cli/test-hooks`. Explicitly setting
+`UNITYRS_TEST_WHOLE_MEMORY=1` installs charge/phase observation and enables a
+single report at the normal terminal Exit point. Other values produce no
+report. The feature-enabled allocator tracks all Rust allocations from process
+initialization, including CLI setup, argument ownership and parent-side thread
+startup. It uses two fixed allocation-free ledgers, with no registration filter,
+heap walk, history or sampling. Growing reallocations retain conservative
+old/new overlap; cross-thread frees balance in the process total. Setup ownership
+is retained in the base, with zero deductions. Before preparation, the opt-in
+observer establishes the normal allocator settings for one worker; normal run
+preparation subsequently applies the prepared worker count.
+
+Reporting formats decimal numbers on the stack and writes to stderr, which the
+caller must drain or redirect to an already-open regular file. Instrumentation
+adds fixed atomic state, short ledger critical sections and bounded setup
+ownership. It changes scheduling and can affect RSS. Native heap, other
+processes and forced-kill/crash paths are not certified by this observer.
+
+For workers=download-concurrency=1 it emits
+`B12_COEFFICIENT c_base <peak>`; other concurrency settings emit no coefficient.
+Every report also contains exactly one newline-terminated line:
+
+```text
+WHOLE_MEMORY_V1 peak events phase-mask workers download-concurrency network heap-negative heap charged-negative charged residual-negative residual
+```
+
+All twelve fields are unsigned u64 decimal integers. The three negative fields
+are sign bits (0 or 1), each followed by its magnitude. A complete run has phase
+mask 255 (Validate through Finish) and a positive event count. `peak` is the
+zero-deduction Rust heap maximum; `network` is the outstanding network reservation.
+Heap, held charges and maximum residual are diagnostic observations from the
+second ledger. That ledger includes native-only charges: its residual must never
+be used to fit a Rust coefficient. The two ledger snapshots are separate and
+must not be combined algebraically. `tools/memory/collect.py` exposes
+`whole_memory_protocol` to reject missing, duplicate, truncated, malformed or
+inconsistent reports. It verifies prepared concurrency and complete phase
+coverage, positive peak and representable nonnegative ledger fields; successful exit, clean matching revision, component evidence, corpus
+completion and output correctness remain separate eligibility requirements.

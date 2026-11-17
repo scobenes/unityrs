@@ -388,7 +388,7 @@ jobs:
       - name: Self-tests (scripts)
         run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=140'
       - name: Aggregate memory regeneration tooling
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/memory/tests=66'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/memory/tests=77'
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
   # section 3) and with UnityPy's samples, so the tests that need them run;
