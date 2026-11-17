@@ -23,9 +23,12 @@ fn provider(args: &Args<'_>, meter: &Arc<Meter>) -> Result<Option<Provider>> {
         return Ok(None);
     };
     let context = |error: Error| error.at_tpk(path);
-    let data =
+    let data = if let Some(roots) = &args.roots {
+        roots.read(Path::new(OsStr::from_bytes(path)), &args.limits, meter)
+    } else {
         unityrs_core::env::read_path(Path::new(OsStr::from_bytes(path)), &args.limits, meter)
-            .map_err(|e| context(Error::from(e)))?;
+    }
+    .map_err(|e| context(Error::from(e)))?;
     meter
         .count_decode(data.len() as u64)
         .map_err(|e| context(Error::from(e)))?;
@@ -42,14 +45,26 @@ fn environment(args: &Args<'_>, provider: Option<&Provider>) -> Environment {
     let mut opts = EnvOptions::unitypy();
     let mut ctx = (*opts.context).clone();
     ctx.limits = args.limits;
+    if args.roots.is_some() {
+        ctx.budget = Arc::new(unityrs_core::budget::Counting::new(
+            args.limits.max_input_memory,
+        ));
+    }
     if let Some(provider) = provider {
         ctx.providers = Arc::new(ProviderChain::new(vec![provider.tree.clone()]));
     }
     opts.context = Arc::new(ctx);
     Environment::new(opts)
 }
-fn load(env: &Environment, path: &[u8]) -> Result<File> {
-    Ok(env.load(Source::Path(Path::new(OsStr::from_bytes(path)).to_owned()))?)
+fn source(env: &Environment, args: &Args<'_>, path: &[u8]) -> Source {
+    let path = Path::new(OsStr::from_bytes(path));
+    args.roots.as_ref().map_or_else(
+        || Source::Path(path.to_owned()),
+        |roots| roots.source(path, args.limits, env.options().context.budget.clone()),
+    )
+}
+fn load(env: &Environment, path: &[u8], args: &Args<'_>) -> Result<File> {
+    Ok(env.load(source(env, args, path))?)
 }
 fn walk(root: File, mut visit: impl FnMut(&File) -> Result<()>) -> Result<()> {
     let mut stack = MeteredVec::new(root.meter());
@@ -248,14 +263,11 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
         let mut source_digest = None;
         let result = (|| {
             let env = environment(args, provider.as_ref());
-            let root = env.load_observed(
-                Source::Path(Path::new(OsStr::from_bytes(path)).to_owned()),
-                |data, input_meter| {
-                    input_meter.count_decode(data.len() as u64)?;
-                    source_digest = Some(json::sha256(data));
-                    Ok(())
-                },
-            );
+            let root = env.load_observed(source(&env, args, path), |data, input_meter| {
+                input_meter.count_decode(data.len() as u64)?;
+                source_digest = Some(json::sha256(data));
+                Ok(())
+            });
             // Bind the loaded snapshot before object work. A fingerprint
             // refusal then cannot replace an object's contextual failure.
             if let Some(digest) = &source_digest {
@@ -436,7 +448,7 @@ pub fn show(args: &Args<'_>) -> Result<Document> {
             continue;
         }
         let env = environment(args, provider.as_ref());
-        let root = load(&env, path).map_err(|e| e.at_input(index, path))?;
+        let root = load(&env, path, args).map_err(|e| e.at_input(index, path))?;
         if matches!(root, File::Raw(_)) {
             return Err(
                 Error::new("input", "input is not a Unity object container").at_input(index, path)

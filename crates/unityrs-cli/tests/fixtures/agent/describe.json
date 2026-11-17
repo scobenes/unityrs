@@ -608,6 +608,97 @@
         1,
         2
       ],
+      "name": "mcp",
+      "options": [
+        {
+          "default": null,
+          "help": "Repeatable held input root; required.",
+          "name": "--root",
+          "value": "DIR"
+        },
+        {
+          "default": null,
+          "help": "Held extraction output root; enables unityrs_extract.",
+          "name": "--out",
+          "value": "DIR"
+        },
+        {
+          "default": "1048576",
+          "help": "Maximum bytes per request line, including newline; 256 through 67108864.",
+          "name": "--max-request-bytes",
+          "value": "N"
+        },
+        {
+          "default": "4194304",
+          "help": "Maximum response bytes including newline; at least request cap + 1024, at most 67108864.",
+          "name": "--max-response-bytes",
+          "value": "N"
+        },
+        {
+          "default": "65536",
+          "help": "Maximum inspect/show document bytes.",
+          "name": "--max-bytes",
+          "value": "N"
+        },
+        {
+          "default": "256",
+          "help": "Maximum show retained entries.",
+          "name": "--max-items",
+          "value": "N"
+        },
+        {
+          "default": "32",
+          "help": "Maximum show display depth, at most 128.",
+          "name": "--max-depth",
+          "value": "N"
+        },
+        {
+          "default": "200",
+          "help": "Maximum inspect page size, 1 through 10000.",
+          "name": "--limit",
+          "value": "N"
+        },
+        {
+          "default": "8589934592",
+          "help": "Charged bytes per input and response.",
+          "name": "--max-input-memory",
+          "value": "N"
+        },
+        {
+          "default": "4294967296",
+          "help": "Source bytes per input.",
+          "name": "--max-input-bytes",
+          "value": "N"
+        },
+        {
+          "default": "34359738368",
+          "help": "Work bytes per input and response.",
+          "name": "--max-decode-work",
+          "value": "N"
+        },
+        {
+          "default": "256",
+          "help": "Compiled typetree depth.",
+          "name": "--max-tree-depth",
+          "value": "N"
+        },
+        {
+          "default": null,
+          "help": "Print command help (also -h).",
+          "name": "--help",
+          "value": null
+        }
+      ],
+      "purpose": "Serve confined agent tools over MCP stdio (2025-11-25).",
+      "stdout": "Newline-delimited JSON-RPC 2.0 only; diagnostics on stderr; EOF exits 0.",
+      "usage": "unityrs mcp --root DIR [--root DIR] [--out DIR] [limits]"
+    },
+    {
+      "exit_codes": [
+        0,
+        1,
+        2
+      ],
       "name": "describe",
       "options": [
         {

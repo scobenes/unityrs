@@ -18,7 +18,7 @@ use unityrs_core::limits::{Meter, MeteredVec};
 use unityrs_export::extractor::{Error, Sink, paths};
 use unityrs_mesh::obj::{ChargedBytes, MeteredWrite};
 static NEXT: AtomicU64 = AtomicU64::new(0);
-pub(super) struct Files {
+pub(crate) struct Files {
     root: File,
     meter: Arc<Meter>,
 }
@@ -67,6 +67,19 @@ impl Files {
             libc::O_RDONLY | libc::O_DIRECTORY,
             meter,
         )?;
+        Ok(Self {
+            root,
+            meter: meter.clone(),
+        })
+    }
+    /// Reach a request's subdirectory from the server's held root, then
+    /// use the original writer with the request's own finite meter.
+    pub(crate) fn subdirectory(&self, path: &[u8], meter: &Arc<Meter>) -> Result<Self, Error> {
+        let request = Self {
+            root: self.root.try_clone()?,
+            meter: meter.clone(),
+        };
+        let root = request.parent(path)?;
         Ok(Self {
             root,
             meter: meter.clone(),

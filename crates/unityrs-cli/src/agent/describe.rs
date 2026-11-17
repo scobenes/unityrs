@@ -14,6 +14,7 @@ fn legacy_options(command: &str) -> Vec<OptionSpec> {
         "obj" => crate::obj::options(),
         "extract" => crate::extract::options(),
         "batch" => crate::batch::options(),
+        "mcp" => crate::mcp::options(),
         "values" => vec![crate::args::COMMAND_HELP],
         _ => Vec::new(),
     }
@@ -73,6 +74,13 @@ const COMMANDS: &[(&str, &str, &str, &str, &[i32])] = &[
         "Read one object with bounded context.",
         "unityrs show INPUT... --path-id N [options]",
         "One unityrs.show or unityrs.error JSON document.",
+        &[0, 1, 2],
+    ),
+    (
+        "mcp",
+        "Serve confined agent tools over MCP stdio (2025-11-25).",
+        "unityrs mcp --root DIR [--root DIR] [--out DIR] [limits]",
+        "Newline-delimited JSON-RPC 2.0 only; diagnostics on stderr; EOF exits 0.",
         &[0, 1, 2],
     ),
     (

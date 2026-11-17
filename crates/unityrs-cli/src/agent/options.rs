@@ -155,6 +155,7 @@ pub struct Args<'a> {
     pub inputs: Vec<&'a [u8]>,
     pub options: Vec<(&'static str, &'a [u8])>,
     pub limits: Limits,
+    pub roots: Option<std::sync::Arc<crate::mcp::roots::Roots>>,
 }
 /// Bound raw argument bytes before escaping or allocating a diagnostic.
 pub(super) fn spelling(raw: &[u8]) -> String {
@@ -253,6 +254,7 @@ impl<'a> Args<'a> {
             inputs,
             options,
             limits,
+            roots: None,
         };
         args.validate(command)?;
         Ok(args)

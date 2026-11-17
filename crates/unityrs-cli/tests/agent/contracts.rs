@@ -80,7 +80,7 @@ fn assert_missing_value(
     // With the flag last, no later positional can masquerade as its value.
     let missing = invoke(tmp, args);
     let status = match name {
-        "dump" | "inspect" | "show" | "describe" => 2,
+        "dump" | "inspect" | "show" | "describe" | "mcp" => 2,
         "batch" => 78,
         _ => 1,
     };
@@ -108,7 +108,7 @@ fn assert_switch_value(
     *explicit.last_mut().unwrap() = format!("{flag}=true");
     let refused = invoke(tmp, &explicit);
     let status = match name {
-        "dump" | "values" | "inspect" | "show" | "describe" => 2,
+        "dump" | "values" | "inspect" | "show" | "describe" | "mcp" => 2,
         "batch" => 78,
         _ => 1,
     };
@@ -142,6 +142,10 @@ fn every_advertised_option_has_its_declared_arity() {
     for command in description["commands"].as_array().unwrap() {
         let name = command["name"].as_str().unwrap();
         assert!(commands.insert(name));
+        // MCP startup/framing option arities are exercised by the real stdio suite.
+        if name == "mcp" {
+            continue;
+        }
         for option in command["options"].as_array().unwrap() {
             let flag = option["name"].as_str().unwrap();
             let mut args = match name {
@@ -218,7 +222,8 @@ fn every_advertised_option_has_its_declared_arity() {
     assert_eq!(
         commands,
         BTreeSet::from([
-            "dump", "values", "gltf", "obj", "extract", "batch", "inspect", "show", "describe"
+            "dump", "values", "gltf", "obj", "extract", "batch", "inspect", "show", "describe",
+            "mcp"
         ])
     );
 }

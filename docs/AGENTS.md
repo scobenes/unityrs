@@ -18,7 +18,7 @@ explicit previews below. Invalid UTF-8 paths and names use the canonical
 `{"t":"str","hex":"..."}` representation.
 Value strings follow the rules for the selected view below.
 
-`describe` lists all nine subcommands, each option's value form, default (a
+`describe` lists all ten subcommands, each option's value form, default (a
 string, or null when absent), help, usage, stdout behavior and exit codes.
 Legacy commands retain their original parsers and output contracts. `-h` and
 `--help` on a new command return the JSON description. New options use separate
@@ -375,11 +375,108 @@ The [Python package](../crates/unityrs-py/README.md) provides the UnityPy-compat
 API for in-process Python callers, including object/typetree access. The new
 CLI protocol is intended for bounded exploration and process-driven tools.
 
-Out of scope: an MCP server or other persistent transport, mutation/write-back
+Out of scope: other persistent transports, mutation/write-back
 commands, remote input discovery, a class-specific interpretation of every
 value, and changing the parity commands' argument or output semantics. The new
 operations return JSON documents from CLI module functions without printing;
-a later in-process transport can call the same functions.
+the MCP transport calls the same functions in process.
+
+## MCP server
+
+Register a local server with Claude Code:
+
+```sh
+claude mcp add unityrs -- unityrs mcp --root /path/to/assets
+```
+
+Clients such as Claude Desktop that read a JSON server configuration can use:
+
+```json
+{
+  "mcpServers": {
+    "unityrs": {
+      "command": "unityrs",
+      "args": ["mcp", "--root", "/path/to/assets", "--out", "/path/to/exports"]
+    }
+  }
+}
+```
+
+The server implements the [MCP 2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)
+over stdio: one UTF-8 JSON-RPC 2.0 object per line, with stdout reserved for
+responses and stderr for diagnostics. It supports `initialize`,
+`notifications/initialized`, `ping`, `tools/list`, and `tools/call`. The supported
+version is `2025-11-25`; that version is echoed when requested, and offered for
+any unsupported version. Send `notifications/initialized` before using tools.
+Batch arrays are rejected (`-32600`), following this revision's removal of
+batching. Notifications produce no response. Parse errors use `-32700`, invalid
+requests `-32600`, unknown methods `-32601`, invalid parameters `-32602`.
+Requests retain their string or integer IDs. EOF exits successfully; malformed
+and oversized messages are refused and the next line is served. Calls execute
+serially. No network, shell, subprocess, or environment-variable expansion is
+used by tool calls.
+
+`tools/list` supplies draft 2020-12 `inputSchema` and `outputSchema` for each tool.
+Input names replace CLI hyphens with underscores. Each result has a single
+`content` text item containing the JSON document, and the same object in
+`structuredContent`. Operation failures set `isError: true` with a
+`unityrs.error` document. Output schemas include that error variant. Argument
+shape/type errors and unknown tool names are JSON-RPC invalid parameters.
+
+| Tool | Arguments | Document |
+| --- | --- | --- |
+| `unityrs_describe` | Optional `schema` (`inspect`, `show`, `describe`, `error`). | `unityrs.describe`, or the requested JSON Schema. |
+| `unityrs_inspect` | Required `inputs` string array; optional `class` and `name` arrays, `limit`, `cursor`, `max_bytes`, budgets and `tpk`. | Version-1 `unityrs.inspect`, with per-input errors and `next_cursor`. |
+| `unityrs_show` | Required `inputs` and signed `path_id`; optional `file`, `file_index` (`INPUT:FILE`), `value`, `bytes`, `max_bytes`, `max_items`, `max_depth`, budgets and `tpk`. | Version-1 `unityrs.show`. |
+| `unityrs_extract` | Required `inputs` and relative `output` subdirectory; extract's options, budgets and provider paths. Repeatable `asset_filter` is an array; switches are booleans. | Existing extract report: `written` and `failures`. Listed only with server `--out`. |
+| `unityrs_batch_check` | Required `job` object. | Existing batch check `exit` result, including `code: 0` and `detail: "memory_bound ..."`; invalid jobs return `unityrs.error`. No batch execution. |
+
+Input and output option schemas are generated from the CLI parser tables. For
+example, call `unityrs_inspect` with `{"inputs":["/path/to/assets/synthetic.assets"],"limit":1}`,
+then keep its inputs, filters and budget options unchanged when supplying its
+`next_cursor` as `cursor`.
+
+At least one startup `--root DIR` is required; repeat it to permit several roots.
+Relative input paths resolve against the server's working directory. Absolute
+paths must be beneath a configured root. Each component is opened relative to
+its held parent descriptor with `O_NOFOLLOW`; `..`, symlinks (including symlinks
+within roots), special files and paths outside all roots are refused. Roots
+are held for the session. Provider files (`tpk` and `vorbis_headers`) and every
+split companion follow the same rules. Loaded bytes retain their input budget.
+No implicit dependencies are fetched. Batch check validates path and URL strings
+as job data without opening, downloading, resolving credentials, or executing them.
+
+Extraction uses the existing held-descriptor writer. A request's `output` must
+be relative beneath `--out`; parent components and symlink parents are refused.
+`report`, when supplied, is relative to that extraction subdirectory. Writes
+replace existing leaves. Confinement attaches to the inodes reached on open:
+a concurrent directory rename moves those inodes and their files together,
+including outside the original root pathname. Files already hard-linked inside
+a root are readable; confinement does not establish their provenance.
+
+Startup budget maxima use the ordinary `--max-input-memory`, `--max-input-bytes`,
+`--max-decode-work`, and `--max-tree-depth` options and defaults above. Startup
+also accepts display ceilings `--max-bytes 65536`, `--max-items 256`,
+`--max-depth 32`, and `--limit 200`. Explicit request values above any ceiling
+are refused with `isError: true`, code `budget`; omitted values use the smaller
+of the command default and server ceiling. A request may lower these limits.
+Job checks additionally cap the serialized job at 64 MiB and at the server's
+input byte ceiling, reserving 64 bytes per job byte, 65,536 fixed bytes, 16,384 bytes per bundle,
+and the exact active/stage slot table sizes before preparation. Memory reservations
+must fit the server ceiling; work is split conservatively between validation
+and preparation, with the existing batch view-work cap also retained.
+Tool document framing, escaping and the serialized response buffer share the
+command's finite response meter; documents are serialized directly into both
+MCP result fields without an intermediate JSON tree.
+
+`--max-request-bytes` defaults to 1,048,576 bytes per physical line, including
+newline; oversized lines are drained with bounded storage. `--max-response-bytes`
+defaults to 4,194,304 bytes per complete protocol response including newline.
+Both are at most 67,108,864; request cap is at least 256, and response cap must
+be at least request cap + 1024 so even a large request ID fits a bounded error.
+A response that cannot fit is replaced by a budget tool failure (or JSON-RPC
+internal error for non-tool responses), preserving its ID. Framing caps are
+startup-only. `unityrs mcp --help` lists the startup options on stderr.
 
 ## Golden examples and regeneration
 

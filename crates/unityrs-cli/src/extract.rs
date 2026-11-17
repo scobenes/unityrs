@@ -1,6 +1,6 @@
 //! `extract` uses one Environment for INPUT..., writes a JSON report on
 //! stdout (and optionally beneath -o), and continues after object failures.
-mod files;
+pub(crate) mod files;
 pub(crate) mod limits;
 mod report;
 use std::{
@@ -117,7 +117,15 @@ fn recognized_option(arg: &[u8]) -> bool {
         .chain(crate::agent::options::BUDGET)
         .any(|s| s.name.as_bytes() == arg)
 }
-fn run(raw: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "shared legacy extraction parser and transaction"
+)]
+pub(crate) fn execute(
+    raw: &[Vec<u8>],
+    roots: Option<&Arc<crate::mcp::roots::Roots>>,
+    confined_output: Option<(&files::Files, &[u8])>,
+) -> Result<unityrs_mesh::obj::ChargedBytes, Box<dyn std::error::Error>> {
     let limits = limits::parse(raw)?;
     let meter = limits::extraction(&limits);
     let mut inputs = MeteredVec::new(&meter);
@@ -188,23 +196,45 @@ fn run(raw: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
         options.asset_filter = Some(&filter);
     }
     let headers = vorbis_headers
-        .map(|path| unityrs_export::VorbisHeaders::load(path, &meter))
+        .map(|path| -> Result<_, Box<dyn std::error::Error>> {
+            Ok(if let Some(roots) = roots {
+                unityrs_export::VorbisHeaders::from_bytes(
+                    &roots.read(path, &limits, &meter)?,
+                    &meter,
+                )?
+            } else {
+                unityrs_export::VorbisHeaders::load(path, &meter)?
+            })
+        })
         .transpose()?;
     options.vorbis = headers.as_ref();
     let mut env_options = EnvOptions::unitypy();
     let mut context = (*env_options.context).clone();
     context.limits = limits;
+    if roots.is_some() {
+        context.budget = Arc::new(unityrs_core::budget::Counting::new(limits.max_input_memory));
+    }
     if let Some(tpk) = tpk {
         context.providers = Arc::new(ProviderChain::new(vec![Arc::new(
-            unityrs_tpk::TpkProvider::open_with(tpk, &limits)?,
+            if let Some(roots) = roots {
+                unityrs_tpk::TpkProvider::from_bytes(&roots.read(tpk, &limits, &meter)?, &limits)?
+            } else {
+                unityrs_tpk::TpkProvider::open_with(tpk, &limits)?
+            },
         )]));
     }
     env_options.context = Arc::new(context);
     let env = Environment::new(env_options);
     for input in inputs.as_slice() {
-        env.load(Source::Path((*input).to_owned()))?;
+        env.load(roots.map_or_else(
+            || Source::Path((*input).to_owned()),
+            |roots| roots.source(input, limits, env.options().context.budget.clone()),
+        ))?;
     }
-    let mut files = files::Files::new(output, &meter)?;
+    let mut files = match confined_output {
+        Some((files, directory)) => files.subdirectory(directory, &meter)?,
+        None => files::Files::new(output, &meter)?,
+    };
     let report = report::checked(extractor::extract_assets(
         &env, &options, &mut files, &meter,
     )?)?;
@@ -212,15 +242,18 @@ fn run(raw: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = report_path {
         files.file(path, json.as_bytes())?;
     }
-    std::io::stdout().lock().write_all(json.as_bytes())?;
-    Ok(())
+    Ok(json)
 }
 pub(super) fn main(raw: &[Vec<u8>]) -> ExitCode {
     if matches!(raw, [a] if a == b"-h" || a == b"--help") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    match run(raw) {
+    let result = execute(raw, None, None).and_then(|json| {
+        std::io::stdout().lock().write_all(json.as_bytes())?;
+        Ok(())
+    });
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{USAGE}\nunityrs extract: {e}");

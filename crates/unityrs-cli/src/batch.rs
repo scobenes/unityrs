@@ -242,11 +242,74 @@ fn phase1_failed(clock: &Clock, error: Phase1Error) -> ExitCode {
     code(c)
 }
 
-/// `--check`'s line for a valid spec: code 0, `memory_bound <bytes>`.
-fn checked(clock: &Clock, v: &PreparedRun, m: alloc::Measured) -> ExitCode {
+/// In-process check: same validator, preparation and memory-bound report as
+/// the CLI. No startup services, file reads, environment lookup or execution.
+pub(crate) fn check_document(
+    bytes: Vec<u8>,
+    memory: u64,
+    work: u64,
+) -> Result<String, (&'static str, String)> {
+    use unityrs_core::limits::heap_cost;
+    // Byte-proportional parser/template tables plus fixed per-bundle contexts
+    // and numeric slot counts. Refuse before preparation allocates its tables.
+    let base = (bytes.len() as u64)
+        .saturating_mul(64)
+        .saturating_add(65_536);
+    if base > memory || base > work {
+        return Err((
+            "budget",
+            "Batch validation reservation exceeds server memory/work ceiling".into(),
+        ));
+    }
+    let (prepared, measured) = alloc::measured(|| {
+        let validated = spec::parse_with(
+            bytes,
+            (work.saturating_sub(base) / 2).min(spec::fields::VIEW_WORK),
+        )
+        .map_err(|bad| {
+            (
+                if bad.rule == spec::Rule::ViewSize
+                    && (work.saturating_sub(base) / 2) < spec::fields::VIEW_WORK
+                {
+                    "budget"
+                } else {
+                    "usage"
+                },
+                bad.detail(),
+            )
+        })?;
+        let s = &validated.spec;
+        let table = |count: u64, size: usize| heap_cost(count.saturating_mul(size as u64));
+        let reservation = base
+            .saturating_add((s.bundle_count() as u64).saturating_mul(16_384))
+            .saturating_add(table(
+                u64::from(s.threads),
+                std::mem::size_of::<phase1::ActiveSlot>(),
+            ))
+            .saturating_add(table(
+                u64::from(s.threads),
+                std::mem::size_of::<Option<phase1::Dispatched>>(),
+            ))
+            .saturating_add(table(
+                u64::from(s.download_concurrency),
+                std::mem::size_of::<phase1::StageSlot>(),
+            ));
+        if reservation > memory || reservation > work.saturating_sub(base) / 2 {
+            return Err((
+                "budget",
+                "Batch preparation reservation exceeds server memory/work ceiling".into(),
+            ));
+        }
+        phase1::prepare(validated)
+            .map_err(|_| ("budget", "Phase-one preparation refused".to_owned()))
+    });
+    let prepared = prepared?;
+    Ok(check_line(0, &prepared, measured))
+}
+fn check_line(ms: u64, v: &PreparedRun, m: alloc::Measured) -> String {
     let s = &v.spec;
     let bound = memory_bound(s, m, CHECK_ENV_BLOCK, &SELECTED);
-    let mut snap = Snapshot::validate(clock.ms());
+    let mut snap = Snapshot::validate(ms);
     let inputs = s.input_count() as u64;
     snap.inputs.total = inputs;
     snap.inputs.queued = inputs;
@@ -259,10 +322,15 @@ fn checked(clock: &Clock, v: &PreparedRun, m: alloc::Measured) -> ExitCode {
         reason: None,
         detail: Some(format!("memory_bound {}", bound.total()).into()),
     };
+    snap.line(Some(&exit))
+}
+
+/// `--check`'s line for a valid spec: code 0, `memory_bound <bytes>`.
+fn checked(clock: &Clock, v: &PreparedRun, m: alloc::Measured) -> ExitCode {
     // Uncertified off 4 KiB pages (`unityrs_batch::bound`): a stderr line.
     let note = Certification::of(unityrs_batch::sys::page_size()).note("unityrs batch");
     early::write(
-        snap.line(Some(&exit)).as_bytes(),
+        check_line(clock.ms(), v, m).as_bytes(),
         note.as_deref().unwrap_or_default().as_bytes(),
     );
     code(Code::Complete)
