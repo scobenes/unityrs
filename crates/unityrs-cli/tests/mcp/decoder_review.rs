@@ -341,3 +341,50 @@ fn integral_number_spellings_are_exact_before_argument_and_ceiling_checks() {
         },
     );
 }
+
+#[test]
+fn integral_request_ids_retain_exact_number_text_through_dispatch_and_decode_errors() {
+    session(&[], |s| {
+        s.ready();
+        for id in [
+            "1.0",
+            "1e0",
+            "18446744073709551616",
+            "-7",
+            "-0",
+            "12E+00",
+            "1e999999999999999999999",
+            "0e-999999999999999999999",
+            "100e-2",
+        ] {
+            for (params, expected) in [
+                ("{}".to_owned(), None),
+                (
+                    format!("{{\"deep\":{}0{}}}", "[".repeat(40), "]".repeat(40)),
+                    Some(-32600),
+                ),
+            ] {
+                s.send(&format!(
+                    "{{\"params\":{params},\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"ping\"}}\n"
+                ));
+                let line = s.read_line();
+                // Check the wire token: parsing a response would normalize uppercase E.
+                assert!(line.contains(&format!("\"id\":{id},")), "{id}: {line}");
+                let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+                if let Some(code) = expected {
+                    assert_eq!(response["error"]["code"], code, "{line}");
+                } else {
+                    assert_eq!(response["result"], json!({}), "{line}");
+                }
+            }
+        }
+        for id in ["1.5", "101e-2", "1e-999999999999999999999"] {
+            s.send(&format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"ping\"}}\n"
+            ));
+            let response = s.read();
+            assert_eq!(response["id"], json!(null), "{response}");
+            assert_eq!(response["error"]["code"], -32600, "{response}");
+        }
+    });
+}

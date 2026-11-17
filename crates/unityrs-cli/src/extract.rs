@@ -102,10 +102,36 @@ Confinement is established on open, not against later pathnames: a concurrent\n\
 rename moves a directory and its files together; held-descriptor writes continue\n\
 in that inode, even outside the -o pathname, as with a rename after extraction.\n\
 Interrupted runs may leave .unityrs-extract-*.tmp files, safe to delete.";
-struct Filter(MeteredVec<i32>);
+struct Filter {
+    ids: Vec<i32>,
+    _charge: unityrs_core::limits::Charge,
+}
+impl Filter {
+    fn new(
+        values: MeteredVec<i32>,
+        meter: &unityrs_core::limits::Meter,
+    ) -> Result<Self, unityrs_core::limits::ChargeError> {
+        meter.count_decode(
+            (values.len() as u64).saturating_mul(1 + u64::from(values.len().bit_width())),
+        )?;
+        let (mut ids, charge) = values.into_parts();
+        ids.sort_unstable();
+        ids.dedup();
+        Ok(Self {
+            ids,
+            _charge: charge,
+        })
+    }
+}
 impl AssetFilter for Filter {
+    fn lookup_work(&self) -> u64 {
+        u64::from(self.ids.len().bit_width()) + 1
+    }
     fn accepts(&self, object: &ObjectRef, _: Option<&Parsed>) -> bool {
-        self.0.as_slice().contains(&object.class_id())
+        self.ids
+            .as_slice()
+            .binary_search(&object.class_id())
+            .is_ok()
     }
 }
 fn path(bytes: &[u8]) -> &Path {
@@ -134,7 +160,7 @@ pub(crate) fn execute(
     let mut vorbis_headers = None;
     let mut report_path = None;
     let mut options = Options::default();
-    let mut filter = Filter(MeteredVec::new(&meter));
+    let mut filter = MeteredVec::new(&meter);
     let mut args = raw.iter();
     let mut positional = false;
     while let Some(arg) = args.next() {
@@ -179,7 +205,7 @@ pub(crate) fn execute(
                             .map(|(id, _)| *id)
                     })
                     .ok_or("unknown CLASS")?;
-                filter.0.push(id)?;
+                filter.push(id)?;
             }
             _ if !arg.starts_with(b"-") => inputs.push(path(arg))?,
             _ => return Err("unexpected argument".into()),
@@ -192,7 +218,8 @@ pub(crate) fn execute(
     if let Some(path) = report_path {
         extractor::paths::validate(path)?;
     }
-    if !filter.0.is_empty() {
+    let filter = Filter::new(filter, &meter)?;
+    if !filter.ids.is_empty() {
         options.asset_filter = Some(&filter);
     }
     let headers = vorbis_headers
@@ -269,3 +296,7 @@ pub(super) fn main(raw: &[Vec<u8>]) -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "extract/filter_tests.rs"]
+mod filter_tests;

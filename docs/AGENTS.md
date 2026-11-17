@@ -413,7 +413,10 @@ batching. Notifications produce no response; malformed `notifications/initialize
 enable tools. Repeated `initialize` and tool requests before initialization are
 refused. Parse errors use `-32700`, invalid
 requests `-32600`, unknown methods `-32601`, malformed method parameters `-32602`.
-Requests retain their string or integer IDs. EOF exits successfully; malformed
+Requests retain their string or integral JSON number IDs, including decimal and
+exponent forms and numbers outside machine-integer ranges. Number IDs are echoed
+with exactly the received JSON number text; fractional IDs are invalid requests.
+EOF exits successfully; malformed
 and oversized messages are refused and the next line is served. Calls execute
 serially. No network, shell, subprocess, or environment-variable expansion is
 used by tool calls.
@@ -448,6 +451,12 @@ use this form. The parity `extract` command keeps its existing output contract.
 `ignore_first_container_dirs` accepts exactly signed 64-bit integers,
 -9,223,372,036,854,775,808 through 9,223,372,036,854,775,807; negative values slice
 from the end of the container path's slash components.
+MCP `asset_filter` accepts at most 1,024 entries, including duplicates. Above
+that count it returns an `isError` argument failure naming the limit. Class IDs
+are sorted and deduplicated once, then each lookup reserves its worst-case
+binary-search comparisons against the request work budget, including rejected
+objects and the second lookup after parsing. The CLI keeps its existing filter
+argument parsing and output; its lookups use the same sort and work charges.
 
 At least one startup `--root DIR` is required; repeat it to permit several roots.
 Both startup `--root` and `--out` reject symlinks in every component, including
@@ -474,6 +483,12 @@ as job data without opening, downloading, resolving credentials, or executing th
 
 Extraction uses the existing held-descriptor writer. A request's `output` must
 be relative beneath `--out`; parent components and symlink parents are refused.
+Before any request directory is created, `output` is limited to 4,096 UTF-8
+bytes and 64 nonempty slash-separated directory components (excluding `.`).
+Exceeding either cap returns an `isError` argument failure naming that limit.
+Each directory creation attempt, directory open and held-directory clone during
+extraction reserves 64 work units before the operation, including existing
+directories and asset/report parents. Work exhaustion is a `budget` refusal.
 `report`, when supplied, is relative to that extraction subdirectory and must
 end in a filename. Output, report and asset-derived paths also reject NUL,
 backslashes and colon-bearing components. Writes replace existing leaves. Confinement attaches to the inodes reached on open:

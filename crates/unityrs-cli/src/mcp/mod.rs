@@ -2,7 +2,9 @@
 mod arguments;
 mod config;
 mod decode;
+mod id;
 mod integer;
+use id::Id;
 mod reply;
 use reply::Response;
 pub(crate) mod roots;
@@ -15,19 +17,19 @@ use std::{
     process::ExitCode,
 };
 const VERSION: &str = "2025-11-25";
-fn error(id: Value, code: i32, message: &str) -> Response {
-    Response::Json(Value::Object(serde_json::Map::from_iter([
-        ("jsonrpc".into(), json!("2.0")),
-        ("id".into(), id),
-        ("error".into(), json!({"code":code,"message":message})),
-    ])))
+fn error(id: Id, code: i32, message: &str) -> Response {
+    Response::Json {
+        id,
+        field: "error",
+        value: json!({"code":code,"message":message}),
+    }
 }
-fn success(id: Value, result: Value) -> Response {
-    Response::Json(Value::Object(serde_json::Map::from_iter([
-        ("jsonrpc".into(), json!("2.0")),
-        ("id".into(), id),
-        ("result".into(), result),
-    ])))
+fn success(id: Id, result: Value) -> Response {
+    Response::Json {
+        id,
+        field: "result",
+        value: result,
+    }
 }
 #[derive(Default)]
 struct State {
@@ -35,18 +37,17 @@ struct State {
     ready: bool,
 }
 impl State {
-    fn handle(&mut self, request: &Value, config: &Config) -> Option<Response> {
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let valid_id = request
-            .get("id")
-            .is_none_or(|v| v.is_string() || v.is_i64() || v.is_u64());
+    fn handle(&mut self, decoded: &decode::Request, config: &Config) -> Option<Response> {
+        let request = &decoded.value;
+        let id = decoded.id.clone().unwrap_or_else(Id::null);
+        let valid_id = request.get("id").is_none_or(id::valid);
         if !request.is_object()
             || request.get("jsonrpc") != Some(&json!("2.0"))
             || !request.get("method").is_some_and(Value::is_string)
             || !valid_id
         {
             return Some(error(
-                if valid_id { id } else { Value::Null },
+                if valid_id { id } else { Id::null() },
                 -32600,
                 "Invalid Request",
             ));
@@ -158,7 +159,7 @@ fn serve(config: &Config, input: &mut impl BufRead, output: &mut impl Write) -> 
     while let Some(line) = line(input, config.request_bytes)? {
         let response = match line {
             Err(()) => Some(error(
-                Value::Null,
+                Id::null(),
                 -32600,
                 "Request line exceeds --max-request-bytes",
             )),

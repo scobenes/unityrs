@@ -303,3 +303,86 @@ fn invalid_utf8_container_output_name_is_tagged_and_written_beneath_output() {
         assert!(!s.directory.join("out/folder").exists());
     });
 }
+
+#[test]
+fn output_subdirectory_limits_precede_all_creation() {
+    session(&["--out", "out"], |s| {
+        s.ready();
+        for (output, limit) in [
+            ("a/".repeat(65), "64 components"),
+            (format!("a/{}", "b".repeat(4095)), "4096 bytes"),
+            ("\"".repeat(400_000), "4096 bytes"),
+        ] {
+            let response = s.request("tools/call", json!({"name":"unityrs_extract","arguments":{"inputs":["synthetic.assets"],"output":output}}));
+            assert_eq!(response["result"]["isError"], true, "{response}");
+            let error = &response["result"]["structuredContent"];
+            assert_eq!(error["code"], "usage", "{response}");
+            assert!(
+                error["message"].as_str().unwrap().contains(limit),
+                "{response}"
+            );
+            assert_eq!(
+                std::fs::read_dir(s.directory.join("out")).unwrap().count(),
+                0
+            );
+        }
+        let output = std::iter::repeat_n("a", 64).collect::<Vec<_>>().join("/");
+        let response = s.request("tools/call", json!({"name":"unityrs_extract","arguments":{"inputs":["synthetic.assets"],"output":output,"no_container":true,"asset_filter":["TextAsset"]}}));
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        assert_eq!(
+            std::fs::read(s.directory.join("out").join(output).join("alpha.txt")).unwrap(),
+            b"hello"
+        );
+    });
+}
+
+#[test]
+fn asset_filter_count_cap_counts_duplicates_and_accepts_the_boundary() {
+    session(&["--out", "out"], |s| {
+        s.ready();
+        let response = s.request("tools/call", json!({"name":"unityrs_extract","arguments":{"inputs":["synthetic.assets"],"output":"refused","asset_filter":vec!["TextAsset";1025]}}));
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        assert_eq!(response["result"]["structuredContent"]["code"], "usage");
+        let message = response["result"]["structuredContent"]["message"]
+            .as_str()
+            .unwrap();
+        assert!(
+            message.contains("asset_filter") && message.contains("1024"),
+            "{response}"
+        );
+        assert!(!s.directory.join("out/refused").exists());
+        let response = s.request("tools/call", json!({"name":"unityrs_extract","arguments":{"inputs":["synthetic.assets"],"output":"boundary","no_container":true,"asset_filter":vec!["TextAsset";1024]}}));
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        assert_eq!(
+            response["result"]["structuredContent"]["written"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            std::fs::read(s.directory.join("out/boundary/alpha.txt")).unwrap(),
+            b"hello"
+        );
+    });
+}
+
+#[test]
+fn output_directory_creation_exhausts_request_work_as_a_budget_failure() {
+    session(&["--out", "out"], |s| {
+        s.ready();
+        let output = std::iter::repeat_n("a", 40).collect::<Vec<_>>().join("/");
+        let response = s.request("tools/call", json!({"name":"unityrs_extract","arguments":{"inputs":["synthetic.assets"],"output":output,"max_decode_work":3000}}));
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        assert_eq!(
+            response["result"]["structuredContent"]["code"], "budget",
+            "{response}"
+        );
+        assert!(
+            s.directory.join("out/a").is_dir(),
+            "directory traversal must have begun"
+        );
+        assert!(!s.directory.join("out").join(output).exists());
+        assert_eq!(s.request("ping", json!({}))["result"], json!({}));
+    });
+}

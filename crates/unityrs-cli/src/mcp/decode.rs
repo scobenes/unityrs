@@ -1,35 +1,41 @@
 //! Decode one bounded tree. Values and keys each cost a node (max(32, line cap / 64)),
 //! decoded UTF-8 keys and strings share line cap / 2 bytes, and depth is 32
 //! (root zero). Only scalar tokens use serde; no unrestricted tree is built.
+use super::id::{self, Id};
 use serde_json::{Map, Value};
 
 pub struct Error {
-    pub id: Option<Value>,
+    pub id: Option<Id>,
     pub code: i32,
     pub message: &'static str,
 }
 type Result<T> = std::result::Result<T, Error>;
 fn syntax() -> Error {
     Error {
-        id: Some(Value::Null),
+        id: Some(Id::null()),
         code: -32700,
         message: "Parse error",
     }
 }
 fn limit(message: &'static str) -> Error {
     Error {
-        id: Some(Value::Null),
+        id: Some(Id::null()),
         code: -32600,
         message,
     }
 }
-pub fn request(bytes: &[u8], cap: usize) -> Result<Value> {
+pub struct Request {
+    pub value: Value,
+    pub id: Option<Id>,
+}
+pub fn request(bytes: &[u8], cap: usize) -> Result<Request> {
     let mut decoder = Decoder {
         bytes,
         at: 0,
         nodes: (cap / 64).max(32),
         strings: cap / 2,
         params: None,
+        id: None,
     };
     let mut value = decoder.value(0, false)?;
     decoder.space();
@@ -39,9 +45,7 @@ pub fn request(bytes: &[u8], cap: usize) -> Result<Value> {
     if let Some((start, end)) = decoder.params {
         let identified = value.get("jsonrpc").is_some_and(|v| v == "2.0")
             && value.get("method").is_some_and(Value::is_string)
-            && value
-                .get("id")
-                .is_none_or(|v| v.is_string() || v.is_i64() || v.is_u64());
+            && value.get("id").is_none_or(id::valid);
         decoder.bytes = bytes.get(start..end).ok_or_else(syntax)?;
         decoder.at = 0;
         let params = decoder
@@ -56,7 +60,7 @@ pub fn request(bytes: &[u8], cap: usize) -> Result<Value> {
             })
             .map_err(|mut e| {
                 if identified {
-                    e.id = value.get("id").cloned();
+                    e.id.clone_from(&decoder.id);
                 }
                 e
             })?;
@@ -64,7 +68,10 @@ pub fn request(bytes: &[u8], cap: usize) -> Result<Value> {
             object.insert("params".into(), params);
         }
     }
-    Ok(value)
+    Ok(Request {
+        value,
+        id: decoder.id,
+    })
 }
 struct Decoder<'a> {
     bytes: &'a [u8],
@@ -72,6 +79,7 @@ struct Decoder<'a> {
     nodes: usize,
     strings: usize,
     params: Option<(usize, usize)>,
+    id: Option<Id>,
 }
 impl Decoder<'_> {
     fn space(&mut self) {
@@ -214,7 +222,7 @@ impl Decoder<'_> {
             let key = self.string()?;
             if values.contains_key(&key) {
                 return Err(Error {
-                    id: Some(Value::Null),
+                    id: Some(Id::null()),
                     code: if under_params { -32602 } else { -32600 },
                     message: "Duplicate object key in request",
                 });
@@ -222,6 +230,8 @@ impl Decoder<'_> {
             if !self.take(b':') {
                 return Err(syntax());
             }
+            self.space();
+            let start = self.at;
             let value = if depth == 0 && key == "params" && !under_params {
                 self.space();
                 let start = self.at;
@@ -231,6 +241,12 @@ impl Decoder<'_> {
             } else {
                 self.value(depth + 1, under_params)?
             };
+            if depth == 0 && key == "id" && id::valid(&value) {
+                self.id = Some(
+                    Id::from_token(self.bytes.get(start..self.at).ok_or_else(syntax)?)
+                        .map_err(|_| syntax())?,
+                );
+            }
             values.insert(key, value);
             if self.take(b'}') {
                 break;

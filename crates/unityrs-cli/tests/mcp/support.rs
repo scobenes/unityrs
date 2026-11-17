@@ -63,9 +63,13 @@ impl Session {
         self.input.write_all(line.as_bytes()).unwrap();
         self.input.flush().unwrap();
     }
-    pub fn read(&mut self) -> Value {
+    pub fn read_line(&mut self) -> String {
         let mut line = String::new();
         self.output.read_line(&mut line).unwrap();
+        line
+    }
+    pub fn read(&mut self) -> Value {
+        let line = self.read_line();
         serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line:?}"))
     }
     pub fn request(&mut self, method: &str, params: Value) -> Value {

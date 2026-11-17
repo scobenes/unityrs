@@ -1,7 +1,7 @@
 //! Serialize tool documents directly twice, without reparsing them into a
 //! second JSON tree or allocating a quoted copy. The original meter pays for
 //! the framing buffer and escaping work before each write.
-use super::{config::Config, tools};
+use super::{config::Config, id::Id, tools};
 use serde_json::Value;
 use std::{
     io::{self, Write},
@@ -41,22 +41,36 @@ impl Tool {
     }
 }
 pub enum Response {
-    Json(Value),
-    Tool { id: Value, result: Tool },
+    Json {
+        id: Id,
+        field: &'static str,
+        value: Value,
+    },
+    Tool {
+        id: Id,
+        result: Tool,
+    },
 }
 impl Response {
-    fn id(&self) -> Value {
+    fn id(&self) -> Id {
         match self {
-            Self::Json(v) => v.get("id").cloned().unwrap_or(Value::Null),
-            Self::Tool { id, .. } => id.clone(),
+            Self::Json { id, .. } | Self::Tool { id, .. } => id.clone(),
         }
     }
     fn encode(&self, out: &mut impl Write) -> io::Result<()> {
         match self {
-            Self::Json(value) => serde_json::to_writer(out, value).map_err(io::Error::other),
+            Self::Json { id, field, value } => {
+                out.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":")?;
+                out.write_all(id.text().as_bytes())?;
+                out.write_all(b",")?;
+                serde_json::to_writer(&mut *out, field).map_err(io::Error::other)?;
+                out.write_all(b":")?;
+                serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
+                out.write_all(b"}")
+            }
             Self::Tool { id, result } => {
                 out.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":")?;
-                serde_json::to_writer(&mut *out, id)?;
+                out.write_all(id.text().as_bytes())?;
                 out.write_all(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":")?;
                 serde_json::to_writer(&mut *out, result.text()?)?;
                 out.write_all(b"}],\"structuredContent\":")?;
@@ -72,7 +86,7 @@ impl Response {
     pub fn write(&self, config: &Config, output: &mut impl Write) -> io::Result<()> {
         let meter = match self {
             Self::Tool { result, .. } => result.meter(config),
-            Self::Json(_) => crate::extract::limits::extraction(&config.limits()),
+            Self::Json { .. } => crate::extract::limits::extraction(&config.limits()),
         };
         let mut encoded = Limited {
             bytes: ChargedBytes::new(&meter),

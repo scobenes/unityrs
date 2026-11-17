@@ -37,6 +37,9 @@ fn property(spec: OptionSpec) -> Value {
         schema = json!({"type":"array","items":schema});
     }
     if let Some(map) = schema.as_object_mut() {
+        if spec.name == "--asset-filter" {
+            map.insert("maxItems".into(), json!(1024));
+        }
         map.insert("description".into(), json!(spec.help));
         if let Some(default) = spec.default {
             let value = match schema_type(spec) {
@@ -79,7 +82,7 @@ pub fn input(command: &str) -> Value {
             required.push("path_id");
         }
         if command == "extract" {
-            properties.insert("output".into(), json!({"type":"string","minLength":1,"description":"Relative subdirectory beneath the server --out root; no symlinks or parent components."}));
+            properties.insert("output".into(), json!({"type":"string","minLength":1,"description":"Relative subdirectory beneath the server --out root; at most 64 directory components and 4096 UTF-8 bytes; no symlinks or parent components."}));
             required.push("output");
         }
     }

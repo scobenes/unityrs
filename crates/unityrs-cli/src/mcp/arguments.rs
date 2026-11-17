@@ -55,6 +55,16 @@ fn allowed(schema: &Value) -> String {
 }
 
 pub fn extraction(arguments: &Value) -> Result<(), String> {
+    if let Some(output) = arguments["output"].as_str()
+        && let Err(limit) = crate::extract::files::output_limit(output.as_bytes())
+    {
+        let preview: String = output.chars().take(32).collect();
+        return Err(format!(
+            "Argument output={} ({} UTF-8 bytes, preview at most 32 characters); allowed: {limit}",
+            serde_json::json!(preview),
+            output.len()
+        ));
+    }
     for key in ["output", "report"] {
         if let Some(value) = arguments.get(key).and_then(Value::as_str)
             && (value.is_empty()
@@ -72,6 +82,12 @@ pub fn extraction(arguments: &Value) -> Result<(), String> {
         }
     }
     if let Some(values) = arguments["asset_filter"].as_array() {
+        if values.len() > 1024 {
+            return Err(format!(
+                "Argument asset_filter count={}; allowed: at most 1024 filters (including duplicates)",
+                values.len()
+            ));
+        }
         for (i, value) in values.iter().enumerate() {
             let text = value.as_str().unwrap_or_default();
             if text.parse::<i32>().is_err()
