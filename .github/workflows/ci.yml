@@ -717,7 +717,7 @@ jobs:
           python tools/parity/compare.py --oracle "$RUNNER_TEMP/dumps/g3.jsonl.gz" \
             "$RUNNER_TEMP/dumps/g3-unityrs.jsonl.gz"
 
-  # Structural glTF oracle only; the tool is not shipped with the library.
+  # glTF structural validation and independent reconstruction.
   gltf:
     env:
       UNITYRS_GLTF_VALIDATOR_REQUIRED: "1"
@@ -740,7 +740,15 @@ jobs:
           tar -xJf "$archive" -C "$RUNNER_TEMP/gltf-validator"
           echo "UNITYRS_GLTF_VALIDATOR=$RUNNER_TEMP/gltf-validator/gltf_validator" >> "$GITHUB_ENV"
       - name: Golden GLBs, metering and structural validation
-        run: cargo test --locked -p unityrs-gltf -- --nocapture
+        run: |
+          UNITYRS_GLTF_PARITY_GLB="$RUNNER_TEMP/animated.glb" \
+            cargo test --locked -p unityrs-gltf -- --nocapture
+      # Reference times are the midpoint, quarter point, and the f64 immediately
+      # before the second f32 key. Quarter progress through a 90° turn gives 22.5°.
+      - name: Reconstruct off-key samples from the Rust animation GLB
+        run: |
+          python3 -I tools/parity/gltf_check.py "$RUNNER_TEMP/animated.glb" \
+            --expected crates/unityrs-gltf/tests/support/animation_expected.json
       - name: Independent accessor and orientation checker
         run: python3 -m unittest tools.parity.tests.test_gltf_check
 

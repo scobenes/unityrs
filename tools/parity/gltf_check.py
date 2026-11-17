@@ -8,10 +8,10 @@ normalise follows the writer's documented rules. No exporter is used as oracle.
 Set complete_texcoords on a record to check all UV sets and structural gap
 padding; otherwise unspecified UV expectations are left unexamined. A UV family
 containing invalid sets must be complete so that compaction is unambiguous.
-Animation records use {animation, node, path, interpolation, times, values}.
+Animation records use {animation, node, path, interpolation, times, values, samples}.
 Times and output rows are in glTF space, with one full weight vector per key.
-The checker compares the emitted f32 keys. Call sample_animation with a
-decoded channel to reconstruct poses at independent reference times.
+Optional samples are [time, expected row] pairs in the same space, with sample
+times kept at reference precision to distinguish either side of a held key.
 """
 import argparse
 from bisect import bisect_right
@@ -61,9 +61,10 @@ def accessor(doc, binary, index):
         row_size = struct.calcsize(fmt)
         stride = view.get("byteStride", row_size)
         start = view.get("byteOffset", 0)
-        if offset < 0 or stride < row_size or (n and offset + (n-1)*stride + row_size > view["byteLength"]):
+        length = view["byteLength"]
+        if offset < 0 or stride < row_size or (n and offset + (n-1)*stride + row_size > length):
             raise ValueError("accessor view range")
-        if start + view["byteLength"] > len(binary):
+        if start < 0 or length < 0 or start + length > len(binary):
             raise ValueError("buffer view range")
         return [list(struct.unpack_from(fmt, binary, start + offset + i*stride)) for i in range(n)]
 
@@ -90,7 +91,7 @@ def f32(v):
     try:
         return struct.unpack("<f", struct.pack("<f", v))[0]
     except OverflowError:
-        return math.copysign(math.inf, v)
+        return -math.inf if v < 0 else math.inf
 
 
 def decode_animation_channel(doc, binary, animation, node, path):
@@ -103,11 +104,25 @@ def decode_animation_channel(doc, binary, animation, node, path):
     interpolation = sampler.get("interpolation", "LINEAR")
     if interpolation not in ("LINEAR", "STEP"):
         raise ValueError("unsupported animation interpolation")
+    target = doc["nodes"][node]
+    if path == "weights" and "mesh" not in target:
+        raise ValueError("animation weights need a mesh")
+    if path != "weights" and "skin" in target:
+        raise ValueError("animation TRS targets a skinned node")
 
     def read(index, shape):
         a = doc["accessors"][index]
         if a["type"] != shape or a["componentType"] != 5126:
             raise ValueError("animation accessor type")
+        if "bufferView" not in a or "sparse" in a:
+            raise ValueError("animation accessor needs a dense buffer view")
+        view = doc["bufferViews"][a["bufferView"]]
+        for field in ("byteStride", "target"):
+            if field in view:
+                raise ValueError(f"animation buffer view must omit {field}")
+        if type(a["count"]) is not int or a["count"] < 1:
+            raise ValueError("animation accessor count")
+        # accessor checks the dense range against the view before decoding rows.
         return a, accessor(doc, binary, index)
 
     timing, time_rows = read(sampler["input"], "SCALAR")
@@ -115,13 +130,16 @@ def decode_animation_channel(doc, binary, animation, node, path):
     if (not times or any(not math.isfinite(t) or t < 0 for t in times)
             or any(a >= b for a, b in zip(times, times[1:]))):
         raise ValueError("animation time order/range")
-    if timing.get("min") != [times[0]] or timing.get("max") != [times[-1]]:
-        raise ValueError("animation time bounds")
+    for name, key in (("min", times[0]), ("max", times[-1])):
+        bound = timing.get(name)
+        if (not isinstance(bound, list) or len(bound) != 1
+                or not isinstance(bound[0], (int, float)) or f32(bound[0]) != key):
+            raise ValueError("animation time bounds")
 
     shape = {"translation": "VEC3", "rotation": "VEC4", "scale": "VEC3", "weights": "SCALAR"}[path]
     _, values = read(sampler["output"], shape)
     if path == "weights":
-        mesh = doc["meshes"][doc["nodes"][node]["mesh"]]
+        mesh = doc["meshes"][target["mesh"]]
         target_count = len(mesh["primitives"][0].get("targets", []))
         if not target_count or len(values) != len(times) * target_count:
             raise ValueError("animation morph dimensions")
@@ -129,11 +147,17 @@ def decode_animation_channel(doc, binary, animation, node, path):
         values = [scalars[i:i + target_count] for i in range(0, len(scalars), target_count)]
     if len(values) != len(times) or any(not math.isfinite(v) for row in values for v in row):
         raise ValueError("animation output dimensions/range")
+    # Match the writer's squared-length allowance for stored f32 keys.
+    if path == "rotation" and any(any(abs(v) > 1. for v in row)
+                                  or abs(sum(v*v for v in row) - 1.) > 5e-7 for row in values):
+        raise ValueError("animation rotation must be a unit quaternion")
     return interpolation, times, values
 
 
 def unit_quaternion(row):
     length = math.hypot(*row)
+    if not math.isfinite(length) or length == 0:
+        raise ValueError("invalid quaternion length")
     return [v / length for v in row]
 
 
@@ -247,12 +271,20 @@ def expected_attributes(attrs, normalise, complete_texcoords=False):
 def check_accessors(doc, binary, expected, normalise=True):
     for case in expected:
         if "animation" in case:
-            mode, times, values = decode_animation_channel(
+            channel = decode_animation_channel(
                 doc, binary, case["animation"], case["node"], case["path"])
+            mode, times, values = channel
             if mode != case["interpolation"]:
                 raise AssertionError("animation interpolation")
             equal([times], [list(map(f32, case["times"]))], "animation times")
             equal(values, [list(map(f32, row)) for row in case["values"]], "animation output")
+            for time, reference in case.get("samples", []):
+                actual = sample_animation(channel, time, rotation=case["path"] == "rotation")
+                if len(actual) != len(reference) or any(
+                        not math.isclose(a, b, rel_tol=1e-7, abs_tol=1e-7)
+                        for a, b in zip(actual, reference)):
+                    raise AssertionError(f"animation {case['animation']} node {case['node']} "
+                                         f"{case['path']} sample at {time}: {actual} != {reference}")
             continue
         if "skin" in case:
             matrices = case["matrices"]

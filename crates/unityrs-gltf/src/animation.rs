@@ -184,8 +184,9 @@ fn channel_arity(scene: &Scene, layout: &Layout, channel: &AnimationChannel) -> 
         .as_slice()
         .get(channel.node)
         .ok_or_else(|| invalid("animation target node index"))?;
+    let emitted_mesh = node.mesh.and_then(|id| layout.mesh_id(id));
     if channel.target != AnimationTarget::Weights {
-        if node.skin.is_some() {
+        if emitted_mesh.is_some() && node.skin.is_some() {
             return Err(invalid("animation TRS targets a skinned mesh attachment"));
         }
         return Ok(1);
@@ -193,12 +194,7 @@ fn channel_arity(scene: &Scene, layout: &Layout, channel: &AnimationChannel) -> 
     let mesh = node
         .mesh
         .ok_or_else(|| invalid("animation weights need a mesh"))?;
-    if layout
-        .meshes
-        .as_slice()
-        .get(mesh)
-        .is_none_or(|m| m.id.is_none())
-    {
+    if emitted_mesh.is_none() {
         return Err(invalid("animation weights target an omitted mesh"));
     }
     scene
@@ -249,10 +245,11 @@ pub(crate) fn validate_keys(a: &Accessor, meter: &Meter) -> Result<Option<(f32, 
                 if (norm2 - 1.).abs() > 5e-7 {
                     return Err(invalid("animation rotation must be unit length"));
                 }
-                if dot(previous, q) < 0. {
+                // Rounding nearly orthogonal keys can change the dot's sign.
+                if dot(previous, *row) < 0. {
                     return Err(invalid("animation rotation signs must be continuous"));
                 }
-                previous = q;
+                previous = *row;
             }
             Ok(None)
         }
@@ -361,7 +358,9 @@ mod tests {
         }
         assert!(matches!(
             validate_keys(&accessor, &meter),
-            Err(GltfError::Invalid(_))
+            Err(GltfError::Invalid(
+                "animation times must be finite, nonnegative and strictly increasing in f32"
+            ))
         ));
     }
 }

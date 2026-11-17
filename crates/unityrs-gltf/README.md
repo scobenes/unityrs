@@ -117,10 +117,11 @@ and scale, unit XYZW `AnimationRotation` keys with continuous signs, and
 key, in the target mesh's morph order. TRS channels target transform and joint
 nodes. Morph channels target the node that instantiates the mesh.
 
-The writer validates rounded animation keys in both modes and emits the
-rounded values directly. It keeps the order of clips, channels and referenced
-samplers, omits clips without channels, and writes time bounds from the actual
-f32 payload. Optional names and string extras use the existing metadata model.
+The writer checks rotation sign continuity before rounding, validates rounded
+animation keys in both modes, and emits the rounded values directly. It keeps
+the order of clips, channels and referenced samplers, omits clips without
+channels, and writes time bounds from the actual f32 payload. Optional names
+and string extras use the existing metadata model.
 `tools/parity/gltf_check.py` can independently decode keys and reconstruct
 STEP, LINEAR and quaternion interpolation.
 

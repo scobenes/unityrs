@@ -96,6 +96,10 @@ pub struct Layout {
 }
 const _: () = crate::send_sync::<Layout>();
 impl Layout {
+    pub(crate) fn mesh_id(&self, source: usize) -> Option<usize> {
+        self.meshes.as_slice().get(source)?.id
+    }
+
     pub(crate) fn view(&mut self, len: usize, target: Option<u32>) -> Result<usize, GltfError> {
         let offset = align(self.bin_length)?;
         let length = u32::try_from(len).map_err(|_| validate::invalid("BIN length exceeds u32"))?;

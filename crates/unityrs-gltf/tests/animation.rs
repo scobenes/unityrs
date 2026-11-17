@@ -97,6 +97,16 @@ fn animation_bytes_are_stable_between_writes_and_threads() {
 }
 
 #[test]
+fn writes_animated_glb_for_parity() {
+    let scratch = unityrs_testkit::scratch::Scratch::new("gltf-animation-parity");
+    let path = std::env::var_os("UNITYRS_GLTF_PARITY_GLB")
+        .map_or_else(|| scratch.path().join("animated.glb"), Into::into);
+    let scene = support::animated(&Meter::unlimited()).unwrap();
+    let mut file = std::fs::File::create(path).unwrap();
+    write_glb(&scene, &Options::default(), &Meter::unlimited(), &mut file).unwrap();
+}
+
+#[test]
 fn metadata_only_animation_emits_no_glb_tables() {
     let meter = Meter::unlimited();
     let mut scene = Scene::new(&meter);
@@ -134,50 +144,171 @@ fn active(scene: &mut Scene) -> &mut Animation {
 
 #[test]
 fn malformed_animations_refuse_before_output_in_both_modes() {
-    let cases: [fn(&mut Scene); 15] = [
-        |s| active(s).channels.as_mut_slice()[0].node = 100,
-        |s| active(s).channels.as_mut_slice()[0].sampler = 100,
-        |s| active(s).samplers.as_mut_slice()[1].input = 100,
-        |s| active(s).samplers.as_mut_slice()[1].output = 100,
-        |s| active(s).samplers.as_mut_slice()[1].output = 0,
-        |s| active(s).channels.as_mut_slice()[0].node = 0,
-        |s| active(s).channels.as_mut_slice()[0].node = 3,
-        |s| active(s).channels.as_mut_slice()[3].node = 1,
-        |s| {
-            let single_time = s.animations.as_slice()[2].samplers.as_slice()[0].input;
-            active(s).samplers.as_mut_slice()[4].input = single_time;
-        },
-        |s| key(s, Kind::AnimationTime, 1, 0.250_000_001),
-        |s| key(s, Kind::AnimationTime, 0, -1.),
-        |s| key(s, Kind::AnimationTime, 1, f64::NAN),
-        |s| key(s, Kind::AnimationVec3, 2, f64::MAX),
-        |s| key(s, Kind::AnimationRotation, 3, 0.),
-        |s| key(s, Kind::AnimationRotation, 3, -1.),
+    const TIME_ERROR: &str =
+        "animation times must be finite, nonnegative and strictly increasing in f32";
+    type Case = (fn(&mut Scene), &'static str);
+    let cases: [Case; 15] = [
+        (
+            |s| active(s).channels.as_mut_slice()[0].node = 100,
+            "animation target node index",
+        ),
+        (
+            |s| active(s).channels.as_mut_slice()[0].sampler = 100,
+            "animation sampler index",
+        ),
+        (
+            |s| active(s).samplers.as_mut_slice()[1].input = 100,
+            "accessor index",
+        ),
+        (
+            |s| active(s).samplers.as_mut_slice()[1].output = 100,
+            "accessor index",
+        ),
+        (
+            |s| active(s).samplers.as_mut_slice()[1].output = 0,
+            "accessor semantic",
+        ),
+        (
+            |s| active(s).channels.as_mut_slice()[0].node = 0,
+            "duplicate animation target",
+        ),
+        (
+            |s| active(s).channels.as_mut_slice()[0].node = 3,
+            "animation weights need a mesh",
+        ),
+        (
+            |s| active(s).channels.as_mut_slice()[3].node = 1,
+            "animation TRS targets a skinned mesh attachment",
+        ),
+        (
+            |s| {
+                let single_time = s.animations.as_slice()[2].samplers.as_slice()[0].input;
+                active(s).samplers.as_mut_slice()[4].input = single_time;
+            },
+            "animation output count",
+        ),
+        (
+            |s| key(s, Kind::AnimationTime, 1, 0.250_000_001),
+            TIME_ERROR,
+        ),
+        (|s| key(s, Kind::AnimationTime, 0, -1.), TIME_ERROR),
+        (|s| key(s, Kind::AnimationTime, 1, f64::NAN), TIME_ERROR),
+        (
+            |s| key(s, Kind::AnimationVec3, 2, f64::MAX),
+            "non-finite f32 animation output",
+        ),
+        (
+            |s| key(s, Kind::AnimationRotation, 3, 0.),
+            "animation rotation must be unit length",
+        ),
+        (
+            |s| key(s, Kind::AnimationRotation, 3, -1.),
+            "animation rotation signs must be continuous",
+        ),
     ];
-    for (i, mutate) in cases.into_iter().enumerate() {
+    for (mutate, message) in cases {
         let mut scene = support::animated(&Meter::unlimited()).unwrap();
         mutate(&mut scene);
         for normalise in [true, false] {
-            refuses(&scene, normalise, i);
+            refuses(&scene, normalise, message);
         }
     }
 }
 
-fn refuses(scene: &Scene, normalise: bool, case: usize) {
+fn refuses(scene: &Scene, normalise: bool, message: &str) {
     let meter = Meter::unlimited();
     let mut out = Vec::new();
     let result = write_glb(scene, &Options { normalise }, &meter, &mut out);
     assert!(
-        matches!(&result, Err(GltfError::Invalid(_))),
-        "case {case}: {result:?}"
+        matches!(&result, Err(GltfError::Invalid(actual)) if *actual == message),
+        "expected {message:?}, got {result:?} (normalise={normalise})"
     );
-    assert!(out.is_empty(), "case {case}");
-    assert_eq!(meter.used(), 0, "case {case}");
+    assert!(out.is_empty(), "{message}");
+    assert_eq!(meter.used(), 0, "{message}");
 }
 
 #[test]
 fn weights_cannot_target_a_mesh_omitted_by_normalisation() {
     let mut scene = support::animated(&Meter::unlimited()).unwrap();
     key(&mut scene, Kind::Position, 0, f64::NAN);
-    refuses(&scene, true, 0);
+    refuses(&scene, true, "animation weights target an omitted mesh");
+}
+
+#[test]
+fn translation_targets_a_node_after_its_skinned_mesh_is_omitted() {
+    let meter = Meter::unlimited();
+    let mut scene = support::animated(&meter).unwrap();
+    key(&mut scene, Kind::Position, 0, f64::NAN);
+    let channels = &mut active(&mut scene).channels;
+    channels.as_mut_slice()[0] = AnimationChannel {
+        sampler: 1,
+        node: 1,
+        target: AnimationTarget::Translation,
+    };
+    channels.truncate(1);
+    scene.nodes.as_mut_slice()[1].children.push(4).unwrap();
+    scene.nodes.push(Node::new(&meter)).unwrap();
+
+    let (bytes, _) = support::write(&scene, Options::default());
+    let doc = support::json(&bytes);
+    assert_eq!(doc["nodes"].as_array().unwrap().len(), 5);
+    assert!(doc["nodes"][1].get("mesh").is_none());
+    assert!(doc["nodes"][1].get("skin").is_none());
+    assert_eq!(doc["nodes"][1]["children"], json!([4]));
+    assert_eq!(
+        doc["animations"][0]["channels"],
+        json!([{"sampler": 0, "target": {"node": 1, "path": "translation"}}])
+    );
+}
+
+#[test]
+fn nearly_opposite_rotations_remain_valid_after_f32_rounding() {
+    let mut scene = support::animated(&Meter::unlimited()).unwrap();
+    // Both quaternions have unit length to f64 precision. The first three
+    // products cancel before rounding, leaving a small positive dot product.
+    let root = 26_f64.sqrt();
+    let keys = [
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        3. / root,
+        1. / root,
+        -4. / root,
+        1e-8 / root,
+    ];
+    for (i, value) in keys.into_iter().enumerate() {
+        key(&mut scene, Kind::AnimationRotation, i, value);
+    }
+    let (bytes, _) = support::write(&scene, Options::default());
+    let doc = support::json(&bytes);
+    let output = doc["animations"][0]["samplers"][1]["output"]
+        .as_u64()
+        .unwrap();
+    let rows = support::f32s(&bytes, &doc, usize::try_from(output).unwrap());
+    assert!(
+        rows[..4]
+            .iter()
+            .zip(&rows[4..])
+            .map(|(a, b)| f64::from(*a) * f64::from(*b))
+            .sum::<f64>()
+            < 0.
+    );
+}
+
+#[test]
+fn negative_zero_is_a_valid_first_animation_time() {
+    let mut scene = support::animated(&Meter::unlimited()).unwrap();
+    key(&mut scene, Kind::AnimationTime, 0, -0.);
+    let (bytes, _) = support::write(&scene, Options::default());
+    let doc = support::json(&bytes);
+    let input = doc["animations"][0]["samplers"][0]["input"]
+        .as_u64()
+        .unwrap();
+    let index = usize::try_from(input).unwrap();
+    assert_eq!(
+        support::f32s(&bytes, &doc, index)[0].to_bits(),
+        (-0.0f32).to_bits()
+    );
+    assert_eq!(doc["accessors"][index]["min"], json!([0]));
 }
