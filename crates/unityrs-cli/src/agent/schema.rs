@@ -98,6 +98,20 @@ pub fn run(name: &str) -> Result<Document> {
         ],
         json!({"input":count,"file_index":count,"file":reference("rawstr"),"path_id":integer,"class_id":integer,"class_name":string,"name":nullable(reference("rawstr")),"container_path":nullable(reference("rawstr")),"byte_size":integer}),
     );
+    let preview = object(
+        &["$unityrs", "length", "prefix", "omitted"],
+        json!({"$unityrs":{"const":"preview"},"length":count,"prefix":reference("rawstr"),"omitted":{"type":"integer","minimum":1}}),
+    );
+    let listingstr = json!({"anyOf":[reference("rawstr"), reference("preview")]});
+    let mut listing_header = header.clone();
+    if let Some(props) = listing_header
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    {
+        props.insert("file".into(), reference("listingstr"));
+        props.insert("name".into(), nullable(reference("listingstr")));
+        props.insert("container_path".into(), nullable(reference("listingstr")));
+    }
     let error = base(
         "error",
         &["code", "message"],
@@ -111,7 +125,7 @@ pub fn run(name: &str) -> Result<Document> {
             "unity_version",
             "target_platform",
         ],
-        json!({"file":reference("rawstr"),"file_index":count,"kind":string,"unity_version":nullable(reference("rawstr")),"target_platform":nullable(integer.clone())}),
+        json!({"file":reference("listingstr"),"file_index":count,"kind":string,"unity_version":nullable(reference("listingstr")),"target_platform":nullable(integer.clone())}),
     );
     let cut = object(
         &["$unityrs", "reason", "omitted"],
@@ -130,8 +144,8 @@ pub fn run(name: &str) -> Result<Document> {
             "inspect",
             &["inputs", "objects", "total_objects", "next_cursor"],
             json!({
-            "inputs":array(object(&["path"],json!({"path":reference("rawstr"),"files":array(reference("metadata")),"error":reference("error")}))),
-            "objects":array(reference("header")),"total_objects":count,"next_cursor":nullable(string.clone())}),
+            "inputs":array(object(&["path"],json!({"path":reference("listingstr"),"files":array(reference("metadata")),"error":reference("error")}))),
+            "objects":array(reference("listing_header")),"total_objects":count,"next_cursor":nullable(string.clone())}),
         ),
         "show" => base(
             "show",
@@ -157,7 +171,7 @@ pub fn run(name: &str) -> Result<Document> {
             json!("https://json-schema.org/draft/2020-12/schema"),
         );
         map.insert("title".into(), json!(format!("unityrs.{name} version 1")));
-        map.insert("$defs".into(), json!({"rawstr":rawstr,"header":header,"metadata":metadata,"error":error,"cut":cut,"binary":binary,"value":value,"pair":pair,"map_pair":map_pair}));
+        map.insert("$defs".into(), json!({"rawstr":rawstr,"listingstr":listingstr,"preview":preview,"header":header,"listing_header":listing_header,"metadata":metadata,"error":error,"cut":cut,"binary":binary,"value":value,"pair":pair,"map_pair":map_pair}));
     }
     fixed(&schema)
 }

@@ -148,6 +148,43 @@ fn numeric_formatting_and_markers_refuse_work_before_writing() {
 }
 
 #[test]
+fn key_escaping_refuses_work_on_an_already_parsed_value() {
+    use unityrs_core::typetree::NodeId;
+    let build_meter = Meter::unlimited();
+    let nodes = NodeList::trusted(vec![
+        NodeRow::new(0, "Base", "Base"),
+        NodeRow::new(1, "int", "k".repeat(10_000).as_str()),
+    ])
+    .unwrap()
+    .into_shared()
+    .unwrap();
+    let builder = ValueBuilder::new(&build_meter, nodes).unwrap();
+    let mut entries = builder.vec();
+    entries
+        .push_entry(NodeId(1), builder.scalar(Value::Int(1)).unwrap())
+        .unwrap();
+    let built = builder.map(0, entries);
+    let parsed = builder.finish(built, 0);
+    for canonical in [false, true] {
+        // This meter has never loaded a file or built a value. Its budget
+        // allows scanning and copying the key, but refuses escaping's charge.
+        let meter = work_meter(50_000);
+        assert_eq!(
+            view(&parsed, &meter, canonical)
+                .render(parsed.value(), 0, 100_000)
+                .unwrap_err()
+                .code,
+            "budget"
+        );
+        let meter = Meter::unlimited();
+        let doc = view(&parsed, &meter, canonical)
+            .render(parsed.value(), 0, 100_000)
+            .unwrap();
+        assert!(doc.json.contains(&"k".repeat(10_000)));
+    }
+}
+
+#[test]
 fn canonical_key_escaping_is_charged_and_cuts_cannot_hide_refusals() {
     use unityrs_core::typetree::NodeId;
     let build_meter = Meter::unlimited();

@@ -1,5 +1,5 @@
 //! Input-order traversal and stable pagination, retaining at most one page.
-use super::{Args, Document, Error, Result, cursor, document, meter, name, render};
+use super::{Args, Document, Error, Result, cursor, document, listing, meter, name, render};
 use std::fmt::Write as _;
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt, path::Path, sync::Arc};
 use unityrs_core::{
@@ -99,7 +99,7 @@ fn metadata(out: &mut Text, file: &File, file_index: usize) {
         return;
     }
     let _ = write!(out, "{{\"file_index\":{file_index},\"file\":");
-    name(out, file_name(file));
+    listing::string(out, file_name(file), true);
     let _ = write!(
         out,
         ",\"kind\":\"{:?}\",\"unity_version\":",
@@ -108,12 +108,12 @@ fn metadata(out: &mut Text, file: &File, file_index: usize) {
     match file {
         File::Serialized(f) => {
             if let Some(v) = f.unity_version() {
-                name(out, v.as_bytes());
+                listing::string(out, v.as_bytes(), true);
             } else {
                 out.push_str("null");
             }
         }
-        File::Bundle(f) => name(out, f.header().version_engine.as_bytes()),
+        File::Bundle(f) => listing::string(out, f.header().version_engine.as_bytes(), true),
         _ => out.push_str("null"),
     }
     out.push_str(",\"target_platform\":");
@@ -148,6 +148,7 @@ fn header(
     obj: &ObjectRef,
     env: &Environment,
     parsed: Option<&Parsed>,
+    preview: bool,
 ) -> Result<()> {
     if !out.count_work(256) {
         return Ok(());
@@ -156,7 +157,7 @@ fn header(
         out,
         "{{\"input\":{index},\"file_index\":{file_index},\"file\":"
     );
-    name(out, obj.file().name().as_bytes());
+    listing::string(out, obj.file().name().as_bytes(), preview);
     let _ = write!(
         out,
         ",\"path_id\":{},\"class_id\":{},\"class_name\":",
@@ -171,13 +172,13 @@ fn header(
     );
     out.push_str(",\"name\":");
     if let Some(n) = parsed.and_then(parsed_name) {
-        name(out, n);
+        listing::string(out, n, preview);
     } else {
         out.push_str("null");
     }
     out.push_str(",\"container_path\":");
     if let Some(unityrs_core::container::ContainerPath::Str(path)) = env.container_path(obj)? {
-        name(out, path.as_bytes());
+        listing::string(out, path.as_bytes(), preview);
     } else {
         out.push_str("null");
     }
@@ -185,7 +186,8 @@ fn header(
     Ok(())
 }
 fn classes(args: &Args<'_>) -> Result<Vec<i32>> {
-    args.options
+    let mut classes = args
+        .options
         .iter()
         .filter(|(k, _)| *k == "--class")
         .map(|(_, b)| {
@@ -203,7 +205,10 @@ fn classes(args: &Args<'_>) -> Result<Vec<i32>> {
                 })
                 .ok_or_else(bad)
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    classes.sort_unstable();
+    classes.dedup();
+    Ok(classes)
 }
 #[allow(
     clippy::too_many_lines,
@@ -241,24 +246,20 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
         cursor::Fingerprint::new(args, &meter, provider.as_ref().map(|p| &p.digest))?;
     let resume = cursor::Resume::parse(args, &meter)?;
     let mut resumed = resume.is_none();
-    let mut last = None;
     let mut more = false;
     let mut unbound = None;
     let mut inputs = Text::on(&meter);
-    let mut objects = Text::on(&meter);
+    let mut objects = listing::Page::new(&meter, args.number("inspect", "--max-bytes")?);
     let mut total = 0usize;
-    let mut emitted = 0usize;
     for (index, path) in args.inputs.iter().enumerate() {
         if index > 0 {
             inputs.push(',');
         }
         inputs.push_str("{\"path\":");
-        name(&mut inputs, path);
+        listing::string(&mut inputs, path, true);
         let mut files = Text::on(&meter);
-        let mut page = Text::on(&meter);
+        let checkpoint = objects.checkpoint();
         let mut count = 0usize;
-        let mut kept = 0usize;
-        let mut page_last = None;
         let before_resumed = resumed;
         let before_more = more;
         let mut source_digest = None;
@@ -284,8 +285,15 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
                 metadata(&mut files, file, occurrence);
                 if let File::Serialized(f) = file {
                     for obj in f.objects_by_path() {
-                        if !classes.is_empty() && !classes.contains(&obj.class_id()) {
-                            continue;
+                        if !classes.is_empty() {
+                            // Reserve the binary search's worst-case comparisons
+                            // before comparing, even for non-matching objects.
+                            obj.file()
+                                .meter()
+                                .count_decode(u64::from(classes.len().ilog2()) + 2)?;
+                            if classes.binary_search(&obj.class_id()).is_err() {
+                                continue;
+                            }
                         }
                         let p = read_name(&obj)?;
                         if !globs.is_empty() {
@@ -304,27 +312,32 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
                         }
                         count += 1;
                         if !resumed {
-                            if resume.as_ref().is_some_and(|r| {
-                                r.key
-                                    .matches(index, occurrence, f.name().as_bytes(), obj.path_id())
-                            }) {
+                            if let Some(r) = &resume
+                                && r.key.matches(
+                                    index,
+                                    occurrence,
+                                    f.name().as_bytes(),
+                                    obj.path_id(),
+                                    &meter,
+                                )?
+                            {
                                 resumed = true;
                             }
                             continue;
                         }
-                        if emitted + kept < limit {
-                            if kept > 0 {
-                                page.push(',');
-                            }
-                            header(&mut page, index, occurrence, &obj, &env, p.as_ref())?;
-                            kept += 1;
-                            page_last = Some(cursor::Key::new(
+                        if !more && objects.len() < limit {
+                            let mut text = Text::on(&meter);
+                            header(&mut text, index, occurrence, &obj, &env, p.as_ref(), true)?;
+                            let key = cursor::Key::new(
                                 index,
                                 occurrence,
                                 f.name().as_bytes(),
                                 obj.path_id(),
                                 &meter,
-                            )?);
+                            )?;
+                            if !objects.push(document(text)?, key)? {
+                                more = true;
+                            }
                         } else {
                             more = true;
                         }
@@ -332,7 +345,7 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
                 }
                 Ok(())
             })?;
-            if let Some(e) = files.refused().or_else(|| page.refused()) {
+            if let Some(e) = files.refused() {
                 return Err(Error::formatted("budget", e));
             }
             Ok(())
@@ -342,22 +355,13 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
         }
         match result {
             Ok(()) => {
-                if page_last.is_some() {
-                    last = page_last;
-                }
                 inputs.push_str(",\"files\":[");
                 inputs.push_str(files.as_str());
                 inputs.push(']');
-                if kept > 0 {
-                    if emitted > 0 {
-                        objects.push(',');
-                    }
-                    objects.push_str(page.as_str());
-                    emitted += kept;
-                }
                 total += count;
             }
             Err(e) => {
+                objects.rollback(checkpoint);
                 resumed = before_resumed;
                 more = before_more;
                 if source_digest.is_none() {
@@ -371,46 +375,24 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
         }
         inputs.push('}');
     }
-    if let Some((index, path, code)) = unbound {
-        if resume.is_some() {
-            return Err(Error::new(
-                "bad_cursor",
-                "cursor refused: inputs changed or cannot be read within budgets",
-            ));
-        }
-        if more {
-            return Err(Error::new(
-                code,
-                "cannot issue a cursor: input bytes unavailable for fingerprinting",
-            )
-            .at_input(index, path));
-        }
+    if unbound.is_some() && resume.is_some() {
+        return Err(Error::new(
+            "bad_cursor",
+            "cursor refused: inputs changed or cannot be read within budgets",
+        ));
     }
     let key = fingerprint.finish();
     if let Some(resume) = &resume {
         resume.verify(&key, resumed)?;
     }
-    let mut out = Text::on(&meter);
-    out.push_str("{\"format\":\"unityrs.inspect\",\"version\":1,\"inputs\":[");
-    out.push_str(inputs.as_str());
-    out.push_str("],\"objects\":[");
-    out.push_str(objects.as_str());
-    let _ = write!(out, "],\"total_objects\":{total},\"next_cursor\":");
-    if more {
-        if let Some(last) = last {
-            let token = last.token(&key, &meter)?;
-            name(&mut out, token.json.as_bytes());
-        } else {
-            out.push_str("null");
-        }
-    } else {
-        out.push_str("null");
-    }
-    out.push_str("}\n");
-    // A refused staging text is never published as a partial document.
-    drop(inputs.finish()?);
-    drop(objects.finish()?);
-    document(out)
+    let cursor_error = unbound.map(|(index, path, code)| {
+        Error::new(
+            code,
+            "cannot issue a cursor: input bytes unavailable for fingerprinting",
+        )
+        .at_input(index, path)
+    });
+    objects.finish(&document(inputs)?, total, more, &key, cursor_error, &meter)
 }
 pub fn show(args: &Args<'_>) -> Result<Document> {
     let path_id = args.path_id()?;
@@ -422,6 +404,9 @@ pub fn show(args: &Args<'_>) -> Result<Document> {
     let mut selected = None;
     let mut count = 0usize;
     for (index, path) in args.inputs.iter().enumerate() {
+        if address.is_some_and(|(selected_input, _)| selected_input != index) {
+            continue;
+        }
         let env = environment(args, provider.as_ref());
         let root = load(&env, path).map_err(|e| e.at_input(index, path))?;
         if matches!(root, File::Raw(_)) {
@@ -478,15 +463,23 @@ pub fn show(args: &Args<'_>) -> Result<Document> {
         .parse_as_dict(false)
         .map_err(|e| Error::from(e).at_input(index, path))?;
     let mut length = render::Length::on(&meter);
-    header(&mut length, index, file_index, &object, &env, Some(&parsed))
-        .map_err(|e| e.at_input(index, path))?;
+    header(
+        &mut length,
+        index,
+        file_index,
+        &object,
+        &env,
+        Some(&parsed),
+        false,
+    )
+    .map_err(|e| e.at_input(index, path))?;
     let header_len = length.finish()?;
     render::show(
         args,
         &parsed,
         header_len,
         |out| {
-            header(out, index, file_index, &object, &env, Some(&parsed))
+            header(out, index, file_index, &object, &env, Some(&parsed), false)
                 .map_err(|e| e.at_input(index, path))
         },
         &meter,

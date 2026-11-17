@@ -2,6 +2,7 @@
 mod cursor;
 mod describe;
 mod inventory;
+mod listing;
 pub(crate) mod options;
 mod render;
 mod schema;

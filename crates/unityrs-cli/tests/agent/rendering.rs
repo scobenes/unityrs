@@ -176,11 +176,3 @@ fn string_scanning_refuses_excess_rendering_work() {
 fn string_escaping_refuses_excess_rendering_work() {
     refuses_rendering_work("escaped", s(&"\n".repeat(10_000)), "100000");
 }
-#[test]
-fn key_escaping_refuses_excess_rendering_work() {
-    refuses_rendering_work(
-        "key",
-        st("Key", vec![(&"k".repeat(10_000), V::Int(1))]),
-        "100000",
-    );
-}

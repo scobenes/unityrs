@@ -1,5 +1,7 @@
 //! Synthetic-only agent protocol tests. Goldens and documentation examples
 //! are regenerated together by the command documented in docs/AGENTS.md.
+#[path = "agent/bounds.rs"]
+mod bounds;
 #[path = "agent/contracts.rs"]
 mod contracts;
 #[path = "agent/edges.rs"]

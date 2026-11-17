@@ -69,6 +69,12 @@ pub const INSPECT: &[OptionSpec] = &[
     ),
     opt("--limit", "N", Some("200"), "Page size, 1 through 10000."),
     opt(
+        "--max-bytes",
+        "N",
+        Some("65536"),
+        "Maximum compact JSON document bytes, including its newline; strings use bounded previews.",
+    ),
+    opt(
         "--cursor",
         "TOKEN",
         None,
@@ -265,6 +271,7 @@ impl<'a> Args<'a> {
             return Err(Error::usage("missing INPUT"));
         }
         if command == "inspect" {
+            self.number(command, "--max-bytes")?;
             let n = self.number(command, "--limit")?;
             if !(1..=10_000).contains(&n) {
                 return Err(bad_value(

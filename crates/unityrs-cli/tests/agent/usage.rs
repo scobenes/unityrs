@@ -6,6 +6,7 @@ fn missing_and_duplicate_values_identify_the_option() {
     let tmp = fixture();
     for (command, option, value) in [
         ("inspect", "--limit", "2"),
+        ("inspect", "--max-bytes", "65536"),
         ("inspect", "--cursor", "token"),
         ("inspect", "--class", "49"),
         ("inspect", "--name", "alpha"),
@@ -60,6 +61,7 @@ fn bad_values_identify_the_option_value_and_accepted_form() {
         ("inspect", "--limit", "many", "10000"),
         ("inspect", "--limit", "0", "10000"),
         ("inspect", "--limit", "10001", "10000"),
+        ("inspect", "--max-bytes", "large", "integer"),
         ("inspect", "--max-input-memory", "lots", "integer"),
         ("inspect", "--max-input-bytes", "-1", "integer"),
         (

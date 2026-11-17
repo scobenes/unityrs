@@ -1,9 +1,13 @@
 //! Role-framed, content-bound cursors. The checkpoint is an object identity,
 //! not a count of objects that a later read might interpret differently.
+//! A cursor is the caller's own token over the caller's own inputs, so an edited
+//! cursor can only show the caller another page of their own data; the checksum
+//! guards against corruption, not tampering. Cursors are integrity-checked, not
+//! authenticated; edit one and you get what you asked for.
 use super::{Args, Document, Error, Result, document};
 use sha2::{Digest, Sha256};
 use std::{fmt::Write as _, sync::Arc};
-use unityrs_core::limits::{Meter, MeteredVec};
+use unityrs_core::limits::Meter;
 use unityrs_dump::{
     json,
     text::{Sink, Text},
@@ -13,13 +17,13 @@ pub struct Fingerprint(Sha256);
 impl Fingerprint {
     pub fn new(args: &Args<'_>, meter: &Arc<Meter>, provider: Option<&[u8; 32]>) -> Result<Self> {
         let mut digest = Self(Sha256::new());
-        digest.field(b"protocol", b"unityrs.inspect.cursor.2", meter)?;
+        digest.field(b"protocol", b"unityrs.inspect.cursor.3", meter)?;
         for (index, path) in args.inputs.iter().enumerate() {
             digest.field(b"input-index", &(index as u64).to_le_bytes(), meter)?;
             digest.field(b"input-path", path, meter)?;
         }
         for (key, value) in &args.options {
-            if !matches!(*key, "--cursor" | "--limit") {
+            if !matches!(*key, "--cursor" | "--limit" | "--max-bytes") {
                 digest.field(b"option-name", key.as_bytes(), meter)?;
                 digest.field(b"option-value", value, meter)?;
             }
@@ -77,17 +81,17 @@ impl<'a> Resume<'a> {
         ) else {
             return Err(bad());
         };
-        if fingerprint.len() != 64 || hex.len() % 2 != 0 {
+        if fingerprint.len() != 64 || hex.len() != 64 {
             return Err(bad());
         }
-        let mut file = MeteredVec::with_capacity(meter, hex.len() / 2)?;
-        for &[a, b] in hex.as_bytes().as_chunks::<2>().0 {
+        let mut file = [0; 32];
+        for (slot, &[a, b]) in file.iter_mut().zip(hex.as_bytes().as_chunks::<2>().0) {
             let byte = |b: u8| match b {
                 b'0'..=b'9' => Some(b - b'0'),
                 b'a'..=b'f' => Some(b - b'a' + 10),
                 _ => None,
             };
-            file.push((byte(a).ok_or_else(bad)? << 4) | byte(b).ok_or_else(bad)?)?;
+            *slot = (byte(a).ok_or_else(bad)? << 4) | byte(b).ok_or_else(bad)?;
         }
         Ok(Some(Self {
             fingerprint,
@@ -110,7 +114,9 @@ impl<'a> Resume<'a> {
 pub struct Key {
     index: usize,
     file_index: usize,
-    file: MeteredVec<u8>,
+    // Fixed-size filename identity keeps even hostile stored names from
+    // making the continuation token larger than the response byte cap.
+    file: [u8; 32],
     path_id: i64,
 }
 impl Key {
@@ -121,20 +127,27 @@ impl Key {
         path_id: i64,
         meter: &Arc<Meter>,
     ) -> Result<Self> {
-        let mut bytes = MeteredVec::new(meter);
-        bytes.extend_from_slice(file)?;
+        meter.count_decode(file.len() as u64)?;
         Ok(Self {
             index,
             file_index,
-            file: bytes,
+            file: json::sha256(file),
             path_id,
         })
     }
-    pub fn matches(&self, index: usize, file_index: usize, file: &[u8], path_id: i64) -> bool {
-        self.index == index
-            && self.file_index == file_index
-            && self.file.as_slice() == file
-            && self.path_id == path_id
+    pub fn matches(
+        &self,
+        index: usize,
+        file_index: usize,
+        file: &[u8],
+        path_id: i64,
+        meter: &Arc<Meter>,
+    ) -> Result<bool> {
+        if self.index != index || self.file_index != file_index || self.path_id != path_id {
+            return Ok(false);
+        }
+        meter.count_decode(file.len() as u64)?;
+        Ok(self.file == json::sha256(file))
     }
     pub fn token(&self, fingerprint: &str, meter: &Arc<Meter>) -> Result<Document> {
         let mut text = Text::on(meter);
@@ -143,7 +156,7 @@ impl Key {
             "{fingerprint}.{}.{}.{}.",
             self.index, self.file_index, self.path_id
         );
-        json::push_hex(&mut text, self.file.as_slice());
+        json::push_hex(&mut text, &self.file);
         let payload = document(text)?;
         meter.count_decode(payload.json.len() as u64)?;
         let mut text = Text::on(meter);

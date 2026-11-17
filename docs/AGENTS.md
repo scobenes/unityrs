@@ -13,8 +13,9 @@ document plus a newline to stdout. Their successful documents have
 `"format": "unityrs.error"` and `"version": 1`. Fields are only added within a
 version; readers ignore unknown fields. Ordering and content are deterministic:
 no timestamps or canonicalized host paths. Paths retain the caller's spelling;
-file names inside containers retain their stored spelling. Invalid UTF-8 paths
-and names use the canonical `{"t":"str","hex":"..."}` representation.
+file names inside containers retain their stored spelling, subject to inspect's
+explicit previews below. Invalid UTF-8 paths and names use the canonical
+`{"t":"str","hex":"..."}` representation.
 Value strings follow the rules for the selected view below.
 
 `describe` lists all nine subcommands, each option's value form, default (a
@@ -53,7 +54,8 @@ payload shapes, recursively. For the existing batch job schema, use
 
 ## Inspect and pagination
 
-`inspect INPUT... [--class CLASS]... [--name GLOB]... [--limit N] [--cursor TOKEN]`
+`inspect INPUT... [--class CLASS]... [--name GLOB]... [--limit N]`
+`[--max-bytes N] [--cursor TOKEN]`
 lists each input with a `files` array or an error, plus object headers.
 `files` lists the root and its descendants once in container order, including
 resource files. Each entry carries its `file_index`, kind, Unity version and
@@ -69,7 +71,8 @@ images, meshes or audio. Name discovery can still require reading an object's
 typetree; the input budgets bound this work.
 
 Class names and integer IDs follow `extract --asset-filter`; repeated classes
-form a union. Name globs use `dump --name`'s case-sensitive Python fnmatch syntax
+form a union, deduplicated by numeric ID with a budgeted binary lookup per object.
+Name globs use `dump --name`'s case-sensitive Python fnmatch syntax
 (`*`, `?`, `[abc]`, `[!abc]`), applied to object names. Repeated globs form a
 union; class and name filters intersect. Unnamed objects do not match a name
 filter. Inputs retain argument order; files retain container order; objects
@@ -116,22 +119,47 @@ are sorted by signed path ID within each file.
 <!-- /example:inspect -->
 
 `total_objects` counts all objects after filtering, including those outside this
-page. The page limit defaults to 200 and accepts 1 through 10,000. Pass a non-null
-`next_cursor` unchanged to the next call; null means the last page. Cursors bind
+page. The page limit defaults to 200 and accepts 1 through 10,000. The whole
+compact success document, including its newline, is also bounded by
+`--max-bytes` (default 65,536). A byte cut may return fewer objects than `--limit`.
+Every listed object retains its full numeric `input`, `file_index` and `path_id`;
+use those to address it even when its file name is a preview.
+
+Input paths, metadata file names and Unity versions, and object file names,
+names and container paths longer than 128 source bytes use a
+`"$unityrs":"preview"` object with the original byte `length`, retained `prefix`,
+and omitted byte count `omitted`.
+The prefix contains at most 128 source bytes without splitting a UTF-8 code
+point; an invalid UTF-8 prefix uses the usual `t: str` hex form. `length` and
+`omitted` count source bytes, not characters or escaped JSON bytes. Filtering
+still uses the complete original name. Previews are bounded independently of
+the page size. Input metadata is retained on every page; if the cap cannot hold
+that metadata and one object's addressing/header plus any required cursor, the
+command refuses with a clear `budget` error. It never emits a partial object or
+an empty page with a continuation token. Error documents are outside the cap.
+
+Pass a non-null `next_cursor` unchanged to the next call; null means the last
+page. Cursors bind
 the exact input spellings, their order, contents, filters, explicitly supplied
 budget/TPK options and provider bytes. Keep these unchanged;
-page size and working directory may change. Relative paths must still resolve
-to the same loaded bytes.
-The cursor resumes after an object key (input index, exact file name, signed path
-ID), with a file-occurrence tie-breaker for repeated names in nested containers,
+page size, response byte cap and working directory may change. Relative paths
+must still resolve to the same loaded bytes.
+The cursor resumes exactly after the last object emitted, including on a byte-cut
+page. Its key contains the input index, a digest of the exact file name and signed
+path ID, with a file-occurrence tie-breaker for repeated names in nested containers,
 rather than a numeric offset. Role-tagged fingerprint fields prevent an input
 path from colliding with an option. Source hashing observes the exact loaded
 snapshot, including joined split companions and compressed container bytes.
 Provider hashing and parsing also share one read. Hashing counts against the
 read/work budgets. If those bounds prevent fingerprinting an input, a page
 requiring a cursor is refused with `budget` (or `input` if the source
-cannot be opened). Foreign, malformed, edited or stale tokens are rejected.
-Cursors are not authentication tokens or a snapshot across calls.
+cannot be opened). Tokens with a wrong fingerprint, invalid checksum, malformed
+payload or absent object key are rejected.
+A cursor is the caller's own token over the caller's own inputs, so an edited
+cursor can only show the caller another page of their own data; the checksum
+guards against corruption, not tampering. Cursors are integrity-checked, not
+authenticated; edit one and you get what you asked for. They are not a snapshot
+across calls.
 Enumeration is repeated per page, retaining only the page's headers, so a smaller
 page bounds output rather than total scan work.
 
@@ -153,6 +181,9 @@ Supply `--file NAME` when the name is unique, or `--file-index INPUT:FILE` to
 select the exact occurrence even inside nested containers or repeated inputs.
 Both indices are zero-based; FILE is the position in that input's `files` array,
 including the root and resource files. With both selectors, both must match.
+An explicit `--file-index` skips loading every other input, so an unrelated
+broken, missing or resource input cannot fail the selection. Without that
+selector, all supplied inputs participate in finding candidates and must load.
 For example, a header with `input: 0`, `file_index: 2`, `file: "CAB-a"` and
 `path_id: -2` can be read with
 `unityrs show nested.bundle --path-id -2 --file-index 0:2`.
@@ -308,8 +339,8 @@ Pass larger numeric limits explicitly when needed. The input loader and JSON
 text writer charge allocations before growth and use fallible allocation.
 Show checks borrowed header and framing lengths against the output cap before
 copying the header or rendering a value. An inspect response also retains input
-metadata; the page limit bounds object headers, while the response memory budget
-bounds all metadata and JSON buffers.
+metadata with bounded string previews; `--limit` and `--max-bytes` bound the
+returned page, while the response memory budget bounds all staging buffers.
 Inputs are loaded separately, preserving repeated caller paths and deterministic
 input attribution. No implicit dependencies are fetched; provide all needed files.
 
