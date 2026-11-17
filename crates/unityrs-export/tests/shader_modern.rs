@@ -10,21 +10,52 @@ use unityrs_export::shader;
 mod shader_int;
 
 #[test]
-fn int_properties_follow_shaderlab_with_float_default_formatting() {
-    // Tier C reference: Unity 2021.3's SL-Properties manual, Int declaration.
-    // Preserve Float's str(float32 widened to f64), attributes and ignored flags.
+fn int_properties_follow_shaderlab_integer_default_rules() {
+    // Tier C reference: Unity 2021.3's SL-Properties manual, Integer declaration.
+    // Finite integral defaults are decimal integers; others keep Python repr.
+    // Preserve attributes and ignored flags.
     // No type-5 recording exists in shader{,_modern,_legacy}.json; these are
     // synthetic expectations, not a claim of a new UnityPy oracle observation.
-    let defaults = [1., -7., -0., 1.25, 0.1, 1e-5, 1e20];
+    // f32 represents every integer through 2^24, then only even integers up to
+    // 2^25. Use exact neighbours, plus values too large for an i64/i128 cast.
+    let defaults = [
+        1.,
+        -3.,
+        0.,
+        -0.,
+        1.25,
+        0.1,
+        1e-5,
+        16_777_215.,
+        16_777_216.,
+        16_777_218.,
+        -16_777_218.,
+        1e20,
+        f32::MAX,
+        f32::MIN,
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    ];
     let expected = concat!(
         "Shader \"Synthetic/Int\" {\nProperties {\n\n",
-        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = 1.0\n\n",
-        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = -7.0\n\n",
-        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = -0.0\n\n",
-        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = 1.25\n\n",
-        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = 0.10000000149011612\n\n",
-        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = 9.999999747378752e-06\n\n",
-        "[HDR] [Toggle(X)] _Count (\"Count é\", Int) = 1.0000000200408773e+20\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = 1\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = -3\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = 0\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = 0\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = 1.25\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = 0.10000000149011612\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = 9.999999747378752e-06\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = 16777215\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = 16777216\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = 16777218\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = -16777218\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = 100000002004087734272\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = 340282346638528859811704183484516925440\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = -340282346638528859811704183484516925440\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = nan\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = inf\n\n",
+        "[HDR] [Toggle(X)] _Count (\"Count é\", Integer) = -inf\n\n",
         "}\n}",
     );
     for blob in [false, true] {

@@ -13,6 +13,19 @@ use unityrs_core::{
 use unityrs_testkit::counted::{self, Allocator, Tally};
 #[path = "support/shader_int.rs"]
 mod shader_int;
+const INT_DEFAULTS: &[f32] = &[
+    1.,
+    -3.,
+    0.,
+    -0.,
+    1.25,
+    0.1,
+    16_777_215.,
+    16_777_216.,
+    16_777_218.,
+    f32::MAX,
+    f32::INFINITY,
+];
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static HELD: AtomicU64 = AtomicU64::new(0);
@@ -72,7 +85,7 @@ fn shader_allocations_are_charged_and_allocator_refusals_propagate() {
         serde_json::from_str(include_str!("fixtures/shader_legacy.json")).unwrap();
     let ints = [false, true].map(|blob| {
         let mut input = String::new();
-        for byte in shader_int::shader_with_properties(5, &[1., -0., 0.1], blob) {
+        for byte in shader_int::shader_with_properties(5, INT_DEFAULTS, blob) {
             write!(&mut input, "{byte:02x}").unwrap();
         }
         serde_json::json!({"case": format!("synthetic_int_blob_{blob}"), "input": input})
@@ -171,7 +184,7 @@ fn int_property_output_obeys_work_and_memory_bounds() {
         let File::Serialized(file) = env
             .load(Source::Bytes {
                 name: RawStr::from("int.assets"),
-                data: Bytes::from(shader_int::shader_with_properties(5, &[1., -0., 0.1], blob)),
+                data: Bytes::from(shader_int::shader_with_properties(5, INT_DEFAULTS, blob)),
             })
             .unwrap()
         else {
@@ -179,7 +192,14 @@ fn int_property_output_obeys_work_and_memory_bounds() {
         };
         let parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
         let meter = work_meter(u64::MAX);
-        drop(unityrs_export::shader::export_parsed(&parsed, (2021, 3), &meter).unwrap());
+        let output = unityrs_export::shader::export_parsed(&parsed, (2021, 3), &meter).unwrap();
+        assert!(
+            output
+                .as_slice()
+                .windows(b"Integer) = 340282346638528859811704183484516925440\n".len())
+                .any(|w| w == b"Integer) = 340282346638528859811704183484516925440\n")
+        );
+        drop(output);
         let work = meter.decoded();
         let short = work_meter(work - 1);
         assert!(matches!(
