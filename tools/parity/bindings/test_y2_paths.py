@@ -1,6 +1,5 @@
 """Filesystem containment regressions using synthetic split resources."""
 import os
-import tempfile
 from pathlib import Path
 import sys
 import unittest
@@ -123,19 +122,19 @@ class FindFilePaths(unittest.TestCase):
 
     def test_case_sensitive_alias_follows_the_suffix_fallback(self):
         # The branch above that a case-sensitive file system takes, on a
-        # tree it controls: the alias is not the root, so the lookup falls
-        # back to UnityPy's suffix match, or raises when nothing matches.
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / 'proj'
-            (root / 'sub').mkdir(parents=True)
-            (root / 'Cargo.toml').write_bytes(b'toml')
-            (root / 'Cargo.lock').write_bytes(b'lock')
-            (root / 'sub' / 'x.bin').write_bytes(b'x')
-            alias = root.with_name('PROJ')
-            if alias.exists():
-                self.skipTest('case-insensitive file system')
-            for name in ('Cargo.toml', 'zzz.toml'):
-                self.assert_find_file_matches_unitypy(root, str(alias / name))
+        # tree it controls (scratch lives under the temporary directory): the
+        # alias is not the root, so the lookup falls back to UnityPy's suffix
+        # match, or raises when nothing matches.
+        root = scratch.for_case(self) / 'proj'
+        (root / 'sub').mkdir(parents=True)
+        (root / 'Cargo.toml').write_bytes(b'toml')
+        (root / 'Cargo.lock').write_bytes(b'lock')
+        (root / 'sub' / 'x.bin').write_bytes(b'x')
+        alias = root.with_name('PROJ')
+        if alias.exists():
+            self.skipTest('case-insensitive file system')
+        for name in ('Cargo.toml', 'zzz.toml'):
+            self.assert_find_file_matches_unitypy(root, str(alias / name))
 
     def assert_find_file_matches_unitypy(self, root, candidate):
         import UnityPy
