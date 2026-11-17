@@ -41,13 +41,13 @@ pub struct ClipSlot {
     pub source: SourceSlot,
     /// The last replacement that supplied the effective clip, if any.
     pub replacement: Option<SourceSlot>,
-    result: Result<ResolvedObject, SlotError>,
+    result: Result<ObjectRef, SlotError>,
     first: bool,
 }
 
 impl ClipSlot {
     pub fn clip(&self) -> Result<&ObjectRef, &SlotError> {
-        self.result.as_ref().map(|resolved| &resolved.object)
+        self.result.as_ref()
     }
 
     /// Whether this is the first successful occurrence of its effective clip.
@@ -60,7 +60,7 @@ impl ClipSlot {
 #[derive(Debug)]
 struct ResolvedObject {
     object: ObjectRef,
-    // Keep the file's sibling scope and identity stable across eviction.
+    // Keep a controller's sibling scope alive while following its pointers.
     _container: Option<File>,
 }
 
@@ -143,7 +143,18 @@ impl Discovery {
                     .map_err(|error| SelectionError::Resource(error.into()))?;
                 let matches = match selector {
                     ClipSelector::Clip(clip) => {
-                        slot.first && slot.clip().is_ok_and(|o| same_object(o, clip))
+                        if slot.first
+                            && let Ok(candidate) = slot.clip()
+                        {
+                            let key = identity_key(clip);
+                            let other = identity_key(candidate);
+                            meter
+                                .count_decode(key.2.len().min(other.2.len()) as u64)
+                                .map_err(|error| SelectionError::Resource(error.into()))?;
+                            key == other
+                        } else {
+                            false
+                        }
                     }
                     ClipSelector::Source(source) => slot.source.matches(source),
                 };
@@ -270,8 +281,8 @@ fn clip_at(
     env: &Environment,
     from: &SourceSlot,
     meter: &Arc<Meter>,
-) -> Result<ResolvedObject, AnimError> {
-    resolve(env, from, |class| class == 74, meter)
+) -> Result<ObjectRef, AnimError> {
+    Ok(resolve(env, from, |class| class == 74, meter)?.object)
 }
 
 fn push_slots(
@@ -311,8 +322,8 @@ fn push_slots(
 
 fn stored_result(
     from: &SourceSlot,
-    result: Result<ResolvedObject, AnimError>,
-) -> Result<Result<ResolvedObject, SlotError>, AnimError> {
+    result: Result<ObjectRef, AnimError>,
+) -> Result<Result<ObjectRef, SlotError>, AnimError> {
     match result {
         Err(cause) if cause.resource_refusal() => Err(cause),
         Err(cause) => Ok(Err(SlotError {
@@ -408,9 +419,12 @@ fn controller(
         };
         chain.push((resolved, parsed))?;
     }
-    for (resolved, parsed) in chain.as_slice().iter().rev() {
+    while let Some((resolved, parsed)) = chain.pop() {
         let object = &resolved.object;
-        let dict = Dict { parsed, meter };
+        let dict = Dict {
+            parsed: &parsed,
+            meter,
+        };
         if let Err(cause) = apply_overrides(env, rig, object, &dict) {
             note(&mut rig.issues, source(object, "m_Clips", 0, None), cause)?;
         }
@@ -432,6 +446,12 @@ fn pointer_source(
     Ok(source(owner, field, ordinal, pointer))
 }
 
+#[derive(Clone, Copy)]
+struct OverrideMatch {
+    ordinal: usize,
+    ambiguous: bool,
+}
+
 fn apply_overrides(
     env: &Environment,
     rig: &mut RigClips,
@@ -442,7 +462,23 @@ fn apply_overrides(
         return Ok(());
     };
     let rows = dict.list(rows, "m_Clips")?;
-    let mut originals = MeteredVec::with_capacity(dict.meter, rows.len())?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let meter = dict.meter;
+    let mut indexed = MeteredVec::new(meter);
+    let mut key_work = 1;
+    meter.count_decode(rig.slots.len() as u64)?;
+    for (index, slot) in rig.slots.as_slice().iter().enumerate() {
+        if let Ok(clip) = slot.clip() {
+            let key = identity_key(clip);
+            key_work = key_work.max(1 + key.2.len() as u64);
+            indexed.push((key, index, None::<OverrideMatch>))?;
+        }
+    }
+    sort_work(meter, indexed.len(), key_work)?;
+    let slots = indexed.as_mut_slice();
+    slots.sort_unstable_by_key(|&(key, index, _)| (key, index));
     for (ordinal, row) in rows.iter().enumerate() {
         let field = "m_OriginalClip";
         let original = match pointer_source(dict, owner, row, ordinal, field) {
@@ -452,31 +488,46 @@ fn apply_overrides(
                 continue;
             }
         };
-        match clip_at(env, &original, dict.meter) {
-            Ok(clip) => originals.push((identity_key(&clip.object), ordinal, clip))?,
-            Err(cause) => note(&mut rig.issues, original, cause)?,
+        let clip = match clip_at(env, &original, meter) {
+            Ok(clip) => clip,
+            Err(cause) => {
+                note(&mut rig.issues, original, cause)?;
+                continue;
+            }
+        };
+        let key = identity_key(&clip);
+        meter.count_decode(log_search(slots.len()).saturating_mul(key_work))?;
+        let start = slots.partition_point(|(candidate, _, _)| *candidate < key);
+        if let Some((_, _, matched)) = slots.get_mut(start).filter(|(k, _, _)| *k == key) {
+            *matched = Some(OverrideMatch {
+                ordinal: matched.map_or(ordinal, |row| row.ordinal),
+                ambiguous: matched.is_some(),
+            });
         }
     }
-    sort_work(dict.meter, originals.len())?;
-    originals
-        .as_mut_slice()
-        .sort_unstable_by_key(|(key, ordinal, _)| (*key, *ordinal));
-    let originals = originals.as_slice();
-    if originals.is_empty() {
-        return Ok(());
+    // Copy each match to every duplicate slot before mutating the clips.
+    meter.count_decode((slots.len() as u64).saturating_mul(key_work))?;
+    let mut previous = None;
+    let mut replacements = MeteredVec::new(meter);
+    for &(key, index, matched) in slots.iter() {
+        if previous.is_none_or(|(last, _)| last != key) {
+            previous = Some((key, matched));
+        }
+        if let Some((_, Some(matched))) = previous {
+            replacements.push((index, matched))?;
+        }
     }
-    dict.meter.count_decode(rig.slots.len() as u64)?;
-    for slot in rig.slots.as_mut_slice() {
-        let Ok(clip) = slot.clip() else { continue };
-        let key = identity_key(clip);
-        dict.meter.count_decode(log_search(originals.len()))?;
-        let start = originals.partition_point(|(candidate, _, _)| *candidate < key);
-        let Some(&(_, ordinal, _)) = originals
-            .get(start)
-            .filter(|(candidate, _, _)| *candidate == key)
-        else {
-            continue;
-        };
+    drop(indexed);
+    sort_work(meter, replacements.len(), 1)?;
+    replacements
+        .as_mut_slice()
+        .sort_unstable_by_key(|&(index, _)| index);
+    for &(index, OverrideMatch { ordinal, ambiguous }) in replacements.as_slice() {
+        let slot = rig
+            .slots
+            .as_mut_slice()
+            .get_mut(index)
+            .ok_or(AnimError::Malformed("clip slot"))?;
         let row = rows.get(ordinal).ok_or(AnimError::Malformed("m_Clips"))?;
         let field = "m_OverrideClip";
         let replacement = match pointer_source(dict, owner, row, ordinal, field) {
@@ -487,10 +538,7 @@ fn apply_overrides(
                 continue;
             }
         };
-        if originals
-            .get(start.saturating_add(1))
-            .is_some_and(|(candidate, _, _)| *candidate == key)
-        {
+        if ambiguous {
             slot.result = stored_result(&replacement, Err(AnimError::AmbiguousOverride))?;
             slot.replacement = None;
         } else if replacement.pointer.is_some_and(|ptr| ptr.is_set()) {
@@ -505,30 +553,35 @@ fn log_search(len: usize) -> u64 {
     u64::from(len.bit_width()) + 1
 }
 
-fn sort_work(meter: &Meter, len: usize) -> Result<(), AnimError> {
-    Ok(meter.count_decode((len as u64).saturating_mul(log_search(len)))?)
+fn sort_work(meter: &Meter, len: usize, key_work: u64) -> Result<(), AnimError> {
+    Ok(meter.count_decode(
+        (len as u64)
+            .saturating_mul(log_search(len))
+            .saturating_mul(key_work),
+    )?)
 }
 
 fn mark_first(slots: &mut MeteredVec<ClipSlot>) -> Result<(), AnimError> {
-    let meter = slots.charge().meter();
-    let mut keys = MeteredVec::new(meter);
+    let meter = slots.charge().meter().clone();
+    let mut keys = MeteredVec::new(&meter);
+    let mut key_work = 1;
     meter.count_decode(slots.len() as u64)?;
-    for (ordinal, slot) in slots.as_slice().iter().enumerate() {
-        if let Ok(clip) = slot.clip() {
-            keys.push((identity_key(clip), ordinal))?;
+    for (ordinal, slot) in slots.as_mut_slice().iter_mut().enumerate() {
+        if let Ok(clip) = &slot.result {
+            let key = identity_key(clip);
+            key_work = key_work.max(1 + key.2.len() as u64);
+            keys.push((key, ordinal, &mut slot.first))?;
         }
     }
-    sort_work(meter, keys.len())?;
-    keys.as_mut_slice().sort_unstable();
+    sort_work(&meter, keys.len(), key_work)?;
+    keys.as_mut_slice()
+        .sort_unstable_by_key(|&(key, ordinal, _)| (key, ordinal));
+    meter.count_decode((keys.len() as u64).saturating_mul(key_work))?;
     let mut previous = None;
-    for &(key, ordinal) in keys.as_slice() {
-        if previous != Some(key) {
-            slots
-                .as_mut_slice()
-                .get_mut(ordinal)
-                .ok_or(AnimError::Malformed("clip slot"))?
-                .first = true;
-            previous = Some(key);
+    for (key, _, first) in keys.as_mut_slice() {
+        if previous != Some(*key) {
+            **first = true;
+            previous = Some(*key);
         }
     }
     Ok(())

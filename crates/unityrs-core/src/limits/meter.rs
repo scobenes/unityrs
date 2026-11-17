@@ -175,6 +175,10 @@ impl Meter {
         Arc::ptr_eq(&self.account, &other.account)
     }
 
+    pub(crate) fn input_address(&self) -> usize {
+        Arc::as_ptr(&self.account).addr()
+    }
+
     /// Counts `bytes` of this open's work, refused when it would pass the
     /// bound ([`LimitKind::DecodeWork`]): one atomic check-and-add, so work
     /// counted at once from several threads never passes the bound. Work is

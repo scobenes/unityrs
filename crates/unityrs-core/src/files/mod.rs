@@ -25,7 +25,7 @@ pub use save::{SaveError, SaveLayout, SaveOptions};
 mod teardown;
 pub mod web;
 
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 
 use bytes::Bytes;
 
@@ -40,7 +40,7 @@ pub use web::{WebFile, WebPacker, WebSaveOptions};
 
 use crate::detect::{FileType, ParsedAs, parsed_as};
 use crate::error::{Error, LimitError, LimitKind, Unsupported};
-use crate::limits::{Charge, ChargeError, Meter, heap_cost};
+use crate::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost};
 use crate::options::FileContext;
 use crate::raw::RawStr;
 use crate::stream::ReaderKind;
@@ -59,6 +59,20 @@ pub enum File {
 }
 
 impl File {
+    pub(crate) fn mark_dependency_root(&self) {
+        self.set_dependency_path(MeteredVec::new(self.meter()));
+    }
+
+    fn set_dependency_path(&self, path: MeteredVec<usize>) {
+        let identity = match self {
+            Self::Serialized(file) => &file.dependency_path,
+            Self::Bundle(file) => &file.dependency_path,
+            Self::Web(file) => &file.dependency_path,
+            Self::Raw(_) => return,
+        };
+        let set = identity.0.set(path);
+        debug_assert!(set.is_ok());
+    }
     /// A container's loaded ordered files dict, or an empty slice for a leaf.
     /// New resource writers are exposed by the container's `writeable_cabs`.
     #[must_use]
@@ -112,6 +126,34 @@ impl File {
             Self::Web(_) => FileType::WebFile,
             Self::Raw(f) => f.file_type(),
         }
+    }
+}
+
+/// Directory indices within a dependency source. The location survives a
+/// reopen without holding any of the parent containers alive.
+#[derive(Default)]
+struct DependencyPath(OnceLock<MeteredVec<usize>>);
+
+impl DependencyPath {
+    fn parse_child(
+        &self,
+        meter: &Arc<Meter>,
+        index: usize,
+        parse: impl FnOnce() -> Result<File, Error>,
+    ) -> Result<File, Error> {
+        let Some(parent) = self.0.get() else {
+            return parse();
+        };
+        let file = parse()?;
+        if matches!(file, File::Raw(_)) {
+            return Ok(file);
+        }
+        meter.count_decode(parent.len() as u64 + 1)?;
+        let mut path = MeteredVec::with_capacity(meter, parent.len().saturating_add(1))?;
+        path.extend_from_slice(parent.as_slice())?;
+        path.push(index)?;
+        file.set_dependency_path(path);
+        Ok(file)
     }
 }
 

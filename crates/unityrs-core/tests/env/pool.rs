@@ -14,16 +14,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value as J, json};
-use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation};
+use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation, Unbounded};
 use unityrs_core::container::ContainerPath;
-use unityrs_core::env::{Cab, CabResolver, EnvOptions, Environment, Fetch, LoadMode, PPtr, Source};
+use unityrs_core::env::{
+    Cab, CabResolver, DerefError, EnvOptions, Environment, Fetch, LoadMode, PPtr, Source,
+};
+use unityrs_core::error::LimitKind;
 use unityrs_core::files::{File, SerializedFile};
 use unityrs_core::limits::Meter;
 use unityrs_core::object::ObjectRef;
 use unityrs_core::value::Value;
 use unityrs_core::{Bytes, Error, RawStr};
 use unityrs_testkit::env::{
-    DepScene, Scene, bundle, dependency_reads, dependency_scenes, res_bytes,
+    DepScene, Obj, Scene, bundle, dependency_reads, dependency_scenes, res_bytes, serialized,
 };
 
 use crate::{DepPool, ctx_with};
@@ -546,6 +549,62 @@ fn a_pool_refusal_anywhere_evicts_the_others_and_retries_once() {
         }
     }
     assert!(refused > 0, "no call made a dependency reservation");
+}
+
+#[test]
+fn held_deref_charges_only_the_scans_each_retry_repeats() {
+    let run = |sibling, allowance| {
+        let budget = Arc::new(RefuseOnce::default());
+        let env = Environment::new(EnvOptions::batch(ctx_with(budget.clone())));
+        let from = serialized(&["to"], &[Obj::named(1, "from", &[])]);
+        let to = serialized(&[], &[Obj::named(2, "to", &[])]);
+        let dependency = |name: &'static [u8], entries: &[(&str, Vec<u8>)]| {
+            env.load_dependency(Source::Bytes {
+                name: RawStr::from_static(name),
+                data: Bytes::from(bundle(entries)),
+            })
+            .unwrap()
+        };
+        let container = if sibling {
+            dependency(b"from.bundle", &[("from", from), ("to", to)][..])
+        } else {
+            drop(dependency(b"to.bundle", &[("to", to)][..]));
+            dependency(b"from.bundle", &[("from", from)][..])
+        };
+        let File::Serialized(file) = container.container_entry(0).unwrap() else {
+            panic!("serialized source");
+        };
+        // A lazy target entry's first reservation comes after the sibling
+        // scan, either directly or within the registry's own retry.
+        budget.arm(1);
+        let meter =
+            Meter::with_decode_work(u64::MAX, allowance, Arc::new(Unbounded), Reservation::Input);
+        let result = env.deref_held(
+            &file,
+            PPtr {
+                file_id: 1,
+                path_id: 2,
+            },
+            &meter,
+        );
+        assert_eq!(budget.refused.load(Ordering::Acquire), 1);
+        (result, meter.decoded())
+    };
+
+    let registry_scan = 2 + 5; // external "to", sibling "from"
+    let sibling_scan = registry_scan + 3; // sibling "to"
+    let (result, charged) = run(false, registry_scan);
+    assert_eq!(result.unwrap().0.path_id(), 2);
+    assert_eq!(charged, registry_scan);
+
+    let (result, charged) = run(true, 2 * sibling_scan);
+    assert_eq!(result.unwrap().0.path_id(), 2);
+    assert_eq!(charged, 2 * sibling_scan);
+
+    let (result, charged) = run(true, 2 * sibling_scan - 1);
+    assert!(matches!(result, Err(DerefError::Load(Error::Limit(error)))
+        if error.kind() == LimitKind::DecodeWork && error.value() == 2 * sibling_scan));
+    assert_eq!(charged, 2 * sibling_scan - 3);
 }
 
 /// An Environment in `mode` whose pool (its limit set by [`room`]) holds

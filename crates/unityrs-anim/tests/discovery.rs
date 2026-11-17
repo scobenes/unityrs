@@ -1,9 +1,12 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use unityrs_anim::{AnimError, ClipSelector, SelectionError, discover};
-use unityrs_core::budget::{Reservation, Unbounded};
-use unityrs_core::env::{CabResolver, DerefError, EnvOptions, Environment, Source};
+use unityrs_core::budget::{
+    BudgetExceeded, MemoryBudget, Permit, PermitHome, Reservation, Unbounded,
+};
+use unityrs_core::env::{CabResolver, DerefError, EnvOptions, Environment, PPtr, Source};
 use unityrs_core::error::{Error, LimitKind};
-use unityrs_core::files::{File, SerializedFile};
+use unityrs_core::files::{File, ParentKind, SerializedFile};
 use unityrs_core::limits::Meter;
 use unityrs_core::{Bytes, FileContext, RawStr};
 use unityrs_scene::{GraphOptions, graph_from_scene_file};
@@ -308,6 +311,68 @@ fn repeated_clips_charge_for_each_bundle_sibling_scan() {
 }
 
 #[test]
+fn discovery_charges_the_sibling_scan_when_the_registry_retries() {
+    #[derive(Debug, Default)]
+    struct RefuseOnce(AtomicBool);
+
+    impl MemoryBudget for RefuseOnce {
+        fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
+            if what == Reservation::Dependency && self.0.swap(false, Ordering::Relaxed) {
+                return Err(BudgetExceeded {
+                    requested: bytes,
+                    what,
+                });
+            }
+            Ok(Permit::detached(bytes))
+        }
+    }
+
+    let budget = Arc::new(RefuseOnce::default());
+    let mut context = FileContext::unitypy();
+    context.budget = budget.clone();
+    let env = Environment::new(EnvOptions::batch(Arc::new(context)));
+    let clip = s::file(Layout::Unity2022, &[], &[a::clip(42)]).unwrap();
+    drop(
+        env.load_dependency(Source::Bytes {
+            name: RawStr::from_static(b"clips.bundle"),
+            data: Bytes::from(bundle(&[("clips", clip)])),
+        })
+        .unwrap(),
+    );
+    let rig = s::file(
+        Layout::Unity2022,
+        &["clips"],
+        &[
+            Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
+            Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+            a::legacy(3, (1, 42), &[]),
+        ],
+    )
+    .unwrap();
+    let container = env
+        .load(Source::Bytes {
+            name: RawStr::from_static(b"rig.bundle"),
+            data: Bytes::from(bundle(&[("rig", rig), ("padding.resS", vec![0])])),
+        })
+        .unwrap();
+    let File::Serialized(file) = container.container_entry(0).unwrap() else {
+        panic!("serialized rig");
+    };
+    let graph =
+        graph_from_scene_file(&env, &file, &GraphOptions::default(), &Meter::unlimited()).unwrap();
+    budget.0.store(true, Ordering::Relaxed);
+
+    // Node and components, two field lookups, pointer read and resolution,
+    // external path and sibling names, then slot collection, sort and dedup.
+    let work = 3 + 4 + 5 + (5 + 4 + 13) + (1 + 4 + 2);
+    let meter = Meter::with_decode_work(u64::MAX, work, Arc::new(Unbounded), Reservation::Input);
+    let catalog = discover(&env, &graph, &meter).unwrap();
+    assert!(!budget.0.load(Ordering::Relaxed));
+    assert_eq!(catalog.rigs()[0].slots()[0].clip().unwrap().path_id(), 42);
+    assert_eq!(meter.decoded(), work);
+}
+
+#[test]
 fn override_can_find_sibling_clips_after_its_dependency_is_evicted() {
     #[derive(Debug)]
     struct Pressure(Bytes);
@@ -377,19 +442,20 @@ fn override_matches_base_clip_identity_after_its_bundle_is_evicted() {
     let mut options = EnvOptions::batch(Arc::new(FileContext::unitypy()));
     options.dep_cache_bytes = 1;
     let env = Environment::new(options);
-    for (name, cab, objects) in [
+    let clips = s::file(Layout::Unity2022, &[], &[a::clip(6), a::clip(7)]).unwrap();
+    let another = s::file(Layout::Unity2022, &[], &[a::clip(6)]).unwrap();
+    let pressure = s::file(Layout::Unity2022, &[], &[a::clip(8)]).unwrap();
+    for (name, entries) in [
         (
             b"clips.bundle".as_slice(),
-            "clips",
-            vec![a::clip(6), a::clip(7)],
+            vec![("clips", clips), ("another", another)],
         ),
-        (b"pressure.bundle".as_slice(), "pressure", vec![a::clip(8)]),
+        (b"pressure.bundle".as_slice(), vec![("pressure", pressure)]),
     ] {
-        let data = s::file(Layout::Unity2022, &[], &objects).unwrap();
         drop(
             env.load_dependency(Source::Bytes {
                 name: RawStr::from_static(name),
-                data: Bytes::from(bundle(&[(cab, data)])),
+                data: Bytes::from(bundle(&entries)),
             })
             .unwrap(),
         );
@@ -397,13 +463,13 @@ fn override_matches_base_clip_identity_after_its_bundle_is_evicted() {
     let file = load(
         &env,
         b"rig",
-        &["clips", "pressure"],
+        &["clips", "pressure", "another"],
         &[
             Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
             Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
             a::animator(3, (0, 4)),
             a::overrides(4, (0, 5), &[((1, 6), (1, 7))]),
-            a::controller(5, &[(1, 6), (2, 8)], &[0, 1]),
+            a::controller(5, &[(1, 6), (2, 8), (1, 6), (3, 6)], &[0, 1, 2, 3]),
         ],
     );
     let meter = Meter::unlimited();
@@ -413,8 +479,133 @@ fn override_matches_base_clip_identity_after_its_bundle_is_evicted() {
     assert!(env.stats().dependencies_evicted > before);
     let rig = &catalog.rigs()[0];
     assert!(rig.issues().is_empty(), "{:?}", rig.issues());
-    assert_eq!(rig.slots()[0].clip().unwrap().path_id(), 7);
-    assert_eq!(rig.slots()[1].clip().unwrap().path_id(), 8);
+    let [first, pressure, duplicate, another] = rig.slots() else {
+        panic!("four controller slots");
+    };
+    let clip = first.clip().unwrap();
+    assert_eq!(clip.path_id(), 7);
+    assert_eq!(pressure.clip().unwrap().path_id(), 8);
+    assert_eq!(duplicate.clip().unwrap().path_id(), 7);
+    assert!(!duplicate.is_first());
+    assert_eq!(another.clip().unwrap().path_id(), 6);
+    assert!(another.replacement.is_none());
+
+    let ParentKind::Bundle { bundle, .. } = &clip.file().parent().unwrap().kind else {
+        panic!("clip bundle");
+    };
+    env.get_cab(&RawStr::from("pressure"), &meter)
+        .unwrap()
+        .unwrap();
+    assert!(bundle.upgrade().is_none());
+    let reopened = env
+        .deref(
+            &file,
+            PPtr {
+                file_id: 1,
+                path_id: 7,
+            },
+        )
+        .unwrap();
+    assert!(!Arc::ptr_eq(clip.file(), reopened.file()));
+    let selected = catalog
+        .select(
+            &rig.root,
+            &rig.component,
+            ClipSelector::Clip(&reopened),
+            &meter,
+        )
+        .unwrap();
+    assert!(std::ptr::eq(selected, first));
+}
+
+#[test]
+fn unused_override_rows_leave_room_for_the_selected_clip() {
+    #[derive(Debug, Default)]
+    struct Usage(AtomicU64);
+    impl PermitHome for Usage {
+        fn release(&self, bytes: u64) {
+            self.0.fetch_sub(bytes, Ordering::Relaxed);
+        }
+    }
+    #[derive(Debug)]
+    struct Pool {
+        usage: Arc<Usage>,
+        limit: u64,
+    }
+    impl MemoryBudget for Pool {
+        fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
+            if what != Reservation::Dependency {
+                return Ok(Permit::detached(bytes));
+            }
+            self.usage
+                .0
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                    used.checked_add(bytes).filter(|&total| total <= self.limit)
+                })
+                .map_err(|_| BudgetExceeded {
+                    requested: bytes,
+                    what,
+                })?;
+            Ok(Permit::new(bytes, self.usage.clone()))
+        }
+    }
+
+    let discover_with_cache = |cache_bytes, pool_bytes| {
+        let mut context = FileContext::unitypy();
+        context.budget = Arc::new(Pool {
+            usage: Arc::default(),
+            limit: pool_bytes,
+        });
+        let mut options = EnvOptions::batch(Arc::new(context));
+        options.dep_cache_bytes = cache_bytes;
+        let env = Environment::new(options);
+        let names: Vec<_> = (0..24).map(|i| format!("clips-{i}")).collect();
+        let externals: Vec<_> = names.iter().map(String::as_str).collect();
+        let filler: Vec<_> = (0..96).map(|i| a::clip(100 + i)).collect();
+        for name in &externals {
+            let clips = s::file(Layout::Unity2022, &[], &filler).unwrap();
+            drop(
+                env.load_dependency(Source::Bytes {
+                    name: RawStr::from(format!("{name}.bundle").into_bytes()),
+                    data: Bytes::from(bundle(&[(name, clips)])),
+                })
+                .unwrap(),
+            );
+        }
+        let mut rows = vec![((1, 100), (1, 101))];
+        // The unused rows have the same path ID as the selected original.
+        rows.extend((2..=24).map(|file_id| ((file_id, 100), (file_id, 102))));
+        let file = load(
+            &env,
+            b"rig",
+            &externals,
+            &[
+                Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
+                Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+                a::animator(3, (0, 4)),
+                a::overrides(4, (0, 5), &rows),
+                a::controller(5, &[(1, 100)], &[0]),
+            ],
+        );
+        let meter = Meter::unlimited();
+        let graph = graph_from_scene_file(&env, &file, &GraphOptions::default(), &meter).unwrap();
+        let before = env.stats().dependencies_evicted;
+        let catalog = discover(&env, &graph, &meter).unwrap();
+        if cache_bytes == 1 {
+            assert!(env.stats().dependencies_evicted > before);
+        }
+        let rig = &catalog.rigs()[0];
+        assert!(rig.issues().is_empty(), "{:?}", rig.issues());
+        let [slot] = rig.slots() else {
+            panic!("one clip slot")
+        };
+        let clip = slot.clip().unwrap();
+        assert_eq!(clip.file().name().as_bytes(), b"clips-0");
+        assert_eq!(clip.path_id(), 101);
+        assert_eq!(slot.replacement.as_ref().unwrap().ordinal, 0);
+    };
+    discover_with_cache(u64::MAX, u64::MAX);
+    discover_with_cache(1, 512 * 1024);
 }
 
 #[test]

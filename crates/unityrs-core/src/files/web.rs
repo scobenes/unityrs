@@ -70,6 +70,7 @@ pub struct WebFile {
     source_depth: u32,
     this: std::sync::Weak<Self>,
     parent: Option<Parent>,
+    pub(super) dependency_path: super::DependencyPath,
     ctx: Arc<FileContext>,
     /// The handle, its directory and its inflated data, charged to the input.
     /// Last so all the storage it covers is freed before its refund.
@@ -217,6 +218,7 @@ impl WebFile {
             source_depth,
             constructor_position,
             parent,
+            dependency_path: super::DependencyPath::default(),
             charge,
             ctx: ctx.clone(),
             this: this.clone(),
@@ -294,14 +296,16 @@ impl WebFile {
                     self.data.len() as u64
                 },
             };
-            parse_file(
-                row.path.clone(),
-                data,
-                ty,
-                Some(parent),
-                self.meter(),
-                &self.ctx,
-            )
+            self.dependency_path.parse_child(self.meter(), i, || {
+                parse_file(
+                    row.path.clone(),
+                    data,
+                    ty,
+                    Some(parent),
+                    self.meter(),
+                    &self.ctx,
+                )
+            })
         })();
         got.map_err(|e| match e {
             Error::Entry { .. } | Error::Limit(_) | Error::Budget(_) | Error::Allocator(_) => e,

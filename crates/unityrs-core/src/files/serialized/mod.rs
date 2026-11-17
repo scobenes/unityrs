@@ -285,6 +285,7 @@ pub struct SerializedFile {
     /// Published by [`get_or_publish_result`]: a refused charge is not kept.
     container: ResultCell<Container, Error>,
     parent: Option<Parent>,
+    pub(super) dependency_path: super::DependencyPath,
     /// The reader UnityPy reads it with, for its metadata and its objects.
     reader: ReaderKind,
     constructor_position: i128,
@@ -312,6 +313,16 @@ impl std::fmt::Debug for SerializedFile {
 }
 
 impl SerializedFile {
+    /// The identity of this file occurrence while it is held. A dependency
+    /// keeps the same input address and directory path across cache reopens.
+    #[must_use]
+    pub fn occurrence_key(&self) -> (usize, &[usize]) {
+        self.dependency_path.0.get().map_or_else(
+            || (std::ptr::from_ref(self).addr(), &[][..]),
+            |path| (self.meter().input_address(), path.as_slice()),
+        )
+    }
+
     /// The meter of the input it belongs to: what reading its objects
     /// charges ([`crate::walk::ReadCtx::meter`]).
     pub fn meter(&self) -> &Arc<Meter> {
@@ -559,6 +570,7 @@ impl SerializedFile {
             object_order: order,
             container: ResultCell::new(),
             parent: None,
+            dependency_path: super::DependencyPath::default(),
             reader: ReaderKind::Memory,
             constructor_position: 0,
             copies: CopyCounts::default(),

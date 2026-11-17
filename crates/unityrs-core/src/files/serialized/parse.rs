@@ -181,6 +181,7 @@ impl SerializedFile {
             by_path,
             container: ResultCell::new(),
             parent,
+            dependency_path: crate::files::DependencyPath::default(),
             reader,
             constructor_position,
             charge,

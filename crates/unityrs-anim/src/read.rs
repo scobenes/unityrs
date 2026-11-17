@@ -65,6 +65,7 @@ pub(crate) fn same_object(a: &ObjectRef, b: &ObjectRef) -> bool {
     a.path_id() == b.path_id() && Arc::ptr_eq(a.file(), b.file())
 }
 
-pub(crate) fn identity_key(object: &ObjectRef) -> (usize, i64) {
-    (Arc::as_ptr(object.file()) as usize, object.path_id())
+pub(crate) fn identity_key(object: &ObjectRef) -> (usize, i64, &[usize]) {
+    let (input, path) = object.file().occurrence_key();
+    (input, object.path_id(), path)
 }
