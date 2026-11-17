@@ -13,6 +13,7 @@ const TOKENS: &[&str] = &[
     ".wait_timeout(",
     ".block_on(",
     "worker.join(",
+    "startup.join(",
     "libc::poll(",
     "thread::sleep(",
     "thread::park(",
@@ -38,6 +39,7 @@ fn scan(dir: &Path, root: &Path, out: &mut BTreeMap<(String, String), usize>) {
             // Existing progress/early has its own bounded wait tests. This
             // inventory owns B5's added execution and orchestration only.
             if name.starts_with("controller/")
+                || name == "execution/startup.rs"
                 || name.starts_with("lifetime/")
                 || [
                     "execution.rs",
@@ -86,6 +88,12 @@ fn every_engine_wait_has_a_bounded_or_idle_role_and_dispatch_unlocks_before_core
         ("execution.rs", "worker.join(", 1), // explicit quiesce only: extraction
         // W20: the prewarm's queued no-ops draining, within its one second
         ("execution.rs", "thread::yield_now(", 1),
+        // W20: run startup's empty tasks and one zero-duration timer.
+        ("execution/startup.rs", ".block_on(", 2),
+        ("execution/startup.rs", ".lock(", 1), // W20: serialize task-ID priming bursts
+        ("execution/startup.rs", "thread::yield_now(", 1), // W20: one-second priming deadline
+        // W20: the scoped helper runs only startup's empty tasks/timer.
+        ("execution/startup.rs", "startup.join(", 1),
         ("worker.rs", ".lock(", 2), // W3 receive, and moving a completed owner
         ("worker.rs", ".recv(", 1), // W3 idle worker
         ("sys/wake.rs", "libc::poll(", 1), // W1/W2: 1 s, stop and end descriptors

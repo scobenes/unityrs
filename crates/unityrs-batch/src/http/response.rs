@@ -160,7 +160,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Response<I> {
             _charge: charge,
         }))
     }
-    fn poll_frame(
+    pub(crate) fn poll_frame(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<hyper::body::Frame<Bytes>>, Error>> {

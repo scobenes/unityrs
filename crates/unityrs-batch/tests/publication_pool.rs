@@ -31,7 +31,7 @@ fn pool_drives_share_admission_and_preserve_winner_indices() {
             done: scene.done,
             workspace: scene.workspace,
             handoff: scene.handoff,
-            directory: Arc::new(directory),
+            sink: Arc::new(directory).into(),
             outcomes,
             account: Arc::new(Account::new(if concurrency == 1 {
                 publish::WORKING_SET
@@ -105,7 +105,7 @@ fn dispatcher_releases_its_lock_before_concurrent_transfers() {
         done: scene.done,
         workspace: scene.workspace,
         handoff: scene.handoff,
-        directory: Arc::new(directory),
+        sink: Arc::new(directory).into(),
         outcomes,
         account: Arc::new(Account::new(64 << 20)),
         gate: publish::Gate::default(),
@@ -212,7 +212,7 @@ fn pool_buffers_child() {
             done: scene.done,
             workspace: scene.workspace,
             handoff: scene.handoff,
-            directory: Arc::new(directory),
+            sink: Arc::new(directory).into(),
             outcomes,
             account: Arc::new(Account::new(64 << 20)),
             gate: publish::Gate::default(),

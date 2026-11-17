@@ -75,6 +75,13 @@ impl PartBudget {
     pub fn used(&self) -> u64 {
         self.0.snapshot().input.used
     }
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn visit_meter(
+        &self,
+        visit: &mut impl FnMut(&std::sync::Arc<unityrs_core::limits::Meter>),
+    ) {
+        visit(self.0.meter());
+    }
 }
 impl Default for PartBudget {
     fn default() -> Self {

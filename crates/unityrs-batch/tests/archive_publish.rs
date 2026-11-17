@@ -415,7 +415,7 @@ fn pool_drives_publish_archives_within_the_archive_envelope() {
             done: scene.done,
             workspace: scene.workspace,
             handoff: scene.handoff,
-            directory: Arc::new(directory),
+            sink: Arc::new(directory).into(),
             outcomes,
             account: Arc::new(Account::new(if concurrency == 1 {
                 publish::ARCHIVE_WORKING_SET

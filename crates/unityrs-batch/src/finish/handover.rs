@@ -9,7 +9,7 @@ use crate::{
     progress::Phase,
     publish::Owned,
     reason::Code,
-    sink::directory::Directory,
+    sink::Sink,
     spool::{FileSystem, workspace::Workspace},
     start::spool::Started,
     sys::Shared,
@@ -94,7 +94,7 @@ pub struct HandOver {
     /// finisher's budget arithmetic is on that clock.
     pub boot: Option<Boot>,
     pub selected: Option<Selected>,
-    pub directory: Option<Arc<Directory>>,
+    pub sink: Option<Sink>,
     pub spool: Option<Spool>,
 }
 impl HandOver {
@@ -110,7 +110,7 @@ impl HandOver {
             at: Instant::now(),
             boot: Boot::now().ok(),
             selected: None,
-            directory: None,
+            sink: None,
             spool: None,
         }
     }

@@ -390,3 +390,46 @@ fn an_engine_failure_before_connect_settles_head_history_without_a_false_infligh
     assert!(!fence.history().needs_final_after_stop());
     assert!(!fence.history().in_flight);
 }
+
+#[test]
+fn final_head_keeps_the_one_second_floor_for_readback() {
+    let h = harness(vec![
+        Reply::error(412, "PreconditionFailed"),
+        Reply::status(404, "", b""),
+        Reply::status(200, "ETag: \"done\"\r\n", b""),
+    ]);
+    let fence = head::Fence::default();
+    let key = Path::parse("head").unwrap();
+    let mut buffer = vec![0; usize::try_from(unityrs_batch::store::HEAD_CAP).unwrap()];
+    let hard = unityrs_batch::finish::budget::Fixed(Some(unityrs_batch::lifetime::Boot(
+        unityrs_batch::lifetime::Boot::now().unwrap().0 + 2700,
+    )));
+    let budget = unityrs_batch::finish::budget::Budget {
+        hard: &hard,
+        reconcile: true,
+    };
+    let result = run(async {
+        let tries = h.tries();
+        let request = Request::new(
+            &h.store,
+            &tries,
+            &h.slot,
+            tokio::time::Instant::now() + Duration::from_secs(2),
+        )
+        .finishing(budget, true);
+        head::Write {
+            key: &key,
+            run_id: "run",
+            identity: unityrs_batch::manifest::head::Identity {
+                attempt: 1,
+                write_seq: 1,
+            },
+            bytes: Bytes::from_static(b"head"),
+            conditional: true,
+        }
+        .publish(&request, &fence, &mut buffer)
+        .await
+    });
+    assert_eq!(h.script.seen.count(), 1);
+    assert_eq!(result, Err(head::Error::PublishFailed));
+}
