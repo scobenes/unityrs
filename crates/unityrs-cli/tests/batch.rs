@@ -23,7 +23,7 @@ use common::{
     write_job,
 };
 use unityrs_batch::alloc::Measured;
-use unityrs_batch::bound::{CHECK_ENV_BLOCK, PROVISIONAL, memory_bound};
+use unityrs_batch::bound::{CHECK_ENV_BLOCK, SELECTED, memory_bound};
 use unityrs_batch::progress::{Exit, Snapshot};
 use unityrs_batch::reason::Code;
 use unityrs_batch::spec::{self, SCHEMA, SPEC_VERSION};
@@ -66,7 +66,7 @@ fn bound_of(dir: &Scratch, text: &str, inputs: u64) -> u64 {
 /// The bound with nothing measured.
 fn fixed(text: &str) -> u64 {
     let parsed = spec::parse(text.as_bytes().to_vec()).unwrap().spec;
-    memory_bound(&parsed, Measured::default(), CHECK_ENV_BLOCK, &PROVISIONAL).total()
+    memory_bound(&parsed, Measured::default(), CHECK_ENV_BLOCK, &SELECTED).total()
 }
 
 #[test]

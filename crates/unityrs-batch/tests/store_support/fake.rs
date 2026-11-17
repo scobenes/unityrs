@@ -51,6 +51,7 @@ pub struct Fault {
     pub body: Option<Vec<u8>>,
     pub headers: Vec<(String, String)>,
     pub before_head: Option<Duration>,
+    pub head_gate: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub after_head: Option<Duration>,
     pub mid_body: Option<(usize, Duration)>,
     pub read_delay_per_kib: Option<Duration>,
@@ -523,6 +524,13 @@ async fn handle(
     }
     if let Some(delay) = fault.before_head {
         tokio::time::sleep(delay).await;
+    }
+    if let Some(gate) = &fault.head_gate {
+        let until = Instant::now() + unityrs_testkit::guard::DEADLOCK_GUARD;
+        while !gate.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(Instant::now() < until, "store response gate");
+            tokio::task::yield_now().await;
+        }
     }
     if fault.close {
         return Err(io::Error::from(io::ErrorKind::ConnectionAborted));

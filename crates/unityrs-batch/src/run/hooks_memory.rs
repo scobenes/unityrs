@@ -57,3 +57,78 @@ pub fn at(point: Point) {
         (observer.point)(point);
     }
 }
+
+/// Isolated representation probe of the real dispatch channel. Referenced
+/// spool owners have their own charged lifetime; messages only share them.
+/// This library-only test adapter never runs in the production engine.
+pub fn probe_dispatch(cap: usize, observe: impl FnOnce()) -> Option<usize> {
+    if !(1..=1024).contains(&cap) {
+        return None;
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel(cap);
+    for id in 0..cap {
+        tx.try_send(crate::worker::Dispatch {
+            kind: crate::phase1::JobKind::Attempt,
+            id: u32::try_from(id).ok()?,
+            directory: None,
+            peek_file: None,
+        })
+        .ok()?;
+    }
+    observe();
+    drop((tx, rx));
+    Some(size_of::<crate::worker::Dispatch>())
+}
+
+/// Drive the real lookup/task-cell path without opening a connection.
+/// The caller owns the runtime, permit and deterministic resolver.
+pub async fn probe_lookup(
+    handle: &tokio::runtime::Handle,
+    permit: &mut crate::http::permit::RequestPermit,
+    resolver: std::sync::Arc<dyn crate::http::resolve::Resolver>,
+    host: &str,
+) -> Result<crate::http::resolve::Addresses, crate::http::Error> {
+    crate::http::resolve::lookup(
+        handle,
+        permit,
+        &crate::http::resolve::Source::Hook(resolver),
+        host,
+        80,
+        None,
+    )
+    .await
+}
+
+/// Construct actual bounded store owners without starting pool threads or
+/// issuing a request. Includes fixed setup conservatively in the probe.
+pub fn probe_store_preparation(
+    spec: std::sync::Arc<crate::spec::model::Spec>,
+    credentials: &object_store::aws::AwsCredentialProvider,
+    observe: impl FnOnce(),
+) -> Option<()> {
+    let runtimes = crate::lifetime::Runtimes::prepare(spec.download_concurrency).ok()?;
+    let controller = crate::http::Service::new(
+        runtimes.controller.handle().clone(),
+        std::sync::Arc::new(crate::sys::reset::SocketTable::new()),
+    )
+    .ok()?;
+    let finisher = controller.on_runtime(runtimes.finisher.handle().clone());
+    let wake = std::sync::Arc::new(crate::sys::Wake::new().ok()?);
+    let registered = crate::sys::Shared::new(
+        crate::sys::RegisteredWake::new(&wake, runtimes.controller.handle()).ok()?,
+    )
+    .ok()?;
+    let store = crate::sink::store::Store::prepare(
+        spec,
+        controller,
+        finisher,
+        crate::sink::store::Runtime::Own(Some(runtimes.finisher)),
+        credentials,
+        registered,
+        None,
+    )
+    .ok()?;
+    observe();
+    drop(store);
+    Some(())
+}

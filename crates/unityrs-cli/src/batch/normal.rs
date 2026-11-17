@@ -1,7 +1,7 @@
 //! Normal runs: phase 1's checks of the subset, then the process host
 //! (`unityrs_batch::run::process`, `docs/plans/batch.md` 2.11 steps 3 to
 //! 8), which never returns.
-use super::{CHECK_ENV_BLOCK, PROVISIONAL, PreparedRun, alloc, memory_bound};
+use super::{PreparedRun, SELECTED, alloc, memory_bound};
 use std::process::ExitCode;
 use unityrs_batch::{bound::Certification, progress::clock::Clock, run::process};
 #[cfg(test)]
@@ -28,9 +28,13 @@ pub(super) fn run(
             &format!("{}\n", super::USAGE),
         );
     }
-    // Provisional until B12 measures the inherited environment block: normal
-    // runs currently use --check's conservative 6 MiB allowance as well.
-    let bound = memory_bound(&prepared.spec, measured, CHECK_ENV_BLOCK, &PROVISIONAL).total();
+    let bound = memory_bound(
+        &prepared.spec,
+        measured,
+        unityrs_batch::bound::execution_env_block(),
+        &SELECTED,
+    )
+    .total();
     // Uncertified off 4 KiB pages (`unityrs_batch::bound`): the run says so
     // at its start, on stderr alone, before any progress thread, and goes on
     // (`docs/BATCH_SPEC.md` section 10). The host writes it as the main
