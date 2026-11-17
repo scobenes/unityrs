@@ -5,7 +5,6 @@ use std::{
     io::Write,
     os::unix::{ffi::OsStrExt, fs::symlink, net::UnixListener},
     process::{Command, Stdio},
-    time::Duration,
 };
 use unityrs_testkit::child;
 
@@ -140,8 +139,15 @@ fn special_inputs_are_refused_without_blocking() {
         // EOF follows every refused special file. A blocking FIFO open cannot
         // hide behind the test's own blocking read; scene cleanup owns the child.
         let mut bytes = Vec::new();
-        while let Ok(chunk) = stdout.0.recv_timeout(Duration::from_secs(10)) {
-            bytes.extend_from_slice(&chunk);
+        // The reader thread ends at the server's EOF; only a hang reaches the guard.
+        loop {
+            match stdout.0.recv_timeout(unityrs_testkit::guard::DEADLOCK_GUARD) {
+                Ok(chunk) => bytes.extend_from_slice(&chunk),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("the server did not close stdout after its last refused special file")
+                }
+            }
         }
         let responses: Vec<Value> = bytes.split(|&b| b == b'\n').filter(|line| !line.is_empty())
             .map(|line| serde_json::from_slice(line).unwrap()).collect();
