@@ -114,6 +114,15 @@ impl File {
         }
     }
 
+    pub(crate) fn parsed_container_entry(&self, i: usize) -> Option<&Self> {
+        let entries = match self {
+            Self::Bundle(b) => &b.entries,
+            Self::Web(w) => &w.entries,
+            _ => return None,
+        };
+        entries.get(i)?.get()?.as_ref().ok()
+    }
+
     /// What `check_file_type` called the bytes [`parse_file`] built this
     /// from, kept so a caller never detects them again (a gzip entry's
     /// detection inflates it): each kind but a reader has one type, and a

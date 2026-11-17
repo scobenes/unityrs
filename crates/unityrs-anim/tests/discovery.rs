@@ -1,17 +1,17 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock, Weak};
 use unityrs_anim::{AnimError, ClipSelector, SelectionError, discover};
 use unityrs_core::budget::{
     BudgetExceeded, MemoryBudget, Permit, PermitHome, Reservation, Unbounded,
 };
-use unityrs_core::env::{CabResolver, DerefError, EnvOptions, Environment, PPtr, Source};
+use unityrs_core::env::{CabResolver, DerefError, EnvOptions, Environment, Fetch, PPtr, Source};
 use unityrs_core::error::{Error, LimitKind};
-use unityrs_core::files::{File, ParentKind, SerializedFile};
+use unityrs_core::files::{BundleFile, File, ParentKind, SerializedFile};
 use unityrs_core::limits::Meter;
 use unityrs_core::{Bytes, FileContext, RawStr};
 use unityrs_scene::{GraphOptions, graph_from_scene_file};
 use unityrs_testkit::env::bundle;
-use unityrs_testkit::ngui::{Object, V, set_field};
+use unityrs_testkit::ngui::{Object, V, pptr, set_field, st, vector};
 use unityrs_testkit::scene3d::{self as s, Layout, anim as a};
 
 fn load(
@@ -562,37 +562,89 @@ mod dependency_budget {
 
 #[test]
 fn alternating_dependency_slots_share_two_retained_clips() {
+    #[derive(Debug)]
+    struct CountedBundle {
+        data: Bytes,
+        fetches: AtomicU64,
+        blocked_by: Option<Arc<OnceLock<Weak<BundleFile>>>>,
+    }
+    impl Fetch for CountedBundle {
+        fn fetch(&self) -> Result<Bytes, Error> {
+            if self
+                .blocked_by
+                .as_ref()
+                .and_then(|pin| pin.get())
+                .is_some_and(|pin| pin.strong_count() > 0)
+            {
+                return Err(BudgetExceeded {
+                    requested: self.data.len() as u64,
+                    what: Reservation::Dependency,
+                }
+                .into());
+            }
+            self.fetches.fetch_add(1, Ordering::Relaxed);
+            Ok(self.data.clone())
+        }
+    }
+
     let mut context = FileContext::unitypy();
     context.budget = dependency_budget::Pool::new(512 * 1024);
     let mut options = EnvOptions::batch(Arc::new(context));
-    options.dep_cache_bytes = 1;
-    let env = Environment::new(options);
     let filler: Vec<_> = (0..96).map(|i| a::clip(100 + i)).collect();
-    for (name, bundle_name) in [
-        ("clips-a", b"clips-a.bundle".as_slice()),
-        ("clips-b", b"clips-b.bundle".as_slice()),
-    ] {
-        let clips = s::file(Layout::Unity2022, &[], &filler).unwrap();
-        drop(
-            env.load_dependency(Source::Bytes {
-                name: RawStr::from_static(bundle_name),
-                data: Bytes::from(bundle(&[(name, clips)])),
+    let clip_file = s::file(Layout::Unity2022, &[], &filler).unwrap();
+    let calibration = Environment::new(options.clone());
+    drop(
+        calibration
+            .load_dependency(Source::Bytes {
+                name: RawStr::from_static(b"clips-a.bundle"),
+                data: Bytes::from(bundle(&[("clips-a", clip_file.clone())])),
             })
             .unwrap(),
-        );
+    );
+    let meter = Meter::unlimited();
+    calibration
+        .get_cab(&RawStr::from_static(b"clips-a"), &meter)
+        .unwrap()
+        .unwrap();
+    options.dep_cache_bytes = calibration.stats().dependency_bytes;
+    drop(calibration);
+    let env = Environment::new(options);
+    let pin = Arc::new(OnceLock::new());
+    let mut bundles = Vec::new();
+    for (name, bundle_name) in [
+        ("clips-b", b"clips-b.bundle".as_slice()),
+        ("clips-a", b"clips-a.bundle".as_slice()),
+    ] {
+        let fetch = Arc::new(CountedBundle {
+            data: Bytes::from(bundle(&[(name, clip_file.clone())])),
+            fetches: AtomicU64::new(0),
+            blocked_by: (name == "clips-b").then(|| pin.clone()),
+        });
+        let opened = env
+            .load_dependency(Source::Fetch {
+                name: RawStr::from_static(bundle_name),
+                fetch: fetch.clone(),
+            })
+            .unwrap();
+        if name == "clips-a" {
+            let File::Bundle(opened) = opened else {
+                panic!("clip bundle");
+            };
+            pin.set(Arc::downgrade(&opened)).unwrap();
+        }
+        bundles.push(fetch);
     }
-    let slots: Vec<_> = (0..128).map(|i| (1 + i % 2, 100)).collect();
+    let slots = [(1, 100), (2, 100), (3, 100)];
     let file = load(
         &env,
         b"rig",
-        &["clips-a", "clips-b"],
+        &["clips-a", "clips-b", "archive:/CLIPS-A/CLIPS-A"],
         &[
             Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
             Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
             a::legacy(3, (0, 0), &slots),
         ],
     );
-    let meter = Meter::unlimited();
     let graph = graph_from_scene_file(&env, &file, &GraphOptions::default(), &meter).unwrap();
     let before = env.stats().dependencies_evicted;
     let catalog = discover(&env, &graph, &meter).unwrap();
@@ -600,7 +652,7 @@ fn alternating_dependency_slots_share_two_retained_clips() {
     let rig = &catalog.rigs()[0];
     assert_eq!(rig.clips().count(), 2);
     let slots = &rig.slots()[1..];
-    assert_eq!(slots.len(), 128);
+    assert_eq!(slots.len(), 3);
     let first = slots[0].clip().unwrap();
     let second = slots[1].clip().unwrap();
     assert_eq!(first.file().name().as_bytes(), b"clips-a");
@@ -608,6 +660,94 @@ fn alternating_dependency_slots_share_two_retained_clips() {
     for (slot, expected) in slots.iter().zip([first, second].into_iter().cycle()) {
         assert!(std::ptr::eq(slot.clip().unwrap(), expected));
     }
+    // B reopens after evicting A. The last A slot reuses the first parsed A.
+    assert_eq!(pin.get().unwrap().strong_count(), 0);
+    assert_eq!(bundles[0].fetches.load(Ordering::Relaxed), 2);
+    assert_eq!(bundles[1].fetches.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn eager_asset_bundle_budget_refusal_retries_after_releasing_the_pinned_bundle() {
+    #[derive(Debug, Default)]
+    struct RefuseWhilePinned {
+        pinned: OnceLock<Weak<BundleFile>>,
+        refusals: AtomicU64,
+    }
+    impl MemoryBudget for RefuseWhilePinned {
+        fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
+            // The eager object read allocates a value array larger than the
+            // serialized bundle. Let all smaller charges through.
+            if what == Reservation::Dependency
+                && bytes >= 128 * 1024
+                && self.pinned.get().is_some_and(|pin| pin.strong_count() > 0)
+            {
+                self.refusals.fetch_add(1, Ordering::Relaxed);
+                return Err(BudgetExceeded {
+                    requested: bytes,
+                    what,
+                });
+            }
+            Ok(Permit::detached(bytes))
+        }
+    }
+
+    let budget = Arc::new(RefuseWhilePinned::default());
+    let mut context = FileContext::unitypy();
+    context.budget = budget.clone();
+    let mut options = EnvOptions::batch(Arc::new(context));
+    options.dep_cache_bytes = 1;
+    let env = Environment::new(options);
+    let null = pptr("Object", (0, 0));
+    let asset_bundle = Object::new(
+        11,
+        142,
+        st(
+            "AssetBundle",
+            vec![
+                ("m_PreloadTable", vector(null.clone(), vec![])),
+                ("m_Container", vector(null.clone(), vec![])),
+                ("m_Junk", vector(null.clone(), vec![null; 8192])),
+            ],
+        ),
+    );
+    for (name, objects) in [
+        ("clips-b", vec![a::clip(10), asset_bundle]),
+        ("clips-a", vec![a::clip(9)]),
+    ] {
+        let clips = s::file(Layout::Unity2022, &[], &objects).unwrap();
+        let opened = env
+            .load_dependency(Source::Bytes {
+                name: RawStr::from(format!("{name}.bundle").into_bytes()),
+                data: Bytes::from(bundle(&[(name, clips)])),
+            })
+            .unwrap();
+        if name == "clips-a" {
+            let File::Bundle(opened) = opened else {
+                panic!("clip bundle");
+            };
+            budget.pinned.set(Arc::downgrade(&opened)).unwrap();
+        }
+    }
+    let file = load(
+        &env,
+        b"rig",
+        &["clips-a", "clips-b"],
+        &[
+            Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
+            Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+            a::legacy(3, (1, 9), &[(2, 10)]),
+        ],
+    );
+    let meter = Meter::unlimited();
+    let graph = graph_from_scene_file(&env, &file, &GraphOptions::default(), &meter).unwrap();
+    let catalog = discover(&env, &graph, &meter).unwrap();
+    let [first, second] = catalog.rigs()[0].slots() else {
+        panic!("two clip slots");
+    };
+    assert!(budget.refusals.load(Ordering::Relaxed) > 0);
+    assert_eq!(budget.pinned.get().unwrap().strong_count(), 0);
+    assert_eq!(first.clip().unwrap().path_id(), 9);
+    assert_eq!(second.clip().unwrap().path_id(), 10);
 }
 
 #[test]

@@ -210,6 +210,7 @@ use std::sync::{Arc, RwLock};
 use bytes::Bytes;
 
 pub use container_index::{ContainerItem, ContainerItems};
+pub use deref::FileOccurrence;
 pub use listing::{FileEntries, FileEntry, Objects};
 pub use pptr::{DerefError, PPtr};
 pub use registry::{Cab, HeldCab, Keys, RawCab, Registry};
@@ -546,12 +547,13 @@ impl fmt::Debug for Environment {
     }
 }
 
-/// What a dereference reached: a registered CAB, or a file (a sibling, a
-/// `files` entry, one the resolver loaded).
+/// What a dereference reached: a retained object, a registered CAB, or a
+/// file (a sibling, a `files` entry, one the resolver loaded).
 #[derive(Clone)]
 enum Found {
     Cab(Cab),
     File(File),
+    Reused(crate::ObjectRef),
 }
 
 /// The name UnityPy keys a source by: the caller's name, or a path's string.
