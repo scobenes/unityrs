@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value as J, json};
-use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation, Unbounded};
+use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Reservation, Unbounded};
 use unityrs_core::container::ContainerPath;
 use unityrs_core::env::{
     Cab, CabResolver, DerefError, EnvOptions, Environment, Fetch, LoadMode, PPtr, Source,
@@ -31,44 +31,9 @@ use unityrs_testkit::env::{
 
 use crate::{DepPool, ctx_with};
 
-/// A budget that grants every reservation but one: the `n`-th dependency
-/// reservation after it is armed with `n` ([`Self::arm`]), refused once.
-/// It counts the dependency reservations it is asked for.
-#[derive(Debug, Default)]
-struct RefuseOnce {
-    countdown: AtomicU64,
-    asked: AtomicU64,
-    refused: AtomicU64,
-}
+mod refuse_once;
 
-impl RefuseOnce {
-    fn arm(&self, n: u64) {
-        self.countdown.store(n, Ordering::Release);
-    }
-
-    fn asked(&self) -> u64 {
-        self.asked.load(Ordering::Acquire)
-    }
-}
-
-impl MemoryBudget for RefuseOnce {
-    fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
-        if what == Reservation::Dependency {
-            self.asked.fetch_add(1, Ordering::AcqRel);
-            let left = self
-                .countdown
-                .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
-            if left == Ok(1) {
-                self.refused.fetch_add(1, Ordering::AcqRel);
-                return Err(BudgetExceeded {
-                    requested: bytes,
-                    what,
-                });
-            }
-        }
-        Ok(Permit::detached(bytes))
-    }
-}
+use refuse_once::RefuseOnce;
 
 /// What UnityPy 1.25.2 recorded for dependency scene `name`
 /// (`tests/fixtures/d/env.json`, `tools/fixtures/env.py`): its steps, each
@@ -480,7 +445,7 @@ fn run(phase: Phase, s: Setup, d: &DepScene, keys: &[String], k: Option<u64>) ->
         }
         _ => answer,
     };
-    (answer, asked, budget.refused.load(Ordering::Acquire))
+    (answer, asked, budget.refused())
 }
 
 /// Every dependency reservation of each phase (the scene's loads, a lookup
@@ -588,7 +553,7 @@ fn held_deref_charges_only_the_scans_each_retry_repeats() {
         } else {
             env.deref_held(&file, ptr, &meter)
         };
-        assert_eq!(budget.refused.load(Ordering::Acquire), 1);
+        assert_eq!(budget.refused(), 1);
         (result, meter.decoded())
     };
 
