@@ -123,6 +123,7 @@ pub fn json(tmp: &Scratch, args: &[&str], status: i32) -> Value {
     if status != 0 {
         assert_eq!(String::from_utf8_lossy(&output.stderr).lines().count(), 1);
     }
+    crate::mcp_parity::check(tmp, args, &value);
     let name = value["format"]
         .as_str()
         .unwrap()

@@ -48,7 +48,9 @@ mod args;
 mod batch;
 mod extract;
 mod gltf;
+mod mcp;
 mod obj;
+mod provider_input;
 #[cfg(feature = "test-hooks")]
 mod whole_memory;
 
@@ -79,7 +81,7 @@ static ALLOCATOR: Counting = Counting::new();
 #[global_allocator]
 static ALLOCATOR: Counting<whole_memory::Bridge> = Counting(whole_memory::Bridge);
 
-const USAGE: &str = "usage: unityrs {dump,values,batch,obj,gltf,extract,inspect,show,describe} ...\n\n\
+const USAGE: &str = "usage: unityrs {dump,values,batch,obj,gltf,extract,inspect,show,describe,mcp} ...\n\n\
   unityrs dump INPUT... -o OUT.jsonl[.gz] [options]   the canonical dump (dump -h)\n\
   unityrs gltf INPUT... --scene FILE -o OUTPUT.glb      scene/prefab export (gltf -h)\n\
   unityrs obj INPUT --path-id ID -o OUTPUT              OBJ/MTL export (obj -h)\n\
@@ -89,6 +91,7 @@ const USAGE: &str = "usage: unityrs {dump,values,batch,obj,gltf,extract,inspect,
   unityrs inspect INPUT... [options]                  bounded object inventory\n\
   unityrs show INPUT... --path-id N [options]          bounded object value\n\
   unityrs describe [--schema NAME]                    machine command reference\n\
+  unityrs mcp --root DIR [--out DIR] [limits]          MCP stdio server\n\
   unityrs --version                                   the version and spec version";
 
 const VALUES_USAGE: &str = "usage: unityrs values CASES.json";
@@ -219,6 +222,7 @@ fn main() -> ExitCode {
         .collect();
     let rest = argv.get(1..).unwrap_or_default();
     match argv.first().map(Vec::as_slice) {
+        Some(b"mcp") => mcp::main(rest),
         Some(b"inspect") => agent::main("inspect", rest),
         Some(b"show") => agent::main("show", rest),
         Some(b"describe") => agent::main("describe", rest),
@@ -248,7 +252,7 @@ fn main() -> ExitCode {
             USAGE,
             "unityrs",
             &format!(
-                "argument command: invalid choice: {} (choose from 'dump', 'values', 'batch', 'obj', 'gltf', 'extract', 'inspect', 'show', 'describe')",
+                "argument command: invalid choice: {} (choose from 'dump', 'values', 'batch', 'obj', 'gltf', 'extract', 'inspect', 'show', 'describe', 'mcp')",
                 args::py_repr(other)
             ),
         ),

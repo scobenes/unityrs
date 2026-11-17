@@ -27,31 +27,31 @@ pub const BUDGET: &[OptionSpec] = &[
         "--max-input-memory",
         "N",
         Some("8589934592"),
-        "Charged bytes per input and response.",
+        "Maximum charged memory in bytes per input and for the separate response or extraction budget.",
     ),
     opt(
         "--max-input-bytes",
         "N",
         Some("4294967296"),
-        "Source bytes per input.",
+        "Maximum source file size in bytes per input, checked before and during loading.",
     ),
     opt(
         "--max-decode-work",
         "N",
         Some("34359738368"),
-        "Work bytes per input and response.",
+        "Maximum cumulative work in byte units per input and for response rendering or extraction, including decoding and hashing.",
     ),
     opt(
         "--max-tree-depth",
         "N",
         Some("256"),
-        "Compiled typetree depth.",
+        "Maximum compiled typetree nesting depth in levels; separate from display depth and fixed runtime reader limits.",
     ),
     opt(
         "--tpk",
         "FILE",
         None,
-        "Optional schema provider for stripped trees.",
+        "Optional local TPK schema-provider file for assets with stripped typetrees; no provider is loaded by default.",
     ),
 ];
 pub const INSPECT: &[OptionSpec] = &[
@@ -59,15 +59,20 @@ pub const INSPECT: &[OptionSpec] = &[
         "--class",
         "CLASS",
         None,
-        "Class name or integer ID; repeat for a union.",
+        "Class names or integer IDs to include; multiple values form a union, intersected with any name filters. Omit to include all classes.",
     ),
     opt(
         "--name",
         "GLOB",
         None,
-        "Object name, using dump's case-sensitive glob syntax; repeat for a union.",
+        "Case-sensitive object-name globs (*, ?, [abc], [!abc]); multiple values form a union, intersected with any class filters. Omit to include unnamed objects too.",
     ),
-    opt("--limit", "N", Some("200"), "Page size, 1 through 10000."),
+    opt(
+        "--limit",
+        "N",
+        Some("200"),
+        "Maximum objects returned per page, 1 through 10000; the response byte cap may reduce the page further.",
+    ),
     opt(
         "--max-bytes",
         "N",
@@ -78,22 +83,27 @@ pub const INSPECT: &[OptionSpec] = &[
         "--cursor",
         "TOKEN",
         None,
-        "Continue this inventory with the same inputs and filters.",
+        "Pass the previous response's non-null next_cursor string unchanged; omit for the first page and stop when next_cursor is null. Keep input spellings, order, contents, filters and explicitly supplied budget/provider options unchanged.",
     ),
 ];
 pub const SHOW: &[OptionSpec] = &[
-    opt("--path-id", "N", None, "Required signed object path ID."),
+    opt(
+        "--path-id",
+        "N",
+        None,
+        "Required signed object path_id from inspect; use a file selector if several files contain the same ID.",
+    ),
     opt(
         "--file",
         "NAME",
         None,
-        "Exact SerializedFile name to disambiguate the path ID.",
+        "Optional exact SerializedFile name from inspect's file field, not an input path; use file_index if names repeat. If both selectors are supplied, both must match.",
     ),
     opt(
         "--file-index",
         "INPUT:FILE",
         None,
-        "Zero-based input index and file occurrence from inspect; selects one file even with repeated names.",
+        "Optional INPUT:FILE string using inspect's zero-based input and file_index numbers (for example 0:2); selects one exact file occurrence even when names repeat. Other inputs are not loaded.",
     ),
     opt(
         "--max-bytes",
@@ -105,32 +115,32 @@ pub const SHOW: &[OptionSpec] = &[
         "--max-items",
         "N",
         Some("256"),
-        "Maximum retained entries in each array or map.",
+        "Maximum retained data entries per array or map; zero shows only a summary and cuts are marked.",
     ),
     opt(
         "--max-depth",
         "N",
         Some("32"),
-        "Maximum value nesting, 0 through 128.",
+        "Maximum displayed value nesting depth in levels, 0 through 128, with root at zero; deeper subtrees are replaced by cut markers.",
     ),
     opt(
         "--value",
         "natural|canonical",
         Some("natural"),
-        "Value JSON representation; untruncated canonical values match the dump encoder.",
+        "Natural emits ordinary JSON with tags for exceptional values; canonical uses the dump encoder's tagged dictionaries, tuples and float bits. Untruncated canonical values match the dump encoder.",
     ),
     opt(
         "--bytes",
         "summary|full",
         Some("summary"),
-        "Natural-view byte runs are summaries unless full hex fits; canonical uses the dump's raw-byte rule.",
+        "In the natural view, summary returns byte length, SHA-256 and a hex prefix; full returns all hex only when it fits the byte cap. Canonical ignores this option and uses the dump's raw-byte rule.",
     ),
 ];
 pub const DESCRIBE: &[OptionSpec] = &[opt(
     "--schema",
     "inspect|show|describe|error",
     None,
-    "Print the named draft 2020-12 output schema.",
+    "Return the named draft 2020-12 output JSON Schema; omit to get the command and option reference instead.",
 )];
 pub const HELP: OptionSpec = OptionSpec {
     name: "--help",
@@ -155,6 +165,7 @@ pub struct Args<'a> {
     pub inputs: Vec<&'a [u8]>,
     pub options: Vec<(&'static str, &'a [u8])>,
     pub limits: Limits,
+    pub roots: Option<std::sync::Arc<crate::mcp::roots::Roots>>,
 }
 /// Bound raw argument bytes before escaping or allocating a diagnostic.
 pub(super) fn spelling(raw: &[u8]) -> String {
@@ -253,6 +264,7 @@ impl<'a> Args<'a> {
             inputs,
             options,
             limits,
+            roots: None,
         };
         args.validate(command)?;
         Ok(args)

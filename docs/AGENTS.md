@@ -18,7 +18,7 @@ explicit previews below. Invalid UTF-8 paths and names use the canonical
 `{"t":"str","hex":"..."}` representation.
 Value strings follow the rules for the selected view below.
 
-`describe` lists all nine subcommands, each option's value form, default (a
+`describe` lists all ten subcommands, each option's value form, default (a
 string, or null when absent), help, usage, stdout behavior and exit codes.
 Legacy commands retain their original parsers and output contracts. `-h` and
 `--help` on a new command return the JSON description. New options use separate
@@ -375,11 +375,191 @@ The [Python package](../crates/unityrs-py/README.md) provides the UnityPy-compat
 API for in-process Python callers, including object/typetree access. The new
 CLI protocol is intended for bounded exploration and process-driven tools.
 
-Out of scope: an MCP server or other persistent transport, mutation/write-back
+Out of scope: other persistent transports, mutation/write-back
 commands, remote input discovery, a class-specific interpretation of every
 value, and changing the parity commands' argument or output semantics. The new
 operations return JSON documents from CLI module functions without printing;
-a later in-process transport can call the same functions.
+the MCP transport calls the same functions in process.
+
+## MCP server
+
+Register a local server with Claude Code:
+
+```sh
+claude mcp add unityrs -- unityrs mcp --root /path/to/assets
+```
+
+Clients such as Claude Desktop that read a JSON server configuration can use:
+
+```json
+{
+  "mcpServers": {
+    "unityrs": {
+      "command": "unityrs",
+      "args": ["mcp", "--root", "/path/to/assets", "--out", "/path/to/exports"]
+    }
+  }
+}
+```
+
+The server implements the [MCP 2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)
+over stdio: one UTF-8 JSON-RPC 2.0 object per line, with stdout reserved for
+responses and stderr for diagnostics. It supports `initialize`,
+`notifications/initialized`, `ping`, `tools/list`, and `tools/call`. The supported
+version is `2025-11-25`; that version is echoed when requested, and offered for
+any unsupported version. Send `notifications/initialized` before using tools.
+Batch arrays are rejected (`-32600`), following this revision's removal of
+batching. Notifications produce no response; malformed `notifications/initialized` does not
+enable tools. Repeated `initialize` and tool requests before initialization are
+refused. Parse errors use `-32700`, invalid
+requests `-32600`, unknown methods `-32601`, malformed method parameters `-32602`.
+Requests retain their string or integral JSON number IDs, including decimal and
+exponent forms and numbers outside machine-integer ranges. Number IDs are echoed
+with exactly the received JSON number text; fractional IDs are invalid requests.
+EOF exits successfully; malformed
+and oversized messages are refused and the next line is served. Calls execute
+serially. No network, shell, subprocess, or environment-variable expansion is
+used by tool calls.
+
+`initialize` includes these model-facing `instructions`:
+
+> unityrs reads Unity asset files: bundles, serialized files and web files. Start with unityrs_inspect, then use unityrs_show to read object fields or unityrs_extract to export assets when available. Inputs must be inside the directories the server was started with; a refusal names the rule that blocked the request. Every tool result contains a JSON document. Inspect, show, describe and error documents are versioned, with format naming their schema; extract and batch-check successes use their report schemas, and describe can return a JSON Schema.
+
+`tools/list` supplies draft 2020-12 `inputSchema` and `outputSchema` for each tool.
+It is also the authoritative source for each tool's usage description and every
+argument's description, units and defaults; these are kept there rather than
+copied into the tool table below. Descriptions explain the inspect-to-show/extract
+flow, pagination and truncation, including extract's default container-only
+selection and the `no_container` option for exporting objects by name.
+Input names replace CLI hyphens with underscores. Each result has a single
+`content` text item containing the JSON document, and the same object in
+`structuredContent`. Operation and tool argument failures set `isError: true` with a
+`unityrs.error` document. Argument errors identify the argument, supplied value
+and accepted type, form or range; ceiling errors identify the server maximum.
+Output schemas include that error variant. Malformed `tools/call` envelopes
+(including a non-object `arguments`) and unknown tool names remain JSON-RPC
+invalid parameters.
+
+| Tool | Arguments | Document |
+| --- | --- | --- |
+| `unityrs_describe` | Optional `schema` (`inspect`, `show`, `describe`, `error`). | `unityrs.describe`, or the requested JSON Schema. |
+| `unityrs_inspect` | Required `inputs` string array; optional `class` and `name` arrays, `limit`, `cursor`, `max_bytes`, budgets and `tpk`. | Version-1 `unityrs.inspect`, with per-input errors and `next_cursor`. |
+| `unityrs_show` | Required `inputs` and signed `path_id`; optional `file`, `file_index` (`INPUT:FILE`), `value`, `bytes`, `max_bytes`, `max_items`, `max_depth`, budgets and `tpk`. | Version-1 `unityrs.show`. |
+| `unityrs_extract` | Required `inputs` and relative `output` subdirectory; extract's options, budgets and provider paths. Repeatable `asset_filter` is an array; switches are booleans. | Extract report: `written` and `failures`; names use Unicode strings or raw-string tags below. Listed only with server `--out`. |
+| `unityrs_batch_check` | Required `job` object. | Existing batch check `exit` result, including `code: 0` and `detail: "memory_bound ..."`; invalid jobs return `unityrs.error`. No batch execution. |
+
+Input and output option schemas are generated from the CLI parser tables. For
+example, call `unityrs_inspect` with `{"inputs":["/path/to/assets/synthetic.assets"],"limit":1}`,
+then keep its inputs, filters and budget options unchanged when supplying its
+`next_cursor` as `cursor`.
+
+Extract report `path` and `serialized_file` names are Unicode strings or,
+for invalid UTF-8 bytes, the lossless `{"t":"str","hex":"..."}` form used by
+the agent interface. Both text and structured content, and a saved `report`,
+use this form. The parity `extract` command keeps its existing output contract.
+`ignore_first_container_dirs` accepts exactly signed 64-bit integers,
+-9,223,372,036,854,775,808 through 9,223,372,036,854,775,807; negative values slice
+from the end of the container path's slash components.
+MCP `asset_filter` accepts at most 1,024 entries, including duplicates. Above
+that count it returns an `isError` argument failure naming the limit. Class IDs
+are sorted and deduplicated once, then each lookup reserves its worst-case
+binary-search comparisons against the request work budget, including rejected
+objects and the second lookup after parsing. The CLI keeps its existing filter
+argument parsing and output; its lookups use the same sort and work charges.
+
+At least one startup `--root DIR` is required; repeat it to permit several roots.
+Both startup `--root` and `--out` reject symlinks in every component, including
+the named directory itself, and reject `..`. Spell platform directory aliases
+using their real paths. Missing output directories are created with `mkdirat`
+and opened component by component with `openat(O_DIRECTORY|O_NOFOLLOW)` against
+held parents; a symlink ancestor is refused before creating its descendants.
+Relative input paths resolve against the server's working directory. Absolute
+paths must be beneath a configured root. Each component is opened relative to
+its held parent descriptor with `O_NOFOLLOW`; `..`, symlinks (including symlinks
+within roots), special files and paths outside all roots are refused. Roots
+are held for the session. Provider files (`tpk` and `vorbis_headers`) and every
+split companion follow the same rules. Input leaves must be regular files;
+nonblocking opens refuse FIFOs, sockets and device nodes without waiting for
+a writer. Loaded bytes retain their input budget. TPK decompression, provider
+tables and lazy tree compilation share the request memory and decode-work
+limits. Before reading, held-descriptor metadata must fit both the request's
+input-byte limit and the provider's 16 MiB file cap; bounded reads also refuse
+files that grow past either cap. The provider's fixed decompression bound
+remains in force. Unsplit files use the native commands' stream-reader rules;
+joined split files use their memory-reader rules.
+No implicit dependencies are fetched. Batch check validates path and URL strings
+as job data without opening, downloading, resolving credentials, or executing them.
+
+Extraction uses the existing held-descriptor writer. A request's `output` must
+be relative beneath `--out`; parent components and symlink parents are refused.
+Before any request directory is created, `output` is limited to 4,096 UTF-8
+bytes and 64 nonempty slash-separated directory components (excluding `.`).
+Exceeding either cap returns an `isError` argument failure naming that limit.
+Each directory creation attempt, directory open and held-directory clone during
+extraction reserves 64 work units before the operation, including existing
+directories and asset/report parents. Work exhaustion is a `budget` refusal.
+`report`, when supplied, is relative to that extraction subdirectory and must
+end in a filename. Output, report and asset-derived paths also reject NUL,
+backslashes and colon-bearing components. Writes replace existing leaves. Confinement attaches to the inodes reached on open:
+a concurrent directory rename moves those inodes and their files together,
+including outside the original root pathname. A directory moved after opening
+stays reachable through its held descriptor. Files already hard-linked inside
+a root are readable; confinement does not establish their provenance.
+Overlapping roots are permitted. The first configured root whose spelling is
+a prefix of the input path supplies the held descriptor.
+Case-insensitive leaf aliases follow the underlying filesystem's behavior
+within the selected root; root-prefix matching uses the configured spelling.
+Asset-derived invalid UTF-8 output names remain raw filesystem bytes and use
+the tagged string form in reports; a filesystem that cannot store those names
+reports an ordinary per-asset I/O failure.
+
+Startup budget maxima use the ordinary `--max-input-memory`, `--max-input-bytes`,
+`--max-decode-work`, and `--max-tree-depth` options and defaults above. Startup
+also accepts display ceilings `--max-bytes 65536`, `--max-items 256`,
+`--max-depth 32`, and `--limit 200`. Explicit request values above any ceiling
+are refused with `isError: true`, code `budget`; omitted values use the smaller
+of the command default and server ceiling. A request may lower these limits.
+Job checks additionally cap the serialized job at 64 MiB and at the server's
+input byte ceiling, reserving 64 bytes per job byte, 65,536 fixed bytes, 16,384 bytes per bundle,
+and the exact active/stage slot table sizes before preparation. Memory reservations
+must fit the server ceiling; work is split conservatively between validation
+and preparation, with the existing batch view-work cap also retained.
+Tool document framing, escaping and the serialized response buffer share the
+command's finite response meter; documents are serialized directly into both
+MCP result fields without an intermediate JSON tree.
+
+`--max-request-bytes` defaults to 1,048,576 bytes per physical line, including
+newline; oversized lines are drained with bounded storage. A partial final line
+at EOF is accepted within the same cap. The decoder constructs the request
+under three additional caps: `max(32, floor(line cap / 64))` nodes (each value
+and object key counts once), `floor(line cap / 2)` total decoded UTF-8 bytes
+across strings and keys, and depth 32 with the root at zero. At the default
+line cap these are 16,384 nodes and 524,288 string bytes. They bound tree
+amplification to a small constant of the line cap, before dispatch and before
+any unrestricted JSON tree can be built. Cap refusals are invalid requests
+(`-32600`). Duplicate keys anywhere, including batch jobs, are refused before
+values can collapse: envelope duplicates use `-32600`, nested parameter
+and argument duplicates use `-32602`. The envelope is identified before decoding
+params, independent of member order: parameter refusals retain the request ID,
+and identified notifications never receive a response, even with invalid params.
+An ambiguous envelope (including duplicate `id` or `method`) is an invalid
+request with a null ID. Unidentifiable envelopes and framing refusals also use
+null IDs. These caps are startup-derived;
+requests cannot raise them. `--max-response-bytes`
+defaults to 4,194,304 bytes per complete protocol response including newline.
+Both are at most 67,108,864; request cap is at least 256, and response cap must
+be at least request cap + 1024 so even a large request ID fits a bounded error.
+A response that cannot fit is replaced by a budget tool failure (or JSON-RPC
+internal error for non-tool responses), preserving its ID. Framing caps are
+startup-only. `unityrs mcp --help` lists the startup options on stderr.
+
+A tool panic follows the build's panic strategy. With unwinding enabled, the
+server catches it at the tool boundary, returns JSON-RPC internal error
+(`-32603`) with that request's ID, and continues serving. The panic hook may
+write a diagnostic to stderr. With `panic=abort`, the process terminates;
+no response or continuation is guaranteed. A client closing stdout ends the
+server quietly without redirecting responses or writing fallback files.
+
 
 ## Golden examples and regeneration
 
@@ -395,3 +575,12 @@ UNITYRS_UPDATE_AGENT_GOLDENS=1 cargo test -p unityrs-cli --test agent goldens
 
 Review the changed golden files and guide together, then run the test without
 the environment variable to check them.
+
+The MCP `legacy_parity` test records default-limit command snapshots from
+A1a head `4a15f9f9` in `tpk-default-parity.json`, with stored, LZ4 and LZMA
+synthetic TPKs. It compares artifact sizes/digests and complete stdout/stderr,
+excluding dump wall time and the platform-dependent glTF peak-byte count from
+portable goldens. Set `UNITYRS_A1A_BIN` to a separately built A1a binary to
+repeat the live comparison, including the exact same-platform peak diagnostic.
+`values` has no TPK option; its case protocol is checked alongside the four
+commands that load a provider.

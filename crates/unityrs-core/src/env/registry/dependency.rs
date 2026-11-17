@@ -243,7 +243,7 @@ pub(crate) fn read_source(
             if let Some(stated) = fetch.size_hint() {
                 within_input_bytes(stated, &ctx.limits)?;
             }
-            (fetched(fetch.as_ref())?, ReaderKind::Memory)
+            fetched(fetch.as_ref())?
         }
     };
     within_input_bytes(data.len() as u64, &ctx.limits)?;
@@ -263,8 +263,8 @@ pub(crate) fn open_bare(
 
 /// `fetch`'s bytes, a refusal of the dependency pool it returns counted
 /// ([`from_callers`]).
-fn fetched(fetch: &dyn Fetch) -> Result<bytes::Bytes, Error> {
-    from_callers(fetch.fetch())
+fn fetched(fetch: &dyn Fetch) -> Result<(bytes::Bytes, ReaderKind), Error> {
+    from_callers(fetch.fetch_with_reader())
 }
 
 /// What the caller's code returned to the core (a [`Fetch`]'s bytes, a

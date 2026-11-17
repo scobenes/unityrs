@@ -132,6 +132,7 @@ pub(crate) fn builds(
     let mut stack: MeteredVec<Frame> = MeteredVec::new(meter);
     let mut out = MeteredVec::with_capacity(meter, roots.len())?;
     for &root in roots {
+        meter.count_decode(1)?;
         let size = match seen.as_slice().get(usize::from(root)) {
             None => past_table,
             Some(Seen::Done(size)) => *size,
@@ -151,6 +152,7 @@ pub(crate) fn builds(
                 })?;
                 let mut found = past_table;
                 while let Some(top) = stack.as_mut_slice().last_mut() {
+                    meter.count_decode(1)?;
                     let node = blob.nodes.get(top.node);
                     let subs = node.map_or(&[][..], |n| blob.nodes.sub_nodes(n));
                     if let Some(&sub) = subs.get(top.next) {
@@ -263,6 +265,7 @@ fn walk(
     let mut stack = MeteredVec::new(meter);
     stack.push((root, 0_usize))?;
     while let Some(&(node_id, level)) = stack.as_slice().last() {
+        meter.count_decode(1)?;
         // `node_id, level = stack.pop(0)`.
         stack.truncate(stack.len().saturating_sub(1));
         // `node: TpkUnityNode = NODES[node_id]`.
@@ -307,6 +310,7 @@ fn walk(
         }
         // `stack = [(node_id, level + 1) for node_id in node.SubNodes] + stack`.
         for &id in subs.iter().rev() {
+            meter.count_decode(1)?;
             stack.push((id, level + 1))?;
         }
     }

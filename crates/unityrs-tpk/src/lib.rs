@@ -139,7 +139,15 @@
 //! at most one row past [`TpkProvider::MAX_TREE_ROWS`]
 //! (`provider::tests::racing_first_requests_walk_a_root_at_most_once_per_thread`).
 //!
-//! **Memory.** The TPK is the provider's, not an input's: its tables, name
+//! **Memory.** [`TpkProvider::from_bytes_metered`] makes a provider owned
+//! by a request: its decoder, tables, names, rows and compiled trees all
+//! charge the supplied meter. Decoded bytes, payload parsing and tree walks
+//! count toward that meter's work allowance. The CLI's inspect, show and
+//! extract commands use this API so a compressed provider cannot escape
+//! their request ceilings. Refusals preserve their limit kind and value.
+//!
+//! The independent [`TpkProvider::open`], [`TpkProvider::open_with`] and
+//! [`TpkProvider::from_bytes`] APIs retain the provider's own account: tables, name
 //! table, rows, trees and kept errors are charged to the provider's own
 //! unlimited meter
 //! (plan section 3.15's constant per context; the bounds above are what
@@ -200,6 +208,9 @@ pub(crate) const fn send_sync<T: Send + Sync + ?Sized>() {}
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum TpkError {
+    /// A caller-supplied meter refused the provider's memory or work.
+    #[error(transparent)]
+    Resource(#[from] unityrs_core::limits::ChargeError),
     /// The host allocator refused storage for the provider. Preserved by
     /// value so reporting the refusal needs no additional allocation.
     #[error(transparent)]

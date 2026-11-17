@@ -1,7 +1,8 @@
-//! JSON report uses the existing Python-compatible string writer, retaining
-//! invalid UTF-8 as JSON escapes. No diagnostic formats arbitrary input text.
+//! Legacy reports preserve Python-compatible strings; MCP metadata uses the
+//! agent's lossless UTF-8/string-tag contract.
 use std::sync::Arc;
 use unityrs_core::limits::Meter;
+use unityrs_dump::{json, text::Sink};
 use unityrs_export::{
     extractor::{Error, Report},
     pyjson,
@@ -18,9 +19,45 @@ impl pyjson::Sink for StringSink<'_> {
         }
     }
 }
-fn string(out: &mut ChargedBytes, bytes: &[u8]) -> Result<(), Error> {
+impl std::fmt::Write for StringSink<'_> {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        self.push_str(text);
+        if self.error.is_some() {
+            Err(std::fmt::Error)
+        } else {
+            Ok(())
+        }
+    }
+}
+impl Sink for StringSink<'_> {
+    fn push_str(&mut self, text: &str) {
+        pyjson::Sink::put(self, text.as_bytes());
+    }
+    fn push(&mut self, c: char) {
+        self.push_str(c.encode_utf8(&mut [0; 4]));
+    }
+    fn count_work(&mut self, bytes: usize) -> bool {
+        if self.error.is_none() {
+            self.error = self
+                .out
+                .meter()
+                .count_decode(bytes as u64)
+                .err()
+                .map(Into::into);
+        }
+        self.error.is_none()
+    }
+}
+fn string(out: &mut ChargedBytes, bytes: &[u8], agent: bool) -> Result<(), Error> {
     let mut sink = StringSink { out, error: None };
-    pyjson::string(bytes, &mut sink);
+    if agent {
+        // Match agent::name: validate and scan only after charging the work.
+        if sink.count_work(bytes.len().saturating_mul(7)) {
+            json::write_name(&mut sink, bytes);
+        }
+    } else {
+        pyjson::string(bytes, &mut sink);
+    }
     if let Some(e) = sink.error {
         return Err(e.into());
     }
@@ -61,7 +98,11 @@ pub(super) fn checked(report: Report) -> Result<Report, Error> {
     }
     Ok(report)
 }
-pub(super) fn json(report: &Report, meter: &Arc<Meter>) -> Result<ChargedBytes, Error> {
+pub(super) fn json(
+    report: &Report,
+    meter: &Arc<Meter>,
+    agent: bool,
+) -> Result<ChargedBytes, Error> {
     let mut out = ChargedBytes::new(meter);
     out.write_bytes(b"{\"written\":[")?;
     for (i, file) in report.written.as_slice().iter().enumerate() {
@@ -69,9 +110,9 @@ pub(super) fn json(report: &Report, meter: &Arc<Meter>) -> Result<ChargedBytes, 
             out.write_bytes(b",")?;
         }
         out.write_bytes(b"{\"path\":")?;
-        string(&mut out, file.path.as_bytes())?;
+        string(&mut out, file.path.as_bytes(), agent)?;
         out.write_bytes(b",\"serialized_file\":")?;
-        string(&mut out, file.object.file().name().as_bytes())?;
+        string(&mut out, file.object.file().name().as_bytes(), agent)?;
         out.write_args(format_args!(
             ",\"path_id\":{},\"class_id\":{},\"size\":{}}}",
             file.object.path_id(),
@@ -85,9 +126,9 @@ pub(super) fn json(report: &Report, meter: &Arc<Meter>) -> Result<ChargedBytes, 
             out.write_bytes(b",")?;
         }
         out.write_bytes(b"{\"path\":")?;
-        string(&mut out, failure.path.as_bytes())?;
+        string(&mut out, failure.path.as_bytes(), agent)?;
         out.write_bytes(b",\"serialized_file\":")?;
-        string(&mut out, failure.object.file().name().as_bytes())?;
+        string(&mut out, failure.object.file().name().as_bytes(), agent)?;
         out.write_args(format_args!(
             ",\"path_id\":{},\"class_id\":{},\"reason\":\"{}\"}}",
             failure.object.path_id(),

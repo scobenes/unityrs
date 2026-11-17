@@ -252,6 +252,14 @@ pub trait Fetch: Send + Sync + fmt::Debug {
     /// [`Environment::load`] is no dependency's, and returns such a refusal
     /// as it is.
     fn fetch(&self) -> Result<Bytes, Error>;
+    /// Fetch bytes together with their reader rules. The default is the
+    /// memory reader; descriptor-backed fetchers can preserve path semantics.
+    /// Joined split files must continue to use the memory reader.
+    fn fetch_with_reader(&self) -> Result<(Bytes, crate::stream::ReaderKind), Error> {
+        self.fetch()
+            .map(|bytes| (bytes, crate::stream::ReaderKind::Memory))
+    }
+
     /// Its size, when known without fetching. A size above
     /// [`Limits::max_input_bytes`] refuses the source before it is fetched
     /// ([`LimitKind::InputBytes`], the size stated as its value), whatever

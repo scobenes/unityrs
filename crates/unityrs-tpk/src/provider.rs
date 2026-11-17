@@ -63,8 +63,8 @@ pub struct TpkProvider {
     /// compile reads none of them (crate docs, "Limits").
     names: NameTable,
     limits: Limits,
-    /// The provider's own meter, unlimited, its refusals labelled
-    /// [`Reservation::Provider`] (crate docs, "Memory").
+    /// The provider's independent meter, or its caller's finite request
+    /// account when loaded with [`Self::from_bytes_metered`].
     meter: Arc<Meter>,
 }
 
@@ -200,20 +200,45 @@ impl TpkProvider {
         Self::load(bytes, limits, provider_meter())
     }
 
+    /// Loads a request-owned provider. Decompression, tables, names and lazy
+    /// trees share `meter`'s memory and work allowance with the caller. The
+    /// provider's fixed file, payload and tree bounds still apply. The caller
+    /// remains responsible for charging the source bytes while it holds them.
+    pub fn from_bytes_metered(
+        bytes: &[u8],
+        limits: &Limits,
+        meter: &Arc<Meter>,
+    ) -> Result<Self, TpkError> {
+        Self::load_inner(bytes, limits, meter.clone(), Some(meter))
+    }
+
     /// [`Self::from_bytes`] on the provider's `meter`, which the bytes a
     /// path held are already charged to.
     fn load(bytes: &[u8], limits: &Limits, meter: Arc<Meter>) -> Result<Self, TpkError> {
+        Self::load_inner(bytes, limits, meter, None)
+    }
+
+    fn load_inner(
+        bytes: &[u8],
+        limits: &Limits,
+        meter: Arc<Meter>,
+        decoder_meter: Option<&Arc<Meter>>,
+    ) -> Result<Self, TpkError> {
         let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if len > Self::MAX_FILE_BYTES {
             return Err(too_large_file(len));
         }
-        let payload = file::payload(bytes, &meter)?;
+        let payload = file::payload(bytes, &meter, decoder_meter)?;
+        meter
+            .count_decode(u64::try_from(payload.len()).unwrap_or(u64::MAX))
+            .map_err(memory)?;
         let blob = TypeTreeBlob::read(&payload, &meter)?;
         drop(payload);
         let common = common_strings(&blob, &meter)?;
         let roots = roots(&blob, limits, &meter).map_err(memory)?;
         let names = NameTable::new(blob.strings.as_slice(), &meter).map_err(|e| match e {
             TreeError::Charge(c) => memory(c),
+            TreeError::Limit(l) => memory(ChargeError::Limit(l)),
             e => TpkError::Malformed(e.to_string().into()),
         })?;
         Ok(Self {
@@ -298,25 +323,33 @@ impl TpkProvider {
     /// next ask computes again, as `unityrs_core::once` treats a transient
     /// error. Otherwise the first outcome published wins.
     fn publish<T: Clone>(&self, cell: &OnceLock<Kept<T>>, outcome: Outcome<T>) -> Outcome<T> {
-        if matches!(&outcome, Err(e) if (e.memory.is_some() || e.allocator.is_some())) {
+        if matches!(&outcome, Err(e) if e.memory.is_some() || e.allocator.is_some()
+            || e.limit.is_some_and(|l| matches!(l.kind(), LimitKind::InputMemory | LimitKind::DecodeWork)))
+        {
             return outcome;
         }
-        get_or_publish(cell, || self.kept(outcome)).outcome.clone()
+        let kept = self.kept(outcome)?;
+        get_or_publish(cell, || kept).outcome.clone()
     }
 
-    /// An outcome to keep, a failure's heap charged first. The meter is
-    /// unlimited, so it refuses only where the allocator does, and the
-    /// error is kept uncharged then.
-    fn kept<T>(&self, outcome: Outcome<T>) -> Kept<T> {
-        let charge = outcome.as_ref().err().and_then(|e| {
-            let bytes = e.detail.len().saturating_add(2 * size_of::<usize>());
-            let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
-            self.meter.charge(heap_cost(bytes)).ok()
-        });
-        Kept {
+    /// An outcome to keep, a failure's heap charged first. A refused charge
+    /// returns a resource error without retaining an unpaid cached error.
+    fn kept<T>(&self, outcome: Outcome<T>) -> Result<Kept<T>, ProviderError> {
+        let charge = outcome
+            .as_ref()
+            .err()
+            .map(|e| {
+                let bytes = e.detail.len().saturating_add(2 * size_of::<usize>());
+                let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+                self.meter
+                    .charge(heap_cost(bytes))
+                    .map_err(|e| charge_error(&e))
+            })
+            .transpose()?;
+        Ok(Kept {
             outcome,
             _charge: charge,
-        }
+        })
     }
 
     /// `generate_node(class_info)` (`Tpk.py:58-88`) from one release root,
@@ -348,6 +381,7 @@ impl TpkProvider {
             .and_then(|list| list.into_shared().map(Some))
             .map_err(|e| match &e {
                 TreeError::Charge(c) => charge_error(c),
+                TreeError::Limit(l) => limit_error(*l),
                 e => error(e),
             })
     }
@@ -460,13 +494,14 @@ fn error(e: &dyn fmt::Display) -> ProviderError {
     ProviderError::new(TpkProvider::NAME, e.to_string().into())
 }
 
-/// A charge refused: by the allocator (the meter is unlimited), a refusal
-/// of memory ([`ProviderError::memory`]), which the provider never keeps.
+/// A refused charge, preserving the caller's memory/work limit or the
+/// allocator's refusal for the core's resource-error handling.
 fn charge_error(e: &ChargeError) -> ProviderError {
     let mut failure = error(e);
     match e {
         ChargeError::Budget(b) => failure.memory = Some(b.clone()),
         ChargeError::Allocator(a) => failure.allocator = Some(*a),
+        ChargeError::Limit(l) => failure.limit = Some(*l),
         _ => {}
     }
     failure

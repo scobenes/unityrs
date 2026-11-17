@@ -1,0 +1,137 @@
+{
+  "lz4/dump": {
+    "files": {
+      "dump.jsonl": {
+        "sha256": "c82e1077bcd48d11be0170219e4de5bf12c215508a5b37dbc271d267fa41d749",
+        "size": 18167
+      }
+    },
+    "stderr": "{\"crashes\":0,\"decode_work\":25189,\"files\":1,\"index_sha256_mismatch\":0,\"inputs\":1,\"objects\":4,\"output_bytes\":18167,\"workers\":1}",
+    "stdout": ""
+  },
+  "lz4/extract": {
+    "files": {
+      "leaf.txt": {
+        "sha256": "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5",
+        "size": 7
+      }
+    },
+    "stderr": "",
+    "stdout": "{\"written\":[{\"path\":\"leaf.txt\",\"serialized_file\":\"input.assets\",\"path_id\":4,\"class_id\":49,\"size\":7}],\"failures\":[]}\n"
+  },
+  "lz4/gltf": {
+    "files": {
+      "scene.glb": {
+        "sha256": "7b297a57fce4a895511335fe0fe49ff10911cec5c1ce69c7f87bee72236110ba",
+        "size": 464
+      }
+    },
+    "stderr": "unityrs gltf: 0 collection issues, 0 primitive/attribute issues, 0 graph issues; peak charged bytes <platform>\n",
+    "stdout": ""
+  },
+  "lz4/obj": {
+    "files": {
+      "mesh.obj": {
+        "sha256": "5f1fb89cf443d0c905ba75aec642bdae13841c826668d462b92057f0e685a39e",
+        "size": 71
+      }
+    },
+    "stderr": "",
+    "stdout": ""
+  },
+  "lz4/values": {
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"name\":\"synthetic\",\"kind\":null,\"bytes_read\":null,\"value\":\"{\\\"t\\\":\\\"dict\\\",\\\"v\\\":[[\\\"x\\\",7]]}\",\"resave\":\"equal\",\"resave_hex\":\"07000000\",\"note\":null}\n"
+  },
+  "lzma/dump": {
+    "files": {
+      "dump.jsonl": {
+        "sha256": "c82e1077bcd48d11be0170219e4de5bf12c215508a5b37dbc271d267fa41d749",
+        "size": 18167
+      }
+    },
+    "stderr": "{\"crashes\":0,\"decode_work\":25189,\"files\":1,\"index_sha256_mismatch\":0,\"inputs\":1,\"objects\":4,\"output_bytes\":18167,\"workers\":1}",
+    "stdout": ""
+  },
+  "lzma/extract": {
+    "files": {
+      "leaf.txt": {
+        "sha256": "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5",
+        "size": 7
+      }
+    },
+    "stderr": "",
+    "stdout": "{\"written\":[{\"path\":\"leaf.txt\",\"serialized_file\":\"input.assets\",\"path_id\":4,\"class_id\":49,\"size\":7}],\"failures\":[]}\n"
+  },
+  "lzma/gltf": {
+    "files": {
+      "scene.glb": {
+        "sha256": "7b297a57fce4a895511335fe0fe49ff10911cec5c1ce69c7f87bee72236110ba",
+        "size": 464
+      }
+    },
+    "stderr": "unityrs gltf: 0 collection issues, 0 primitive/attribute issues, 0 graph issues; peak charged bytes <platform>\n",
+    "stdout": ""
+  },
+  "lzma/obj": {
+    "files": {
+      "mesh.obj": {
+        "sha256": "5f1fb89cf443d0c905ba75aec642bdae13841c826668d462b92057f0e685a39e",
+        "size": 71
+      }
+    },
+    "stderr": "",
+    "stdout": ""
+  },
+  "lzma/values": {
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"name\":\"synthetic\",\"kind\":null,\"bytes_read\":null,\"value\":\"{\\\"t\\\":\\\"dict\\\",\\\"v\\\":[[\\\"x\\\",7]]}\",\"resave\":\"equal\",\"resave_hex\":\"07000000\",\"note\":null}\n"
+  },
+  "root_flags/dump": {
+    "files": {
+      "dump.jsonl": {
+        "sha256": "c82e1077bcd48d11be0170219e4de5bf12c215508a5b37dbc271d267fa41d749",
+        "size": 18167
+      }
+    },
+    "stderr": "{\"crashes\":0,\"decode_work\":25189,\"files\":1,\"index_sha256_mismatch\":0,\"inputs\":1,\"objects\":4,\"output_bytes\":18167,\"workers\":1}",
+    "stdout": ""
+  },
+  "root_flags/extract": {
+    "files": {
+      "leaf.txt": {
+        "sha256": "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5",
+        "size": 7
+      }
+    },
+    "stderr": "",
+    "stdout": "{\"written\":[{\"path\":\"leaf.txt\",\"serialized_file\":\"input.assets\",\"path_id\":4,\"class_id\":49,\"size\":7}],\"failures\":[]}\n"
+  },
+  "root_flags/gltf": {
+    "files": {
+      "scene.glb": {
+        "sha256": "7b297a57fce4a895511335fe0fe49ff10911cec5c1ce69c7f87bee72236110ba",
+        "size": 464
+      }
+    },
+    "stderr": "unityrs gltf: 0 collection issues, 0 primitive/attribute issues, 0 graph issues; peak charged bytes <platform>\n",
+    "stdout": ""
+  },
+  "root_flags/obj": {
+    "files": {
+      "mesh.obj": {
+        "sha256": "5f1fb89cf443d0c905ba75aec642bdae13841c826668d462b92057f0e685a39e",
+        "size": 71
+      }
+    },
+    "stderr": "",
+    "stdout": ""
+  },
+  "root_flags/values": {
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"name\":\"synthetic\",\"kind\":null,\"bytes_read\":null,\"value\":\"{\\\"t\\\":\\\"dict\\\",\\\"v\\\":[[\\\"x\\\",7]]}\",\"resave\":\"equal\",\"resave_hex\":\"07000000\",\"note\":null}\n"
+  }
+}

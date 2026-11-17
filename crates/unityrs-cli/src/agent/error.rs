@@ -135,9 +135,10 @@ impl Error {
         ));
         self
     }
-    pub(super) fn tpk(error: unityrs_tpk::TpkError) -> Self {
+    pub(crate) fn tpk(error: &unityrs_tpk::TpkError) -> Self {
         use unityrs_tpk::TpkError;
-        match &error {
+        match error {
+            TpkError::Resource(e) => Self::from(e.clone()),
             TpkError::TooLarge { max, .. } => Self::new(
                 "budget",
                 bounded_message(&format_args!(

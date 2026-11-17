@@ -1,6 +1,6 @@
 //! `extract` uses one Environment for INPUT..., writes a JSON report on
 //! stdout (and optionally beneath -o), and continues after object failures.
-mod files;
+pub(crate) mod files;
 pub(crate) mod limits;
 mod report;
 use std::{
@@ -21,55 +21,55 @@ pub(crate) const OPTIONS: &[crate::agent::options::OptionSpec] = &[
         "--no-container",
         None,
         Some("false"),
-        "Export every object by name.",
+        "Consider every object for export by name instead of requiring a container path; class filters and supported export types still apply.",
     ),
     option(
         "--no-use-container",
         None,
         Some("false"),
-        "Alias for --no-container.",
+        "Alias for no_container: consider every object for export by name instead of requiring a container path.",
     ),
     option(
         "--use-container",
         None,
         Some("true"),
-        "Export container assets.",
+        "Export only assets referenced by container paths, using those paths for output names; enabled by default.",
     ),
     option(
         "--ignore-first-container-dirs",
         Some("N"),
         Some("0"),
-        "Drop slash components from container paths.",
+        "Number of leading slash-separated components to drop from container paths; zero keeps all, and negative values keep that many trailing components.",
     ),
     option(
         "--append-path-id",
         None,
         Some("false"),
-        "Append UnityPy's _None suffix.",
+        "Append the literal _None suffix to output stems, matching UnityPy's naming behavior; this does not append the numeric path ID.",
     ),
     option(
         "--export-unknown-as-typetree",
         None,
         Some("false"),
-        "Other classes as JSON or raw binary.",
+        "Export otherwise unsupported classes as typetree JSON when readable, falling back to raw binary.",
     ),
     option(
         "--asset-filter",
         Some("CLASS"),
         None,
-        "Repeatable class name or integer ID.",
+        "Class names or integer IDs to export; multiple values form a union. Omit or supply no values to allow all supported classes.",
     ),
     option(
         "--vorbis-headers",
         Some("FILE"),
         None,
-        "Runtime VST1 headers; never fetched.",
+        "Optional local VST1 Vorbis setup-header table for audio decoding; no default table is loaded or fetched.",
     ),
     option(
         "--report",
         Some("PATH"),
         None,
-        "Also save JSON beneath output directory.",
+        "Optional relative filename beneath the extraction output directory for saving the JSON report; omit to return the report only.",
     ),
 ];
 pub(crate) fn options() -> Vec<crate::agent::options::OptionSpec> {
@@ -102,10 +102,36 @@ Confinement is established on open, not against later pathnames: a concurrent\n\
 rename moves a directory and its files together; held-descriptor writes continue\n\
 in that inode, even outside the -o pathname, as with a rename after extraction.\n\
 Interrupted runs may leave .unityrs-extract-*.tmp files, safe to delete.";
-struct Filter(MeteredVec<i32>);
+struct Filter {
+    ids: Vec<i32>,
+    _charge: unityrs_core::limits::Charge,
+}
+impl Filter {
+    fn new(
+        values: MeteredVec<i32>,
+        meter: &unityrs_core::limits::Meter,
+    ) -> Result<Self, unityrs_core::limits::ChargeError> {
+        meter.count_decode(
+            (values.len() as u64).saturating_mul(1 + u64::from(values.len().bit_width())),
+        )?;
+        let (mut ids, charge) = values.into_parts();
+        ids.sort_unstable();
+        ids.dedup();
+        Ok(Self {
+            ids,
+            _charge: charge,
+        })
+    }
+}
 impl AssetFilter for Filter {
+    fn lookup_work(&self) -> u64 {
+        u64::from(self.ids.len().bit_width()) + 1
+    }
     fn accepts(&self, object: &ObjectRef, _: Option<&Parsed>) -> bool {
-        self.0.as_slice().contains(&object.class_id())
+        self.ids
+            .as_slice()
+            .binary_search(&object.class_id())
+            .is_ok()
     }
 }
 fn path(bytes: &[u8]) -> &Path {
@@ -117,7 +143,15 @@ fn recognized_option(arg: &[u8]) -> bool {
         .chain(crate::agent::options::BUDGET)
         .any(|s| s.name.as_bytes() == arg)
 }
-fn run(raw: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "shared legacy extraction parser and transaction"
+)]
+pub(crate) fn execute(
+    raw: &[Vec<u8>],
+    roots: Option<&Arc<crate::mcp::roots::Roots>>,
+    confined_output: Option<(&files::Files, &[u8])>,
+) -> Result<unityrs_mesh::obj::ChargedBytes, Box<dyn std::error::Error>> {
     let limits = limits::parse(raw)?;
     let meter = limits::extraction(&limits);
     let mut inputs = MeteredVec::new(&meter);
@@ -126,7 +160,7 @@ fn run(raw: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
     let mut vorbis_headers = None;
     let mut report_path = None;
     let mut options = Options::default();
-    let mut filter = Filter(MeteredVec::new(&meter));
+    let mut filter = MeteredVec::new(&meter);
     let mut args = raw.iter();
     let mut positional = false;
     while let Some(arg) = args.next() {
@@ -171,7 +205,7 @@ fn run(raw: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
                             .map(|(id, _)| *id)
                     })
                     .ok_or("unknown CLASS")?;
-                filter.0.push(id)?;
+                filter.push(id)?;
             }
             _ if !arg.starts_with(b"-") => inputs.push(path(arg))?,
             _ => return Err("unexpected argument".into()),
@@ -184,43 +218,77 @@ fn run(raw: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = report_path {
         extractor::paths::validate(path)?;
     }
-    if !filter.0.is_empty() {
+    let filter = Filter::new(filter, &meter)?;
+    if !filter.ids.is_empty() {
         options.asset_filter = Some(&filter);
     }
     let headers = vorbis_headers
-        .map(|path| unityrs_export::VorbisHeaders::load(path, &meter))
+        .map(|path| -> Result<_, Box<dyn std::error::Error>> {
+            Ok(if let Some(roots) = roots {
+                unityrs_export::VorbisHeaders::from_bytes(
+                    &roots.read(path, &limits, &meter)?,
+                    &meter,
+                )?
+            } else {
+                unityrs_export::VorbisHeaders::load(path, &meter)?
+            })
+        })
         .transpose()?;
     options.vorbis = headers.as_ref();
     let mut env_options = EnvOptions::unitypy();
     let mut context = (*env_options.context).clone();
     context.limits = limits;
+    if roots.is_some() {
+        context.budget = Arc::new(unityrs_core::budget::Counting::new(limits.max_input_memory));
+    }
     if let Some(tpk) = tpk {
         context.providers = Arc::new(ProviderChain::new(vec![Arc::new(
-            unityrs_tpk::TpkProvider::open_with(tpk, &limits)?,
+            unityrs_tpk::TpkProvider::from_bytes_metered(
+                &crate::provider_input::read(
+                    if let Some(roots) = roots {
+                        roots.open(tpk)?
+                    } else {
+                        std::fs::File::open(tpk).map_err(unityrs_tpk::TpkError::from)?
+                    },
+                    &limits,
+                    &meter,
+                )?,
+                &limits,
+                &meter,
+            )?,
         )]));
     }
     env_options.context = Arc::new(context);
     let env = Environment::new(env_options);
     for input in inputs.as_slice() {
-        env.load(Source::Path((*input).to_owned()))?;
+        env.load(roots.map_or_else(
+            || Source::Path((*input).to_owned()),
+            |roots| roots.source(input, limits, env.options().context.budget.clone()),
+        ))?;
     }
-    let mut files = files::Files::new(output, &meter)?;
+    let mut files = match confined_output {
+        Some((files, directory)) => files.subdirectory(directory, &meter)?,
+        None => files::Files::new(output, &meter)?,
+    };
     let report = report::checked(extractor::extract_assets(
         &env, &options, &mut files, &meter,
     )?)?;
-    let json = report::json(&report, &meter)?;
+    let json = report::json(&report, &meter, confined_output.is_some())?;
     if let Some(path) = report_path {
         files.file(path, json.as_bytes())?;
     }
-    std::io::stdout().lock().write_all(json.as_bytes())?;
-    Ok(())
+    Ok(json)
 }
 pub(super) fn main(raw: &[Vec<u8>]) -> ExitCode {
     if matches!(raw, [a] if a == b"-h" || a == b"--help") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    match run(raw) {
+    let result = execute(raw, None, None).and_then(|json| {
+        std::io::stdout().lock().write_all(json.as_bytes())?;
+        Ok(())
+    });
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{USAGE}\nunityrs extract: {e}");
@@ -228,3 +296,7 @@ pub(super) fn main(raw: &[Vec<u8>]) -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "extract/filter_tests.rs"]
+mod filter_tests;

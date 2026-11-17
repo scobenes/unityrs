@@ -23,6 +23,11 @@ pub const EXPORT_TYPES: [i32; 9] = [1, 213, 83, 128, 43, 114, 48, 49, 28];
 /// Called first with metadata, then with the parsed object, as UnityPy does.
 /// A missing MonoBehaviour tree is passed as None on the second call too.
 pub trait AssetFilter: Send + Sync {
+    /// Upper bound on lookup work, reserved before each call to `accepts`.
+    /// Existing callbacks retain their own work-accounting policy.
+    fn lookup_work(&self) -> u64 {
+        0
+    }
     fn accepts(&self, object: &ObjectRef, parsed: Option<&Parsed>) -> bool;
 }
 /// Options of `extract_assets`; loading is the caller's Environment policy.
@@ -203,8 +208,11 @@ pub fn extract_assets(
         .sort_unstable_by_key(|e| (priority(e.object.class_id()), e.ordinal));
     for entry in entries.as_slice() {
         let obj = &entry.object;
-        if options.asset_filter.is_some_and(|f| !f.accepts(obj, None)) {
-            continue;
+        if let Some(filter) = options.asset_filter {
+            meter.count_decode(filter.lookup_work())?;
+            if !filter.accepts(obj, None) {
+                continue;
+            }
         }
         if !options.use_container && was_exported(report.exported.as_slice(), obj, meter)? {
             continue;
@@ -305,11 +313,11 @@ fn one(
         }
         Err(e) => return Err(e.into()),
     };
-    if options
-        .asset_filter
-        .is_some_and(|f| !f.accepts(obj, parsed.as_ref()))
-    {
-        return Ok(());
+    if let Some(filter) = options.asset_filter {
+        meter.count_decode(filter.lookup_work())?;
+        if !filter.accepts(obj, parsed.as_ref()) {
+            return Ok(());
+        }
     }
     let path = if append_name {
         paths::join(path, name(obj, parsed.as_ref())?, meter)?

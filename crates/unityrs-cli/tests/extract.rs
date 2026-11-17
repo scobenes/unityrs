@@ -44,7 +44,32 @@ fn extract_cli_replays_the_l9_oracle() {
         "../../unityrs-export/tests/fixtures/extractor.json"
     ))
     .unwrap();
+    let probe = Scratch::new("extract-raw-name-probe");
+    let raw_path = probe.join(std::ffi::OsStr::from_bytes(b"raw-\xff"));
+    let raw_names = match std::fs::write(&raw_path, b"probe") {
+        Ok(()) => true,
+        Err(error) => {
+            assert!(
+                matches!(error.raw_os_error(), Some(libc::EILSEQ | libc::EINVAL)),
+                "{error}"
+            );
+            false
+        }
+    };
     for case in recorded["cases"].as_array().unwrap() {
+        if !raw_names
+            && case["expected"]["tree"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .any(|name| std::str::from_utf8(&unhex(name)).is_err())
+        {
+            eprintln!(
+                "skipped {}: filesystem cannot store raw UTF-8-invalid filenames",
+                case["case"]
+            );
+            continue;
+        }
         let tmp = Scratch::new("extract-cli");
         let input = tmp.join("synthetic.assets");
         let output = tmp.join("dst");
@@ -450,4 +475,22 @@ fn missing_or_invalid_vorbis_headers_fail_before_loading_inputs() {
         );
         assert!(!output.exists());
     }
+}
+
+#[test]
+fn cli_asset_filter_count_remains_unbounded_by_the_mcp_cap() {
+    let tmp = Scratch::new("extract-filter-count");
+    let input = input(&tmp, b"leaf");
+    let single = run(
+        &input,
+        &tmp.join("single"),
+        &["--asset-filter", "TextAsset"],
+    );
+    let filters = ["--asset-filter", "TextAsset"].repeat(1025);
+    let repeated = run(&input, &tmp.join("repeated"), &filters);
+    assert!(single.status.success(), "{single:?}");
+    assert!(repeated.status.success(), "{repeated:?}");
+    assert_eq!(repeated.stdout, single.stdout);
+    assert_eq!(repeated.stderr, single.stderr);
+    assert_eq!(tree(&tmp.join("single")), tree(&tmp.join("repeated")));
 }

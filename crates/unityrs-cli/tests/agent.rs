@@ -10,6 +10,8 @@ mod diagnostics;
 mod edges;
 #[path = "agent/inventory.rs"]
 mod inventory;
+#[path = "agent/mcp_parity.rs"]
+mod mcp_parity;
 #[path = "agent/rendering.rs"]
 mod rendering;
 #[path = "agent/support.rs"]

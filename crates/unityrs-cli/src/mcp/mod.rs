@@ -1,0 +1,210 @@
+//! MCP 2025-11-25 over bounded newline-delimited JSON-RPC, with no stdout logs.
+mod arguments;
+mod config;
+mod decode;
+mod id;
+mod integer;
+use id::Id;
+mod reply;
+use reply::Response;
+pub(crate) mod roots;
+mod schema;
+mod tools;
+mod value;
+use config::Config;
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    io::{self, BufRead, Write},
+    process::ExitCode,
+};
+const VERSION: &str = "2025-11-25";
+const INSTRUCTIONS: &str = "unityrs reads Unity asset files: bundles, serialized files and web files. Start with unityrs_inspect, then use unityrs_show to read object fields or unityrs_extract to export assets when available. Inputs must be inside the directories the server was started with; a refusal names the rule that blocked the request. Every tool result contains a JSON document. Inspect, show, describe and error documents are versioned, with format naming their schema; extract and batch-check successes use their report schemas, and describe can return a JSON Schema.";
+fn error(id: Id, code: i32, message: &str) -> Response {
+    Response::Json {
+        id,
+        field: "error",
+        value: json!({"code":code,"message":message}),
+    }
+}
+fn success(id: Id, result: Value) -> Response {
+    Response::Json {
+        id,
+        field: "result",
+        value: result,
+    }
+}
+#[derive(Default)]
+struct State {
+    initialized: bool,
+    ready: bool,
+}
+impl State {
+    fn handle(&mut self, decoded: &decode::Request, config: &Config) -> Option<Response> {
+        let request = &decoded.value;
+        let id = decoded.id.clone().unwrap_or_else(Id::null);
+        let valid_id = request.get("id").is_none_or(id::valid);
+        if !request.is_object()
+            || request.get("jsonrpc").and_then(value::Value::as_str) != Some("2.0")
+            || !request.get("method").is_some_and(value::Value::is_string)
+            || !valid_id
+        {
+            return Some(error(
+                if valid_id { id } else { Id::null() },
+                -32600,
+                "Invalid Request",
+            ));
+        }
+        let method = request
+            .get("method")
+            .and_then(value::Value::as_str)
+            .unwrap_or_default();
+        if request.get("id").is_none() {
+            if method == "notifications/initialized"
+                && self.initialized
+                && request.get("params").is_none_or(|p| {
+                    p.as_object()
+                        .is_some_and(|p| p.iter().all(|(k, v)| k == "_meta" && v.is_object()))
+                })
+            {
+                self.ready = true;
+            }
+            return None;
+        }
+        let empty = value::Value::Object(BTreeMap::new());
+        let params = request.get("params").unwrap_or(&empty);
+        if !params.is_object() {
+            return Some(error(id, -32602, "params must be an object"));
+        }
+        let result = match method {
+            "initialize" => {
+                if self.initialized {
+                    return Some(error(id, -32600, "Already initialized"));
+                }
+                if !params
+                    .get("protocolVersion")
+                    .is_some_and(value::Value::is_string)
+                    || !params
+                        .get("capabilities")
+                        .is_some_and(value::Value::is_object)
+                    || !params
+                        .get("clientInfo")
+                        .and_then(|v| v.get("name"))
+                        .is_some_and(value::Value::is_string)
+                    || !params
+                        .get("clientInfo")
+                        .and_then(|v| v.get("version"))
+                        .is_some_and(value::Value::is_string)
+                {
+                    return Some(error(id, -32602, "Invalid initialize parameters"));
+                }
+                self.initialized = true;
+                json!({"protocolVersion":VERSION,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"unityrs","version":env!("CARGO_PKG_VERSION")},"instructions":INSTRUCTIONS})
+            }
+            "ping" => json!({}),
+            "tools/list" | "tools/call" if !self.ready => {
+                return Some(error(
+                    id,
+                    -32600,
+                    "Initialize and send notifications/initialized first",
+                ));
+            }
+            "tools/list" => {
+                if params.get("cursor").is_some_and(|v| !v.is_null()) {
+                    return Some(error(id, -32602, "Tool list has no continuation cursor"));
+                }
+                json!({"tools":schema::tools(config.output.is_some())})
+            }
+            "tools/call" => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tools::call(params, config)
+            })) {
+                Ok(Ok(result)) => return Some(Response::Tool { id, result }),
+                Ok(Err(message)) => return Some(error(id, -32602, &message)),
+                Err(_) => return Some(error(id, -32603, "Internal error")),
+            },
+            _ => return Some(error(id, -32601, "Method not found")),
+        };
+        Some(success(id, result))
+    }
+}
+/// Read and drain exactly one physical line with bounded storage, including
+/// when a peer sends an unlimited line. A missing terminal newline is accepted.
+fn line(input: &mut impl BufRead, cap: usize) -> io::Result<Option<Result<Vec<u8>, ()>>> {
+    let mut bytes = Vec::new();
+    let mut oversized = false;
+    loop {
+        let available = input.fill_buf()?;
+        if available.is_empty() {
+            return Ok(if bytes.is_empty() && !oversized {
+                None
+            } else {
+                Some(if oversized { Err(()) } else { Ok(bytes) })
+            });
+        }
+        let end = available
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(available.len(), |i| i + 1);
+        let chunk = available.get(..end).unwrap_or_default();
+        let done = chunk.last() == Some(&b'\n');
+        if !oversized {
+            if bytes.len().saturating_add(end) > cap || bytes.try_reserve(end).is_err() {
+                oversized = true;
+                bytes.clear();
+            } else {
+                bytes.extend_from_slice(chunk);
+            }
+        }
+        input.consume(end);
+        if done {
+            return Ok(Some(if oversized { Err(()) } else { Ok(bytes) }));
+        }
+    }
+}
+fn serve(config: &Config, input: &mut impl BufRead, output: &mut impl Write) -> io::Result<()> {
+    let mut state = State::default();
+    while let Some(line) = line(input, config.request_bytes)? {
+        let response = match line {
+            Err(()) => Some(error(
+                Id::null(),
+                -32600,
+                "Request line exceeds --max-request-bytes",
+            )),
+            Ok(bytes) => match decode::request(&bytes, config.request_bytes) {
+                Err(e) => e.id.map(|id| error(id, e.code, e.message)),
+                Ok(value) => state.handle(&value, config),
+            },
+        };
+        if let Some(response) = response {
+            response.write(config, output)?;
+        }
+    }
+    Ok(())
+}
+pub(crate) fn main(raw: &[Vec<u8>]) -> ExitCode {
+    if matches!(raw, [v] if v == b"--help" || v == b"-h") {
+        eprintln!(
+            "usage: unityrs mcp --root DIR [--root DIR] [--out DIR] [limits]\n{}",
+            config::help()
+        );
+        return ExitCode::SUCCESS;
+    }
+    let config = match Config::parse(raw) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("unityrs mcp: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    match serve(&config, &mut io::stdin().lock(), &mut io::stdout().lock()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("unityrs mcp: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+pub(crate) fn options() -> Vec<crate::agent::options::OptionSpec> {
+    config::options()
+}

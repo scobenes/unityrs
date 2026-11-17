@@ -48,6 +48,11 @@ pub struct Document {
     pub json: String,
     charge: Charge,
 }
+impl Document {
+    pub(crate) fn meter(&self) -> &Arc<Meter> {
+        self.charge.meter()
+    }
+}
 fn document(text: Text) -> Result<Document> {
     let (json, charge) = text.finish()?;
     Ok(Document { json, charge })
@@ -70,7 +75,7 @@ fn write_error(out: &mut impl Sink, e: &Error) {
     }
     out.push('}');
 }
-fn error_document(e: &Error) -> Result<Document> {
+pub(crate) fn error_document(e: &Error) -> Result<Document> {
     let meter = crate::extract::limits::extraction(&unityrs_core::limits::Limits::default());
     let mut out = Text::on(&meter);
     write_error(&mut out, e);
@@ -79,7 +84,15 @@ fn error_document(e: &Error) -> Result<Document> {
 }
 /// Executes a new command and returns exactly one compact JSON document.
 pub fn execute(command: &str, raw: &[Vec<u8>]) -> Result<Document> {
-    let args = Args::parse(command, raw)?;
+    execute_confined(command, raw, None)
+}
+pub(crate) fn execute_confined(
+    command: &str,
+    raw: &[Vec<u8>],
+    roots: Option<Arc<crate::mcp::roots::Roots>>,
+) -> Result<Document> {
+    let mut args = Args::parse(command, raw)?;
+    args.roots = roots;
     if args.get("--help").is_some() {
         return describe::run();
     }
