@@ -22,7 +22,26 @@ class ProtocolTests(unittest.TestCase):
             with redirect_stderr(stderr):
                 status = collect.main(['--native', '--profile', 'debug', '--output', str(output)])
         self.assertEqual(status, 2)
-        self.assertEqual(stderr.getvalue(), 'calibration failed; no aggregate published\n')
+        self.assertEqual(stderr.getvalue(),
+                         'calibration failed; no aggregate published\nreason: SystemKilled\n')
+        self.assertFalse(output.exists())
+
+    def test_a_refusal_names_its_reason_and_a_failed_command_its_step_only(self):
+        output = scratch.for_case(self, 'memory-collector-refusal-') / 'aggregate.json'
+        stderr = io.StringIO()
+        with patch.object(collect, 'collect', side_effect=collect.gen.Invalid('calibration requires clean source')):
+            with redirect_stderr(stderr):
+                status = collect.main(['--native', '--profile', 'debug', '--output', str(output)])
+        self.assertEqual(status, 2)
+        self.assertEqual(stderr.getvalue(), 'calibration failed; no aggregate published\n'
+                         'reason: calibration requires clean source\n')
+        failed = collect.child.CompletedProcess(['cargo'], 101, b'raw child output', b'raw child error')
+        with patch.object(collect.child, 'run', return_value=failed):
+            with self.assertRaises(collect.gen.Invalid) as raised:
+                collect.run(['cargo', 'test', '--locked', '-p', 'unityrs-batch', '--manifest-path', '/x/Cargo.toml'])
+        message = str(raised.exception)
+        self.assertEqual(message, 'calibration command failed (cargo test --locked -p unityrs-batch --manifest-path, status 101)')
+        self.assertNotIn('raw', message)
         self.assertFalse(output.exists())
 
     def test_numeric_maxima_do_not_include_unrelated_test_output(self):

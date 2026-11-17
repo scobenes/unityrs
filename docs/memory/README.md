@@ -178,7 +178,25 @@ docker exec -w /work unityrs-dev \
 
 The calibration workflow runs the synthetic matrix on native
 `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarch64), in debug and release.
-It checks architecture and 4 KiB pages, builds before measuring, runs scenes
+Each job runs in Debian 12 (bookworm), pinned to the multi-architecture image
+index digest in the workflow; the native runner pulls its own architecture.
+This matches the host toolchain used for private whole-run aggregate evidence:
+GCC/G++ 12.2.0 and glibc 2.36. Running a container on a native host is still
+native execution. Both `cc -dumpfullversion` and `c++ -dumpfullversion` must
+report exactly `12.2.0` before measurement. All synthetic and whole-run records,
+across both architectures and profiles, must agree on `native_compilers`.
+The jobs install Debian build dependencies without recommended packages, verify
+the architecture-specific published SHA-256 of the pinned rustup installer,
+and install the toolchain from `rust-toolchain.toml`. No ambient build or
+allocator overrides or external Cargo configuration are supplied.
+
+The measured targets inspect their own and their children's `/proc` entries,
+which default Docker containers expose. They do not require ptrace or create
+user/PID namespaces; the separate `lifetime_process` namespace test is outside
+the collector's target list. No additional container capabilities or security
+options are needed.
+
+The workflow checks architecture and 4 KiB pages, builds before measuring, runs scenes
 serially, and uploads exactly one aggregate JSON per job. Child output is
 parsed in memory; no measurement logs or traces are uploaded. The workflow
 checks the PR head revision, so all eight sink records describe the same source.

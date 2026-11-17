@@ -108,8 +108,16 @@ def coverage(text, complete=True):
 def run(command, *, env=None):
     result = child.run(command, cwd=ROOT, env=env, stdout=child.PIPE, stderr=child.PIPE)
     if result.returncode:
-        raise gen.Invalid('calibration command failed; no aggregate published')
+        # The command's own words (fixed in this file) and its status name
+        # the failing step; the child's output is never echoed.
+        raise gen.Invalid(f'calibration command failed ({label(command)}, status {result.returncode})')
     return result.stdout.decode('utf-8', errors='strict')
+
+
+def label(command):
+    """The command as this file spells it, without paths, at most 240 characters."""
+    words = ' '.join(word for word in command if '/' not in word)
+    return words if len(words) <= 240 else words[:237] + '...'
 
 
 def numeric_protocol(text):
@@ -282,8 +290,15 @@ def main(argv=None):
         args.output.write_text(json.dumps(data, sort_keys=True, indent=2) + '\n', encoding='utf-8')
         print('synthetic aggregate written; no raw output retained')
         return 0
-    except (gen.Invalid, child.SystemKilled, OSError, UnicodeError, ValueError):
+    except gen.Invalid as error:
+        # Every Invalid message is a fixed string of the collector's or the
+        # generator's, or a command label (run), never a child's output.
         print('calibration failed; no aggregate published', file=sys.stderr)
+        print(f'reason: {error}', file=sys.stderr)
+        return 2
+    except (child.SystemKilled, OSError, UnicodeError, ValueError) as error:
+        print('calibration failed; no aggregate published', file=sys.stderr)
+        print(f'reason: {type(error).__name__}', file=sys.stderr)
         return 2
 
 
