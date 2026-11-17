@@ -159,6 +159,64 @@ fn hex(text: &str) -> Vec<u8> {
 }
 
 #[test]
+fn replay_pinned_audio_dispatch() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../unityrs-audio/tests/fixtures/audio.json"
+    ))
+    .unwrap();
+    for label in [
+        "ogg",
+        "riff",
+        "m4a",
+        "riff_before_m4a",
+        "legacy_ogg",
+        "pcm16_c1_r8",
+        "named_multi",
+        "overrides",
+    ] {
+        let case = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["case"] == label)
+            .unwrap();
+        let mut fields = vec![
+            ("m_Name", s(case["name"].as_str().unwrap())),
+            ("m_AudioData", V::Bytes(hex(case["data"].as_str().unwrap()))),
+            // These are the recorder's raw_to_wav defaults. Bank metadata
+            // overrides them, and neither format field selects the suffix.
+            ("m_Channels", V::Int(2)),
+            ("m_Frequency", V::Int(44100)),
+        ];
+        for (key, value) in [
+            ("m_Type", &case["legacy_type"]),
+            ("m_CompressionFormat", &case["compression"]),
+        ] {
+            if let Some(value) = value.as_i64() {
+                fields.push((key, V::Int(i32::try_from(value).unwrap())));
+            }
+        }
+        let (env, obj) = load(st("AudioClip", fields));
+        let m = Meter::unlimited();
+        {
+            let files = unityrs_export::audio::export(&obj, &env, true, &m)
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            let expected = case["oracle"]["files"].as_object().unwrap();
+            assert_eq!(files.len(), expected.len(), "{label}");
+            for file in files.as_slice() {
+                let name = std::str::from_utf8(file.name.as_slice()).unwrap();
+                assert_eq!(
+                    file.bytes.as_slice(),
+                    hex(expected[name].as_str().unwrap()),
+                    "{label}: {name}"
+                );
+            }
+        }
+        assert_eq!(m.used(), 0, "{label}");
+    }
+}
+
+#[test]
 fn replay_pinned_audio_data_sources() {
     use unityrs_export::{audio, simple};
 

@@ -37,6 +37,7 @@ pub fn direct_stage(
     }
     let mut out = Output::new(meter);
     out.int_properties = false;
+    out.code_fallback = false;
     match stage {
         "shader" => convert::shader(value, platforms, programs.as_slice(), &mut out, meter)?,
         "subshader" => convert::subshader(value, platforms, programs.as_slice(), &mut out, meter)?,

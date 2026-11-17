@@ -115,6 +115,20 @@ fn replay_pinned_audio_exports() {
             );
         }
     }
+    // Do not let the broad replay silently lose the PCM16 reference cases.
+    for channels in [1, 2] {
+        for rate in 0..11 {
+            let label = format!("pcm16_c{channels}_r{rate}");
+            assert!(
+                fixture["cases"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|case| { case["case"] == label && case["oracle"]["files"].is_object() }),
+                "missing accepted PCM16 oracle case {label}"
+            );
+        }
+    }
     assert!(exact >= 25, "oracle accepted too few cases: {exact}");
 }
 
@@ -190,4 +204,14 @@ fn replay_pinned_extension_property_including_enum_collisions() {
             .collect()
     );
     assert_eq!(collisions, [2, 2]);
+    // P3b consumes the integer values of both enums through this property;
+    // construction of Python enum objects is covered separately in P3c.
+    for (prefix, count) in [("AudioType.", 13), ("AudioCompressionFormat.", 10)] {
+        let values: std::collections::BTreeSet<_> = cases
+            .iter()
+            .filter(|case| case["case"].as_str().unwrap().starts_with(prefix))
+            .map(|case| case["compression"].as_i64().unwrap())
+            .collect();
+        assert_eq!(values.len(), count, "{prefix}");
+    }
 }

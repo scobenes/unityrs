@@ -1,10 +1,14 @@
 //! Replay real Shader.export calls recorded from hand-built `SerializedFiles`.
+use std::fmt::Write;
 use unityrs_core::{
     Bytes, File, RawStr,
     env::{EnvOptions, Environment, Source},
     limits::Meter,
 };
 use unityrs_export::shader;
+
+#[path = "support/shader_code.rs"]
+mod shader_code;
 
 fn unhex(text: &str) -> Vec<u8> {
     assert!(text.len().is_multiple_of(2));
@@ -78,6 +82,23 @@ fn every_shader_export_matches_the_pinned_oracle() {
         };
         let result = shader::export(&file.object(1).unwrap(), &env, &Meter::unlimited());
         let oracle = &case["oracle"];
+        if name == "converter_invalid_source_utf8" {
+            assert_eq!(oracle["exception"], "UnicodeDecodeError");
+            assert_eq!(
+                result.unwrap().as_slice(),
+                [
+                    shader::HEADER,
+                    concat!(
+                        "Shader \"Synthetic/Écho\" {\nProperties {\n\n}\nSubShader {\n",
+                        " Pass {\n  GpuProgramID 0\nProgram \"vp\" {\nSubProgram \"openGL \" {\n",
+                        "\"//shader disassembly not supported on 1\"\n}\n}\n}\n}\n}"
+                    )
+                ]
+                .concat()
+                .as_bytes(),
+            );
+            continue;
+        }
         if matches!(
             name,
             "script_missing"
@@ -87,22 +108,7 @@ fn every_shader_export_matches_the_pinned_oracle() {
                 | "script_invalid_utf8"
         ) {
             // Tier C: retain UnityPy's answer beside the version-first correction.
-            match name {
-                "script_empty" => assert_eq!(oracle["text"], shader::HEADER),
-                "script_utf8" => {
-                    assert_eq!(oracle["text"], shader::HEADER.to_owned() + "// Shader É\n");
-                }
-                "script_invalid_utf8" => assert_eq!(oracle["exception"], "UnicodeDecodeError"),
-                _ => {
-                    assert_eq!(oracle["exception"], "TypeError", "{name}");
-                    let message = if name == "script_string" {
-                        "string argument without an encoding"
-                    } else {
-                        "cannot convert 'NoneType' object to bytes"
-                    };
-                    assert_eq!(oracle["message"], message, "{name}");
-                }
-            }
+            assert_no_blob_oracle(name, oracle);
             assert_eq!(
                 result.unwrap().as_slice(),
                 no_programs_text.as_slice(),
@@ -221,4 +227,269 @@ fn source_block_output_cap_is_preserved() {
     };
     assert_eq!(limit.kind(), unityrs_core::error::LimitKind::BlockOutput);
     assert_eq!(limit.max(), 1);
+}
+
+fn code_shader_text(platform: &str, programs: &[&str]) -> String {
+    let mut expected = [shader::HEADER, "Shader \"Synthetic/Code\" {\nProperties {\n\n}\nSubShader {\n Pass {\n  GpuProgramID 7\nProgram \"vp\" {\n"].concat();
+    for program in programs {
+        write!(expected, "SubProgram \"{platform} \" {{\n{program}\n}}\n").unwrap();
+    }
+    expected.push_str("}\n}\n}\n}");
+    expected
+}
+
+#[test]
+fn unreadable_code_falls_back_beside_the_recorded_unitypy_raise() {
+    let recorded: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/shader.json")).unwrap();
+    for name in [
+        "invalid_source_utf8_kind_1",
+        "invalid_source_utf8_kind_8",
+        "invalid_source_utf8_kind_26",
+        "invalid_source_utf8_kind_30",
+        "metal_short_header",
+        "metal_unterminated",
+        "metal_offset_100",
+        "metal_invalid_source_utf8",
+    ] {
+        let case = recorded["blobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["case"] == name)
+            .unwrap();
+        let blob = unhex(case["input"].as_str().unwrap());
+        let kind = i32::from_le_bytes(blob[20..24].try_into().unwrap());
+        let expected_exception = if name == "metal_short_header" {
+            "error"
+        } else if matches!(name, "metal_unterminated" | "metal_offset_100") {
+            "Exception"
+        } else {
+            "UnicodeDecodeError"
+        };
+        assert_eq!(case["oracle"]["exception"], expected_exception, "{name}");
+        let env = Environment::new(EnvOptions::unitypy());
+        let File::Serialized(file) = env
+            .load(Source::Bytes {
+                name: RawStr::from("code.assets"),
+                data: Bytes::from(shader_code::asset(kind, &blob, 1)),
+            })
+            .unwrap()
+        else {
+            panic!("file")
+        };
+        let parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
+        let platform = match kind {
+            1 => "openGL",
+            8 => "glcore",
+            23 => "metal",
+            _ => "xbox360",
+        };
+        let comment = format!("\"//shader disassembly not supported on {kind}\"");
+        let output = shader::export_parsed(&parsed, (2021, 3), &Meter::unlimited()).unwrap();
+        assert_eq!(
+            output.as_slice(),
+            code_shader_text(platform, &[&comment]).as_bytes(),
+            "{name}"
+        );
+        let error = shader::export_with_cap_unitypy_properties(
+            &parsed,
+            (2021, 3),
+            &Meter::unlimited(),
+            u64::MAX,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.exception(),
+            Some(expected_exception),
+            "binding {name}"
+        );
+        if expected_exception == "Exception" {
+            assert_eq!(
+                error.to_string(),
+                case["oracle"]["message"].as_str().unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_replacements_fall_back_while_bindings_keep_code_raises() {
+    use unityrs_core::Value;
+    use unityrs_testkit::bundle::{TestCodec, compress};
+
+    let recorded: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/shader_legacy.json")).unwrap();
+    for minor in [3, 4] {
+        let name = format!("big_endian_5_{minor}_valid");
+        let case = recorded["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["case"] == name)
+            .unwrap();
+        for (kind, code, exception) in [
+            (1i32, b"\xff".as_slice(), "UnicodeDecodeError"),
+            (23, b"ABCDunterminated", "Exception"),
+        ] {
+            // Reuse the legacy builder's BE table and revision-specific header.
+            // Only the program kind, code length and code bytes change.
+            let mut blob = unhex(case["replacement_blob"].as_str().unwrap());
+            assert_eq!(blob.len(), 40);
+            blob[16..20].copy_from_slice(&kind.to_be_bytes());
+            blob[36..40].copy_from_slice(&i32::try_from(code.len()).unwrap().to_be_bytes());
+            blob.extend_from_slice(code);
+            while !blob.len().is_multiple_of(4) {
+                blob.push(0);
+            }
+            let env = Environment::new(EnvOptions::unitypy());
+            let File::Serialized(file) = env
+                .load(Source::Bytes {
+                    name: RawStr::from("legacy-code.assets"),
+                    data: Bytes::from(unhex(case["input"].as_str().unwrap())),
+                })
+                .unwrap()
+            else {
+                panic!("file")
+            };
+            let mut parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
+            assert!(
+                parsed
+                    .replace_scalar(
+                        &[b"m_SubProgramBlob"],
+                        Value::Bytes(Bytes::from(compress(TestCodec::Lz4, &blob))),
+                    )
+                    .unwrap()
+            );
+            assert!(
+                parsed
+                    .replace_scalar(
+                        &[b"decompressedSize"],
+                        Value::Int(i64::try_from(blob.len()).unwrap()),
+                    )
+                    .unwrap()
+            );
+            let meter = Meter::unlimited();
+            let output = shader::export_parsed(&parsed, (5, minor), &meter).unwrap();
+            assert_eq!(
+                output.as_slice(),
+                format!(
+                    "{}\"//shader disassembly not supported on {kind}\"\n",
+                    shader::HEADER
+                )
+                .as_bytes(),
+                "5.{minor}, kind {kind}"
+            );
+            drop(output);
+            assert_eq!(meter.used(), 0);
+            let error =
+                shader::export_with_cap_unitypy_properties(&parsed, (5, minor), &meter, u64::MAX)
+                    .unwrap_err();
+            assert_eq!(error.exception(), Some(exception), "5.{minor}, kind {kind}");
+            if kind == 23 {
+                assert_eq!(error.to_string(), "String not terminated");
+            }
+            drop(error);
+            assert_eq!(meter.used(), 0);
+        }
+    }
+}
+
+#[test]
+fn code_fallback_is_local_and_preserves_metal_window_and_slice_rules() {
+    // These synthetic expectations come from section 19.2's comment rule;
+    // they do not claim new oracle recordings. Existing recordings above
+    // pin the raises and shader_blob_boundaries pins Python's slice results.
+    for kind in [1, 2, 3, 4, 5, 6, 7, 8, 23, 24, 26, 27, 28, 29, 30] {
+        let platform = match kind {
+            1 => "openGL",
+            2..=4 => "gles3",
+            5 => "gles",
+            6..=8 => "glcore",
+            23 | 24 => "metal",
+            _ => "xbox360",
+        };
+        let metal = matches!(kind, 23 | 24);
+        let valid = if metal {
+            b"ABCDentry\0source".as_slice()
+        } else {
+            b"source"
+        };
+        let mut cases = vec![(vec![0xff], true, "")];
+        if metal {
+            cases.clear();
+            for len in 1..4 {
+                cases.push((vec![b'a'; len], true, ""));
+            }
+            for len in 4..8 {
+                let mut code = 0xf00d_cafeu32.to_le_bytes().to_vec();
+                code.resize(len, 1);
+                cases.push((code, true, ""));
+            }
+            for len in [0, 1, 32766, 32767, 32768] {
+                let mut code = b"ABCD".to_vec();
+                code.extend(vec![b'n'; len]);
+                cases.push((code, len <= 32767, "n"));
+            }
+            cases.extend([
+                (b"ABCDentry\0\xff".to_vec(), true, ""),
+                (b"ABCD\xff\0source".to_vec(), false, "source"),
+                (vec![], false, ""),
+                (
+                    [0xf00d_cafeu32.to_le_bytes(), (-32768i32).to_le_bytes()]
+                        .concat()
+                        .into_iter()
+                        .chain(b"main\0source".iter().copied())
+                        .collect(),
+                    false,
+                    "e",
+                ),
+            ]);
+        }
+        for (code, fallback, source) in cases {
+            let blob = shader_code::program(kind, &[valid, &code, valid]);
+            let env = Environment::new(EnvOptions::unitypy());
+            let File::Serialized(file) = env
+                .load(Source::Bytes {
+                    name: RawStr::from("variants.assets"),
+                    data: Bytes::from(shader_code::asset(kind, &blob, 3)),
+                })
+                .unwrap()
+            else {
+                panic!("file")
+            };
+            let output =
+                shader::export(&file.object(1).unwrap(), &env, &Meter::unlimited()).unwrap();
+            let middle = if fallback {
+                format!("\"//shader disassembly not supported on {kind}\"")
+            } else {
+                format!("\"{source}\"")
+            };
+            assert_eq!(
+                output.as_slice(),
+                code_shader_text(platform, &["\"source\"", &middle, "\"source\""]).as_bytes(),
+                "kind {kind}, code length {}",
+                code.len()
+            );
+        }
+    }
+}
+
+fn assert_no_blob_oracle(name: &str, oracle: &serde_json::Value) {
+    match name {
+        "script_empty" => assert_eq!(oracle["text"], shader::HEADER),
+        "script_utf8" => {
+            assert_eq!(oracle["text"], shader::HEADER.to_owned() + "// Shader É\n");
+        }
+        "script_invalid_utf8" => assert_eq!(oracle["exception"], "UnicodeDecodeError"),
+        _ => {
+            assert_eq!(oracle["exception"], "TypeError", "{name}");
+            let message = if name == "script_string" {
+                "string argument without an encoding"
+            } else {
+                "cannot convert 'NoneType' object to bytes"
+            };
+            assert_eq!(oracle["message"], message, "{name}");
+        }
+    }
 }

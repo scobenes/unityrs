@@ -18,6 +18,7 @@ pub(super) fn export(
     version: (u32, u32),
     meter: &Arc<Meter>,
     cap: u64,
+    code_fallback: bool,
 ) -> Result<MeteredVec<u8>, Error> {
     let refusal = if version == (5, 3) {
         Unsupported::BigEndian53Blob
@@ -51,6 +52,7 @@ pub(super) fn export(
     meter.count_decode((script.len() as u64).saturating_mul(16))?;
     let mut rest = std::str::from_utf8(script).map_err(|_| super::utf8_error(script, meter))?;
     let mut out = Output::new(meter);
+    out.code_fallback = code_fallback;
     out.text(super::HEADER)?;
     while let Some(start) = rest.find(MARKER) {
         out.text(&rest[..start])?;
