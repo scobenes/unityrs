@@ -72,24 +72,41 @@
       }
     },
     "humanoid": {
-      "type": "object",
+      "type": "object", "additionalProperties": false,
       "required": ["absent_slot", "slots", "axes", "disposition"],
       "properties": {
         "absent_slot": {"type": "integer"}, "slots": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/slot"}},
         "axes": {"type": "array", "items": {"$ref": "#/$defs/axis"}},
         "disposition": {"type": "string", "pattern": "^(pending|qualified_muscle_only|unsupported_[a-z_]+)$"},
-        "root_hips_comparison": {"type": "object", "required": ["baseline_sha256", "root_node", "hips_node", "within_bounds"],
+        "storage_counts": {"type": "object", "additionalProperties": false,
+          "required": ["streamed", "dense", "constant"], "properties": {
+            "streamed": {"$ref": "#/$defs/index"}, "dense": {"$ref": "#/$defs/index"}, "constant": {"$ref": "#/$defs/index"}}},
+        "root_hips_comparison": {"type": "object", "additionalProperties": false,
+          "required": ["baseline_sha256", "root_node", "hips_node", "baseline"],
           "properties": {"baseline_sha256": {"$ref": "#/$defs/digest"}, "root_node": {"$ref": "#/$defs/index"},
-            "hips_node": {"$ref": "#/$defs/index"}, "within_bounds": {"type": "boolean"}}}
+            "hips_node": {"$ref": "#/$defs/index"},
+            "baseline": {"$ref": "#/$defs/humanoid_baseline"}}}
+      }
+    },
+    "humanoid_baseline": {
+      "type": "object", "additionalProperties": false,
+      "required": ["bundle_sha256", "prefab", "binding", "avatar", "samples"],
+      "properties": {
+        "bundle_sha256": {"type": "array", "items": {"$ref": "#/$defs/digest"}},
+        "prefab": {"$ref": "#/$defs/id"}, "binding": {"$ref": "#/$defs/id"}, "avatar": {"$ref": "#/$defs/id"},
+        "samples": {"type": "array", "minItems": 1, "items": {
+          "type": "object", "additionalProperties": false, "required": ["local_f32", "root", "hips_local"],
+          "properties": {"local_f32": {"$ref": "#/$defs/f32"}, "root": {"$ref": "#/$defs/trs"},
+            "hips_local": {"$ref": "#/$defs/trs"}}}}
       }
     },
     "slot": {
-      "type": "object", "required": ["dof", "kind", "index_value", "storage"],
+      "type": "object", "additionalProperties": false, "required": ["dof", "kind", "index_value", "storage"],
       "properties": {"dof": {"$ref": "#/$defs/name"}, "kind": {"enum": ["body", "muscle", "goal", "translation"]},
         "index_value": {"type": "integer"}, "storage": {"enum": ["absent", "streamed", "dense", "constant"]}}
     },
     "axis": {
-      "type": "object", "required": ["bone", "axis_type", "pre", "post", "sign", "min", "max"],
+      "type": "object", "additionalProperties": false, "required": ["bone", "axis_type", "pre", "post", "sign", "min", "max"],
       "properties": {"bone": {"$ref": "#/$defs/index"}, "axis_type": {"type": "integer"},
         "pre": {"$ref": "#/$defs/vec4"}, "post": {"$ref": "#/$defs/vec4"},
         "sign": {"$ref": "#/$defs/vec3"}, "min": {"$ref": "#/$defs/vec3"}, "max": {"$ref": "#/$defs/vec3"}}
@@ -98,29 +115,56 @@
       "type": "object",
       "required": ["layout", "clock", "import_settings", "discovery"],
       "properties": {
-        "layout": {"$ref": "#/$defs/name"}, "clock": {"$ref": "#/$defs/name"},
+        "layout": {"$ref": "#/$defs/name"}, "clock": {"$ref": "#/$defs/clock_evidence"},
         "import_settings": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/setting"}},
         "discovery": {"type": "array", "items": {"$ref": "#/$defs/discovery"}},
         "humanoid": {"$ref": "#/$defs/humanoid"}
       }
     },
-    "nonnegative": {"type": "number", "minimum": 0, "maximum": 1e30},
-    "stage": {
-      "type": "object", "additionalProperties": false, "required": ["name", "operations", "scale", "gain", "elementary_error"],
+    "clock_evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["start", "stop", "key_times", "held"],
       "properties": {
-        "name": {"$ref": "#/$defs/name"}, "operations": {"type": "integer", "minimum": 0, "maximum": 65536},
-        "scale": {"$ref": "#/$defs/nonnegative"}, "gain": {"$ref": "#/$defs/nonnegative"},
-        "elementary_error": {"$ref": "#/$defs/nonnegative"}
+        "start": {"$ref": "#/$defs/endpoint"}, "stop": {"$ref": "#/$defs/endpoint"},
+        "key_times": {"type": "array", "minItems": 1, "items": {"type": "number"}},
+        "held": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+          "required": ["source", "right"], "properties": {
+            "source": {"type": "number"}, "left": {"$ref": "#/$defs/probe"}, "right": {"$ref": "#/$defs/probe"}}}}
+      }
+    },
+    "endpoint": {
+      "type": "object", "additionalProperties": false, "required": ["source", "field", "probe"],
+      "properties": {"source": {"type": "number"}, "field": {"$ref": "#/$defs/name"}, "probe": {"$ref": "#/$defs/probe"}}
+    },
+    "probe": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sample", "property", "target", "channel", "component", "value"],
+      "properties": {
+        "sample": {"$ref": "#/$defs/index"}, "property": {"enum": ["translation", "rotation", "scale", "weight"]},
+        "target": {"$ref": "#/$defs/index"}, "channel": {"type": "integer", "minimum": -1},
+        "component": {"$ref": "#/$defs/index"}, "value": {"$ref": "#/$defs/f32"}
+      }
+    },
+    "interval": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": {"type": "number", "minimum": -1e30, "maximum": 1e30}
+    },
+    "stage": {
+      "type": "object", "additionalProperties": false, "required": ["stage", "range"],
+      "properties": {
+        "stage": {"enum": ["rest", "constant", "held", "streamed", "dense", "hermite", "weighted", "muscle", "joint"]},
+        "range": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/interval"}}
       }
     },
     "budget": {
       "type": "object", "additionalProperties": false,
-      "required": ["property", "target", "channel", "rate", "output_gain", "min_norm", "stages"],
+      "required": ["property", "target", "channel", "stages"],
       "properties": {
         "property": {"enum": ["translation", "rotation", "scale", "weight"]},
         "target": {"$ref": "#/$defs/index"}, "channel": {"type": "integer", "minimum": -1, "maximum": 2147483647},
-        "rate": {"$ref": "#/$defs/nonnegative"}, "output_gain": {"$ref": "#/$defs/nonnegative"},
-        "min_norm": {"$ref": "#/$defs/nonnegative"},
+        "weight_units": {"enum": ["editor", "fraction_of_100"]},
+        "norm_ranges": {"type": "array", "minItems": 1, "items": {
+          "type": "array", "minItems": 4, "maxItems": 4, "items": {"$ref": "#/$defs/interval"}}},
         "stages": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stage"}}
       }
     },
@@ -178,10 +222,11 @@
     },
     "playback": {
       "type": "object", "additionalProperties": false,
-      "required": ["api", "reset", "wrap_mode", "clip_looping", "speed", "delta_time", "apply_root_motion", "foot_ik", "playable_ik", "animator_move", "controller_blending", "events", "legacy_state", "clip_length_f32", "frame_rate_f32"],
+      "required": ["api", "reset", "wrap_mode", "clip_looping", "clip_human_motion", "speed", "delta_time", "apply_root_motion", "foot_ik", "playable_ik", "animator_move", "controller_blending", "events", "legacy_state", "clip_length_f32", "frame_rate_f32"],
       "properties": {
         "api": {"enum": ["AnimationClipPlayable", "Animation.Sample", "HumanPoseHandler.SetHumanPose"]},
         "reset": {"const": "fresh_prefab"}, "wrap_mode": {"$ref": "#/$defs/name"}, "clip_looping": {"type": "boolean"},
+        "clip_human_motion": {"type": "boolean"},
         "speed": {"const": 1}, "delta_time": {"const": 0}, "apply_root_motion": {"const": false},
         "foot_ik": {"const": false}, "playable_ik": {"const": false}, "animator_move": {"const": false},
         "controller_blending": {"const": false}, "events": {"const": false},

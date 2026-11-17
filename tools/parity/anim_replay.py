@@ -6,19 +6,31 @@ import math
 import re
 import struct
 import sys
+from bisect import bisect_left
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from anim_reference import BOUNDS, angular_bound, gamma, ulp32  # noqa: E402
+from anim_reference import BOUNDS, angle, angular_bound, ulp32  # noqa: E402
+from anim_replay_bounds import budget_model, roundoff  # noqa: E402
 
 SCHEMA = json.loads(Path(__file__).with_name("anim_replay.schema.json").read_text(encoding="utf-8"))
 TRS = ("translation", "rotation", "scale")
 API = {"animator": "AnimationClipPlayable", "legacy": "Animation.Sample",
        "human_pose": "HumanPoseHandler.SetHumanPose"}
 BODY_DOFS = {f"RootT.{axis}" for axis in "xyz"} | {f"RootQ.{axis}" for axis in "xyzw"}
-U32 = 2**-24
+MUSCLE_COUNT = 95  # HumanTrait order for the supported fixture versions
 F64_ANGLE_FLOOR = BOUNDS["transcription"]["angular_floor_u64"] * BOUNDS["transcription"]["unit_roundoff"]
+NEUTRAL_SETTINGS = dict.fromkeys((
+    "loop", "loopTime", "loopPose", "loopBlend", "loopBlendOrientation", "loopBlendPositionY",
+    "loopBlendPositionXZ", "lockRootRotation", "lockRootHeightY", "lockRootPositionXZ",
+    "keepOriginalOrientation", "keepOriginalPositionY", "keepOriginalPositionXZ",
+    "heightFromFeet", "startAtOrigin", "mirror", "hasAdditiveReferencePose", "translation_dof",
+), False) | dict.fromkeys((
+    "orientationOffsetY", "level", "rotationOffset", "heightOffset", "cycleOffset",
+    "additiveReferencePoseTime", "upper_arm_twist", "lower_arm_twist", "upper_leg_twist",
+    "lower_leg_twist",
+), 0) | {"additiveReferencePoseClipName": ""}
 
 
 def require(ok, message):
@@ -38,6 +50,11 @@ def read_json(text):
         raise ValueError(f"invalid JSON number {token}")
 
     return json.loads(text, object_pairs_hook=unique, parse_constant=nonfinite)
+
+
+def _digest(value):
+    encoded = json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("ascii")).hexdigest()
 
 
 def _same(a, b):
@@ -117,6 +134,117 @@ def _targets(spec):
             + [("weight", i, c["index"]) for i, r in enumerate(spec["renderers"]) for c in r["channels"]])
 
 
+def _validate_clock(spec, start, stop, length):
+    evidence = spec["evidence"]["clock"]
+    times = [row["local"] for row in spec["schedule"]]
+    require(_ordered(times) and times[0] == 0 and times[-1] == stop - start, "invalid schedule endpoints or order")
+    require((evidence["start"]["source"], evidence["stop"]["source"]) == (start, stop),
+            "source origin disagrees with independently inspected endpoints")
+    boundaries = spec["held_boundaries"]
+    require(_ordered(boundaries) and all(start <= t <= stop for t in boundaries), "invalid held boundaries")
+    require([row["source"] for row in evidence["held"]] == boundaries, "missing or mismatched held observations")
+    keys = evidence["key_times"]
+    require(_ordered(keys) and keys[0] == start and keys[-1] == stop and set(boundaries) <= set(keys),
+            "invalid clock evidence key times")
+    require(all(float(t) == t for t in (*boundaries, *keys, *times)), "time is not exactly representable as binary64")
+    effective = [clocks(spec, time, length) for time in times]
+    if stop > start:
+        key_locals = sorted({f32_from_bits(f32_bits(t - start)) for t in keys})
+        key_sources = (sorted({f32_from_bits(f32_bits(t)) for t in keys})
+                       if spec["source_clock"] == "f32_add" else keys)
+
+        def between(keys, time):
+            i = bisect_left(keys, time)
+            return 0 < i < len(keys) and time < keys[i]
+
+        require(any(start < source < stop and between(key_locals, f32_from_bits(bits)) and between(key_sources, source)
+                    for bits, _, source in effective[1:-1]), "nonzero interval requires an effective f32 off-key sample")
+        require(_ordered([f32_from_bits(bits) for bits, _, _ in effective]), "duplicate effective f32 sample times")
+
+    targets = set(_targets(spec))
+
+    def probe_index(probe):
+        key = _target_key(probe)
+        widths = {"translation": 3, "rotation": 4, "scale": 3, "weight": 1}
+        require(key in targets and probe["component"] < widths[key[0]] and probe["sample"] < len(times),
+                "invalid clock probe sample or target")
+        return probe["sample"]
+
+    for endpoint, index in (("start", 0), ("stop", len(times) - 1)):
+        require(probe_index(evidence[endpoint]["probe"]) == index, "clock probe must observe the endpoint sample")
+    effective_sources = [source for _, _, source in effective]
+    for row in evidence["held"]:
+        left, right = row.get("left"), row["right"]
+        first_right = bisect_left(effective_sources, row["source"])
+        require(probe_index(right) == first_right, "held probe must observe the first effective right sample")
+        if row["source"] == start:
+            require(left is None, "held boundary at start has only a right-side probe")
+        else:
+            require(left is not None and probe_index(left) == first_right - 1,
+                    "held probe must observe the last effective left sample")
+            require((_target_key(left), left["component"]) == (_target_key(right), right["component"])
+                    and f32_from_bits(left["value"]) != f32_from_bits(right["value"]),
+                    "held probes must distinguish both sides of the same component")
+
+
+def _validate_humanoid_spec(spec, human):
+    require(spec["avatar"] is not None, "humanoid evidence requires an Avatar")
+    slots = human["slots"]
+    require(len({row["dof"] for row in slots}) == len(slots), "duplicate humanoid DOF")
+    for row in slots:
+        absent = row["storage"] == "absent"
+        require(absent == (row["index_value"] == human["absent_slot"])
+                and (absent or row["index_value"] >= 0), "invalid humanoid slot sentinel")
+    comparison = human.get("root_hips_comparison")
+    nodes = spec["nodes"]
+    if comparison is not None:
+        require(comparison["root_node"] < len(nodes) and comparison["hips_node"] < len(nodes),
+                "unknown root or hips node")
+    if human["disposition"] != "qualified_muscle_only":
+        return
+
+    body = {row["dof"]: row for row in slots if row["kind"] == "body"}
+    require(body.keys() == BODY_DOFS and all(row["storage"] == "absent" for row in body.values()),
+            "qualification requires the complete absent body slot inventory")
+    muscles = [row for row in slots if row["kind"] == "muscle"]
+    mapped = [row for row in slots if row["storage"] != "absent"]
+    require(len(muscles) == MUSCLE_COUNT and mapped and all(row["kind"] == "muscle" for row in mapped),
+            "qualification requires the complete muscle slot inventory and only muscle writers")
+    counts = human.get("storage_counts")
+    require(counts is not None and len({row["index_value"] for row in mapped}) == len(mapped),
+            "qualification requires unambiguous humanoid storage ranges")
+    offset = 0
+    for storage in ("streamed", "dense", "constant"):
+        end = offset + counts[storage]
+        require(all(offset <= row["index_value"] < end for row in mapped if row["storage"] == storage),
+                "humanoid slot lies outside its storage range")
+        offset = end
+    require(human["axes"], "qualification requires runtime axes")
+    settings = {row["property"]: row for row in spec["evidence"]["import_settings"]}
+    require(settings.keys() >= NEUTRAL_SETTINGS.keys(), "qualification requires complete effective import settings")
+    for name, neutral in NEUTRAL_SETTINGS.items():
+        row = settings[name]
+        require(_same(row["effective"], neutral), f"non-neutral qualified import setting: {name}")
+        serialized = row["serialized"]
+        if type(neutral) is bool and type(serialized) is int and serialized in (0, 1):
+            serialized = bool(serialized)
+        require(_same(serialized, neutral), f"missing or non-neutral serialized import setting: {name}")
+
+    require(spec["mode"] == "animator" and comparison is not None and "budgets" in spec,
+            "qualification requires clip playback, root and hips-local baseline and frozen budgets")
+    root, hips = (nodes[comparison[name]]["address"] for name in ("root_node", "hips_node"))
+    require(root == spec["binding_address"] and hips != root and (not root or hips.startswith(root + "/")),
+            "hips must be a distinct descendant of the Animator root")
+    baseline = comparison["baseline"]
+    require(baseline["bundle_sha256"] == [bundle["sha256"] for bundle in spec["bundles"]]
+            and all(baseline[key] == spec[key] for key in ("prefab", "binding", "avatar")),
+            "root and hips-local baseline must use the same built rig")
+    require(len(baseline["samples"]) == len(spec["schedule"]), "incomplete root and hips-local baseline")
+    require([row["local_f32"] for row in baseline["samples"]] == [f32_bits(row["local"]) for row in spec["schedule"]],
+            "root and hips-local baseline schedule mismatch")
+    require(_digest(baseline) == comparison["baseline_sha256"], "root and hips-local baseline digest mismatch")
+
+
 def validate_spec(spec):
     _shape(SCHEMA["$defs"]["spec"], spec, "/spec")
     bundles = spec["bundles"]
@@ -181,48 +309,24 @@ def validate_spec(spec):
     require(f32_from_bits(f32_bits(spec["sample_rate"])) == spec["sample_rate"], "invalid serialized f32 rate")
     if spec["source_clock"] == "f32_add":
         require(f32_from_bits(f32_bits(start)) == start, "f32 source clock needs an exact f32 start")
-    boundaries = spec["held_boundaries"]
-    require(_ordered(boundaries) and all(start <= t <= stop for t in boundaries), "invalid held boundaries")
-    times = [row["local"] for row in spec["schedule"]]
-    require(all(float(t) == t for t in (*boundaries, *times)), "time is not exactly representable as binary64")
-    require(_ordered(times) and times[0] == 0 and times[-1] == stop - start, "invalid schedule endpoints or order")
-    require(stop == start or len(times) > 2, "nonzero interval requires an off-key sample")
+    _validate_clock(spec, start, stop, length)
     require(all(("muscles" in row) == (spec["mode"] == "human_pose") for row in spec["schedule"]),
             "only known-vector playback requires muscles in the schedule")
     if spec["mode"] == "human_pose":
-        require(not boundaries and "humanoid" in spec["evidence"], "invalid known-vector evidence")
+        require(not spec["held_boundaries"] and "humanoid" in spec["evidence"], "invalid known-vector evidence")
+    settings = spec["evidence"]["import_settings"]
+    require(len({row["property"] for row in settings}) == len(settings), "duplicate effective import setting")
     human = spec["evidence"].get("humanoid")
     paths = spec.get("editor_axis_properties", [])
     require(len(set(paths)) == len(paths) and (not paths or human is not None), "invalid Editor axis paths")
     if human is not None:
-        require(spec["avatar"] is not None, "humanoid evidence requires an Avatar")
-        dofs = [row["dof"] for row in human["slots"]]
-        require(len(dofs) == len(set(dofs)), "duplicate humanoid DOF")
-        absent_body = set()
-        for row in human["slots"]:
-            absent = row["storage"] == "absent"
-            require(absent == (row["index_value"] == human["absent_slot"])
-                    and (absent or row["index_value"] >= 0), "invalid humanoid slot sentinel")
-            if row["kind"] == "body" and absent:
-                absent_body.add(row["dof"])
-        comparison = human.get("root_hips_comparison")
-        if comparison is not None:
-            require(comparison["root_node"] < len(nodes) and comparison["hips_node"] < len(nodes),
-                    "unknown root or hips node")
-        if human["disposition"] == "qualified_muscle_only":
-            require(BODY_DOFS <= absent_body
-                    and all(row["storage"] == "absent" for row in human["slots"] if row["kind"] == "body")
-                    and comparison is not None and comparison["within_bounds"],
-                    "qualified muscle-only playback needs absent body slots and root/hips evidence")
+        _validate_humanoid_spec(spec, human)
     if "budgets" in spec:
         budgets = spec["budgets"]
         keys = [_target_key(row) for row in budgets]
         require(len(set(keys)) == len(keys) and set(keys) == set(_targets(spec)), "invalid budget coverage")
         for row in budgets:
-            rotation, weight = row["property"] == "rotation", row["property"] == "weight"
-            require((row["min_norm"] > 0 if rotation else row["min_norm"] == 0)
-                    and (row["output_gain"] > 0 if weight else row["output_gain"] == 1),
-                    "invalid quaternion norm or output gain")
+            budget_model(row)
 
 
 def clocks(spec, local, length):
@@ -255,6 +359,67 @@ def _pose_values(spec, pose):
             yield (f32_from_bits(value),)
 
 
+def _validate_probes(spec, samples):
+    clock = spec["evidence"]["clock"]
+    probes = [clock[side]["probe"] for side in ("start", "stop")]
+    probes.extend(row[side] for row in clock["held"] for side in ("left", "right") if side in row)
+    for probe in probes:
+        pose = samples[probe["sample"]]["pose"]
+        prop, target, channel = _target_key(probe)
+        if prop == "weight":
+            actual = pose["weights"][target]["channels"][channel]
+        else:
+            actual = pose["transforms"][target][prop][probe["component"]]
+        require(actual == probe["value"], "captured pose disagrees with independent clock probe")
+
+
+def _validate_qualification(spec, capture):
+    human = spec["evidence"].get("humanoid")
+    if human is None or human["disposition"] != "qualified_muscle_only":
+        return
+    require(capture["playback"]["clip_human_motion"], "qualified playback requires an observed human-motion clip")
+    captured = capture["humanoid"]
+    muscles = [row for row in human["slots"] if row["kind"] == "muscle"]
+    require([row["dof"] for row in muscles] == [row["name"] for row in captured["muscles"]]
+            and len({(row["bone"], row["axis"]) for row in captured["muscles"]}) == MUSCLE_COUNT,
+            "qualified muscle slots disagree with the independent HumanTrait inventory")
+    bones = captured["bones"]
+    axes = {row["bone"]: row for row in human["axes"]}
+    require(len(axes) == len(human["axes"]) and all(bone < len(bones) for bone in axes),
+            "invalid qualified runtime axis mapping")
+    for slot, muscle in zip(muscles, captured["muscles"]):
+        if slot["storage"] != "absent":
+            bone, axis = muscle["bone"], muscle["axis"]
+            require(bones[bone]["node"] >= 0 and bone in axes, "mapped muscle needs a bone and runtime axes")
+            record = axes[bone]
+            require(all(any(map(f32_from_bits, record[name])) for name in ("pre", "post"))
+                    and f32_from_bits(record["sign"][axis]) in (-1, 1)
+                    and f32_from_bits(record["min"][axis]) <= 0 <= f32_from_bits(record["max"][axis]),
+                    "invalid runtime axes for mapped muscle")
+
+    comparison = human["root_hips_comparison"]
+    hips = comparison["hips_node"]
+    require([bone["node"] for bone in bones if bone["name"] == "Hips"] == [hips],
+            "hips node disagrees with the independent HumanTrait map")
+    settings = {row["property"]: row["effective"] for row in spec["evidence"]["import_settings"]}
+    for name in NEUTRAL_SETTINGS.keys() & captured.keys():
+        observed = captured[name]
+        if isinstance(observed, str):
+            observed = f32_from_bits(observed)
+        require(_same(observed, settings[name]), f"effective Avatar setting mismatch: {name}")
+
+    baselines = comparison["baseline"]["samples"]
+    for sample, baseline, bounds in zip(capture["samples"], baselines, _sample_bounds(spec, capture)):
+        for name, target in (("root", comparison["root_node"]), ("hips_local", hips)):
+            actual = sample["pose"]["transforms"][target]
+            for axis, prop in enumerate(TRS):
+                measured, expected = (tuple(map(f32_from_bits, pose[prop])) for pose in (actual, baseline[name]))
+                residual = (angle(measured, expected) if prop == "rotation"
+                            else max(abs(a - b) for a, b in zip(measured, expected)))
+                require(residual <= bounds[3 * target + axis],
+                        f"{name} {prop} residual exceeds frozen replay bound at {sample['local']}")
+
+
 def validate(manifest, bundle_dir=None):
     _shape(SCHEMA, manifest, "")
     spec, capture = manifest["spec"], manifest["capture"]
@@ -284,7 +449,8 @@ def validate(manifest, bundle_dir=None):
     require(playback["clip_length_f32"] == f32_bits(float(spec["stop"]) - float(spec["start"]))
             and f32_from_bits(playback["frame_rate_f32"]) == spec["sample_rate"], "clip length or sample rate mismatch")
     human = capture.get("humanoid")
-    require(human is not None or "humanoid" not in spec["evidence"], "missing humanoid capture")
+    require(human is not None or ("humanoid" not in spec["evidence"] and not playback["clip_human_motion"]),
+            "missing humanoid capture")
     if human is not None:
         require(spec["avatar"] is not None, "humanoid capture requires an Avatar identity")
         require([row["path"] for row in human["axis_properties"]] == spec.get("editor_axis_properties", []),
@@ -318,37 +484,43 @@ def validate(manifest, bundle_dir=None):
         require(sample["muscles_f32"] == [f32_bits(value) for value in point.get("muscles", ())],
                 "applied known-vector bits disagree with schedule")
         list(_pose_values(spec, sample["pose"]))
+    _validate_probes(spec, capture["samples"])
+    _validate_qualification(spec, capture)
+
+
+def _sample_bounds(spec, capture):
+    keys = _targets(spec)
+    budgets = {_target_key(row): row for row in spec["budgets"]}
+    models = [budget_model(budgets[key]) for key in keys]
+    for sample in capture["samples"]:
+        dt = abs(sample["effective_source"] - sample["source"])
+        bounds = []
+        for model, values in zip(models, _pose_values(spec, sample["pose"])):
+            raw = model.error(dt)
+            output = .5 * ulp32(max(map(abs, values)))
+            if model.min_norm is not None:
+                unit_error = output + roundoff(32, 1)
+                bound = (angular_bound(raw, model.min_norm) + angular_bound(unit_error, 1.)
+                         + F64_ANGLE_FLOOR)
+            else:
+                bound = raw + output
+            bound = math.nextafter(bound * (1 + 2**-45), math.inf)
+            require(math.isfinite(bound) and (model.min_norm is None or bound < math.pi),
+                    "replay tolerance is nonfinite or reaches pi")
+            bounds.append(bound)
+        yield bounds
 
 
 def derive(manifest, bundle_dir=None):
     """Return per-sample bounds in target order. Observations supply only the output ulp."""
     validate(manifest, bundle_dir)
-    spec = manifest["spec"]
+    spec, capture = manifest["spec"], manifest["capture"]
     require("budgets" in spec, "derivation requires recorded budgets")
-    keys = _targets(spec)
-    budgets = {_target_key(row): row for row in spec["budgets"]}
-    stages = {key: math.fsum((gamma(s["operations"], U32) * s["scale"]
-                              + s["operations"] * 2**-126 + s["elementary_error"]) * s["gain"]
-                             for s in budgets[key]["stages"]) for key in keys}
-    result = []
-    for sample in manifest["capture"]["samples"]:
-        dt = abs(sample["effective_source"] - sample["source"])
-        bounds = []
-        for key, values in zip(keys, _pose_values(spec, sample["pose"])):
-            budget = budgets[key]
-            raw = (stages[key] + dt * budget["rate"]) * budget["output_gain"]
-            output = .5 * ulp32(max(map(abs, values)))
-            if key[0] == "rotation":
-                bound = (angular_bound(raw, budget["min_norm"]) + angular_bound(output, 1.)
-                         + F64_ANGLE_FLOOR)
-            else:
-                bound = raw + output
-            bounds.append(math.nextafter(bound * (1 + 2**-45), math.inf))
-        result.append({k: sample[k] for k in ("source", "effective_source", "sides")} | {"bounds": bounds})
-    encoded = json.dumps(manifest, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+    result = [{k: sample[k] for k in ("source", "effective_source", "sides")} | {"bounds": bounds}
+              for sample, bounds in zip(capture["samples"], _sample_bounds(spec, capture))]
     return {"format": "unityrs.anim_tolerances", "version": 1,
-            "manifest_sha256": hashlib.sha256(encoded.encode("ascii")).hexdigest(),
-            "targets": keys, "samples": result}
+            "manifest_sha256": _digest(manifest),
+            "targets": _targets(spec), "samples": result}
 
 
 def main():

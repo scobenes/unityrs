@@ -13,7 +13,7 @@ using UnityEngine.Playables;
 using UnityEngine.SceneManagement;
 using Object = UnityEngine.Object;
 
-public static class AnimReplayRecorder
+public static partial class AnimReplayRecorder
 {
     // JsonUtility reads only the fields used to drive capture. Preserve the complete
     // validated specification verbatim, including the owner-inspected serialized evidence.
@@ -23,6 +23,10 @@ public static class AnimReplayRecorder
     [Serializable] class Channel { public int index; public string name; public float[] full_weights; }
     [Serializable] class RendererSpec { public string address; public int component; public Id mesh; public Channel[] channels; }
     [Serializable] class Point { public double local; public float[] muscles; }
+    [Serializable] class EndpointEvidence { public double source; public string field; }
+    [Serializable] class ClockEvidence { public EndpointEvidence start, stop; }
+    [Serializable] class Evidence { public ClockEvidence clock; }
+    enum SourceClock { Widened, F32Add }
     [Serializable] class Spec
     {
         public Bundle[] bundles;
@@ -35,6 +39,7 @@ public static class AnimReplayRecorder
         public Node[] nodes;
         public RendererSpec[] renderers;
         public string[] editor_axis_properties;
+        public Evidence evidence;
     }
 
     [Serializable] class Trs { public string[] translation, rotation, scale; }
@@ -52,7 +57,7 @@ public static class AnimReplayRecorder
         public string api, wrap_mode, clip_length_f32, frame_rate_f32, legacy_state;
         public string reset = "fresh_prefab";
         public int speed = 1, delta_time = 0;
-        public bool clip_looping, apply_root_motion = false, foot_ik = false, playable_ik = false,
+        public bool clip_looping, clip_human_motion, apply_root_motion = false, foot_ik = false, playable_ik = false,
             animator_move = false, controller_blending = false, events = false;
     }
     [Serializable] class ClipSettings
@@ -102,6 +107,7 @@ public static class AnimReplayRecorder
         Need(!File.Exists(output), "Choose a new replay filename.");
         string json = File.ReadAllText(input);
         var spec = JsonUtility.FromJson<Spec>(json);
+        var clock = ReadSourceClock(spec);
         var bundles = new List<AssetBundle>();
         var digests = new List<string>();
         try
@@ -121,7 +127,7 @@ public static class AnimReplayRecorder
                 bundles.Add(bundle);
             }
 
-            var prefab = Load<GameObject>(bundles, spec.prefab, spec.prefab_asset);
+            var prefab = LoadPrefab(FindAssetBundle(bundles, spec.prefab, spec.prefab_asset), spec.prefab_asset);
             var clip = Load<AnimationClip>(bundles, spec.clip, spec.clip_asset);
             Need(clip.name == spec.clip_name, "Built clip name disagrees with the inspected clip.");
             foreach (var node in spec.nodes)
@@ -147,7 +153,8 @@ public static class AnimReplayRecorder
                 api = legacy ? "Animation.Sample" : knownPose ? "HumanPoseHandler.SetHumanPose" : "AnimationClipPlayable",
                 wrap_mode = (legacy ? WrapMode.ClampForever : clip.wrapMode).ToString(),
                 legacy_state = legacy ? "enabled_weight_one_clamp_forever" : "unused",
-                clip_looping = clip.isLooping, clip_length_f32 = Bits(clip.length), frame_rate_f32 = Bits(clip.frameRate)
+                clip_looping = clip.isLooping, clip_human_motion = clip.humanMotion,
+                clip_length_f32 = Bits(clip.length), frame_rate_f32 = Bits(clip.frameRate)
             };
             capture.clip_settings = ReadSettings(clip);
             capture.samples = new Sample[spec.schedule.Length];
@@ -204,7 +211,7 @@ public static class AnimReplayRecorder
 
                         var point = spec.schedule[i];
                         float time = (float)point.local;
-                        var sample = ReadClock(spec, clip.length, point.local, time);
+                        var sample = ReadClock(spec, clock, clip.length, point.local, time);
                         sample.muscles_f32 = Array.Empty<string>();
                         if (legacy)
                         {
@@ -242,12 +249,25 @@ public static class AnimReplayRecorder
         }
     }
 
-    static T Load<T>(List<AssetBundle> bundles, Id id, string key) where T : Object
+    static AssetBundle FindAssetBundle(List<AssetBundle> bundles, Id id, string key)
     {
         Need(id != null && id.bundle >= 0 && id.bundle < bundles.Count, "Invalid bundle index.");
         var bundle = bundles[id.bundle];
         Need(bundle.GetAllAssetNames().Contains(key, StringComparer.Ordinal), "Unknown exact asset key: " + key);
-        var matches = bundle.LoadAssetWithSubAssets<T>(key);
+        return bundle;
+    }
+
+    static GameObject LoadPrefab(AssetBundle bundle, string key)
+    {
+        // Confirm this root lookup in the Editor with the multi-node fixture smoke test.
+        var roots = bundle.LoadAssetWithSubAssets<GameObject>(key).Where(obj => obj.transform.parent == null).ToArray();
+        Need(roots.Length == 1, "Use an asset key with exactly one prefab root: " + key);
+        return roots[0];
+    }
+
+    static T Load<T>(List<AssetBundle> bundles, Id id, string key) where T : Object
+    {
+        var matches = FindAssetBundle(bundles, id, key).LoadAssetWithSubAssets<T>(key);
         Need(matches.Length == 1, "Use an unambiguous typed asset key: " + key);
         return matches[0];
     }
@@ -265,12 +285,29 @@ public static class AnimReplayRecorder
         return At(root, address).GetComponents<T>()[component];
     }
 
-    static Sample ReadClock(Spec spec, float length, double local, float time)
+    static SourceClock ReadSourceClock(Spec spec)
+    {
+        var evidence = spec.evidence?.clock;
+        Need(evidence?.start != null && evidence.stop != null
+            && !string.IsNullOrEmpty(evidence.start.field) && !string.IsNullOrEmpty(evidence.stop.field)
+            && evidence.start.source == spec.start && evidence.stop.source == spec.stop,
+            "Source origin disagrees with independently inspected endpoints.");
+        switch (spec.source_clock)
+        {
+            case "widened": return SourceClock.Widened;
+            case "f32_add":
+                Need((float)spec.start == spec.start, "The f32 source clock needs an exact f32 start.");
+                return SourceClock.F32Add;
+            default: throw new InvalidOperationException("Unknown source clock.");
+        }
+    }
+
+    static Sample ReadClock(Spec spec, SourceClock clock, float length, double local, float time)
     {
         Need(0 <= local && local <= spec.stop - spec.start, "Sample outside source interval.");
         double source = local == spec.stop - spec.start ? spec.stop : spec.start + local;
         double effective = spec.start + time;
-        if (spec.source_clock == "f32_add") effective = (float)effective;
+        if (clock == SourceClock.F32Add) effective = (float)effective;
         effective = time == length ? spec.stop : Math.Max(spec.start, Math.Min(spec.stop, effective));
         return new Sample {
             local = local, source = source, local_f32 = Bits(time), effective_source = effective,

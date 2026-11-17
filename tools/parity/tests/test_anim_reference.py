@@ -1,11 +1,13 @@
 """Analytic checks for the independent f64 animation transcription."""
 import math
+import struct
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import anim_reference as reference  # noqa: E402
 from anim_reference import (  # noqa: E402
     angle, bake_bound, constant, dense, euler, hermite, joint_rotation,
     local_pose, muscle_angle, normalize, packed_times, schedule, source_to_local,
@@ -50,6 +52,37 @@ class TestAnimReference(unittest.TestCase):
         for t, expected in ((0, 2), (.5, 2), (1, 10), (2, 10)):
             self.assertEqual(hermite(0, 1, 2, 10, math.inf, math.inf, t, held=True), expected)
 
+    def test_short_curves_refuse_unconfirmed_wrap(self):
+        for evaluate, weights in ((hermite, ()), (weighted, (.25, .25))):
+            for time, side in ((.5, "pre_wrap"), (2.5, "post_wrap")):
+                with self.subTest(evaluator=evaluate.__name__, side=side):
+                    args = (1, 2, 3, 5, 0, 0, *weights, time)
+                    self.assertEqual(evaluate(*args, **{side: "ClampForever"}), 3 if time < 1 else 5)
+                    with self.assertRaises(reference.UnsupportedCurveWrap) as refusal:
+                        evaluate(*args, **{side: "Loop"})
+                    self.assertEqual(refusal.exception.code, "unsupported_curve_wrap")
+            self.assertEqual(evaluate(1, 2, 3, 5, 0, 0, *weights, 1, pre_wrap="Loop"), 3)
+
+    def test_only_one_infinite_tangent_is_needed_to_hold(self):
+        for outgoing, incoming in ((math.inf, 0), (0, -math.inf), (math.inf, -math.inf)):
+            for time, value in ((.5, 2), (1, 10)):
+                args = (0, 1, 2, 10, outgoing, incoming)
+                with self.subTest(outgoing=outgoing, incoming=incoming, time=time):
+                    self.assertEqual(hermite(*args, time), value)
+                    self.assertEqual(weighted(*args, .25, .25, time), value)
+                    self.assertEqual(weighted_bound(*args, .25, .25, time), 0)
+
+    def test_nan_tangents_refuse_even_at_endpoints(self):
+        for outgoing, incoming in ((math.nan, math.inf), (math.inf, math.nan)):
+            with self.subTest(outgoing=outgoing, incoming=incoming):
+                args = (0, 1, 2, 10, outgoing, incoming)
+                with self.assertRaisesRegex(ValueError, "NaN"):
+                    hermite(*args, 0, held=True)
+                with self.assertRaisesRegex(ValueError, "NaN"):
+                    weighted(*args, .25, .25, 0)
+                with self.assertRaisesRegex(ValueError, "NaN"):
+                    weighted_bound(*args, .25, .25, 0)
+
     def test_weighted_inverts_time_and_returns_endpoints(self):
         # x controls (0, 0, 0, 1), y controls (0, 0, 1, 1).
         # x(1/2)=1/8, y(1/2)=1/2.
@@ -62,10 +95,10 @@ class TestAnimReference(unittest.TestCase):
         # t=1/2, x=[0,1/4,3/4,1], y=[0,2,4,4], so y=11/4.
         self.assertEqual(weighted(0, 4, 0, 4, 2, 0, .25, .25, 2), 2.75)
 
-    def test_weighted_rejects_reversing_time_and_allows_isolated_flat(self):
+    def test_weighted_rejects_out_of_range_weights_and_allows_isolated_flat(self):
         args = (0, 1, 0, 1, 1, 1, 1, 1)
         self.assertEqual(weighted(*args, .5), .5)  # x' = 3*(2p-1)^2.
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "fractional encoding"):
             weighted(0, 1, 0, 1, 1, 1, 1.25, 1, .5)
 
     def test_weighted_gate_accounts_for_inverse_near_flat(self):
@@ -125,6 +158,11 @@ class TestAnimReference(unittest.TestCase):
             source_to_local(2, 3, 4)
         with self.assertRaises(ValueError):
             schedule(2, 2, 0)
+
+    def test_schedule_keeps_exact_f32_stop_once(self):
+        stop = struct.unpack(">f", struct.pack(">f", 1 / 30))[0]
+        self.assertEqual(schedule(0, stop, 30), (0, stop))
+        self.assertEqual(schedule(2, 2 + stop, 30), (2, 2 + stop))
 
     def test_packed_times_accumulate_in_source_centiseconds(self):
         self.assertEqual(packed_times((5, 20, 100)), (.05, .25, 1.25))

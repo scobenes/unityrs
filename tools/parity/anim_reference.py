@@ -2,6 +2,7 @@
 
 import json
 import math
+import struct
 from bisect import bisect_right
 from fractions import Fraction
 from pathlib import Path
@@ -55,13 +56,32 @@ def constant(values, slot):
     return values[slot]
 
 
-def hermite(left, right, a, b, outgoing, incoming, sample, *, held=False):
+class UnsupportedCurveWrap(ValueError):
+    code = "unsupported_curve_wrap"
+
+
+def _check_curve_wrap(left, right, sample, pre_wrap, post_wrap):
+    for outside, mode in ((sample < left, pre_wrap), (sample > right, post_wrap)):
+        if outside and mode not in ("Default", "Clamp", "ClampForever"):
+            raise UnsupportedCurveWrap(f"unconfirmed curve wrap mode: {mode!r}")
+
+
+def _stepped(outgoing, incoming):
+    if math.isnan(outgoing) or math.isnan(incoming):
+        raise ValueError("NaN curve slope")
+    return math.isinf(outgoing) or math.isinf(incoming)
+
+
+def hermite(left, right, a, b, outgoing, incoming, sample, *, held=False,
+            pre_wrap="Default", post_wrap="Default"):
     _interval(left, right)
+    stepped = _stepped(outgoing, incoming)
+    _check_curve_wrap(left, right, sample, pre_wrap, post_wrap)
     if sample <= left:
         return a
     if sample >= right:
         return b
-    if held:
+    if stepped or held:
         return a
     dt = right - left
     t = (sample - left) / dt
@@ -80,7 +100,8 @@ def bezier(controls, t):
 def _time_controls(out_weight, in_weight):
     if not (0 <= out_weight <= 1 and 0 <= in_weight <= 1):
         raise ValueError("weights outside the fractional encoding")
-    # Check the quadratic derivative exactly, including a double zero.
+    # Defensive: reversal is impossible for weights in [0,1]. Check the
+    # quadratic derivative exactly, including a double zero.
     first, last = Fraction(out_weight), Fraction(in_weight)
     middle = 1 - first - last
     a = first - 2 * middle + last
@@ -108,13 +129,18 @@ def _value_controls(dt, a, b, outgoing, incoming, out_weight, in_weight):
     return a, a + (dt * outgoing) * out_weight, b - (dt * incoming) * in_weight, b
 
 
-def weighted(left, right, a, b, outgoing, incoming, out_weight, in_weight, sample):
+def weighted(left, right, a, b, outgoing, incoming, out_weight, in_weight, sample,
+             *, pre_wrap="Default", post_wrap="Default"):
     _interval(left, right)
+    stepped = _stepped(outgoing, incoming)
+    _check_curve_wrap(left, right, sample, pre_wrap, post_wrap)
     controls = tuple(map(float, _time_controls(out_weight, in_weight)))
     if sample <= left:
         return a
     if sample >= right:
         return b
+    if stepped:
+        return a
     dt = right - left
     p = _solve_time(controls, (sample - left) / dt)
     return bezier(_value_controls(dt, a, b, outgoing, incoming, out_weight, in_weight), p)
@@ -146,16 +172,19 @@ def _inverse_bracket(controls, target):
     return lo, hi
 
 
-def weighted_bound(left, right, a, b, outgoing, incoming, out_weight, in_weight, sample):
+def weighted_bound(left, right, a, b, outgoing, incoming, out_weight, in_weight, sample,
+                   *, pre_wrap="Default", post_wrap="Default"):
     """Enclose the exact and rounded time roots and propagate through the value cubic."""
     _interval(left, right)
+    stepped = _stepped(outgoing, incoming)
+    _check_curve_wrap(left, right, sample, pre_wrap, post_wrap)
     controls = _time_controls(out_weight, in_weight)
+    if stepped or sample <= left or sample >= right:
+        return 0.
     limits = BOUNDS["transcription"]
     dt = right - left
     if not (limits["min_interval"] <= dt and max(abs(left), abs(right)) <= limits["max_abs_source_time"]):
         raise ValueError("weighted time outside frozen transcription range")
-    if sample <= left or sample >= right:
-        return 0.
     target = (Fraction(sample) - Fraction(left)) / (Fraction(right) - Fraction(left))
     band = Fraction(gamma(limits["weighted_time_operations"], limits["unit_roundoff"]))
     lo = _inverse_bracket(controls, max(0, target - band))[0]
@@ -187,12 +216,30 @@ def schedule(start, stop, rate):
     _interval(start, stop, zero=True)
     if not math.isfinite(rate) or rate <= 0:
         raise ValueError("invalid serialized sample rate")
-    count = math.ceil((stop - start) * rate)
-    interior = tuple(start + i / rate for i in range(1, count + 1))
-    times = (start,) + tuple(t for t in interior if t < stop)
-    if any(a >= b for a, b in zip(times, times[1:])):
-        raise ValueError("collapsed source schedule")
-    return times if start == stop else times + (stop,)
+    if start == stop:
+        return (start,)
+
+    def local_f32(time):
+        try:
+            return struct.unpack(">f", struct.pack(">f", time - start))[0]
+        except OverflowError as exc:
+            raise ValueError("local time exceeds f32 range") from exc
+
+    end = local_f32(stop)
+    if end == 0:
+        raise ValueError("collapsed f32 schedule endpoints")
+    times, previous = [start], 0.
+    for i in range(1, math.ceil((stop - start) * rate) + 1):
+        time = start + i / rate
+        if time >= stop:
+            break
+        rounded = local_f32(time)
+        if rounded >= end:
+            break
+        if rounded > previous:
+            times.append(time)
+            previous = rounded
+    return (*times, stop)
 
 
 def packed_times(deltas):
