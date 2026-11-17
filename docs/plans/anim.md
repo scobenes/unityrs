@@ -267,8 +267,9 @@ Unconfirmed settings or layouts produce their typed refusal.
 
 PR 8 ships muscle-only playback for clips the recorder qualifies and typed
 refusals for the rest. If no clips qualify on the two fixture rigs, PR 8 ships
-the typed refusals and the qualification evidence. The positive humanoid pose
-row stays planned, and body motion is a deferred slice in 2.6.
+the typed refusals and the qualification evidence. Positive L11 playback moves
+to the deferred Humanoid body motion slice in 2.6. The parity row records
+verified P2b coverage for the typed refusals once their tests pass.
 
 ### 2.5 glTF animation, collection and profile
 
@@ -394,14 +395,25 @@ occurrence and path ID. Prefabs without an override use the default.
 
 The template expands the complete GLB key. Validate presence, sizes,
 duplicate members, unknown fields, types and ranges in phase 1, with a
-charged profile and template parse. An override naming a prefab outside the
-job is a spec error (`bad_spec`, exit 78, rule `range`). Reject unknown input
-IDs in phase 1. Check expanded keys against the addressed input's selected
-prefab rows after key planning and before winner publication, with the failed
-override's JSON pointer. `--check` validates the spec structure and input IDs.
-If an input fails before its key plan can establish membership, preserve its
-typed input failure. Allow GLB-only jobs. Spec 1 and 2 reject
-`outputs.glb` as `unknown_field`. Texture and image options apply to 2D outputs. GLBs embed
+charged profile and template parse. `--check` validates the selection shape,
+including known input IDs, and checks each literal `clips_by_prefab` key
+against the output-key rules that apply before planning. These static
+failures are `bad_spec` (exit 78). See BATCH_SPEC 1.1, 2.3, 9.1 and 10.
+
+In phase 6, after key planning and before selecting winners, check each
+override against the addressed input's planned prefab unit keys. If an input
+fails before its plan can establish membership, preserve its typed input
+failure. A missing key in a completed plan is a job-level data failure. Use
+the phase-6 finisher to write the fenced final head as `incomplete`, with
+`stop_reason: "unknown_prefab_key"` and the first unmatched selection's JSON
+pointer in spec order as `stop_detail`. Skip artifact publication and exit 4
+unless a higher-priority outcome applies. Resume repeats the membership
+check, so the same missing key fails again. Correct the selection or inputs
+and retry with `attempt + 1` after the fencing wait. See BATCH_SPEC 7.2–7.4
+and 9.1–9.3.
+
+Allow GLB-only jobs. Spec 1 and 2 reject `outputs.glb` as `unknown_field`.
+Texture and image options apply to 2D outputs. GLBs embed
 textures through the glTF writer. Keep loose prefab units in this slice.
 The batch PR updates BATCH_SPEC, including the run-time validation outcome,
 schemas, examples and CLI schema discovery.
@@ -655,9 +667,11 @@ row with and without an expandable key, same-name CABs, invalid keys, and
 within-input and across-input 2D collisions. Include a member key held only
 by an ordinary losing unit and one reserved by an E61-withheld unit key.
 Test all-discovered defaults, two different rig selections, same-key
-contestants with repeated view-local IDs, and a selection for an absent
-prefab. Test `prefer.md5` against byte digests, prefix conflicts and
-withholding. For each outcome in 2.7, pin candidate eligibility, typed row,
+contestants with repeated view-local IDs, and a valid key absent from the
+plan. Pin `--check` acceptance of that key, the final `unknown_prefab_key`
+head and exit 4, and resume after correction. Test `prefer.md5` against byte
+digests, prefix conflicts and withholding. For each per-prefab outcome in
+2.7, pin candidate eligibility, typed row,
 input status and exit together. Exercise both `publish_incomplete` settings
 with another successful input, including a
 dependency-budget refusal from an optional resource, a `max_export_work`
