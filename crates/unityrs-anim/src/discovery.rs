@@ -5,12 +5,13 @@ use crate::read::{Dict, identity_key, same_object, version};
 use std::collections::HashMap;
 use std::sync::Arc;
 use unityrs_core::ObjectRef;
-use unityrs_core::budget::BudgetExceeded;
+use unityrs_core::budget::{BudgetExceeded, Reservation};
 use unityrs_core::env::{DerefError, Environment, FileOccurrence, PPtr};
 use unityrs_core::error::Error;
 use unityrs_core::files::File;
 use unityrs_core::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost};
 use unityrs_core::value::{Parsed, Value};
+use unityrs_core::walk::ParseError;
 use unityrs_scene::{Component, Graph, NodeId};
 
 /// Serialized occurrence. Only the file/object identity, field and ordinal
@@ -312,9 +313,9 @@ impl Discovery {
 
 /// Visit the graph and each component in their stored order.
 ///
-/// Dependency sources must not change during the Environment's lifetime.
-/// A source changed between eviction and reopen may yield the previously
-/// retained clip.
+/// Reusing a retained clip assumes its dependency source stays stable across
+/// reopens during discovery. If that source changes after eviction, discovery
+/// may still use the clip it retained earlier.
 pub fn discover(
     env: &Environment,
     graph: &Graph,
@@ -427,16 +428,35 @@ fn checked_pointer(from: &SourceSlot, meter: &Meter) -> Result<PPtr, AnimError> 
     Ok(ptr)
 }
 
+fn provider_dependency_refusal(error: &Error) -> bool {
+    let deref = match error {
+        Error::Entry { source, .. } => return provider_dependency_refusal(source),
+        Error::AssetBundle(error) => match error.as_ref() {
+            ParseError::Provider(provider) => {
+                return provider
+                    .memory
+                    .as_ref()
+                    .is_some_and(|budget| budget.what == Reservation::Dependency);
+            }
+            ParseError::Deref(deref) => deref,
+            _ => return false,
+        },
+        Error::Deref(deref) => deref,
+        _ => return false,
+    };
+    matches!(deref, DerefError::Load(error) if provider_dependency_refusal(error))
+}
+
 fn with_clip_room<T>(
     clips: &mut ClipPool,
     mut lookup: impl FnMut(&ClipPool) -> Result<T, DerefError>,
 ) -> Result<T, AnimError> {
     match lookup(clips) {
         Err(DerefError::Load(ref error))
-            if error.is_dependency_budget_refusal() && clips.release_containers()? =>
+            if (error.is_dependency_budget_refusal() || provider_dependency_refusal(error))
+                && clips.release_containers()? =>
         {
-            // The environment has already tried evicting its cache. Drop
-            // discovery's extra container holds to make room for this load.
+            // Retry without discovery's extra container holds.
             Ok(lookup(clips)?)
         }
         result => Ok(result?),

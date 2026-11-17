@@ -8,7 +8,8 @@ use std::sync::Arc;
 use super::container_index::Siblings;
 use super::listing::FileMatch;
 use super::load::Asked;
-use super::registry::{Registry, Slot, SlotKind, from_callers};
+use super::registry::from_callers;
+use super::registry::{Slot, SlotKind};
 use super::resource_data::top_container;
 use super::{Cab, DerefError, Environment, Found, HeldCab, PPtr, RawCab, pptr};
 use crate::error::{Error, NotFound};
@@ -67,20 +68,6 @@ impl HeldLookup<'_> {
             (Some(reuse), occurrence) => occurrence().map_or(Ok(None), reuse),
             (None, _) => Ok(None),
         }
-    }
-
-    fn registered(
-        &mut self,
-        registry: &Registry,
-        slot: &Arc<Slot>,
-    ) -> Result<Option<Found>, Error> {
-        if let Some(object) = self.reused(|| FileOccurrence::in_slot(slot))? {
-            return Ok(Some(Found::Reused(object)));
-        }
-        Ok(registry.resolve_held(slot)?.map(|held| {
-            self.container = held.hold;
-            Found::Cab(held.cab)
-        }))
     }
 }
 
@@ -349,7 +336,13 @@ impl Environment {
                 let Some(slot) = registry.slot(&simple, meter)? else {
                     return Ok(None);
                 };
-                work.registered(registry, &slot)
+                if let Some(object) = work.reused(|| FileOccurrence::in_slot(&slot))? {
+                    return Ok(Some(Found::Reused(object)));
+                }
+                Ok(registry.resolve_held(&slot)?.map(|held| {
+                    work.container = held.hold;
+                    Found::Cab(held.cab)
+                }))
             } else {
                 Ok(registry.get(&simple, meter)?.map(Found::Cab))
             }
@@ -366,27 +359,6 @@ impl Environment {
         let Some(source) = self.room(|| from_callers(resolver.find_file(name.as_bytes())))? else {
             return Ok(None);
         };
-        if let Some(work) = work.filter(|work| work.reuse.is_some()) {
-            // A resolver alias can name a registered top-level dependency.
-            // A matching registry key alone can also name a bundle entry
-            // or a different source with the same basename.
-            let registered = self.room(|| {
-                let registry = &self.inner.registry;
-                let Some(slot) = registry.slot_bytes(source.name_bytes(), meter)? else {
-                    return Ok(None);
-                };
-                if slot.rank.path().is_empty()
-                    && let SlotKind::Dependency { dep } = &slot.kind
-                    && dep.source.same_origin(&source)
-                {
-                    return work.registered(registry, &slot);
-                }
-                Ok(None)
-            })?;
-            if let Some(found) = registered {
-                return Ok(Some((found, Reached::Lookup)));
-            }
-        }
         let file = self.load_resolved(&source, Asked::Find { is_dependency })?;
         Ok(Some((Found::File(file), Reached::Load)))
     }
@@ -435,12 +407,9 @@ impl Environment {
     /// offer its file occurrence to `reuse`. The callback may return a
     /// retained object at the requested path ID in that occurrence. A hit
     /// needs no new target container hold, even after a dependency eviction.
-    /// A resolver alias to a registered dependency uses that dependency's
-    /// occurrence.
     ///
-    /// Dependency sources must not change during the Environment's lifetime.
-    /// A source changed between eviction and reopen may yield the previously
-    /// retained object.
+    /// Reuse assumes a dependency's source stays stable across reopens.
+    /// A resolver alias may load another copy of a dependency.
     pub fn deref_held_reusing(
         &self,
         from: &Arc<SerializedFile>,

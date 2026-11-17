@@ -485,7 +485,6 @@ fn parse_refused(p: &ParseError) -> bool {
         },
         ParseError::Tree(t) => tree_refused(t),
         ParseError::Deref(d) => deref_refused(d),
-        ParseError::Provider(p) => p.memory.iter().any(|b| b.what == Reservation::Dependency),
         _ => false,
     }
 }
