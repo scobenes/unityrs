@@ -7,6 +7,183 @@ use unityrs_core::{
 use unityrs_export::shader;
 
 #[test]
+fn plain_string_scripts_before_55_are_utf8() {
+    use unityrs_testkit::{
+        ngui::{Object, V, s, st},
+        scene3d::{self, Layout},
+    };
+    for script in ["", "Shader \"Écho/雪\" {}\nGpuProgramIndex 0\n"] {
+        let env = Environment::new(EnvOptions::unitypy());
+        let File::Serialized(file) = env
+            .load(Source::Bytes {
+                name: RawStr::from("plain.assets"),
+                data: Bytes::from(
+                    scene3d::file(
+                        Layout::Unity2022,
+                        &[],
+                        &[Object::new(
+                            1,
+                            48,
+                            st(
+                                "Shader",
+                                vec![
+                                    ("m_Script", s(script)),
+                                    ("m_SubProgramBlob", V::Bytes(vec![])),
+                                ],
+                            ),
+                        )],
+                    )
+                    .unwrap(),
+                ),
+            })
+            .unwrap()
+        else {
+            panic!("file")
+        };
+        let parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
+        for version in [(2, 6), (5, 2), (5, 3), (5, 4)] {
+            let result = shader::export_parsed(&parsed, version, &Meter::unlimited()).unwrap();
+            assert_eq!(
+                result.as_slice(),
+                [shader::HEADER, script].concat().as_bytes()
+            );
+        }
+    }
+}
+
+#[test]
+fn no_blob_paths_follow_the_tier_c_spec() {
+    use unityrs_core::Value;
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/shader.json")).unwrap();
+    let case = fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["case"] == "script_string")
+        .unwrap();
+    let input: Vec<u8> = case["input"]
+        .as_str()
+        .unwrap()
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+        .collect();
+    let env = Environment::new(EnvOptions::unitypy());
+    let File::Serialized(file) = env
+        .load(Source::Bytes {
+            name: RawStr::from("empty.assets"),
+            data: Bytes::from(input),
+        })
+        .unwrap()
+    else {
+        panic!("file")
+    };
+    let mut parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
+    let expected = fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["case"] == "empty_platforms")
+        .unwrap()["oracle"]["text"]
+        .as_str()
+        .unwrap();
+    // No programs means even irrelevant malformed platform metadata is unused.
+    for field in [
+        b"platforms".as_slice(),
+        b"offsets",
+        b"compressedLengths",
+        b"decompressedLengths",
+    ] {
+        assert!(parsed.replace_scalar(&[field], Value::Int(-1)).unwrap());
+    }
+    for (index, script) in [
+        Value::Str(RawStr::from("Shader \"Écho/雪\" {}\n")),
+        Value::Bytes(Bytes::from_static("Shader \"Écho/雪\" {}\n".as_bytes())),
+        Value::Bytes(Bytes::from_static(b"\xff")),
+        Value::Int(-1),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(parsed.replace_scalar(&[b"m_Script"], script).unwrap());
+        for version in [(5, 5), (2019, 4), (2021, 3), (6000, 3)] {
+            let meter = Meter::unlimited();
+            let result = shader::export_with_cap(&parsed, version, &meter, 0).unwrap();
+            assert_eq!(
+                result.as_slice(),
+                expected.as_bytes(),
+                "{version:?}: script {index}"
+            );
+            drop(result);
+            assert_eq!(meter.used(), 0);
+        }
+        // The exact lower boundary still uses the retained script, even with
+        // a valid parsed form present.
+        if index < 2 {
+            let result = shader::export_parsed(&parsed, (5, 4), &Meter::unlimited()).unwrap();
+            assert_eq!(
+                result.as_slice(),
+                [shader::HEADER, "Shader \"Écho/雪\" {}\n"]
+                    .concat()
+                    .as_bytes()
+            );
+        }
+    }
+}
+
+#[test]
+fn modern_shaders_require_a_parsed_form_even_with_a_script() {
+    use unityrs_testkit::{
+        ngui::{Object, V, s, st, vector},
+        scene3d::{self, Layout},
+    };
+    for script in [
+        None,
+        Some(s("retained")),
+        Some(V::Bytes(b"retained".to_vec())),
+    ] {
+        for blob in [vec![], vec![1]] {
+            let mut fields = vec![
+                ("compressedBlob", V::Bytes(blob)),
+                ("platforms", vector(V::Int(0), vec![])),
+            ];
+            if let Some(script) = script.clone() {
+                fields.push(("m_Script", script));
+            }
+            let data = scene3d::file(
+                Layout::Unity2022,
+                &[],
+                &[Object::new(1, 48, st("Shader", fields))],
+            )
+            .unwrap();
+            let env = Environment::new(EnvOptions::unitypy());
+            let File::Serialized(file) = env
+                .load(Source::Bytes {
+                    name: RawStr::from("missing-parsed-form.assets"),
+                    data: Bytes::from(data),
+                })
+                .unwrap()
+            else {
+                panic!("file")
+            };
+            let parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
+            for version in [(5, 5), (2021, 3)] {
+                let meter = Meter::unlimited();
+                let error = shader::export_parsed(&parsed, version, &meter).unwrap_err();
+                assert!(
+                    matches!(error, shader::Error::Field("m_ParsedForm")),
+                    "{version:?}: {script:?}: {error}"
+                );
+                assert_eq!(meter.used(), 0);
+            }
+        }
+    }
+}
+
+#[test]
 fn modern_layouts_and_refusals_replay_the_recording() {
     replay_recording(None);
 }
