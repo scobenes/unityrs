@@ -19,12 +19,11 @@ pub(crate) fn parse(raw: &[Vec<u8>]) -> Result<Limits, Box<dyn std::error::Error
                     std::str::from_utf8(args.next().ok_or("missing limit")?)?.parse()?;
                 None
             }
-            b"-o"
-            | b"--tpk"
-            | b"--vorbis-headers"
-            | b"--report"
-            | b"--asset-filter"
-            | b"--ignore-first-container-dirs" => {
+            _ if super::OPTIONS
+                .iter()
+                .chain(crate::agent::options::BUDGET)
+                .any(|s| s.name.as_bytes() == arg && s.value.is_some()) =>
+            {
                 args.next().ok_or("missing argument")?;
                 None
             }

@@ -13,6 +13,34 @@ use unityrs_mesh::{
 };
 mod output;
 use output::Outputs;
+
+use crate::args::option;
+pub(crate) const OPTIONS: &[crate::agent::options::OptionSpec] = &[
+    option(
+        "--path-id",
+        Some("ID"),
+        None,
+        "Required Mesh or renderer ID.",
+    ),
+    option(
+        "-o",
+        Some("PATH"),
+        None,
+        "Required OBJ file or renderer output directory.",
+    ),
+    option(
+        "--tpk",
+        Some("FILE"),
+        None,
+        "Schema provider for stripped files.",
+    ),
+];
+pub(crate) fn options() -> Vec<crate::agent::options::OptionSpec> {
+    let mut specs = OPTIONS.to_vec();
+    specs.push(crate::args::COMMAND_HELP);
+    specs
+}
+
 const USAGE: &str = "usage: unityrs obj INPUT --path-id ID -o OUTPUT [--tpk FILE]\n\
 Mesh: OUTPUT is an OBJ file. Renderer: OUTPUT is a directory.\n\
 Outputs overwrite existing files and symlinks. A failed rename leaves earlier outputs in place.\n\
@@ -57,6 +85,9 @@ fn run(args: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
     let mut tpk = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
+        if arg.starts_with(b"-") && !OPTIONS.iter().any(|s| s.name.as_bytes() == arg) {
+            return Err("unexpected argument".into());
+        }
         match arg.as_slice() {
             b"--path-id" => {
                 path_id =

@@ -1,5 +1,6 @@
 //! One explicit scene or prefab unit, using the library's two-phase exporter.
 mod args;
+pub(crate) use args::options;
 mod output;
 mod report;
 use std::{path::PathBuf, process::ExitCode, sync::Arc};

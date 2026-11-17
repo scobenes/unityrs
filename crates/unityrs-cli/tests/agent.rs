@@ -4,8 +4,12 @@
 mod contracts;
 #[path = "agent/edges.rs"]
 mod edges;
+#[path = "agent/inventory.rs"]
+mod inventory;
 #[path = "agent/support.rs"]
 mod support;
+#[path = "agent/usage.rs"]
+mod usage;
 use serde_json::json;
 use support::{assert_cuts, fixture, golden, json, run};
 
@@ -233,7 +237,7 @@ fn bounded_values_and_binary_modes() {
     }
     let default = json(&tmp, &["show", "rich.assets", "--path-id", "7"], 0);
     assert_eq!(default["truncated"]["binary"], 2);
-    let bytes = &default["value"]["v"][3][1];
+    let bytes = &default["value"]["bytes"];
     assert_eq!(bytes["length"], 100);
     assert_eq!(bytes["prefix_hex"].as_str().unwrap().len(), 128);
     assert_eq!(
@@ -241,7 +245,7 @@ fn bounded_values_and_binary_modes() {
         unityrs_dump::json::sha256_hex(&(0..100).collect::<Vec<u8>>())
     );
     assert_eq!(
-        default["value"]["v"][7][1],
+        default["value"]["bad_string"],
         serde_json::json!({"t":"str","hex":"ff61"})
     );
     let full = json(
@@ -250,7 +254,7 @@ fn bounded_values_and_binary_modes() {
         0,
     );
     assert_eq!(full["truncated"]["cuts"], 0);
-    assert_eq!(full["value"]["v"][3][1]["hex"].as_str().unwrap().len(), 200);
+    assert_eq!(full["value"]["bytes"]["hex"].as_str().unwrap().len(), 200);
     let limited = json(
         &tmp,
         &["show", "rich.assets", "--path-id", "7", "--max-items", "2"],
@@ -298,7 +302,7 @@ fn budgets_and_usage_are_structured() {
         "--max-decode-work",
         "--max-tree-depth",
     ] {
-        let status = i32::from(option == "--max-input-memory");
+        let status = i32::from(matches!(option, "--max-input-memory" | "--max-decode-work"));
         let value = json(&tmp, &["inspect", "synthetic.assets", option, "0"], status);
         if status == 1 {
             assert_eq!(value["code"], "budget");

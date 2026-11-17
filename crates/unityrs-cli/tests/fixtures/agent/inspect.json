@@ -10,12 +10,6 @@
           "unity_version": "2022.3.0f1"
         }
       ],
-      "metadata": {
-        "file": "synthetic.assets",
-        "kind": "AssetsFile",
-        "target_platform": 13,
-        "unity_version": "2022.3.0f1"
-      },
       "path": "synthetic.assets"
     }
   ],

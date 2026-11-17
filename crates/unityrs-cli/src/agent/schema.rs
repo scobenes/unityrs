@@ -16,6 +16,16 @@ fn array(items: Value) -> Value {
     }
     result
 }
+fn tagged(tag: &str, field: &str, payload: Value) -> Value {
+    let mut properties = serde_json::Map::new();
+    properties.insert("t".into(), json!({"const":tag}));
+    properties.insert(field.into(), payload);
+    let mut value = object(&["t", field], Value::Object(properties));
+    if let Some(map) = value.as_object_mut() {
+        map.insert("additionalProperties".into(), json!(false));
+    }
+    value
+}
 fn reference(name: &str) -> Value {
     json!({"$ref":format!("#/$defs/{name}")})
 }
@@ -31,7 +41,10 @@ fn base(name: &str, required: &[&str], mut properties: Value) -> Value {
 pub fn run(name: &str) -> Result<Document> {
     let integer = json!({"type":"integer"});
     let string = json!({"type":"string"});
-    let rawstr = json!({"anyOf":[{"type":"string"},{"type":"object","required":["t","hex"],"properties":{"t":{"const":"str"},"hex":{"type":"string"}}}]});
+    let hex = json!({"type":"string","pattern":"^([0-9a-f]{2})*$"});
+    let raw_string = tagged("str", "hex", hex.clone());
+    let rawstr = json!({"anyOf":[string.clone(),raw_string.clone()]});
+    let count = json!({"type":"integer","minimum":0});
     let nullable = |v: Value| json!({"anyOf":[{"type":"null"},v]});
     let header = object(
         &[
@@ -57,27 +70,47 @@ pub fn run(name: &str) -> Result<Document> {
     );
     let cut = object(
         &["$unityrs", "reason", "omitted"],
-        json!({"$unityrs":{"const":"cut"},"reason":{"enum":["bytes","items","depth"]},"omitted":integer}),
+        json!({"$unityrs":{"const":"cut"},"reason":{"enum":["bytes","items","depth"]},"omitted":{"type":"integer","minimum":1}}),
     );
     let binary = object(
         &["$unityrs", "kind", "length", "sha256", "prefix_hex"],
-        json!({"$unityrs":{"const":"bytes"},"kind":{"enum":["bytes","u8s"]},"length":integer,"sha256":string,"prefix_hex":string}),
+        json!({"$unityrs":{"const":"bytes"},"kind":{"enum":["bytes","u8s"]},"length":count,"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"prefix_hex":hex}),
     );
-    let value = json!({"anyOf":[{"type":"boolean"},{"type":"integer"},{"type":"string"},array(reference("value")),reference("cut"),reference("binary"),
-        {"type":"object","required":["t"],"properties":{"t":{"enum":["dict","tuple","str","bytes","u8s","f32","f64","f32s","f64s"]},"v":{"anyOf":[{"type":"string"},array(json!({}))]},"hex":string,"len":integer,"sha256":string,"cut":reference("cut")}}]});
+    let mut dict = tagged("dict", "v", array(reference("pair")));
+    if let Some(map) = dict.get_mut("properties").and_then(Value::as_object_mut) {
+        map.insert("cut".into(), reference("cut"));
+    }
+    let mut map = tagged("map", "v", array(reference("map_pair")));
+    if let Some(properties) = map.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert("cut".into(), reference("cut"));
+    }
+    let tuple = tagged("tuple", "v", array(reference("value")));
+    let value = json!({"anyOf":[
+        {"type":"boolean"}, {"type":"number"}, string.clone(),
+        array(reference("value")),
+        {"type":"object","propertyNames":{"not":{"enum":["t","$unityrs"]}},"additionalProperties":reference("value")},
+        reference("cut"), reference("binary"), dict, map, tuple, raw_string,
+        tagged("bytes", "hex", hex.clone()), tagged("u8s", "hex", hex.clone()),
+        tagged("f32", "v", json!({"type":"string","pattern":"^[0-9a-f]{8}$"})),
+        tagged("f64", "v", json!({"type":"string","pattern":"^[0-9a-f]{16}$"})),
+        tagged("i64", "v", json!({"type":"string","pattern":"^-?(0|[1-9][0-9]*)$","maxLength":20})),
+        tagged("u64", "v", json!({"type":"string","pattern":"^(0|[1-9][0-9]*)$","maxLength":20}))
+    ]});
+    let pair = json!({"type":"array","prefixItems":[reference("rawstr"),reference("value")],"minItems":2,"maxItems":2});
+    let map_pair = json!({"type":"array","prefixItems":[reference("value"),reference("value")],"minItems":2,"maxItems":2});
     let mut schema = match name {
         "error" => error.clone(),
         "inspect" => base(
             "inspect",
             &["inputs", "objects", "total_objects", "next_cursor"],
             json!({
-            "inputs":array(object(&["path"],json!({"path":reference("rawstr"),"metadata":reference("metadata"),"files":array(reference("metadata")),"error":reference("error")}))),
-            "objects":array(reference("header")),"total_objects":integer,"next_cursor":nullable(string.clone())}),
+            "inputs":array(object(&["path"],json!({"path":reference("rawstr"),"files":array(reference("metadata")),"error":reference("error")}))),
+            "objects":array(reference("header")),"total_objects":count,"next_cursor":nullable(string.clone())}),
         ),
         "show" => base(
             "show",
             &["object", "value", "truncated"],
-            json!({"object":reference("header"),"value":reference("value"),"truncated":object(&["cuts","bytes","items","depth","binary"],json!({"cuts":integer,"bytes":integer,"items":integer,"depth":integer,"binary":integer}))}),
+            json!({"object":reference("header"),"value":reference("value"),"truncated":object(&["cuts","bytes","items","depth","binary"],json!({"cuts":count,"bytes":count,"items":count,"depth":count,"binary":count}))}),
         ),
         "describe" => base(
             "describe",
@@ -98,7 +131,7 @@ pub fn run(name: &str) -> Result<Document> {
             json!("https://json-schema.org/draft/2020-12/schema"),
         );
         map.insert("title".into(), json!(format!("unityrs.{name} version 1")));
-        map.insert("$defs".into(), json!({"rawstr":rawstr,"header":header,"metadata":metadata,"error":error,"cut":cut,"binary":binary,"value":value}));
+        map.insert("$defs".into(), json!({"rawstr":rawstr,"header":header,"metadata":metadata,"error":error,"cut":cut,"binary":binary,"value":value,"pair":pair,"map_pair":map_pair}));
     }
     fixed(&schema)
 }

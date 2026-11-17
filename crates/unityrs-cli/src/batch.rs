@@ -47,6 +47,24 @@ use unityrs_batch::progress::{Exit, Snapshot, early, rss};
 use unityrs_batch::reason::Code;
 use unityrs_batch::spec::{self, BadSpec, SPEC_VERSION};
 
+use crate::args::option;
+const CHECK_OPTION: crate::agent::options::OptionSpec = option(
+    "--check",
+    Some("JOB.json"),
+    None,
+    "Validate the job without running it.",
+);
+const SCHEMA_OPTION: crate::agent::options::OptionSpec = option(
+    "--schema",
+    None,
+    None,
+    "Print the existing batch job schema; see unityrs batch --schema.",
+);
+pub(crate) const OPTIONS: &[crate::agent::options::OptionSpec] = &[CHECK_OPTION, SCHEMA_OPTION];
+pub(crate) fn options() -> Vec<crate::agent::options::OptionSpec> {
+    OPTIONS.to_vec()
+}
+
 pub const USAGE: &str = "usage: unityrs batch --check JOB.json\n       \
                          unityrs batch --schema\n       \
                          unityrs batch JOB.json   (temporary normal-run subset: local and URL sources, directory sink)";
@@ -68,8 +86,8 @@ fn path(a: &[u8]) -> Option<&[u8]> {
 
 fn command(args: &[Vec<u8>]) -> Option<Command<'_>> {
     match args {
-        [o] if o == b"--schema" => Some(Command::Schema),
-        [o, p] if o == b"--check" => path(p).map(Command::Check),
+        [o] if o == SCHEMA_OPTION.name.as_bytes() => Some(Command::Schema),
+        [o, p] if o == CHECK_OPTION.name.as_bytes() => path(p).map(Command::Check),
         [p] => path(p).map(Command::Run),
         _ => None,
     }

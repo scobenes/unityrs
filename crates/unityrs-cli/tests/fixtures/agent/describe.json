@@ -538,6 +538,12 @@
           "value": "N"
         },
         {
+          "default": "natural",
+          "help": "Value JSON representation; canonical preserves tagged types.",
+          "name": "--value",
+          "value": "natural|canonical"
+        },
+        {
           "default": "summary",
           "help": "Byte runs are summaries unless full hex fits.",
           "name": "--bytes",

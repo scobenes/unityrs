@@ -211,3 +211,303 @@ fn stripped_and_truncated_objects_stay_bounded() {
         1
     );
 }
+
+fn exceptional_object() -> Object {
+    Object::new(
+        1,
+        114,
+        st(
+            "Exceptional",
+            vec![
+                ("wide_signed", V::Int64(i64::MIN)),
+                ("wide_unsigned", V::UInt64(u64::MAX)),
+                ("safe", V::Int64(9_007_199_254_740_992)),
+                ("nan", V::Float(f32::from_bits(0x7fc0_0042))),
+                ("infinity", V::Double(f64::INFINITY)),
+                ("negative_zero", V::Double(-0.0)),
+                (
+                    "float_array",
+                    vector(
+                        V::Float(0.0),
+                        vec![V::Float(1.5), V::Float(f32::NEG_INFINITY)],
+                    ),
+                ),
+                (
+                    "non_string_keys",
+                    V::Vector(
+                        "map".into(),
+                        Box::new(ngui::pair(V::Int(0), s(""))),
+                        vec![
+                            ngui::pair(V::Int(1), s("one")),
+                            ngui::pair(V::Int(1), s("again")),
+                        ],
+                    ),
+                ),
+                (
+                    "collision",
+                    st(
+                        "Marker",
+                        vec![
+                            ("$unityrs", s("cut")),
+                            ("reason", s("depth")),
+                            ("omitted", V::Int(1)),
+                        ],
+                    ),
+                ),
+                (
+                    "tag_collision",
+                    st("Tag", vec![("t", s("dict")), ("v", s("data"))]),
+                ),
+            ],
+        ),
+    )
+}
+
+#[test]
+fn natural_values_and_exact_exceptions() {
+    let tmp = fixture();
+    let rich = json(&tmp, &["show", "rich.assets", "--path-id", "7"], 0);
+    assert_eq!(rich["value"]["m_Name"], "rich");
+    assert_eq!(rich["value"]["list"], serde_json::json!([1, 2, 3]));
+    assert_eq!(rich["value"]["nested"]["child"]["value"], 42);
+    assert_eq!(rich["value"]["pair"], serde_json::json!([1, "two"]));
+    assert_eq!(rich["value"]["float"], 1.5);
+    let object = exceptional_object();
+    std::fs::write(
+        tmp.join("exceptions.assets"),
+        ngui::file(&[], &[object], true).unwrap(),
+    )
+    .unwrap();
+    let v = json(&tmp, &["show", "exceptions.assets", "--path-id", "1"], 0);
+    let value = &v["value"];
+    assert_eq!(
+        value["wide_signed"],
+        serde_json::json!({"t":"i64","v":"-9223372036854775808"})
+    );
+    assert_eq!(
+        value["wide_unsigned"],
+        serde_json::json!({"t":"u64","v":"18446744073709551615"})
+    );
+    assert_eq!(value["safe"], 9_007_199_254_740_992_i64);
+    assert_eq!(value["nan"], serde_json::json!({"t":"f32","v":"7fc00042"}));
+    assert_eq!(
+        value["infinity"],
+        serde_json::json!({"t":"f64","v":"7ff0000000000000"})
+    );
+    assert!(value["negative_zero"].as_f64().unwrap().is_sign_negative());
+    assert_eq!(value["collision"]["t"], "dict");
+    assert_eq!(value["tag_collision"]["t"], "dict");
+    assert_eq!(
+        value["float_array"],
+        serde_json::json!([1.5,{"t":"f32","v":"ff800000"}])
+    );
+    assert_eq!(
+        value["non_string_keys"],
+        serde_json::json!({"t":"map","v":[[1, "one"], [1, "again"]]})
+    );
+    assert_cuts(&v);
+    assert_eq!(v["truncated"]["cuts"], 0);
+    let canonical = json(
+        &tmp,
+        &[
+            "show",
+            "rich.assets",
+            "--path-id",
+            "7",
+            "--value",
+            "canonical",
+        ],
+        0,
+    );
+    assert_eq!(canonical["value"]["t"], "dict");
+    let canonical_arrays = json(
+        &tmp,
+        &[
+            "show",
+            "exceptions.assets",
+            "--path-id",
+            "1",
+            "--value",
+            "canonical",
+        ],
+        0,
+    );
+    let fields = canonical_arrays["value"]["v"].as_array().unwrap();
+    let floats = fields.iter().find(|row| row[0] == "float_array").unwrap();
+    assert_eq!(
+        floats[1],
+        serde_json::json!([{"t":"f32","v":"3fc00000"},{"t":"f32","v":"ff800000"}])
+    );
+    assert_eq!(
+        canonical["value"]["v"][6][1],
+        serde_json::json!({"t":"f32","v":"3fc00000"})
+    );
+}
+
+#[test]
+fn schema_rejects_malformed_recursive_values() {
+    let tmp = fixture();
+    let schema: serde_json::Value =
+        serde_json::from_slice(&run(&tmp, &["describe", "--schema", "show"]).stdout).unwrap();
+    let mut document = json(&tmp, &["show", "synthetic.assets", "--path-id", "-2"], 0);
+    for bad in [
+        serde_json::json!({"t":"dict"}),
+        serde_json::json!({"t":"tuple"}),
+        serde_json::json!({"t":"map"}),
+        serde_json::json!({"t":"map","v":[[1]]}),
+        serde_json::json!({"t":"map","v":[[1,2,3]]}),
+        serde_json::json!({"t":"map","v":[[{"t":"bytes"},1]]}),
+        serde_json::json!({"t":"map","v":[[1,{"t":"tuple"}]]}),
+        serde_json::json!({"t":"f32","v":[]}),
+        serde_json::json!({"t":"f32","v":"not_hex!"}),
+        serde_json::json!({"t":"f64","v":"3ff00000"}),
+        serde_json::json!({"t":"str","hex":"f"}),
+        serde_json::json!({"t":"u64","v":"-1"}),
+        serde_json::json!({"t":"i64","v":123}),
+        serde_json::json!({"t":"bytes"}),
+        serde_json::json!({"t":"dict","v":[["key"]]}),
+        serde_json::json!({"t":"dict","v":[["key",1,2]]}),
+        serde_json::json!({"t":"dict","v":[[false,1]]}),
+        serde_json::json!({"t":"dict","v":[["key",{"t":"tuple","v":[{"t":"bytes"}]}]]}),
+        serde_json::json!({"ordinary":[{"t":"str"}]}),
+        serde_json::json!({"$unityrs":"cut","reason":"items","omitted":-1}),
+        serde_json::json!({"$unityrs":"bytes","kind":"bytes","length":-1,"sha256":"","prefix_hex":""}),
+    ] {
+        document["value"] = bad.clone();
+        assert!(
+            !super::support::valid(&document, &schema, &schema),
+            "accepted malformed value: {bad}"
+        );
+    }
+}
+
+fn unity_map(key: V, value: V, entries: Vec<V>) -> V {
+    V::Vector("map".into(), Box::new(ngui::pair(key, value)), entries)
+}
+fn string_pairs() -> Vec<V> {
+    vec![ngui::pair(s("z"), V::Int(1)), ngui::pair(s("a"), V::Int(2))]
+}
+fn logical_map_object() -> Object {
+    let inner = unity_map(s(""), V::Int(0), vec![ngui::pair(s("inner"), V::Int(5))]);
+    Object::new(
+        1,
+        114,
+        st(
+            "Maps",
+            vec![
+                ("unique", unity_map(s(""), V::Int(0), string_pairs())),
+                (
+                    "duplicate",
+                    unity_map(
+                        s(""),
+                        V::Int(0),
+                        vec![ngui::pair(s("x"), V::Int(1)), ngui::pair(s("x"), V::Int(2))],
+                    ),
+                ),
+                (
+                    "raw",
+                    unity_map(
+                        s(""),
+                        V::Int(0),
+                        vec![ngui::pair(V::Str(vec![0xff]), V::Int(3))],
+                    ),
+                ),
+                (
+                    "reserved",
+                    unity_map(s(""), s(""), vec![ngui::pair(s("$unityrs"), s("cut"))]),
+                ),
+                (
+                    "ordinary_pairs",
+                    vector(ngui::pair(s(""), V::Int(0)), string_pairs()),
+                ),
+                (
+                    "nested",
+                    unity_map(
+                        s(""),
+                        inner.clone(),
+                        vec![ngui::pair(s("outer"), inner.clone())],
+                    ),
+                ),
+                ("array_maps", vector(inner.clone(), vec![inner])),
+                ("empty", unity_map(s(""), V::Int(0), vec![])),
+            ],
+        ),
+    )
+}
+#[test]
+fn logical_maps_are_distinguished_from_pair_arrays() {
+    let tmp = fixture();
+    let maps = logical_map_object();
+    std::fs::write(
+        tmp.join("maps.assets"),
+        ngui::file(&[], &[maps], true).unwrap(),
+    )
+    .unwrap();
+    let doc = json(&tmp, &["show", "maps.assets", "--path-id", "1"], 0);
+    let value = &doc["value"];
+    assert_eq!(value["unique"], serde_json::json!({"z":1,"a":2}));
+    assert_eq!(
+        value["duplicate"],
+        serde_json::json!({"t":"map","v":[["x",1],["x",2]]})
+    );
+    assert_eq!(
+        value["raw"],
+        serde_json::json!({"t":"map","v":[[{"t":"str","hex":"ff"},3]]})
+    );
+    assert_eq!(
+        value["reserved"],
+        serde_json::json!({"t":"map","v":[["$unityrs","cut"]]})
+    );
+    assert_eq!(
+        value["ordinary_pairs"],
+        serde_json::json!([["z", 1], ["a", 2]])
+    );
+    assert_eq!(value["nested"], serde_json::json!({"outer":{"inner":5}}));
+    assert_eq!(value["array_maps"], serde_json::json!([{"inner":5}]));
+    assert_eq!(value["empty"], serde_json::json!({}));
+    assert_cuts(&doc);
+    let output = run(&tmp, &["show", "maps.assets", "--path-id", "1"]);
+    let output = String::from_utf8(output.stdout).unwrap();
+    assert!(output.contains("\"unique\":{\"z\":1,\"a\":2}"), "{output}");
+    let root = Object::new(2, 114, unity_map(s(""), V::Int(0), string_pairs()));
+    std::fs::write(
+        tmp.join("rootmap.assets"),
+        ngui::file(&[], &[root], true).unwrap(),
+    )
+    .unwrap();
+    let root = json(&tmp, &["show", "rootmap.assets", "--path-id", "2"], 0);
+    assert_eq!(root["value"], serde_json::json!({"z":1,"a":2}));
+    let clipped = json(
+        &tmp,
+        &[
+            "show",
+            "rootmap.assets",
+            "--path-id",
+            "2",
+            "--max-items",
+            "1",
+        ],
+        0,
+    );
+    assert_eq!(
+        clipped["value"],
+        serde_json::json!({"t":"map","v":[["z",1]],"cut":{"$unityrs":"cut","reason":"items","omitted":1}})
+    );
+    assert_cuts(&clipped);
+    let canonical = json(
+        &tmp,
+        &[
+            "show",
+            "rootmap.assets",
+            "--path-id",
+            "2",
+            "--value",
+            "canonical",
+        ],
+        0,
+    );
+    assert_eq!(
+        canonical["value"],
+        serde_json::json!([{"t":"tuple","v":["z",1]},{"t":"tuple","v":["a",2]}])
+    );
+}

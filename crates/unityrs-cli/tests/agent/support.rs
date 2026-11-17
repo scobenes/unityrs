@@ -149,6 +149,14 @@ pub fn valid(v: &Value, s: &Value, root: &Value) -> bool {
             return false;
         }
     }
+    if let Some(no) = s.get("not") {
+        if valid(v, no, root) {
+            return false;
+        }
+    }
+    if !scalar_limits(v, s) {
+        return false;
+    }
     if let Some(c) = s.get("const") {
         if v != c {
             return false;
@@ -164,6 +172,7 @@ pub fn valid(v: &Value, s: &Value, root: &Value) -> bool {
             "object" => v.is_object(),
             "array" => v.is_array(),
             "string" => v.is_string(),
+            "number" => v.is_number(),
             "integer" => v.is_i64() || v.is_u64(),
             "boolean" => v.is_boolean(),
             "null" => v.is_null(),
@@ -186,9 +195,92 @@ pub fn valid(v: &Value, s: &Value, root: &Value) -> bool {
             }
         }
     }
+    if let Some(values) = v.as_object() {
+        if let Some(names) = s.get("propertyNames") {
+            if values
+                .keys()
+                .any(|k| !valid(&Value::String(k.clone()), names, root))
+            {
+                return false;
+            }
+        }
+        if let Some(additional) = s.get("additionalProperties") {
+            for (key, value) in values {
+                if s["properties"].get(key).is_none() {
+                    if additional == &Value::Bool(false)
+                        || (!additional.is_boolean() && !valid(value, additional, root))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(values) = v.as_array() {
+        if s["minItems"]
+            .as_u64()
+            .is_some_and(|n| (values.len() as u64) < n)
+            || s["maxItems"]
+                .as_u64()
+                .is_some_and(|n| (values.len() as u64) > n)
+        {
+            return false;
+        }
+        if let Some(prefix) = s["prefixItems"].as_array() {
+            if values.iter().zip(prefix).any(|(v, s)| !valid(v, s, root)) {
+                return false;
+            }
+        }
+    }
     if let Some(items) = s.get("items") {
         if let Some(values) = v.as_array() {
             if !values.iter().all(|v| valid(v, items, root)) {
+                return false;
+            }
+        }
+    }
+    true
+}
+#[allow(clippy::collapsible_if, reason = "independent schema keyword checks")]
+fn scalar_limits(v: &Value, s: &Value) -> bool {
+    if let Some(min) = s["minimum"].as_f64() {
+        if let Some(n) = v.as_f64() {
+            if n < min {
+                return false;
+            }
+        }
+    }
+    if let Some(pattern) = s["pattern"].as_str() {
+        if let Some(text) = v.as_str() {
+            let hex = |len: usize| {
+                text.len() == len
+                    && text
+                        .bytes()
+                        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            };
+            let decimal = |text: &str| {
+                text == "0"
+                    || (!text.starts_with('0')
+                        && !text.is_empty()
+                        && text.bytes().all(|c| c.is_ascii_digit()))
+            };
+            let matches = match pattern {
+                "^([0-9a-f]{2})*$" => text.len() % 2 == 0 && hex(text.len()),
+                "^[0-9a-f]{8}$" => hex(8),
+                "^[0-9a-f]{16}$" => hex(16),
+                "^[0-9a-f]{64}$" => hex(64),
+                "^-?(0|[1-9][0-9]*)$" => decimal(text.strip_prefix('-').unwrap_or(text)),
+                "^(0|[1-9][0-9]*)$" => decimal(text),
+                _ => panic!("unknown schema pattern {pattern}"),
+            };
+            if !matches {
+                return false;
+            }
+        }
+    }
+    if let Some(max) = s["maxLength"].as_u64() {
+        if let Some(text) = v.as_str() {
+            if text.chars().count() as u64 > max {
                 return false;
             }
         }

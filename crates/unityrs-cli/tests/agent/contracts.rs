@@ -23,186 +23,203 @@ pub fn docs_examples(examples: &[(&str, &Value)]) {
         std::fs::write(path, text).unwrap();
     }
 }
-fn quoted_options(mut source: &str, prefix: &str) -> BTreeSet<String> {
-    let mut options = BTreeSet::new();
-    while let Some(start) = source.find(prefix) {
-        let rest = &source[start + prefix.len()..];
-        let Some(end) = rest.find('"') else {
-            break;
-        };
-        let value = &rest[..end];
-        if value.starts_with('-') && value != "--" && value != "-" {
-            options.insert(value.to_owned());
-        }
-        source = &rest[end + 1..];
+/// Keep parser acceptance distinct from loading a provider, profile, or input.
+/// These paths deliberately do not exist; a parsed legacy invocation reaches IO.
+fn legacy_args(command: &str, flag: &str) -> Vec<String> {
+    let mut args: Vec<_> = match command {
+        "dump" => vec![command, "arity-missing.assets", "-o", "dump.jsonl"],
+        "extract" => vec![command, "arity-missing.assets", "-o", "out"],
+        "obj" => vec![
+            command,
+            "arity-missing.assets",
+            "--path-id",
+            "-2",
+            "-o",
+            "out.obj",
+        ],
+        "gltf" => vec![
+            command,
+            "arity-missing.assets",
+            "--scene",
+            "arity-missing.assets",
+            "-o",
+            "out.glb",
+        ],
+        _ => vec![command],
     }
-    options
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    if command == "dump" && flag == "--allow-index-mismatch" {
+        args.push("--index".to_owned());
+    }
+    // glTF accepts exactly one selector; aliases for the dump output share a destination.
+    if command == "gltf" && matches!(flag, "--scene" | "--path-id" | "--prefab") {
+        let i = args.iter().position(|a| a == "--scene").unwrap();
+        args.drain(i..i + 2);
+    }
+    let key = if command == "dump" && flag == "--output" {
+        "-o"
+    } else {
+        flag
+    };
+    if let Some(i) = args.iter().position(|a| a == key) {
+        args.drain(i..i + 2);
+    }
+    args
+}
+fn invoke(tmp: &unityrs_testkit::scratch::Scratch, args: &[String]) -> std::process::Output {
+    run(tmp, &args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+fn assert_missing_value(
+    tmp: &unityrs_testkit::scratch::Scratch,
+    name: &str,
+    flag: &str,
+    args: &[String],
+) {
+    // With the flag last, no later positional can masquerade as its value.
+    let missing = invoke(tmp, args);
+    let status = match name {
+        "dump" | "inspect" | "show" | "describe" => 2,
+        "batch" => 78,
+        _ => 1,
+    };
+    assert_eq!(
+        missing.status.code(),
+        Some(status),
+        "missing {name} {flag}: {missing:?}"
+    );
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        stderr.contains("missing")
+            || stderr.contains("expected one argument")
+            || stderr.contains("bad_spec usage"),
+        "missing {name} {flag}: {stderr}"
+    );
+}
+fn assert_switch_value(
+    tmp: &unityrs_testkit::scratch::Scratch,
+    name: &str,
+    flag: &str,
+    args: &[String],
+) {
+    // Attached values are unambiguously a switch value, never another INPUT.
+    let mut explicit = args.to_vec();
+    *explicit.last_mut().unwrap() = format!("{flag}=true");
+    let refused = invoke(tmp, &explicit);
+    let status = match name {
+        "dump" | "values" | "inspect" | "show" | "describe" => 2,
+        "batch" => 78,
+        _ => 1,
+    };
+    assert_eq!(
+        refused.status.code(),
+        Some(status),
+        "switch value {name} {flag}: {refused:?}"
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    let reason = match name {
+        "dump" => "ignored explicit argument",
+        "values" => "expected one argument",
+        "batch" => "bad_spec usage",
+        "inspect" | "show" | "describe" => "unknown option",
+        _ => "unexpected argument",
+    };
+    assert!(
+        stderr.contains(reason),
+        "switch value {name} {flag}: {stderr}"
+    );
 }
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "exercise the complete parser contract together"
-)]
-fn every_parser_and_describe_agree_on_options() {
+fn every_advertised_option_has_its_declared_arity() {
     let tmp = fixture();
     let description = json(&tmp, &["describe"], 0);
-    // Exact source slices cover the option tables/matches, excluding prose and tests.
-    let dump = include_str!("../../src/args/mod.rs")
-        .split("const STRINGS:")
-        .nth(1)
+    let cursor = json(&tmp, &["inspect", "synthetic.assets", "--limit", "1"], 0)["next_cursor"]
+        .as_str()
         .unwrap()
-        .split("];\n")
-        .next()
-        .unwrap();
-    let extract = include_str!("../../src/extract.rs")
-        .split("match arg.as_slice() {")
-        .nth(1)
-        .unwrap()
-        .split("    let output = output.ok_or")
-        .next()
-        .unwrap();
-    let gltf = include_str!("../../src/gltf/args.rs")
-        .split("match arg.as_slice() {")
-        .nth(1)
-        .unwrap()
-        .split("        if inputs == 0")
-        .next()
-        .unwrap();
-    let obj = include_str!("../../src/obj.rs")
-        .split("match arg.as_slice() {")
-        .nth(1)
-        .unwrap()
-        .split("    let input = Path::new")
-        .next()
-        .unwrap();
-    for (command, source, prefix) in [
-        ("dump", dump, "(\""),
-        ("extract", extract, "b\""),
-        ("gltf", gltf, "b\""),
-        ("obj", obj, "b\""),
-    ] {
-        let record = description["commands"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|c| c["name"] == command)
-            .unwrap();
-        let mut expected = quoted_options(source, prefix);
-        expected.remove("-h");
-        expected.remove("--help");
-        let actual: BTreeSet<_> = record["options"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|o| o["name"].as_str().unwrap().to_owned())
-            .filter(|s| s != "--help")
-            .collect();
-        assert_eq!(actual, expected, "{command} options drifted from parser");
-    }
-    let batch = include_str!("../../src/batch.rs")
-        .split("fn command(args:")
-        .nth(1)
-        .unwrap()
-        .split("/// `unityrs batch`")
-        .next()
-        .unwrap();
-    let batch_record = description["commands"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["name"] == "batch")
-        .unwrap();
-    assert_eq!(
-        quoted_options(batch, "b\""),
-        batch_record["options"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|o| o["name"].as_str().unwrap().to_owned())
-            .collect()
-    );
-    let values = include_str!("../../src/main.rs")
-        .split("Some(b\"values\") =>")
-        .nth(1)
-        .unwrap()
-        .split("Some(b\"-h\" | b\"--help\")")
-        .next()
-        .unwrap();
-    assert_eq!(
-        quoted_options(values, "b\""),
-        BTreeSet::from(["--help".to_owned(), "-h".to_owned()])
-    );
-    let names: Vec<_> = description["commands"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|c| c["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(names.len(), 9); // Six existing commands plus three additions.
+        .to_owned();
+    let mut commands = BTreeSet::new();
     for command in description["commands"].as_array().unwrap() {
         let name = command["name"].as_str().unwrap();
-        if name == "batch" {
-            assert_eq!(command["options"].as_array().unwrap().len(), 2);
-            assert_eq!(command["options"][0]["name"], "--check");
-            assert_eq!(command["options"][1]["name"], "--schema");
-            continue;
-        }
-        if name == "values" {
-            assert_eq!(command["options"].as_array().unwrap().len(), 1);
-        }
-        // Exercise every advertised option through the real binary. A sentinel
-        // path ensures option recognition is separate from successful loading.
+        assert!(commands.insert(name));
         for option in command["options"].as_array().unwrap() {
             let flag = option["name"].as_str().unwrap();
-            let mut args = vec![name, "synthetic.assets"];
-            if name == "dump" {
-                args.extend(["-o", "dump.jsonl"]);
+            let mut args = match name {
+                "inspect" => vec![name.to_owned(), "synthetic.assets".to_owned()],
+                "show" => vec![
+                    name.to_owned(),
+                    "synthetic.assets".to_owned(),
+                    "--path-id".to_owned(),
+                    "-2".to_owned(),
+                ],
+                _ => legacy_args(name, flag),
+            };
+            if flag == "--help" || name == "batch" {
+                args = vec![name.to_owned()];
+            } else if name == "show" && flag == "--path-id" {
+                args.truncate(2);
             }
-            if name == "extract" {
-                args.extend(["-o", "out"]);
-            }
-            if name == "obj" {
-                args.extend(["--path-id", "-2", "-o", "out.obj"]);
-            }
-            if name == "gltf" {
-                args.extend(["--scene", "synthetic.assets", "-o", "out.glb"]);
-            }
-            if name == "show" {
-                args.extend(["--path-id", "-2"]);
-            }
-            if name == "describe" {
-                args = vec![name];
-            }
-            if flag == "--help" {
-                args = vec![name, flag];
+            args.push(flag.to_owned());
+            if option["value"].is_null() {
+                assert_switch_value(&tmp, name, flag, &args);
             } else {
-                // Avoid duplicating required flags from the base argument set.
-                if let Some(i) = args.iter().position(|a| *a == flag) {
-                    args.drain(i..i + 2);
-                }
-                args.push(flag);
-                if !option["value"].is_null() {
-                    args.push(option["default"].as_str().unwrap_or(match flag {
-                        "--class" | "--asset-filter" => "TextAsset",
-                        "--name" => "*",
-                        "--path-id" => "-2",
-                        "--levels" => "L0",
-                        "--unbounded" => "TreeDepth",
-                        "--schema" => "error",
-                        _ => "1",
-                    }));
-                }
+                assert_missing_value(&tmp, name, flag, &args);
+                let value = match flag {
+                    "--class" | "--asset-filter" => "TextAsset",
+                    "--name" => "*",
+                    "--path-id" => "-2",
+                    "--scene" | "--prefab" | "--tpk" | "--profile" | "--builtin-file"
+                    | "--vorbis-headers" => "arity-missing.assets",
+                    "--file" => "synthetic.assets",
+                    "--cursor" => &cursor,
+                    "--levels" => "L0",
+                    "--unbounded" => "TreeDepth",
+                    "--schema" if name == "describe" => "error",
+                    "--check" => "arity-missing.job.json",
+                    _ => option["default"].as_str().unwrap_or("1"),
+                };
+                args.push(value.to_owned());
             }
-            let out = run(&tmp, &args);
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            assert!(
-                !stderr.contains("unrecognized arguments")
-                    && !stderr.contains("unexpected argument")
-                    && !stderr.contains("unknown option"),
-                "{name} {flag}: {stderr}"
-            );
+            let accepted = invoke(&tmp, &args);
+            let stderr = String::from_utf8_lossy(&accepted.stderr);
+            if flag == "--help" || (name == "batch" && flag == "--schema") || name == "describe" {
+                assert!(
+                    accepted.status.success(),
+                    "accepted {name} {flag}: {accepted:?}"
+                );
+            } else if name == "batch" {
+                assert_eq!(accepted.status.code(), Some(78));
+                assert!(stderr.contains("bad_spec unreadable"), "{stderr}");
+            } else if matches!(name, "inspect" | "show") {
+                if flag == "--tpk" {
+                    assert_eq!(accepted.status.code(), Some(1), "{name} {flag}");
+                    let error: Value = serde_json::from_slice(&accepted.stdout).unwrap();
+                    assert_ne!(error["code"], "usage", "accepted {name} {flag}: {error}");
+                } else {
+                    assert!(
+                        accepted.status.success(),
+                        "accepted {name} {flag}: {accepted:?}"
+                    );
+                }
+            } else {
+                assert!(
+                    !accepted.status.success(),
+                    "missing input should reach IO: {args:?}"
+                );
+                assert!(
+                    stderr.contains("os error 2")
+                        || stderr.contains("no such input: arity-missing.assets"),
+                    "accepted {name} {flag}: {stderr}"
+                );
+            }
         }
     }
+    assert_eq!(
+        commands,
+        BTreeSet::from([
+            "dump", "values", "gltf", "obj", "extract", "batch", "inspect", "show", "describe"
+        ])
+    );
 }
 #[test]
 fn advertised_defaults_match_observable_defaults() {

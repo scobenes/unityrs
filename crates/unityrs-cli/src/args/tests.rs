@@ -291,23 +291,15 @@ fn unbounded_takes_a_comma_list_of_limits() {
         );
     }
     // No abbreviation the oracle takes changed meaning.
-    for o in STRINGS
-        .map(|(o, _)| o)
-        .iter()
-        .filter(|o| o.starts_with("--"))
-    {
+    for o in strings().map(|(o, _)| o).filter(|o| o.starts_with("--")) {
         for n in 3..o.len() {
-            let matches = STRINGS
-                .iter()
+            let matches = strings()
                 .filter(|(s, _)| {
                     s.starts_with(&o[..n]) && !matches!(*s, "--unbounded" | "--reverse-prepass")
                 })
                 .count();
-            let with = STRINGS
-                .iter()
-                .filter(|(s, _)| s.starts_with(&o[..n]))
-                .count();
-            if !matches!(*o, "--unbounded" | "--reverse-prepass") {
+            let with = strings().filter(|(s, _)| s.starts_with(&o[..n])).count();
+            if !matches!(o, "--unbounded" | "--reverse-prepass") {
                 assert_eq!(matches, with, "{}", &o[..n]);
             }
         }

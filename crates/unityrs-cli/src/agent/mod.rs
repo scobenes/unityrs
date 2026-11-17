@@ -1,7 +1,8 @@
 //! Versioned agent documents. Operations return charged JSON, never print.
+mod cursor;
 mod describe;
 mod inventory;
-mod options;
+pub(crate) mod options;
 mod render;
 mod schema;
 use options::Args;
@@ -34,6 +35,17 @@ impl Error {
     }
     fn input(e: impl std::fmt::Display) -> Self {
         Self::formatted("input", &e)
+    }
+    fn at_input(mut self, index: usize, path: &[u8]) -> Self {
+        self.message = bounded_message(&format_args!(
+            "input {index} {}: {}",
+            options::spelling(path),
+            self.message
+        ));
+        self.detail = fixed(&serde_json::json!({"input":index}))
+            .ok()
+            .map(Box::new);
+        self
     }
 }
 impl From<unityrs_core::Error> for Error {
@@ -103,7 +115,7 @@ fn document(text: Text) -> Result<Document> {
     let (json, charge) = text.finish()?;
     Ok(Document { json, charge })
 }
-fn name(out: &mut Text, bytes: &[u8]) {
+fn name(out: &mut impl Sink, bytes: &[u8]) {
     json::write_name(out, bytes);
 }
 fn write_error(out: &mut impl Sink, e: &Error) {
@@ -113,7 +125,7 @@ fn write_error(out: &mut impl Sink, e: &Error) {
     json::write_str(out, &e.message);
     if let Some(detail) = &e.detail {
         out.push_str(",\"detail\":");
-        out.push_str(&detail.json);
+        out.push_str(detail.json.trim_end());
     }
     out.push('}');
 }
