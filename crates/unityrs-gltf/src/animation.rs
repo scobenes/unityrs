@@ -261,7 +261,7 @@ pub(crate) fn validate_keys(
                 }
                 if check_rotation_signs {
                     // Rounding nearly orthogonal keys can change the dot's sign.
-                    if previous.is_some_and(|prev| dot(prev, q) < 0.) {
+                    if previous.is_some_and(|prev| negative_rotation_dot(prev, q)) {
                         return Err(invalid(
                             "LINEAR animation rotation signs must be continuous in f32",
                         ));
@@ -285,6 +285,34 @@ pub(crate) fn validate_keys(
 
 fn dot(a: [f64; 4], b: [f64; 4]) -> f64 {
     a.into_iter().zip(b).map(|(a, b)| a * b).sum()
+}
+
+fn negative_rotation_dot(a: [f64; 4], b: [f64; 4]) -> bool {
+    // The f32 products are exact in f64. Grow a nonoverlapping expansion
+    // with TwoSum so the most significant nonzero component gives the sign.
+    let mut partials = [0.; 4];
+    for (i, (a, b)) in a.into_iter().zip(b).enumerate() {
+        let (lower, rest) = partials.split_at_mut(i);
+        let mut sum = a * b;
+        for part in lower {
+            (sum, *part) = two_sum(sum, *part);
+        }
+        if let [high, ..] = rest {
+            *high = sum;
+        }
+    }
+    partials
+        .into_iter()
+        .rev()
+        .find(|&part| part != 0.)
+        .is_some_and(|part| part < 0.)
+}
+
+fn two_sum(a: f64, b: f64) -> (f64, f64) {
+    let sum = a + b;
+    let b_in_sum = sum - a;
+    let error = (a - (sum - b_in_sum)) + (b - b_in_sum);
+    (sum, error)
 }
 
 pub(crate) fn document(scene: &Scene, layout: &Layout, j: &mut Json<'_>) -> Result<()> {

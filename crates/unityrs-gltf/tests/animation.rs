@@ -302,6 +302,19 @@ fn linear_rotation_refuses_a_negative_dot_product_after_f32_rounding() {
 }
 
 #[test]
+fn linear_rotation_refuses_a_negative_dot_product_hidden_by_cancellation() {
+    let mut scene = support::animated(&Meter::unlimited()).unwrap();
+    let x = 0.707_106_77_f32;
+    let t = 2_f32.powi(-30);
+    for (i, value) in [x, t, x, 0., x, -t, -x, 0.].into_iter().enumerate() {
+        key(&mut scene, Kind::AnimationRotation, i, f64::from(value));
+    }
+    for normalise in [true, false] {
+        refuses(&scene, normalise, ROTATION_SIGN_ERROR);
+    }
+}
+
+#[test]
 fn step_rotation_preserves_opposite_signs_in_a_shared_accessor() {
     let mut scene = support::animated(&Meter::unlimited()).unwrap();
     let keys = [0_f32, 0., 0., 1., 0., 0., 0., -1.];

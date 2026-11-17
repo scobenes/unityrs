@@ -363,8 +363,8 @@ fn discovery_charges_the_sibling_scan_when_the_registry_retries() {
     budget.0.store(true, Ordering::Relaxed);
 
     // Node and components, two field lookups, pointer read and resolution,
-    // external path and sibling names, then slot collection, sort and dedup.
-    let work = 3 + 4 + 5 + (5 + 4 + 13) + (1 + 4 + 2);
+    // external path and sibling names, clip interning, then first occurrences.
+    let work = 3 + 4 + 5 + (5 + 4 + 13) + 2 + (1 + 4 + 2);
     let meter = Meter::with_decode_work(u64::MAX, work, Arc::new(Unbounded), Reservation::Input);
     let catalog = discover(&env, &graph, &meter).unwrap();
     assert!(!budget.0.load(Ordering::Relaxed));
@@ -485,7 +485,7 @@ fn override_matches_base_clip_identity_after_its_bundle_is_evicted() {
     let clip = first.clip().unwrap();
     assert_eq!(clip.path_id(), 7);
     assert_eq!(pressure.clip().unwrap().path_id(), 8);
-    assert_eq!(duplicate.clip().unwrap().path_id(), 7);
+    assert!(std::ptr::eq(duplicate.clip().unwrap(), clip));
     assert!(!duplicate.is_first());
     assert_eq!(another.clip().unwrap().path_id(), 6);
     assert!(another.replacement.is_none());
@@ -518,8 +518,9 @@ fn override_matches_base_clip_identity_after_its_bundle_is_evicted() {
     assert!(std::ptr::eq(selected, first));
 }
 
-#[test]
-fn unused_override_rows_leave_room_for_the_selected_clip() {
+mod dependency_budget {
+    use super::*;
+
     #[derive(Debug, Default)]
     struct Usage(AtomicU64);
     impl PermitHome for Usage {
@@ -528,9 +529,17 @@ fn unused_override_rows_leave_room_for_the_selected_clip() {
         }
     }
     #[derive(Debug)]
-    struct Pool {
+    pub(super) struct Pool {
         usage: Arc<Usage>,
         limit: u64,
+    }
+    impl Pool {
+        pub(super) fn new(limit: u64) -> Arc<Self> {
+            Arc::new(Self {
+                usage: Arc::default(),
+                limit,
+            })
+        }
     }
     impl MemoryBudget for Pool {
         fn try_reserve(&self, bytes: u64, what: Reservation) -> Result<Permit, BudgetExceeded> {
@@ -549,13 +558,63 @@ fn unused_override_rows_leave_room_for_the_selected_clip() {
             Ok(Permit::new(bytes, self.usage.clone()))
         }
     }
+}
 
+#[test]
+fn alternating_dependency_slots_share_two_retained_clips() {
+    let mut context = FileContext::unitypy();
+    context.budget = dependency_budget::Pool::new(512 * 1024);
+    let mut options = EnvOptions::batch(Arc::new(context));
+    options.dep_cache_bytes = 1;
+    let env = Environment::new(options);
+    let filler: Vec<_> = (0..96).map(|i| a::clip(100 + i)).collect();
+    for (name, bundle_name) in [
+        ("clips-a", b"clips-a.bundle".as_slice()),
+        ("clips-b", b"clips-b.bundle".as_slice()),
+    ] {
+        let clips = s::file(Layout::Unity2022, &[], &filler).unwrap();
+        drop(
+            env.load_dependency(Source::Bytes {
+                name: RawStr::from_static(bundle_name),
+                data: Bytes::from(bundle(&[(name, clips)])),
+            })
+            .unwrap(),
+        );
+    }
+    let slots: Vec<_> = (0..128).map(|i| (1 + i % 2, 100)).collect();
+    let file = load(
+        &env,
+        b"rig",
+        &["clips-a", "clips-b"],
+        &[
+            Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
+            Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+            a::legacy(3, (0, 0), &slots),
+        ],
+    );
+    let meter = Meter::unlimited();
+    let graph = graph_from_scene_file(&env, &file, &GraphOptions::default(), &meter).unwrap();
+    let before = env.stats().dependencies_evicted;
+    let catalog = discover(&env, &graph, &meter).unwrap();
+    assert!(env.stats().dependencies_evicted > before);
+    let rig = &catalog.rigs()[0];
+    assert_eq!(rig.clips().count(), 2);
+    let slots = &rig.slots()[1..];
+    assert_eq!(slots.len(), 128);
+    let first = slots[0].clip().unwrap();
+    let second = slots[1].clip().unwrap();
+    assert_eq!(first.file().name().as_bytes(), b"clips-a");
+    assert_eq!(second.file().name().as_bytes(), b"clips-b");
+    for (slot, expected) in slots.iter().zip([first, second].into_iter().cycle()) {
+        assert!(std::ptr::eq(slot.clip().unwrap(), expected));
+    }
+}
+
+#[test]
+fn unused_override_rows_leave_room_for_the_selected_clip() {
     let discover_with_cache = |cache_bytes, pool_bytes| {
         let mut context = FileContext::unitypy();
-        context.budget = Arc::new(Pool {
-            usage: Arc::default(),
-            limit: pool_bytes,
-        });
+        context.budget = dependency_budget::Pool::new(pool_bytes);
         let mut options = EnvOptions::batch(Arc::new(context));
         options.dep_cache_bytes = cache_bytes;
         let env = Environment::new(options);
