@@ -38,11 +38,19 @@ pub fn call(params: &Value, config: &Config) -> Result<Tool, String> {
     }
     let empty = json!({});
     let arguments = params.get("arguments").unwrap_or(&empty);
-    if !schema::valid(arguments, &schema::input(command)) {
-        return Err("Arguments do not match tool inputSchema".into());
+    if !arguments.is_object() {
+        return Err("tools/call arguments must be an object".into());
+    }
+    if let Err(message) = super::arguments::check(arguments, &schema::input(command), "arguments") {
+        return Ok(failure("usage", &message));
     }
     if command == "batch_check" {
         return Ok(batch_check(arguments, config));
+    }
+    if command == "extract"
+        && let Err(message) = super::arguments::extraction(arguments)
+    {
+        return Ok(failure("usage", &message));
     }
     let mut raw = match options(command, arguments, config) {
         Ok(raw) => raw,
@@ -110,7 +118,11 @@ fn options(command: &str, arguments: &Value, config: &Config) -> Result<Vec<Vec<
         let owned;
         let value = if let Some(max) = ceiling {
             if supplied.and_then(Value::as_u64).is_some_and(|n| n > max) {
-                return Err(format!("{} exceeds server ceiling {max}", spec.name));
+                return Err(format!(
+                    "Argument {key}={}; allowed range 0..={max} (server ceiling {})",
+                    supplied.unwrap_or(&Value::Null),
+                    spec.name
+                ));
             }
             owned = json!(supplied.and_then(Value::as_u64).unwrap_or_else(|| {
                 spec.default
@@ -213,13 +225,19 @@ fn extract(raw: &[Vec<u8>], arguments: &Value, config: &Config) -> Tool {
             document: Document::Extract(doc),
             failed: false,
         },
-        Err(e) => failure(
-            if resource_refusal(e.as_ref()) {
-                "budget"
-            } else {
-                "input"
-            },
-            "Extraction failed under the configured limits and confinement",
-        ),
+        Err(e) => {
+            if let Some(tpk) = e.downcast_ref::<unityrs_tpk::TpkError>() {
+                let error = crate::agent::Error::tpk(tpk);
+                return failure(error.code, &error.message);
+            }
+            failure(
+                if resource_refusal(e.as_ref()) {
+                    "budget"
+                } else {
+                    "input"
+                },
+                "Extraction failed under the configured limits and confinement",
+            )
+        }
     }
 }

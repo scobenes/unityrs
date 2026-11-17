@@ -34,8 +34,8 @@ fn provider(args: &Args<'_>, meter: &Arc<Meter>) -> Result<Option<Provider>> {
         .map_err(|e| context(Error::from(e)))?;
     let digest = json::sha256(&data);
     // Parse exactly the bytes whose digest was computed, without reopening.
-    let tree = unityrs_tpk::TpkProvider::from_bytes(&data, &args.limits)
-        .map_err(|e| context(Error::tpk(e)))?;
+    let tree = unityrs_tpk::TpkProvider::from_bytes_metered(&data, &args.limits, meter)
+        .map_err(|e| context(Error::tpk(&e)))?;
     Ok(Some(Provider {
         tree: Arc::new(tree),
         digest,

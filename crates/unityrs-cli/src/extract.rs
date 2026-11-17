@@ -217,9 +217,17 @@ pub(crate) fn execute(
     if let Some(tpk) = tpk {
         context.providers = Arc::new(ProviderChain::new(vec![Arc::new(
             if let Some(roots) = roots {
-                unityrs_tpk::TpkProvider::from_bytes(&roots.read(tpk, &limits, &meter)?, &limits)?
+                unityrs_tpk::TpkProvider::from_bytes_metered(
+                    &roots.read(tpk, &limits, &meter)?,
+                    &limits,
+                    &meter,
+                )?
             } else {
-                unityrs_tpk::TpkProvider::open_with(tpk, &limits)?
+                unityrs_tpk::TpkProvider::from_bytes_metered(
+                    &unityrs_core::env::read_path(tpk, &limits, &meter)?,
+                    &limits,
+                    &meter,
+                )?
             },
         )]));
     }
@@ -238,7 +246,7 @@ pub(crate) fn execute(
     let report = report::checked(extractor::extract_assets(
         &env, &options, &mut files, &meter,
     )?)?;
-    let json = report::json(&report, &meter)?;
+    let json = report::json(&report, &meter, confined_output.is_some())?;
     if let Some(path) = report_path {
         files.file(path, json.as_bytes())?;
     }

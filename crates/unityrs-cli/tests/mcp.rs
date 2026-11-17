@@ -1,8 +1,18 @@
 //! Real stdio sessions using only generated Unity fixtures.
+#[path = "mcp/confinement_review.rs"]
+mod confinement_review;
+#[path = "mcp/decoder_review.rs"]
+mod decoder_review;
+#[path = "mcp/extract_review.rs"]
+mod extract_review;
+#[path = "mcp/framing_review.rs"]
+mod framing_review;
 #[path = "mcp/support.rs"]
 mod mcp_support;
 #[path = "agent/support.rs"]
 mod support;
+#[path = "mcp/tpk_review.rs"]
+mod tpk_review;
 use mcp_support::*;
 use serde_json::json;
 
@@ -323,8 +333,8 @@ fn framing_version_negotiation_and_invalid_requests() {
                 s.request(
                     "tools/call",
                     json!({"name":"unityrs_inspect","arguments":args})
-                )["error"]["code"],
-                -32602
+                )["result"]["isError"],
+                true
             );
         }
     });

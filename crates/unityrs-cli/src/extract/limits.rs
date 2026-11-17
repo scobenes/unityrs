@@ -53,7 +53,7 @@ mod tests {
         let buffer = meter
             .charge(limits.max_input_memory - meter.used() - 16)
             .unwrap();
-        let result = super::super::report::json(&report, &meter);
+        let result = super::super::report::json(&report, &meter, false);
         assert!(matches!(&result, Err(e) if e.resource_refusal()));
         assert!(meter.used() <= limits.max_input_memory);
         drop((result, buffer, report));

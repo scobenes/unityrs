@@ -1,5 +1,7 @@
 //! MCP 2025-11-25 over bounded newline-delimited JSON-RPC, with no stdout logs.
+mod arguments;
 mod config;
+mod decode;
 mod reply;
 use reply::Response;
 pub(crate) mod roots;
@@ -53,7 +55,13 @@ impl State {
             .and_then(Value::as_str)
             .unwrap_or_default();
         if request.get("id").is_none() {
-            if method == "notifications/initialized" && self.initialized {
+            if method == "notifications/initialized"
+                && self.initialized
+                && request.get("params").is_none_or(|p| {
+                    p.as_object()
+                        .is_some_and(|p| p.iter().all(|(k, v)| k == "_meta" && v.is_object()))
+                })
+            {
                 self.ready = true;
             }
             return None;
@@ -150,8 +158,8 @@ fn serve(config: &Config, input: &mut impl BufRead, output: &mut impl Write) -> 
                 -32600,
                 "Request line exceeds --max-request-bytes",
             )),
-            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-                Err(_) => Some(error(Value::Null, -32700, "Parse error")),
+            Ok(bytes) => match decode::request(&bytes, config.request_bytes) {
+                Err(e) => Some(error(Value::Null, e.code, e.message)),
                 Ok(value) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     state.handle(&value, config)
                 }))

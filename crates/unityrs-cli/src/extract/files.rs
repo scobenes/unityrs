@@ -8,7 +8,7 @@ use std::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::ffi::OsStrExt,
     },
-    path::Path,
+    path::{Component, Path},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -69,6 +69,32 @@ impl Files {
         )?;
         Ok(Self {
             root,
+            meter: meter.clone(),
+        })
+    }
+    /// Open an MCP output root one component at a time. Startup paths must
+    /// contain neither parent components nor symlinks, including ancestors.
+    /// Relative paths attach to the held working directory; absolute paths
+    /// attach to `/`. Keep the ordinary CLI constructor's path semantics.
+    pub(crate) fn confined(root: &Path, meter: &Arc<Meter>) -> Result<Self, Error> {
+        if root.as_os_str().as_bytes().contains(&0)
+            || root.components().any(|part| part == Component::ParentDir)
+        {
+            return Err(Error::UnsafePath);
+        }
+        let mut held = open(
+            libc::AT_FDCWD,
+            if root.is_absolute() { b"/" } else { b"." },
+            libc::O_RDONLY | libc::O_DIRECTORY,
+            meter,
+        )?;
+        for part in root.components() {
+            if let Component::Normal(name) = part {
+                held = mkdir(held.as_raw_fd(), name.as_bytes(), meter)?;
+            }
+        }
+        Ok(Self {
+            root: held,
             meter: meter.clone(),
         })
     }

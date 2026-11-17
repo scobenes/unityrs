@@ -20,7 +20,7 @@ fn property(spec: OptionSpec) -> Value {
         None => json!({"type":"boolean"}),
         Some("N") => {
             let (min, max) = match spec.name {
-                "--path-id" => (json!(i64::MIN), json!(i64::MAX)),
+                "--path-id" | "--ignore-first-container-dirs" => (json!(i64::MIN), json!(i64::MAX)),
                 "--limit" => (json!(1), json!(10_000)),
                 "--max-depth" => (json!(0), json!(128)),
                 "--max-tree-depth" => (json!(0), json!(u32::MAX)),
@@ -95,7 +95,11 @@ fn agent_schema(name: &str) -> Value {
     .unwrap_or_else(|| json!({"type":"object"}))
 }
 fn extract_schema() -> Value {
-    let common = json!({"path":{"type":"string"},"serialized_file":{"type":"string"},"path_id":{"type":"integer"},"class_id":{"type":"integer"}});
+    let rawstr = agent_schema("show")
+        .pointer("/$defs/rawstr")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let common = json!({"path":rawstr,"serialized_file":rawstr,"path_id":{"type":"integer"},"class_id":{"type":"integer"}});
     let entry = |extra: &str, schema: Value| {
         let mut props = common.as_object().cloned().unwrap_or_default();
         props.insert(extra.into(), schema);

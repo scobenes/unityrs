@@ -187,10 +187,10 @@ fn bounded(table: &'static str, count: u64) -> Result<usize, TpkError> {
     }
 }
 
-/// A growth the allocator refused. The provider's meter is unlimited
-/// (crate docs, "Memory"), so a charge fails only when the allocation does.
+/// A refused charge, preserving request limits and allocator provenance.
 pub(crate) fn memory(e: ChargeError) -> TpkError {
     match e {
+        ChargeError::Limit(_) => TpkError::Resource(e),
         ChargeError::Allocator(a) => TpkError::Allocator(a),
         e => TpkError::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, e)),
     }

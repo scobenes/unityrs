@@ -612,19 +612,19 @@
       "options": [
         {
           "default": null,
-          "help": "Repeatable held input root; required.",
+          "help": "Repeatable held input root; required; no symlink or parent components.",
           "name": "--root",
           "value": "DIR"
         },
         {
           "default": null,
-          "help": "Held extraction output root; enables unityrs_extract.",
+          "help": "Held extraction output root; enables unityrs_extract; no symlink or parent components.",
           "name": "--out",
           "value": "DIR"
         },
         {
           "default": "1048576",
-          "help": "Maximum bytes per request line, including newline; 256 through 67108864.",
+          "help": "Maximum bytes per request line, including newline; 256 through 67108864. Decoder caps: max(32,N/64) nodes, N/2 string/key bytes, depth 32; duplicate keys refused.",
           "name": "--max-request-bytes",
           "value": "N"
         },
@@ -689,8 +689,8 @@
           "value": null
         }
       ],
-      "purpose": "Serve confined agent tools over MCP stdio (2025-11-25).",
-      "stdout": "Newline-delimited JSON-RPC 2.0 only; diagnostics on stderr; EOF exits 0.",
+      "purpose": "Serve agent tools over MCP stdio (2025-11-25); held roots reject all symlinks, allow hard-linked files and retain moved directories.",
+      "stdout": "Newline-delimited JSON-RPC 2.0; diagnostics on stderr; EOF exits 0. Request caps: max(32,line_bytes/64) nodes, line_bytes/2 UTF-8 string/key bytes, depth 32; duplicate keys refused. Protocol errors for malformed calls; argument/operation failures are isError unityrs.error results. TPK work/memory share request ceilings. Extract raw names use {t:str,hex:...}.",
       "usage": "unityrs mcp --root DIR [--root DIR] [--out DIR] [limits]"
     },
     {

@@ -6,7 +6,7 @@
 
 - [README](README.md): Project overview and command-line examples.
 - [Agent and script guide](docs/AGENTS.md): Versioned JSON, exact object addresses (--file-index INPUT:FILE), natural and canonical values, string previews, work/display limits, integrity-checked (not authenticated) content-bound pagination and errors.
-- [MCP server](docs/AGENTS.md#mcp-server): Stdio MCP tools, registration, input/output schemas, held-descriptor roots and startup budget ceilings.
+- [MCP server](docs/AGENTS.md#mcp-server): Stdio MCP 2025-11-25 tools and schemas; descriptor confinement rejects symlinks in startup roots and request paths. Hard-linked files remain readable and moved held directories reachable. Bounded request decoding (max(32,line_bytes/64) nodes, line_bytes/2 decoded UTF-8 string/key bytes, depth 32, duplicate rejection), shared TPK budgets, protocol errors for malformed calls and isError unityrs.error results for argument/operation failures.
 - [Batch specification](docs/BATCH_SPEC.md): Job schema, budgets, outputs, progress and exit codes.
 - [Canonical dump](docs/CANONICAL_DUMP.md): Canonical value representation and parity records.
 - [Design](docs/DESIGN.md): Architecture and crate responsibilities.

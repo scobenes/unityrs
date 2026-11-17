@@ -18,19 +18,19 @@ pub fn options() -> Vec<OptionSpec> {
             "--root",
             Some("DIR"),
             None,
-            "Repeatable held input root; required.",
+            "Repeatable held input root; required; no symlink or parent components.",
         ),
         option(
             "--out",
             Some("DIR"),
             None,
-            "Held extraction output root; enables unityrs_extract.",
+            "Held extraction output root; enables unityrs_extract; no symlink or parent components.",
         ),
         option(
             "--max-request-bytes",
             Some("N"),
             Some("1048576"),
-            "Maximum bytes per request line, including newline; 256 through 67108864.",
+            "Maximum bytes per request line, including newline; 256 through 67108864. Decoder caps: max(32,N/64) nodes, N/2 string/key bytes, depth 32; duplicate keys refused.",
         ),
         option(
             "--max-response-bytes",
@@ -132,7 +132,7 @@ impl Config {
         let roots = Arc::new(Roots::new(&roots)?);
         let output = out
             .map(|path| {
-                Files::new(
+                Files::confined(
                     &path,
                     &crate::extract::limits::extraction(&unityrs_core::limits::Limits::default()),
                 )

@@ -78,9 +78,9 @@ const COMMANDS: &[(&str, &str, &str, &str, &[i32])] = &[
     ),
     (
         "mcp",
-        "Serve confined agent tools over MCP stdio (2025-11-25).",
+        "Serve agent tools over MCP stdio (2025-11-25); held roots reject all symlinks, allow hard-linked files and retain moved directories.",
         "unityrs mcp --root DIR [--root DIR] [--out DIR] [limits]",
-        "Newline-delimited JSON-RPC 2.0 only; diagnostics on stderr; EOF exits 0.",
+        "Newline-delimited JSON-RPC 2.0; diagnostics on stderr; EOF exits 0. Request caps: max(32,line_bytes/64) nodes, line_bytes/2 UTF-8 string/key bytes, depth 32; duplicate keys refused. Protocol errors for malformed calls; argument/operation failures are isError unityrs.error results. TPK work/memory share request ceilings. Extract raw names use {t:str,hex:...}.",
         &[0, 1, 2],
     ),
     (

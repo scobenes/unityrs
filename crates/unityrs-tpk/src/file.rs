@@ -53,7 +53,11 @@ impl Deref for Payload<'_> {
 /// data type is checked last, as `init`'s `assert isinstance(blob,
 /// TpkTypeTreeBlob)` is (`:37-38`). What decoding copies is charged to
 /// `meter`, the provider's.
-pub(crate) fn payload<'a>(bytes: &'a [u8], meter: &Arc<Meter>) -> Result<Payload<'a>, TpkError> {
+pub(crate) fn payload<'a>(
+    bytes: &'a [u8],
+    meter: &Arc<Meter>,
+    decoder_meter: Option<&Arc<Meter>>,
+) -> Result<Payload<'a>, TpkError> {
     let bad = |what: &str| TpkError::Malformed(what.into());
     // `TpkFile.Struct.unpack(stream.read(20))`.
     let Some((head, rest)) = bytes.split_first_chunk::<HEADER>() else {
@@ -107,13 +111,21 @@ pub(crate) fn payload<'a>(bytes: &'a [u8], meter: &Arc<Meter>) -> Result<Payload
         .ok_or_else(|| bad("Invalid compressed size"))?;
     let decoded = match compression {
         NONE => Payload::Stored(data),
-        LZ4 => Payload::Decoded(decode(Codec::Lz4, &codec::Lz4, data, uncompressed, meter)?),
+        LZ4 => Payload::Decoded(decode(
+            Codec::Lz4,
+            &codec::Lz4,
+            data,
+            uncompressed,
+            meter,
+            decoder_meter,
+        )?),
         LZMA => Payload::Decoded(decode(
             Codec::Lzma,
             &codec::Lzma,
             data,
             uncompressed,
             meter,
+            decoder_meter,
         )?),
         _ => return Err(TpkError::Unsupported("brotli")),
     };
@@ -154,9 +166,16 @@ fn decode(
     data: &[u8],
     uncompressed: u32,
     provider: &Arc<Meter>,
+    decoder_meter: Option<&Arc<Meter>>,
 ) -> Result<Bytes, TpkError> {
     let name = if which == Codec::Lz4 { "lz4" } else { "lzma" };
     let fail = |e: unityrs_core::Error| match e {
+        unityrs_core::Error::Limit(l)
+            if decoder_meter.is_some()
+                && matches!(l.kind(), LimitKind::InputMemory | LimitKind::DecodeWork) =>
+        {
+            memory(ChargeError::Limit(l))
+        }
         unityrs_core::Error::Limit(l) => TpkError::TooLarge {
             what: if l.kind() == LimitKind::InputMemory {
                 "decoder memory"
@@ -177,11 +196,13 @@ fn decode(
             detail: e.to_string().into(),
         },
     };
-    let meter = Meter::new(
-        TpkProvider::MAX_DECODER_MEMORY,
-        Arc::new(Unbounded),
-        Reservation::Provider,
-    );
+    let meter = decoder_meter.cloned().unwrap_or_else(|| {
+        Meter::new(
+            TpkProvider::MAX_DECODER_MEMORY,
+            Arc::new(Unbounded),
+            Reservation::Provider,
+        )
+    });
     let cap = TpkProvider::MAX_DECODED_BYTES;
     let room = if which == Codec::Lzma { cap } else { 0 };
     let mut out =
@@ -215,7 +236,7 @@ mod tests {
             what: Reservation::Provider,
         };
         let meter = Meter::new(u64::MAX, Arc::new(Unbounded), Reservation::Provider);
-        let got = decode(Codec::Lz4, &Refused(a), b"block", 0, &meter);
+        let got = decode(Codec::Lz4, &Refused(a), b"block", 0, &meter, None);
         assert!(matches!(got, Err(TpkError::Allocator(got)) if got == a));
         assert_eq!(meter.used(), 0, "input copies dropped on refusal");
     }
