@@ -96,14 +96,20 @@ jobs:
         run: >-
           python3 tools/memory/regenerate.py --bootstrap
           --rust-output crates/unityrs-batch/src/bound/measured.rs --check
+      # In a container job the runner.temp and github.workspace expressions
+      # name the host's paths; steps use the container's $RUNNER_TEMP, and the
+      # upload takes a path relative to the workspace, written only after the
+      # collector has checked the source is clean.
       - name: Run synthetic measurements and independent gates
         run: >-
           python3 tools/memory/collect.py --native --profile ${{ matrix.profile }}
-          --output "${{ runner.temp }}/aggregate.json"
+          --output "$RUNNER_TEMP/aggregate.json"
+      - name: Stage the aggregate record for upload
+        run: cp "$RUNNER_TEMP/aggregate.json" calibration-aggregate.json
       - name: Upload the aggregate record only
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: memory-${{ matrix.arch }}-${{ matrix.profile }}
-          path: ${{ runner.temp }}/aggregate.json
+          path: calibration-aggregate.json
           if-no-files-found: error
           retention-days: 14

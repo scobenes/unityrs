@@ -89,7 +89,18 @@ class MemoryWorkflowTests(unittest.TestCase):
     def test_only_aggregate_json_is_uploaded_after_success(self):
         uploads = [s for s in self.job['steps'] if 'actions/upload-artifact@' in s.get('uses', '')]
         self.assertEqual(len(uploads), 1)
-        self.assertEqual(uploads[0]['with']['path'], '${{ runner.temp }}/aggregate.json')
+        self.assertEqual(uploads[0]['with']['path'], 'calibration-aggregate.json')
+        steps = self.job['steps']
+        collect = next(i for i, s in enumerate(steps) if 'tools/memory/collect.py' in s.get('run', ''))
+        stage = next(i for i, s in enumerate(steps) if s.get('run', '').startswith('cp "$RUNNER_TEMP/aggregate.json"'))
+        self.assertIn('--output "$RUNNER_TEMP/aggregate.json"', steps[collect]['run'])
+        self.assertLess(collect, stage)
+        self.assertLess(stage, steps.index(uploads[0]))
+        # Container jobs: expressions name host paths, so no step may use them.
+        for step in steps:
+            for text in (step.get('run', ''), *map(str, step.get('with', {}).values())):
+                self.assertNotIn('runner.temp', text)
+                self.assertNotIn('github.workspace', text)
         self.assertNotIn('if', uploads[0])
         self.assertEqual(uploads[0]['with']['if-no-files-found'], 'error')
 
