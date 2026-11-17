@@ -52,6 +52,10 @@ pub enum V {
     UInt(u32),
     /// `UInt8`, unaligned.
     UInt8(u8),
+    /// `UInt8` with the typetree align-after flag.
+    AlignedUInt8(u8),
+    /// `UInt16`, unaligned.
+    UInt16(u16),
     /// `UInt64`.
     UInt64(u64),
     /// `SInt64`.
@@ -182,6 +186,8 @@ fn rows(level: u8, name: &str, v: &V, out: &mut Vec<NodeSpec>) {
         V::Int(_) => out.push(leaf("int", 4)),
         V::UInt(_) => out.push(leaf("unsigned int", 4)),
         V::UInt8(_) => out.push(leaf("UInt8", 1)),
+        V::AlignedUInt8(_) => out.push(leaf("UInt8", 1).aligned()),
+        V::UInt16(_) => out.push(leaf("UInt16", 2)),
         V::UInt64(_) => out.push(leaf("UInt64", 8)),
         V::Int64(_) => out.push(leaf("SInt64", 8)),
         V::Float(_) => out.push(leaf("float", 4)),
@@ -253,6 +259,12 @@ fn bytes(w: &mut ByteWriter, v: &V) -> Result<(), BuildError> {
         }
         V::UInt8(x) => {
             w.u8(*x);
+        }
+        V::AlignedUInt8(x) => {
+            w.u8(*x).align(4);
+        }
+        V::UInt16(x) => {
+            w.u16(*x);
         }
         V::UInt64(x) => {
             w.u64(*x);
