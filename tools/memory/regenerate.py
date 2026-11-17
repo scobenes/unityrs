@@ -157,6 +157,11 @@ def validate_input(data):
                 raise Invalid('whole-run record claims synthetic coverage')
             if record['sink'] == 'directory' and record['whole_run_coverage']['store-roundtrip']:
                 raise Invalid('directory record claims store roundtrip')
+            # A claimed one-worker run must have an observer baseline: the
+            # protocol accepts only positive peaks in its signed ledger range.
+            if (record['whole_run_coverage']['one-worker']
+                    and not 0 < record['coefficients']['c_base'] < (1 << 63)):
+                raise Invalid('impossible whole-run one-worker baseline')
         p = record['provenance']
         if not p['native'] or not p['clean']:
             raise Invalid('emulated or modified-source evidence is ineligible')

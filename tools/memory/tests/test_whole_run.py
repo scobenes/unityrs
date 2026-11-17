@@ -5,6 +5,51 @@ from test_regenerate import document, gen, record
 
 
 class WholeRunTests(unittest.TestCase):
+    def test_one_worker_baseline_must_be_possible_on_input(self):
+        for baseline in (1, (1 << 63) - 1):
+            data = document(True)
+            for item in data['records'][8:]:
+                item['coefficients']['c_base'] = baseline
+            with self.subTest(valid_baseline=baseline):
+                self.assertTrue(gen.generate(data)['shipping_replacement'])
+        data = document(True)
+        data['status'] = 'provisional-b12b'
+        for item in data['records'][8:]:
+            item['whole_run_coverage']['one-worker'] = False
+            item['coefficients']['c_base'] = 0
+        self.assertIn('scene-coverage', gen.generate(data)['pending'])
+        for final in (False, True):
+            for baseline in (0, 1 << 63, (1 << 63) + 1):
+                for index in (8, 9, 10, 11, None):
+                    data = document(True)
+                    if not final:
+                        data['status'] = 'provisional-b12b'
+                    for i, item in enumerate(data['records']):
+                        if item['kind'] == 'whole-run' and (index is None or i == index):
+                            item['coefficients']['c_base'] = baseline
+                    with self.subTest(final=final, baseline=baseline, index=index):
+                        with self.assertRaisesRegex(gen.Invalid, 'impossible whole-run one-worker baseline'):
+                            gen.generate(data)
+
+    def test_one_worker_baseline_must_be_possible_on_output(self):
+        for final in (False, True):
+            data = document(True)
+            if not final:
+                data['status'] = 'provisional-b12b'
+            # The synthetic maximum keeps every derived selection unchanged
+            # when the whole-run bases are tampered with, including at 2**63.
+            data['records'][0]['coefficients']['c_base'] = (1 << 63) + 1
+            output = gen.generate(data)
+            for baseline in (0, 1 << 63, (1 << 63) + 1):
+                for index in (8, 9, 10, 11, None):
+                    bad = copy.deepcopy(output)
+                    for i, item in enumerate(bad['records']):
+                        if item['kind'] == 'whole-run' and (index is None or i == index):
+                            item['coefficients']['c_base'] = baseline
+                    with self.subTest(final=final, baseline=baseline, index=index):
+                        with self.assertRaisesRegex(gen.Invalid, 'impossible whole-run one-worker baseline'):
+                            gen.validate_output(bad)
+
     def test_whole_run_never_claims_synthetic_scenes(self):
         for scene in gen.SCENES:
             data = document(True)
@@ -65,15 +110,23 @@ class WholeRunTests(unittest.TestCase):
 
     def test_whole_run_companion_provenance_must_match(self):
         changes = {'revision': 'a' * 40, 'lockfile_sha256': 'a' * 64,
-                   'rustc': [1, 99, 1], 'features': 'other',
+                   'rustc': [1, 99, 1],
                    'native_compilers': {'c': [12, 2, 0], 'cxx': [12, 2, 0]},
                    'native_libraries_sha256': 'a' * 64,
-                   'native_flags_sha256': 'a' * 64, 'clean': False}
+                   'native_flags_sha256': 'a' * 64}
         for key, value in changes.items():
             data = document(True)
             data['records'][8]['provenance'][key] = value
-            with self.subTest(key=key), self.assertRaises(gen.Invalid):
+            with self.subTest(key=key), self.assertRaisesRegex(gen.Invalid, 'mismatched build provenance'):
                 gen.generate(data)
+
+    def test_whole_run_features_require_the_supported_build(self):
+        # A standalone provisional record has no companion to mismatch.
+        data = document()
+        data['records'] = [record(kind='whole-run')]
+        data['records'][0]['provenance']['features'] = 'other'
+        with self.assertRaisesRegex(gen.Invalid, 'unsupported value'):
+            gen.generate(data)
 
     def test_whole_run_cannot_hide_an_envelope_breach_in_its_base(self):
         for key, ceiling in gen.ENVELOPES.items():
@@ -147,20 +200,34 @@ class WholeProtocolTests(unittest.TestCase):
             with self.subTest(text=text[:100]), self.assertRaises(gen.Invalid):
                 self.parse(text)
 
-    def test_missing_component_telemetry_and_dirty_checkout_are_refused(self):
+    def test_missing_component_telemetry_is_refused(self):
         from test_collect import collect
         from unittest.mock import patch
-        for missing in ('COEFFICIENT', 'FLOOR'):
-            observations = {'COEFFICIENT': {k: 1 for k in gen.COEFFICIENTS},
-                            'FLOOR': {'m_dispatch': 128, 'm_end': 4096}, 'ENVELOPE': {}}
-            observations[missing].pop(next(iter(observations[missing])))
-            with patch.object(collect, 'provenance', return_value=('target', {})), \
+        fixture = record()
+        for missing, reason in ((None, None),
+                                ('COEFFICIENT', 'missing coefficient measurements'),
+                                ('FLOOR', 'missing structural measurements')):
+            observations = {'COEFFICIENT': fixture['coefficients'].copy(),
+                            'FLOOR': fixture['structural_floors'].copy(), 'ENVELOPE': {}}
+            if missing:
+                observations[missing].pop(next(iter(observations[missing])))
+            with patch.object(collect, 'provenance', return_value=(fixture['target'], fixture['provenance'])), \
                  patch.object(collect, 'run', return_value=''), \
                  patch.object(collect.child, 'run', return_value=collect.child.CompletedProcess([], 1)), \
-                 patch.object(collect, 'coverage', return_value={}), \
+                 patch.object(collect, 'coverage', return_value=fixture['coverage']), \
                  patch.object(collect, 'numeric_protocol', return_value=observations):
-                with self.subTest(missing=missing), self.assertRaises(gen.Invalid):
-                    collect.collect('debug', True)
+                with self.subTest(missing=missing):
+                    if missing:
+                        with self.assertRaisesRegex(gen.Invalid, reason):
+                            collect.collect('debug', True)
+                    else:
+                        data = collect.collect('debug', True)
+                        self.assertEqual(len(data['records']), 2)
+                        gen.validate_input(data)
+
+    def test_dirty_checkout_is_refused(self):
+        from test_collect import collect
+        from unittest.mock import patch
         # Environment and host validation precede Git; the refusal is before any build.
         def command(args):
             if args[0] == 'rustc':
