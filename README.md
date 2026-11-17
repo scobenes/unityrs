@@ -7,8 +7,8 @@ a command-line tool and Python bindings.
 **Status: pre-alpha.** The core reads asset bundles, serialized files and
 typetrees as UnityPy 1.25.2 reads them. The CLI provides the canonical dump,
 value-case protocol, batch extraction, OBJ/MTL and static scene/prefab GLB export.
-Animation and batch GLB/OBJ integration remain P2b. The plan and phases are in
-[`docs/DESIGN.md`](docs/DESIGN.md).
+Animation and [GLB-only prefab batch](docs/plans/anim.md#0-decisions) remain P2b.
+The plan and phases are in [`docs/DESIGN.md`](docs/DESIGN.md).
 
 Agents and scripts: see [the agent interface guide](docs/AGENTS.md) for `describe`, `inspect`, `show`, and the JSON protocols.
 
@@ -71,7 +71,7 @@ publish failure leaves earlier complete outputs in place and removes only this
 invocation's remaining temps; an interrupted run may leave `.unityrs-gltf-*.tmp`
 files, safe to delete. Exit status is 0 for success/help and 1 for any export or
 argument error, following `unityrs obj`. Run `unityrs gltf --help` for all options.
-Batch GLB/OBJ integration and animation remain P2b.
+Animation and [GLB-only prefab batch](docs/plans/anim.md#0-decisions) remain P2b.
 
 `unityrs extract INPUT... -o DIR` exports the UnityPy extractor tree. It uses
 container paths by default; `--no-container` exports objects by name.

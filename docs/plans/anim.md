@@ -1,12 +1,13 @@
 # P2b plan: animation
 
-**Status.** Draft, 2026-11-17, with the round 1 review folded into the decisions
+**Status.** Draft, 2026-11-17, with both review rounds folded into the decisions
 and eight PRs in section 6. Generic export and batch have synthetic integration
 gates. Serialized playback and humanoid L11 depend on Editor recordings.
 
 **Deliverables.** Discover clips by PPtr and bind them to a prefab or scene.
-Sample generic and legacy TRS and morph weights, and retarget supported humanoid
-clips to local TRS. The library and `unityrs gltf` write editable animated GLBs.
+Sample generic and legacy TRS and morph weights, and provide humanoid retargeting
+for qualified clips, with typed refusals for the rest. The library and
+`unityrs gltf` write editable animated GLBs.
 Batch spec 3 writes one loose GLB per selected prefab. Section 2.6 names the
 deferred slices.
 
@@ -28,7 +29,7 @@ output-backed units and spec 2 (`docs/plans/rest.md` decision 3).
 | 6 | Use same-bundle Editor playback for L11. Land the recorder and the f64 transcription check before the Rust playback and retargeting code they check (4.2). | Two evaluators transcribed from the same equations can share a mistake. |
 | 7 | Emit held `STEP` or bounded `LINEAR` channels for TRS and morph weights. Keep serialized non-glTF properties and inert events as metadata (2.5–2.6). | Each glTF target has one channel per animation. |
 | 8 | Keep P2a's last-frame morph policy and four-influence skinning. Amend static3d decision 9 by assigning variable bone weights to the later slice in 2.6. | Layout and deformation still need recorded evidence. |
-| 9 | Amend static3d decision 11, which assigned `glb` and `obj` to spec 2. P2b adds GLB-only prefab export in new spec 3 with manifest 3. The GLB's output key is its unit key (2.7). | E32 uses output-backed unit keys and the output's byte MD5. |
+| 9 | Set the P2b batch scope for static3d decision 11. P2b adds GLB-only prefab export in spec 3 with manifest 3. The GLB's output key is its unit key (2.7). | E32 uses output-backed unit keys and the output's byte MD5. |
 | 10 | Revise DESIGN section 5's P2b estimate to 7.3–10.0k non-test lines (section 6). Defer controller state/blend-tree evaluation, variable bone weights and sampled non-glTF properties (2.6). | The remaining work includes versioned playback, generic and humanoid collection, reference tooling and sealed GLB publication. |
 
 ## 1. Where it starts
@@ -71,8 +72,9 @@ properties for later use. Events are inert records.
 
 **Playback source.** Per resolved target property, a populated, supported
 compiled binding in `m_MuscleClip.m_Clip` owns the property on a runtime clip.
-A malformed or unsupported compiled binding that claims the property refuses
-it with the original cause. On explicit/legacy layouts, use the runtime fields.
+A malformed or unsupported compiled binding that claims a playback property
+refuses it with the original cause. Valid metadata-only bindings follow 2.3.
+On explicit/legacy layouts, use the runtime fields.
 For rotation on such a layout, use `m_CompressedRotationCurves` when the
 fixture-confirmed compression flag (`m_Compressed` where present) selects it
 and supplies a channel for that path. Otherwise prefer explicit
@@ -87,9 +89,9 @@ malformed chosen source gives a typed refusal. Record the chosen field.
 
 - Evaluate ordinary continuous values with time-scaled Hermite tangents
   (`outSlope` of the left key and `inSlope` of the right). Evaluate supported
-  weighted tangents on the time/value Bézier segment by solving its time
-  coordinate. Keep held segments discrete. Require fixtures for versioned
-  weighted or held encodings.
+  weighted tangents on the time/value Bézier segment using the time solve
+  in 4.2. Keep held segments discrete. Require fixtures for versioned weighted
+  or held encodings.
 - For supported explicit quaternion curves, evaluate XYZW key components and
   their component derivatives in the same representation, then normalize the
   evaluated vector. Tangents are derivatives per second, with values and
@@ -151,10 +153,11 @@ roles. For explicit-only layouts use the bounds defined by the layout or, when
 no interval is stored, the first and last real runtime key times. A
 metadata-only clip has no playable tracks. `sample_clip` takes a bound clip,
 rest pose and an explicit schedule of source times within the closed interval.
-The default samples at the positive finite clip rate (30 Hz when absent) and
-includes both endpoints once. A zero-duration clip gets one sample. Refuse
-invalid rates, intervals or schedules. Work in source seconds until output,
-where the clock is `source_time - start`, also for nonzero starts. Fill
+Use the clip-level serialized `m_SampleRate` for the default schedule and include
+both endpoints once. A zero-duration clip gets one sample. Refuse a non-finite
+or non-positive serialized rate even when a schedule or rate override is
+supplied. Refuse invalid intervals or schedules. Work in source seconds until
+output, where the clock is `source_time - start`, also for nonzero starts. Fill
 unanimated components from rest. Return f64 local TRS, resolved morph scalars
 and the typed issues and source metadata. Export one pass, retaining wrap
 metadata.
@@ -214,8 +217,11 @@ layout's numeric index as finite, integral and in bounds, handling a sentinel
 only where recorded, then take the PPtr from the clip-owned table. For a
 bit-encoded discrete integer slot, reinterpret the word as the layout's
 integer bits before float checks. It is neither a mapping index nor a floating
-point sample. Discrete validation preserves the initial PPtr and later changes,
-but resolving or exporting non-glTF property tracks belongs to 2.6.
+point sample. Discrete validation preserves the initial PPtr and later changes.
+Keep valid material, integer and PPtr bindings as metadata only. They consume
+their serialized slots and never count as refused export channels or cause a
+clip failure. Sampling and resolving those properties for a consumer belongs
+to 2.6.
 [AssetStudio GenericBinding v0.16.47](https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudio/Classes/AnimationClip.cs#L737-L824) · [Unity GenericBinding value kinds](https://docs.unity.com/en-us/engine/6000.0/script-reference/unityengine/animations/genericbinding)
 
 ### 2.4 Avatar and humanoid
@@ -237,16 +243,32 @@ mappings, unknown DOFs or an optimized hierarchy that cannot be reconstructed.
 | Feature | P2b behaviour and evidence |
 |---|---|
 | Muscle rotations | Use the documented normalized muscle range relative to neutral and axis limits. Apply the recorded runtime signs, reference pose and pre/post axis transforms in the order validated by single-muscle and noncommuting multi-axis recordings. Leave untouched components at rest. A missing axis convention gives `unsupported_humanoid_axes`. A conflicting generic writer gives a typed binding error. [Mecanim Humanoids](https://unity.com/blog/engine-platform/mecanim-humanoids) |
-| Body position and rotation | `RootT` and `RootQ` describe the approximate centre-of-mass body pose in the Animator root frame. Position is divided by human scale. Recovering hips-local TRS requires the pose-dependent humanoid mass/body-orientation model and the clip's root-motion projection. Refuse `unsupported_body_motion` for a body-bearing clip until the model and import configuration are recorded and verified. A muscle-only clip is supported only where the recordings establish that no body-to-hips correction is needed. [Unity internal human pose](https://docs.unity.cn/2023.1/Documentation/ScriptReference/HumanPoseHandler.SetInternalHumanPose.html) · [Unity root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html) |
+| Body position and rotation | `RootT` and `RootQ` describe the approximate centre-of-mass body pose in the Animator root frame. Position is divided by human scale. Recovering hips-local TRS requires the pose-dependent humanoid mass/body-orientation model and the clip's root-motion projection. Apply the body-bearing test below and refuse those clips as `unsupported_body_motion`. [Unity internal human pose](https://docs.unity.cn/2023.1/Documentation/ScriptReference/HumanPoseHandler.SetInternalHumanPose.html) · [Unity root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html) |
 | Nonidentity Animator root | For any future supported body configuration, denormalize body position by the target Avatar's human scale, express the reconstructed hips in the Animator root frame, compose with its world transform, then convert through the inverse of the actual hips parent's world transform. Refuse that body case until this conversion passes a translated and rotated root fixture as well as an identity case. For muscle-only clips, accept a nonidentity root only on a recorded matching layout/configuration, otherwise return `unsupported_animator_root`. Singular or non-TRS conversions refuse explicitly. |
 | Twist distribution | Read the runtime `m_Human` upper/lower arm and leg twist settings (`m_ArmTwist`, `m_ForeArmTwist`, `m_UpperLegTwist`, `m_LegTwist`) and record the import values. Refuse `unsupported_humanoid_twist` for a pose that needs twist redistribution until its joint order and split are confirmed on limb fixtures. The supported subset must show that redistribution is inactive for the recorded motion. [Unity HumanDescription](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanDescription.html) |
 | Clip settings | Read the versioned clip settings, including `m_Mirror`, `m_CycleOffset`, loop time, `m_LoopBlend*`, and the rotation, Y and XZ bake-into-pose flags (including the corresponding runtime blend fields), original/feet basis flags, start-at-origin, height and orientation offsets. Pin the exact neutral settings and mapping in the fixture metadata. Mirror, nonzero cycle/height/orientation offsets and unverified loop-blend, bake or basis settings refuse as `unsupported_humanoid_clip_settings` with the offending field. Missing settings without a confirmed layout default refuse too. [Unity clip import settings](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/ModelImporterClipAnimation.html) · [Unity root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html) |
 | Other pose features | Refuse unsupported locomotion extraction, translation DOFs, additive poses and IK with distinct causes. Missing Avatar or any humanoid refusal prevents a successful export of that selected animation. |
 
-The humanoid PR must demonstrate a real, supported serialized clip on each of
-two rigs. If the recordings expose a required semantic outside the supported
-subset, retain the typed refusal and keep the corresponding pose row planned
-until the gap is resolved.
+**Body-bearing test.** A clip is body-bearing if any `RootT` or `RootQ`
+component maps to a populated runtime slot (streamed, dense or constant), or
+the verified effective import settings require root projection or a
+body-to-hips correction in local pose. A mapped constant or neutral value
+counts as populated. An absent slot must be established by the versioned
+`m_IndexArray` mapping and absent sentinel, or its verified layout equivalent.
+Bake-into-pose and disabled root-motion application alone do not qualify a
+clip. The recorder inventories the body and muscle slots and records the
+effective import settings from the table above, with same-bundle root and
+hips-local samples. To qualify a clip it must establish absent body slots and
+that the recorded settings and playback require neither root projection nor
+body-to-hips correction, with the other pose features also in supported scope.
+Compare the sampled root and hips-local TRS to the reset rig with only the
+known muscle-driven components applied, within the derived Editor bounds.
+Unconfirmed settings or layouts produce their typed refusal.
+
+PR 8 ships muscle-only playback for clips the recorder qualifies and typed
+refusals for the rest. If no clips qualify on the two fixture rigs, PR 8 ships
+the typed refusals and the qualification evidence. The positive humanoid pose
+row stays planned, and body motion is a deferred slice in 2.6.
 
 ### 2.5 glTF animation, collection and profile
 
@@ -273,63 +295,116 @@ in-between approximation.
 **Write and baking.** Times are finite f32 SCALAR seconds with min/max and are
 nonnegative and strictly increasing after rounding. Outputs are f32 VEC3 for
 translation and scale, VEC4 in XYZW order for rotation, and SCALAR weights in
-key-major order with `key_count × target_count` elements. Use exact `STEP` for
+key-major order with `key_count × target_count` elements. Use `STEP` for
 wholly held properties and `LINEAR` otherwise (glTF quaternion interpolation
-for rotation). Include source key boundaries and schedule samples. For mixed
-held and continuous components bracket each jump with its rounded time and
-the preceding representable time, when distinct and in range. Check both
-sides. Deduplicate coincident rounded keys only when their values and
-transition semantics agree. Refuse a collapsed or unrepresentable jump.
+for rotation). Include source key boundaries and schedule samples. Round
+times to nearest f32, ties to even. Deduplicate coincident rounded keys only
+when their values and transition semantics agree.
 Validate dimensions, values, references and unique targets before writing.
 Omit empty animations and stream the aligned BIN in first-reach order.
 
-For baked output, compare a reconstruction of emitted f32 glTF interpolation
-with the source pose or intended last-frame morph weights. Per interval allow
-at most `1e-4` absolute Unity units per translation component, `1e-4` per scale
-or weight component and `1e-3` radians of quaternion angular error. Include the
-first/last times, source breakpoints, off-key quarter/mid/three-quarter points
-and extrema or conservative subdivision bounds that cover narrow spikes and
-fast turns. Evaluate the intentional jump bracket at its two representable
-sides. Refine within the work/sample caps. If the cap prevents meeting or
-establishing the bound, return `animation_bake_error`. These are export
-thresholds, separate from L11. Later, glTF `CUBICSPLINE` can carry compatible
+**Held jumps.** For a jump at exact source time `t`, let `j = t - start`,
+`b = round_f32(j)` and `a` be the f32 predecessor of `b`. A mixed held and
+continuous channel emits the source property's left limit at `t` on `a`
+and its right-hand value at `t` on `b`, including the continuous components'
+values at the jump. Compare the reconstructed values at those keys to those
+exact sided references, even when `b` rounds down. For wholly held `STEP`
+compare the value immediately before `b` and the value at `b` to the same
+references. Let `s` be the f32 gap from `b` toward `j` (zero if exact).
+Accept `|b - j| ≤ s/2` on the right and `|a - j| ≤ (b - a) + s/2` on the
+left for a mixed channel. For `STEP`, both sides of the transition use the
+same `s/2` timing bound at `b`. Within the transition window from `min(a,j)`
+to `max(b,j)` for a mixed channel, or between `b` and `j` for `STEP`, use
+these sided value and timing checks. Apply the continuous error check
+outside the window. Refuse a jump if required keys fall outside the rounded
+clip interval, another key changes its bracket, its transition window
+overlaps another jump's, or its sides collapse or conflict after rounding.
+
+For baked output, compare interpolation reconstructed from the emitted f32
+accessors with the mirrored source pose or intended last-frame morph weights.
+Measure absolute component error for translation (Unity units), scale and
+weights, and sign-invariant normalized quaternion angle in radians (4.2).
+Use a bound of the form `A + B × ulp32(M)` per component, where `M` bounds
+the component magnitude over the source and reconstructed interval.
+`ulp32(M)` is the local f32 spacing, including subnormal spacing at zero.
+Derive the spacing term from rounding f32 key values and glTF accessor
+storage. Count a single rounding where a rounded key is stored unchanged.
+Bound timestamp rounding via the source and reconstructed rates of change
+outside jump windows. Derive the absolute term from a stated approximation
+allowance and an absolute arithmetic floor. Propagate component rounding
+through quaternion normalization and glTF interpolation to derive the angular
+bound, including a separate angular approximation allowance. PR 2 freezes
+the constants, rate and value ranges, and the derivation in its reference
+notes before any implementation comparison. These are export bounds distinct
+from L11.
+
+Include the first/last times, source breakpoints, off-key quarter/mid/three-quarter
+points and extrema or conservative subdivision bounds that cover narrow spikes
+and fast turns. Refine within the bake approximation's own subdivision and
+sample caps. If those caps prevent meeting or establishing the bound, return
+`animation_bake_error`. An engine budget refusal retains its original typed
+cause, including `limit(export_work, <value>)` when `max_export_work` is
+exhausted (2.7). Later, glTF `CUBICSPLINE` can carry compatible
 unweighted Hermite and streamed polynomial segments with the same derivatives
 and normalized quaternion results, subject to equivalent interpolation and
 continuity tests. [Khronos glTF interpolation](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-c-animation-sampler-interpolation-modes)
 
 **Profile.** Extend the strict v1 profile with `clips` and a finite bounded
-sample-rate override. Each selector uses unit-scoped root Transform and
-Animation/Animator component identities plus either the resolved clip identity
-or the discovery source-slot identity. Address objects by SerializedFile
+sample-rate override. The `all_discovered` selector takes all resolved clips
+discovered on the unit's own rigs, in discovery order and within its loaded
+view. Discovery reports unresolved slots. An explicit selector uses unit-scoped
+root Transform and Animation/Animator component identities plus either the
+resolved clip identity or the discovery source-slot identity. Address objects by SerializedFile
 occurrence in the loaded view and signed path ID. A selected unresolved slot
 returns its original cause. Reuse discovery's addressing and refuse missing
 or ambiguous matches. Display
 names are optional labels, so two same-name clips on different roots can be
-selected independently. Missing or empty `clips` selects static GLB. Nonempty
-`clip_states` remains a typed refusal. CLI and batch use the same profile and
-collect/write path. Report typed conditions and fixture-backed approximations.
-A selected clip with refused channels or no playable channels fails its
-animation request. Section 2.7 defines the batch outcome.
+selected independently. In standalone export, missing or empty `clips`
+selects static GLB. Batch's defaults and per-prefab selections are in 2.7.
+Nonempty `clip_states` remains a typed refusal. CLI and batch share the
+selector and collect/write path. Report typed conditions and fixture-backed
+approximations. A selected clip with refused playback channels fails its
+animation request. A valid metadata-only clip retains its metadata and emits
+no glTF animation. For a selected empty clip with neither playable channels
+nor valid metadata bindings, return a typed no-playable-channels cause.
 
 ### 2.6 Later slices
 
 | Later slice | Preconditions and policy |
 |---|---|
 | Controller state and blend-tree evaluation | Start from P2b's discovery tables and direct-clip sampler. Require versioned layer/state-machine/motion and leaf-to-clip resolution, recorded state time, speed, cycle offset, mirror, write defaults and null overrides, plus child duration synchronization and missing-channel rules. Verify 1D, Simple Directional 2D, Freeform Directional 2D, Freeform Cartesian 2D and Direct separately before enabling each. Humanoid states also need verified humanoid playback. [Unity 2D blending](https://docs.unity3d.com/2022.3/Documentation/Manual/BlendTree-2DBlending.html) |
+| Humanoid body motion | Establish the pose-dependent mass and body-orientation model, root-motion projection under recorded import settings, and the hips-local TRS derivation. Verify with scaled rigs and identity and translated/rotated Animator roots before lifting the body-bearing refusal. |
 | Variable bone weights (eight influences) | Record serialized `m_VariableBoneCountWeights`, counts, palette indices and weights against Editor APIs by version and validate deformed positions and both joint/weight sets. Four stays the default. An explicit eight-influence request on an unverified layout fails. Remap into the palette and merge duplicate joints before ranking and truncation, breaking ties by first source occurrence. Normalize across both sets then pad in normal mode. For eight influences with `normalise: false`, refuse explicitly until a raw contract for merged rows and both sets is verified. [Unity Mesh.GetAllBoneWeights](https://docs.unity3d.com/6000.0/Documentation/ScriptReference/Mesh.GetAllBoneWeights.html) |
 | Sampled non-glTF properties | Start from retained serialized keys, bindings, value kinds, PPtr mappings, authoring curves and events. Require fixtures for typed integer and PPtr hold semantics, reference validation, scalar interpolation and custom width, and a consumer API for these sampled values. Keep event execution and any glTF extension for those properties outside this slice. |
 
 ### 2.7 Batch prefab units
 
 **Spec 3.** Add opt-in `outputs.glb` with a required `prefab_key_template` and
-an optional inline `profile` that defaults to static export. The profile
-applies per selected prefab and its clip selections are required in that
-prefab. The template expands the complete GLB key. Validate presence, sizes,
+an optional inline `profile`. The default selector, including when the
+profile is omitted, is `all_discovered` for each selected prefab's own rigs
+in that unit's loaded view. An empty discovery list yields a static GLB.
+The batch profile accepts `clips: "all_discovered"` or `clips: []` as the
+default for all prefabs. Optional explicit selections in `clips_by_prefab`
+are keyed by the batch unit key, the complete expanded GLB output key. Each
+entry maps input IDs to selector lists, with an empty list selecting static
+export for that prefab. The input ID keeps a same-key contestant in another
+view from inheriting the list. Each selector resolves only in its addressed
+prefab and input view, even when a different view has the same SerializedFile
+occurrence and path ID. Prefabs without an override use the default.
+
+The template expands the complete GLB key. Validate presence, sizes,
 duplicate members, unknown fields, types and ranges in phase 1, with a
-charged profile and template parse. Allow GLB-only jobs. Spec 1 and 2 reject
+charged profile and template parse. An override naming a prefab outside the
+job is a spec error (`bad_spec`, exit 78, rule `range`). Reject unknown input
+IDs in phase 1. Check expanded keys against the addressed input's selected
+prefab rows after key planning and before winner publication, with the failed
+override's JSON pointer. `--check` validates the spec structure and input IDs.
+If an input fails before its key plan can establish membership, preserve its
+typed input failure. Allow GLB-only jobs. Spec 1 and 2 reject
 `outputs.glb` as `unknown_field`. Texture and image options apply to 2D outputs. GLBs embed
 textures through the glTF writer. Keep loose prefab units in this slice.
-The batch PR updates BATCH_SPEC, schemas, examples and CLI schema discovery.
+The batch PR updates BATCH_SPEC, including the run-time validation outcome,
+schemas, examples and CLI schema discovery.
 
 **Row identity and key ownership.** Visit the input's own eligible
 SerializedFiles in 4.4 file order and each file's stored container rows in
@@ -355,11 +430,14 @@ identity.
 candidate and one unit. Its unit key is exactly its GLB output key, with
 `prefer.md5` comparing the artifact's byte digest. Use E31/E32/E61 and the
 existing prefix and archive-key checks. Across inputs, a GLB and a 2D unit
-with the same unit key compete as units. A 2D plain candidate at a reserved
-GLB key loses by `unit`. If a GLB key is also a member key of a differently
-keyed 2D unit, E32 reserves the key for the first unit key in bytewise order
-and withholds the losing unit whole. No anchor records or group digests enter
-the winner pass. The existing archive membership kinds stay 2D.
+with the same unit key first compete by E31 and E61. After that contest, only
+the winning units and all units under E61-withheld unit keys reserve their
+keys. An ordinary losing unit is ineligible. If a GLB key is also a member
+key of a differently keyed 2D unit and both reserve it, the first unit key in
+bytewise order keeps it. The other winning unit is withheld whole as
+`unit_conflict`. E61-withheld unit keys retain `withheld`, and reservations
+persist through withholding. A plain candidate at a reserved key loses by
+`unit`. The existing archive membership kinds stay 2D.
 
 **Failure policy.** Carry typed causes through standalone and batch collect
 and write, preserving input or dependency provenance before deriving report
@@ -369,27 +447,45 @@ strings. For a normal end with no higher-priority outcome, apply this table.
 |---|---|---|---|
 | Broken container-row PPtr | No candidate | Unexpected `bad_pointer` skip (or the original `outside_view` or decode cause), input `complete_with_skips` | 3 |
 | Caller-selected clip outside the view, including through an override | No candidate, even if static geometry is usable | Unexpected `outside_view` skip with clip identity, input `complete_with_skips` | 3 |
-| Missing optional renderer resource, such as a texture with a usable factor-only material | Keep the degraded GLB when the selected animation and remaining scene are usable | Unexpected skip retaining the renderer/resource identity and cause, input `complete_with_skips` | 3 |
+| Missing optional renderer resource, such as a texture with a usable factor-only material | Keep the degraded GLB when the selected animation and remaining scene are usable | `glb_degraded` diagnostic with output key, renderer/resource identity and typed cause. Input `complete` if there are no actual skips | 3 |
 | Any dropped selected animation or selected animation channel, including an unavailable humanoid path or lost renderer target | No candidate for that prefab | Unexpected GLB skip with the typed cause, input `complete_with_skips` | 3 |
+| Bake approximation caps exhausted before meeting or establishing the bound | No candidate for that prefab | Unexpected `animation_bake_error` GLB skip, input `complete_with_skips` | 3 |
+| Engine `max_export_work` exhausted | Discard the input's attempt candidates | Failed input with `limit(export_work, <value>)` | 5 |
 | Object-scoped input budget refusal | No candidate for that prefab | Existing budget skip, input `complete_with_skips` | 5 |
 | `budget(dependency)` anywhere in the export, even on an optional resource | Discard the input's attempt candidates | Failed input with `budget(dependency)` | 5 |
 | Other input-scoped container, dependency or budget failure | Discard the input's attempt candidates | Existing failed-input classifier | 4 or 5 |
 
-No selected animation loss can be classified as an expected skip. A missing
-required renderer resource that makes a prefab unusable has no candidate and
-retains its typed object skip or input failure as applicable. Preserve the
-existing sink and run-level outcomes for publication, spool, allocation and
-internal failures. If an input fails and `publish_incomplete: false`, withhold
+This plan amends BATCH_SPEC 9.3 for new GLB scope reasons. PR 7 adds this
+rule to the expected-skip test and records the new reasons in its closed list.
+
+> For spec 3, an object skip caused by refusal of a caller-selected animation
+> or one of its playback channels is unexpected (exit 3), including when the
+> clip is selected by the profile default and the reason is a supported-scope
+> limit such as `unsupported_body_motion`. Budget and failed-input causes
+> keep their existing classifications.
+
+PR 7 adds `glb_degraded` to manifest 3 diagnostics and to BATCH_SPEC 9.2's
+exit-3 outcomes, including a diagnostic-only run's `complete_with_skips`
+final status. The diagnostic leaves `skips` rows and counters untouched.
+A missing required renderer resource that makes a prefab unusable has no
+candidate and retains its typed object skip or input failure as applicable.
+Preserve the existing sink and run-level outcomes for publication, spool,
+allocation and internal failures. If an input fails and `publish_incomplete: false`, withhold
 all otherwise eligible winners and nonempty archives under the existing rule.
-With it true, candidates from successful inputs can publish. Unexpected skips
-alone leave the input eligible for publication and still set exit 3 (or 5
-for an object budget). Reuse stop, resume, verification and exit precedence.
+With it true, E61 still withholds each key whose `prefer.input` names a failed
+input, including the whole unit for a withheld unit key. Other eligible keys
+from successful inputs can publish. Unexpected skips and GLB degradation
+diagnostics alone leave the input eligible for publication and still set exit
+3 (or 5 for an object budget). Reuse stop, resume, verification and exit
+precedence.
 
 **Versioned records.** Preserve BATCH_SPEC 7.3's one-to-one spec-to-manifest
 mapping for running and final fenced heads, including spec 3 runs with no GLB
 request or no 3D artifacts. Version 3 adds the GLB request provenance, closed
 `outputs.kind` and `skips.output` value `glb`, bounded container-row and root
-provenance, and typed skip details. Image-only fields are null for GLB.
+provenance, and typed skip details. A GLB has null `visible_hash` and `mode`.
+Collision rows keep `pixels_differ` boolean. It is false when either visible
+hash is absent, including collisions involving a GLB.
 Update the reason, detail and count vocabulary in the manifest contract.
 Keep progress at `p: 1` using existing progress fields, counters and
 `bad_spec` rule/pointer vocabulary. New per-prefab outcomes appear in manifest
@@ -416,10 +512,10 @@ component patches. [UnityPy 1.25.2](https://pypi.org/project/UnityPy/1.25.2/)
 
 The plan records `planned (P2b)` rows in `PARITY.md` section 24. Typed
 decoding and bindings have their own checks. Discovery identity and order
-use expected lists of source identities. L11 is the per-frame pose result
-from the same serialized clip and rig as the Editor recording. GLB and
-batch have separate L6g and L9 checks. Advance each row only when its own
-named reference and test cover the stated scope.
+use expected lists of source identities. L11 compares per-frame local TRS
+and renderer morph weights from the same serialized clip and rig as the Editor recording. GLB and
+batch have separate L6g (animation) and L9 (batch) checks. Advance each row
+only when its own named reference and test cover the stated scope.
 
 ## 4. Verification
 
@@ -436,8 +532,9 @@ overrides, controller cycles and outside-view references. Check the exact
 binding/slot table, including unsupported known widths before healthy
 bindings, unknown widths, malformed counts, mixed Transform storage, distinct
 PPtr and integer encodings, the streamed initial PPtr seed and terminal dummy.
-Exercise a nonzero start, a constant-only clip, sparse slots before their
-first real key, and dense samples between frames and beyond both grid ends.
+Exercise non-finite and non-positive clip sample rates, a nonzero start,
+a constant-only clip, sparse slots before their first real key, and dense
+samples between frames and beyond both grid ends.
 
 ### 4.2 L11 and f64 transcription
 
@@ -456,10 +553,40 @@ are unpublished. Any convention the descriptions leave open needs an explicit
 hypothesis guarded by Editor evidence, or a typed refusal. Read AssetRipper
 (GPL) for understanding only. Copy no code. [glTF interpolation](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-c-animation-sampler-interpolation-modes) · [Bézier easing functions](https://www.w3.org/TR/css-easing-1/#cubic-bezier-easing-functions) · [Unity Quaternion.Euler](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/Quaternion.Euler.html) · [Mecanim Humanoids](https://unity.com/blog/engine-platform/mecanim-humanoids) · [Unity HumanTrait](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanTrait.html) · [Unity internal human pose](https://docs.unity.cn/2023.1/Documentation/ScriptReference/HumanPoseHandler.SetInternalHumanPose.html) · [AssetRipper licensing](https://assetripper.github.io/AssetRipper/)
 
-Give Python analytic cases and independently recorded binding, axis, rest and
-curve/muscle inputs. The same-input f64 gates of `1e-9` absolute plus `1e-9`
-relative for vector components and `1e-8` radians for rotation check
-transcription. Shared equations can reproduce the same semantic error.
+**Weighted Bézier time solve.** For an interior sample use normalized time
+`(sample - left_time) / (right_time - left_time)`. Solve the time cubic with
+endpoints 0 and 1 and the versioned control points. For a confirmed fractional
+weight encoding the inner time controls are `outWeight` and `1 - inWeight`.
+Require a finite, strictly increasing time curve
+on the segment, allowing isolated zero derivatives. Return stored endpoint
+values at or beyond the corresponding endpoint. Bisect the parameter bracket
+`[0, 1]` for at most 64 iterations. At each iteration use
+`mid = lo + (hi - lo) * 0.5`, evaluate time by de Casteljau with the lerp
+`a + (b - a) * mid`, and move the lower bound if the result is below the
+normalized sample time, otherwise move the upper bound. Return `mid`
+immediately on equality or when it rounds to either bound. At the iteration
+cap return the midpoint of the final bracket. Use f64 round-to-nearest, ties
+to even, with operations in the stated order and separate multiply/add.
+Evaluate the value cubic at that parameter with the same de Casteljau order.
+
+**f64 transcription gates.** Give Python analytic cases and independently
+recorded binding, axis, rest and curve/muscle inputs. Compare componentwise
+absolute error for vectors and morph weights and normalized angular error
+for rotations. Normalize both quaternions, choose their signs for a
+nonnegative dot product, then measure `4 atan2(||q - r||, ||q + r||)`.
+Derive the vector gates as an absolute floor plus a scale-dependent term
+from the f64 operation counts and magnitude bounds for the stated polynomial,
+linear interpolation, axis and pose algorithms. Include cancellation,
+normalization conditioning and bounds on elementary functions where used.
+For the time solve, include both the final parameter uncertainty from
+bisection and the effect of normalization and time-cubic rounding on the
+inverse. Enclose the possible parameters using the monotone time curve and
+its evaluation error, including at a flat derivative or rounded equality.
+Propagate that interval through the value cubic. Propagate quaternion error
+through normalization and the angular metric to derive the rotation gate.
+PR 2 freezes the resulting bounds and valid ranges in its reference notes
+before any implementation comparison. Shared equations can reproduce the
+same semantic error.
 Include neutral/identity, single-axis, noncommuting multi-axis and asymmetric
 limits, an optional missing bone, differing rig proportions, generic scale
 and non-root translation.
@@ -470,31 +597,42 @@ that Rust reads. Land the recorder, replay manifest format and tolerance
 procedure with the Python evaluator in their own PR. Record bundle digests
 and the serialized identities of the prefab, clip, Animator and Avatar,
 the exact Editor version and build target, import settings, rig transforms,
-and playback configuration. Capture f32 local TRS and widen exactly.
+and playback configuration. Capture f32 local TRS and each renderer's
+blend-shape weights at the recorded times and widen exactly.
 A supplementary `HumanPoseHandler.SetHumanPose` recording applies known
 muscle vectors on the reset rig and isolates muscle-to-pose evaluation.
 Same-bundle playback supplies the separate evidence for clip decoding and
 muscle binding. [Unity SetHumanPose](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanPoseHandler.SetHumanPose.html)
 
-**Replay and tolerances.** Freeze Editor tolerances per property and unit
-before comparing any implementation results, using documented f32 error
-analysis or repeated Editor recordings of the same fixture. Commit the
-tolerances and derivation alongside the recording. Resolve discrepancies by
-investigating the implementation, format or fixture. Never fit tolerances to
-the observed Rust or Python errors. Rust replays the same sample times and
-compares every expected node before glTF conversion. Check translations and
-scales componentwise and rotations by a stable normalized quaternion angle
-that treats q and −q identically. Report worst errors with rig, bone,
-property and source time. L11 rows stay planned until same-bundle playback
-and the Rust comparisons pass for their claimed layouts.
+**Replay and tolerances.** PR 2 defines the Editor tolerance derivation.
+Bound f32 rounding along the documented playback path for the recorded
+layout and ranges. Include rounding the time given to Unity, interpolation
+and its local rate of change, pose and axis composition, quaternion
+normalization, and f32 outputs. Propagate those errors into the component
+and angle metrics above and into the weight units reported by the Editor.
+At held boundaries, record which side the effective f32 sample time selects
+and compare that side. Repeated recordings can test recorder repeatability.
+Freeze the tolerances and derivation alongside each recording before comparing
+any implementation results. Resolve discrepancies by investigating the
+implementation, format or fixture.
+
+PR 6 owns the generic and legacy Editor replay, including morph weights.
+PR 8 owns humanoid replay and qualification. Rust replays the same sample
+times and compares every expected node and renderer weight before glTF
+conversion, reporting the worst errors by rig, bone or renderer, property
+and source time. Run the generic and legacy comparison once the recordings
+are available. L11 rows stay planned until same-bundle playback and the
+Rust comparisons pass for their claimed layouts.
 
 ### 4.3 GLB, skin and profile
 
 - Run the pinned glTF-Validator and existing allowlist and orientation checks.
   Extend `tools/parity/gltf_check.py` to reconstruct accessors and interpolation
-  independently and enforce section 2.5's baking thresholds. Include nonlinear
-  and held segments, a fast turn, single-sample clips, a collapsed timestamp,
-  malformed channels, two morph instances sharing a mesh and a filtered node.
+  independently and enforce section 2.5's baking bounds. Include nonlinear
+  and held segments, jumps rounding up and down, a large translation with a
+  nonrepresentable f32 endpoint, a fast turn, single-sample clips, a collapsed
+  timestamp, malformed channels, valid metadata-only bindings alongside TRS,
+  two morph instances sharing a mesh and a filtered node.
 - In a non-rest four-influence skin fixture with animated joints, compute
   the Unity-space positions using all four joint transforms, inverse binds
   and weights. With `D = diag(-1, 1, 1, 1)`, independently reconstruct the
@@ -514,13 +652,18 @@ renderer resources crossing bundle boundaries in the private view. Compare
 candidate GLB bytes with the standalone writer's. Cover two rows pointing
 to one GameObject, two rows to one key with a failing first owner, a broken
 row with and without an expandable key, same-name CABs, invalid keys, and
-within-input and across-input 2D collisions. Test `prefer.md5` against byte
-digests, prefix conflicts and withholding. For each failure in 2.7, pin
-candidate eligibility, typed row, input status and exit together. Exercise
-both `publish_incomplete` settings with another successful input, including a
-dependency-budget refusal from an optional resource. Check exact L9
-manifest shapes, running and final heads for v1/v2/v3, a zero-artifact v3
-job, the progress protocol, interrupted publication and resume, and stable
+within-input and across-input 2D collisions. Include a member key held only
+by an ordinary losing unit and one reserved by an E61-withheld unit key.
+Test all-discovered defaults, two different rig selections, same-key
+contestants with repeated view-local IDs, and a selection for an absent
+prefab. Test `prefer.md5` against byte digests, prefix conflicts and
+withholding. For each outcome in 2.7, pin candidate eligibility, typed row,
+input status and exit together. Exercise both `publish_incomplete` settings
+with another successful input, including a
+dependency-budget refusal from an optional resource, a `max_export_work`
+refusal distinct from a bake approximation cap and E61 prefer-withholding.
+Check exact L9 manifest shapes, running and final heads for v1/v2/v3, a
+zero-artifact v3 job, the progress protocol, interrupted publication and resume, and stable
 records with 1 and N workers.
 
 ## 5. Performance and memory
@@ -545,19 +688,20 @@ records with 1 and N workers.
 | # | PR | Contents | ~Non-test lines | Depends on |
 |---|---|---|---|---|
 | 1 | Plan | Plan, DESIGN estimate, static3d cross-reference and planned PARITY rows | docs | — |
-| 2 | Reference and recorder | Public equation notes, Python f64 transcription check, Editor recorder, replay identity and time contract, tolerance procedure | 0.7–1.0k | 1 |
+| 2 | Reference and recorder | Public equation notes, Python f64 transcription check, frozen bake and transcription bounds, Editor recorder and f32 tolerance procedure, replay identity and time contract | 0.7–1.0k | 1 |
 | 3 | Discovery and binding types | PPtrs, controller tables and overrides, versioned GenericBinding types and widths, graph path/CRC binding, renderer channel input and synthetic fixtures | 0.9–1.2k | 1 |
 | 4 | Clip reader and bound sampler | Runtime/source precedence, explicit and packed curves, compiled slots, timing and generic/legacy TRS and morph sampling, L2 and synthetic replay | 1.6–2.1k | 2, 3 |
 | 5 | glTF animation model and writer | Editable tables, validation, deterministic JSON/BIN, accessors, validator and reconstruction checks | 0.9–1.2k | 1 |
-| 6 | Generic collection, profile and CLI | Collector callback and morph map, selection, mirrored TRS, baking, four-influence deformation test and standalone generic/legacy GLB | 1.2–1.6k | 3, 4, 5 |
+| 6 | Generic collection, profile and CLI | Collector callback and morph map, selection, mirrored TRS, baking, four-influence deformation test, standalone generic/legacy GLB and same-bundle Editor replay of TRS and renderer weights | 1.2–1.6k | 3, 4, 5 |
 | 7 | Sealed GLB prefab batch | Spec/schema/manifest v3, row identity, key ownership, attempt/winner integration and typed failure L9 cases | 1.0–1.4k | 6 and P3a T3 (merged) |
-| 8 | Avatar and humanoid integration | Runtime Avatar tables, supported retargeting, typed refusals, same-bundle L11 replay and collector integration | 1.0–1.5k | 2, 3, 4, 6 and section 8 recordings |
+| 8 | Avatar and humanoid integration | Runtime Avatar tables, qualification evidence, muscle-only retargeting for qualified clips, typed refusals for the rest, same-bundle L11 replay and collector integration for qualified clips | 1.0–1.5k | 2, 3, 4, 6 and section 8 recordings |
 
 **Total estimate.** 7.3–10.0k non-test lines, including the recorder and
 reference. PRs 2, 3 and 5 can start together. Merge PR 2 before the code it
 checks and PR 3 before the bound sampler. Generic collection has a synthetic
-integration gate. The batch PR can prepare keys and schema once the plan
-lands, and merge after generic collection without waiting for Editor
+integration gate. PR 6's Editor comparisons gate L11 status and run when the
+recordings are available. The batch PR can prepare keys and schema once the
+plan lands, and merge after generic collection without waiting for Editor
 fixtures or humanoid retargeting. Once verified, humanoid uses the same
 collection path.
 
@@ -586,12 +730,16 @@ repository's fixture rules for the built assets and numeric records.
 For each sample, instantiate a fresh rig from the loaded bundle or reset it
 to the documented identical rest and Animator state. Use an explicit
 one-clip evaluation at speed one, with no controller state blending,
-transitions or accumulated delta. Set `Animator.applyRootMotion = false`
-before evaluation, disable foot IK and playable IK, and do not apply
-`OnAnimatorMove` deltas. Pin loop settings, time origin and endpoint handling.
+transitions or accumulated delta. For Animator playback set
+`Animator.applyRootMotion = false` before evaluation, disable foot IK and
+playable IK, and leave `OnAnimatorMove` deltas unapplied. For legacy Animation,
+record the direct legacy sampling API and playback state. Pin loop settings,
+time origin and endpoint handling.
 Log both the clip-local time given to the recorder and serialized source
 time (including the nonzero `m_StartTime` offset), and the reset procedure.
-Record local TRS at the first/last times and off-key times in Unity space.
+Record local TRS and per-renderer blend-shape weights at the first/last times
+and off-key times in Unity space. Key the weights by renderer identity and
+mesh channel index and name, including when renderers share one mesh.
 
 - A legacy explicit clip and generic runtime clips with recorded
   streamed, dense and constant layouts, including constant-only and nonzero
@@ -604,11 +752,15 @@ Record local TRS at the first/last times and off-key times in Unity space.
   separately from poses. Use a direct clip for the pose recording.
 - Two humanoid rigs with different proportions, asymmetric limits or axes
   and a materialized hierarchy, including a missing optional bone. Record
-  supported muscle-only playback and known-vector `SetHumanPose` cases.
-  Record identity and nonidentity Animator roots. Include body motion,
-  twist and non-neutral clip settings as probe/refusal cases until 2.4's
-  preconditions are met. Capture rest poses, mappings, axes and effective
-  import settings from the Editor independently of the Rust decoder.
+  candidate muscle-only playback and known-vector `SetHumanPose` cases.
+  Record identity and nonidentity Animator roots. For every candidate record
+  the serialized body and muscle slot inventory, absent sentinels and storage
+  ranges, each effective import setting and its serialized counterpart, and
+  root and hips-local comparison results for the 2.4 qualification rule.
+  Record why each clip qualifies or which typed refusal it requires. Include
+  body motion, twist and non-neutral clip settings as probe/refusal cases.
+  Capture rest poses, mappings, axes and effective import settings from the
+  Editor independently of the Rust decoder.
 - Four-influence animated skinning and two instances of a mesh with
   animated blend shapes, including non-100 full weight and in-between
   frames. Extra-influence layout recordings belong to the later slice.
