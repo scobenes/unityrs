@@ -1,16 +1,14 @@
 //! Exact JSON integer normalization. Work and storage are bounded by token text;
 //! huge exponents never cause exponent-sized allocations or loops.
-use serde_json::Value;
+use super::value::Value;
 
 pub fn unsigned(value: &Value) -> Option<u64> {
     u64::try_from(parse(value)?).ok()
 }
 
 pub fn parse(value: &Value) -> Option<i128> {
-    let text = value.as_number()?.to_string();
-    let (negative, text) = text
-        .strip_prefix('-')
-        .map_or((false, text.as_str()), |s| (true, s));
+    let text = value.number_text()?;
+    let (negative, text) = text.strip_prefix('-').map_or((false, text), |s| (true, s));
     let (mantissa, exponent) = text.split_once(['e', 'E']).unwrap_or((text, "0"));
     let fraction = mantissa.split_once('.').map_or(0, |(_, s)| s.len());
     let digits: String = mantissa.chars().filter(|&c| c != '.').collect();

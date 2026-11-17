@@ -278,8 +278,10 @@ fn integral_number_spellings_are_exact_before_argument_and_ceiling_checks() {
             s.ready();
             for (key, number, valid) in [
                 ("limit", "1.0", true),
+                ("limit", "10E-1", true),
                 ("limit", "1e2", true),
                 ("limit", "1.5", false),
+                ("limit", "1.0000000000000001", false),
                 ("limit", "10001.0", false),
                 ("ignore_first_container_dirs", "-0.0", true),
                 (
@@ -288,6 +290,8 @@ fn integral_number_spellings_are_exact_before_argument_and_ceiling_checks() {
                     true,
                 ),
                 ("ignore_first_container_dirs", "9223372036854775807e0", true),
+                ("ignore_first_container_dirs", "9007199254740993.0", true),
+                ("ignore_first_container_dirs", "9007199254740992.5", false),
                 (
                     "ignore_first_container_dirs",
                     "-9223372036854775809.0",
@@ -300,6 +304,7 @@ fn integral_number_spellings_are_exact_before_argument_and_ceiling_checks() {
                 ),
                 ("max_input_bytes", "-0e100", true),
                 ("max_input_bytes", "18446744073709551615.0", true),
+                ("max_input_bytes", "18446744073709551615.1", false),
                 ("max_input_bytes", "18446744073709551616.0", false),
                 ("max_input_bytes", "-1e0", false),
                 ("limit", "1e999999999999999999999", false),
@@ -334,7 +339,7 @@ fn integral_number_spellings_are_exact_before_argument_and_ceiling_checks() {
                             .as_array()
                             .unwrap()
                             .len(),
-                        if number == "1.0" { 1 } else { 3 }
+                        if number == "1e2" { 3 } else { 1 }
                     );
                 }
             }
@@ -349,6 +354,8 @@ fn integral_request_ids_retain_exact_number_text_through_dispatch_and_decode_err
         for id in [
             "1.0",
             "1e0",
+            "10E-1",
+            "9007199254740993.0",
             "18446744073709551616",
             "-7",
             "-0",
@@ -370,15 +377,26 @@ fn integral_request_ids_retain_exact_number_text_through_dispatch_and_decode_err
                 let line = s.read_line();
                 // Check the wire token: parsing a response would normalize uppercase E.
                 assert!(line.contains(&format!("\"id\":{id},")), "{id}: {line}");
-                let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+                // Inspect the envelope without asking serde_json to convert an
+                // unbounded ID (including huge exponents) into a machine number.
+                let response: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+                    serde_json::from_str(&line).unwrap();
                 if let Some(code) = expected {
-                    assert_eq!(response["error"]["code"], code, "{line}");
+                    let error: serde_json::Value =
+                        serde_json::from_str(response["error"].get()).unwrap();
+                    assert_eq!(error["code"], code, "{line}");
                 } else {
-                    assert_eq!(response["result"], json!({}), "{line}");
+                    assert_eq!(response["result"].get(), "{}", "{line}");
                 }
             }
         }
-        for id in ["1.5", "101e-2", "1e-999999999999999999999"] {
+        for id in [
+            "1.5",
+            "101e-2",
+            "1e-999999999999999999999",
+            "1.0000000000000001",
+            "9007199254740992.5",
+        ] {
             s.send(&format!(
                 "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"ping\"}}\n"
             ));

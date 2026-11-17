@@ -1,8 +1,12 @@
 //! Decode one bounded tree. Values and keys each cost a node (max(32, line cap / 64)),
 //! decoded UTF-8 keys and strings share line cap / 2 bytes, and depth is 32
 //! (root zero). Only scalar tokens use serde; no unrestricted tree is built.
-use super::id::{self, Id};
-use serde_json::{Map, Value};
+use super::{
+    id::{self, Id},
+    value::Value,
+};
+use serde_json::value::RawValue;
+use std::collections::BTreeMap;
 
 pub struct Error {
     pub id: Option<Id>,
@@ -43,7 +47,7 @@ pub fn request(bytes: &[u8], cap: usize) -> Result<Request> {
         return Err(syntax());
     }
     if let Some((start, end)) = decoder.params {
-        let identified = value.get("jsonrpc").is_some_and(|v| v == "2.0")
+        let identified = value.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
             && value.get("method").is_some_and(Value::is_string)
             && value.get("id").is_none_or(id::valid);
         decoder.bytes = bytes.get(start..end).ok_or_else(syntax)?;
@@ -64,7 +68,7 @@ pub fn request(bytes: &[u8], cap: usize) -> Result<Request> {
                 }
                 e
             })?;
-        if let Some(object) = value.as_object_mut() {
+        if let Value::Object(object) = &mut value {
             object.insert("params".into(), params);
         }
     }
@@ -153,13 +157,18 @@ impl Decoder<'_> {
                 }) {
                     self.at += 1;
                 }
-                let scalar: Value =
+                let scalar: Box<RawValue> =
                     serde_json::from_slice(self.bytes.get(start..self.at).ok_or_else(syntax)?)
                         .map_err(|_| syntax())?;
-                if scalar.is_array() || scalar.is_object() || scalar.is_string() {
-                    return Err(syntax());
+                match scalar.get() {
+                    "null" => Ok(Value::Null),
+                    "true" => Ok(Value::Bool(true)),
+                    "false" => Ok(Value::Bool(false)),
+                    text if matches!(text.as_bytes().first(), Some(b'-' | b'0'..=b'9')) => {
+                        Ok(Value::Number(scalar))
+                    }
+                    _ => Err(syntax()),
                 }
-                Ok(scalar)
             }
             None => Err(syntax()),
         }
@@ -213,7 +222,7 @@ impl Decoder<'_> {
     }
     fn object(&mut self, depth: usize, under_params: bool) -> Result<Value> {
         self.at += 1;
-        let mut values = Map::new();
+        let mut values = BTreeMap::new();
         if self.take(b'}') {
             return Ok(Value::Object(values));
         }

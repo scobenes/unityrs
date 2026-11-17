@@ -1,4 +1,5 @@
 //! Parser metadata is the source of option names, help, defaults and value forms.
+use super::value::Value as RequestValue;
 use crate::agent::options::{self, OptionSpec};
 use serde_json::{Map, Value, json};
 pub fn specs(command: &str) -> Vec<OptionSpec> {
@@ -180,7 +181,7 @@ pub fn tools(extract: bool) -> Vec<Value> {
 }
 /// Only the small input-schema vocabulary above is accepted here. Semantic
 /// errors (bad class, cursor, job, or file selector) remain operation failures.
-pub fn valid(value: &Value, schema: &Value) -> bool {
+pub fn valid(value: &RequestValue, schema: &Value) -> bool {
     let kind = schema.get("type").and_then(Value::as_str);
     if !match kind {
         Some("object") => value.is_object(),
@@ -193,13 +194,13 @@ pub fn valid(value: &Value, schema: &Value) -> bool {
         return false;
     }
     if let Some(values) = schema.get("enum").and_then(Value::as_array)
-        && !values.contains(value)
+        && !values.iter().any(|v| v.as_str() == value.as_str())
     {
         return false;
     }
-    if let Some(n) = value.as_number() {
+    if value.number_text().is_some() {
         // Compare integers exactly, including signed path IDs and u64 budgets.
-        let integer = super::integer::parse(&Value::Number(n.clone()));
+        let integer = super::integer::parse(value);
         for (key, lower) in [("minimum", true), ("maximum", false)] {
             let bound = schema.get(key).and_then(|v| {
                 v.as_i64()

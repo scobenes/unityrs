@@ -2,9 +2,10 @@ use super::{
     config::Config,
     reply::{Document, Tool},
     schema,
+    value::Value,
 };
-use serde_json::{Value, json};
-use std::path::Path;
+use serde_json::{json, value::RawValue};
+use std::{collections::BTreeMap, path::Path};
 use unityrs_mesh::obj::ChargedBytes;
 pub fn failure(code: &str, message: &str) -> Tool {
     Tool {
@@ -36,7 +37,7 @@ pub fn call(params: &Value, config: &Config) -> Result<Tool, String> {
     {
         return Err("Unknown tool".into());
     }
-    let empty = json!({});
+    let empty = Value::Object(BTreeMap::new());
     let arguments = params.get("arguments").unwrap_or(&empty);
     if !arguments.is_object() {
         return Err("tools/call arguments must be an object".into());
@@ -138,15 +139,19 @@ fn options(command: &str, arguments: &Value, config: &Config) -> Result<Vec<Vec<
                     spec.name
                 ));
             }
-            owned = json!(
-                supplied
-                    .and_then(super::integer::unsigned)
-                    .unwrap_or_else(|| {
-                        spec.default
-                            .and_then(|s| s.parse::<u64>().ok())
-                            .unwrap_or(max)
-                            .min(max)
-                    })
+            owned = Value::Number(
+                RawValue::from_string(
+                    supplied
+                        .and_then(super::integer::unsigned)
+                        .unwrap_or_else(|| {
+                            spec.default
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .unwrap_or(max)
+                                .min(max)
+                        })
+                        .to_string(),
+                )
+                .map_err(|e| e.to_string())?,
             );
             Some(&owned)
         } else {
@@ -156,7 +161,7 @@ fn options(command: &str, arguments: &Value, config: &Config) -> Result<Vec<Vec<
             continue;
         };
         if spec.value.is_none() {
-            if value == &json!(true) {
+            if matches!(value, Value::Bool(true)) {
                 raw.push(spec.name.as_bytes().to_vec());
             }
             continue;

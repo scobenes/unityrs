@@ -1,13 +1,13 @@
 //! Explain the first rejected tool argument using the advertised schema.
-use super::schema;
-use serde_json::Value;
-pub fn check(value: &Value, schema: &Value, path: &str) -> Result<(), String> {
+use super::{schema, value::Value};
+use serde_json::Value as JsonValue;
+pub fn check(value: &Value, schema: &JsonValue, path: &str) -> Result<(), String> {
     if schema::valid(value, schema) {
         return Ok(());
     }
     if let Some(object) = value.as_object() {
         if let Some(required) = schema["required"].as_array() {
-            for key in required.iter().filter_map(Value::as_str) {
+            for key in required.iter().filter_map(JsonValue::as_str) {
                 if !object.contains_key(key) {
                     return Err(format!(
                         "Argument {key}=<missing>; allowed: required {}",
@@ -15,7 +15,7 @@ pub fn check(value: &Value, schema: &Value, path: &str) -> Result<(), String> {
                             schema
                                 .get("properties")
                                 .and_then(|p| p.get(key))
-                                .unwrap_or(&Value::Null)
+                                .unwrap_or(&JsonValue::Null)
                         )
                     ));
                 }
@@ -44,7 +44,7 @@ pub fn check(value: &Value, schema: &Value, path: &str) -> Result<(), String> {
         allowed(schema)
     ))
 }
-fn allowed(schema: &Value) -> String {
+fn allowed(schema: &JsonValue) -> String {
     let mut parts = vec![schema["type"].as_str().unwrap_or("value").to_owned()];
     for key in ["minimum", "maximum", "enum", "minItems", "minLength"] {
         if let Some(value) = schema.get(key) {

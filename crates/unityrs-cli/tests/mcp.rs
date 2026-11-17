@@ -25,6 +25,17 @@ use mcp_support::*;
 use serde_json::json;
 
 #[test]
+fn serde_json_keeps_workspace_number_parsing() {
+    // Cargo unifies features: arbitrary_precision would change the batch
+    // job parser and dump encoders linked into the same binary as MCP.
+    for text in ["1.0", "18446744073709551616"] {
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert!(value.is_f64(), "{text}: {value:?}");
+        assert!(!value.is_i64() && !value.is_u64(), "{text}: {value:?}");
+    }
+}
+
+#[test]
 fn lifecycle_and_recovery() {
     session(&[], |s| {
         let init = s.request("initialize", initialize("2025-11-25"));

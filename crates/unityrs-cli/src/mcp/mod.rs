@@ -10,9 +10,11 @@ use reply::Response;
 pub(crate) mod roots;
 mod schema;
 mod tools;
+mod value;
 use config::Config;
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io::{self, BufRead, Write},
     process::ExitCode,
 };
@@ -43,8 +45,8 @@ impl State {
         let id = decoded.id.clone().unwrap_or_else(Id::null);
         let valid_id = request.get("id").is_none_or(id::valid);
         if !request.is_object()
-            || request.get("jsonrpc") != Some(&json!("2.0"))
-            || !request.get("method").is_some_and(Value::is_string)
+            || request.get("jsonrpc").and_then(value::Value::as_str) != Some("2.0")
+            || !request.get("method").is_some_and(value::Value::is_string)
             || !valid_id
         {
             return Some(error(
@@ -55,7 +57,7 @@ impl State {
         }
         let method = request
             .get("method")
-            .and_then(Value::as_str)
+            .and_then(value::Value::as_str)
             .unwrap_or_default();
         if request.get("id").is_none() {
             if method == "notifications/initialized"
@@ -69,7 +71,7 @@ impl State {
             }
             return None;
         }
-        let empty = json!({});
+        let empty = value::Value::Object(BTreeMap::new());
         let params = request.get("params").unwrap_or(&empty);
         if !params.is_object() {
             return Some(error(id, -32602, "params must be an object"));
@@ -79,16 +81,20 @@ impl State {
                 if self.initialized {
                     return Some(error(id, -32600, "Already initialized"));
                 }
-                if !params.get("protocolVersion").is_some_and(Value::is_string)
-                    || !params.get("capabilities").is_some_and(Value::is_object)
+                if !params
+                    .get("protocolVersion")
+                    .is_some_and(value::Value::is_string)
+                    || !params
+                        .get("capabilities")
+                        .is_some_and(value::Value::is_object)
                     || !params
                         .get("clientInfo")
                         .and_then(|v| v.get("name"))
-                        .is_some_and(Value::is_string)
+                        .is_some_and(value::Value::is_string)
                     || !params
                         .get("clientInfo")
                         .and_then(|v| v.get("version"))
-                        .is_some_and(Value::is_string)
+                        .is_some_and(value::Value::is_string)
                 {
                     return Some(error(id, -32602, "Invalid initialize parameters"));
                 }

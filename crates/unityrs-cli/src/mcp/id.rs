@@ -1,6 +1,7 @@
 //! JSON-RPC IDs: exact integrality without a machine-integer range bound,
 //! and original wire spelling kept independently of serde's number normalization.
-use serde_json::{Value, value::RawValue};
+use super::value::Value;
+use serde_json::value::RawValue;
 
 #[derive(Clone)]
 pub struct Id(Box<RawValue>);
@@ -16,7 +17,7 @@ impl Id {
     }
 }
 pub fn valid(value: &Value) -> bool {
-    value.is_string() || value.as_number().is_some_and(|n| integral(n.as_str()))
+    value.is_string() || value.number_text().is_some_and(integral)
 }
 /// The input is a validated JSON number. Removing a decimal point requires
 /// enough exponent places (or trailing zeroes) to leave no fractional digits.
