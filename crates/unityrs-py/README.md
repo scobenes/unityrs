@@ -24,7 +24,7 @@ the wheel, then run:
 ```sh
 python tools/fixtures/py_bindings.py --check
 cd tools/parity
-python ../../scripts/unittest-suites bindings=316
+python ../../scripts/unittest-suites bindings=317
 ```
 
 The recorder writes 202 synthetic API records (34 Y1 records, 10 Y3 groups and
@@ -40,7 +40,7 @@ compares the installed wheel directly with UnityPy and fails if either import
 is missing. The ordinary oracle suite does not discover this separate suite.
 The Y3 replay is `replays_unitypy_helper_observations`; its installed-wheel suite
 also compares runtime common strings directly, without saving TPK-derived data.
-The wheel suite has 133 tests and the oracle comparison has 316; CI enforces both
+The wheel suite has 133 tests and the oracle comparison has 317; CI enforces both
 minimum counts. Exception translation and object-value handoff run on the calling
 thread after the native worker joins. Other worker sites relay Python callbacks,
 allocations and finalizers to that caller. Warning handlers run on that thread
