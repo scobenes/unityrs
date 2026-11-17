@@ -71,7 +71,10 @@ fn shader_allocations_are_charged_and_allocator_refusals_propagate() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|c| c["oracle"].get("text").is_some())
+        .filter(|c| {
+            c["oracle"].get("text").is_some()
+                || matches!(c["case"].as_str(), Some("script_missing" | "script_string"))
+        })
         .chain(
             modern["cases"]
                 .as_array()
@@ -145,6 +148,53 @@ fn work_meter(work: u64) -> Arc<Meter> {
         Arc::new(unityrs_core::budget::Unbounded),
         Reservation::Input,
     )
+}
+
+#[test]
+fn no_blob_outputs_obey_the_work_bound() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/shader.json")).unwrap();
+    for name in ["script_missing", "script_string"] {
+        let case = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["case"] == name)
+            .unwrap();
+        let input = case["input"]
+            .as_str()
+            .unwrap()
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        let env = Environment::new(EnvOptions::unitypy());
+        let File::Serialized(file) = env
+            .load(Source::Bytes {
+                name: RawStr::from("empty.assets"),
+                data: Bytes::from(input),
+            })
+            .unwrap()
+        else {
+            panic!("file")
+        };
+        let object = file.object(1).unwrap();
+        let meter = work_meter(u64::MAX);
+        drop(unityrs_export::shader::export(&object, &env, &meter).unwrap());
+        let work = meter.decoded();
+        let short = work_meter(work - 1);
+        assert!(
+            matches!(unityrs_export::shader::export(&object, &env, &short),
+            Err(unityrs_export::shader::Error::Charge(unityrs_core::limits::ChargeError::Limit(ref e)))
+                if e.kind() == unityrs_core::error::LimitKind::DecodeWork)
+        );
+        assert_eq!(short.used(), 0);
+        let exact = work_meter(work);
+        drop(unityrs_export::shader::export(&object, &env, &exact).unwrap());
+        assert_eq!(exact.used(), 0);
+    }
 }
 
 #[test]
@@ -278,7 +328,7 @@ fn field_name_searches_charge_hits_and_misses_at_the_work_bound() {
         if hit {
             drop(answer.unwrap());
         } else {
-            assert!(matches!(answer, Err(Error::NoneBytes)));
+            assert!(matches!(answer, Err(Error::Field("m_ParsedForm"))));
         }
         assert_eq!(exact.used(), 0);
     }

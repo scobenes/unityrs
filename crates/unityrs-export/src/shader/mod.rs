@@ -1,5 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/export/ShaderConverter.py, UnityPy/classes/legacy_patch/Shader.py. See THIRD_PARTY_LICENSES.
-//! Tier A Shader export and Tier C player/parameter record selection.
+//! Tier A Shader export and Tier C no-blob and player/parameter corrections.
 //! Malformed legacy blobs and unfillable replacements have named Tier U refusals.
 //! Entry point: export/ShaderConverter.py:41-89;
 //! classes/legacy_patch/Shader.py:4-7.
@@ -280,13 +280,46 @@ pub fn export_with_cap(
             meter,
         )?;
     } else {
-        let script = root.optional("m_Script")?.ok_or(Error::NoneBytes)?;
-        let script = bytes(script.value, meter)?;
-        meter.count_decode(script.len() as u64)?;
-        std::str::from_utf8(&script).map_err(|_| utf8_error(&script, meter))?;
-        out.text(&script)?;
+        no_blob(root, version, &mut out, meter)?;
     }
     Ok(out.bytes)
+}
+
+fn no_blob(
+    root: View<'_>,
+    version: (u32, u32),
+    out: &mut Output<'_>,
+    meter: &Arc<Meter>,
+) -> Result<(), Error> {
+    if let Some(script) = root.optional("m_Script")? {
+        // Tier C: legacy strings are already UTF-8; bytes(str) is UnityPy's
+        // missing-encoding error, not a reason to discard a valid script.
+        let converted;
+        let script = if let Value::Str(s) = script.value {
+            s.as_bytes()
+        } else {
+            converted = bytes(script.value, meter)?;
+            converted.as_ref()
+        };
+        meter.count_decode(script.len() as u64)?;
+        std::str::from_utf8(script).map_err(|_| utf8_error(script, meter))?;
+        out.text(script)?;
+    } else if version >= (5, 5) {
+        // Tier C: 5.5+ has no script. With no blob, convert the parsed form
+        // exactly as a blob with no platforms would, without reading metadata
+        // for nonexistent programs or constructing platform/program buffers.
+        let platforms = Value::List(Vec::new());
+        convert::shader(
+            root.field("m_ParsedForm")?,
+            view::Seq::new(&platforms)?,
+            &[],
+            out,
+            meter,
+        )?;
+    } else {
+        return Err(Error::NoneBytes);
+    }
+    Ok(())
 }
 
 fn utf8_error(data: &[u8], meter: &Arc<Meter>) -> Error {

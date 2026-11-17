@@ -144,6 +144,52 @@ fn run(input: &Path, output: &Path, extra: &[&str]) -> std::process::Output {
     )
     .unwrap()
 }
+
+#[test]
+fn no_blob_shaders_are_written_and_reported_as_successes() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../unityrs-export/tests/fixtures/shader.json"
+    ))
+    .unwrap();
+    let cases = fixture["cases"].as_array().unwrap();
+    let no_programs = cases
+        .iter()
+        .find(|c| c["case"] == "empty_platforms")
+        .unwrap()["oracle"]["text"]
+        .as_str()
+        .unwrap();
+    for name in ["script_missing", "script_string"] {
+        let case = cases.iter().find(|c| c["case"] == name).unwrap();
+        assert_eq!(case["oracle"]["exception"], "TypeError");
+        let tmp = Scratch::new("extract-shader-no-blob");
+        let input = tmp.join("synthetic.assets");
+        let output = tmp.join("dst");
+        std::fs::write(&input, unhex(case["input"].as_str().unwrap())).unwrap();
+        let result = run(&input, &output, &[]);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let expected = if name == "script_string" {
+            [unityrs_export::shader::HEADER, "synthetic"].concat()
+        } else {
+            no_programs.to_owned()
+        };
+        assert_eq!(
+            std::fs::read(output.join("Synthetic Shader.txt")).unwrap(),
+            expected.as_bytes()
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&result.stdout).unwrap(),
+            json!({
+                "written": [{"path":"Synthetic Shader.txt", "serialized_file":input.to_str().unwrap(),
+                    "path_id":1, "class_id":48, "size":expected.len()}],
+                "failures":[]
+            })
+        );
+    }
+}
 #[test]
 fn unsafe_names_and_symlink_parents_write_nothing_outside_root() {
     use std::os::unix::fs::symlink;
