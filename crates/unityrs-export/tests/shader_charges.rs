@@ -11,6 +11,8 @@ use unityrs_core::{
     limits::Meter,
 };
 use unityrs_testkit::counted::{self, Allocator, Tally};
+#[path = "support/shader_code.rs"]
+mod shader_code;
 #[path = "support/shader_int.rs"]
 mod shader_int;
 const INT_DEFAULTS: &[f32] = &[
@@ -90,6 +92,7 @@ fn shader_allocations_are_charged_and_allocator_refusals_propagate() {
         }
         serde_json::json!({"case": format!("synthetic_int_blob_{blob}"), "input": input})
     });
+    let fallback = fallback_charge_cases();
     for case in fixture["cases"]
         .as_array()
         .unwrap()
@@ -110,6 +113,7 @@ fn shader_allocations_are_charged_and_allocator_refusals_propagate() {
                 .filter(|c| c["rust"].get("text").is_some()),
         )
         .chain(ints.iter())
+        .chain(fallback.iter())
     {
         let text = case["input"].as_str().unwrap();
         let input: Vec<u8> = text
@@ -492,4 +496,81 @@ fn modern_detection_charges_for_passes_without_fields() {
         work[1] >= work[0] + 999,
         "pass traversal was not charged: {work:?}"
     );
+}
+
+#[test]
+fn code_fallback_obeys_work_and_memory_bounds() {
+    for (kind, code, scan) in [
+        (1, vec![0xff; 32767], 32767),
+        (5, vec![0xff], 1),
+        (26, vec![0xff], 1),
+        (23, b"abc".to_vec(), 6),
+        (24, 0xf00d_cafeu32.to_le_bytes().to_vec(), 8),
+        (23, vec![b'n'; 32771], 65542),
+        (23, b"ABCDentry\0\xff".to_vec(), 23),
+    ] {
+        let blob = shader_code::program(kind, &[&code]);
+        let env = Environment::new(EnvOptions::unitypy());
+        let File::Serialized(file) = env
+            .load(Source::Bytes {
+                name: RawStr::from("fallback.assets"),
+                data: Bytes::from(shader_code::asset(kind, &blob, 1)),
+            })
+            .unwrap()
+        else {
+            panic!("file")
+        };
+        let parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
+        let meter = work_meter(u64::MAX);
+        let output = unityrs_export::shader::export_parsed(&parsed, (2021, 3), &meter).unwrap();
+        assert!(
+            std::str::from_utf8(output.as_slice())
+                .unwrap()
+                .contains(&format!("\"//shader disassembly not supported on {kind}\""))
+        );
+        // At least the parsed code bytes, rendering scans (UTF-8: len;
+        // Metal: 2 * len, plus source UTF-8 if reached), and all output bytes.
+        // Field searches, table reads and decompression add further work.
+        let minimum_work = code.len() as u64 + scan + output.len() as u64;
+        drop(output);
+        let work = meter.decoded();
+        assert!(work >= minimum_work, "kind {kind}: {work} < {minimum_work}");
+        assert_eq!(meter.used(), 0);
+        let short = work_meter(work - 1);
+        assert!(
+            matches!(unityrs_export::shader::export_parsed(&parsed, (2021, 3), &short),
+            Err(unityrs_export::shader::Error::Charge(unityrs_core::limits::ChargeError::Limit(ref e)))
+                if e.kind() == unityrs_core::error::LimitKind::DecodeWork)
+        );
+        assert_eq!(short.used(), 0);
+        let exact = work_meter(work);
+        drop(unityrs_export::shader::export_parsed(&parsed, (2021, 3), &exact).unwrap());
+        assert_eq!(exact.used(), 0);
+        let no_memory = Meter::new(
+            0,
+            Arc::new(unityrs_core::budget::Unbounded),
+            Reservation::Input,
+        );
+        assert!(matches!(
+            unityrs_export::shader::export_parsed(&parsed, (2021, 3), &no_memory),
+            Err(unityrs_export::shader::Error::Charge(_))
+        ));
+        assert_eq!(no_memory.used(), 0);
+    }
+}
+
+fn fallback_charge_cases() -> [serde_json::Value; 2] {
+    [1, 23].map(|kind| {
+        let code = if kind == 1 {
+            vec![0xff; 32767]
+        } else {
+            vec![b'n'; 32771]
+        };
+        let blob = shader_code::program(kind, &[&code]);
+        let mut input = String::new();
+        for byte in shader_code::asset(kind, &blob, 1) {
+            write!(&mut input, "{byte:02x}").unwrap();
+        }
+        serde_json::json!({"case": format!("synthetic_code_fallback_{kind}"), "input": input})
+    })
 }

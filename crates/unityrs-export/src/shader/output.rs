@@ -11,6 +11,7 @@ use unityrs_core::limits::{ChargeError, Meter, MeteredVec};
 pub(super) struct Output<'a> {
     pub bytes: MeteredVec<u8>,
     pub int_properties: bool,
+    pub code_fallback: bool,
     meter: &'a Arc<Meter>,
     error: Option<ChargeError>,
 }
@@ -19,6 +20,7 @@ impl<'a> Output<'a> {
         Self {
             bytes: MeteredVec::new(meter),
             int_properties: true,
+            code_fallback: true,
             meter,
             error: None,
         }
