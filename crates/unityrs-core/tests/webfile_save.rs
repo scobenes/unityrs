@@ -103,6 +103,30 @@ fn replay_webfile_save_signatures_packers_duplicates_nested_edits_and_block_boun
                 packer: compression,
             };
             let saved = web.save_with_signature(options, signature).unwrap();
+            if compression == WebPacker::Gzip {
+                // Section 19.2's core policy, not the helper's level-9,
+                // wall-clock default: deterministic RFC 1952 header and
+                // RFC 1951 stored blocks. Content is oracle-compared below.
+                assert_eq!(&saved[..10], &[31, 139, 8, 0, 0, 0, 0, 0, 0, 255]);
+                let mut offset = 10;
+                let mut decoded = Vec::new();
+                loop {
+                    let tag = saved[offset];
+                    assert!(tag <= 1, "{name}: stored block with zero padding");
+                    let len = u16::from_le_bytes(saved[offset + 1..offset + 3].try_into().unwrap());
+                    let complement =
+                        u16::from_le_bytes(saved[offset + 3..offset + 5].try_into().unwrap());
+                    assert_eq!(len, !complement);
+                    offset += 5;
+                    decoded.extend_from_slice(&saved[offset..offset + usize::from(len)]);
+                    offset += usize::from(len);
+                    if tag == 1 {
+                        break;
+                    }
+                }
+                assert_eq!(decoded, plain.as_ref(), "{name}: stored payload");
+                assert_eq!(offset + 8, saved.len(), "{name}: gzip trailer");
+            }
             let back = load(saved.clone(), &Meter::unlimited());
             assert_eq!(back.packer(), compression, "{name}");
             assert_eq!(back.data(), &plain, "{name}: exact decompressed layout");

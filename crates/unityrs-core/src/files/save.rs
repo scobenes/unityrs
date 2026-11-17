@@ -210,6 +210,48 @@ mod tests {
     use super::*;
     use crate::budget::{Reservation, Unbounded};
 
+    /// Independent writer evidence: the crate's reader recovers each scalar
+    /// and the original surrogate-escaped string bytes in either byte order.
+    #[test]
+    fn primitives_and_null_strings_roundtrip_through_the_reader() {
+        use crate::stream::Reader;
+
+        for endian in [Endian::Big, Endian::Little] {
+            let meter =
+                Meter::with_decode_work(1 << 20, 1 << 20, Arc::new(Unbounded), Reservation::Input);
+            let mut writer = Writer::new(&meter, endian).unwrap();
+            writer.boolean(true).unwrap();
+            writer.boolean(false).unwrap();
+            writer.i16(i16::MIN).unwrap();
+            writer.u16(u16::MAX).unwrap();
+            writer.i32(i32::MIN).unwrap();
+            writer.u32(u32::MAX).unwrap();
+            writer.i64(i64::MIN).unwrap();
+            writer.u64(u64::MAX).unwrap();
+            writer.cstr(b"a\xff\xc3\xa9").unwrap();
+            let unaligned = writer.len();
+            writer.align(8).unwrap();
+            assert!(writer.slice()[unaligned..].iter().all(|byte| *byte == 0));
+            let bytes = writer.finish().unwrap();
+            assert_eq!(meter.decoded(), bytes.len() as u64);
+            assert!(meter.used() > 0);
+            let mut reader = Reader::new(&bytes, endian);
+            assert!(reader.read_bool().unwrap());
+            assert!(!reader.read_bool().unwrap());
+            assert_eq!(reader.read_i16().unwrap(), i16::MIN);
+            assert_eq!(reader.read_u16().unwrap(), u16::MAX);
+            assert_eq!(reader.read_i32().unwrap(), i32::MIN);
+            assert_eq!(reader.read_u32().unwrap(), u32::MAX);
+            assert_eq!(reader.read_i64().unwrap(), i64::MIN);
+            assert_eq!(reader.read_u64().unwrap(), u64::MAX);
+            assert_eq!(reader.read_string_to_null().unwrap(), b"a\xff\xc3\xa9");
+            reader.align(8).unwrap();
+            assert_eq!(reader.position(), bytes.len() as i128);
+            drop(bytes);
+            assert_eq!(meter.used(), 0);
+        }
+    }
+
     #[test]
     fn positioned_writes_preserve_tails_and_refusals_preserve_bytes() {
         let meter = Meter::with_decode_work(1 << 20, 2048, Arc::new(Unbounded), Reservation::Input);
