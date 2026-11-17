@@ -4,6 +4,9 @@
 //! wildcard matcher over code points (`tests/fixtures/dump/select.json`
 //! "fnmatch" records Python's answers, invalid UTF-8 included).
 
+use std::sync::Arc;
+use unityrs_core::limits::{ChargeError, Meter, MeteredVec};
+
 /// A name or pattern as Python sees it: the code points of its bytes
 /// decoded as UTF-8 with `surrogateescape` (an invalid byte `b` is U+DC00+b).
 #[must_use]
@@ -131,6 +134,70 @@ impl Glob {
         self.toks
             .get(p..)
             .is_some_and(|rest| rest.iter().all(|t| *t == Tok::Star))
+    }
+
+    /// Matches with fallible storage and work charged to the input's meter.
+    /// This reuses the translated tokens and wildcard semantics of [`Self::matches`].
+    pub fn matches_metered(&self, name: &[u8], meter: &Arc<Meter>) -> Result<bool, ChargeError> {
+        // Charge the UTF-8 scan before reading attacker-controlled bytes.
+        meter.count_decode(u64::try_from(name.len()).unwrap_or(u64::MAX))?;
+        let mut s = MeteredVec::with_capacity(meter, name.len())?;
+        for chunk in name.utf8_chunks() {
+            for c in chunk
+                .valid()
+                .chars()
+                .map(u32::from)
+                .chain(chunk.invalid().iter().map(|b| 0xDC00 + u32::from(*b)))
+            {
+                meter.count_decode(4)?;
+                s.push(c)?;
+            }
+        }
+        let (mut p, mut k) = (0usize, 0usize);
+        let mut star: Option<(usize, usize)> = None;
+        while let Some(&c) = s.as_slice().get(k) {
+            // Backtracking can revisit the same input and token many times.
+            meter.count_decode(1)?;
+            match self.toks.get(p) {
+                Some(Tok::Star) => {
+                    star = Some((p, k));
+                    p += 1;
+                }
+                Some(t) if one_metered(t, c, meter)? => {
+                    p += 1;
+                    k += 1;
+                }
+                _ => match star {
+                    Some((sp, sk)) => {
+                        p = sp + 1;
+                        k = sk + 1;
+                        star = Some((sp, sk + 1));
+                    }
+                    None => return Ok(false),
+                },
+            }
+        }
+        for token in self.toks.get(p..).unwrap_or_default() {
+            meter.count_decode(1)?;
+            if *token != Tok::Star {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
+fn one_metered(t: &Tok, c: u32, meter: &Meter) -> Result<bool, ChargeError> {
+    if let Tok::Set { negate, ranges } = t {
+        for (lo, hi) in ranges {
+            meter.count_decode(1)?;
+            if (*lo..=*hi).contains(&c) {
+                return Ok(!*negate);
+            }
+        }
+        Ok(*negate)
+    } else {
+        Ok(one(t, c))
     }
 }
 
@@ -297,6 +364,78 @@ fn class_tok(stuff: &[u32]) -> Result<Tok, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use unityrs_core::{
+        LimitKind,
+        budget::{Reservation, Unbounded},
+        limits::{ChargeError, Limits, Meter},
+    };
+
+    fn meter(memory: u64, work: u64) -> Arc<Meter> {
+        let mut limits = Limits::default();
+        limits.max_input_memory = memory;
+        limits.max_decode_work = work;
+        Meter::for_input(&limits, Arc::new(Unbounded), Reservation::Input)
+    }
+
+    #[test]
+    fn metered_conversion_refuses_memory_and_work_without_retaining_memory() {
+        let glob = Glob::new(b"*").unwrap();
+        let memory = meter(1024, u64::MAX);
+        assert!(
+            matches!(glob.matches_metered(&[b'a'; 4096], &memory), Err(ChargeError::Limit(e)) if e.kind() == LimitKind::InputMemory)
+        );
+        assert_eq!(memory.used(), 0);
+        let work = meter(1 << 20, 1);
+        assert!(
+            matches!(glob.matches_metered(b"ab", &work), Err(ChargeError::Limit(e)) if e.kind() == LimitKind::DecodeWork)
+        );
+        assert_eq!(work.used(), 0);
+    }
+
+    #[test]
+    fn matcher_backtracking_and_character_sets_are_work_bounded() {
+        let pattern = format!("*{}b", "a".repeat(64));
+        let glob = Glob::new(pattern.as_bytes()).unwrap();
+        let name = [b'a'; 2000];
+        let work = meter(1 << 20, 11_000);
+        assert!(
+            matches!(glob.matches_metered(&name, &work), Err(ChargeError::Limit(e)) if e.kind() == LimitKind::DecodeWork)
+        );
+        assert_eq!(work.used(), 0);
+        let glob = Glob::new(b"[abcdefghijklmnopqrstuvwxy]").unwrap();
+        let work = meter(1 << 20, 8);
+        assert!(
+            matches!(glob.matches_metered(b"z", &work), Err(ChargeError::Limit(e)) if e.kind() == LimitKind::DecodeWork)
+        );
+        assert_eq!(work.used(), 0);
+    }
+
+    #[test]
+    fn metered_matching_preserves_pinned_fnmatch_answers() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/dump/select.json")).unwrap();
+        let unhex = |text: &str| -> Vec<u8> {
+            text.as_bytes()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect()
+        };
+        for case in fixture["fnmatch"].as_array().unwrap() {
+            let name = unhex(case["name"].as_str().unwrap());
+            let pattern = unhex(case["pattern"].as_str().unwrap());
+            let glob = Glob::new(&pattern).unwrap();
+            let budget = meter(1 << 20, 1 << 20);
+            assert_eq!(
+                glob.matches_metered(&name, &budget).unwrap(),
+                case["match"].as_bool().unwrap(),
+                "{case}"
+            );
+            assert_eq!(budget.used(), 0);
+        }
+    }
 
     #[test]
     fn globs_cover_the_basics() {

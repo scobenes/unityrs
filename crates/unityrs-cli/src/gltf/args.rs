@@ -4,6 +4,59 @@ use caseless::Caseless;
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt, path::Path};
 use unityrs_core::limits::Limits;
 
+use crate::args::option;
+pub(crate) const OPTIONS: &[crate::agent::options::OptionSpec] = &[
+    option(
+        "--scene",
+        Some("FILE"),
+        None,
+        "Select a SerializedFile or SceneAsset.",
+    ),
+    option(
+        "--path-id",
+        Some("ID"),
+        None,
+        "Select a prefab root or SceneAsset.",
+    ),
+    option(
+        "--prefab",
+        Some("PATH"),
+        None,
+        "Select a container prefab path.",
+    ),
+    option("-o", Some("FILE"), None, "Required output GLB."),
+    option(
+        "--profile",
+        Some("FILE"),
+        None,
+        "Strict profile_version 1 JSON.",
+    ),
+    option(
+        "--builtin-file",
+        Some("FILE"),
+        None,
+        "Supplied built-in resources.",
+    ),
+    option(
+        "--report",
+        Some("FILE"),
+        None,
+        "Also write detailed report JSON.",
+    ),
+    option(
+        "--mapper",
+        Some("unlit|pbr"),
+        Some("unlit"),
+        "Material mapper.",
+    ),
+];
+pub(crate) fn options() -> Vec<crate::agent::options::OptionSpec> {
+    let mut specs = OPTIONS.to_vec();
+    specs.extend_from_slice(crate::agent::options::BUDGET);
+    specs.push(crate::args::COMMAND_HELP);
+    specs
+}
+
 pub(super) const USAGE: &str = "usage: unityrs gltf INPUT... (--scene FILE | --path-id ID | --prefab PATH) -o OUTPUT.glb\n\
   --scene FILE           select a SerializedFile by name or exactly one SceneAsset at a container path\n\
   --path-id ID           select one GameObject prefab root or SceneAsset's owning file\n\
@@ -99,22 +152,11 @@ impl<'a> Args<'a> {
                 inputs += 1;
                 continue;
             }
-            if !matches!(
-                arg.as_slice(),
-                b"-o"
-                    | b"--scene"
-                    | b"--path-id"
-                    | b"--prefab"
-                    | b"--profile"
-                    | b"--tpk"
-                    | b"--builtin-file"
-                    | b"--report"
-                    | b"--mapper"
-                    | b"--max-input-memory"
-                    | b"--max-input-bytes"
-                    | b"--max-decode-work"
-                    | b"--max-tree-depth"
-            ) {
+            if !OPTIONS
+                .iter()
+                .chain(crate::agent::options::BUDGET)
+                .any(|s| s.name.as_bytes() == arg)
+            {
                 return Err("unexpected argument".into());
             }
             let value = iter.next().ok_or("missing option value")?.as_slice();

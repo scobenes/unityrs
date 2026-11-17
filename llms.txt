@@ -1,0 +1,12 @@
+# unityrs
+
+> unityrs is a Rust port of UnityPy 1.25.2 for exploring, reading and extracting Unity files. Agents and scripts can discover the CLI with describe, page through a byte-bounded inventory with inspect, read a bounded natural JSON value with show (or --value canonical for dump-compatible encoding), and export assets with extract or the budgeted batch engine. Inspect and show default to a 65,536-byte response cap (--max-bytes); inspect previews long strings and preserves exact numeric object addresses. Object failures retain that address; budget errors identify the option and current value, and shared provider failures identify --tpk.
+
+## Guides
+
+- [README](README.md): Project overview and command-line examples.
+- [Agent and script guide](docs/AGENTS.md): Versioned JSON, exact object addresses (--file-index INPUT:FILE), natural and canonical values, string previews, work/display limits, integrity-checked (not authenticated) content-bound pagination and errors.
+- [Batch specification](docs/BATCH_SPEC.md): Job schema, budgets, outputs, progress and exit codes.
+- [Canonical dump](docs/CANONICAL_DUMP.md): Canonical value representation and parity records.
+- [Design](docs/DESIGN.md): Architecture and crate responsibilities.
+- [Python package](crates/unityrs-py/README.md): UnityPy-compatible in-process API.

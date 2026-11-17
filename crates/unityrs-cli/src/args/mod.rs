@@ -102,57 +102,30 @@ enum Dest {
     Mesh,
 }
 
-/// `_option_string_actions`, in the order `add_argument` fills it: an
-/// ambiguous prefix lists its matches in this order.
-const STRINGS: [(&str, Dest); 21] = [
-    ("-h", Dest::Help),
-    ("--help", Dest::Help),
-    ("-o", Dest::Output),
-    ("--output", Dest::Output),
-    ("--index", Dest::Index),
-    ("--kind", Dest::Kind),
-    ("--build", Dest::Build),
-    ("--allow-index-mismatch", Dest::Allow),
-    ("--name", Dest::Name),
-    ("--sample", Dest::Sample),
-    ("--limit", Dest::Limit),
-    ("--levels", Dest::Levels),
-    ("-j", Dest::Jobs),
-    ("--jobs", Dest::Jobs),
-    ("--stats", Dest::Stats),
-    ("-q", Dest::Quiet),
-    ("--quiet", Dest::Quiet),
-    ("--tpk", Dest::Tpk),
-    ("--reverse-prepass", Dest::LazyReverse),
-    ("--unbounded", Dest::Unbounded),
-    ("--mesh", Dest::Mesh),
-];
+mod options;
+use options::strings;
+pub(crate) use options::{COMMAND_HELP, OPTIONS, option, options};
 
 impl Dest {
     /// `nargs` None (one value) against `store_true` / help (none).
     fn takes_value(self) -> bool {
-        !matches!(
-            self,
-            Self::Help | Self::Index | Self::Allow | Self::Quiet | Self::LazyReverse | Self::Mesh
-        )
+        OPTIONS
+            .iter()
+            .any(|o| o.dest == self && o.spec.value.is_some())
     }
 
     /// The action's name in an error: `-o/--output`.
     fn display(self) -> String {
-        STRINGS
-            .iter()
+        strings()
             .filter(|(_, d)| *d == self)
-            .map(|(s, _)| *s)
+            .map(|(s, _)| s)
             .collect::<Vec<_>>()
             .join("/")
     }
 }
 
 fn exact(s: &[u8]) -> Option<Dest> {
-    STRINGS
-        .iter()
-        .find(|(o, _)| o.as_bytes() == s)
-        .map(|(_, d)| *d)
+    strings().find(|(o, _)| o.as_bytes() == s).map(|(_, d)| d)
 }
 
 /// `unityrs dump`'s arguments, as `unitypy_dump.py`'s `args` after `main`
@@ -355,7 +328,7 @@ fn option_tuples(arg: &[u8]) -> Vec<Class> {
             Some((prefix, value)) => (prefix, Some(value)),
             None => (arg, None),
         };
-        for (o, d) in STRINGS {
+        for (o, d) in strings() {
             if o.as_bytes().starts_with(prefix) {
                 out.push(optional(d, o.as_bytes(), explicit.is_some(), explicit));
             }
@@ -364,7 +337,7 @@ fn option_tuples(arg: &[u8]) -> Vec<Class> {
         // Short: the first two characters, the rest attached.
         let short = arg.get(..2).unwrap_or(arg);
         let attached = arg.get(short.len()..).unwrap_or_default();
-        for (o, d) in STRINGS {
+        for (o, d) in strings() {
             if o.as_bytes() == short {
                 out.push(optional(d, o.as_bytes(), false, Some(attached)));
             } else if o.as_bytes().starts_with(arg) {

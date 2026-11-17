@@ -5,13 +5,44 @@ use super::{Environment, load::Target};
 use crate::{
     Bytes, Error, File, RawStr,
     budget::Reservation,
-    detect::{FileType, detect_at_position},
+    detect::{FileType, check_file_type_with_reader, detect_at_position},
     files::parse_file_with_reader,
     limits::Meter,
     stream::ReaderKind,
 };
 
 impl Environment {
+    /// Loads a bounded source and observes the exact immutable bytes that
+    /// detection and parsing consume, before either starts. Split companions
+    /// are joined by the source reader first; compressed containers are still
+    /// compressed here. The observer shares this load's input meter and may
+    /// refuse without publishing any files or CAB registrations.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn load_observed(
+        &self,
+        source: super::Source,
+        observe: impl FnOnce(&Bytes, &std::sync::Arc<Meter>) -> Result<(), Error>,
+    ) -> Result<File, Error> {
+        let name = super::source_name(&source);
+        #[cfg(feature = "test-counters")]
+        let load_id = crate::counters::LoadId::draw(&name);
+        let ctx = self.ctx();
+        let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Input);
+        let (data, reader) = super::registry::read_source(&source, &meter, ctx)?;
+        observe(&data, &meter)?;
+        let ty = check_file_type_with_reader(&data, &ctx.limits, reader)?;
+        let parsed = parse_file_with_reader(name.clone(), data, ty, None, &meter, ctx, reader);
+        #[cfg(feature = "test-counters")]
+        crate::testing::adopt(&parsed, || crate::testing::Key::load(load_id));
+        let file = parsed?;
+        let load = self.register_file(&name, &file, &mut Target::Caller)?;
+        self.list(name, file.clone(), false, load, &meter)?;
+        self.inner
+            .loaded
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(file)
+    }
+
     /// `ImportHelper`'s parser selection without detection or a top-level file
     /// registration (helpers/ImportHelper.py:127-156). Container constructors
     /// still register their child CABs (files/File.py:76-90).
@@ -183,6 +214,95 @@ mod tests {
             panic!("expected raw reader")
         };
         assert_eq!(raw.reader_kind(), ReaderKind::Stream);
+        assert_eq!(env.files().count(), 1);
+    }
+    #[test]
+    fn observed_load_sees_exact_joined_split_source_and_its_input_meter() {
+        let tmp = unityrs_testkit::scratch::Scratch::new("observed-split");
+        let data = unityrs_testkit::ngui::file(
+            &[],
+            &[unityrs_testkit::ngui::Object::new(
+                1,
+                49,
+                unityrs_testkit::ngui::st(
+                    "TextAsset",
+                    vec![("m_Name", unityrs_testkit::ngui::s("snapshot"))],
+                ),
+            )],
+            true,
+        )
+        .unwrap();
+        let split = data.len() / 2;
+        std::fs::write(tmp.join("source.assets.split0"), &data[..split]).unwrap();
+        std::fs::write(tmp.join("source.assets.split1"), &data[split..]).unwrap();
+        for name in ["source.assets", "source.assets.split0"] {
+            let env = Environment::new(super::super::EnvOptions::unitypy());
+            let mut observed = Vec::new();
+            let mut input_meter = None;
+            let file = env
+                .load_observed(
+                    super::super::Source::Path(tmp.join(name)),
+                    |bytes, meter| {
+                        assert_eq!(env.files().count(), 0);
+                        observed.extend_from_slice(bytes);
+                        input_meter = Some(meter.clone());
+                        meter.count_decode(bytes.len() as u64)?;
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(observed, data);
+            assert!(matches!(file, File::Serialized(_)));
+            assert!(std::sync::Arc::ptr_eq(file.meter(), &input_meter.unwrap()));
+            assert_eq!(env.files().count(), 1);
+        }
+    }
+
+    #[test]
+    fn observed_load_refusal_happens_before_detection_or_registration() {
+        let mut opts = super::super::EnvOptions::unitypy();
+        let mut context = (*opts.context).clone();
+        context.limits.max_decode_work = 0;
+        opts.context = std::sync::Arc::new(context);
+        let env = Environment::new(opts);
+        let result = env.load_observed(
+            super::super::Source::Bytes {
+                name: "malformed".into(),
+                data: Bytes::from_static(b"AAAAAAAAAAAAAAAAAAAA"),
+            },
+            |_, meter| {
+                meter.count_decode(1)?;
+                Ok(())
+            },
+        );
+        assert!(matches!(result, Err(Error::Limit(e)) if e.kind() == crate::LimitKind::DecodeWork));
+        assert_eq!(env.files().count(), 0);
+        assert_eq!(env.registry().keys().count(), 0);
+    }
+
+    #[test]
+    fn observed_load_sees_compressed_web_source_before_inflation() {
+        let source = unityrs_testkit::web::plain("UnityWebData1.0", &[("entry.resS", &[42; 256])]);
+        let compressed = unityrs_testkit::web::gzip(&source);
+        let env = Environment::new(super::super::EnvOptions::unitypy());
+        let mut observed = Vec::new();
+        let file = env
+            .load_observed(
+                super::super::Source::Bytes {
+                    name: "compressed.web".into(),
+                    data: Bytes::copy_from_slice(&compressed),
+                },
+                |bytes, _| {
+                    observed.extend_from_slice(bytes);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(observed, compressed);
+        let File::Web(web) = file else {
+            panic!("expected WebFile")
+        };
+        assert_eq!(web.data().as_ref(), source);
         assert_eq!(env.files().count(), 1);
     }
 }

@@ -1,7 +1,7 @@
 //! `extract` uses one Environment for INPUT..., writes a JSON report on
 //! stdout (and optionally beneath -o), and continues after object failures.
 mod files;
-mod limits;
+pub(crate) mod limits;
 mod report;
 use std::{
     ffi::OsStr, io::Write, os::unix::ffi::OsStrExt, path::Path, process::ExitCode, sync::Arc,
@@ -13,6 +13,72 @@ use unityrs_core::{
     provider::ProviderChain,
 };
 use unityrs_export::extractor::{self, AssetFilter, Options, Sink};
+
+use crate::args::option;
+pub(crate) const OPTIONS: &[crate::agent::options::OptionSpec] = &[
+    option("-o", Some("DIR"), None, "Required output directory."),
+    option(
+        "--no-container",
+        None,
+        Some("false"),
+        "Export every object by name.",
+    ),
+    option(
+        "--no-use-container",
+        None,
+        Some("false"),
+        "Alias for --no-container.",
+    ),
+    option(
+        "--use-container",
+        None,
+        Some("true"),
+        "Export container assets.",
+    ),
+    option(
+        "--ignore-first-container-dirs",
+        Some("N"),
+        Some("0"),
+        "Drop slash components from container paths.",
+    ),
+    option(
+        "--append-path-id",
+        None,
+        Some("false"),
+        "Append UnityPy's _None suffix.",
+    ),
+    option(
+        "--export-unknown-as-typetree",
+        None,
+        Some("false"),
+        "Other classes as JSON or raw binary.",
+    ),
+    option(
+        "--asset-filter",
+        Some("CLASS"),
+        None,
+        "Repeatable class name or integer ID.",
+    ),
+    option(
+        "--vorbis-headers",
+        Some("FILE"),
+        None,
+        "Runtime VST1 headers; never fetched.",
+    ),
+    option(
+        "--report",
+        Some("PATH"),
+        None,
+        "Also save JSON beneath output directory.",
+    ),
+];
+pub(crate) fn options() -> Vec<crate::agent::options::OptionSpec> {
+    let mut specs = OPTIONS.to_vec();
+    specs.extend_from_slice(crate::agent::options::BUDGET);
+    specs.push(crate::args::COMMAND_HELP);
+    specs
+}
+
 const USAGE: &str = "usage: unityrs extract INPUT... -o DIR [options]\n\
   --no-container                       export every object by name\n\
   --ignore-first-container-dirs N       drop N slash components (default 0)\n\
@@ -45,6 +111,12 @@ impl AssetFilter for Filter {
 fn path(bytes: &[u8]) -> &Path {
     Path::new(OsStr::from_bytes(bytes))
 }
+fn recognized_option(arg: &[u8]) -> bool {
+    OPTIONS
+        .iter()
+        .chain(crate::agent::options::BUDGET)
+        .any(|s| s.name.as_bytes() == arg)
+}
 fn run(raw: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
     let limits = limits::parse(raw)?;
     let meter = limits::extraction(&limits);
@@ -61,6 +133,9 @@ fn run(raw: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
         if positional {
             inputs.push(path(arg))?;
             continue;
+        }
+        if arg.starts_with(b"-") && arg != b"--" && !recognized_option(arg) {
+            return Err("unexpected argument".into());
         }
         match arg.as_slice() {
             b"--" => positional = true,

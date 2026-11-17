@@ -10,6 +10,8 @@ value-case protocol, batch extraction, OBJ/MTL and static scene/prefab GLB expor
 Animation and batch GLB/OBJ integration remain P2b. The plan and phases are in
 [`docs/DESIGN.md`](docs/DESIGN.md).
 
+Agents and scripts: see [the agent interface guide](docs/AGENTS.md) for `describe`, `inspect`, `show`, and the JSON protocols.
+
 ## Goals
 
 - **Parity with [UnityPy](https://github.com/K0lb3/UnityPy).** Every behaviour is

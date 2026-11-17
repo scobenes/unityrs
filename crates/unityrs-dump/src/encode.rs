@@ -79,9 +79,21 @@ pub fn encode(parsed: &Parsed) -> Result<String, EncodeError> {
 /// # Errors
 /// As [`encode`].
 pub fn encode_into<S: Sink>(out: &mut S, parsed: &Parsed) -> Result<(), EncodeError> {
+    encode_value_into(out, parsed, parsed.value())
+}
+
+/// Encodes a subtree using the canonical rules and its owning parsed names.
+///
+/// # Errors
+/// As [`encode_into`].
+pub fn encode_value_into<S: Sink>(
+    out: &mut S,
+    parsed: &Parsed,
+    value: &Value,
+) -> Result<(), EncodeError> {
     let meter = out.meter().map_or_else(Meter::unlimited, Arc::clone);
     let mut open = MeteredVec::new(&meter);
-    match walk(out, parsed, &mut open) {
+    match walk(out, parsed, value, &mut open) {
         Ok(()) => Ok(()),
         Err(Stop::Encode(e)) => Err(e),
         Err(Stop::Memory(e)) => out.stop(e).map_or(Ok(()), |e| {
@@ -138,9 +150,10 @@ enum Frame<'a> {
 fn walk<'a, S: Sink>(
     out: &mut S,
     p: &'a Parsed,
+    value: &'a Value,
     open: &mut MeteredVec<Frame<'a>>,
 ) -> Result<(), Stop> {
-    begin(out, p, p.value(), open)?;
+    begin(out, p, value, open)?;
     while let Some(top) = open.as_mut_slice().last_mut() {
         let next = match top {
             Frame::Items {

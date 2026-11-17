@@ -90,6 +90,7 @@ const CALLS: &[(&str, Pool, &[&str])] = &[
     ),
     ("Environment::object_tree", Pool::Own, &[TREE, TREE_FULL]),
     ("Environment::load", Pool::Inner, &[SETTLE]),
+    ("Environment::load_observed", Pool::Inner, &[SETTLE]),
     ("Environment::load_file", Pool::Inner, &[SETTLE]),
     ("Environment::load_zip_file", Pool::Inner, &[SETTLE]),
     ("Environment::load_reader", Pool::Inner, &[SETTLE]),
@@ -374,6 +375,7 @@ fn sorted_keys(env: &Environment) -> Vec<String> {
 #[derive(Clone, Copy, Debug)]
 enum Dropper {
     Load,
+    LoadObserved,
     LoadFile,
     LoadReader,
     LoadReaderAtPosition,
@@ -410,6 +412,7 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
     let held = load(&env, &d, 0..3);
     let inner = match how {
         Dropper::Load
+        | Dropper::LoadObserved
         | Dropper::LoadFile
         | Dropper::LoadReader
         | Dropper::LoadReaderAtPosition
@@ -433,6 +436,7 @@ fn drop_inner(how: Dropper, refused: u64) -> (Environment, Arc<RefuseNext>, Vec<
     match inner {
         None => match how {
             Dropper::Load => drop(env.load(source(&d, 3)).unwrap()),
+            Dropper::LoadObserved => drop(env.load_observed(source(&d, 3), |_, _| Ok(())).unwrap()),
             Dropper::LoadFile => drop(env.load_file(source(&d, 3)).unwrap()),
             Dropper::LoadReader | Dropper::LoadReaderAtPosition => {
                 let (name, bytes) = &d.scene.files[3];
@@ -514,6 +518,7 @@ fn a_registration_that_drops_a_dependencys_container_makes_room_to_reach_it() {
     let want = oracle_keys();
     for how in [
         Dropper::Load,
+        Dropper::LoadObserved,
         Dropper::LoadFile,
         Dropper::LoadReader,
         Dropper::LoadReaderAtPosition,
