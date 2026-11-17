@@ -314,6 +314,88 @@ fn unreadable_code_falls_back_beside_the_recorded_unitypy_raise() {
 }
 
 #[test]
+fn legacy_replacements_fall_back_while_bindings_keep_code_raises() {
+    use unityrs_core::Value;
+    use unityrs_testkit::bundle::{TestCodec, compress};
+
+    let recorded: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/shader_legacy.json")).unwrap();
+    for minor in [3, 4] {
+        let name = format!("big_endian_5_{minor}_valid");
+        let case = recorded["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["case"] == name)
+            .unwrap();
+        for (kind, code, exception) in [
+            (1i32, b"\xff".as_slice(), "UnicodeDecodeError"),
+            (23, b"ABCDunterminated", "Exception"),
+        ] {
+            // Reuse the legacy builder's BE table and revision-specific header.
+            // Only the program kind, code length and code bytes change.
+            let mut blob = unhex(case["replacement_blob"].as_str().unwrap());
+            assert_eq!(blob.len(), 40);
+            blob[16..20].copy_from_slice(&kind.to_be_bytes());
+            blob[36..40].copy_from_slice(&i32::try_from(code.len()).unwrap().to_be_bytes());
+            blob.extend_from_slice(code);
+            while !blob.len().is_multiple_of(4) {
+                blob.push(0);
+            }
+            let env = Environment::new(EnvOptions::unitypy());
+            let File::Serialized(file) = env
+                .load(Source::Bytes {
+                    name: RawStr::from("legacy-code.assets"),
+                    data: Bytes::from(unhex(case["input"].as_str().unwrap())),
+                })
+                .unwrap()
+            else {
+                panic!("file")
+            };
+            let mut parsed = file.object(1).unwrap().read_typetree(None, false).unwrap();
+            assert!(
+                parsed
+                    .replace_scalar(
+                        &[b"m_SubProgramBlob"],
+                        Value::Bytes(Bytes::from(compress(TestCodec::Lz4, &blob))),
+                    )
+                    .unwrap()
+            );
+            assert!(
+                parsed
+                    .replace_scalar(
+                        &[b"decompressedSize"],
+                        Value::Int(i64::try_from(blob.len()).unwrap()),
+                    )
+                    .unwrap()
+            );
+            let meter = Meter::unlimited();
+            let output = shader::export_parsed(&parsed, (5, minor), &meter).unwrap();
+            assert_eq!(
+                output.as_slice(),
+                format!(
+                    "{}\"//shader disassembly not supported on {kind}\"\n",
+                    shader::HEADER
+                )
+                .as_bytes(),
+                "5.{minor}, kind {kind}"
+            );
+            drop(output);
+            assert_eq!(meter.used(), 0);
+            let error =
+                shader::export_with_cap_unitypy_properties(&parsed, (5, minor), &meter, u64::MAX)
+                    .unwrap_err();
+            assert_eq!(error.exception(), Some(exception), "5.{minor}, kind {kind}");
+            if kind == 23 {
+                assert_eq!(error.to_string(), "String not terminated");
+            }
+            drop(error);
+            assert_eq!(meter.used(), 0);
+        }
+    }
+}
+
+#[test]
 fn code_fallback_is_local_and_preserves_metal_window_and_slice_rules() {
     // These synthetic expectations come from section 19.2's comment rule;
     // they do not claim new oracle recordings. Existing recordings above

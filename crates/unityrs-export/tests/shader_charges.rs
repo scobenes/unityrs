@@ -500,14 +500,14 @@ fn modern_detection_charges_for_passes_without_fields() {
 
 #[test]
 fn code_fallback_obeys_work_and_memory_bounds() {
-    for (kind, code) in [
-        (1, vec![0xff; 32767]),
-        (5, vec![0xff]),
-        (26, vec![0xff]),
-        (23, b"abc".to_vec()),
-        (24, 0xf00d_cafeu32.to_le_bytes().to_vec()),
-        (23, vec![b'n'; 32771]),
-        (23, b"ABCDentry\0\xff".to_vec()),
+    for (kind, code, scan) in [
+        (1, vec![0xff; 32767], 32767),
+        (5, vec![0xff], 1),
+        (26, vec![0xff], 1),
+        (23, b"abc".to_vec(), 6),
+        (24, 0xf00d_cafeu32.to_le_bytes().to_vec(), 8),
+        (23, vec![b'n'; 32771], 65542),
+        (23, b"ABCDentry\0\xff".to_vec(), 23),
     ] {
         let blob = shader_code::program(kind, &[&code]);
         let env = Environment::new(EnvOptions::unitypy());
@@ -528,9 +528,13 @@ fn code_fallback_obeys_work_and_memory_bounds() {
                 .unwrap()
                 .contains(&format!("\"//shader disassembly not supported on {kind}\""))
         );
+        // At least the parsed code bytes, rendering scans (UTF-8: len;
+        // Metal: 2 * len, plus source UTF-8 if reached), and all output bytes.
+        // Field searches, table reads and decompression add further work.
+        let minimum_work = code.len() as u64 + scan + output.len() as u64;
         drop(output);
         let work = meter.decoded();
-        assert!(work >= code.len() as u64);
+        assert!(work >= minimum_work, "kind {kind}: {work} < {minimum_work}");
         assert_eq!(meter.used(), 0);
         let short = work_meter(work - 1);
         assert!(
