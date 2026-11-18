@@ -655,8 +655,15 @@ def main():
             executable = args.unityrs or "unityrs"
             if args.unityrs:
                 executable = str(Path(executable).resolve())
-            count = complete_folder(args.file, executable, args.inspect_dir, sys.modules[__name__])
+            result = complete_folder(args.file, executable, args.inspect_dir, sys.modules[__name__])
+            # A material or texture variant run has no replays and reports its cases instead.
+            if isinstance(result, str):
+                print(result)
+                return
+            count, uncovered = result
             print(f"Completed and validated {count} replay(s).")
+            for row in uncovered:
+                print(f"Optional coverage not recorded: {row}")
             return
         require(args.unityrs is None and args.inspect_dir is None, "inspection options require complete")
         value = read_json(args.file.read_text(encoding="utf-8"))
