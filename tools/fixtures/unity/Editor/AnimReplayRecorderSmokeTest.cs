@@ -47,7 +47,7 @@ public static partial class AnimReplayRecorder
             bundle = AssetBundle.LoadFromFile(Path.Combine(output, bundleName));
             Need(bundle != null, "Could not load the smoke-test bundle.");
 
-            var loaded = LoadPrefab(bundle, prefabPath.ToLowerInvariant());
+            var loaded = LoadPrefab(bundle, BuiltAssetKey(bundle.GetAllAssetNames(), prefabPath));
             Need(loaded.name == "Rig" && loaded.transform.parent == null
                 && loaded.GetComponentsInChildren<Transform>(true).Length == 3
                 && At(loaded.transform, "0/0").name == "Spine",

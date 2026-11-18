@@ -171,6 +171,14 @@ public static partial class AnimReplayRecorder
                 bundles.Add(bundle);
             }
 
+            if (pending)
+            {
+                var keys = bundles[0].GetAllAssetNames();
+                spec.prefab_asset = BuiltAssetKey(keys, spec.prefab_asset);
+                spec.clip_asset = BuiltAssetKey(keys, spec.clip_asset);
+                if (!string.IsNullOrEmpty(spec.avatar_asset))
+                    spec.avatar_asset = BuiltAssetKey(keys, spec.avatar_asset);
+            }
             var prefab = LoadPrefab(FindAssetBundle(bundles, pending ? 0 : spec.prefab.bundle, spec.prefab_asset),
                 spec.prefab_asset);
             var clip = Load<AnimationClip>(bundles, pending ? 0 : spec.clip.bundle, spec.clip_asset);
@@ -187,7 +195,7 @@ public static partial class AnimReplayRecorder
                 "Built clip length or rate disagrees with the inspected source clock.");
             Need(prefab.GetComponentsInChildren<MonoBehaviour>(true).Length == 0,
                 "Use a fixture prefab without scripts, including root-motion and IK callbacks.");
-            bool humanClip = avatar != null && avatar.isHuman;
+            bool humanClip = avatar != null && avatar.isHuman && avatar.isValid;
             Need(!knownPose || humanClip, "Known muscle vectors require a human Avatar.");
             Need(!clip.humanMotion || humanClip, "Human motion requires the bound human Avatar.");
 
@@ -288,6 +296,15 @@ public static partial class AnimReplayRecorder
         {
             for (int i = bundles.Count - 1; i >= 0; --i) bundles[i].Unload(true);
         }
+    }
+
+    static string BuiltAssetKey(string[] keys, string assetPath)
+    {
+        // Find the generated path regardless of how Unity cases its key,
+        // then preserve the exact built key for serialized-ID completion.
+        var matches = keys.Where(key => string.Equals(key, assetPath, StringComparison.OrdinalIgnoreCase)).ToArray();
+        Need(matches.Length == 1, "Expected one built asset key for " + assetPath + ".");
+        return matches[0];
     }
 
     static AssetBundle FindAssetBundle(List<AssetBundle> bundles, int index, string key)

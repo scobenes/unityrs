@@ -502,9 +502,9 @@ array. Keep the original recorder output with the fixture.
 
 The validator resolves the ID, checks `SetHumanPose` playback, rig
 identities and sample times, and reads the root and hips-local poses
-directly from the referenced capture. It rejects a byte-identical
-sequence of root and hips-local samples and measures componentwise and
-angular residuals against the frozen replay budgets.
+directly from the referenced capture. It measures componentwise and
+angular residuals against the frozen replay budgets. Equal root and
+hips-local samples across the two captures give a zero residual.
 
 The `qualified_muscle_only` profile requires absent body slots (including
 mapped constant slots as present), only muscle writers, and neutral
@@ -520,12 +520,27 @@ them. Record the typed `unsupported_…` causes for refusal probes.
 
 ### Owner workflow
 
-Follow the [five Editor steps](../tools/fixtures/unity/README.md) to build
-the bundles and record all animation fixtures in one run. The recorder
-uses asset keys, hierarchy addresses and component ordinals. It selects
-endpoints, off-key samples and held probes from the authored keys and
-records the Editor-visible clip settings, curve bindings and model import
-settings. Built file and path IDs are filled in by repo-side completion.
+Follow the [Windows Editor steps](../tools/fixtures/unity/README.md). Run
+**Tools → unityrs → Build and record all fixtures** first in a new Unity
+2022.3 LTS 3D (Built-in) project and later in a separate new Unity 6000.x
+project. The button uses the active build target, which defaults to
+`StandaloneWindows64` on the owner's PC. Send each complete
+version-and-target folder to the maintainer's fixture inbox. If the run
+shows an error, send `build.log`.
+
+The button generates both humanoid rigs and their clips. Each rig has
+skinned boxes in a T-pose and a procedurally built Avatar. The taller rig
+has asymmetric Spine limits and omits UpperChest. Each rig has an
+identity and a translated, rotated Animator root. The recorder pairs a
+candidate muscle-only clip with a known-vector `SetHumanPose` replay on
+each prefab and uses the same five sample times for the pair. A separate
+clip on the compact rig adds `RootT` and `RootQ` body curves. An invalid
+generated Avatar is reported in the log and generation continues.
+
+Recordings use asset keys, hierarchy addresses and component ordinals.
+The recorder selects endpoints, off-key samples and held probes from the
+authored keys and records the Editor-visible clip settings and curve
+bindings. Repo-side completion fills in the built file and path IDs.
 
 #### Repo-side completion
 
@@ -557,6 +572,18 @@ from inside `bundles/`. Save each needed
 response as `BUNDLE.FILE_INDEX.PATH_ID.show.json`. Preserve exact file
 occurrences and signed path IDs from inspection.
 
+The raw `human_pose` recordings are under `replays/known-vectors/`.
+Each contains the inputs in HumanTrait order, the exact applied f32
+bits and the independently captured rig facts. The completion command
+processes pending files directly in `replays/`. To complete a known-vector
+baseline, keep the raw recording and copy its pending file into
+`replays/`. Add the inspected `spec.evidence.humanoid` for its selected
+clip with `disposition: "pending"` and the slot and axis evidence
+described in [Humanoid qualification](#humanoid-qualification).
+Run completion on that copy, then use the standalone result to compute
+the baseline ID and attach it to the candidate clip recording as
+described above.
+
 On the first run, confirm that `StaticBatchingUtility.Combine` persists
 the shared mesh and submesh ranges in the scene bundle, and that
 `LoadAssetWithSubAssets<GameObject>` returns the prefab root and hierarchy.
@@ -565,17 +592,23 @@ In the animation bundles, check how `AnimationClip.SetCurve`,
 and `AnimatorOverrideController.ApplyOverrides` serialize the authored
 curves, nonzero interval, discrete binding, and null substitution. Check
 the native playback endpoints and held probes for the actual build.
-The optional FBX path also needs confirmation of the imported Avatar,
-asset extraction, and binding on the built rig.
+Confirm `AvatarBuilder.BuildHumanAvatar` accepts the generated T-poses
+and public `HumanDescription` fields and that the built Avatars retain
+their mappings, limits and optional absences. Confirm the Animator
+muscle property names and `RootT`/`RootQ` produce the expected
+`humanMotion` clips. Check that the `SetHumanPose` probes move the Spine
+on both root placements. [Unity AvatarBuilder](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/AvatarBuilder.BuildHumanAvatar.html)
+· [Unity HumanDescription](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanDescription.html)
+· [Unity AnimationClip.SetCurve](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/AnimationClip.SetCurve.html)
 
 Unity chooses the serialized curve layout. Check compiled storage,
 packed rotations and the complete runtime key inventory using the
-same-bundle cross-checks. The optional FBX capture supplies observed
-playback and rig facts for one take. The two-rig humanoid qualification,
-runtime slot inventory, and known-vector baseline are later fixture work.
-Freeze the budgets and derive the tolerances below before comparing Rust
-output. Keep original built fixtures and their numeric records under the
-repository's fixture rules, with no machine-specific paths.
+same-bundle cross-checks. Humanoid qualification starts pending until the
+built slot inventory, axes, serialized settings and baseline comparison
+have been checked. Freeze the budgets and derive the tolerances below
+before comparing Rust output. Keep original built fixtures and their
+numeric records under the repository's fixture rules, with no
+machine-specific paths.
 
 For a manual case, copy the same [Editor folder](../tools/fixtures/unity/Editor).
 Put the validated spec beside its bundle set and choose **Tools → unityrs

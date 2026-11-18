@@ -54,7 +54,7 @@ public static partial class AnimReplayRecorder
         public Clock clock;
         public EditorEvidence editor;
     }
-    [Serializable] sealed class PendingSpec
+    [Serializable] class PendingSpec
     {
         public BundleName[] bundles;
         public string prefab_asset, clip_asset, avatar_asset, clip_name, binding_address, build_target, mode;
@@ -62,11 +62,12 @@ public static partial class AnimReplayRecorder
         public int binding_component = 0;
         public double start, stop, sample_rate;
         public double[] held_boundaries;
-        public Timepoint[] schedule;
         public Node[] nodes;
         public PendingRenderer[] renderers;
         public PendingEvidence evidence;
     }
+    [Serializable] sealed class PendingClipSpec : PendingSpec { public Timepoint[] schedule; }
+    [Serializable] sealed class PendingPoseSpec : PendingSpec { public Point[] schedule; }
 
     internal static void RecordFixture(UnityrsFixtureBuilder.ReplayCase fixture, string bundles, string output)
     {
@@ -119,32 +120,88 @@ public static partial class AnimReplayRecorder
             key_times = keys,
             held = Array.Empty<Held>()
         };
-        var pending = new PendingSpec {
-            bundles = new[] { new BundleName { name = fixture.Bundle } },
-            prefab_asset = fixture.Prefab.ToLowerInvariant(), clip_asset = fixture.Clip.ToLowerInvariant(),
-            avatar_asset = fixture.Avatar.ToLowerInvariant(), clip_name = clip.name,
-            build_target = EditorUserBuildSettings.activeBuildTarget.ToString(),
-            binding_address = fixture.BindingAddress, mode = clip.legacy ? "legacy" : "animator",
-            start = start, stop = stop, sample_rate = clip.frameRate,
-            held_boundaries = fixture.HeldTime.HasValue ? new[] { (double)fixture.HeldTime.Value } : Array.Empty<double>(),
-            schedule = points, nodes = nodes, renderers = renderers,
-            evidence = new PendingEvidence { clock = clock, editor = new EditorEvidence {
-                animation_source = fixture.Avatar.Length == 0 ? "procedural_clip" : "humanoid_model_import",
-                expected_discovery = fixture.ExpectedDiscovery,
-                bindings = bindings, clip_settings = ReadSettings(clip), length_f32 = Bits(clip.length),
-                frame_rate_f32 = Bits(clip.frameRate), model_import_settings = fixture.ImportSettings
-            } }
-        };
+        bool human = fixture.Avatar.Length != 0;
+        bool knownPose = fixture.KnownMuscles != null;
+        if (human)
+            Need(keys.Contains(.5), "Humanoid clip is missing the single-axis key for " + clip.name + ".");
+        PendingSpec pending;
+        if (knownPose)
+        {
+            Need(human && !clip.legacy && !fixture.HeldTime.HasValue,
+                "Known-vector baselines require an unheld Humanoid clip schedule.");
+            pending = new PendingPoseSpec { schedule = points.Select(point => new Point {
+                local = point.local, muscles = fixture.KnownMuscles((float)point.local)
+            }).ToArray() };
+        }
+        else
+        {
+            pending = new PendingClipSpec { schedule = points };
+        }
+        pending.bundles = new[] { new BundleName { name = fixture.Bundle } };
+        pending.prefab_asset = fixture.Prefab;
+        pending.clip_asset = fixture.Clip;
+        pending.avatar_asset = fixture.Avatar;
+        pending.clip_name = clip.name;
+        pending.build_target = EditorUserBuildSettings.activeBuildTarget.ToString();
+        pending.binding_address = fixture.BindingAddress;
+        pending.mode = knownPose ? "human_pose" : clip.legacy ? "legacy" : "animator";
+        pending.start = start;
+        pending.stop = stop;
+        pending.sample_rate = clip.frameRate;
+        pending.held_boundaries = fixture.HeldTime.HasValue ? new[] { (double)fixture.HeldTime.Value } : Array.Empty<double>();
+        pending.nodes = nodes;
+        pending.renderers = renderers;
+        pending.evidence = new PendingEvidence { clock = clock, editor = new EditorEvidence {
+            animation_source = human ? "procedural_humanoid" : "procedural_clip",
+            expected_discovery = fixture.ExpectedDiscovery,
+            bindings = bindings, clip_settings = ReadSettings(clip), length_f32 = Bits(clip.length),
+            frame_rate_f32 = Bits(clip.frameRate), model_import_settings = Array.Empty<string>()
+        } };
 
         var spec = JsonUtility.FromJson<Spec>(JsonUtility.ToJson(pending));
         var capture = RecordCapture(spec, bundles, pending: true);
+        pending.prefab_asset = spec.prefab_asset;
+        pending.clip_asset = spec.clip_asset;
+        pending.avatar_asset = spec.avatar_asset;
+        if (human)
+            CheckHumanoidPlayback(capture as HumanCapture, fixture.OutputName);
         Need(ProbeMatches(clock.start.probe, capture.samples) && ProbeMatches(clock.stop.probe, capture.samples),
             "Built playback missed the authored endpoint probes for " + clip.name + ".");
         if (fixture.HeldTime.HasValue)
             SetHeldEvidence(pending, spec, capture, fixture, target, clip.length);
 
+        // The final human_pose schema needs an inspected runtime slot
+        // inventory. Keep these captures until the maintainer adds it.
+        if (knownPose)
+        {
+            output = Path.Combine(output, "known-vectors");
+            Directory.CreateDirectory(output);
+        }
         string path = Path.Combine(output, fixture.OutputName + ".pending.json");
         WriteReplay(path, "unityrs.anim_replay_pending", JsonUtility.ToJson(pending, true), capture);
+    }
+
+    static void CheckHumanoidPlayback(HumanCapture capture, string name)
+    {
+        Need(capture != null && capture.playback.clip_human_motion,
+            "Built clip is missing its human-motion flag for " + name + ".");
+        int spine = capture.humanoid.bones.Single(bone => bone.name == "Spine").node;
+        Need(spine >= 0, "Built Avatar is missing the mapped Spine for " + name + ".");
+        Quaternion Rotation(Sample sample)
+        {
+            var bits = sample.pose.transforms[spine].rotation;
+            float Component(int i) => BitConverter.ToSingle(BitConverter.GetBytes(
+                uint.Parse(bits[i], NumberStyles.HexNumber, CultureInfo.InvariantCulture)), 0);
+            return new Quaternion(Component(0), Component(1), Component(2), Component(3));
+        }
+
+        // The endpoint sentinel verifies the fixture, while the mapped
+        // Spine verifies that the built curves or known vectors took effect.
+        var neutral = Rotation(capture.samples[0]);
+        var single = Rotation(capture.samples.Single(sample => sample.local == .5));
+        var combined = Rotation(capture.samples[capture.samples.Length - 1]);
+        Need(Quaternion.Angle(neutral, single) > 1 && Quaternion.Angle(single, combined) > 1,
+            "Humanoid playback did not move the Spine at the authored probes for " + name + ".");
     }
 
     static Timepoint[] Schedule(double[] keys, float? heldTime)
@@ -190,7 +247,7 @@ public static partial class AnimReplayRecorder
         Need(pending.evidence.clock.key_times.Contains(boundary), "Held boundary is missing from the authored curves.");
         foreach (SourceClock clock in new[] { SourceClock.Widened, SourceClock.F32Add })
         {
-            var clocks = pending.schedule.Select(point => ReadClock(spec, clock, length, point.local, (float)point.local)).ToArray();
+            var clocks = spec.schedule.Select(point => ReadClock(spec, clock, length, point.local, (float)point.local)).ToArray();
             int right = Array.FindIndex(clocks, point => point.effective_source >= boundary);
             Need(right > 0, "Held boundary must have probes on both sides.");
             var leftProbe = ProbeAt(fixture, target, right - 1, fixture.HeldLeft.Value);
