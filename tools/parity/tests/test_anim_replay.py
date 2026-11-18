@@ -94,6 +94,17 @@ def synthetic():
     return dict(format="unityrs.anim_replay", version=1, spec=spec, capture=capture)
 
 
+def zero_origin(manifest):
+    """The synthetic clip on a zero-origin clock, where playable time is source time."""
+    times = (0, 2.05, 2.5, 3)
+    manifest["spec"].update(source_clock="zero_origin", schedule=[dict(local=t) for t in times])
+    for sample, t in zip(manifest["capture"]["samples"], times):
+        local = replay.f32_from_bits(bits(t))
+        sample.update(local=t, local_f32=bits(t), source=max(2, t), effective_source=max(2, local))
+    manifest["capture"]["playback"]["clip_length_f32"] = bits(3)
+    return manifest
+
+
 def declare_budgets(manifest):
     def row(prop, target, channel=-1):
         stages = [dict(stage="rest", range=[[0, 1]])]
@@ -261,6 +272,32 @@ class TestAnimReplay(unittest.TestCase):
         m["capture"]["samples"][1].update(effective_source=replay.f32_from_bits(bits(2.1)), sides=["left"])
         m["capture"]["samples"][1]["pose"]["weights"][0]["channels"][0] = bits(12.5)
         self.assertTrue(replay.derive(m)["clock_discriminated"])
+
+    def test_zero_origin_clock_reads_playable_time_as_source_time(self):
+        result = replay.derive(declare_budgets(zero_origin(synthetic())))
+        self.assertTrue(result["clock_discriminated"])
+        # The start pose holds before the late interval, without clock displacement.
+        self.assertEqual([(row["source"], row["effective_source"]) for row in result["samples"]],
+                         [(2, 2), (2.05, replay.f32_from_bits(bits(2.05))), (2.5, 2.5), (3, 3)])
+        m = synthetic()
+        m["spec"]["source_clock"] = "zero_origin"
+        with self.assertRaisesRegex(ValueError, "endpoints"):
+            replay.validate(m)
+
+    def test_zero_origin_clock_needs_its_length_and_a_late_animator_start(self):
+        m = zero_origin(synthetic())
+        m["capture"]["playback"]["clip_length_f32"] = bits(1)
+        with self.assertRaisesRegex(ValueError, "clip length"):
+            replay.validate(m)
+        for change in (dict(start=0), dict(mode="legacy")):
+            m = zero_origin(synthetic())
+            m["spec"].update(change)
+            with self.assertRaisesRegex(ValueError, "late Animator start"):
+                replay.validate_spec(m["spec"])
+        m = zero_origin(synthetic())
+        m["spec"]["source_clock"] = "widened"
+        with self.assertRaisesRegex(ValueError, "endpoints"):
+            replay.validate(m)
 
     def test_sample_clock_and_endpoints_cannot_be_inferred_from_the_observations(self):
         m = synthetic()

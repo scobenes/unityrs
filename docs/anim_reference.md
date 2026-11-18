@@ -426,6 +426,24 @@ sum to f32 and require an exact f32 start. Clamp to the serialized
 interval. At `float(l) == clip.length`, the endpoint convention selects
 the exact stored stop.
 
+A clip whose interval starts late (`start > 0`) may report an
+`AnimationClip.length` measured from zero, `stop` rather than
+`stop - start`, while its built `m_MuscleClip` keeps the interval and its
+keys in source seconds. Its playable time is then a candidate source
+time. For `source_clock = zero_origin` (an Animator clip with a late
+start) the schedule runs from 0 to `stop`, `source = l`, and the effective
+source is `float(l)` widened. Both clamp to the interval: before `start`
+the compiled storage holds its first stored values. The clip length must
+equal `float(stop)`. The recorder picks this clock only when the Editor
+length disagrees with `stop - start`, and only for a clip with a held
+boundary. Its probes at the last left and first right samples must then
+show the authored values, which an interval-start clock would not: it
+reaches the boundary earlier and shows the right-side value at the left
+probe. When they disagree it reports the probed
+value at every playable time, so the step shows which clock Unity used.
+Clock discrimination compares the selected clock with each other one; a
+zero origin is an alternative only for a late start.
+
 The public playable or legacy time checks the supplied time. Use the
 `source_clock` enum to declare the clock model. Inspect the source
 endpoints independently and record their source seconds and field names

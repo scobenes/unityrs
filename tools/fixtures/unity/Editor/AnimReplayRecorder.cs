@@ -29,7 +29,9 @@ public static partial class AnimReplayRecorder
     [Serializable] class EndpointEvidence { public double source; public string field; }
     [Serializable] class ClockEvidence { public EndpointEvidence start, stop; }
     [Serializable] class Evidence { public ClockEvidence clock; }
-    enum SourceClock { Widened, F32Add }
+    // ZeroOrigin: playable time is source time, for a clip whose interval
+    // starts late and whose AnimationClip.length runs from zero to stop.
+    enum SourceClock { Widened, F32Add, ZeroOrigin }
     [Serializable] class Spec
     {
         public Bundle[] bundles;
@@ -194,8 +196,9 @@ public static partial class AnimReplayRecorder
             Need(legacy || knownPose || spec.mode == "animator", "Unknown playback mode.");
             Need(legacy == clip.legacy, "Clip legacy flag disagrees with playback mode.");
             Need(spec.mode != "animator" || !clip.isLooping, "Build a nonlooping Animator fixture for endpoint replay.");
-            Need(clip.length == (float)(spec.stop - spec.start) && clip.frameRate == spec.sample_rate,
-                "Built clip length or rate disagrees with the inspected source clock.");
+            Need(clip.length == (float)(spec.stop - Origin(spec, clock)) && clip.frameRate == spec.sample_rate,
+                "Built clip length " + clip.length.ToString("R", CultureInfo.InvariantCulture)
+                + " or rate disagrees with the inspected source clock.");
             Need(prefab.GetComponentsInChildren<MonoBehaviour>(true).Length == 0,
                 "Use a fixture prefab without scripts, including root-motion and IK callbacks.");
             bool humanClip = avatar != null && avatar.isHuman && avatar.isValid;
@@ -361,15 +364,25 @@ public static partial class AnimReplayRecorder
             case "f32_add":
                 Need((float)spec.start == spec.start, "The f32 source clock needs an exact f32 start.");
                 return SourceClock.F32Add;
+            case "zero_origin":
+                Need(spec.start > 0, "The zero-origin source clock needs a late interval start.");
+                return SourceClock.ZeroOrigin;
             default: throw new InvalidOperationException("Unknown source clock.");
         }
     }
 
+    // Source seconds at playable time zero.
+    static double Origin(Spec spec, SourceClock clock) => clock == SourceClock.ZeroOrigin ? 0 : spec.start;
+
     static Sample ReadClock(Spec spec, SourceClock clock, float length, double local, float time)
     {
-        Need(0 <= local && local <= spec.stop - spec.start, "Sample outside source interval.");
-        double source = local == spec.stop - spec.start ? spec.stop : spec.start + local;
-        double effective = spec.start + time;
+        double origin = Origin(spec, clock);
+        Need(0 <= local && local <= spec.stop - origin, "Sample outside source interval.");
+        double source = local == spec.stop - origin ? spec.stop : origin + local;
+        // Before a late start the compiled storage holds its first stored
+        // values, so a zero-origin request evaluates the interval start.
+        source = Math.Max(spec.start, source);
+        double effective = origin + time;
         if (clock == SourceClock.F32Add) effective = (float)effective;
         effective = time == length ? spec.stop : Math.Max(spec.start, Math.Min(spec.stop, effective));
         return new Sample {

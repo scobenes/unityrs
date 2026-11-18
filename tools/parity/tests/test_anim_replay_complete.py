@@ -98,6 +98,36 @@ class CompleteReplayTests(unittest.TestCase):
         self.assertEqual(sorted((self.replays / "known-vectors").glob("*.json")),
                          sorted((self.replays / "known-vectors").glob("*.pending.json")))
 
+    def test_complete_accepts_the_offset_clip_on_either_playable_origin(self):
+        doc = self.recordings["generic-offset-stepped"]
+        spec, capture = doc["spec"], doc["capture"]
+        self.assertEqual(spec["source_clock"], "zero_origin")
+        self.assertEqual(self.complete().returncode, 0)
+        (self.replays / "generic-offset-stepped.json").unlink()
+        # A length measured from the interval start puts the step at local .25.
+        times = (0, .1, .25, 1)
+        first, last = capture["samples"][0], capture["samples"][-1]
+        spec.update(source_clock="widened", schedule=[dict(local=t) for t in times])
+        capture["playback"]["clip_length_f32"] = bits(1)
+        capture["samples"] = []
+        for t in times:
+            sample = copy.deepcopy(first if t < .25 else last)
+            local = struct.unpack(">f", struct.pack(">f", t))[0]
+            sample.update(local=t, local_f32=bits(t), source=.5 + t, effective_source=.5 + local,
+                          sides=["left" if t < .25 else "right"])
+            capture["samples"].append(sample)
+        clock = spec["evidence"]["clock"]
+        clock["held"][0]["left"]["sample"], clock["held"][0]["right"]["sample"] = 1, 2
+        clock["stop"]["probe"]["sample"] = 3
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        finished = replay.read_json((self.replays / "generic-offset-stepped.json").read_text(encoding="utf-8"))
+        self.assertEqual(finished["spec"]["source_clock"], "widened")
+
+    def test_complete_refuses_zero_origin_with_an_interval_length(self):
+        self.recordings["generic-offset-stepped"]["capture"]["playback"]["clip_length_f32"] = bits(1)
+        self.assert_refused("clip length")
+
     def test_complete_refuses_changed_bundle(self):
         (self.bundles / "anim-legacy").write_bytes(b"different bytes")
         self.assert_refused("bundle digest mismatch")
