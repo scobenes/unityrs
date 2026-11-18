@@ -483,11 +483,20 @@ before the jump and the first one at or after it. A jump at the clip
 start needs only the right probe. Use a held component with distinct,
 independently known values on its two sides. The validator compares the
 expected values with the captured pose and predicts the held sides under
-both clock models. When no held probe changes sides between the models,
-`validate` reports `clock not discriminated` for clip playback and
-`derive` sets `clock_discriminated` to false. Promotion requires at least
-one held probe whose independently observed side distinguishes the models
-and a true `clock_discriminated` in the frozen tolerances used as clock evidence.
+both clock models. A recording is clock-independent when both candidate
+clocks give every sample a bit-identical effective source time, as when
+each `start + f32(local)` is exact in f32 (a zero start, for one). Then
+`derive` sets `clock_discriminated` to `"independent"`, and no held probe is
+needed to choose between the models. Otherwise, when no held probe changes
+sides between the models, `validate` reports `clock not discriminated` for
+clip playback and `derive` sets `clock_discriminated` to false. Promotion
+requires a clock-independent recording, or at least one held probe whose
+independently observed side distinguishes the models, and the matching
+`"independent"` or true `clock_discriminated` in the frozen tolerances used
+as clock evidence. The Rust comparison recomputes both clocks per sample
+and refuses a recording whose clocks differ anywhere without a
+discriminating probe. A late-start Mecanim interval still needs its own
+held probe against a zero origin.
 
 Include the cases in [plan section 8](plans/anim.md#8-editor-fixture-project-owner-built).
 All local TRS and renderer weights are eight-digit IEEE 754 f32 bit
@@ -717,8 +726,40 @@ sequence, with each stage appearing once.
 | `euler_constant`, `euler_held`, `euler_streamed`, `euler_dense`, `euler_hermite`, `euler_weighted` | The named input stage, then `joint`, for rotation. |
 | `muscle_constant`, `muscle_streamed`, `muscle_dense` | The named input stage, then `muscle`, then `joint`, for rotation. |
 
-Mixed-stage inputs need a documented track kind and a matching budget
-derivation before promotion.
+A streamed track whose key intervals mix held (zero `c3`, `c2` and `c1`)
+and streamed segments has track kind `streamed`. A held segment is the
+streamed cubic with zero slopes, so the streamed stage bounds it, and its
+value lies in the `c0` range. Other mixed-stage inputs need a documented
+track kind and a matching budget derivation before promotion.
+
+`tools/parity/anim_replay_budgets.py REPLAY --bundle-dir DIR` writes the
+budget rows of a completed generic or legacy replay without them. It reads
+the replay's digest-pinned bundles through `unityrs show`: the serialized
+rest pose, the compiled or explicit curves and the playback interval,
+never the observed poses. It walks each interval between the start, the
+stop and every key strictly inside them, and records every coefficient,
+key-relative time, Hermite control and clamped or rest value the path
+reads. It supports rest, constant, held and streamed compiled slots,
+clamped explicit Hermite curves and Euler input through `joint`, and
+refuses dense, weighted and humanoid paths until they have an author.
+Its choices, provisional until review:
+
+- Each recorded range is padded outward by `2^-40` of its magnitude plus
+  `2^-140`, and a nonnegative bound stays nonnegative. The tool computes
+  Hermite values, Euler quaternions and derivative pads in f64. `2^-40`
+  covers about 4096 f64 roundings of that arithmetic, yet is `2^-16` of an
+  f32 ulp, so the derived bounds do not grow measurably. The absolute
+  term keeps exact zeros, where the relative term vanishes, strictly
+  inside their range. It is below f32's smallest normal, so it adds
+  nothing an f32 output can show.
+- Rotation `norm_ranges` split each key interval into 64 equal pieces,
+  and box each piece by its endpoint quaternions widened by the piece's
+  width times a derivative bound. The derivative bound is the stage's,
+  or `π/360` per degree per second summed over the Euler axes. 64 is a power of
+  two, so the pieces fall on the midpoint subdivision the Rust audit uses
+  to fit its own pieces into a box. With 64 pieces, each box spans at most
+  1/64 of the interval's motion, so the norm floor stays near one for
+  ordinary clips, at the cost of 64 boxes per interval and rotation target.
 
 | Stage | Recorded ranges in order | Continuous derivative bound |
 |---|---|---|
@@ -790,7 +831,7 @@ angle metric floor. Refuse any rotation tolerance that reaches π.
 
 Run `python3 -I tools/parity/anim_replay.py derive synthetic-replay.json --bundle-dir . > synthetic-tolerances.json`.
 The result contains the manifest SHA-256 (sorted compact UTF-8 JSON),
-`clock_discriminated`, ordered property, target and channel keys, and
+`clock_discriminated` (true, false or `"independent"`), ordered property, target and channel keys, and
 per-sample clocks, held sides and bounds. Freeze it alongside the inputs
 before comparison.
 Investigate discrepancies against the recorded layout, settings and

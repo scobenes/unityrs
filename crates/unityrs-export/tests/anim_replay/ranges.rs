@@ -172,8 +172,14 @@ pub(crate) fn check(target: &Target<'_, '_, '_>, timing: ClipTiming, meter: &Met
             if let Some((track, component)) = target.track(axis)
                 && let Some(stage) = stage_name(track.segment(component, mid, false, meter)?)
             {
+                // A held segment of a streamed track is a cubic with zero
+                // slopes, which the streamed stage bounds.
+                let stage = match (name, stage) {
+                    (Some("streamed"), "held") | (Some("held"), "streamed") => "streamed",
+                    _ => stage,
+                };
                 require(
-                    name.is_none_or(|old| old == stage),
+                    name.is_none_or(|old| old == stage || (old, stage) == ("held", "streamed")),
                     "bundle mixed-stage track kind",
                 )?;
                 name = Some(stage);

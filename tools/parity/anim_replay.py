@@ -123,6 +123,10 @@ def f32_bits(value):
     return bits
 
 
+def f64_bits(value):
+    return struct.unpack("<Q", struct.pack("<d", value))[0]
+
+
 def f32_from_bits(bits):
     number, = struct.unpack(">f", bytes.fromhex(bits))
     require(math.isfinite(number), "expected finite f32 bits")
@@ -214,17 +218,20 @@ def _validate_clock(spec, start, stop, length):
 
 
 def _clock_discriminated(spec, times, length, selected_sources):
+    """True, False, or "independent" when no sample's time depends on the clock."""
     boundaries = spec["held_boundaries"]
-    if not boundaries:
-        return False
     other = "f32_add" if spec["source_clock"] == "widened" else "widened"
     try:
-        if other == "f32_add" and f32_from_bits(f32_bits(spec["start"])) != spec["start"]:
-            return False
         alternative = spec | {"source_clock": other}
         other_sources = [clocks(alternative, time, length)[2] for time in times]
     except ValueError:
         # There is no f32-add prediction when source time overflows f32.
+        return False
+    # Both candidate clocks give every sample the same effective source
+    # time, so the recording needs no held probe to tell them apart.
+    if [f64_bits(t) for t in other_sources] == [f64_bits(t) for t in selected_sources]:
+        return "independent"
+    if not boundaries or (other == "f32_add" and f32_from_bits(f32_bits(spec["start"])) != spec["start"]):
         return False
     # Different splits put at least one of the validated adjacent probes
     # on the opposite side under the other model.

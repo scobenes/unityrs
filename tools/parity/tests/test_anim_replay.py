@@ -263,6 +263,20 @@ class TestAnimReplay(unittest.TestCase):
         m["capture"]["samples"][1]["pose"]["weights"][0]["channels"][0] = bits(12.5)
         self.assertTrue(replay.derive(m)["clock_discriminated"])
 
+    def test_a_recording_whose_clocks_agree_at_every_sample_is_clock_independent(self):
+        m = declare_budgets(synthetic())
+        # The other clock moves sample 1, and its probe stays on the left.
+        self.assertIs(replay.derive(m)["clock_discriminated"], False)
+        jump = 2.25
+        m["spec"]["held_boundaries"] = [jump]
+        m["spec"]["evidence"]["clock"] = clock_evidence(jump)
+        m["spec"]["schedule"][1]["local"] = .125
+        m["capture"]["samples"][1].update(local=.125, local_f32=bits(.125), source=2.125, effective_source=2.125)
+        # 2 + 0.125 is exact in f32, so neither clock moves a sample.
+        self.assertEqual(replay.derive(m)["clock_discriminated"], "independent")
+        m["spec"]["source_clock"] = "f32_add"
+        self.assertEqual(replay.derive(m)["clock_discriminated"], "independent")
+
     def test_late_start_clip_reports_its_stop_as_length_but_plays_its_interval(self):
         m = synthetic()
         replay.validate(m)
