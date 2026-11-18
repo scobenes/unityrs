@@ -494,7 +494,7 @@ human-motion clip. Record a separate `human_pose` replay on the same
 built rig and Editor version with the same f32 sample schedule. Run
 `python3 -I tools/parity/anim_replay.py capture-id known-vector-replay.json`
 to get its ID, the SHA-256 of the complete standalone recording as sorted
-compact ASCII JSON. Put this ID in
+compact UTF-8 JSON. Put this ID in
 `evidence.humanoid.root_hips_comparison.baseline_capture_id` in the clip
 spec. Once the clip is recorded, attach the complete known-vector replay
 document as an entry in the clip manifest's top-level `baseline_captures`
@@ -638,9 +638,26 @@ errors with norm one, sum the two angular budgets and include the f64
 angle metric floor. Refuse any rotation tolerance that reaches π.
 
 Run `python3 -I tools/parity/anim_replay.py derive synthetic-replay.json --bundle-dir . > synthetic-tolerances.json`.
-The result contains the manifest SHA-256 (sorted compact ASCII JSON),
+The result contains the manifest SHA-256 (sorted compact UTF-8 JSON),
 `clock_discriminated`, ordered property, target and channel keys, and
 per-sample clocks, held sides and bounds. Freeze it alongside the inputs
 before comparison.
 Investigate discrepancies against the recorded layout, settings and
 equations.
+
+After deriving and freezing the tolerances, run the Rust comparison from
+the repository root:
+
+```sh
+UNITYRS_ANIM_REPLAY=synthetic-replay.json \
+UNITYRS_ANIM_BUNDLES=. \
+UNITYRS_ANIM_TOLERANCES=synthetic-tolerances.json \
+cargo test -p unityrs-export --features gltf --test anim_replay \
+  recorded_generic_or_legacy -- --ignored --nocapture
+```
+
+The same-bundle comparator checks the captured rig, clip and renderer
+identities, derives clocks and ranges from serialized playback, and reports
+worst Unity-space errors by rig, node or renderer, property and source time.
+The ungated synthetic tests exercise both clip modes with testkit bundles.
+L11 status requires the owner-built Editor recordings.

@@ -25,7 +25,7 @@ def bits(value):
 
 
 def recording_id(recording):
-    encoded = json.dumps(recording, sort_keys=True, separators=(",", ":")).encode("ascii")
+    encoded = json.dumps(recording, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -38,8 +38,8 @@ def probe(sample, value, *, target=0):
 
 
 def clock_evidence(jump, right=2):
-    return dict(start=dict(source=2, field="m_StartTime", probe=probe(0, 12.5)),
-                stop=dict(source=3, field="m_StopTime", probe=probe(3, 17.5)),
+    return dict(start=dict(source=2, field="m_MuscleClip.m_StartTime", probe=probe(0, 12.5)),
+                stop=dict(source=3, field="m_MuscleClip.m_StopTime", probe=probe(3, 17.5)),
                 key_times=[2, jump, 3],
                 held=[dict(source=jump, left=probe(right - 1, 12.5), right=probe(right, 17.5))])
 

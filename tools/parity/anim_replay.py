@@ -53,8 +53,8 @@ def read_json(text):
 
 
 def _digest(value):
-    encoded = json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
-    return hashlib.sha256(encoded.encode("ascii")).hexdigest()
+    encoded = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _same(a, b):

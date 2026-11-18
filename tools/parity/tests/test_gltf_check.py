@@ -148,6 +148,15 @@ class Checks(unittest.TestCase):
         with self.assertRaises(ValueError):
             g.unit_quaternion([0., 0., 0., 0.])
 
+    def test_bake_envelope_checks_off_key_error_without_exact_key_arrays(self):
+        doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])
+        case = {"animation": 0, "node": 0, "path": "translation", "interpolation": "LINEAR",
+                "bake": [6., 8., 1.25], "samples": [[0.75, [2.50008, 3.5, 4.5]]]}
+        self.assertEqual(g.check_accessors(doc, data, [case]), 1)
+        case["samples"][0][1][0] = 2.5002
+        with self.assertRaisesRegex(AssertionError, "sample at"):
+            g.check_accessors(doc, data, [case])
+
     def test_animation_requires_dense_views_that_fit_the_counts(self):
         doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])
         timing = doc["accessors"][0]
