@@ -1,8 +1,8 @@
 # Build the unityrs fixtures on Windows
 
 1. Open the [unityrs repository on GitHub](https://github.com/scobenes/unityrs).
-   Select **main** in the branch menu, then click **Code → Download ZIP**.
-   Extract the ZIP.
+   Select the branch or commit you were given in the branch menu, then
+   click **Code → Download ZIP**. Extract the ZIP.
 2. In Unity Hub, create and open a **new 3D (Built-in)** project using
    **Unity 2022.3.62f3**. Any Unity **2022.3 LTS** patch works. Keep the
    project path short, for example `C:\unity\unityrs-fixtures-2022`. In File
@@ -58,11 +58,15 @@
    tools under it; keep them ticked.
 2. Open the **3D (Built-in)** project from step 2 above. The active
    platform can stay **Windows**: the menu item builds for Android itself.
-3. Choose **Tools → unityrs → Build Android fixtures**. Unity imports the
-   textures for Android first, which can take a few minutes. If the dialog
-   says **Android Build Support** is missing, repeat step 1.
+3. Choose **Tools → unityrs → Build Android fixtures**. If the dialog says
+   **Android Build Support** is missing, repeat step 1. Building for
+   Android from a Windows project switches the build target for the
+   duration of the build: expect Unity to recompile scripts and reimport
+   the textures, which can take several minutes, and save the scene if
+   Unity asks.
 4. When the dialog says **unityrs fixtures ready**, zip the
-   `UnityrsFixturesOutput/<Unity version>/Android` folder and send it.
+   `UnityrsFixturesOutput/<Unity version>/Android-variant` folder and send
+   it.
    Follow steps 4–5 above for the other dialogs.
 5. Later, add the Android module to **6000.6.9f1** too and repeat steps 2–4
    in the Unity 6000.x Built-in project.

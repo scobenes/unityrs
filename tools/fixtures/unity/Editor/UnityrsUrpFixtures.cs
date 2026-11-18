@@ -67,12 +67,14 @@ static partial class UnityrsFixtureBuilder
         finally { Object.DestroyImmediate(root); }
     }
 
+    // Alpha 64 (.25) on every third texel falls below the Unlit _Cutoff .375,
+    // so the alpha-tested material rejects some texels and keeps the rest.
     static Texture2D NewTexture(string name, int width, int height)
     {
         var tex = new Texture2D(width, height, TextureFormat.RGBA32, false) { name = name };
         var pixels = new Color32[width * height];
         for (int i = 0; i < pixels.Length; ++i)
-            pixels[i] = new Color32((byte)(40 * i), (byte)(255 - 30 * i), (byte)(90 + 10 * i), (byte)(i % 3 == 0 ? 128 : 255));
+            pixels[i] = new Color32((byte)(40 * i), (byte)(255 - 30 * i), (byte)(90 + 10 * i), (byte)(i % 3 == 0 ? 64 : 255));
         tex.SetPixels32(pixels);
         tex.Apply();
         return tex;

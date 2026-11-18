@@ -70,8 +70,10 @@ static partial class UnityrsFixtureBuilder
                 + "and run the menu item again.", "OK");
             return;
         }
+        // Its own folder: a Built-in run with Android as the active target
+        // publishes to <version>/Android.
         Run(new Variant {
-            Name = "android", Folder = BuildTarget.Android.ToString(), Target = BuildTarget.Android,
+            Name = "android", Folder = "Android-variant", Target = BuildTarget.Android,
             Cases = StaticCases.Concat(new[] { AndroidTextureCase }).ToArray(), Prepare = PrepareAndroid
         });
     }

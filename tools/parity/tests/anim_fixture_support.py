@@ -144,7 +144,7 @@ def serialized_value(name, value):
     return Node("int" if value < 0 or name == "m_FileID" else "UInt32", name), struct.pack("<I", value & 0xffffffff)
 
 
-def unityfs(files, run):
+def unityfs(files, run, resources=()):
     """Uncompressed UnityFS with real object payloads and embedded type trees."""
     payload, directory = b"", b""
     for filename, rows, externals in files:
@@ -159,15 +159,18 @@ def unityfs(files, run):
                                      platform=run["build_target_id"], externals=[External(p) for p in externals])
         directory += struct.pack(">qqI", len(payload), len(serialized), 4) + filename.encode() + b"\0"
         payload += serialized
+    for filename, data in resources:
+        directory += struct.pack(">qqI", len(payload), len(data), 0) + filename.encode() + b"\0"
+        payload += data
     size = len(payload)
-    info = bytes(16) + struct.pack(">IIIHI", 1, size, size, 0, len(files)) + directory
+    info = bytes(16) + struct.pack(">IIIHI", 1, size, size, 0, len(files) + len(resources)) + directory
     head = b"UnityFS\0" + struct.pack(">I", 8) + b"5.x.x\0" + run["editor_version"].encode() + b"\0"
     padding = bytes(-(len(head) + 20) % 16)
     return head + struct.pack(">qIII", len(head) + 20 + len(padding) + len(info) + size,
                               len(info), len(info), 0x40) + padding + info + payload
 
 
-def archive(bundles, inspect, bundle, assets, rows, run=RUN, shared=()):
+def archive(bundles, inspect, bundle, assets, rows, run=RUN, shared=(), resources=()):
     if bundle == "static-batch-scene":
         filename = "PlayerBuild-batch"
         rows.append((999, 1, stamp(run), {}))
@@ -182,7 +185,7 @@ def archive(bundles, inspect, bundle, assets, rows, run=RUN, shared=()):
     files = [(filename, rows, ["archive:/" + filename + "/" + external] if shared else [])]
     if shared:
         files.append((external, shared, []))
-    data = unityfs(files, run)
+    data = unityfs(files, run, resources)
     (bundles / bundle).write_bytes(data)
     digest = hashlib.sha256(data).hexdigest()
     headers = []
