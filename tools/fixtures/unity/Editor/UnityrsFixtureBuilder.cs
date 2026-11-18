@@ -293,14 +293,9 @@ static partial class UnityrsFixtureBuilder
         // active itself, and the owner's scenes are restored afterwards. An
         // additive untitled scene could not be activated on the first owner
         // run (2022.3.62f3), so no SetActiveScene call is needed here.
+        // Cancel at Unity's save prompt stops the run; Don't Save discards.
         Require(EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo(),
             "Save or discard your open scene changes, then run the menu again.");
-        for (int i = 0; i < SceneManager.sceneCount; i++)
-        {
-            var open = SceneManager.GetSceneAt(i);
-            if (string.IsNullOrEmpty(open.path) && open.isDirty)
-                Require(EditorSceneManager.SaveScene(open), "Save the untitled scene before building fixtures.");
-        }
         var setup = EditorSceneManager.GetSceneManagerSetup();
         return PrepareAndCloseScene(() =>
         {
