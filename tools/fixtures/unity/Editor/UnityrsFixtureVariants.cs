@@ -22,7 +22,8 @@ static partial class UnityrsFixtureBuilder
         public bool Record;
         public string[] Cases;
         public Func<bool> PipelineReady = () => GraphicsSettings.currentRenderPipeline == null;
-        public string PipelineMessage = "Open an empty 3D (Built-in) project to build these fixtures.";
+        public string PipelineMessage = "Open an empty 3D (Built-in) project to build these fixtures. In a URP project, run "
+            + UrpMenu + " instead.";
         public Action<RunReport> AddDeferred = report => { };
         public Func<RunReport, Scene, string, Build> Prepare;
     }

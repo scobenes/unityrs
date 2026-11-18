@@ -97,22 +97,23 @@ static partial class UnityrsFixtureBuilder
 
     // Build the coverage bundles apart from the main fixtures, then move them
     // beside the others. Returns null, with the cases failed, if that fails.
-    static AssetBundleManifest BuildCoverageBundles(Build build, RunReport report, string staging, string bundles,
+    static Dictionary<string, string[]> BuildCoverageBundles(Build build, RunReport report, string staging, string bundles,
         BuildTarget target)
     {
         if (build.CoverageBundles.Count == 0) return null;
         var names = build.Replays.Where(replay => replay.Optional).Select(replay => replay.OutputName).ToArray();
-        AssetBundleManifest manifest = null;
+        Dictionary<string, string[]> contents = null;
         string folder = Path.Combine(staging, "coverage-bundles");
         bool built = report.Try("Build coverage bundles", names, () => {
             Directory.CreateDirectory(folder);
-            manifest = BuildPipeline.BuildAssetBundles(folder, build.CoverageBundles.ToArray(),
+            var manifest = BuildPipeline.BuildAssetBundles(folder, build.CoverageBundles.ToArray(),
                 BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.StrictMode, target);
             Require(manifest != null, "Unity could not build the coverage bundles. See the log and Console.");
+            contents = BundleContents(manifest);
             foreach (var bundle in build.CoverageBundles)
             {
                 string name = bundle.assetBundleName;
-                Require(manifest.GetAllAssetBundles().Contains(name), "Unity did not emit " + name + ".");
+                Require(contents.ContainsKey(name), "Unity did not emit " + name + ".");
                 File.Move(Path.Combine(folder, name), Path.Combine(bundles, name));
             }
         });
@@ -123,7 +124,7 @@ static partial class UnityrsFixtureBuilder
         // A failed check leaves its case failed and unrecorded.
         build.Replays.RemoveAll(replay => replay.Optional && !report.Try("Check built " + replay.OutputName,
             new[] { replay.OutputName }, () => CheckBuiltCoverage(replay, Path.Combine(bundles, replay.Bundle))));
-        return manifest;
+        return contents;
     }
 
     // Catch serialization loss in the built bundle before recording.

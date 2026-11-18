@@ -66,9 +66,11 @@ static partial class UnityrsFixtureBuilder
         }
     }
 
+    const string NeverProduced = "Fixture was never produced.";
+
     [Serializable] sealed class RunCase
     {
-        public string name, status = "failed", reason = "Fixture was never produced.";
+        public string name, status = "failed", reason = NeverProduced;
     }
 
     [Serializable] sealed class RunManifest
@@ -106,6 +108,17 @@ static partial class UnityrsFixtureBuilder
         public void AddDeferred(string name, string reason) => cases.Add(name, new RunCase {
             name = name, status = "not_covered", reason = reason
         });
+
+        // Fail, with an error line, each case no step has reached yet.
+        public void FailUnreached(IEnumerable<string> names, string reason)
+        {
+            foreach (string name in names)
+            {
+                if (!cases.TryGetValue(name, out var row) || row.reason != NeverProduced) continue;
+                Set(name, "failed", reason);
+                log("ERROR " + name + ": " + reason);
+            }
+        }
 
         public void Set(string name, string status, string reason = "")
         {
@@ -361,10 +374,24 @@ static partial class UnityrsFixtureBuilder
             string name = tall ? "humanoid-tall" : "humanoid-compact";
             report.Prepare(build, "Prepare " + name, HumanoidCases(name, tall), () => BuildHumanoid(build, name, tall));
         }
+        // Every main fixture is prepared or has failed with a reason here.
+        var prepared = new HashSet<string>(build.Replays.Select(replay => replay.OutputName), StringComparer.Ordinal);
+        report.FailUnreached(MainAnimationCases().Where(name => !prepared.Contains(name)),
+            "No preparation step produced this fixture.");
         Progress("Preparing coverage fixtures", .45f);
         BuildCoverage(build, report);
         return build;
     }
+
+    static IEnumerable<string> MainAnimationCases() => LegacyCases.Concat(GenericCases)
+        .Concat(HumanoidCases("humanoid-compact", false)).Concat(HumanoidCases("humanoid-tall", true));
+
+    // A built manifest's bundles and their dependencies as plain data. A later
+    // BuildAssetBundles call destroys the previous AssetBundleManifest, which
+    // then compares equal to null.
+    static Dictionary<string, string[]> BundleContents(AssetBundleManifest manifest) =>
+        manifest.GetAllAssetBundles().ToDictionary(name => name, name => manifest.GetAllDependencies(name),
+            StringComparer.Ordinal);
 
     static void BuildAndCapture(Build build, RunReport report, string staging, RunIdentity run, BuildTarget target,
         bool record, Action<string> log)
@@ -381,7 +408,8 @@ static partial class UnityrsFixtureBuilder
             BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.StrictMode, target);
         Require(manifest != null, "Unity could not build the fixture bundles. See the log and Console.");
 
-        var built = new HashSet<string>(manifest.GetAllAssetBundles(), StringComparer.Ordinal);
+        var main = BundleContents(manifest);
+        var built = new HashSet<string>(main.Keys, StringComparer.Ordinal);
         // Unity writes an extra manifest bundle and text manifests. The handoff contains the stamped case bundles.
         foreach (string path in Directory.EnumerateFiles(bundles))
             if (!built.Contains(Path.GetFileName(path))) File.Delete(path);
@@ -396,7 +424,8 @@ static partial class UnityrsFixtureBuilder
         {
             var fixture = build.Replays[i];
             string name = fixture.OutputName;
-            var source = fixture.Optional ? coverage : manifest;
+            var source = fixture.Optional ? coverage : main;
+            // A coverage build that failed has already set its cases.
             if (source == null) continue;
             if (!record)
             {
@@ -406,8 +435,7 @@ static partial class UnityrsFixtureBuilder
             Progress("Recording " + name, .6f + .36f * i / build.Replays.Count);
             log("Recording " + name);
             report.Try("Record " + name, new[] { name }, () => {
-                Require(source.GetAllAssetBundles().Contains(fixture.Bundle)
-                    && source.GetAllDependencies(fixture.Bundle).Length == 0,
+                Require(source.TryGetValue(fixture.Bundle, out var dependencies) && dependencies.Length == 0,
                     "Expected a self-contained replay bundle for " + name);
                 Directory.CreateDirectory(replays);
                 bool mixed = AnimReplayRecorder.RecordFixture(fixture, bundles, replays, run.run_id, log);
@@ -415,6 +443,8 @@ static partial class UnityrsFixtureBuilder
                 if (mixed) report.Set("mixed-transform-storage", "recorded", "Verified in the built generic-scale clip.");
             }, fixture.Optional);
         }
+        report.FailUnreached(build.Replays.Select(replay => replay.OutputName),
+            "Prepared, but the capture loop never reached this fixture.");
     }
 
     static void CheckOwned(string folder)
