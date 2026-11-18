@@ -55,12 +55,16 @@ payload shapes, recursively. For the existing batch job schema, use
 ## Inspect and pagination
 
 `inspect INPUT... [--class CLASS]... [--name GLOB]... [--limit N]`
-`[--max-bytes N] [--cursor TOKEN]`
+`[--max-bytes N] [--cursor TOKEN] [--external-paths]`
 lists each input with a `files` array or an error, plus object headers.
 `files` lists the root and its descendants once in container order, including
 resource files. Each entry carries its `file_index`, kind, Unity version and
 platform (null where inapplicable). Each SerializedFile carries its own version and
 platform, so mixed-version containers need no guessed aggregate platform.
+With `--external-paths`, a SerializedFile with external references includes
+`external_paths` in its metadata on each page. The array lists their stored
+paths in PPtr file-ID order, starting with file ID 1, with the same previews as
+file names.
 
 Headers carry the input's zero-based index, the file's zero-based `file_index`,
 SerializedFile name, signed path ID, class ID and name (`Unknown` for an unmapped ID), object name, container path,
@@ -140,8 +144,8 @@ an empty page with a continuation token. Error documents are outside the cap.
 
 Pass a non-null `next_cursor` unchanged to the next call; null means the last
 page. Cursors bind
-the exact input spellings, their order, contents, filters, explicitly supplied
-budget/TPK options and provider bytes. Keep these unchanged;
+the exact input spellings, their order, contents, filters, `--external-paths`,
+explicitly supplied budget/TPK options and provider bytes. Keep these unchanged;
 page size, response byte cap and working directory may change. Relative paths
 must still resolve to the same loaded bytes.
 The cursor resumes exactly after the last object emitted, including on a byte-cut

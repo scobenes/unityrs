@@ -752,7 +752,11 @@ collection path.
 ## 8. Editor fixture project (owner-built)
 
 Extend the project in `docs/plans/static3d.md` section 8 with small original
-assets. Record actual Unity 2022.3 and 6000.x patch releases, build target,
+assets. The [Editor automation](../../tools/fixtures/unity/README.md) builds
+and records the initial procedural set in Unity 2022.3. The
+[repo-side handoff](../anim_reference.md#repo-side-completion) completes
+the serialized crosswalk after recording. Record actual Unity 2022.3
+and 6000.x patch releases, build target,
 loaded bundle hashes, rig/asset identities and import settings. Use the
 repository's fixture rules for the built assets and numeric records.
 
