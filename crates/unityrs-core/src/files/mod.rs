@@ -38,7 +38,7 @@ pub use serialized::{
 };
 pub use web::{WebFile, WebPacker, WebSaveOptions};
 
-use crate::detect::{FileType, ParsedAs, parsed_as};
+use crate::detect::{FileType, ParsedAs, check_entry_type, parsed_as, probe_container};
 use crate::error::{Error, LimitError, LimitKind, Unsupported};
 use crate::limits::{Charge, ChargeError, Meter, MeteredVec, heap_cost};
 use crate::options::FileContext;
@@ -105,21 +105,18 @@ impl File {
     }
     /// Open a child container, leaving serialized and raw entries lazy.
     /// A leaf still occupies its directory position in a file walk. Probe
-    /// failures are returned because they leave the entry's kind unknown.
+    /// read failures and resource refusals are returned.
     pub fn child_container(&self, i: usize) -> Result<Option<Self>, Error> {
         if let Some(file) = self.parsed_container_entry(i) {
             return Ok(matches!(file, Self::Bundle(_) | Self::Web(_)).then(|| file.clone()));
         }
         let container = match self {
             Self::Bundle(bundle) => crate::env::registry::probe_bundle_entry(bundle, i)?,
-            Self::Web(web) => matches!(
-                crate::detect::check_entry_type(
-                    &web.entry_bytes(i)?,
-                    &web.context().limits,
-                    web.meter(),
-                )?,
-                FileType::BundleFile | FileType::WebFile
-            ),
+            Self::Web(web) => probe_container(check_entry_type(
+                &web.entry_bytes(i)?,
+                &web.context().limits,
+                web.meter(),
+            ))?,
             _ => false,
         };
         if container {

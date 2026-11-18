@@ -187,9 +187,12 @@ use concatenated depth-first inspection order, including bundle roots and raw
 entries. The input is first, followed by its view members in bytewise input-ID
 order. Selection reads the needed directory positions and the files addressed
 by the selected prefab's override. An unused leaf keeps its position even if
-its contents are corrupt. Two views can use identical numbers for different
-objects. Phase 1 checks IDs, selector shape and literal keys, including the
-sink prefix.
+its contents are corrupt. A nested gzip detection probe that reaches the
+inflate cap fails the input and discards the attempt as a data limit
+(`limit(inflate, …)`, exit 4). A decode-work refusal in that probe discards
+the attempt as a budget outcome (`limit(decode_work, …)`, exit 5).
+Two views can use identical numbers for different objects. Phase 1 checks
+IDs, selector shape and literal keys, including the sink prefix.
 Key membership is checked during phase 6 (4.8).
 
 **Prefer:** `{"input": id or null, "md5": 32 lowercase hex digits or null}`, at least one not null (E31).

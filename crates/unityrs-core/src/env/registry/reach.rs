@@ -71,7 +71,7 @@ use super::super::Source;
 use super::Hook;
 use super::pending::{List, STEP};
 use super::{By, Cab, DepSlot, Dependency, Loads, RawCab, Registry, Slot, SlotKind};
-use crate::detect::{DetectError, FileType, check_file_type};
+use crate::detect::{DetectError, FileType, check_file_type, probe_container};
 use crate::error::Error;
 use crate::files::{BundleFile, File};
 use crate::limits::{GrantScope, Limits, Meter};
@@ -91,7 +91,7 @@ fn is_bundle_entry(b: &BundleFile, i: usize) -> Result<bool, Error> {
 }
 
 /// A file walk needs a verdict to determine how many positions the entry
-/// occupies. Keep probe errors so a refusal cannot change later indices.
+/// occupies. Forward read failures and resource refusals from detection.
 pub(crate) fn probe_bundle_entry(b: &BundleFile, i: usize) -> Result<bool, Error> {
     bundle_entry(b, i, true)
 }
@@ -107,8 +107,8 @@ fn bundle_entry(b: &BundleFile, i: usize, require_verdict: bool) -> Result<bool,
     } else {
         check_file_type(&head, &Limits::default())
     };
-    if require_verdict && let Err(e) = detected {
-        return Err(e.into());
+    if require_verdict {
+        return Ok(probe_container(detected)?);
     }
     bundle_detected(detected)
 }

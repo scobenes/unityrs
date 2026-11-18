@@ -1,4 +1,5 @@
 use super::*;
+use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build};
 
 #[test]
 fn invalid_static_batch_range_skips_a_prefab_with_no_remaining_mesh() {
@@ -60,6 +61,37 @@ fn explicit_selection_fails_the_input_for_a_bad_nested_web_signature() {
     check_nested_signature(corrupt);
 }
 
+#[test]
+fn explicit_selection_passes_an_unterminated_bundle_leaf() {
+    let leaf = b"abcdefghijklmnopqrst";
+    check_unterminated_leaf(env::bundle(&[("leaf", leaf.to_vec())]));
+}
+
+#[test]
+fn explicit_selection_passes_an_unterminated_web_leaf() {
+    let leaf = b"abcdefghijklmnopqrst";
+    check_unterminated_leaf(unityrs_testkit::web::plain(
+        "UnityWebData1.0",
+        &[("leaf", leaf)],
+    ));
+}
+
+fn check_unterminated_leaf(nested: Vec<u8>) {
+    let (scratch, mut spec) = job(&[]);
+    let (input, objects) = fixture(Clip::Translation, false);
+    let deps = env::bundle(&[("nested", nested), ("objects.bundle", objects)]);
+    install(&scratch, &mut spec, &input, &deps);
+    let mut request = selection(2, 3);
+    request["source"]["owner"] = index(7, 10);
+    spec["outputs"]["glb"]["profile"] = json!({
+        "profile_version":1,"clips":[],"clips_by_prefab":{"first.glb":{"a":[request]}}
+    });
+    let end = drive(&scratch, &spec);
+    assert_eq!(end.code, Code::Complete, "{end:?}");
+    assert!(scratch.join("sink/first.glb").exists());
+    assert!(scratch.join("sink/second.glb").exists());
+}
+
 fn check_nested_signature(corrupt: Vec<u8>) {
     let (scratch, mut spec) = job(&[]);
     let (input, objects) = fixture(Clip::Translation, false);
@@ -83,24 +115,52 @@ fn check_nested_signature(corrupt: Vec<u8>) {
 
 #[test]
 fn nested_gzip_probe_decode_work_discards_the_attempt() {
+    check_nested_gzip_refusal(65, 1 << 20, 5, "limit(decode_work, 4194304)");
+}
+
+#[test]
+fn nested_gzip_probe_inflate_limit_discards_the_attempt() {
+    // 65,536 members of 64 KiB each reach the 4 GiB inflate cap. Decode
+    // work has an 8 GiB allowance so the inflate cap is reached first.
+    check_nested_gzip_refusal(65_536, 2 << 30, 4, "limit(inflate, 4294967296)");
+}
+
+fn check_nested_gzip_refusal(members: usize, budget: u64, exit: u8, reason: &str) {
     let (scratch, mut spec) = job(&[]);
     let (input, objects) = fixture(Clip::Translation, false);
     let web = unityrs_testkit::web::plain("UnityWebData1.0", &[("leaf", b"raw")]);
     let mut gzip = unityrs_testkit::web::gzip(&web);
-    // Each of these gzip members decodes to 64 KiB of zeros. Padding the
-    // first member this way hits the decode-work cap during detection.
+    // Each of these gzip members decodes to 64 KiB of zeros.
     let mut zeros = vec![
         0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0x02, 0x03, 0xed, 0xc1, 0x01, 0x01, 0, 0, 0, 0x80, 0x90,
         0xfe, 0xaf, 0xee, 0x08, 0x0a,
     ];
     zeros.resize(87, 0);
     zeros.extend_from_slice(&[0x6a, 0xeb, 0x8e, 0x97, 0xd7, 0, 0, 1, 0]);
-    for _ in 0..65 {
+    for _ in 0..members {
         gzip.extend_from_slice(&zeros);
     }
-    let deps = env::bundle(&[("web.gz", gzip), ("objects.bundle", objects)]);
+    let deps = build(&BundleSpec {
+        data_codec: TestCodec::None,
+        entries: vec![
+            EntrySpec {
+                name: b"web.gz".to_vec(),
+                data: gzip,
+                flags: 4,
+            },
+            EntrySpec {
+                name: b"objects.bundle".to_vec(),
+                data: objects,
+                flags: 4,
+            },
+        ],
+        ..BundleSpec::default()
+    });
     install(&scratch, &mut spec, &input, &deps);
-    spec["max_decoded_bytes"] = json!(1 << 20);
+    let dep_cache = budget.max(32 << 20);
+    spec["max_decoded_bytes"] = json!(budget);
+    spec["dep_cache_bytes"] = json!(dep_cache);
+    spec["max_inflight_uncompressed_bytes"] = json!((budget + dep_cache).max(256 << 20));
     spec["publish_incomplete"] = json!(true);
     // The first prefab is staged before the second walks through the gzip
     // container and its leaf to locate the controller at index 7.
@@ -110,10 +170,10 @@ fn nested_gzip_probe_decode_work_discards_the_attempt() {
         "profile_version":1,"clips":[],"clips_by_prefab":{"second.glb":{"a":[request]}}
     });
     let end = drive(&scratch, &spec);
-    assert_eq!(end.code, Code::Budget, "{end:?}");
+    assert_eq!(end.code.value(), exit, "{end:?}");
     let inputs = rows(&scratch, 1, "inputs");
     assert_eq!(inputs[0]["status"], "failed");
-    assert_eq!(inputs[0]["reason"], "limit(decode_work, 4194304)");
+    assert_eq!(inputs[0]["reason"], reason);
     assert!(!scratch.join("sink/first.glb").exists());
     assert!(!scratch.join("sink/second.glb").exists());
 }
