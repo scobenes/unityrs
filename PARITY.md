@@ -2107,8 +2107,8 @@ absent index buffer (`helpers/MeshHelper.py:630-683`), whereas OBJ returns
 `False` before calling it (`export/MeshExporter.py:17-56`). The strict Mesh
 reader and OBJ retain those behaviours (`crates/unityrs-mesh/tests/empty.rs`).
 The CLI keeps total `peak_charged_bytes`, with `input_peak_charged_bytes` for
-loading/selection and `export_peak_charged_bytes` for profile, graph, collect
-and write; retained input permits are excluded from export charges. The
+loading/selection, profile parsing and the input-root list a clip profile
+needs, and `export_peak_charged_bytes` for graph, collect and write; retained input permits are excluded from export charges. The
 phase peaks need not sum to the total. `crates/unityrs-cli/tests/gltf.rs` and
 `gltf::report::tests` check these fields and permit lifetimes.
 `tools/parity/tests/test_gltf_check.py` pins strict 99% fixture behavior,

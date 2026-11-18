@@ -285,7 +285,7 @@ def check_accessors(doc, binary, expected, normalise=True):
                 raise AssertionError("animation interpolation")
             envelope = case.get("bake")
             samples = case.get("samples", [])
-            if envelope is not None and not samples:
+            if envelope is not None and not samples and "values" not in case:
                 raise AssertionError("animation bake envelope has no compared values")
             if "times" in case or envelope is None:
                 equal([times], [list(map(f32, case["times"]))], "animation times")

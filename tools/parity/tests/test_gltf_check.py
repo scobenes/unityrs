@@ -161,10 +161,15 @@ class Checks(unittest.TestCase):
         doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])
         case = {"animation": 0, "node": 0, "path": "translation", "interpolation": "LINEAR",
                 "bake": [6., 8., 1.25]}
-        for fields in ({}, {"samples": []}, {"times": [0.25, 1.25]},
-                       {"values": [[1., 2., 3.], [4., 5., 6.]]}):
+        for fields in ({}, {"samples": []}, {"times": [0.25, 1.25]}):
             with self.subTest(fields=fields), self.assertRaisesRegex(AssertionError, "no compared values"):
                 g.check_accessors(doc, data, [case | fields])
+        # Exact output rows are compared values: every row is checked.
+        exact = case | {"values": [[1., 2., 3.], [4., 5., 6.]]}
+        self.assertEqual(g.check_accessors(doc, data, [exact]), 1)
+        exact["values"][1][2] = 6.5
+        with self.assertRaisesRegex(AssertionError, "animation output"):
+            g.check_accessors(doc, data, [exact])
 
     def test_bake_envelope_rejects_nan_after_a_finite_component_error(self):
         for path, row in (("translation", [1., 2., 3.]), ("scale", [1., 2., 3.]),
