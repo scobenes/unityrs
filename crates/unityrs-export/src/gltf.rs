@@ -10,7 +10,7 @@ mod select;
 use std::sync::Arc;
 use unityrs_anim::{
     AnimError, Attachment, BindingTarget, Clip, Discovery, RendererChannel, RendererChannels,
-    RigClips, RigPaths, SlotError, bind_clip, discover, read_clip,
+    RigClips, RigPaths, SlotError, bind_clip, discover, humanoid, read_clip,
 };
 use unityrs_core::{
     ObjectRef,
@@ -117,6 +117,7 @@ pub(crate) fn collect_with_view(
                 profile,
                 selected.as_slice(),
                 &mut clips,
+                env,
                 meter,
             )
         },
@@ -128,6 +129,10 @@ pub(crate) fn collect_with_view(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the collector callback's captures, plus the view for Avatar reads"
+)]
 fn animate(
     scene: &mut Scene,
     targets: CollectionTargets<'_>,
@@ -135,6 +140,7 @@ fn animate(
     profile: &Profile,
     selected: &[(&RigClips, &ObjectRef)],
     clips: &mut MeteredVec<Clip>,
+    env: &Environment,
     meter: &Arc<Meter>,
 ) -> Result<(), ExportError> {
     let mut filtered = MeteredVec::new(meter);
@@ -195,6 +201,12 @@ fn animate(
             .get(index)
             .ok_or(ExportError::MissingClipSelection)?;
         let paths = RigPaths::new(graph, rig.node, meter)?;
+        if clip.humanoid().is_some() {
+            // Humanoid clips have no supported playback yet: return the
+            // ordered typed refusal for this rig (plan section 2.4).
+            let avatar = humanoid::rig_avatar(env, &rig.component, meter)?;
+            return Err(humanoid::humanoid_refusal(clip, &avatar, &paths, meter).into());
+        }
         let bound = bind_clip(
             clip,
             &paths,

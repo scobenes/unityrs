@@ -577,3 +577,28 @@ fn a_mixed_set_exits_3_and_the_precedence_is_unchanged() {
         [78, 69, 70, 74, 7, 6, 5, 4, 3, 0]
     );
 }
+
+#[test]
+fn humanoid_refusals_are_glb_skips() {
+    // unityrs-anim's humanoid refusal codes (plan section 2.4).
+    for reason in [
+        "missing_avatar",
+        "invalid_avatar_index",
+        "unsupported_humanoid_layout",
+        "unknown_human_dof",
+        "conflicting_human_mapping",
+        "missing_human_bone",
+        "unsupported_humanoid_hierarchy",
+        "unsupported_humanoid_axes",
+        "unsupported_humanoid_twist",
+        "unsupported_humanoid_avatar_setting",
+        "unsupported_humanoid_clip_settings",
+        "unsupported_body_motion",
+        "unsupported_locomotion",
+        "unsupported_translation_dof",
+        "unsupported_additive_pose",
+        "unsupported_humanoid_ik",
+    ] {
+        assert!(super::is_glb_skip(reason), "{reason}");
+    }
+}

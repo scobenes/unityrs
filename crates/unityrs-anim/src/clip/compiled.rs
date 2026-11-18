@@ -364,7 +364,9 @@ impl CompiledClip {
     }
 }
 
-fn refuse_humanoid(dict: &Dict<'_, '_>, muscle: &Value) -> Result<(), AnimError> {
+/// Compiled clips carry `m_IndexArray`. Humanoid clips leave this reader
+/// before decode, so a mapped DOF here is a reader invariant failure.
+fn require_index_array(dict: &Dict<'_, '_>, muscle: &Value) -> Result<(), AnimError> {
     let Some(value) = dict.field(muscle, "m_IndexArray")? else {
         return Err(AnimError::UnsupportedClipLayout);
     };
@@ -423,7 +425,7 @@ pub(super) fn decode(
     {
         return Err(AnimError::InvalidDenseGrid);
     }
-    refuse_humanoid(dict, muscle)?;
+    require_index_array(dict, muscle)?;
     if counts == SlotCounts::default()
         && table.is_none_or(|table| table.bindings().is_empty())
         && dict

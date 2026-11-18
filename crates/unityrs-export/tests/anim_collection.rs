@@ -5,6 +5,8 @@
     reason = "replay also uses the specialized fixture variants"
 )]
 mod anim_support;
+#[path = "anim_collection/humanoid.rs"]
+mod humanoid;
 #[path = "anim_collection/review.rs"]
 mod review;
 
