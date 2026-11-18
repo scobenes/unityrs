@@ -85,24 +85,17 @@ public static partial class AnimReplayRecorder
         double start = fixture.Start ?? (clip.legacy ? 0 : settings.startTime);
         double stop = fixture.Stop ?? (clip.legacy ? clip.length : settings.stopTime);
         Need(0 <= start && start <= stop, "Editor clip interval is not ordered for " + clip.name);
+        var invariant = CultureInfo.InvariantCulture;
+        Need(clip.length == ClipLength(start, stop, clip.legacy), "Clip length for " + clip.name + " is "
+            + clip.length.ToString("R", invariant) + " for the interval " + start.ToString("R", invariant)
+            + " to " + stop.ToString("R", invariant) + ".");
         if (fixture.Start.HasValue && !clip.legacy)
             Need(start == settings.startTime && stop == settings.stopTime, "Unity did not retain the authored clip interval.");
-        // Unity may measure the length of a clip whose interval starts late
-        // from zero. Its playable time is then a candidate source time, which
-        // the held probes must confirm against the interval-start clock.
-        bool zeroOrigin = !clip.legacy && start > 0 && clip.length != (float)(stop - start);
-        double origin = zeroOrigin ? 0 : start;
-        var invariant = CultureInfo.InvariantCulture;
-        Need(clip.length == (float)(stop - origin), "Clip length for " + clip.name + " is "
-            + clip.length.ToString("R", invariant) + ", which matches neither the interval "
-            + start.ToString("R", invariant) + " to " + stop.ToString("R", invariant) + " nor a zero origin.");
-        Need(!zeroOrigin || fixture.HeldTime.HasValue,
-            "A zero-origin clip needs a held boundary to confirm its clock: " + clip.name);
 
         var bindings = ReadBindings(clip, out double[] authoredTimes);
         var keys = authoredTimes.Where(time => start <= time && time <= stop).Concat(new[] { start, stop })
             .Distinct().OrderBy(time => time).ToArray();
-        var points = Schedule(keys, fixture.HeldTime, origin);
+        var points = Schedule(keys, fixture.HeldTime);
         string probeAddress = Address(prefab.transform, prefab.transform.Find(fixture.ProbePath));
         var nodes = prefab.GetComponentsInChildren<Transform>(true)
             .Select(node => new Node { name = node.name, address = Address(prefab.transform, node) }).ToArray();
@@ -162,7 +155,6 @@ public static partial class AnimReplayRecorder
         pending.build_target = EditorUserBuildSettings.activeBuildTarget.ToString();
         pending.binding_address = fixture.BindingAddress;
         pending.mode = knownPose ? "human_pose" : clip.legacy ? "legacy" : "animator";
-        if (zeroOrigin) pending.source_clock = "zero_origin";
         pending.start = start;
         pending.stop = stop;
         pending.sample_rate = clip.frameRate;
@@ -213,7 +205,7 @@ public static partial class AnimReplayRecorder
         Need(ProbeMatches(clock.start.probe, capture.samples) && ProbeMatches(clock.stop.probe, capture.samples),
             "Built playback missed the authored endpoint probes for " + clip.name + ".");
         if (fixture.HeldTime.HasValue)
-            SetHeldEvidence(pending, spec, capture, fixture, target, clip.length);
+            SetHeldEvidence(pending, spec, capture, fixture, target);
 
         // The final human_pose schema needs an inspected runtime slot
         // inventory. Keep these captures until the maintainer adds it.
@@ -322,28 +314,26 @@ public static partial class AnimReplayRecorder
         clock.stop.probe.value = last.pose.transforms[spine].rotation[clock.stop.probe.component];
     }
 
-    // Local playable times for keys in source seconds, with the playable
-    // origin at source time `origin` (the interval start or zero).
-    static Timepoint[] Schedule(double[] keys, float? heldTime, double origin)
+    static Timepoint[] Schedule(double[] keys, float? heldTime)
     {
         var times = new SortedDictionary<float, double>();
-        double length = keys[keys.Length - 1] - origin;
+        double start = keys[0], length = keys[keys.Length - 1] - start;
         for (int i = 0; i < keys.Length; i++)
         {
-            double local = keys[i] - origin;
+            double local = keys[i] - start;
             times[(float)local] = local;
             if (i > 0)
             {
                 // Avoid simple frame-grid fractions. Completion checks this
                 // sample against the independently inspected built key times.
-                double offKey = keys[i - 1] - origin + (keys[i] - keys[i - 1]) * (391.0 / 1024.0);
-                if ((float)offKey > (float)(keys[i - 1] - origin) && (float)offKey < (float)local)
+                double offKey = keys[i - 1] - start + (keys[i] - keys[i - 1]) * (391.0 / 1024.0);
+                if ((float)offKey > (float)(keys[i - 1] - start) && (float)offKey < (float)local)
                     times[(float)offKey] = offKey;
             }
         }
         if (heldTime.HasValue)
         {
-            float boundary = (float)(heldTime.Value - origin);
+            float boundary = (float)(heldTime.Value - start);
             Need(boundary > 0 && boundary < length, "Expected an interior held boundary.");
             int bits = BitConverter.ToInt32(BitConverter.GetBytes(boundary), 0);
             // At a nonzero origin the previous f32 local can already round
@@ -352,7 +342,7 @@ public static partial class AnimReplayRecorder
             float prior = BitConverter.ToSingle(BitConverter.GetBytes(bits - 1), 0);
             times[prior] = prior;
             float left = boundary - 1f / 4096f;
-            Need(left > 0 && origin + left < heldTime.Value && (float)(origin + left) < heldTime.Value,
+            Need(left > 0 && start + left < heldTime.Value && (float)(start + left) < heldTime.Value,
                 "Could not schedule a distinct left-side probe.");
             times[left] = left;
         }
@@ -362,25 +352,19 @@ public static partial class AnimReplayRecorder
     }
 
     static void SetHeldEvidence(PendingSpec pending, Spec spec, Capture capture,
-        UnityrsFixtureBuilder.ReplayCase fixture, int target, float length)
+        UnityrsFixtureBuilder.ReplayCase fixture, int target)
     {
         double boundary = fixture.HeldTime.Value;
         Need(pending.evidence.clock.key_times.Contains(boundary), "Held boundary is missing from the authored curves.");
-        // A zero-origin schedule spans [0, stop], so only that clock can be
-        // confirmed by it. Its left probes would show the right-side value under
-        // an interval-start clock, which reaches the boundary earlier.
-        var candidates = spec.source_clock == "zero_origin" ? new[] { SourceClock.ZeroOrigin }
-            : new[] { SourceClock.Widened, SourceClock.F32Add };
-        foreach (SourceClock clock in candidates)
+        foreach (SourceClock clock in new[] { SourceClock.Widened, SourceClock.F32Add })
         {
-            var clocks = spec.schedule.Select(point => ReadClock(spec, clock, length, point.local, (float)point.local)).ToArray();
+            var clocks = spec.schedule.Select(point => ReadClock(spec, clock, point.local, (float)point.local)).ToArray();
             int right = Array.FindIndex(clocks, point => point.effective_source >= boundary);
             Need(right > 0, "Held boundary must have probes on both sides.");
             var leftProbe = ProbeAt(fixture, target, right - 1, fixture.HeldLeft.Value);
             var rightProbe = ProbeAt(fixture, target, right, fixture.HeldRight.Value);
             if (!ProbeMatches(leftProbe, capture.samples) || !ProbeMatches(rightProbe, capture.samples)) continue;
-            pending.source_clock = clock == SourceClock.Widened ? "widened"
-                : clock == SourceClock.F32Add ? "f32_add" : "zero_origin";
+            pending.source_clock = clock == SourceClock.Widened ? "widened" : "f32_add";
             pending.evidence.clock.held = new[] { new Held { source = boundary, left = leftProbe, right = rightProbe } };
             for (int i = 0; i < clocks.Length; i++)
             {
@@ -390,7 +374,7 @@ public static partial class AnimReplayRecorder
             return;
         }
         // Report the probed component at every playable time, so the step
-        // shows which source clock Unity used.
+        // shows where Unity's playable clock reaches the boundary.
         var probe = ProbeAt(fixture, target, 0, 0);
         var invariant = CultureInfo.InvariantCulture;
         string trace = string.Join(", ", spec.schedule.Select((point, i) => {
@@ -399,8 +383,8 @@ public static partial class AnimReplayRecorder
             float value = BitConverter.ToSingle(BitConverter.GetBytes(bits), 0);
             return point.local.ToString("R", invariant) + "->" + value.ToString("R", invariant);
         }));
-        throw new InvalidOperationException("Built playback did not match the " + spec.source_clock
-            + " held-boundary source clock for " + spec.clip_name + " (playable time->probe: " + trace + ").");
+        throw new InvalidOperationException("Built playback did not match either held-boundary source clock for "
+            + spec.clip_name + " (playable time->probe: " + trace + ").");
     }
 
     static Probe ProbeAt(UnityrsFixtureBuilder.ReplayCase fixture, int target, int sample, float value) => new Probe {

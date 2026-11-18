@@ -5,17 +5,6 @@ use crate::{
 };
 use unityrs_anim::{AnimError, BindingTarget, BoundTrack, TransformProperty};
 
-/// How playable time maps to source seconds; see `docs/anim_reference.md`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Clock {
-    /// `start + float(l)` in f64.
-    Widened,
-    /// `start + float(l)` rounded to f32.
-    F32Add,
-    /// `float(l)`: playable time is source time for a late start.
-    ZeroOrigin,
-}
-
 #[allow(clippy::too_many_lines)]
 pub(crate) fn check(
     spec: &J,
@@ -77,29 +66,14 @@ pub(crate) fn check(
         .collect::<Result<Vec<_>>>()?;
     require(recorded == boundaries, "bundle held boundaries")?;
     let round = |value| f64::from(value as f32);
-    let clock = match spec["source_clock"].as_str() {
-        Some("f32_add") => Clock::F32Add,
-        Some("zero_origin") => Clock::ZeroOrigin,
-        _ => Clock::Widened,
-    };
-    let origin_of = |clock| {
-        if clock == Clock::ZeroOrigin {
-            0.
-        } else {
-            start
-        }
-    };
-    let origin = origin_of(clock);
-    let f32_add = clock == Clock::F32Add;
+    let length = round(stop - start);
+    let f32_add = spec["source_clock"] == "f32_add";
     if f32_add {
         require(round(start) == start, "bundle f32 source origin")?;
     }
-    if clock == Clock::ZeroOrigin {
-        require(start > 0., "bundle zero-origin start")?;
-    }
     let local_keys = inventory
         .iter()
-        .map(|t| round(t - origin))
+        .map(|t| round(t - start))
         .collect::<Vec<_>>();
     let mut effective_keys = inventory
         .iter()
@@ -107,25 +81,13 @@ pub(crate) fn check(
         .collect::<Vec<_>>();
     effective_keys.extend([start, stop]);
     effective_keys.sort_unstable_by(f64::total_cmp);
-    // Before a late start the compiled storage holds its first values, so
-    // a zero-origin time clamps to the interval like the other clocks.
-    let effective_clock = |rounded, clock| {
-        let origin = origin_of(clock);
-        if rounded == round(stop - origin) {
+    let effective_clock = |rounded, f32_add| {
+        if rounded == length {
             stop
         } else {
-            let time = origin + rounded;
-            (if clock == Clock::F32Add {
-                round(time)
-            } else {
-                time
-            })
-            .clamp(start, stop)
+            let time = start + rounded;
+            (if f32_add { round(time) } else { time }).clamp(start, stop)
         }
-    };
-    let alternative_clock = match clock {
-        Clock::Widened => Clock::F32Add,
-        Clock::F32Add | Clock::ZeroOrigin => Clock::Widened,
     };
     let off_key = |keys: &[f64], time| {
         let i = keys.partition_point(|&key| key < time);
@@ -140,7 +102,7 @@ pub(crate) fn check(
     )?;
     require(
         number(&schedule[0]["local"])? == 0.
-            && number(&schedule[schedule.len() - 1]["local"])? == stop - origin,
+            && number(&schedule[schedule.len() - 1]["local"])? == stop - start,
         "replay endpoint schedule",
     )?;
     let mut times = Vec::new();
@@ -150,14 +112,13 @@ pub(crate) fn check(
     for ((point, observed), frozen) in schedule.iter().zip(samples).zip(frozen) {
         let local = number(&point["local"])?;
         let rounded = round(local);
-        let source = if local == stop - origin {
+        let source = if local == stop - start {
             stop
         } else {
-            origin + local
-        }
-        .max(start);
-        let effective = effective_clock(rounded, clock);
-        let other = effective_clock(rounded, alternative_clock);
+            start + local
+        };
+        let effective = effective_clock(rounded, f32_add);
+        let other = effective_clock(rounded, !f32_add);
         require(
             previous_local.is_none_or(|previous| previous < rounded),
             "non-increasing f32 local clock",
@@ -256,8 +217,7 @@ pub(crate) fn check(
                 meter,
             )?;
             require(error <= budget, "held probe disagrees with bundle")?;
-            let predictable = alternative_clock != Clock::F32Add || round(start) == start;
-            if predictable && (alternative[sample] < boundary) != is_left {
+            if round(start) == start && (alternative[sample] < boundary) != is_left {
                 let error = probe_error(
                     target,
                     component,

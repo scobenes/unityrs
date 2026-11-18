@@ -6,7 +6,6 @@ mod anim_replay {
     pub mod clock;
     pub mod fixture;
     pub mod ranges;
-    pub mod zero_origin;
 }
 use anim_replay::{clock, ranges};
 use serde_json::Value as J;

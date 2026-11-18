@@ -4,7 +4,7 @@ use crate::{J, Path, compare, derive, digest};
 use serde_json::json;
 use unityrs_testkit::scratch::Scratch;
 
-pub(crate) fn bits(x: f32) -> String {
+fn bits(x: f32) -> String {
     format!("{:08x}", x.to_bits())
 }
 
@@ -25,7 +25,7 @@ fn budget(prop: &str, target: usize, kind: &str, range: &J) -> J {
     out
 }
 
-pub(crate) fn probe(sample: usize, value: f32) -> J {
+fn probe(sample: usize, value: f32) -> J {
     json!({"sample":sample,"property":"weight","target":0,"channel":0,"component":0,"value":bits(value)})
 }
 
@@ -129,7 +129,8 @@ fn manifest(pin: &str, legacy: bool) -> J {
                 "apply_root_motion":false,"foot_ik":false,"playable_ik":false,"animator_move":false,
                 "controller_blending":false,"events":false,
                 "legacy_state":if legacy {"enabled_weight_one_clamp_forever"} else {"unused"},
-                "clip_length_f32":one,"frame_rate_f32":bits(4.)
+                // 2022.3 reports a late-start Mecanim clip's length as its stop.
+                "clip_length_f32":if legacy {one} else {bits(3.)},"frame_rate_f32":bits(4.)
             }
         }
     })
@@ -257,7 +258,7 @@ fn a_request_that_rounds_onto_a_bundle_key_is_not_an_off_key_probe() {
     });
 }
 
-pub(crate) fn rejects(dir: &Path, manifest: &J, tolerance: &J, expected: &str) {
+fn rejects(dir: &Path, manifest: &J, tolerance: &J, expected: &str) {
     let error = compare(manifest, dir, tolerance).unwrap_err();
     assert!(
         error.to_string().contains(expected),
@@ -498,7 +499,7 @@ fn with_clip(
     with_recording(legacy, bytes, edit, action);
 }
 
-pub(crate) fn with_recording(
+fn with_recording(
     legacy: bool,
     bytes: Vec<u8>,
     edit: impl FnOnce(&mut J),

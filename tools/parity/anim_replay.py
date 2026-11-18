@@ -142,20 +142,10 @@ def _targets(spec):
             + [("weight", i, c["index"]) for i, r in enumerate(spec["renderers"]) for c in r["channels"]])
 
 
-def origin(spec):
-    """Source seconds at playable time zero."""
-    return 0. if spec["source_clock"] == "zero_origin" else float(spec["start"])
-
-
-def _length(spec):
-    return f32_from_bits(f32_bits(float(spec["stop"]) - origin(spec)))
-
-
 def _validate_clock(spec, start, stop, length):
     evidence = spec["evidence"]["clock"]
     times = [row["local"] for row in spec["schedule"]]
-    require(_ordered(times) and times[0] == 0 and times[-1] == stop - origin(spec),
-            "invalid schedule endpoints or order")
+    require(_ordered(times) and times[0] == 0 and times[-1] == stop - start, "invalid schedule endpoints or order")
     require((evidence["start"]["source"], evidence["stop"]["source"]) == (start, stop),
             "source origin disagrees with independently inspected endpoints")
     boundaries = spec["held_boundaries"]
@@ -174,7 +164,7 @@ def _validate_clock(spec, start, stop, length):
     if stop > start:
         runtime_source_bits = {f32_bits(t) for t in keys} if authored_keys else set()
         keys = sorted(set(keys) | set(authored_keys))
-        key_locals = sorted({f32_from_bits(f32_bits(t - origin(spec))) for t in keys})
+        key_locals = sorted({f32_from_bits(f32_bits(t - start)) for t in keys})
         key_sources = (sorted({f32_from_bits(f32_bits(t)) for t in keys})
                        if spec["source_clock"] == "f32_add" else keys)
 
@@ -211,6 +201,15 @@ def _validate_clock(spec, start, stop, length):
             require((_target_key(left), left["component"]) == (_target_key(right), right["component"])
                     and f32_from_bits(left["value"]) != f32_from_bits(right["value"]),
                     "held probes must distinguish both sides of the same component")
+    if spec["mode"] == "animator" and 0 < start < stop:
+        # Unity 2022.3 reports a late-start clip's length as its stop time,
+        # yet plays it from the interval start. Require a held probe on the
+        # other side from where reading playable time as source time puts it.
+        end = f32_from_bits(f32_bits(stop))
+        as_source = [stop if f32_from_bits(bits) == end else max(start, min(stop, f32_from_bits(bits)))
+                     for bits, _, _ in effective]
+        require(any(bisect_left(effective_sources, jump) != bisect_left(as_source, jump) for jump in boundaries),
+                "late-start interval clock is not discriminated from a zero origin by a held probe")
     return _clock_discriminated(spec, times, length, effective_sources)
 
 
@@ -218,23 +217,19 @@ def _clock_discriminated(spec, times, length, selected_sources):
     boundaries = spec["held_boundaries"]
     if not boundaries:
         return False
-    # A zero origin differs from the interval start only for a late start.
-    others = [clock for clock in ("widened", "f32_add", "zero_origin")
-              if clock != spec["source_clock"] and (clock != "zero_origin" or spec["start"] > 0)]
+    other = "f32_add" if spec["source_clock"] == "widened" else "widened"
     try:
-        if "f32_add" in others and f32_from_bits(f32_bits(spec["start"])) != spec["start"]:
+        if other == "f32_add" and f32_from_bits(f32_bits(spec["start"])) != spec["start"]:
             return False
-        alternatives = []
-        for other in others:
-            alternative = spec | {"source_clock": other}
-            alternatives.append([clocks(alternative, time, _length(alternative))[2] for time in times])
+        alternative = spec | {"source_clock": other}
+        other_sources = [clocks(alternative, time, length)[2] for time in times]
     except ValueError:
         # There is no f32-add prediction when source time overflows f32.
         return False
     # Different splits put at least one of the validated adjacent probes
-    # on the opposite side under each other model.
-    return all(any(bisect_left(selected_sources, jump) != bisect_left(other_sources, jump)
-                   for jump in boundaries) for other_sources in alternatives)
+    # on the opposite side under the other model.
+    return any(bisect_left(selected_sources, jump) != bisect_left(other_sources, jump)
+               for jump in boundaries)
 
 
 def _validate_humanoid_spec(spec, human):
@@ -346,17 +341,12 @@ def validate_spec(spec, *, pending_humanoid=False):
     # These are decoded source timings, not asset-import frame numbers.
     require(start == spec["start"] and stop == spec["stop"] and start <= stop
             and math.isfinite(stop - start), "invalid binary64 source interval")
-    if spec["source_clock"] == "zero_origin":
-        require(start > 0 and spec["mode"] != "legacy", "zero-origin source clock needs a late Animator start")
-    length = _length(spec)
+    length = f32_from_bits(f32_bits(stop - start))
     require(length > 0 or stop == start, "collapsed playback interval")
     require(f32_from_bits(f32_bits(spec["sample_rate"])) == spec["sample_rate"], "invalid serialized f32 rate")
     if spec["source_clock"] == "f32_add":
         require(f32_from_bits(f32_bits(start)) == start, "f32 source clock needs an exact f32 start")
     clock_discriminated = _validate_clock(spec, start, stop, length)
-    # Only a held probe shows that playable time is source time.
-    require(spec["source_clock"] != "zero_origin" or clock_discriminated,
-            "zero-origin source clock is not discriminated by a held probe")
     require(all(("muscles" in row) == (spec["mode"] == "human_pose") for row in spec["schedule"]),
             "only known-vector playback requires muscles in the schedule")
     if spec["mode"] == "human_pose":
@@ -381,14 +371,12 @@ def validate_spec(spec, *, pending_humanoid=False):
 def clocks(spec, local, length):
     local_f32 = f32_bits(local)
     effective_local = f32_from_bits(local_f32)
-    start, stop, base = float(spec["start"]), float(spec["stop"]), origin(spec)
-    # Before a late start the compiled storage holds its first stored values,
-    # so a zero-origin request evaluates the interval start.
-    source = max(start, stop if local == stop - base else base + local)
+    start, stop = float(spec["start"]), float(spec["stop"])
+    source = stop if local == stop - start else start + local
     if effective_local == length:
         effective = stop
     else:
-        effective = base + effective_local
+        effective = start + effective_local
         if spec["source_clock"] == "f32_add":
             effective = f32_from_bits(f32_bits(effective))
         effective = max(start, min(stop, effective))
@@ -520,9 +508,13 @@ def _validate_recording(spec, capture, bundle_dir=None, *, pending_humanoid=Fals
             "legacy state mismatch")
     require(mode != "animator" or not playback["clip_looping"], "looping Animator endpoint is unconfirmed")
     require(mode != "legacy" or playback["wrap_mode"] == "ClampForever", "legacy endpoint must be clamped")
-    length = f32_from_bits(playback["clip_length_f32"])
-    require(playback["clip_length_f32"] == f32_bits(float(spec["stop"]) - origin(spec))
+    start, stop = float(spec["start"]), float(spec["stop"])
+    # Unity 2022.3 measures a late-start Mecanim clip's length from zero.
+    # Playback still runs over the interval, so the clocks use its length.
+    reported = stop if mode != "legacy" and start > 0 else stop - start
+    require(playback["clip_length_f32"] == f32_bits(reported)
             and f32_from_bits(playback["frame_rate_f32"]) == spec["sample_rate"], "clip length or sample rate mismatch")
+    length = f32_from_bits(f32_bits(stop - start))
     human = capture.get("humanoid")
     require(human is not None or ("humanoid" not in spec["evidence"] and not playback["clip_human_motion"]),
             "missing humanoid capture")
