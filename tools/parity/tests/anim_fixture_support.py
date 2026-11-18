@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import struct
+from zlib import crc32
 
 from synth import External, Node, Obj, Type, s32, serialized_file, vec
 from test_anim_replay import bits, human_capture, synthetic
@@ -118,6 +119,9 @@ def serialized_value(name, value):
             return Node("SInt64", name), struct.pack("<q", int(value["v"]))
         if tag == "f32":
             return Node("float", name), bytes.fromhex(value["v"])[::-1]
+        if tag == "bytes":
+            data = bytes.fromhex(value["hex"])
+            return Node("TypelessData", name), struct.pack("<i", len(data)) + data
         if tag == "tuple":
             fields = [serialized_value(key, item) for key, item in zip(("first", "second"), value["v"])]
         else:
@@ -213,7 +217,12 @@ def mesh_parts(rows, obj, mesh_filter, renderer, mesh, material, **fields):
 
 
 def skin_mesh():
-    return {"m_BindPose": [{"e00": 1.}] * 4, "m_Shapes": {
+    channels = [dict(stream=0, offset=0, format=0, dimension=0)] * 12
+    channels += [dict(stream=0, offset=0, format=0, dimension=4), dict(stream=0, offset=16, format=6, dimension=4)]
+    vertices = b"".join(struct.pack("<4f4B", .5, .25, .1875, .0625, i, i ^ 1, i ^ 2, i ^ 3) for i in range(4))
+    return {"m_BindPose": [{"e00": 1.}] * 4, "m_VertexData": {
+        "m_VertexCount": 4, "m_Channels": channels, "m_DataSize": {"t": "bytes", "hex": vertices.hex()},
+    }, "m_Shapes": {
         "channels": [{"name": "Lift", "frameIndex": 0, "frameCount": 2}], "fullWeights": [25., 80.],
         "shapes": [{"firstVertex": 0, "vertexCount": 1}, {"firstVertex": 1, "vertexCount": 1}],
         "vertices": [{"index": 2, "vertex": {"x": 0., "y": 0., "z": weight}} for weight in (.25, 1.)],
@@ -517,6 +526,23 @@ def fixture_archives(bundles, inspect, run=RUN, legacy_only=False):
                     "m_ConstantClip": {"data": []}}}}
                 if case in HUMANOID:
                     value["m_MuscleClip"]["m_IndexArray"] = [0, 1, -1]
+                if case == "generic-object-reference":
+                    value["m_ClipBindingConstant"] = {
+                        "genericBindings": [
+                            dict(path=crc32(b"Reference"), typeID=33, attribute=crc32(b"m_Mesh"),
+                                 customType=0, isPPtrCurve=True),
+                            dict(path=crc32("Mötión".encode()), typeID=4, attribute=1,
+                                 customType=0, isPPtrCurve=False),
+                        ],
+                        "pptrCurveMapping": [pointer(80), pointer(81)],
+                    }
+                    data = value["m_MuscleClip"]["m_Clip"]["data"]
+                    data["m_StreamedClip"]["data"] = [
+                        0xff7fffff, 1, 0, 0, 0, 0, 0,
+                        int(bits(.5), 16), 1, 0, 0, 0, 0, int(bits(1.), 16),
+                        0x7f800000, 0,
+                    ]
+                    data["m_ConstantClip"]["data"] = [0., 0.]
             rows.append((path, 74, spec["clip_name"], value))
         if bundle != "anim-legacy":
             rows.append((91, 91, "Controller", {"m_AnimationClips": [pointer(p) for p, c in clips

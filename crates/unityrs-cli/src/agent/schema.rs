@@ -125,7 +125,7 @@ pub fn run(name: &str) -> Result<Document> {
             "unity_version",
             "target_platform",
         ],
-        json!({"file":reference("listingstr"),"file_index":count,"kind":string,"unity_version":nullable(reference("listingstr")),"target_platform":nullable(integer.clone()),"external_paths":array(reference("listingstr"))}),
+        json!({"file":reference("listingstr"),"file_index":count,"kind":string,"unity_version":nullable(reference("listingstr")),"target_platform":nullable(integer.clone()),"external_paths":{"type":"array","items":reference("listingstr"),"description":"Stored external paths in PPtr file-ID order, present when requested with --external-paths and nonempty."}}),
     );
     let cut = object(
         &["$unityrs", "reason", "omitted"],

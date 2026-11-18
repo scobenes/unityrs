@@ -447,6 +447,12 @@
           "value": "GLOB"
         },
         {
+          "default": null,
+          "help": "Include SerializedFile external paths in PPtr file-ID order on each page when present.",
+          "name": "--external-paths",
+          "value": null
+        },
+        {
           "default": "200",
           "help": "Maximum objects returned per page, 1 through 10000; the response byte cap may reduce the page further.",
           "name": "--limit",
@@ -460,7 +466,7 @@
         },
         {
           "default": null,
-          "help": "Pass the previous response's non-null next_cursor string unchanged; omit for the first page and stop when next_cursor is null. Keep input spellings, order, contents, filters and explicitly supplied budget/provider options unchanged.",
+          "help": "Pass the previous response's non-null next_cursor string unchanged; omit for the first page and stop when next_cursor is null. Keep input spellings, order, contents, filters, --external-paths and explicitly supplied budget/provider options unchanged.",
           "name": "--cursor",
           "value": "TOKEN"
         },

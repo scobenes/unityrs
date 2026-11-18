@@ -548,12 +548,13 @@ bindings. Repo-side completion fills in the built file and path IDs.
 
 #### Repo-side completion
 
-Pass the returned version-and-target folder, containing `run.json`,
-`build.log`, `bundles/` and `replays/`, to the completion command. The Unity operator's work ends
-when they send the folder.
+The Unity project owner sends the version folder. Point `complete` at the
+target directory within it (`<version>/<target>/`), which contains `run.json`,
+`build.log`, `bundles/` and `replays/`. For example, after unpacking the
+`2022.3.62f3` folder under `returned/`, run the following command.
 
 ```sh
-python3 -I tools/parity/anim_replay.py complete "path/to/returned-folder" --unityrs target/debug/unityrs
+python3 -I tools/parity/anim_replay.py complete "returned/2022.3.62f3/StandaloneWindows64/" --unityrs target/debug/unityrs
 ```
 
 Omit `--unityrs` to use `unityrs` on PATH. Completion requires the inventory
@@ -591,12 +592,17 @@ The automated fixtures keep these PPtrs within one bundle. Completion
 verifies the digest, writes the existing `unityrs.anim_replay` version 1
 format and runs its validator. The validator refuses pending recordings.
 
-For a saved inspection, pass `--inspect-dir DIR`. Use an unfiltered,
-complete `unityrs inspect BUNDLE --limit 10000 --max-bytes 1048576` response
+For a saved inspection, pass `--inspect-dir DIR`. Completion trusts sidecars
+produced by our own unityrs tooling. The bundle digest catches stale or
+mismatched sidecars and provides no protection against forgery. Use an unfiltered,
+complete `unityrs inspect BUNDLE --limit 10000 --max-bytes 1048576 --external-paths` response
 named `BUNDLE.inspect.json`. Run inspection with the bundle basename
 from inside `bundles/`. Save each needed
 `unityrs show BUNDLE --file-index 0:FILE_INDEX --path-id PATH_ID --value canonical --max-items 4096 --max-bytes 4194304`
-response as `BUNDLE.FILE_INDEX.PATH_ID.show.json`. Add a top-level
+response as `BUNDLE.FILE_INDEX.PATH_ID.show.json`.
+For the four-influence skin meshes in `static-objects` and `anim-generic`,
+use `--value natural --bytes full` in place of `--value canonical` to preserve
+the vertex bytes. Add a top-level
 `bundle_sha256` field to the inspect response and each show response, using
 the SHA-256 of the bundle bytes inspected at the time of capture. Preserve
 exact file occurrences and signed path IDs. Completion refuses cut values,

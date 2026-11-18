@@ -169,7 +169,7 @@ static partial class UnityrsFixtureBuilder
         string shortId = run.run_id.Substring(0, 8);
         string staging = output + ".b-" + shortId;
         string stagedLog = Path.Combine(staging, LogFile);
-        bool publishing = false;
+        bool publishing = false, preserveStaging = false;
         string[] failures;
         try
         {
@@ -202,7 +202,7 @@ static partial class UnityrsFixtureBuilder
                     var report = new RunReport(Log);
                     AddDeferredCases(report);
                     Progress("Preparing fixtures", .05f);
-                    var build = PrepareInFixtureScene(report, run.Stamp);
+                    var build = PrepareInFixtureScene(report, run.Stamp, ref preserveStaging);
                     BuildAndCapture(build, report, staging, run, target, record, Log);
                     failures = report.Write(staging, projectPath, run);
                     Log(failures.Length == 0 ? "Finished." : "Finished with fixture errors: " + string.Join(", ", failures));
@@ -231,13 +231,16 @@ static partial class UnityrsFixtureBuilder
             EditorUtility.ClearProgressBar();
             Debug.LogException(error);
             string diagnostic = "See the Unity Console.";
-            if (publishing)
+            if (publishing || preserveStaging)
             {
-                diagnostic = "Close any windows or terminals using the output folders, then zip this staged folder and send it instead:\n" + staging;
+                diagnostic = publishing
+                    ? "Close any windows or terminals using the output folders, then zip this staged folder and send it instead:\n" + staging
+                    : "Send this run's staged folder and build log:\n" + staging;
                 try { File.AppendAllText(stagedLog, "ERROR " + error.Message + "\n" + diagnostic + "\n"); }
                 catch (IOException logError) { Debug.LogException(logError); }
                 catch (UnauthorizedAccessException logError) { Debug.LogException(logError); }
-                EditorUtility.DisplayDialog("unityrs fixtures staged", error.Message + "\n\n" + diagnostic, "OK");
+                EditorUtility.DisplayDialog(publishing ? "unityrs fixtures staged" : "unityrs fixture build failed",
+                    error.Message + "\n\n" + diagnostic, "OK");
                 return;
             }
             if (File.Exists(stagedLog))
@@ -259,7 +262,7 @@ static partial class UnityrsFixtureBuilder
         finally
         {
             EditorUtility.ClearProgressBar();
-            if (!publishing && Directory.Exists(staging))
+            if (!publishing && !preserveStaging && Directory.Exists(staging))
             {
                 try { Directory.Delete(staging, true); }
                 catch (IOException cleanupError) { Debug.LogException(cleanupError); }
@@ -284,7 +287,7 @@ static partial class UnityrsFixtureBuilder
         report.AddDeferred("integer-discrete-binding", "This run verifies a PPtr transition. An integer discrete flag needs its own fixture.");
     }
 
-    static Build PrepareInFixtureScene(RunReport report, string stamp)
+    static Build PrepareInFixtureScene(RunReport report, string stamp, ref bool preserveStaging)
     {
         // Unity cannot create an additive scene while an untitled scene is open.
         for (int i = 0; i < SceneManager.sceneCount; i++)
@@ -295,12 +298,11 @@ static partial class UnityrsFixtureBuilder
         }
         var previous = SceneManager.GetActiveScene();
         var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
-        try
+        return PrepareAndCloseScene(() =>
         {
             Require(SceneManager.SetActiveScene(scene), "Could not activate the fixture scene.");
             return PrepareFixtures(report, scene, stamp);
-        }
-        finally
+        }, () =>
         {
             try
             {
@@ -308,11 +310,31 @@ static partial class UnityrsFixtureBuilder
                     Debug.LogError("Could not restore the previously active scene.");
             }
             catch (Exception error) { Debug.LogException(error); }
+            return EditorSceneManager.CloseScene(scene, true);
+        }, ref preserveStaging);
+    }
+
+    static Build PrepareAndCloseScene(Func<Build> prepare, Func<bool> close, ref bool preserveStaging)
+    {
+        bool prepared = false;
+        try
+        {
+            var build = prepare();
+            prepared = true;
+            return build;
+        }
+        finally
+        {
             try
             {
-                if (!EditorSceneManager.CloseScene(scene, true)) Debug.LogError("Could not close the fixture scene before building.");
+                Require(close(), "Could not close the fixture scene before building.");
             }
-            catch (Exception error) { Debug.LogException(error); }
+            catch (Exception error)
+            {
+                preserveStaging = true;
+                if (prepared) throw;
+                Debug.LogException(error);
+            }
         }
     }
 

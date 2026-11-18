@@ -1,4 +1,4 @@
-use super::support::{fixture, json};
+use super::support::{fixture, json, run};
 use unityrs_testkit::ngui::{self, Object, s, st};
 
 #[test]
@@ -126,11 +126,45 @@ fn inspect_lists_external_paths_in_file_id_order() {
     ];
     let file = unityrs_testkit::env::serialized(&paths, &[]);
     std::fs::write(tmp.join("scene.assets"), file).unwrap();
-    let page = json(&tmp, &["inspect", "scene.assets"], 0);
+    let page = json(&tmp, &["inspect", "scene.assets", "--external-paths"], 0);
     assert_eq!(
         page["inputs"][0]["files"][0]["external_paths"],
         serde_json::json!(paths)
     );
+}
+
+#[test]
+fn inspect_without_external_paths_preserves_the_exact_byte_cap() {
+    let tmp = fixture();
+    let args = ["inspect", "synthetic.assets", "--name", "alpha"];
+    let original = run(&tmp, &args);
+    assert!(original.status.success());
+    let cap = original.stdout.len().to_string();
+    let file = ngui::file(
+        &[
+            "archive:/cab/cab.sharedasset",
+            "resources/unity_builtin_extra",
+        ],
+        &[Object::new(
+            -2,
+            49,
+            st(
+                "TextAsset",
+                vec![("m_Name", s("alpha")), ("m_Script", s("hello"))],
+            ),
+        )],
+        true,
+    )
+    .unwrap();
+    std::fs::write(tmp.join("synthetic.assets"), file).unwrap();
+    let capped = [&args[..], &["--max-bytes", &cap]].concat();
+    let page = run(&tmp, &capped);
+    assert!(page.status.success(), "{page:?}");
+    assert_eq!(page.stdout, original.stdout);
+    assert_eq!(page.stderr, original.stderr);
+
+    let opted_in = [&capped[..], &["--external-paths"]].concat();
+    assert_eq!(json(&tmp, &opted_in, 1)["code"], "budget");
 }
 
 #[test]

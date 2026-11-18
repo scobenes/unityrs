@@ -7,9 +7,10 @@ import os
 import re
 import struct
 from uuid import uuid4
+from zlib import crc32
 
 import child
-from anim_fixture_contract import (ASSETS, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
+from anim_fixture_contract import (ASSETS, MOTION, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
                                    check_built_clip, check_built_static, check_discovery, check_evidence,
                                    check_identity, check_vectors)
 
@@ -60,7 +61,7 @@ class BundleView:
         cursor = None
         seen = set()
         while True:
-            options = ["--limit", "10000", "--max-bytes", "1048576"]
+            options = ["--limit", "10000", "--max-bytes", "1048576", "--external-paths"]
             if cursor is not None:
                 options += ["--cursor", cursor]
             doc = self.document("inspect", options, path.name + ".inspect.json")
@@ -116,11 +117,14 @@ class BundleView:
             self.require(doc.get("bundle_sha256") == self.digest, f"inspection bundle digest mismatch: {json_name}")
         return doc
 
-    def value(self, key):
-        if key not in self.values:
+    def value(self, key, *, full_bytes=False):
+        cache_key = key, full_bytes
+        if cache_key not in self.values:
             file, path = key
-            options = ["--file-index", f"0:{file}", "--path-id", str(path), "--value", "canonical",
+            options = ["--file-index", f"0:{file}", "--path-id", str(path),
                        "--max-items", "4096", "--max-bytes", "4194304"]
+            # Canonical show summarizes byte arrays longer than 64 bytes.
+            options += ["--value", "natural", "--bytes", "full"] if full_bytes else ["--value", "canonical"]
             doc = self.document("show", options, f"{self.path.name}.{file}.{path}.show.json")
             self.require(doc["object"] == self.headers[key], f"show identity disagrees with inspect: {key}")
             truncated = doc.get("truncated")
@@ -129,8 +133,8 @@ class BundleView:
                          f"truncated show or missing truncation counters: {key}")
             value = wire_value(doc["value"], self.replay)
             self.require(isinstance(value, dict) and "$unityrs" not in value, f"unreadable show value: {key}")
-            self.values[key] = value
-        return self.values[key]
+            self.values[cache_key] = value
+        return self.values[cache_key]
 
     def identity(self, key):
         if key is None:
@@ -258,7 +262,7 @@ class BundleView:
         return rows, direct
 
 
-def streamed_times(words, width, require):
+def streamed_times(words, width, require, *, require_real_keys=False):
     """Read frame times from the CLI's uint32 view of m_StreamedClip.data."""
     cursor, previous, occupied = 0, -math.inf, set()
     while cursor < len(words):
@@ -279,7 +283,8 @@ def streamed_times(words, width, require):
         slots = words[start:cursor:5]
         require(all(type(slot) is int and 0 <= slot < width for slot in slots)
                 and len(set(slots)) == len(slots), "invalid built streamed clip slot")
-        occupied.update(slots)
+        if not seed or not require_real_keys:
+            occupied.update(slots)
         if count and not seed:
             yield time
     require(len(occupied) == width, "missing built streamed clip frame data")
@@ -311,7 +316,7 @@ def packed_times(times, require):
         yield total / 100
 
 
-def built_key_times(value, playback, require):
+def built_key_times(value, playback, require, *, require_real_stream_keys=False):
     times = []
     for field in ("m_PositionCurves", "m_RotationCurves", "m_EulerCurves", "m_ScaleCurves",
                   "m_FloatCurves", "m_PPtrCurves"):
@@ -327,7 +332,7 @@ def built_key_times(value, playback, require):
         count, words = stream["curveCount"], stream.get("data")
         require(type(count) is int and count >= 0, "invalid built streamed clip curve count")
         require(isinstance(words, list) and (count == 0 or words), "missing built streamed clip frame data")
-        times.extend(streamed_times(words, count, require))
+        times.extend(streamed_times(words, count, require, require_real_keys=require_real_stream_keys))
     dense = playback.get("m_DenseClip", {})
     if dense.get("m_CurveCount", 0):
         curves, count, rate, begin = (dense[k] for k in ("m_CurveCount", "m_FrameCount", "m_SampleRate", "m_BeginTime"))
@@ -347,6 +352,7 @@ def built_key_times(value, playback, require):
 
 def clip_evidence(spec, capture, value, replay):
     evidence = spec["evidence"]
+    is_scale_fixture = evidence.get("editor", {}).get("fixture_case") == "generic-scale"
     muscle = value.get("m_MuscleClip", {})
     playback = muscle.get("m_Clip", {})
     playback = playback.get("data", playback)
@@ -369,7 +375,8 @@ def clip_evidence(spec, capture, value, replay):
         if compiled or fields in value:
             replay.require(serialized.get(field) == spec[side], f"built clip {side} differs from Editor evidence")
             evidence["clock"][side]["field"] = f"{fields}.{field}"
-    built_times = built_key_times(value, playback if compiled else {}, replay.require)
+    built_times = built_key_times(value, playback if compiled else {}, replay.require,
+                                require_real_stream_keys=is_scale_fixture)
     if not compiled and fields not in value:
         replay.require(built_times and (built_times[0], built_times[-1]) == (spec["start"], spec["stop"]),
                        "built clip key bounds differ from Editor interval")
@@ -382,11 +389,13 @@ def clip_evidence(spec, capture, value, replay):
     layouts = [label for label, count in (("streamed", stream), ("dense", dense), ("constant", constant))
                if count]
     evidence["layout"] = ("_".join(layouts) or "compiled") if compiled else "explicit"
-    if evidence.get("editor", {}).get("fixture_case") == "generic-scale":
+    if is_scale_fixture:
         binding = bindings[0] if len(bindings) == 1 else {}
         evidence["mixed_transform_storage"] = (compiled and len(layouts) > 1 and stream + dense + constant == 3
                                                 and binding.get("typeID", binding.get("classID")) == 4
-                                                and binding.get("attribute") == 3 and binding.get("customType") == 0)
+                                                and binding.get("attribute") == 3 and binding.get("customType") == 0
+                                                and binding.get("path") == crc32(MOTION.encode())
+                                                and not binding.get("isPPtrCurve"))
     f32_settings = {"startTime", "stopTime", "orientationOffsetY", "level", "cycleOffset",
                     "additiveReferencePoseTime"}
     evidence["import_settings"] = []
@@ -403,14 +412,20 @@ def clip_evidence(spec, capture, value, replay):
             serialized_path=f"{fields}.{field}", serialized=stored))
 
 
+def check_recording_run(doc, run, replay, label):
+    spec, capture = doc["spec"], doc["capture"]
+    replay.require(spec["evidence"]["editor"].get("run_id") == run["run_id"]
+                   and capture["editor_version"] == run["editor_version"]
+                   and capture["build_target"] == spec["build_target"] == run["build_target"],
+                   f"fixture run identity mismatch in {label}")
+
+
 def complete_recording(name, fixture, doc, bundle_dir, views, unityrs, inspect_dir, replay, run):
     replay.require(set(doc) == {"format", "version", "spec", "capture"}
                    and doc["format"] == PENDING_FORMAT and type(doc["version"]) is int and doc["version"] == 1,
                    "expected unityrs.anim_replay_pending version 1")
     spec, capture = doc["spec"], doc["capture"]
-    replay.require((spec["evidence"]["editor"].get("run_id"), capture["editor_version"], capture["build_target"])
-                   == (run["run_id"], run["editor_version"], run["build_target"])
-                   and spec["build_target"] == run["build_target"], "fixture run identity mismatch in recording")
+    check_recording_run(doc, run, replay, "recording")
     replay.require(not {"prefab", "clip", "binding", "avatar"}.intersection(spec),
                    "pending replay already contains built identities")
     check_identity(name, fixture, spec, capture, replay)
@@ -569,12 +584,18 @@ def complete_folder(folder, unityrs, inspect_dir, replay):
             name = path.name.removesuffix(".pending.json")
             result = complete_recording(name, fixtures[name], document, bundle_dir, views, unityrs, inspect_dir, replay, run)
             recordings[name] = result
+            output = path.with_name(name + ".json")
             if name in VECTOR_CASES and "humanoid" not in result["spec"]["evidence"]:
+                if output.exists():
+                    existing = replay.read_json(output.read_text(encoding="utf-8"))
+                    replay.require(existing.get("format") == "unityrs.anim_replay"
+                                   and type(existing.get("version")) is int and existing["version"] == 1,
+                                   f"expected completed replay version 1 in {output.name}")
+                    check_recording_run(existing, run, replay, "existing known-vector recording")
                 continue
             if name == "generic-scale" and recorded_mixed:
                 replay.require(result["spec"]["evidence"]["mixed_transform_storage"],
                                "mixed Transform storage reported by Unity is absent from the built scale clip")
-            output = path.with_name(path.name.removesuffix(".pending.json") + ".json")
             data = json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
             replay.require(not output.exists() or output.read_text(encoding="utf-8") == data,
                            f"{output.name} already exists with different content")

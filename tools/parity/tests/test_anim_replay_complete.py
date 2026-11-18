@@ -11,7 +11,7 @@ from pathlib import Path
 
 from anim_fixture_support import (
     DEFERRED, REPLAYS, ROOT_ID, RUN, STATIC, VECTORS, bits, canonical, fixture_archives, rebuild_bundle,
-    stamp, static_bundles, write,
+    stamp, static_bundles, untag, write,
 )
 from test_anim_replay import identity
 
@@ -70,6 +70,7 @@ class CompleteReplayTests(unittest.TestCase):
         return path, json.loads(path.read_text())
 
     def test_complete_resolves_exact_ids_from_container_and_pointers(self):
+        self.replace_clip_values("generic-object-reference", lambda clip: clip.pop("m_PPtrCurves"))
         result = self.complete()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Completed and validated 16 replay(s)", result.stdout)
@@ -138,22 +139,47 @@ class CompleteReplayTests(unittest.TestCase):
         self.assert_refused("fixture binding flags mismatch")
 
     def test_complete_confirms_reported_mixed_transform_storage(self):
-        for row in self.run["cases"]:
-            if row["name"] == "mixed-transform-storage":
-                row.update(status="recorded", reason="Mixed scale vector")
+        self.report_mixed_storage()
         self.assert_refused("mixed Transform storage reported by Unity is absent")
-        path, doc = self.clip_show("generic-scale")
-        clip = dict(doc["value"]["v"])
-        playback = dict(dict(dict(clip["m_MuscleClip"]["v"])["m_Clip"]["v"])["data"]["v"])
-        dict(playback["m_ConstantClip"]["v"])["data"].append(canonical(1.))
-        doc["value"]["v"].append(["m_ClipBindingConstant", canonical({"genericBindings": [
-            {"path": 0, "typeID": 4, "attribute": 3, "customType": 0}
-        ]})])
-        write(path, doc)
+        self.store_mixed_scale()
         result = self.complete()
         self.assertEqual(result.returncode, 0, result.stderr)
         scale = json.loads((self.replays / "generic-scale.json").read_text(encoding="utf-8"))
         self.assertTrue(scale["spec"]["evidence"]["mixed_transform_storage"])
+
+    def report_mixed_storage(self):
+        for row in self.run["cases"]:
+            if row["name"] == "mixed-transform-storage":
+                row.update(status="recorded", reason="Mixed scale vector")
+
+    def store_mixed_scale(self, *, path_hash=crc32("Mötión".encode()), pptr=False, seed_only=False):
+        path, doc = self.clip_show("generic-scale")
+        clip = untag(doc["value"])
+        playback = clip["m_MuscleClip"]["m_Clip"]["data"]
+        playback["m_ConstantClip"]["data"].append(1.)
+        clip["m_ClipBindingConstant"] = {"genericBindings": [
+            {"path": path_hash, "typeID": 4, "attribute": 3, "customType": 0, "isPPtrCurve": pptr}
+        ]}
+        if seed_only:
+            playback["m_StreamedClip"]["data"] = [0xff7fffff, 1, 0, 0, 0, 0, 0, 0x7f800000, 0]
+        doc["value"] = canonical(clip)
+        write(path, doc)
+        rebuild_bundle(self.bundles, self.inspect, "anim-generic", self.recordings)
+
+    def test_mixed_storage_refuses_scale_on_the_wrong_path(self):
+        self.report_mixed_storage()
+        self.store_mixed_scale(path_hash=0)
+        self.assert_refused("mixed Transform storage reported by Unity is absent")
+
+    def test_mixed_storage_refuses_a_pptr_binding(self):
+        self.report_mixed_storage()
+        self.store_mixed_scale(pptr=True)
+        self.assert_refused("mixed Transform storage reported by Unity is absent")
+
+    def test_mixed_storage_refuses_a_seed_without_keys(self):
+        self.report_mixed_storage()
+        self.store_mixed_scale(seed_only=True)
+        self.assert_refused("missing built streamed clip frame data")
 
     def test_complete_requires_run_manifest(self):
         write(self.pending_path, self.recordings["legacy-explicit"])
@@ -216,6 +242,27 @@ class CompleteReplayTests(unittest.TestCase):
     def test_complete_refuses_known_vectors_from_a_different_editor(self):
         self.recordings[VECTORS[0]]["capture"]["editor_version"] = "6000.0.1f1"
         self.assert_refused("fixture run identity mismatch in recording")
+
+    def test_complete_refuses_existing_foreign_known_vectors_without_qualification(self):
+        name = VECTORS[0]
+        path = self.replays / "known-vectors" / f"{name}.json"
+        completed = copy.deepcopy(self.recordings[name])
+        completed["format"] = "unityrs.anim_replay"
+        for keys, replacement in ((('spec', 'evidence', 'editor', 'run_id'), 'a' * 32),
+                                  (('capture', 'editor_version'), '6000.0.1f1'),
+                                  (('capture', 'build_target'), 'StandaloneLinux64'),
+                                  (('spec', 'build_target'), 'StandaloneLinux64')):
+            with self.subTest(keys=keys):
+                foreign = copy.deepcopy(completed)
+                parent = foreign
+                for key in keys[:-1]:
+                    parent = parent[key]
+                parent[keys[-1]] = replacement
+                write(path, foreign)
+                self.assert_refused("fixture run identity mismatch in existing known-vector recording")
+                self.assertEqual(json.loads(path.read_text()), foreign)
+        write(path, completed | {"version": 2})
+        self.assert_refused("expected completed replay version 1")
 
     def test_complete_refuses_wrong_known_muscle_vector(self):
         doc = self.recordings[VECTORS[0]]
@@ -302,7 +349,7 @@ class CompleteReplayTests(unittest.TestCase):
                             ("generic-quaternion", "m_RotationCurves"), ("generic-constant", "m_PositionCurves"),
                             ("generic-offset-stepped", "m_PositionCurves"), ("generic-weighted", "m_PositionCurves"),
                             ("generic-scale", "m_ScaleCurves"), ("generic-morph", "m_FloatCurves"),
-                            ("generic-override-morph", "m_FloatCurves"), ("generic-object-reference", "m_PPtrCurves"),
+                            ("generic-override-morph", "m_FloatCurves"),
                             ("humanoid-compact-body-motion", "m_FloatCurves")):
             with self.subTest(case=case, field=field):
                 path, doc = self.clip_show(case)
@@ -314,6 +361,73 @@ class CompleteReplayTests(unittest.TestCase):
                 self.assert_refused("missing built fixture curve")
                 path.write_bytes(original)
                 rebuild_bundle(self.bundles, self.inspect, bundle, self.recordings)
+
+    def replace_clip_values(self, case, edit):
+        path, doc = self.clip_show(case)
+        value = untag(doc["value"])
+        edit(value)
+        doc["value"] = canonical(value)
+        write(path, doc)
+        rebuild_bundle(self.bundles, self.inspect, self.recordings[case]["spec"]["bundles"][0]["name"], self.recordings)
+
+    def test_complete_refuses_nonfinite_built_quaternion_components(self):
+        self.replace_clip_values("generic-quaternion", lambda clip: clip["m_RotationCurves"][0]["curve"]
+                                 ["m_Curve"][0]["value"].update(x={"t": "f32", "v": "7fc00000"}))
+        self.assert_refused("invalid built quaternion")
+
+    def test_complete_refuses_zero_built_quaternions(self):
+        self.replace_clip_values("generic-quaternion", lambda clip: clip["m_RotationCurves"][0]["curve"]
+                                 ["m_Curve"][0]["value"].update(dict.fromkeys("xyzw", 0.)))
+        self.assert_refused("invalid built quaternion")
+
+    def test_complete_refuses_zero_compiled_quaternions(self):
+        def edit(clip):
+            del clip["m_RotationCurves"]
+            clip["m_ClipBindingConstant"] = {"genericBindings": [
+                {"path": crc32("Mötión".encode()), "typeID": 4, "attribute": 2, "customType": 0, "isPPtrCurve": False}
+            ]}
+            data = clip["m_MuscleClip"]["m_Clip"]["data"]
+            data["m_ConstantClip"]["data"] = [0., 0.]
+            data["m_DenseClip"]["m_SampleArray"] = [0.] * 4
+
+        self.replace_clip_values("generic-quaternion", edit)
+        self.assert_refused("invalid built quaternion")
+
+    def test_complete_refuses_missing_or_wrong_compiled_pptr_transition(self):
+        def set_mapping(clip, mapping):
+            clip["m_ClipBindingConstant"]["pptrCurveMapping"] = [dict(m_FileID=0, m_PathID=index) for index in mapping]
+
+        def set_wrong_index(clip):
+            set_mapping(clip, [80, 81])
+            clip["m_MuscleClip"]["m_Clip"]["data"]["m_StreamedClip"]["data"][13] = 0
+
+        for label, edit in (("missing mapping", lambda clip: set_mapping(clip, [])),
+                            ("reversed mapping", lambda clip: set_mapping(clip, [81, 80])),
+                            ("wrong key index", set_wrong_index)):
+            with self.subTest(label=label):
+                self.replace_clip_values("generic-object-reference", edit)
+                self.assert_refused("invalid built compiled MeshFilter.m_Mesh PPtr transition")
+
+    def test_complete_refuses_skin_without_valid_per_vertex_weights(self):
+        path = self.inspect / "static-objects.1.7.show.json"
+        original = json.loads(path.read_text())
+        for failure in ("missing", "zero weights", "out of range bone index"):
+            with self.subTest(failure=failure):
+                doc = copy.deepcopy(original)
+                value = untag(doc["value"])
+                if failure == "missing":
+                    del value["m_VertexData"]["m_DataSize"]
+                else:
+                    data = bytearray.fromhex(value["m_VertexData"]["m_DataSize"]["hex"])
+                    if failure == "zero weights":
+                        data[:16] = bytes(16)
+                    else:
+                        data[16] = 4
+                    value["m_VertexData"]["m_DataSize"]["hex"] = data.hex()
+                doc["value"] = canonical(value)
+                write(path, doc)
+                rebuild_bundle(self.bundles, self.inspect, "static-objects", self.recordings)
+                self.assert_refused("built skin per-vertex bone weights")
 
     def test_complete_refuses_missing_built_static_features(self):
         for bundle, path_id, field, message in (

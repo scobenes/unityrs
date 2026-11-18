@@ -64,4 +64,36 @@ public static partial class AnimReplayRecorder
     }
 }
 
+static partial class UnityrsFixtureBuilder
+{
+    [MenuItem("Tools/unityrs/Test fixture scene close failure")]
+    static void TestFixtureSceneCloseFailure()
+    {
+        var preparationError = new InvalidOperationException("Synthetic fixture preparation failure.");
+        var closeError = new InvalidOperationException("Synthetic fixture scene close failure.");
+        foreach (bool preparationFailed in new[] { false, true })
+        {
+            foreach (bool closeThrew in new[] { false, true })
+            {
+                bool preserveStaging = false;
+                Exception observed = null;
+                try
+                {
+                    PrepareAndCloseScene(() => preparationFailed ? throw preparationError : new Build(),
+                        () => closeThrew ? throw closeError : false, ref preserveStaging);
+                }
+                catch (Exception error) { observed = error; }
+                Require(preserveStaging, "A fixture scene close failure must retain staging.");
+                if (preparationFailed || closeThrew)
+                    Require(ReferenceEquals(observed, preparationFailed ? preparationError : closeError),
+                        "A fixture scene close failure replaced the original exception.");
+                else
+                    Require(observed is InvalidOperationException && observed.Message == "Could not close the fixture scene before building.",
+                        "A fixture scene close refusal must fail the run.");
+            }
+        }
+        Debug.Log("Fixture scene close failure test passed.");
+    }
+}
+
 #endif

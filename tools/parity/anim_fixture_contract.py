@@ -5,7 +5,7 @@ from math import isfinite, radians
 import struct
 from zlib import crc32
 
-from anim_reference import streamed, weighted
+from anim_reference import dense, streamed, weighted
 
 ASSETS = "assets/unityrsfixtures/"
 STATIC_CASES = {
@@ -112,6 +112,11 @@ def built_transform_curves(clip):
     return curves
 
 
+def unit_quaternion(values):
+    return all(type(value) in (int, float) and isfinite(value) for value in values) and abs(
+        sum(value * value for value in values) - 1) <= .002
+
+
 def built_float_curves(clip, field):
     classes = {4: "Transform", 95: "Animator", 137: "SkinnedMeshRenderer"}
     return {(row["path"], classes[row["classID"]], row["attribute"]): (keys, None)
@@ -149,8 +154,7 @@ def compiled_curves(clip, replay):
         width = widths.get(attribute, 1) if class_id == 4 else 1
         span = tuple(range(len(slots), len(slots) + width))
         slots.extend(span)
-        if not row.get("isPPtrCurve"):
-            curves[path, class_id, attribute, custom] = span
+        curves[path, class_id, attribute, custom, bool(row.get("isPPtrCurve"))] = span
     if len(slots) != slot_count:
         return {}
 
@@ -158,12 +162,15 @@ def compiled_curves(clip, replay):
         return struct.unpack(">f", struct.pack(">I", word))[0]
 
     tracks = [[] for _ in range(stream_count)]
+    seeds = {}
     words = stream.get("data", [])
     cursor = 0
     while cursor < len(words):
         bits, count = words[cursor:cursor + 2]
         stop = cursor + 2 + 5 * count
-        if bits not in (0xff7fffff, 0x7f800000):
+        if cursor == 0 and bits == 0xff7fffff:
+            seeds = {words[i]: (f32(bits), tuple(map(f32, words[i+1:i+5]))) for i in range(cursor + 2, stop, 5)}
+        elif bits != 0x7f800000:
             for i in range(cursor + 2, stop, 5):
                 slot, *coefficients = words[i:i+5]
                 tracks[slot].append((f32(bits), tuple(map(f32, coefficients))))
@@ -172,7 +179,49 @@ def compiled_curves(clip, replay):
     dense_tracks = [[(dense["m_BeginTime"] + i / dense["m_SampleRate"], (0, 0, 0, p))
                      for i, p in enumerate(data[slot::dense_count])] for slot in range(dense_count)]
     tracks += dense_tracks + [[(0, (0, 0, 0, value))] for value in constants]
-    return {key: [(slot < stream_count, tracks[slot]) for slot in span] for key, span in curves.items()}
+    return {key: [(slot < stream_count, [seeds[slot], *tracks[slot]] if key[-1] and slot in seeds else tracks[slot])
+                  for slot in span] for key, span in curves.items()}
+
+
+def check_compiled_quaternion(tracks, timing):
+    if not all(keys and all(isfinite(value) for _, coefficients in keys for value in coefficients)
+               for _, keys in tracks):
+        return False
+    playback = timing["m_Clip"]
+    grid = playback.get("data", playback).get("m_DenseClip", {})
+
+    def sample(track, time):
+        is_streamed, keys = track
+        if is_streamed:
+            return streamed(keys, time)
+        values = [coefficients[3] for _, coefficients in keys]
+        if len(values) == 1:
+            return values[0]
+        return dense(values, 1, 0, grid["m_BeginTime"], grid["m_SampleRate"], time)
+
+    # Constant axes participate at every time. Check the clip endpoints and
+    # shared keys without treating intermediate interpolation as stored keys.
+    grids = [{time for time, _ in keys} for _, keys in tracks if len(keys) > 1]
+    times = {timing["m_StartTime"], timing["m_StopTime"]} | (set.intersection(*grids) if grids else set())
+    return all(unit_quaternion([sample(track, time) for track in tracks]) for time in times)
+
+
+def check_compiled_references(view, clip_key, clip, curves, expected):
+    path, _, prop = REFERENCE
+    tracks = [track for (path_hash, class_id, attribute, _, pptr), track in curves.items()
+              if (path_hash, class_id, attribute, pptr) == (crc32(path.encode()), 33, crc32(prop.encode()), True)]
+    message = "invalid built compiled MeshFilter.m_Mesh PPtr transition"
+    view.require(len(tracks) == 1 and len(tracks[0]) == 1 and tracks[0][0][1], message)
+    mapping = clip["m_ClipBindingConstant"].get("pptrCurveMapping", [])
+    changes = []
+    for time, coefficients in tracks[0][0][1]:
+        index = coefficients[3]
+        view.require(isfinite(index) and 0 <= index < len(mapping) and index == int(index), message)
+        target = view.pointer(clip_key, mapping[int(index)], {43})
+        if not changes or target != changes[-1][1]:
+            changes.append((time, target))
+    view.require(len(changes) == 2 and changes[0][0] <= 0 and changes[0][1] == expected[0]
+                 and changes[1] == (.5, expected[1]), message)
 
 
 def check_compiled_weight(track, scale):
@@ -193,16 +242,20 @@ def check_built_clip(name, fixture, view, clip_key, nodes, avatar):
     runtime = built_transform_curves(clip) | built_float_curves(clip, "m_FloatCurves")
     authored = built_float_curves(clip, "m_EditorCurves")
     by_hash = compiled_curves(clip, view.replay) if fixture.playback != "legacy" else {}
+    for row in clip.get("m_RotationCurves", []):
+        view.require(all(unit_quaternion([point["value"].get(axis) for axis in "xyzw"])
+                         for point in row["curve"]["m_Curve"]), "invalid built quaternion key")
     compiled = {}
     for path, kind, prop in fixture.bindings:
         key = path, kind, prop
         if key == REFERENCE:
-            rows = [row for row in clip.get("m_PPtrCurves", [])
-                    if (row["path"], row["classID"], row["attribute"]) == (path, 33, prop)]
             expected = [view.asset(asset, 43, ignore_case=True) for asset in REFERENCE_ASSETS]
-            view.require(len(rows) == 1 and [(point["time"], view.pointer(clip_key, point["value"], {43}))
-                                            for point in rows[0]["curve"]] == list(zip((0, .5), expected)),
-                         "missing built fixture curve for MeshFilter.m_Mesh PPtr transition")
+            if explicit := clip.get("m_PPtrCurves"):
+                rows = [row for row in explicit if (row["path"], row["classID"], row["attribute"]) == (path, 33, prop)]
+                view.require(len(rows) == 1 and [(point["time"], view.pointer(clip_key, point["value"], {43}))
+                                                for point in rows[0]["curve"]] == list(zip((0, .5), expected)),
+                             "invalid built explicit MeshFilter.m_Mesh PPtr transition")
+            check_compiled_references(view, clip_key, clip, by_hash, expected)
             reference = [keys for _, node_name, keys in nodes.values() if node_name == path]
             filters = [key for keys in reference for key in keys if view.headers[key]["class_id"] == 33]
             view.require(len(filters) == 1 and view.pointer(filters[0], view.value(filters[0])["m_Mesh"], {43})
@@ -212,13 +265,16 @@ def check_built_clip(name, fixture, view, clip_key, nodes, avatar):
         if kind == "Transform":
             family, _, axis = prop.rpartition(".")
             _, attribute, axes = TRANSFORM_CURVES[family]
-            family_tracks = by_hash.get((crc32(path.encode()), 4, attribute, 0))
+            family_tracks = by_hash.get((crc32(path.encode()), 4, attribute, 0, False))
             if family_tracks:
+                if attribute == 2 and axis == "x":
+                    view.require(check_compiled_quaternion(family_tracks, clip["m_MuscleClip"]),
+                                 "invalid built quaternion in compiled slots")
                 track = family_tracks[axes.index(axis):axes.index(axis) + 1]
         elif kind == "SkinnedMeshRenderer":
-            track = by_hash.get((crc32(path.encode()), 137, crc32(prop.encode()), 20), [])
+            track = by_hash.get((crc32(path.encode()), 137, crc32(prop.encode()), 20, False), [])
         elif kind == "Animator":
-            track = by_hash.get((0, 95, HUMANOID_ATTRIBUTES[key], 8), [])
+            track = by_hash.get((0, 95, HUMANOID_ATTRIBUTES[key], 8, False), [])
         if track and track[0][1] and all(isfinite(v) for _, co in track[0][1] for v in co):
             compiled[key] = track[0]
         view.require(key in runtime or key in compiled or (kind == "Animator" and key in authored),
@@ -261,7 +317,7 @@ def check_built_clip(name, fixture, view, clip_key, nodes, avatar):
         view.require(muscle.get("m_IndexArray") and any(slot >= 0 for slot in muscle["m_IndexArray"]),
                      "missing built fixture curve slots for humanoid playback")
         view.require(view.value(avatar).get("m_Avatar", {}).get("m_Human"), "missing built humanoid Avatar")
-        has_body = any(key in runtime or key in authored or (0, 95, HUMANOID_ATTRIBUTES[key], 8) in by_hash
+        has_body = any(key in runtime or key in authored or (0, 95, HUMANOID_ATTRIBUTES[key], 8, False) in by_hash
                        for key in BODY)
         view.require(has_body == ("muscle_only" not in fixture.checks), "built humanoid body motion mismatch")
         if name.removesuffix(VECTOR_SUFFIX).endswith("-offset"):
@@ -281,6 +337,43 @@ def mesh_parts(view, node):
     return node[33], view.value(node[33]), view.value(node[23])
 
 
+def skin_vertex_influences(vertex):
+    """Read BlendWeight and BlendIndices from the little-endian Windows mesh."""
+    channels = vertex.get("m_Channels", [])
+    data = vertex.get("m_DataSize", {})
+    if len(channels) < 14 or not isinstance(data, dict) or data.get("t") not in ("bytes", "u8s") or "hex" not in data:
+        return
+    blob = bytes.fromhex(data["hex"])
+    weights, indices = channels[12:14]
+    if any(channel["dimension"] & 15 != 4 for channel in (weights, indices)):
+        return
+    # Unity 2019+ vertex format IDs, including the channels that precede skinning.
+    formats = "feBbHhBbHhIi"
+    scales = {0: 1, 1: 1, 2: 255, 4: 65535}
+    if weights["format"] not in scales or indices["format"] < 6:
+        return
+    readers = [struct.Struct("<4" + formats[channel["format"]]) for channel in (weights, indices)]
+    count = vertex["m_VertexCount"]
+    strides = [0] * (max(channel["stream"] for channel in channels) + 1)
+    for channel in channels:
+        dimension = channel["dimension"] & 15
+        if dimension:
+            strides[channel["stream"]] += dimension * struct.calcsize("<" + formats[channel["format"]])
+    starts, offset = [], 0
+    for stride in strides:
+        starts.append(offset)
+        offset = (offset + count * stride + 15) & ~15
+    for index in range(count):
+        row = []
+        for channel, reader in zip((weights, indices), readers):
+            stream = channel["stream"]
+            start = starts[stream] + index * strides[stream] + channel["offset"]
+            if channel["offset"] + reader.size > strides[stream] or start + reader.size > len(blob):
+                return
+            row.append(reader.unpack_from(blob, start))
+        yield tuple(value / scales[weights["format"]] for value in row[0]), row[1]
+
+
 def check_skin(view, renderers, label, expected_mesh):
     view.require(len(renderers) == 2, f"{label} renderer count")
     meshes, bone_sets = set(), set()
@@ -296,7 +389,7 @@ def check_skin(view, renderers, label, expected_mesh):
         bone_sets.add(bones)
     view.require(len(meshes) == len(bone_sets) == 1 and (expected_mesh is None or meshes == {expected_mesh}),
                  f"{label} shared mesh or bones mismatch")
-    mesh = view.value(next(iter(meshes)))
+    mesh = view.value(next(iter(meshes)), full_bytes=True)
     shapes = mesh.get("m_Shapes", {})
     weights = floats(shapes.get("fullWeights", []), view.replay)
     frames = shapes.get("shapes", [])
@@ -305,7 +398,14 @@ def check_skin(view, renderers, label, expected_mesh):
                  and (channels[0]["name"], channels[0]["frameIndex"], channels[0]["frameCount"]) == ("Lift", 0, 2)
                  and all(0 <= row["firstVertex"] < row["firstVertex"] + row["vertexCount"]
                          <= len(shapes.get("vertices", [])) for row in frames), "missing built Lift blend-shape frames")
-    view.require(len(mesh.get("m_BindPose", [])) == 4, f"{label} bind pose count")
+    bind_count = len(mesh.get("m_BindPose", []))
+    view.require(bind_count == 4, f"{label} bind pose count")
+    vertex = mesh.get("m_VertexData", {})
+    influences = list(skin_vertex_influences(vertex))
+    view.require(len(influences) == vertex.get("m_VertexCount") and influences and
+                 all(set(indices) == set(range(bind_count)) and all(isfinite(w) and w > 0 for w in weights)
+                     and abs(sum(weights) - 1) <= .01 for weights, indices in influences),
+                 f"{label} per-vertex bone weights")
 
 
 def entries(value):
