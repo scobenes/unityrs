@@ -46,6 +46,54 @@ fn the_bin_streams_under_a_constant_heap_bound() {
     assert_eq!(writer_meter.used(), 0);
 }
 #[test]
+fn large_animation_accessors_stream_under_a_constant_heap_bound() {
+    let model_meter = Meter::unlimited();
+    let mut scene = Scene::new(&model_meter);
+    scene.nodes.push(Node::new(&model_meter)).unwrap();
+    scene.roots.push(0).unwrap();
+    let count = 96_000u32;
+    let mut times = MeteredVec::with_capacity(&model_meter, count as usize).unwrap();
+    let mut values = MeteredVec::with_capacity(&model_meter, 3 * count as usize).unwrap();
+    for key in 0..count {
+        times.push(f64::from(key) * 0.25).unwrap();
+        values.extend_from_slice(&[f64::from(key), 2., 3.]).unwrap();
+    }
+    for (kind, data) in [(Kind::AnimationTime, times), (Kind::AnimationVec3, values)] {
+        scene
+            .accessors
+            .push(Accessor {
+                kind,
+                count: count as usize,
+                data: Data::Float(data),
+                sparse_indices: None,
+            })
+            .unwrap();
+    }
+    let mut clip = Animation::new(&model_meter);
+    clip.samplers
+        .push(AnimationSampler {
+            input: 0,
+            output: 1,
+            interpolation: Interpolation::Linear,
+        })
+        .unwrap();
+    clip.channels
+        .push(AnimationChannel {
+            sampler: 0,
+            node: 0,
+            target: AnimationTarget::Translation,
+        })
+        .unwrap();
+    scene.animations.push(clip).unwrap();
+    let writer_meter = Meter::new(16 << 10, Arc::new(Unbounded), Reservation::Input);
+    let mut output = Observe { max: 0, bytes: 0 };
+    let report = write_glb(&scene, &Options::default(), &writer_meter, &mut output).unwrap();
+    assert_eq!(output.max, 65536);
+    assert!(output.bytes > 1_500_000);
+    drop(report);
+    assert_eq!(writer_meter.used(), 0);
+}
+#[test]
 fn layout_uses_first_reach_instead_of_accessor_table_order() {
     let meter = Meter::unlimited();
     let a = support::rich(&meter).unwrap();

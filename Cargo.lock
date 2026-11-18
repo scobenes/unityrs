@@ -1509,6 +1509,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs-anim"
+version = "0.0.1"
+dependencies = [
+ "unityrs-core",
+ "unityrs-scene",
+ "unityrs-testkit",
+]
+
+[[package]]
 name = "unityrs-audio"
 version = "0.0.1"
 dependencies = [

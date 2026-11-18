@@ -174,7 +174,7 @@ pub use cab::{Cab, HeldCab, RawCab};
 #[cfg(test)]
 pub(crate) use dependency::open_bare;
 pub(crate) use dependency::{
-    DepSlot, Dependency, Open, PoolRefusal, from_callers, open_source, with_room,
+    DepSlot, Dependency, Open, PoolRefusal, from_callers, open_source, pool_refused, with_room,
 };
 pub(crate) use lru::DepCache;
 #[cfg(test)]

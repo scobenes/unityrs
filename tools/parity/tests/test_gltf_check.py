@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import math
 import struct
 import sys
 import unittest
@@ -58,7 +59,127 @@ def attribute_fixture(attributes):
     return doc, binary
 
 
+def animation_fixture(path, rows, mode="LINEAR"):
+    shape = {"translation": "VEC3", "rotation": "VEC4", "weights": "SCALAR"}[path]
+    output = [v for row in rows for v in row]
+    data = struct.pack(f"<{2 + len(output)}f", 0.25, 1.25, *output)
+    doc = {
+        "bufferViews": [{"byteLength": 8}, {"byteOffset": 8, "byteLength": len(data) - 8}],
+        "accessors": [
+            {"bufferView": 0, "componentType": 5126, "type": "SCALAR", "count": 2,
+             "min": [0.25], "max": [1.25]},
+            {"bufferView": 1, "componentType": 5126, "type": shape,
+             "count": len(output) if path == "weights" else len(rows)},
+        ],
+        "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": [{"targets": [{"POSITION": 4}, {"POSITION": 5}]}]}],
+        "animations": [{
+            "samplers": [{"input": 0, "output": 1, "interpolation": mode}],
+            "channels": [{"sampler": 0, "target": {"node": 0, "path": path}}],
+        }],
+    }
+    return doc, data
+
+
 class Checks(unittest.TestCase):
+    def test_animation_reconstructs_step_and_linear_morph_rows(self):
+        rows = [[0.25, 0.5], [0.75, -0.25]]
+        for mode in ("STEP", "LINEAR"):
+            doc, data = animation_fixture("weights", rows, mode)
+            expected = {"animation": 0, "node": 0, "path": "weights", "interpolation": mode,
+                        "times": [0.25, 1.25], "values": rows,
+                        "samples": [[0.75, rows[0] if mode == "STEP" else [0.5, 0.125]]]}
+            self.assertEqual(g.check_accessors(doc, data, [expected]), 1)
+            wrong = dict(expected, samples=[[0.75, [0., 0.]]])
+            with self.assertRaisesRegex(AssertionError, "animation .* sample"):
+                g.check_accessors(doc, data, [wrong])
+            channel = g.decode_animation_channel(doc, data, 0, 0, "weights")
+            self.assertEqual(g.sample_animation(channel, 0.), rows[0])
+            self.assertEqual(g.sample_animation(channel, 0.75),
+                             rows[0] if mode == "STEP" else [0.5, 0.125])
+            if mode == "STEP":
+                self.assertEqual(g.sample_animation(channel, math.nextafter(1.25, 0.)), rows[0])
+            self.assertEqual(g.sample_animation(channel, 1.25), rows[1])
+            self.assertEqual(g.sample_animation(channel, 2.), rows[1])
+
+    def test_animation_reconstructs_quaternion_slerp_off_key(self):
+        s = math.sqrt(0.5)
+        for sign in (1, -1):
+            doc, data = animation_fixture("rotation", [[0., 0., 0., 1.], [0., 0., sign*s, sign*s]])
+            channel = g.decode_animation_channel(doc, data, 0, 0, "rotation")
+            result = g.sample_animation(channel, 0.5, rotation=True)
+            for actual, expected in zip(result, [0., 0., math.sin(math.pi/16), math.cos(math.pi/16)]):
+                self.assertAlmostEqual(actual, expected, places=14)
+
+    def test_animation_reconstructs_step_rotations_with_opposite_signs(self):
+        rows = [[0., 0., 0., 1.], [0., 0., 0., -1.]]
+        doc, data = animation_fixture("rotation", rows, "STEP")
+        channel = g.decode_animation_channel(doc, data, 0, 0, "rotation")
+        self.assertEqual(g.sample_animation(channel, 0.75, rotation=True), rows[0])
+        self.assertEqual(g.sample_animation(channel, 1.25, rotation=True), rows[1])
+
+    def test_animation_reconstruction_checks_time_bounds_order_and_output_count(self):
+        doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])
+        with self.assertRaisesRegex(ValueError, "time order"):
+            g.decode_animation_channel(doc, data[:4] * 2 + data[8:], 0, 0, "translation")
+        doc["accessors"][0]["max"] = [1.5]
+        with self.assertRaisesRegex(ValueError, "time bounds"):
+            g.decode_animation_channel(doc, data, 0, 0, "translation")
+        doc["accessors"][0]["max"] = [1.25]
+        doc["accessors"][1]["count"] = 1
+        with self.assertRaisesRegex(ValueError, "output dimensions"):
+            g.decode_animation_channel(doc, data, 0, 0, "translation")
+
+    def test_animation_time_bounds_use_accessor_f32_precision(self):
+        doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])
+        doc["accessors"][0].update(min=[0.1], max=[0.2])
+        # IEEE 754 binary32 encodings of decimal 0.1 and 0.2, little-endian.
+        data = bytes.fromhex("cdcccc3d cdcc4c3e") + data[8:]
+        _, times, _ = g.decode_animation_channel(doc, data, 0, 0, "translation")
+        self.assertEqual(times, [0.10000000149011612, 0.20000000298023224])
+
+    def test_animation_rejects_non_unit_and_zero_quaternions(self):
+        for invalid in ([0., 0., 0., 2.], [0., 0., 0., 0.], [0., 0., 0.5, 0.5],
+                        [0., 0., 0., 1.0000001192092896]):
+            with self.subTest(invalid=invalid):
+                doc, data = animation_fixture("rotation", [[0., 0., 0., 1.], invalid])
+                with self.assertRaisesRegex(ValueError, "unit quaternion"):
+                    g.decode_animation_channel(doc, data, 0, 0, "rotation")
+        with self.assertRaises(ValueError):
+            g.unit_quaternion([0., 0., 0., 0.])
+
+    def test_animation_requires_dense_views_that_fit_the_counts(self):
+        doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])
+        timing = doc["accessors"][0]
+        for count in (3, 1_000_000_000):
+            with self.subTest(count=count):
+                timing["count"] = count
+                with self.assertRaisesRegex(ValueError, "accessor view range"):
+                    g.decode_animation_channel(doc, data, 0, 0, "translation")
+        timing["count"] = 2
+        del timing["bufferView"]
+        with self.assertRaisesRegex(ValueError, "dense buffer view"):
+            g.decode_animation_channel(doc, data, 0, 0, "translation")
+
+    def test_animation_views_cannot_have_byte_stride_or_target(self):
+        for index in (0, 1):
+            for field, value in (("byteStride", 16), ("target", 34962)):
+                with self.subTest(index=index, field=field):
+                    doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])
+                    doc["bufferViews"][index][field] = value
+                    with self.assertRaisesRegex(ValueError, field):
+                        g.decode_animation_channel(doc, data, 0, 0, "translation")
+
+    def test_animation_checks_skin_and_mesh_attachments(self):
+        doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])
+        doc["nodes"][0]["skin"] = 0
+        with self.assertRaisesRegex(ValueError, "TRS targets a skinned node"):
+            g.decode_animation_channel(doc, data, 0, 0, "translation")
+        doc, data = animation_fixture("weights", [[0.25, 0.5], [0.75, -0.25]])
+        del doc["nodes"][0]["mesh"]
+        with self.assertRaisesRegex(ValueError, "weights need a mesh"):
+            g.decode_animation_channel(doc, data, 0, 0, "weights")
+
     def check_attributes(self, source, output, normalise=True):
         return g.check_accessors(*attribute_fixture(output),
                                  [{'mesh': 0, 'primitive': 0, 'attributes': source,

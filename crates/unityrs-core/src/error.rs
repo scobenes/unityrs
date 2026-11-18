@@ -140,6 +140,17 @@ pub enum Error {
     Io(IoError),
 }
 
+impl Error {
+    /// Whether the dependency budget refused a reservation, including when
+    /// an entry or object read wraps the refusal. A refusal carried inside a
+    /// `ParseError::Provider` is not recognised here; callers that retry
+    /// provider reads classify that case themselves.
+    #[must_use]
+    pub fn is_dependency_budget_refusal(&self) -> bool {
+        crate::env::registry::pool_refused(self)
+    }
+}
+
 /// An I/O error, shared because [`Error`] is `Clone`. `std::io::Error` has
 /// no equality, so two are equal when their kinds and OS error codes are.
 #[derive(Clone, Debug, thiserror::Error)]
@@ -398,6 +409,27 @@ pub enum NotFound {
 #[cfg(test)]
 mod tests {
     use super::Error;
+
+    #[test]
+    fn dependency_budget_refusal_follows_entry_and_asset_bundle_wrappers() {
+        use crate::budget::{BudgetExceeded, Reservation};
+        use crate::walk::{ParseError, ReadDetail, ReadError, ReadErrorKind};
+
+        for (what, expected) in [(Reservation::Dependency, true), (Reservation::Input, false)] {
+            let budget = BudgetExceeded { requested: 1, what };
+            let error = Error::Entry {
+                name: "assets".into(),
+                source: super::Arc::new(Error::AssetBundle(super::Arc::new(ParseError::Read(
+                    ReadError {
+                        kind: ReadErrorKind::Other,
+                        at: 0,
+                        detail: ReadDetail::Charge(budget.into()),
+                    },
+                )))),
+            };
+            assert_eq!(error.is_dependency_budget_refusal(), expected);
+        }
+    }
 
     #[test]
     fn a_short_read_reports_a_negative_position() {

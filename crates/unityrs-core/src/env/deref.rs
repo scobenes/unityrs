@@ -2,16 +2,18 @@
 //! Lookups and dereference: `get_cab`, `find_file` and `PPtr.deref`, by
 //! the rules of [`super::pptr`]. "Module docs" below are [`super`]'s.
 
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use super::container_index::Siblings;
 use super::listing::FileMatch;
 use super::load::Asked;
 use super::registry::from_callers;
+use super::registry::{Slot, SlotKind};
 use super::resource_data::top_container;
 use super::{Cab, DerefError, Environment, Found, HeldCab, PPtr, RawCab, pptr};
 use crate::error::{Error, NotFound};
-use crate::files::{File, ParentKind, SerializedFile};
+use crate::files::{External, File, FileSlot, ParentKind, SerializedFile};
 use crate::limits::Meter;
 use crate::object::ObjectRef;
 use crate::pystr::{clean_external_path, lower_eq, simplify_name};
@@ -47,6 +49,188 @@ pub(super) enum Reached {
     /// The resolver's file, loaded now: under the name it was asked for or
     /// another, which only the next lookup tells.
     Load,
+}
+
+pub(super) struct HeldLookup<'a> {
+    meter: &'a Meter,
+    container: Option<File>,
+    reuse: Option<&'a mut ReuseTarget<'a>>,
+}
+
+type ReuseTarget<'a> = dyn FnMut(FileOccurrence) -> Result<Option<ObjectRef>, Error> + 'a;
+
+impl HeldLookup<'_> {
+    fn reused(
+        &mut self,
+        occurrence: impl FnOnce() -> Option<FileOccurrence>,
+    ) -> Result<Option<ObjectRef>, Error> {
+        match (self.reuse.as_mut(), occurrence) {
+            (Some(reuse), occurrence) => occurrence().map_or(Ok(None), reuse),
+            (None, _) => Ok(None),
+        }
+    }
+}
+
+/// A serialized file's occurrence, comparable before its data is loaded.
+/// Dependency occurrences are stable across cache reopens.
+#[derive(Clone, Debug)]
+pub struct FileOccurrence(Occurrence);
+
+const _: () = crate::send_sync::<FileOccurrence>();
+
+#[derive(Clone, Debug)]
+enum Occurrence {
+    Parsed(Arc<SerializedFile>),
+    Dependency(usize, Arc<Slot>),
+    DependencySibling(Arc<SerializedFile>, usize),
+}
+
+impl FileOccurrence {
+    /// The occurrence of an already parsed file.
+    #[must_use]
+    pub fn of(file: &Arc<SerializedFile>) -> Self {
+        Self(Occurrence::Parsed(file.clone()))
+    }
+
+    fn in_entry(container: &File, index: usize) -> Option<Self> {
+        match container.parsed_container_entry(index)? {
+            File::Serialized(file) => Some(Self::of(file)),
+            _ => None,
+        }
+    }
+
+    fn in_sibling(from: &Arc<SerializedFile>, container: &File, index: usize) -> Option<Self> {
+        if from.occurrence_key().1.is_empty() {
+            Self::in_entry(container, index)
+        } else {
+            Some(Self(Occurrence::DependencySibling(from.clone(), index)))
+        }
+    }
+
+    fn in_slot(slot: &Arc<Slot>) -> Option<Self> {
+        match &slot.kind {
+            SlotKind::Dependency { dep } => Some(Self(Occurrence::Dependency(
+                dep.meter().input_address(),
+                slot.clone(),
+            ))),
+            SlotKind::Ready(Cab::Serialized(file)) => Some(Self::of(file)),
+            SlotKind::Entry { bundle, dir_index } => {
+                Self::in_entry(&File::Bundle(bundle.clone()), *dir_index)
+            }
+            SlotKind::Ready(_) => None,
+        }
+    }
+
+    fn parts(&self) -> (usize, &[usize], Option<usize>) {
+        match &self.0 {
+            Occurrence::Parsed(file) => {
+                let (input, path) = file.occurrence_key();
+                (input, path, None)
+            }
+            Occurrence::Dependency(input, slot) => (*input, slot.rank.path(), None),
+            Occurrence::DependencySibling(from, index) => {
+                let (input, path) = from.occurrence_key();
+                (
+                    input,
+                    path.split_last().map_or(&[], |(_, parent)| parent),
+                    Some(*index),
+                )
+            }
+        }
+    }
+
+    /// Number of directory indices in this occurrence, for work accounting.
+    #[must_use]
+    pub fn path_len(&self) -> usize {
+        let (_, path, last) = self.parts();
+        path.len() + usize::from(last.is_some())
+    }
+}
+
+impl PartialEq for FileOccurrence {
+    fn eq(&self, other: &Self) -> bool {
+        let (input, path, last) = self.parts();
+        let (other_input, other_path, other_last) = other.parts();
+        input == other_input
+            && path
+                .iter()
+                .copied()
+                .chain(last)
+                .eq(other_path.iter().copied().chain(other_last))
+    }
+}
+
+impl Eq for FileOccurrence {}
+
+impl Hash for FileOccurrence {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let (input, path, last) = self.parts();
+        input.hash(state);
+        (path.len() + usize::from(last.is_some())).hash(state);
+        for index in path.iter().copied().chain(last) {
+            index.hash(state);
+        }
+    }
+}
+
+fn scan_siblings(
+    slots: &[FileSlot],
+    clean: &RawStr,
+    work: Option<&Meter>,
+) -> Result<Option<usize>, Error> {
+    for slot in slots {
+        if let Some(work) = work {
+            work.count_decode((slot.name.as_bytes().len() as u64).saturating_add(1))?;
+        }
+        if lower_eq(slot.name.as_bytes(), clean.as_bytes()) {
+            return Ok(Some(slot.dir_index));
+        }
+    }
+    Ok(None)
+}
+
+fn external_name<'a>(
+    from: &'a SerializedFile,
+    file_id: i32,
+    work: Option<&Meter>,
+) -> Result<(&'a External, RawStr), DerefError> {
+    let externals = from.externals();
+    let index = pptr::external_index(file_id, externals.len()).map_err(|error| match error {
+        pptr::ExternalIndexError::PastEnd => DerefError::FileIdPastEnd { file_id },
+        pptr::ExternalIndexError::BelowStart => DerefError::FileIdBelowStart { file_id },
+    })?;
+    let external = externals
+        .get(index)
+        .ok_or(DerefError::FileIdBelowStart { file_id })?;
+    if let Some(work) = work {
+        work.count_decode(external.path.len() as u64)
+            .map_err(Error::from)?;
+    }
+    let clean = clean_external_path(&external.path, from.meter()).map_err(Error::from)?;
+    Ok((external, clean))
+}
+
+fn sibling_entry(
+    from: &SerializedFile,
+    clean: &RawStr,
+    siblings: Option<&mut Siblings>,
+    work: Option<&Meter>,
+) -> Result<Option<(File, usize)>, DerefError> {
+    let Some(parent) = from.parent() else {
+        return Ok(None);
+    };
+    let dropped = || DerefError::ContainerDropped {
+        name: parent.name.clone(),
+    };
+    let container = match &parent.kind {
+        ParentKind::Bundle { bundle, .. } => File::Bundle(bundle.upgrade().ok_or_else(dropped)?),
+        ParentKind::Web { web } => File::Web(web.upgrade().ok_or_else(dropped)?),
+    };
+    let index = match (siblings, &container) {
+        (Some(index), File::Bundle(bundle)) => index.find(bundle, clean)?,
+        _ => scan_siblings(container.container_files(), clean, work)?,
+    };
+    Ok(index.map(|index| (container, index)))
 }
 
 impl Environment {
@@ -119,9 +303,10 @@ impl Environment {
         is_dependency: bool,
         meter: &Arc<Meter>,
     ) -> Result<Option<File>, Error> {
-        match self.find(name, is_dependency, meter)? {
+        match self.find(name, is_dependency, meter, None)? {
             None => Ok(None),
             Some((Found::File(file), _)) => Ok(Some(file)),
+            Some((Found::Reused(object), _)) => Ok(Some(File::Serialized(object.file().clone()))),
             // A raw entry the registry answered is in its bundle's cell, so
             // `entry` reads the cell; it takes the retry all the same.
             Some((Found::Cab(cab), _)) => self.room(|| cab_file(&cab)).map(Some),
@@ -140,15 +325,30 @@ impl Environment {
         name: &RawStr,
         is_dependency: bool,
         meter: &Arc<Meter>,
+        mut work: Option<&mut HeldLookup<'_>>,
     ) -> Result<Option<(Found, Reached)>, Error> {
         // UnityPy environment.py:326-329: `get_cab(simplify_name(name))`,
         // which simplifies again.
-        let found = self.room(|| {
+        let found = self.room(|| -> Result<Option<Found>, Error> {
             let simple = simplify_name(name, meter)?;
-            self.inner.registry.get(&simple, meter)
+            let registry = &self.inner.registry;
+            if let Some(work) = work.as_deref_mut() {
+                let Some(slot) = registry.slot(&simple, meter)? else {
+                    return Ok(None);
+                };
+                if let Some(object) = work.reused(|| FileOccurrence::in_slot(&slot))? {
+                    return Ok(Some(Found::Reused(object)));
+                }
+                Ok(registry.resolve_held(&slot)?.map(|held| {
+                    work.container = held.hold;
+                    Found::Cab(held.cab)
+                }))
+            } else {
+                Ok(registry.get(&simple, meter)?.map(Found::Cab))
+            }
         })?;
-        if let Some(cab) = found {
-            return Ok(Some((Found::Cab(cab), Reached::Lookup)));
+        if let Some(found) = found {
+            return Ok(Some((found, Reached::Lookup)));
         }
         // :330-354: the resolver stands for the walk of `env.path`. What it
         // returns is the caller's code's, a pool refusal in it counted as it
@@ -179,12 +379,71 @@ impl Environment {
     /// evicts the others and retries once, `from`'s top-level bundle held
     /// meanwhile (plan section 3.13; review round 8: it had no retry).
     pub fn deref(&self, from: &Arc<SerializedFile>, pptr: PPtr) -> Result<ObjectRef, DerefError> {
+        self.deref_inner(from, pptr, None)
+    }
+
+    /// Resolve as in [`Self::deref`], retaining the target's top-level
+    /// container when available. Hold the returned file to preserve access
+    /// to the target's siblings across dependency cache evictions.
+    ///
+    /// Charge the caller's work meter for the external path and each sibling
+    /// name examined, including any scan on retry.
+    pub fn deref_held(
+        &self,
+        from: &Arc<SerializedFile>,
+        pptr: PPtr,
+        meter: &Meter,
+    ) -> Result<(ObjectRef, Option<File>), DerefError> {
+        let mut work = HeldLookup {
+            meter,
+            container: None,
+            reuse: None,
+        };
+        let object = self.deref_inner(from, pptr, Some(&mut work))?;
+        Ok((object, work.container))
+    }
+
+    /// Resolve as in [`Self::deref_held`]. Before opening a known target,
+    /// offer its file occurrence to `reuse`. The callback may return a
+    /// retained object at the requested path ID in that occurrence. A hit
+    /// needs no new target container hold, even after a dependency eviction.
+    ///
+    /// Reuse assumes a dependency's source stays stable across reopens.
+    /// A resolver alias may load another copy of a dependency.
+    pub fn deref_held_reusing(
+        &self,
+        from: &Arc<SerializedFile>,
+        pptr: PPtr,
+        meter: &Meter,
+        mut reuse: impl FnMut(FileOccurrence) -> Result<Option<ObjectRef>, Error>,
+    ) -> Result<(ObjectRef, Option<File>), DerefError> {
+        let mut work = HeldLookup {
+            meter,
+            container: None,
+            reuse: Some(&mut reuse),
+        };
+        let object = self.deref_inner(from, pptr, Some(&mut work))?;
+        Ok((object, work.container))
+    }
+
+    fn deref_inner(
+        &self,
+        from: &Arc<SerializedFile>,
+        pptr: PPtr,
+        mut work: Option<&mut HeldLookup<'_>>,
+    ) -> Result<ObjectRef, DerefError> {
         // UnityPy classes/PPtr.py:49-50
         if pptr.path_id == 0 {
             return Err(DerefError::Null);
         }
         // :53-54
         if pptr.file_id == 0 {
+            if let Some(work) = work {
+                if let Some(object) = work.reused(|| Some(FileOccurrence::of(from)))? {
+                    return Ok(object);
+                }
+                work.container = top_container(from);
+            }
             return object_in(from, pptr.path_id);
         }
         let _top = top_container(from);
@@ -192,8 +451,17 @@ impl Environment {
         // loads again what the first run loaded.
         self.room(|| {
             self.reach_chain(from)?;
-            let (target, _) = self.external(from, pptr.file_id, None)?;
-            Self::object_of(&target, pptr.path_id)
+            let (target, _) = self.external(from, pptr.file_id, None, work.as_deref_mut())?;
+            if let Found::Reused(object) = target {
+                return Ok(object);
+            }
+            let object = Self::object_of(&target, pptr.path_id)?;
+            if let Some(work) = work.as_deref_mut()
+                && work.container.is_none()
+            {
+                work.container = top_container(object.file());
+            }
+            Ok(object)
         })
     }
 
@@ -207,69 +475,40 @@ impl Environment {
         from: &Arc<SerializedFile>,
         file_id: i32,
         siblings: Option<&mut Siblings>,
+        mut work: Option<&mut HeldLookup<'_>>,
     ) -> Result<(Found, Reached), DerefError> {
-        // :57-60
-        let externals = from.externals();
-        let external = match pptr::external_index(file_id, externals.len()) {
-            Ok(i) => externals.get(i),
-            Err(pptr::ExternalIndexError::PastEnd) => {
-                return Err(DerefError::FileIdPastEnd { file_id });
-            }
-            Err(pptr::ExternalIndexError::BelowStart) => None,
-        };
-        let Some(external) = external else {
-            return Err(DerefError::FileIdBelowStart { file_id });
-        };
         let meter = from.meter();
-        // :68-73
-        let clean = clean_external_path(&external.path, meter).map_err(Error::from)?;
+        let meter_work = work.as_ref().map(|work| work.meter);
+        let (external, clean) = external_name(from, file_id, meter_work)?;
         // :63-78: the container's `files`, each key lower-cased, the first
         // equal one wins.
-        let sibling = match from.parent() {
-            Some(parent) => match &parent.kind {
-                ParentKind::Bundle { bundle, .. } => {
-                    let Some(bundle) = bundle.upgrade() else {
-                        return Err(DerefError::ContainerDropped {
-                            name: parent.name.clone(),
-                        });
-                    };
-                    let hit = match siblings {
-                        Some(index) => index.find(&bundle, &clean)?,
-                        None => bundle
-                            .files()
-                            .iter()
-                            .find(|s| lower_eq(s.name.as_bytes(), clean.as_bytes()))
-                            .map(|s| s.dir_index),
-                    };
-                    match hit {
-                        Some(i) => {
-                            let f = bundle.entry(i)?;
-                            // Named as a sibling, a nested container is
-                            // reached, as a `get` of its name would reach it.
-                            if matches!(f, File::Bundle(_) | File::Web(_)) {
-                                self.reach_sibling(from, &bundle, i, &f)?;
-                            }
-                            Some((f, Reached::Sibling))
-                        }
-                        None => None,
+        let sibling = if let Some((parent, i)) = sibling_entry(from, &clean, siblings, meter_work)?
+        {
+            if let Some(work) = work.as_deref_mut()
+                && let Some(object) =
+                    work.reused(|| FileOccurrence::in_sibling(from, &parent, i))?
+            {
+                return Ok((Found::Reused(object), Reached::Sibling));
+            }
+            let file = parent.container_entry(i)?;
+            // Named as a sibling, a nested container is reached as a get
+            // of its name would reach it.
+            if matches!(file, File::Bundle(_) | File::Web(_))
+                && let File::Bundle(bundle) = parent
+            {
+                self.reach_sibling(from, &bundle, i, &file)?;
+            }
+            Some((file, Reached::Sibling))
+        } else if from.parent().is_none() {
+            match self.files_match(&clean) {
+                Some(FileMatch::File(f)) => {
+                    if let (File::Serialized(file), Some(work)) = (&f, work.as_deref_mut())
+                        && let Some(object) = work.reused(|| Some(FileOccurrence::of(file)))?
+                    {
+                        return Ok((Found::Reused(object), Reached::Lookup));
                     }
+                    Some((f, Reached::Lookup))
                 }
-                ParentKind::Web { web } => {
-                    let web = web.upgrade().ok_or_else(|| DerefError::ContainerDropped {
-                        name: parent.name.clone(),
-                    })?;
-                    let hit = web
-                        .files()
-                        .iter()
-                        .find(|s| lower_eq(s.name.as_bytes(), clean.as_bytes()));
-                    match hit {
-                        Some(slot) => Some((web.entry(slot.dir_index)?, Reached::Sibling)),
-                        None => None,
-                    }
-                }
-            },
-            None => match self.files_match(&clean) {
-                Some(FileMatch::File(f)) => Some((f, Reached::Lookup)),
                 // A matching key breaks the loop even when its value is
                 // None; only an absent key runs the for-else fallback
                 // (classes/PPtr.py:75-88).
@@ -279,13 +518,15 @@ impl Environment {
                     });
                 }
                 None => None,
-            },
+            }
+        } else {
+            None
         };
         match sibling {
             Some((f, reached)) => Ok((Found::File(f), reached)),
             // :80-85: `find_file`'s `None`, and its walk's
             // `FileNotFoundError`, are the pointer's `FileNotFoundError`.
-            None => match self.find(&clean, true, meter) {
+            None => match self.find(&clean, true, meter, work) {
                 Ok(Some(t)) => Ok(t),
                 Ok(None) | Err(Error::NotFound(NotFound::Cab(_))) => Err(DerefError::NotFound {
                     path: external.path.clone(),
@@ -299,6 +540,7 @@ impl Environment {
     /// (`classes/PPtr.py:90`, `assetsfile_dst.objects[m_PathID]`).
     pub(super) fn object_of(target: &Found, path_id: i64) -> Result<ObjectRef, DerefError> {
         match target.clone() {
+            Found::Reused(object) => Ok(object),
             Found::Cab(Cab::Serialized(sf)) | Found::File(File::Serialized(sf)) => {
                 object_in(&sf, path_id)
             }

@@ -83,6 +83,12 @@ const CALLS: &[(&str, Pool, &[&str])] = &[
         Pool::Own,
         &[SWEEP, FULL, HOLD, RESOLVER],
     ),
+    ("Environment::deref_held", Pool::Own, &[SWEEP]),
+    (
+        "Environment::deref_held_reusing",
+        Pool::Own,
+        &["held_deref_charges_only_the_scans_each_retry_repeats"],
+    ),
     (
         "Environment::resource",
         Pool::Own,

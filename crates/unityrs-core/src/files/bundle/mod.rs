@@ -256,6 +256,7 @@ pub struct BundleFile {
     directory: Box<[DirEntry]>,
     files: Box<[FileSlot]>,
     parent: Option<Parent>,
+    pub(super) dependency_path: super::DependencyPath,
     /// Enclosing ZIP levels when this is an Environment file.
     source_depth: u32,
     /// Each block's outcome, once known: its actual decoded length (a stored
@@ -581,14 +582,16 @@ impl BundleFile {
         // docs, "Memory and work").
         let meter = self.meter();
         let scope = GrantScope::enter(meter);
-        let got = parse_file(
-            e.path.clone(),
-            bytes,
-            ty,
-            Some(parent),
-            meter,
-            self.ctx.file(),
-        );
+        let got = self.dependency_path.parse_child(meter, dir_index, || {
+            parse_file(
+                e.path.clone(),
+                bytes,
+                ty,
+                Some(parent),
+                meter,
+                self.ctx.file(),
+            )
+        });
         // A nested bundle is keyed by this one's load and its row: a
         // statement only the feature builds.
         #[cfg(feature = "test-counters")]

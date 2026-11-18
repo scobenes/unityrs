@@ -697,7 +697,7 @@ impl Environment {
             self.inner.registry.hook(super::registry::Hook::Watched);
             // What to record: kept until a change, kept for the walk, or
             // not kept (the resolver's load).
-            let (found, kept, flag) = match self.external(sf, p.file_id, Some(siblings)) {
+            let (found, kept, flag) = match self.external(sf, p.file_id, Some(siblings), None) {
                 Ok((t, Reached::Sibling)) => (Some(t), true, None),
                 Ok((t, Reached::Lookup)) => (Some(t), true, Some(flag)),
                 Ok((t, Reached::Load)) => (Some(t), false, Some(flag)),

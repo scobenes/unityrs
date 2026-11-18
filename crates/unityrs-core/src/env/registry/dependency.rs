@@ -220,6 +220,11 @@ pub(crate) fn open_source(
     // UnityPy environment.py:139-154
     let ty = check_file_type_with_reader(&data, &ctx.limits, reader)?;
     let file = parse_file_with_reader(name.clone(), data, ty, None, meter, ctx, reader);
+    if let Ok(file) = &file
+        && meter.reservation() == Reservation::Dependency
+    {
+        file.mark_dependency_root();
+    }
     // A statement only the feature builds, so a build without it is the
     // code it was before the counters.
     #[cfg(feature = "test-counters")]

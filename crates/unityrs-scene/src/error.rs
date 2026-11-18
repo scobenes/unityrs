@@ -67,7 +67,9 @@ impl SceneError {
         clippy::match_same_arms,
         reason = "Keep audited refusals explicit beside the conservative non-exhaustive fallback"
     )]
-    pub(crate) fn resource_refusal(&self) -> bool {
+    /// Whether the failure must abort a walk instead of becoming a data issue.
+    #[must_use]
+    pub fn resource_refusal(&self) -> bool {
         use unityrs_core::detect::DetectError;
         use unityrs_core::typetree::TreeError;
         use unityrs_core::walk::{ParseError, ReadDetail};
