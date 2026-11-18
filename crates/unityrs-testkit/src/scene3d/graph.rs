@@ -11,7 +11,10 @@ use crate::writer::ByteWriter;
 /// shape in these versions; the file's version identifies each case.
 #[derive(Clone, Copy, Debug)]
 pub enum Layout {
+    Unity51,
+    Unity55,
     Unity2019,
+    Unity20221,
     Unity2022,
     Unity6000,
 }
@@ -20,6 +23,9 @@ impl Layout {
     #[must_use]
     pub const fn version(self) -> &'static [u8] {
         match self {
+            Self::Unity51 => b"5.1.0f1",
+            Self::Unity55 => b"5.5.0f1",
+            Self::Unity20221 => b"2022.1.0f1",
             Self::Unity2019 => b"2019.4.0f1",
             Self::Unity2022 => b"2022.3.0f1",
             Self::Unity6000 => b"6000.0.0f1",

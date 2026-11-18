@@ -110,6 +110,12 @@ fn validator_scenes(m: &std::sync::Arc<Meter>) -> Vec<(&'static str, Scene, Opti
             true,
         ),
         ("rich", support::rich(m).unwrap(), Options::default(), true),
+        (
+            "animated",
+            support::animated(m).unwrap(),
+            Options::default(),
+            true,
+        ),
         ("dropped-normal", bad, Options::default(), true),
         (
             "morph-directions",

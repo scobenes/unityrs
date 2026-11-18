@@ -3,10 +3,11 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use unityrs_core::budget::{Counting, Reservation};
+use unityrs_core::budget::{Counting, Reservation, Unbounded};
 use unityrs_core::env::{CabResolver, DerefError, EnvOptions, Environment, LoadMode, PPtr, Source};
-use unityrs_core::error::Error;
+use unityrs_core::error::{Error, LimitKind};
 use unityrs_core::files::File;
+use unityrs_core::limits::Meter;
 use unityrs_core::{Bytes, FileContext, RawStr};
 use unityrs_testkit::env::{Obj, bundle, res_bytes, serialized};
 
@@ -61,6 +62,55 @@ fn dependencies_are_evicted_and_reopened_and_every_charge_returns() {
         ));
     }
     assert_eq!(budget.used(), 0, "every charge returned");
+}
+
+#[test]
+fn held_dereference_preserves_the_target_container_and_meters_sibling_names() {
+    let env = batch(Arc::new(FileContext::unitypy()), 1);
+    let data = bundle(&[
+        (
+            "from",
+            serialized(&["target"], &[Obj::named(1, "from", &[])]),
+        ),
+        (&"pad".repeat(100), vec![0]),
+        ("target", serialized(&[], &[Obj::named(2, "target", &[])])),
+    ]);
+    drop(
+        env.load_dependency(src("dependency.bundle", &data))
+            .unwrap(),
+    );
+    let scene = serialized(&["from"], &[Obj::named(3, "scene", &[])]);
+    let File::Serialized(source) = env.load(src("scene.assets", &scene)).unwrap() else {
+        panic!("serialized scene");
+    };
+    let (object, hold) = env
+        .deref_held(
+            &source,
+            PPtr {
+                file_id: 1,
+                path_id: 1,
+            },
+            &unlimited(),
+        )
+        .unwrap();
+    env.load_dependency(src("pressure.bundle", &named_bundle("pressure", 64)))
+        .unwrap();
+    assert_eq!(env.stats().dependencies_evicted, 1);
+    let sibling = PPtr {
+        file_id: 1,
+        path_id: 2,
+    };
+    let meter = Meter::with_decode_work(u64::MAX, 100, Arc::new(Unbounded), Reservation::Input);
+    assert!(matches!(
+        env.deref_held(object.file(), sibling, &meter),
+        Err(DerefError::Load(Error::Limit(error))) if error.kind() == LimitKind::DecodeWork
+    ));
+    assert_eq!(env.deref(object.file(), sibling).unwrap().path_id(), 2);
+    drop(hold);
+    assert!(matches!(
+        env.deref(object.file(), sibling),
+        Err(DerefError::ContainerDropped { .. })
+    ));
 }
 
 /// `Source::Path` dependencies totalling twice the LRU's bound, read round

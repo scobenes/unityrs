@@ -126,6 +126,7 @@ pub(super) fn open(
         directory,
         files,
         parent,
+        dependency_path: crate::files::DependencyPath::default(),
         source_depth,
         lengths: Box::default(),
         ends,

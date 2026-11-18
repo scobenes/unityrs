@@ -1,5 +1,5 @@
 //! Fallible layout and G8 analysis; no payload copies are retained here.
-use crate::{Attribute, GltfError, Kind, Options, Scene, normalise, validate};
+use crate::{Attribute, GltfError, Interpolation, Kind, Options, Scene, normalise, validate};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
 
@@ -58,12 +58,18 @@ pub(crate) struct AccessorLayout {
     pub min: [f32; 16],
     pub max: [f32; 16],
     pub valid: bool,
-    pub analysed: bool,
+    analysis: AccessorAnalysis,
     pub joint_weights: Option<usize>,
     pub changes: u64,
     pub zeros: u64,
     pub joint_changes: u64,
     pub uv_filler: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessorAnalysis {
+    Pending,
+    Complete,
+    LinearRotation,
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PrimitiveLayout {
@@ -90,11 +96,16 @@ pub struct Layout {
     pub(crate) meshes: MeteredVec<MeshLayout>,
     pub(crate) rotations: MeteredVec<[f64; 4]>,
     pub(crate) image_views: MeteredVec<usize>,
+    pub(crate) animations: MeteredVec<crate::animation::AnimationLayout>,
     /// Source material ids for variants whose texture references are omitted.
     pub(crate) textureless_materials: MeteredVec<usize>,
 }
 const _: () = crate::send_sync::<Layout>();
 impl Layout {
+    pub(crate) fn mesh_id(&self, source: usize) -> Option<usize> {
+        self.meshes.as_slice().get(source)?.id
+    }
+
     pub(crate) fn view(&mut self, len: usize, target: Option<u32>) -> Result<usize, GltfError> {
         let offset = align(self.bin_length)?;
         let length = u32::try_from(len).map_err(|_| validate::invalid("BIN length exceeds u32"))?;
@@ -142,6 +153,7 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
         accessor_order: MeteredVec::new(meter),
         meshes: MeteredVec::with_capacity(meter, s.meshes.len())?,
         image_views: MeteredVec::new(meter),
+        animations: MeteredVec::new(meter),
         textureless_materials: MeteredVec::new(meter),
         rotations: MeteredVec::with_capacity(meter, s.nodes.len())?,
     };
@@ -175,7 +187,7 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
             min: [0.; 16],
             max: [0.; 16],
             valid: true,
-            analysed: false,
+            analysis: AccessorAnalysis::Pending,
             joint_weights: None,
             changes: 0,
             zeros: 0,
@@ -351,7 +363,8 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
     }
     validate::skin_attributes(s, &l, *opts, meter)?;
     // First reach: meshes/primitives, semantic attribute order, indices,
-    // morph slots, then inverse binds and images. Unreferenced data is omitted.
+    // morph slots, then inverse binds, animation samplers and images.
+    // Unreferenced data is omitted.
     for (m, mi) in s.meshes.as_slice().iter().enumerate() {
         for (pi, p) in mi.primitives.as_slice().iter().enumerate() {
             meter.count_decode(p.attributes.len() as u64 + p.targets.len() as u64 * 3 + 1)?;
@@ -392,12 +405,52 @@ pub fn layout(s: &Scene, opts: &Options, meter: &Arc<Meter>) -> Result<Layout, G
             place(s, &mut l, id, *opts, meter)?;
         }
     }
+    crate::animation::layout_animations(s, &mut l, meter)?;
     for image in s.images.as_slice() {
         meter.count_decode(1)?;
         let view = l.view(image.bytes.len(), None)?;
         l.image_views.push(view)?;
     }
     Ok(l)
+}
+
+pub(crate) fn place_animation(
+    s: &Scene,
+    l: &mut Layout,
+    id: usize,
+    interpolation: Interpolation,
+    meter: &Meter,
+) -> Result<(), GltfError> {
+    let a = s
+        .accessors
+        .as_slice()
+        .get(id)
+        .ok_or_else(|| validate::invalid("accessor index"))?;
+    let al = l
+        .accessors
+        .as_mut_slice()
+        .get_mut(id)
+        .ok_or_else(|| validate::invalid("accessor layout"))?;
+    let check_signs = a.kind == Kind::AnimationRotation && interpolation == Interpolation::Linear;
+    // A LINEAR sampler may reuse keys previously validated for STEP.
+    if al.analysis == AccessorAnalysis::Pending
+        || (check_signs && al.analysis != AccessorAnalysis::LinearRotation)
+    {
+        if let Some((min, max)) = crate::animation::validate_keys(a, meter, check_signs)? {
+            *al.min
+                .first_mut()
+                .ok_or_else(|| validate::invalid("time bounds"))? = min;
+            *al.max
+                .first_mut()
+                .ok_or_else(|| validate::invalid("time bounds"))? = max;
+        }
+        al.analysis = if check_signs {
+            AccessorAnalysis::LinearRotation
+        } else {
+            AccessorAnalysis::Complete
+        };
+    }
+    place_analysed(s, l, id)
 }
 
 fn place(
@@ -408,6 +461,10 @@ fn place(
     meter: &Meter,
 ) -> Result<(), GltfError> {
     analyse(s, l, id, opts, meter)?;
+    place_analysed(s, l, id)
+}
+
+fn place_analysed(s: &Scene, l: &mut Layout, id: usize) -> Result<(), GltfError> {
     let al = l
         .accessors
         .as_slice()
@@ -456,7 +513,7 @@ fn place(
         let target = match a.kind {
             Kind::Indices => Some(34963),
             Kind::InverseBind => None,
-            k if k.morph() => None,
+            k if k.morph() || k.animation() => None,
             _ => Some(34962),
         };
         (Some(l.view(bytes, target)?), None)
@@ -486,7 +543,7 @@ fn analyse(
         .as_mut_slice()
         .get_mut(id)
         .ok_or_else(|| validate::invalid("accessor layout"))?;
-    if al.analysed {
+    if al.analysis != AccessorAnalysis::Pending {
         return Ok(());
     }
     let a = s
@@ -516,7 +573,7 @@ fn analyse(
             [f32::NEG_INFINITY; 16]
         },
         valid: true,
-        analysed: true,
+        analysis: AccessorAnalysis::Complete,
         joint_weights: None,
         changes: 0,
         zeros: 0,

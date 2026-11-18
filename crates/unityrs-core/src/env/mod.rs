@@ -108,6 +108,12 @@
 //! that someone still holds (a nested bundle a resource read kept) goes on
 //! counting against the old open's, which nothing resets. A
 //! [`Source::Bytes`] dependency keeps its bytes, which are the caller's.
+//! An ordinary CAB lookup after reopening a dependency can see changed bytes,
+//! and it follows the indices registered at the first open, so a source whose
+//! bundle directory was reordered can resolve a CAB name to a different entry.
+//! Retained-object reuse via [`Environment::deref_held_reusing`] assumes
+//! stable bytes across reopens. If the source changes after eviction, reuse
+//! may still return the previously retained object.
 //! The files a caller loaded are never evicted. Every call that reads or
 //! registers through a dependency's meter (a load, a lookup, a dereference,
 //! a resource read, an object's tree with the script hook, the container
@@ -210,6 +216,7 @@ use std::sync::{Arc, RwLock};
 use bytes::Bytes;
 
 pub use container_index::{ContainerItem, ContainerItems};
+pub use deref::FileOccurrence;
 pub use listing::{FileEntries, FileEntry, Objects};
 pub use pptr::{DerefError, PPtr};
 pub use registry::{Cab, HeldCab, Keys, RawCab, Registry};
@@ -546,12 +553,13 @@ impl fmt::Debug for Environment {
     }
 }
 
-/// What a dereference reached: a registered CAB, or a file (a sibling, a
-/// `files` entry, one the resolver loaded).
+/// What a dereference reached: a retained object, a registered CAB, or a
+/// file (a sibling, a `files` entry, one the resolver loaded).
 #[derive(Clone)]
 enum Found {
     Cab(Cab),
     File(File),
+    Reused(crate::ObjectRef),
 }
 
 /// The name UnityPy keys a source by: the caller's name, or a path's string.
