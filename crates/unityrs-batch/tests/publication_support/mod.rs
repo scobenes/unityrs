@@ -32,6 +32,10 @@ impl Scene {
     pub fn with_payload(keys: &[&str], block: u64, payload: &[u8]) -> Self {
         Self::build(keys, true, block, false, payload)
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep the fixture commit order visible"
+    )]
     fn build(keys: &[&str], archives: bool, block: u64, failed: bool, payload: &[u8]) -> Self {
         let scratch = Scratch::new("publication");
         let mut spec = crate::common::base();
@@ -95,6 +99,7 @@ impl Scene {
                 phase: InputPhase::Committed,
                 failure_bundle: failure.then_some(1),
                 received: (!failure).then(|| AttemptFacts {
+                    missing_prefab: None,
                     state: unityrs_batch::attempt::State::Done,
                     figures: summary.figures.unwrap(),
                     spooled_part: summary.spooled_part,
@@ -172,6 +177,7 @@ fn records<'a>(
     writer
         .append(
             Record::Diagnostic(records::Diagnostic {
+                glb: None,
                 kind: records::DiagnosticKind::UndeclaredDependency,
                 input: id,
                 bundle: None,
@@ -184,6 +190,7 @@ fn records<'a>(
     writer
         .append(
             Record::Skip(records::Skip {
+                prefab: None,
                 input: id,
                 serialized_file: records::Text::Raw(&[0xff; 1024]),
                 path_id: 3,
@@ -237,6 +244,7 @@ fn candidates(
             writer
                 .append(
                     Record::Candidate(records::Candidate {
+                        prefab: None,
                         key,
                         unit: None,
                         input: id,

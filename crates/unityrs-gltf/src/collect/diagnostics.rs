@@ -9,6 +9,7 @@ pub(crate) fn record(
 ) -> Result<()> {
     scene.collection_issues.push(crate::CollectionIssue {
         node,
+        resource: None,
         reason,
         count,
     })?;

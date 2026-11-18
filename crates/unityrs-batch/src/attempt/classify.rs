@@ -199,6 +199,7 @@ pub(crate) fn skip_code(s: &str) -> Option<Code> {
         "decode_error" | "decoder_panic" | "bad_pointer" | "duplicate_key" | "unnamed_atlas"
         | "sheet_not_found" | "no_typetree" | "json_unwritable" => Code::CompleteWithSkips,
         "budget(input)" => Code::Budget,
+        _ if crate::reason::is_glb_skip(s) => Code::CompleteWithSkips,
         _ if s.starts_with("outside_view(") && s.ends_with(')') => Code::CompleteWithSkips,
         _ if s.starts_with("unwritable_key(") && s.ends_with(')') => {
             let arg = s.strip_prefix("unwritable_key(")?.strip_suffix(')')?;

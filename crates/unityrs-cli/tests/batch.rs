@@ -304,3 +304,26 @@ fn x8_e42_a_refused_spec_s_secrets_reach_no_output() {
         }
     }
 }
+
+#[test]
+fn check_accepts_a_valid_prefab_key_before_the_view_is_planned() {
+    let dir = Scratch::new("cli-batch-prefab");
+    enterable(&dir);
+    let mut doc: serde_json::Value = serde_json::from_str(&job(INPUTS)).unwrap();
+    doc["spec_version"] = serde_json::json!(3);
+    doc["outputs"] = serde_json::json!({
+        "glb": {
+            "prefab_key_template": "prefabs/{safe_container_path}.glb",
+            "profile": {
+                "profile_version": 1,
+                "clips_by_prefab": {"prefabs/absent.glb": {"a": []}}
+            }
+        }
+    });
+    let out = check(&write_job(&dir, &doc.to_string()));
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let (_, record) = line_of(&out);
+    assert_eq!(record["p"], 2);
+    assert_eq!(record["type"], "exit");
+    assert!(record["reason"].is_null());
+}

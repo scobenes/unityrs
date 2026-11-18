@@ -201,9 +201,17 @@ fn publishable(r: &winners::rowread::Output<'_>, blocked: bool) -> bool {
         || (blocked && r.status == "withheld" && r.reason == Some("publish_incomplete"))
 }
 fn same_output(r: &winners::rowread::Output<'_>, w: winners::Row<'_>) -> bool {
-    let kind = ["texture", "sprite", "atlas_json", "atlas_sprite"]
-        .get(usize::from(w.kind))
-        .copied();
+    let kind = [
+        Some("texture"),
+        Some("sprite"),
+        Some("atlas_json"),
+        Some("atlas_sprite"),
+        None,
+        Some("glb"),
+    ]
+    .get(usize::from(w.kind))
+    .copied()
+    .flatten();
     let mode = [None, Some("L"), Some("LA"), Some("RGB"), Some("RGBA")]
         .get(usize::from(w.mode))
         .copied();
@@ -216,6 +224,7 @@ fn same_output(r: &winners::rowread::Output<'_>, w: winners::Row<'_>) -> bool {
         && r.unit == (!w.unit.is_empty()).then_some(w.unit)
         && r.visible_hash == w.visible_hash
         && r.cut == w.cut
+        && r.prefab == w.prefab
         && Some(r.kind) == kind
         && Some(r.mode) == mode
 }
@@ -239,6 +248,7 @@ fn output(
     json.value("size", r.size)?;
     json.text("status", Some(status))?;
     json.text("reason", reason)?;
+    json.prefab(r.prefab)?;
     json.value("cut", r.cut)
 }
 fn collision(json: &mut Json, r: &winners::rowread::Collision<'_>) -> Result<(), Error> {

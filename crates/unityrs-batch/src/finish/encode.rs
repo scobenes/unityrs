@@ -14,7 +14,7 @@ pub(super) struct Final<'a> {
     pub report: &'a manifest::Report,
     pub code: Code,
     pub phase: Phase,
-    pub stop: Option<(&'static str, Option<&'static str>)>,
+    pub stop: Option<(&'static str, Option<&'a str>)>,
 }
 pub(super) fn head(
     spec: &Spec,
@@ -28,7 +28,7 @@ pub(super) fn head(
     let mut json = Json::new(account)?;
     json.start("run_id", &spec.run_id)?;
     // A version 2 spec's head adds its options (7.3): `manifest_version` 2.
-    json.value("manifest_version", spec.spec_version.min(2))?;
+    json.value("manifest_version", spec.spec_version)?;
     json.value("attempt", spec.attempt)?;
     json.value("write_seq", u8::from(final_head.is_some()))?;
     json.text(
@@ -61,6 +61,16 @@ pub(super) fn head(
             }
         }
         json.value("unitycn_key", spec.unitycn_key.is_some())?;
+    }
+    if spec.spec_version >= 3 {
+        if let Some(glb) = &spec.outputs.glb {
+            json.object("glb")?;
+            json.text("prefab_key_template", Some(&glb.prefab_key_template))?;
+            json.value("clip_selections", glb.overrides.len())?;
+            json.close_object()?;
+        } else {
+            json.text("glb", None)?;
+        }
     }
     json.text("started_at", Some(identity.started_at))?;
     let mut deadline = [0; 30];
@@ -165,6 +175,9 @@ fn run(
         peek_work_peak,
         spooled_parts
     );
+    if spec.spec_version >= 3 {
+        json.value("glb_degraded", figures.glb_degraded)?;
+    }
     json.value(
         "spool_peak",
         if final_head { identity.spool_peak } else { 0 },

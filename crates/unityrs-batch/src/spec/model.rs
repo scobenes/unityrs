@@ -1,4 +1,4 @@
-//! The typed spec, version 1 or 2, with its defaults filled in
+//! The typed spec, version 1, 2 or 3, with its defaults filled in
 //! (`docs/BATCH_SPEC.md` section 1). Built only from a document the
 //! per-value pass accepted; the cross-field rules are checked on it.
 //!
@@ -13,6 +13,7 @@ use std::num::NonZeroU64;
 
 use unityrs_export::ngui::Formats;
 
+pub use super::Glb;
 use super::store::{Chunks, Seg};
 
 /// Where a parse-time [`Seg`] of a string starts when it is in the escape
@@ -23,7 +24,7 @@ pub(crate) const ESCAPED: usize = 1 << 31;
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)] // The spec's own booleans.
 pub struct Spec {
-    /// The version the document was read by: 1 or 2.
+    /// The version the document was read by: 1, 2 or 3.
     pub spec_version: u64,
     /// `run_id`.
     pub run_id: String,
@@ -548,6 +549,8 @@ pub struct Outputs {
     pub sprites: Option<String>,
     /// `atlases`.
     pub atlases: Option<Atlases>,
+    /// Loose prefab GLB policy (version 3).
+    pub glb: Option<super::prefab::Glb>,
     /// `formats` (version 2): the formats a texture is exported in, a
     /// sheet's included; version 1's five for a version 1 spec.
     pub formats: Formats,

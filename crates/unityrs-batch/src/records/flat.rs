@@ -48,6 +48,17 @@ const NAMES: &[&str] = &[
     "unresolved_scripts",
     "spooled_part",
     "claimed_bytes",
+    "container_file_index",
+    "container_row",
+    "container_file",
+    "container_path",
+    "root_serialized_file",
+    "root_path_id",
+    "node",
+    "renderer_path_id",
+    "resource_owner_path_id",
+    "resource_file_id",
+    "resource_path_id",
 ];
 #[derive(Clone, Copy)]
 enum Atom {
@@ -99,6 +110,9 @@ impl Fields {
         }
         Ok(fields)
     }
+    pub fn contains(&self, name: &str) -> bool {
+        self.get(name).is_ok()
+    }
     fn get(&self, name: &str) -> Result<Atom, Error> {
         let index = NAMES
             .iter()
@@ -111,10 +125,13 @@ impl Fields {
             .ok_or_else(Error::internal)
     }
     pub fn shape(&self, expected: &[&str]) -> Result<(), Error> {
-        if self.values.iter().flatten().count() != expected.len() {
+        self.shape_with(expected, &[])
+    }
+    pub fn shape_with(&self, expected: &[&str], extra: &[&str]) -> Result<(), Error> {
+        if self.values.iter().flatten().count() != expected.len() + extra.len() {
             return Err(Error::internal());
         }
-        for name in expected {
+        for name in expected.iter().chain(extra) {
             self.get(name)?;
         }
         Ok(())

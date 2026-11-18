@@ -6,8 +6,7 @@ use crate::{
     winners::rowread::{File, Reader, Row},
 };
 
-pub(super) fn normal(cx: &Context<'_>) -> Result<Code, Error> {
-    let sel = cx.selected.ok_or_else(Error::internal)?;
+pub(super) fn inputs(cx: &Context<'_>) -> Result<Code, Error> {
     let mut code = Code::Complete;
     for bundle in &cx.facts.bundles {
         if let Some(Failure::Data(failure)) = bundle.stage.and_then(|s| s.failure) {
@@ -36,6 +35,12 @@ pub(super) fn normal(cx: &Context<'_>) -> Result<Code, Error> {
             });
         }
     }
+    Ok(code)
+}
+
+pub(super) fn normal(cx: &Context<'_>) -> Result<Code, Error> {
+    let mut code = inputs(cx)?;
+    let sel = cx.selected.ok_or_else(Error::internal)?;
     let mut outputs = Reader::open(
         sel.workspace,
         sel.handoff.outputs.as_ref(),

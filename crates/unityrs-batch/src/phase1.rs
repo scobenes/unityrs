@@ -181,6 +181,7 @@ pub struct AttemptFacts {
     pub outputs: u64,
     pub skips_expected: u64,
     pub diagnostics: u64,
+    pub missing_prefab: Option<u32>,
     pub code: crate::reason::Code,
 }
 impl AttemptFacts {
@@ -193,6 +194,7 @@ impl AttemptFacts {
             outputs: e.outputs,
             skips_expected: e.skips_expected,
             diagnostics: e.diagnostics,
+            missing_prefab: e.missing_prefab,
             code: e.code,
         }
     }

@@ -6,6 +6,7 @@ pub(crate) mod hooks;
 mod metadata;
 mod options;
 mod peek;
+mod prefab;
 use crate::{
     records::{self, Figures, Status, Summary, Writer},
     spool::Directory,
@@ -83,11 +84,12 @@ pub struct AttemptArgs<'a> {
 pub fn run_attempt(args: AttemptArgs<'_>) -> AttemptEnd {
     let memory =
         crate::job_memory::Memory::new(args.limits.m, args.limits.d, false, args.hooks.usage());
-    run_reserved(args, &memory)
+    run_reserved(args, &memory, None)
 }
 pub(crate) fn run_reserved(
     args: AttemptArgs<'_>,
     memory: &crate::job_memory::Memory,
+    glb: Option<prefab::Options<'_>>,
 ) -> AttemptEnd {
     let started = Instant::now();
     let before = crate::alloc::refusals();
@@ -105,7 +107,7 @@ pub(crate) fn run_reserved(
     let mut end = AttemptEnd::new(args.view.input_index);
     // No charged result escapes this closure, including on unwind.
     let result = catch_unwind(AssertUnwindSafe(|| {
-        execute(&args, &engine, &mut end, started)
+        execute(&args, &engine, &mut end, started, glb)
     }));
     match result {
         // A classifier may return internal when a fallible core helper
@@ -166,11 +168,16 @@ pub(crate) fn run_reserved(
 fn elapsed(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep sealing and release order visible in the attempt"
+)]
 fn execute(
     args: &AttemptArgs<'_>,
     engine: &Engine<'_>,
     end: &mut AttemptEnd,
     started: Instant,
+    glb: Option<prefab::Options<'_>>,
 ) -> Result<(), Failure> {
     let (env, meter) = context(args, engine);
     let _sample = engine.track(&meter);
@@ -193,7 +200,10 @@ fn execute(
     engine.sample(registration.own().meter());
     engine.point(Point::Metadata)?;
     let mut names = metadata::Names::new(&meter);
-    let mut loaded = |id: &str, bundle: &unityrs_core::files::BundleFile| {
+    let mut prefab = prefab::Attempt::new(glb, args.view.input.id, &meter, engine)?;
+    prefab.loaded(true, false, registration.own(), &meter, engine)?;
+    let mut loaded = |id: &str, bundle: &Arc<unityrs_core::files::BundleFile>| {
+        prefab.loaded(id == args.view.input.id, true, bundle, &meter, engine)?;
         let holder = if id == args.view.input.id {
             args.view.members.len()
         } else {
@@ -230,25 +240,28 @@ fn execute(
     let mut keys = KeyTable::new(&meter);
     let cut = {
         let mut sink = |output| copy::output(args, engine, &mut writer, end, output);
-        let result = ngui::cut(
-            ngui::Context {
-                registered: &registered,
-                meter: &meter,
-                input: args.view.input.id,
-                hooks: engine,
-                max_evictions: args.limits.max_attempt_evictions,
-                prefix: args.prefix,
-                members: args.members,
-                keys: &mut keys,
-                sink: &mut sink,
-            },
-            args.options,
-        );
+        let cx = ngui::Context {
+            registered: &registered,
+            meter: &meter,
+            input: args.view.input.id,
+            hooks: engine,
+            max_evictions: args.limits.max_attempt_evictions,
+            prefix: args.prefix,
+            members: args.members,
+            keys: &mut keys,
+            sink: &mut sink,
+        };
+        let mut missing = None;
+        let result = prefab.cut(cx, args.options, &mut missing);
+        end.missing_prefab = missing;
         end.figures.evictions = registered.env.stats().dependencies_evicted;
         engine.sample(registered.own.meter());
         result?
     };
     engine.observer.sheets(&cut.sheets);
+    for issue in &cut.glb_diagnostics {
+        copy::degraded(args.view.input.id, engine, &mut writer, end, issue)?;
+    }
     for path in &cut.nested_containers {
         metadata::diagnostic(
             &mut writer,

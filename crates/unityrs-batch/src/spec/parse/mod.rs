@@ -356,6 +356,20 @@ impl<'de> DeserializeSeed<'de> for Value<'_, 'de> {
             Skip::deserialize(d)?;
             return Ok(Node::Null);
         }
+        if matches!(self.ty, Ty::GlbProfile) {
+            let raw = <&serde_json::value::RawValue>::deserialize(d)?;
+            if raw.get().len() > super::prefab::PROFILE_BYTES {
+                self.cx.fail(Rule::Range);
+                return Ok(Node::Null);
+            }
+            let mut de = serde_json::Deserializer::from_str(raw.get());
+            return Value {
+                ty: &super::prefab::PROFILE,
+                ..self
+            }
+            .deserialize(&mut de)
+            .map_err(de::Error::custom);
+        }
         d.deserialize_any(self)
     }
 }
@@ -368,6 +382,24 @@ impl<'de> Value<'_, 'de> {
                     self.cx.fail(r);
                 }
             }
+            Ty::PathId => match n {
+                Node::NegInt(_) => {}
+                Node::UInt(value) if i64::try_from(value).is_ok() => {}
+                Node::UInt(_) => self.cx.fail(Rule::Range),
+                _ => self.cx.fail(Rule::Type),
+            },
+            Ty::SampleRate => {
+                #[allow(clippy::cast_precision_loss)]
+                let rate = match n {
+                    Node::UInt(value) => value as f64,
+                    Node::NegInt(value) => value as f64,
+                    Node::Float(value) => value,
+                    _ => 0.0,
+                };
+                if !(0.0 < rate && rate <= unityrs_gltf::MAX_SAMPLE_RATE) {
+                    self.cx.fail(Rule::Range);
+                }
+            }
             _ => self.cx.fail(Rule::Type),
         }
         n
@@ -378,6 +410,11 @@ impl<'de> Value<'_, 'de> {
     fn string(self, s: &str) -> bool {
         let rule = match self.ty {
             Ty::Str(st) => validate::str_rule(s, st),
+            Ty::ProfileDigest if s.len() != 64 => Some(Rule::Range),
+            Ty::ProfileDigest => {
+                (!s.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(Rule::Format)
+            }
+            Ty::DefaultClips => (s != "all_discovered").then_some(Rule::Range),
             Ty::Image => (!fields::IMAGES.contains(&s)).then_some(Rule::Range),
             Ty::TextureFormat => Formats::decoded(s).err().map(|_| Rule::Range),
             _ => Some(Rule::Type),
@@ -443,6 +480,7 @@ impl<'de> Visitor<'de> for Value<'_, 'de> {
     fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Node<'de>, A::Error> {
         match *self.ty {
             Ty::Array(a) => array(self.cx, seq, a),
+            Ty::DefaultClips => array(self.cx, seq, &super::prefab::EMPTY),
             Ty::Deps => deps(self.cx, seq),
             Ty::Bundles(a, inputs) => bundles(self.cx, seq, a, inputs),
             _ => {
@@ -461,6 +499,22 @@ impl<'de> Visitor<'de> for Value<'_, 'de> {
             Ty::Image => Ok(Node::Obj(
                 object(self.cx, map, &fields::WEBP_IMAGE, false)?.into_boxed_slice(),
             )),
+            Ty::ClipSelector => {
+                let fields = object(self.cx, map, super::prefab::CLIP, false)?;
+                let count = fields
+                    .iter()
+                    .filter(|(key, _)| key == "clip" || key == "source")
+                    .count();
+                if count != 1 {
+                    self.cx.fail(if count == 0 {
+                        Rule::Missing
+                    } else {
+                        Rule::Range
+                    });
+                }
+                Ok(Node::Obj(fields.into_boxed_slice()))
+            }
+            Ty::Map { value, entries } => dynamic(self.cx, map, value, entries),
             Ty::Prefer => prefer(self.cx, map),
             Ty::Headers => headers(self.cx, map),
             Ty::Sink => sink(self.cx, map),
@@ -640,4 +694,38 @@ fn bundle<'de>(cx: &mut Cx<'de>, members: Vec<Member<'de>>, inputs: bool) {
         cx.store.dependencies.push(b);
         cx.store.dependencies_deps.push(deps);
     }
+}
+
+fn dynamic<'de, A: MapAccess<'de>>(
+    cx: &mut Cx<'de>,
+    mut map: A,
+    value: &'static Ty,
+    max: usize,
+) -> Result<Node<'de>, A::Error> {
+    let mut output: Vec<Member<'de>> = Vec::new();
+    let mut count = 0;
+    while let Some(Name(name)) = map.next_key()? {
+        count += 1;
+        if count == max + 1 {
+            cx.own(Rule::Range);
+        }
+        if !cx.poisoned() {
+            cx.under(&name, |cx| {
+                if output.iter().any(|(key, _)| key == &name) {
+                    cx.fail(Rule::DuplicateMember);
+                }
+            });
+        }
+        let item = cx.under(&name, |cx| {
+            map.next_value_seed(Value {
+                cx,
+                ty: value,
+                nullable: false,
+            })
+        })?;
+        if !cx.poisoned() {
+            output.push((name, item));
+        }
+    }
+    Ok(Node::Obj(output.into_boxed_slice()))
 }

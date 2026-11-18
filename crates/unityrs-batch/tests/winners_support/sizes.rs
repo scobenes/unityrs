@@ -143,6 +143,7 @@ fn candidate_annotations_outputs_and_collisions_fit_source_record_work() {
         writer
             .append(
                 Record::Candidate(records::Candidate {
+                    prefab: None,
                     key: "k",
                     unit: Some("k"),
                     input: "a",

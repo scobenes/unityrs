@@ -23,6 +23,7 @@ pub enum File {
 }
 #[derive(Debug)]
 pub struct Output<'a> {
+    pub prefab: Option<crate::records::Prefab<&'a str>>,
     pub key: &'a str,
     pub kind: &'a str,
     pub unit: Option<&'a str>,
@@ -103,23 +104,34 @@ fn decode(file: File, b: &mut [u8]) -> Result<Row<'_>, Error> {
     }
     match file {
         File::Outputs => {
-            f.shape(&[
-                "key",
-                "kind",
-                "unit",
-                "input",
-                "serialized_file",
-                "path_id",
-                "md5",
-                "visible_hash",
-                "mode",
-                "size",
-                "status",
-                "reason",
-                "cut",
-            ])?;
             let kind = f.text(b, "kind")?;
-            if !matches!(kind, "texture" | "sprite" | "atlas_json" | "atlas_sprite") {
+            let is_glb = kind == "glb";
+            f.shape_with(
+                &[
+                    "key",
+                    "kind",
+                    "unit",
+                    "input",
+                    "serialized_file",
+                    "path_id",
+                    "md5",
+                    "visible_hash",
+                    "mode",
+                    "size",
+                    "status",
+                    "reason",
+                    "cut",
+                ],
+                if is_glb {
+                    crate::records::PREFAB_FIELDS
+                } else {
+                    &[]
+                },
+            )?;
+            if !matches!(
+                kind,
+                "texture" | "sprite" | "atlas_json" | "atlas_sprite" | "glb"
+            ) {
                 return Err(Error::internal());
             }
             let unit = f.optional_text(b, "unit")?;
@@ -128,7 +140,7 @@ fn decode(file: File, b: &mut [u8]) -> Result<Row<'_>, Error> {
             }
             let visible_hash = f.optional_text(b, "visible_hash")?.map(hex).transpose()?;
             let mode = f.optional_text(b, "mode")?;
-            if (kind == "atlas_json") != mode.is_none()
+            if matches!(kind, "atlas_json" | "glb") != mode.is_none()
                 || mode.is_some() != visible_hash.is_some()
                 || mode.is_some_and(|m| !matches!(m, "L" | "LA" | "RGB" | "RGBA"))
             {
@@ -153,6 +165,9 @@ fn decode(file: File, b: &mut [u8]) -> Result<Row<'_>, Error> {
                 return Err(Error::internal());
             }
             Ok(Row::Output(Output {
+                prefab: is_glb
+                    .then(|| crate::records::read::prefab(&f, b))
+                    .transpose()?,
                 key,
                 kind,
                 unit,

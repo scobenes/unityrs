@@ -436,3 +436,19 @@ pub(super) fn parse(bytes: &[u8], meter: &Arc<Meter>) -> Result<Profile> {
     }
     Ok(p)
 }
+
+/// Parse a standalone profile's explicit selector list without copying its policy.
+pub(super) fn clip_requests(bytes: &[u8], meter: &Arc<Meter>) -> Result<MeteredVec<ClipRequest>> {
+    meter.count_decode((bytes.len() as u64).saturating_mul(32))?;
+    let mut reader = Read {
+        bytes,
+        at: 0,
+        meter,
+    };
+    let requests = reader.list(Read::clip)?;
+    reader.ws();
+    if reader.at != bytes.len() {
+        return Err(invalid("profile trailing data"));
+    }
+    Ok(requests)
+}

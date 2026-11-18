@@ -102,6 +102,7 @@ fn maximum_repaired_candidate_and_all_projection_frames_fit_twice_counted_work()
         writer
             .append(
                 Record::Candidate(records::Candidate {
+                    prefab: None,
                     key: k,
                     unit: Some(&root),
                     input: "a",

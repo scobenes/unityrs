@@ -137,6 +137,9 @@ impl Work {
         self.spooled = self.spooled.checked_add(n).ok_or_else(|| self.error())?;
         Ok(())
     }
+    pub(crate) fn remaining(&self) -> u64 {
+        self.limit.saturating_sub(self.export)
+    }
     /// Work so far, including refused increments.
     #[must_use]
     pub fn export_work(&self) -> u64 {

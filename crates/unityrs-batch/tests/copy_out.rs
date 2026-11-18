@@ -30,6 +30,7 @@ fn candidate_members_and_terminal_figures_roundtrip_from_disk() {
     writer
         .append(
             Record::Candidate(Candidate {
+                prefab: None,
                 key: "result.json",
                 unit: None,
                 input: "input",
@@ -128,6 +129,7 @@ fn full_flushes_cross_lines_and_drop_discards_a_failed_partial_buffer() {
     writer
         .append(
             Record::Candidate(Candidate {
+                prefab: None,
                 key: "earlier.json",
                 unit: None,
                 input: "input",
@@ -148,6 +150,7 @@ fn full_flushes_cross_lines_and_drop_discards_a_failed_partial_buffer() {
         writer
             .append(
                 Record::Diagnostic(Diagnostic {
+                    glb: None,
                     kind: DiagnosticKind::NestedContainer,
                     input: "input",
                     bundle: Some("input"),
@@ -221,6 +224,7 @@ fn filesystem_errors_keep_their_detail_and_claims_until_deletion() {
                 writer
                     .append(
                         Record::Diagnostic(Diagnostic {
+                            glb: None,
                             kind: DiagnosticKind::UndeclaredDependency,
                             input: "input",
                             bundle: None,
@@ -322,6 +326,7 @@ fn maximal_control_fields_and_wrapped_reason_stay_bounded() {
     writer
         .append(
             Record::Candidate(Candidate {
+                prefab: None,
                 key: &raw,
                 unit: Some(&raw),
                 input: &raw,
@@ -357,6 +362,7 @@ fn maximal_control_fields_and_wrapped_reason_stay_bounded() {
     writer
         .append(
             Record::Diagnostic(Diagnostic {
+                glb: None,
                 kind: DiagnosticKind::SameNamedCab,
                 input: &raw,
                 bundle: Some(&raw),
@@ -369,6 +375,7 @@ fn maximal_control_fields_and_wrapped_reason_stay_bounded() {
     writer
         .append(
             Record::Skip(Skip {
+                prefab: None,
                 input: &raw,
                 serialized_file: text,
                 path_id: i64::MIN,
@@ -478,6 +485,7 @@ fn success_after_cross_buffer_lines_has_one_complete_terminal_summary() {
         writer
             .append(
                 Record::Diagnostic(Diagnostic {
+                    glb: None,
                     kind: DiagnosticKind::NestedContainer,
                     input: "input",
                     bundle: Some("input"),
@@ -652,6 +660,7 @@ fn terminal_summary_accounts_for_its_own_page_and_buffer_boundaries() {
             writer
                 .append(
                     Record::Diagnostic(Diagnostic {
+                        glb: None,
                         kind: DiagnosticKind::UndeclaredDependency,
                         input: "input",
                         bundle: None,
@@ -705,6 +714,7 @@ fn pictures_keep_visible_hash_and_mode_and_oversized_prepared_lines_fail_before_
         writer
             .append(
                 Record::Candidate(Candidate {
+                    prefab: None,
                     key: "picture.png",
                     unit: Some("unit"),
                     input: "input",
@@ -736,6 +746,7 @@ fn pictures_keep_visible_hash_and_mode_and_oversized_prepared_lines_fail_before_
     assert!(matches!(
         writer.append(
             Record::Diagnostic(Diagnostic {
+                glb: None,
                 kind: DiagnosticKind::NestedContainer,
                 input: "input",
                 bundle: None,

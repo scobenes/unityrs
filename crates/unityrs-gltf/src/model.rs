@@ -22,11 +22,20 @@ const _: () = crate::send_sync::<Extras>();
 #[derive(Debug, Clone, Copy)]
 pub struct CollectionIssue {
     pub node: usize,
+    pub resource: Option<RendererResource>,
     pub reason: &'static str,
     /// Number of repaired entries, or one for a degraded renderer.
     pub count: u64,
 }
 const _: () = crate::send_sync::<CollectionIssue>();
+
+/// A source pointer relative to the material that owns it.
+#[derive(Clone, Copy, Debug)]
+pub struct RendererResource {
+    pub renderer_path_id: i64,
+    pub owner_path_id: i64,
+    pub pointer: unityrs_core::env::PPtr,
+}
 
 /// Editable scene, already in glTF's right-handed coordinate and UV space.
 #[derive(Debug)]

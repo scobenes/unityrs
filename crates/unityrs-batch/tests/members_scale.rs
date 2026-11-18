@@ -58,6 +58,7 @@ fn scale_child() {
         writer
             .append(
                 Record::Candidate(records::Candidate {
+                    prefab: None,
                     key: &key,
                     unit: (mode == "unit").then_some("k00000000"),
                     input: "a",

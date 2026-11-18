@@ -57,6 +57,11 @@ pub trait Hooks {
         0
     }
 
+    /// Remaining engine export work before the next scoped collection.
+    fn export_work_remaining(&self) -> u64 {
+        u64::MAX
+    }
+
     /// Counts `bytes` of export work (2.6 step 10): past
     /// `max_export_work`, X's failure, `limit(export_work, <value>)`.
     fn export_work(&self, bytes: u64) -> Result<(), Reason> {

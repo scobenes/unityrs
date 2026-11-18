@@ -448,6 +448,8 @@ fn reach(
 }
 
 /// What registration needs beside the view.
+type Loaded<'a> = dyn FnMut(&str, &Arc<BundleFile>) -> Result<(), Failure> + 'a;
+
 #[derive(Clone, Copy)]
 pub struct Admit<'a> {
     /// The private Environment's options: `EnvOptions::batch(ctx_X)` with
@@ -531,7 +533,7 @@ impl<'a> Registration<'a> {
         &mut self,
         m: &Staged<'a>,
         bits: &dyn PeekBits,
-        loaded: &mut dyn FnMut(&str, &BundleFile) -> Result<(), Failure>,
+        loaded: &mut Loaded<'_>,
     ) -> Result<(), Failure> {
         let admit = self.admit;
         if admit.hooks.stopped() {
@@ -571,7 +573,7 @@ impl<'a> Registration<'a> {
     pub fn finish(
         self,
         bits: &dyn PeekBits,
-        loaded: &mut dyn FnMut(&str, &BundleFile) -> Result<(), Failure>,
+        loaded: &mut Loaded<'_>,
     ) -> Result<Registered, Failure> {
         let admit = self.admit;
         if self.next != self.ids.len() {
@@ -628,7 +630,7 @@ pub fn register(
     members: &[Staged<'_>],
     bits: &dyn PeekBits,
     admit: Admit<'_>,
-    loaded: &mut dyn FnMut(&str, &BundleFile) -> Result<(), Failure>,
+    loaded: &mut Loaded<'_>,
 ) -> Result<Registered, Failure> {
     let mut sorted: Vec<&Staged<'_>> = members.iter().filter(|m| m.id != input.id).collect();
     sorted.sort_by(|a, b| a.id.as_bytes().cmp(b.id.as_bytes()));

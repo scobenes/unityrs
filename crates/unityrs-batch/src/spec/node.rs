@@ -178,6 +178,29 @@ impl<'de> Visitor<'de> for NodeVisitor {
     }
 }
 
+impl serde::Serialize for Node<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            Self::Null => serializer.serialize_unit(),
+            Self::Bool(value) => serializer.serialize_bool(*value),
+            Self::UInt(value) => serializer.serialize_u64(*value),
+            Self::NegInt(value) => serializer.serialize_i64(*value),
+            Self::Float(value) => serializer.serialize_f64(*value),
+            Self::Str(value) => serializer.serialize_str(value),
+            Self::Arr(values) => values.serialize(serializer),
+            Self::Obj(fields) => {
+                let mut map = serializer.serialize_map(Some(fields.len()))?;
+                for (name, value) in fields {
+                    map.serialize_entry(name, value)?;
+                }
+                map.end()
+            }
+            Self::Held(_) => Err(serde::ser::Error::custom("compact spec table")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Node;

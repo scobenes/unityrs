@@ -36,7 +36,7 @@ pub(in crate::spec) fn check(
     spool_in_sink(spec)?;
     path_style(spec)?;
     deadline_required(spec)?;
-    unknown_input(spec)?;
+    unknown_input(spec, sites)?;
     super::templates::template(spec, sites)?;
     super::templates::key(spec, sites)?;
     archive_key(spec)?;
@@ -280,17 +280,37 @@ fn deadline_required(spec: &Spec) -> Result<(), BadSpec> {
 }
 
 /// Every `prefer` entry's non-null `input` names an input.
-fn unknown_input(spec: &Spec) -> Result<(), BadSpec> {
-    // Built only when some entry names an input, over the inputs alone.
+fn unknown_input(spec: &Spec, sites: &Sites) -> Result<(), BadSpec> {
+    use super::super::build::KeySite;
     let mut index: Option<view::IdIndex> = None;
-    for (key, p) in spec.prefer() {
-        let Some(id) = p.input else { continue };
-        let inputs = index.get_or_insert_with(|| view::IdIndex::over(spec, spec.input_count()));
-        if inputs.find(spec, id).is_none() {
-            return Err(BadSpec::new(
-                Rule::UnknownInput,
-                pointer(&["prefer", key, "input"]),
-            ));
+    let mut known = |id: &str| {
+        index
+            .get_or_insert_with(|| view::IdIndex::over(spec, spec.input_count()))
+            .find(spec, id)
+            .is_some()
+    };
+    for site in &sites.keys {
+        match site {
+            KeySite::Prefer => {
+                for (key, preference) in spec.prefer() {
+                    if preference.input.is_some_and(|id| !known(id)) {
+                        return Err(BadSpec::new(
+                            Rule::UnknownInput,
+                            pointer(&["prefer", key, "input"]),
+                        ));
+                    }
+                }
+            }
+            KeySite::Prefab => {
+                if let Some(glb) = &spec.outputs.glb {
+                    for row in &glb.overrides {
+                        if !known(&row.input) {
+                            return Err(BadSpec::new(Rule::UnknownInput, row.pointer()));
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -359,7 +379,7 @@ fn headers_without_url(spec: &Spec) -> Result<(), BadSpec> {
 /// At least one of `outputs`' three kinds.
 fn outputs_empty(spec: &Spec) -> Result<(), BadSpec> {
     let o = &spec.outputs;
-    if o.textures.is_none() && o.sprites.is_none() && o.atlases.is_none() {
+    if o.textures.is_none() && o.sprites.is_none() && o.atlases.is_none() && o.glb.is_none() {
         Err(BadSpec::new(Rule::OutputsEmpty, "/outputs"))
     } else {
         Ok(())
