@@ -5,7 +5,11 @@
 //! muscles, and its typed refusal for each clip must be one of the causes
 //! the evidence lists (cross-check obligation 3). The clip set is the
 //! run's: every required humanoid clip and every optional one `run.json`
-//! marks recorded, each with its completed replay.
+//! marks recorded, each bound to its own completed replay (the same
+//! digest-pinned bundles, prefab, clip, Animator and Avatar). A clip the
+//! evidence qualifies has no Rust refusal but `unsupported_humanoid_playback`
+//! while positive playback is deferred; nor does one whose only causes are
+//! measured on the recordings (`RESIDUAL`), which Rust cannot see.
 use crate::{J, Result, address, index, list, load, object, require, same, string};
 use std::{path::Path, sync::Arc};
 use unityrs_anim::{
@@ -16,7 +20,26 @@ use unityrs_anim::{
     },
     read_clip,
 };
-use unityrs_scene::{GraphOptions, Unit};
+use unityrs_scene::{GraphOptions, Trs, Unit};
+
+/// The causes only the recordings measure.
+const RESIDUAL: &[&str] = &[
+    "unsupported_body_motion(hips_correction)",
+    "unsupported_body_motion(root_projection)",
+];
+/// The identity fields of a clip's evidence and of its completed replay.
+const IDENTITY: &[&str] = &[
+    "bundles",
+    "prefab_asset",
+    "clip_asset",
+    "avatar_asset",
+    "binding_address",
+    "binding_component",
+    "prefab",
+    "clip",
+    "binding",
+    "avatar",
+];
 
 /// The humanoid clips every run records (`REPLAY_CASES`).
 const REQUIRED: &[&str] = &[
@@ -98,8 +121,45 @@ fn same_setting(value: Option<SettingValue>, recorded: &J) -> bool {
 }
 
 /// Check one clip's recorded inventory and refusal; returns the refusal.
+/// The evidence names the identities of the clip's own completed replay,
+/// a non-empty recording of the same bundles and objects.
+fn bind_replay(entry: &J, dir: &Path) -> Result<()> {
+    let case = string(&entry["case"])?;
+    let run = dir.parent().ok_or("bundles folder has no run folder")?;
+    let replay: J = serde_json::from_slice(&std::fs::read(
+        run.join("replays").join(format!("{case}.json")),
+    )?)?;
+    require(
+        replay["format"] == "unityrs.anim_replay"
+            && !list(&replay["capture"]["samples"])?.is_empty()
+            && IDENTITY.iter().all(|&key| {
+                !entry["spec"][key].is_null() && replay["spec"][key] == entry["spec"][key]
+            }),
+        "the evidence names another replay's identities",
+    )
+}
+
+/// The Animator node's rest: the `-offset` prefabs translate and rotate
+/// it, every other fixture leaves it at the identity.
+fn check_animator_rest(case: &str, local: &Trs) -> Result<()> {
+    let moved =
+        local.position.iter().all(|&v| v != 0.) && local.rotation[..3].iter().any(|&v| v != 0.);
+    let identity = local.position.iter().all(|&v| v == 0.)
+        && local.rotation[..3].iter().all(|&v| v == 0.)
+        && local.scale.iter().all(|&v| v.to_bits() == 1_f32.to_bits());
+    require(
+        if case.ends_with("-offset") {
+            moved
+        } else {
+            identity
+        },
+        "Animator root rest differs from the fixture's",
+    )
+}
+
 pub(crate) fn check_clip(entry: &J, dir: &Path) -> Result<String> {
     let spec = &entry["spec"];
+    bind_replay(entry, dir)?;
     let (env, files) = load(spec, dir)?;
     let prefab = object(&files, &spec["prefab"])?;
     let clip_object = object(&files, &spec["clip"])?;
@@ -109,6 +169,7 @@ pub(crate) fn check_clip(entry: &J, dir: &Path) -> Result<String> {
     let graph = unit.graph(&env, &GraphOptions::default(), meter)?;
     let discovery = discover(&env, &graph, meter)?;
     let node = address(&graph, &spec["binding_address"])?;
+    check_animator_rest(string(&entry["case"])?, &graph.nodes()[node].local)?;
     let rig = discovery
         .rigs()
         .iter()
@@ -207,12 +268,10 @@ pub(crate) fn check_document(document: &J, dir: &Path) -> Result<()> {
         document["format"] == "unityrs.anim_humanoid_qualification" && document["version"] == 2,
         "expected humanoid qualification version 2",
     )?;
-    let qualified = list(&document["qualified"])?;
-    // Positive playback waits for a qualified clip (plan section 2.4).
-    require(
-        qualified.is_empty(),
-        "qualified humanoid clips need playback",
-    )?;
+    let qualified = list(&document["qualified"])?
+        .iter()
+        .map(string)
+        .collect::<Result<Vec<_>>>()?;
     check_neutral_twin(document)?;
     let expected = expected_cases(dir)?;
     let listed = list(&document["expected_cases"])?
@@ -230,23 +289,70 @@ pub(crate) fn check_document(document: &J, dir: &Path) -> Result<()> {
     )?;
     for entry in clips {
         let case = string(&entry["case"])?;
+        require(
+            qualified.contains(&case) == (entry["verdict"] == "qualified_pending_playback"),
+            "the qualified list and the verdicts differ",
+        )?;
         let refusal = check_clip(entry, dir).map_err(|error| format!("{case}: {error}"))?;
-        let recorded = list(&entry["causes"])?
-            .iter()
-            .map(string)
-            .collect::<Result<Vec<_>>>()?;
-        if !recorded.contains(&refusal.as_str()) {
-            return Err(
-                format!("{case}: Rust refused {refusal}, evidence causes {recorded:?}").into(),
-            );
-        }
-        let probe = string(&entry["expected_refusal"])?;
-        let code = refusal.split('(').next().unwrap_or_default();
-        if !probe.is_empty() && code != probe {
-            return Err(
-                format!("{case}: Rust refused {refusal}, the probe expects {probe}").into(),
-            );
-        }
+        accept(entry, &refusal).map_err(|error| format!("{case}: {error}"))?;
     }
     Ok(())
+}
+
+/// Whether Rust's refusal agrees with the clip's evidence: a qualified
+/// clip, or one whose causes are all measured on recordings, refuses only
+/// because playback is deferred; any other refusal is a listed cause, and
+/// a refusal probe's carries the probe's code.
+pub(crate) fn accept(entry: &J, refusal: &str) -> Result<()> {
+    let causes = list(&entry["causes"])?
+        .iter()
+        .map(string)
+        .collect::<Result<Vec<_>>>()?;
+    let verdict = string(&entry["verdict"])?;
+    require(
+        verdict == "refused" || (verdict == "qualified_pending_playback" && causes.is_empty()),
+        "unknown verdict",
+    )?;
+    if refusal == "unsupported_humanoid_playback" {
+        if verdict == "qualified_pending_playback"
+            || causes.iter().all(|cause| RESIDUAL.contains(cause))
+        {
+            return Ok(());
+        }
+    } else if verdict == "refused" && causes.contains(&refusal) {
+        let probe = string(&entry["expected_refusal"])?;
+        if probe.is_empty() || refusal.split('(').next() == Some(probe) {
+            return Ok(());
+        }
+        return Err(format!("Rust refused {refusal}, the probe expects {probe}").into());
+    }
+    Err(format!("Rust refused {refusal}, evidence {verdict} with causes {causes:?}").into())
+}
+
+#[test]
+fn rust_refusals_agree_with_each_evidence_verdict() {
+    let entry = |verdict: &str, causes: &[&str], probe: &str| serde_json::json!({"verdict": verdict, "causes": causes, "expected_refusal": probe});
+    let playback = "unsupported_humanoid_playback";
+    let hips = RESIDUAL[0];
+    let basis = "unsupported_humanoid_root_basis(m_KeepOriginalPositionY)";
+    // A qualified neutral clip, and one only the recordings refuse.
+    assert!(accept(&entry("qualified_pending_playback", &[], ""), playback).is_ok());
+    assert!(accept(&entry("refused", &[hips], ""), playback).is_ok());
+    // A static cause Rust missed, or one it gave the evidence lacks.
+    assert!(accept(&entry("refused", &[hips, basis], ""), playback).is_err());
+    assert!(accept(&entry("qualified_pending_playback", &[], ""), basis).is_err());
+    assert!(accept(&entry("refused", &[hips, basis], ""), basis).is_ok());
+    assert!(accept(&entry("refused", &[hips], ""), basis).is_err());
+    let probe = "unsupported_humanoid_root_basis";
+    assert!(accept(&entry("refused", &[basis], probe), basis).is_ok());
+    assert!(
+        accept(
+            &entry("refused", &[hips, basis], "unsupported_humanoid_twist"),
+            basis
+        )
+        .is_err()
+    );
+    // A verdict at odds with its causes.
+    assert!(accept(&entry("qualified_pending_playback", &[hips], ""), playback).is_err());
+    assert!(accept(&entry("pending", &[], ""), playback).is_err());
 }

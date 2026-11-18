@@ -553,7 +553,8 @@ def recorded_paths(folder, replay, manifest, run):
                 errors.append(f"{name}: missing {paths[name].relative_to(folder)}")
         elif name in OPTIONAL_CASES and status == "recorded" and name != "mixed-transform-storage":
             errors.append(f"{name}: no recording defined for this optional case")
-    errors.extend(f"missing run.json case: {name}" for name in sorted(expected - statuses.keys()))
+    # A run older than the basis matrix has no rows for it.
+    errors.extend(f"missing run.json case: {name}" for name in sorted(expected - statuses.keys() - BASIS_CASES.keys()))
     # Coverage confirmed on this Editor version is no longer optional.
     errors.extend(f"{name}: required for Unity {run['editor_version']} but {statuses[name]}"
                   for name in sorted(required_coverage(run["editor_version"]))

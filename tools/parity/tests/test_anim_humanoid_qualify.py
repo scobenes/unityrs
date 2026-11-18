@@ -144,8 +144,10 @@ class View:
         return self.objects[key]
 
 
-def qualify(clip=None, avatar=None, name="humanoid-synthetic", baseline=True, **recorded):
+def qualify(clip=None, avatar=None, name="humanoid-synthetic", baseline=True, edit=None, **recorded):
     doc, known = recordings(**recorded)
+    if edit:
+        edit(known)
     clip = clip or rig_clip()
     # The Editor's Animator curve names for the clip's own DOFs.
     names = [f"Muscle {row['attribute'] - 42}" if q.dof_kind(row["attribute"])[0] == "muscle"
@@ -196,6 +198,8 @@ class VerdictTests(unittest.TestCase):
         entry = qualify(moved=False, avatar=rig_avatar(root_x=(0.0, 0.0, 0.0)))
         self.assertEqual(entry["causes"], [])
         self.assertTrue(entry["qualifies"] and entry["verdicts"]["residual"] == dict(root=True, hips_local=True))
+        self.assertEqual(entry["verdict"], "qualified_pending_playback")
+        self.assertTrue(entry["root_hips"]["baseline_within"])
         self.assertEqual(entry["verdicts"]["clip_settings"] + entry["verdicts"]["root_basis"], [])
         # The same clip with no known-vector baseline does not.
         self.assertFalse(qualify(moved=False, baseline=False)["qualifies"])
@@ -232,6 +236,51 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(qualify(clip=rig_clip(m_StartAtOrigin=False))["verdicts"]["root_basis"], ["m_StartAtOrigin"])
         self.assertEqual(qualify(clip=rig_clip(m_KeepOriginalPositionXZ=True, m_StartAtOrigin=False))
                          ["verdicts"]["root_basis"], ["m_KeepOriginalPositionXZ", "m_StartAtOrigin"])
+
+
+class BaselineTests(unittest.TestCase):
+    def still(self, **kwargs):
+        return qualify(moved=False, avatar=rig_avatar(root_x=(0.0, 0.0, 0.0)), **kwargs)
+
+    def test_a_baseline_beyond_its_bound_does_not_qualify(self):
+        def lift(known):
+            for row in known["capture"]["samples"]:
+                row["pose"]["transforms"][2] = pose((0.0, 1.25, 0.0))
+        entry = self.still(edit=lift)
+        self.assertEqual(entry["causes"], [])
+        self.assertFalse(entry["qualifies"] or entry["root_hips"]["baseline_within"])
+        self.assertEqual(entry["verdict"], "refused")
+        self.assertTrue(any("known-vector baseline differs" in reason for reason in entry["reasons"]))
+
+    def test_a_baseline_that_moves_its_root_does_not_qualify(self):
+        def drift(known):
+            for row in known["capture"]["samples"]:
+                row["pose"]["transforms"][1] = pose((0.0, 0.0, 0.5))
+        entry = self.still(edit=drift)
+        self.assertFalse(entry["root_hips"]["baseline_root_at_rest"] or entry["qualifies"])
+
+    def test_a_baseline_of_another_prefab_or_rig_is_refused(self):
+        for edit, message in [
+            (lambda known: known["spec"].update(prefab_asset="other"), "another prefab"),
+            (lambda known: known["spec"].update(binding_component=1), "another prefab"),
+            (lambda known: known["spec"]["nodes"][2].update(name="Pelvis"), "another reset rig"),
+            (lambda known: known["capture"]["rest"]["transforms"].__setitem__(2, pose((0, 2, 0))),
+             "another reset rig"),
+        ]:
+            with self.subTest(message), self.assertRaisesRegex(ValueError, message):
+                self.still(edit=edit)
+
+    def test_a_neutral_basis_matrix_clip_qualifies_on_its_reset_baseline(self):
+        neutral = "humanoid-root-basis-o0-y0-xz0"
+        entry = self.still(name=neutral, baseline=False)
+        self.assertEqual((entry["causes"], entry["verdict"]), ([], "qualified_pending_playback"))
+        self.assertEqual(entry["root_hips"]["baseline_kind"], "reset")
+        # Over its hips bound, the same clip is refused by its residual alone.
+        entry = qualify(name=neutral, baseline=False)
+        self.assertEqual(entry["causes"], ["unsupported_body_motion(hips_correction)"])
+        self.assertEqual(entry["verdict"], "refused")
+        # Any other clip without a known-vector baseline does not qualify.
+        self.assertEqual(self.still(baseline=False)["verdict"], "refused")
 
 
 class CauseTests(unittest.TestCase):

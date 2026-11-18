@@ -383,6 +383,31 @@ pub fn clip_with(
     streamed: u32,
     words: &[u32],
 ) -> Object {
+    let slots = dofs.len() + 3 * transforms.len();
+    let constants = vec![0_u32; slots.saturating_sub(streamed as usize)];
+    clip_stored(
+        dofs,
+        transforms,
+        settings,
+        p::Storage {
+            interval: [0., 1.],
+            streamed_count: streamed,
+            words,
+            constants: &constants,
+            ..p::Storage::default()
+        },
+    )
+}
+
+/// A humanoid clip as `clip_with`, with its slots stored as `storage` says
+/// (streamed, then dense, then constant, in binding order).
+#[must_use]
+pub fn clip_stored(
+    dofs: &[u32],
+    transforms: &[u32],
+    settings: &[(&str, V)],
+    storage: p::Storage<'_>,
+) -> Object {
     let mut object = p::explicit(CLIP, 30., &[]);
     let mut bindings: Vec<_> = dofs
         .iter()
@@ -399,21 +424,7 @@ pub fn clip_with(
         attribute: 1,
         ..Binding::default()
     }));
-    let slots = dofs.len() + 3 * transforms.len();
-    let constants = vec![0_u32; slots.saturating_sub(streamed as usize)];
-    p::add_compiled(
-        &mut object,
-        Layout::Unity2022,
-        &bindings,
-        &[],
-        p::Storage {
-            interval: [0., 1.],
-            streamed_count: streamed,
-            words,
-            constants: &constants,
-            ..p::Storage::default()
-        },
-    );
+    p::add_compiled(&mut object, Layout::Unity2022, &bindings, &[], storage);
     let mut index = vec![-1_i32; 200];
     for (slot, &dof) in dofs.iter().enumerate() {
         if let Some(entry) = usize::try_from(dof).ok().and_then(|dof| index.get_mut(dof)) {

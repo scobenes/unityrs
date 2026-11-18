@@ -1,7 +1,7 @@
 //! The ordered typed refusals, one cause at a time, and the causes that
 //! must not fire: twist and stretch on limbs the clip leaves still, a
 //! muscle of an absent optional bone, a generic writer off the skeleton.
-use super::{SPINE, file, refusal, refusal_on};
+use super::{SPINE, file, issue, refusal, refusal_on};
 use unityrs_anim::{
     humanoid::{dropped_muscles, rig_avatar},
     read_clip,
@@ -11,7 +11,10 @@ use unityrs_testkit::{
     ngui::{Object, V, vector},
     scene3d::{
         Layout,
-        anim::humanoid::{self as h, ANIMATOR, CLIP, Rig},
+        anim::{
+            humanoid::{self as h, ANIMATOR, CLIP, Rig},
+            playback::{Dense, Storage},
+        },
     },
 };
 
@@ -40,10 +43,12 @@ fn rig_and_slot_refusals_follow_the_module_order() {
     let neutral = Rig::default();
     let cases: Vec<(Rig, Object, &str)> = vec![
         (neutral.clone(), muscles(), "unsupported_humanoid_playback"),
+        // A rest body offset is no static refusal: the recordings measure
+        // whether the hips need a correction.
         (
             rig(|r| r.body_offset = [0., 0.9, 0.]),
             muscles(),
-            "unsupported_body_motion(hips_correction)",
+            "unsupported_humanoid_playback",
         ),
         (rig(|r| r.avatar = false), muscles(), "missing_avatar"),
         (
@@ -252,5 +257,167 @@ fn a_missing_setting_has_no_confirmed_default() {
         };
         muscle.retain(|(name, _)| name != field);
         assert_eq!(refusal(&Rig::default(), clip), expected);
+    }
+}
+
+/// A clip of a body slot (`RootT.x`) and a muscle, both dense over two
+/// frames at `rate`, from the given sample words.
+fn dense(rate: f32, bits: &[u32]) -> Object {
+    h::clip_stored(
+        &[7, 42],
+        &[],
+        &[],
+        Storage {
+            interval: [0., 1.],
+            dense: Dense {
+                frames: 2,
+                curves: 2,
+                rate,
+                begin: 0.,
+                bits,
+            },
+            ..Storage::default()
+        },
+    )
+}
+
+#[test]
+fn a_dense_grid_needs_a_finite_positive_rate_and_finite_body_values() {
+    let zero = 0_f32.to_bits();
+    let nan = f32::NAN.to_bits();
+    let inf = f32::INFINITY.to_bits();
+    for rate in [0., -30., f32::NAN, f32::INFINITY] {
+        assert_eq!(
+            issue(dense(rate, &[zero; 4]), Layout::Unity2022),
+            "invalid_dense_grid"
+        );
+    }
+    // Frame-major: the body slot is column 0 of each frame.
+    for bits in [[nan, zero, zero, zero], [zero, zero, inf, zero]] {
+        assert_eq!(
+            issue(dense(30., &bits), Layout::Unity2022),
+            "malformed animation field: m_SampleArray"
+        );
+    }
+    // A muscle column is not a body slot; the clip reads and refuses its body.
+    assert_eq!(
+        refusal(&Rig::default(), dense(30., &[zero, nan, zero, zero])),
+        "unsupported_body_motion(body_slots)"
+    );
+    let constant = h::clip_stored(
+        &[7, 42],
+        &[],
+        &[],
+        Storage {
+            interval: [0., 1.],
+            constants: &[nan, zero],
+            ..Storage::default()
+        },
+    );
+    assert_eq!(
+        issue(constant, Layout::Unity2022),
+        "malformed animation field: m_ConstantClip"
+    );
+}
+
+/// Each case carries two triggers, of one stage and the next, and refuses
+/// as the earlier: swapping any two adjacent stages fails a case.
+#[test]
+fn adjacent_triggers_refuse_as_the_earlier_stage() {
+    let writer = [h::crc32(b"Hips/Spine")];
+    let level = ("m_Level", V::Float(0.125));
+    let cases: Vec<(Rig, Object, &str)> = vec![
+        (
+            rig(|r| {
+                r.no_tos = Some(3);
+                r.unmapped_bone = Some(10);
+            }),
+            muscles(),
+            "unsupported_humanoid_hierarchy(4)",
+        ),
+        (
+            rig(|r| {
+                r.unmapped_bone = Some(10);
+                r.root_offset = true;
+            }),
+            muscles(),
+            "missing_human_bone(10)",
+        ),
+        (
+            rig(|r| r.root_offset = true),
+            h::clip_with(&SPINE, &writer, &[], 0, &[]),
+            "unsupported_animator_root",
+        ),
+        (
+            Rig::default(),
+            h::clip_with(&[0, 42, 43, 44], &writer, &[], 0, &[]),
+            "conflicting_humanoid_writer(4)",
+        ),
+        (
+            Rig::default(),
+            h::clip(&[0, 14, 42], &[]),
+            "unsupported_locomotion",
+        ),
+        (
+            Rig::default(),
+            h::clip(&[14, 137, 42], &[]),
+            "unsupported_humanoid_ik",
+        ),
+        (
+            Rig::default(),
+            h::clip(
+                &[137, 42],
+                &[(
+                    "m_ValueArrayReferencePose",
+                    vector(V::Float(0.), vec![V::Float(1.)]),
+                )],
+            ),
+            "unsupported_translation_dof",
+        ),
+        (
+            Rig::default(),
+            h::clip(
+                &[13, 42],
+                &[(
+                    "m_ValueArrayReferencePose",
+                    vector(V::Float(0.), vec![V::Float(1.)]),
+                )],
+            ),
+            "unsupported_additive_pose",
+        ),
+        (
+            rig(|r| r.no_axes = Some(7)),
+            h::clip(&[13, 42, 43, 44], &[]),
+            "unsupported_body_motion(body_slots)",
+        ),
+        (
+            rig(|r| {
+                r.no_axes = Some(7);
+                r.twist = [0., 0.25, 0., 0.];
+            }),
+            h::clip(&[42, 43, 44, FOREARM], &[]),
+            "unsupported_humanoid_axes(7)",
+        ),
+        (
+            rig(|r| {
+                r.twist = [0., 0.25, 0., 0.];
+                r.stretch = [0.05, 0., 0.];
+            }),
+            h::clip(&[FOREARM], &[]),
+            "unsupported_humanoid_twist(m_ForeArmTwist)",
+        ),
+        (
+            rig(|r| r.stretch = [0.05, 0., 0.]),
+            h::clip(&[FOREARM], std::slice::from_ref(&level)),
+            "unsupported_humanoid_avatar_setting(m_ArmStretch)",
+        ),
+        (
+            Rig::default(),
+            h::clip(&SPINE, &[level, flag("m_HeightFromFeet", true)]),
+            "unsupported_humanoid_clip_settings(m_Level)",
+        ),
+    ];
+    for (rig, clip, expected) in cases {
+        assert_eq!(refusal(&rig, clip), expected);
     }
 }

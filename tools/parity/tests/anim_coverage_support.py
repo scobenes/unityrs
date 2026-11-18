@@ -124,7 +124,9 @@ def human_clip(case, spec, *, ramp=True):
     if case in BASIS_CASES:
         orientation, y, xz = BASIS_CASES[case]
         basis = {"m_KeepOriginalOrientation": orientation, "m_KeepOriginalPositionY": y,
-                 "m_KeepOriginalPositionXZ": xz, "m_HeightFromFeet": False, "m_StartAtOrigin": not xz}
+                 "m_KeepOriginalPositionXZ": xz, "m_HeightFromFeet": False, "m_StartAtOrigin": not xz,
+                 **dict.fromkeys(("m_LoopBlend", "m_LoopBlendOrientation", "m_LoopBlendPositionY",
+                                  "m_LoopBlendPositionXZ"), False)}
     return {"m_SampleRate": 16., "m_Legacy": False, **stored_curves(spec), "m_MuscleClip": {
         "m_StartTime": 0., "m_StopTime": 1., "m_LoopTime": False, "m_CycleOffset": 0., "m_Mirror": False,
         "m_Level": .125 if offset else 0., "m_OrientationOffsetY": 0., "m_KeepOriginalPositionY": False,

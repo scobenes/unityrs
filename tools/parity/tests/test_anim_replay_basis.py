@@ -2,6 +2,7 @@
 built start-at-origin flag the complement of its XZ flag, on a neutral Avatar."""
 
 import unittest
+from unittest import mock
 
 import test_anim_replay_coverage as coverage
 from anim_coverage_support import BASIS, BASIS_Y, COVERAGE, NEUTRAL_BASIS, coverage_archives
@@ -59,8 +60,26 @@ class BasisMatrixTests(unittest.TestCase):
             clip["m_MuscleClip"]["m_KeepOriginalPositionY"] = False
             return clip
         self.build(clips={BASIS_Y: edit})
-        self.assert_refused("built basis matrix clip flags differ from the authored combination",
-                            written=COVERAGE + BASIS)
+        self.assert_refused("basis matrix clip has another serialized clip setting", written=COVERAGE + BASIS)
+
+    def test_refuses_a_non_neutral_built_setting(self):
+        for field, value in (("m_Mirror", True), ("m_Level", .125), ("m_CycleOffset", .5), ("m_LoopBlend", True)):
+            def edit(clip, field=field, value=value):
+                clip["m_MuscleClip"][field] = value
+                return clip
+            with self.subTest(field):
+                self.build(clips={NEUTRAL_BASIS: edit})
+                # The serialized import row or, for a field with none, the built clip refuses it.
+                self.assert_refused("basis matrix clip has", written=COVERAGE + BASIS)
+
+    def test_a_run_without_matrix_rows_completes(self):
+        # As a round-3 run: no matrix rows in run.json, no matrix bundle or recordings.
+        older = tuple(name for name in coverage.DEFERRED if name not in anim_fixture_coverage.BASIS_CASES)
+        with mock.patch.object(coverage, "DEFERRED", older):
+            self.coverage = coverage_archives(self.bundles, self.inspect)
+            result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("humanoid-root-basis", result.stdout)
 
     def test_refuses_another_captured_setting(self):
         self.build()

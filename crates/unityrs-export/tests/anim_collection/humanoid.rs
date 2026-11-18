@@ -44,12 +44,12 @@ fn a_selected_humanoid_clip_refuses_with_its_typed_cause() {
         collect(&Rig::default(), &[]),
         ExportError::Animation(AnimError::UnsupportedHumanoidPlayback)
     ));
-    let offset = Rig {
-        body_offset: [0., 0.9, 0.],
-        ..Rig::default()
-    };
+    // A mapped body slot is the one body refusal Rust gives.
+    let mut objects = h::prefab(&Rig::default());
+    objects.push(h::clip(&[7, 42], &[]));
+    let (env, root, graph, meter) = input(s::file(Layout::Unity2022, &[], &objects).unwrap(), 0);
     assert!(matches!(
-        collect(&offset, &[]),
-        ExportError::Animation(AnimError::UnsupportedBodyMotion(BodyMotion::HipsCorrection))
+        animated(&env, &root, &graph, &meter, ALL).unwrap_err(),
+        ExportError::Animation(AnimError::UnsupportedBodyMotion(BodyMotion::BodySlots))
     ));
 }

@@ -602,23 +602,34 @@ It then gives three independent verdicts:
   is `unsupported_body_motion(hips_correction)`, a root residual
   `unsupported_body_motion(root_projection)`.
 
-The evidence lists every typed cause a clip has, unordered, and a clip
-qualifies only with no cause and a known-vector baseline. The Rust reader
-returns one cause, in the partial order the plan implies: identity before
+The evidence lists every typed cause a clip has, unordered. A clip
+qualifies only with no cause and a baseline within its bound: the
+known-vector `SetHumanPose` recording of the same prefab, clip, Animator,
+Avatar, hierarchy and reset rig, whose own root stays at its rest and which
+the clip's root and hips match within the rest-track bounds. A root basis
+matrix clip has no known-vector recording, so its baseline is its own
+prefab's reset rig, which the residual verdict compares. A qualifying
+clip's verdict is `qualified_pending_playback`. The Rust reader cannot see
+recordings, so it never reports a residual cause; it returns one static
+cause, in the partial order the plan implies: identity before
 the rig (Avatar, hierarchy, required bones), the rig before the Animator
 root and conflicting generic writers, those before the slots it plays
 (locomotion, IK, translation DOFs, additive pose, body slots, muscle axes),
 the slots before the Avatar settings that act on them (twist and stretch,
 only where the clip animates a bone the setting redistributes or
-lengthens), those before the clip's own settings and its root basis, and
-the residual last. A clip with none of these refuses as
-`unsupported_humanoid_playback`, since positive playback is not built.
+lengthens), and those before the clip's own settings and its root basis.
+A clip with none of these refuses as `unsupported_humanoid_playback`,
+since positive playback is not built.
 The Rust test `recorded_humanoid_refusals` (`UNITYRS_ANIM_HUMANOID`,
 `UNITYRS_ANIM_BUNDLES`, with `run.json` beside the bundles folder) reads
 the same bundles, checks the run's clip set, the inventory, settings,
 Avatar twist and stretch, the dropped muscles and the neutral twin's
-values, and its refusal must be one of the listed causes; a refusal probe's
-refusal must carry the probe's code. The neutral twist and stretch are
+values, binds each clip to its own completed replay (bundle digests,
+prefab, clip, Animator and Avatar) and the `-offset` clips to a translated
+and rotated Animator rest. Its refusal must be one of the listed causes, a
+refusal probe's carrying the probe's code, or
+`unsupported_humanoid_playback` for a qualified clip or one whose causes
+are all residual. The neutral twist and stretch are
 the values on the recorded probes' neutral Avatar, not an assumed zero.
 
 On the 2022.3 and 6000 fixture runs no clip qualified, and no muscle clip's
@@ -629,8 +640,9 @@ clips also keep the original Y position, which refuses first as a root
 basis. The candidate equation matched the known-vector Spine poses on both
 rigs. The optional `humanoid-root-basis-*` coverage matrix records the
 compact rig's muscle clip in each combination of the three keep-original
-flags under the same playback, so the basis and the residual can be told
-apart on one rig. Positive playback waits for the Humanoid body motion slice.
+flags under the same playback, every other setting neutral, so the basis
+and the residual can be told apart on one rig. A run older than the matrix
+has no rows for it in `run.json` and still completes. Positive playback waits for the Humanoid body motion slice.
 
 ### Owner workflow
 

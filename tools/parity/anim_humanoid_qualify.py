@@ -19,7 +19,14 @@ folder ``anim_replay.py complete`` accepted. For each humanoid clip the run's
   every typed cause the clip has, unordered. The Rust reader returns one of
   them in its own order; ``recorded_humanoid_refusals`` checks it is listed.
 
-A clip qualifies when it has no cause and a known-vector baseline.
+A clip qualifies when it has no cause and a baseline within its bound: the
+known-vector ``SetHumanPose`` recording of the same prefab, Animator, clip and
+Avatar, whose root stays at its rest and which the clip's root and hips match
+within the rest-track bounds. A root basis matrix clip has no known-vector
+recording; its baseline is its own prefab's reset rig, which the residual
+verdict already compares. A qualifying clip's verdict is
+``qualified_pending_playback``: positive playback is deferred, so Rust still
+refuses it as ``unsupported_humanoid_playback``.
 
 ``python3 -I tools/parity/anim_humanoid_qualify.py RUN_DIR --unityrs CLI -o OUT``
 writes ``unityrs.anim_humanoid_qualification`` version 2.
@@ -37,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import anim_replay as replay  # noqa: E402
 import anim_replay_budgets as budgets  # noqa: E402
 from anim_fixture_contract import REPLAY_CASES, VECTOR_SUFFIX  # noqa: E402
-from anim_fixture_coverage import COVERAGE_CASES, REFUSALS  # noqa: E402
+from anim_fixture_coverage import BASIS_CASES, COVERAGE_CASES, REFUSALS  # noqa: E402
 from anim_replay_complete import BundleView, read_manifest  # noqa: E402
 
 FORMAT = "unityrs.anim_humanoid_qualification"
@@ -69,6 +76,8 @@ REQUIRED_CASES = tuple(sorted(name for name, fixture in REPLAY_CASES.items()
 # twist and stretch the recorder's neutral-twist twin evaluates with.
 NEUTRAL_TWINS = ("humanoid-non-neutral-setting-refusal", "humanoid-compact-muscles")
 require = replay.require
+# What a known-vector baseline shares with its clip's replay.
+BASELINE_IDENTITY = ("prefab_asset", "clip_asset", "avatar_asset", "binding_address", "binding_component")
 
 
 def dof_kind(dof):
@@ -392,11 +401,23 @@ def comparison(doc, baseline, avatar, spec):
     require([row["local_f32"] for row in other] == [row["local_f32"] for row in samples],
             "known-vector schedule differs")
     require(baseline["capture"]["bundle_sha256"] == capture["bundle_sha256"], "known-vector bundle differs")
+    other_spec = baseline["spec"]
+    require(all(other_spec[key] == spec[key] for key in BASELINE_IDENTITY)
+            and [row["name"] for row in other_spec["bundles"]] == [row["name"] for row in spec["bundles"]],
+            "known-vector baseline is another prefab, clip, Animator or Avatar")
+    require([(row["address"], row["name"]) for row in other_spec["nodes"]]
+            == [(row["address"], row["name"]) for row in spec["nodes"]]
+            and baseline["capture"]["rest"]["transforms"] == rest, "known-vector baseline has another reset rig")
     # The raw recorder output, not a completed replay: its digest names the input.
     result["baseline_recording_id"] = replay._known_vector_id(baseline)
     result["baseline"] = {name: judge([(a["pose"]["transforms"][node], b["pose"]["transforms"][node])
                                        for a, b in zip(samples, other)], result["bounds"][name])
                           for name, node in (("root", root), ("hips_local", hips))}
+    # The baseline poses the muscles alone: its own root stays at its rest.
+    result["baseline_root_at_rest"] = judge([(row["pose"]["transforms"][root], rest[root]) for row in other],
+                                            result["bounds"]["root"])["within"]
+    result["baseline_within"] = result["baseline_root_at_rest"] and all(
+        row["within"] for row in result["baseline"].values())
     # Absent body slots leave the body at the Animator root origin: the
     # clip's hips translation is the baseline's less the rest body offset.
     offset = vec(data(avatar["m_Avatar"]["m_Human"])["m_RootX"]["t"])
@@ -499,8 +520,12 @@ def reasons(entry):
     for name, row in entry["root_hips"]["reset"].items():
         if not row["within"]:
             result.append(f"{name} differs from the reset pose beyond its rest bound: {row}")
-    if entry["root_hips"].get("baseline") is None:
+    root_hips = entry["root_hips"]
+    if root_hips["baseline_kind"] is None:
         result.append("no known-vector baseline")
+    elif root_hips["baseline_kind"] == "known_vectors" and not root_hips["baseline_within"]:
+        result.append(f"the known-vector baseline differs beyond its bound: {root_hips['baseline']}"
+                      + ("" if root_hips["baseline_root_at_rest"] else ", and moves its root"))
     return result
 
 
@@ -548,8 +573,15 @@ def qualify_clip(name, doc, baseline, view, neutral_avatar):
             angle_degrees(trs(a["pose"]["transforms"][spine])["rotation"], trs(b["pose"]["transforms"][spine])["rotation"])
             for a, b in zip(capture["samples"], baseline["capture"]["samples"]))
     entry["causes"] = causes(entry, avatar, clip, neutral_avatar)
+    if baseline is not None:
+        entry["root_hips"]["baseline_kind"] = "known_vectors"
+    else:
+        # A basis matrix clip's baseline is its own prefab's reset rig.
+        entry["root_hips"]["baseline_kind"] = "reset" if name in BASIS_CASES else None
+        entry["root_hips"]["baseline_within"] = name in BASIS_CASES
     entry["reasons"] = reasons(entry)
-    entry["qualifies"] = not entry["causes"] and baseline is not None
+    entry["qualifies"] = not entry["causes"] and entry["root_hips"]["baseline_within"]
+    entry["verdict"] = "qualified_pending_playback" if entry["qualifies"] else "refused"
     expected = entry["expected_refusal"] = REFUSALS.get(name, "")
     require(not expected or expected in {cause.split("(")[0] for cause in entry["causes"]},
             f"{name}: causes {entry['causes']} lack the probe's {expected}")

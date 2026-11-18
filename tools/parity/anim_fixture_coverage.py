@@ -56,6 +56,10 @@ for _name in BASIS_CASES:
 del _name
 # The built muscle clip's serialized flags, in BASIS_FLAGS order.
 BUILT_BASIS = ("m_KeepOriginalOrientation", "m_KeepOriginalPositionY", "m_KeepOriginalPositionXZ")
+# Every other built setting a matrix clip holds at neutral, so only the basis varies.
+BUILT_NEUTRAL = dict.fromkeys(("m_Mirror", "m_LoopTime", "m_LoopBlend", "m_LoopBlendOrientation",
+                               "m_LoopBlendPositionY", "m_LoopBlendPositionXZ", "m_HeightFromFeet"), False) \
+    | dict.fromkeys(("m_CycleOffset", "m_Level", "m_OrientationOffsetY"), 0.)
 
 # Distinct values catch a swapped field. The capture names come from
 # HumanDescription; the runtime and serialized Avatar fields follow Unity's names.
@@ -106,7 +110,7 @@ def check_coverage(name, fixture, doc, view, clip_key, avatar_key, replay):
     if "twist" in checks:
         check_twist(editor, capture, view.value(clip_key), replay)
     if "basis" in checks:
-        check_basis(BASIS_CASES[name], capture, view.value(clip_key), view.value(avatar_key), replay)
+        check_basis(BASIS_CASES[name], spec, capture, view.value(clip_key), view.value(avatar_key), replay)
     elif refusal:
         check_isolated(spec, capture, view.value(avatar_key), "twist" in checks, replay)
 
@@ -201,19 +205,33 @@ def check_isolated(spec, capture, avatar, twist, replay):
             and not runtime.get("m_HasTDoF"), "built Avatar settings differ from the probe's one trigger")
 
 
-def check_basis(flags, capture, clip, avatar, replay):
-    """A basis matrix clip: neutral but for its three flags, the built start-at-origin their XZ complement."""
+def check_basis(flags, spec, capture, clip, avatar, replay):
+    """A basis matrix clip: every non-basis setting neutral, captured, effective and built, its three flags
+    the authored combination and its built start-at-origin their XZ complement, on a neutral Avatar."""
     require = replay.require
     expected = NEUTRAL_CLIP | dict(zip(BASIS_FLAGS, flags))
+
+    def matches(value, want):
+        if type(want) is bool:
+            return value is want or (type(value) is int and not isinstance(value, bool) and value == int(want))
+        if type(want) is str:
+            return value == want
+        return same_f32(value, want, replay)
+
     settings = capture["clip_settings"]
     require(settings.keys() == expected.keys() and all(
         (settings[name] is want) if type(want) is bool else
         settings[name] == (replay.f32_bits(want) if type(want) is float else want)
         for name, want in expected.items()), "basis matrix clip has another clip setting")
+    rows = {row["property"]: row for row in spec["evidence"]["import_settings"]}
+    require(rows.keys() <= expected.keys() and all(
+        matches(row["effective"], expected[name]) and (row["serialized"] is None or matches(row["serialized"], expected[name]))
+        for name, row in rows.items()), "basis matrix clip has another serialized clip setting")
     muscle = clip.get("m_MuscleClip", {})
+    require(all(matches(muscle.get(field), want) for field, want in BUILT_NEUTRAL.items()),
+            "built basis matrix clip has a non-neutral setting")
     built = [muscle.get(field) for field in BUILT_BASIS]
-    require(built == list(flags) and muscle.get("m_StartAtOrigin") is (not flags[2])
-            and muscle.get("m_HeightFromFeet") is False,
+    require(built == list(flags) and muscle.get("m_StartAtOrigin") is (not flags[2]),
             "built basis matrix clip flags differ from the authored combination")
     human = capture["humanoid"]
     require(all(human[name] == replay.f32_bits(0) for name in (*TWIST, "arm_stretch", "leg_stretch", "feet_spacing"))

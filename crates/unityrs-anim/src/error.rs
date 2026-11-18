@@ -92,15 +92,11 @@ pub enum AnimError {
 /// Why a humanoid clip needs the unsupported body model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BodyMotion {
-    /// A `RootT` or `RootQ` DOF maps to a runtime slot.
+    /// A `RootT` or `RootQ` DOF maps to a runtime slot. The hips
+    /// correction and root projection a recorded clip may need with absent
+    /// body slots are measured on recordings, so only the qualification
+    /// evidence reports them.
     BodySlots,
-    /// The body slots are absent, but playback still moves the hips: a
-    /// body placed at the Animator root origin displaces them by the rest
-    /// body offset `m_RootX` beyond the rest-track bound.
-    HipsCorrection,
-    /// The recorded Animator root moved beyond its bound with no motion
-    /// slot. Only the qualification evidence measures it.
-    RootProjection,
 }
 
 impl BodyMotion {
@@ -108,8 +104,6 @@ impl BodyMotion {
     pub const fn name(self) -> &'static str {
         match self {
             Self::BodySlots => "body_slots",
-            Self::HipsCorrection => "hips_correction",
-            Self::RootProjection => "root_projection",
         }
     }
 }

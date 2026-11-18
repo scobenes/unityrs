@@ -315,7 +315,13 @@ pub(crate) fn read(
         }
         index.push(value)?;
     }
-    check_payload(dict, muscle, counts, kinds.as_slice())?;
+    // The slots of the seven body DOFs (`RootT`, `RootQ`), when mapped.
+    let body: [Option<usize>; 7] = std::array::from_fn(|i| {
+        values
+            .get(7 + i)
+            .and_then(|&slot| usize::try_from(slot).ok())
+    });
+    check_payload(dict, muscle, counts, kinds.as_slice(), &body)?;
     let mut settings = SETTINGS.map(|(field, _)| ClipSetting { field, value: None });
     for (setting, (field, boolean)) in settings.iter_mut().zip(SETTINGS) {
         setting.value = match (boolean, dict.field(muscle, field)?) {
@@ -372,13 +378,16 @@ fn counts(dict: &Dict<'_, '_>, muscle: &Value) -> Result<SlotCounts, AnimError> 
 }
 
 /// The serialized payload must populate every counted slot: each
-/// streamed curve keyed or seeded in valid frames, and a dense grid of
-/// `m_FrameCount` frames of every dense curve.
+/// streamed curve keyed or seeded in valid frames (finite continuous
+/// coefficients), and a dense grid of `m_FrameCount` frames of every dense
+/// curve at a finite begin time and a finite, positive sample rate. A
+/// mapped body slot's dense or constant values must be finite too.
 fn check_payload(
     dict: &Dict<'_, '_>,
     muscle: &Value,
     counts: SlotCounts,
     kinds: &[BindingKind],
+    body: &[Option<usize>],
 ) -> Result<(), AnimError> {
     let clip = dict.required(muscle, "m_Clip")?;
     let clip = dict.field(clip, "data")?.unwrap_or(clip);
@@ -387,9 +396,40 @@ fn check_payload(
     decode_stream(dict, counts.streamed, words, kinds, &[])?;
     let dense = dict.required(clip, "m_DenseClip")?;
     let frames = dict.count(dense, "m_FrameCount")?;
-    let samples = dict.words(dense, "m_SampleArray", true)?.len();
-    if counts.dense.checked_mul(frames) != Some(samples) || (counts.dense > 0 && frames == 0) {
+    let samples = dict.words(dense, "m_SampleArray", true)?;
+    if counts.dense.checked_mul(frames) != Some(samples.len()) || (counts.dense > 0 && frames == 0)
+    {
         return Err(AnimError::InvalidDenseGrid);
+    }
+    if counts.dense > 0 {
+        let begin = dict.float(dense, "m_BeginTime")?;
+        let rate = dict.float(dense, "m_SampleRate")?;
+        if !begin.is_finite() || !rate.is_finite() || rate <= 0. {
+            return Err(AnimError::InvalidDenseGrid);
+        }
+    }
+    let constant = match dict.field(clip, "m_ConstantClip")? {
+        None => &[][..],
+        Some(constant) => dict.words(constant, "data", true)?,
+    };
+    let finite = |word: &u32| f32::from_bits(*word).is_finite();
+    for &slot in body.iter().flatten() {
+        // A streamed slot's coefficients were checked as it decoded.
+        let Some(offset) = slot.checked_sub(counts.streamed) else {
+            continue;
+        };
+        if offset < counts.dense {
+            if !samples
+                .iter()
+                .skip(offset)
+                .step_by(counts.dense)
+                .all(finite)
+            {
+                return Err(AnimError::Malformed("m_SampleArray"));
+            }
+        } else if !constant.get(offset - counts.dense).is_some_and(finite) {
+            return Err(AnimError::Malformed("m_ConstantClip"));
+        }
     }
     Ok(())
 }

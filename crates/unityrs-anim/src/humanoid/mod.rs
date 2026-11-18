@@ -7,12 +7,11 @@
 //! fixed order consistent with that; the qualification evidence lists
 //! every cause a recorded clip has, and Rust's must be among them.
 //!
-//! A clip that passes every check still refuses. On the 2022.3 and 6000
-//! fixture rigs a clip with absent body slots places the body at the
-//! Animator root origin, so the hips move by the Avatar's rest body
-//! offset `m_RootX` (`unsupported_body_motion(hips_correction)`). A rig
-//! without that offset still has no qualified playback in P2b
-//! (`unsupported_humanoid_playback`).
+//! A clip that passes every check still refuses as
+//! `unsupported_humanoid_playback`: positive playback is deferred. Whether
+//! such a clip's hips or root need a correction is measured on Editor
+//! recordings, so only the qualification evidence reports it
+//! (`unsupported_body_motion(hips_correction)` or `(root_projection)`).
 mod avatar;
 mod clip;
 
@@ -306,43 +305,7 @@ fn refusal(
     if let Some(field) = slots.root_basis_refusal() {
         return Ok(AnimError::UnsupportedHumanoidRootBasis(field));
     }
-    if body_offset(human) {
-        return Ok(AnimError::UnsupportedBodyMotion(BodyMotion::HipsCorrection));
-    }
     Ok(AnimError::UnsupportedHumanoidPlayback)
-}
-
-/// Half an f32 ulp of `value`: a rest-valued track's output rounding,
-/// the bound `anim_replay.py` derives for an unanimated component.
-fn rest_bound(value: f32) -> f32 {
-    let magnitude = value.abs();
-    if magnitude < f32::MIN_POSITIVE {
-        return f32::from_bits(1) / 2.;
-    }
-    let ulp = f32::from_bits(magnitude.to_bits() + 1) - magnitude;
-    ulp / 2.
-}
-
-/// Whether a body at the Animator root origin moves the hips: the rest
-/// body offset `m_RootX` reaches past the rest bound of the hips' own
-/// rest translation, or its rotation past that of a unit quaternion.
-fn body_offset(human: &Human) -> bool {
-    let hips = human
-        .bone_node(0)
-        .and_then(|node| human.pose.as_slice().get(node))
-        .map_or([0.; 3], |pose| pose.t);
-    let root = human.root;
-    let near = |sign: f32| {
-        root.q
-            .iter()
-            .zip([0., 0., 0., sign])
-            .all(|(q, unit)| (q - unit).abs() <= rest_bound(1.))
-    };
-    root.t
-        .iter()
-        .zip(hips)
-        .any(|(offset, rest)| offset.abs() > rest_bound(rest))
-        || !(near(1.) || near(-1.))
 }
 
 /// Whether the Animator node and its ancestors all have identity local
