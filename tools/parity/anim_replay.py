@@ -154,9 +154,16 @@ def _validate_clock(spec, start, stop, length):
     keys = evidence["key_times"]
     require(_ordered(keys) and keys[0] == start and keys[-1] == stop and set(boundaries) <= set(keys),
             "invalid clock evidence key times")
-    require(all(float(t) == t for t in (*boundaries, *keys, *times)), "time is not exactly representable as binary64")
+    authored_keys = evidence.get("authored_key_times", [])
+    if authored_keys:
+        require(_ordered(authored_keys) and authored_keys[0] == start and authored_keys[-1] == stop,
+                "invalid authored key times")
+    require(all(float(t) == t for t in (*boundaries, *keys, *authored_keys, *times)),
+            "time is not exactly representable as binary64")
     effective = [clocks(spec, time, length) for time in times]
     if stop > start:
+        runtime_source_bits = {f32_bits(t) for t in keys} if authored_keys else set()
+        keys = sorted(set(keys) | set(authored_keys))
         key_locals = sorted({f32_from_bits(f32_bits(t - start)) for t in keys})
         key_sources = (sorted({f32_from_bits(f32_bits(t)) for t in keys})
                        if spec["source_clock"] == "f32_add" else keys)
@@ -166,7 +173,8 @@ def _validate_clock(spec, start, stop, length):
             return 0 < i < len(keys) and time < keys[i]
 
         require(any(start < source < stop and between(key_locals, f32_from_bits(bits)) and between(key_sources, source)
-                    for bits, _, source in effective[1:-1]), "nonzero interval requires an effective f32 off-key sample")
+                    and (not authored_keys or between(keys, nominal) and f32_bits(source) not in runtime_source_bits)
+                    for bits, nominal, source in effective[1:-1]), "nonzero interval requires an effective f32 off-key sample")
         require(_ordered([f32_from_bits(bits) for bits, _, _ in effective]), "duplicate effective f32 sample times")
 
     targets = set(_targets(spec))

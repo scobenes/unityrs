@@ -41,12 +41,16 @@ public static partial class AnimReplayRecorder
     }
     [Serializable] sealed class EditorEvidence
     {
+        public string fixture_case;
         public string animation_source;
         public string expected_discovery;
         public string length_f32, frame_rate_f32;
         public ClipSettings clip_settings;
         public CurveBinding[] bindings;
         public string[] model_import_settings;
+        public ObjectKey[] object_reference_samples;
+        public string[] spine_start_f32, spine_stop_f32;
+        public float spine_endpoint_tolerance_degrees;
     }
     [Serializable] sealed class PendingEvidence
     {
@@ -69,7 +73,7 @@ public static partial class AnimReplayRecorder
     [Serializable] sealed class PendingClipSpec : PendingSpec { public Timepoint[] schedule; }
     [Serializable] sealed class PendingPoseSpec : PendingSpec { public Point[] schedule; }
 
-    internal static void RecordFixture(UnityrsFixtureBuilder.ReplayCase fixture, string bundles, string output)
+    internal static bool RecordFixture(UnityrsFixtureBuilder.ReplayCase fixture, string bundles, string output)
     {
         var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(fixture.Prefab);
         var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(fixture.Clip);
@@ -120,7 +124,7 @@ public static partial class AnimReplayRecorder
             key_times = keys,
             held = Array.Empty<Held>()
         };
-        bool human = fixture.Avatar.Length != 0;
+        bool human = fixture.IsHumanoid;
         bool knownPose = fixture.KnownMuscles != null;
         if (human)
             Need(keys.Contains(.5), "Humanoid clip is missing the single-axis key for " + clip.name + ".");
@@ -151,20 +155,42 @@ public static partial class AnimReplayRecorder
         pending.held_boundaries = fixture.HeldTime.HasValue ? new[] { (double)fixture.HeldTime.Value } : Array.Empty<double>();
         pending.nodes = nodes;
         pending.renderers = renderers;
-        pending.evidence = new PendingEvidence { clock = clock, editor = new EditorEvidence {
+        var editor = new EditorEvidence {
+            fixture_case = fixture.OutputName,
             animation_source = human ? "procedural_humanoid" : "procedural_clip",
             expected_discovery = fixture.ExpectedDiscovery,
             bindings = bindings, clip_settings = ReadSettings(clip), length_f32 = Bits(clip.length),
             frame_rate_f32 = Bits(clip.frameRate), model_import_settings = Array.Empty<string>()
-        } };
+        };
+        pending.evidence = new PendingEvidence { clock = clock, editor = editor };
+
+        var referenceAssets = fixture.ObjectReferenceAssets;
+        if (referenceAssets != null) CheckAuthoredReferences(bindings, referenceAssets);
+        Mesh[] builtReferences = null;
+        var referenceSamples = new List<ObjectKey>();
+        bool mixed = false;
 
         var spec = JsonUtility.FromJson<Spec>(JsonUtility.ToJson(pending));
-        var capture = RecordCapture(spec, bundles, pending: true);
+        var capture = RecordCapture(spec, bundles, pending: true, inspectClip: (builtClip, bundle) => {
+            if (fixture.ProbeMixedStorage) mixed = HasMixedTransformStorage(builtClip);
+            if (referenceAssets == null) return;
+            var keysInBundle = bundle.GetAllAssetNames();
+            builtReferences = referenceAssets.Select(path => bundle.LoadAsset<Mesh>(BuiltAssetKey(keysInBundle, path))).ToArray();
+            Need(builtReferences.All(mesh => mesh != null) && builtReferences[0] != builtReferences[1],
+                "Built object-reference assets are missing or indistinguishable.");
+        }, inspectPose: (root, time) => {
+            if (referenceAssets == null) return;
+            int key = time < .5f ? 0 : 1;
+            var mesh = root.Find(UnityrsFixtureBuilder.ReferencePath).GetComponent<MeshFilter>().sharedMesh;
+            Need(mesh == builtReferences[key], "Built playback missed the authored MeshFilter object reference at " + time + ".");
+            referenceSamples.Add(new ObjectKey { time_f32 = Bits(time), asset = referenceAssets[key], name = mesh.name });
+        });
+        editor.object_reference_samples = referenceSamples.ToArray();
         pending.prefab_asset = spec.prefab_asset;
         pending.clip_asset = spec.clip_asset;
         pending.avatar_asset = spec.avatar_asset;
         if (human)
-            CheckHumanoidPlayback(capture as HumanCapture, fixture.OutputName);
+            CheckHumanoidPlayback(capture as HumanCapture, fixture, prefab, clock, editor);
         Need(ProbeMatches(clock.start.probe, capture.samples) && ProbeMatches(clock.stop.probe, capture.samples),
             "Built playback missed the authored endpoint probes for " + clip.name + ".");
         if (fixture.HeldTime.HasValue)
@@ -179,14 +205,49 @@ public static partial class AnimReplayRecorder
         }
         string path = Path.Combine(output, fixture.OutputName + ".pending.json");
         WriteReplay(path, "unityrs.anim_replay_pending", JsonUtility.ToJson(pending, true), capture);
+        return mixed;
     }
 
-    static void CheckHumanoidPlayback(HumanCapture capture, string name)
+    static void CheckAuthoredReferences(CurveBinding[] bindings, string[] assets)
     {
+        var binding = bindings.Single(row => row.path == UnityrsFixtureBuilder.ReferencePath
+            && row.type == typeof(MeshFilter).FullName && row.property == UnityrsFixtureBuilder.ReferenceProperty);
+        Need(binding.object_reference && binding.object_keys.Select(key => key.asset).SequenceEqual(assets)
+            && binding.object_keys.Select(key => key.time_f32).SequenceEqual(new[] { Bits(0), Bits(.5f) }),
+            "The authored MeshFilter binding must retain both object-reference keys.");
+    }
+
+    static bool HasMixedTransformStorage(AnimationClip clip)
+    {
+        using (var serialized = new SerializedObject(clip))
+        {
+            var bindings = serialized.FindProperty("m_ClipBindingConstant.genericBindings");
+            if (bindings == null || !bindings.isArray || bindings.arraySize != 1) return false;
+            var binding = bindings.GetArrayElementAtIndex(0);
+            var type = binding.FindPropertyRelative("typeID") ?? binding.FindPropertyRelative("classID");
+            if (type?.intValue != 4 || binding.FindPropertyRelative("attribute")?.intValue != 3
+                || binding.FindPropertyRelative("customType")?.intValue != 0) return false;
+
+            var playback = serialized.FindProperty("m_MuscleClip.m_Clip.data")
+                ?? serialized.FindProperty("m_MuscleClip.m_Clip");
+            if (playback == null) return false;
+            int stream = playback.FindPropertyRelative("m_StreamedClip.curveCount")?.intValue ?? 0;
+            int dense = playback.FindPropertyRelative("m_DenseClip.m_CurveCount")?.intValue ?? 0;
+            var constant = playback.FindPropertyRelative("m_ConstantClip.data");
+            int[] counts = { stream, dense, constant != null && constant.isArray ? constant.arraySize : 0 };
+            // The candidate has only one three-component local scale binding.
+            return counts.Sum() == 3 && counts.Count(count => count > 0) > 1;
+        }
+    }
+
+    static void CheckHumanoidPlayback(HumanCapture capture, UnityrsFixtureBuilder.ReplayCase fixture,
+        GameObject prefab, Clock clock, EditorEvidence editor)
+    {
+        string name = fixture.OutputName;
         Need(capture != null && capture.playback.clip_human_motion,
             "Built clip is missing its human-motion flag for " + name + ".");
         int spine = capture.humanoid.bones.Single(bone => bone.name == "Spine").node;
-        Need(spine >= 0, "Built Avatar is missing the mapped Spine for " + name + ".");
+        Need(spine >= 0 && clock.start.probe.target == spine, "Built Avatar is missing the mapped Spine probe for " + name + ".");
         Quaternion Rotation(Sample sample)
         {
             var bits = sample.pose.transforms[spine].rotation;
@@ -195,13 +256,41 @@ public static partial class AnimReplayRecorder
             return new Quaternion(Component(0), Component(1), Component(2), Component(3));
         }
 
-        // The endpoint sentinel verifies the fixture, while the mapped
-        // Spine verifies that the built curves or known vectors took effect.
+        // Evaluate the authored muscle vectors independently on the source rig.
+        // Compare local Spine rotations so root motion and placement do not
+        // change the endpoint being tested.
+        Quaternion AuthoredRotation(float time)
+        {
+            var instance = UnityEngine.Object.Instantiate(prefab);
+            try
+            {
+                var animator = At<Animator>(instance.transform, fixture.BindingAddress, 0);
+                animator.runtimeAnimatorController = null;
+                animator.applyRootMotion = false;
+                SampleMuscles(animator, UnityrsFixtureBuilder.KnownHumanoidMuscles(time));
+                var bone = animator.GetBoneTransform(HumanBodyBones.Spine);
+                Need(bone != null && bone == instance.transform.Find(fixture.ProbePath), "Authored Avatar is missing the Spine probe.");
+                return bone.localRotation;
+            }
+            finally { UnityEngine.Object.DestroyImmediate(instance); }
+        }
+
+        const float tolerance = .25f;
+        var expectedStart = AuthoredRotation(0);
+        var expectedStop = AuthoredRotation(1);
         var neutral = Rotation(capture.samples[0]);
         var single = Rotation(capture.samples.Single(sample => sample.local == .5));
-        var combined = Rotation(capture.samples[capture.samples.Length - 1]);
+        var last = capture.samples[capture.samples.Length - 1];
+        var combined = Rotation(last);
+        Need(Quaternion.Angle(neutral, expectedStart) <= tolerance && Quaternion.Angle(combined, expectedStop) <= tolerance,
+            "Built Spine rotation differs from the authored endpoint pose in " + name + ".");
         Need(Quaternion.Angle(neutral, single) > 1 && Quaternion.Angle(single, combined) > 1,
             "Humanoid playback did not move the Spine at the authored probes for " + name + ".");
+        editor.spine_start_f32 = Bits(expectedStart);
+        editor.spine_stop_f32 = Bits(expectedStop);
+        editor.spine_endpoint_tolerance_degrees = tolerance;
+        clock.start.probe.value = capture.samples[0].pose.transforms[spine].rotation[clock.start.probe.component];
+        clock.stop.probe.value = last.pose.transforms[spine].rotation[clock.stop.probe.component];
     }
 
     static Timepoint[] Schedule(double[] keys, float? heldTime)
@@ -214,8 +303,9 @@ public static partial class AnimReplayRecorder
             times[(float)local] = local;
             if (i > 0)
             {
-                // Sample within each authored segment, away from key rounding.
-                double offKey = (keys[i - 1] - start + local) * .5;
+                // Avoid simple frame-grid fractions. Completion checks this
+                // sample against the independently inspected built key times.
+                double offKey = keys[i - 1] - start + (keys[i] - keys[i - 1]) * (391.0 / 1024.0);
                 if ((float)offKey > (float)(keys[i - 1] - start) && (float)offKey < (float)local)
                     times[(float)offKey] = offKey;
             }
@@ -273,8 +363,15 @@ public static partial class AnimReplayRecorder
     static bool ProbeMatches(Probe probe, Sample[] samples)
     {
         var pose = samples[probe.sample].pose;
-        return probe.value == (probe.property == "weight" ? pose.weights[probe.target].channels[probe.channel]
-            : pose.transforms[probe.target].translation[probe.component]);
+        if (probe.property == "weight") return probe.value == pose.weights[probe.target].channels[probe.channel];
+        var transform = pose.transforms[probe.target];
+        switch (probe.property)
+        {
+            case "rotation": return probe.value == transform.rotation[probe.component];
+            case "scale": return probe.value == transform.scale[probe.component];
+            case "translation": return probe.value == transform.translation[probe.component];
+            default: throw new InvalidOperationException("Unknown clock probe property " + probe.property + ".");
+        }
     }
 
     static string Address(Transform root, Transform target)
@@ -309,6 +406,7 @@ public static partial class AnimReplayRecorder
         }
         foreach (var binding in AnimationUtility.GetObjectReferenceCurveBindings(clip))
         {
+            Need(binding.isPPtrCurve, "Expected an object-reference curve flag on " + binding.propertyName + ".");
             var keys = AnimationUtility.GetObjectReferenceCurve(clip, binding);
             times.AddRange(keys.Select(key => (double)key.time));
             rows.Add(new CurveBinding {

@@ -130,6 +130,7 @@
       "properties": {
         "start": {"$ref": "#/$defs/endpoint"}, "stop": {"$ref": "#/$defs/endpoint"},
         "key_times": {"type": "array", "minItems": 1, "items": {"type": "number"}},
+        "authored_key_times": {"type": "array", "minItems": 1, "items": {"type": "number"}},
         "held": {"type": "array", "items": {"type": "object", "additionalProperties": false,
           "required": ["source", "right"], "properties": {
             "source": {"type": "number"}, "left": {"$ref": "#/$defs/probe"}, "right": {"$ref": "#/$defs/probe"}}}}

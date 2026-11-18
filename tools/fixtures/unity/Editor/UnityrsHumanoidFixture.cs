@@ -8,24 +8,6 @@ using Object = UnityEngine.Object;
 
 static partial class UnityrsFixtureBuilder
 {
-    static void BuildHumanoids(Build build, Action<string> log, List<string> failures)
-    {
-        foreach (bool tall in new[] { false, true })
-        {
-            string name = tall ? "humanoid-tall" : "humanoid-compact";
-            try
-            {
-                BuildHumanoid(build, name, tall);
-                log("Prepared procedural Humanoid fixtures for " + name + ".");
-            }
-            catch (Exception error)
-            {
-                failures.Add(name);
-                log("ERROR " + name + ": " + error.Message + " Continuing with the other fixtures.");
-            }
-        }
-    }
-
     static void BuildHumanoid(Build build, string name, bool tall)
     {
         var rig = new GameObject("HumanoidRig");
@@ -69,8 +51,6 @@ static partial class UnityrsFixtureBuilder
 
             root = new GameObject("HumanoidFixture");
             rig.transform.SetParent(root.transform, false);
-            // The endpoint probe is a fixed sibling outside the Animator's hierarchy.
-            Child(root.transform, "Sentinel", new Vector3(2, 0, 0));
             string prefab = SavePrefab(root, dir + "/identity.prefab");
             rig.transform.localPosition = new Vector3(2, .25f, -1);
             rig.transform.localRotation = Quaternion.Euler(0, 35, 0);
@@ -95,7 +75,7 @@ static partial class UnityrsFixtureBuilder
     static ReplayCase HumanoidReplay(string bundle, string prefab, string avatar, string clip, string name) =>
         new ReplayCase {
             Bundle = bundle, Prefab = prefab, Avatar = avatar, Clip = clip, ReplayName = name,
-            BindingAddress = "0", ProbePath = "Sentinel", First = 2, Last = 2
+            BindingAddress = "0", ProbePath = "HumanoidRig/Hips/Spine", ProbeProperty = "rotation"
         };
 
     static void AddHumanoidReplays(Build build, string bundle, string prefab, string avatar, string clip, string name)

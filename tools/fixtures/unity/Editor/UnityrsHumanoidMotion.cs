@@ -17,12 +17,12 @@ static partial class UnityrsFixtureBuilder
             for (int i = 0; i < SpineMuscles.Length; i++)
             {
                 string property = names[MuscleIndex(names, SpineMuscles[i])];
-                float middle = SingleAxis[i], end = CombinedAxes[i];
-                float firstSlope = 2 * middle, lastSlope = 2 * (end - middle);
+                float middle = SingleAxis[i], endValue = CombinedAxes[i];
+                float firstSlope = 2 * middle, lastSlope = 2 * (endValue - middle);
                 authored.SetCurve("", typeof(Animator), property, new AnimationCurve(
                     new Keyframe(0, 0, 0, firstSlope),
                     new Keyframe(.5f, middle, firstSlope, lastSlope),
-                    new Keyframe(1, end, lastSlope, 0)));
+                    new Keyframe(1, endValue, lastSlope, 0)));
             }
 
             if (!bodyMotion) return;
@@ -44,7 +44,7 @@ static partial class UnityrsFixtureBuilder
         return clip;
     }
 
-    static float[] KnownHumanoidMuscles(float time)
+    internal static float[] KnownHumanoidMuscles(float time)
     {
         var names = HumanTrait.MuscleName;
         var vector = new float[names.Length];

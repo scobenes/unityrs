@@ -12,12 +12,8 @@ static partial class UnityrsFixtureBuilder
     const string MorphA = "Skin/RendererA";
     const string MorphB = "Skin/RendererB";
     const string PositionX = "m_LocalPosition.x";
-
-    static void BuildAnimation(Build build)
-    {
-        BuildLegacy(build);
-        BuildGeneric(build);
-    }
+    internal const string ReferencePath = "Reference";
+    internal const string ReferenceProperty = "m_Mesh";
 
     static void BuildLegacy(Build build)
     {
@@ -81,17 +77,21 @@ static partial class UnityrsFixtureBuilder
             Author(dir, "generic-morph", clip => SetMorph(clip, 12.5f, 80, 70, 25)),
             Author(dir, "generic-object-reference", clip => {
                 SetMotion(clip, AnimationCurve.Linear(0, 3, 1, 9));
-                var binding = EditorCurveBinding.PPtrCurve("Reference", typeof(MeshFilter), "m_Mesh");
+                var binding = EditorCurveBinding.PPtrCurve(ReferencePath, typeof(MeshFilter), ReferenceProperty);
                 AnimationUtility.SetObjectReferenceCurve(clip, binding, new[] {
                     new ObjectReferenceKeyframe { time = 0, value = panel },
                     new ObjectReferenceKeyframe { time = .5f, value = other }
                 });
-                // Confirm in the first run that Unity retains the discrete
-                // flag and object-reference binding when building the clip.
-                var active = EditorCurveBinding.DiscreteCurve("Reference", typeof(GameObject), "m_IsActive");
-                AnimationUtility.SetEditorCurve(clip, active, new AnimationCurve(
-                    new Keyframe(0, 1, 0, float.PositiveInfinity),
-                    new Keyframe(.75f, 0, float.PositiveInfinity, 0)));
+            }),
+            Author(dir, "generic-scale", clip => {
+                // Give the three axes different curve shapes so we can check
+                // whether the compiler stores the vector in separate ranges.
+                clip.SetCurve(MotionPath, typeof(Transform), "m_LocalScale.x", new AnimationCurve(
+                    new Keyframe(0, 1), new Keyframe(.375f, .75f), new Keyframe(1, 2.5f)));
+                var left = new Keyframe(0, 1, 0, 3, .25f, .25f) { weightedMode = WeightedMode.Out };
+                var right = new Keyframe(1, .5f, -2, 0, .375f, .25f) { weightedMode = WeightedMode.In };
+                clip.SetCurve(MotionPath, typeof(Transform), "m_LocalScale.y", new AnimationCurve(left, right));
+                clip.SetCurve(MotionPath, typeof(Transform), "m_LocalScale.z", AnimationCurve.Constant(0, 1, 1));
             })
         };
         var replacement = Author(dir, "generic-override-morph", clip => SetMorph(clip, 25, 50, 80, 10));
@@ -112,7 +112,7 @@ static partial class UnityrsFixtureBuilder
         {
             Child(root.transform, MotionPath, Vector3.zero);
             AddSkins(root.transform, skin);
-            var reference = Child(root.transform, "Reference", new Vector3(0, 0, 2)).gameObject;
+            var reference = Child(root.transform, ReferencePath, new Vector3(0, 0, 2)).gameObject;
             reference.AddComponent<MeshFilter>().sharedMesh = panel;
             var animator = root.AddComponent<Animator>();
             animator.applyRootMotion = false;
@@ -139,7 +139,13 @@ static partial class UnityrsFixtureBuilder
         build.Replays.Add(offset);
         build.Replays.Add(Case(bundle, prefab, paths[4], 1, 6));
         build.Replays.Add(MorphCase(bundle, prefab, paths[5], 12.5f, 80));
-        build.Replays.Add(Case(bundle, prefab, paths[6], 3, 9));
+        var referenceReplay = Case(bundle, prefab, paths[6], 3, 9);
+        referenceReplay.ObjectReferenceAssets = new[] { panelPath, otherPath };
+        build.Replays.Add(referenceReplay);
+        var scale = Case(bundle, prefab, paths[7], 1, 2.5f);
+        scale.ProbeProperty = "scale";
+        scale.ProbeMixedStorage = true;
+        build.Replays.Add(scale);
         var replaced = MorphCase(bundle, overridePrefab, replacementPath, 25, 50);
         replaced.ExpectedDiscovery = "override";
         build.Replays.Add(replaced);

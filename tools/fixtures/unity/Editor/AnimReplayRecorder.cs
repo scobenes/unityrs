@@ -130,10 +130,11 @@ public static partial class AnimReplayRecorder
 
     static void WriteReplay(string output, string format, string spec, Capture capture)
     {
-        string staging = output + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        string staging = Path.Combine(Path.GetDirectoryName(output), "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".tmp");
+        var stream = new FileStream(staging, FileMode.CreateNew);
         try
         {
-            using (var stream = new FileStream(staging, FileMode.CreateNew))
+            using (stream)
             using (var writer = new StreamWriter(stream))
                 writer.Write("{\"format\":\"" + format + "\",\"version\":1,\"spec\":" + spec
                     + ",\"capture\":" + JsonUtility.ToJson(capture, true) + "}\n");
@@ -145,7 +146,8 @@ public static partial class AnimReplayRecorder
         }
     }
 
-    static Capture RecordCapture(Spec spec, string bundleDir, bool pending)
+    static Capture RecordCapture(Spec spec, string bundleDir, bool pending,
+        Action<AnimationClip, AssetBundle> inspectClip = null, Action<Transform, float> inspectPose = null)
     {
         Need(spec != null && spec.bundles != null && spec.bundles.Length > 0, "Expected a replay specification with bundles.");
         Need(pending || (spec.prefab != null && spec.clip != null
@@ -183,6 +185,7 @@ public static partial class AnimReplayRecorder
                 spec.prefab_asset);
             var clip = Load<AnimationClip>(bundles, pending ? 0 : spec.clip.bundle, spec.clip_asset);
             Need(clip.name == spec.clip_name, "Built clip name disagrees with the inspected clip.");
+            if (inspectClip != null) inspectClip(clip, bundles[0]);
             foreach (var node in spec.nodes)
                 Need(At(prefab.transform, node.address).name == node.name, "Built node name disagrees with the inspected node.");
             var avatar = string.IsNullOrEmpty(spec.avatar_asset) ? null
@@ -280,8 +283,10 @@ public static partial class AnimReplayRecorder
                         }
                         else
                         {
-                            sample.pose = SampleAnimator(target, clip, time,
-                                () => ReadPose(nodes, renderers, spec.renderers, pending));
+                            sample.pose = SampleAnimator(target, clip, time, () => {
+                                if (inspectPose != null) inspectPose(root, time);
+                                return ReadPose(nodes, renderers, spec.renderers, pending);
+                            });
                         }
                         capture.samples[i] = sample;
                     }

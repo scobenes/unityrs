@@ -431,13 +431,16 @@ The public playable or legacy time checks the supplied time. Use the
 endpoints independently and record their source seconds and field names
 in `evidence.clock.start` and `stop`. Include all inspected key times
 inside the source interval, held boundaries and both endpoints in
-`key_times`. For a constant clip use the interval endpoints as the
+`key_times`. The Editor handoff also preserves its authored times in
+`authored_key_times`. For a constant clip use the interval endpoints as the
 comparison keys. Supply the first and last samples and at least one
 effective f32 interior sample strictly between distinct keys. The
 sample must remain off-key under the selected source clock.
 
 Each endpoint also carries a probe with the schedule index, property,
-target, channel, component and independently known f32 value. For a
+target, channel, component and independently known f32 value. Humanoid
+fixtures retain the observed component bits after checking the full local
+Spine rotation against the authored endpoint pose. For a
 Transform use `channel: -1` and its zero-based component index. For a
 weight use the channel index and component zero. Include one `held` row
 per boundary with its source time and probes at the last effective sample
@@ -544,15 +547,23 @@ bindings. Repo-side completion fills in the built file and path IDs.
 
 #### Repo-side completion
 
-Pass the returned version-and-target folder, containing `bundles/` and
-`replays/`, to the completion command. The Unity operator's work ends
+Pass the returned version-and-target folder, containing `run.json`,
+`bundles/` and `replays/`, to the completion command. The Unity operator's work ends
 when they send the folder.
 
 ```sh
 python3 -I tools/parity/anim_replay.py complete "path/to/returned-folder" --unityrs target/debug/unityrs
 ```
 
-Omit `--unityrs` to use `unityrs` on PATH. The `*.pending.json` files use
+Omit `--unityrs` to use `unityrs` on PATH. Completion requires the inventory
+in `run.json` and a recorded result for every required case, including the
+static bundles and raw known-vector recordings. It reports missing and failed
+cases before writing completed replays. Optional coverage can be skipped with
+a reason. These sections are URP materials, packed rotation slopes,
+authored/runtime precedence, verified mixed Transform storage, integer discrete
+bindings, humanoid twist and non-neutral setting refusals, humanoid slot/axis
+inventory and the root/hips comparison. `build.log` and `run.json` give the
+reason for uncovered sections and fixture errors. The `*.pending.json` files use
 the separate `unityrs.anim_replay_pending` format, version 1, and stay
 beside the completed files. Each pending spec has one bundle basename
 without a digest, uses integer mesh groups where renderers share a mesh,
@@ -560,6 +571,9 @@ and omits built identities. The capture pins the digest of the bytes
 Unity loaded. Completion reads `inspect` for file occurrences and class
 headers, then uses `show` for the actual container entries, Transform and
 component PPtrs, mesh and Avatar PPtrs, controller slots, and clip settings.
+It inventories explicit and packed keys, streamed frame times and the dense
+grid from the serialized clip. The recording must include an interior sample
+off both the authored and built key times after f32 rounding.
 The automated fixtures keep these PPtrs within one bundle. Completion
 verifies the digest, writes the existing `unityrs.anim_replay` version 1
 format and runs its validator. The validator refuses pending recordings.
@@ -569,15 +583,18 @@ complete `unityrs inspect BUNDLE --limit 10000 --max-bytes 1048576` response
 named `BUNDLE.inspect.json`. Run inspection with the bundle basename
 from inside `bundles/`. Save each needed
 `unityrs show BUNDLE --file-index 0:FILE_INDEX --path-id PATH_ID --value canonical --max-items 4096 --max-bytes 4194304`
-response as `BUNDLE.FILE_INDEX.PATH_ID.show.json`. Preserve exact file
-occurrences and signed path IDs from inspection.
+response as `BUNDLE.FILE_INDEX.PATH_ID.show.json`. Add a top-level
+`bundle_sha256` field to the inspect response and each show response, using
+the SHA-256 of the bundle bytes inspected at the time of capture. Preserve
+exact file occurrences and signed path IDs. Completion refuses cut values,
+nonzero show truncation counters and missing or mismatched digests.
 
 The raw `human_pose` recordings are under `replays/known-vectors/`.
 Each contains the inputs in HumanTrait order, the exact applied f32
-bits and the independently captured rig facts. The completion command
-processes pending files directly in `replays/`. To complete a known-vector
-baseline, keep the raw recording and copy its pending file into
-`replays/`. Add the inspected `spec.evidence.humanoid` for its selected
+bits and the independently captured rig facts. Completion checks their
+presence, sample coverage and bundle hashes. To complete a known-vector baseline, preserve a
+copy of the raw recording and add the inspected `spec.evidence.humanoid` to
+the pending file under `replays/known-vectors/` for its selected
 clip with `disposition: "pending"` and the slot and axis evidence
 described in [Humanoid qualification](#humanoid-qualification).
 Run completion on that copy, then use the standalone result to compute
@@ -588,16 +605,17 @@ On the first run, confirm that `StaticBatchingUtility.Combine` persists
 the shared mesh and submesh ranges in the scene bundle, and that
 `LoadAssetWithSubAssets<GameObject>` returns the prefab root and hierarchy.
 In the animation bundles, check how `AnimationClip.SetCurve`,
-`AnimationUtility.SetAnimationClipSettings`, `EditorCurveBinding.DiscreteCurve`
+`AnimationUtility.SetAnimationClipSettings`, `EditorCurveBinding.PPtrCurve`
 and `AnimatorOverrideController.ApplyOverrides` serialize the authored
-curves, nonzero interval, discrete binding, and null substitution. Check
+curves, nonzero interval, object-reference binding, and null substitution. Check
 the native playback endpoints and held probes for the actual build.
 Confirm `AvatarBuilder.BuildHumanAvatar` accepts the generated T-poses
 and public `HumanDescription` fields and that the built Avatars retain
 their mappings, limits and optional absences. Confirm the Animator
 muscle property names and `RootT`/`RootQ` produce the expected
-`humanMotion` clips. Check that the `SetHumanPose` probes move the Spine
-on both root placements. [Unity AvatarBuilder](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/AvatarBuilder.BuildHumanAvatar.html)
+`humanMotion` clips. The recorder compares built local Spine endpoint rotations
+to `SetHumanPose` evaluations of the authored muscle vectors on the source rig.
+[Unity AvatarBuilder](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/AvatarBuilder.BuildHumanAvatar.html)
 · [Unity HumanDescription](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanDescription.html)
 · [Unity AnimationClip.SetCurve](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/AnimationClip.SetCurve.html)
 

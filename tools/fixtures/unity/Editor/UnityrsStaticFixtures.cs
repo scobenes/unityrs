@@ -1,4 +1,6 @@
 #if UNITY_EDITOR
+using System;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -7,17 +9,29 @@ using Object = UnityEngine.Object;
 
 static partial class UnityrsFixtureBuilder
 {
-    static void BuildStatic(Build build)
+    static void BuildStatic(Build build, RunReport report, Scene scene)
     {
-        string dir = Folder(Assets + "/Static");
-        string primitives = BuildPrimitives(dir);
-        string materials = BuildMaterials(dir);
-        string lod = BuildLod(dir);
-        var skin = Save(NewSkin(), dir + "/four-influence.asset");
-        string rig = BuildSkinPrefab(dir, skin);
-        build.AddBundle("static-objects", primitives, materials, lod, rig, dir + "/four-influence.asset",
-            dir + "/metallic.mat", dir + "/unlit.mat", dir + "/checker.asset");
-        build.AddBundle("static-batch-scene", BuildBatchScene(dir));
+        string dir = null;
+        if (!report.Try("Prepare static folder", StaticCases, () => dir = Folder(Assets + "/Static"))) return;
+        const string batch = "static-batch-scene";
+        if (report.Try("Prepare " + batch, new[] { batch }, () => build.AddBundle(batch, BuildBatchScene(dir, scene))))
+            build.StaticBundles.Add(batch, batch);
+
+        const string bundle = "static-objects";
+        var assets = new List<string>();
+        void Add(string name, Func<string[]> buildAssets)
+        {
+            if (report.Try("Prepare " + name, new[] { name }, () => assets.AddRange(buildAssets())))
+                build.StaticBundles.Add(name, bundle);
+        }
+        Add("static-primitives", () => new[] { BuildPrimitives(dir) });
+        Add("static-materials", () => new[] { BuildMaterials(dir), dir + "/metallic.mat", dir + "/unlit.mat", dir + "/checker.asset" });
+        Add("static-lod", () => new[] { BuildLod(dir) });
+        Add("static-skin", () => {
+            string mesh = dir + "/four-influence.asset";
+            return new[] { BuildSkinPrefab(dir, Save(NewSkin(), mesh)), mesh };
+        });
+        if (assets.Count > 0) build.AddBundle(bundle, assets.ToArray());
     }
 
     static string BuildPrimitives(string dir)
@@ -95,7 +109,7 @@ static partial class UnityrsFixtureBuilder
         finally { Object.DestroyImmediate(root); }
     }
 
-    static string BuildBatchScene(string dir)
+    static string BuildBatchScene(string dir, Scene scene)
     {
         // Use readable original meshes. The default primitive references are
         // exercised in the other bundle without depending on their readability.
@@ -103,14 +117,12 @@ static partial class UnityrsFixtureBuilder
         var source = Shader.Find("Standard");
         Require(source != null, "The Built-in Standard shader is required for static batching.");
         var material = Save(new Material(source) { name = "BatchMaterial" }, dir + "/batch.mat");
-        var previous = SceneManager.GetActiveScene();
-        var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+        GameObject first = null, second = null;
         try
         {
-            Require(SceneManager.SetActiveScene(scene), "Could not activate the static-batch scene.");
             // The roots deliberately have different names and authored order.
-            var first = new GameObject("Zulu");
-            var second = new GameObject("Alpha");
+            first = new GameObject("Zulu");
+            second = new GameObject("Alpha");
             first.transform.position = new Vector3(3, 1, -2);
             second.transform.position = new Vector3(-1, 2, 4);
             second.transform.rotation = Quaternion.Euler(0, 45, 0);
@@ -130,6 +142,8 @@ static partial class UnityrsFixtureBuilder
                 && first.GetComponent<MeshRenderer>().isPartOfStaticBatch
                 && second.GetComponent<MeshRenderer>().isPartOfStaticBatch,
                 "StaticBatchingUtility.Combine did not create a shared static batch.");
+            Require(combined.isReadable && combined.vertexCount > 0 && combined.vertexCount == mesh.vertexCount * objects.Length,
+                "The shared static batch must contain the expected readable vertices.");
             if (!AssetDatabase.Contains(combined))
             {
                 combined.name = "CombinedBatchPanels";
@@ -143,13 +157,13 @@ static partial class UnityrsFixtureBuilder
             }
 
             string path = dir + "/batch.unity";
-            Require(EditorSceneManager.SaveScene(scene, path), "Could not save " + path);
+            Require(EditorSceneManager.SaveScene(scene, path, true), "Could not save " + path);
             return path;
         }
         finally
         {
-            if (previous.IsValid()) SceneManager.SetActiveScene(previous);
-            EditorSceneManager.CloseScene(scene, true);
+            if (first != null) Object.DestroyImmediate(first);
+            if (second != null) Object.DestroyImmediate(second);
         }
     }
 

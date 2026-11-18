@@ -2,12 +2,28 @@
 
 import hashlib
 import json
+import math
 import os
+import struct
 from uuid import uuid4
 
 import child
 
 PENDING_FORMAT = "unityrs.anim_replay_pending"
+STATIC_CASES = dict.fromkeys(("static-primitives", "static-materials", "static-lod", "static-skin"), "static-objects")
+STATIC_CASES["static-batch-scene"] = "static-batch-scene"
+HUMANOID_CASES = tuple(f"humanoid-{rig}-muscles{offset}" for rig in ("compact", "tall") for offset in ("", "-offset"))
+REPLAY_CASES = (
+    "legacy-explicit", "generic-quaternion", "generic-euler", "generic-constant", "generic-offset-stepped",
+    "generic-weighted", "generic-morph", "generic-object-reference", "generic-override-morph",
+    "generic-null-override", "generic-scale", "humanoid-compact-body-motion", *HUMANOID_CASES,
+)
+VECTOR_CASES = tuple(f"{name}-known-vectors" for name in HUMANOID_CASES)
+OPTIONAL_CASES = {
+    "urp-materials", "packed-rotation-slopes", "authored-runtime-precedence", "mixed-transform-storage",
+    "humanoid-twist-refusal", "humanoid-non-neutral-setting-refusal", "humanoid-slot-axis-inventory",
+    "humanoid-root-hips-comparison", "integer-discrete-binding",
+}
 
 
 def wire_value(value, replay):
@@ -16,6 +32,7 @@ def wire_value(value, replay):
         return [wire_value(item, replay) for item in value]
     if not isinstance(value, dict):
         return value
+    replay.require(value.get("$unityrs") != "cut" and "cut" not in value, "cut show value")
     tag = value.get("t")
     if tag == "dict":
         return {key: wire_value(item, replay) for key, item in value["v"]}
@@ -36,8 +53,9 @@ def wire_value(value, replay):
 class BundleView:
     """One bundle's inspect headers and lazily visited show values."""
 
-    def __init__(self, path, index, unityrs, inspect_dir, replay):
+    def __init__(self, path, digest, index, unityrs, inspect_dir, replay):
         self.path, self.index, self.unityrs, self.inspect_dir = path, index, unityrs, inspect_dir
+        self.digest = digest
         self.require, self.read_json, self.replay = replay.require, replay.read_json, replay
         self.headers = {}
         self.values = {}
@@ -77,6 +95,8 @@ class BundleView:
         doc = self.read_json(data)
         self.require(doc.get("format") == f"unityrs.{command}" and doc.get("version") == 1,
                      f"expected unityrs {command} v1 for {self.path.name}")
+        if self.inspect_dir is not None:
+            self.require(doc.get("bundle_sha256") == self.digest, f"inspection bundle digest mismatch: {json_name}")
         return doc
 
     def value(self, key):
@@ -86,6 +106,10 @@ class BundleView:
                        "--max-items", "4096", "--max-bytes", "4194304"]
             doc = self.document("show", options, f"{self.path.name}.{file}.{path}.show.json")
             self.require(doc["object"] == self.headers[key], f"show identity disagrees with inspect: {key}")
+            truncated = doc.get("truncated")
+            self.require(isinstance(truncated, dict) and set(truncated) == {"cuts", "items", "depth", "bytes", "binary"}
+                         and all(type(count) is int and count == 0 for count in truncated.values()),
+                         f"truncated show or missing truncation counters: {key}")
             value = wire_value(doc["value"], self.replay)
             self.require(isinstance(value, dict) and "$unityrs" not in value, f"unreadable show value: {key}")
             self.values[key] = value
@@ -206,6 +230,74 @@ class BundleView:
         return rows, direct
 
 
+def streamed_times(words, require):
+    """Read frame times from the CLI's uint32 view of m_StreamedClip.data."""
+    cursor, previous = 0, -math.inf
+    while cursor < len(words):
+        bits, count = words[cursor:cursor + 2]
+        require(type(bits) is int and 0 <= bits <= 0xffffffff and type(count) is int and count >= 0,
+                "invalid built streamed clip frame")
+        time, = struct.unpack(">f", struct.pack(">I", bits))
+        seed = cursor == 0 and bits == 0xff7fffff
+        cursor += 2 + 5 * count
+        require(cursor <= len(words), "incomplete built streamed clip frame")
+        if time == math.inf:
+            require(count == 0 and cursor == len(words), "invalid built streamed clip terminal frame")
+            break
+        require(math.isfinite(time) and time > previous, "invalid built streamed clip time")
+        previous = time
+        if count and not seed:
+            yield time
+
+
+def packed_times(times, require):
+    width, count = times["m_BitSize"], times["m_NumItems"]
+    require(type(width) is int and type(count) is int and 0 <= width <= 32 and 0 < count <= 65536,
+            "invalid built packed rotation time layout")
+    raw = times["m_Data"]
+    data = bytes.fromhex(raw["hex"]) if isinstance(raw, dict) else bytes(raw)
+    require(count * width <= 8 * len(data) and (width > 0 or count == 1),
+            "incomplete built packed rotation times")
+    total, mask = 0, (1 << width) - 1
+    for i in range(count):
+        byte, shift = divmod(i * width, 8)
+        delta = (int.from_bytes(data[byte:byte + 5], "little") >> shift) & mask
+        require(i == 0 or delta > 0, "unordered built packed rotation times")
+        total += delta
+        yield total / 100
+
+
+def built_key_times(value, playback, require):
+    times = []
+    for field in ("m_PositionCurves", "m_RotationCurves", "m_EulerCurves", "m_ScaleCurves",
+                  "m_FloatCurves", "m_PPtrCurves"):
+        for row in value.get(field, []):
+            curve = row["curve"]
+            if field != "m_PPtrCurves":
+                curve = curve["m_Curve"]
+            times.extend(key["time"] for key in curve)
+    for row in value.get("m_CompressedRotationCurves", []):
+        times.extend(packed_times(row["m_Times"], require))
+    stream = playback.get("m_StreamedClip", {})
+    if stream:
+        times.extend(streamed_times(stream["data"], require))
+    dense = playback.get("m_DenseClip", {})
+    if dense.get("m_CurveCount", 0):
+        curves, count, rate, begin = (dense[k] for k in ("m_CurveCount", "m_FrameCount", "m_SampleRate", "m_BeginTime"))
+        array = dense["m_SampleArray"]
+        if isinstance(array, dict):
+            require(array.get("t") == "f32s" and len(array["v"]) % 8 == 0, "incomplete built dense samples")
+            size = len(array["v"]) // 8
+        else:
+            size = len(array)
+        require(type(curves) is int and type(count) is int and curves > 0 and count > 0
+                and size == curves * count and math.isfinite(begin) and math.isfinite(rate) and rate > 0,
+                "invalid built dense clip grid")
+        times.extend(begin + i / rate for i in range(count))
+    require(all(type(time) in (int, float) and math.isfinite(time) for time in times), "invalid built clip key time")
+    return sorted(set(times))
+
+
 def clip_evidence(spec, capture, value, replay):
     evidence = spec["evidence"]
     muscle = value.get("m_MuscleClip", {})
@@ -215,7 +307,8 @@ def clip_evidence(spec, capture, value, replay):
     dense = playback.get("m_DenseClip", {}).get("m_CurveCount", 0)
     constants = playback.get("m_ConstantClip", {}).get("data", [])
     if isinstance(constants, dict):
-        replay.require(constants.get("t") == "f32s", "incomplete built constant clip data")
+        replay.require(constants.get("t") == "f32s" and len(constants["v"]) % 8 == 0,
+                       "incomplete built constant clip data")
         constant = len(constants["v"]) // 8
     else:
         constant = len(constants)
@@ -229,11 +322,24 @@ def clip_evidence(spec, capture, value, replay):
         if compiled or fields in value:
             replay.require(serialized.get(field) == spec[side], f"built clip {side} differs from Editor evidence")
             evidence["clock"][side]["field"] = f"{fields}.{field}"
-        else:
+    built_times = built_key_times(value, playback if compiled else {}, replay.require)
+    if not compiled and fields not in value:
+        replay.require(built_times and (built_times[0], built_times[-1]) == (spec["start"], spec["stop"]),
+                       "built clip key bounds differ from Editor interval")
+        for side in ("start", "stop"):
             evidence["clock"][side]["field"] = "key_bounds"
+    clock = evidence["clock"]
+    clock["authored_key_times"] = clock["key_times"]
+    clock["key_times"] = sorted({spec["start"], spec["stop"],
+                                 *(time for time in built_times if spec["start"] <= time <= spec["stop"])})
     layouts = [label for label, count in (("streamed", stream), ("dense", dense), ("constant", constant))
                if count]
     evidence["layout"] = ("_".join(layouts) or "compiled") if compiled else "explicit"
+    if evidence.get("editor", {}).get("fixture_case") == "generic-scale":
+        binding = bindings[0] if len(bindings) == 1 else {}
+        evidence["mixed_transform_storage"] = (compiled and len(layouts) > 1 and stream + dense + constant == 3
+                                                and binding.get("typeID", binding.get("classID")) == 4
+                                                and binding.get("attribute") == 3 and binding.get("customType") == 0)
     f32_settings = {"startTime", "stopTime", "orientationOffsetY", "level", "cycleOffset",
                     "additiveReferencePoseTime"}
     evidence["import_settings"] = []
@@ -257,19 +363,11 @@ def complete_recording(doc, bundle_dir, views, unityrs, inspect_dir, replay):
     spec, capture = doc["spec"], doc["capture"]
     replay.require(not {"prefab", "clip", "binding", "avatar"}.intersection(spec),
                    "pending replay already contains built identities")
-    # v1 of the handoff deliberately requires a self-contained fixture bundle.
-    replay.require(len(spec["bundles"]) == 1 and set(spec["bundles"][0]) == {"name"},
-                   "pending replay must select one self-contained bundle by name")
-    name = spec["bundles"][0]["name"]
-    replay._shape(replay.SCHEMA["$defs"]["bundle"]["properties"]["name"], name, "/spec/bundles/0/name")
-    path = bundle_dir / name
-    with path.open("rb") as source:
-        digest = hashlib.file_digest(source, "sha256").hexdigest()
-    replay.require(capture["bundle_sha256"] == [digest], f"bundle digest mismatch: {name}")
+    path, digest = pending_bundle(doc, bundle_dir, replay)
     spec["bundles"][0]["sha256"] = digest
-    view_key = name, digest
+    view_key = path.name, digest
     if view_key not in views:
-        views[view_key] = BundleView(path, 0, unityrs, inspect_dir, replay)
+        views[view_key] = BundleView(path, digest, 0, unityrs, inspect_dir, replay)
     view = views[view_key]
     prefab = view.asset(spec["prefab_asset"], 1)
     clip = view.asset(spec["clip_asset"], 74)
@@ -317,16 +415,92 @@ def complete_recording(doc, bundle_dir, views, unityrs, inspect_dir, replay):
     return doc
 
 
+def recorded_paths(folder, replay):
+    """Check the fixed v1 inventory before trusting any pending recording."""
+    manifest = replay.read_json((folder / "run.json").read_text(encoding="utf-8"))
+    replay.require(isinstance(manifest, dict) and set(manifest) == {"format", "version", "cases"}
+                   and manifest["format"] == "unityrs.fixture_run" and type(manifest["version"]) is int
+                   and manifest["version"] == 1 and isinstance(manifest["cases"], list),
+                   "expected unityrs.fixture_run version 1 in run.json")
+    replay_dir = folder / "replays"
+    paths = {name: replay_dir / f"{name}.pending.json" for name in REPLAY_CASES}
+    paths.update({name: replay_dir / "known-vectors" / f"{name}.pending.json" for name in VECTOR_CASES})
+    required = set(STATIC_CASES) | paths.keys()
+    expected = required | OPTIONAL_CASES
+    errors, statuses = [], {}
+    for row in manifest["cases"]:
+        replay.require(isinstance(row, dict) and set(row) == {"name", "status", "reason"}
+                       and all(isinstance(value, str) for value in row.values()), "invalid run.json case row")
+        name, status, reason = row["name"], row["status"], row["reason"]
+        replay.require(name in expected and name not in statuses, f"unknown or duplicate run.json case: {name}")
+        replay.require(status in {"recorded", "failed", "skipped", "not_covered"}
+                       and (status == "recorded" or reason.strip()), f"invalid run.json case status or reason: {name}")
+        statuses[name] = status
+        if status == "failed" or (name in required and status != "recorded"):
+            errors.append(f"{name}: {status} ({reason})")
+        if name in required and status == "recorded":
+            path = paths[name] if name in paths else folder / "bundles" / STATIC_CASES[name]
+            if not path.is_file() or path.stat().st_size == 0:
+                errors.append(f"{name}: missing {path.relative_to(folder)}")
+        if name in OPTIONAL_CASES and status == "recorded" and name != "mixed-transform-storage":
+            errors.append(f"{name}: no recording defined for this optional case")
+    errors.extend(f"missing run.json case: {name}" for name in sorted(expected - statuses.keys()))
+    undocumented = set(replay_dir.rglob("*.pending.json")) - set(paths.values())
+    errors.extend(f"unexpected pending recording: {path.relative_to(folder)}" for path in sorted(undocumented))
+    replay.require(not errors, "incomplete fixture run:\n" + "\n".join(errors))
+    return sorted(paths.values()), statuses["mixed-transform-storage"] == "recorded"
+
+
+def pending_bundle(doc, bundle_dir, replay):
+    spec, capture = doc["spec"], doc["capture"]
+    replay.require(len(spec["bundles"]) == 1 and set(spec["bundles"][0]) == {"name"},
+                   "pending replay must select one self-contained bundle by name")
+    name = spec["bundles"][0]["name"]
+    replay._shape(replay.SCHEMA["$defs"]["bundle"]["properties"]["name"], name, "/spec/bundles/0/name")
+    path = bundle_dir / name
+    with path.open("rb") as source:
+        digest = hashlib.file_digest(source, "sha256").hexdigest()
+    replay.require(capture["bundle_sha256"] == [digest], f"bundle digest mismatch: {name}")
+    return path, digest
+
+
+def check_raw_vectors(doc, replay):
+    spec, capture = doc["spec"], doc["capture"]
+    replay._shape(replay.SCHEMA["$defs"]["capture"], capture, "/capture")
+    replay.require(spec["mode"] == "human_pose" and capture["playback"]["api"] == replay.API["human_pose"]
+                   and capture["playback"]["clip_human_motion"] and "humanoid" in capture,
+                   "expected a pending known-vector recording")
+    schedule, samples = spec["schedule"], capture["samples"]
+    width = len(capture["humanoid"]["muscles"])
+    replay.require(len(schedule) == len(samples) and all(
+        len(point["muscles"]) == width and point["local"] == sample["local"]
+        and [replay.f32_bits(value) for value in point["muscles"]] == sample["muscles_f32"]
+        for point, sample in zip(schedule, samples)), "incomplete known-vector recording")
+
+
 def complete_folder(folder, unityrs, inspect_dir, replay):
     """Validate every result before writing any completed recordings."""
-    bundle_dir, replay_dir = folder / "bundles", folder / "replays"
-    paths = sorted(replay_dir.glob("*.pending.json"))
-    replay.require(paths, f"no *.pending.json recordings in {replay_dir}")
+    bundle_dir = folder / "bundles"
     results, views = [], {}
+    paths, recorded_mixed = recorded_paths(folder, replay)
     for path in paths:
         try:
             document = replay.read_json(path.read_text(encoding="utf-8"))
+            spec = document["spec"]
+            name = path.name.removesuffix(".pending.json")
+            replay.require(spec["evidence"]["editor"].get("fixture_case") == name,
+                           f"pending recording does not identify manifest case {name}")
+            if path.parent.name == "known-vectors":
+                replay.require(document["format"] == PENDING_FORMAT and type(document["version"]) is int
+                               and document["version"] == 1, "expected a pending known-vector recording")
+                check_raw_vectors(document, replay)
+                if "humanoid" not in spec["evidence"]:
+                    pending_bundle(document, bundle_dir, replay)
+                    continue
             result = complete_recording(document, bundle_dir, views, unityrs, inspect_dir, replay)
+            if name == "generic-scale" and recorded_mixed:
+                replay.require(result["spec"]["evidence"]["mixed_transform_storage"],
+                               "mixed Transform storage reported by Unity is absent from the built scale clip")
             output = path.with_name(path.name.removesuffix(".pending.json") + ".json")
             data = json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
             replay.require(not output.exists() or output.read_text(encoding="utf-8") == data,

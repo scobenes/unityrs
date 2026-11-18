@@ -89,7 +89,7 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `anim_reference.py` | P2b's standalone f64 evaluator of the clip-sampling equations in `docs/anim_reference.md` (standard library only); the expectations the Rust sampler's synthetic replay is held to |
 | `anim_bounds.json` | the frozen transcription and bake bounds `docs/anim_reference.md` derives, read by the Rust replay |
 | `anim_replay.py`, `anim_replay_bounds.py` | validate a same-bundle Editor replay manifest for internal consistency and derive its f32 tolerances per recording; bundle-derivable facts are the Rust comparison's cross-checks |
-| `anim_replay_complete.py` | resolve pending Editor replay identities through CLI inspect and show, verify the bundle digests, and validate the completed recordings |
+| `anim_replay_complete.py` | require the Editor run inventory, resolve replay identities and serialized key times through complete CLI inspect and show, and verify bundle provenance and recordings |
 | `anim_replay.schema.json` | the replay manifest's schema |
 | `mesh_dump.py` | L6 corpus JSONL digests and exact masked comparison; standalone oracle dump, `unityrs dump --mesh` candidate; arrays preserve binary64 bits and numeric tags, triangles preserve partial/empty tuples, OBJ streams into SHA-256; output stays outside the repository |
 | `mesh_samples.py` | L6 (`docs/plans/static3d.md`): every Mesh in the pinned UnityPy samples, its arrays, type tags, triangles and raw OBJ text against `unityrs-mesh`'s `mesh_l6` example, with section 19.1's corrected decoding; prints aggregate counts only; needs the oracle stack |
@@ -222,7 +222,7 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_gltf_check.py` | `gltf_check.py` on hand-built GLBs: the orientation verdict (pass, a reversed winding, no normals, degenerate triangles), accessor reads (sparse, stride and offset, ranges, raw values), the UV, tangent, normal and weight conversions, morph deltas left unnormalised, and the attributes an invalid normal or tangent must omit | stdlib |
 | `test_anim_reference.py` | the f64 evaluator against hand-derived values: Hermite, weighted and stepped segments, streamed, dense and constant layouts, quaternion and Euler orders, timing and the f32 schedule | stdlib |
 | `test_anim_replay.py` | the replay manifest's validator and tolerance derivation on synthetic manifests, including the refusals | stdlib |
-| `test_anim_replay_complete.py` | complete a synthetic Editor handoff, including exact identity, null override, and refusal cases | stdlib |
+| `test_anim_replay_complete.py` | complete a synthetic Editor handoff and exercise the run inventory, built key times, digest-bound inspections, truncation and identity checks | stdlib |
 | `test_anim_synthetic.py` | the synthetic clip replay's expectations (`crates/unityrs-anim/tests/support/clip_expected.json`) are what `anim_reference.py` computes now, and the file the Rust sampler is held to is regenerated, never edited | stdlib |
 
 **Samples.** The samples are UnityPy's `tests/samples` at commit `417d595`. They are read from `$UNITYRS_UNITYPY_SAMPLES` when set, else from the folder the corpus index (`$UNITYRS_CORPUS_INDEX`, default `/corpus/index.json`) gives for its `unitypy-sample` entries, and their sha256 is checked against pinned values. They are game bundles, so they are never copied into this repository. Without them the sample tests skip.
