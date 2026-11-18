@@ -13,6 +13,7 @@ from anim_fixture_support import (
     DEFERRED, REPLAYS, ROOT_ID, RUN, STATIC, VECTORS, bits, canonical, fixture_archives, rebuild_bundle,
     stamp, static_bundles, untag, write,
 )
+from anim_coverage_support import COVERAGE, coverage_archives
 from test_anim_replay import identity
 
 HERE = Path(__file__).resolve().parents[1]
@@ -34,9 +35,11 @@ class CompleteReplayTests(unittest.TestCase):
             folder.mkdir()
         self.run_path = self.folder / "run.json"
         self.run = dict(format="unityrs.fixture_run", version=1, run=RUN, cases=[
-            dict(name=name, status="recorded", reason="") for name in (*STATIC, *REPLAYS, *VECTORS)
-        ] + [dict(name=name, status="not_covered", reason="Separate fixture needed") for name in DEFERRED])
-        self.recordings = fixture_archives(self.bundles, self.inspect)
+            dict(name=name, status="recorded", reason="") for name in (*STATIC, *REPLAYS, *VECTORS, *COVERAGE)
+        ] + [dict(name=name, status="not_covered", reason="Separate fixture needed")
+             for name in DEFERRED if name not in COVERAGE])
+        # The run's Editor version requires the humanoid refusal probes.
+        self.recordings = fixture_archives(self.bundles, self.inspect) | coverage_archives(self.bundles, self.inspect)
         static_bundles(self.bundles, self.inspect)
         (self.folder / "build.log").write_text(stamp(RUN) + "\n", encoding="utf-8")
         (self.folder / "unityrs-generated.txt").write_text(
@@ -74,13 +77,13 @@ class CompleteReplayTests(unittest.TestCase):
         self.run["run"] = RUN | {"variant": "builtin"}
         result = self.complete()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Completed and validated 16 replay(s)", result.stdout)
+        self.assertIn("Completed and validated 18 replay(s)", result.stdout)
 
     def test_complete_resolves_exact_ids_from_container_and_pointers(self):
         self.replace_clip_values("generic-object-reference", lambda clip: clip.pop("m_PPtrCurves"))
         result = self.complete()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Completed and validated 16 replay(s)", result.stdout)
+        self.assertIn("Completed and validated 18 replay(s)", result.stdout)
         for name in REPLAYS:
             finished = replay.read_json((self.replays / f"{name}.json").read_text(encoding="utf-8"))
             self.assertEqual(finished["capture"], self.recordings[name]["capture"])

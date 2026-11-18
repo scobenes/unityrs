@@ -76,25 +76,31 @@ class CoverageCompletionTests(unittest.TestCase):
         for name in COVERAGE:
             replay.validate(self.completed(name), self.bundles)
 
-    def test_run_without_coverage_fixtures_completes_and_reports_them(self):
+    def test_a_2022_run_without_coverage_fixtures_is_refused(self):
         # As an older run: no coverage bundles or recordings, each reported not covered.
         self.statuses = {}
         result = self.complete(written=())
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Completed and validated 16 replay(s)", result.stdout)
-        for name in (INTEGER, *COVERAGE):
-            self.assertIn(f"Optional coverage not recorded: {name}: not_covered (Unity refused it)", result.stdout)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        for name in COVERAGE:
+            self.assertIn(f"{name}: required for Unity 2022.3.62f3 but not_covered", result.stderr)
             self.assertFalse((self.replays / f"{name}.json").exists())
 
-    def required(self, table):
-        self.complete(written=())
-        with mock.patch.dict(anim_fixture_coverage.REQUIRED_COVERAGE, table):
+    def required(self, table, *, written=()):
+        self.complete(written=written)
+        with mock.patch.dict(anim_fixture_coverage.REQUIRED_COVERAGE, table, clear=True):
             return recorded_paths(self.folder, replay, *read_manifest(self.folder, replay))
 
-    def test_no_coverage_case_is_required_until_confirmed(self):
+    def test_both_versions_require_the_humanoid_refusals(self):
+        self.assertEqual(anim_fixture_coverage.REQUIRED_COVERAGE, dict.fromkeys(("2022.3", "6000"), COVERAGE))
+        self.assertEqual(anim_fixture_coverage.required_coverage("6000.6.9f1"), set(COVERAGE))
+        self.assertEqual(anim_fixture_coverage.required_coverage("2021.3.45f1"), set())
+
+    def test_an_unlisted_version_completes_without_coverage_and_reports_it(self):
         self.statuses = {}
-        self.assertEqual(anim_fixture_coverage.REQUIRED_COVERAGE, {"2022.3": (), "6000": ()})
-        self.assertEqual(len(self.required({})[0]), len(REPLAYS) + len(VECTORS))
+        paths, _, _, uncovered = self.required({})
+        self.assertEqual(len(paths), len(REPLAYS) + len(VECTORS))
+        for name in (INTEGER, *COVERAGE):
+            self.assertIn(f"{name}: not_covered (Unity refused it)", uncovered)
 
     def test_a_required_case_fails_a_run_that_does_not_record_it(self):
         self.statuses = {}
@@ -124,11 +130,13 @@ class CoverageCompletionTests(unittest.TestCase):
         self.statuses = {TWIST: "recorded"}
         self.assert_refused("unexpected pending recording: replays/humanoid-non-neutral-setting-refusal.pending.json")
         (self.replays / f"{SETTINGS}.pending.json").unlink()
-        result = self.complete(written=(TWIST,))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Optional coverage not recorded: humanoid-non-neutral-setting-refusal", result.stdout)
+        # 2022.3 requires it; where no version requires it, its built bundle may stay.
+        self.assert_refused("humanoid-non-neutral-setting-refusal: required for Unity 2022.3.62f3 but not_covered",
+                            written=(TWIST,))
+        paths, _, _, uncovered = self.required({}, written=(TWIST,))
+        self.assertIn(self.replays / f"{TWIST}.pending.json", paths)
+        self.assertIn("humanoid-non-neutral-setting-refusal: not_covered (Unity refused it)", uncovered)
         self.assertTrue((self.bundles / BUNDLES[SETTINGS]).exists())
-        self.assertFalse((self.replays / f"{SETTINGS}.json").exists())
 
     def test_recorded_coverage_needs_its_recording_and_bundle(self):
         self.build()

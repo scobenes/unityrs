@@ -20,9 +20,12 @@ from anim_reference import dense, streamed
 # The coverage cases a run must record, by Editor version ("2022.3" matches
 # 2022.3.x). Add a case once a real run of that version has recorded it and
 # `complete` has accepted it; from then on a not_covered status fails that run.
+# Real 2022.3.62f3 and 6000.6.9f1 runs recorded and completed both humanoid
+# refusal probes, so both versions require them. A run without them refuses.
+HUMANOID_REFUSALS = ("humanoid-twist-refusal", "humanoid-non-neutral-setting-refusal")
 REQUIRED_COVERAGE = {
-    "2022.3": (),
-    "6000": (),
+    "2022.3": HUMANOID_REFUSALS,
+    "6000": HUMANOID_REFUSALS,
 }
 
 SPINE_PROBE = (SPINE_PATH, "rotation", None, None)

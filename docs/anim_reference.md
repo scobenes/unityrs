@@ -617,7 +617,8 @@ shows Unity cannot produce it, with the reason; any other error fails it. A case
 pending recording, which completion checks against the [coverage contract](../tools/parity/anim_fixture_coverage.py);
 any other status must leave none. Completion lists the optional cases not recorded. Its `REQUIRED_COVERAGE` table
 names, per Editor version, the cases a run must record; add a case there once a real run of that version has
-recorded it and completion has accepted it. The `*.pending.json` files use
+recorded it and completion has accepted it. Real 2022.3 and 6000 runs recorded both humanoid refusal probes, so
+both versions now require them, and a run of either version without them is refused. The `*.pending.json` files use
 the separate `unityrs.anim_replay_pending` format, version 1, and stay
 beside the completed files. Each pending spec has one bundle basename
 without a digest, uses integer mesh groups where renderers share a mesh,

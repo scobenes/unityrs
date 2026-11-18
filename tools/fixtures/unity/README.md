@@ -95,6 +95,14 @@ Each project has its own `UnityrsFixturesOutput` folder. In the Built-in
 project, the Windows and Android results sit side by side in the
 `<Unity version>` folder, so zipping that whole folder sends both.
 
+## For maintainers
+
+`tools/parity/anim_replay.py complete` requires the humanoid twist and
+clip-settings refusal probes from 2022.3 and 6000 main runs
+(`REQUIRED_COVERAGE` in `tools/parity/anim_fixture_coverage.py`). An older
+run that predates them, or one that reports either as not covered, is
+refused: rerun the main menu item with the current Editor folder.
+
 If the maintainer needs a manual FBX fallback, use a **CC0-licensed rigged
 model**. Exclude TurboSquid and Mixamo assets because their licences forbid
 redistributing the rigged assets in the fixtures.
