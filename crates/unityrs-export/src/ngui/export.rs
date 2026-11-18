@@ -46,7 +46,7 @@ impl Charger for Metered<'_> {
     }
 }
 
-fn md5(bytes: &[u8]) -> [u8; 16] {
+pub(super) fn md5(bytes: &[u8]) -> [u8; 16] {
     let digest = Md5::digest(bytes);
     let mut out = [0u8; 16];
     out.copy_from_slice(&digest);
@@ -325,6 +325,7 @@ impl Attempt<'_> {
             return Ok(false);
         }
         let output = Output {
+            prefab: None,
             plan_index: made.plan_index,
             key: made.key.to_owned(),
             kind: made.kind,

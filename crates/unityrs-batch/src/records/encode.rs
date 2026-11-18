@@ -133,6 +133,22 @@ impl Encoder<'_> {
         self.display(self.cut || inherited)?;
         self.raw(b"}\n")
     }
+    fn prefab(&mut self, prefab: Option<super::Prefab<Text<'_>>>) -> Result<(), Error> {
+        if let Some(p) = prefab {
+            self.num("container_file_index", p.file_index)?;
+            self.num("container_row", p.row)?;
+            self.text_field("container_file", p.container_file)?;
+            self.optional_text("container_path", p.container_path)?;
+            self.optional_text("root_serialized_file", p.root.map(|root| root.0))?;
+            self.field("root_path_id")?;
+            if let Some((_, path_id)) = p.root {
+                self.display(path_id)?;
+            } else {
+                self.raw(b"null")?;
+            }
+        }
+        Ok(())
+    }
     fn candidate(&mut self, c: Candidate<'_>) -> Result<(), Error> {
         self.start("candidate")?;
         self.str_field("key", c.key)?;
@@ -163,6 +179,7 @@ impl Encoder<'_> {
         self.raw(b"\"o")?;
         self.display(c.plan_index)?;
         self.raw(b"\"")?;
+        self.prefab(c.prefab)?;
         self.end(c.cut)
     }
     fn member(&mut self, m: Member<'_>) -> Result<(), Error> {
@@ -203,6 +220,7 @@ impl Encoder<'_> {
         }
         self.optional_reason(Some(s.reason))?;
         self.optional_text("detail", s.detail)?;
+        self.prefab(s.prefab)?;
         self.end(s.cut)
     }
     fn diagnostic(&mut self, d: Diagnostic<'_>) -> Result<(), Error> {
@@ -211,6 +229,21 @@ impl Encoder<'_> {
         self.str_field("input", d.input)?;
         self.optional_text("bundle", d.bundle.map(Text::from))?;
         self.text_field("name", d.name)?;
+        if let Some(glb) = d.glb {
+            self.str_field("key", glb.key)?;
+            self.num("node", glb.node)?;
+            self.str_field("reason", glb.reason)?;
+            if let Some(resource) = glb.resource {
+                for (field, value) in super::RESOURCE_FIELDS.iter().zip([
+                    resource.renderer_path_id,
+                    resource.owner_path_id,
+                    i64::from(resource.pointer.file_id),
+                    resource.pointer.path_id,
+                ]) {
+                    self.num(field, value)?;
+                }
+            }
+        }
         self.end(d.cut)
     }
     fn summary(&mut self, s: Summary<'_>) -> Result<(), Error> {

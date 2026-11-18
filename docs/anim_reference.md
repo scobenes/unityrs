@@ -315,8 +315,8 @@ conflicting/collapsed sides refuses the jump.
 
 ## Same-bundle recorder and replay contract
 
-A replay document has an owner-prepared `spec` and recorder-generated
-`capture` under a versioned [JSON Schema](../tools/parity/anim_replay.schema.json).
+A completed replay document has a `spec` and recorder-generated `capture`
+under a versioned [JSON Schema](../tools/parity/anim_replay.schema.json).
 The [synthetic replay test](../tools/parity/tests/test_anim_replay.py) shows
 both halves on a one-node prefab with two renderers sharing a mesh.
 
@@ -361,7 +361,7 @@ any L11 row.
   contract](AGENTS.md#inspect-and-pagination). `file` is the exact stored
   name. `path_id` is a canonical signed 64-bit decimal string, which
   survives JSON number conversions.
-- Inspect the exact hashed artifacts before recording. Check the bundle
+- Inspect the exact hashed artifacts before completing a recording. Check the bundle
   container PPtr for each selected prefab, clip and Avatar asset key.
   From the prefab GameObject, walk Transform child and GameObject
   component PPtrs in stored order to establish the address-to-ID crosswalk
@@ -431,13 +431,16 @@ The public playable or legacy time checks the supplied time. Use the
 endpoints independently and record their source seconds and field names
 in `evidence.clock.start` and `stop`. Include all inspected key times
 inside the source interval, held boundaries and both endpoints in
-`key_times`. For a constant clip use the interval endpoints as the
+`key_times`. The Editor handoff also preserves its authored times in
+`authored_key_times`. For a constant clip use the interval endpoints as the
 comparison keys. Supply the first and last samples and at least one
 effective f32 interior sample strictly between distinct keys. The
 sample must remain off-key under the selected source clock.
 
 Each endpoint also carries a probe with the schedule index, property,
-target, channel, component and independently known f32 value. For a
+target, channel, component and independently known f32 value. Humanoid
+fixtures retain the observed component bits after checking the full local
+Spine rotation against the authored endpoint pose. For a
 Transform use `channel: -1` and its zero-based component index. For a
 weight use the channel index and component zero. Include one `held` row
 per boundary with its source time and probes at the last effective sample
@@ -502,9 +505,9 @@ array. Keep the original recorder output with the fixture.
 
 The validator resolves the ID, checks `SetHumanPose` playback, rig
 identities and sample times, and reads the root and hips-local poses
-directly from the referenced capture. It rejects a byte-identical
-sequence of root and hips-local samples and measures componentwise and
-angular residuals against the frozen replay budgets.
+directly from the referenced capture. It measures componentwise and
+angular residuals against the frozen replay budgets. Equal root and
+hips-local samples across the two captures give a zero residual.
 
 The `qualified_muscle_only` profile requires absent body slots (including
 mapped constant slots as present), only muscle writers, and neutral
@@ -520,28 +523,141 @@ them. Record the typed `unsupported_…` causes for refusal probes.
 
 ### Owner workflow
 
-1. Build original fixture bundles in the [owner-built project](plans/static3d.md#8-the-editor-fixture-project-owner-built)
-   with a documented 2022.3 or 6000.x patch and active target. Place the
-   ordered bundle set beside the recording spec. Check the identity
-   crosswalk, timing and settings against these exact artifacts.
-2. Prepare the spec and include endpoints, off-key and held-boundary
-   times. Run `python3 -I tools/parity/anim_replay.py validate-spec synthetic-spec.json`.
-3. Copy [AnimReplayRecorder.cs](../tools/fixtures/AnimReplayRecorder.cs)
-   into `Assets/Editor`. In Edit Mode choose **Tools → unityrs → Record
-   animation replay**. Open the validated spec and save a new replay file.
-   Verify the endpoint behavior and held probes. Run
-   `python3 -I tools/parity/anim_replay.py validate synthetic-replay.json --bundle-dir .`
-   with the bundle directory to recheck the artifact bytes.
-4. Freeze the budgets and the resulting tolerance document as described
-   below. Keep the original fixture bundles and numeric records under
-   the repository's fixture rules. Record digest and project-relative
-   keys without machine-specific paths.
+Follow the [Windows Editor steps](../tools/fixtures/unity/README.md). Run
+**Tools → unityrs → Build and record all fixtures** first in a new Unity
+2022.3 LTS 3D (Built-in) project and later in a separate new Unity 6000.x
+project. The button uses the active build target, which defaults to
+`StandaloneWindows64` on the owner's PC. Send each complete
+version-and-target folder to the maintainer's fixture inbox. If the run
+stops with **unityrs fixture build failed**, send the log from the separate
+`-failed-<id>` folder shown in the dialog.
 
-To check prefab lookup in the Editor, also copy
-[AnimReplayRecorderSmokeTest.cs](../tools/fixtures/AnimReplayRecorderSmokeTest.cs)
-to `Assets/Editor` and run **Tools → unityrs → Test animation replay prefab
-loading**. It builds a temporary three-node prefab bundle and checks the
-recorder's root selection and access to the nested node.
+The button generates both humanoid rigs and their clips. Each rig has
+skinned boxes in a T-pose and a procedurally built Avatar. The taller rig
+has asymmetric Spine limits and omits UpperChest. Each rig has an
+identity and a translated, rotated Animator root. The recorder pairs a
+candidate muscle-only clip with a known-vector `SetHumanPose` replay on
+each prefab and uses the same five sample times for the pair. A separate
+clip on the compact rig adds `RootT` and `RootQ` body curves. An invalid
+generated Avatar is reported in the log and generation continues.
+
+Recordings use asset keys, hierarchy addresses and component ordinals.
+The recorder selects endpoints, off-key samples and held probes from the
+authored keys and records the Editor-visible clip settings and curve
+bindings. Repo-side completion fills in the built file and path IDs.
+
+#### Repo-side completion
+
+The Unity project owner sends the version folder. Point `complete` at the
+target directory within it (`<version>/<target>/`), which contains `run.json`,
+`build.log`, `bundles/` and `replays/`. For example, after unpacking the
+`2022.3.62f3` folder under `returned/`, run the following command.
+
+```sh
+python3 -I tools/parity/anim_replay.py complete "returned/2022.3.62f3/StandaloneWindows64/" --unityrs target/debug/unityrs
+```
+
+Omit `--unityrs` to use `unityrs` on PATH. Completion requires the inventory
+in `run.json` and a recorded result for every required case, including the
+static bundles and raw known-vector recordings. It reports missing and failed
+cases before writing completed replays. The [fixture contract](../tools/parity/anim_fixture_contract.py)
+specifies each required bundle, asset key, playback route and evidence.
+Completion matches the run ID, Editor version and build target across the
+manifest, log, recordings and built bundles. Each bundle stores the stamp as
+a TextAsset or, for the scene, as an empty GameObject. The built clip curves,
+prefab components and scene references supply the required fixture evidence.
+Static asset keys are checked against the inspected AssetBundle container.
+A scene's container entry names its `.unity` path and has a null object
+pointer. [Unity AssetBundle format](https://github.com/Unity-Technologies/UnityDataTools/blob/main/Documentation/assetbundle-format.md#scenes-in-assetbundles)
+
+Optional coverage can be skipped with
+a reason. These sections are URP materials, packed rotation slopes,
+authored/runtime precedence, verified mixed Transform storage, integer discrete
+bindings, humanoid twist and non-neutral setting refusals, humanoid slot/axis
+inventory and the root/hips comparison. `build.log` and `run.json` give the
+reason for uncovered sections and fixture errors. The `*.pending.json` files use
+the separate `unityrs.anim_replay_pending` format, version 1, and stay
+beside the completed files. Each pending spec has one bundle basename
+without a digest, uses integer mesh groups where renderers share a mesh,
+and omits built identities. The capture pins the digest of the bytes
+Unity loaded. Completion reads `inspect` for file occurrences and class
+headers, then uses `show` for the actual container entries, Transform and
+component PPtrs, mesh and Avatar PPtrs, controller slots, and clip settings.
+It inventories explicit and packed keys, streamed frame times and the dense
+grid from the serialized clip. A packed time array represented only by its
+length and digest leaves the inventory incomplete, so completion refuses it.
+The recording must include an interior sample
+off both the authored and built key times after f32 rounding.
+The automated fixtures keep these PPtrs within one bundle. Completion
+verifies the digest, writes the existing `unityrs.anim_replay` version 1
+format and runs its validator. The validator refuses pending recordings.
+
+For a saved inspection, pass `--inspect-dir DIR`. Completion trusts sidecars
+produced by our own unityrs tooling. The bundle digest catches stale or
+mismatched sidecars and provides no protection against forgery. Use an unfiltered,
+complete `unityrs inspect BUNDLE --limit 10000 --max-bytes 1048576 --external-paths` response
+named `BUNDLE.inspect.json`. Run inspection with the bundle basename
+from inside `bundles/`. Save each needed
+`unityrs show BUNDLE --file-index 0:FILE_INDEX --path-id PATH_ID --value canonical --max-items 4096 --max-bytes 4194304`
+response as `BUNDLE.FILE_INDEX.PATH_ID.show.json`.
+For the four-influence skin meshes in `static-objects` and `anim-generic`,
+use `--value natural --bytes full` in place of `--value canonical` to preserve
+the vertex bytes. Add a top-level
+`bundle_sha256` field to the inspect response and each show response, using
+the SHA-256 of the bundle bytes inspected at the time of capture. Preserve
+exact file occurrences and signed path IDs. Completion refuses cut values,
+nonzero show truncation counters and missing or mismatched digests.
+
+The raw `human_pose` recordings are under `replays/known-vectors/`.
+Each contains the inputs in HumanTrait order, the exact applied f32
+bits and the independently captured rig facts. Completion checks their
+exact five-point schedule, muscle vectors, and agreement with the corresponding
+clip replay's inspected assets, rest pose and Editor capture facts. To complete a known-vector baseline, preserve a
+copy of the raw recording and add the inspected `spec.evidence.humanoid` to
+the pending file under `replays/known-vectors/` for its selected
+clip with `disposition: "pending"` and the slot and axis evidence
+described in [Humanoid qualification](#humanoid-qualification).
+Run completion on that copy, then use the standalone result to compute
+the baseline ID and attach it to the candidate clip recording as
+described above.
+
+On the first run, confirm that `StaticBatchingUtility.Combine` persists
+the shared mesh and submesh ranges in the scene bundle, and that
+`LoadAssetWithSubAssets<GameObject>` returns the prefab root and hierarchy.
+In the animation bundles, check how `AnimationClip.SetCurve`,
+`AnimationUtility.SetAnimationClipSettings`, `EditorCurveBinding.PPtrCurve`
+and `AnimatorOverrideController.ApplyOverrides` serialize the authored
+curves, nonzero interval, object-reference binding, and null substitution. Check
+the native playback endpoints and held probes for the actual build.
+Confirm `AvatarBuilder.BuildHumanAvatar` accepts the generated T-poses
+and public `HumanDescription` fields and that the built Avatars retain
+their mappings, limits and optional absences. Confirm the Animator
+muscle property names and `RootT`/`RootQ` produce the expected
+`humanMotion` clips. The recorder compares built local Spine endpoint rotations
+to `SetHumanPose` evaluations of the authored muscle vectors on the source rig.
+[Unity AvatarBuilder](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/AvatarBuilder.BuildHumanAvatar.html)
+· [Unity HumanDescription](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanDescription.html)
+· [Unity AnimationClip.SetCurve](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/AnimationClip.SetCurve.html)
+
+Unity chooses the serialized curve layout. Check compiled storage,
+packed rotations and the complete runtime key inventory using the
+same-bundle cross-checks. Humanoid qualification starts pending until the
+built slot inventory, axes, serialized settings and baseline comparison
+have been checked. Freeze the budgets and derive the tolerances below
+before comparing Rust output. Keep original built fixtures and their
+numeric records under the repository's fixture rules, with no
+machine-specific paths.
+
+For a manual case, copy the same [Editor folder](../tools/fixtures/unity/Editor).
+Put the validated spec beside its bundle set and choose **Tools → unityrs
+→ Record animation replay**. Open the spec and save a new replay file.
+The manual and automated paths share
+[`AnimReplayRecorder.cs`](../tools/fixtures/unity/Editor/AnimReplayRecorder.cs).
+`anim_replay.py validate-spec` checks the input and `anim_replay.py validate
+REPLAY --bundle-dir BUNDLE_DIR` checks the result and artifact bytes.
+**Tools → unityrs → Test animation replay prefab loading** builds a
+temporary three-node prefab bundle and checks root lookup and a nested
+address. [`AnimReplayRecorderSmokeTest.cs`](../tools/fixtures/unity/Editor/AnimReplayRecorderSmokeTest.cs)
 
 ### Per-recording f32 tolerances
 

@@ -518,3 +518,34 @@ fn scene_and_obj_checks_run_every_synthetic_seed_and_truncations() {
         "targets must reach successful exports: scenes={scenes}, objs={objs}"
     );
 }
+
+#[test]
+fn anim_checks_run_every_synthetic_seed_and_truncations() {
+    let mut clips = 0;
+    for (_, case) in unityrs_testkit::fuzz::anim_clip_cases() {
+        let bytes = case.encode();
+        clips += usize::from(crate::anim_clip::check(&bytes));
+        if case.meter == 0 {
+            for cut in [0, 1, 3, bytes.len() / 2, bytes.len() - 1] {
+                crate::anim_clip::check(&bytes[..cut]);
+            }
+        }
+    }
+    let mut gltfs = 0;
+    let mut explicit = 0;
+    for (name, case) in unityrs_testkit::fuzz::anim_gltf_cases() {
+        let bytes = case.encode();
+        let done = crate::anim_gltf::check(&bytes);
+        gltfs += usize::from(done);
+        explicit += usize::from(done && name.contains("-explicit-"));
+        if case.meter == 0 {
+            for cut in [0, 3, bytes.len() / 2, bytes.len() - 1] {
+                crate::anim_gltf::check(&bytes[..cut]);
+            }
+        }
+    }
+    assert!(
+        clips >= 100 && gltfs >= 50 && explicit >= 10,
+        "targets must reach successful runs: clips={clips}, gltfs={gltfs}, explicit={explicit}"
+    );
+}

@@ -23,7 +23,7 @@ use crate::reason::Code;
 use crate::spec::{MAX_DETAIL_BYTES, escaped_len};
 
 /// The stream's format version, `p` (section 10).
-pub const P: u64 = 1;
+pub const P: u64 = 2;
 
 /// `phase`: `docs/plans/batch.md` 2.1's phases 1 to 8.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

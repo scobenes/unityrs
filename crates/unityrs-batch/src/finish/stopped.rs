@@ -93,9 +93,15 @@ pub fn run(h: &HandOver, taken: Option<Stop>, fin: &mut Finisher<'_>) -> Finishe
                 no_head(stop.reason.code(), Some(stop), "internal")
             };
         }
+        FinishCause::UnknownPrefab(_) if h.running && taken.is_some() => {
+            if let Some(stop) = taken {
+                finished.end = stopped(h, stop, fin, &mut finished.reconcile)
+                    .unwrap_or_else(|failure| unwritten(stop, failure));
+            }
+        }
         // A normal end always follows `running`; one that cannot read its
         // rows leaves that head, with the failure's code.
-        FinishCause::Normal if h.running => {
+        FinishCause::Normal | FinishCause::UnknownPrefab(_) if h.running => {
             finished.end = normal(h, taken, fin).unwrap_or_else(|failure| ResultEnd {
                 code: failure.code(),
                 status: Some("running"),
@@ -103,7 +109,7 @@ pub fn run(h: &HandOver, taken: Option<Stop>, fin: &mut Finisher<'_>) -> Finishe
                 detail: None,
             });
         }
-        FinishCause::Normal => {}
+        FinishCause::Normal | FinishCause::UnknownPrefab(_) => {}
     }
     finished
 }
@@ -133,21 +139,23 @@ fn normal(
     taken: Option<Stop>,
     fin: &mut Finisher<'_>,
 ) -> Result<ResultEnd, RunFailure> {
-    let Some(Selected::Owned(owned)) = &h.selected else {
-        return Err(internal());
-    };
     let facts = h.facts.as_deref().ok_or_else(internal)?;
+    let spool = h.spool.as_ref().ok_or_else(internal)?;
     let directory = h.sink.as_ref().ok_or_else(internal)?;
     let inputs =
-        Committed::received(&owned.done, &facts.inputs, &*owned.fs, &|| false).map_err(failure)?;
+        Committed::received(&spool.done, &facts.inputs, &*spool.fs, &|| false).map_err(failure)?;
     let cx = manifest::rows::Context {
         facts,
         inputs: &inputs,
-        selected: Some(manifest::rows::Selected {
-            handoff: &owned.handoff,
-            workspace: &owned.workspace,
-            outcomes: &owned.outcomes,
-        }),
+        selected: match &h.selected {
+            Some(Selected::Owned(owned)) => Some(manifest::rows::Selected {
+                handoff: &owned.handoff,
+                workspace: &owned.workspace,
+                outcomes: &owned.outcomes,
+            }),
+            _ if matches!(h.cause, FinishCause::UnknownPrefab(_)) => None,
+            _ => return Err(internal()),
+        },
         stop: None,
         found: None,
         account: fin.account,
@@ -156,19 +164,51 @@ fn normal(
     };
     let mut rows = rows(facts, directory, fin.account, fin.budget);
     let mut time = [0; 20];
-    Ok(normal_into(
-        &cx,
-        &mut Budgeted {
-            rows: &mut rows,
-            budget: fin.budget,
-            clock: fin.clock,
-            cut: false,
-        },
-        directory,
-        fin.identity,
-        ended_at(&mut time),
-        taken,
-    ))
+    let mut dest = Budgeted {
+        rows: &mut rows,
+        budget: fin.budget,
+        clock: fin.clock,
+        cut: false,
+    };
+    let ended_at = ended_at(&mut time);
+    if let FinishCause::UnknownPrefab(ordinal) = h.cause {
+        let selection = facts
+            .spec
+            .outputs
+            .glb
+            .as_ref()
+            .and_then(|glb| glb.overrides.get(ordinal as usize))
+            .ok_or_else(internal)?;
+        let pointer = selection.pointer();
+        let code = fin
+            .account
+            .publication(|| super::reduce::inputs(&cx))
+            .map_err(failure)?;
+        Ok(conclude(
+            &cx,
+            &mut dest,
+            directory,
+            fin.identity,
+            ended_at,
+            Ending {
+                code: code.worst(Code::Incomplete),
+                failure: None,
+                stop: None,
+                taken,
+                phase: Phase::Winners,
+                missing: Some(&pointer),
+            },
+        ))
+    } else {
+        Ok(normal_into(
+            &cx,
+            &mut dest,
+            directory,
+            fin.identity,
+            ended_at,
+            taken,
+        ))
+    }
 }
 enum Rows<'a> {
     Directory(manifest::chunks::Directory<'a>),
@@ -298,6 +338,7 @@ fn stopped(
             stop: Some(stop),
             taken: Some(stop),
             phase: h.phase,
+            missing: None,
         },
     ))
 }

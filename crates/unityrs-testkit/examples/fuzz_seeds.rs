@@ -76,7 +76,7 @@ mod webp;
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 27] = [
+const TARGETS: [&str; 29] = [
     "detect",
     "bundle",
     "bundle_save",
@@ -102,6 +102,8 @@ const TARGETS: [&str; 27] = [
     "set_image",
     "scene_collect",
     "obj_text",
+    "anim_clip",
+    "anim_gltf",
     "shader",
     "extractor_paths",
 ];
@@ -594,7 +596,8 @@ fn module_seeds(s: &mut Seeds) -> std::io::Result<()> {
     hdr::write(s)?;
     crunch::write(s)?;
     meshdecode(s)?;
-    scene_seeds(s)
+    scene_seeds(s)?;
+    anim_seeds(s)
 }
 
 /// Scene collection and OBJ export share each generated scene case.
@@ -603,6 +606,17 @@ fn scene_seeds(s: &mut Seeds) -> std::io::Result<()> {
         for target in ["scene_collect", "obj_text"] {
             s.add(target, &name, &case.encode())?;
         }
+    }
+    Ok(())
+}
+
+/// The animation targets' synthetic scenes, plain and bundled.
+fn anim_seeds(s: &mut Seeds) -> std::io::Result<()> {
+    for (name, case) in unityrs_testkit::fuzz::anim_clip_cases() {
+        s.add("anim_clip", &name, &case.encode())?;
+    }
+    for (name, case) in unityrs_testkit::fuzz::anim_gltf_cases() {
+        s.add("anim_gltf", &name, &case.encode())?;
     }
     Ok(())
 }

@@ -27,14 +27,13 @@ pub fn graph_from_game_object(
     meter.count_decode(pointers.len() as u64)?;
     let mut found = None;
     for ptr in pointers.as_slice() {
-        match env.deref(root.file(), *ptr) {
+        match walk.resolve(root, *ptr) {
             Ok(t) if matches!(t.class_id(), 4 | 224) => {
                 found = Some(t);
                 break;
             }
             Ok(_) => (),
             Err(e) => {
-                let e = SceneError::Deref(e);
                 if e.resource_refusal() {
                     return Err(e);
                 }
@@ -95,10 +94,15 @@ impl<'a> Walk<'a> {
                 nodes: MeteredVec::new(meter),
                 roots: MeteredVec::new(meter),
                 issues: MeteredVec::new(meter),
+                held: crate::held::Held::new(meter),
             },
             visited: Visited::new(meter),
         }
     }
+    fn resolve(&mut self, from: &ObjectRef, pointer: PPtr) -> Result<ObjectRef, SceneError> {
+        self.graph.held.resolve(self.env, from, pointer, self.meter)
+    }
+
     fn malformed(&mut self, object: ObjectRef, error: SceneError) -> Result<(), SceneError> {
         if error.resource_refusal() {
             return Err(error);
@@ -130,10 +134,9 @@ impl<'a> Walk<'a> {
         while let Some(item) = pending.as_mut_slice().last_mut().and_then(Option::take) {
             pending.truncate(pending.len().saturating_sub(1));
             self.meter.count_decode(1)?;
-            let transform = match self.env.deref(item.from.file(), item.pointer) {
+            let transform = match self.resolve(&item.from, item.pointer) {
                 Ok(t) => t,
-                Err(e) => {
-                    let error = SceneError::Deref(e);
+                Err(error) => {
                     if error.resource_refusal() {
                         return Err(error);
                     }
@@ -269,9 +272,7 @@ impl<'a> Walk<'a> {
         if let Some(id) = parent {
             self.check_parent(&transform, &r, id)?;
         }
-        let go = self
-            .env
-            .deref(transform.file(), r.pointer("m_GameObject")?)?;
+        let go = self.resolve(&transform, r.pointer("m_GameObject")?)?;
         if go.class_id() != 1 {
             return Err(SceneError::WrongClass(go.class_id()));
         }
@@ -299,23 +300,28 @@ impl<'a> Walk<'a> {
         let mut components = MeteredVec::with_capacity(self.meter, ptrs.len())?;
         self.meter.count_decode(ptrs.len() as u64)?;
         for ptr in ptrs.as_slice() {
-            let mut reader = Reader {
-                env: self.env,
-                meter: self.meter,
-                issues: &mut self.graph.issues,
-            };
-            match self.env.deref(go.file(), *ptr) {
-                Ok(obj) => match reader.component(obj.clone()) {
+            match self.resolve(&go, *ptr) {
+                Ok(obj) => match (Reader {
+                    env: self.env,
+                    meter: self.meter,
+                    issues: &mut self.graph.issues,
+                    held: &mut self.graph.held,
+                })
+                .component(obj.clone())
+                {
                     Ok(c) => components.push(c)?,
                     Err(e) => {
                         self.malformed(obj.clone(), e)?;
                         components.push(Component::Other(obj.class_id(), obj))?;
                     }
                 },
-                Err(e) => {
-                    if SceneError::Deref(e.clone()).resource_refusal() {
-                        return Err(e.into());
+                Err(error) => {
+                    if error.resource_refusal() {
+                        return Err(error);
                     }
+                    let SceneError::Deref(e) = error else {
+                        return Err(error);
+                    };
                     self.graph.issues.push(Issue::Unresolved {
                         from: go.clone(),
                         pointer: *ptr,

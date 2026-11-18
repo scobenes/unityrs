@@ -202,8 +202,10 @@ pub(super) fn animation(
         })?;
         if approximations != 0 {
             scene.collection_issues.push(CollectionIssue {
+                resource: None,
                 node,
                 reason: "animation_morph_last_frame_approximation",
+                dropped_renderer: false,
                 count: approximations,
             })?;
         }

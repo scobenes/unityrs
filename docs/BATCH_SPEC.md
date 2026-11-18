@@ -13,15 +13,15 @@
 
 ## 1. The job spec
 
-A spec is one JSON object, at most 64 MiB (an average of about 670 bytes per input at 100,000 inputs), UTF-8, in a regular file: a `JOB.json` of another type, or a longer one, is refused at validation (`bad_spec`). An unknown field at any level, a duplicate member in any object, a value of the wrong type and a value out of its range are refused at validation. `docs/batch/spec-v1.schema.json` and `docs/batch/spec-v2.schema.json` (JSON Schema 2020-12) are written by hand from these tables, one per version; it covers each field's type and range, a byte cap only as a code-point bound, an integer as JSON Schema's `integer`, which also holds `1.0`, and the byte caps, the cross-field rules and which `TextureFormat` names this binary decodes (`outputs.formats`, 1.5) are the parser's alone (`extract.md` section 3, item 4). `unityrs batch --schema` prints the schema of the binary's highest `spec_version` alone, as one JSON document with no progress line (9.1); an earlier version's is its file above.
+A spec is one JSON object, at most 64 MiB (an average of about 670 bytes per input at 100,000 inputs), UTF-8, in a regular file: a `JOB.json` of another type, or a longer one, is refused at validation (`bad_spec`). An unknown field at any level, a duplicate member in any object, a value of the wrong type and a value out of its range are refused at validation. `docs/batch/spec-v1.schema.json`, `docs/batch/spec-v2.schema.json` and `docs/batch/spec-v3.schema.json` (JSON Schema 2020-12) are written by hand from these tables, one per version; it covers each field's type and range, a byte cap only as a code-point bound, an integer as JSON Schema's `integer`, which also holds `1.0`, and the byte caps, the cross-field rules and which `TextureFormat` names this binary decodes (`outputs.formats`, 1.5) are the parser's alone (`extract.md` section 3, item 4). `unityrs batch --schema` prints the schema of the binary's highest `spec_version` alone, as one JSON document with no progress line (9.1); an earlier version's is its file above.
 
-**Versions.** Version 2 is version 1 with three members added: `unitycn_key` (1.1), `outputs.formats` and `outputs.image` (1.5). A version 1 spec is read and run as before, each of the three `unknown_field` in it, and its manifest is version 1's with the same rows; its `run.memory_bound`, like any spec's, may move with the binary (section 10's `memory_bound`). A version 2 spec that gives none of them runs as the same spec at version 1 would, its manifest version 2's (7.3). The version is the value of the document's first top-level `spec_version` member, wherever it stands, so a member only version 2 has is `unknown_field` in a version 1 document at its own place in document order (section 10's order).
+**Versions.** Version 3 adds opt-in `outputs.glb` for loose prefab GLBs. Versions 1 and 2 refuse this field as `unknown_field`. Version 2 is version 1 with three members added: `unitycn_key` (1.1), `outputs.formats` and `outputs.image` (1.5). A version 1 spec is read and run as before, each of the three `unknown_field` in it, and its manifest is version 1's with the same rows; its `run.memory_bound`, like any spec's, may move with the binary (section 10's `memory_bound`). A version 2 spec that gives none of them runs as the same spec at version 1 would, its manifest version 2's (7.3). The version is the value of the document's first top-level `spec_version` member, wherever it stands, so a member introduced in a later version is `unknown_field` in an earlier document at its own place in document order (section 10's order).
 
 ### 1.1 Top level
 
 | field | type | required | default | allowed values and meaning |
 |---|---|---|---|---|
-| `spec_version` | integer | yes | | `1` or `2` |
+| `spec_version` | integer | yes | | `1`, `2` or `3` |
 | `run_id` | string | yes | | 1-64 bytes of `[A-Za-z0-9._-]`, not `.` or `..`. Names one logical run; its attempts share it (section 7) |
 | `attempt` | integer | yes | | 1 to 2^31-1. The caller raises it for each attempt of one `run_id` |
 | `deadline` | string or null | no; yes with an object store sink | `null` | an RFC 3339 date-time with `Z` or an offset; `null` sets none (E45). Its second is 60 only where a leap second can be (RFC 3339 5.7): at 23:59:60 once the time is converted to UTC by its offset (`2016-12-31T23:59:60Z`, `2017-01-01T00:59:60+01:00`); any other second 60 is `format`, as is a deadline whose UTC form, by its offset, falls outside the years 0000 to 9999, which the head could not write (7.3; `9999-12-31T23:59:59-00:01`). A deadline whose stop cutoff (the deadline less the grace) has passed at preflight exits 69 (`deadline_too_close`). Phase 1's validation, which holds stops (`shutdown_grace_ms`), runs before the deadline is read, and its time counts against the deadline like any other |
@@ -40,7 +40,7 @@ A spec is one JSON object, at most 64 MiB (an average of about 670 bytes per inp
 | `http` | Http | no | every default | section 1.4 |
 | `inputs` | array of Bundle | yes | | 1 to 100,000 items |
 | `dependencies` | array of Bundle | no | `[]` | bundles that are read but not extracted |
-| `unitycn_key` | `{"env": NAME}` or null | no; version 2 only | `null` | the environment variable holding the UnityCN key, never the key: NAME as a header's (1.2, `range` and `format`). It is read at preflight, once, as a header's variable is (`--check` reads no environment), and holds the key's 16 bytes as 32 hexadecimal digits of either case, nothing else (no space, no newline), so any 16 bytes can be passed; a key UnityPy is given as a string of 16 characters is their UTF-8 bytes in hex (`printf %s KEY \| xxd -p`). An unset or empty variable exits 69 (`header_env_missing`), one over 16 KiB `header_env_too_long`, any other value that is not 32 hex digits `header_env_invalid`, each with the variable's name as its detail (9.3); the key's value appears in no row, line, message or log. The key decrypts every UnityCN-encrypted bundle of the run; a bundle that is not encrypted ignores it. An encrypted input with no key or a wrong one fails as 7.3's UnityCN codes say, the run going on |
+| `unitycn_key` | `{"env": NAME}` or null | no; versions 2 and 3 | `null` | the environment variable holding the UnityCN key, never the key: NAME as a header's (1.2, `range` and `format`). It is read at preflight, once, as a header's variable is (`--check` reads no environment), and holds the key's 16 bytes as 32 hexadecimal digits of either case, nothing else (no space, no newline), so any 16 bytes can be passed; a key UnityPy is given as a string of 16 characters is their UTF-8 bytes in hex (`printf %s KEY \| xxd -p`). An unset or empty variable exits 69 (`header_env_missing`), one over 16 KiB `header_env_too_long`, any other value that is not 32 hex digits `header_env_invalid`, each with the variable's name as its detail (9.3); the key's value appears in no row, line, message or log. The key decrypts every UnityCN-encrypted bundle of the run; a bundle that is not encrypted ignores it. An encrypted input with no key or a wrong one fails as 7.3's UnityCN codes say, the run going on |
 | `outputs` | Outputs | yes | | section 1.5 |
 | `prefer` | object | no | `{}` | output key → Prefer (E31) |
 | `publish_incomplete` | boolean | no | `true` | E61 |
@@ -134,10 +134,11 @@ The body timers exclude the spawn-to-completion interval of the stage's own outs
 | `textures` | `{"key": Template}` | no | one image per selected Texture2D (E66) |
 | `sprites` | `{"key": Template}` | no | one image per Sprite (E17) |
 | `atlases` | Atlases | no | NGUI atlases (section 5) |
-| `formats` | array of string | no; version 2 only | the formats a texture is exported in (section 3), a sheet's included: at least 1 item, each UnityPy 1.25.2's `TextureFormat` member name, written as UnityPy writes it, and none repeated. Default `["RGB24", "RGBA32", "DXT1", "DXT5", "BC7"]`, version 1's five (E15) |
-| `image` | string or object | no; version 2 only | the image encoding of every texture, Sprite and atlas crop: `"png"` (E19), the default, `"png_fast"` (W1b), or `{"webp": {"quality": <q>}}`; quality is an integer 0 through 100, default 80. WebP uses method 4, exact false and lossless off |
+| `glb` | GLB | no; version 3 | One loose GLB per selected prefab row (4.8) |
+| `formats` | array of string | no; versions 2 and 3 | the formats a texture is exported in (section 3), a sheet's included: at least 1 item, each UnityPy 1.25.2's `TextureFormat` member name, written as UnityPy writes it, and none repeated. Default `["RGB24", "RGBA32", "DXT1", "DXT5", "BC7"]`, version 1's five (E15) |
+| `image` | string or object | no; versions 2 and 3 | the image encoding of every texture, Sprite and atlas crop: `"png"` (E19), the default, `"png_fast"` (W1b), or `{"webp": {"quality": <q>}}`; quality is an integer 0 through 100, default 80. WebP uses method 4, exact false and lossless off |
 
-At least one of `textures`, `sprites` and `atlases` is present. A `formats` item that is no `TextureFormat` name is `range`, and so is one that names a format this binary does not decode, though UnityPy names it (the ETC 3DS forms, ARGBFloat). BC6H, all six ASTC HDR names and all six PVRTC/ATC names are accepted, along with the four crunched names: `DXT1Crunched`, `DXT5Crunched`, `ETC_RGB4Crunched` and `ETC2_RGBA8Crunched`. The texture's own SerializedFile's Unity version chooses the DXT decoder: legacy below (2017, 3), Unity's fork at or above it, including an unknown version. Crunched ETC always uses Unity's fork (`export/Texture2DConverter.py:297-306`). The 75 formats this binary decodes are those `unityrs_texture::Format::ALL` lists; a format a later binary adds is accepted by that binary with no new `spec_version`. A repeated item is `range` at the repeat, an empty list `range` at `formats`. The list's order is not significant. `image: "png_fast"` opts every texture, Sprite and atlas-crop PNG into vendored zlib 1.2.13 at level 1, windowBits 15, memLevel 9 and `Z_FILTERED`, with a fixed Sub filter (type 1) on every row. It avoids adaptive filter scoring and uses zlib's fast match search, trading compression ratio for speed. All decoded pixel bytes, including RGB under zero alpha, and the visible-pixel hash equal the default's; file bytes, sizes and file hashes can differ from Pillow's. The charge plan, output bound and fallible allocation handling are the default's. Version 1 refuses `outputs.image`, including `"png_fast"`, as `bad_spec` (`unknown_field /outputs/image`). Golden specs keep the default encoding. The bare string `"webp"` is `range`. WebP takes a closed wrapper with the sole required member `webp`, whose closed options object has only `quality`; `{"webp": {}}` uses 80. Keys and archive member templates determine file names independently of encoding: use `.webp` in them when selecting WebP. `visible_hash` and `mode` describe the source pixels before lossy encoding, so visible hashes remain comparable across encodings. WebP sides outside 1..=16383 are `decode_error(pillow_value_error)`; PNG fallback for the extractor by extension belongs to W2/E4. **Atlases:**
+At least one supported output kind is present. Texture format and image encoding options apply to 2D outputs. A `formats` item that is no `TextureFormat` name is `range`, and so is one that names a format this binary does not decode, though UnityPy names it (the ETC 3DS forms, ARGBFloat). BC6H, all six ASTC HDR names and all six PVRTC/ATC names are accepted, along with the four crunched names: `DXT1Crunched`, `DXT5Crunched`, `ETC_RGB4Crunched` and `ETC2_RGBA8Crunched`. The texture's own SerializedFile's Unity version chooses the DXT decoder: legacy below (2017, 3), Unity's fork at or above it, including an unknown version. Crunched ETC always uses Unity's fork (`export/Texture2DConverter.py:297-306`). The 75 formats this binary decodes are those `unityrs_texture::Format::ALL` lists; a format a later binary adds is accepted by that binary with no new `spec_version`. A repeated item is `range` at the repeat, an empty list `range` at `formats`. The list's order is not significant. `image: "png_fast"` opts every texture, Sprite and atlas-crop PNG into vendored zlib 1.2.13 at level 1, windowBits 15, memLevel 9 and `Z_FILTERED`, with a fixed Sub filter (type 1) on every row. It avoids adaptive filter scoring and uses zlib's fast match search, trading compression ratio for speed. All decoded pixel bytes, including RGB under zero alpha, and the visible-pixel hash equal the default's; file bytes, sizes and file hashes can differ from Pillow's. The charge plan, output bound and fallible allocation handling are the default's. Version 1 refuses `outputs.image`, including `"png_fast"`, as `bad_spec` (`unknown_field /outputs/image`). Golden specs keep the default encoding. The bare string `"webp"` is `range`. WebP takes a closed wrapper with the sole required member `webp`, whose closed options object has only `quality`; `{"webp": {}}` uses 80. Keys and archive member templates determine file names independently of encoding: use `.webp` in them when selecting WebP. `visible_hash` and `mode` describe the source pixels before lossy encoding, so visible hashes remain comparable across encodings. WebP sides outside 1..=16383 are `decode_error(pillow_value_error)`; PNG fallback for the extractor by extension belongs to W2/E4. **Atlases:**
 
 | field | type | required | default | meaning |
 |---|---|---|---|---|
@@ -147,6 +148,52 @@ At least one of `textures`, `sprites` and `atlases` is present. A `formats` item
 | `skip_name_suffixes` | array of string | no | `[]` | 0 to 256 items, each 1 to 1,024 bytes: an atlas whose `m_Name` ends with one of them is skipped as a reference atlas (E22) |
 
 Their count, and an item's length, out of bounds is `range`. The caps keep phase 1's memory bounded by the document's legal parts (`batch.md` 5.3): only the 64 MiB cap bounds the count of `dependencies`, of the `deps` lists' ids and of `prefer`'s entries, which phase 1 keeps compact; `inputs` holds at most 100,000, and `retry_on` at most its six classes, since none repeats.
+
+**GLB.** The closed object requires `prefab_key_template` (1 to 1,024 bytes)
+and accepts an optional inline `profile`. The profile uses the strict
+[glTF v1 policy](../crates/unityrs-gltf/README.md) with the batch
+selection rules below. Its JSON occupies at most 64 KiB. String fields
+are capped at 1,024 bytes and arrays at 256 entries unless the field has a
+tighter bound. `sample_rate` is finite, greater than 0 and at most 1,024.
+Object addresses take an unsigned 32-bit file index and signed 64-bit path ID.
+The full field schema is [spec-v3.schema.json](batch/spec-v3.schema.json).
+
+Omitting `clips` selects `"all_discovered"` for each prefab's own rigs in its
+input view. An empty explicit default list selects static export; an empty
+discovery list also yields a static GLB. Override the default for one
+expanded unit key and input ID with `clips_by_prefab`. For example, an output
+configuration can leave a single prefab static.
+
+```json
+{
+  "glb": {
+    "prefab_key_template": "prefabs/{safe_container_path}.glb",
+    "profile": {
+      "profile_version": 1,
+      "clips": "all_discovered",
+      "clips_by_prefab": {
+        "prefabs/props_lamp.prefab.glb": {"models": []}
+      }
+    }
+  }
+}
+```
+
+Each override value is an object mapping known input IDs to explicit selector
+lists. The two maps each hold at most 256 entries. A selector names the root
+Transform, Animation or Animator component and either the resolved clip or
+the discovery source slot, using the standalone selector shape. File indices
+use concatenated depth-first inspection order, including bundle roots and raw
+entries. The input is first, followed by its view members in bytewise input-ID
+order. Selection reads the needed directory positions and the files addressed
+by the selected prefab's override. An unused leaf keeps its position even if
+its contents are corrupt. A nested gzip detection probe that reaches the
+inflate cap fails the input and discards the attempt as a data limit
+(`limit(inflate, …)`, exit 4). A decode-work refusal in that probe discards
+the attempt as a budget outcome (`limit(decode_work, …)`, exit 5).
+Two views can use identical numbers for different objects. Phase 1 checks
+IDs, selector shape and literal keys, including the sink prefix.
+Key membership is checked during phase 6 (4.8).
 
 **Prefer:** `{"input": id or null, "md5": 32 lowercase hex digits or null}`, at least one not null (E31).
 
@@ -207,11 +254,12 @@ variable = "{" name "}"
 | variable | value | allowed in |
 |---|---|---|
 | `input`, `safe_input` | the input's `id` | every template |
-| `type` | the object's class name: `Texture2D` or `Sprite` | `textures`, `sprites`, and archive paths of kind `texture` or `sprite` |
+| `type` | the object's class name: `Texture2D`, `Sprite` or `GameObject` | `textures`, `sprites`, `glb`, and archive paths of kind `texture` or `sprite` |
 | `name`, `safe_name` | the object's `m_Name` | as `type` |
 | `path_id` | the object's path id, signed decimal, no leading zero | every template; an atlas's is the MonoBehaviour's |
 | `atlas`, `safe_atlas` | the atlas MonoBehaviour's `m_Name`, as 4.4 step 1 reads it | `sprite_key`, `json_key`, and archive paths of kind `atlas_sprite` or `atlas_json` |
 | `sprite`, `safe_sprite` | the `mSprites` element's `name` | `sprite_key`, and archive paths of kind `atlas_sprite` |
+| `container_path`, `safe_container_path` | the stored path of the selected container row | `glb` |
 
 A plain variable is written verbatim: a name's stored bytes. Its `safe_` form is `safe()` of the same value (2.2). There is no `{container}` variable in version 1 (E27).
 
@@ -226,7 +274,7 @@ A plain variable is written verbatim: a name's stored bytes. Its `safe_` form is
 
 ### 2.3 Key rules
 
-A key is the template's expansion. It is checked as given, then after the sink's prefix is put before it. The first rule it breaks names the refusal:
+A key is the template's expansion. Literal prefab override keys pass the same pre-planning checks. It is checked as given, then after the sink's prefix is put before it. The first rule it breaks names the refusal:
 
 | rule | refused when |
 |---|---|
@@ -360,6 +408,45 @@ For each archive and each of its `members` entries, every winner of that kind is
 Membership depends only on the winners, never on how their loose PUTs end, so an archive's bytes are a function of the committed records. With `publish_incomplete: false` and a failed input, nothing is published, and every archive with a member is `withheld` (`publish_incomplete`). Here "with a member" means at least one structurally included survivor after these rules. An archive with only left-out expansions stays `empty`, preserving its `left_out` count. Member rows use archive-key byte order, then displayed path in `/`-first order, then loose key and input; invalid paths enter only this display sort.
 
 ---
+
+### 4.8 Prefab GLB units (spec 3)
+
+Visit the input's eligible SerializedFiles in the order in 4.4, and their
+AssetBundle container rows in stored order. A row's identity is the input ID,
+the eligible SerializedFile occurrence and the zero-based row ordinal. Each
+row targeting a GameObject supplies its own selection. Ignore successfully
+resolved rows of other classes. Resolve pointers, clips and renderer resources
+inside the input's private view.
+
+Append the prefab keys after the 2D plan. The first valid key claim wins within
+an input. A broken pointer retains its claim when the template can expand a
+valid key independently of resolution, and otherwise records the pointer
+failure without claiming a key. A later claim to an owned key records
+`duplicate_key`, including when the first owner cannot export. A successful
+sealed GLB is both a loose candidate and a unit whose key is the candidate's
+complete output key. GLB textures are embedded in the shared glTF writer.
+
+Unit key contests use E31 and E61, with file bytes supplying the MD5. Only
+the winning units and units under E61-withheld keys reserve their member keys.
+When two such units reserve one member, the unit whose key sorts first
+bytewise owns the member. The other winner is withheld whole as
+`unit_conflict`, or remains `withheld` if E61 already withheld it. Reserved
+members retain their reservations through withholding. A plain candidate
+at a reserved member loses by `unit`. Prefix and archive conflicts use 4.6.
+Archive members use the 2D kinds in 1.7.
+
+At the phase-6 boundary check overrides against their input's valid planned
+prefab keys, including a claimed key whose owner was skipped. When the input
+failed before completing the plan, report its original failure. An unknown key
+in a completed plan prevents winner selection and artifact publication. The
+finisher writes an `incomplete` fenced head with `unknown_prefab_key` and the
+first unmatched override's JSON pointer in spec order. The code is 4 unless
+a higher-priority outcome applies. Resume checks membership again. Correct
+the selection or inputs and retry with `attempt + 1` after the fencing wait.
+
+Graph, collection, animation baking and GLB writer work count against
+`max_export_work`. Object reads retain their file's budget provenance.
+GLB copy-out uses the ordinary file, spool and digest accounting in 6 and 7.3.
 
 ## 5. The NGUI cutter
 
@@ -542,17 +629,18 @@ supplies the bounded read buffer.
 
 | field | type | meaning |
 |---|---|---|
-| `manifest_version` | integer | `1` for a version 1 spec, `2` for a version 2 spec, whose head adds `formats`, `image` and `unitycn_key` (below) and is otherwise version 1's. Within a version these sets are closed: the reasons, statuses and warning codes; the kinds, rules and values inside a reason's arguments (`limit(<kind>, ..)`'s, 9.3's table; `unwritable_key(<rule>)`'s and `unwritable_path(<rule>)`'s, 2.3's; `unsupported_platform`'s `switch` and `xbox360`); the `detail` vocabularies (this section's codes, 1.4's try classes, 9.3's and section 10's forms); the keys of `counts` and `warnings`; the values of `collisions.rule`, `diagnostics.kind`, `outputs.kind`, `skips.output`, `mode`, `phase` and `stop_detail`; and UnityPy 1.25.2's `TextureFormat` names and its `ClassIDType` names (`skips.class`). A value's free parts are open: a panic payload, an S3 error code, an errno or call name, a JSON pointer, a status number, a variable's name, a path, an id, a key and a number, a `TextureFormat` value or a class id written in decimal among them. A new closed value or a new field takes a new version, and a version only adds; a value only the progress stream carries (a validation or preflight reason, or its detail) raises `p` instead (section 10). A reader of an older version ignores a field it does not know, and reads a value of a closed set it does not know as "other". Fencing (7.2) recognizes a head of any version only by the seven-field identity envelope above: each field must occur once with its stated type and bounds, and `run_id` must match this run; otherwise it is not a manifest |
+| `manifest_version` | integer | The spec version. Version 2 adds `formats`, `image` and `unitycn_key` (below), and version 3 adds the GLB fields and vocabulary in this section. Within a version these sets are closed: the reasons, statuses and warning codes; the kinds, rules and values inside a reason's arguments (`limit(<kind>, ..)`'s, 9.3's table; `unwritable_key(<rule>)`'s and `unwritable_path(<rule>)`'s, 2.3's; `unsupported_platform`'s `switch` and `xbox360`); the `detail` vocabularies (this section's codes, 1.4's try classes, 9.3's and section 10's forms); the keys of `counts` and `warnings`; the values of `collisions.rule`, `diagnostics.kind`, `outputs.kind`, `skips.output`, `mode`, `phase` and `stop_detail`; and UnityPy 1.25.2's `TextureFormat` names and its `ClassIDType` names (`skips.class`). A value's free parts are open: a panic payload, an S3 error code, an errno or call name, a JSON pointer, a status number, a variable's name, a path, an id, a key and a number, a `TextureFormat` value or a class id written in decimal among them. A new closed value or a new field takes a new version, and a version only adds; a value only the progress stream carries (a validation or preflight reason, or its detail) raises `p` instead (section 10). A reader of an older version ignores a field it does not know, and reads a value of a closed set it does not know as "other". Fencing (7.2) recognizes a head of any version only by the seven-field identity envelope above: each field must occur once with its stated type and bounds, and `run_id` must match this run; otherwise it is not a manifest |
 | `run_id`, `attempt` | string, integer | from the spec |
 | `write_seq` | integer | 0 for the `running` write, 1 for the final |
 | `status` | string | `running`, `complete`, `complete_with_skips` or `incomplete` |
-| `phase` | string | the phase the controller had reached when the finish started (section 10's values): `start` in the `running` write, `publish` at a normal end |
+| `phase` | string | the phase the controller had reached when the finish started (section 10's values): `start` in the `running` write, `publish` at a normal end, or `winners` for `unknown_prefab_key` |
 | `exit_code` | integer or null | null while `running` |
-| `stop_reason` | string or null | a stop reason of section 9.3, or null |
-| `stop_detail` | string or null | the detail kept with `stop_reason` (`batch.md` 2.11): for `spool_full`, `ENOSPC`, `EDQUOT`, `reserve` or `size_bytes` (`batch.md` 2.7); else null |
+| `stop_reason` | string or null | a stop reason of section 9.3, `unknown_prefab_key` (4.8), or null |
+| `stop_detail` | string or null | the detail kept with `stop_reason` (`batch.md` 2.11): for `spool_full`, `ENOSPC`, `EDQUOT`, `reserve` or `size_bytes` (`batch.md` 2.7); for `unknown_prefab_key`, the unmatched override's JSON pointer; else null |
 | `binary_version`, `spec_version` | string, integer | |
 | `spec_sha256` | string | the SHA-256 of the exact byte buffer passed to parsing, retained as 32 bytes before that buffer is compacted or dropped and rendered as lowercase hex; the file is never reopened for this digest: each attempt's file holds its own `attempt`, so the digest differs between attempts |
-| `formats`, `image`, `unitycn_key` | array of string, string or object, boolean | version 2 only, after `spec_sha256`: the spec's effective `outputs.formats` (its default when absent), as `TextureFormat` names in the enum's order of value, not the spec's; its effective `outputs.image`; and whether the spec names a UnityCN key variable (`unitycn_key` not null), never the variable's name or the key |
+| `formats`, `image`, `unitycn_key` | array of string, string or object, boolean | versions 2 and 3, after `spec_sha256`: the spec's effective `outputs.formats` (its default when absent), as `TextureFormat` names in the enum's order of value, not the spec's; its effective `outputs.image`; and whether the spec names a UnityCN key variable (`unitycn_key` not null), never the variable's name or the key |
+| `glb` | object or null | version 3, null if omitted in the spec; otherwise `prefab_key_template` and integer `clip_selections` (the number of key/input pairs) |
 | `started_at`, `deadline`, `ended_at` | string or null | RFC 3339, UTC |
 | `verified` | boolean or null | true only when verification ran to its end and every published key matched; false on a mismatch, LIST failure or interruption (section 7.2); null for a directory sink, or when nothing was published |
 | `verified_by_size` | integer | outcome-7 keys and archives verified by size plus the returned write ETag under the usual normalization, or by size alone only when the write response carried no ETag (`etag_not_md5`, section 7.2); 0 for a directory sink |
@@ -666,9 +754,11 @@ only its record's flush to the supplied `spooled_part`; it never changes
 `export_work`. The returned summary has exactly the figures written on disk.
 Candidate/member lines preserve export/expansion order. The diagnostic/skip
 subsequence is same-name diagnostics, undeclared-dependency diagnostics,
-nested-container diagnostics, plan skips, export skips, with source order
-within each, and no sorting. Strings already cut and repaired by the classifier
-keep their inherited `cut`; they are not cut a second time after replacement.
+nested-container diagnostics, GLB degradation diagnostics (version 3), plan
+skips, then export skips. In each skip phase the existing 2D outputs precede
+the appended prefab rows, preserving source order within each group.
+Strings already cut and repaired by the classifier keep their values and
+their inherited `cut` flag.
 Every line, including its newline, is at most 32 KiB. Serialization streams
 escaping into the charged 64 KiB buffer, flushing only full buffers and the
 final partial buffer; failure discards pending bytes without another flush.
@@ -694,6 +784,22 @@ The row assembler takes one frozen snapshot instant for dispatched `not_run`
 elapsed times; queued, never-dispatched inputs keep null reason and time.
 A family is acknowledged only after its last complete-line chunk. A failed later
 chunk nulls the entire family, including earlier physically written chunks.
+
+Version 3 adds `glb` to `outputs.kind` and `skips.output`. A GLB has null
+`visible_hash` and `mode`. In collisions involving a GLB, `pixels_differ`
+is false. A GLB output or skip adds `container_file_index` and `container_row`
+(0-based integers), `container_file` (the row's SerializedFile),
+`container_path` (null for an unavailable path), `root_serialized_file`
+and `root_path_id` (both null before root resolution). Text fields use the
+same cut rule as the other rows. GLB candidates retain this provenance through
+the sealed attempt and the winner reduction.
+
+A successful degraded prefab adds a `glb_degraded` diagnostic with its
+`key`, model `node` and typed `reason`. Texture failures also carry
+`renderer_path_id` and the resource pointer as `resource_owner_path_id`,
+`resource_file_id` and `resource_path_id`. These rows are counted in
+`run.glb_degraded`. They leave the input's skip rows, status and counters
+to the actual skips.
 
 ### 7.4 The manifest at each phase
 
@@ -763,7 +869,8 @@ B8a supplies this library stream. B8b publishes it to a directory sink through B
 |---|---|
 | an object skipped for a budget: reason `budget(input)`, or `limit` of kind `input_memory`, `input_bytes` or `decode_work` | 5 |
 | an object skipped for an expected skip (9.3) | none |
-| an object skipped for any other reason | 3 |
+| an object skipped for any other reason, or a `glb_degraded` diagnostic | 3 |
+| `unknown_prefab_key` in a completed plan (4.8) | 4 |
 | an input failed for a budget, by the same reasons, `budget(dependency)`, `limit(attempt_evictions, ...)` or `limit(export_work, ...)`, or by `dependency_failed(<id>, <reason>)` whose inner reason is one of them other than these two, which always fail the input by their own reason (`batch.md` 2.7) | 5 |
 | an input failed for any other reason (a transport reason, `integrity_mismatch`, `dependency_failed` with any other inner reason, `not_a_bundle`, a container or entry error, a depth or count limit) | 4 |
 | an output, archive, row file or the head that failed to publish (`publish_failed`, `publish_mismatch`, `credentials_expired`, `archive_too_large`) | 4 |
@@ -775,6 +882,14 @@ B8a supplies this library stream. B8b publishes it to a directory sink through B
 | an archive `empty` | none |
 
 A depth or count limit is a data reason: no budget raises it. An expected skip sets no code but is recorded as every skip is (a `skips` row, `counts.skips_expected`), and its input's row is still `complete_with_skips` (7.3). `budget(dependency)` is never an object's skip: a Dependency budget refusal the core returns after the view is registered (4.3's gaps aside, until CR7) fails the input (`batch.md` 2.7).
+
+A refused selected animation or playback channel is an unexpected GLB skip,
+including a scope refusal in the default selection. A bake approximation cap
+gives `animation_bake_error`; engine work gives the failed-input
+`limit(export_work, <value>)`. A refused optional dependency read covered
+by `budget(dependency)` fails the input as it would for a required resource.
+Budget failures discard the input's entire attempt. The expected-skip set for
+the 2D kinds is unchanged.
 
 ### 9.3 Reasons
 
@@ -828,7 +943,7 @@ A reason is `name` or `name(argument, ...)`. A `limit`'s arguments are its kind,
 
 ## 10. The progress stream
 
-NDJSON on stdout (E4), in the stream's own format version `p`: 1 in this release, raised when a binary adds a field or a value of a closed set (`type`, `phase`, `status`, `reason`, a `detail`'s form), whatever the `spec_version`, as `manifest_version` is (7.3). Each line is one JSON object and a whole snapshot, never a delta: a reader needs only the last line it read. Every line has every field below. A reader ignores a field it does not know, reads a value of a closed set it does not know as "other", and reads a line of a higher `p` by the fields it knows.
+NDJSON on stdout (E4), in the stream's own format version `p`: 2 in this release for every spec version, raised when a binary adds a field or a value of a closed set (`type`, `phase`, `status`, `reason`, a `detail`'s form), whatever the `spec_version`, as `manifest_version` is (7.3). Each line is one JSON object and a whole snapshot, never a delta: a reader needs only the last line it read. Every line has every field below. A reader ignores a field it does not know, reads a value of a closed set it does not know as "other", and reads a line of a higher `p` by the fields it knows.
 
 | field | type | meaning |
 |---|---|---|
@@ -844,7 +959,7 @@ NDJSON on stdout (E4), in the stream's own format version `p`: 1 in this release
 | `outputs` | object | integers: `candidates`, `winners`, `published`, `present`, `failed`; `winners` is 0 before phase 6 |
 | `status` | string or null | on the `exit` line, the status of this attempt's last head write the store acknowledged, or null when none was or the attempt was superseded, which does not mean the store holds no head (7.4); null on a snapshot |
 | `code` | integer or null | on the `exit` line, the exit code (section 9); null on a snapshot |
-| `reason` | string or null | on the `exit` line, the reason that set the code: a stop, preflight, head-read or validation reason of 9.3; `publish_failed` when a failed final head write set it (`batch.md` 2.11 step 3); or null for any other code section 9.2 decided; null on a snapshot |
+| `reason` | string or null | on the `exit` line, the reason that set the code: a stop, preflight, head-read or validation reason of 9.3; `unknown_prefab_key` (4.8); `publish_failed` when a failed final head write set it (`batch.md` 2.11 step 3); or null for any other code section 9.2 decided; null on a snapshot |
 | `detail` | string or null | on the `exit` line, at most 1,024 bytes as written, escaping included (it is cut at a code point boundary before escaping, so that its escaped form fits): for `bad_spec`, its rule and pointer (below); for a 69 from a store request, its last try by 1.6's table, in a fixed form that holds no text from a body and no secret: `connect` (`tls` for a failure rustls reports, 1.4), `no_response`, or `status <HTTP status>` and, when the body named one of 1 to 64 ASCII letters and digits other than `truncated`, its S3 error code (`status 403 AccessDenied`), then `truncated` when the body failed or passed `timeout_ms` (1.6; `status 200 truncated`); for a stop, its `stop_detail` (7.3); for `--check` and a valid spec, `memory_bound <bytes>`, `batch.md` 5.1's bound for the spec with every `{"env": NAME}` value at its 16 KiB cap and the main thread's environment block at 6 MiB, Linux's cap on `execve`'s arguments and environment (three quarters of `_STK_LIM`, `fs/exec.c`), since `--check` reads no environment and counts the block at its cap (section 6's cgroup rule takes it); **provisional** until `extract.md` X12 measures the constants `batch.md` 5.3 compiles into the binary (`c_base`, `m_thread`, `m_pool`, `m_dispatch`, `m_end`, `c_env`), which are estimates until then, so the bound may change with the binary, `p` and `spec_version` unchanged, and a caller sizes by it only as an estimate; its calibration is certified for 4 KiB pages only (x86_64 and arm64 Linux), so on a host whose page size is another, or unknown, the bound is also **uncertified**: `--check`, and a run at its start, write the stderr line `<prog>: memory_bound uncertified: <N>-byte pages, calibrated for 4096-byte pages only` and go on, no field of the manifest's or this stream's changed; else the reason's detail (9.3) or null; null on a snapshot |
 
 B7 owns the normal-run one-slot mailbox, writer, bounded acknowledgment and
@@ -854,6 +969,6 @@ lifetime and stop behavior.
 
 - The first line is written when the threads start (`batch.md` 2.11 step 7), and then a line at least every 2 s while stdout is a pipe, a FIFO, a socket or a terminal that the caller keeps reading (a line a full pipe holds back is the caller's own backlog); to a regular file or a block device the host's writeback can hold a write for minutes (measured, `batch.md` A11), so the `exit` line may be missing there, the exit status authoritative, and no deadline waits on it (`batch.md` 2.11). The deadline holds only for a stdout and a stderr of the engine's own: a regular file another process also writes can hold the engine's write on that file's lock while the other writer is throttled, a wait `_exit` cannot end, so the process can outlive its deadline (`batch.md` 2.11, *What cannot be bounded*). A caller that needs the deadline gives the engine a pipe, or a file no other process writes, for each, and sources no other process is writing: on XFS a buffered read takes the file's `IOLOCK_SHARED`, which a throttled writer's `IOLOCK_EXCL` holds. The lines come from a one-slot mailbox (`extract.md` item 5). No field holds a URL, a header value or a credential (E42). A reader ignores a last line with no `\n`: an `_exit` can cut the line being written.
 - A run that ends before the progress thread exists (a spec refused at validation, a 69 before that thread's spawn), and `--check` either way, write one line: the `exit` line, with `seq` 0. Without a deadline the main thread writes it, and then its stderr line, within one budget of 1 s for the two, counted from the first write: on a pipe, a FIFO or a terminal through a non-blocking description of its own, tried again while it is full, and on a socket, or when stdout cannot be opened again (`EACCES`, a pipe another uid created), through its writer thread, waited on for what is left of the budget; a line, or its rest, is dropped when the budget is spent, so another writer of the same pipe holds the two no longer (`batch.md` 2.11): a failure before validation accepts a spec, a spec accepted with `deadline: null`, a 78, since a refused spec has no deadline even when its `JOB.json` names one, and `--check`, which sets no deadline and does no work. With the deadline of a spec validation accepted (a 69 after validation, before that thread's spawn), the line, whatever stdout is, goes through the main thread's writer thread, which it waits on for at most `min(1 s, the time left - 500 ms)`, so the line may be missing, and when that wait is not positive (the deadline less than 500 ms away, or past) no line is promised: the exit status is the record (`batch.md` 2.11). For a failure at its step 1, before validation, `phase` is `validate`; on signal-setup failure any stream that is a terminal is left unwritten (9.1). A main-thread panic writes none (70). A 78's stderr line is `unityrs batch: bad_spec <detail>`, the `exit` line's detail, then, for `usage`, the command's usage lines; for `unityrs --version` with an argument it is `unityrs: bad_spec usage`, then `usage: unityrs --version`. **Execution support.** The CLI runs local and HTTP(S) URL bundles to a directory sink, with directory archives and the process lifetime guarantees of 9.1. Object-store sinks are typed library refusals before host checks or mutation; the CLI maps this unavailable capability to 78 `usage`. Full validation and `--check` accept the whole schema.
-- **`bad_spec`'s detail** is `<rule> <JSON pointer>`: the rule broken, then the RFC 6901 pointer of the value refused, empty for the document itself, when the detail is the rule alone, with no space, and, for `missing`, the pointer the absent member would have; only the pointer is cut to fit, and a cut pointer ends in `~`, which no whole one does (RFC 6901 writes `~` as `~0`). A bad command line of `unityrs batch ...` or `unityrs --version` (an unknown option, an argument missing or extra) is `usage`, the rule alone; the binary's other commands and an unknown top-level command keep their status 2 (9.1). The parser reports the first error in this order. First the document's own rules: `unreadable` (a `JOB.json` missing, or one that cannot be opened or read, but for a run's open that fails `EMFILE` or `ENFILE`, a full descriptor table, which exits 69, `startup_failed` with detail `open <ERRNO name>`; `--check` keeps it `unreadable`), `not_regular`, `too_large`, `not_utf8`, `syntax` (text that is not one JSON value, a value nested 128 levels deep or more, the document's object or array the first level, or a number past a double's range, the conventions). A document that is not an object is `type`, the rule alone. Then `spec_version` (`duplicate_member`, `missing`, `type` or `version`, an unknown version). Then each other value in document order (an absent member at its object's end, where the first required member the object lacks, in its table's order, is named), by the first it breaks of `duplicate_member`, `unknown_field`, `missing`, `type`, `range` (a length, a count, or a string outside its field's values among them), `format` (a pattern, a URL's form, a date, a digest) and `refused_header` (1.2). A value's own rules come before those of what it holds: an array's count before its items, a `headers` object's count and byte total (`range`, at `headers`) before its members. A count is known only at its value's end, so a count out of bounds replaces whatever its items broke; an object's own `missing` is its last rule, after its members', since an absent member is told only at the object's end. After the first error the parser reads the rest of the document for `syntax` and for these own rules of the values that hold the error, and builds nothing more. A URL is `format` when it is not ASCII, `range` when it or its host as written passes its cap, both before it is parsed (1.2), then `format` when it does not parse or has not its form (an endpoint's path, query and fragment included), and only then `range` when its serialization passes its cap. A header's own rules come before its value's members: a refused name whose value is an object is `refused_header`, `{}` included, before the object's missing `env`. A sink whose `kind` is absent or names no kind has each other member checked against either kind's table. Then the cross-field rules, in this order, each with its pointer: 1.1's, in its list's order, `budgets`, `/max_decoded_bytes`; `duplicate_id`, the second occurrence's `id` in document order; `duplicate_header`, the second of the two names, under its bundle's `headers`; `backoff`, `/http/backoff_max_ms`; `deps`, the `deps` list; `view_size`, the first input, in document order, whose view passes `max_view_bundles` or at which the views' running work passes 2^24 ids (1.1), the check stopping there; `spool_in_sink`, `/spool/dir`; `path_style`, `/sink/endpoint` for an address, `/sink/bucket` for a bucket's name; `deadline_required`, `/deadline`; `unknown_input`, the `prefer` entry's `input`; `template`, the template; `key(<rule>)`, the literal key, its rule 2.3's: the sink's `prefix` first, `/sink/prefix`, wherever it stands in the document, since every other key is checked with it, then the other keys in document order; `archive_key`, the later of the two keys; `archive_kind`, the later member's `kind`; then `source`, a bundle with both or neither of `path` and `url`, the bundle (1.2); `headers_without_url`, the bundle's `headers` (1.2); `outputs_empty`, `/outputs`, and `prefer_empty`, a Prefer whose fields are both null, the entry (1.5). The detail holds nothing else: never the parser's message, which may quote a value (E42).
+- **`bad_spec`'s detail** is `<rule> <JSON pointer>`: the rule broken, then the RFC 6901 pointer of the value refused, empty for the document itself, when the detail is the rule alone, with no space, and, for `missing`, the pointer the absent member would have; only the pointer is cut to fit, and a cut pointer ends in `~`, which no whole one does (RFC 6901 writes `~` as `~0`). A bad command line of `unityrs batch ...` or `unityrs --version` (an unknown option, an argument missing or extra) is `usage`, the rule alone; the binary's other commands and an unknown top-level command keep their status 2 (9.1). The parser reports the first error in this order. First the document's own rules: `unreadable` (a `JOB.json` missing, or one that cannot be opened or read, but for a run's open that fails `EMFILE` or `ENFILE`, a full descriptor table, which exits 69, `startup_failed` with detail `open <ERRNO name>`; `--check` keeps it `unreadable`), `not_regular`, `too_large`, `not_utf8`, `syntax` (text that is not one JSON value, a value nested 128 levels deep or more, the document's object or array the first level, or a number past a double's range, the conventions). A document that is not an object is `type`, the rule alone. Then `spec_version` (`duplicate_member`, `missing`, `type` or `version`, an unknown version). Then each other value in document order (an absent member at its object's end, where the first required member the object lacks, in its table's order, is named), by the first it breaks of `duplicate_member`, `unknown_field`, `missing`, `type`, `range` (a length, a count, or a string outside its field's values among them), `format` (a pattern, a URL's form, a date, a digest) and `refused_header` (1.2). A value's own rules come before those of what it holds: an array's count before its items, a `headers` object's count and byte total (`range`, at `headers`) before its members. A count is known only at its value's end, so a count out of bounds replaces whatever its items broke; an object's own `missing` is its last rule, after its members', since an absent member is told only at the object's end. After the first error the parser reads the rest of the document for `syntax` and for these own rules of the values that hold the error, and builds nothing more. A URL is `format` when it is not ASCII, `range` when it or its host as written passes its cap, both before it is parsed (1.2), then `format` when it does not parse or has not its form (an endpoint's path, query and fragment included), and only then `range` when its serialization passes its cap. A header's own rules come before its value's members: a refused name whose value is an object is `refused_header`, `{}` included, before the object's missing `env`. A sink whose `kind` is absent or names no kind has each other member checked against either kind's table. Then the cross-field rules, in this order, each with its pointer: 1.1's, in its list's order, `budgets`, `/max_decoded_bytes`; `duplicate_id`, the second occurrence's `id` in document order; `duplicate_header`, the second of the two names, under its bundle's `headers`; `backoff`, `/http/backoff_max_ms`; `deps`, the `deps` list; `view_size`, the first input, in document order, whose view passes `max_view_bundles` or at which the views' running work passes 2^24 ids (1.1), the check stopping there; `spool_in_sink`, `/spool/dir`; `path_style`, `/sink/endpoint` for an address, `/sink/bucket` for a bucket's name; `deadline_required`, `/deadline`; `unknown_input`, the `prefer` entry's `input` or the prefab override's input ID; `template`, the template; `key(<rule>)`, the literal key, its rule 2.3's: the sink's `prefix` first, `/sink/prefix`, wherever it stands in the document, since every other key is checked with it, then the other keys in document order; `archive_key`, the later of the two keys; `archive_kind`, the later member's `kind`; then `source`, a bundle with both or neither of `path` and `url`, the bundle (1.2); `headers_without_url`, the bundle's `headers` (1.2); `outputs_empty`, `/outputs`, and `prefer_empty`, a Prefer whose fields are both null, the entry (1.5). The detail holds nothing else: never the parser's message, which may quote a value (E42).
 - With `detail` so bounded, every `exit` line is under `PIPE_BUF` (4,096 bytes).
 - `unityrs --version` prints one line on stdout, not NDJSON: `unityrs <crate version> spec <highest spec_version>`.

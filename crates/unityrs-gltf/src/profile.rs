@@ -164,3 +164,11 @@ impl Profile {
         }
     }
 }
+
+/// Parse explicit clip selectors with the same rules as the profile's `clips`.
+pub fn parse_clip_requests(
+    json: &[u8],
+    meter: &Arc<Meter>,
+) -> Result<MeteredVec<ClipRequest>, GltfError> {
+    read::clip_requests(json, meter)
+}

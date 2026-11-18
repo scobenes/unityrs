@@ -1,0 +1,41 @@
+# Build the unityrs fixtures on Windows
+
+1. Open the [unityrs repository on GitHub](https://github.com/scobenes/unityrs).
+   Select **main** in the branch menu, then click **Code → Download ZIP**.
+   Extract the ZIP.
+2. In Unity Hub, create and open a **new 3D (Built-in)** project using
+   **Unity 2022.3.62f3**. Any Unity **2022.3 LTS** patch works. Keep the
+   project path short, for example `C:\unity\unityrs-fixtures-2022`. In File
+   Explorer, find `tools/fixtures/unity/Editor` in the downloaded repository
+   and copy the whole **Editor** folder into the project's **Assets** folder.
+   The result should be `Assets/Editor`. Return to Unity and wait for the
+   scripts to finish importing.
+3. Exit Play Mode and close any animation preview. In Unity, choose
+   **Tools → unityrs → Build and record all fixtures**. Save the scene if
+   Unity asks, then wait for the results dialog.
+4. If the dialog says **unityrs fixtures ready** or **unityrs fixtures built
+   with errors**, zip the folder named after your Unity version (e.g.
+   `2022.3.62f3`) inside `UnityrsFixturesOutput`, and send the zip (USB stick
+   or cloud drive). `UnityrsFixturesOutput` is in your project folder, next to **Assets**.
+   Keep `bundles`, `replays`, `run.json`, and `build.log` together.
+   A new build that reaches this dialog replaces the previous results in that folder.
+   If the dialog says **unityrs fixtures staged**, close windows or terminals
+   using the output folders and zip the staged folder shown in the dialog.
+5. If the dialog says **unityrs fixture build failed**, follow the path in the
+   dialog. Under `UnityrsFixturesOutput/<Unity version>`, a folder named
+   `<target>-failed-<id>` holds the copied `build.log` to send. If Unity
+   could not close its temporary fixture scene, zip and send the
+   `<target>.b-<id>` folder with `build.log` inside. Unity builds in this
+   staging folder before moving the results to `<target>`. The ID is the
+   first eight characters of the run ID.
+   If the menu never appears or the log is missing, open
+   **Window → General → Console** and send the first red error.
+6. Later, repeat steps 2–5 in a **separate new 3D (Built-in) project** using
+   **Unity 6000.x**, for example **6000.6.9f1**. Keep the 2022.3 project in
+   its original Unity version.
+
+URP fixtures will come later as a separate menu item.
+
+If the maintainer needs a manual FBX fallback, use a **CC0-licensed rigged
+model**. Exclude TurboSquid and Mixamo assets because their licences forbid
+redistributing the rigged assets in the fixtures.

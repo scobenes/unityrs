@@ -282,3 +282,44 @@ fn prefix_propagation_keeps_losing_instance_rules_and_never_promotes_plain_candi
         expected
     );
 }
+
+#[test]
+fn a_glb_can_claim_a_losing_atlas_member_but_not_an_e61_reservation() {
+    use unityrs_export::ngui::Prefer;
+    let mut case = Case::new(vec![
+        candidate("a", "atlas", Some("atlas"), 1),
+        candidate("a", "a-only", Some("atlas"), 1),
+        candidate("b", "atlas", Some("atlas"), 2),
+        candidate("b", "member.glb", Some("atlas"), 2),
+        candidate("c", "member.glb", Some("member.glb"), 3),
+    ]);
+    case.glbs.insert(("c".into(), "member.glb".into()));
+    let member = |case: &Case| {
+        case.select(unityrs_batch::sort::Options::default(), true)
+            .into_iter()
+            .find(|decision| decision.key == "member.glb")
+            .unwrap()
+    };
+    let won = member(&case);
+    assert_eq!(won.winner, "c");
+    assert!(won.publish);
+
+    case.failed.insert("failed".into());
+    case.prefer.insert(
+        "atlas".into(),
+        Prefer {
+            input: Some("failed".into()),
+            md5: None,
+        },
+    );
+    let withheld = member(&case);
+    assert_eq!(withheld.winner, "b");
+    assert_eq!(withheld.reason, Some("withheld"));
+    assert!(!withheld.publish);
+    let glb = withheld
+        .candidates
+        .iter()
+        .find(|row| row.input == "c")
+        .unwrap();
+    assert_eq!(glb.rule, unityrs_export::ngui::Rule::UnitConflict);
+}

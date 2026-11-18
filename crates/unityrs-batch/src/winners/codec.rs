@@ -57,6 +57,7 @@ impl State {
 /// Borrowed view; source coordinates address an immutable committed output.
 #[derive(Clone, Copy, Debug)]
 pub struct Row<'a> {
+    pub prefab: Option<crate::records::Prefab<&'a str>>,
     pub key: &'a str,
     pub unit: &'a str,
     pub input: &'a str,
@@ -82,6 +83,7 @@ impl<'a> Row<'a> {
     #[must_use]
     pub fn marker(key: &'a str) -> Self {
         Self {
+            prefab: None,
             key,
             unit: "",
             input: "",
@@ -107,6 +109,7 @@ impl<'a> Row<'a> {
     pub(super) fn candidate(c: &Candidate<'a>, source: u32) -> Self {
         use crate::records::read::Kind;
         Self {
+            prefab: c.prefab,
             key: c.key,
             unit: c.unit.unwrap_or_default(),
             input: c.input,
@@ -125,6 +128,7 @@ impl<'a> Row<'a> {
                 Kind::AtlasJson => 2,
                 Kind::AtlasSprite => 3,
                 Kind::Atlas => 4,
+                Kind::Glb => 5,
             },
             mode: match c.mode {
                 None => 0,
@@ -191,6 +195,22 @@ impl Codec {
             )?;
             self.bytes.extend(text.as_bytes())?;
         }
+        if let Some(prefab) = r.prefab {
+            self.bytes.extend(&prefab.file_index.to_le_bytes())?;
+            self.bytes.extend(&prefab.row.to_le_bytes())?;
+            self.bytes.push(u8::from(prefab.container_path.is_some()))?;
+            for text in [
+                prefab.container_file,
+                prefab.container_path.unwrap_or_default(),
+            ] {
+                self.bytes.extend(
+                    &u16::try_from(text.len())
+                        .map_err(|_| Error::internal())?
+                        .to_le_bytes(),
+                )?;
+                self.bytes.extend(text.as_bytes())?;
+            }
+        }
         Ok(&self.bytes)
     }
 }
@@ -222,6 +242,10 @@ impl<'a> Decode<'a> {
         std::str::from_utf8(self.take(n)?).map_err(|_| Error::internal())
     }
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "Decode the checked fields in physical order"
+)]
 pub fn decode(bytes: &[u8]) -> Result<Row<'_>, Error> {
     let mut d = Decode(bytes);
     let rule = match d.byte()? {
@@ -248,7 +272,7 @@ pub fn decode(bytes: &[u8]) -> Result<Row<'_>, Error> {
     let kind = d.byte()?;
     let mode = d.byte()?;
     let cut = d.flag()?;
-    if kind > 4 || mode > 4 {
+    if kind > 5 || mode > 4 {
         return Err(Error::internal());
     }
     let source = u32::from_le_bytes(d.fixed()?);
@@ -268,6 +292,25 @@ pub fn decode(bytes: &[u8]) -> Result<Row<'_>, Error> {
     let unit = d.text(1024)?;
     let input = d.text(1024)?;
     let serialized_file = d.text(3072)?;
+    let prefab = if kind == 5 {
+        let file_index = u32::from_le_bytes(d.fixed()?);
+        let row = u32::from_le_bytes(d.fixed()?);
+        let has_path = d.flag()?;
+        let container_file = d.text(3072)?;
+        let path = d.text(3072)?;
+        if !has_path && !path.is_empty() {
+            return Err(Error::internal());
+        }
+        Some(crate::records::Prefab {
+            file_index,
+            row,
+            container_file,
+            container_path: has_path.then_some(path),
+            root: Some((serialized_file, path_id)),
+        })
+    } else {
+        None
+    };
     if key.is_empty() || !d.0.is_empty() {
         return Err(Error::internal());
     }
@@ -277,6 +320,7 @@ pub fn decode(bytes: &[u8]) -> Result<Row<'_>, Error> {
         let valid = match kind {
             0 | 1 | 3 => mode != 0 && visible_hash.is_some(),
             2 => mode == 0 && visible_hash.is_none(),
+            5 => mode == 0 && visible_hash.is_none() && !unit.is_empty(),
             _ => false,
         };
         if !valid {
@@ -284,6 +328,7 @@ pub fn decode(bytes: &[u8]) -> Result<Row<'_>, Error> {
         }
     }
     Ok(Row {
+        prefab,
         key,
         unit,
         input,

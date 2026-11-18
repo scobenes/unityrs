@@ -10,6 +10,7 @@ pub struct Figures {
     pub same_named_cabs: u64,
     pub undeclared_dependencies: u64,
     pub nested_containers: u64,
+    pub glb_degraded: u64,
     pub evictions: u64,
     pub input_peak: u64,
     pub dependency_peak: u64,
@@ -63,6 +64,7 @@ pub(super) fn complete(cx: &super::rows::Context<'_>) -> Result<Figures, Error> 
             id,
             cx.inputs.failed(index)?,
             u64::try_from(cx.facts.spec.archives.len()).map_err(|_| Error::internal())?,
+            cx.facts.spec.spec_version,
             cx.account.meter(),
         )?;
         while let Some(row) = reader.next(cx.stopped)? {
@@ -71,6 +73,7 @@ pub(super) fn complete(cx: &super::rows::Context<'_>) -> Result<Figures, Error> 
                     DiagnosticKind::SameNamedCab => &mut out.same_named_cabs,
                     DiagnosticKind::UndeclaredDependency => &mut out.undeclared_dependencies,
                     DiagnosticKind::NestedContainer => &mut out.nested_containers,
+                    DiagnosticKind::GlbDegraded => &mut out.glb_degraded,
                 })?,
                 read::Row::Summary(s) if state.received.is_none() => {
                     // A received controller failure write before dispatch has

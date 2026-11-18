@@ -20,7 +20,8 @@ libfuzzer-sys = "=0.4.13"
 # (the target checks `LZ4_versionNumber` at its first input).
 lz4-sys = "=1.10.0"
 unityrs-core = { path = "../crates/unityrs-core" }
-unityrs-export = { path = "../crates/unityrs-export" }
+unityrs-anim = { path = "../crates/unityrs-anim" }
+unityrs-export = { path = "../crates/unityrs-export", features = ["gltf"] }
 unityrs-imageio = { path = "../crates/unityrs-imageio", features = ["test-reference"] }
 unityrs-gltf = { path = "../crates/unityrs-gltf" }
 unityrs-mesh = { path = "../crates/unityrs-mesh" }
@@ -225,6 +226,20 @@ bench = false
 [[bin]]
 name = "extractor_paths"
 path = "fuzz_targets/extractor_paths.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "anim_clip"
+path = "fuzz_targets/anim_clip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "anim_gltf"
+path = "fuzz_targets/anim_gltf.rs"
 test = false
 doc = false
 bench = false

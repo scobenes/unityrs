@@ -100,7 +100,7 @@ fn file_name(file: &File) -> &[u8] {
         File::Raw(f) => f.name.as_bytes(),
     }
 }
-fn metadata(out: &mut Text, file: &File, file_index: usize) {
+fn metadata(out: &mut Text, file: &File, file_index: usize, external_paths: bool) {
     if !out.count_work(256) {
         return;
     }
@@ -132,6 +132,19 @@ fn metadata(out: &mut Text, file: &File, file_index: usize) {
             }
         }
         _ => out.push_str("null"),
+    }
+    if external_paths
+        && let File::Serialized(f) = file
+        && !f.externals().is_empty()
+    {
+        out.push_str(",\"external_paths\":[");
+        for (i, external) in f.externals().iter().enumerate() {
+            if i != 0 {
+                out.push(',');
+            }
+            listing::string(out, external.path.as_bytes(), true);
+        }
+        out.push(']');
     }
     out.push('}');
 }
@@ -237,6 +250,7 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
         })
         .collect::<Result<Vec<_>>>()?;
     let limit = args.number("inspect", "--limit")?;
+    let external_paths = args.get("--external-paths").is_some();
     let meter = meter(args);
     let provider = provider(args, &meter).map_err(|mut e| {
         if args.get("--cursor").is_some() && e.code != "budget" {
@@ -292,7 +306,7 @@ pub fn inspect(args: &Args<'_>) -> Result<Document> {
                     files.push(',');
                 }
                 first_file = false;
-                metadata(&mut files, file, occurrence);
+                metadata(&mut files, file, occurrence, external_paths);
                 if let Some(e) = files.refused() {
                     return Err(Error::from(e.clone()));
                 }

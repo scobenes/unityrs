@@ -1,7 +1,10 @@
 //! Selection uses the same file walk as the inspection and replay crosswalk.
-use super::{Arc, Discovery, ExportError, File, Meter, MeteredVec, ObjectRef, same};
+use super::{Arc, Discovery, ExportError, File, FileIndex, Meter, MeteredVec, ObjectRef, same};
 use unityrs_anim::{ClipSelector, RigClips, SelectionError};
-use unityrs_core::{files::SerializedFile, limits::ChargeError};
+use unityrs_core::{
+    files::{BundleFile, SerializedFile},
+    limits::ChargeError,
+};
 use unityrs_gltf::{ClipAddress, Clips, ObjectAddress};
 
 /// Visit root and descendant files in depth-first inspection order.
@@ -28,9 +31,15 @@ pub fn walk_files<E: From<ChargeError> + From<unityrs_core::Error>>(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum Addresses<'a> {
+    Loaded(&'a [File]),
+    Indexed(&'a FileIndex, &'a Arc<BundleFile>),
+}
+
 pub(super) fn clips<'a>(
     discovery: &'a Discovery,
-    roots: &[File],
+    roots: Addresses<'_>,
     policy: &Clips,
     meter: &Arc<Meter>,
 ) -> Result<MeteredVec<(&'a RigClips, &'a ObjectRef)>, ExportError> {
@@ -47,30 +56,44 @@ pub(super) fn clips<'a>(
         }
         Clips::Explicit(requests) => {
             let mut files = MeteredVec::new(meter);
-            for root in roots {
-                walk_files(root.clone(), meter, |file| -> Result<(), ExportError> {
-                    files.push(match file {
-                        File::Serialized(file) => Some(file.clone()),
-                        _ => None,
+            if let Addresses::Loaded(roots) = roots {
+                for root in roots {
+                    walk_files(root.clone(), meter, |file| -> Result<(), ExportError> {
+                        files.push(match file {
+                            File::Serialized(file) => Some(file.clone()),
+                            _ => None,
+                        })?;
+                        Ok(())
                     })?;
-                    Ok(())
-                })?;
+                }
             }
-            for request in requests.as_slice() {
-                let object = |address: ObjectAddress| {
-                    files
+            let object = |address: ObjectAddress, target: bool| {
+                let result = match roots {
+                    Addresses::Indexed(index, own) => index.object(own, discovery, address, meter),
+                    Addresses::Loaded(_) => files
                         .as_slice()
                         .get(address.file_index as usize)
-                        .and_then(Option::<Arc<SerializedFile>>::as_ref)
-                        .and_then(|file| file.object(address.path_id))
-                        .ok_or(ExportError::MissingClipSelection)
+                        .ok_or(ExportError::OutsideSelectionView(address))
+                        .and_then(|file| {
+                            file.as_ref()
+                                .and_then(|file: &Arc<SerializedFile>| file.object(address.path_id))
+                                .ok_or(ExportError::MissingClipSelection)
+                        }),
                 };
-                let root = object(request.root)?;
-                let component = object(request.component)?;
+                match result {
+                    Err(ExportError::OutsideSelectionView(_)) if !target => {
+                        Err(ExportError::MissingClipSelection)
+                    }
+                    result => result,
+                }
+            };
+            for request in requests.as_slice() {
+                let root = object(request.root, false)?;
+                let component = object(request.component, false)?;
                 let target;
                 let selector = match &request.clip {
                     ClipAddress::Resolved(address) => {
-                        target = object(*address)?;
+                        target = object(*address, true)?;
                         ClipSelector::Clip(&target)
                     }
                     ClipAddress::Source {
@@ -78,7 +101,7 @@ pub(super) fn clips<'a>(
                         field,
                         ordinal,
                     } => {
-                        target = object(*owner)?;
+                        target = object(*owner, true)?;
                         ClipSelector::SourceAddress {
                             owner: &target,
                             field: field.as_bytes(),

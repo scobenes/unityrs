@@ -105,11 +105,11 @@ pub enum MeshError {
     /// The core's error reading `m_StreamData`'s bytes (`Environment::resource`,
     /// its port of `get_resource_data`), as the core reports it.
     #[error("resource: {0}")]
-    Resource(unityrs_core::Error),
+    Resource(#[source] unityrs_core::Error),
     /// A charge the caller's meter refused: an array's memory, or the
     /// work counted before a loop (`docs/plans/extract.md` E59). UnityPy
     /// has no such bound (`PARITY.md` section 19.3).
-    #[error(transparent)]
+    #[error("{0}")]
     Charge(#[from] ChargeError),
     /// UnityPyBoost's `uint32_t` arithmetic wrapped and its check passed,
     /// so it would read outside the vertex data or write past the buffer

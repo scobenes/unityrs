@@ -110,6 +110,23 @@ fn ty(t: &Ty) -> Value {
         Ty::Image => {
             json!({"oneOf": [{"type": "string", "enum": fields::IMAGES}, object(&fields::WEBP_IMAGE)]})
         }
+        Ty::GlbProfile => ty(&fields::PROFILE),
+        Ty::ClipSelector => {
+            let mut schema = object(fields::CLIP);
+            schema["oneOf"] = json!([{"required":["clip"]}, {"required":["source"]}]);
+            schema
+        }
+        Ty::PathId => json!({"type": "integer", "minimum": i64::MIN, "maximum": i64::MAX}),
+        Ty::ProfileDigest => {
+            json!({"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9A-Fa-f]{64}$"})
+        }
+        Ty::SampleRate => json!({"type": "number", "exclusiveMinimum": 0, "maximum": 1024}),
+        Ty::DefaultClips => json!({"oneOf": [
+            {"type": "string", "enum": ["all_discovered"]}, array(&fields::EMPTY)
+        ]}),
+        Ty::Map { value, entries } => json!({
+            "type": "object", "additionalProperties": ty(value), "maxProperties": entries
+        }),
         Ty::Bool => json!({"type": "boolean"}),
         Ty::Int { min, max } => json!({"type": "integer", "minimum": min, "maximum": max}),
         Ty::Str(s) => string(s),

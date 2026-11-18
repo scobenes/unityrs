@@ -14,6 +14,7 @@ pub(crate) struct Reader<'a> {
     pub env: &'a Environment,
     pub meter: &'a Arc<Meter>,
     pub issues: &'a mut MeteredVec<Issue>,
+    pub held: &'a mut crate::held::Held,
 }
 impl Reader<'_> {
     pub fn target(
@@ -31,10 +32,9 @@ impl Reader<'_> {
             })?;
             return Ok(Some(PPtrTarget::Builtin(builtin)));
         }
-        match self.env.deref(from.file(), ptr) {
+        match self.held.resolve(self.env, from, ptr, self.meter) {
             Ok(o) => Ok(Some(PPtrTarget::Object(o))),
-            Err(e) => {
-                let error = SceneError::Deref(e);
+            Err(error) => {
                 if error.resource_refusal() {
                     return Err(error);
                 }

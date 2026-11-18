@@ -58,6 +58,8 @@ jobs:
           - meshdecode
           - scene_collect
           - obj_text
+          - anim_clip
+          - anim_gltf
           - zlib_match
           - webp
           - unitycn

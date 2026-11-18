@@ -33,6 +33,8 @@ pub enum TemplateKind {
     AtlasSprite,
     /// `atlases.json_key`.
     AtlasJson,
+    /// A loose prefab GLB.
+    Glb,
 }
 
 impl TemplateKind {
@@ -45,6 +47,7 @@ impl TemplateKind {
             Self::Sprite => "sprite",
             Self::AtlasSprite => "atlas_sprite",
             Self::AtlasJson => "atlas_json",
+            Self::Glb => "glb",
         }
     }
 }
@@ -72,6 +75,10 @@ pub enum Var {
     Sprite,
     /// `{safe_sprite}`.
     SafeSprite,
+    /// The stored container-row path.
+    ContainerPath,
+    /// The safe form of the container-row path.
+    SafeContainerPath,
 }
 
 impl Var {
@@ -83,6 +90,7 @@ impl Var {
             Self::SafeName => Self::Name,
             Self::SafeAtlas => Self::Atlas,
             Self::SafeSprite => Self::Sprite,
+            Self::SafeContainerPath => Self::ContainerPath,
             _ => return None,
         })
     }
@@ -99,6 +107,8 @@ impl Var {
             "safe_atlas" => Self::SafeAtlas,
             "sprite" => Self::Sprite,
             "safe_sprite" => Self::SafeSprite,
+            "container_path" => Self::ContainerPath,
+            "safe_container_path" => Self::SafeContainerPath,
             _ => return None,
         })
     }
@@ -109,12 +119,16 @@ impl Var {
         match self {
             Self::Input | Self::SafeInput | Self::PathId => true,
             Self::Type | Self::Name | Self::SafeName => {
-                matches!(kind, TemplateKind::Texture | TemplateKind::Sprite)
+                matches!(
+                    kind,
+                    TemplateKind::Texture | TemplateKind::Sprite | TemplateKind::Glb
+                )
             }
             Self::Atlas | Self::SafeAtlas => {
                 matches!(kind, TemplateKind::AtlasSprite | TemplateKind::AtlasJson)
             }
             Self::Sprite | Self::SafeSprite => kind == TemplateKind::AtlasSprite,
+            Self::ContainerPath | Self::SafeContainerPath => kind == TemplateKind::Glb,
         }
     }
 }
@@ -223,6 +237,14 @@ impl<'t> Iterator for Tokens<'t> {
 }
 
 impl Template {
+    #[cfg(feature = "gltf")]
+    pub(super) fn uses(&self, var: Var) -> bool {
+        self.pieces.iter().any(|piece| match piece {
+            Piece::Var(v) => *v == var || v.plain() == Some(var),
+            Piece::Lit(_) => false,
+        })
+    }
+
     /// Parses `text` for a template of `kind` ([`tokens`]).
     pub fn parse(text: &str, kind: TemplateKind) -> Result<Self, TemplateError> {
         if text.is_empty() {

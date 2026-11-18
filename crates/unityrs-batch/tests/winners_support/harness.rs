@@ -59,6 +59,7 @@ pub struct Case {
     pub candidates: Vec<Candidate>,
     pub expansions: Vec<Expansion>,
     pub kinds: BTreeMap<String, OutputKind>,
+    pub glbs: BTreeSet<(String, String)>,
     pub prefer: BTreeMap<String, Prefer>,
     pub failed: BTreeSet<String>,
     pub inputs: Vec<String>,
@@ -77,6 +78,7 @@ impl Case {
             candidates,
             expansions: Vec::new(),
             kinds: BTreeMap::new(),
+            glbs: BTreeSet::new(),
             prefer: BTreeMap::new(),
             failed: BTreeSet::new(),
             inputs,
@@ -86,6 +88,9 @@ impl Case {
     }
     pub fn spec(&self) -> unityrs_batch::spec::Validated {
         let mut doc = super::common::base();
+        if !self.glbs.is_empty() {
+            doc["spec_version"] = json!(3);
+        }
         let ids = self
             .inputs
             .iter()
@@ -159,11 +164,18 @@ impl Case {
                     let mut hashes =
                         records::copy_output(&directory, ordinal, b"x", &mut work).unwrap();
                     hashes.md5 = c.md5;
-                    let kind = self
-                        .kinds
-                        .get(&c.key)
-                        .copied()
-                        .unwrap_or(OutputKind::AtlasJson);
+                    let glb = self
+                        .glbs
+                        .iter()
+                        .any(|(input, key)| input == id && key == &c.key);
+                    let kind = if glb {
+                        OutputKind::Glb
+                    } else {
+                        self.kinds
+                            .get(&c.key)
+                            .copied()
+                            .unwrap_or(OutputKind::AtlasJson)
+                    };
                     let picture = unityrs_export::ngui::Picture {
                         mode: "RGBA",
                         width: 1,
@@ -173,6 +185,13 @@ impl Case {
                     writer
                         .append(
                             Record::Candidate(records::Candidate {
+                                prefab: glb.then_some(records::Prefab {
+                                    file_index: 0,
+                                    row: 0,
+                                    container_file: "CAB-index".into(),
+                                    container_path: Some("root.prefab".into()),
+                                    root: Some(("CAB-synthetic".into(), 1)),
+                                }),
                                 key: &c.key,
                                 unit: c.unit.as_deref(),
                                 input: id,
@@ -180,7 +199,8 @@ impl Case {
                                 kind,
                                 path_id: 1,
                                 hashes,
-                                picture: (kind != OutputKind::AtlasJson).then_some(&picture),
+                                picture: (!matches!(kind, OutputKind::AtlasJson | OutputKind::Glb))
+                                    .then_some(&picture),
                                 size: 1,
                                 plan_index: ordinal,
                                 cut: false,

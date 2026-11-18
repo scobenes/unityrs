@@ -143,6 +143,7 @@ fn candidate_annotations_outputs_and_collisions_fit_source_record_work() {
         writer
             .append(
                 Record::Candidate(records::Candidate {
+                    prefab: None,
                     key: "k",
                     unit: Some("k"),
                     input: "a",
@@ -172,7 +173,8 @@ fn candidate_annotations_outputs_and_collisions_fit_source_record_work() {
         let bytes = std::fs::read(directory.path().join("records.ndjson")).unwrap();
         let j = bytes.iter().position(|&b| b == b'\n').unwrap() + 1;
         let mut read =
-            records::read::Reader::new(bytes.as_slice(), "a", false, 0, account.meter()).unwrap();
+            records::read::Reader::new(bytes.as_slice(), "a", false, 0, 1, account.meter())
+                .unwrap();
         let Some(records::read::Row::Candidate(c)) = read.next(&|| false).unwrap() else {
             panic!("candidate missing")
         };

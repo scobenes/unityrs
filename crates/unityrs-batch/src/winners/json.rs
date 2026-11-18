@@ -81,6 +81,24 @@ impl Json {
             self.text(name, None)
         }
     }
+    pub(crate) fn prefab(
+        &mut self,
+        row: Option<crate::records::Prefab<&str>>,
+    ) -> Result<(), Error> {
+        if let Some(row) = row {
+            self.value("container_file_index", row.file_index)?;
+            self.value("container_row", row.row)?;
+            self.text("container_file", Some(row.container_file))?;
+            self.text("container_path", row.container_path)?;
+            self.text("root_serialized_file", row.root.map(|root| root.0))?;
+            if let Some((_, id)) = row.root {
+                self.value("root_path_id", id)?;
+            } else {
+                self.text("root_path_id", None)?;
+            }
+        }
+        Ok(())
+    }
     pub fn end(&mut self) -> Result<&[u8], Error> {
         self.bytes.extend(b"}\n")?;
         Ok(&self.bytes)

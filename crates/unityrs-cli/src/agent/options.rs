@@ -67,6 +67,12 @@ pub const INSPECT: &[OptionSpec] = &[
         None,
         "Case-sensitive object-name globs (*, ?, [abc], [!abc]); multiple values form a union, intersected with any class filters. Omit to include unnamed objects too.",
     ),
+    OptionSpec {
+        name: "--external-paths",
+        value: None,
+        default: None,
+        help: "Include SerializedFile external paths in PPtr file-ID order on each page when present.",
+    },
     opt(
         "--limit",
         "N",
@@ -83,7 +89,7 @@ pub const INSPECT: &[OptionSpec] = &[
         "--cursor",
         "TOKEN",
         None,
-        "Pass the previous response's non-null next_cursor string unchanged; omit for the first page and stop when next_cursor is null. Keep input spellings, order, contents, filters and explicitly supplied budget/provider options unchanged.",
+        "Pass the previous response's non-null next_cursor string unchanged; omit for the first page and stop when next_cursor is null. Keep input spellings, order, contents, filters, --external-paths and explicitly supplied budget/provider options unchanged.",
     ),
 ];
 pub const SHOW: &[OptionSpec] = &[

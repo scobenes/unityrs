@@ -148,6 +148,24 @@ pub fn check_entry_type(
     detect(data, limits, Some(meter), ReaderKind::Memory)
 }
 
+/// Interpret a detection result for a lazy file walk.
+pub(crate) fn probe_container(
+    detected: Result<FileType, DetectError>,
+) -> Result<bool, DetectError> {
+    match detected {
+        Ok(ty) => Ok(matches!(ty, FileType::BundleFile | FileType::WebFile)),
+        Err(
+            e @ (DetectError::Allocator(_) | DetectError::Work(_) | DetectError::InflateLimit(_)),
+        ) => Err(e),
+        Err(
+            DetectError::Unterminated
+            | DetectError::UnterminatedStream
+            | DetectError::Gzip(_)
+            | DetectError::GzipCrc { .. },
+        ) => Ok(false),
+    }
+}
+
 /// Container-entry detection preserving the reader semantics of ZIP member
 /// streams, while charging gzip probing to the enclosing input's work.
 pub(crate) fn check_entry_type_with_reader(

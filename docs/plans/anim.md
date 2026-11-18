@@ -440,6 +440,10 @@ A broken row with a valid independently expanded key retains the claim.
 Keep row identity independent of the string key and of the resolved object's
 identity.
 
+Within an input, emit plan skips first in plan order, then export skips in
+export order. Each phase visits the existing 2D outputs before the appended
+prefab rows. The manifest preserves this skip order.
+
 **Sealing and winners.** A successful GLB copy-out and seal supplies one
 candidate and one unit. Its unit key is exactly its GLB output key, with
 `prefer.md5` comparing the artifact's byte digest. Use E31/E32/E61 and the
@@ -688,8 +692,8 @@ with another successful input, including a
 dependency-budget refusal from an optional resource, a `max_export_work`
 refusal distinct from a bake approximation cap and E61 prefer-withholding.
 Check exact L9 manifest shapes, running and final heads for v1/v2/v3, a
-zero-artifact v3 job, the progress protocol, interrupted publication and resume, and stable
-records with 1 and N workers.
+zero-artifact v3 job, the progress protocol, interrupted publication and resume,
+mixed-job skip order, and stable records with 1 and N workers.
 
 ## 5. Performance and memory
 
@@ -748,7 +752,11 @@ collection path.
 ## 8. Editor fixture project (owner-built)
 
 Extend the project in `docs/plans/static3d.md` section 8 with small original
-assets. Record actual Unity 2022.3 and 6000.x patch releases, build target,
+assets. The [Editor automation](../../tools/fixtures/unity/README.md) builds
+and records the initial procedural set in Unity 2022.3. The
+[repo-side handoff](../anim_reference.md#repo-side-completion) completes
+the serialized crosswalk after recording. Record actual Unity 2022.3
+and 6000.x patch releases, build target,
 loaded bundle hashes, rig/asset identities and import settings. Use the
 repository's fixture rules for the built assets and numeric records.
 

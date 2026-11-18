@@ -208,8 +208,12 @@ fn the_version_is_known_before_the_members_it_governs() {
         "unknown_field /outputs/formats"
     );
     assert_eq!(refused_text(&text(2, r#""zzz":0,"#)), "unknown_field /zzz");
+    assert_eq!(
+        common::parse_text(&text(3, "")).unwrap().spec.spec_version,
+        3
+    );
     // `spec_version`'s own rules still come first.
-    assert_eq!(refused_text(&text(3, "")), "version /spec_version");
+    assert_eq!(refused_text(&text(4, "")), "version /spec_version");
 }
 
 #[test]

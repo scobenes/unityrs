@@ -4,6 +4,7 @@
     reason = "keep source slot provenance inline and fallible allocation-free"
 )]
 mod bake;
+mod file_index;
 mod select;
 
 use std::sync::Arc;
@@ -21,6 +22,8 @@ use unityrs_core::{
 use unityrs_gltf::{CollectionTargets, GltfError, MaterialMapper, Profile, Scene};
 use unityrs_scene::Graph;
 
+pub use file_index::FileIndex;
+pub(crate) use select::Addresses;
 pub use select::walk_files;
 
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +38,8 @@ pub enum ExportError {
     Input(#[from] unityrs_core::Error),
     #[error("missing_clip_selection")]
     MissingClipSelection,
+    #[error("clip selection outside_view at file {} path {}", .0.file_index, .0.path_id)]
+    OutsideSelectionView(unityrs_gltf::ObjectAddress),
     #[error("ambiguous_clip_selection")]
     AmbiguousClipSelection,
     #[error("clip source {}[{}]: {}", .0.source.field, .0.source.ordinal, .0.cause)]
@@ -59,6 +64,24 @@ pub struct Collected {
 pub fn collect(
     env: &Environment,
     roots: &[File],
+    graph: &Graph,
+    profile: &Profile,
+    mapper: &dyn MaterialMapper,
+    meter: &Arc<Meter>,
+) -> Result<Collected, ExportError> {
+    collect_with_view(
+        env,
+        select::Addresses::Loaded(roots),
+        graph,
+        profile,
+        mapper,
+        meter,
+    )
+}
+
+pub(crate) fn collect_with_view(
+    env: &Environment,
+    roots: select::Addresses<'_>,
     graph: &Graph,
     profile: &Profile,
     mapper: &dyn MaterialMapper,

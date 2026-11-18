@@ -224,12 +224,14 @@ fn normal_into(
             stop: None,
             taken,
             phase: Phase::Publish,
+            missing: None,
         },
     )
 }
 /// What the final head starts from: a normal reduction, or the stop taken.
 #[derive(Clone, Copy)]
-struct Ending {
+struct Ending<'a> {
+    missing: Option<&'a str>,
     code: Code,
     failure: Option<RunFailure>,
     stop: Option<Stop>,
@@ -245,7 +247,7 @@ fn conclude(
     directory: &dyn Head,
     identity: &Identity<'_>,
     ended_at: Option<&str>,
-    ending: Ending,
+    ending: Ending<'_>,
 ) -> ResultEnd {
     let mut code = ending.code;
     let mut report = manifest::finishing(cx, destination);
@@ -280,14 +282,24 @@ fn conclude(
             Some((f.name(), None))
         }
         (Some(stop), _) => Some((stop.reason.name(), stop.detail.map(SpoolDetail::name))),
-        (None, f) => f.map(|f| (RunFailure::name(f), None)),
+        (None, f) => f
+            .map(|f| (RunFailure::name(f), None))
+            .or_else(|| ending.missing.map(|at| ("unknown_prefab_key", Some(at)))),
     };
     // The exit line names the reason that set the code.
     let (reason, detail) = match ending.stop {
         Some(stop) if stop.reason.code() == code => {
             (Some(stop.reason.name()), stop.detail.map(SpoolDetail::name))
         }
-        _ => (report.failure.map(RunFailure::name), None),
+        _ => (
+            report.failure.map(RunFailure::name).or_else(|| {
+                ending
+                    .missing
+                    .filter(|_| code == Code::Incomplete)
+                    .map(|_| "unknown_prefab_key")
+            }),
+            None,
+        ),
     };
     let status = code.status();
     let mut superseded = false;

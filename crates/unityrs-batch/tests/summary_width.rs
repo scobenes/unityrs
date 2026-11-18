@@ -19,6 +19,7 @@ fn artifact(name: &[u8], ms: u64, block: u64, cap: u64) -> Result<(Vec<u8>, u64)
     let mut work = Work::new(cap);
     writer.append(
         Record::Diagnostic(Diagnostic {
+            glb: None,
             kind: DiagnosticKind::NestedContainer,
             input: "input",
             bundle: None,

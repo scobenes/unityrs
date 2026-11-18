@@ -63,6 +63,7 @@ pub struct Meter {
     /// Work done by this open ([`Limits::max_decode_work`]).
     work: AtomicU64,
     work_limit: u64,
+    work_refusal: AtomicU64,
     /// Every byte this meter ever granted, never returned: what a lazy
     /// computation is measured by ([`crate::once::get_or_publish_result`]).
     granted: AtomicU64,
@@ -129,6 +130,7 @@ impl Meter {
             }),
             work: AtomicU64::new(0),
             work_limit: max_decode_work,
+            work_refusal: AtomicU64::new(0),
             granted: AtomicU64::new(0),
         })
     }
@@ -164,8 +166,28 @@ impl Meter {
             account: self.account.clone(),
             work: AtomicU64::new(0),
             work_limit: self.work_limit,
+            work_refusal: AtomicU64::new(0),
             granted: AtomicU64::new(0),
         })
+    }
+
+    /// Separate work allowance on the same memory account, for caller-side export.
+    #[must_use]
+    pub fn work_scope(&self, limit: u64) -> Arc<Self> {
+        Arc::new(Self {
+            account: self.account.clone(),
+            work: AtomicU64::new(0),
+            work_limit: limit,
+            work_refusal: AtomicU64::new(0),
+            granted: AtomicU64::new(0),
+        })
+    }
+
+    /// Work attempted by this scope, including its largest refused increment.
+    #[must_use]
+    pub fn attempted_work(&self) -> u64 {
+        self.decoded()
+            .max(self.work_refusal.load(Ordering::Acquire))
     }
 
     /// Whether `other` charges the same input's memory (one of them is a
@@ -272,11 +294,9 @@ impl Meter {
     }
 
     fn decode_refused(&self, done: u64, bytes: u64) -> LimitError {
-        LimitError::refused(
-            LimitKind::DecodeWork,
-            done.saturating_add(bytes),
-            self.work_limit,
-        )
+        let attempted = done.saturating_add(bytes);
+        self.work_refusal.fetch_max(attempted, Ordering::AcqRel);
+        LimitError::refused(LimitKind::DecodeWork, attempted, self.work_limit)
     }
 
     /// Work counted so far by this open.

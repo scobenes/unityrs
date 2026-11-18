@@ -5,6 +5,7 @@ use unityrs_export::ngui::{MemberTemplate, Options, Template, TemplateError, Tem
 pub struct Prepared {
     pub options: Options,
     pub members: Vec<MemberTemplate>,
+    pub(crate) glb: Option<Template>,
 }
 impl Prepared {
     pub fn from_spec(spec: &Spec) -> Result<Self, TemplateError> {
@@ -62,6 +63,16 @@ impl Prepared {
                 });
             }
         }
-        Ok(Self { options, members })
+        let glb = spec
+            .outputs
+            .glb
+            .as_ref()
+            .map(|glb| Template::parse(&glb.prefab_key_template, TemplateKind::Glb))
+            .transpose()?;
+        Ok(Self {
+            options,
+            members,
+            glb,
+        })
     }
 }

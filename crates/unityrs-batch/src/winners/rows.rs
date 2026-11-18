@@ -92,6 +92,7 @@ pub(super) fn output(json: &mut Json, row: Row<'_>, state: State) -> Result<(), 
             1 => "sprite",
             2 => "atlas_json",
             3 => "atlas_sprite",
+            5 => "glb",
             _ => return Err(Error::internal()),
         }),
     )?;
@@ -125,6 +126,7 @@ pub(super) fn output(json: &mut Json, row: Row<'_>, state: State) -> Result<(), 
         }),
     )?;
     json.text("reason", state.reason())?;
+    json.prefab(row.prefab)?;
     json.value("cut", row.cut)
 }
 

@@ -73,8 +73,8 @@ impl State {
         if !ptr.is_set() {
             return Ok(None);
         }
-        let shader = env
-            .deref(object.file(), ptr)
+        let (shader, _owner) = env
+            .deref_held(object.file(), ptr, meter)
             .map_err(|e| GltfError::Mesh(e.into()))?;
         meter.count_decode(self.shaders.len() as u64)?;
         if let Some(i) = self
@@ -108,7 +108,11 @@ impl State {
         })?;
         Ok(Some(i))
     }
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "Keep material cache insertion and rollback together"
+    )]
     pub(crate) fn binding(
         &mut self,
         env: &Environment,
@@ -163,9 +167,13 @@ impl State {
                     .any(|r| same(r, &renderer.object))
             {
                 meter.count_decode(c.issues.len() as u64)?;
-                for issue in c.issues.as_slice() {
-                    diagnostics::record(scene, node, issue.reason, issue.count, meter)?;
-                }
+                copy_issues(
+                    scene,
+                    node,
+                    renderer.object.path_id(),
+                    c.issues.as_slice(),
+                    meter,
+                )?;
                 c.reported.push(renderer.object.clone())?;
             }
             return Ok((c.material, c.skip));
@@ -177,7 +185,17 @@ impl State {
             self.textures.len(),
         );
         let issue_start = scene.collection_issues.len();
-        let result = self.map(env, scene, profile, mapper, object, uv, node, meter);
+        let result = self.map(
+            env,
+            scene,
+            profile,
+            mapper,
+            object,
+            uv,
+            node,
+            renderer.object.path_id(),
+            meter,
+        );
         let (material, skip) = match result {
             Ok(result) => result,
             Err(e) if recoverable(&e) => {
@@ -222,6 +240,7 @@ impl State {
         object: &ObjectRef,
         uv: bool,
         node: usize,
+        renderer_path_id: i64,
         meter: &Arc<Meter>,
     ) -> Result<(Option<usize>, bool)> {
         if object.class_id() != 21 {
@@ -254,6 +273,7 @@ impl State {
             source: object,
             uv,
             node,
+            renderer_path_id,
             issues: MeteredVec::new(meter),
         };
         if input.shader_name.is_empty() {
@@ -275,6 +295,28 @@ impl State {
         Ok((Some(id), false))
     }
 }
+fn copy_issues(
+    scene: &mut Scene,
+    node: usize,
+    renderer: i64,
+    issues: &[crate::CollectionIssue],
+    meter: &Arc<Meter>,
+) -> Result<()> {
+    for issue in issues {
+        diagnostics::record(scene, node, issue.reason, issue.count, meter)?;
+        if let (Some(resource), Some(row)) = (
+            issue.resource,
+            scene.collection_issues.as_mut_slice().last_mut(),
+        ) {
+            row.resource = Some(crate::RendererResource {
+                renderer_path_id: renderer,
+                ..resource
+            });
+        }
+    }
+    Ok(())
+}
+
 /// One mapping's texture resolution and diagnostics context. Decodes are
 /// released after each PNG; encoded images remain charged in the scene.
 pub struct MapCx<'a> {
@@ -286,6 +328,7 @@ pub struct MapCx<'a> {
     source: &'a ObjectRef,
     uv: bool,
     node: usize,
+    renderer_path_id: i64,
     issues: crate::Extras,
 }
 const _: () = crate::send_sync::<MapCx<'static>>();
@@ -300,6 +343,26 @@ impl MapCx<'_> {
             reason.as_bytes(),
         )
     }
+    fn resource_issue(
+        &mut self,
+        reason: &'static str,
+        pointer: unityrs_core::env::PPtr,
+    ) -> Result<()> {
+        self.report(reason)?;
+        let issue = self
+            .scene
+            .collection_issues
+            .as_mut_slice()
+            .last_mut()
+            .ok_or(GltfError::Invalid("resource diagnostic"))?;
+        issue.resource = Some(crate::RendererResource {
+            renderer_path_id: self.renderer_path_id,
+            owner_path_id: self.source.path_id(),
+            pointer,
+        });
+        Ok(())
+    }
+
     /// Decode one `Texture2D` by identity, embed its PNG, and apply Unity ST.
     pub fn texture(&mut self, texture: TextureInput, key: &[u8]) -> Result<Option<TextureInfo>> {
         self.texture_as(texture, key, pixels::Usage::Color, None)
@@ -335,24 +398,33 @@ impl MapCx<'_> {
             self.report("invalid_texture_transform")?;
             return Ok(None);
         }
-        let object = match self.env.deref(self.source.file(), texture.pointer) {
-            Ok(o) => o,
-            Err(e) if diagnostics::deref_data(&e) => {
-                self.report("missing_texture")?;
-                return Ok(None);
-            }
-            Err(e) => return Err(GltfError::Mesh(e.into())),
-        };
-        let albedo = match albedo {
-            Some(t) if t.pointer.is_set() => match self.env.deref(self.source.file(), t.pointer) {
-                Ok(o) => Some(o),
+        let (object, _owner) =
+            match self
+                .env
+                .deref_held(self.source.file(), texture.pointer, self.meter)
+            {
+                Ok(o) => o,
                 Err(e) if diagnostics::deref_data(&e) => {
-                    self.report("missing_texture")?;
-                    None
+                    self.resource_issue("missing_texture", texture.pointer)?;
+                    return Ok(None);
                 }
                 Err(e) => return Err(GltfError::Mesh(e.into())),
-            },
-            _ => None,
+            };
+        let (albedo, _albedo_owner) = match albedo {
+            Some(t) if t.pointer.is_set() => {
+                match self
+                    .env
+                    .deref_held(self.source.file(), t.pointer, self.meter)
+                {
+                    Ok((object, owner)) => (Some(object), owner),
+                    Err(e) if diagnostics::deref_data(&e) => {
+                        self.resource_issue("missing_texture", t.pointer)?;
+                        (None, None)
+                    }
+                    Err(e) => return Err(GltfError::Mesh(e.into())),
+                }
+            }
+            _ => (None, None),
         };
         self.meter.count_decode(self.state.textures.len() as u64)?;
         let (id, reason, mirror_once, packed_sampler_conflict) = if let Some(c) =
@@ -409,7 +481,7 @@ impl MapCx<'_> {
             self.report("mirror_once")?;
         }
         if let Some(reason) = reason {
-            self.report(reason)?;
+            self.resource_issue(reason, texture.pointer)?;
         }
         Ok(id.map(|texture| TextureInfo {
             texture,
