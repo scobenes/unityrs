@@ -472,7 +472,7 @@ def complete_recording(name, fixture, doc, bundle_dir, views, unityrs, inspect_d
                                    if view.headers[key]["class_id"] == 137}, "built renderer coverage mismatch")
 
     clip_evidence(spec, capture, view.value(clip), replay)
-    check_built_clip(name, fixture, view, clip, nodes, avatar)
+    check_built_clip(name, fixture, view, clip, nodes, avatar, spec["evidence"]["editor"]["bindings"])
     discovery, effective = view.discovery(binding, binding_class)
     replay.require(clip in effective, "selected clip is absent from built playback component discovery")
     check_discovery(fixture, view, discovery, clip)

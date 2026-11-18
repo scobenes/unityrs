@@ -20,9 +20,14 @@
    Keep `bundles`, `replays`, `run.json`, and `build.log` together.
    A new build that reaches this dialog replaces the previous results in that folder.
    If the dialog says **unityrs fixtures staged**, close windows or terminals
-   using the output folders and zip the staged folder shown in the dialog instead.
-5. If the dialog says **unityrs fixture build failed**, send the
-   `build.log` it points to in the folder ending in `-failed-<id>`.
+   using the output folders and zip the staged folder shown in the dialog.
+5. If the dialog says **unityrs fixture build failed**, follow the path in the
+   dialog. Under `UnityrsFixturesOutput/<Unity version>`, a folder named
+   `<target>-failed-<id>` holds the copied `build.log` to send. If Unity
+   could not close its temporary fixture scene, zip and send the
+   `<target>.b-<id>` folder with `build.log` inside. Unity builds in this
+   staging folder before moving the results to `<target>`. The ID is the
+   first eight characters of the run ID.
    If the menu never appears or the log is missing, open
    **Window → General → Console** and send the first red error.
 6. Later, repeat steps 2–5 in a **separate new 3D (Built-in) project** using

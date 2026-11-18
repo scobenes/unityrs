@@ -393,8 +393,91 @@ class CompleteReplayTests(unittest.TestCase):
         self.replace_clip_values("generic-quaternion", edit)
         self.assert_refused("invalid built quaternion")
 
+    def store_dense_quaternions(self, w_samples):
+        def edit(clip):
+            clip.pop("m_RotationCurves", None)
+            clip["m_ClipBindingConstant"] = {"genericBindings": [
+                dict(path=crc32("Mötión".encode()), typeID=4, attribute=2, customType=0)
+            ]}
+            clip["m_MuscleClip"]["m_Clip"]["data"] = {"m_DenseClip": {
+                "m_CurveCount": 4, "m_FrameCount": 5, "m_BeginTime": 0., "m_SampleRate": 4.,
+                "m_SampleArray": [v for w in w_samples for v in (0., 0., 0., w)],
+            }}
+
+        self.replace_clip_values("generic-quaternion", edit)
+
+    def test_complete_accepts_nonunit_dense_quaternions_between_authored_rotation_keys(self):
+        evidence = self.recordings["generic-quaternion"]["spec"]["evidence"]
+        position = next(row for row in evidence["editor"]["bindings"] if row["property"] == "m_LocalPosition.x")
+        position["keys"].insert(1, position["keys"][0] | {"time_f32": bits(.25)})
+        evidence["clock"]["key_times"].insert(1, .25)
+        self.store_dense_quaternions([1., .75, 1., 1.25, 1.])
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_complete_refuses_nonunit_dense_quaternion_at_authored_midpoint(self):
+        self.store_dense_quaternions([1., 1., .75, 1., 1.])
+        self.assert_refused("invalid built quaternion")
+
+    def test_complete_refuses_zero_or_nonfinite_dense_quaternions_between_authored_rotation_keys(self):
+        for value in (0., float("inf")):
+            with self.subTest(value=value):
+                self.store_dense_quaternions([1., value, 1., 1., 1.])
+                self.assert_refused("invalid built quaternion")
+
+    def store_explicit_pptr_only(self):
+        def edit(clip):
+            del clip["m_ClipBindingConstant"], clip["m_MuscleClip"]
+
+        self.replace_clip_values("generic-object-reference", edit)
+
+    def test_complete_accepts_explicit_pptr_with_playback_and_no_compiled_track(self):
+        self.store_explicit_pptr_only()
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_complete_refuses_explicit_pptr_when_playback_disagrees(self):
+        self.store_explicit_pptr_only()
+        samples = self.recordings["generic-object-reference"]["spec"]["evidence"]["editor"]["object_reference_samples"]
+        samples[-1].update(asset=samples[0]["asset"], name=samples[0]["name"])
+        self.assert_refused("fixture object-reference evidence mismatch")
+
+    def test_complete_refuses_wrong_explicit_pptr_despite_matching_playback(self):
+        self.store_explicit_pptr_only()
+        self.replace_clip_values("generic-object-reference", lambda clip: clip["m_PPtrCurves"][0]["curve"][1]
+                                 ["value"].update(m_PathID=80))
+        self.assert_refused("invalid built MeshFilter.m_Mesh PPtr transition")
+
+    def test_complete_accepts_compiled_pptr_when_explicit_target_is_wrong(self):
+        self.replace_clip_values("generic-object-reference", lambda clip: clip["m_PPtrCurves"][0]["curve"][1]
+                                 ["value"].update(m_PathID=999))
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def store_dense_pptr(self, first_target_frames):
+        def edit(clip):
+            del clip["m_PPtrCurves"]
+            clip["m_ClipBindingConstant"]["genericBindings"].pop()
+            clip["m_MuscleClip"]["m_Clip"]["data"] = {"m_DenseClip": {
+                "m_CurveCount": 1, "m_FrameCount": 6, "m_BeginTime": 0., "m_SampleRate": 5.,
+                "m_SampleArray": [0.] * first_target_frames + [1.] * (6 - first_target_frames),
+            }}
+
+        self.replace_clip_values("generic-object-reference", edit)
+
+    def test_complete_accepts_dense_pptr_at_f32_half_sample_boundary(self):
+        # Frame 3 of a 5 Hz grid is 0.6, exactly half a sample after the authored key.
+        self.store_dense_pptr(3)
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_complete_refuses_dense_pptr_past_half_a_sample(self):
+        self.store_dense_pptr(4)
+        self.assert_refused("invalid built MeshFilter.m_Mesh PPtr transition")
+
     def test_complete_refuses_missing_or_wrong_compiled_pptr_transition(self):
         def set_mapping(clip, mapping):
+            clip.pop("m_PPtrCurves", None)
             clip["m_ClipBindingConstant"]["pptrCurveMapping"] = [dict(m_FileID=0, m_PathID=index) for index in mapping]
 
         def set_wrong_index(clip):
@@ -406,7 +489,7 @@ class CompleteReplayTests(unittest.TestCase):
                             ("wrong key index", set_wrong_index)):
             with self.subTest(label=label):
                 self.replace_clip_values("generic-object-reference", edit)
-                self.assert_refused("invalid built compiled MeshFilter.m_Mesh PPtr transition")
+                self.assert_refused("invalid built MeshFilter.m_Mesh PPtr transition")
 
     def test_complete_refuses_skin_without_valid_per_vertex_weights(self):
         path = self.inspect / "static-objects.1.7.show.json"

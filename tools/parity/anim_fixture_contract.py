@@ -183,45 +183,87 @@ def compiled_curves(clip, replay):
                   for slot in span] for key, span in curves.items()}
 
 
-def check_compiled_quaternion(tracks, timing):
-    if not all(keys and all(isfinite(value) for _, coefficients in keys for value in coefficients)
+def check_compiled_quaternion(tracks, timing, authored_times):
+    if not all(keys and all(type(value) in (int, float) and isfinite(value)
+                            for _, coefficients in keys for value in coefficients)
                for _, keys in tracks):
         return False
     playback = timing["m_Clip"]
     grid = playback.get("data", playback).get("m_DenseClip", {})
 
-    def sample(track, time):
+    def sampler(track):
         is_streamed, keys = track
         if is_streamed:
-            return streamed(keys, time)
+            return lambda time: streamed(keys, time)
         values = [coefficients[3] for _, coefficients in keys]
         if len(values) == 1:
-            return values[0]
-        return dense(values, 1, 0, grid["m_BeginTime"], grid["m_SampleRate"], time)
+            return lambda _: values[0]
+        return lambda time: dense(values, 1, 0, grid["m_BeginTime"], grid["m_SampleRate"], time)
 
-    # Constant axes participate at every time. Check the clip endpoints and
-    # shared keys without treating intermediate interpolation as stored keys.
-    grids = [{time for time, _ in keys} for _, keys in tracks if len(keys) > 1]
-    times = {timing["m_StartTime"], timing["m_StopTime"]} | (set.intersection(*grids) if grids else set())
-    return all(unit_quaternion([sample(track, time) for track in tracks]) for time in times)
+    # Unity normalizes interpolated rotations during playback.
+    samplers = [sampler(track) for track in tracks]
+    times = authored_times | {time for _, keys in tracks for time, _ in keys}
+    for time in times:
+        values = [sample(time) for sample in samplers]
+        if time in authored_times:
+            if not unit_quaternion(values):
+                return False
+        elif not any(values) or not all(map(isfinite, values)):
+            return False
+    return True
 
 
-def check_compiled_references(view, clip_key, clip, curves, expected):
+def mesh_reference(view, clip_key, pointer):
+    try:
+        return view.pointer(clip_key, pointer, {43})
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def matches_reference_time(time, rate):
+    def f32(value):
+        return struct.unpack(">f", struct.pack(">f", value))[0]
+
+    # Compare the decoded grid and the inclusive half-frame window as f32.
+    if not isfinite(rate) or rate <= 0:
+        return False
+    half_interval = .5 / rate
+    return f32(.5 - half_interval) <= f32(time) <= f32(.5 + half_interval)
+
+
+def explicit_references_match(view, clip_key, clip, expected):
+    path, _, prop = REFERENCE
+    rows = [row["curve"] for row in clip.get("m_PPtrCurves", [])
+            if (row["path"], row["classID"], row["attribute"]) == (path, 33, prop)]
+    if len(rows) != 1 or len(rows[0]) != 2:
+        return False
+    first, second = rows[0]
+    return (first["time"] == 0 < second["time"]
+            and matches_reference_time(second["time"], clip["m_SampleRate"])
+            and [mesh_reference(view, clip_key, point["value"]) for point in rows[0]] == expected)
+
+
+def compiled_references_match(view, clip_key, clip, curves, expected):
     path, _, prop = REFERENCE
     tracks = [track for (path_hash, class_id, attribute, _, pptr), track in curves.items()
               if (path_hash, class_id, attribute, pptr) == (crc32(path.encode()), 33, crc32(prop.encode()), True)]
-    message = "invalid built compiled MeshFilter.m_Mesh PPtr transition"
-    view.require(len(tracks) == 1 and len(tracks[0]) == 1 and tracks[0][0][1], message)
+    if len(tracks) != 1 or len(tracks[0]) != 1:
+        return False
+    is_streamed, keys = tracks[0][0]
     mapping = clip["m_ClipBindingConstant"].get("pptrCurveMapping", [])
     changes = []
-    for time, coefficients in tracks[0][0][1]:
+    for time, coefficients in keys:
         index = coefficients[3]
-        view.require(isfinite(index) and 0 <= index < len(mapping) and index == int(index), message)
-        target = view.pointer(clip_key, mapping[int(index)], {43})
+        if type(index) not in (int, float) or not isfinite(index) or not 0 <= index < len(mapping) or index != int(index):
+            return False
+        target = mesh_reference(view, clip_key, mapping[int(index)])
         if not changes or target != changes[-1][1]:
             changes.append((time, target))
-    view.require(len(changes) == 2 and changes[0][0] <= 0 and changes[0][1] == expected[0]
-                 and changes[1] == (.5, expected[1]), message)
+    if len(changes) != 2 or changes[0][0] > 0 or [target for _, target in changes] != expected:
+        return False
+    playback = clip["m_MuscleClip"]["m_Clip"]
+    rate = clip["m_SampleRate"] if is_streamed else playback.get("data", playback)["m_DenseClip"]["m_SampleRate"]
+    return matches_reference_time(changes[1][0], rate)
 
 
 def check_compiled_weight(track, scale):
@@ -236,7 +278,7 @@ def check_compiled_weight(track, scale):
     return len(samples) >= 2 and all(abs(value - weighted(*stem, t)) < .002 for t, value in samples)
 
 
-def check_built_clip(name, fixture, view, clip_key, nodes, avatar):
+def check_built_clip(name, fixture, view, clip_key, nodes, avatar, editor_bindings):
     """Qualify required content from the stored clip and its actual targets."""
     clip = view.value(clip_key)
     runtime = built_transform_curves(clip) | built_float_curves(clip, "m_FloatCurves")
@@ -250,12 +292,9 @@ def check_built_clip(name, fixture, view, clip_key, nodes, avatar):
         key = path, kind, prop
         if key == REFERENCE:
             expected = [view.asset(asset, 43, ignore_case=True) for asset in REFERENCE_ASSETS]
-            if explicit := clip.get("m_PPtrCurves"):
-                rows = [row for row in explicit if (row["path"], row["classID"], row["attribute"]) == (path, 33, prop)]
-                view.require(len(rows) == 1 and [(point["time"], view.pointer(clip_key, point["value"], {43}))
-                                                for point in rows[0]["curve"]] == list(zip((0, .5), expected)),
-                             "invalid built explicit MeshFilter.m_Mesh PPtr transition")
-            check_compiled_references(view, clip_key, clip, by_hash, expected)
+            view.require(explicit_references_match(view, clip_key, clip, expected)
+                         or compiled_references_match(view, clip_key, clip, by_hash, expected),
+                         "invalid built MeshFilter.m_Mesh PPtr transition")
             reference = [keys for _, node_name, keys in nodes.values() if node_name == path]
             filters = [key for keys in reference for key in keys if view.headers[key]["class_id"] == 33]
             view.require(len(filters) == 1 and view.pointer(filters[0], view.value(filters[0])["m_Mesh"], {43})
@@ -268,7 +307,12 @@ def check_built_clip(name, fixture, view, clip_key, nodes, avatar):
             family_tracks = by_hash.get((crc32(path.encode()), 4, attribute, 0, False))
             if family_tracks:
                 if attribute == 2 and axis == "x":
-                    view.require(check_compiled_quaternion(family_tracks, clip["m_MuscleClip"]),
+                    properties = {family + "." + channel for channel in axes}
+                    authored_times = {view.replay.f32_from_bits(key["time_f32"])
+                                      for binding in editor_bindings
+                                      if (binding["path"], binding["type"]) == (path, "UnityEngine.Transform")
+                                      and binding["property"] in properties for key in binding["keys"]}
+                    view.require(check_compiled_quaternion(family_tracks, clip["m_MuscleClip"], authored_times),
                                  "invalid built quaternion in compiled slots")
                 track = family_tracks[axes.index(axis):axes.index(axis) + 1]
         elif kind == "SkinnedMeshRenderer":
