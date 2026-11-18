@@ -486,10 +486,13 @@ def _validate_qualification(spec, capture, baselines):
             actual = sample["pose"]["transforms"][target]
             for axis, prop in enumerate(TRS):
                 measured, expected = (tuple(map(f32_from_bits, pose[prop])) for pose in (actual, expected_pose))
-                residual = (angle(measured, expected) if prop == "rotation"
-                            else max(abs(a - b) for a, b in zip(measured, expected)))
-                require(residual <= bounds[3 * target + axis],
-                        f"{name} {prop} residual exceeds frozen replay bound at {sample['local']}")
+                bound = bounds[3 * target + axis]
+                if prop == "rotation":
+                    within = angle(measured, expected) <= bound
+                else:
+                    # Translation and scale have a bound per component.
+                    within = all(abs(a - b) <= c for a, b, c in zip(measured, expected, bound, strict=True))
+                require(within, f"{name} {prop} residual exceeds frozen replay bound at {sample['local']}")
 
 
 def _validate_recording(spec, capture, bundle_dir=None, *, pending_humanoid=False):

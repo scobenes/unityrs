@@ -23,6 +23,9 @@ pub(crate) fn budget(prop: &str, target: usize, kind: &str, range: &J) -> J {
     if prop == "rotation" {
         out["stages"][0]["norm_ranges"] = json!([[[0, 0], [0, 0], [0, 0], [1, 1]]]);
     }
+    if prop == "translation" || prop == "scale" {
+        out["component_ranges"] = json!([range, range, range]);
+    }
     out
 }
 

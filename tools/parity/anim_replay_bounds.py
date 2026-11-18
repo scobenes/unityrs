@@ -161,10 +161,10 @@ def _component_ranges(row, stage):
     component's values against its own ranges and the row's stage range.
     """
     rows = row.get("component_ranges")
+    if (rows is None) == (row["property"] in ("translation", "scale")):
+        raise ValueError("translation and scale rows, and only they, need component ranges")
     if rows is None:
         return None
-    if row["property"] not in ("translation", "scale"):
-        raise ValueError("component ranges are only for translation and scale")
     for ranges in rows:
         if len(ranges) != len(stage["range"]):
             raise ValueError(f"wrong component range width for {stage['stage']}")
@@ -215,11 +215,14 @@ def budget_model(row):
                 raise ValueError("joint angle range does not cover the muscle range and limits")
             extra += gain * roundoff(OPERATIONS["muscle"], max_muscle * max_limit)
             gain *= max_limit
+    own = _component_ranges(row, stages[0])
     if joint or prop == "rotation":
         # The output is a normalized quaternion, with components at most one.
         components = ((_curve_error(sequence[0], stages[0]["range"]), 0.),)
     else:
-        rows = _component_ranges(row, stages[0]) or [stages[0]["range"]]
+        # A weight has one component; a vector row bounds each from its own
+        # ranges and never from a range shared across components.
+        rows = own or [stages[0]["range"]]
         components = tuple((_curve_error(sequence[0], ranges), value_magnitude(sequence[0], ranges))
                            for ranges in rows)
     return BudgetModel(components, gain, extra, floor, "component_ranges" in row)

@@ -212,8 +212,13 @@ pub(crate) fn check(target: &Target<'_, '_, '_>, timing: ClipTiming, meter: &Met
         name,
         ranges: list(&stages[0]["range"])?,
     };
-    // A vector row may give each component its own ranges, inside the
-    // row's envelope; each component's values must then lie in its own.
+    // Translation and scale rows give each component its own ranges, and
+    // each component's values must lie in its own.
+    let vector = matches!(target.property(), "translation" | "scale");
+    require(
+        target.budget.get("component_ranges").is_some() == vector,
+        "bundle component range coverage",
+    )?;
     let components = match target.budget.get("component_ranges") {
         Some(rows) => {
             let rows = list(rows)?;

@@ -742,9 +742,11 @@ serialized rest pose, the compiled or explicit curves and the playback
 interval, never the observed poses. It walks each interval between the
 start, the stop and every key strictly inside them, and records every
 coefficient, key-relative time, Hermite control and clamped or rest value
-the path reads. A translation or scale row also gives each component its
-own ranges in `component_ranges`, in the stage's layout, with `[0, 0]`
-for a range the component never reads. The derivation then bounds each
+the path reads. A translation or scale row must also give each component
+its own ranges in `component_ranges`, in the stage's layout, with `[0, 0]`
+for a range the component never reads. The schema, `derive` and the Rust
+audit refuse a translation or scale row without them, and any other row
+with them; no shared envelope ever bounds a vector component. The derivation then bounds each
 component from its own ranges, so a large clamped Y never widens X's
 tolerance, and the Rust audit checks each component against them. The
 author supports rest, constant, held and streamed compiled slots, clamped
@@ -851,9 +853,9 @@ angle metric floor. Refuse any rotation tolerance that reaches π.
 Run `python3 -I tools/parity/anim_replay.py derive synthetic-replay.json --bundle-dir . > synthetic-tolerances.json`.
 The result contains the manifest SHA-256 (sorted compact UTF-8 JSON),
 `clock_discriminated` (true, false or `"independent"`), ordered property, target and channel keys, and
-per-sample clocks, held sides and bounds. A row with `component_ranges`
-has one bound per component, compared component by component; any other
-row has one bound. Freeze it alongside the inputs before comparison.
+per-sample clocks, held sides and bounds. A translation or scale row has
+one bound per component, compared component by component; a rotation or
+weight row has one bound. Freeze it alongside the inputs before comparison.
 Investigate discrepancies against the recorded layout, settings and
 equations.
 

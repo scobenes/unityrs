@@ -79,19 +79,13 @@ fn each_component_is_bounded_by_its_own_ranges() {
         [[0, 0], [0, 0], [0, 0], [large, large], [0, 1]],
         [[0, 0], [0, 0], [0, 0], [0, 0], [0, 1]]
     ]);
-    for (ramp, own_ranges, passes) in [
-        (true, true, true),
-        (false, true, false),
-        (false, false, true),
-    ] {
+    for (ramp, passes) in [(true, true), (false, false)] {
         with_clip(
             false,
             generic_clip(GenericClip::RampBesideLarge),
             |document| {
                 let mut row = budget("translation", 0, "streamed", &envelope);
-                if own_ranges {
-                    row["component_ranges"] = components.clone();
-                }
+                row["component_ranges"] = components.clone();
                 document["spec"]["budgets"][0] = row;
                 for sample in document["capture"]["samples"].as_array_mut().unwrap() {
                     let local = sample["local"].as_f64().unwrap();
@@ -103,6 +97,14 @@ fn each_component_is_bounded_by_its_own_ranges() {
             |dir, valid, frozen| {
                 if passes {
                     compare(valid, dir, frozen).unwrap();
+                    // A vector row without its own component ranges is
+                    // refused, never bounded by the shared envelope.
+                    let mut shared = valid.clone();
+                    shared["spec"]["budgets"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("component_ranges");
+                    rejects(dir, &shared, frozen, "bundle component range coverage");
                 } else {
                     // A replay that leaves X at rest must not pass on Y's
                     // f32 rounding at 2^20.

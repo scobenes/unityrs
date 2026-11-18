@@ -557,16 +557,16 @@ impl Target<'_, '_, '_> {
             .fold(0., f64::max))
     }
 
-    /// The error and bound of the component furthest past its bound, or of
-    /// the whole target where one bound covers every component.
+    /// The error and bound of the translation or scale component furthest
+    /// past its bound, or of a rotation or weight target's one bound.
     fn worst(&self, sampled: &[f64], reference: &[f64], bound: &J) -> Result<(f64, f64)> {
+        let vector = matches!(self.property(), "translation" | "scale");
         let Some(bounds) = bound.as_array() else {
+            require(!vector, "component tolerance coverage")?;
             return Ok((self.error(sampled, reference)?, number(bound)?));
         };
         require(
-            self.property() != "rotation"
-                && bounds.len() == sampled.len()
-                && sampled.len() == reference.len(),
+            vector && bounds.len() == sampled.len() && sampled.len() == reference.len(),
             "component tolerance coverage",
         )?;
         let mut worst = None;

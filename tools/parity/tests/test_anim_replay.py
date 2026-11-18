@@ -111,6 +111,14 @@ def declare_budgets(manifest):
     spec = manifest["spec"]
     spec["budgets"] = [row(prop, i) for i in range(len(spec["nodes"])) for prop in ("translation", "rotation", "scale")]
     spec["budgets"] += [row("weight", i, 0) for i in range(len(spec["renderers"]))]
+    return own_ranges(manifest)
+
+
+def own_ranges(manifest):
+    """Give each translation and scale row's components the row's stage ranges."""
+    for budget in manifest["spec"]["budgets"]:
+        if budget["property"] in ("translation", "scale"):
+            budget["component_ranges"] = [copy.deepcopy(budget["stages"][0]["range"]) for _ in range(3)]
     return manifest
 
 
@@ -525,9 +533,9 @@ class TestAnimReplay(unittest.TestCase):
                 m = declare_budgets(synthetic())
                 m["spec"]["budgets"][0]["track_kind"] = stage
                 m["spec"]["budgets"][0]["stages"] = [dict(stage=stage, range=ranges)]
-                first, off_key, *_ = replay.derive(m)["samples"]
+                first, off_key, *_ = replay.derive(own_ranges(m))["samples"]
                 dt = abs(off_key["source"] - off_key["effective_source"])
-                self.assertAlmostEqual(off_key["bounds"][0] - first["bounds"][0], rate * dt, delta=1e-17)
+                self.assertAlmostEqual(off_key["bounds"][0][0] - first["bounds"][0][0], rate * dt, delta=1e-17)
 
     def test_weighted_budget_encloses_flat_time_inverse(self):
         m = declare_budgets(synthetic())
@@ -535,9 +543,9 @@ class TestAnimReplay(unittest.TestCase):
         m["spec"]["budgets"][0]["track_kind"] = "weighted"
         stages[:] = [dict(stage="weighted", range=[[0, 0], [1, 1], [0, 0], [0, 0],
                                                      [1, 1], [1, 1], [1, 1]])]
-        flat = replay.derive(m)["samples"][1]["bounds"][0]
+        flat = replay.derive(own_ranges(m))["samples"][1]["bounds"][0][0]
         stages[0]["range"][-2:] = [[.25, .25], [.25, .25]]
-        regular = replay.derive(m)["samples"][1]["bounds"][0]
+        regular = replay.derive(own_ranges(m))["samples"][1]["bounds"][0][0]
         self.assertGreater(flat, .01)
         self.assertLess(regular, .001)
 
@@ -600,6 +608,7 @@ class TestAnimReplay(unittest.TestCase):
                 with self.subTest(stage=stage, duration=duration):
                     budget.update(track_kind=stage, stages=[dict(
                         stage=stage, range=[[0, 0]] * 4 + [[duration, 1]] + weights)])
+                    own_ranges(m)
                     if duration < 2**-126:
                         with self.assertRaisesRegex(ValueError, "normal f32 duration"):
                             replay.derive(m)
@@ -646,12 +655,27 @@ class TestAnimReplay(unittest.TestCase):
         trans, rot, _, weight, _ = frame["bounds"]
         # The ranges reach 8, where half an f32 ulp is 2^-21.
         expected = 8 / (2**20 - 1) + 2 * abs(frame["effective_source"] - frame["source"]) + 2**-21
-        self.assertAlmostEqual(trans, expected, delta=1e-18)
+        self.assertEqual(len(trans), 3)
+        self.assertAlmostEqual(trans[0], expected, delta=1e-18)
         self.assertGreater(rot, 0)
         self.assertEqual(replay.derive(m), result)
         # A wider value range reaches a coarser f32 ulp.
         m["spec"]["budgets"][4]["stages"][0]["range"][3] = [6, 60]
         self.assertGreater(replay.derive(m)["samples"][1]["bounds"][4], weight)
+
+    def test_vector_rows_and_only_they_need_component_ranges(self):
+        m = declare_budgets(synthetic())
+        del m["spec"]["budgets"][2]["component_ranges"]
+        with self.assertRaisesRegex(ValueError, "no schema alternative"):
+            replay.derive(m)
+        m = declare_budgets(synthetic())
+        m["spec"]["budgets"][3]["component_ranges"] = [m["spec"]["budgets"][3]["stages"][0]["range"]] * 3
+        with self.assertRaisesRegex(ValueError, "only they, need component ranges"):
+            replay.derive(m)
+        m = declare_budgets(synthetic())
+        m["spec"]["budgets"][0]["component_ranges"][1] = [[0, 0]]
+        with self.assertRaisesRegex(ValueError, "wrong component range width"):
+            replay.derive(m)
 
     def test_bounds_ignore_the_captured_pose(self):
         m = declare_budgets(synthetic())

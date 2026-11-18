@@ -219,9 +219,11 @@ class AuthoredBudgets(unittest.TestCase):
         translation = [sample["bounds"][0] for sample in derived["samples"]]
         # A replay leaving X at 0 errs by 1 at the stop, far past X's bound.
         self.assertTrue(all(x < 1e-3 and y > 2**-5 for x, y, _ in translation))
+        # A vector row without its own component ranges is refused, never
+        # bounded by the envelope its components share.
         del row(m, "translation", 0)["component_ranges"]
-        shared = replay.derive(m)["samples"][-1]["bounds"][0]
-        self.assertGreater(shared, 1)
+        with self.assertRaisesRegex(ValueError, "no schema alternative"):
+            replay.derive(m)
 
     def test_verify_refuses_rows_widened_after_the_capture(self):
         m = authored(held_weight_clip())
