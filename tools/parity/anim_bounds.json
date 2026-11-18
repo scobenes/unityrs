@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "transcription": {
+    "unit_roundoff": 1.1102230246251565e-16,
+    "absolute_floor": 1.1830521861667747e-271,
+    "min_interval": 9.5367431640625e-7,
+    "max_abs_source_time": 1024,
+    "max_operation_scale": 1099511627776,
+    "max_abs_degrees": 3600,
+    "min_raw_quaternion_norm": 0.25,
+    "elementary_max_ulps": 2,
+    "operations": {"streamed": 16, "dense": 16, "constant": 0, "hermite": 64, "weighted": 64, "muscle": 4, "joint": 256},
+    "weighted_time_operations": 64,
+    "angular_floor_u64": 256
+  },
+  "bake": {
+    "max_local_seconds": 1024,
+    "max_abs_component": 1048576,
+    "max_component_rate": 4096,
+    "max_angular_rate": 512,
+    "arithmetic_floor": 9.313225746154785e-10,
+    "component_ulp_coefficient": 0.500001,
+    "angular_ulp_coefficient": 32,
+    "timestamp_ulp_coefficient": 0.5,
+    "aligned_dot_margin_ulps": 8,
+    "approximation": {"translation": 0.0001, "scale": 0.00001, "weight": 0.00001, "rotation": 0.0001},
+    "max_subdivision_depth": 20,
+    "max_keys_per_channel": 65536
+  }
+}
