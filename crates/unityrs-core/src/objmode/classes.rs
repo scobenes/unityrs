@@ -63,7 +63,8 @@ pub const MESH: Class = Class {
 };
 
 /// `Mesh` from Unity 6000 (Tier C, `PARITY.md` section 19.1): UnityPy git
-/// 417d595's fields (unchanged at master), from a newer TPK: `m_MeshUsageFlags`,
+/// 417d595's fields (`HEAD classes/generated.py:4813-4852`, unchanged at
+/// master), from a newer TPK: `m_MeshUsageFlags`,
 /// which Unity 6000.6 no longer writes, has the default `None`, and the two
 /// `m_PreBake*` flags are new. 1.25.2 requires it, so builds an `UnknownObject`.
 pub const MESH_6000: Class = Class {
