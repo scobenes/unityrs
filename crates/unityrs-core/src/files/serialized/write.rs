@@ -51,11 +51,10 @@ impl SerializedFile {
     /// HEAD 417d595 for formats 23-26. HEAD's absent per-type node assertion
     /// and formats above 26 refuse before building or charging output.
     ///
-    /// `Semantic` refuses an output that detection would take for a brotli
-    /// `WebFile` (128 bytes or more with `brotli` at 0x20, which below format
-    /// 22 metadata or object bytes can spell) with
-    /// `Range("SerializedFile brotli marker collision")`: reloaded, it would
-    /// fail as a WebFile, where UnityPy's layout writes it as UnityPy does.
+    /// `Semantic` refuses with a `Range` collision an output that detection
+    /// would not reload as a SerializedFile (a bundle signature or gzip magic
+    /// in the header's sizes, the brotli marker at 0x20 in metadata or object
+    /// bytes below format 22); the `UnityPy` layout writes it unchecked.
     pub fn save(&self, options: SaveOptions) -> Result<Bytes, SaveError> {
         self.save_impl(options, None)
     }
@@ -365,13 +364,8 @@ impl SerializedFile {
             out.boolean(h.endian == Endian::Big)?;
             out.bytes(meta.slice())?;
         }
-        // UnityPy helpers/ImportHelper.py:84-88 tests the marker before the
-        // SerializedFile header, so such bytes never reload as this file.
-        if layout == SaveLayout::Semantic
-            && out.len() >= 128
-            && out.slice().get(0x20..0x26) == Some(b"brotli".as_slice())
-        {
-            return Err(SaveError::Range("SerializedFile brotli marker collision"));
+        if layout == SaveLayout::Semantic {
+            reloads_as_serialized(out.slice(), &self.ctx.limits, self.meter())?;
         }
         out.finish()
     }
@@ -383,6 +377,35 @@ impl SerializedFile {
             .read(self.data.len(), start, i64::from(row.byte_size))?;
         Ok(self.data.slice(range))
     }
+}
+
+/// The semantic layout's reload guard: `bytes`, the whole output, must be
+/// detected as it is when a bundle or WebFile holds it (`check_entry_type`,
+/// `helpers/ImportHelper.py:44-124`), an `AssetsFile`, or, under 128 bytes,
+/// the `ResourceFile` every such small file is. Detection tests signatures,
+/// gzip magic and the brotli marker before the SerializedFile header, and
+/// below format 22 the header's sizes and the metadata or object bytes that
+/// follow can spell them. It reads the output in place, and inflates only a
+/// stream behind gzip magic, counting that as the meter's work.
+fn reloads_as_serialized(
+    bytes: &[u8],
+    limits: &crate::limits::Limits,
+    meter: &crate::limits::Meter,
+) -> Result<(), SaveError> {
+    use crate::detect::{DetectError, FileType, check_entry_type};
+    use crate::limits::ChargeError;
+    let reason = match check_entry_type(bytes, limits, meter) {
+        Ok(FileType::AssetsFile) => return Ok(()),
+        Ok(FileType::ResourceFile) if bytes.len() < 128 => return Ok(()),
+        Ok(FileType::BundleFile) => "SerializedFile bundle signature collision",
+        Ok(FileType::WebFile) => "SerializedFile WebFile marker collision",
+        Ok(FileType::Zip) => "SerializedFile zip signature collision",
+        Ok(FileType::ResourceFile) => "SerializedFile header detected as a resource",
+        Err(DetectError::Work(e)) => return Err(SaveError::Charge(ChargeError::Limit(e))),
+        Err(DetectError::Allocator(e)) => return Err(SaveError::Charge(e.into())),
+        Err(_) => "SerializedFile gzip magic collision",
+    };
+    Err(SaveError::Range(reason))
 }
 
 impl SerializedType {
@@ -452,5 +475,57 @@ impl SerializedType {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::reloads_as_serialized;
+    use crate::files::save::SaveError;
+    use crate::limits::{Limits, Meter};
+
+    /// A format-17 header (big-endian sizes, then the endian byte and three
+    /// reserved bytes), zero-padded to `len`.
+    fn header(metadata: u32, file: u32, len: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for field in [metadata, file, 17, 0x40] {
+            out.extend_from_slice(&field.to_be_bytes());
+        }
+        out.resize(len, 0);
+        out
+    }
+
+    fn guard(bytes: &[u8]) -> Result<(), SaveError> {
+        reloads_as_serialized(bytes, &Limits::default(), &Meter::unlimited())
+    }
+
+    #[test]
+    fn only_outputs_detected_as_serialized_files_pass() {
+        let collision = |reason| Err(SaveError::Range(reason));
+        assert_eq!(guard(&header(0x10, 128, 128)), Ok(()));
+        // Under 128 bytes detection says resource for any unsigned file.
+        assert_eq!(guard(&header(0x10, 64, 64)), Ok(()));
+        // A metadata size of 0x1f8b0000 opens with gzip magic, whose
+        // compression method byte (0) fails detection.
+        assert_eq!(
+            guard(&header(0x1f8b_0000, 128, 128)),
+            collision("SerializedFile gzip magic collision")
+        );
+        // Sizes 0x556e6974 and 0x79465300 spell `UnityFS\0`.
+        assert_eq!(
+            guard(&header(0x556e_6974, 0x7946_5300, 128)),
+            collision("SerializedFile bundle signature collision")
+        );
+        let mut marked = header(0x10, 128, 128);
+        marked[0x20..0x26].copy_from_slice(b"brotli");
+        assert_eq!(
+            guard(&marked),
+            collision("SerializedFile WebFile marker collision")
+        );
+        // Sizes past the file fail the header check: a resource.
+        assert_eq!(
+            guard(&header(0x10, 4096, 128)),
+            collision("SerializedFile header detected as a resource")
+        );
     }
 }

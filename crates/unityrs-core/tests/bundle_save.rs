@@ -294,7 +294,7 @@ fn semantic_save_refuses_a_serialized_child_that_would_reload_as_a_brotli_webfil
         }
     ));
     // The semantic layout refuses it before output, directly or held.
-    let collision = Err(SaveError::Range("SerializedFile brotli marker collision"));
+    let collision = Err(SaveError::Range("SerializedFile WebFile marker collision"));
     assert_eq!(sf.save(SaveOptions::default()), collision);
     assert_eq!(b.save(BundleSaveOptions::default()), collision);
     // In path-id order the marker stays at 0x10: saved and reloaded alike.
