@@ -2,7 +2,10 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use unityrs_anim::{AnimError, PathQuery, RigPaths, SlotCounts, discover, read_bindings};
+use unityrs_anim::{
+    AnimError, PathQuery, RigPaths, SlotCounts, bind_clip, discover, read_bindings, read_clip,
+    sample_clip,
+};
 use unityrs_core::budget::{BudgetExceeded, MemoryBudget, Permit, Reservation, Unbounded};
 use unityrs_core::env::{EnvOptions, Environment, Source};
 use unityrs_core::files::File;
@@ -37,6 +40,9 @@ fn fixture() -> (Environment, Graph, ObjectRef) {
         a::clip(8),
         clip,
     ];
+    let mut playback = a::playback::compiled_fixture();
+    playback.path_id = 40;
+    objects.push(playback);
     for id in [10, 20] {
         objects.push(Object::new(id, 1, s::game_object(b"child", &[(0, id + 1)])));
         objects.push(Object::new(
@@ -83,6 +89,14 @@ fn walk(
     )?;
     assert_eq!(catalog.rigs()[0].clips().count(), 1);
     assert_eq!(slots.len(), 6);
+    let playback = clip.file().object(40).unwrap();
+    let playback = read_clip(&playback, meter)?;
+    let bound = bind_clip(&playback, &paths, &[], &[], meter)?;
+    let schedule = bound.timing().unwrap().schedule(None, meter)?;
+    let rest = [graph.nodes()[0].local];
+    let samples = sample_clip(&bound, &rest, schedule.as_slice(), meter)?;
+    assert_eq!(samples.times().len(), 9);
+    assert_eq!(samples.transforms().len(), 9);
     assert!(meter.used() > 0);
     Ok(())
 }
@@ -126,7 +140,14 @@ fn reservation_and_work_refusals_release_partial_results() {
         let meter = Meter::new(u64::MAX, budget, Reservation::Dependency);
         let err = walk(&env, &graph, &clip, &meter).unwrap_err();
         assert!(
-            matches!(err, AnimError::Charge(ChargeError::Budget(ref e)) if e.what == Reservation::Dependency),
+            match &err {
+                AnimError::Charge(ChargeError::Budget(e)) => e.what == Reservation::Dependency,
+                AnimError::Parse(unityrs_core::walk::ParseError::Read(e)) => {
+                    matches!(&e.detail, unityrs_core::walk::ReadDetail::Charge(ChargeError::Budget(e))
+                        if e.what == Reservation::Dependency)
+                }
+                _ => false,
+            },
             "reservation {at}: {err:?}"
         );
         assert_eq!(meter.used(), 0, "reservation {at}");
@@ -141,7 +162,14 @@ fn reservation_and_work_refusals_release_partial_results() {
             result.unwrap();
         } else {
             assert!(
-                matches!(result, Err(AnimError::Charge(ChargeError::Limit(ref e))) if e.kind() == LimitKind::DecodeWork),
+                match &result {
+                    Err(AnimError::Charge(ChargeError::Limit(e))) =>
+                        e.kind() == LimitKind::DecodeWork,
+                    Err(AnimError::Parse(unityrs_core::walk::ParseError::Read(e))) => {
+                        matches!(&e.detail, unityrs_core::walk::ReadDetail::Limit(e) if e.kind() == LimitKind::DecodeWork)
+                    }
+                    _ => false,
+                },
                 "work {limit}: {result:?}"
             );
         }

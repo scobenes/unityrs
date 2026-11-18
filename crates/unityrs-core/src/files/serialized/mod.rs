@@ -62,7 +62,7 @@ use bytes::Bytes;
 use crate::container::{Container, read_container};
 use crate::error::Error;
 use crate::files::Parent;
-use crate::limits::{Charge, GrantScope, Limits, Meter};
+use crate::limits::{Charge, ChargeError, GrantScope, Limits, Meter};
 use crate::object::ObjectRef;
 use crate::once::{CellError, ResultCell, get_or_publish_result};
 use crate::options::FileContext;
@@ -360,10 +360,19 @@ impl SerializedFile {
     /// Copies `value`'s slices of this file out of the buffer they keep
     /// alive, when they would keep much more than themselves alive
     /// ([`crate::pin`]), and counts the copy: the bytes copied.
-    pub(crate) fn unpin(&self, value: &mut Parsed) -> u64 {
-        let n = crate::pin::copy_out(value.value_mut(), &self.data, self.pinned(), self.meter());
+    pub(crate) fn unpin(
+        &self,
+        value: &mut Parsed,
+        caller: Option<&Arc<Meter>>,
+    ) -> Result<(), ChargeError> {
+        let target = value.value_mut();
+        let n = if let Some(meter) = caller {
+            crate::pin::try_copy_out(target, &self.data, self.pinned(), meter, true)?
+        } else {
+            crate::pin::copy_out(target, &self.data, self.pinned(), self.meter())
+        };
         self.copies.value(n);
-        n
+        Ok(())
     }
 
     /// Final metadata cursor of the constructor's input reader.

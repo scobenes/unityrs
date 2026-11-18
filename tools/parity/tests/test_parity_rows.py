@@ -85,7 +85,7 @@ class TestColumn(unittest.TestCase):
         """Section 0's status rules: a row that names a test is pinned or verified, one that names none is
         unverified (source reading), n/a (tier —) or a pointer to another row; `planned` is sections 17.1's and 24's.
         A test or the corpus dump named inside a `planned` clause probes nothing, every row states its own status,
-        and every test a test column names carries its module; a verified P1, P1b, P2a or P3 row names a Rust test,
+        and every test a test column names carries its module; a verified P1, P1b, P2a, P2b or P3 row names a Rust test,
         and that test exists."""
         text = (HERE.parent.parent / "PARITY.md").read_text(encoding="utf-8")
         seen = 0
@@ -101,15 +101,17 @@ class TestColumn(unittest.TestCase):
                     # Every test is named with its module, so a renamed test fails the check above.
                     self.assertIsNone(re.search(r"`test_[a-z_]+\.py` [a-z0-9_]+, [a-z]", cells[test]), "a bare name")
                     # A row P0 probed and P1 verified ("pinned P0; verified P1") takes both checks.
-                    if any(f"verified {phase}" in state for phase in ("P1", "P2a", "P3")):
+                    if state.startswith("verified P2b") or any(
+                        f"verified {phase}" in state for phase in ("P1", "P2a", "P3")
+                    ):
                         rust = self.RUST.findall(cells[test])
-                        self.assertTrue(rust, "a verified P1, P1b, P2a or P3 row names the Rust test that pins it")
+                        self.assertTrue(rust, "a verified P1, P1b, P2a, P2b or P3 row names the Rust test that pins it")
                         for path, name in rust:
                             source = (HERE.parent.parent / path).read_text(encoding="utf-8")
                             self.assertRegex(source, rf"\bfn {name}\(", f"{path} has no test {name}")
                     if state.startswith(("pinned P0", "verified P0")):
                         self.assertTrue(probed, "a probed row names what probes it")
-                    elif state.startswith(("verified P1", "verified P2a", "verified P3")):
+                    elif state.startswith(("verified P1", "verified P2a", "verified P2b", "verified P3")):
                         pass
                     elif state.startswith("unverified (source reading); impl P"):
                         self.assertFalse(probed, "a row a test runs is not unverified")

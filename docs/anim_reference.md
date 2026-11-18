@@ -51,7 +51,7 @@ shapes and mixed-storage Transform bindings need same-bundle evidence.
   exclude it from the real keys and duration.
 - Dense. Frame `i` is at `g(i) = m_BeginTime + i / m_SampleRate`, using
   the dense layout's rate. Read `A[i*curve_count + slot]`. With
-  `g(i) <= sample < g(i+1)`, let `u = (sample - g(i))*rate` and evaluate
+  `g(i) <= sample < g(i+1)`, let `u = min(1, (sample - g(i))*rate)` and evaluate
   `A[i] + (A[i+1] - A[i])*u` for that slot. At a grid point use its stored
   value. Clamp outside the grid, and hold a one-frame slot. Discrete slots
   hold the preceding value with a right-hand change at a grid point.
@@ -75,10 +75,10 @@ Ordinary Hermite uses the four basis terms in this order:
 ```
 
 Tangents are derivatives per second. Use the stored value at each key.
-For a short explicit curve, clamp before the first key or after the last
-key only when that side's per-curve wrap mode is Default or Clamp
-(including ClampForever). An out-of-range sample with an unconfirmed
-mode raises `unsupported_curve_wrap` until a fixture confirms playback.
+For a short explicit curve, use that side's `m_PreInfinity` or
+`m_PostInfinity` code outside the key range. The boundary rule is
+**serialized 2 = clamp; others refused until confirmed by fixture**.
+An out-of-range sample with any other code raises `unsupported_curve_wrap`.
 [Unity AnimationCurve pre-wrap](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/AnimationCurve-preWrapMode.html) · [Unity AnimationCurve post-wrap](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/AnimationCurve-postWrapMode.html)
 
 For both Hermite and weighted segments, an infinite left `outSlope`
@@ -221,6 +221,29 @@ This budget assumes elementary functions within two ulps over the
 evaluated domains. Use the recorded norm lower bound for a complete
 interval, including off-key values, so a near-zero raw quaternion cannot
 hide under a generous angular tolerance.
+
+### Synthetic sampler replay
+
+The testkit emits explicit and compiled clips with a two-second source
+origin. The Rust replay binds their Transform and morph channels and
+compares 18 sampled poses against the independent f64 evaluator. The
+fixtures cover fractional scalar weights, an infinite one-sided tangent,
+stored Euler order and authored turns, sparse cubic streams, frame-major
+dense quaternions and morph weights, and constants. The serialized field
+fixtures and stripped TPK check exercise the read path separately.
+
+Regenerate the expected values and inverse-time bounds from the repository
+root with:
+
+```sh
+python3 -I tools/parity/tests/test_anim_synthetic.py --generate
+```
+
+The [generation test](../tools/parity/tests/test_anim_synthetic.py) checks
+the JSON for drift. The [Rust replay](../crates/unityrs-anim/tests/clip/replay.rs)
+compares stored Hermite endpoints exactly and uses the raw quaternion norm
+of each rotation sample, with the frozen norm as its floor. Same-bundle
+Editor playback remains the L11 gate.
 
 ## Frozen bake bounds
 

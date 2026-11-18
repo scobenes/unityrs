@@ -6,9 +6,10 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::{Slice, Slices, copy_out, merge, place};
+use super::{Slice, Slices, copy_out, merge, place, try_copy_out};
 use crate::budget::{OWNER_COST, Reservation, Unbounded};
-use crate::limits::{Meter, heap_cost};
+use crate::error::LimitKind;
+use crate::limits::{ChargeError, Meter, heap_cost};
 
 /// Slices, visited in order.
 struct Many(Vec<Bytes>);
@@ -97,6 +98,28 @@ fn a_refused_copy_changes_nothing() {
     // With room for all three it copies.
     let meter = Meter::new(all, Arc::new(Unbounded), Reservation::Input);
     assert_eq!(copy_out(&mut slices(&whole), &within, 4 << 20, &meter), 32);
+}
+
+#[test]
+fn a_large_copy_is_refused_by_the_caller_work_budget() {
+    let whole = Bytes::from(vec![42; 4 << 20]);
+    let slice = whole.slice(..(256 << 10));
+    let mut target = Many(vec![slice.clone()]);
+    let meter = Meter::with_decode_work(u64::MAX, 16, Arc::new(Unbounded), Reservation::Input);
+
+    let err = try_copy_out(&mut target, &whole, 4 << 20, &meter, true).unwrap_err();
+    let ChargeError::Limit(limit) = err else {
+        panic!("expected a decode work refusal, got {err}");
+    };
+    assert_eq!(limit.kind(), LimitKind::DecodeWork);
+    assert_eq!(limit.value(), 1 + (256 << 10));
+    assert_eq!(target.0[0].as_ptr(), slice.as_ptr());
+    assert_eq!(meter.used(), 0);
+    assert_eq!(meter.decoded(), 1, "only the sort spent work");
+
+    assert_eq!(copy_out(&mut target, &whole, 4 << 20, &meter), 256 << 10);
+    assert_eq!(target.0[0], slice);
+    assert_eq!(meter.decoded(), 1, "the legacy copy spends no work");
 }
 
 /// A slice is placed only when it is not empty and lies wholly in `within`.

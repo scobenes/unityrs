@@ -220,6 +220,18 @@ impl ObjectRef {
         self.read_typetree_mode(nodes, check_read, false)
     }
 
+    /// Read the dictionary on the supplied meter with exact serialized
+    /// float bits, including signalling NaNs used by some animation slots.
+    /// Tree resolution stays scoped to the owning file.
+    pub fn read_typetree_lossless(
+        &self,
+        nodes: Option<&Arc<Tree>>,
+        check_read: bool,
+        meter: &Arc<crate::limits::Meter>,
+    ) -> Result<Parsed, ParseError> {
+        self.read_fields_mode(nodes, check_read, false, None, Some(meter))
+    }
+
     /// Read object-mode values into the dict model, retaining the Python
     /// reader's pointer and referenced-type validation. The binding constructs
     /// Python classes from these values; the core fallback also uses this mode.
@@ -243,7 +255,7 @@ impl ObjectRef {
         nodes: Option<&Arc<Tree>>,
     ) -> Result<(Parsed, crate::walk::FieldProgress), ParseError> {
         let mut progress = crate::walk::FieldProgress::default();
-        let parsed = self.read_fields_mode(nodes, false, true, Some(&mut progress))?;
+        let parsed = self.read_fields_mode(nodes, false, true, Some(&mut progress), None)?;
         Ok((parsed, progress))
     }
 
@@ -253,7 +265,7 @@ impl ObjectRef {
         check_read: bool,
         object_mode: bool,
     ) -> Result<Parsed, ParseError> {
-        self.read_fields_mode(nodes, check_read, object_mode, None)
+        self.read_fields_mode(nodes, check_read, object_mode, None, None)
     }
 
     fn read_fields_mode(
@@ -262,6 +274,7 @@ impl ObjectRef {
         check_read: bool,
         object_mode: bool,
         progress: Option<&mut crate::walk::FieldProgress>,
+        lossless_meter: Option<&Arc<crate::limits::Meter>>,
     ) -> Result<Parsed, ParseError> {
         // UnityPy files/ObjectReader.py:244-262
         let Some(tree) = self.tree(nodes)? else {
@@ -271,12 +284,15 @@ impl ObjectRef {
             });
         };
         let file = &self.file;
-        let options = file.context().read_options();
+        let mut options = file.context().read_options();
+        if lossless_meter.is_some() {
+            options.floats = crate::walk::FloatMode::Lossless;
+        }
         let ctx = ReadCtx {
             endian: file.header().endian,
             ref_types: file.ref_types_view(),
             options: &options,
-            meter: file.meter(),
+            meter: lossless_meter.unwrap_or_else(|| file.meter()),
         };
         let info = self.info();
         let mut read = crate::walk::read_with_fields(
@@ -292,16 +308,15 @@ impl ObjectRef {
         // A value kept past the file's handles keeps alive the buffer its
         // slices are of: copied out of a run much larger than they are
         // (`crate::pin`; plan section 8, R3), `check_read`'s value too.
-        match &mut read {
-            Ok(value) => {
-                file.unpin(value);
-            }
-            Err(ParseError::CheckRead { parsed, .. }) => {
-                if let Some(value) = Arc::get_mut(parsed) {
-                    file.unpin(value);
-                }
-            }
-            Err(_) => {}
+        let value = match &mut read {
+            Ok(value) => Some(value),
+            Err(ParseError::CheckRead { parsed, .. }) => Arc::get_mut(parsed),
+            Err(_) => None,
+        };
+        if let Some(value) = value {
+            file.unpin(value, lossless_meter).map_err(|error| {
+                crate::walk::charge_error(u64::try_from(value.bytes_read).unwrap_or(0), error)
+            })?;
         }
         read
     }

@@ -32,6 +32,10 @@ class TestAnimReference(unittest.TestCase):
         frames = [0, 4, 30, 8, 60, 20]
         self.assertEqual([dense(frames, 2, 1, 2, 4, t) for t in (1, 2, 2.125, 2.25, 9)],
                          [4, 4, 6, 8, 20])
+        rate = struct.unpack("<f", struct.pack("<f", 29 / 3))[0]
+        sample = math.nextafter(1 + 4 / rate, -math.inf)
+        self.assertGreater((sample - (1 + 3 / rate)) * rate, 1)
+        self.assertEqual(dense([0, 0, 0, 0, 1], 1, 0, 1, rate, sample), 1)
 
     def test_dense_discrete_and_single_frame(self):
         self.assertEqual(dense([4, 8], 1, 0, 2, 4, 2.125, held=True), 4)

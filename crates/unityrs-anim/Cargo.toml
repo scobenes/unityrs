@@ -1,6 +1,6 @@
 [package]
 name = "unityrs-anim"
-description = "Metered Unity animation discovery and binding."
+description = "Metered Unity animation discovery, binding and sampling."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,7 @@ unityrs-core = { path = "../unityrs-core" }
 unityrs-scene = { path = "../unityrs-scene" }
 
 [dev-dependencies]
+serde_json = "=1.0.154"
 unityrs-testkit = { path = "../unityrs-testkit" }
 
 [features]

@@ -1,4 +1,4 @@
-//! Clip discovery and binding to a Unity scene graph.
+//! Clip discovery, reading, binding and Unity-space sampling.
 //!
 //! Callers supply the loaded view, meter and renderer facts. Discovery yields
 //! rig-scoped clip identities and retains serialized slots and failure causes.
@@ -17,20 +17,33 @@
 )]
 
 mod bindings;
+mod clip;
 mod controller;
+mod curve;
 mod discovery;
 mod error;
 mod read;
+mod sample;
 mod targets;
+mod timing;
 
 pub use bindings::{
     BindingKind, BindingLayout, BindingTable, GenericBinding, SlotBinding, SlotCounts,
     TransformProperty, ValueFlags, read_bindings,
 };
+pub use clip::{
+    Clip, ClipField, ClipSource, CompiledClip, PackedRotation, SlotValue, StorageKind, StreamKey,
+    StreamSlot, read_clip,
+};
+pub use sample::{
+    BoundClip, BoundTrack, ClipSamples, LocalTrs, MorphSample, SampleTime, TransformSample,
+    bind_clip, sample_clip,
+};
 pub use targets::{
     Attachment, BindingTarget, MorphProperty, PathQuery, RendererChannel, RendererChannels,
     RigPaths,
 };
+pub use timing::ClipTiming;
 
 pub use controller::{ControllerLeaf, ControllerTable};
 pub use discovery::{
