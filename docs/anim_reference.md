@@ -494,7 +494,7 @@ human-motion clip. Record a separate `human_pose` replay on the same
 built rig and Editor version with the same f32 sample schedule. Run
 `python3 -I tools/parity/anim_replay.py capture-id known-vector-replay.json`
 to get its ID, the SHA-256 of the complete standalone recording as sorted
-compact ASCII JSON. Put this ID in
+compact UTF-8 JSON. Put this ID in
 `evidence.humanoid.root_hips_comparison.baseline_capture_id` in the clip
 spec. Once the clip is recorded, attach the complete known-vector replay
 document as an entry in the clip manifest's top-level `baseline_captures`
@@ -638,7 +638,7 @@ errors with norm one, sum the two angular budgets and include the f64
 angle metric floor. Refuse any rotation tolerance that reaches π.
 
 Run `python3 -I tools/parity/anim_replay.py derive synthetic-replay.json --bundle-dir . > synthetic-tolerances.json`.
-The result contains the manifest SHA-256 (sorted compact ASCII JSON),
+The result contains the manifest SHA-256 (sorted compact UTF-8 JSON),
 `clock_discriminated`, ordered property, target and channel keys, and
 per-sample clocks, held sides and bounds. Freeze it alongside the inputs
 before comparison.
