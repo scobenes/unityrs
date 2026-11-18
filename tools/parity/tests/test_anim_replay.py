@@ -96,9 +96,13 @@ def synthetic():
 
 def zero_origin(manifest):
     """The synthetic clip on a zero-origin clock, where playable time is source time."""
-    times = (0, 2.05, 2.5, 3)
+    times = (0, 1, 2.05, 2.5, 3)
     manifest["spec"].update(source_clock="zero_origin", schedule=[dict(local=t) for t in times])
-    for sample, t in zip(manifest["capture"]["samples"], times):
+    samples = manifest["capture"]["samples"]
+    samples.insert(1, copy.deepcopy(samples[0]))
+    manifest["spec"]["evidence"]["clock"] = clock_evidence(manifest["spec"]["held_boundaries"][0], right=3)
+    manifest["spec"]["evidence"]["clock"]["stop"]["probe"]["sample"] = 4
+    for sample, t in zip(samples, times):
         local = replay.f32_from_bits(bits(t))
         sample.update(local=t, local_f32=bits(t), source=max(2, t), effective_source=max(2, local))
     manifest["capture"]["playback"]["clip_length_f32"] = bits(3)
@@ -278,7 +282,9 @@ class TestAnimReplay(unittest.TestCase):
         self.assertTrue(result["clock_discriminated"])
         # The start pose holds before the late interval, without clock displacement.
         self.assertEqual([(row["source"], row["effective_source"]) for row in result["samples"]],
-                         [(2, 2), (2.05, replay.f32_from_bits(bits(2.05))), (2.5, 2.5), (3, 3)])
+                         [(2, 2), (2, 2), (2.05, replay.f32_from_bits(bits(2.05))), (2.5, 2.5), (3, 3)])
+        start = replay.derive(declare_budgets(synthetic()))["samples"][0]["bounds"]
+        self.assertEqual([row["bounds"] for row in result["samples"][:2]], [start, start])
         m = synthetic()
         m["spec"]["source_clock"] = "zero_origin"
         with self.assertRaisesRegex(ValueError, "endpoints"):

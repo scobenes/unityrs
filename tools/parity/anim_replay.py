@@ -354,6 +354,9 @@ def validate_spec(spec, *, pending_humanoid=False):
     if spec["source_clock"] == "f32_add":
         require(f32_from_bits(f32_bits(start)) == start, "f32 source clock needs an exact f32 start")
     clock_discriminated = _validate_clock(spec, start, stop, length)
+    # Only a held probe shows that playable time is source time.
+    require(spec["source_clock"] != "zero_origin" or clock_discriminated,
+            "zero-origin source clock is not discriminated by a held probe")
     require(all(("muscles" in row) == (spec["mode"] == "human_pose") for row in spec["schedule"]),
             "only known-vector playback requires muscles in the schedule")
     if spec["mode"] == "human_pose":

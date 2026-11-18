@@ -4,7 +4,7 @@ use crate::{J, Path, compare, derive, digest};
 use serde_json::json;
 use unityrs_testkit::scratch::Scratch;
 
-fn bits(x: f32) -> String {
+pub(crate) fn bits(x: f32) -> String {
     format!("{:08x}", x.to_bits())
 }
 
@@ -25,7 +25,7 @@ fn budget(prop: &str, target: usize, kind: &str, range: &J) -> J {
     out
 }
 
-fn probe(sample: usize, value: f32) -> J {
+pub(crate) fn probe(sample: usize, value: f32) -> J {
     json!({"sample":sample,"property":"weight","target":0,"channel":0,"component":0,"value":bits(value)})
 }
 
@@ -257,7 +257,7 @@ fn a_request_that_rounds_onto_a_bundle_key_is_not_an_off_key_probe() {
     });
 }
 
-fn rejects(dir: &Path, manifest: &J, tolerance: &J, expected: &str) {
+pub(crate) fn rejects(dir: &Path, manifest: &J, tolerance: &J, expected: &str) {
     let error = compare(manifest, dir, tolerance).unwrap_err();
     assert!(
         error.to_string().contains(expected),
@@ -498,7 +498,7 @@ fn with_clip(
     with_recording(legacy, bytes, edit, action);
 }
 
-fn with_recording(
+pub(crate) fn with_recording(
     legacy: bool,
     bytes: Vec<u8>,
     edit: impl FnOnce(&mut J),

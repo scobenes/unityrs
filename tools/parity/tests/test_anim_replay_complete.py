@@ -124,6 +124,25 @@ class CompleteReplayTests(unittest.TestCase):
         finished = replay.read_json((self.replays / "generic-offset-stepped.json").read_text(encoding="utf-8"))
         self.assertEqual(finished["spec"]["source_clock"], "widened")
 
+    def test_complete_refuses_an_undiscriminated_zero_origin(self):
+        # Both clocks put .1 left and .91 right of the boundary at .75.
+        doc = self.recordings["generic-offset-stepped"]
+        spec, capture = doc["spec"], doc["capture"]
+        times = (0, .1, .91, 1.5)
+        first, last = capture["samples"][0], capture["samples"][-1]
+        spec["schedule"] = [dict(local=t) for t in times]
+        capture["samples"] = []
+        for t in times:
+            sample = copy.deepcopy(first if t < .75 else last)
+            local = struct.unpack(">f", struct.pack(">f", t))[0]
+            sample.update(local=t, local_f32=bits(t), source=max(.5, t), effective_source=max(.5, local),
+                          sides=["left" if t < .75 else "right"])
+            capture["samples"].append(sample)
+        clock = spec["evidence"]["clock"]
+        clock["held"][0]["left"]["sample"], clock["held"][0]["right"]["sample"] = 1, 2
+        clock["stop"]["probe"]["sample"] = 3
+        self.assert_refused("zero-origin source clock is not discriminated")
+
     def test_complete_refuses_zero_origin_with_an_interval_length(self):
         self.recordings["generic-offset-stepped"]["capture"]["playback"]["clip_length_f32"] = bits(1)
         self.assert_refused("clip length")
