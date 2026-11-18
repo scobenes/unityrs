@@ -621,7 +621,7 @@ class ExportRows(unittest.TestCase):
                 m_IndexBuffer=index_buffer([0, 1, 2, 2, 1, 3]),
                 m_VertexData=vertex_data(4, {0: (0, 0, "f", positions)}),
             )
-            writer = EndianBinaryWriter()
+            writer = EndianBinaryWriter(endian="<")  # the file's byte order, as tpk_object writes it
             TypeTreeHelper.write_typetree(value, node, writer)
             mesh = load(tpk_file([(1, 43, writer.bytes)]))[0].objects[1].parse_as_object(node)
             handler = MeshHelper.MeshHandler(mesh, version=version)
