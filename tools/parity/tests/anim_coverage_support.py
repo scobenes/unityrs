@@ -12,9 +12,11 @@ INTEGER, TWIST, SETTINGS = "integer-discrete-binding", "humanoid-twist-refusal",
 # The integer case has no Built-in fixture: the run reports it as not covered.
 COVERAGE = (TWIST, SETTINGS)
 BUNDLES = {TWIST: "humanoid-twist", SETTINGS: "humanoid-settings"} | dict.fromkeys(BASIS_CASES, "humanoid-root-basis")
-# Two basis matrix clips: the neutral combination and the original-Y one.
+# Three basis matrix clips: the neutral combination, the original-Y one and
+# the original-XZ one, which still starts at the origin.
 NEUTRAL_BASIS, BASIS_Y = "humanoid-root-basis-o0-y0-xz0", "humanoid-root-basis-o0-y1-xz0"
-BASIS = (NEUTRAL_BASIS, BASIS_Y)
+BASIS_XZ = "humanoid-root-basis-o0-y0-xz1"
+BASIS = (NEUTRAL_BASIS, BASIS_Y, BASIS_XZ)
 BASIS_FIELDS = ("keepOriginalOrientation", "keepOriginalPositionY", "keepOriginalPositionXZ")
 TWIST_VALUES = dict(upper_arm_twist=.5, lower_arm_twist=.25, upper_leg_twist=.75, lower_leg_twist=.375)
 AVATAR_TWIST = dict(m_ArmTwist=.5, m_ForeArmTwist=.25, m_UpperLegTwist=.75, m_LegTwist=.375)
@@ -124,7 +126,7 @@ def human_clip(case, spec, *, ramp=True):
     if case in BASIS_CASES:
         orientation, y, xz = BASIS_CASES[case]
         basis = {"m_KeepOriginalOrientation": orientation, "m_KeepOriginalPositionY": y,
-                 "m_KeepOriginalPositionXZ": xz, "m_HeightFromFeet": False, "m_StartAtOrigin": not xz,
+                 "m_KeepOriginalPositionXZ": xz, "m_HeightFromFeet": False, "m_StartAtOrigin": True,
                  **dict.fromkeys(("m_LoopBlend", "m_LoopBlendOrientation", "m_LoopBlendPositionY",
                                   "m_LoopBlendPositionXZ"), False)}
     return {"m_SampleRate": 16., "m_Legacy": False, **stored_curves(spec), "m_MuscleClip": {

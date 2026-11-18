@@ -173,9 +173,9 @@ impl HumanoidClip {
     }
 
     /// The first root basis flag off its neutral profile: the three
-    /// Original bases and Based Upon Feet off, and `m_StartAtOrigin` the
-    /// complement of `m_KeepOriginalPositionXZ`, as every built fixture
-    /// clip stores it. A missing flag has no confirmed default.
+    /// Original bases and Based Upon Feet off, and `m_StartAtOrigin` on, as
+    /// every built fixture clip stores it whatever its XZ flag. A missing
+    /// flag has no confirmed default.
     #[must_use]
     pub fn root_basis_refusal(&self) -> Option<&'static str> {
         let value = |field: &str| {

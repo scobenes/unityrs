@@ -8,7 +8,7 @@ using Object = UnityEngine.Object;
 // neutral Avatar, once per combination of the three keep-original flags
 // (orientation, Y, XZ), every clip in one bundle and played back on one prefab,
 // so their root and hips samples differ only by the basis. AnimationClipSettings
-// has no start-at-origin field; the built clip derives it from the XZ flag.
+// has no start-at-origin field; the built clips store it on whatever the XZ flag.
 // Every combination but the all-off one is a root basis refusal probe; the
 // all-off one's residual alone says whether it needs a hips correction.
 static partial class UnityrsFixtureBuilder

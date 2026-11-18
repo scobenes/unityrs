@@ -1,11 +1,11 @@
 """Complete the optional root basis matrix fail-closed: each clip neutral but for its own basis flags, its
-built start-at-origin flag the complement of its XZ flag, on a neutral Avatar."""
+built start-at-origin flag on whatever its XZ flag (as real built clips store it), on a neutral Avatar."""
 
 import unittest
 from unittest import mock
 
 import test_anim_replay_coverage as coverage
-from anim_coverage_support import BASIS, BASIS_Y, COVERAGE, NEUTRAL_BASIS, coverage_archives
+from anim_coverage_support import BASIS, BASIS_XZ, BASIS_Y, COVERAGE, NEUTRAL_BASIS, coverage_archives
 
 import anim_fixture_coverage  # noqa: E402
 import anim_replay as replay  # noqa: E402
@@ -39,15 +39,17 @@ class BasisMatrixTests(unittest.TestCase):
         self.build()
         result = self.finish()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Completed and validated 20 replay(s)", result.stdout)
+        self.assertIn("Completed and validated 21 replay(s)", result.stdout)
         self.assertIn("humanoid-root-basis-o1-y1-xz1: not_covered", result.stdout)
         self.assertEqual(self.completed(BASIS_Y)["spec"]["evidence"]["expected_refusal"],
                          "unsupported_humanoid_root_basis")
         self.assertNotIn("expected_refusal", self.completed(NEUTRAL_BASIS)["spec"]["evidence"])
+        self.assertEqual(self.completed(BASIS_XZ)["spec"]["evidence"]["expected_refusal"],
+                         "unsupported_humanoid_root_basis")
         for name in BASIS:
             replay.validate(self.completed(name), self.bundles)
 
-    def test_refuses_a_start_at_origin_flag_off_the_xz_complement(self):
+    def test_refuses_a_start_at_origin_flag_off(self):
         def edit(clip):
             clip["m_MuscleClip"]["m_StartAtOrigin"] = False
             return clip

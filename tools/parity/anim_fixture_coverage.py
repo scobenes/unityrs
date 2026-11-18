@@ -42,7 +42,7 @@ REFUSALS = {"humanoid-twist-refusal": "unsupported_humanoid_twist",
 # The root basis matrix: the compact rig's muscle clip on a neutral Avatar in
 # each combination of the three keep-original flags, recorded under the same
 # playback. AnimationClipSettings has no start-at-origin field; the built
-# clip's flag is the complement of the XZ flag. Every combination but the
+# clips store it on whatever their XZ flag. Every combination but the
 # neutral one carries a root basis refusal label; the neutral one has none,
 # so its residual alone says whether it needs a hips correction.
 BASIS_FLAGS = ("keepOriginalOrientation", "keepOriginalPositionY", "keepOriginalPositionXZ")
@@ -207,7 +207,7 @@ def check_isolated(spec, capture, avatar, twist, replay):
 
 def check_basis(flags, spec, capture, clip, avatar, replay):
     """A basis matrix clip: every non-basis setting neutral, captured, effective and built, its three flags
-    the authored combination and its built start-at-origin their XZ complement, on a neutral Avatar."""
+    the authored combination and its built start-at-origin on, on a neutral Avatar."""
     require = replay.require
     expected = NEUTRAL_CLIP | dict(zip(BASIS_FLAGS, flags))
 
@@ -231,7 +231,7 @@ def check_basis(flags, spec, capture, clip, avatar, replay):
     require(all(matches(muscle.get(field), want) for field, want in BUILT_NEUTRAL.items()),
             "built basis matrix clip has a non-neutral setting")
     built = [muscle.get(field) for field in BUILT_BASIS]
-    require(built == list(flags) and muscle.get("m_StartAtOrigin") is (not flags[2]),
+    require(built == list(flags) and muscle.get("m_StartAtOrigin") is True,
             "built basis matrix clip flags differ from the authored combination")
     human = capture["humanoid"]
     require(all(human[name] == replay.f32_bits(0) for name in (*TWIST, "arm_stretch", "leg_stretch", "feet_spacing"))

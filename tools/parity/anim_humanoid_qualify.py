@@ -59,8 +59,8 @@ SETTINGS = (
     "m_LoopBlendOrientation", "m_LoopBlendPositionY", "m_LoopBlendPositionXZ", "m_KeepOriginalOrientation",
     "m_KeepOriginalPositionY", "m_KeepOriginalPositionXZ", "m_HeightFromFeet", "m_StartAtOrigin",
 )
-# The root basis flags. Their neutral profile: the first four off, and the
-# start-at-origin flag the complement of the XZ basis flag.
+# The root basis flags. Their neutral profile: the first four off and
+# start-at-origin on, as built clips store it whatever their XZ flag.
 ROOT_BASIS = SETTINGS[-5:]
 TWIST = ("m_ArmTwist", "m_ForeArmTwist", "m_UpperLegTwist", "m_LegTwist")
 AVATAR_SETTINGS = ("m_ArmStretch", "m_LegStretch", "m_FeetSpacing")

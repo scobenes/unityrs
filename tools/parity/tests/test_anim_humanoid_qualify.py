@@ -232,7 +232,7 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(entry["causes"], ["unsupported_body_motion(hips_correction)",
                                            "unsupported_humanoid_clip_settings(m_Level)",
                                            "unsupported_humanoid_root_basis(m_KeepOriginalPositionY)"])
-        # The start-at-origin flag is the complement of the XZ basis flag.
+        # Each basis flag off its neutral profile is listed.
         self.assertEqual(qualify(clip=rig_clip(m_StartAtOrigin=False))["verdicts"]["root_basis"], ["m_StartAtOrigin"])
         self.assertEqual(qualify(clip=rig_clip(m_KeepOriginalPositionXZ=True, m_StartAtOrigin=False))
                          ["verdicts"]["root_basis"], ["m_KeepOriginalPositionXZ", "m_StartAtOrigin"])

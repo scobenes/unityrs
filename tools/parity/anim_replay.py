@@ -31,8 +31,8 @@ NEUTRAL_SETTINGS = dict.fromkeys((
     "additiveReferencePoseTime", "upper_arm_twist", "lower_arm_twist", "upper_leg_twist",
     "lower_leg_twist",
 ), 0) | {"additiveReferencePoseClipName": ""} | {"startAtOrigin": True}
-# The neutral root basis starts at the origin: the built clip's start-at-origin
-# flag is the complement of the XZ basis flag, recorded on every fixture clip.
+# The neutral root basis starts at the origin: every built fixture clip stores
+# start-at-origin on, whatever its XZ basis flag.
 
 
 def require(ok, message):

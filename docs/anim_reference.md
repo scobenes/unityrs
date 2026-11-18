@@ -583,10 +583,10 @@ It then gives three independent verdicts:
   `m_Level`, the loop flags and the orientation offset) at its neutral
   value.
 - **Root basis.** The keep-original orientation, Y, XZ and height-from-feet
-  flags off and `m_StartAtOrigin` on. The built clip derives
-  `m_StartAtOrigin` as the complement of `m_KeepOriginalPositionXZ` (the
-  Editor's `AnimationClipSettings` has no field for it), so the neutral
-  profile has both XZ flags consistent. The Rust reader refuses an
+  flags off and `m_StartAtOrigin` on. The Editor's
+  `AnimationClipSettings` has no field for `m_StartAtOrigin`, and every
+  built clip of the basis matrix stores it on, whatever its XZ flag, so the
+  neutral profile has it on and the XZ flag off. The Rust reader refuses an
   unverified basis as `unsupported_humanoid_root_basis(field)`, apart from
   the non-neutral settings.
   [Root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html),

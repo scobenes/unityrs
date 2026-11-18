@@ -457,7 +457,7 @@ pub fn clip_stored(
     ] {
         set(muscle, field, V::Bool(false));
     }
-    // The start-at-origin flag is the complement of the XZ basis flag.
+    // Built clips store start-at-origin on, whatever their XZ basis flag.
     set(muscle, "m_StartAtOrigin", V::Bool(true));
     for field in ["m_CycleOffset", "m_Level", "m_OrientationOffsetY"] {
         set(muscle, field, V::Float(0.));
