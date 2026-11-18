@@ -24,7 +24,9 @@
 //! Every decoder here takes any bytes: a field the input does not reach is
 //! empty (a row, a reference, the data), never an error.
 
+mod anim;
 mod scene;
+pub use anim::{anim_clip_cases, anim_gltf_cases};
 pub use scene::scene_cases;
 
 /// A synthetic serialized scene and strict export profile for the 3D targets.
