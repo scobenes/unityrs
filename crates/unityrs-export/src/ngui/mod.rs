@@ -278,7 +278,6 @@ pub struct Output {
 /// A skip (7.3's `skips` row, but its input).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Skip {
-    pub prefab: Option<PrefabRow>,
     /// The object's SerializedFile.
     pub serialized_file: RawStr,
     /// The object's path id.
@@ -291,6 +290,13 @@ pub struct Skip {
     pub sprite: Option<usize>,
     /// Why.
     pub reason: Reason,
+}
+
+/// The prefab's stored row accompanies its skip without growing 2D rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrefabSkip {
+    pub skip: Skip,
+    pub row: PrefabRow,
 }
 
 /// How an atlas's sheet was found (section 5 step 2).
@@ -322,6 +328,8 @@ pub struct SheetRow {
 #[derive(Debug, Default)]
 pub struct Cut {
     pub glb_diagnostics: Vec<GlbDiagnostic>,
+    pub prefab_plan_skips: Vec<PrefabSkip>,
+    pub prefab_export_skips: Vec<PrefabSkip>,
     /// The plan's skips, in plan order.
     pub plan_skips: Vec<Skip>,
     /// The export's skips, in export order; record order is the plan's,

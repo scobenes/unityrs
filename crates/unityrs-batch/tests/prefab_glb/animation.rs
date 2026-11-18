@@ -594,6 +594,27 @@ fn missing_required_mesh_skips_the_prefab_and_leaves_the_other_eligible() {
 }
 
 #[test]
+fn an_export_failure_does_not_reoffer_the_first_owners_key() {
+    let (scratch, mut spec) = job(&[]);
+    let (input, deps) = fixture(Clip::MissingMesh, false);
+    install(&scratch, &mut spec, &input, &deps);
+    spec["outputs"]["glb"]["prefab_key_template"] = json!("shared.glb");
+    assert_eq!(drive(&scratch, &spec).code, Code::CompleteWithSkips);
+    let skips = rows(&scratch, 1, "skips");
+    assert_eq!(skips.len(), 2);
+    assert_eq!(skips[0]["container_row"], 1);
+    assert_eq!(skips[0]["reason"], "duplicate_key");
+    assert_eq!(skips[1]["container_row"], 0);
+    assert_eq!(skips[1]["reason"], "invalid_glb");
+    assert_eq!(skips[1]["detail"], "mesh_unresolved");
+    assert_eq!(
+        rows(&scratch, 1, "inputs")[0]["status"],
+        "complete_with_skips"
+    );
+    assert!(!scratch.join("sink/shared.glb").exists());
+}
+
+#[test]
 fn a_resolved_selector_outside_the_view_retains_its_address() {
     let (scratch, mut spec) = job(&[]);
     let (input, deps) = fixture(Clip::Translation, false);

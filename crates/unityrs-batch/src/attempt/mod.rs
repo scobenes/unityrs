@@ -273,9 +273,7 @@ fn execute(
         )?;
         end.diagnostics += 1;
     }
-    for skip in cut.plan_skips.iter().chain(&cut.export_skips) {
-        copy::skip(args.view.input.id, engine, &mut writer, end, skip)?;
-    }
+    write_skips(args, engine, end, &mut writer, &cut)?;
     end.figures.unresolved_scripts = cut.unresolved_scripts;
     drop(cut);
     drop(keys);
@@ -286,6 +284,35 @@ fn execute(
     engine.point(Point::BeforeSeal)?;
     seal(args, engine, end, started, writer)
 }
+
+fn write_skips(
+    args: &AttemptArgs<'_>,
+    engine: &Engine<'_>,
+    end: &mut AttemptEnd,
+    writer: &mut Writer,
+    cut: &ngui::Cut,
+) -> Result<(), Failure> {
+    for (two_d, glb) in [
+        (&cut.plan_skips, &cut.prefab_plan_skips),
+        (&cut.export_skips, &cut.prefab_export_skips),
+    ] {
+        for skip in two_d {
+            copy::skip(args.view.input.id, engine, writer, end, skip, None)?;
+        }
+        for glb in glb {
+            copy::skip(
+                args.view.input.id,
+                engine,
+                writer,
+                end,
+                &glb.skip,
+                Some(&glb.row),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn seal(
     args: &AttemptArgs<'_>,
     engine: &Engine<'_>,

@@ -87,6 +87,7 @@ pub(super) fn skip(
     writer: &mut Writer,
     end: &mut AttemptEnd,
     skip: &ngui::Skip,
+    row: Option<&ngui::PrefabRow>,
 ) -> Result<(), Failure> {
     engine.check()?;
     let code = skip_code(&skip.reason.reason).ok_or_else(internal)?;
@@ -99,7 +100,7 @@ pub(super) fn skip(
         writer.append(
             Record::Skip(records::Skip {
                 input,
-                prefab: skip.prefab.as_ref().map(prefab),
+                prefab: row.map(prefab),
                 serialized_file: Text::Raw(skip.serialized_file.as_bytes()),
                 path_id: skip.path_id,
                 class: &skip.class,

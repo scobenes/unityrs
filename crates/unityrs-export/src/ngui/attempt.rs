@@ -70,9 +70,11 @@ pub(super) struct Site<'o> {
 
 /// The records, as the cut grows them.
 pub(super) struct Records {
-    pub(super) plan_skips: MeteredVec<Skip>,
+    plan_skips: MeteredVec<Skip>,
     pub(super) glb_diagnostics: MeteredVec<super::GlbDiagnostic>,
-    pub(super) export_skips: MeteredVec<Skip>,
+    pub(super) prefab_plan_skips: MeteredVec<super::PrefabSkip>,
+    pub(super) prefab_export_skips: MeteredVec<super::PrefabSkip>,
+    export_skips: MeteredVec<Skip>,
     sheets: MeteredVec<SheetRow>,
     nested: MeteredVec<RawStr>,
     /// The skip rows' strings.
@@ -197,6 +199,8 @@ impl<'a> Attempt<'a> {
             records: Records {
                 plan_skips: MeteredVec::new(meter),
                 glb_diagnostics: MeteredVec::new(meter),
+                prefab_plan_skips: MeteredVec::new(meter),
+                prefab_export_skips: MeteredVec::new(meter),
                 export_skips: MeteredVec::new(meter),
                 sheets: MeteredVec::new(meter),
                 nested: MeteredVec::new(meter),
@@ -213,6 +217,8 @@ impl<'a> Attempt<'a> {
         let Records {
             plan_skips,
             glb_diagnostics,
+            prefab_plan_skips,
+            prefab_export_skips,
             export_skips,
             sheets,
             nested,
@@ -231,8 +237,14 @@ impl<'a> Attempt<'a> {
         strings.absorb(c);
         let (glb_diagnostics, charge) = glb_diagnostics.into_parts();
         strings.absorb(charge);
+        let (prefab_plan_skips, charge) = prefab_plan_skips.into_parts();
+        strings.absorb(charge);
+        let (prefab_export_skips, charge) = prefab_export_skips.into_parts();
+        strings.absorb(charge);
         Cut {
             glb_diagnostics,
+            prefab_plan_skips,
+            prefab_export_skips,
             plan_skips,
             export_skips,
             unresolved_scripts: unresolved,
@@ -328,7 +340,6 @@ impl<'a> Attempt<'a> {
         seam.probe(|| strings.grow(cost).map_err(|e| table::refused(&e)))
             .map_err(Failure::from)?;
         let row = Skip {
-            prefab: None,
             serialized_file: site.obj.file().name().clone(),
             path_id: site.obj.path_id(),
             class: String::from_utf8_lossy(class).into_owned(),

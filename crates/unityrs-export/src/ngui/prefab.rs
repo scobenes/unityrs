@@ -12,8 +12,8 @@ use unityrs_gltf::{Clips, Profile, UnlitExtras};
 use unityrs_scene::{GraphOptions, Unit};
 
 use super::{
-    Context, Cut, Failure, GlbDiagnostic, Options, Output, OutputKind, PrefabRow, Skip, SkipOutput,
-    Template,
+    Context, Cut, Failure, GlbDiagnostic, Options, Output, OutputKind, PrefabRow, PrefabSkip, Skip,
+    SkipOutput, Template,
     attempt::Attempt,
     classify::{self, Class, Reason},
     export::md5,
@@ -310,9 +310,9 @@ impl Attempt<'_> {
         let seam = self.seam;
         let records = &mut self.records;
         let skips = if self.exporting {
-            &mut records.export_skips
+            &mut records.prefab_export_skips
         } else {
-            &mut records.plan_skips
+            &mut records.prefab_plan_skips
         };
         let cost = table::string("GameObject".len())
             .saturating_add(table::string(reason.reason.len()))
@@ -324,14 +324,16 @@ impl Attempt<'_> {
                 .map_err(|e| classify::charge(&e))?;
             table::push(
                 skips,
-                Skip {
-                    serialized_file: row.serialized_file.clone(),
-                    path_id: path_id.unwrap_or_default(),
-                    prefab: Some(row),
-                    class: "GameObject".to_owned(),
-                    output: SkipOutput::Glb,
-                    sprite: None,
-                    reason,
+                PrefabSkip {
+                    skip: Skip {
+                        serialized_file: row.serialized_file.clone(),
+                        path_id: path_id.unwrap_or_default(),
+                        class: "GameObject".to_owned(),
+                        output: SkipOutput::Glb,
+                        sprite: None,
+                        reason,
+                    },
+                    row,
                 },
             )
         })?;
