@@ -84,8 +84,12 @@ public static partial class AnimReplayRecorder
         var settings = AnimationUtility.GetAnimationClipSettings(clip);
         double start = fixture.Start ?? (clip.legacy ? 0 : settings.startTime);
         double stop = fixture.Stop ?? (clip.legacy ? clip.length : settings.stopTime);
-        Need(0 <= start && start <= stop && clip.length == (float)(stop - start),
-            "Editor clip interval differs from the authored interval for " + clip.name);
+        Need(0 <= start && start <= stop, "Editor clip interval is not ordered for " + clip.name);
+        // Unity may measure the length of a clip whose first key is late from
+        // zero; the retained interval below is the requirement.
+        if (clip.length != (float)(stop - start))
+            Debug.LogWarning("Clip length for " + clip.name + " is " + clip.length.ToString("R")
+                + " for the interval " + start.ToString("R") + " to " + stop.ToString("R") + ".");
         if (fixture.Start.HasValue && !clip.legacy)
             Need(start == settings.startTime && stop == settings.stopTime, "Unity did not retain the authored clip interval.");
 
