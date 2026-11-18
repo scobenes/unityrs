@@ -440,6 +440,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
+name = "unityrs-anim"
+version = "0.0.1"
+dependencies = [
+ "unityrs-core",
+ "unityrs-scene",
+]
+
+[[package]]
 name = "unityrs-audio"
 version = "0.0.1"
 dependencies = [
@@ -476,11 +484,14 @@ version = "0.0.1"
 dependencies = [
  "md-5",
  "thiserror",
+ "unityrs-anim",
  "unityrs-audio",
  "unityrs-core",
+ "unityrs-gltf",
  "unityrs-imageio",
  "unityrs-mesh",
  "unityrs-meshdecode",
+ "unityrs-scene",
  "unityrs-texture",
 ]
 
@@ -491,6 +502,7 @@ dependencies = [
  "libfuzzer-sys",
  "lz4-sys",
  "serde_json",
+ "unityrs-anim",
  "unityrs-audio",
  "unityrs-core",
  "unityrs-export",

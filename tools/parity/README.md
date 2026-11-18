@@ -85,12 +85,11 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `ngui_scenes.py` | unityrs-testkit's NGUI scenes, which cargo builds, for the reference's tests and `tools/fixtures/ngui.py` |
 | `sprites_kind.py` | the `sprites` output kind's reference (`docs/plans/extract.md` E17): one PNG per Sprite of one input's view, its plan and sprite groups by `docs/BATCH_SPEC.md` 4.4, each image UnityPy 1.25.2's `SpriteHelper` and Pillow 9.5.0's PNG writer; a library and a command |
 | `sprites_scenes.py` | unityrs-testkit's `sprites` scenes, which cargo builds, for `tools/fixtures/sprites.py` |
-| `anim_reference.py` | Standard-library f64 source-curve and rotation reference used by the animator and sampler comparisons |
-| `anim_bounds.json` | Frozen f64 transcription and GLB bake bounds shared by the animation checks |
-| `anim_replay.py` | Checks same-bundle replay manifests and derives f32 tolerances for the Rust pose comparison |
-| `anim_replay.schema.json` | Replay manifest spec and capture schema |
-| `anim_replay_bounds.py` | Stage-based f32 error and rate bounds for the replay manifest |
 | `gltf_check.py` | L6g's independent check of a written GLB (`docs/plans/static3d.md` sections 2.4 and 3.2): reads the accessors with the standard library and compares them with MeshHandler's rows in Unity coordinates, X mirrored, V flipped and winding reversed, after the writer's documented normalisation; no exporter is its oracle |
+| `anim_reference.py` | P2b's standalone f64 evaluator of the clip-sampling equations in `docs/anim_reference.md` (standard library only); the expectations the Rust sampler's synthetic replay is held to |
+| `anim_bounds.json` | the frozen transcription and bake bounds `docs/anim_reference.md` derives, read by the Rust replay |
+| `anim_replay.py`, `anim_replay_bounds.py` | validate a same-bundle Editor replay manifest for internal consistency and derive its f32 tolerances per recording; bundle-derivable facts are the Rust comparison's cross-checks |
+| `anim_replay.schema.json` | the replay manifest's schema |
 | `mesh_dump.py` | L6 corpus JSONL digests and exact masked comparison; standalone oracle dump, `unityrs dump --mesh` candidate; arrays preserve binary64 bits and numeric tags, triangles preserve partial/empty tuples, OBJ streams into SHA-256; output stays outside the repository |
 | `mesh_samples.py` | L6 (`docs/plans/static3d.md`): every Mesh in the pinned UnityPy samples, its arrays, type tags, triangles and raw OBJ text against `unityrs-mesh`'s `mesh_l6` example, with section 19.1's corrected decoding; prints aggregate counts only; needs the oracle stack |
 | `ruff.toml` | the lint and format settings for this folder (`uvx ruff check`, `uvx ruff format`) |
@@ -219,10 +218,10 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_texture_seal.py` | every Texture2D either reference constructs, nested or read directly, refuses an `image` child without opening a host path: the sprite_attributes scene's unused path-valued textures under a texture, a Sprite and an atlas, each parent still exported, and `PIL.Image.open` never called while the references run | UnityPy, Pillow 9.5.0 |
 | `synth.py`, `dump_harness.py` | not tests: `synth.py` builds the synthetic inputs, and `dump_harness.py` holds what the `test_dump*.py` modules share (the sample pins included) | stdlib; UnityPy for `dump_harness.py`'s dumps |
 | `test_mesh_dump.py` | mesh digest framing, signed zero/NaN payloads/type tags, optional arrays, triangle counts, Unicode JSON, exact field masks, duplicate/missing records, corpus pin bytes, resource refusals and committed synthetic OBJ replay | stdlib + pinned UnityPy for replay |
-| `test_anim_reference.py` | Frozen numeric contracts, source-curve equations, Euler rotations and timing of the animation reference | stdlib |
-| `test_anim_replay.py` | Replay schema, bundle digests, source clocks, stage tolerances and humanoid qualification evidence | stdlib |
-| `test_anim_synthetic.py` | Reproducibility of the Rust sampler's synthetic f64 comparison rows | stdlib |
 | `test_gltf_check.py` | `gltf_check.py` on hand-built GLBs: the orientation verdict (pass, a reversed winding, no normals, degenerate triangles), accessor reads (sparse, stride and offset, ranges, raw values), the UV, tangent, normal and weight conversions, morph deltas left unnormalised, and the attributes an invalid normal or tangent must omit | stdlib |
+| `test_anim_reference.py` | the f64 evaluator against hand-derived values: Hermite, weighted and stepped segments, streamed, dense and constant layouts, quaternion and Euler orders, timing and the f32 schedule | stdlib |
+| `test_anim_replay.py` | the replay manifest's validator and tolerance derivation on synthetic manifests, including the refusals | stdlib |
+| `test_anim_synthetic.py` | the synthetic clip replay's expectations (`crates/unityrs-anim/tests/support/clip_expected.json`) are what `anim_reference.py` computes now, and the file the Rust sampler is held to is regenerated, never edited | stdlib |
 
 **Samples.** The samples are UnityPy's `tests/samples` at commit `417d595`. They are read from `$UNITYRS_UNITYPY_SAMPLES` when set, else from the folder the corpus index (`$UNITYRS_CORPUS_INDEX`, default `/corpus/index.json`) gives for its `unitypy-sample` entries, and their sha256 is checked against pinned values. They are game bundles, so they are never copied into this repository. Without them the sample tests skip.
 
