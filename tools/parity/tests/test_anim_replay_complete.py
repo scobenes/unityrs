@@ -8,7 +8,10 @@ import sys
 import unittest
 from pathlib import Path
 
-from test_anim_replay import bits, human_capture, identity, synthetic
+from anim_fixture_support import (
+    DEFERRED, REPLAYS, ROOT_ID, STATIC, VECTORS, bits, canonical, fixture_archives, static_bundles, write,
+)
+from test_anim_replay import identity
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
@@ -16,37 +19,7 @@ sys.path.insert(0, str(HERE))
 import anim_replay as replay  # noqa: E402
 import child  # noqa: E402
 import scratch  # noqa: E402
-
-ROOT_ID = -9223372036854775808
-STATIC = dict.fromkeys(("static-primitives", "static-materials", "static-lod", "static-skin"), "static-objects")
-STATIC["static-batch-scene"] = "static-batch-scene"
-REPLAYS = (
-    "legacy-explicit", "generic-quaternion", "generic-euler", "generic-constant", "generic-offset-stepped",
-    "generic-weighted", "generic-morph", "generic-object-reference", "generic-override-morph",
-    "generic-null-override", "generic-scale", "humanoid-compact-body-motion",
-    *(f"humanoid-{rig}-muscles{offset}" for rig in ("compact", "tall") for offset in ("", "-offset")),
-)
-DEFERRED = (
-    "urp-materials", "packed-rotation-slopes", "authored-runtime-precedence", "mixed-transform-storage",
-    "humanoid-twist-refusal", "humanoid-non-neutral-setting-refusal", "humanoid-slot-axis-inventory",
-    "humanoid-root-hips-comparison", "integer-discrete-binding",
-)
-VECTORS = tuple(f"{name}-known-vectors" for name in REPLAYS if "-muscles" in name)
-
-
-def pointer(path_id, file_id=0):
-    wire_id = path_id if abs(path_id) <= 2**53 else {"t": "i64", "v": str(path_id)}
-    return {"m_FileID": file_id, "m_PathID": wire_id}
-
-
-def canonical(value):
-    if isinstance(value, dict) and "t" not in value:
-        return {"t": "dict", "v": [[key, canonical(item)] for key, item in value.items()]}
-    if isinstance(value, list):
-        return [canonical(item) for item in value]
-    if type(value) is float:
-        return {"t": "f32", "v": struct.pack(">f", value).hex()}
-    return value
+from anim_replay_complete import packed_times  # noqa: E402
 
 
 class CompleteReplayTests(unittest.TestCase):
@@ -55,183 +28,132 @@ class CompleteReplayTests(unittest.TestCase):
         self.inspect = self.folder / "inspection"
         self.replays = self.folder / "replays"
         self.bundles = self.folder / "bundles"
-        for folder in (self.inspect, self.replays, self.bundles):
+        for folder in (self.inspect, self.replays, self.bundles, self.replays / "known-vectors"):
             folder.mkdir()
-        self.bundle = self.bundles / "synthetic"
-        data = b"synthetic bundle bytes"
-        self.bundle.write_bytes(data)
-        self.digest = hashlib.sha256(data).hexdigest()
-
-        self.pending_path = self.replays / "legacy-explicit.pending.json"
-        self.complete_path = self.replays / "legacy-explicit.json"
-        for bundle in set(STATIC.values()):
-            (self.bundles / bundle).write_bytes(b"static bundle")
         self.run_path = self.folder / "run.json"
         self.run = dict(format="unityrs.fixture_run", version=1, cases=[
             dict(name=name, status="recorded", reason="") for name in (*STATIC, *REPLAYS, *VECTORS)
         ] + [dict(name=name, status="not_covered", reason="Separate fixture needed") for name in DEFERRED])
-        self.pending = synthetic()
-        self.pending["format"] = "unityrs.anim_replay_pending"
-        spec, capture = self.pending["spec"], self.pending["capture"]
-        capture["bundle_sha256"] = [self.digest]
-        spec["bundles"] = [{"name": "synthetic"}]
-        for field in ("prefab", "clip", "binding", "avatar"):
-            del spec[field]
-        del spec["nodes"][0]["id"]
-        for renderer in spec["renderers"]:
-            del renderer["id"], renderer["mesh"]
-            renderer["mesh_group"] = 0
-        del spec["evidence"]["discovery"], spec["evidence"]["import_settings"]
-        spec["evidence"]["layout"] = "editor_authored"
-        spec["held_boundaries"] = [2.125]
-        spec["evidence"]["clock"]["key_times"] = [2, 2.125, 3]
-        spec["evidence"]["clock"]["held"][0]["source"] = 2.125
-        spec["evidence"]["editor"] = {
-            "bindings": [{"path": "", "property": "blendShape.Lift"}], "expected_discovery": "null_override"
-        }
-
-        headers = []
-        for path_id, class_id, name, value in (
-            (1, 1, "Synthetic", {"m_Component": [{"component": pointer(i)} for i in (ROOT_ID, 3, 7, 8)]}),
-            (ROOT_ID, 4, None, {"m_GameObject": pointer(1), "m_Father": pointer(0), "m_Children": []}),
-            (2, 74, "Synthetic", {"m_SampleRate": 60.0, "m_Legacy": False, "m_MuscleClip": {
-                "m_StartTime": 2.0, "m_StopTime": 3.0, "m_LoopTime": False, "m_CycleOffset": .1, "m_Clip": {"data": {
-                    "m_StreamedClip": {"curveCount": 1, "data": [0x40080000, 1, 0, 0, 0, 0, 0,
-                                                               0x40300000, 1, 0, 0, 0, 0, 0]},
-                    "m_DenseClip": {"m_CurveCount": 1, "m_FrameCount": 3, "m_BeginTime": 2.125,
-                                    "m_SampleRate": 8.0, "m_SampleArray": [0., 1., 2.]},
-                    "m_ConstantClip": {"data": []}}}}}),
-            # These components deliberately share names or have no names or asset keys.
-            (3, 95, None, {"m_GameObject": pointer(1), "m_Controller": pointer(10), "m_Avatar": pointer(0)}),
-            (7, 137, None, {"m_GameObject": pointer(1), "m_Mesh": pointer(9)}),
-            (8, 137, None, {"m_GameObject": pointer(1), "m_Mesh": pointer(9)}),
-            (9, 43, "Shared", {}),
-            (10, 221, "Override", {"m_Controller": pointer(11), "m_Clips": [
-                {"m_OriginalClip": pointer(2), "m_OverrideClip": pointer(0)}]}),
-            (11, 91, "Controller", {"m_AnimationClips": [pointer(2)]}),
-            (12, 142, "Bundle", {"m_Container": [
-                {"t": "tuple", "v": [spec["prefab_asset"], canonical({"asset": pointer(1)})]},
-                {"t": "tuple", "v": [spec["clip_asset"], canonical({"asset": pointer(2)})]}]}),
-        ):
-            header = dict(input=0, file_index=1, file="CAB-synthetic", path_id=path_id,
-                          class_id=class_id, name=name, container_path=None)
-            headers.append(header)
-            self.write_show(header, value)
-        (self.inspect / "synthetic.inspect.json").write_text(json.dumps({
-            "format": "unityrs.inspect", "version": 1, "bundle_sha256": self.digest,
-            "next_cursor": None, "total_objects": len(headers),
-            "inputs": [{"path": "synthetic", "files": [
-                {"file_index": 0, "file": "synthetic", "kind": "BundleFile"},
-                {"file_index": 1, "file": "CAB-synthetic", "kind": "AssetsFile"},
-            ]}], "objects": headers,
-        }), encoding="utf-8")
-
-    def write_show(self, header, value):
-        doc = {"format": "unityrs.show", "version": 1, "bundle_sha256": self.digest,
-               "object": header, "value": canonical(value),
-               "truncated": dict.fromkeys(("items", "depth", "bytes", "binary", "cuts"), 0)}
-        (self.inspect / f"synthetic.1.{header['path_id']}.show.json").write_text(
-            json.dumps(doc), encoding="utf-8")
+        self.recordings = fixture_archives(self.bundles, self.inspect)
+        static_bundles(self.bundles, self.inspect)
+        self.pending_path = self.replays / "legacy-explicit.pending.json"
+        self.complete_path = self.replays / "legacy-explicit.json"
 
     def run_tool(self, *args):
         return child.run([sys.executable, "-I", str(HERE / "anim_replay.py"), *map(str, args)],
                          capture_output=True, text=True)
 
-    def complete(self, *, missing=(), stale=None):
-        self.run_path.write_text(json.dumps(self.run), encoding="utf-8")
-        for name in REPLAYS:
+    def complete(self, *, missing=()):
+        write(self.run_path, self.run)
+        for name, doc in self.recordings.items():
             if name not in missing:
-                doc = copy.deepcopy(self.pending)
-                doc["spec"]["evidence"]["editor"]["fixture_case"] = "generic-euler" if name == stale else name
-                (self.replays / f"{name}.pending.json").write_text(json.dumps(doc), encoding="utf-8")
-        vectors = self.replays / "known-vectors"
-        vectors.mkdir(exist_ok=True)
-        for name in VECTORS:
-            if name not in missing:
-                doc = copy.deepcopy(self.pending)
-                doc["spec"]["mode"] = "human_pose"
-                doc["spec"]["evidence"]["editor"]["fixture_case"] = name
-                doc["capture"]["humanoid"] = human_capture()
-                doc["capture"]["playback"].update(api="HumanPoseHandler.SetHumanPose", clip_human_motion=True)
-                for point, sample in zip(doc["spec"]["schedule"], doc["capture"]["samples"]):
-                    point["muscles"] = [0]
-                    sample["muscles_f32"] = [bits(0)]
-                (vectors / f"{name}.pending.json").write_text(json.dumps(doc), encoding="utf-8")
+                folder = self.replays / "known-vectors" if name in VECTORS else self.replays
+                write(folder / f"{name}.pending.json", doc)
         return self.run_tool("complete", self.folder, "--inspect-dir", self.inspect)
+
+    def assert_refused(self, message, **kwargs):
+        result = self.complete(**kwargs)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(message, result.stderr)
+        self.assertFalse(self.complete_path.exists())
+
+    def clip_show(self, case):
+        bundle = self.recordings[case]["spec"]["bundles"][0]["name"]
+        objects = json.loads((self.inspect / f"{bundle}.inspect.json").read_text())["objects"]
+        header = next(row for row in objects if row["container_path"] == self.recordings[case]["spec"]["clip_asset"])
+        path = self.inspect / f"{bundle}.1.{header['path_id']}.show.json"
+        return path, json.loads(path.read_text())
 
     def test_complete_resolves_exact_ids_from_container_and_pointers(self):
         result = self.complete()
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Completed and validated 16 replay(s)", result.stdout)
+        for name in REPLAYS:
+            finished = replay.read_json((self.replays / f"{name}.json").read_text(encoding="utf-8"))
+            self.assertEqual(finished["capture"], self.recordings[name]["capture"])
+            replay.validate(finished, self.bundles)
         finished = replay.read_json(self.complete_path.read_text(encoding="utf-8"))
-        self.assertFalse(replay.validate(finished, self.bundles))
         spec = finished["spec"]
-        self.assertEqual(finished["capture"], self.pending["capture"])
-        self.assertEqual(spec["prefab"], identity(1))
-        self.assertEqual(spec["clip"], identity(2))
-        self.assertEqual(spec["binding"], identity(3))
-        self.assertIsNone(spec["avatar"])
+        self.assertEqual((spec["prefab"], spec["clip"], spec["binding"], spec["avatar"]),
+                         (identity(1), identity(2), identity(3), None))
         self.assertEqual(spec["nodes"][0]["id"], identity(ROOT_ID))
-        self.assertEqual([(r["id"], r["mesh"]) for r in spec["renderers"]],
-                         [(identity(i), identity(9)) for i in (7, 8)])
-        self.assertIn(dict(owner=identity(10), field="m_OverrideClip", ordinal=0,
-                           original=identity(2), resolved=identity(2), outcome="null_override"),
+        finished = replay.read_json((self.replays / "generic-null-override.json").read_text(encoding="utf-8"))
+        spec = finished["spec"]
+        self.assertEqual([r["mesh"] for r in spec["renderers"]], [identity(8009), identity(8009)])
+        self.assertIn(dict(owner=identity(221), field="m_OverrideClip", ordinal=0,
+                           original=identity(2002), resolved=identity(2002), outcome="null_override"),
                       spec["evidence"]["discovery"])
-        self.assertEqual(spec["evidence"]["editor"], self.pending["spec"]["evidence"]["editor"] | {
-            "fixture_case": "legacy-explicit"
-        })
+        self.assertEqual(spec["evidence"]["editor"], self.recordings["generic-null-override"]["spec"]["evidence"]["editor"])
         self.assertEqual(spec["evidence"]["layout"], "streamed_dense")
-        self.assertEqual(spec["evidence"]["clock"]["key_times"], [2, 2.125, 2.25, 2.375, 2.75, 3])
-        self.assertEqual(spec["evidence"]["clock"]["authored_key_times"], [2, 2.125, 3])
+        self.assertEqual(spec["evidence"]["clock"]["key_times"], [0, .25, .5, .75, 1])
+        self.assertEqual(spec["evidence"]["clock"]["authored_key_times"], [0, .5, 1])
         cycle = next(s for s in spec["evidence"]["import_settings"] if s["property"] == "cycleOffset")
         self.assertEqual(cycle["serialized"], struct.unpack(">f", struct.pack(">f", .1))[0])
+        self.assertEqual(sorted((self.replays / "known-vectors").glob("*.json")),
+                         sorted((self.replays / "known-vectors").glob("*.pending.json")))
 
     def test_complete_refuses_changed_bundle(self):
-        self.bundle.write_bytes(b"different bytes")
-        result = self.complete()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("bundle digest mismatch", result.stderr)
-        self.assertFalse(self.complete_path.exists())
+        (self.bundles / "anim-legacy").write_bytes(b"different bytes")
+        self.assert_refused("bundle digest mismatch")
 
     def test_complete_refuses_wrong_component_address(self):
-        self.pending["spec"]["renderers"][1]["component"] = 2
-        result = self.complete()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("renderer component", result.stderr)
-        self.assertFalse(self.complete_path.exists())
+        self.recordings["generic-morph"]["spec"]["renderers"][1]["component"] = 2
+        self.assert_refused("renderer component")
 
     def test_complete_refuses_a_pending_recording_from_another_case(self):
-        result = self.complete(stale="generic-scale")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("pending recording does not identify manifest case generic-scale", result.stderr)
-        self.assertFalse(self.complete_path.exists())
+        self.recordings["generic-scale"]["spec"]["evidence"]["editor"]["fixture_case"] = "generic-euler"
+        self.assert_refused("pending recording does not identify manifest case generic-scale")
+
+    def test_complete_refuses_relabelled_clip_and_prefab(self):
+        for source, target in (("generic-quaternion", "generic-euler"), ("generic-constant", "generic-null-override"),
+                               ("humanoid-compact-muscles", "humanoid-compact-muscles-offset")):
+            with self.subTest(source=source, target=target):
+                original = self.recordings[target]
+                self.recordings[target] = copy.deepcopy(self.recordings[source])
+                self.recordings[target]["spec"]["evidence"]["editor"]["fixture_case"] = target
+                self.assert_refused("fixture identity mismatch")
+                self.recordings[target] = original
+
+    def test_complete_refuses_wrong_playback_mode(self):
+        self.recordings["legacy-explicit"]["spec"]["mode"] = "animator"
+        self.assert_refused("fixture playback mode mismatch")
+
+    def test_complete_requires_case_specific_evidence(self):
+        for case, field in (("generic-object-reference", "object_reference_samples"),
+                            ("humanoid-tall-muscles", "spine_stop_f32")):
+            with self.subTest(case=case, field=field):
+                editor = self.recordings[case]["spec"]["evidence"]["editor"]
+                original = editor.pop(field)
+                self.assert_refused("missing fixture evidence")
+                editor[field] = original
+
+    def test_complete_refuses_wrong_discrete_flag(self):
+        bindings = self.recordings["generic-object-reference"]["spec"]["evidence"]["editor"]["bindings"]
+        next(row for row in bindings if row["property"] == "m_Mesh")["object_reference"] = False
+        self.assert_refused("fixture binding flags mismatch")
 
     def test_complete_confirms_reported_mixed_transform_storage(self):
         for row in self.run["cases"]:
             if row["name"] == "mixed-transform-storage":
                 row.update(status="recorded", reason="Mixed scale vector")
-        result = self.complete()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("mixed Transform storage reported by Unity is absent", result.stderr)
-        self.assertFalse(self.complete_path.exists())
-
-        path = self.inspect / "synthetic.1.2.show.json"
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        self.assert_refused("mixed Transform storage reported by Unity is absent")
+        path, doc = self.clip_show("generic-scale")
         clip = dict(doc["value"]["v"])
         playback = dict(dict(dict(clip["m_MuscleClip"]["v"])["m_Clip"]["v"])["data"]["v"])
         dict(playback["m_ConstantClip"]["v"])["data"].append(canonical(1.))
         doc["value"]["v"].append(["m_ClipBindingConstant", canonical({"genericBindings": [
             {"typeID": 4, "attribute": 3, "customType": 0}
         ]})])
-        path.write_text(json.dumps(doc), encoding="utf-8")
+        write(path, doc)
         result = self.complete()
         self.assertEqual(result.returncode, 0, result.stderr)
         scale = json.loads((self.replays / "generic-scale.json").read_text(encoding="utf-8"))
         self.assertTrue(scale["spec"]["evidence"]["mixed_transform_storage"])
 
     def test_complete_requires_run_manifest(self):
-        self.pending_path.write_text(json.dumps(self.pending), encoding="utf-8")
+        write(self.pending_path, self.recordings["legacy-explicit"])
         result = self.run_tool("complete", self.folder, "--inspect-dir", self.inspect)
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("run.json", result.stderr)
         self.assertFalse(self.complete_path.exists())
 
@@ -241,7 +163,7 @@ class CompleteReplayTests(unittest.TestCase):
             if row["name"] == "static-lod":
                 row.update(status="failed", reason="LOD could not build")
         result = self.complete()
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("generic-euler", result.stderr)
         self.assertIn("static-lod: failed (LOD could not build)", result.stderr)
         self.assertFalse(self.complete_path.exists())
@@ -251,13 +173,53 @@ class CompleteReplayTests(unittest.TestCase):
             if row["name"] == "generic-scale":
                 row.update(status="skipped", reason="Build only")
         result = self.complete(missing=(VECTORS[0], "generic-scale"))
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("generic-scale: skipped (Build only)", result.stderr)
         self.assertIn(f"{VECTORS[0]}.pending.json", result.stderr)
         self.assertFalse(self.complete_path.exists())
 
+    def test_complete_refuses_text_as_a_static_bundle(self):
+        data = b"this is a text file"
+        (self.bundles / "static-objects").write_bytes(data)
+        for path in self.inspect.glob("static-objects.*.json"):
+            doc = json.loads(path.read_text())
+            doc["bundle_sha256"] = hashlib.sha256(data).hexdigest()
+            write(path, doc)
+        self.assert_refused("invalid UnityFS signature: static-objects")
+
+    def test_complete_refuses_static_bundle_missing_expected_asset(self):
+        path = self.inspect / "static-objects.1.142.show.json"
+        doc = json.loads(path.read_text())
+        container = dict(doc["value"]["v"])["m_Container"]
+        container.remove(next(row for row in container if row["v"][0].endswith("/lod.prefab")))
+        write(path, doc)
+        self.assert_refused("static/lod.prefab")
+
+    def test_complete_refuses_static_inspection_with_wrong_digest(self):
+        path = self.inspect / "static-batch-scene.inspect.json"
+        doc = json.loads(path.read_text())
+        doc["bundle_sha256"] = "0" * 64
+        write(path, doc)
+        self.assert_refused("inspection bundle digest mismatch: static-batch-scene.inspect.json")
+
+    def test_complete_refuses_known_vectors_missing_a_schedule_point(self):
+        doc = self.recordings[VECTORS[0]]
+        del doc["spec"]["schedule"][1], doc["capture"]["samples"][1]
+        doc["spec"]["evidence"]["clock"]["stop"]["probe"]["sample"] -= 1
+        self.assert_refused("known-vector schedule mismatch")
+
+    def test_complete_refuses_known_vectors_from_a_different_editor(self):
+        self.recordings[VECTORS[0]]["capture"]["editor_version"] = "6000.0.1f1"
+        self.assert_refused("known-vector recording disagrees with its clip replay")
+
+    def test_complete_refuses_wrong_known_muscle_vector(self):
+        doc = self.recordings[VECTORS[0]]
+        doc["spec"]["schedule"][2]["muscles"][0] = .25
+        doc["capture"]["samples"][2]["muscles_f32"][0] = bits(.25)
+        self.assert_refused("known-vector inputs mismatch")
+
     def test_complete_refuses_unbound_or_stale_inspections(self):
-        for filename, remove in (("synthetic.inspect.json", True), ("synthetic.1.2.show.json", False)):
+        for filename, remove in (("anim-legacy.inspect.json", True), ("anim-legacy.1.2.show.json", False)):
             with self.subTest(filename=filename):
                 path = self.inspect / filename
                 original = path.read_text(encoding="utf-8")
@@ -266,19 +228,15 @@ class CompleteReplayTests(unittest.TestCase):
                     del doc["bundle_sha256"]
                 else:
                     doc["bundle_sha256"] = "0" * 64
-                path.write_text(json.dumps(doc), encoding="utf-8")
-                result = self.complete()
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(f"inspection bundle digest mismatch: {filename}", result.stderr)
-                self.assertFalse(self.complete_path.exists())
+                write(path, doc)
+                self.assert_refused(f"inspection bundle digest mismatch: {filename}")
                 path.write_text(original, encoding="utf-8")
 
     def test_complete_refuses_truncated_and_cut_show_values(self):
-        path = self.inspect / "synthetic.1.2.show.json"
-        original = path.read_text(encoding="utf-8")
+        path, original = self.clip_show("legacy-explicit")
         for where in ("stats", "tagged", "nested"):
             with self.subTest(where=where):
-                doc = json.loads(original)
+                doc = copy.deepcopy(original)
                 cut = {"$unityrs": "cut", "reason": "items", "omitted": 1}
                 if where == "stats":
                     doc["truncated"].update(cuts=1, items=1)
@@ -286,32 +244,50 @@ class CompleteReplayTests(unittest.TestCase):
                     doc["value"]["cut"] = cut
                 else:
                     doc["value"]["v"].append(["ignored", [cut]])
-                path.write_text(json.dumps(doc), encoding="utf-8")
+                write(path, doc)
                 result = self.complete()
-                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertRegex(result.stderr, "truncated show|cut show")
                 self.assertFalse(self.complete_path.exists())
 
     def test_complete_refuses_samples_that_only_miss_authored_keys(self):
-        path = self.inspect / "synthetic.1.2.show.json"
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        path, doc = self.clip_show("generic-euler")
         clip = dict(doc["value"]["v"])
         playback = dict(dict(dict(clip["m_MuscleClip"]["v"])["m_Clip"]["v"])["data"]["v"])
-        dict(playback["m_StreamedClip"]["v"])["data"][7] = 0x40200000
-        dense = dict(playback["m_DenseClip"]["v"])
-        dense["m_BeginTime"]["v"] = struct.pack(">f", 2.1).hex()
-        # Use f32 addition: the first interior sample rounds to this dense key.
-        self.pending["spec"]["source_clock"] = "f32_add"
-        for sample in self.pending["capture"]["samples"]:
-            sample["effective_source"], = struct.unpack(">f", struct.pack(">f", sample["effective_source"]))
-        path.write_text(json.dumps(doc), encoding="utf-8")
-        result = self.complete()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("off-key sample", result.stderr)
-        self.assertFalse(self.complete_path.exists())
+        stream = dict(playback["m_StreamedClip"]["v"])["data"]
+        stream[7:7] = [int(bits(391 / 2048), 16), 1, 0, 0, 0, 0, 0]
+        stream[21:21] = [int(bits(.5 + 391 / 2048), 16), 1, 0, 0, 0, 0, 0]
+        write(path, doc)
+        self.assert_refused("off-key sample")
+
+    def test_complete_refuses_positive_stream_count_with_no_frame_data(self):
+        path, doc = self.clip_show("generic-euler")
+        clip = dict(doc["value"]["v"])
+        playback = dict(dict(dict(clip["m_MuscleClip"]["v"])["m_Clip"]["v"])["data"]["v"])
+        dict(playback["m_StreamedClip"]["v"])["data"].clear()
+        write(path, doc)
+        self.assert_refused("missing built streamed clip frame data")
+
+    def test_packed_time_array_over_64_bytes_decodes_all_deltas(self):
+        deltas = [0] + [33] * 89
+        packed = sum(delta << (7 * i) for i, delta in enumerate(deltas)).to_bytes(79, "little")
+        payload = {"m_BitSize": 7, "m_NumItems": len(deltas), "m_Data": list(packed)}
+        self.assertEqual(list(packed_times(payload, replay.require)), [i * 33 / 100 for i in range(90)])
+        payload["m_Data"] = {"t": "u8s", "hex": packed.hex()}
+        self.assertEqual(list(packed_times(payload, replay.require)), [i * 33 / 100 for i in range(90)])
+
+    def test_complete_refuses_packed_time_digest_with_zero_cut_counters(self):
+        path, doc = self.clip_show("legacy-explicit")
+        packed = bytes(65)
+        data = {"t": "u8s", "len": len(packed), "sha256": hashlib.sha256(packed).hexdigest()}
+        doc["value"]["v"].append(["m_CompressedRotationCurves", canonical([{
+            "m_Times": {"m_BitSize": 8, "m_NumItems": 65, "m_Data": data},
+        }])])
+        write(path, doc)
+        self.assert_refused("incomplete built packed rotation times: canonical show elided the bytes")
 
     def test_validate_refuses_pending_replay(self):
-        self.pending_path.write_text(json.dumps(self.pending), encoding="utf-8")
+        write(self.pending_path, self.recordings["legacy-explicit"])
         result = self.run_tool("validate", self.pending_path)
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("pending replay", result.stderr)

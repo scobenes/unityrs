@@ -273,7 +273,7 @@ def _validate_humanoid_spec(spec, human):
             "hips must be a distinct descendant of the Animator root")
 
 
-def validate_spec(spec):
+def validate_spec(spec, *, pending_humanoid=False):
     _shape(SCHEMA["$defs"]["spec"], spec, "/spec")
     bundles = spec["bundles"]
     require(len({bundle["name"] for bundle in bundles}) == len(bundles), "duplicate bundle name")
@@ -341,7 +341,8 @@ def validate_spec(spec):
     require(all(("muscles" in row) == (spec["mode"] == "human_pose") for row in spec["schedule"]),
             "only known-vector playback requires muscles in the schedule")
     if spec["mode"] == "human_pose":
-        require(not spec["held_boundaries"] and "humanoid" in spec["evidence"], "invalid known-vector evidence")
+        require(not spec["held_boundaries"] and (pending_humanoid or "humanoid" in spec["evidence"]),
+                "invalid known-vector evidence")
     settings = spec["evidence"]["import_settings"]
     require(len({row["property"] for row in settings}) == len(settings), "duplicate effective import setting")
     human = spec["evidence"].get("humanoid")
@@ -475,8 +476,8 @@ def _validate_qualification(spec, capture, baselines):
                         f"{name} {prop} residual exceeds frozen replay bound at {sample['local']}")
 
 
-def _validate_recording(spec, capture, bundle_dir=None):
-    clock_discriminated = validate_spec(spec)
+def _validate_recording(spec, capture, bundle_dir=None, *, pending_humanoid=False):
+    clock_discriminated = validate_spec(spec, pending_humanoid=pending_humanoid)
     require(spec["build_target"] == capture["build_target"], "build target mismatch")
     require([b["sha256"] for b in spec["bundles"]] == capture["bundle_sha256"], "bundle digest mismatch")
     if bundle_dir is not None:

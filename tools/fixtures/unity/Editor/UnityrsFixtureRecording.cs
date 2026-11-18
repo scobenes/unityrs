@@ -5,7 +5,9 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 public static partial class AnimReplayRecorder
 {
@@ -73,7 +75,8 @@ public static partial class AnimReplayRecorder
     [Serializable] sealed class PendingClipSpec : PendingSpec { public Timepoint[] schedule; }
     [Serializable] sealed class PendingPoseSpec : PendingSpec { public Point[] schedule; }
 
-    internal static bool RecordFixture(UnityrsFixtureBuilder.ReplayCase fixture, string bundles, string output)
+    internal static bool RecordFixture(UnityrsFixtureBuilder.ReplayCase fixture, string bundles, string output,
+        Action<string> log)
     {
         var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(fixture.Prefab);
         var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(fixture.Clip);
@@ -172,7 +175,11 @@ public static partial class AnimReplayRecorder
 
         var spec = JsonUtility.FromJson<Spec>(JsonUtility.ToJson(pending));
         var capture = RecordCapture(spec, bundles, pending: true, inspectClip: (builtClip, bundle) => {
-            if (fixture.ProbeMixedStorage) mixed = HasMixedTransformStorage(builtClip);
+            if (fixture.ProbeMixedStorage)
+            {
+                mixed = HasMixedTransformStorage(builtClip, out string reason);
+                if (!mixed) log("mixed-transform-storage not covered: " + reason);
+            }
             if (referenceAssets == null) return;
             var keysInBundle = bundle.GetAllAssetNames();
             builtReferences = referenceAssets.Select(path => bundle.LoadAsset<Mesh>(BuiltAssetKey(keysInBundle, path))).ToArray();
@@ -217,24 +224,31 @@ public static partial class AnimReplayRecorder
             "The authored MeshFilter binding must retain both object-reference keys.");
     }
 
-    static bool HasMixedTransformStorage(AnimationClip clip)
+    static bool HasMixedTransformStorage(AnimationClip clip, out string reason)
     {
         using (var serialized = new SerializedObject(clip))
         {
+            var playback = serialized.FindProperty("m_MuscleClip.m_Clip.data")
+                ?? serialized.FindProperty("m_MuscleClip.m_Clip");
+            reason = "Unity did not expose m_MuscleClip playback on the bundle-loaded scale clip.";
+            if (playback == null) return false;
+
             var bindings = serialized.FindProperty("m_ClipBindingConstant.genericBindings");
+            reason = "Unity did not expose a single local-scale binding on the bundle-loaded clip.";
             if (bindings == null || !bindings.isArray || bindings.arraySize != 1) return false;
             var binding = bindings.GetArrayElementAtIndex(0);
             var type = binding.FindPropertyRelative("typeID") ?? binding.FindPropertyRelative("classID");
             if (type?.intValue != 4 || binding.FindPropertyRelative("attribute")?.intValue != 3
                 || binding.FindPropertyRelative("customType")?.intValue != 0) return false;
 
-            var playback = serialized.FindProperty("m_MuscleClip.m_Clip.data")
-                ?? serialized.FindProperty("m_MuscleClip.m_Clip");
-            if (playback == null) return false;
-            int stream = playback.FindPropertyRelative("m_StreamedClip.curveCount")?.intValue ?? 0;
-            int dense = playback.FindPropertyRelative("m_DenseClip.m_CurveCount")?.intValue ?? 0;
+            var stream = playback.FindPropertyRelative("m_StreamedClip.curveCount");
+            var dense = playback.FindPropertyRelative("m_DenseClip.m_CurveCount");
             var constant = playback.FindPropertyRelative("m_ConstantClip.data");
-            int[] counts = { stream, dense, constant != null && constant.isArray ? constant.arraySize : 0 };
+            reason = "Unity did not expose all runtime storage counts on the bundle-loaded scale clip.";
+            if (stream == null || dense == null || constant == null || !constant.isArray) return false;
+            int[] counts = { stream.intValue, dense.intValue, constant.arraySize };
+            reason = "The runtime counts do not show the three scale components split across storage ranges (streamed="
+                + counts[0] + ", dense=" + counts[1] + ", constant=" + counts[2] + ").";
             // The candidate has only one three-component local scale binding.
             return counts.Sum() == 3 && counts.Count(count => count > 0) > 1;
         }
@@ -261,9 +275,12 @@ public static partial class AnimReplayRecorder
         // change the endpoint being tested.
         Quaternion AuthoredRotation(float time)
         {
-            var instance = UnityEngine.Object.Instantiate(prefab);
+            Scene scene = EditorSceneManager.NewPreviewScene();
             try
             {
+                var anchor = new GameObject("Authored Spine probe");
+                SceneManager.MoveGameObjectToScene(anchor, scene);
+                var instance = UnityEngine.Object.Instantiate(prefab, anchor.transform, false);
                 var animator = At<Animator>(instance.transform, fixture.BindingAddress, 0);
                 animator.runtimeAnimatorController = null;
                 animator.applyRootMotion = false;
@@ -272,7 +289,7 @@ public static partial class AnimReplayRecorder
                 Need(bone != null && bone == instance.transform.Find(fixture.ProbePath), "Authored Avatar is missing the Spine probe.");
                 return bone.localRotation;
             }
-            finally { UnityEngine.Object.DestroyImmediate(instance); }
+            finally { EditorSceneManager.ClosePreviewScene(scene); }
         }
 
         const float tolerance = .25f;

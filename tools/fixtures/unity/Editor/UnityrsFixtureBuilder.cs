@@ -152,7 +152,8 @@ static partial class UnityrsFixtureBuilder
         string project = Path.GetDirectoryName(assetDirectory);
         string generated = Path.Combine(assetDirectory, AssetFolder);
         string output = Path.Combine(project, relative);
-        string staging = output + ".b-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+        string runId = Guid.NewGuid().ToString("N").Substring(0, 8);
+        string staging = output + ".b-" + runId;
         string stagedLog = Path.Combine(staging, LogFile);
         string[] failures;
         try
@@ -185,11 +186,9 @@ static partial class UnityrsFixtureBuilder
 
                     var report = new RunReport(Log);
                     AddDeferredCases(report);
-                    InFixtureScene(scene => {
-                        Progress("Preparing fixtures", .05f);
-                        var build = PrepareFixtures(report, scene);
-                        BuildAndCapture(build, report, staging, target, record, Log);
-                    });
+                    Progress("Preparing fixtures", .05f);
+                    var build = PrepareInFixtureScene(report);
+                    BuildAndCapture(build, report, staging, target, record, Log);
                     failures = report.Write(staging, projectPath);
                     Log(failures.Length == 0 ? "Finished." : "Finished with fixture errors: " + string.Join(", ", failures));
                 }
@@ -214,21 +213,22 @@ static partial class UnityrsFixtureBuilder
         {
             EditorUtility.ClearProgressBar();
             Debug.LogException(error);
+            string diagnostic = "See the Unity Console.";
             if (File.Exists(stagedLog))
             {
                 try
                 {
-                    CheckOwned(output);
-                    Directory.CreateDirectory(output);
-                    File.Copy(stagedLog, Path.Combine(output, LogFile), true);
-                    WriteMarker(output);
+                    string failedRun = relative + "-failed-" + runId;
+                    string failedOutput = Path.Combine(project, failedRun);
+                    Directory.CreateDirectory(failedOutput);
+                    File.Copy(stagedLog, Path.Combine(failedOutput, LogFile));
+                    diagnostic = "Send this run's log from your project folder:\n" + Path.Combine(failedRun, LogFile);
                 }
                 catch (IOException logError) { Debug.LogException(logError); }
                 catch (UnauthorizedAccessException logError) { Debug.LogException(logError); }
-                catch (InvalidOperationException logError) { Debug.LogException(logError); }
             }
             EditorUtility.DisplayDialog("unityrs fixture build failed",
-                error.Message + "\n\nSee the Unity Console and " + Path.Combine(relative, LogFile) + " if present.", "OK");
+                error.Message + "\n\n" + diagnostic, "OK");
         }
         finally
         {
@@ -258,7 +258,7 @@ static partial class UnityrsFixtureBuilder
         report.AddDeferred("integer-discrete-binding", "This run verifies a PPtr transition. An integer discrete flag needs its own fixture.");
     }
 
-    static void InFixtureScene(Action<Scene> action)
+    static Build PrepareInFixtureScene(RunReport report)
     {
         // Unity cannot create an additive scene while an untitled scene is open.
         for (int i = 0; i < SceneManager.sceneCount; i++)
@@ -272,12 +272,12 @@ static partial class UnityrsFixtureBuilder
         try
         {
             Require(SceneManager.SetActiveScene(scene), "Could not activate the fixture scene.");
-            action(scene);
+            return PrepareFixtures(report, scene);
         }
         finally
         {
             if (previous.IsValid()) SceneManager.SetActiveScene(previous);
-            EditorSceneManager.CloseScene(scene, true);
+            Require(EditorSceneManager.CloseScene(scene, true), "Could not close the fixture scene before building.");
         }
     }
 
@@ -287,7 +287,7 @@ static partial class UnityrsFixtureBuilder
         BuildStatic(build, report, scene);
         Progress("Preparing legacy and generic animation", .2f);
         report.Prepare(build, "Prepare legacy animation", LegacyCases, () => BuildLegacy(build));
-        report.Prepare(build, "Prepare generic animation", GenericCases, () => BuildGeneric(build));
+        BuildGeneric(build, report);
         Progress("Preparing humanoid animation", .35f);
         foreach (bool tall in new[] { false, true })
         {
@@ -300,18 +300,15 @@ static partial class UnityrsFixtureBuilder
     static void BuildAndCapture(Build build, RunReport report, string staging, BuildTarget target,
         bool record, Action<string> log)
     {
-        if (build.Bundles.Count == 0) return;
+        Require(build.Bundles.Count > 0, "No fixtures could be prepared. See the log and Console.");
         string bundles = Path.Combine(staging, "bundles");
         string replays = Path.Combine(staging, "replays");
-        AssetBundleManifest manifest = null;
         Progress("Building asset bundles", .5f);
-        if (!report.Try("Build asset bundles", build.StaticBundles.Keys.Concat(build.Replays.Select(fixture => fixture.OutputName)), () => {
-            AssetDatabase.SaveAssets();
-            Directory.CreateDirectory(bundles);
-            manifest = BuildPipeline.BuildAssetBundles(bundles, build.Bundles.ToArray(),
-                BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.StrictMode, target);
-            Require(manifest != null, "Unity could not build the fixture bundles. See the log and Console.");
-        })) return;
+        AssetDatabase.SaveAssets();
+        Directory.CreateDirectory(bundles);
+        var manifest = BuildPipeline.BuildAssetBundles(bundles, build.Bundles.ToArray(),
+            BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.StrictMode, target);
+        Require(manifest != null, "Unity could not build the fixture bundles. See the log and Console.");
 
         var built = new HashSet<string>(manifest.GetAllAssetBundles(), StringComparer.Ordinal);
         foreach (var entry in build.StaticBundles)
@@ -334,7 +331,7 @@ static partial class UnityrsFixtureBuilder
                 Require(built.Contains(fixture.Bundle) && manifest.GetAllDependencies(fixture.Bundle).Length == 0,
                     "Expected a self-contained replay bundle for " + name);
                 Directory.CreateDirectory(replays);
-                bool mixed = AnimReplayRecorder.RecordFixture(fixture, bundles, replays);
+                bool mixed = AnimReplayRecorder.RecordFixture(fixture, bundles, replays, log);
                 report.Set(name, "recorded");
                 if (mixed) report.Set("mixed-transform-storage", "recorded", "Verified in the built generic-scale clip.");
             });

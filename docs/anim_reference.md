@@ -529,7 +529,8 @@ Follow the [Windows Editor steps](../tools/fixtures/unity/README.md). Run
 project. The button uses the active build target, which defaults to
 `StandaloneWindows64` on the owner's PC. Send each complete
 version-and-target folder to the maintainer's fixture inbox. If the run
-shows an error, send `build.log`.
+stops with **unityrs fixture build failed**, send the log from the separate
+`-failed-<id>` folder shown in the dialog.
 
 The button generates both humanoid rigs and their clips. Each rig has
 skinned boxes in a T-pose and a procedurally built Avatar. The taller rig
@@ -558,7 +559,13 @@ python3 -I tools/parity/anim_replay.py complete "path/to/returned-folder" --unit
 Omit `--unityrs` to use `unityrs` on PATH. Completion requires the inventory
 in `run.json` and a recorded result for every required case, including the
 static bundles and raw known-vector recordings. It reports missing and failed
-cases before writing completed replays. Optional coverage can be skipped with
+cases before writing completed replays. The [fixture contract](../tools/parity/anim_fixture_contract.py)
+specifies each required bundle, asset key, playback route and evidence.
+Static asset keys are checked against the inspected AssetBundle container.
+A scene's container entry names its `.unity` path and has a null object
+pointer. [Unity AssetBundle format](https://github.com/Unity-Technologies/UnityDataTools/blob/main/Documentation/assetbundle-format.md#scenes-in-assetbundles)
+
+Optional coverage can be skipped with
 a reason. These sections are URP materials, packed rotation slopes,
 authored/runtime precedence, verified mixed Transform storage, integer discrete
 bindings, humanoid twist and non-neutral setting refusals, humanoid slot/axis
@@ -572,7 +579,9 @@ Unity loaded. Completion reads `inspect` for file occurrences and class
 headers, then uses `show` for the actual container entries, Transform and
 component PPtrs, mesh and Avatar PPtrs, controller slots, and clip settings.
 It inventories explicit and packed keys, streamed frame times and the dense
-grid from the serialized clip. The recording must include an interior sample
+grid from the serialized clip. A packed time array represented only by its
+length and digest leaves the inventory incomplete, so completion refuses it.
+The recording must include an interior sample
 off both the authored and built key times after f32 rounding.
 The automated fixtures keep these PPtrs within one bundle. Completion
 verifies the digest, writes the existing `unityrs.anim_replay` version 1
@@ -592,7 +601,8 @@ nonzero show truncation counters and missing or mismatched digests.
 The raw `human_pose` recordings are under `replays/known-vectors/`.
 Each contains the inputs in HumanTrait order, the exact applied f32
 bits and the independently captured rig facts. Completion checks their
-presence, sample coverage and bundle hashes. To complete a known-vector baseline, preserve a
+exact five-point schedule, muscle vectors, and agreement with the corresponding
+clip replay's inspected assets, rest pose and Editor capture facts. To complete a known-vector baseline, preserve a
 copy of the raw recording and add the inspected `spec.evidence.humanoid` to
 the pending file under `replays/known-vectors/` for its selected
 clip with `disposition: "pending"` and the slot and axis evidence

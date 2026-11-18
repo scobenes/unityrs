@@ -8,17 +8,10 @@ import struct
 from uuid import uuid4
 
 import child
+from anim_fixture_contract import (ASSETS, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
+                                   check_discovery, check_evidence, check_identity, check_vectors)
 
 PENDING_FORMAT = "unityrs.anim_replay_pending"
-STATIC_CASES = dict.fromkeys(("static-primitives", "static-materials", "static-lod", "static-skin"), "static-objects")
-STATIC_CASES["static-batch-scene"] = "static-batch-scene"
-HUMANOID_CASES = tuple(f"humanoid-{rig}-muscles{offset}" for rig in ("compact", "tall") for offset in ("", "-offset"))
-REPLAY_CASES = (
-    "legacy-explicit", "generic-quaternion", "generic-euler", "generic-constant", "generic-offset-stepped",
-    "generic-weighted", "generic-morph", "generic-object-reference", "generic-override-morph",
-    "generic-null-override", "generic-scale", "humanoid-compact-body-motion", *HUMANOID_CASES,
-)
-VECTOR_CASES = tuple(f"{name}-known-vectors" for name in HUMANOID_CASES)
 OPTIONAL_CASES = {
     "urp-materials", "packed-rotation-slopes", "authored-runtime-precedence", "mixed-transform-storage",
     "humanoid-twist-refusal", "humanoid-non-neutral-setting-refusal", "humanoid-slot-axis-inventory",
@@ -57,8 +50,11 @@ class BundleView:
         self.path, self.index, self.unityrs, self.inspect_dir = path, index, unityrs, inspect_dir
         self.digest = digest
         self.require, self.read_json, self.replay = replay.require, replay.read_json, replay
+        with path.open("rb") as source:
+            self.require(source.read(8) == b"UnityFS\0", f"invalid UnityFS signature: {path.name}")
         self.headers = {}
         self.values = {}
+        self.container = None
         cursor = None
         seen = set()
         while True:
@@ -69,6 +65,8 @@ class BundleView:
             self.require(len(doc["inputs"]) == 1 and "error" not in doc["inputs"][0],
                          f"cannot inspect {path.name}: {doc['inputs']}")
             files = {row["file_index"]: row for row in doc["inputs"][0]["files"]}
+            self.require(files.get(0, {}).get("kind") == "BundleFile"
+                         and files[0]["file"] == path.name, f"expected inspected Unity bundle: {path.name}")
             for header in doc["objects"]:
                 key = (header["file_index"], header["path_id"])
                 self.require(header["input"] == 0 and key not in self.headers
@@ -134,17 +132,21 @@ class BundleView:
                      f"unresolved or wrong-class PPtr in {self.path.name}: {owner} -> {key}")
         return key
 
-    def asset(self, name, class_id):
+    def asset(self, name, class_id, *, ignore_case=False):
+        if self.container is None:
+            self.container = []
+            for key, header in self.headers.items():
+                if header["class_id"] == 142:
+                    container = self.value(key)["m_Container"]
+                    rows = container.items() if isinstance(container, dict) else container
+                    self.container.extend((asset_key, key, info["asset"]) for asset_key, info in rows)
+        match = name.lower() if ignore_case else name
         candidates = []
-        for key, header in self.headers.items():
-            if header["class_id"] != 142:
-                continue
-            container = self.value(key)["m_Container"]
-            rows = container.items() if isinstance(container, dict) else container
-            for asset_key, info in rows:
-                if asset_key == name:
-                    candidates.append(self.pointer(key, info["asset"], {class_id}))
-        self.require(len(candidates) == 1 and candidates[0] is not None,
+        for asset_key, key, ptr in self.container:
+            if (asset_key.lower() if ignore_case else asset_key) == match:
+                candidates.append(self.pointer(key, ptr, None if class_id is None else {class_id}))
+        # Scene bundles list a .unity address with a null PPtr.
+        self.require(len(candidates) == 1 and (candidates[0] is None) == (class_id is None),
                      f"expected one AssetBundle container entry for {name} in {self.path.name}")
         return candidates[0]
 
@@ -234,6 +236,7 @@ def streamed_times(words, require):
     """Read frame times from the CLI's uint32 view of m_StreamedClip.data."""
     cursor, previous = 0, -math.inf
     while cursor < len(words):
+        require(cursor + 2 <= len(words), "incomplete built streamed clip frame")
         bits, count = words[cursor:cursor + 2]
         require(type(bits) is int and 0 <= bits <= 0xffffffff and type(count) is int and count >= 0,
                 "invalid built streamed clip frame")
@@ -255,7 +258,16 @@ def packed_times(times, require):
     require(type(width) is int and type(count) is int and 0 <= width <= 32 and 0 < count <= 65536,
             "invalid built packed rotation time layout")
     raw = times["m_Data"]
-    data = bytes.fromhex(raw["hex"]) if isinstance(raw, dict) else bytes(raw)
+    if isinstance(raw, dict):
+        require("len" not in raw and "sha256" not in raw,
+                "incomplete built packed rotation times: canonical show elided the bytes")
+        require(raw.get("t") in ("bytes", "u8s") and isinstance(raw.get("hex"), str),
+                "invalid built packed rotation time bytes")
+        data = bytes.fromhex(raw["hex"])
+    else:
+        require(isinstance(raw, list) and all(type(byte) is int and 0 <= byte <= 255 for byte in raw),
+                "invalid built packed rotation time bytes")
+        data = bytes(raw)
     require(count * width <= 8 * len(data) and (width > 0 or count == 1),
             "incomplete built packed rotation times")
     total, mask = 0, (1 << width) - 1
@@ -280,7 +292,10 @@ def built_key_times(value, playback, require):
         times.extend(packed_times(row["m_Times"], require))
     stream = playback.get("m_StreamedClip", {})
     if stream:
-        times.extend(streamed_times(stream["data"], require))
+        count, words = stream["curveCount"], stream.get("data")
+        require(type(count) is int and count >= 0, "invalid built streamed clip curve count")
+        require(isinstance(words, list) and (count == 0 or words), "missing built streamed clip frame data")
+        times.extend(streamed_times(words, require))
     dense = playback.get("m_DenseClip", {})
     if dense.get("m_CurveCount", 0):
         curves, count, rate, begin = (dense[k] for k in ("m_CurveCount", "m_FrameCount", "m_SampleRate", "m_BeginTime"))
@@ -356,13 +371,14 @@ def clip_evidence(spec, capture, value, replay):
             serialized_path=f"{fields}.{field}", serialized=stored))
 
 
-def complete_recording(doc, bundle_dir, views, unityrs, inspect_dir, replay):
+def complete_recording(name, fixture, doc, bundle_dir, views, unityrs, inspect_dir, replay):
     replay.require(set(doc) == {"format", "version", "spec", "capture"}
                    and doc["format"] == PENDING_FORMAT and type(doc["version"]) is int and doc["version"] == 1,
                    "expected unityrs.anim_replay_pending version 1")
     spec, capture = doc["spec"], doc["capture"]
     replay.require(not {"prefab", "clip", "binding", "avatar"}.intersection(spec),
                    "pending replay already contains built identities")
+    check_identity(name, fixture, spec, capture, replay)
     path, digest = pending_bundle(doc, bundle_dir, replay)
     spec["bundles"][0]["sha256"] = digest
     view_key = path.name, digest
@@ -375,16 +391,19 @@ def complete_recording(doc, bundle_dir, views, unityrs, inspect_dir, replay):
     nodes = view.hierarchy(prefab)
     replay.require(set(nodes) == {node["address"] for node in spec["nodes"]}, "built node coverage mismatch")
     for node in spec["nodes"]:
-        key, name, _ = nodes[node["address"]]
-        replay.require(name == node["name"] and "id" not in node, "built node name or pending identity mismatch")
+        key, node_name, _ = nodes[node["address"]]
+        replay.require(node_name == node["name"] and "id" not in node, "built node name or pending identity mismatch")
         node["id"] = view.identity(key)
 
     binding_class = 111 if spec["mode"] == "legacy" else 95
     binding = view.component(nodes, spec["binding_address"], spec["binding_component"], binding_class, "binding")
     avatar = view.asset(spec["avatar_asset"], 90) if spec["avatar_asset"] else None
     if binding_class == 95:
-        pointer = view.value(binding)["m_Avatar"]
-        replay.require(view.pointer(binding, pointer, {90}) == avatar, "built Animator Avatar mismatch")
+        animator = view.value(binding)
+        replay.require(view.pointer(binding, animator["m_Avatar"], {90}) == avatar, "built Animator Avatar mismatch")
+        controller_class = 221 if fixture.playback in ("override", "null_override") else 91
+        replay.require(view.pointer(binding, animator["m_Controller"], {controller_class}) is not None,
+                       "missing built fixture Animator controller")
     spec.update(prefab=view.identity(prefab), clip=view.identity(clip),
                 binding=view.identity(binding), avatar=view.identity(avatar))
 
@@ -405,13 +424,15 @@ def complete_recording(doc, bundle_dir, views, unityrs, inspect_dir, replay):
     clip_evidence(spec, capture, view.value(clip), replay)
     discovery, effective = view.discovery(binding, binding_class)
     replay.require(clip in effective, "selected clip is absent from built playback component discovery")
-    expected = spec["evidence"].get("editor", {}).get("expected_discovery")
-    if expected:
-        replay.require(any(row["outcome"] == expected and row["resolved"] == view.identity(clip)
-                           for row in discovery), f"missing expected built discovery outcome: {expected}")
+    check_discovery(fixture, view, discovery, clip)
     spec["evidence"]["discovery"] = discovery
     doc["format"] = "unityrs.anim_replay"
-    replay.validate(doc, bundle_dir)
+    if name in VECTOR_CASES and "humanoid" not in spec["evidence"]:
+        replay._shape(replay.SCHEMA["$defs"]["capture"], capture, "/capture")
+        replay._validate_recording(spec, capture, pending_humanoid=True)
+    else:
+        replay.validate(doc)
+    check_evidence(fixture, doc, view, replay)
     return doc
 
 
@@ -439,7 +460,7 @@ def recorded_paths(folder, replay):
         if status == "failed" or (name in required and status != "recorded"):
             errors.append(f"{name}: {status} ({reason})")
         if name in required and status == "recorded":
-            path = paths[name] if name in paths else folder / "bundles" / STATIC_CASES[name]
+            path = paths[name] if name in paths else folder / "bundles" / STATIC_CASES[name][0]
             if not path.is_file() or path.stat().st_size == 0:
                 errors.append(f"{name}: missing {path.relative_to(folder)}")
         if name in OPTIONAL_CASES and status == "recorded" and name != "mixed-transform-storage":
@@ -458,46 +479,45 @@ def pending_bundle(doc, bundle_dir, replay):
     name = spec["bundles"][0]["name"]
     replay._shape(replay.SCHEMA["$defs"]["bundle"]["properties"]["name"], name, "/spec/bundles/0/name")
     path = bundle_dir / name
-    with path.open("rb") as source:
-        digest = hashlib.file_digest(source, "sha256").hexdigest()
+    digest = bundle_digest(path)
     replay.require(capture["bundle_sha256"] == [digest], f"bundle digest mismatch: {name}")
     return path, digest
 
 
-def check_raw_vectors(doc, replay):
-    spec, capture = doc["spec"], doc["capture"]
-    replay._shape(replay.SCHEMA["$defs"]["capture"], capture, "/capture")
-    replay.require(spec["mode"] == "human_pose" and capture["playback"]["api"] == replay.API["human_pose"]
-                   and capture["playback"]["clip_human_motion"] and "humanoid" in capture,
-                   "expected a pending known-vector recording")
-    schedule, samples = spec["schedule"], capture["samples"]
-    width = len(capture["humanoid"]["muscles"])
-    replay.require(len(schedule) == len(samples) and all(
-        len(point["muscles"]) == width and point["local"] == sample["local"]
-        and [replay.f32_bits(value) for value in point["muscles"]] == sample["muscles_f32"]
-        for point, sample in zip(schedule, samples)), "incomplete known-vector recording")
+def bundle_digest(path):
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def check_static(bundle_dir, views, unityrs, inspect_dir, replay):
+    bundles = {}
+    for case, (bundle, assets) in STATIC_CASES.items():
+        try:
+            if bundle not in bundles:
+                path = bundle_dir / bundle
+                digest = bundle_digest(path)
+                bundles[bundle] = views[bundle, digest] = BundleView(path, digest, 0, unityrs, inspect_dir, replay)
+            for asset, class_id in assets.items():
+                bundles[bundle].asset(ASSETS + "static/" + asset, class_id, ignore_case=True)
+        except (KeyError, TypeError, IndexError, AttributeError, ValueError, OSError) as exc:
+            raise ValueError(f"{case}: {exc}") from exc
 
 
 def complete_folder(folder, unityrs, inspect_dir, replay):
     """Validate every result before writing any completed recordings."""
     bundle_dir = folder / "bundles"
-    results, views = [], {}
+    results, views, recordings = [], {}, {}
     paths, recorded_mixed = recorded_paths(folder, replay)
+    check_static(bundle_dir, views, unityrs, inspect_dir, replay)
+    fixtures = REPLAY_CASES | VECTOR_CASES
     for path in paths:
         try:
             document = replay.read_json(path.read_text(encoding="utf-8"))
-            spec = document["spec"]
             name = path.name.removesuffix(".pending.json")
-            replay.require(spec["evidence"]["editor"].get("fixture_case") == name,
-                           f"pending recording does not identify manifest case {name}")
-            if path.parent.name == "known-vectors":
-                replay.require(document["format"] == PENDING_FORMAT and type(document["version"]) is int
-                               and document["version"] == 1, "expected a pending known-vector recording")
-                check_raw_vectors(document, replay)
-                if "humanoid" not in spec["evidence"]:
-                    pending_bundle(document, bundle_dir, replay)
-                    continue
-            result = complete_recording(document, bundle_dir, views, unityrs, inspect_dir, replay)
+            result = complete_recording(name, fixtures[name], document, bundle_dir, views, unityrs, inspect_dir, replay)
+            recordings[name] = result
+            if name in VECTOR_CASES and "humanoid" not in result["spec"]["evidence"]:
+                continue
             if name == "generic-scale" and recorded_mixed:
                 replay.require(result["spec"]["evidence"]["mixed_transform_storage"],
                                "mixed Transform storage reported by Unity is absent from the built scale clip")
@@ -508,6 +528,13 @@ def complete_folder(folder, unityrs, inspect_dir, replay):
             results.append((output, data))
         except (KeyError, TypeError, IndexError, AttributeError, ValueError, OSError) as exc:
             raise ValueError(f"{path.name}: {exc}") from exc
+    for name in VECTOR_CASES:
+        try:
+            check_vectors(recordings[name], recordings[name.removesuffix(VECTOR_SUFFIX)], replay)
+        except ValueError as exc:
+            raise ValueError(f"{name}.pending.json: {exc}") from exc
+    for view in views.values():
+        replay.require(bundle_digest(view.path) == view.digest, f"bundle changed during inspection: {view.path.name}")
     for output, data in results:
         if output.exists():
             continue
