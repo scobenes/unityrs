@@ -1,7 +1,7 @@
 //! Verify the clocks against the loaded clip and independently observed probes.
 #![allow(clippy::cast_possible_truncation)]
 use crate::{
-    Arc, BoundClip, J, Meter, Result, Target, f32_bits, index, list, number, require, string,
+    Arc, BoundClip, J, Meter, Result, Target, angle, f32_bits, index, list, number, require, string,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -113,6 +113,7 @@ pub(crate) fn check(
     let mut times = Vec::new();
     let mut alternative = Vec::new();
     let mut has_off_key = false;
+    let mut previous_local = None;
     for ((point, observed), frozen) in schedule.iter().zip(samples).zip(frozen) {
         let local = number(&point["local"])?;
         let rounded = round(local);
@@ -124,7 +125,13 @@ pub(crate) fn check(
         let effective = effective_clock(rounded, f32_add);
         let other = effective_clock(rounded, !f32_add);
         require(
-            f32_bits(&observed["local_f32"])? == rounded
+            previous_local.is_none_or(|previous| previous < rounded),
+            "non-increasing f32 local clock",
+        )?;
+        previous_local = Some(rounded);
+        require(
+            number(&observed["local"])? == local
+                && f32_bits(&observed["local_f32"])? == rounded
                 && number(&observed["source"])? == source
                 && number(&observed["effective_source"])? == effective
                 && number(&frozen["source"])? == source
@@ -152,11 +159,13 @@ pub(crate) fn check(
         "bundle interior off-key probe",
     )?;
     require(
-        times.windows(2).all(|w| w[0] < w[1]),
-        "non-increasing effective clock",
+        times.windows(2).all(|w| w[0] <= w[1]),
+        "decreasing effective clock",
     )?;
     let mut distinguished = false;
-    for (&boundary, row) in boundaries.iter().zip(list(&evidence["held"])?) {
+    let held = list(&evidence["held"])?;
+    require(boundaries.len() == held.len(), "held probe coverage")?;
+    for (&boundary, row) in boundaries.iter().zip(held) {
         require(number(&row["source"])? == boundary, "held probe boundary")?;
         let left = &row["left"];
         let right = &row["right"];
@@ -171,10 +180,8 @@ pub(crate) fn check(
         let target = &targets[target_index];
         let component = index(&right["component"])?;
         let held = held_input(target, component, boundary, meter)?;
-        let left_value = target.component(component, boundary, true, meter)?;
-        let right_value = target.component(component, boundary, false, meter)?;
         require(
-            held && left_value != right_value,
+            held && distinct_sides(target, component, boundary, meter)?,
             "held probe does not distinguish bundle sides",
         )?;
         let split = times.partition_point(|&time| time < boundary);
@@ -207,14 +214,26 @@ pub(crate) fn check(
             let sample = index(&probe["sample"])?;
             let observed = f32_bits(&probe["value"])?;
             let budget = number(&frozen[sample]["bounds"][target_index])?;
-            let predicted = target.component(component, times[sample], false, meter)?;
-            require(
-                (predicted - observed).abs() <= budget,
-                "held probe disagrees with bundle",
+            let error = probe_error(
+                target,
+                component,
+                times[sample],
+                observed,
+                &samples[sample],
+                meter,
             )?;
+            require(error <= budget, "held probe disagrees with bundle")?;
             if round(start) == start && (alternative[sample] < boundary) != is_left {
-                let alternate = target.component(component, alternative[sample], false, meter)?;
-                distinguished |= (alternate - observed).abs() > budget;
+                let error = probe_error(
+                    target,
+                    component,
+                    alternative[sample],
+                    observed,
+                    &samples[sample],
+                    meter,
+                )?;
+                let within_tolerance = error <= budget;
+                distinguished |= !within_tolerance;
             }
         }
     }
@@ -223,6 +242,39 @@ pub(crate) fn check(
         "bundle held probe did not distinguish clocks",
     )?;
     Ok(times)
+}
+
+fn distinct_sides(
+    target: &Target<'_, '_, '_>,
+    axis: usize,
+    time: f64,
+    meter: &Meter,
+) -> Result<bool> {
+    if target.property() == "rotation" {
+        let left = target.rotation_at(time, true, meter, true)?;
+        let right = target.rotation_at(time, false, meter, true)?;
+        return Ok(angle(&left, &right) > 0.);
+    }
+    Ok(target.component(axis, time, true, meter)? != target.component(axis, time, false, meter)?)
+}
+
+fn probe_error(
+    target: &Target<'_, '_, '_>,
+    axis: usize,
+    time: f64,
+    observed: f64,
+    sample: &J,
+    meter: &Meter,
+) -> Result<f64> {
+    if target.property() == "rotation" {
+        let reference = target.reference(&sample["pose"])?;
+        require(
+            reference.get(axis) == Some(&observed),
+            "captured rotation disagrees with held probe",
+        )?;
+        return target.error(&target.rotation_at(time, false, meter, true)?, &reference);
+    }
+    Ok((target.component(axis, time, false, meter)? - observed).abs())
 }
 
 fn held_input(

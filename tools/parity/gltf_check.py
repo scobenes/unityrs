@@ -284,6 +284,9 @@ def check_accessors(doc, binary, expected, normalise=True):
             if mode != case["interpolation"]:
                 raise AssertionError("animation interpolation")
             envelope = case.get("bake")
+            samples = case.get("samples", [])
+            if envelope is not None and "times" not in case and "values" not in case and not samples:
+                raise AssertionError("animation bake envelope has no compared values")
             if "times" in case or envelope is None:
                 equal([times], [list(map(f32, case["times"]))], "animation times")
             if "values" in case or envelope is None:
@@ -292,7 +295,7 @@ def check_accessors(doc, binary, expected, normalise=True):
             if envelope is not None:
                 prop = "weight" if case["path"] == "weights" else case["path"]
                 bound = bake_bound(prop, *envelope)
-            for time, reference in case.get("samples", []):
+            for time, reference in samples:
                 actual = sample_animation(channel, time, rotation=rotation)
                 if envelope is not None and len(actual) == len(reference):
                     error = (quaternion_angle(actual, reference) if rotation else

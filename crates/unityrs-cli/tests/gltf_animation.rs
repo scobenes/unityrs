@@ -144,3 +144,43 @@ fn prefab_diagnoses_discovery_and_refuses_an_explicit_unresolved_slot() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("outside_view"));
     assert_eq!(std::fs::read(scratch.join("result.glb")).unwrap(), before);
 }
+
+#[test]
+fn static_gltf_ignores_input_root_storage_on_an_unrelated_meter() {
+    use unityrs_core::env::{EnvOptions, Environment, Source};
+
+    let scratch = Scratch::new("gltf-static-input-budget");
+    let unrelated = scratch.join("large.resource");
+    let padding = scratch.join("small.resource");
+    let prefab = scratch.join("level0");
+    let profile = scratch.join("static.json");
+    std::fs::write(&unrelated, vec![0; 256 * 1024]).unwrap();
+    std::fs::write(&padding, b"resource").unwrap();
+    std::fs::write(&prefab, fixture()).unwrap();
+    std::fs::write(&profile, br#"{"profile_version":1,"clips":[]}"#).unwrap();
+
+    let env = Environment::new(EnvOptions::unitypy());
+    let first = env.load(Source::Path(unrelated.clone())).unwrap();
+    let limit = (first.meter().used() + 4096).to_string();
+
+    for explicit_profile in [false, true] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_unityrs"));
+        cmd.arg("gltf").arg(&unrelated);
+        // Enough input arguments to exhaust the first meter if it pays
+        // for the root list. The selected prefab has a separate meter.
+        cmd.args(std::iter::repeat_n(&padding, 640))
+            .arg(&prefab)
+            .args(["--path-id", "1", "--max-input-memory", &limit, "-o"])
+            .arg(scratch.join("result.glb"));
+        if explicit_profile {
+            cmd.arg("--profile").arg(&profile);
+        }
+        let result = child::output(&mut cmd).unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(doc(&scratch).get("animations").is_none());
+    }
+}

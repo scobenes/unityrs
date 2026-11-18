@@ -432,22 +432,41 @@ fn compare(document: &J, dir: &Path, tolerance: &J) -> Result<()> {
     )?;
     for target in &targets {
         require(
-            target.error(&target.rest, target.observed(&capture["rest"])?)? == 0.,
+            target.error(&target.rest, &target.reference(&capture["rest"])?)? <= 0.,
             "serialized rest pose mismatch",
         )?;
     }
     let mut worst = vec![(0., times[0]); targets.len()];
     let mut failed = None;
+    let mut replay = None;
     for (row, (&time, observed)) in times.iter().zip(expected).enumerate() {
-        let samples = sample_clip(&bound, &rest, &[time], meter)?;
+        if replay
+            .as_ref()
+            .is_none_or(|(previous, _, _)| *previous != time)
+        {
+            replay = Some((time, row, sample_clip(&bound, &rest, &[time], meter)?));
+        }
+        let (_, first, samples) = replay.as_ref().unwrap();
         let bounds = list(&tolerances[row]["bounds"])?;
         require(bounds.len() == targets.len(), "tolerance coverage")?;
         for (i, target) in targets.iter().enumerate() {
             let actual = target.sampled(samples.transforms(), samples.morphs());
-            let error = target.error(&actual, target.observed(&observed["pose"])?)?;
+            let reference = target.reference(&observed["pose"])?;
+            let error = target.error(&actual, &reference)?;
             let tolerance = number(&bounds[i])?;
+            if *first != row {
+                let earlier = target.reference(&expected[*first]["pose"])?;
+                let earlier_tolerance = number(&tolerances[*first]["bounds"][i])?;
+                require(
+                    target.error(&earlier, &reference)? <= tolerance.max(earlier_tolerance),
+                    "inconsistent pose at the same effective source time",
+                )?;
+            }
             let excess = error - tolerance;
-            if excess > 0. && failed.is_none_or(|(worst, _, _, _, _)| excess > worst) {
+            let within_tolerance = error <= tolerance;
+            if !within_tolerance
+                && failed.is_none_or(|(worst, _, _, _, _)| excess.total_cmp(&worst).is_gt())
+            {
                 failed = Some((excess, i, time, error, tolerance));
             }
             if error > worst[i].0 {
@@ -500,11 +519,18 @@ impl Target<'_, '_, '_> {
         list(&pose["transforms"][index][self.property()])
     }
 
-    fn error(&self, sampled: &[f64], observed: &[J]) -> Result<f64> {
-        require(sampled.len() == observed.len(), "pose arity")?;
-        let reference = observed.iter().map(f32_bits).collect::<Result<Vec<_>>>()?;
+    fn reference(&self, pose: &J) -> Result<Vec<f64>> {
+        self.observed(pose)?.iter().map(f32_bits).collect()
+    }
+
+    fn error(&self, sampled: &[f64], reference: &[f64]) -> Result<f64> {
+        require(sampled.len() == reference.len(), "pose arity")?;
         if self.property() == "rotation" {
-            return Ok(angle(sampled, &reference));
+            require(
+                reference.iter().any(|&x| x != 0.),
+                "zero-norm captured quaternion",
+            )?;
+            return Ok(angle(sampled, reference));
         }
         Ok(sampled
             .iter()

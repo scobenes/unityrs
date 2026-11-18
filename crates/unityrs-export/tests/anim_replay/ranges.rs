@@ -11,7 +11,13 @@ impl<'c, 'r> Target<'_, 'c, 'r> {
         })
     }
 
-    fn rotation_at(&self, time: f64, left: bool, meter: &Meter, joint: bool) -> Result<[f64; 4]> {
+    pub(super) fn rotation_at(
+        &self,
+        time: f64,
+        left: bool,
+        meter: &Meter,
+        joint: bool,
+    ) -> Result<[f64; 4]> {
         let Some(track) = self.tracks.first() else {
             return Ok(self.rest.as_slice().try_into()?);
         };
@@ -30,9 +36,6 @@ impl<'c, 'r> Target<'_, 'c, 'r> {
         left: bool,
         meter: &Meter,
     ) -> Result<f64> {
-        if self.property() == "rotation" {
-            return Ok(self.rotation_at(source, left, meter, true)?[axis]);
-        }
         let Some((track, component)) = self.track(axis) else {
             return self
                 .rest
@@ -45,6 +48,7 @@ impl<'c, 'r> Target<'_, 'c, 'r> {
 }
 
 struct Stage<'a> {
+    name: &'a str,
     ranges: &'a [J],
 }
 
@@ -57,11 +61,22 @@ impl Stage<'_> {
         self.range(i, value, value)
     }
 
+    fn clamp(&self, value: f64) -> Result<()> {
+        match self.name {
+            "streamed" => self.point(3, value),
+            // A clamp uses a single key value, with no interpolation.
+            "dense" | "hermite" | "weighted" => require(
+                inside(&self.ranges[0], value, value)? || inside(&self.ranges[1], value, value)?,
+                "bundle stage range",
+            ),
+            _ => self.point(0, value),
+        }
+    }
+
     fn segment(&self, segment: ScalarSegment, lo: f64, hi: f64) -> Result<()> {
         use ScalarSegment as S;
         match segment {
-            S::Constant(_) => Ok(()), // The other stages clamp outside their input grid.
-            S::Held(value) => self.point(0, value),
+            S::Constant(value) | S::Held(value) => self.clamp(value),
             S::Streamed { key, coefficients } => {
                 for (i, value) in coefficients.into_iter().enumerate() {
                     self.point(i, value)?;
@@ -188,18 +203,18 @@ pub(crate) fn check(target: &Target<'_, '_, '_>, timing: ClipTiming, meter: &Met
         "bundle track stage path",
     )?;
     let stage = Stage {
+        name,
         ranges: list(&stages[0]["range"])?,
     };
-    let point_stage = matches!(name, "rest" | "held" | "constant");
     for (index, &time) in times.iter().enumerate() {
-        if point_stage {
-            for axis in 0..target.rest.len() {
-                let value = target
-                    .track(axis)
-                    .map_or(Ok(target.rest[axis]), |(track, component)| {
-                        track.raw_at(time, false, meter).map(|raw| raw[component])
-                    })?;
-                stage.point(0, value)?;
+        for axis in 0..target.rest.len() {
+            if let Some((track, component)) = target.track(axis) {
+                let segment = track.segment(component, time, false, meter)?;
+                if segment.is_held() {
+                    stage.segment(segment, time, time)?;
+                }
+            } else {
+                stage.clamp(target.rest[axis])?;
             }
         }
         if target.property() == "rotation" {

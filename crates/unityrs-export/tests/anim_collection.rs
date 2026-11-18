@@ -1,6 +1,8 @@
 #![cfg(feature = "gltf")]
 #![allow(clippy::float_cmp)]
 mod anim_support;
+#[path = "anim_collection/review.rs"]
+mod review;
 
 use serde_json::Value as J;
 use std::{path::Path, process::Command, sync::Arc};
@@ -711,6 +713,7 @@ fn large_translation_uses_f32_ulp_rounding_at_an_off_key_endpoint() {
 #[test]
 fn budget_refusal_remains_typed_and_releases_collection_storage() {
     use unityrs_core::budget::{Reservation, Unbounded};
+    use unityrs_core::{error::LimitKind, limits::ChargeError};
     let (env, root, graph, _) = input(anim_support::bundle(false), 1);
     let profile = Profile::parse(ALL, &Meter::unlimited()).unwrap();
     let budget = Meter::with_decode_work(u64::MAX, 64, Arc::new(Unbounded), Reservation::Input);
@@ -724,7 +727,9 @@ fn budget_refusal_remains_typed_and_releases_collection_storage() {
     );
     assert!(matches!(
         result,
-        Err(ExportError::Charge(_) | ExportError::Animation(unityrs_anim::AnimError::Charge(_)))
+        // Static collection runs before the animation callback.
+        Err(ExportError::Gltf(unityrs_gltf::GltfError::Charge(ChargeError::Limit(limit))))
+            if limit.kind() == LimitKind::DecodeWork && limit.max() == 64 && limit.value() > 64
     ));
     assert_eq!(budget.used(), 0);
 }

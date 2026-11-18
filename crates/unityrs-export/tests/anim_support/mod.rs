@@ -16,7 +16,7 @@ pub const PREFAB: &str = "assets/synthetic.prefab";
 pub const CLIP: &str = "assets/synthetic.anim";
 pub const CAB: &str = "CAB-synthetic";
 
-fn legacy_clip() -> Object {
+pub fn legacy_clip() -> Object {
     let mut left = Key::new(2., [12.5]);
     left.outgoing = [f32::INFINITY];
     let mut middle = Key::new(2.25, [17.5]);
@@ -76,12 +76,19 @@ fn legacy_clip() -> Object {
     )
 }
 
-fn generic_clip() -> Object {
+pub fn generic_clip(clamped_translation: bool) -> Object {
     let mut object = p::explicit(9, 4., &[]);
     let mut words = Vec::new();
     p::frame(&mut words, f32::MIN, &[]);
     for (time, weight) in [(2., 12.5_f32), (2.25, 17.5), (3., 17.5)] {
-        p::frame(&mut words, time, &[(0, [0, 0, 0, weight.to_bits()])]);
+        if clamped_translation && time == 3. {
+            p::frame(&mut words, 2.75, &[(1, [0, 0, 0, 1000_f32.to_bits()])]);
+        }
+        let mut keys = vec![(0, [0, 0, 0, weight.to_bits()])];
+        if clamped_translation && time == 2. {
+            keys.extend([(1, [0, 0, 1_f32.to_bits(), 0]), (2, [0; 4]), (3, [0; 4])]);
+        }
+        p::frame(&mut words, time, &keys);
     }
     p::frame(&mut words, f32::INFINITY, &[]);
     p::add_compiled(
@@ -108,9 +115,10 @@ fn generic_clip() -> Object {
         &[],
         Storage {
             interval: [2., 3.],
-            streamed_count: 1,
+            streamed_count: if clamped_translation { 4 } else { 1 },
             words: &words,
-            constants: &[1_f32, -2., 0., 0., 0., 0., 1.].map(f32::to_bits),
+            constants: &[1_f32, -2., 0., 0., 0., 0., 1.].map(f32::to_bits)
+                [if clamped_translation { 3.. } else { 0.. }],
             ..Storage::default()
         },
     );
@@ -123,6 +131,17 @@ fn generic_clip() -> Object {
 }
 
 pub fn bundle(legacy: bool) -> Vec<u8> {
+    bundle_with_clip(
+        legacy,
+        if legacy {
+            legacy_clip()
+        } else {
+            generic_clip(false)
+        },
+    )
+}
+
+pub fn bundle_with_clip(legacy: bool, clip: Object) -> Vec<u8> {
     let mut mesh = m::mesh(
         7,
         b"mesh",
@@ -167,11 +186,7 @@ pub fn bundle(legacy: bool) -> Vec<u8> {
             137,
             s::skinned_mesh_renderer((0, 4), (0, 7), &[], &[30.]),
         ),
-        if legacy {
-            legacy_clip()
-        } else {
-            generic_clip()
-        },
+        clip,
     ];
     if !legacy {
         objects.push(anim::controller(10, &[(0, 9)], &[0]));

@@ -157,6 +157,15 @@ class Checks(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "sample at"):
             g.check_accessors(doc, data, [case])
 
+    def test_bake_envelope_requires_at_least_one_compared_value(self):
+        doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])
+        case = {"animation": 0, "node": 0, "path": "translation", "interpolation": "LINEAR",
+                "bake": [6., 8., 1.25]}
+        for samples in ({}, {"samples": []}):
+            with self.subTest(samples=samples), self.assertRaisesRegex(AssertionError, "no compared values"):
+                g.check_accessors(doc, data, [case | samples])
+        self.assertEqual(g.check_accessors(doc, data, [case | {"times": [0.25, 1.25]}]), 1)
+
     def test_animation_requires_dense_views_that_fit_the_counts(self):
         doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])
         timing = doc["accessors"][0]

@@ -93,6 +93,10 @@ impl ScalarSegment {
 
     /// Upper bounds on the first and second derivative over the source interval.
     #[must_use]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the affine shortcut requires exact equality"
+    )]
     pub fn derivatives(self, lo: f64, hi: f64) -> (f64, f64) {
         match self {
             Self::Held(_) | Self::Constant(_) => (0., 0.),
@@ -132,24 +136,38 @@ impl ScalarSegment {
                 slopes,
                 duration,
                 weights: [outgoing, incoming],
-                ..
+                key,
             } => {
+                // Identical affine time and value controls reduce to a
+                // straight line even where the parameterization stalls.
+                let delta = values[1] - values[0];
+                if (outgoing == 0. || duration * slopes[0] == delta)
+                    && (incoming == 0. || duration * slopes[1] == delta)
+                {
+                    return (delta.abs() / duration, 0.);
+                }
                 let (first, second) =
                     bezier_derivatives(values, slopes, duration, [outgoing, incoming]);
                 let middle = 1. - outgoing - incoming;
-                let mut floor = outgoing.min(incoming);
+                let controls = [0., outgoing, 1. - incoming, 1.];
+                let a = parameter_bound(controls, (lo - key) / duration, true);
+                let b = parameter_bound(controls, (hi - key) / duration, false);
+                let time_derivative = |u| {
+                    curve::lerp(
+                        curve::lerp(outgoing, middle, u),
+                        curve::lerp(middle, incoming, u),
+                        u,
+                    )
+                };
+                let mut floor = time_derivative(a).min(time_derivative(b));
                 let curvature = outgoing - 2. * middle + incoming;
                 if curvature > 0. {
                     let vertex = (outgoing - middle) / curvature;
-                    if (0. ..=1.).contains(&vertex) {
-                        floor = floor.min(curve::lerp(
-                            curve::lerp(outgoing, middle, vertex),
-                            curve::lerp(middle, incoming, vertex),
-                            vertex,
-                        ));
+                    if (a..=b).contains(&vertex) {
+                        floor = floor.min(time_derivative(vertex));
                     }
                 }
-                let time_rate = 3. * floor * duration;
+                let time_rate = 3. * (floor - 16. * f64::EPSILON) * duration;
                 if time_rate <= 0. {
                     return if first == 0. {
                         (0., 0.)
@@ -166,6 +184,29 @@ impl ScalarSegment {
             }
         }
     }
+}
+
+/// Invert to an outer parameter bound. Bias comparisons to retain the
+/// enclosure through rounding of normalized time and the unit Bézier.
+fn parameter_bound(controls: [f64; 4], time: f64, lower: bool) -> f64 {
+    if time <= 0. {
+        return 0.;
+    }
+    if time >= 1. {
+        return 1.;
+    }
+    let margin = 16. * f64::EPSILON;
+    let target = if lower { time - margin } else { time + margin };
+    let (mut lo, mut hi) = (0., 1.);
+    for _ in 0..32 {
+        let mid = f64::midpoint(lo, hi);
+        if curve::bezier(controls, mid) < target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    if lower { lo } else { hi }
 }
 
 fn bezier_derivatives(
@@ -202,5 +243,21 @@ mod tests {
         };
         assert!(dense.derivatives(key, end).1.is_infinite());
         assert!(dense.derivatives(key, key + (end - key) * 0.5).1.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn weighted_time_derivative_floor_follows_the_subdivision() {
+        let curve = ScalarSegment::Weighted {
+            values: [0., 1.],
+            slopes: [0.; 2],
+            key: 2.,
+            duration: 1.,
+            weights: [1.; 2],
+        };
+        assert!(curve.derivatives(2., 3.).0.is_infinite());
+        assert!(curve.derivatives(2.25, 2.5).0.is_infinite());
+        let (rate, acceleration) = curve.derivatives(2.125, 2.25);
+        assert!((1. ..2.).contains(&rate), "rate {rate}");
+        assert!(acceleration.is_finite());
     }
 }

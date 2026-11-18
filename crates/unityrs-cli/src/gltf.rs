@@ -7,6 +7,7 @@ use std::{path::PathBuf, process::ExitCode, sync::Arc};
 use unityrs_core::{
     env::{CabResolver, EnvOptions, Environment, Source, read_path},
     files::{File, SerializedFile},
+    limits::MeteredVec,
     provider::ProviderChain,
 };
 use unityrs_scene::Unit;
@@ -163,15 +164,21 @@ fn run(raw: &[Vec<u8>]) -> Result<()> {
     }
     let env = Environment::new(options);
     let mut scene = None;
-    let mut roots = None;
+    // Only a profile can request explicit file-occurrence addresses. Keep
+    // those roots in argument order, including repeated path arguments, until
+    // the selected unit can account for the argument-sized list.
+    let mut input_roots = Vec::new();
+    if args.profile.is_some() {
+        input_roots.try_reserve_exact(args.inputs().count())?;
+    }
     for input in args.inputs() {
         let file = env.load(Source::Path(input.to_owned()))?;
         if let args::Selection::Scene(requested) = args.selection {
             scene_in_file(&mut scene, &file, requested)?;
         }
-        roots
-            .get_or_insert_with(|| unityrs_core::limits::MeteredVec::new(file.meter()))
-            .push(file)?;
+        if args.profile.is_some() {
+            input_roots.push(file);
+        }
     }
     let unit = select(&env, &args, scene)?;
     peak.start_export();
@@ -182,20 +189,21 @@ fn run(raw: &[Vec<u8>]) -> Result<()> {
     } else {
         unityrs_gltf::Profile::new(meter)
     };
+    let roots = if matches!(&profile.clips, unityrs_gltf::Clips::Explicit(rows) if !rows.is_empty())
+    {
+        MeteredVec::from_vec(input_roots, meter)?
+    } else {
+        drop(input_roots);
+        MeteredVec::new(meter)
+    };
     let graph = unit.graph(&env, &unityrs_scene::GraphOptions::default(), meter)?;
     let mapper: &dyn unityrs_gltf::MaterialMapper = if args.pbr {
         &unityrs_gltf::CorePbr
     } else {
         &unityrs_gltf::UnlitExtras
     };
-    let collected = unityrs_export::gltf::collect(
-        &env,
-        roots.as_ref().ok_or("missing input")?.as_slice(),
-        &graph,
-        &profile,
-        mapper,
-        meter,
-    )?;
+    let collected =
+        unityrs_export::gltf::collect(&env, roots.as_slice(), &graph, &profile, mapper, meter)?;
     if let Some(discovery) = collected.discovery {
         for rig in discovery.rigs() {
             for issue in rig
