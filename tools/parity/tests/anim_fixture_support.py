@@ -241,7 +241,8 @@ def static_bundles(bundles, inspect):
     specs = (
         (1, "Primitives", ("Cube", "Cylinder", "Sphere", "Capsule", "Plane", "Quad"), ()),
         (2, "BuiltInMaterials", ("Metallic", "Unlit"), ()),
-        (6, "LodGroup", ("Near", "Far"), (205,)),
+        # As built, the saved prefab root takes the asset file's name.
+        (6, "lod", ("Near", "Far"), (205,)),
     )
     for root, name, children, components in specs:
         base = 1000 * root

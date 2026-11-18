@@ -494,7 +494,9 @@ def check_built_static(case, view, assets):
                              and "_EmissionColor" in entries(props["m_Colors"]), "built metallic material properties mismatch")
         view.require(len(shaders) == 2, "built fixture materials share one shader")
     elif case == "static-lod":
-        group = nodes["LodGroup"].get(205)
+        # Unity names a saved prefab's root after the asset file, so find
+        # the group on the root node rather than by its authored name.
+        group = {view.headers[key]["class_id"]: key for key in view.hierarchy(root)[""][2]}.get(205)
         lods = view.value(group).get("m_LODs", []) if group is not None else []
         view.require(len(lods) == 2, "built LOD count must be two")
         for lod, name, height in zip(lods, ("Near", "Far"), (.6, .2)):

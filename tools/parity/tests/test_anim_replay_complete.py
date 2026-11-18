@@ -542,6 +542,17 @@ class CompleteReplayTests(unittest.TestCase):
                 rebuild_bundle(self.bundles, self.inspect, "static-objects", self.recordings)
                 self.assert_refused("built skin per-vertex bone weights")
 
+    def test_complete_refuses_a_lod_prefab_root_without_its_group(self):
+        path = self.inspect / "static-objects.1.6.show.json"
+        doc = json.loads(path.read_text())
+        value = untag(doc["value"])
+        self.assertEqual(doc["object"]["name"], "lod")
+        value["m_Component"] = [row for row in value["m_Component"] if row["component"]["m_PathID"] != 205]
+        doc["value"] = canonical(value)
+        write(path, doc)
+        rebuild_bundle(self.bundles, self.inspect, "static-objects", self.recordings)
+        self.assert_refused("built LOD count must be two")
+
     def test_complete_refuses_missing_built_static_features(self):
         for bundle, path_id, field, message in (
             ("static-objects", 205, "m_LODs", "built LOD count"),
