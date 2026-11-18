@@ -1,8 +1,11 @@
 """Complete synthetic URP material and Android texture fixture runs through saved inspect and show documents."""
 
+import hashlib
 import json
+import struct
 import sys
 import unittest
+import zlib
 from pathlib import Path
 
 from anim_fixture_support import (
@@ -28,6 +31,7 @@ URP_RUN = dict(run_id="2" * 32, editor_version="6000.6.9f1", build_target="Stand
 ANDROID_RUN = dict(run_id="3" * 32, editor_version="2022.3.62f3", build_target="Android",
                    build_target_id=13, variant="android")
 LIT, UNLIT = "Universal Render Pipeline/Lit", "Universal Render Pipeline/Unlit"
+RESOURCE = "CAB-synthetic.resS"
 # name: width, height, TextureFormat, bytes
 ANDROID = {
     "astc-4x4.png": (64, 64, 48, 4096), "astc-6x6.png": (40, 24, 50, 448), "astc-8x8.png": (64, 64, 51, 1024),
@@ -66,8 +70,52 @@ def rgba(count, alpha):
     return b"".join(bytes(((40 * i) & 255, (255 - 30 * i) & 255, 90 + 10 * i, alpha(i))) for i in range(count))
 
 
-def payload(size, seed=1):
-    return bytes((i * 7 + seed) % 251 + 1 for i in range(size))
+def gradient(width, height):
+    return b"".join(bytes((x * 255 // max(1, width - 1), y * 255 // max(1, height - 1), (x ^ y) * 4 & 255, 255))
+                    for y in range(height) for x in range(width))
+
+
+def png(width, height, pixels):
+    """An RGBA PNG whose rows cycle through the five filter types, as an encoder may choose."""
+    stride, raw, prior = 4 * width, b"", bytes(4 * width)
+    for y in range(height):
+        line, kind = pixels[y * stride:(y + 1) * stride], y % 5
+        out = bytearray([kind])
+        for i in range(stride):
+            a, b = line[i - 4] if i >= 4 else 0, prior[i]
+            c = prior[i - 4] if i >= 4 else 0
+            p = a + b - c
+            paeth = a if abs(p - a) <= abs(p - b) and abs(p - a) <= abs(p - c) else b if abs(p - b) <= abs(p - c) else c
+            out.append((line[i] - (0, a, b, (a + b) // 2, paeth)[kind]) & 255)
+        raw, prior = raw + bytes(out), line
+
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def stream(size):
+    return {"offset": 0, "size": size, "path": f"archive:/CAB-synthetic/{RESOURCE}"}
+
+
+def saved_extraction(inspect, bundle, digest, rows):
+    """The saved `unityrs extract` report and PNGs: rows of (path ID, container path, PNG bytes or failure)."""
+    index_path = inspect / f"{bundle}.inspect.json"
+    index = json.loads(index_path.read_text())
+    index["inputs"][0]["files"].append(dict(file_index=len(index["inputs"][0]["files"]), file=RESOURCE,
+                                            kind="ResourceFile", unity_version=None, target_platform=None))
+    write(index_path, index)
+    report, root = dict(written=[], failures=[]), inspect / f"{bundle}.extract"
+    for path_id, path, result in rows:
+        row = dict(path=path, serialized_file="CAB-synthetic", path_id=path_id, class_id=28)
+        if isinstance(result, bytes):
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_bytes(result)
+            report["written"].append(row | dict(size=len(result)))
+        else:
+            report["failures"].append(row | dict(reason=result))
+    write(inspect / f"{bundle}.extract.json", dict(bundle_sha256=digest, report=report))
 
 
 def write_shader_show(inspect, bundle, digest, path_id, name):
@@ -85,9 +133,9 @@ def write_shader_show(inspect, bundle, digest, path_id, name):
 def urp_bundle(bundles, inspect, spec, run=URP_RUN):
     assets = {ASSETS + "urp/" + name: i for name, i in (
         ("materials.prefab", 1), ("lit.mat", 3), ("unlit.mat", 4), ("base.asset", 5), ("normal.asset", 6))}
-    rows = [(i, 28, name, {"m_Width": size, "m_Height": size, "m_TextureFormat": 4, "m_MipCount": 1,
-                           "image data": {"t": "bytes", "hex": data.hex()},
-                           "m_StreamData": {"offset": 0, "size": 0, "path": ""}})
+    rows = [(i, 28, name, {"m_Width": size, "m_Height": size, "m_CompleteImageSize": len(data),
+                           "m_TextureFormat": 4, "m_MipCount": 1, "image data": {"t": "bytes", "hex": ""},
+                           "m_StreamData": stream(len(data))})
             for i, (name, size, data) in spec["textures"].items()]
     rows += [(3, 21, "UrpLit", spec["lit"]), (4, 21, "UrpUnlit", spec["unlit"])]
     rows += [(i, 48, "", {"m_ParsedForm": {"m_Name": name}}) for i, name in spec["shaders"].items()]
@@ -101,32 +149,32 @@ def urp_bundle(bundles, inspect, spec, run=URP_RUN):
     digest = archive(bundles, inspect, "urp-materials", assets, rows, run)
     for path_id, name in spec["shaders"].items():
         write_shader_show(inspect, "urp-materials", digest, path_id, name)
-
-
-RESOURCE = "CAB-synthetic.resS"
+    saved_extraction(inspect, "urp-materials", digest, [
+        (i, f"{ASSETS}urp/{('base', 'normal')[i - 5]}.png", png(size, size, data))
+        for i, (_, size, data) in spec["textures"].items()])
 
 
 def texture(width, height, texture_format, size, *, inline=False):
-    """Unity streams bundle texels into the .resS node; android_bundle lays out the offsets."""
+    """Unity streams bundle texels into the .resS node."""
+    data = {"t": "bytes", "hex": payload(size).hex() if inline else ""}
     return {"m_Width": width, "m_Height": height, "m_CompleteImageSize": size, "m_TextureFormat": texture_format,
-            "m_MipCount": 1, "image data": {"t": "bytes", "hex": payload(size).hex() if inline else ""},
-            "m_StreamData": {"offset": 0, "size": 0 if inline else size,
-                             "path": "" if inline else f"archive:/CAB-synthetic/{RESOURCE}"}}
+            "m_MipCount": 1, "image data": data,
+            "m_StreamData": {"offset": 0, "size": 0, "path": ""} if inline else stream(size)}
 
 
-def android_bundle(bundles, inspect, textures, run=ANDROID_RUN, edit_resource=None):
-    resource = bytearray()
-    for seed, value in enumerate(textures.values(), 1):
-        stream = value["m_StreamData"]
-        if stream["size"]:
-            stream["offset"] = len(resource)
-            resource += payload(stream["size"], seed)
-    name = RESOURCE
-    if edit_resource:
-        name = edit_resource(textures, resource) or name
+def payload(size):
+    return bytes(i * 7 % 251 + 1 for i in range(size))
+
+
+def android_bundle(bundles, inspect, textures, run=ANDROID_RUN, decoded=None):
+    """`decoded` maps a texture name to its saved extract result, by default a gradient at its size."""
     assets = {ASSETS + "android/" + name: i for i, name in enumerate(textures, 1)}
     rows = [(i, 28, name.removesuffix(".png"), value) for i, (name, value) in enumerate(textures.items(), 1)]
-    archive(bundles, inspect, "android-textures", assets, rows, run, resources=[(name, bytes(resource))])
+    digest = archive(bundles, inspect, "android-textures", assets, rows, run)
+    results = {name: png(value["m_Width"], value["m_Height"], gradient(value["m_Width"], value["m_Height"]))
+               for name, value in textures.items()} | (decoded or {})
+    saved_extraction(inspect, "android-textures", digest, [
+        (i, ASSETS + "android/" + name, results[name]) for i, name in enumerate(textures, 1)])
 
 
 class VariantRunTests(unittest.TestCase):
@@ -161,12 +209,12 @@ class VariantRunTests(unittest.TestCase):
         urp_bundle(self.bundles, self.inspect, spec)
         return self.handoff(URP_RUN, cases)
 
-    def android(self, edit=None, run=ANDROID_RUN, edit_resource=None):
+    def android(self, edit=None, run=ANDROID_RUN, decoded=None):
         textures = {name: texture(*row) for name, row in ANDROID.items()}
         if edit:
             edit(textures)
         static_bundles(self.bundles, self.inspect, run)
-        android_bundle(self.bundles, self.inspect, textures, run, edit_resource)
+        android_bundle(self.bundles, self.inspect, textures, run, decoded)
         return self.handoff(run, (*STATIC, "android-textures"))
 
     def test_urp_run_validates_shaders_keywords_and_properties(self):
@@ -213,29 +261,48 @@ class VariantRunTests(unittest.TestCase):
 
     def test_android_accepts_inline_texture_data(self):
         self.android(lambda textures: textures.update({"astc-6x6.png": texture(40, 24, 50, 448, inline=True)}))
+        # Canonical show summarises the 448 bytes as their length and digest.
+        path = self.inspect / "android-textures.1.2.show.json"
+        doc = json.loads(path.read_text())
+        rows = doc["value"]["v"]
+        index = next(i for i, (key, _) in enumerate(rows) if key == "image data")
+        rows[index][1] = {"t": "bytes", "len": 448, "sha256": hashlib.sha256(payload(448)).hexdigest()}
+        write(path, doc)
         result = self.complete()
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_android_refuses_a_texture_without_its_resource_file(self):
-        self.android(edit_resource=lambda textures, resource: "CAB-other.resS")
-        self.assert_refused("built texture stream resource missing: astc-4x4.png")
+    def test_android_refuses_short_inline_hex(self):
+        self.android(lambda textures: textures["astc-6x6.png"].update(
+            {"image data": {"t": "bytes", "hex": payload(48).hex()}, "m_StreamData": {"offset": 0, "size": 0,
+                                                                                     "path": ""}}))
+        self.assert_refused("built texture data size mismatch: astc-6x6.png")
 
-    def test_android_refuses_a_range_past_the_resource_end(self):
-        def shift(textures, resource):
-            textures["astc-6x6.png"]["m_StreamData"]["offset"] = len(resource) - 100
-        self.android(edit_resource=shift)
-        self.assert_refused("built texture stream range past the end of CAB-synthetic.resS: astc-6x6.png")
+    def test_android_refuses_hex_beside_a_summarised_length(self):
+        self.android(lambda textures: textures["astc-6x6.png"].update(
+            {"image data": {"t": "bytes", "len": 448, "hex": payload(48).hex()}}))
+        self.assert_refused("invalid inline image data: astc-6x6.png")
+
+    def test_android_refuses_a_stream_in_the_serialized_file(self):
+        self.android(lambda textures: textures["astc-4x4.png"]["m_StreamData"].update(
+            path="archive:/CAB-synthetic/CAB-synthetic"))
+        self.assert_refused("built texture stream must name the bundle's .resS node: astc-4x4.png")
 
     def test_android_refuses_a_stream_of_the_wrong_length(self):
         self.android(lambda textures: textures["etc2-rgb4.png"]["m_StreamData"].update(size=1024))
         self.assert_refused("built texture data size mismatch: etc2-rgb4.png")
 
-    def test_android_refuses_all_zero_texels(self):
-        def zero(textures, resource):
-            stream = textures["etc2-rgba8.png"]["m_StreamData"]
-            resource[stream["offset"]:stream["offset"] + stream["size"]] = bytes(stream["size"])
-        self.android(edit_resource=zero)
-        self.assert_refused("built texture data is all zero: etc2-rgba8.png")
+    def test_android_refuses_a_texture_unityrs_cannot_decode(self):
+        # A range past the end of the resource node fails the decode.
+        self.android(decoded={"astc-6x6.png": "decode"})
+        self.assert_refused("unityrs extract could not decode the built texture astc-6x6.png: decode")
+
+    def test_android_refuses_a_decode_at_another_size(self):
+        self.android(decoded={"astc-8x8.png": png(32, 32, gradient(32, 32))})
+        self.assert_refused("unityrs extract decoded astc-8x8.png at 32x32, not its declared size")
+
+    def test_android_refuses_zeroed_texels(self):
+        self.android(decoded={"etc2-rgba8.png": png(64, 64, bytes(4 * 64 * 64))})
+        self.assert_refused("the built texture etc2-rgba8.png decodes to a single colour")
 
     def test_android_refuses_an_uncompressed_fallback(self):
         self.android(lambda textures: textures.update({"etc2-rgba8.png": texture(64, 64, 4, 16384)}))

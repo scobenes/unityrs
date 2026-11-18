@@ -1,20 +1,19 @@
 """The URP material and Android texture fixture runs: their inventory and built-bundle contract.
 
 `anim_replay.py complete` hands a run.json whose run names a variant other than
-`builtin` to `complete_variant`. The Editor writes them to
-`<version>/URP-<target>/` and `<version>/Android-variant/`. These runs record no replays. Each case is a
-bundle checked through the same `unityrs inspect` and `show` reads as the
-Built-in static cases, and a streamed texture's bytes come from its declared
-range of the bundle's resource node (`bundle_nodes.py`) (tools/fixtures/unity/Editor/UnityrsUrpFixtures.cs and
-UnityrsAndroidFixtures.cs build them).
+`builtin` to `complete_variant`. The Editor writes them to `<version>/URP-<target>/`
+and `<version>/Android-variant/` (tools/fixtures/unity/Editor/UnityrsUrpFixtures.cs
+and UnityrsAndroidFixtures.cs build them). These runs record no replays. Each case
+is a bundle checked through the same `unityrs inspect` and `show` reads as the
+Built-in static cases, and each texture is decoded by `unityrs extract`
+(`fixture_textures.py`).
 """
 
-from hashlib import sha256
 from math import ceil
 
 from anim_fixture_contract import ASSETS, STATIC_CASES, entries, prefab_components
 from anim_replay_complete import BundleView, bundle_digest, check_handoff_stamps, check_static
-from bundle_nodes import bundle_nodes
+from fixture_textures import check_decoded, check_storage, decoded_textures
 
 URP_CASE = "urp-materials"
 ANDROID_CASE = "android-textures"
@@ -111,16 +110,22 @@ def keywords(view, value):
 def check_urp(view):
     built = {asset: view.asset(ASSETS + "urp/" + asset, class_id, ignore_case=True)
              for asset, class_id in URP_ASSETS.items()}
+    images = {asset: view.value(built[asset]) for asset in URP_TEXTURES}
     for asset, size in URP_TEXTURES.items():
-        image = view.value(built[asset])
-        view.require((image["m_Width"], image["m_Height"]) == size and image["m_TextureFormat"] == RGBA32,
+        image = images[asset]
+        data = image_size(*size, 1, 1, 4)
+        view.require((image["m_Width"], image["m_Height"]) == size and image["m_TextureFormat"] == RGBA32
+                     and image.get("m_MipCount") == 1 and image.get("m_CompleteImageSize") == data,
                      f"built URP texture size or format mismatch: {asset}")
-        payload = texture_payload(view, image, image_size(*size, 1, 1, 4), asset)
-        if asset == "base.asset":
-            # The Unlit material clips below _Cutoff .375: both sides must occur.
-            alpha = payload[3::4] if payload is not None else b""
-            view.require(any(a < 96 for a in alpha) and any(a >= 96 for a in alpha),
-                         "built URP base texture does not straddle the Unlit alpha cutoff")
+        check_storage(view, image, data, asset)
+    decoded = decoded_textures(view, {built[asset]: asset for asset in URP_TEXTURES})
+    for asset in URP_TEXTURES:
+        check_decoded(view, images[asset], decoded[built[asset]], asset)
+    _, _, channels, pixels = decoded[built["base.asset"]]
+    # The Unlit material clips below _Cutoff .375: both sides must occur.
+    alpha = pixels[channels - 1::channels] if channels in (2, 4) else b""
+    view.require(any(a < 96 for a in alpha) and any(a >= 96 for a in alpha),
+                 "built URP base texture does not straddle the Unlit alpha cutoff")
     nodes = prefab_components(view, built["materials.prefab"])
     for node, (asset, shader, words, textures, floats, colors) in URP_MATERIALS.items():
         material = built[asset]
@@ -158,46 +163,12 @@ def image_size(width, height, mips, block, block_bytes):
                for level in range(mips))
 
 
-def texture_payload(view, image, size, label):
-    """Check the texel bytes, inline or in the declared range of the bundle's resource node.
-
-    Return them, or None when canonical show summarised inline bytes (then only their digest is checked).
-    """
-    data = image.get("image data", {"t": "bytes", "hex": ""})
-    stream = image.get("m_StreamData") or {}
-    offset, streamed, path = stream.get("offset", 0), stream.get("size", 0), stream.get("path", "")
-    if isinstance(data, list):
-        data = {"t": "u8s", "hex": bytes(data).hex()}
-    view.require(isinstance(data, dict) and data.get("t") in ("bytes", "u8s"), f"invalid built image data: {label}")
-    inline = data["len"] if "len" in data else len(data["hex"]) // 2
-    payload = None
-    if inline:
-        view.require(inline == size and streamed == 0, f"built texture data size mismatch: {label}")
-        if "hex" in data:
-            payload = bytes.fromhex(data["hex"])
-        else:
-            view.require(data["sha256"] != sha256(bytes(size)).hexdigest(), f"built texture data is all zero: {label}")
-            return None
-    else:
-        view.require(type(offset) is int and type(streamed) is int and offset >= 0 and isinstance(path, str),
-                     f"invalid built texture stream: {label}")
-        view.require(streamed == size, f"built texture data size mismatch: {label}")
-        if not hasattr(view, "nodes"):
-            view.nodes = bundle_nodes(view.path, view.require)
-        name = path.rsplit("/", 1)[-1].lower()
-        matches = [node for node in view.nodes if node.rsplit("/", 1)[-1].lower() == name]
-        view.require(name and len(matches) == 1, f"built texture stream resource missing: {label} ({path!r})")
-        resource = view.nodes[matches[0]]
-        view.require(offset + streamed <= len(resource),
-                     f"built texture stream range past the end of {matches[0]}: {label}")
-        payload = resource[offset:offset + streamed]
-    view.require(any(payload), f"built texture data is all zero: {label}")
-    return payload
-
-
 def check_android_textures(view):
-    for asset, (width, height, (texture_format, block, block_bytes)) in ANDROID_TEXTURES.items():
-        image = view.value(view.asset(ASSETS + "android/" + asset, 28, ignore_case=True))
+    keys = {view.asset(ASSETS + "android/" + asset, 28, ignore_case=True): asset for asset in ANDROID_TEXTURES}
+    images = {}
+    for key, asset in keys.items():
+        width, height, (texture_format, block, block_bytes) = ANDROID_TEXTURES[asset]
+        image = images[key] = view.value(key)
         view.require((image["m_Width"], image["m_Height"]) == (width, height),
                      f"built Android texture size mismatch: {asset}")
         view.require(image["m_TextureFormat"] == texture_format,
@@ -207,7 +178,10 @@ def check_android_textures(view):
         view.require(mips == 1, f"built Android texture has mipmaps: {asset}")
         size = image_size(width, height, mips, block, block_bytes)
         view.require(image.get("m_CompleteImageSize") == size, f"built texture data size mismatch: {asset}")
-        texture_payload(view, image, size, asset)
+        check_storage(view, image, size, asset)
+    # A decode at the declared size, from the declared format and mip count, shows the range holds the texels.
+    for key, decoded in decoded_textures(view, keys).items():
+        check_decoded(view, images[key], decoded, keys[key])
 
 
 def complete_variant(folder, manifest, run, unityrs, inspect_dir, replay):

@@ -556,7 +556,8 @@ explicit ASTC and ETC/ETC2 Android overrides. Their `run.json` names the
 variant (`urp` or `android`), and `complete` checks it against
 [`anim_fixture_variants.py`](../tools/parity/anim_fixture_variants.py):
 shader names, keywords and properties for URP, and each override's texture
-format, data size and resource range for Android. The Android folder is
+format, data size and `.resS` stream for Android, with each texture decoded by
+`unityrs extract` at its declared size. The Android folder is
 separate from `<version>/Android/`, where a Built-in run publishes when
 Android is the active target. A Built-in run keeps `urp-materials` as
 `not_covered`.
