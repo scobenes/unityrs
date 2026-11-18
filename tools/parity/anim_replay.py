@@ -1,4 +1,4 @@
-"""Validate a version 1 L11 recording and derive its a priori f32 tolerances."""
+"""Complete and validate L11 recordings and derive their a priori f32 tolerances."""
 import argparse
 import hashlib
 import json
@@ -543,6 +543,8 @@ def _known_vector_id(recording):
 
 def validate(manifest, bundle_dir=None):
     """Check the recording and return whether a held probe discriminates the clock."""
+    require(not (isinstance(manifest, dict) and manifest.get("format") == "unityrs.anim_replay_pending"),
+            "pending replay needs the complete command")
     _shape(SCHEMA, manifest, "")
     spec, capture = manifest["spec"], manifest["capture"]
     clock_discriminated = _validate_recording(spec, capture, bundle_dir)
@@ -594,11 +596,25 @@ def derive(manifest, bundle_dir=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("validate", "validate-spec", "derive", "capture-id"))
-    parser.add_argument("file", type=Path)
+    parser.add_argument("mode", choices=("complete", "validate", "validate-spec", "derive", "capture-id"))
+    parser.add_argument("file", type=Path, help="replay file or output folder for complete")
     parser.add_argument("--bundle-dir", type=Path)
+    inspection = parser.add_mutually_exclusive_group()
+    inspection.add_argument("--unityrs", help="unityrs executable for complete (default: unityrs on PATH)")
+    inspection.add_argument("--inspect-dir", type=Path, help="saved inspect and show JSON for complete")
     args = parser.parse_args()
     try:
+        if args.mode == "complete":
+            from anim_replay_complete import complete_folder
+
+            require(args.bundle_dir is None, "complete reads bundles/ inside the output folder")
+            executable = args.unityrs or "unityrs"
+            if args.unityrs:
+                executable = str(Path(executable).resolve())
+            count = complete_folder(args.file, executable, args.inspect_dir, sys.modules[__name__])
+            print(f"Completed and validated {count} replay(s).")
+            return
+        require(args.unityrs is None and args.inspect_dir is None, "inspection options require complete")
         value = read_json(args.file.read_text(encoding="utf-8"))
         if args.mode == "validate-spec":
             require(args.bundle_dir is None, "bundle verification requires a capture")
