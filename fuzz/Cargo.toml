@@ -238,6 +238,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "anim_humanoid"
+path = "fuzz_targets/anim_humanoid.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "anim_gltf"
 path = "fuzz_targets/anim_gltf.rs"
 test = false

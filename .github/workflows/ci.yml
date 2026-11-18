@@ -298,7 +298,7 @@ jobs:
               -print_final_stats=1 > "$RUNNER_TEMP/fuzz-$1.log" 2>&1
           }
           failed=""
-          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc crunch meshdecode zlib_match webp unitycn zip" "webfile unityweb" "fsb5 image_writers set_image" "serialized_save bundle_save" "scene_collect obj_text" "anim_clip anim_gltf" "shader extractor_paths"; do
+          for batch in "detect bundle serialized typetree" "boost_read python_read write_after_read lz4" "texture astc crunch meshdecode zlib_match webp unitycn zip" "webfile unityweb" "fsb5 image_writers set_image" "serialized_save bundle_save" "scene_collect obj_text" "anim_clip anim_gltf anim_humanoid" "shader extractor_paths"; do
             pids=""
             for t in $batch; do
               run "$t" &
@@ -308,7 +308,7 @@ jobs:
               wait "${p#*:}" || failed="$failed ${p%%:*}"
             done
           done
-          for t in detect bundle bundle_save serialized serialized_save typetree boost_read python_read write_after_read lz4 texture astc crunch meshdecode zlib_match webp unitycn zip webfile unityweb fsb5 image_writers set_image scene_collect obj_text anim_clip anim_gltf shader extractor_paths; do
+          for t in detect bundle bundle_save serialized serialized_save typetree boost_read python_read write_after_read lz4 texture astc crunch meshdecode zlib_match webp unitycn zip webfile unityweb fsb5 image_writers set_image scene_collect obj_text anim_clip anim_gltf anim_humanoid shader extractor_paths; do
             echo "== $t"
             grep -E '^(stat::|#[0-9]+ +DONE)' "$RUNNER_TEMP/fuzz-$t.log" || true
           done
