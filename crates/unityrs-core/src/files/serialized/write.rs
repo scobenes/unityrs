@@ -8,7 +8,7 @@
 
 use super::{External, ObjectInfo, SerializedFile, SerializedHeader, SerializedType};
 use crate::RawStr;
-use crate::files::save::{SaveError, SaveOptions, Writer, narrow, required};
+use crate::files::save::{SaveError, SaveLayout, SaveOptions, Writer, narrow, required};
 use crate::stream::Endian;
 use bytes::Bytes;
 
@@ -50,6 +50,12 @@ impl SerializedFile {
     /// matches UnityPy 1.25.2's uncompressed save through format 22 and
     /// HEAD 417d595 for formats 23-26. HEAD's absent per-type node assertion
     /// and formats above 26 refuse before building or charging output.
+    ///
+    /// `Semantic` refuses an output that detection would take for a brotli
+    /// `WebFile` (128 bytes or more with `brotli` at 0x20, which below format
+    /// 22 metadata or object bytes can spell) with
+    /// `Range("SerializedFile brotli marker collision")`: reloaded, it would
+    /// fail as a WebFile, where UnityPy's layout writes it as UnityPy does.
     pub fn save(&self, options: SaveOptions) -> Result<Bytes, SaveError> {
         self.save_impl(options, None)
     }
@@ -155,7 +161,7 @@ impl SerializedFile {
         drop(edits);
         self.write_references(&mut meta, trees, options, snapshot)?;
         meta.end_metadata()?;
-        self.finish_file(h, &meta, &data)
+        self.finish_file(h, &meta, &data, options.layout)
     }
 
     fn write_object(
@@ -294,6 +300,7 @@ impl SerializedFile {
         h: &SerializedHeader,
         meta: &Writer,
         data: &Writer,
+        layout: SaveLayout,
     ) -> Result<Bytes, SaveError> {
         let v = h.version;
         let mut out = Writer::new(self.meter(), Endian::Big)?;
@@ -357,6 +364,14 @@ impl SerializedFile {
             out.bytes(data.slice())?;
             out.boolean(h.endian == Endian::Big)?;
             out.bytes(meta.slice())?;
+        }
+        // UnityPy helpers/ImportHelper.py:84-88 tests the marker before the
+        // SerializedFile header, so such bytes never reload as this file.
+        if layout == SaveLayout::Semantic
+            && out.len() >= 128
+            && out.slice().get(0x20..0x26) == Some(b"brotli".as_slice())
+        {
+            return Err(SaveError::Range("SerializedFile brotli marker collision"));
         }
         out.finish()
     }
