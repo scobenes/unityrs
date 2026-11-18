@@ -5,6 +5,7 @@ mod anim_support;
 mod anim_replay {
     pub mod clock;
     pub mod fixture;
+    pub mod humanoid;
     pub mod ranges;
     pub mod rules;
 }
@@ -730,4 +731,13 @@ fn recorded_generic_or_legacy() {
         "frozen tolerances differ from replay derivation"
     );
     compare(&manifest, Path::new(&dir), &tolerance).unwrap();
+}
+
+#[test]
+#[ignore = "owner-built Editor humanoid qualification evidence is required"]
+fn recorded_humanoid_refusals() {
+    let path = std::env::var("UNITYRS_ANIM_HUMANOID").unwrap();
+    let dir = std::env::var("UNITYRS_ANIM_BUNDLES").unwrap();
+    let document = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    anim_replay::humanoid::check_document(&document, Path::new(&dir)).unwrap();
 }

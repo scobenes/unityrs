@@ -565,6 +565,26 @@ layout defaults or twist behavior pending until the rig fixtures establish
 them. Record the typed `unsupported_…` causes for refusal probes.
 [Unity clip import settings](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/ModelImporterClipAnimation.html)
 
+**PR 8's outcome.** `tools/parity/anim_humanoid_qualify.py FOLDER --unityrs BIN -o OUT`
+reads a completed run's humanoid clip recordings, their known-vector
+baselines and the same built bundles through `unityrs show`. Per clip it
+writes the slot inventory, the crosswalk against the recorder's
+`HumanTrait` order, the body-bearing test, root and hips-local residuals
+against the reset rig and the baseline, the muscle-to-pose residual of the
+candidate equation in `muscle_rotation`, the settings and the first typed
+refusal in the Rust reader's order. The Rust test `recorded_humanoid_refusals`
+(`UNITYRS_ANIM_HUMANOID`, `UNITYRS_ANIM_BUNDLES`) reads the same bundles and
+must give each clip the recorded refusal. On the 2022.3 and 6000 fixture
+runs no clip qualified. The body-motion clip maps body slots. Each muscle clip
+has absent body slots, but its hips-local translation is the baseline's
+less the Avatar's `m_RootX` translation and its hips rotation follows the
+spine muscles, so it needs a body-to-hips correction
+(`unsupported_body_motion(hips_correction)`). The muscle clips the builder
+makes also keep the original Y position and start at the origin, and those
+flags refuse first as `unsupported_humanoid_clip_settings`. The candidate
+equation matched the known-vector Spine poses on both rigs. Positive
+playback waits for the Humanoid body motion slice.
+
 ### Owner workflow
 
 Follow the [Windows Editor steps](../tools/fixtures/unity/README.md). Run
