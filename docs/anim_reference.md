@@ -34,10 +34,13 @@ renderer and mesh channel, in Unity weight units.
 ### Compiled storage
 
 The scalar slot order is streamed, dense, constant. Build the typed
-binding table before indexing those ranges. A built 2022.3 stream with a
-nonzero `discreteCurveCount` keys its discrete slots after the
-`curveCount` continuous ones, both in binding order. Refuse a split stream
-with dense or constant slots until their relative order is confirmed. Public readers support the
+binding table before indexing those ranges. Where the stream has a
+`discreteCurveCount`, the streamed range holds `curveCount +
+discreteCurveCount` slots in serialized binding order, and its discrete
+bindings must number exactly `discreteCurveCount`. Dense and then constant
+slots follow. A built 2022.3 capture confirms a stream of continuous slots
+followed by a discrete PPtr slot. Discrete slots beside dense or constant
+storage follow the format and are unverified by a real capture. Public readers support the
 layout, coefficient and value field positions. Sampling behavior, sentinel
 shapes and mixed-storage Transform bindings need same-bundle evidence.
 [AssetStudio reader](https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudio/Classes/AnimationClip.cs)
@@ -49,9 +52,13 @@ shapes and mixed-storage Transform bindings need same-bundle evidence.
   ordinary key and after the last real key, hold the first or last stored
   value respectively. An initial sentinel can seed a held PPtr in a
   confirmed layout. Use that seed up to the first real key, even if the
-  first real key is later than the clip start. Built 2022.3 clips also
-  seed each continuous slot with zero slopes and its first key's value.
-  Require that agreement and otherwise ignore the continuous seed. An empty slot needs a
+  first real key is later than the clip start. Built 2022.3 clips seed
+  every slot, continuous ones with zero slopes and their first key's
+  value. The seed's cubic starts at `-FLT_MAX`, so no finite sample lies on
+  it: hold its constant term up to the first real key, and over the whole
+  interval for a slot with no real key. Accept any finite coefficients,
+  including signed zeros. Refuse a seed for a slot outside the stream, a
+  repeated seed slot and a non-finite coefficient. An empty slot needs a
   supported initializer. Validate the terminal dummy separately and
   exclude it from the real keys and duration.
 - Dense. Frame `i` is at `g(i) = m_BeginTime + i / m_SampleRate`, using
@@ -143,11 +150,14 @@ For Euler values, sample degrees without folding revolutions. About axis
 For application order `A,B,C`, compose `Q_C Q_B Q_A` using the Hamilton
 product and normalize. The confirmed enum layout uses
 `0..5 = XYZ, XZY, YZX, YXZ, ZXY, ZYX`. Where there is no stored order,
-use ZXY only for a layout with confirmed default behavior. Built 2022.3
-generic clips have no stored order on their Euler slots, which bind as
-Transform attribute 4 with custom type 4. Their replays match ZXY and no
-other order. A compiled blend-shape binding stores the CRC32 of the bare
-channel name, without the `blendShape.` prefix.
+use ZXY only for a layout with confirmed default behavior. A compiled
+Euler binding (Transform attribute 4) stores its order in `customType`,
+in the same enum; refuse other values. Built 2022.3 generic clips store
+4, and their replays match ZXY and no other order. A compiled
+blend-shape binding of a built 2022.3 clip stores the CRC32 of the bare
+channel name. AssetStudio's model converter hashes the
+`blendShape.<name>` property instead. Accept either, and refuse a hash
+that names two channels under the two conventions as ambiguous.
 [Unity Quaternion.Euler](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/Quaternion.Euler.html)
 · [Unity rotation-order enum](https://github.com/Unity-Technologies/UnityCsReference/blob/9778aaee88c7de7656c15184ba5c91ca66db7e94/Runtime/Transform/ScriptBindings/Transform.bindings.cs)
 

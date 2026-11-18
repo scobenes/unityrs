@@ -81,16 +81,32 @@ pub struct StreamKey {
 
 #[derive(Debug)]
 pub struct StreamSlot {
-    seed: Option<PPtr>,
-    /// A continuous seed's value bits, which must repeat the first key's.
-    float_seed: Option<u32>,
+    seed: Option<SlotValue>,
     keys: MeteredVec<StreamKey>,
 }
 
 impl StreamSlot {
     #[must_use]
     pub fn seed(&self) -> Option<PPtr> {
+        match self.seed {
+            Some(SlotValue::Object(pointer)) => Some(pointer),
+            _ => None,
+        }
+    }
+
+    /// The typed value of the initial sentinel entry, held before the first
+    /// real key.
+    #[must_use]
+    pub fn seed_value(&self) -> Option<SlotValue> {
         self.seed
+    }
+
+    /// The value held before the first real key: the seed, or else the
+    /// first key's value.
+    fn initial(&self, slot: usize) -> Result<SlotValue, AnimError> {
+        self.seed
+            .or_else(|| self.keys().first().map(|key| key.value))
+            .ok_or(AnimError::MissingStreamKey(slot))
     }
 
     #[must_use]
@@ -98,16 +114,15 @@ impl StreamSlot {
         self.keys.as_slice()
     }
 
-    /// Record one seed entry. Built clips seed every continuous slot with
-    /// its first value and zero slopes, so that seed is only checked.
-    fn seed_with(&mut self, value: SlotValue, [c3, c2, c1, c0]: [u32; 4]) -> bool {
-        match value {
-            SlotValue::Object(pointer) => self.seed.replace(pointer).is_none(),
-            SlotValue::Float(_) if [c3, c2, c1].iter().all(|&c| f32::from_bits(c) == 0.) => {
-                self.float_seed.replace(c0).is_none()
-            }
-            _ => false,
-        }
+    /// Record one seed entry, refusing a repeated slot or a non-finite
+    /// continuous coefficient. Its cubic starts at `-FLT_MAX`, so only the
+    /// constant term is held before the first real key.
+    fn seed_with(&mut self, value: SlotValue, coefficients: [u32; 4]) -> bool {
+        let finite = !matches!(value, SlotValue::Float(_))
+            || coefficients
+                .iter()
+                .all(|&bits| f32::from_bits(bits).is_finite());
+        finite && self.seed.replace(value).is_none()
     }
 
     fn at(&self, slot: usize, sample: f64, meter: &Meter) -> Result<SlotValue, AnimError> {
@@ -115,11 +130,7 @@ impl StreamSlot {
         meter.count_decode(work_for_search(keys.len()) + 12)?;
         let next = keys.partition_point(|key| key.time <= sample);
         let Some(left) = next.checked_sub(1).and_then(|i| keys.get(i)) else {
-            return self
-                .seed
-                .map(SlotValue::Object)
-                .or_else(|| keys.first().map(|key| key.value))
-                .ok_or(AnimError::MissingStreamKey(slot));
+            return self.initial(slot);
         };
         if next == keys.len() || sample <= left.time || !matches!(left.value, SlotValue::Float(_)) {
             return Ok(left.value);
@@ -255,10 +266,10 @@ impl CompiledClip {
             meter.count_decode(work_for_search(keys.len()) + 8)?;
             let next =
                 keys.partition_point(|key| key.time < time || (!left_side && key.time <= time));
-            let left = keys
-                .get(next.saturating_sub(1))
-                .ok_or(AnimError::MissingStreamKey(slot))?;
-            if next == 0 || next == keys.len() {
+            let Some(left) = next.checked_sub(1).and_then(|i| keys.get(i)) else {
+                return Ok(S::Constant(stream.initial(slot)?.continuous()?));
+            };
+            if next == keys.len() {
                 return Ok(S::Constant(left.value.continuous()?));
             }
             let coefficients = left
@@ -369,9 +380,8 @@ pub(super) fn decode(
     };
     let clip = dict.field(clip, "data")?.unwrap_or(clip);
     let stream = dict.required(clip, "m_StreamedClip")?;
-    // Built 2022.3 clips stream their discrete slots after the continuous
-    // ones, in binding order. Their order against dense and constant slots
-    // has no fixture evidence, so a split stream must be the only storage.
+    // The streamed range holds curveCount continuous and discreteCurveCount
+    // discrete slots, in serialized binding order, before dense and constant.
     let discrete = match dict.field(stream, "discreteCurveCount")? {
         None => 0,
         Some(_) => dict.count(stream, "discreteCurveCount")?,
@@ -391,9 +401,6 @@ pub(super) fn decode(
         dense: dict.count(dense, "m_CurveCount")?,
         constant: constant_bits.len(),
     };
-    if discrete > 0 && (counts.dense > 0 || counts.constant > 0) {
-        return Err(AnimError::UnsupportedClipLayout);
-    }
     if counts.dense.checked_mul(frame_count) != Some(dense_bits.len())
         || (counts.dense > 0 && frame_count == 0)
     {
@@ -426,10 +433,9 @@ pub(super) fn decode(
     }
     let kinds = kinds.as_slice();
     if discrete > 0
-        && kinds
-            .iter()
-            .enumerate()
-            .any(|(slot, &kind)| discrete_kind(kind) != (slot >= continuous))
+        && kinds.get(..counts.streamed).is_none_or(|streamed| {
+            streamed.iter().filter(|&&kind| discrete_kind(kind)).count() != discrete
+        })
     {
         return Err(AnimError::UnsupportedClipLayout);
     }
@@ -515,7 +521,6 @@ fn decode_stream(
     for _ in 0..count {
         slots.push(StreamSlot {
             seed: None,
-            float_seed: None,
             keys: MeteredVec::new(dict.meter),
         })?;
     }
@@ -582,13 +587,6 @@ fn decode_stream(
     for (i, slot) in slots.as_slice().iter().enumerate() {
         if slot.keys.is_empty() && slot.seed.is_none() {
             return Err(AnimError::MissingStreamKey(i));
-        }
-        if slot.float_seed.is_some_and(|bits| {
-            slot.keys()
-                .first()
-                .is_none_or(|key| key.coefficients[3] != bits)
-        }) {
-            return Err(AnimError::InvalidStreamFrame);
         }
     }
     Ok(slots)

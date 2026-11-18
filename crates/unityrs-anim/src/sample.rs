@@ -483,16 +483,21 @@ impl BoundTrack<'_, '_> {
             meter.count_decode(256)?;
             return order.rotation(raw);
         }
-        if let Evaluator::Compiled(..) = self.evaluator
+        if let Evaluator::Compiled(compiled, first, _) = self.evaluator
             && let BindingTarget::Transform {
                 property: TransformProperty::Euler,
                 ..
             } = self.target
         {
-            // The slot table has no order field. Built 2022.3 generic replays
-            // match Unity's default ZXY order and no other.
-            meter.count_decode(256)?;
-            return EulerOrder::ZXY.rotation(raw);
+            // A compiled Euler row's custom type is its rotation order.
+            let slots = compiled.slot_bindings();
+            meter.count_decode(work_for_search(slots.len()) + 256)?;
+            let i = slots.partition_point(|slot| slot.first < first);
+            let slot = slots
+                .get(i)
+                .filter(|slot| slot.first == first)
+                .ok_or(AnimError::SlotOverflow)?;
+            return EulerOrder::read(Some(i32::from(slot.binding.custom_type)))?.rotation(raw);
         }
         meter.count_decode(32)?;
         normalize(raw)

@@ -88,9 +88,6 @@ pub(crate) fn weighted(
 pub(crate) struct EulerOrder([usize; 3]);
 
 impl EulerOrder {
-    /// Unity's default order, serialized as rotation order 4.
-    pub(crate) const ZXY: Self = Self([2, 0, 1]);
-
     pub(crate) fn read(order: Option<i32>) -> Result<Self, AnimError> {
         let axes = match order {
             Some(0) => [0, 1, 2],
