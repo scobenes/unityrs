@@ -146,6 +146,13 @@ def compiled_curves(clip, replay):
     dense = playback.get("m_DenseClip", {})
     stream_count, dense_count = stream.get("curveCount", 0), dense.get("m_CurveCount", 0)
     constants = floats(playback.get("m_ConstantClip", {}).get("data", []), replay)
+    # 2022.3 counts discrete (PPtr) streamed slots apart and serializes them
+    # after the other streamed slots. Their place before dense and constant
+    # ranges is unconfirmed, so refuse that combination.
+    discrete = stream.get("discreteCurveCount", 0)
+    if discrete and (dense_count or constants):
+        return {}
+    stream_count += discrete
     slot_count = stream_count + dense_count + len(constants)
     curves, slots = {}, []
     widths = {attribute: len(axes) for _, attribute, axes in TRANSFORM_CURVES.values()}

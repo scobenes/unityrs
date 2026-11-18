@@ -329,8 +329,11 @@ def built_key_times(value, playback, require, *, require_real_stream_keys=False)
         times.extend(packed_times(row["m_Times"], require))
     stream = playback.get("m_StreamedClip", {})
     if stream:
-        count, words = stream["curveCount"], stream.get("data")
-        require(type(count) is int and count >= 0, "invalid built streamed clip curve count")
+        count, discrete, words = stream["curveCount"], stream.get("discreteCurveCount", 0), stream.get("data")
+        require(type(count) is int and count >= 0 and type(discrete) is int and discrete >= 0,
+                "invalid built streamed clip curve count")
+        # 2022.3 counts discrete (PPtr) streamed slots apart, after the others.
+        count += discrete
         require(isinstance(words, list) and (count == 0 or words), "missing built streamed clip frame data")
         times.extend(streamed_times(words, count, require, require_real_keys=require_real_stream_keys))
     dense = playback.get("m_DenseClip", {})
@@ -356,7 +359,8 @@ def clip_evidence(spec, capture, value, replay):
     muscle = value.get("m_MuscleClip", {})
     playback = muscle.get("m_Clip", {})
     playback = playback.get("data", playback)
-    stream = playback.get("m_StreamedClip", {}).get("curveCount", 0)
+    streamed = playback.get("m_StreamedClip", {})
+    stream = streamed.get("curveCount", 0) + streamed.get("discreteCurveCount", 0)
     dense = playback.get("m_DenseClip", {}).get("m_CurveCount", 0)
     constants = playback.get("m_ConstantClip", {}).get("data", [])
     if isinstance(constants, dict):

@@ -431,6 +431,39 @@ class CompleteReplayTests(unittest.TestCase):
                 self.compiled_morph(channel)
                 self.assert_refused("missing built fixture curve for ('Skin/RendererA', 'SkinnedMeshRenderer'")
 
+    def compiled_reference(self, discrete, dense=0):
+        # As built by 2022.3: three translation slots, then the PPtr slot,
+        # which the streamed clip counts apart as a discrete curve.
+        words = [0xff7fffff, 4] + [w for slot, value in enumerate((3, 0, 0, 0))
+                                   for w in (slot, 0, 0, 0, int(bits(value), 16))]
+        words += [0, 3, 0, 0, 0, int(bits(6), 16), int(bits(3), 16), 1, 0, 0, 0, 0, 2, 0, 0, 0, 0]
+        words += [int(bits(.5), 16), 1, 3, 0, 0, 0, int(bits(1), 16)]
+        words += [int(bits(1), 16), 3, 0, 0, 0, 0, int(bits(9), 16), 1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0x7f800000, 0]
+
+        def edit(clip):
+            for field in ("m_PositionCurves", "m_PPtrCurves"):
+                clip.pop(field, None)
+            data = clip["m_MuscleClip"]["m_Clip"]["data"]
+            data.update(m_StreamedClip={"curveCount": 3, "discreteCurveCount": discrete, "data": words},
+                        m_ConstantClip={"data": [0.] * dense})
+            data["m_DenseClip"].update(m_CurveCount=0, m_SampleArray=[])
+            clip["m_ClipBindingConstant"]["genericBindings"] = [
+                dict(path=crc32("Mötión".encode()), typeID=4, attribute=1, customType=0, isPPtrCurve=False),
+                dict(path=crc32(b"Reference"), typeID=33, attribute=crc32(b"m_Mesh"), customType=41, isPPtrCurve=True),
+            ] + [dict(path=0, typeID=4, attribute=3, customType=0, isPPtrCurve=False)] * bool(dense)
+        self.replace_clip_values("generic-object-reference", edit)
+
+    def test_complete_reads_a_discrete_streamed_reference_slot(self):
+        self.compiled_reference(1)
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_complete_refuses_unplaced_or_uncounted_discrete_slots(self):
+        self.compiled_reference(0)
+        self.assert_refused("invalid built streamed clip slot")
+        self.compiled_reference(1, dense=3)
+        self.assert_refused("missing built fixture curve for ('Mötión', 'Transform', 'm_LocalPosition.x')")
+
     def test_complete_refuses_missing_built_curve_despite_editor_claim(self):
         for case, field in (("legacy-explicit", "m_RotationCurves"), ("generic-euler", "m_EulerCurves"),
                             ("generic-quaternion", "m_RotationCurves"), ("generic-constant", "m_PositionCurves"),
