@@ -294,6 +294,7 @@ pub(super) fn decode(
     {
         return Err(AnimError::InvalidDenseGrid);
     }
+    refuse_humanoid(dict, muscle)?;
     if counts == SlotCounts::default()
         && table.is_none_or(|table| table.bindings().is_empty())
         && dict
@@ -304,7 +305,6 @@ pub(super) fn decode(
         return Ok(None);
     }
 
-    refuse_humanoid(dict, muscle)?;
     let table = table.ok_or(AnimError::UnsupportedBindingLayout)?;
     let slots = table.slots(counts, dict.meter)?;
     let timing = ClipTiming::new(

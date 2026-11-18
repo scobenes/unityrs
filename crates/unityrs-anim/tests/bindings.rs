@@ -279,6 +279,37 @@ fn unknown_transform_attribute_refuses_slot_assignment() {
 }
 
 #[test]
+fn unknown_custom_transform_refuses_before_assigning_trs_slots() {
+    let meter = Meter::unlimited();
+    let ordinary = a::Binding {
+        class: 4,
+        attribute: 1,
+        ..Default::default()
+    };
+    let source = [
+        a::Binding {
+            custom: 250,
+            ..ordinary
+        },
+        ordinary,
+    ];
+    let table = read_bindings(&clip(Layout::Unity2022, &source), &meter).unwrap();
+    let counts = SlotCounts {
+        constant: 6,
+        ..Default::default()
+    };
+    assert!(matches!(
+        table.slots(counts, &meter),
+        Err(AnimError::UnknownBindingWidth {
+            binding: 0,
+            class_id: 4,
+            custom_type: 250,
+            attribute: 1,
+        })
+    ));
+}
+
+#[test]
 fn conflicting_value_flags_are_refused_in_every_pair() {
     let meter = Meter::unlimited();
     for (pptr, integer, managed) in [(1, 1, 0), (1, 0, 1), (0, 1, 1)] {

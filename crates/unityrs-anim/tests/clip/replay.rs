@@ -34,6 +34,10 @@ fn scalar_bound(row: &Value, limits: &Value) -> f64 {
 
 fn check_component(got: f64, row: &Value, limits: &Value, location: &str) {
     let expected = number(&row["value"]);
+    if row["equation"] == "exact" {
+        assert_eq!(got, expected, "{location}: stored key value");
+        return;
+    }
     let limit = 2. * scalar_bound(row, limits);
     assert!(
         (got - expected).abs() <= limit,
@@ -41,10 +45,11 @@ fn check_component(got: f64, row: &Value, limits: &Value, location: &str) {
     );
 }
 
+fn norm(v: [f64; 4]) -> f64 {
+    v.into_iter().map(|x| x * x).sum::<f64>().sqrt()
+}
+
 fn angle(a: [f64; 4], mut b: [f64; 4]) -> f64 {
-    fn norm(v: [f64; 4]) -> f64 {
-        v.into_iter().map(|x| x * x).sum::<f64>().sqrt()
-    }
     let a = a.map(|x| x / norm(a));
     b = b.map(|x| x / norm(b));
     if a.into_iter().zip(b).map(|(x, y)| x * y).sum::<f64>() < 0. {
@@ -53,6 +58,23 @@ fn angle(a: [f64; 4], mut b: [f64; 4]) -> f64 {
     let diff = norm(std::array::from_fn(|i| a[i] - b[i]));
     let sum = norm(std::array::from_fn(|i| a[i] + b[i]));
     4. * diff.atan2(sum)
+}
+
+fn angle_bound(component_error: f64, raw: [f64; 4], limits: &Value) -> f64 {
+    let raw_norm = norm(raw).max(number(&limits["min_raw_quaternion_norm"]));
+    let arithmetic = number(&limits["angular_floor_u64"]) * number(&limits["unit_roundoff"]);
+    (4. * (2. * component_error / raw_norm).min(1.).asin()).min(std::f64::consts::PI) + arithmetic
+}
+
+#[test]
+fn angular_bound_uses_the_sample_norm_with_a_frozen_floor() {
+    let frozen: Value = serde_json::from_str(BOUNDS).unwrap();
+    let limits = &frozen["transcription"];
+    let error = 0.0001;
+    let bound = |w| angle_bound(error, [0., 0., 0., w], limits);
+    assert!(bound(2.) < bound(1.));
+    assert!(bound(1.) < bound(0.25));
+    assert_eq!(bound(0.125), bound(0.25));
 }
 
 #[test]
@@ -128,12 +150,10 @@ fn rust_replays_python_curves_with_frozen_f64_bounds() {
                 check_component(value, expected, limits, &location);
             }
             let rotation = &row["rotation"];
-            let actual_angle = angle(pose.rotation, array(&rotation["value"]));
-            let min_norm = number(&limits["min_raw_quaternion_norm"]);
-            let component_error = 2. * scalar_bound(rotation, limits);
-            let arithmetic =
-                number(&limits["angular_floor_u64"]) * number(&limits["unit_roundoff"]);
-            let angle_limit = 4. * (2. * component_error / min_norm).min(1.).asin() + arithmetic;
+            let expected = array(&rotation["value"]);
+            let actual_angle = angle(pose.rotation, expected);
+            let raw = rotation.get("raw").map_or(expected, array);
+            let angle_limit = angle_bound(2. * scalar_bound(rotation, limits), raw, limits);
             assert!(
                 actual_angle <= angle_limit,
                 "{location}: angle {actual_angle}, bound {angle_limit}"

@@ -16,9 +16,10 @@
 //! `max(S + 1 MiB, 5 S)` of the buffer alive, its own slices included, and
 //! a copy would cost more than it frees. The copy's charge rides in its
 //! `Bytes`, its owner record included ([`crate::budget::charged_bytes`]), so
-//! it returns when the last slice of it drops. A copy the meter or the
-//! budget refuses is not made: the slices stay as they were, and the read or
-//! the parse goes on. [`Copies`] counts what was copied, per file. The
+//! it returns when the last slice of it drops. A refused copy leaves the
+//! slices in place. Legacy reads and parses proceed after a refusal, while a
+//! lossless read propagates it on the caller's meter. [`Copies`] counts what
+//! was copied, per file. The
 //! other slices the core hands out are not copied, and each keeps its whole
 //! buffer alive as any slice does: [`crate::object::ObjectRef::raw_data`],
 //! [`crate::files::BundleFile::entry_bytes`] and
@@ -50,7 +51,7 @@ use bytes::Bytes;
 
 use crate::budget::DecodeBuf;
 use crate::error::LimitKind;
-use crate::limits::{Meter, MeteredVec};
+use crate::limits::{ChargeError, Meter, MeteredVec};
 use crate::raw::RawStr;
 use crate::typetree::NodeRow;
 
@@ -150,52 +151,58 @@ pub(crate) fn copy_out(
     pinned: u64,
     meter: &Arc<Meter>,
 ) -> u64 {
+    try_copy_out(target, within, pinned, meter, false).unwrap_or(0)
+}
+
+/// The lossless read also accounts for sort work and surfaces refusals.
+pub(crate) fn try_copy_out(
+    target: &mut dyn Slices,
+    within: &[u8],
+    pinned: u64,
+    meter: &Arc<Meter>,
+    count_work: bool,
+) -> Result<u64, ChargeError> {
     if pinned <= UNPIN_MIN {
-        return 0;
+        return Ok(0);
     }
     let mut n = 0usize;
     target.each(&mut |sl| n += usize::from(place(within, sl.bytes()).is_some()));
     if n == 0 {
-        return 0;
+        return Ok(0);
     }
-    let Ok(mut table) = MeteredVec::with_capacity(meter, n) else {
-        return 0;
-    };
-    let mut listed = true;
+    let mut table = MeteredVec::with_capacity(meter, n)?;
+    let mut listed = Ok(());
     target.each(&mut |sl| {
-        if let Some(span) = place(within, sl.bytes()) {
-            listed &= table.push(span).is_ok();
+        if listed.is_ok()
+            && let Some(span) = place(within, sl.bytes())
+        {
+            listed = table.push(span);
         }
     });
-    if !listed {
-        return 0;
+    listed?;
+    if count_work {
+        meter.count_decode(len64(n).saturating_mul(u64::from(n.ilog2() + 1)))?;
     }
     let kept = merge(table.as_mut_slice());
     let Some(spans) = table.as_mut_slice().get_mut(..kept) else {
-        return 0;
+        return Ok(0);
     };
     let s = spans
         .iter()
         .fold(0u64, |s, (from, to)| s.saturating_add(len64(to - from)));
     if !worth_copying(pinned, s) {
-        return 0;
+        return Ok(0);
     }
-    let Ok(mut buf) = DecodeBuf::new(meter, s, s, LimitKind::InputMemory) else {
-        return 0;
-    };
+    let mut buf = DecodeBuf::new(meter, s, s, LimitKind::InputMemory)?;
     for span in spans.iter_mut() {
         let Some(bytes) = within.get(span.0..span.1) else {
-            return 0;
+            return Ok(0);
         };
-        if buf.extend_from_slice(bytes).is_err() {
-            return 0;
-        }
+        buf.extend_from_slice(bytes)?;
         // From here a span is its start and where its bytes start in the copy.
         span.1 = buf.len() - (span.1 - span.0);
     }
-    let Ok(copy) = buf.into_bytes() else {
-        return 0;
-    };
+    let copy = buf.into_bytes()?;
     target.each(&mut |mut sl| {
         if let Some((from, to)) = place(within, sl.bytes()) {
             // The span holding `from`: the last that starts at or before it.
@@ -206,7 +213,7 @@ pub(crate) fn copy_out(
             }
         }
     });
-    s
+    Ok(s)
 }
 
 /// What a file's reads and its parse copied out of the buffer its bytes

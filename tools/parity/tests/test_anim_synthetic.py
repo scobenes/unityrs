@@ -31,7 +31,9 @@ def explicit():
         position = []
         for a, b, outgoing, incoming in [(2, 10, 6, -2), (-2, 8, 0, 0), (3, 4, math.inf, 0)]:
             value = r.hermite(2, 6, a, b, outgoing, incoming, t)
-            if math.isinf(outgoing):
+            if t in (2, 6):
+                position.append(component("exact", value))
+            elif math.isinf(outgoing):
                 position.append(component("constant", value))
             else:
                 scale = 16 * (abs(a) + abs(b) + 4 * (abs(outgoing) + abs(incoming)))
@@ -64,8 +66,10 @@ def dense():
         # Conservative common scale from the adjacent sample magnitudes,
         # the largest adjacent difference, and the entire grid/time span.
         scale = 2 * 84 + 64 * (1 + 4 * (6 + 3 + .5))
+        raw = tuple(slot(i) for i in range(4))
+        rotation = {**component("dense", r.normalize(raw), scale), "raw": raw}
         yield {**clock(t), "position": constants([9, 8, 7]), "scale": constants([8, 9, 10]),
-               "rotation": component("dense", r.normalize(tuple(slot(i) for i in range(4))), scale),
+               "rotation": rotation,
                "weight": component("dense", slot(4), scale)}
 
 
@@ -80,16 +84,23 @@ def dump():
 
 
 class TestSyntheticSamplerReplay(unittest.TestCase):
+    def test_explicit_hermite_endpoints_equal_the_serialized_keys(self):
+        rows = list(explicit())
+        for row, source, xyz in ((rows[0], 2, (2, -2, 3)), (rows[-1], 6, (10, 8, 4))):
+            self.assertEqual(row["source"], source)
+            self.assertEqual(row["position"], [component("exact", value) for value in xyz])
+
     def test_checked_in_samples_come_from_the_reference(self):
         stored = json.loads(OUTPUT.read_text(encoding="utf-8"))
         generated = json.loads(dump())
         # Platform libm implementations may round trig and normalization
         # differently. Check rotations with the same frozen angular metric.
-        norm = r.BOUNDS["transcription"]["min_raw_quaternion_norm"]
+        floor = r.BOUNDS["transcription"]["min_raw_quaternion_norm"]
         for group in ("explicit", "streamed", "dense"):
             for left, right in zip(stored[group], generated[group], strict=True):
                 a, b = left["rotation"], right["rotation"]
                 error = r.transcription_bound(b["equation"], b["scale"])
+                norm = max(floor, math.hypot(*b.get("raw", b["value"])))
                 self.assertLessEqual(r.angle(a.pop("value"), b.pop("value")),
                                      r.transcription_angle_bound(2 * error, norm))
         self.assertEqual(stored, generated)

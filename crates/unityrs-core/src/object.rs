@@ -308,16 +308,15 @@ impl ObjectRef {
         // A value kept past the file's handles keeps alive the buffer its
         // slices are of: copied out of a run much larger than they are
         // (`crate::pin`; plan section 8, R3), `check_read`'s value too.
-        match &mut read {
-            Ok(value) => {
-                file.unpin(value);
-            }
-            Err(ParseError::CheckRead { parsed, .. }) => {
-                if let Some(value) = Arc::get_mut(parsed) {
-                    file.unpin(value);
-                }
-            }
-            Err(_) => {}
+        let value = match &mut read {
+            Ok(value) => Some(value),
+            Err(ParseError::CheckRead { parsed, .. }) => Arc::get_mut(parsed),
+            Err(_) => None,
+        };
+        if let Some(value) = value {
+            file.unpin(value, lossless_meter).map_err(|error| {
+                crate::walk::charge_error(u64::try_from(value.bytes_read).unwrap_or(0), error)
+            })?;
         }
         read
     }

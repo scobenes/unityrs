@@ -24,6 +24,7 @@ pub(crate) struct Explicit {
 pub(crate) enum Property {
     Transform(TransformProperty),
     Component(TransformProperty, usize),
+    RotationComponent,
     Morph(RawStr),
 }
 
@@ -35,7 +36,9 @@ impl Property {
             Self::Component(T::Translation, axis) => (0, Some(*axis), b""),
             Self::Transform(T::Scale) => (1, None, b""),
             Self::Component(T::Scale, axis) => (1, Some(*axis), b""),
-            Self::Transform(T::Quaternion | T::Euler) | Self::Component(_, _) => (2, None, b""),
+            Self::Transform(T::Quaternion | T::Euler)
+            | Self::RotationComponent
+            | Self::Component(_, _) => (2, None, b""),
             Self::Morph(attribute) => (3, None, attribute.as_bytes()),
         }
     }
@@ -44,7 +47,7 @@ impl Property {
         match self {
             Self::Transform(TransformProperty::Quaternion) => 4,
             Self::Transform(_) => 3,
-            Self::Morph(_) | Self::Component(_, _) => 1,
+            Self::Morph(_) | Self::Component(_, _) | Self::RotationComponent => 1,
         }
     }
 }
@@ -112,7 +115,7 @@ impl Explicit {
 fn clamp(raw: i32) -> Result<(), AnimError> {
     // Curve infinity codes in the serialized layout. The clip's m_WrapMode
     // uses a separate enum and does not override per-curve boundary behavior.
-    if matches!(raw, 0 | 2 | 8) {
+    if raw == 2 {
         Ok(())
     } else {
         Err(AnimError::UnsupportedCurveWrap(raw))
@@ -334,7 +337,7 @@ fn float_property(dict: &Dict<'_, '_>, row: &Value) -> Result<Option<Property>, 
                 (T::Scale, suffix)
             } else if name.starts_with(b"m_LocalRotation.") || name.starts_with(b"localEulerAngles")
             {
-                return Err(AnimError::UnsupportedBindingTarget);
+                return Ok(Some(Property::RotationComponent));
             } else {
                 return Ok(None);
             };
@@ -409,7 +412,7 @@ pub(crate) fn visit_runtime<'a>(
         (F::Euler, Some(T::Euler), 2),
         (F::Position, Some(T::Translation), 0),
         (F::Scale, Some(T::Scale), 0),
-        (F::Float, None, 0),
+        (F::Float, None, 3),
     ] {
         if field == F::CompressedRotation && compressed != Some(true) {
             continue;
@@ -482,6 +485,12 @@ pub(super) fn decode(
         let Some((chosen, others)) = group.split_first() else {
             continue;
         };
+        let property = match &chosen.property {
+            Property::Transform(p) => Property::Transform(*p),
+            Property::Component(p, axis) => Property::Component(*p, *axis),
+            Property::RotationComponent => return Err(AnimError::UnsupportedBindingTarget),
+            Property::Morph(attribute) => Property::Morph(attribute.clone()),
+        };
         if others
             .first()
             .is_some_and(|other| other.priority == chosen.priority)
@@ -491,12 +500,7 @@ pub(super) fn decode(
         let data = if chosen.source.field == ClipField::CompressedRotation {
             Data::Packed(packed::read(dict, chosen.row)?)
         } else {
-            Data::Curve(curve(dict, chosen.row, &chosen.property, version)?)
-        };
-        let property = match &chosen.property {
-            Property::Transform(p) => Property::Transform(*p),
-            Property::Component(p, axis) => Property::Component(*p, *axis),
-            Property::Morph(attribute) => Property::Morph(attribute.clone()),
+            Data::Curve(curve(dict, chosen.row, &property, version)?)
         };
         let track = Explicit {
             source: chosen.source,

@@ -13,11 +13,12 @@
 
 use std::sync::Arc;
 
-use unityrs_core::budget::{OWNER_COST, Reservation};
+use unityrs_core::budget::{OWNER_COST, Reservation, Unbounded};
+use unityrs_core::error::LimitKind;
 use unityrs_core::files::{BundleFile, SerializedFile};
-use unityrs_core::limits::{Meter, heap_cost};
+use unityrs_core::limits::{ChargeError, Meter, heap_cost};
 use unityrs_core::pin::{Copies, UNPIN_MIN, worth_copying};
-use unityrs_core::walk::ParseError;
+use unityrs_core::walk::{ParseError, ReadDetail};
 use unityrs_core::{Bytes, File, FileContext, Parsed, PrimArray, RawStr, Value};
 use unityrs_testkit::blob::NodeSpec;
 use unityrs_testkit::bundle::{BundleSpec, EntrySpec, TestCodec, build};
@@ -185,6 +186,65 @@ fn a_kept_value_copies_its_slices_out_of_a_large_run() {
         kept,
         heap_cost(100) + OWNER_COST + heap_cost(T) + OWNER_COST
     );
+}
+
+#[test]
+fn lossless_value_copy_uses_the_callers_memory_and_work_limits() {
+    let file = object_file(&bytes(60, 1), &bytes(40, 2));
+    let data = bundle(&file, 2 << 20, TestCodec::Lz4, 1 << 16);
+    let (_, _, small) = open(&data, false);
+    let walk = Meter::unlimited();
+    let value = small
+        .object(1)
+        .unwrap()
+        .read_typetree_lossless(None, true, &walk)
+        .unwrap();
+    assert!(in_run(&small, &slices(&value).1));
+
+    let (file_meter, _bundle, large) = open(&data, true);
+    let object = large.object(1).unwrap();
+    let tree = object.tree(None).unwrap().unwrap().tree;
+    let file_granted = file_meter.granted();
+    let file_work = file_meter.decoded();
+    let copy_memory = heap_cost(100) + OWNER_COST;
+    let span_memory = heap_cost(2 * size_of::<(usize, usize)>() as u64);
+
+    for (memory, work, expected) in [
+        (
+            walk.used() + span_memory + copy_memory - 1,
+            u64::MAX,
+            LimitKind::InputMemory,
+        ),
+        (u64::MAX, walk.decoded(), LimitKind::DecodeWork),
+    ] {
+        let control =
+            Meter::with_decode_work(memory, work, Arc::new(Unbounded), Reservation::Input);
+        small
+            .object(1)
+            .unwrap()
+            .read_typetree_lossless(None, true, &control)
+            .unwrap();
+        let caller = Meter::with_decode_work(memory, work, Arc::new(Unbounded), Reservation::Input);
+        let result = object.read_typetree_lossless(Some(&tree), true, &caller);
+        assert!(
+            matches!(&result, Err(ParseError::Read(error))
+                if matches!(&error.detail, ReadDetail::Charge(ChargeError::Limit(limit))
+                    if limit.kind() == expected)),
+            "{result:?}"
+        );
+        assert_eq!(caller.used(), 0);
+    }
+    assert_eq!(large.copies(), copies(0, 0, 1, T));
+
+    let caller = Meter::unlimited();
+    let value = object
+        .read_typetree_lossless(Some(&tree), true, &caller)
+        .unwrap();
+    assert!(!in_run(&large, &slices(&value).1));
+    assert_eq!(caller.used(), walk.used() + copy_memory);
+    assert!(caller.decoded() > walk.decoded());
+    assert_eq!(file_meter.granted(), file_granted);
+    assert_eq!(file_meter.decoded(), file_work);
 }
 
 /// The threshold on the file's run: `L - S` of exactly `max(1 MiB, 4 S)`

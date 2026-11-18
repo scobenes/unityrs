@@ -140,7 +140,14 @@ fn clamp_is_per_side_and_only_consulted_outside_the_curve() {
         )
     };
     let meter = Meter::unlimited();
-    for (wrap, bad_time) in [([4, 2], 2.), ([2, 4], 6.)] {
+    for (wrap, bad_time, code) in [
+        ([4, 2], 2., 4),
+        ([2, 4], 6., 4),
+        ([0, 2], 2., 0),
+        ([2, 0], 6., 0),
+        ([8, 2], 2., 8),
+        ([2, 8], 6., 8),
+    ] {
         let mut object = f::explicit_fixture();
         set(&mut object.value, "m_ScaleCurves", f::one_row(scale(wrap)));
         let (clip, graph) = load(object, false);
@@ -156,7 +163,7 @@ fn clamp_is_per_side_and_only_consulted_outside_the_curve() {
         );
         assert!(matches!(
             sample_clip(&bound, &rest(&graph), &[bad_time], &meter),
-            Err(AnimError::UnsupportedCurveWrap(4))
+            Err(AnimError::UnsupportedCurveWrap(raw)) if raw == code
         ));
     }
 }

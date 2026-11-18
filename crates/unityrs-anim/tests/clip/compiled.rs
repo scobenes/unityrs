@@ -274,6 +274,42 @@ fn extra_explicit_properties_require_supplemental_playback_evidence() {
 }
 
 #[test]
+fn float_rotation_refuses_only_without_a_compiled_rotation_owner() {
+    let meter = Meter::unlimited();
+    for attribute in [1, 2] {
+        let mut clip = object(
+            &[transform(attribute)],
+            f::Storage {
+                interval: [2., 6.],
+                constants: &[0, 0, 1_f32.to_bits(), 0][..if attribute == 2 { 4 } else { 3 }],
+                ..f::Storage::default()
+            },
+        );
+        let row = f::curve(
+            "",
+            &[f::Key::new(2., [0.75])],
+            [2; 2],
+            Some(4),
+            true,
+            Some(("m_LocalRotation.x", 4)),
+        );
+        set(&mut clip.value, "m_FloatCurves", f::one_row(row));
+        let (clip, graph) = load(clip, false);
+        let clip = read_clip(&clip, &meter).unwrap();
+        let bound = bind(&clip, &graph, &meter);
+        if attribute == 2 {
+            let bound = bound.unwrap();
+            assert_eq!(bound.tracks().len(), 1);
+            assert_eq!(bound.tracks()[0].source.field, ClipField::Compiled);
+            let samples = sample_clip(&bound, &rest(&graph), &[2.], &meter).unwrap();
+            assert_eq!(samples.transforms()[0].pose.rotation, [0., 0., 1., 0.]);
+        } else {
+            assert!(matches!(bound, Err(AnimError::UnsupportedBindingTarget)));
+        }
+    }
+}
+
+#[test]
 fn stream_shape_and_slot_indices_are_validated_before_playback() {
     let known = [transform(1)];
     let meter = Meter::unlimited();
@@ -319,6 +355,44 @@ fn stream_shape_and_slot_indices_are_validated_before_playback() {
         bind(&clip, &graph, &meter),
         Err(AnimError::MissingStreamKey(0))
     ));
+}
+
+#[test]
+fn dense_interpolation_caps_a_rounded_fraction_at_the_next_value() {
+    let rate = 29_f32 / 3.;
+    let frame_time = |frame| 1. + f64::from(frame) / f64::from(rate);
+    let sample = frame_time(4).next_down();
+    assert!((sample - frame_time(3)) * f64::from(rate) > 1.);
+
+    let mut bits = [0; 5 * 3];
+    bits[4 * 3] = 1_f32.to_bits();
+    let (clip, _) = load(
+        object(
+            &[transform(1)],
+            f::Storage {
+                interval: [1., 2.],
+                dense: f::Dense {
+                    frames: 5,
+                    curves: 3,
+                    rate,
+                    begin: 1.,
+                    bits: &bits,
+                },
+                ..f::Storage::default()
+            },
+        ),
+        false,
+    );
+    let meter = Meter::unlimited();
+    let clip = read_clip(&clip, &meter).unwrap();
+    assert_eq!(
+        clip.compiled()
+            .unwrap()
+            .unwrap()
+            .slot_value(0, sample, &meter)
+            .unwrap(),
+        SlotValue::Float(1.)
+    );
 }
 
 #[test]
@@ -381,6 +455,15 @@ fn bad_dense_dimensions_rate_and_interval_are_distinct() {
 #[test]
 fn humanoid_slots_refuse_generic_playback() {
     let mut object = f::compiled_fixture();
+    set_humanoid_mapping(&mut object);
+    let (clip, _) = load(object, false);
+    assert!(matches!(
+        read_clip(&clip, &Meter::unlimited()).unwrap().issue(),
+        Some(AnimError::UnsupportedHumanoidPlayback)
+    ));
+}
+
+fn set_humanoid_mapping(object: &mut unityrs_testkit::ngui::Object) {
     let V::Struct(_, root) = &mut object.value else {
         panic!("clip");
     };
@@ -397,10 +480,25 @@ fn humanoid_slots_refuse_generic_playback() {
             vec![V::Int(-1); 7].into_iter().chain([V::Int(0)]).collect(),
         ),
     );
-    let (clip, _) = load(object, false);
+}
+
+#[test]
+fn humanoid_mapping_refuses_even_with_empty_storage_and_explicit_curves() {
+    let mut clip = f::explicit_fixture();
+    f::add_compiled(
+        &mut clip,
+        Layout::Unity2022,
+        &[],
+        &[],
+        f::Storage::default(),
+    );
+    set_humanoid_mapping(&mut clip);
+    let (clip, graph) = load(clip, false);
+    let meter = Meter::unlimited();
+    let clip = read_clip(&clip, &meter).unwrap();
     assert!(matches!(
-        read_clip(&clip, &Meter::unlimited()).unwrap().issue(),
-        Some(AnimError::UnsupportedHumanoidPlayback)
+        bind(&clip, &graph, &meter),
+        Err(AnimError::UnsupportedHumanoidPlayback)
     ));
 }
 

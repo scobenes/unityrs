@@ -90,6 +90,10 @@ fn bind_explicit<'r>(
             paths.bind_transform(path, *property, filtered, meter)?,
             Some(*component),
         ),
+        Property::RotationComponent => (
+            paths.bind_transform(path, TransformProperty::Quaternion, filtered, meter)?,
+            None,
+        ),
         Property::Morph(attribute) => (
             paths.bind_morph(
                 path,
@@ -133,10 +137,7 @@ pub fn bind_clip<'a, 'r>(
                 if first != last {
                     return Err(AnimError::UnsupportedMixedTransformStorage(slot.first));
                 }
-                if slot.binding.script.path_id != 0
-                    || matches!(slot.kind, BindingKind::Transform(_))
-                        && slot.binding.custom_type != 0
-                {
+                if slot.binding.script.path_id != 0 {
                     return Err(AnimError::UnsupportedBindingTarget);
                 }
                 if let BindingKind::Transform(property) = slot.kind {
@@ -213,7 +214,10 @@ pub fn bind_clip<'a, 'r>(
                 .as_slice()
                 .binary_search_by_key(&key, |track| property_key(track.target))
                 .map(|_| ())
-                .map_err(|_| AnimError::UnsupportedSupplementalCurve)
+                .map_err(|_| match candidate.property {
+                    Property::RotationComponent => AnimError::UnsupportedBindingTarget,
+                    _ => AnimError::UnsupportedSupplementalCurve,
+                })
         })?;
     }
     if tracks.is_empty() && !clip.has_metadata_tracks() {
