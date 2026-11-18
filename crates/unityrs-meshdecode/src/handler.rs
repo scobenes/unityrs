@@ -63,8 +63,8 @@ use crate::vertex::{Attributes, Streams, VertexData, field, get_streams, read_ve
 use crate::{ProcessedOwned, Version};
 use unityrs_core::Value;
 use unityrs_core::objmode::{
-    BONE_WEIGHTS, CHANNEL_INFO, Ints, List, MESH, Obj, SPRITE, SPRITE_RENDER_DATA, STREAM_INFO,
-    STREAMING_INFO, VERTEX_DATA,
+    BONE_WEIGHTS, CHANNEL_INFO, Ints, List, MESH, MESH_6000, Obj, SPRITE, SPRITE_RENDER_DATA,
+    STREAM_INFO, STREAMING_INFO, VERTEX_DATA,
 };
 
 /// Where a Mesh's `m_StreamData` bytes come from: UnityPy's
@@ -140,12 +140,17 @@ impl<'a> Source<'a> {
         }
     }
 
-    /// The object the handler reads, its reads counted on `meter`.
-    fn root<'m>(&self, meter: &'m Meter) -> Result<Obj<'m>, MeshError>
+    /// The object the handler reads, its reads counted on `meter`. From
+    /// Unity 6000 a Mesh is built as UnityPy git 417d595 builds it, without
+    /// a required `m_MeshUsageFlags` ([`MESH_6000`], Tier C).
+    fn root<'m>(&self, version: Version, meter: &'m Meter) -> Result<Obj<'m>, MeshError>
     where
         'a: 'm,
     {
         match self.kind {
+            Kind::Mesh if version.at_least(&[6000])? => {
+                Ok(Obj::root(self.parsed, &MESH_6000, meter)?)
+            }
             Kind::Mesh => Ok(Obj::root(self.parsed, &MESH, meter)?),
             Kind::RenderData => Obj::root(self.parsed, &SPRITE, meter)?
                 .class("m_RD", &SPRITE_RENDER_DATA)?
@@ -206,7 +211,7 @@ impl<'a> MeshHandler<'a> {
         meter: &Arc<Meter>,
     ) -> Result<Processed<'a>, MeshError> {
         let version = self.version;
-        let mesh = self.src.root(meter)?;
+        let mesh = self.src.root(version, meter)?;
         // UnityPy MeshHelper.py:112-113
         let vd = mesh
             .class("m_VertexData", &VERTEX_DATA)?
@@ -648,7 +653,7 @@ impl Processed<'_> {
     /// its first wrote into a strip's `SubMesh`.
     pub fn get_triangles(&self, meter: &Arc<Meter>) -> Result<Triangles, MeshError> {
         get_triangles(
-            &self.src.root(meter)?,
+            &self.src.root(self.version, meter)?,
             self.version,
             self.use_16bit,
             self.index_buffer.as_ref().map(IndexBuffer::as_slice),
