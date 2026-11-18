@@ -22,6 +22,9 @@ pub(super) struct Handler {
     pub(super) refs: MeteredVec<Hash>,
     pub(super) version: i32,
     pub(super) original_nodes: Option<crate::typetree::SharedNodes>,
+    /// Whether the envelope carried HEAD's reference-hash list (false for
+    /// the bare envelopes formats 23-25 may hold; see [`Parser::head_handler`]).
+    pub(super) listed_refs: bool,
 }
 
 fn invalid(detail: &'static str) -> Error {
@@ -57,12 +60,20 @@ impl Parser<'_> {
     /// HEAD helpers/TypeTreeNode.py:348-357, HEAD helpers/TypeTreeNode.py:375-383.
     /// The serialized size is a presence gate, not a cursor bound; a size
     /// below eight consumes no payload. The embedded version selects the blob layout.
+    ///
+    /// Tier C (PARITY.md section 19.1): at formats 23-25, which have no
+    /// shared-subtree table to consume reference hashes, an envelope whose
+    /// serialized size ends exactly at the blob's end has no reference-hash
+    /// list, as Unity 6000.6 writes it. HEAD reads a count past it and
+    /// misreads the rest of the metadata. Any other size reads as HEAD reads it.
     pub(super) fn head_handler(&mut self) -> Result<Handler, Error> {
         self.meter.count_decode(20)?;
         let hash = self.r.read_short_array();
         let size = self.r.read_u32()?;
+        let start = self.r.position();
         let mut refs = MeteredVec::new(self.meter);
         let mut embedded_version = 0;
+        let mut listed_refs = true;
         let nodes = if size >= 8 {
             if self.r.read_bytes_short(4) != b"mhtt" {
                 return Err(invalid("Invalid type tree blob magic"));
@@ -79,7 +90,10 @@ impl Parser<'_> {
             )?;
             self.copy_tree_strings(&mut rows);
             let nodes = NodeList::from_rows(rows)?.into_shared()?;
-            for _ in 0..self.r.read_u32()? {
+            listed_refs = !((23..26).contains(&self.version)
+                && self.r.position() - start == i128::from(size));
+            let count = if listed_refs { self.r.read_u32()? } else { 0 };
+            for _ in 0..count {
                 self.meter.count_decode(16)?;
                 refs.push(self.r.read_short_array())?;
             }
@@ -93,6 +107,7 @@ impl Parser<'_> {
             nodes,
             refs,
             version: embedded_version,
+            listed_refs,
         })
     }
 }
