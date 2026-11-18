@@ -1,4 +1,4 @@
-//! Shared bounded input and streaming digest for the two 3D targets.
+//! Shared bounded input and streaming digest for the 3D and animation targets.
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     io::{self, Write},
@@ -11,6 +11,8 @@ use unityrs_core::{
     files::{File, SerializedFile},
     limits::Meter,
 };
+use unityrs_export::gltf::{ExportError, walk_files};
+use unityrs_scene::{Graph, GraphOptions, graph_from_game_object, graph_from_scene_file};
 use unityrs_testkit::fuzz::SceneCase;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -52,8 +54,40 @@ impl Outcome {
             e => Self::error(e),
         }
     }
+    /// A resource refusal anywhere in the cause chain is `Refused`.
+    pub(crate) fn anim_error(e: unityrs_anim::AnimError) -> Self {
+        if anim_refusal(&e) {
+            Self::Refused
+        } else {
+            Self::error(e)
+        }
+    }
+    pub(crate) fn export_error(e: ExportError) -> Self {
+        use unityrs_core::limits::ChargeError;
+        match e {
+            ExportError::Gltf(e) => Self::gltf_error(e),
+            ExportError::Animation(e) => Self::anim_error(e),
+            ExportError::Charge(ChargeError::Limit(_)) => Self::Refused,
+            ExportError::Unresolved(e) if anim_refusal(&e.cause) => Self::Refused,
+            e => Self::error(e),
+        }
+    }
     pub(crate) fn error(e: impl std::fmt::Debug) -> Self {
         Self::Error(format!("{e:?}"))
+    }
+}
+/// The operation meter's refusals, and a lazy read's resource refusal.
+pub(crate) fn anim_refusal(e: &unityrs_anim::AnimError) -> bool {
+    use unityrs_anim::AnimError;
+    use unityrs_core::limits::ChargeError;
+    use unityrs_scene::SceneError;
+    match e {
+        AnimError::Charge(ChargeError::Limit(_)) => true,
+        AnimError::Parse(e) => SceneError::Parse(e.clone()).resource_refusal(),
+        AnimError::Deref(e) | AnimError::OutsideView(e) => {
+            SceneError::Deref(e.clone()).resource_refusal()
+        }
+        _ => false,
     }
 }
 /// Counts every output byte without retaining a whole GLB or OBJ in memory.
@@ -135,4 +169,66 @@ pub(crate) fn check(input: &[u8], export: impl Fn(&SceneCase, u64) -> Outcome + 
         }
         matches!(full, Outcome::Done(_))
     })
+}
+/// Like [`run`], but the input may be a bundle (or any container): the
+/// operation gets the loaded root and the first serialized file, in
+/// depth-first inspection order, that holds a `GameObject`.
+pub(crate) fn run_root(
+    case: &SceneCase,
+    limit: u64,
+    export: impl FnOnce(&Environment, &File, &Arc<SerializedFile>, &Arc<Meter>) -> Outcome,
+) -> Outcome {
+    let mut options = EnvOptions::unitypy();
+    options.context = crate::context();
+    let env = Environment::new(options);
+    let root = match env.load(Source::Bytes {
+        name: RawStr::from_static(b"synthetic-scene"),
+        data: Bytes::from(case.data.clone()),
+    }) {
+        Ok(root) => root,
+        Err(e) => return Outcome::error(e),
+    };
+    let meter =
+        Meter::with_decode_work(limit, crate::WORK, Arc::new(Unbounded), Reservation::Input);
+    let answer = (|| {
+        let mut scene = None;
+        let walk = walk_files(root.clone(), &meter, |file| -> Result<(), ExportError> {
+            if let (None, File::Serialized(f)) = (&scene, file)
+                && f.objects().any(|o| o.class_id() == 1)
+            {
+                scene = Some(f.clone());
+            }
+            Ok(())
+        });
+        if let Err(e) = walk {
+            return Outcome::export_error(e);
+        }
+        let Some(file) = scene else {
+            return Outcome::Error("no GameObject".to_owned());
+        };
+        export(&env, &root, &file, &meter)
+    })();
+    assert_eq!(
+        meter.used(),
+        0,
+        "the operation retained charges after its outputs dropped"
+    );
+    answer
+}
+/// The scene file's graph, or (flag 1) the first `GameObject`'s prefab graph.
+pub(crate) fn graph(
+    env: &Environment,
+    file: &Arc<SerializedFile>,
+    flags: u8,
+    meter: &Arc<Meter>,
+) -> Result<Graph, Outcome> {
+    let graph = if flags & 1 != 0 {
+        let Some(root) = file.objects().find(|o| o.class_id() == 1) else {
+            return Err(Outcome::Error("no prefab root".to_owned()));
+        };
+        graph_from_game_object(env, &root, &GraphOptions::default(), meter)
+    } else {
+        graph_from_scene_file(env, file, &GraphOptions::default(), meter)
+    };
+    graph.map_err(Outcome::scene_error)
 }

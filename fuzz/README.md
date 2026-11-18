@@ -5,7 +5,9 @@
 liblz4); for `unityrs-texture`'s decoders and selection
 (`docs/plans/extract.md` E15, E18, E59, E66); and for `unityrs-meshdecode`'s
 vertex-data unpack and triangles (E16, E59); and for scene/prefab collection,
-GLB writing and OBJ/MTL text (`docs/plans/static3d.md` section 4.3). Any panic, timeout over 10 s,
+GLB writing and OBJ/MTL text (`docs/plans/static3d.md` section 4.3); and for
+animation discovery, binding, sampling and baking (`docs/plans/anim.md`
+section 5). Any panic, timeout over 10 s,
 or allocation over 2 GiB is a bug.
 The `shader` target exercises `unityrs-export`'s shader program parser and
 converter over arbitrary typetree values.
@@ -41,6 +43,8 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `meshdecode` | `walk::boost::read` of a Mesh's or a Sprite's value, then `unityrs_meshdecode::MeshHandler::process` (with or without a resource reader, either byte order, any version), `get_triangles` twice and `process` again, run last once the first's outputs drop, under the case's limits and, when the case's meter is not 0, again under a meter of `meter² × 64` bytes with the same work bound: the second `get_triangles` and the second `process` must answer as the first (but a refusal of the work it adds), the smaller meter's answer must be the first's (but a refusal of a charge past its limit), and each meter back at 0 once the outputs drop | `unityrs_testkit::fuzz::MeshCase`: flags, meter, version, resource, then a `TreeCase` |
 | `scene_collect` | graph construction for the complete scene or the last GameObject in object-table order as a prefab, strict profile parsing, collect with UnlitExtras or CorePbr, then streaming GLB writing twice; fresh exports must repeat their outcome, smaller-meter exports must produce identical bytes or a named memory/work refusal, and operation meters return to zero | `unityrs_testkit::fuzz::SceneCase`: meter byte, policy flags, u16 profile length, JSON profile, serialized scene bytes |
 | `obj_text` | raw mesh OBJ plus corrected renderer OBJ/MTL/texture export to a streaming digest; repeated fresh exports must match, smaller-meter exports must match or name their memory/work refusal, and operation meters return to zero | `SceneCase`, sharing the synthetic scene seeds |
+| `anim_clip` | a serialized file or bundle's first file holding a `GameObject`, as a scene or prefab graph; `unityrs-anim` discovery, then for every discovered clip slot `read_clip`, its key-time inventory, endpoints and packed rotations, `bind_clip` against present or filtered renderer channels, and `sample_clip` at the clip's ends and midpoint or on its own schedule; content errors are typed and hashed, fresh runs must repeat, smaller-meter runs must match or name their memory/work refusal, and operation meters return to zero | `SceneCase` (empty profile): flag 1 prefab, 2 filtered renderers, 4 clip schedule |
+| `anim_gltf` | the same graph selection, then `unityrs_export::gltf::collect` (feature `gltf`: discovery, clip selection, binding and baking into `unityrs-gltf`'s scene) and streaming GLB writing twice, under the `scene_collect` rules | `SceneCase`: strict profile with `clips` and `sample_rate`; flag 1 prefab, 2 CorePbr |
 | `fsb5` | `unityrs_audio::plan` and `decode`: bounded parsing, PCM and float WAV lengths, repeatability and charge release | raw audio bytes |
 | `image_writers` | `Image::new` and palette validation, then default image writers: deterministic output and typed refusals, charged output and released charges; at most 65,536 source pixels and 4 MiB per writer run; ICNS uses a zero allocation budget to bound its mandatory resize | width/height u32 LE, mode, format, dimension policy, budget selector, filename selector, then repeating pixel/palette bytes |
 | `set_image` | Raw texture conversion, BICUBIC mips, all 23 Pillow modes, format promotion, platform gates, native BC/ETC/ASTC encoding and encoder refusals with the `encode` feature enabled; at most 65,536 generated pixel bytes and 8 MiB per run; deterministic output and released charges | width/height u32 LE, format/mips i32 LE, mode, platform, flip, exponent, memory and size policies, then repeating pixels |
@@ -116,6 +120,19 @@ profile means defaults. A nonzero meter also runs at `meter² × 64` bytes.
 Source loading keeps the normal input/work bounds; graph, collect and
 output operations use the selected meter. GLB and OBJ output is hashed as
 it streams, without retaining a complete output buffer.
+The `anim_clip` and `anim_gltf` seeds are `unityrs_testkit::fuzz`'s
+animated scenes (the `scene3d::anim` builders): legacy explicit curves,
+compiled generic clips (constant, clamped and sign-flipping channels),
+the playback fixtures (explicit, compiled, replay and dense), packed
+rotations with and without slopes, a metadata-only clip, binding-only
+clips in 2019.4 and 6000.x layouts and a hostile compiled clip (NaN
+interval, oversized streamed and dense counts), under legacy Animation,
+Animator, override, leaf-info, cyclic, dangling and negative-file-id
+rigs, each as a plain serialized file and inside a bundle, at meters 0,
+1, 16 and 64. `anim_clip` runs each as a scene and as a prefab on the
+clip's schedule with filtered renderers; `anim_gltf` under all-discovered
+selection (with and without a sample-rate override) and an explicit
+selection by file index and path id.
 The `shader` seeds are synthetic program blobs on either side of the
 2019.3 entry-table change and each subprogram-header boundary, with empty
 and textual code, global and local keywords, repeated entries, truncated
@@ -183,8 +200,9 @@ at step 1.
 - `.github/workflows/ci.yml`'s `fuzz-build`: on every push, every target
   built and run for 30 seconds from the seeds, the harness's own tests
   (`cargo test --lib`), and `cargo fmt --check` over this crate.
-  The smoke lists and nightly matrix include all 27 targets, including
-  `image_writers`, `set_image`, `scene_collect`, `obj_text`, `shader` and `extractor_paths`, run from their
+  The smoke lists and nightly matrix include all 29 targets, including
+  `image_writers`, `set_image`, `scene_collect`, `obj_text`, `anim_clip`,
+  `anim_gltf`, `shader` and `extractor_paths`, run from their
   generated seeds.
 
 ## Licences
