@@ -1,0 +1,131 @@
+{
+ "format": "unityrs.show",
+ "version": 1,
+ "object": {
+  "input": 0,
+  "file_index": 2,
+  "file": "CAB-synthetic",
+  "path_id": 6,
+  "class_id": 137,
+  "class_name": "SkinnedMeshRenderer",
+  "name": null,
+  "container_path": null,
+  "byte_size": 80
+ },
+ "value": {
+  "t": "dict",
+  "v": [
+   [
+    "m_GameObject",
+    {
+     "t": "dict",
+     "v": [
+      [
+       "m_FileID",
+       0
+      ],
+      [
+       "m_PathID",
+       1
+      ]
+     ]
+    }
+   ],
+   [
+    "m_Enabled",
+    true
+   ],
+   [
+    "m_Materials",
+    []
+   ],
+   [
+    "m_StaticBatchInfo",
+    {
+     "t": "dict",
+     "v": [
+      [
+       "firstSubMesh",
+       0
+      ],
+      [
+       "subMeshCount",
+       0
+      ]
+     ]
+    }
+   ],
+   [
+    "m_SubsetIndices",
+    []
+   ],
+   [
+    "m_StaticBatchRoot",
+    {
+     "t": "dict",
+     "v": [
+      [
+       "m_FileID",
+       0
+      ],
+      [
+       "m_PathID",
+       0
+      ]
+     ]
+    }
+   ],
+   [
+    "m_Mesh",
+    {
+     "t": "dict",
+     "v": [
+      [
+       "m_FileID",
+       0
+      ],
+      [
+       "m_PathID",
+       7
+      ]
+     ]
+    }
+   ],
+   [
+    "m_Bones",
+    []
+   ],
+   [
+    "m_RootBone",
+    {
+     "t": "dict",
+     "v": [
+      [
+       "m_FileID",
+       0
+      ],
+      [
+       "m_PathID",
+       0
+      ]
+     ]
+    }
+   ],
+   [
+    "m_BlendShapeWeights",
+    {
+     "t": "f32s",
+     "v": "41200000"
+    }
+   ]
+  ]
+ },
+ "truncated": {
+  "cuts": 0,
+  "bytes": 0,
+  "items": 0,
+  "depth": 0,
+  "binary": 0
+ },
+ "bundle_sha256": "857374a9815ef2567dc6bb466b51cb5b295e1398f246c88a30a2ec554a8413f5"
+}

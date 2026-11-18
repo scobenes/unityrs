@@ -733,33 +733,50 @@ value lies in the `c0` range. Other mixed-stage inputs need a documented
 track kind and a matching budget derivation before promotion.
 
 `tools/parity/anim_replay_budgets.py REPLAY --bundle-dir DIR` writes the
-budget rows of a completed generic or legacy replay without them. It reads
-the replay's digest-pinned bundles through `unityrs show`: the serialized
-rest pose, the compiled or explicit curves and the playback interval,
-never the observed poses. It walks each interval between the start, the
-stop and every key strictly inside them, and records every coefficient,
-key-relative time, Hermite control and clamped or rest value the path
-reads. It supports rest, constant, held and streamed compiled slots,
-clamped explicit Hermite curves and Euler input through `joint`, and
+budget rows of a completed generic or legacy replay without them, and
+`--verify` refuses stored rows that differ from the ones it writes. It
+checks each bundle's SHA-256 pin, then reads the bundles through
+`unityrs show --value canonical`, refusing any truncated document, and
+takes the tagged f32 bits of infinite tangents as they are. It reads the
+serialized rest pose, the compiled or explicit curves and the playback
+interval, never the observed poses. It walks each interval between the
+start, the stop and every key strictly inside them, and records every
+coefficient, key-relative time, Hermite control and clamped or rest value
+the path reads. A translation or scale row also gives each component its
+own ranges in `component_ranges`, in the stage's layout, with `[0, 0]`
+for a range the component never reads. The derivation then bounds each
+component from its own ranges, so a large clamped Y never widens X's
+tolerance, and the Rust audit checks each component against them. The
+author supports rest, constant, held and streamed compiled slots, clamped
+unweighted explicit Hermite curves and Euler input through `joint`, and
 refuses dense, weighted and humanoid paths until they have an author.
 Its choices, provisional until review:
 
-- Each recorded range is padded outward by `2^-40` of its magnitude plus
-  `2^-140`, and a nonnegative bound stays nonnegative. The tool computes
-  Hermite values, Euler quaternions and derivative pads in f64. `2^-40`
-  covers about 4096 f64 roundings of that arithmetic, yet is `2^-16` of an
-  f32 ulp, so the derived bounds do not grow measurably. The absolute
-  term keeps exact zeros, where the relative term vanishes, strictly
-  inside their range. It is below f32's smallest normal, so it adds
-  nothing an f32 output can show.
-- Rotation `norm_ranges` split each key interval into 64 equal pieces,
-  and box each piece by its endpoint quaternions widened by the piece's
-  width times a derivative bound. The derivative bound is the stage's,
-  or `π/360` per degree per second summed over the Euler axes. 64 is a power of
-  two, so the pieces fall on the midpoint subdivision the Rust audit uses
-  to fit its own pieces into a box. With 64 pieces, each box spans at most
-  1/64 of the interval's motion, so the norm floor stays near one for
-  ordinary clips, at the cost of 64 boxes per interval and rotation target.
+- Every computed enclosure is widened by `2^-40` of the magnitudes of the
+  terms that produced it, never of the result, so cancellation and trig
+  zeros keep their margin. The tool computes in f64, where each rounding
+  errs by at most `2^-53` of its operands' scale. `2^-40` covers about
+  4096 such roundings, yet is `2^-16` of an f32 ulp, so the derived bounds
+  do not grow measurably. Exact f32 inputs are widened by `2^-40` of their
+  own magnitude. A further absolute `2^-1022`, the smallest normal f64,
+  covers the f64 underflow of the tool's own arithmetic, whose absolute
+  error is at most `2^-1075` per operation. It is far below the smallest
+  f32 subnormal, `2^-149`.
+- An Euler box widens each half angle by `2^-40` of its magnitude before
+  the trig. That covers the rounding of the degree conversion and the
+  difference between the f64 constant and π, below `2^-52` of π. Sine
+  and cosine are enclosed over the widened interval, including any
+  extremum inside it, and the axis quaternions are multiplied as
+  intervals. A constant angle whose half falls on a trig zero, such as
+  3060°, still lies inside its box.
+- The rotation `norm_ranges` hold a point box at every walked time, using
+  that time's own segment, so a held jump at a key or at the stop is
+  enclosed. Each interval is halved at its midpoint, as the Rust audit
+  halves its pieces, until every box's guaranteed largest component is at
+  least half its largest possible one. A unit quaternion's largest
+  component is at least one half, so the floor stays at least one
+  quarter. The tool refuses after 16 halvings (the Rust audit allows 20)
+  and refuses any box that holds the origin.
 
 | Stage | Recorded ranges in order | Continuous derivative bound |
 |---|---|---|
@@ -824,16 +841,19 @@ component magnitude no greater than `2^60` to keep f32 length
 arithmetic in range. For a `joint` output each box must admit a unit
 quaternion, and the floor is capped at one. Convert propagated raw
 component error with this norm floor. Budget normalization with 32
-operations in unit space. Add half an f32 ulp at the largest captured
-component for final storage. For rotation, convert the normalization and storage
+operations in unit space. Add half an f32 ulp for final storage at the
+largest value the stage ranges admit, never at a captured value: one for
+a normalized quaternion, else the stage's value magnitude times the weight
+gain plus the arithmetic error. For rotation, convert the normalization and storage
 errors with norm one, sum the two angular budgets and include the f64
 angle metric floor. Refuse any rotation tolerance that reaches π.
 
 Run `python3 -I tools/parity/anim_replay.py derive synthetic-replay.json --bundle-dir . > synthetic-tolerances.json`.
 The result contains the manifest SHA-256 (sorted compact UTF-8 JSON),
 `clock_discriminated` (true, false or `"independent"`), ordered property, target and channel keys, and
-per-sample clocks, held sides and bounds. Freeze it alongside the inputs
-before comparison.
+per-sample clocks, held sides and bounds. A row with `component_ranges`
+has one bound per component, compared component by component; any other
+row has one bound. Freeze it alongside the inputs before comparison.
 Investigate discrepancies against the recorded layout, settings and
 equations.
 
@@ -841,6 +861,7 @@ After deriving and freezing the tolerances, run the Rust comparison from
 the repository root:
 
 ```sh
+UNITYRS_ANIM_CLI=target/release/unityrs \
 UNITYRS_ANIM_REPLAY=synthetic-replay.json \
 UNITYRS_ANIM_BUNDLES=. \
 UNITYRS_ANIM_TOLERANCES=synthetic-tolerances.json \
@@ -848,6 +869,8 @@ cargo test -p unityrs-export --features gltf --test anim_replay \
   recorded_generic_or_legacy -- --ignored --nocapture
 ```
 
+The gated test first runs `anim_replay_budgets.py --verify` with that CLI,
+so it refuses budget rows that differ from the ones the bundles give.
 The same-bundle comparator checks the captured rig, clip and renderer
 identities, derives clocks and ranges from serialized playback, and reports
 worst Unity-space errors by rig, node or renderer, property and source time.

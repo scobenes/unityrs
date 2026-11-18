@@ -212,15 +212,38 @@ pub(crate) fn check(target: &Target<'_, '_, '_>, timing: ClipTiming, meter: &Met
         name,
         ranges: list(&stages[0]["range"])?,
     };
+    // A vector row may give each component its own ranges, inside the
+    // row's envelope; each component's values must then lie in its own.
+    let components = match target.budget.get("component_ranges") {
+        Some(rows) => {
+            let rows = list(rows)?;
+            require(
+                rows.len() == target.rest.len(),
+                "bundle component range coverage",
+            )?;
+            rows.iter()
+                .map(|ranges| {
+                    Ok(Stage {
+                        name,
+                        ranges: list(ranges)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        }
+        None => Vec::new(),
+    };
+    let stage_for = |axis: usize| components.get(axis).unwrap_or(&stage);
     for (index, &time) in times.iter().enumerate() {
         for axis in 0..target.rest.len() {
             if let Some((track, component)) = target.track(axis) {
                 let segment = track.segment(component, time, false, meter)?;
                 if segment.is_held() {
                     stage.segment(segment, time, time)?;
+                    stage_for(axis).segment(segment, time, time)?;
                 }
             } else {
                 stage.clamp(target.rest[axis])?;
+                stage_for(axis).clamp(target.rest[axis])?;
             }
         }
         if target.property() == "rotation" {
@@ -231,6 +254,7 @@ pub(crate) fn check(target: &Target<'_, '_, '_>, timing: ClipTiming, meter: &Met
                 if let Some((track, component)) = target.track(axis) {
                     let segment = track.segment(component, center(time, stop), false, meter)?;
                     stage.segment(segment, time, stop)?;
+                    stage_for(axis).segment(segment, time, stop)?;
                 }
             }
             if target.property() == "rotation" {

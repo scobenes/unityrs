@@ -207,7 +207,9 @@ pub(crate) fn check(
             )?;
             let sample = index(&probe["sample"])?;
             let observed = f32_bits(&probe["value"])?;
-            let budget = number(&frozen[sample]["bounds"][target_index])?;
+            let bound = &frozen[sample]["bounds"][target_index];
+            // A row with its own component ranges has a bound per component.
+            let budget = number(bound.get(component).unwrap_or(bound))?;
             let error = probe_error(
                 target,
                 component,

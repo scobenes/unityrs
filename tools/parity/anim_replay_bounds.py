@@ -103,6 +103,22 @@ def _curve_error(stage, ranges):
                       time_derivative=time_derivative, time_error=time_error)
 
 
+def value_magnitude(stage, ranges):
+    """The largest value magnitude an input stage's ranges admit."""
+    bounds = list(map(magnitude, ranges))
+    if stage in ("rest", "constant", "held"):
+        return bounds[0]
+    if stage == "streamed":
+        c3, c2, c1, c0, d = bounds
+        return ((c3 * d + c2) * d + c1) * d + c0
+    if stage == "dense":
+        return max(bounds[:2])
+    # A cubic Bezier stays in the hull of its controls, v0 + h*outSlope/3
+    # and v1 - h*inSlope/3 between the two values.
+    a, b, outgoing, incoming, h = bounds[:5]
+    return max(a, b) + h * (outgoing + incoming)
+
+
 def _norm_floor(boxes, *, unit_space):
     # Each box encloses the raw quaternion over a part of the playback path.
     # Its largest guaranteed component magnitude is a lower bound on its norm.
@@ -123,13 +139,38 @@ def _norm_floor(boxes, *, unit_space):
 
 @dataclass(frozen=True)
 class BudgetModel:
-    curve: CurveError
+    # One (curve error, value magnitude) per component with its own ranges,
+    # or a single pair shared by every component of the row.
+    components: tuple
     gain: float
     extra_error: float
     min_norm: float | None
+    per_component: bool
 
-    def error(self, dt):
-        return self.curve.error(dt) * self.gain + self.extra_error
+    def errors(self, dt):
+        """Each component's arithmetic error and the output magnitude it reaches."""
+        for curve, value in self.components:
+            error = curve.error(dt) * self.gain + self.extra_error
+            yield error, value * self.gain + error
+
+
+def _component_ranges(row, stage):
+    """Per-component ranges of a translation or scale row, in the stage's layout.
+
+    A range a component never reads is [0, 0]. The Rust audit checks each
+    component's values against its own ranges and the row's stage range.
+    """
+    rows = row.get("component_ranges")
+    if rows is None:
+        return None
+    if row["property"] not in ("translation", "scale"):
+        raise ValueError("component ranges are only for translation and scale")
+    for ranges in rows:
+        if len(ranges) != len(stage["range"]):
+            raise ValueError(f"wrong component range width for {stage['stage']}")
+        for interval in ranges:
+            magnitude(interval)
+    return rows
 
 
 def budget_model(row):
@@ -174,5 +215,11 @@ def budget_model(row):
                 raise ValueError("joint angle range does not cover the muscle range and limits")
             extra += gain * roundoff(OPERATIONS["muscle"], max_muscle * max_limit)
             gain *= max_limit
-    curve = _curve_error(sequence[0], stages[0]["range"])
-    return BudgetModel(curve, gain, extra, floor)
+    if joint or prop == "rotation":
+        # The output is a normalized quaternion, with components at most one.
+        components = ((_curve_error(sequence[0], stages[0]["range"]), 0.),)
+    else:
+        rows = _component_ranges(row, stages[0]) or [stages[0]["range"]]
+        components = tuple((_curve_error(sequence[0], ranges), value_magnitude(sequence[0], ranges))
+                           for ranges in rows)
+    return BudgetModel(components, gain, extra, floor, "component_ranges" in row)

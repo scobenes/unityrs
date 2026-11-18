@@ -172,7 +172,9 @@
         "track_kind": {"enum": ["rest", "constant", "held", "streamed", "dense", "hermite", "weighted",
           "euler_constant", "euler_held", "euler_streamed", "euler_dense", "euler_hermite", "euler_weighted",
           "muscle_constant", "muscle_streamed", "muscle_dense"]},
-        "stages": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stage"}}
+        "stages": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stage"}},
+        "component_ranges": {"type": "array", "minItems": 3, "maxItems": 3, "items": {
+          "type": "array", "minItems": 1, "items": {"$ref": "#/$defs/interval"}}}
       }
     },
     "spec": {

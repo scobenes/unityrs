@@ -68,3 +68,47 @@ fn a_held_segment_of_a_streamed_track_is_streamed_storage() {
         },
     );
 }
+
+#[test]
+#[allow(clippy::cast_possible_truncation)]
+fn each_component_is_bounded_by_its_own_ranges() {
+    let large = 2f64.powi(20);
+    let envelope = json!([[0, 0], [0, 0], [0, 1], [0, large], [0, 1]]);
+    let components = json!([
+        [[0, 0], [0, 0], [0, 1], [0, 1], [0, 1]],
+        [[0, 0], [0, 0], [0, 0], [large, large], [0, 1]],
+        [[0, 0], [0, 0], [0, 0], [0, 0], [0, 1]]
+    ]);
+    for (ramp, own_ranges, passes) in [
+        (true, true, true),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        with_clip(
+            false,
+            generic_clip(GenericClip::RampBesideLarge),
+            |document| {
+                let mut row = budget("translation", 0, "streamed", &envelope);
+                if own_ranges {
+                    row["component_ranges"] = components.clone();
+                }
+                document["spec"]["budgets"][0] = row;
+                for sample in document["capture"]["samples"].as_array_mut().unwrap() {
+                    let local = sample["local"].as_f64().unwrap();
+                    let x = if ramp { local as f32 } else { 0. };
+                    sample["pose"]["transforms"][0]["translation"] =
+                        json!([bits(x), bits(large as f32), bits(0.)]);
+                }
+            },
+            |dir, valid, frozen| {
+                if passes {
+                    compare(valid, dir, frozen).unwrap();
+                } else {
+                    // A replay that leaves X at rest must not pass on Y's
+                    // f32 rounding at 2^20.
+                    rejects(dir, valid, frozen, "translation");
+                }
+            },
+        );
+    }
+}

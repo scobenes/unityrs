@@ -643,12 +643,23 @@ class TestAnimReplay(unittest.TestCase):
         m = declare_budgets(synthetic())
         result = replay.derive(m)
         frame = result["samples"][1]
-        trans, rot, _, small_weight, larger_ulp_weight = frame["bounds"]
-        expected = 8 / (2**20 - 1) + 2 * abs(frame["effective_source"] - frame["source"])
+        trans, rot, _, weight, _ = frame["bounds"]
+        # The ranges reach 8, where half an f32 ulp is 2^-21.
+        expected = 8 / (2**20 - 1) + 2 * abs(frame["effective_source"] - frame["source"]) + 2**-21
         self.assertAlmostEqual(trans, expected, delta=1e-18)
         self.assertGreater(rot, 0)
-        self.assertGreater(small_weight, larger_ulp_weight)
         self.assertEqual(replay.derive(m), result)
+        # A wider value range reaches a coarser f32 ulp.
+        m["spec"]["budgets"][4]["stages"][0]["range"][3] = [6, 60]
+        self.assertGreater(replay.derive(m)["samples"][1]["bounds"][4], weight)
+
+    def test_bounds_ignore_the_captured_pose(self):
+        m = declare_budgets(synthetic())
+        result = replay.derive(m)
+        for sample in m["capture"]["samples"]:
+            sample["pose"]["transforms"][0]["translation"][0] = bits(3e6)
+            sample["pose"]["weights"][1]["channels"][0] = bits(1e9)
+        self.assertEqual(replay.derive(m)["samples"], result["samples"])
 
     def test_derivation_requires_explicit_complete_property_budgets(self):
         with self.assertRaisesRegex(ValueError, "budgets"):
@@ -663,7 +674,8 @@ class TestAnimReplay(unittest.TestCase):
         result = replay.derive(m)["samples"][0]["bounds"][3]
         m["spec"]["budgets"][3]["weight_units"] = "fraction_of_100"
         bound = replay.derive(m)["samples"][0]["bounds"][3]
-        self.assertAlmostEqual(bound - result, 99 * 8 / (2**20 - 1), delta=1e-16)
+        # The output ulp moves from 8 to 800 with the units.
+        self.assertAlmostEqual(bound - result, 99 * 8 / (2**20 - 1) + 2**-15 - 2**-21, delta=1e-16)
 
         # The percent conversion can flush a subnormal result to zero.
         m["spec"]["budgets"][4].update(weight_units="fraction_of_100",

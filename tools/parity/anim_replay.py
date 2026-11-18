@@ -587,31 +587,42 @@ def validate(manifest, bundle_dir=None):
     return clock_discriminated
 
 
+def _bound(model, raw, reach):
+    # Final f32 storage rounds by half an ulp at the largest value the
+    # ranges admit, never at an observed value.
+    output = .5 * ulp32(reach)
+    if model.min_norm is not None:
+        unit_error = output + roundoff(32, 1)
+        bound = angular_bound(raw, model.min_norm) + angular_bound(unit_error, 1.) + F64_ANGLE_FLOOR
+    else:
+        bound = raw + output
+    bound = math.nextafter(bound * (1 + 2**-45), math.inf)
+    require(math.isfinite(bound) and (model.min_norm is None or bound < math.pi),
+            "replay tolerance is nonfinite or reaches pi")
+    return bound
+
+
 def _sample_bounds(spec, capture):
+    """Per-sample bounds: a number per target, or one per component where the row has its own."""
     keys = _targets(spec)
     budgets = {_target_key(row): row for row in spec["budgets"]}
     models = [budget_model(budgets[key]) for key in keys]
     for sample in capture["samples"]:
         dt = abs(sample["effective_source"] - sample["source"])
         bounds = []
-        for model, values in zip(models, _pose_values(spec, sample["pose"])):
-            raw = model.error(dt)
-            output = .5 * ulp32(max(map(abs, values)))
+        for model in models:
             if model.min_norm is not None:
-                unit_error = output + roundoff(32, 1)
-                bound = (angular_bound(raw, model.min_norm) + angular_bound(unit_error, 1.)
-                         + F64_ANGLE_FLOOR)
-            else:
-                bound = raw + output
-            bound = math.nextafter(bound * (1 + 2**-45), math.inf)
-            require(math.isfinite(bound) and (model.min_norm is None or bound < math.pi),
-                    "replay tolerance is nonfinite or reaches pi")
-            bounds.append(bound)
+                [(raw, _)] = model.errors(dt)
+                reach = 1.
+                bounds.append(_bound(model, raw, reach))
+                continue
+            each = [_bound(model, raw, reach) for raw, reach in model.errors(dt)]
+            bounds.append(each if model.per_component else each[0])
         yield bounds
 
 
 def derive(manifest, bundle_dir=None):
-    """Return per-sample bounds in target order. Observations supply only the output ulp."""
+    """Return per-sample bounds in target order. Observations supply no part of a bound."""
     clock_discriminated = validate(manifest, bundle_dir)
     spec, capture = manifest["spec"], manifest["capture"]
     require("budgets" in spec, "derivation requires recorded budgets")
