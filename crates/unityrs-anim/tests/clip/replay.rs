@@ -35,7 +35,7 @@ fn scalar_bound(row: &Value, limits: &Value) -> f64 {
 fn check_component(got: f64, row: &Value, limits: &Value, location: &str) {
     let expected = number(&row["value"]);
     if row["equation"] == "exact" {
-        assert_eq!(got, expected, "{location}: stored key value");
+        assert_eq!(got, expected, "{location}: stored scalar value");
         return;
     }
     let limit = 2. * scalar_bound(row, limits);
@@ -61,20 +61,31 @@ fn angle(a: [f64; 4], mut b: [f64; 4]) -> f64 {
 }
 
 fn angle_bound(component_error: f64, raw: [f64; 4], limits: &Value) -> f64 {
-    let raw_norm = norm(raw).max(number(&limits["min_raw_quaternion_norm"]));
+    let raw_norm = norm(raw);
+    let floor = number(&limits["min_raw_quaternion_norm"]);
+    assert!(
+        raw_norm.is_finite() && raw_norm >= floor,
+        "quaternion norm {raw_norm} is outside the frozen norm range (minimum {floor})"
+    );
     let arithmetic = number(&limits["angular_floor_u64"]) * number(&limits["unit_roundoff"]);
     (4. * (2. * component_error / raw_norm).min(1.).asin()).min(std::f64::consts::PI) + arithmetic
 }
 
 #[test]
-fn angular_bound_uses_the_sample_norm_with_a_frozen_floor() {
+fn angular_bound_uses_the_sample_norm_down_to_the_frozen_floor() {
     let frozen: Value = serde_json::from_str(BOUNDS).unwrap();
     let limits = &frozen["transcription"];
     let error = 0.0001;
     let bound = |w| angle_bound(error, [0., 0., 0., w], limits);
     assert!(bound(2.) < bound(1.));
     assert!(bound(1.) < bound(0.25));
-    assert_eq!(bound(0.125), bound(0.25));
+}
+
+#[test]
+#[should_panic(expected = "outside the frozen norm range")]
+fn angular_bound_rejects_a_sample_norm_below_the_frozen_floor() {
+    let frozen: Value = serde_json::from_str(BOUNDS).unwrap();
+    angle_bound(0.0001, [0., 0., 0., 0.125], &frozen["transcription"]);
 }
 
 #[test]
@@ -151,9 +162,9 @@ fn rust_replays_python_curves_with_frozen_f64_bounds() {
             }
             let rotation = &row["rotation"];
             let expected = array(&rotation["value"]);
-            let actual_angle = angle(pose.rotation, expected);
             let raw = rotation.get("raw").map_or(expected, array);
             let angle_limit = angle_bound(2. * scalar_bound(rotation, limits), raw, limits);
+            let actual_angle = angle(pose.rotation, expected);
             assert!(
                 actual_angle <= angle_limit,
                 "{location}: angle {actual_angle}, bound {angle_limit}"

@@ -59,18 +59,24 @@ def streamed():
 
 
 def dense():
+    width, begin, rate = 5, 3, 4
     values = [0, 0, 0, 1, 4, 0, 0, 1, 1, 20, 0, 0, 1, 0, 84]
+    last_frame = len(values) // width - 1
     for t in [2, 3, 3.125, 3.25, 3.375, 6]:
         def slot(i):
-            return r.dense(values, 5, i, 3, 4, t)
+            return r.dense(values, width, i, begin, rate, t)
         # Conservative common scale from the adjacent sample magnitudes,
         # the largest adjacent difference, and the entire grid/time span.
         scale = 2 * 84 + 64 * (1 + 4 * (6 + 3 + .5))
         raw = tuple(slot(i) for i in range(4))
         rotation = {**component("dense", r.normalize(raw), scale), "raw": raw}
+        frame = (t - begin) * rate
+        if frame <= 0 or frame >= last_frame or frame % 1 == 0:
+            weight = component("exact", slot(4))
+        else:
+            weight = component("dense", slot(4), scale)
         yield {**clock(t), "position": constants([9, 8, 7]), "scale": constants([8, 9, 10]),
-               "rotation": rotation,
-               "weight": component("dense", slot(4), scale)}
+               "rotation": rotation, "weight": weight}
 
 
 def dump():
@@ -90,17 +96,23 @@ class TestSyntheticSamplerReplay(unittest.TestCase):
             self.assertEqual(row["source"], source)
             self.assertEqual(row["position"], [component("exact", value) for value in xyz])
 
+    def test_dense_frame_and_held_weights_equal_the_serialized_samples(self):
+        rows = {row["source"]: row["weight"] for row in dense()}
+        for source, weight in ((2, 4), (3, 4), (3.25, 20), (6, 84)):
+            self.assertEqual(rows[source], component("exact", weight))
+        for source in (3.125, 3.375):
+            self.assertEqual(rows[source]["equation"], "dense")
+
     def test_checked_in_samples_come_from_the_reference(self):
         stored = json.loads(OUTPUT.read_text(encoding="utf-8"))
         generated = json.loads(dump())
         # Platform libm implementations may round trig and normalization
         # differently. Check rotations with the same frozen angular metric.
-        floor = r.BOUNDS["transcription"]["min_raw_quaternion_norm"]
         for group in ("explicit", "streamed", "dense"):
             for left, right in zip(stored[group], generated[group], strict=True):
                 a, b = left["rotation"], right["rotation"]
                 error = r.transcription_bound(b["equation"], b["scale"])
-                norm = max(floor, math.hypot(*b.get("raw", b["value"])))
+                norm = math.hypot(*b.get("raw", b["value"]))
                 self.assertLessEqual(r.angle(a.pop("value"), b.pop("value")),
                                      r.transcription_angle_bound(2 * error, norm))
         self.assertEqual(stored, generated)

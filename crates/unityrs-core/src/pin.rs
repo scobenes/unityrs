@@ -154,7 +154,7 @@ pub(crate) fn copy_out(
     try_copy_out(target, within, pinned, meter, false).unwrap_or(0)
 }
 
-/// The lossless read also accounts for sort work and surfaces refusals.
+/// The lossless read also accounts for sort and copy work and surfaces refusals.
 pub(crate) fn try_copy_out(
     target: &mut dyn Slices,
     within: &[u8],
@@ -192,6 +192,9 @@ pub(crate) fn try_copy_out(
         .fold(0u64, |s, (from, to)| s.saturating_add(len64(to - from)));
     if !worth_copying(pinned, s) {
         return Ok(0);
+    }
+    if count_work {
+        meter.count_decode(s)?;
     }
     let mut buf = DecodeBuf::new(meter, s, s, LimitKind::InputMemory)?;
     for span in spans.iter_mut() {
