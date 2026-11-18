@@ -86,21 +86,31 @@ const PEEK: u64 = 128;
 /// (their blocks decoded, as any read decodes them). A read that fails other
 /// than transiently says no: such an entry cannot be parsed, so it holds
 /// nothing to register, and its reads fail with the error.
-pub(crate) fn is_bundle_entry(b: &BundleFile, i: usize) -> Result<bool, Error> {
-    match b.entry_range(i, 0..PEEK) {
-        Ok(head) => {
-            if head.starts_with(&[31, 139]) {
-                return bundle_detected(crate::detect::check_entry_type(
-                    &b.entry_bytes(i)?,
-                    &b.context().limits,
-                    b.meter(),
-                ));
-            }
-            bundle_detected(check_file_type(&head, &Limits::default()))
-        }
-        Err(e) if e.is_transient() => Err(e),
-        Err(_) => Ok(false),
+fn is_bundle_entry(b: &BundleFile, i: usize) -> Result<bool, Error> {
+    bundle_entry(b, i, false)
+}
+
+/// A file walk needs a verdict to determine how many positions the entry
+/// occupies. Keep probe errors so a refusal cannot change later indices.
+pub(crate) fn probe_bundle_entry(b: &BundleFile, i: usize) -> Result<bool, Error> {
+    bundle_entry(b, i, true)
+}
+
+fn bundle_entry(b: &BundleFile, i: usize, require_verdict: bool) -> Result<bool, Error> {
+    let head = match b.entry_range(i, 0..PEEK) {
+        Ok(head) => head,
+        Err(e) if require_verdict || e.is_transient() => return Err(e),
+        Err(_) => return Ok(false),
+    };
+    let detected = if head.starts_with(&[31, 139]) {
+        crate::detect::check_entry_type(&b.entry_bytes(i)?, &b.context().limits, b.meter())
+    } else {
+        check_file_type(&head, &Limits::default())
+    };
+    if require_verdict && let Err(e) = detected {
+        return Err(e.into());
     }
+    bundle_detected(detected)
 }
 
 // Detection errors caused by input mean there is no nested bundle to register.

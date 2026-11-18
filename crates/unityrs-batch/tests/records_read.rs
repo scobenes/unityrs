@@ -19,6 +19,60 @@ fn candidate() -> String {
     )
     .into()
 }
+
+#[test]
+fn legacy_committed_streams_reject_glb_skips() {
+    let skip = concat!(
+        "{\"type\":\"skip\",\"input\":\"input\",\"serialized_file\":\"CAB-rig\",\"path_id\":1,",
+        "\"class\":\"GameObject\",\"output\":\"glb\",\"sprite\":null,",
+        "\"reason\":\"missing_clip_selection\",\"detail\":null,\"cut\":false,",
+        "\"container_file_index\":1,\"container_row\":0,\"container_file\":\"CAB-index\",",
+        "\"container_path\":\"a\",\"root_serialized_file\":\"CAB-rig\",\"root_path_id\":1}\n"
+    );
+    let terminal = summary()
+        .replace("\"complete\"", "\"complete_with_skips\"")
+        .replace("\"skips\": 0", "\"skips\": 1");
+    reject_legacy_glb(&(skip.to_owned() + &terminal), |row| {
+        matches!(row, Row::Skip(_))
+    });
+}
+
+#[test]
+fn legacy_committed_streams_reject_glb_degradation_diagnostics() {
+    let diagnostic = concat!(
+        "{\"type\":\"diagnostic\",\"input\":\"input\",\"kind\":\"glb_degraded\",",
+        "\"name\":\"CAB-rig\",\"bundle\":null,\"key\":\"a.glb\",\"node\":0,",
+        "\"reason\":\"static batch submesh range\",\"cut\":false}\n"
+    );
+    reject_legacy_glb(&(diagnostic.to_owned() + &summary()), |row| {
+        matches!(row, Row::Diagnostic(_))
+    });
+}
+
+fn reject_legacy_glb(stream: &str, expected: impl FnOnce(Row<'_>) -> bool) {
+    let account = Account::new(64 << 20);
+    for version in [1, 2] {
+        let mut reader = Reader::new(
+            Cursor::new(stream),
+            "input",
+            false,
+            0,
+            version,
+            account.meter(),
+        )
+        .unwrap();
+        assert_eq!(reader.next(&|| false).unwrap_err(), Error::internal());
+    }
+    let mut reader =
+        Reader::new(Cursor::new(stream), "input", false, 0, 3, account.meter()).unwrap();
+    assert!(expected(reader.next(&|| false).unwrap().unwrap()));
+    assert!(matches!(
+        reader.next(&|| false).unwrap(),
+        Some(Row::Summary(_))
+    ));
+    assert!(reader.next(&|| false).unwrap().is_none());
+}
+
 #[test]
 fn typed_reader_preserves_repaired_text_and_summary_whitespace() {
     let account = Account::new(64 << 20);

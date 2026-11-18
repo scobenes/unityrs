@@ -18,9 +18,9 @@ use unityrs_scene::SceneError;
 use super::super::classify::{self, Class, Reason};
 use crate::gltf::ExportError;
 
-// Follow the typed causes. Some core wrappers are transparent to Error::source
-// or carry a structured read detail without exposing it as a source.
-fn refusal(mut cause: &(dyn StdError + 'static)) -> Option<Class> {
+// Follow the typed causes for resource refusals and signature failures.
+// Some core wrappers carry a cause without exposing it through Error::source.
+fn required_failure(mut cause: &(dyn StdError + 'static)) -> Option<Class> {
     loop {
         if let Some(error) = cause.downcast_ref::<BudgetExceeded>() {
             return Some(classify::budget(error));
@@ -33,6 +33,16 @@ fn refusal(mut cause: &(dyn StdError + 'static)) -> Option<Class> {
         }
         if cause.is::<unityrs_core::budget::AllocError>() {
             return Some(Class::Run(Reason::plain("host_memory")));
+        }
+        if matches!(
+            cause.downcast_ref::<Error>(),
+            Some(Error::WebSignature(_) | Error::BundleSignature(_))
+        ) {
+            return Some(Class::Input(Reason {
+                reason: "container_error".into(),
+                detail: Some("malformed".into()),
+                cut: false,
+            }));
         }
         cause = source(cause)?;
     }
@@ -95,9 +105,11 @@ fn source<'a>(cause: &'a (dyn StdError + 'static)) -> Option<&'a (dyn StdError +
 }
 
 fn loaded(error: &Error) -> Class {
-    if let Some(class) = refusal(error) {
+    if let Some(class) = required_failure(error) {
         return match class {
-            Class::Skip(r) if r.reason.starts_with("limit(") => Class::Input(r),
+            Class::Skip(r) if r.reason.starts_with("limit(") || r.reason == "budget(input)" => {
+                Class::Input(r)
+            }
             class => class,
         };
     }
@@ -120,7 +132,7 @@ pub(super) fn deref(error: &DerefError) -> Class {
 fn parse(error: &ParseError) -> Class {
     match error {
         ParseError::Deref(e) => deref(e),
-        e => refusal(e).unwrap_or_else(|| classify::parse(e)),
+        e => required_failure(e).unwrap_or_else(|| classify::parse(e)),
     }
 }
 
@@ -140,7 +152,7 @@ pub(super) fn gltf(error: GltfError) -> Class {
         GltfError::Io(e) => Some(e),
         _ => None,
     };
-    if let Some(class) = cause.and_then(refusal) {
+    if let Some(class) = cause.and_then(required_failure) {
         return class;
     }
     match error {
@@ -299,7 +311,9 @@ mod tests {
             );
             let parse = ParseError::Deref(DerefError::Load(wrapped));
             let loaded = match expected {
-                Class::Skip(r) if r.reason.starts_with("limit(") => Class::Input(r),
+                Class::Skip(r) if r.reason.starts_with("limit(") || r.reason == "budget(input)" => {
+                    Class::Input(r)
+                }
                 result => result,
             };
             assert_eq!(scene(&SceneError::Parse(parse.clone())), loaded);

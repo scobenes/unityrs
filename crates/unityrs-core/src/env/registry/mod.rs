@@ -180,7 +180,7 @@ pub(crate) use lru::DepCache;
 #[cfg(test)]
 pub(crate) use lru::{Hook, HookFn};
 pub(crate) use rank::Rank;
-pub(crate) use reach::{Through, entry_of, is_bundle_entry};
+pub(crate) use reach::{Through, entry_of, probe_bundle_entry};
 pub(crate) use register::Stage;
 use register::{By, Loads};
 pub(crate) use slot::{Slot, SlotKind};
