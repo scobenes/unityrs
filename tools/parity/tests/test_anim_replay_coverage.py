@@ -6,8 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from anim_coverage_support import (BUNDLES, COVERAGE, INTEGER, SETTINGS, TWIST, coverage_archives, integer_clip,
-                                   turn, word)
+from anim_coverage_support import BUNDLES, COVERAGE, INTEGER, SETTINGS, TWIST, coverage_archives, turn
 from anim_fixture_support import (DEFERRED, REPLAYS, RUN, STATIC, VECTORS, fixture_archives, stamp,
                                   static_bundles, write)
 from test_anim_replay import bits
@@ -66,12 +65,9 @@ class CoverageCompletionTests(unittest.TestCase):
         self.build()
         result = self.complete()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Completed and validated 19 replay(s)", result.stdout)
-        self.assertNotIn("integer-discrete-binding:", result.stdout)
-        evidence = self.completed(INTEGER)["spec"]["evidence"]
-        self.assertEqual(evidence["integer_discrete"],
-                         dict(encoding="int32_bits", slot=3, counted_discrete=True, custom_type=0))
-        self.assertNotIn("expected_refusal", evidence)
+        self.assertIn("Completed and validated 18 replay(s)", result.stdout)
+        self.assertIn("Optional coverage not recorded: integer-discrete-binding: not_covered", result.stdout)
+        self.assertFalse((self.replays / f"{INTEGER}.json").exists())
         self.assertEqual(self.completed(TWIST)["spec"]["evidence"]["expected_refusal"], "unsupported_humanoid_twist")
         settings = self.completed(SETTINGS)["spec"]["evidence"]
         self.assertEqual(settings["expected_refusal"], "unsupported_humanoid_clip_settings")
@@ -86,7 +82,7 @@ class CoverageCompletionTests(unittest.TestCase):
         result = self.complete(written=())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Completed and validated 16 replay(s)", result.stdout)
-        for name in COVERAGE:
+        for name in (INTEGER, *COVERAGE):
             self.assertIn(f"Optional coverage not recorded: {name}: not_covered (Unity refused it)", result.stdout)
             self.assertFalse((self.replays / f"{name}.json").exists())
 
@@ -102,10 +98,22 @@ class CoverageCompletionTests(unittest.TestCase):
 
     def test_a_required_case_fails_a_run_that_does_not_record_it(self):
         self.statuses = {}
-        with self.assertRaisesRegex(ValueError, "integer-discrete-binding: required for Unity 2022.3.62f3 but not_covered"):
-            self.required({"2022.3": (INTEGER,)})
+        with self.assertRaisesRegex(ValueError, "humanoid-twist-refusal: required for Unity 2022.3.62f3 but not_covered"):
+            self.required({"2022.3": (TWIST,)})
         # Another version's requirement does not apply.
-        self.assertEqual(len(self.required({"6000": (INTEGER,)})[0]), len(REPLAYS) + len(VECTORS))
+        self.assertEqual(len(self.required({"6000": (TWIST,)})[0]), len(REPLAYS) + len(VECTORS))
+
+    def test_refuses_a_recorded_integer_case(self):
+        # Built-in components expose no discrete integer binding, so no recording of it is defined.
+        self.build()
+        self.statuses[INTEGER] = "recorded"
+        write(self.replays / f"{INTEGER}.pending.json", self.coverage[TWIST])
+        self.assert_refused("integer-discrete-binding: no recording defined for this optional case")
+
+    def test_refuses_an_integer_bundle(self):
+        self.build()
+        (self.bundles / "anim-discrete").write_bytes((self.bundles / BUNDLES[TWIST]).read_bytes())
+        self.assert_refused("unexpected fixture bundle inventory")
 
     def test_a_failed_coverage_case_fails_the_run(self):
         self.statuses = {TWIST: "failed"}
@@ -113,10 +121,10 @@ class CoverageCompletionTests(unittest.TestCase):
 
     def test_unrecorded_coverage_may_leave_its_bundle_but_not_a_recording(self):
         self.build()
-        self.statuses = {INTEGER: "recorded", TWIST: "recorded"}
+        self.statuses = {TWIST: "recorded"}
         self.assert_refused("unexpected pending recording: replays/humanoid-non-neutral-setting-refusal.pending.json")
         (self.replays / f"{SETTINGS}.pending.json").unlink()
-        result = self.complete(written=(INTEGER, TWIST))
+        result = self.complete(written=(TWIST,))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Optional coverage not recorded: humanoid-non-neutral-setting-refusal", result.stdout)
         self.assertTrue((self.bundles / BUNDLES[SETTINGS]).exists())
@@ -125,7 +133,7 @@ class CoverageCompletionTests(unittest.TestCase):
     def test_recorded_coverage_needs_its_recording_and_bundle(self):
         self.build()
         self.assert_refused("humanoid-twist-refusal: missing replays/humanoid-twist-refusal.pending.json",
-                            written=(INTEGER, SETTINGS))
+                            written=(SETTINGS,))
         (self.bundles / BUNDLES[TWIST]).unlink()
         self.assert_refused("unexpected fixture bundle inventory")
 
@@ -143,68 +151,6 @@ class CoverageCompletionTests(unittest.TestCase):
         self.build()
         self.coverage[TWIST]["spec"]["evidence"]["editor"]["expected_refusal"] = "unsupported_humanoid_clip_settings"
         self.assert_refused("fixture refusal label mismatch for humanoid-twist-refusal")
-
-    def test_integer_refuses_a_float_encoded_built_slot(self):
-        self.build(clips={INTEGER: lambda _: integer_clip(None, encode=lambda value: word(float(value)))})
-        self.assert_refused("built integer discrete slot does not hold the authored step")
-    def test_integer_refuses_a_wrong_stored_value(self):
-        self.build(clips={INTEGER: lambda _: integer_clip(None, encode=lambda value: value + 1)})
-        self.assert_refused("built integer discrete slot does not hold the authored step")
-
-    def test_integer_refuses_a_slot_holding_one_value(self):
-        self.build(clips={INTEGER: lambda _: integer_clip(None, encode=lambda value: 3)})
-        self.assert_refused("built integer discrete slot does not hold the authored step")
-
-    def test_integer_refuses_a_binding_without_its_integer_flag(self):
-        def edit(clip):
-            clip["m_ClipBindingConstant"]["genericBindings"][1]["isIntCurve"] = 0
-            return clip
-        self.build(clips={INTEGER: edit})
-        self.assert_refused("built integer fixture bindings mismatch")
-
-    def test_integer_refuses_a_pptr_binding(self):
-        def edit(clip):
-            clip["m_ClipBindingConstant"]["genericBindings"][1]["isPPtrCurve"] = 1
-            return clip
-        self.build(clips={INTEGER: edit})
-        self.assert_refused("built integer fixture bindings mismatch")
-
-    def test_integer_refuses_a_slot_outside_the_discrete_range(self):
-        def edit(clip):
-            rows = clip["m_ClipBindingConstant"]["genericBindings"]
-            rows.reverse()
-            return clip
-        self.build(clips={INTEGER: edit})
-        self.assert_refused("built integer slot outside a confirmed streamed layout")
-
-    def test_integer_refuses_a_float_editor_binding(self):
-        self.build()
-        editor = self.coverage[INTEGER]["spec"]["evidence"]["editor"]
-        editor["bindings"][-1]["discrete"] = False
-        self.assert_refused("integer fixture binding is not the authored bit-cast discrete step")
-
-    def test_integer_refuses_plain_float_keys(self):
-        # Keys authored as 3.0 and 7.0 instead of the integers' bits.
-        self.build()
-        keys = self.coverage[INTEGER]["spec"]["evidence"]["editor"]["bindings"][-1]["keys"]
-        for key, value in zip(keys, (3., 7.)):
-            key["value_f32"] = bits(value)
-        self.assert_refused("integer fixture binding is not the authored bit-cast discrete step")
-
-    def test_integer_refuses_decoded_keys_that_disagree(self):
-        self.build()
-        self.coverage[INTEGER]["spec"]["evidence"]["editor"]["discrete_keys"][1]["value"] = 1088421888
-        self.assert_refused("integer fixture decoded keys mismatch")
-    def test_integer_refuses_playback_evidence_that_misses_the_step(self):
-        self.build()
-        samples = self.coverage[INTEGER]["spec"]["evidence"]["editor"]["discrete_samples"]
-        samples[2]["value"] = 3
-        self.assert_refused("integer fixture playback evidence mismatch")
-
-    def test_integer_refuses_absent_playback_evidence(self):
-        self.build()
-        del self.coverage[INTEGER]["spec"]["evidence"]["editor"]["discrete_samples"]
-        self.assert_refused("fixture coverage evidence mismatch for integer-discrete-binding")
 
     def test_twist_refuses_a_neutral_capture(self):
         self.build()

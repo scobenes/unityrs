@@ -2,15 +2,14 @@
 
 import copy
 import math
-import struct
-from zlib import crc32
 
 from anim_fixture_support import ASSETS, ROOT_ID, RUN, archive, game_object, pointer, recording, stored_curves
 from test_anim_replay import bits
 
 INTEGER, TWIST, SETTINGS = "integer-discrete-binding", "humanoid-twist-refusal", "humanoid-non-neutral-setting-refusal"
-COVERAGE = (INTEGER, TWIST, SETTINGS)
-BUNDLES = {INTEGER: "anim-discrete", TWIST: "humanoid-twist", SETTINGS: "humanoid-settings"}
+# The integer case has no Built-in fixture: the run reports it as not covered.
+COVERAGE = (TWIST, SETTINGS)
+BUNDLES = {TWIST: "humanoid-twist", SETTINGS: "humanoid-settings"}
 TWIST_VALUES = dict(upper_arm_twist=.5, lower_arm_twist=.25, upper_leg_twist=.75, lower_leg_twist=.375)
 AVATAR_TWIST = dict(m_ArmTwist=.5, m_ForeArmTwist=.25, m_UpperLegTwist=.75, m_LegTwist=.375)
 # HumanTrait order puts these after the Spine muscles; the index sets the built attribute.
@@ -25,11 +24,6 @@ def word(value):
     return int(bits(value), 16)
 
 
-def int_bits(value):
-    """An integer as Unity keeps it in a discrete key's f32 value."""
-    return struct.pack(">i", value).hex()
-
-
 def key_rows(times, values, encode=bits):
     return [dict(time_f32=bits(t), value_f32=encode(v), in_tangent_f32=bits(0), out_tangent_f32=bits(0),
                  in_weight_f32=bits(.25), out_weight_f32=bits(.25), weighted_mode="None")
@@ -39,29 +33,6 @@ def key_rows(times, values, encode=bits):
 def turn(degrees):
     half = math.radians(degrees) / 2
     return [bits(math.sin(half)), bits(0), bits(0), bits(math.cos(half))]
-
-
-def integer_recording(run):
-    folder = ASSETS + "discrete/"
-    doc = recording("generic-object-reference", BUNDLES[INTEGER], folder + "discrete.prefab",
-                    folder + INTEGER + ".anim", "", run)
-    spec, capture = doc["spec"], doc["capture"]
-    editor = spec["evidence"]["editor"]
-    spec["nodes"] = [dict(address="", name="DiscreteRig"), dict(address="0", name="Mötión"),
-                     dict(address="1", name="Discrete")]
-    spec["renderers"] = []
-    for pose in (capture["rest"], *(sample["pose"] for sample in capture["samples"])):
-        pose["transforms"] = pose["transforms"][:2] + [copy.deepcopy(capture["rest"]["transforms"][0])]
-        pose["weights"] = []
-    editor["fixture_case"] = INTEGER
-    editor["bindings"] = [row for row in editor["bindings"] if not row["object_reference"]] + [dict(
-        path="Discrete", property="m_SortingOrder", type="UnityEngine.MeshRenderer", discrete=True,
-        object_reference=False, object_keys=[], keys=key_rows((0, .5), (3, 7), int_bits))]
-    del editor["object_reference_samples"]
-    editor["discrete_keys"] = [dict(time_f32=bits(t), value=v) for t, v in ((0, 3), (.5, 7))]
-    editor["discrete_samples"] = [dict(time_f32=s["local_f32"], value=3 if s["local"] < .5 else 7)
-                                  for s in capture["samples"]]
-    return doc
 
 
 def human_recording(case, run):
@@ -127,24 +98,6 @@ def stream(frames):
     return data + [0x7f800000, 0]
 
 
-def integer_clip(spec, *, encode=lambda value: value):
-    """The 2022.3 layout: three streamed translation slots, then the discrete integer slot."""
-    seed = [(0, 0, 0, 0, word(3.)), (1, 0, 0, 0, 0), (2, 0, 0, 0, 0), (3, 0, 0, 0, encode(3))]
-    frames = [(0xff7fffff, seed), (0, [(0, 0, 0, word(6.), word(3.)), (1, 0, 0, 0, 0), (2, 0, 0, 0, 0)]),
-              (word(.5), [(3, 0, 0, 0, encode(7))]),
-              (word(1.), [(0, 0, 0, 0, word(9.)), (1, 0, 0, 0, 0), (2, 0, 0, 0, 0)])]
-    return {"m_SampleRate": 16., "m_Legacy": False, "m_MuscleClip": {
-        "m_StartTime": 0., "m_StopTime": 1., "m_LoopTime": False, "m_IndexArray": [], "m_Clip": {"data": {
-            "m_StreamedClip": {"curveCount": 3, "discreteCurveCount": 1, "data": stream(frames)},
-            "m_DenseClip": {"m_CurveCount": 0, "m_FrameCount": 0, "m_BeginTime": 0., "m_SampleRate": 16.,
-                            "m_SampleArray": []},
-            "m_ConstantClip": {"data": []}}}},
-        "m_ClipBindingConstant": {"genericBindings": [
-            dict(path=crc32("Mötión".encode()), typeID=4, attribute=1, customType=0, isPPtrCurve=0, isIntCurve=0),
-            dict(path=crc32(b"Discrete"), typeID=23, attribute=crc32(b"m_SortingOrder"), customType=0,
-                 isPPtrCurve=0, isIntCurve=1)], "pptrCurveMapping": []}}
-
-
 def human_clip(case, spec, *, ramp=True):
     """Spine slots hold .25; each twist slot ramps linearly from 0 to its end value."""
     twist = list(TWIST_MUSCLES.values()) if case == TWIST else []
@@ -169,29 +122,26 @@ def human_clip(case, spec, *, ramp=True):
 
 
 def coverage_archives(bundles, inspect, run=RUN, *, clips=None, avatar=None, ramp=True):
-    """Write the three coverage bundles; `clips` and `avatar` replace a built value per case."""
-    recordings = {INTEGER: integer_recording(run), TWIST: human_recording(TWIST, run),
-                  SETTINGS: human_recording(SETTINGS, run)}
+    """Write the coverage bundles; `clips` and `avatar` replace a built value per case."""
+    recordings = {case: human_recording(case, run) for case in COVERAGE}
     for case, doc in recordings.items():
         spec = doc["spec"]
         assets = {spec["prefab_asset"]: 1, spec["clip_asset"]: 2}
         rows = []
-        human = case != INTEGER
-        prefab_rows(rows, spec, None if human else {"Discrete": (23, 23, None, {"m_Materials": []})})
-        clip = integer_clip(spec) if not human else human_clip(case, spec, ramp=ramp)
+        prefab_rows(rows, spec)
+        clip = human_clip(case, spec, ramp=ramp)
         if clips and case in clips:
             clip = clips[case](clip)
         rows.append((2, 74, spec["clip_name"], clip))
         rows.append((91, 91, "Controller", {"m_AnimationClips": [pointer(2)]}))
-        rows.append((3, 95, None, {"m_Controller": pointer(91), "m_Avatar": pointer(90 if human else 0)}))
-        if human:
-            assets[spec["avatar_asset"]] = 90
-            twist = AVATAR_TWIST if case == TWIST else dict.fromkeys(AVATAR_TWIST, 0.)
-            neutral = dict(m_ArmStretch=0., m_LegStretch=0., m_FeetSpacing=0., m_HasTDoF=False)
-            value = {"m_Avatar": {"m_Human": {"data": {"m_RootX": {"t": {"x": 0.}}, **twist, **neutral}}},
-                     "m_HumanDescription": dict(twist)}
-            rows.append((90, 90, BUNDLES[case], avatar(case, value) if avatar else value))
-            rows.append((9, 43, "Shared", {}))
+        rows.append((3, 95, None, {"m_Controller": pointer(91), "m_Avatar": pointer(90)}))
+        assets[spec["avatar_asset"]] = 90
+        twist = AVATAR_TWIST if case == TWIST else dict.fromkeys(AVATAR_TWIST, 0.)
+        neutral = dict(m_ArmStretch=0., m_LegStretch=0., m_FeetSpacing=0., m_HasTDoF=False)
+        value = {"m_Avatar": {"m_Human": {"data": {"m_RootX": {"t": {"x": 0.}}, **twist, **neutral}}},
+                 "m_HumanDescription": dict(twist)}
+        rows.append((90, 90, BUNDLES[case], avatar(case, value) if avatar else value))
+        rows.append((9, 43, "Shared", {}))
         digest = archive(bundles, inspect, BUNDLES[case], assets, rows, run=run)
         doc["capture"]["bundle_sha256"] = [digest]
     return recordings

@@ -12,9 +12,9 @@ There are three runs for each Unity version, **2022.3.62f3** first and then
 All three menu items are under **Tools → unityrs** and come from the same
 **Editor** folder. Each folder is inside `UnityrsFixturesOutput` in the
 project that ran it. The main run also builds the optional coverage
-fixtures (an integer discrete binding and two humanoid refusal probes). When
-Unity cannot provide one of them, `run.json` lists it as not covered and the
-dialog still says **ready**.
+fixtures (two humanoid refusal probes). When Unity cannot provide one of
+them, `run.json` lists it as not covered and the dialog still says **ready**.
+The integer discrete binding is always listed as not covered.
 
 1. Open the [unityrs repository on GitHub](https://github.com/scobenes/unityrs).
    Select the branch or commit you were given in the branch menu, then

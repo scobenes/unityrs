@@ -7,8 +7,8 @@ using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
-// Optional coverage: an integer discrete binding and two humanoid refusal
-// probes, built in their own bundle build. A case is not covered only when an
+// Optional coverage: two humanoid refusal probes, built in their own bundle
+// build, and a probe showing why the integer discrete binding is not covered. A case is not covered only when an
 // explicit check shows Unity cannot produce it (CoverageUnavailable, with the
 // reason); any other error fails the case and leaves the main fixtures intact.
 static partial class UnityrsFixtureBuilder
@@ -26,10 +26,20 @@ static partial class UnityrsFixtureBuilder
     const string PrecedenceReason = "Unity's bundle build drops the authoring curves of a Mecanim clip (the 2022.3"
         + " built generic clips have empty m_PositionCurves and m_FloatCurves) and a legacy clip has no compiled playback,"
         + " so no Editor-built clip carries both sources to conflict.";
-    internal const string DiscretePath = "Discrete";
-    internal const string DiscreteProperty = "m_SortingOrder";
-    internal static readonly float[] DiscreteTimes = { 0, .5f };
-    internal static readonly int[] DiscreteValues = { 3, 7 };
+    // UnityCsReference: EditorCurveBinding.DiscreteCurve accepts only "[System.Enum] and [System.Int32 with the
+    // `DiscreteEvaluation` attribute]", AnimationUtility.IsDiscreteIntBinding checks a script's field
+    // (InvalidScript, MissingField, IncompatibleFieldType, MissingDiscreteAttribute), and
+    // DiscreteEvaluationAttribute is AttributeTargets.Field. A built-in component is native, so its
+    // properties are float curves; only PPtrCurve sets isDiscreteCurve for one. The prefabs carry no scripts.
+    const string IntegerReason = "Unity animates an integer as a discrete curve only on a script field (an enum, or"
+        + " an int with [DiscreteEvaluation]); built-in component properties are float curves, and the fixture"
+        + " prefabs carry no scripts.";
+    // Built-in components on the probe, one renderer per object.
+    static readonly Type[][] DiscreteProbeComponents = {
+        new[] { typeof(MeshFilter), typeof(MeshRenderer), typeof(Light), typeof(AudioSource), typeof(Camera) },
+        new[] { typeof(SpriteRenderer) },
+        new[] { typeof(SkinnedMeshRenderer) },
+    };
 
     // Distinct values so a swapped field shows. Unity's default is .5 for each.
     const float UpperArmTwist = .5f, LowerArmTwist = .25f, UpperLegTwist = .75f, LowerLegTwist = .375f;
@@ -50,14 +60,9 @@ static partial class UnityrsFixtureBuilder
         if (!condition) throw new CoverageUnavailable(message);
     }
 
-    // Unity stores a discrete integer key as the integer's bits in the float
-    // value (UnityCsReference DiscreteEvaluationAttribute).
-    internal static float IntegerKey(int value) => BitConverter.ToSingle(BitConverter.GetBytes(value), 0);
-    internal static int IntegerValue(float key) => BitConverter.ToInt32(BitConverter.GetBytes(key), 0);
-
     internal sealed partial class ReplayCase
     {
-        public bool Optional, ProbeDiscrete;
+        public bool Optional;
         public string ExpectedRefusal = "";
         public string[] TwistMuscles;
         public float[] TwistValues;
@@ -83,7 +88,7 @@ static partial class UnityrsFixtureBuilder
 
     static void BuildCoverage(Build build, RunReport report)
     {
-        report.Prepare(build, "Prepare " + IntegerCase, new[] { IntegerCase }, () => BuildIntegerDiscrete(build), true);
+        report.Set(IntegerCase, "not_covered", ProbeDiscreteIntegers());
         report.Prepare(build, "Prepare " + TwistCase, new[] { TwistCase },
             () => BuildRefusalRig(build, "humanoid-twist", TwistCase, twist: true), true);
         report.Prepare(build, "Prepare " + SettingsCase, new[] { SettingsCase },
@@ -148,63 +153,44 @@ static partial class UnityrsFixtureBuilder
         finally { bundle.Unload(true); }
     }
 
-    static void BuildIntegerDiscrete(Build build)
+    // Always not covered. The reason lists what Unity reports on every
+    // component of the probe objects, so a discrete integer would show; a
+    // probe error only changes that list.
+    static string ProbeDiscreteIntegers()
     {
-        const string bundle = "anim-discrete";
-        string dir = Folder(Assets + "/Discrete");
-        var rig = new GameObject("DiscreteRig");
+        var rig = new GameObject("DiscreteProbe");
         try
         {
-            Child(rig.transform, MotionPath, Vector3.zero);
-            var target = Child(rig.transform, DiscretePath, new Vector3(0, 0, 2)).gameObject;
-            target.AddComponent<MeshRenderer>();
-            var binding = EditorCurveBinding.DiscreteCurve(DiscretePath, typeof(MeshRenderer), DiscreteProperty);
-            RequireDiscreteInteger(rig, target, binding);
-            var clip = Author(dir, IntegerCase, authored => {
-                SetMotion(authored, AnimationCurve.Linear(0, 3, 1, 9));
-                AnimationUtility.SetEditorCurve(authored, binding, new AnimationCurve(
-                    new Keyframe(DiscreteTimes[0], IntegerKey(DiscreteValues[0])),
-                    new Keyframe(DiscreteTimes[1], IntegerKey(DiscreteValues[1]))));
-            });
-            var stored = AnimationUtility.GetCurveBindings(clip).Where(row => row.path == DiscretePath).ToArray();
-            Unavailable(stored.Length == 1 && stored[0].isDiscreteCurve && !stored[0].isPPtrCurve
-                && stored[0].type == typeof(MeshRenderer) && stored[0].propertyName == DiscreteProperty,
-                "Unity did not keep MeshRenderer." + DiscreteProperty + " as a discrete curve.");
-            var keys = AnimationUtility.GetEditorCurve(clip, stored[0]).keys;
-            Unavailable(keys.Select(key => key.time).SequenceEqual(DiscreteTimes)
-                && keys.Select(key => IntegerValue(key.value)).SequenceEqual(DiscreteValues),
-                "Unity did not retain both bit-cast integer keys.");
-
-            string controllerPath = dir + "/discrete.controller";
-            var animator = rig.AddComponent<Animator>();
-            animator.applyRootMotion = false;
-            animator.runtimeAnimatorController = Controller(controllerPath, new[] { clip });
-            string prefab = SavePrefab(rig, dir + "/discrete.prefab");
-            string clipPath = AssetDatabase.GetAssetPath(clip);
-            build.AddCoverageBundle(bundle, prefab, clipPath, controllerPath);
-            var replay = Case(bundle, prefab, clipPath, 3, 9);
-            replay.Optional = replay.ProbeDiscrete = true;
-            build.Replays.Add(replay);
+            var found = new List<string>();
+            int total = 0, pptr = 0;
+            for (int i = 0; i < DiscreteProbeComponents.Length; i++)
+            {
+                var target = Child(rig.transform, "Probe" + i, Vector3.zero).gameObject;
+                foreach (var type in DiscreteProbeComponents[i]) target.AddComponent(type);
+                var animatable = AnimationUtility.GetAnimatableBindings(target, rig);
+                total += animatable.Length;
+                pptr += animatable.Count(row => row.isPPtrCurve);
+                found.AddRange(animatable.Where(row => row.isDiscreteCurve && !row.isPPtrCurve).Select(row =>
+                    row.type.Name + "." + row.propertyName + " (" + ValueTypeName(rig, row) + ")"));
+            }
+            string components = string.Join(", ", new[] { typeof(Transform) }
+                .Concat(DiscreteProbeComponents.SelectMany(types => types)).Select(type => type.Name).Distinct());
+            return IntegerReason + " Unity listed " + total + " animatable bindings on " + components + ": "
+                + pptr + " PPtr, and non-PPtr discrete candidates: "
+                + (found.Count == 0 ? "none" : string.Join(", ", found.Distinct())) + ".";
+        }
+        catch (Exception error)
+        {
+            Debug.LogException(error);
+            return IntegerReason + " The binding probe failed: " + error.Message;
         }
         finally { Object.DestroyImmediate(rig); }
     }
 
-    static void RequireDiscreteInteger(GameObject root, GameObject target, EditorCurveBinding binding)
+    static string ValueTypeName(GameObject root, EditorCurveBinding binding)
     {
-        var animatable = AnimationUtility.GetAnimatableBindings(target, root);
-        bool listed = animatable.Any(row => row.path == binding.path && row.type == binding.type
-            && row.propertyName == binding.propertyName && row.isDiscreteCurve && !row.isPPtrCurve);
-        if (!listed)
-        {
-            var discrete = animatable.Where(row => row.isDiscreteCurve && !row.isPPtrCurve)
-                .Select(row => row.type.Name + "." + row.propertyName).Distinct().Take(8).ToArray();
-            throw new CoverageUnavailable("Unity does not list MeshRenderer." + binding.propertyName
-                + " as an animatable discrete binding (discrete candidates: "
-                + (discrete.Length == 0 ? "none" : string.Join(", ", discrete)) + ").");
-        }
         var type = AnimationUtility.GetEditorCurveValueType(root, binding);
-        Unavailable(type == typeof(int), "Unity reports MeshRenderer." + binding.propertyName + " as "
-            + (type == null ? "untyped" : type.Name) + ", not an integer.");
+        return type == null ? "untyped" : type.Name;
     }
 
     // A compact rig with one muscle clip and exactly one refusal trigger: the

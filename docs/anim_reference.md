@@ -605,9 +605,14 @@ a reason. These sections are URP materials, packed rotation slopes,
 authored/runtime precedence, verified mixed Transform storage, integer discrete
 bindings, humanoid twist and non-neutral setting refusals, humanoid slot/axis
 inventory and the root/hips comparison. `build.log` and `run.json` give the
-reason for uncovered sections and fixture errors. The button generates three of them in a separate bundle build: an integer discrete `MeshRenderer.m_SortingOrder`
-step keyed with the integers' bits, a humanoid rig with non-neutral Avatar twist that ramps the twist muscles, and
-a muscle clip whose one non-neutral setting is a height offset. A case is not covered only when an explicit check
+reason for uncovered sections and fixture errors. The button generates two of them in a separate bundle build: a
+humanoid rig with non-neutral Avatar twist that ramps the twist muscles, and a muscle clip whose one non-neutral
+setting is a height offset. Integer discrete bindings stay not covered on Built-in. Unity keeps an integer as a
+discrete curve only on a script field: `EditorCurveBinding.DiscreteCurve` accepts only an enum or an int with
+`[DiscreteEvaluation]`, and `DiscreteEvaluationAttribute` targets fields
+([UnityCsReference](https://github.com/Unity-Technologies/UnityCsReference/blob/2022.3/Editor/Mono/Animation/EditorCurveBinding.bindings.cs)).
+Built-in components bind their integers as float curves, and the fixture prefabs carry no scripts. The run's reason
+lists the discrete candidates that `GetAnimatableBindings` reported on the probe's built-in components. A case is not covered only when an explicit check
 shows Unity cannot produce it, with the reason; any other error fails it. A case recorded in `run.json` needs its
 pending recording, which completion checks against the [coverage contract](../tools/parity/anim_fixture_coverage.py);
 any other status must leave none. Completion lists the optional cases not recorded. Its `REQUIRED_COVERAGE` table

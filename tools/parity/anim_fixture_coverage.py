@@ -1,18 +1,20 @@
-"""Optional coverage fixtures: an integer discrete binding and two humanoid refusal probes.
+"""Optional coverage fixtures: the two humanoid refusal probes.
 
 Each case is optional in run.json unless REQUIRED_COVERAGE lists it for the
 run's Editor version. A case recorded there must have its pending recording,
 and completion checks the evidence fail-closed. A case reported as not covered
 must not leave a recording, so an older run without these fixtures completes
 unchanged.
+
+integer-discrete-binding has no Built-in fixture. Unity accepts a discrete
+integer curve only on a script field (an enum, or an int with
+[DiscreteEvaluation]), and the fixture prefabs carry no scripts, so the run
+reports it as not covered, and a recording of it is refused.
 """
 
 from math import isfinite, radians
-import struct
-from zlib import crc32
 
-from anim_fixture_contract import (MOTION, MUSCLES, POSITION, SPINE_PATH, Fixture, compiled_curves, floats,
-                                   matches_reference_time)
+from anim_fixture_contract import MUSCLES, SPINE_PATH, Fixture, compiled_curves
 from anim_reference import dense, streamed
 
 # The coverage cases a run must record, by Editor version ("2022.3" matches
@@ -25,8 +27,6 @@ REQUIRED_COVERAGE = {
 
 SPINE_PROBE = (SPINE_PATH, "rotation", None, None)
 COVERAGE_CASES = {
-    "integer-discrete-binding": Fixture("anim-discrete", "discrete", "discrete", "integer-discrete-binding",
-                                        "animator", (MOTION, "translation", 3, 9), POSITION, ("integer",)),
     "humanoid-twist-refusal": Fixture("humanoid-twist", "humanoid-twist", "identity", "humanoid-twist-refusal",
                                       "animator", SPINE_PROBE, MUSCLES, ("spine", "muscle_only", "twist")),
     "humanoid-non-neutral-setting-refusal": Fixture(
@@ -35,12 +35,6 @@ COVERAGE_CASES = {
 }
 REFUSALS = {"humanoid-twist-refusal": "unsupported_humanoid_twist",
             "humanoid-non-neutral-setting-refusal": "unsupported_humanoid_clip_settings"}
-
-# A MeshRenderer's sorting order, keyed 3 then 7 at .5 s on a "Discrete" node.
-# Unity keeps a discrete integer key as the integer's bits in the f32 value.
-DISCRETE = ("Discrete", "MeshRenderer", "m_SortingOrder")
-DISCRETE_CLASS = 23
-DISCRETE_KEYS = ((0, 3), (.5, 7))
 
 # Distinct values catch a swapped field. The capture names come from
 # HumanDescription; the runtime and serialized Avatar fields follow Unity's names.
@@ -73,14 +67,6 @@ def required_coverage(editor_version):
             if editor_version.startswith(prefix + ".") for name in names}
 
 
-def f32(word):
-    return struct.unpack(">f", struct.pack(">I", word))[0]
-
-
-def int32(word):
-    return struct.unpack(">i", struct.pack(">I", word))[0]
-
-
 def same_f32(value, expected, replay):
     return type(value) in (int, float) and replay.f32_bits(value) == replay.f32_bits(expected)
 
@@ -92,77 +78,14 @@ def check_coverage(name, fixture, doc, view, clip_key, avatar_key, replay):
     refusal = REFUSALS.get(name, "")
     checks = fixture.checks
     replay.require(editor.get("expected_refusal", "") == refusal, f"fixture refusal label mismatch for {name}")
-    replay.require(bool(editor.get("discrete_samples")) == bool(editor.get("discrete_keys")) == ("integer" in checks)
-                   and bool(editor.get("twist_effects")) == ("twist" in checks),
+    replay.require(bool(editor.get("twist_effects")) == ("twist" in checks),
                    f"fixture coverage evidence mismatch for {name}")
     if refusal:
         spec["evidence"]["expected_refusal"] = refusal
-    if "integer" in checks:
-        spec["evidence"]["integer_discrete"] = check_integer(editor, capture, view.value(clip_key), replay)
     if "twist" in checks:
         check_twist(editor, capture, view.value(clip_key), replay)
     if refusal:
         check_isolated(spec, capture, view.value(avatar_key), "twist" in checks, replay)
-
-
-def check_integer(editor, capture, clip, replay):
-    require = replay.require
-    rows = [row for row in editor["bindings"] if (row["path"], row["type"].removeprefix("UnityEngine."),
-                                                   row["property"]) == DISCRETE]
-    require(len(rows) == 1 and {(row["path"], row["type"].removeprefix("UnityEngine."), row["property"])
-                                for row in editor["bindings"]} == set(POSITION) | {DISCRETE},
-            "integer fixture must author translation and one discrete sorting-order binding")
-    row = rows[0]
-    expected = [(replay.f32_bits(t), v) for t, v in DISCRETE_KEYS]
-    require(row["discrete"] is True and row["object_reference"] is False and not row["object_keys"]
-            and [(key["time_f32"], int32(int(key["value_f32"], 16))) for key in row["keys"]] == expected,
-            "integer fixture binding is not the authored bit-cast discrete step")
-    require([(key.get("time_f32"), key.get("value")) for key in editor["discrete_keys"]] == expected
-            and all(set(key) == {"time_f32", "value"} and type(key["value"]) is int for key in editor["discrete_keys"]),
-            "integer fixture decoded keys mismatch")
-    samples = capture["samples"]
-    observed = editor["discrete_samples"]
-    require(len(observed) == len(samples) and all(
-        set(item) == {"time_f32", "value"} and item["time_f32"] == sample["local_f32"] and type(item["value"]) is int
-        and item["value"] == (DISCRETE_KEYS[0][1] if sample["local"] < DISCRETE_KEYS[1][0] else DISCRETE_KEYS[1][1])
-        for item, sample in zip(observed, samples)), "integer fixture playback evidence mismatch")
-    return built_integer(clip, replay)
-
-
-def built_integer(clip, replay):
-    """Find the integer slot in the streamed range and read its stored step as int32 bits."""
-    require = replay.require
-    bindings = clip.get("m_ClipBindingConstant", {}).get("genericBindings", [])
-    playback = clip.get("m_MuscleClip", {}).get("m_Clip", {})
-    playback = playback.get("data", playback)
-    stream = playback.get("m_StreamedClip", {})
-    count, discrete = stream.get("curveCount", 0), stream.get("discreteCurveCount", 0)
-    dense_count = playback.get("m_DenseClip", {}).get("m_CurveCount", 0)
-    constants = floats(playback.get("m_ConstantClip", {}).get("data", []), replay)
-    path, _, prop = DISCRETE
-    position = (crc32(MOTION.encode()), 4, 1, False, False)
-    integer = (crc32(path.encode()), DISCRETE_CLASS, crc32(prop.encode()), False, True)
-    rows = [(row["path"], row.get("typeID", row.get("classID")), row["attribute"], bool(row.get("isPPtrCurve")),
-             bool(row.get("isIntCurve"))) for row in bindings]
-    require(sorted(rows) == sorted([position, integer]), "built integer fixture bindings mismatch")
-    slot = sum(3 if row == position else 1 for row in rows[:rows.index(integer)])
-    # 2022.3 counts discrete slots apart and serializes them after the others.
-    require(dense_count == 0 and not constants and count + discrete == 4 and discrete in (0, 1)
-            and (discrete == 0 or slot == count), "built integer slot outside a confirmed streamed layout")
-    words, keys, cursor = stream.get("data", []), [], 0
-    while cursor + 2 <= len(words) and words[cursor] != 0x7f800000:
-        stop = cursor + 2 + 5 * words[cursor + 1]
-        keys.extend((f32(words[cursor]), int32(words[i + 4])) for i in range(cursor + 2, stop, 5) if words[i] == slot)
-        cursor = stop
-    changes = []
-    for time, value in keys:
-        if not changes or value != changes[-1][1]:
-            changes.append((time, value))
-    require([value for _, value in changes] == [value for _, value in DISCRETE_KEYS] and changes[0][0] <= 0
-            and matches_reference_time(changes[1][0], clip["m_SampleRate"]),
-            "built integer discrete slot does not hold the authored step")
-    custom = next(row["customType"] for row in bindings if row["path"] == integer[0])
-    return dict(encoding="int32_bits", slot=slot, counted_discrete=bool(discrete), custom_type=custom)
 
 
 def sample_track(track, time, clip):

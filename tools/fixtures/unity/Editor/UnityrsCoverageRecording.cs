@@ -11,7 +11,6 @@ using UnityEngine.SceneManagement;
 // Recording evidence for the optional coverage fixtures.
 public static partial class AnimReplayRecorder
 {
-    [Serializable] sealed class DiscreteSample { public string time_f32; public int value; }
     [Serializable] sealed class TwistEffect
     {
         public string bone;
@@ -23,34 +22,6 @@ public static partial class AnimReplayRecorder
         HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand,
         HumanBodyBones.LeftUpperLeg, HumanBodyBones.LeftLowerLeg, HumanBodyBones.LeftFoot
     };
-
-    // Read the animated sorting order while the graph owns the pose.
-    static DiscreteSample ReadDiscrete(Transform root, float time)
-    {
-        var node = root.Find(UnityrsFixtureBuilder.DiscretePath);
-        Need(node != null, "Built playback is missing the discrete binding target.");
-        var renderer = node.GetComponent<MeshRenderer>();
-        Need(renderer != null, "Built playback is missing the discrete MeshRenderer.");
-        var times = UnityrsFixtureBuilder.DiscreteTimes;
-        var values = UnityrsFixtureBuilder.DiscreteValues;
-        int expected = time < times[1] ? values[0] : values[1];
-        UnityrsFixtureBuilder.Unavailable(renderer.sortingOrder == expected, "Built playback set MeshRenderer." + UnityrsFixtureBuilder.DiscreteProperty
-            + " to " + renderer.sortingOrder.ToString(CultureInfo.InvariantCulture) + " at "
-            + time.ToString("R", CultureInfo.InvariantCulture) + " instead of the authored "
-            + expected.ToString(CultureInfo.InvariantCulture) + ".");
-        return new DiscreteSample { time_f32 = Bits(time), value = renderer.sortingOrder };
-    }
-
-    // The authored integer keys, decoded from the bits Unity keeps in each key's value.
-    static DiscreteSample[] ReadDiscreteKeys(AnimationClip clip)
-    {
-        var bindings = AnimationUtility.GetCurveBindings(clip).Where(row => row.isDiscreteCurve && !row.isPPtrCurve
-            && row.path == UnityrsFixtureBuilder.DiscretePath).ToArray();
-        Need(bindings.Length == 1, "Expected one authored discrete integer binding.");
-        return AnimationUtility.GetEditorCurve(clip, bindings[0]).keys.Select(key => new DiscreteSample {
-            time_f32 = Bits(key.time), value = UnityrsFixtureBuilder.IntegerValue(key.value)
-        }).ToArray();
-    }
 
     // Show that the authored Avatar twist redistributes the end-pose twist
     // muscles: compare the left limb bones against the same pose on a twin

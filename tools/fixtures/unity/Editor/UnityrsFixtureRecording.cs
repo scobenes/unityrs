@@ -54,7 +54,6 @@ public static partial class AnimReplayRecorder
         public string[] spine_start_f32, spine_stop_f32;
         public float spine_endpoint_tolerance_degrees;
         public string expected_refusal;
-        public DiscreteSample[] discrete_samples, discrete_keys;
         public TwistEffect[] twist_effects;
     }
     [Serializable] sealed class PendingEvidence
@@ -179,7 +178,6 @@ public static partial class AnimReplayRecorder
         if (referenceAssets != null) CheckAuthoredReferences(bindings, referenceAssets);
         Mesh[] builtReferences = null;
         var referenceSamples = new List<ObjectKey>();
-        var discreteSamples = new List<DiscreteSample>();
         bool mixed = false;
 
         var spec = JsonUtility.FromJson<Spec>(JsonUtility.ToJson(pending));
@@ -195,7 +193,6 @@ public static partial class AnimReplayRecorder
             Need(builtReferences.All(mesh => mesh != null) && builtReferences[0] != builtReferences[1],
                 "Built object-reference assets are missing or indistinguishable.");
         }, inspectPose: (root, time) => {
-            if (fixture.ProbeDiscrete) discreteSamples.Add(ReadDiscrete(root, time));
             if (referenceAssets == null) return;
             int key = time < .5f ? 0 : 1;
             var mesh = root.Find(UnityrsFixtureBuilder.ReferencePath).GetComponent<MeshFilter>().sharedMesh;
@@ -203,8 +200,6 @@ public static partial class AnimReplayRecorder
             referenceSamples.Add(new ObjectKey { time_f32 = Bits(time), asset = referenceAssets[key], name = mesh.name });
         });
         editor.object_reference_samples = referenceSamples.ToArray();
-        editor.discrete_samples = discreteSamples.ToArray();
-        if (fixture.ProbeDiscrete) editor.discrete_keys = ReadDiscreteKeys(clip);
         pending.prefab_asset = spec.prefab_asset;
         pending.clip_asset = spec.clip_asset;
         pending.avatar_asset = spec.avatar_asset;
