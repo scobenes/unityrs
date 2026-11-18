@@ -367,3 +367,55 @@ fn a_stop_captured_in_phase_six_takes_precedence_over_unknown_key() {
     assert_eq!(head(&scratch)["stop_reason"], "sigterm");
     assert!(!scratch.join("sink/first.glb").exists());
 }
+
+#[test]
+fn mixed_skip_rows_keep_plan_then_export_order() {
+    let (scratch, mut spec) = job(&[]);
+    let graph = scene3d::file(
+        Layout::Unity2022,
+        &[],
+        &[
+            Object::new(
+                1,
+                1,
+                scene3d::game_object(b"root", &[(0, 2), (0, 3), (0, 4)]),
+            ),
+            Object::new(2, 4, scene3d::transform((0, 1), (0, 0), &[], false)),
+            Object::new(3, 33, scene3d::mesh_filter((0, 1), (0, 7))),
+            Object::new(4, 23, scene3d::mesh_renderer((0, 1), &[], (1, 1))),
+            animation::triangle(),
+            unityrs_testkit::ngui::texture(14, b"empty", 4, (0, 1), vec![]),
+            unityrs_testkit::ngui::texture(15, b"short", 4, (2, 2), vec![0]),
+        ],
+    )
+    .unwrap();
+    let input = env::bundle(&[
+        (
+            "CAB-index",
+            animation::catalog(&[("broken", 99), ("first", 1)]),
+        ),
+        ("CAB-rig", graph),
+    ]);
+    fs::write(scratch.join("one.bundle"), input).unwrap();
+    spec["outputs"]["textures"] = json!({"key":"{name}.png"});
+    assert_eq!(drive(&scratch, &spec).code, Code::CompleteWithSkips);
+    let skips = rows(&scratch, 1, "skips");
+    let order: Vec<_> = skips
+        .iter()
+        .map(|row| {
+            (
+                row["output"].as_str().unwrap(),
+                row["reason"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("texture", "empty_image"),
+            ("glb", "bad_pointer"),
+            ("texture", "decode_error"),
+            ("glb", "invalid_glb"),
+        ],
+    );
+}

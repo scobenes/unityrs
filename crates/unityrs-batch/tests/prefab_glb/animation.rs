@@ -23,7 +23,7 @@ use unityrs_testkit::{
     },
 };
 
-fn catalog(paths: &[(&str, i64)]) -> Vec<u8> {
+pub(super) fn catalog(paths: &[(&str, i64)]) -> Vec<u8> {
     env::serialized(
         &["CAB-rig"],
         &[env::Obj::asset_bundle(
@@ -47,6 +47,9 @@ enum Clip {
     Outside,
     MissingMesh,
     Backref,
+    BadStaticRange,
+    BadStaticRangeWithMesh,
+    StreamedMesh,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,12 +63,19 @@ fn fixture(clip: Clip, material: bool) -> (Vec<u8>, Vec<u8>) {
     build_fixture(clip, material.then_some(Material::Missing), true)
 }
 
-fn build_fixture(clip: Clip, material: Option<Material>, texture: bool) -> (Vec<u8>, Vec<u8>) {
+fn rig_bundle(clip: Clip, material: bool, texture: bool) -> Vec<u8> {
     let mut rig = vec![
         Object::new(
             1,
             1,
-            s::game_object(b"root", &[(0, 2), (0, 3), (0, 4), (0, 5)]),
+            s::game_object(
+                b"root",
+                if matches!(clip, Clip::BadStaticRangeWithMesh) {
+                    &[(0, 2), (0, 3), (0, 4), (0, 5), (0, 6)]
+                } else {
+                    &[(0, 2), (0, 3), (0, 4), (0, 5)]
+                },
+            ),
         ),
         Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
         anim::animator(3, (1, 10)),
@@ -75,19 +85,25 @@ fn build_fixture(clip: Clip, material: Option<Material>, texture: bool) -> (Vec<
             23,
             s::mesh_renderer(
                 (0, 1),
-                if material.is_some() { &[(1, 8)] } else { &[] },
-                (0, 0),
+                if material { &[(1, 8)] } else { &[] },
+                if matches!(clip, Clip::BadStaticRange | Clip::BadStaticRangeWithMesh) {
+                    (1, 1)
+                } else {
+                    (0, 0)
+                },
             ),
         ),
         Object::new(11, 1, s::game_object(b"second", &[(0, 12), (0, 13)])),
         Object::new(12, 4, s::transform((0, 11), (0, 0), &[], false)),
         anim::animator(13, (1, 10)),
     ];
+    if matches!(clip, Clip::BadStaticRangeWithMesh) {
+        rig.push(Object::new(6, 23, s::mesh_renderer((0, 1), &[], (0, 0))));
+    }
     if texture {
         rig.push(ngui::texture(14, b"pixel", 4, (1, 1), vec![255; 4]));
     }
-    let backref = matches!(clip, Clip::Backref);
-    if backref {
+    if matches!(clip, Clip::Backref) {
         rig.push(p::explicit(
             9,
             4.,
@@ -96,14 +112,24 @@ fn build_fixture(clip: Clip, material: Option<Material>, texture: bool) -> (Vec<
     }
     // Roots are stored under a separate AssetBundle index, just as for a
     // bundle that has more than one CAB.
-    let input = env::bundle(&[
-        ("CAB-index", catalog(&[("first", 1), ("second", 11)])),
+    let rows = if matches!(clip, Clip::StreamedMesh) {
+        // Seal a successful candidate before the stream is read.
+        [("second", 11), ("first", 1)]
+    } else {
+        [("first", 1), ("second", 11)]
+    };
+    env::bundle(&[
+        ("CAB-index", catalog(&rows)),
         (
             "CAB-rig",
             s::file(Layout::Unity2022, &["CAB-objects"], &rig).unwrap(),
         ),
-    ]);
+    ])
+}
 
+fn build_fixture(clip: Clip, material: Option<Material>, texture: bool) -> (Vec<u8>, Vec<u8>) {
+    let input = rig_bundle(clip, material.is_some(), texture);
+    let backref = matches!(clip, Clip::Backref);
     let end = if matches!(clip, Clip::TooLong) {
         1000.
     } else {
@@ -124,10 +150,25 @@ fn build_fixture(clip: Clip, material: Option<Material>, texture: bool) -> (Vec<
         ),
     ];
     if !matches!(clip, Clip::MissingMesh) {
-        objects.push(triangle());
+        let mut mesh = triangle();
+        if matches!(clip, Clip::StreamedMesh) {
+            s::set(
+                &mut mesh.value,
+                "m_StreamData",
+                st(
+                    "StreamingInfo",
+                    vec![
+                        ("offset", V::UInt64(0)),
+                        ("size", V::UInt(64)),
+                        ("path", V::Str(b"stream.resS".to_vec())),
+                    ],
+                ),
+            );
+        }
+        objects.push(mesh);
     }
     add_material(&mut objects, material);
-    let streamed = material == Some(Material::Streamed);
+    let streamed = material == Some(Material::Streamed) || matches!(clip, Clip::StreamedMesh);
     let external: &[&str] = if use_outside {
         &["CAB-outside"]
     } else if backref {
@@ -202,7 +243,7 @@ fn large_bundle(name: &[u8], data: Vec<u8>, flags: u32) -> Vec<u8> {
     })
 }
 
-fn triangle() -> Object {
+pub(super) fn triangle() -> Object {
     let vertices = [
         [0., 0., 0., 0., 0.],
         [1., 0., 0., 1., 0.],
@@ -545,9 +586,18 @@ fn export_work_refusal_discards_the_attempt_and_obeys_publication_policy() {
 
 #[test]
 fn optional_stream_dependency_budget_discards_the_attempt() {
+    stream_budget(Clip::Translation, Some(Material::Streamed));
+}
+
+#[test]
+fn wrapped_mesh_stream_dependency_budget_discards_the_attempt() {
+    stream_budget(Clip::StreamedMesh, None);
+}
+
+fn stream_budget(clip: Clip, material: Option<Material>) {
     for publish in [true, false] {
         let (scratch, mut spec) = job(&[]);
-        let (input, deps) = build_fixture(Clip::Translation, Some(Material::Streamed), false);
+        let (input, deps) = build_fixture(clip, material, false);
         install(&scratch, &mut spec, &input, &deps);
         let source = large_bundle(b"stream.resS", vec![0; 700 << 10], 0);
         fs::write(scratch.join("resource.bundle"), source).unwrap();
@@ -670,3 +720,6 @@ fn input_memory_refusal_skips_only_the_prefab_that_needs_the_allocation() {
     assert!(!scratch.join("sink/first.glb").exists());
     assert!(scratch.join("sink/second.glb").exists());
 }
+
+#[path = "review.rs"]
+mod review;

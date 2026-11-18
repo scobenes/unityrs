@@ -1,0 +1,119 @@
+use super::*;
+
+#[test]
+fn invalid_static_batch_range_skips_a_prefab_with_no_remaining_mesh() {
+    let (scratch, mut spec) = job(&[]);
+    let (input, deps) = fixture(Clip::BadStaticRange, false);
+    install(&scratch, &mut spec, &input, &deps);
+    spec["outputs"]["glb"]["profile"] = json!({"profile_version":1,"clips":[]});
+    assert_eq!(drive(&scratch, &spec).code, Code::CompleteWithSkips);
+    let skips = rows(&scratch, 1, "skips");
+    assert_eq!(skips.len(), 1);
+    assert_eq!(skips[0]["reason"], "invalid_glb");
+    assert_eq!(skips[0]["detail"], "static batch submesh range");
+    assert!(!scratch.join("sink/first.glb").exists());
+    assert!(scratch.join("sink/second.glb").exists());
+}
+
+#[test]
+fn a_source_selector_outside_the_view_retains_its_owner_address() {
+    let (scratch, mut spec) = job(&[]);
+    let (input, deps) = fixture(Clip::Translation, false);
+    install(&scratch, &mut spec, &input, &deps);
+    let mut request = selection(2, 3);
+    request["source"]["owner"] = index(100, 10);
+    spec["outputs"]["glb"]["profile"] = json!({
+        "profile_version":1,"clips":[], "clips_by_prefab":{"first.glb":{"a":[request]}}
+    });
+    assert_eq!(drive(&scratch, &spec).code, Code::CompleteWithSkips);
+    let skips = rows(&scratch, 1, "skips");
+    assert_eq!(skips.len(), 1);
+    assert_eq!(skips[0]["reason"], "outside_view(file_index=100)");
+    assert_eq!(skips[0]["detail"], "path_id=10");
+    assert!(!scratch.join("sink/first.glb").exists());
+    assert!(scratch.join("sink/second.glb").exists());
+}
+
+#[test]
+fn explicit_selection_ignores_an_untouched_corrupt_nested_file() {
+    check_nested_serialized_file(false);
+}
+
+#[test]
+fn explicit_selection_fails_the_input_for_a_needed_corrupt_nested_file() {
+    check_nested_serialized_file(true);
+}
+
+fn check_nested_serialized_file(needed: bool) {
+    let (scratch, mut spec) = job(&[]);
+    let (input, objects) = fixture(
+        if needed {
+            Clip::Outside
+        } else {
+            Clip::Translation
+        },
+        false,
+    );
+    let corrupt = corrupt_serialized_file();
+    let nested = env::bundle(&[("CAB-outside", corrupt)]);
+    let deps = env::bundle(&[("nested.bundle", nested), ("objects.bundle", objects)]);
+    install(&scratch, &mut spec, &input, &deps);
+    let mut request = selection(2, 3);
+    request["source"]["owner"] = index(7, 10);
+    spec["outputs"]["glb"]["profile"] = json!({
+        "profile_version":1,"clips":[],"clips_by_prefab":{"first.glb":{"a":[request]}}
+    });
+    let end = drive(&scratch, &spec);
+    assert_eq!(
+        end.code,
+        if needed {
+            Code::Incomplete
+        } else {
+            Code::Complete
+        },
+        "{end:?}"
+    );
+    let inputs = rows(&scratch, 1, "inputs");
+    if needed {
+        assert_eq!(end.code, Code::Incomplete, "{inputs:?}");
+        assert_eq!(inputs[0]["status"], "failed");
+        assert_eq!(inputs[0]["reason"], "container_error");
+        assert_eq!(inputs[0]["detail"], "out_of_bounds");
+    } else {
+        assert_eq!(end.code, Code::Complete, "{inputs:?}");
+    }
+    assert_eq!(scratch.join("sink/first.glb").exists(), !needed);
+    assert_eq!(scratch.join("sink/second.glb").exists(), !needed);
+}
+
+fn corrupt_serialized_file() -> Vec<u8> {
+    // Unity 2022 (format 22), with version metadata but no type table.
+    let mut bytes = vec![0; 128];
+    bytes[11] = 22;
+    bytes[23] = 80;
+    bytes[31] = 128;
+    bytes[39] = 128;
+    bytes[48..59].copy_from_slice(b"2022.3.0f1\0");
+    bytes[64] = 100;
+    bytes
+}
+
+#[test]
+fn invalid_static_batch_range_degrades_a_prefab_with_a_remaining_mesh() {
+    let (scratch, mut spec) = job(&[]);
+    let (input, deps) = fixture(Clip::BadStaticRangeWithMesh, false);
+    install(&scratch, &mut spec, &input, &deps);
+    spec["outputs"]["glb"]["profile"] = json!({"profile_version":1,"clips":[]});
+    assert_eq!(drive(&scratch, &spec).code, Code::CompleteWithSkips);
+    assert_eq!(rows(&scratch, 1, "inputs")[0]["status"], "complete");
+    assert_eq!(head(&scratch)["run"]["glb_degraded"], 1);
+    let diagnostics = rows(&scratch, 1, "diagnostics");
+    let issue = diagnostics
+        .iter()
+        .find(|row| row["kind"] == "glb_degraded")
+        .unwrap();
+    assert_eq!(issue["key"], "first.glb");
+    assert_eq!(issue["reason"], "static batch submesh range");
+    assert!(scratch.join("sink/first.glb").exists());
+    assert!(scratch.join("sink/second.glb").exists());
+}

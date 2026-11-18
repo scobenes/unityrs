@@ -64,6 +64,7 @@ pub(super) fn complete(cx: &super::rows::Context<'_>) -> Result<Figures, Error> 
             id,
             cx.inputs.failed(index)?,
             u64::try_from(cx.facts.spec.archives.len()).map_err(|_| Error::internal())?,
+            cx.facts.spec.spec_version,
             cx.account.meter(),
         )?;
         while let Some(row) = reader.next(cx.stopped)? {

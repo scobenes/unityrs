@@ -185,8 +185,11 @@ Transform, Animation or Animator component and either the resolved clip or
 the discovery source slot, using the standalone selector shape. File indices
 use concatenated depth-first inspection order, including bundle roots and raw
 entries. The input is first, followed by its view members in bytewise input-ID
-order. Two views can use identical numbers for different objects. Phase 1
-checks IDs, selector shape and literal keys, including the sink prefix.
+order. Selection reads the needed directory positions and the files addressed
+by the selected prefab's override. An unused leaf keeps its position even if
+its contents are corrupt. Two views can use identical numbers for different
+objects. Phase 1 checks IDs, selector shape and literal keys, including the
+sink prefix.
 Key membership is checked during phase 6 (4.8).
 
 **Prefer:** `{"input": id or null, "md5": 32 lowercase hex digits or null}`, at least one not null (E31).
@@ -749,9 +752,10 @@ only its record's flush to the supplied `spooled_part`; it never changes
 Candidate/member lines preserve export/expansion order. The diagnostic/skip
 subsequence is same-name diagnostics, undeclared-dependency diagnostics,
 nested-container diagnostics, GLB degradation diagnostics (version 3), plan
-skips, export skips, with source order
-within each, and no sorting. Strings already cut and repaired by the classifier
-keep their inherited `cut`; they are not cut a second time after replacement.
+skips, then export skips. In each skip phase the existing 2D outputs precede
+the appended prefab rows, preserving source order within each group.
+Strings already cut and repaired by the classifier keep their values and
+their inherited `cut` flag.
 Every line, including its newline, is at most 32 KiB. Serialization streams
 escaping into the charged 64 KiB buffer, flushing only full buffers and the
 final partial buffer; failure discards pending bytes without another flush.

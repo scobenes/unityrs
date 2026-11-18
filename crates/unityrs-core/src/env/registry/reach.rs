@@ -86,7 +86,7 @@ const PEEK: u64 = 128;
 /// (their blocks decoded, as any read decodes them). A read that fails other
 /// than transiently says no: such an entry cannot be parsed, so it holds
 /// nothing to register, and its reads fail with the error.
-fn is_bundle_entry(b: &BundleFile, i: usize) -> Result<bool, Error> {
+pub(crate) fn is_bundle_entry(b: &BundleFile, i: usize) -> Result<bool, Error> {
     match b.entry_range(i, 0..PEEK) {
         Ok(head) => {
             if head.starts_with(&[31, 139]) {

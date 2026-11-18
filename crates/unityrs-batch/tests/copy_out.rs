@@ -90,6 +90,7 @@ fn candidate_members_and_terminal_figures_roundtrip_from_disk() {
         "input",
         false,
         1,
+        1,
         phase.meter(),
     )
     .unwrap();

@@ -149,6 +149,7 @@ fn audit_child() {
                 "input",
                 false,
                 0,
+                1,
                 account.meter(),
             )?;
             Ok(())

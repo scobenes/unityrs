@@ -24,6 +24,8 @@ pub struct CollectionIssue {
     pub node: usize,
     pub resource: Option<RendererResource>,
     pub reason: &'static str,
+    /// Collection dropped a renderer because its source or geometry failed.
+    pub dropped_renderer: bool,
     /// Number of repaired entries, or one for a degraded renderer.
     pub count: u64,
 }

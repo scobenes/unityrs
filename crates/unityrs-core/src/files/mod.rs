@@ -103,6 +103,36 @@ impl File {
             }),
         }
     }
+    /// Open a child container, leaving serialized and raw entries lazy.
+    /// A leaf still occupies its directory position in a file walk.
+    pub fn child_container(&self, i: usize) -> Result<Option<Self>, Error> {
+        if let Some(file) = self.parsed_container_entry(i) {
+            return Ok(matches!(file, Self::Bundle(_) | Self::Web(_)).then(|| file.clone()));
+        }
+        let container = match self {
+            Self::Bundle(bundle) => crate::env::registry::is_bundle_entry(bundle, i)?,
+            Self::Web(web) => match crate::detect::check_entry_type(
+                &web.entry_bytes(i)?,
+                &web.context().limits,
+                web.meter(),
+            ) {
+                Ok(ty) => matches!(ty, FileType::BundleFile | FileType::WebFile),
+                Err(
+                    e @ (crate::detect::DetectError::Allocator(_)
+                    | crate::detect::DetectError::InflateLimit(_)
+                    | crate::detect::DetectError::Work(_)),
+                ) => return Err(e.into()),
+                Err(_) => false,
+            },
+            _ => false,
+        };
+        if container {
+            self.container_entry(i).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// The meter of the input this file belongs to.
     #[must_use]
     pub fn meter(&self) -> &Arc<Meter> {

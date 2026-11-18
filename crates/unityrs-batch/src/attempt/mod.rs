@@ -201,9 +201,8 @@ fn execute(
     engine.point(Point::Metadata)?;
     let mut names = metadata::Names::new(&meter);
     let mut prefab = prefab::Attempt::new(glb, args.view.input.id, &meter, engine)?;
-    prefab.loaded(true, false, registration.own(), &meter, engine)?;
-    let mut loaded = |id: &str, bundle: &Arc<unityrs_core::files::BundleFile>| {
-        prefab.loaded(id == args.view.input.id, true, bundle, &meter, engine)?;
+    let mut loaded = |id: &str, bundle: &Arc<unityrs_core::files::BundleFile>, handle| {
+        prefab.loaded(id == args.view.input.id, handle, engine)?;
         let holder = if id == args.view.input.id {
             args.view.members.len()
         } else {
@@ -216,11 +215,11 @@ fn execute(
         names.loaded(holder, bundle, &meter, engine)
     };
     for m in args.view.members {
-        let result = registration.member(&m.staged(), args.peeks, &mut loaded);
+        let result = registration.member_with_handle(&m.staged(), args.peeks, &mut loaded);
         end.figures.evictions = registration.stats().dependencies_evicted;
         result?;
     }
-    let registered = registration.finish(args.peeks, &mut loaded)?;
+    let registered = registration.finish_with_handle(args.peeks, &mut loaded)?;
     engine.point(Point::Registered)?;
     let mut writer = engine.records(|_| Writer::new(args.directory, &meter))?;
     end.diagnostics = names.write(args.view, &mut writer, engine)?;
@@ -258,6 +257,7 @@ fn execute(
         engine.sample(registered.own.meter());
         result?
     };
+    drop(prefab);
     engine.observer.sheets(&cut.sheets);
     for issue in &cut.glb_diagnostics {
         copy::degraded(args.view.input.id, engine, &mut writer, end, issue)?;

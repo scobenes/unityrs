@@ -1,6 +1,16 @@
 //! Preserve resource and object classifications through the 3D adapters.
+use std::error::Error as StdError;
 use unityrs_anim::AnimError;
-use unityrs_core::{env::DerefError, objmode::ViewError};
+use unityrs_core::{
+    Error, LimitError,
+    budget::BudgetExceeded,
+    detect::DetectError,
+    env::DerefError,
+    limits::ChargeError,
+    objmode::ViewError,
+    typetree::TreeError,
+    walk::{ParseError, ReadDetail, ReadError},
+};
 use unityrs_gltf::GltfError;
 use unityrs_mesh::MeshError;
 use unityrs_scene::SceneError;
@@ -8,28 +18,116 @@ use unityrs_scene::SceneError;
 use super::super::classify::{self, Class, Reason};
 use crate::gltf::ExportError;
 
+// Follow the typed causes. Some core wrappers are transparent to Error::source
+// or carry a structured read detail without exposing it as a source.
+fn refusal(mut cause: &(dyn StdError + 'static)) -> Option<Class> {
+    loop {
+        if let Some(error) = cause.downcast_ref::<BudgetExceeded>() {
+            return Some(classify::budget(error));
+        }
+        if let Some(error) = cause.downcast_ref::<LimitError>() {
+            return Some(classify::limit(error));
+        }
+        if let Some(error) = cause.downcast_ref::<ChargeError>() {
+            return Some(classify::charge(error));
+        }
+        if cause.is::<unityrs_core::budget::AllocError>() {
+            return Some(Class::Run(Reason::plain("host_memory")));
+        }
+        cause = source(cause)?;
+    }
+}
+
+fn source<'a>(cause: &'a (dyn StdError + 'static)) -> Option<&'a (dyn StdError + 'static)> {
+    match cause.downcast_ref::<Error>() {
+        Some(Error::Budget(e)) => return Some(e),
+        Some(Error::Limit(e)) => return Some(e),
+        Some(Error::Allocator(e)) => return Some(e),
+        Some(Error::Entry { source, .. }) => return Some(source.as_ref()),
+        Some(Error::AssetBundle(e)) => return Some(e.as_ref()),
+        Some(Error::Deref(e)) => return Some(e.as_ref()),
+        Some(Error::Tree(e)) => return Some(e),
+        Some(Error::Detect(e)) => return Some(e),
+        Some(Error::Io(e)) => return Some(e.0.as_ref()),
+        _ => {}
+    }
+    if let Some(DerefError::Load(e)) = cause.downcast_ref::<DerefError>() {
+        return Some(e);
+    }
+    match cause.downcast_ref::<ParseError>() {
+        Some(ParseError::Deref(e)) => return Some(e),
+        Some(ParseError::Tree(e)) => return Some(e),
+        Some(ParseError::Read(e)) => return Some(e),
+        Some(ParseError::Provider(e)) => {
+            if let Some(e) = &e.allocator {
+                return Some(e);
+            }
+            if let Some(e) = &e.memory {
+                return Some(e);
+            }
+            return e.limit.as_ref().map(|e| e as &dyn StdError);
+        }
+        _ => {}
+    }
+    match cause.downcast_ref::<ReadError>().map(|e| &e.detail) {
+        Some(ReadDetail::Charge(e)) => return Some(e),
+        Some(ReadDetail::Limit(e)) => return Some(e),
+        Some(ReadDetail::Tree(e)) => return Some(e),
+        _ => {}
+    }
+    match cause.downcast_ref::<TreeError>() {
+        Some(TreeError::Charge(e)) => return Some(e),
+        Some(TreeError::Limit(e)) => return Some(e),
+        _ => {}
+    }
+    match cause.downcast_ref::<DetectError>() {
+        Some(DetectError::Allocator(e)) => return Some(e),
+        Some(DetectError::InflateLimit(e) | DetectError::Work(e)) => return Some(e),
+        _ => {}
+    }
+    match cause
+        .downcast_ref::<std::io::Error>()
+        .and_then(std::io::Error::get_ref)
+    {
+        Some(e) => Some(e),
+        None => cause.source(),
+    }
+}
+
+fn loaded(error: &Error) -> Class {
+    if let Some(class) = refusal(error) {
+        return match class {
+            Class::Skip(r) if r.reason.starts_with("limit(") => Class::Input(r),
+            class => class,
+        };
+    }
+    match classify::error(error) {
+        Class::Skip(r) if r.reason == "decode_error" => Class::Input(Reason {
+            reason: "container_error".into(),
+            ..r
+        }),
+        class => class,
+    }
+}
+
 pub(super) fn deref(error: &DerefError) -> Class {
     match error {
-        DerefError::Load(error) => {
-            let class = classify::error(error);
-            match class {
-                Class::Skip(r) if r.reason == "decode_error" && r.detail.is_some() => {
-                    Class::Input(Reason {
-                        reason: "container_error".into(),
-                        ..r
-                    })
-                }
-                Class::Skip(r) if r.reason.starts_with("limit(") => Class::Input(r),
-                class => class,
-            }
-        }
+        DerefError::Load(error) => loaded(error),
         error => classify::deref(error),
     }
 }
+
+fn parse(error: &ParseError) -> Class {
+    match error {
+        ParseError::Deref(e) => deref(e),
+        e => refusal(e).unwrap_or_else(|| classify::parse(e)),
+    }
+}
+
 pub(super) fn scene(error: &SceneError) -> Class {
     match error {
         SceneError::Charge(e) | SceneError::View(ViewError::Charge(e)) => classify::charge(e),
-        SceneError::Parse(e) => classify::parse(e),
+        SceneError::Parse(e) => parse(e),
         SceneError::Deref(e) => deref(e),
         SceneError::Malformed(field) => skip("malformed_scene", Some(field)),
         SceneError::NoTransform => skip("missing_transform", None),
@@ -37,6 +135,14 @@ pub(super) fn scene(error: &SceneError) -> Class {
     }
 }
 pub(super) fn gltf(error: GltfError) -> Class {
+    let cause: Option<&dyn StdError> = match &error {
+        GltfError::Mesh(e) => Some(e),
+        GltfError::Io(e) => Some(e),
+        _ => None,
+    };
+    if let Some(class) = cause.and_then(refusal) {
+        return class;
+    }
     match error {
         GltfError::Charge(e)
         | GltfError::Mesh(
@@ -44,7 +150,7 @@ pub(super) fn gltf(error: GltfError) -> Class {
             | MeshError::Decode(unityrs_meshdecode::MeshError::Charge(e))
             | MeshError::View(ViewError::Charge(e)),
         ) => classify::charge(&e),
-        GltfError::Mesh(MeshError::Parse(e)) => classify::parse(&e),
+        GltfError::Mesh(MeshError::Parse(e)) => parse(&e),
         GltfError::Mesh(MeshError::Core(e)) => classify::error(&e),
         GltfError::Mesh(MeshError::Scene(e)) => scene(&e),
         GltfError::Mesh(MeshError::Deref(e)) => deref(&e),
@@ -66,7 +172,7 @@ pub fn export(error: ExportError) -> Class {
         ExportError::Gltf(e) => gltf(e),
         ExportError::Animation(e) => animation(&e),
         ExportError::Charge(e) => classify::charge(&e),
-        ExportError::Input(e) => classify::error(&e),
+        ExportError::Input(e) => loaded(&e),
         ExportError::OutsideSelectionView(address) => Class::Skip(Reason {
             reason: format!("outside_view(file_index={})", address.file_index),
             detail: Some(format!("path_id={}", address.path_id)),
@@ -101,7 +207,7 @@ pub fn export(error: ExportError) -> Class {
 fn animation(error: &AnimError) -> Class {
     match error {
         AnimError::Charge(e) => classify::charge(e),
-        AnimError::Parse(e) => classify::parse(e),
+        AnimError::Parse(e) => parse(e),
         AnimError::Deref(e) | AnimError::OutsideView(e) => deref(e),
         AnimError::Malformed(field) => skip("malformed_animation", Some(field)),
         AnimError::WrongClass(_) => skip("malformed_animation", None),
@@ -125,31 +231,82 @@ pub(super) fn skip(reason: &str, detail: Option<&str>) -> Class {
     })
 }
 
-pub(super) fn degraded(reason: &str) -> bool {
-    matches!(
-        reason,
-        "missing_texture"
-            | "texture_malformed"
-            | "undecodable_texture"
-            | "unsupported_texture_platform"
-            | "texture_encode_failed"
-            | "texture_too_large"
-            | "unresolved_material"
-            | "malformed_material"
-            | "missing_material"
-    ) || required_renderer(reason)
+pub(super) fn degraded(issue: &unityrs_gltf::CollectionIssue) -> bool {
+    // Resource issues and dropped renderers lose source content. The other
+    // collector notes include profile choices and representation adjustments
+    // such as material-less submeshes, placeholders and padded skin rows.
+    issue.dropped_renderer
+        || issue.resource.is_some()
+        || matches!(
+            issue.reason,
+            "unresolved_material"
+                | "malformed_material"
+                | "missing_material"
+                | "missing_skin_attributes"
+        )
 }
 
-pub(super) fn required_renderer(reason: &str) -> bool {
-    matches!(
-        reason,
-        "mesh_unresolved"
-            | "missing_mesh"
-            | "mesh_parse_failed"
-            | "mesh_resource_failed"
-            | "mesh_decode_failed"
-            | "malformed_mesh_field"
-            | "source_not_mesh"
-            | "empty_mesh"
-    )
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use unityrs_core::{
+        LimitKind, RawStr,
+        budget::{BudgetExceeded, Reservation},
+        walk::ParseError,
+    };
+
+    fn entry(error: Error) -> Error {
+        Error::Entry {
+            name: RawStr::from_static(b"stream.resS"),
+            source: Arc::new(Error::Deref(Arc::new(DerefError::Load(error)))),
+        }
+    }
+
+    #[test]
+    fn prefab_classifiers_preserve_refusals_wrapped_by_reads_and_dereferences() {
+        let cases = [
+            (
+                Error::Budget(BudgetExceeded {
+                    requested: 1,
+                    what: Reservation::Dependency,
+                }),
+                Class::Input(Reason::plain("budget(dependency)")),
+            ),
+            (
+                Error::Budget(BudgetExceeded {
+                    requested: 1,
+                    what: Reservation::Input,
+                }),
+                skip("budget(input)", None),
+            ),
+            (
+                Error::Limit(LimitError::refused(LimitKind::InputMemory, 2, 1)),
+                skip("limit(input_memory, 1)", None),
+            ),
+            (
+                Error::Limit(LimitError::refused(LimitKind::DecodeWork, 2, 1)),
+                skip("limit(decode_work, 1)", None),
+            ),
+        ];
+        for (error, expected) in cases {
+            let wrapped = entry(error);
+            assert_eq!(
+                gltf(GltfError::Mesh(MeshError::Decode(
+                    unityrs_meshdecode::MeshError::Resource(wrapped.clone()),
+                ))),
+                expected
+            );
+            let parse = ParseError::Deref(DerefError::Load(wrapped));
+            let loaded = match expected {
+                Class::Skip(r) if r.reason.starts_with("limit(") => Class::Input(r),
+                result => result,
+            };
+            assert_eq!(scene(&SceneError::Parse(parse.clone())), loaded);
+            assert_eq!(
+                export(ExportError::Animation(AnimError::Parse(parse))),
+                loaded
+            );
+        }
+    }
 }

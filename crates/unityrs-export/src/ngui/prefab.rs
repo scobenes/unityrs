@@ -117,7 +117,7 @@ impl Attempt<'_> {
             let pointer = pointer.ok_or_else(|| Class::Skip(Reason::plain("bad_pointer")))?;
             seam.env()
                 .deref(file, pointer)
-                .map_err(|e| classify::deref(&e))
+                .map_err(|e| failure::deref(&e))
         }) {
             Ok(root) if root.class_id() == 1 => {
                 row.root = Some((root.file().name().clone(), root.path_id()));
@@ -262,7 +262,7 @@ impl Attempt<'_> {
             for issue in issues
                 .as_slice()
                 .iter()
-                .filter(|issue| failure::degraded(issue.reason))
+                .filter(|issue| failure::degraded(issue))
             {
                 let records = &mut self.records;
                 seam.probe(|| {
@@ -398,7 +398,7 @@ fn render(
         .map_err(|e| failure::scene(&e))?;
     let collected = crate::gltf::collect_with_view(
         seam.env(),
-        crate::gltf::Addresses::Indexed(files),
+        crate::gltf::Addresses::Indexed(files, &seam.registered.own),
         &graph,
         profile,
         &UnlitExtras,
@@ -411,7 +411,7 @@ fn render(
             .collection_issues
             .as_slice()
             .iter()
-            .find(|issue| failure::required_renderer(issue.reason))
+            .find(|issue| issue.dropped_renderer)
     {
         return Err(failure::skip("invalid_glb", Some(issue.reason)));
     }

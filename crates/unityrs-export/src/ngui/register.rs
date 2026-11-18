@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use unityrs_core::budget::{Reservation, Unbounded};
 use unityrs_core::detect::{FileType, check_file_type, check_file_type_with_reader};
-use unityrs_core::env::{EnvOptions, Environment, Source, read_path};
+use unityrs_core::env::{DependencyFile, EnvOptions, Environment, Source, read_path};
 use unityrs_core::files::{BundleFile, File, parse_file_with_reader};
 use unityrs_core::limits::{Charge, Limits, Meter, MeteredVec, heap_cost};
 use unityrs_core::pystr::simplify_name;
@@ -449,6 +449,7 @@ fn reach(
 
 /// What registration needs beside the view.
 type Loaded<'a> = dyn FnMut(&str, &Arc<BundleFile>) -> Result<(), Failure> + 'a;
+type WithHandle<'a> = dyn FnMut(&str, &Arc<BundleFile>, DependencyFile) -> Result<(), Failure> + 'a;
 
 #[derive(Clone, Copy)]
 pub struct Admit<'a> {
@@ -535,6 +536,16 @@ impl<'a> Registration<'a> {
         bits: &dyn PeekBits,
         loaded: &mut Loaded<'_>,
     ) -> Result<(), Failure> {
+        self.member_with_handle(m, bits, &mut |id, bundle, _| loaded(id, bundle))
+    }
+
+    /// Register a member and pass its evictable handle to the caller.
+    pub fn member_with_handle(
+        &mut self,
+        m: &Staged<'a>,
+        bits: &dyn PeekBits,
+        loaded: &mut WithHandle<'_>,
+    ) -> Result<(), Failure> {
         let admit = self.admit;
         if admit.hooks.stopped() {
             return Err(Failure::Stopped);
@@ -553,7 +564,7 @@ impl<'a> Registration<'a> {
             },
             Data::Path(p) => Source::Path(p.to_path_buf()),
         };
-        let file = call(env, &admit, || env.load_dependency(source))?
+        let (file, handle) = call(env, &admit, || env.load_dependency_with_handle(source))?
             .map_err(|e| whose.failed(&e, m.name, &admit, before))?;
         let File::Bundle(b) = file else {
             return Err(dependency_failed(
@@ -561,7 +572,7 @@ impl<'a> Registration<'a> {
                 Class::Input(Reason::plain("not_a_bundle")),
             ));
         };
-        loaded(m.id, &b)?;
+        loaded(m.id, &b, handle)?;
         let bits = bits.load(m.id, admit.meter, admit.hooks)?;
         reach(env, &b, &bits, whose, &admit)
     }
@@ -574,6 +585,15 @@ impl<'a> Registration<'a> {
         self,
         bits: &dyn PeekBits,
         loaded: &mut Loaded<'_>,
+    ) -> Result<Registered, Failure> {
+        self.finish_with_handle(bits, &mut |id, bundle, _| loaded(id, bundle))
+    }
+
+    /// Finish registration and pass the registered input's evictable handle.
+    pub fn finish_with_handle(
+        self,
+        bits: &dyn PeekBits,
+        loaded: &mut WithHandle<'_>,
     ) -> Result<Registered, Failure> {
         let admit = self.admit;
         if self.next != self.ids.len() {
@@ -588,17 +608,18 @@ impl<'a> Registration<'a> {
             name: self.input.name.clone(),
             data: self.bytes.clone(),
         };
-        let file = call(env, &admit, || env.load_dependency(source))?.map_err(|e| {
-            match seam::probed(admit.hooks, before, classify::error(&e)) {
-                Class::Skip(r) | Class::Input(r) => Failure::Input(container(r)),
-                Class::Run(r) => Failure::Run(r),
-            }
-        })?;
+        let (file, handle) = call(env, &admit, || env.load_dependency_with_handle(source))?
+            .map_err(
+                |e| match seam::probed(admit.hooks, before, classify::error(&e)) {
+                    Class::Skip(r) | Class::Input(r) => Failure::Input(container(r)),
+                    Class::Run(r) => Failure::Run(r),
+                },
+            )?;
         let File::Bundle(slot) = file else {
             return Err(Failure::Input(Reason::plain("not_a_bundle")));
         };
         same_open(&slot, &self.own)?;
-        loaded(self.input.id, &slot)?;
+        loaded(self.input.id, &slot, handle)?;
         let bits = bits.load(self.input.id, admit.meter, admit.hooks)?;
         reach(env, &slot, &bits, Whose::Own, &admit)?;
         drop(slot);

@@ -1,12 +1,12 @@
 //! Input-local overrides and lightweight file addresses for the private view.
 use std::sync::Arc;
 use unityrs_core::{
-    files::{BundleFile, File},
+    env::DependencyFile,
     limits::{Meter, MeteredVec},
 };
 use unityrs_export::{
     gltf::FileIndex,
-    ngui::{self, Context, Failure, Hooks, Prefabs, Selection, Template},
+    ngui::{self, Context, Failure, Prefabs, Selection, Template},
 };
 
 use super::{
@@ -68,24 +68,15 @@ impl<'a> Attempt<'a> {
     pub(super) fn loaded(
         &mut self,
         own: bool,
-        registered: bool,
-        bundle: &Arc<BundleFile>,
-        attempt: &Arc<Meter>,
+        handle: DependencyFile,
         engine: &Engine<'_>,
     ) -> Result<(), Failure> {
         if self.explicit {
-            let meter = attempt.work_scope(engine.export_work_remaining());
-            let result = probe(engine, || {
+            probe(engine, || {
                 self.files
-                    .add(File::Bundle(bundle.clone()), own, registered, &meter)
-                    .map_err(ngui::classify_gltf)
-            });
-            if !matches!(result, Err(Failure::Run(_))) {
-                engine
-                    .export_work(meter.attempted_work())
-                    .map_err(Failure::Input)?;
-            }
-            result?;
+                    .add(handle, own)
+                    .map_err(|e| ngui::classify::charge(&e))
+            })?;
         }
         Ok(())
     }

@@ -17,6 +17,32 @@ use crate::files::{BundleFile, File};
 use crate::limits::{Charge, Meter};
 use crate::raw::RawStr;
 
+/// Reopens a registered dependency without pinning its files in the cache.
+pub struct DependencyFile(Arc<Dependency>);
+
+const _: () = crate::send_sync::<DependencyFile>();
+
+impl DependencyFile {
+    /// Read through the registered open, retrying with room if the pool refuses.
+    pub fn read<T>(&self, mut read: impl FnMut(File) -> Result<T, Error>) -> Result<T, Error> {
+        self.0.with_room(|| {
+            let file = self.0.handle()?;
+            if self.0.unreachable()
+                && let Some(cache) = self.0.cache.upgrade()
+            {
+                cache.forget(&self.0);
+            }
+            read(file)
+        })
+    }
+
+    /// Whether a file belongs to this dependency, including across reopens.
+    #[must_use]
+    pub fn owns(&self, file: &crate::files::SerializedFile) -> bool {
+        self.0.meter().same_input(file.meter())
+    }
+}
+
 /// Whose CABs a registration makes: a caller's file (slots that may hold
 /// it), or a dependency's (slots that reopen it), registered one at a time
 /// or staged, every one charged before any is published (the registry's
@@ -323,26 +349,32 @@ impl Environment {
     /// those registered before its failure (the partial registration of
     /// the module docs).
     // The source is handed over (the frozen signature) and kept by a clone.
-    #[allow(clippy::needless_pass_by_value)]
     pub fn load_dependency(&self, source: Source) -> Result<File, Error> {
-        let name = source_name(&source);
-        self.load_dep(&name, &source)
+        self.load_dependency_with_handle(source)
+            .map(|(file, _)| file)
     }
 
-    fn load_dep(&self, name: &RawStr, source: &Source) -> Result<File, Error> {
+    /// Load a dependency and give the caller an evictable handle to its exact
+    /// occurrence, even if another dependency registers the same CAB name.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn load_dependency_with_handle(
+        &self,
+        source: Source,
+    ) -> Result<(File, DependencyFile), Error> {
+        let name = source_name(&source);
         // Drawn once, so the retry keeps it (CR8's test feature).
-        let load_id = LoadId::draw(name);
+        let load_id = LoadId::draw(&name);
         // A pool refusal evicts the others and retries once (plan 3.13); a
         // second refusal fails naming the pool, and nothing of the
         // dependency is kept (its first attempt's charges returned with its
         // handle; under `Lazy` neither attempt published a key).
         with_room(Some(&self.inner.cache), None, || {
-            self.try_load_dep(name, source, false, load_id)
-                .map(|(file, ..)| file)
+            self.try_load_dep(&name, &source, false, load_id)
+                .map(|(file, _, _, dep)| (file, DependencyFile(dep)))
         })
     }
 
-    /// One attempt of [`Self::load_dep`], on a meter of its own: the file,
+    /// One attempt of [`Self::load_dependency_with_handle`], on a meter of its own: the file,
     /// the load's number and, with `listed` under `Lazy`, its `files`
     /// entry under `name` charged and not yet published. Under `Lazy` its
     /// registrations are staged, every one charged, and the LRU's entry and
@@ -357,7 +389,7 @@ impl Environment {
         source: &Source,
         listed: bool,
         load_id: LoadId,
-    ) -> Result<(File, u64, Option<Listing>), Error> {
+    ) -> Result<(File, u64, Option<Listing>, Arc<Dependency>), Error> {
         let ctx = self.ctx();
         let meter = Meter::for_input(&ctx.limits, ctx.budget.clone(), Reservation::Dependency);
         let file = open_source(name, source, &meter, ctx, load_id)?;
@@ -398,7 +430,7 @@ impl Environment {
         }
         #[cfg(test)]
         self.inner.cache.hook(Hook::LoadChecked);
-        Ok((file, load, listing))
+        Ok((file, load, listing, dep))
     }
 
     /// A dependency's registrations under `Lazy`, staged ([`Stage`]: the
@@ -487,7 +519,7 @@ impl Environment {
                 // Under `Lazy` the listing is charged before the keys are
                 // published, so a refused one publishes none of them
                 // (`register_staged`); under `Eager`, after.
-                let (file, load, listing) = self.try_load_dep(name, source, true, load_id)?;
+                let (file, load, listing, _) = self.try_load_dep(name, source, true, load_id)?;
                 let listing = if let Some(listing) = listing {
                     listing
                 } else {

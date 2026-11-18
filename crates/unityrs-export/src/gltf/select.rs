@@ -1,7 +1,10 @@
 //! Selection uses the same file walk as the inspection and replay crosswalk.
 use super::{Arc, Discovery, ExportError, File, FileIndex, Meter, MeteredVec, ObjectRef, same};
 use unityrs_anim::{ClipSelector, RigClips, SelectionError};
-use unityrs_core::{files::SerializedFile, limits::ChargeError};
+use unityrs_core::{
+    files::{BundleFile, SerializedFile},
+    limits::ChargeError,
+};
 use unityrs_gltf::{ClipAddress, Clips, ObjectAddress};
 
 /// Visit root and descendant files in depth-first inspection order.
@@ -31,7 +34,7 @@ pub fn walk_files<E: From<ChargeError> + From<unityrs_core::Error>>(
 #[derive(Clone, Copy)]
 pub(crate) enum Addresses<'a> {
     Loaded(&'a [File]),
-    Indexed(&'a FileIndex),
+    Indexed(&'a FileIndex, &'a Arc<BundleFile>),
 }
 
 pub(super) fn clips<'a>(
@@ -64,31 +67,33 @@ pub(super) fn clips<'a>(
                     })?;
                 }
             }
-            let object = |address: ObjectAddress| match roots {
-                Addresses::Indexed(index) => {
-                    address_from_discovery(discovery, index, address, meter)
+            let object = |address: ObjectAddress, target: bool| {
+                let result = match roots {
+                    Addresses::Indexed(index, own) => index.object(own, discovery, address, meter),
+                    Addresses::Loaded(_) => files
+                        .as_slice()
+                        .get(address.file_index as usize)
+                        .ok_or(ExportError::OutsideSelectionView(address))
+                        .and_then(|file| {
+                            file.as_ref()
+                                .and_then(|file: &Arc<SerializedFile>| file.object(address.path_id))
+                                .ok_or(ExportError::MissingClipSelection)
+                        }),
+                };
+                match result {
+                    Err(ExportError::OutsideSelectionView(_)) if !target => {
+                        Err(ExportError::MissingClipSelection)
+                    }
+                    result => result,
                 }
-                Addresses::Loaded(_) => files
-                    .as_slice()
-                    .get(address.file_index as usize)
-                    .and_then(Option::<Arc<SerializedFile>>::as_ref)
-                    .and_then(|file| file.object(address.path_id))
-                    .ok_or(ExportError::MissingClipSelection),
             };
             for request in requests.as_slice() {
-                let root = object(request.root)?;
-                let component = object(request.component)?;
+                let root = object(request.root, false)?;
+                let component = object(request.component, false)?;
                 let target;
                 let selector = match &request.clip {
                     ClipAddress::Resolved(address) => {
-                        let inside = match roots {
-                            Addresses::Loaded(_) => (address.file_index as usize) < files.len(),
-                            Addresses::Indexed(index) => index.contains(address.file_index),
-                        };
-                        if !inside {
-                            return Err(ExportError::OutsideSelectionView(*address));
-                        }
-                        target = object(*address)?;
+                        target = object(*address, true)?;
                         ClipSelector::Clip(&target)
                     }
                     ClipAddress::Source {
@@ -96,7 +101,7 @@ pub(super) fn clips<'a>(
                         field,
                         ordinal,
                     } => {
-                        target = object(*owner)?;
+                        target = object(*owner, true)?;
                         ClipSelector::SourceAddress {
                             owner: &target,
                             field: field.as_bytes(),
@@ -142,35 +147,4 @@ pub(super) fn clips<'a>(
 
 fn unresolved(error: &unityrs_anim::SlotError) -> ExportError {
     ExportError::Unresolved(error.clone())
-}
-
-fn address_from_discovery(
-    discovery: &Discovery,
-    files: &FileIndex,
-    address: ObjectAddress,
-    meter: &Meter,
-) -> Result<ObjectRef, ExportError> {
-    for rig in discovery.rigs() {
-        let objects = [&rig.root, &rig.component]
-            .into_iter()
-            .chain(rig.slots().iter().flat_map(|slot| {
-                [
-                    Some(&slot.source.owner),
-                    slot.replacement.as_ref().map(|source| &source.owner),
-                    slot.clip().ok(),
-                ]
-                .into_iter()
-                .flatten()
-            }))
-            .chain(rig.issues().iter().map(|issue| &issue.source.owner));
-        for object in objects {
-            meter.count_decode(1)?;
-            if object.path_id() == address.path_id
-                && files.matches(address.file_index, object, meter)?
-            {
-                return Ok(object.clone());
-            }
-        }
-    }
-    Err(ExportError::MissingClipSelection)
 }

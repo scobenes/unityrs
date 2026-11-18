@@ -63,34 +63,34 @@ pub enum MeshError {
     #[error("mesh has no positions or indices")]
     Empty,
     /// The core could not parse the object.
-    #[error(transparent)]
+    #[error("{0}")]
     Parse(#[from] unityrs_core::walk::ParseError),
     /// A source-file or resource error.
-    #[error(transparent)]
+    #[error("{0}")]
     Core(#[from] unityrs_core::Error),
     /// The geometry handler refused the input.
-    #[error(transparent)]
+    #[error("{0}")]
     Decode(#[from] unityrs_meshdecode::MeshError),
     /// A metadata field is missing, has the wrong type or is out of range.
     #[error("malformed mesh field: {0}")]
     Field(&'static str),
     /// Renderer or component access failed.
-    #[error(transparent)]
+    #[error("{0}")]
     Scene(#[from] unityrs_scene::SceneError),
     /// A material or texture pointer failed to resolve.
-    #[error(transparent)]
+    #[error("{0}")]
     Deref(#[from] unityrs_core::env::DerefError),
     /// Texture decoding refused the input.
-    #[error(transparent)]
+    #[error("{0}")]
     Texture(#[from] unityrs_texture::DecodeError),
     /// Export output failed.
-    #[error(transparent)]
+    #[error("{0}")]
     Io(#[from] std::io::Error),
     /// Object-mode view refused a field.
-    #[error(transparent)]
+    #[error("{0}")]
     View(#[from] unityrs_core::objmode::ViewError),
     /// A memory, budget, allocator or work refusal.
-    #[error(transparent)]
+    #[error("{0}")]
     Charge(#[from] unityrs_core::limits::ChargeError),
 }
 const _: () = send_sync::<MeshError>();

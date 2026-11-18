@@ -205,6 +205,7 @@ pub(super) fn animation(
                 resource: None,
                 node,
                 reason: "animation_morph_last_frame_approximation",
+                dropped_renderer: false,
                 count: approximations,
             })?;
         }

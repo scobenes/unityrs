@@ -49,6 +49,7 @@ impl<'a> Candidates<'a> {
             id,
             inputs.failed(current)?,
             u64::try_from(spec.archives.len()).map_err(|_| Error::internal())?,
+            spec.spec_version,
             account.meter(),
         )?;
         Ok(Self {

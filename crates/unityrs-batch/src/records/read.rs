@@ -108,6 +108,7 @@ pub struct Reader<'a, R> {
     expected: &'a str,
     failed_input: bool,
     archives: u64,
+    spec_version: u64,
     input: Buffer<u8>,
     position: usize,
     available: usize,
@@ -125,6 +126,7 @@ impl<'a, R: Read> Reader<'a, R> {
         expected: &'a str,
         failed_input: bool,
         archives: u64,
+        spec_version: u64,
         meter: &Arc<Meter>,
     ) -> Result<Self, Error> {
         let mut input = Buffer::new(meter, BUFFER)?;
@@ -134,6 +136,7 @@ impl<'a, R: Read> Reader<'a, R> {
             expected,
             failed_input,
             archives,
+            spec_version,
             input,
             position: 0,
             available: 0,
@@ -241,6 +244,17 @@ impl<'a, R: Read> Reader<'a, R> {
             return Err(Error::internal());
         }
         let row = decode(&fields, &self.line)?;
+        if self.spec_version < 3 {
+            let glb = match &row {
+                Row::Candidate(c) => c.kind == Kind::Glb,
+                Row::Skip(s) => s.output == Kind::Glb,
+                Row::Diagnostic(d) => matches!(d.kind, super::DiagnosticKind::GlbDegraded),
+                _ => false,
+            };
+            if glb {
+                return Err(Error::internal());
+            }
+        }
         match &row {
             Row::Candidate(c) => {
                 self.last_key.clear();
