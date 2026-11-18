@@ -304,7 +304,10 @@ def check_built_clip(name, fixture, view, clip_key, nodes, avatar, editor_bindin
         if kind == "Transform":
             family, _, axis = prop.rpartition(".")
             _, attribute, axes = TRANSFORM_CURVES[family]
-            family_tracks = by_hash.get((crc32(path.encode()), 4, attribute, 0, False))
+            # Unity 2022.3 builds a Euler binding with custom type 4 and the
+            # other Transform families with custom type 0.
+            custom = 4 if attribute == 4 else 0
+            family_tracks = by_hash.get((crc32(path.encode()), 4, attribute, custom, False))
             if family_tracks:
                 if attribute == 2 and axis == "x":
                     properties = {family + "." + channel for channel in axes}

@@ -374,6 +374,39 @@ class CompleteReplayTests(unittest.TestCase):
         completed = json.loads((self.replays / "generic-constant.json").read_text())
         self.assertEqual(completed["spec"]["evidence"]["layout"], "constant")
 
+    def compiled_euler(self, bindings):
+        # Shaped like a 2022.3 build: no explicit curves, streamed slots for
+        # translation and then Euler, whose binding has custom type 4.
+        def frame(t, values):
+            return [int(bits(t), 16), len(values)] + [w for slot, v in enumerate(values)
+                                                      for w in (slot, 0, 0, 0, int(bits(v), 16))]
+        words = frame(-3.4028234663852886e38, [2, 0, 0, 15, 30, 10]) + frame(0, [2, 0, 0, 15, 30, 10])
+        words += frame(.5, [3.5, 0, 0, 82.5, -25, 220]) + frame(1, [5, 0, 0, 150, -80, 430]) + [0x7f800000, 0]
+        words[0] = 0xff7fffff
+        motion = crc32("Mötión".encode())
+
+        def edit(clip):
+            for field in ("m_PositionCurves", "m_EulerCurves"):
+                clip.pop(field)
+            data = clip["m_MuscleClip"]["m_Clip"]["data"]
+            data["m_StreamedClip"] = {"curveCount": 6, "data": words}
+            data["m_DenseClip"].update(m_CurveCount=0, m_SampleArray=[])
+            clip["m_ClipBindingConstant"] = {"genericBindings": [
+                dict(path=motion, typeID=4, attribute=attribute, customType=custom, isPPtrCurve=False)
+                for attribute, custom in bindings], "pptrCurveMapping": []}
+        self.replace_clip_values("generic-euler", edit)
+
+    def test_complete_reads_euler_motion_from_its_compiled_binding(self):
+        self.compiled_euler([(1, 0), (4, 4)])
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        completed = json.loads((self.replays / "generic-euler.json").read_text())
+        self.assertEqual(completed["spec"]["evidence"]["layout"], "streamed")
+
+    def test_complete_refuses_compiled_euler_without_its_binding(self):
+        self.compiled_euler([(1, 0), (3, 0)])
+        self.assert_refused("missing built fixture curve for ('Mötión', 'Transform', 'localEulerAnglesRaw.x')")
+
     def test_complete_refuses_missing_built_curve_despite_editor_claim(self):
         for case, field in (("legacy-explicit", "m_RotationCurves"), ("generic-euler", "m_EulerCurves"),
                             ("generic-quaternion", "m_RotationCurves"), ("generic-constant", "m_PositionCurves"),
