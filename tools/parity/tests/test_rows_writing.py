@@ -630,3 +630,47 @@ class FileRows(unittest.TestCase):
                         load(saved)
         self.assertEqual(blocks_of(no_blocks, "lz4"), 0)
         self.assertEqual(entries(load(no_blocks.save(packer="lz4"))[0]), {"e.resS": b""})
+
+    # Section 19.1, Unity 6000.6 node-info envelopes: HEAD 417d595 (head_oracle.py) on a synthetic format-23 file
+    # laid out as 6000.6.9f1 writes it, each envelope's size ending at its blob with no reference-hash list. HEAD
+    # reads a reference count there and misreads or refuses the file; the same file with the list reads (the
+    # control). unityrs's side: crates/unityrs-core/tests/head_bare_envelope.rs.
+    def test_head_misreads_bare_node_info_envelopes(self):
+        from io import BytesIO
+
+        import head_oracle
+
+        def envelope(listed):
+            strings = b"Synthetic\0Base\0int\0m_A\0"
+            rows = struct.pack("<hBBIIiiiQ", 1, 0, 0, 0, 10, -1, 0, 0, 0)
+            rows += struct.pack("<hBBIIiiiQ", 1, 1, 0, 15, 19, 4, 1, 0, 0)
+            payload = b"mhtt" + struct.pack("<iii", 23, 2, len(strings)) + rows + strings
+            payload += struct.pack("<I", 0) if listed else b""
+            return b"H" * 16 + struct.pack("<I", len(payload)) + payload
+
+        def serialized(listed):
+            head = struct.pack("<i?h", 1, False, -1) + bytes(16) + envelope(listed)
+            buf = bytearray(48) + b"6000.6.0f1\0" + struct.pack("<i?i", 19, True, 1) + head
+            buf += struct.pack("<iii", 2, 5, 7)  # dependencies
+            buf += struct.pack("<i", 1) + bytes(-(len(buf) + 4) % 4) + struct.pack("<qqIi", 1, 0, 4, 0)
+            buf += struct.pack("<iii", 0, 0, 1) + head + b"Part\0Synthetic\0Assembly\0" + b"\0"
+            metadata = len(buf) - 48
+            buf += bytes(-len(buf) % 16)
+            offset = len(buf)
+            buf += struct.pack("<i", 37)
+            buf[8:12] = struct.pack(">I", 23)
+            buf[20:40] = struct.pack(">Iqq", metadata, len(buf), offset)
+            return bytes(buf)
+
+        def read(sf, data, stream):
+            f = sf.SerializedFile(EndianBinaryReader(BytesIO(data) if stream else data), name="CAB-synthetic")
+            return f.types[0].type_dependencies, [o.parse_as_dict()["m_A"] for o in f.objects.values()]
+
+        with head_oracle.readers() as (sf, _, _):
+            for stream in (False, True):
+                self.assertEqual(read(sf, serialized(True), stream), ((5, 7), [37]))
+                try:
+                    got = read(sf, serialized(False), stream)
+                except Exception:
+                    continue
+                self.assertNotEqual(got, ((5, 7), [37]))

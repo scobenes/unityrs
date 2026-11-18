@@ -164,3 +164,114 @@ fn a_size_other_than_the_blob_end_reads_a_reference_count() {
     let file = parse(file(23, &info), ReaderKind::Memory).unwrap();
     assert_readable(&file);
 }
+
+#[test]
+fn a_listed_envelope_whose_size_excludes_its_list_reads_as_bare() {
+    // Tier C: HEAD takes this size for a presence gate and reads the list
+    // after it, as format 26 still does here. At 23 the bare reading takes
+    // the list's count (0) for the dependencies, the real dependency count
+    // (2) for the object count, and the tables after it shift.
+    for format in [23, 26] {
+        let mut info = envelope(format, None);
+        info.extend_from_slice(&0u32.to_le_bytes()); // the list, outside the size
+        let got = parse(file(format, &info), ReaderKind::Memory);
+        if format == 26 {
+            assert_readable(&got.unwrap());
+        } else {
+            assert!(
+                matches!(got, Err(unityrs_core::Error::TypeIndex { .. })),
+                "{got:?}"
+            );
+        }
+    }
+}
+
+/// A format-26 file whose last bytes are `handler`, its one shared handler.
+fn shared_tail(handler: &[u8]) -> Bytes {
+    let mut out = ByteWriter::le();
+    out.bytes(&[0; 48]).cstr(b"6000.6.0f1").i32(19).bool(true);
+    out.i32(0).i32(0).i32(0).i32(0).i32(0); // types, objects, scripts, externals, refs
+    out.i32(1).bytes(handler);
+    let mut data = out.into_inner();
+    let size = u64::try_from(data.len()).unwrap();
+    data[8..12].copy_from_slice(&26u32.to_be_bytes());
+    let metadata = u32::try_from(data.len() - 48).unwrap();
+    data[20..24].copy_from_slice(&metadata.to_be_bytes());
+    data[24..32].copy_from_slice(&size.to_be_bytes());
+    data[32..40].copy_from_slice(&size.to_be_bytes());
+    Bytes::from(data)
+}
+
+/// A listed envelope with `count` as its count, `hashes` bytes of hashes and
+/// a declared size of `size(blob_end)`, where `blob_end` is the bytes from
+/// the magic to the end of the blob.
+fn listed(count: u32, hashes: usize, size: impl Fn(u32) -> u32) -> Vec<u8> {
+    let mut info = envelope(26, None);
+    let blob_end = u32::from_le_bytes(info[16..20].try_into().unwrap());
+    info[16..20].copy_from_slice(&size(blob_end).to_le_bytes());
+    info.extend_from_slice(&count.to_le_bytes());
+    info.extend(std::iter::repeat_n(0xA5, hashes));
+    info
+}
+
+fn refusal(data: Bytes, kind: ReaderKind) -> String {
+    let meter = Meter::unlimited();
+    let error = SerializedFile::parse_with_reader(
+        RawStr::from_static(b"CAB-synthetic"),
+        data,
+        None,
+        &meter,
+        &Arc::new(FileContext::unitypy()),
+        kind,
+    )
+    .unwrap_err();
+    assert!(meter.decoded() < 4096, "refused before reading the list");
+    assert_eq!(meter.used(), 0);
+    error.to_string()
+}
+
+#[test]
+fn a_reference_list_is_bounded_by_its_envelope_before_any_hash_is_read() {
+    for kind in [ReaderKind::Memory, ReaderKind::Stream] {
+        // A huge count in an envelope declaring room for the count alone.
+        let huge = shared_tail(&listed(u32::MAX, 64, |end| end + 4));
+        assert!(refusal(huge, kind).contains("reference hashes exceed the envelope"));
+        // A size reaching past the blob but not past the list it holds.
+        let short = shared_tail(&listed(2, 32, |end| end + 20));
+        assert!(refusal(short, kind).contains("reference hashes exceed the envelope"));
+        // A declared hash the input ends inside.
+        let truncated = shared_tail(&listed(1, 3, |end| end + 20));
+        assert!(refusal(truncated, kind).contains("short reference hash"));
+        // A size below the blob's end (HEAD's presence-only size) is bounded
+        // by the input instead: a count past its end is refused.
+        let presence = shared_tail(&listed(1 << 20, 64, |_| 8));
+        assert!(refusal(presence, kind).contains("reference hashes exceed the envelope"));
+    }
+}
+
+#[test]
+fn a_canonical_bare_file_saves_to_its_own_bytes() {
+    // The writer rebuilds each blob, taking common strings where it can, and
+    // pads object data to 8: built that way, with no unused strings, the
+    // saved file equals the original byte for byte.
+    let common: &[(u32, &[u8])] = &[(55, b"Base"), (222, b"int")];
+    let mut payload = ByteWriter::le();
+    payload.bytes(b"mhtt").i32(23);
+    payload.bytes(&blob_tree(&nodes(), 23, false, Strings::Common, common));
+    let mut info = ByteWriter::le();
+    info.bytes(&[b'H'; 16])
+        .u32(u32::try_from(payload.len()).unwrap())
+        .bytes(payload.as_slice());
+    let mut original = file(23, info.as_slice()).to_vec();
+    original.resize(original.len().next_multiple_of(8), 0);
+    let size = u64::try_from(original.len()).unwrap();
+    original[24..32].copy_from_slice(&size.to_be_bytes());
+    let original = Bytes::from(original);
+    let file = parse(original.clone(), ReaderKind::Memory).unwrap();
+    assert_readable(&file);
+    for layout in [SaveLayout::Semantic, SaveLayout::UnityPy] {
+        let saved = file.save(SaveOptions { layout }).unwrap();
+        assert_eq!(envelopes(&saved), [None, None], "{layout:?}");
+        assert_eq!(saved, original, "{layout:?}");
+    }
+}

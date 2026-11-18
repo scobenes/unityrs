@@ -65,7 +65,9 @@ impl Parser<'_> {
     /// shared-subtree table to consume reference hashes, an envelope whose
     /// serialized size ends exactly at the blob's end has no reference-hash
     /// list, as Unity 6000.6 writes it. HEAD reads a count past it and
-    /// misreads the rest of the metadata. Any other size reads as HEAD reads it.
+    /// misreads the rest of the metadata; conversely a hand-made listed
+    /// envelope whose size leaves its list out reads here as bare. Any other
+    /// size reads a list as HEAD does, bounded by the envelope or the input.
     pub(super) fn head_handler(&mut self) -> Result<Handler, Error> {
         self.meter.count_decode(20)?;
         let hash = self.r.read_short_array();
@@ -92,10 +94,26 @@ impl Parser<'_> {
             let nodes = NodeList::from_rows(rows)?.into_shared()?;
             listed_refs = !((23..26).contains(&self.version)
                 && self.r.position() - start == i128::from(size));
-            let count = if listed_refs { self.r.read_u32()? } else { 0 };
-            for _ in 0..count {
-                self.meter.count_decode(16)?;
-                refs.push(self.r.read_short_array())?;
+            if listed_refs {
+                // Checked before any hash is read or charged, the list must
+                // fit in what a size reaching past the blob declares, else
+                // (HEAD's presence-only sizes, which its oracle reads) in the input.
+                let blob_end = self.r.position();
+                let declared = start + i128::from(size);
+                let input = i128::try_from(self.data.len()).unwrap_or(i128::MAX);
+                let left = if declared > blob_end { declared } else { input } - blob_end;
+                let count = self.r.read_u32()?;
+                if 4 + 16 * i128::from(count) > left {
+                    return Err(invalid("reference hashes exceed the envelope"));
+                }
+                for _ in 0..count {
+                    self.meter.count_decode(16)?;
+                    let hash = self.r.read_short_array();
+                    if hash.as_slice().len() != 16 {
+                        return Err(invalid("short reference hash"));
+                    }
+                    refs.push(hash)?;
+                }
             }
             Some(nodes)
         } else {

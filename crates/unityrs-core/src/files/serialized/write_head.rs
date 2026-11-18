@@ -54,7 +54,8 @@ impl Handler {
             options.layout,
             file.ctx.providers.common_strings(),
         )?;
-        // A bare envelope (formats 23-25, Tier C) keeps its layout: no list.
+        // A bare envelope (formats 23-25, Tier C) stays bare: no list. The
+        // blob above is rebuilt, so the envelope keeps its layout, not its bytes.
         if self.listed_refs {
             info.u32(narrow(self.refs.len(), "HEAD reference count")?)?;
             for hash in self.refs.as_slice() {
