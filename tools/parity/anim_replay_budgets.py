@@ -13,7 +13,7 @@ checks every range and track kind against its own decoding, and
 
 `--verify` authors the rows again for a budgeted replay and fails unless
 they equal the stored ones, so rows widened after the capture was seen do
-not pass. Supported paths: rest, constant, held and streamed compiled
+not pass. `--show-dir DIR` reads saved show documents instead of bundles. Supported paths: rest, constant, held and streamed compiled
 slots, clamped explicit Hermite curves, and Euler input through the joint
 stage. Dense, weighted and humanoid paths are refused until they have a
 budget author.
@@ -42,6 +42,7 @@ RELATIVE_PAD, ABSOLUTE_PAD = 2**-40, 2**-1022
 # Rotation boxes halve a key interval until each box's guaranteed largest
 # component is at least FLOOR_SHARE of its largest possible component.
 FLOOR_SHARE, MAX_DEPTH = .5, 16
+TOO_CLOSE = f"rotation path too close to the origin to bound within {MAX_DEPTH} halvings"
 EXPLICIT = {"m_PositionCurves": ("translation", 3), "m_ScaleCurves": ("scale", 3),
             "m_RotationCurves": ("rotation", 4), "m_EulerCurves": ("euler", 3)}
 AXES = "xyzw"
@@ -232,7 +233,8 @@ class Bundles:
             require(result.returncode == 0, f"unityrs show {name}: {(result.stderr or result.stdout).strip()}")
             doc = read_json(result.stdout)
         require(doc.get("format") == "unityrs.show" and doc.get("version") == 1
-                and doc["object"]["file"] == ident["file"] and str(doc["object"]["path_id"]) == path_id,
+                and doc["object"]["file"] == ident["file"] and doc["object"]["file_index"] == ident["file_index"]
+                and str(doc["object"]["path_id"]) == path_id,
                 f"unexpected show document for {name} {path_id}")
         truncated = doc.get("truncated")
         require(isinstance(truncated, dict) and set(truncated) == {"cuts", "items", "depth", "bytes", "binary"}
@@ -483,17 +485,15 @@ def rotation_boxes(rest, sources, order, times):
         if floor_of(enclosure) >= FLOOR_SHARE * max(map(magnitude, enclosure)):
             return keep(values, enclosure)
         middle = a + (b - a) * .5
-        require(depth < MAX_DEPTH and a < middle < b,
-                f"rotation boxes reach depth {MAX_DEPTH} without a norm floor near the origin")
+        require(depth < MAX_DEPTH and a < middle < b, TOO_CLOSE)
         return pieces(segments, a, middle, depth + 1) + pieces(segments, middle, b, depth + 1)
 
-    if not sources:
-        return point(times[0]), degrees
-    boxes = [box for time in times for box in point(time)]
-    for lo, hi in zip(times, times[1:]):
+    boxes = [box for time in (times if sources else times[:1]) for box in point(time)]
+    for lo, hi in zip(times, times[1:]) if sources else ():
         middle = lo + (hi - lo) * .5
         boxes += pieces([source.segment(middle) for source in sources], lo, hi, 0)
-    require(all(floor_of(b) > 0 for b in boxes), "a rotation box contains the origin")
+    # A rest pose or a point box holding the origin has no norm floor either.
+    require(all(floor_of(b) > 0 for b in boxes), TOO_CLOSE)
     return boxes, degrees
 
 
@@ -616,17 +616,20 @@ def verify(manifest, folder, unityrs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("replay", type=Path)
-    parser.add_argument("--bundle-dir", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--bundle-dir", type=Path)
+    source.add_argument("--show-dir", type=Path, help="saved show documents instead of bundles and a CLI")
     parser.add_argument("--unityrs", default="unityrs")
     parser.add_argument("--verify", action="store_true")
     args = parser.parse_args()
     try:
         manifest = read_json(args.replay.read_text(encoding="utf-8"))
+        folder, unityrs = (args.show_dir, None) if args.show_dir else (args.bundle_dir, args.unityrs)
         if args.verify:
-            verify(manifest, args.bundle_dir, args.unityrs)
+            verify(manifest, folder, unityrs)
             return
         require("budgets" not in manifest["spec"], "the replay already has budgets")
-        result = author(manifest, args.bundle_dir, args.unityrs)
+        result = author(manifest, folder, unityrs)
         print(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False))
     except (ValueError, OSError, KeyError, IndexError, TypeError) as exc:
         parser.exit(1, f"anim_replay_budgets: {exc}\n")

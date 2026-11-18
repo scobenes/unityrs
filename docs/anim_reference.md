@@ -736,7 +736,8 @@ track kind and a matching budget derivation before promotion.
 budget rows of a completed generic or legacy replay without them, and
 `--verify` refuses stored rows that differ from the ones it writes. It
 checks each bundle's SHA-256 pin, then reads the bundles through
-`unityrs show --value canonical`, refusing any truncated document, and
+`unityrs show --value canonical`, refusing any truncated document or one
+for another file or object, and
 takes the tagged f32 bits of infinite tangents as they are. It reads the
 serialized rest pose, the compiled or explicit curves and the playback
 interval, never the observed poses. It walks each interval between the
@@ -777,8 +778,19 @@ Its choices, provisional until review:
   halves its pieces, until every box's guaranteed largest component is at
   least half its largest possible one. A unit quaternion's largest
   component is at least one half, so the floor stays at least one
-  quarter. The tool refuses after 16 halvings (the Rust audit allows 20)
-  and refuses any box that holds the origin.
+  quarter. A path that gets this close to the origin, such as a raw
+  quaternion whose W changes sign beside an X of `2^-14`, is refused as
+  `rotation path too close to the origin to bound` after 16 halvings, as
+  is a box holding the origin, a rest pose included.
+- The Rust audit halves its own pieces up to 20 times. It expands each
+  piece's chord by a curvature bound, per component, and for a `joint`
+  output clamps it to `[-1, 1]`, since a normalized quaternion lies there.
+  With at most one turning Euler axis, the other two vector components are
+  exactly zero and get no expansion, so a Z-only turn the author accepts,
+  such as 0° to 3000°, passes the audit (a test runs that case through
+  both). A piece that still fits no box is refused as `rotation path too
+  close to the origin to bound` when its chord's norm is below every box's
+  guaranteed floor, and as `bundle rotation output boxes` otherwise.
 
 | Stage | Recorded ranges in order | Continuous derivative bound |
 |---|---|---|

@@ -90,7 +90,7 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `anim_bounds.json` | the frozen transcription and bake bounds `docs/anim_reference.md` derives, read by the Rust replay |
 | `anim_replay.py`, `anim_replay_bounds.py` | validate a same-bundle Editor replay manifest for internal consistency and derive its f32 tolerances per recording; bundle-derivable facts are the Rust comparison's cross-checks |
 | `anim_fixture_contract.py` | required fixture asset keys, playback modes, built curves and static components, recorded probes, and the paired humanoid vector schedule |
-| `anim_replay_budgets.py` | author a completed generic or legacy replay's per-recording budget rows from its pinned bundles' rest pose and curves, read through CLI show, or `--verify` stored rows against them |
+| `anim_replay_budgets.py` | author a completed generic or legacy replay's per-recording budget rows from its pinned bundles' rest pose and curves, read through CLI show or from saved show documents (`--show-dir`), or `--verify` stored rows against them |
 | `anim_replay_complete.py` | verify the Editor run stamp across the handoff, resolve identities and serialized key times through CLI inspect and show, and validate the required bundles and recordings |
 | `anim_replay.schema.json` | the replay manifest's schema |
 | `mesh_dump.py` | L6 corpus JSONL digests and exact masked comparison; standalone oracle dump, `unityrs dump --mesh` candidate; arrays preserve binary64 bits and numeric tags, triangles preserve partial/empty tuples, OBJ streams into SHA-256; output stays outside the repository |
@@ -225,7 +225,7 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_anim_reference.py` | the f64 evaluator against hand-derived values: Hermite, weighted and stepped segments, streamed, dense and constant layouts, quaternion and Euler orders, timing and the f32 schedule | stdlib |
 | `test_anim_replay.py` | the replay manifest's validator and tolerance derivation on synthetic manifests, including the refusals | stdlib |
 | `test_anim_replay_budgets.py` | budget rows authored from synthetic bundle values and from `anim_budget_show/`: per-component ranges, mixed held-streamed slots, rotation boxes against closed-form quaternions (trig zeros, a fast turn, a held jump at the stop), the `--verify` refusal of widened rows, and refused seeds, pins, weighted and unclamped curves, dense storage and unclaimed bindings | stdlib |
-| `anim_budget_show/` | saved `unityrs show --value canonical` documents of a testkit-built synthetic legacy bundle, with its digest, for `test_anim_replay_budgets.py` | |
+| `anim_budget_show/` | saved `unityrs show --value canonical` documents, with their bundle's digest, of two testkit-built synthetic legacy bundles: `stepped/` (an Euler step at 2.25 s) for `test_anim_replay_budgets.py`, and `turn/` (a Z-only 0° to 3000° turn) for the Rust `anim_replay` audit test | |
 | `test_anim_replay_complete.py`, with `anim_fixture_support.py` | complete a serialized synthetic Editor handoff and reject invalid quaternion keys, skin weights and compiled PPtr mappings, foreign known vectors, wrong mixed scale bindings, seed-only streamed slots, and stale inspections | stdlib |
 | `test_anim_synthetic.py` | the synthetic clip replay's expectations (`crates/unityrs-anim/tests/support/clip_expected.json`) are what `anim_reference.py` computes now, and the file the Rust sampler is held to is regenerated, never edited | stdlib |
 

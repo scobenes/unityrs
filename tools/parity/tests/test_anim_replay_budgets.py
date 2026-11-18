@@ -12,11 +12,13 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import anim_replay as replay  # noqa: E402
+import scratch  # noqa: E402
 import anim_replay_budgets as budgets  # noqa: E402
 from anim_replay_bounds import budget_model  # noqa: E402
 from test_anim_replay import synthetic  # noqa: E402
 
 SEED, END = 0xff7fffff, 0x7f800000
+SHOWS = HERE / "tests" / "anim_budget_show"
 NODE = "-9223372036854775808"
 
 
@@ -197,6 +199,30 @@ class AuthoredBudgets(unittest.TestCase):
         self.assertTrue(held(boxes, (0, 0, 0, 1)) and held(boxes, (0, 0, 1, 0)))
         budget_model(rotation)
 
+    def test_a_raw_path_near_the_origin_is_refused(self):
+        # W runs linearly from 1 to -1 beside an X of 2^-14, so the raw norm
+        # falls to 2^-14 at 2.5 s.
+        tiny = 2.**-14
+        keys = [dict(time=2, value=dict(x=tiny, y=0, z=0, w=1), inSlope=dict(x=0, y=0, z=0, w=-2),
+                     outSlope=dict(x=0, y=0, z=0, w=-2)),
+                dict(time=3, value=dict(x=tiny, y=0, z=0, w=-1), inSlope=dict(x=0, y=0, z=0, w=-2),
+                     outSlope=dict(x=0, y=0, z=0, w=-2))]
+        curve = dict(m_Curve=keys, m_PreInfinity=2, m_PostInfinity=2, m_RotationOrder=4)
+        with self.assertRaisesRegex(ValueError, "rotation path too close to the origin to bound"):
+            authored(dict(m_RotationCurves=[dict(path="", curve=curve)]), legacy())
+
+    def test_a_zero_rest_rotation_is_refused(self):
+        clip = held_weight_clip()
+        FakeBundles.values = values(clip)
+        FakeBundles.values[NODE]["m_LocalRotation"] = dict(x=0, y=0, z=0, w=0)
+        original = budgets.Bundles
+        budgets.Bundles = FakeBundles
+        try:
+            with self.assertRaisesRegex(ValueError, "too close to the origin"):
+                budgets.author(synthetic(), None, "unityrs")
+        finally:
+            budgets.Bundles = original
+
     def test_weighted_scalar_curves_are_refused(self):
         key = dict(time=2, value=1, inSlope=0, outSlope=0, weightedMode=3)
         curve = dict(m_Curve=[key], m_PreInfinity=2, m_PostInfinity=2)
@@ -258,7 +284,7 @@ class RecordedShow(unittest.TestCase):
                                dict(address="0", id=ident(8), channels=channels)])
 
     def test_the_cli_encoding_authors_a_stepped_euler_row(self):
-        m = budgets.author(dict(spec=self.spec()), HERE / "tests" / "anim_budget_show", None)
+        m = budgets.author(dict(spec=self.spec()), SHOWS / "stepped", None)
         rotation = row(m, "rotation", 0)
         self.assertEqual(rotation["track_kind"], "euler_held")
         boxes = rotation["stages"][1]["norm_ranges"]
@@ -269,11 +295,23 @@ class RecordedShow(unittest.TestCase):
         [[lo, hi]] = row(m, "weight", 1)["stages"][0]["range"]
         self.assertTrue(lo < 30 < hi and hi - lo < 1e-9)
 
+    def test_a_truncated_or_misplaced_show_document_is_refused(self):
+        for field, value, reason in (("truncated", "items", "truncated show"),
+                                     ("object", "file_index", "unexpected show document")):
+            with self.subTest(field=field):
+                folder = scratch.for_case(self)
+                for path in (SHOWS / "stepped").iterdir():
+                    doc = json.loads(path.read_text(encoding="utf-8"))
+                    doc[field][value] += 1
+                    (folder / path.name).write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, reason):
+                    budgets.author(dict(spec=self.spec()), folder, None)
+
     def test_a_mismatched_pin_is_refused(self):
         spec = self.spec()
         spec["bundles"][0]["sha256"] = "0" * 64
         with self.assertRaisesRegex(ValueError, "digest mismatch"):
-            budgets.author(dict(spec=spec), HERE / "tests" / "anim_budget_show", None)
+            budgets.author(dict(spec=spec), SHOWS / "stepped", None)
 
 
 if __name__ == "__main__":

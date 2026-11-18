@@ -71,6 +71,7 @@ def _matches(schema, value, path):
 
 def _shape(schema, value, path):
     """The small Draft 2020-12 subset used by this checked-in schema."""
+    require(schema is not False, f"{path}: member not allowed")
     if "$ref" in schema:
         _shape(SCHEMA["$defs"][schema["$ref"].split("/")[-1]], value, path)
         return

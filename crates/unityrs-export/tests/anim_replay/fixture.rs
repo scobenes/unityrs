@@ -629,7 +629,7 @@ fn streamed_stage_range_covers_held_final_key() {
     );
 }
 
-fn legacy_euler_clip(keys: &[Key<3>]) -> unityrs_testkit::ngui::Object {
+pub(crate) fn legacy_euler_clip(keys: &[Key<3>]) -> unityrs_testkit::ngui::Object {
     let mut clip = legacy_clip();
     let V::Struct(_, fields) = &mut clip.value else {
         unreachable!()

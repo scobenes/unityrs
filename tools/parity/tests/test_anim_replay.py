@@ -670,7 +670,7 @@ class TestAnimReplay(unittest.TestCase):
             replay.derive(m)
         m = declare_budgets(synthetic())
         m["spec"]["budgets"][3]["component_ranges"] = [m["spec"]["budgets"][3]["stages"][0]["range"]] * 3
-        with self.assertRaisesRegex(ValueError, "only they, need component ranges"):
+        with self.assertRaisesRegex(ValueError, "no schema alternative"):
             replay.derive(m)
         m = declare_budgets(synthetic())
         m["spec"]["budgets"][0]["component_ranges"][1] = [[0, 0]]

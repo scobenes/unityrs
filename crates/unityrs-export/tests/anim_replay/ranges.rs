@@ -293,6 +293,8 @@ fn audit_rotation(
     if let Some(track) = target.tracks.first() {
         let mut speed = 0.;
         let mut curvature = 0.;
+        // Euler axes whose angle is not identically zero over the piece.
+        let mut active = [false; 3];
         for (axis, expansion) in expansions.iter_mut().enumerate().take(track.width()) {
             let (rate, acceleration) = if hi > lo {
                 track
@@ -307,6 +309,9 @@ fn audit_rotation(
             if joint {
                 let a = track.raw_at(lo, false, meter)?[axis];
                 let b = track.raw_at(hi, hi > lo, meter)?[axis];
+                if let Some(flag) = active.get_mut(axis) {
+                    *flag = a != 0. || b != 0. || rate != 0. || acceleration != 0.;
+                }
                 if !inside(
                     &last["range"][0],
                     a.min(b) - *expansion,
@@ -331,23 +336,55 @@ fn audit_rotation(
             let speed = speed * gain;
             let acceleration = curvature * gain + speed.powi(2);
             expansions.fill(((hi - lo).powi(2) * acceleration / 8.).min((hi - lo) * speed * 0.5));
+            // With at most one turning axis the joint quaternion is that
+            // axis's own, so the other two vector components are exactly
+            // zero and need no expansion.
+            if active.iter().filter(|&&flag| flag).count() <= 1 {
+                for (expansion, flag) in expansions.iter_mut().zip(active) {
+                    if !flag {
+                        *expansion = 0.;
+                    }
+                }
+            }
         }
     }
     let boxes = list(&last["norm_ranges"])?;
     for range in boxes {
         let mut fits = true;
         for (axis, ((&a, &b), &expand)) in a.iter().zip(&b).zip(&expansions).enumerate() {
-            fits &= inside(&range[axis], a.min(b) - expand, a.max(b) + expand)?;
+            let (mut lo, mut hi) = (a.min(b) - expand, a.max(b) + expand);
+            if joint {
+                // A normalized quaternion's components lie in [-1, 1].
+                (lo, hi) = (lo.max(-1.), hi.min(1.));
+            }
+            fits &= inside(&range[axis], lo, hi)?;
         }
         if fits {
             return Ok(());
         }
     }
     let middle = center(lo, hi);
-    require(
-        depth < 20 && lo < middle && middle < hi,
-        "bundle rotation output boxes",
-    )?;
+    if !(depth < 20 && lo < middle && middle < hi) {
+        // Every box guarantees a norm of at least its own floor, so a
+        // point of the path below the smallest floor fits no box: the path
+        // is too close to the origin for these boxes to bound.
+        let mut floor = f64::INFINITY;
+        for range in boxes {
+            let mut guaranteed = 0_f64;
+            for axis in 0..4 {
+                let (lo, hi) = (number(&range[axis][0])?, number(&range[axis][1])?);
+                guaranteed = guaranteed.max(lo.max(-hi));
+            }
+            floor = floor.min(guaranteed);
+        }
+        let norm = |q: [f64; 4]| q.iter().map(|x| x * x).sum::<f64>().sqrt();
+        return Err(if norm(a).min(norm(b)) < floor {
+            "rotation path too close to the origin to bound"
+        } else {
+            "bundle rotation output boxes"
+        }
+        .into());
+    }
     audit_rotation(target, stages, joint, lo, middle, meter, depth + 1)?;
     audit_rotation(target, stages, joint, middle, hi, meter, depth + 1)
 }

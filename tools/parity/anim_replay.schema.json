@@ -167,7 +167,7 @@
       "required": ["property", "target", "channel", "track_kind", "stages"],
       "anyOf": [
         {"properties": {"property": {"enum": ["translation", "scale"]}}, "required": ["component_ranges"]},
-        {"properties": {"property": {"enum": ["rotation", "weight"]}}}
+        {"properties": {"property": {"enum": ["rotation", "weight"]}, "component_ranges": false}}
       ],
       "properties": {
         "property": {"enum": ["translation", "rotation", "scale", "weight"]},
