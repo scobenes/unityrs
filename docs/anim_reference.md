@@ -644,3 +644,20 @@ per-sample clocks, held sides and bounds. Freeze it alongside the inputs
 before comparison.
 Investigate discrepancies against the recorded layout, settings and
 equations.
+
+After deriving and freezing the tolerances, run the Rust comparison from
+the repository root:
+
+```sh
+UNITYRS_ANIM_REPLAY=synthetic-replay.json \
+UNITYRS_ANIM_BUNDLES=. \
+UNITYRS_ANIM_TOLERANCES=synthetic-tolerances.json \
+cargo test -p unityrs-export --features gltf --test anim_replay \
+  recorded_generic_or_legacy -- --ignored --nocapture
+```
+
+The same-bundle comparator checks the captured rig, clip and renderer
+identities, derives clocks and ranges from serialized playback, and reports
+worst Unity-space errors by rig, node or renderer, property and source time.
+The ungated synthetic tests exercise both clip modes with testkit bundles.
+L11 status requires the owner-built Editor recordings.

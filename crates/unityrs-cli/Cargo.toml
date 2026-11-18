@@ -28,7 +28,7 @@ unityrs-batch = { path = "../unityrs-batch" }
 unityrs-core = { path = "../unityrs-core" }
 unityrs-gltf = { path = "../unityrs-gltf" }
 unityrs-scene = { path = "../unityrs-scene" }
-unityrs-export = { path = "../unityrs-export", features = ["vorbis"] }
+unityrs-export = { path = "../unityrs-export", features = ["vorbis", "gltf"] }
 unityrs-mesh = { path = "../unityrs-mesh" }
 unityrs-tpk = { path = "../unityrs-tpk" }
 unityrs-dump = { path = "../unityrs-dump" }

@@ -10,7 +10,7 @@ pub(crate) fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
 }
 
-fn bezier([a, b, c, d]: [f64; 4], parameter: f64) -> f64 {
+pub(crate) fn bezier([a, b, c, d]: [f64; 4], parameter: f64) -> f64 {
     let ab = lerp(a, b, parameter);
     let bc = lerp(b, c, parameter);
     let cd = lerp(c, d, parameter);

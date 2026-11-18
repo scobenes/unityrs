@@ -24,6 +24,8 @@ mod discovery;
 mod error;
 mod read;
 mod sample;
+mod segment;
+pub use segment::ScalarSegment;
 mod targets;
 mod timing;
 

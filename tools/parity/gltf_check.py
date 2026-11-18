@@ -12,6 +12,9 @@ Animation records use {animation, node, path, interpolation, times, values, samp
 Times and output rows are in glTF space, with one full weight vector per key.
 Optional samples are [time, expected row] pairs in the same space, with sample
 times kept at reference precision to distinguish either side of a held key.
+A bake envelope [magnitude, combined rate, local time] selects the frozen
+component or quaternion-angle comparison. In this mode exact key arrays
+are optional and at least one sample is required.
 """
 import argparse
 from bisect import bisect_right
@@ -19,6 +22,10 @@ import json
 import math
 import struct
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from anim_reference import angle as quaternion_angle, bake_bound  # noqa: E402
 
 
 def read_glb(path):
@@ -276,13 +283,29 @@ def check_accessors(doc, binary, expected, normalise=True):
             mode, times, values = channel
             if mode != case["interpolation"]:
                 raise AssertionError("animation interpolation")
-            equal([times], [list(map(f32, case["times"]))], "animation times")
-            equal(values, [list(map(f32, row)) for row in case["values"]], "animation output")
-            for time, reference in case.get("samples", []):
-                actual = sample_animation(channel, time, rotation=case["path"] == "rotation")
-                if len(actual) != len(reference) or any(
-                        not math.isclose(a, b, rel_tol=1e-7, abs_tol=1e-7)
-                        for a, b in zip(actual, reference)):
+            envelope = case.get("bake")
+            samples = case.get("samples", [])
+            if envelope is not None and not samples and "values" not in case:
+                raise AssertionError("animation bake envelope has no compared values")
+            if "times" in case or envelope is None:
+                equal([times], [list(map(f32, case["times"]))], "animation times")
+            if "values" in case or envelope is None:
+                equal(values, [list(map(f32, row)) for row in case["values"]], "animation output")
+            rotation = case["path"] == "rotation"
+            if envelope is not None:
+                prop = "weight" if case["path"] == "weights" else case["path"]
+                bound = bake_bound(prop, *envelope)
+            for time, reference in samples:
+                actual = sample_animation(channel, time, rotation=rotation)
+                if envelope is not None and len(actual) == len(reference):
+                    errors = ([quaternion_angle(actual, reference)] if rotation else
+                              (abs(a-b) for a, b in zip(actual, reference)))
+                    matches = all(math.isfinite(error) and error <= bound for error in errors)
+                else:
+                    matches = len(actual) == len(reference) and all(
+                        math.isclose(a, b, rel_tol=1e-7, abs_tol=1e-7)
+                        for a, b in zip(actual, reference))
+                if not matches:
                     raise AssertionError(f"animation {case['animation']} node {case['node']} "
                                          f"{case['path']} sample at {time}: {actual} != {reference}")
             continue

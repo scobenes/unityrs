@@ -50,6 +50,8 @@
 pub mod audio;
 pub use unityrs_audio::VorbisHeaders;
 pub mod extractor;
+#[cfg(feature = "gltf")]
+pub mod gltf;
 pub mod ngui;
 pub mod pyjson;
 mod pyjson_numbers;

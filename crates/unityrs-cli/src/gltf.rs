@@ -5,8 +5,10 @@ mod output;
 mod report;
 use std::{path::PathBuf, process::ExitCode, sync::Arc};
 use unityrs_core::{
+    budget::Reservation,
     env::{CabResolver, EnvOptions, Environment, Source, read_path},
     files::{File, SerializedFile},
+    limits::{Meter, MeteredVec},
     provider::ProviderChain,
 };
 use unityrs_scene::Unit;
@@ -162,29 +164,65 @@ fn run(raw: &[Vec<u8>]) -> Result<()> {
         options.resolver = Some(Arc::new(BuiltinFile(path.to_owned())));
     }
     let env = Environment::new(options);
+    // Read the profile before loading inputs so only explicit selectors
+    // retain file occurrences in argument order, including repeated paths.
+    let (profile, mut input_roots) = if let Some(path) = args.profile {
+        let meter = Meter::for_input(&args.limits, peak.clone(), Reservation::Input);
+        let bytes = read_path(path, &args.limits, &meter)?;
+        let profile = unityrs_gltf::Profile::parse(&bytes, &meter)?;
+        drop(bytes);
+        let roots = if matches!(&profile.clips, unityrs_gltf::Clips::Explicit(rows) if !rows.is_empty())
+        {
+            Some(MeteredVec::with_capacity(&meter, args.inputs().count())?)
+        } else {
+            None
+        };
+        (Some(profile), roots)
+    } else {
+        (None, None)
+    };
     let mut scene = None;
     for input in args.inputs() {
         let file = env.load(Source::Path(input.to_owned()))?;
         if let args::Selection::Scene(requested) = args.selection {
             scene_in_file(&mut scene, &file, requested)?;
         }
+        if let Some(roots) = &mut input_roots {
+            roots.push(file)?;
+        }
     }
     let unit = select(&env, &args, scene)?;
     peak.start_export();
     let meter = unit.meter();
-    let profile = if let Some(path) = args.profile {
-        let bytes = read_path(path, &args.limits, meter)?;
-        unityrs_gltf::Profile::parse(&bytes, meter)?
-    } else {
-        unityrs_gltf::Profile::new(meter)
-    };
+    let profile = profile.unwrap_or_else(|| unityrs_gltf::Profile::new(meter));
+    let roots = input_roots.as_ref().map_or(&[][..], MeteredVec::as_slice);
     let graph = unit.graph(&env, &unityrs_scene::GraphOptions::default(), meter)?;
     let mapper: &dyn unityrs_gltf::MaterialMapper = if args.pbr {
         &unityrs_gltf::CorePbr
     } else {
         &unityrs_gltf::UnlitExtras
     };
-    let scene = unityrs_gltf::collect_with_mapper(&env, &graph, &profile, mapper, meter)?;
+    let collected = unityrs_export::gltf::collect(&env, roots, &graph, &profile, mapper, meter)?;
+    if let Some(discovery) = collected.discovery {
+        for rig in discovery.rigs() {
+            for issue in rig
+                .issues()
+                .iter()
+                .chain(rig.slots().iter().filter_map(|slot| slot.clip().err()))
+            {
+                eprintln!(
+                    "unityrs gltf: rig {} component {} {}[{}]: {}",
+                    rig.root.path_id(),
+                    rig.component.path_id(),
+                    issue.source.field,
+                    issue.source.ordinal,
+                    issue.cause
+                );
+            }
+        }
+    }
+    let scene = collected.scene;
+    drop(collected.clips);
     let mut outputs = output::Outputs::new(meter);
     let mut written = None;
     outputs.write(args.output, |out| {
@@ -223,5 +261,54 @@ pub(super) fn main(raw: &[Vec<u8>]) -> ExitCode {
             eprintln!("{}\nunityrs gltf: {}", args::USAGE, e);
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::ffi::OsStrExt;
+    use unityrs_testkit::{ngui::Object, scene3d as s, scratch::Scratch};
+
+    #[test]
+    fn empty_clip_profile_does_not_allocate_an_input_root_list() {
+        let scratch = Scratch::new("gltf-static-input-allocation");
+        let resource = scratch.join("r.resource");
+        let prefab = scratch.join("level0");
+        let profile = scratch.join("static.json");
+        let output = scratch.join("result.glb");
+        std::fs::write(&resource, b"resource").unwrap();
+        let bytes = s::file(
+            s::Layout::Unity2022,
+            &[],
+            &[
+                Object::new(1, 1, s::game_object(b"root", &[(0, 2)])),
+                Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&prefab, bytes).unwrap();
+        std::fs::write(&profile, br#"{"profile_version":1,"clips":[]}"#).unwrap();
+
+        let padding = 8192;
+        let raw_path = |path: &std::path::Path| path.as_os_str().as_bytes().to_vec();
+        let mut args = vec![raw_path(&prefab)];
+        args.extend(std::iter::repeat_n(raw_path(&resource), padding));
+        args.extend([
+            b"--path-id".to_vec(),
+            b"1".to_vec(),
+            b"--profile".to_vec(),
+            raw_path(&profile),
+            b"-o".to_vec(),
+            raw_path(&output),
+        ]);
+        crate::test_alloc::LARGEST.set(Some(0));
+        let result = run(&args);
+        let largest = crate::test_alloc::LARGEST.replace(None).unwrap();
+        result.unwrap();
+        assert!(
+            largest < (padding + 1) * size_of::<File>(),
+            "largest allocation was {largest} bytes"
+        );
     }
 }

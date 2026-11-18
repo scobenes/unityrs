@@ -20,6 +20,9 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+unityrs-anim = { path = "../unityrs-anim", optional = true }
+unityrs-gltf = { path = "../unityrs-gltf", optional = true }
+unityrs-scene = { path = "../unityrs-scene", optional = true }
 unityrs-audio = { path = "../unityrs-audio", default-features = false }
 unityrs-mesh = { path = "../unityrs-mesh" }
 unityrs-core = { path = "../unityrs-core" }
@@ -42,6 +45,7 @@ md5 = { package = "md-5", version = "=0.11.0", default-features = false }
 # join's late names, for tests/tag_walk.rs and tests/late_names.rs); CI's
 # feature step enables it.
 [features]
+gltf = ["dep:unityrs-anim", "dep:unityrs-gltf", "dep:unityrs-scene"]
 # Explicit opt-in for library/CLI/Python callers; never called by batch.
 vorbis = ["unityrs-audio/vorbis"]
 test-hooks = []

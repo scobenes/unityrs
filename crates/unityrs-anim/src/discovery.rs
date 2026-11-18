@@ -17,7 +17,7 @@ use retain::{
 
 /// Serialized occurrence. Only the file/object identity, field and ordinal
 /// participate in selection. The pointer remains available for diagnostics.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SourceSlot {
     pub owner: ObjectRef,
     pub field: &'static str,
@@ -34,7 +34,7 @@ impl SourceSlot {
 }
 
 /// A failed reference and the exact occurrence that failed.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SlotError {
     pub source: SourceSlot,
     pub cause: AnimError,
@@ -103,6 +103,29 @@ pub struct Discovery(MeteredVec<RigClips>);
 pub enum ClipSelector<'a> {
     Clip(&'a ObjectRef),
     Source(&'a SourceSlot),
+    SourceAddress {
+        owner: &'a ObjectRef,
+        field: &'a [u8],
+        ordinal: usize,
+    },
+}
+
+impl ClipSelector<'_> {
+    fn matches_source(self, source: &SourceSlot) -> bool {
+        match self {
+            Self::Clip(_) => false,
+            Self::Source(other) => source.matches(other),
+            Self::SourceAddress {
+                owner,
+                field,
+                ordinal,
+            } => {
+                source.ordinal == ordinal
+                    && source.field.as_bytes() == field
+                    && same_object(&source.owner, owner)
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -128,6 +151,7 @@ impl Discovery {
         meter: &Arc<Meter>,
     ) -> Result<&ClipSlot, SelectionError<'_>> {
         let mut found = None;
+        let mut issue = None;
         for rig in self.rigs() {
             meter
                 .count_decode(1)
@@ -154,14 +178,26 @@ impl Discovery {
                             false
                         }
                     }
-                    ClipSelector::Source(source) => slot.source.matches(source),
+                    source => source.matches_source(&slot.source),
                 };
                 if matches && found.replace(slot).is_some() {
                     return Err(SelectionError::Ambiguous);
                 }
             }
+            if found.is_none() && issue.is_none() && !matches!(selector, ClipSelector::Clip(_)) {
+                for candidate in rig.issues() {
+                    meter
+                        .count_decode(1)
+                        .map_err(|error| SelectionError::Resource(error.into()))?;
+                    if selector.matches_source(&candidate.source) {
+                        issue = Some(candidate);
+                        break;
+                    }
+                }
+            }
         }
-        let slot = found.ok_or(SelectionError::Missing)?;
+        let slot = found
+            .ok_or_else(|| issue.map_or(SelectionError::Missing, SelectionError::Unresolved))?;
         slot.clip().map_err(SelectionError::Unresolved)?;
         Ok(slot)
     }

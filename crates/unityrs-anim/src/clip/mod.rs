@@ -127,6 +127,90 @@ impl Clip {
         self.has_metadata_tracks
     }
 
+    /// Provenance of the two endpoints used by playback.
+    pub fn endpoint_fields(
+        &self,
+        meter: &Arc<Meter>,
+    ) -> Result<(&'static str, &'static str), AnimError> {
+        if self.compiled()?.is_some() {
+            Ok(("m_MuscleClip.m_StartTime", "m_MuscleClip.m_StopTime"))
+        } else if (Dict {
+            parsed: &self.parsed,
+            meter,
+        })
+        .root("m_AnimationClipSettings")?
+        .is_some()
+        {
+            Ok((
+                "m_AnimationClipSettings.m_StartTime",
+                "m_AnimationClipSettings.m_StopTime",
+            ))
+        } else {
+            Ok(("key_bounds", "key_bounds"))
+        }
+    }
+
+    /// Runtime clock inventory, including metadata keys and shadowed runtime
+    /// fields. The caller sorts, deduplicates and clips to the source interval.
+    pub fn visit_key_times(
+        &self,
+        meter: &Arc<Meter>,
+        mut visit: impl FnMut(f64) -> Result<(), AnimError>,
+    ) -> Result<(), AnimError> {
+        let dict = Dict {
+            parsed: &self.parsed,
+            meter,
+        };
+        if let Some(clip) = self.compiled()? {
+            for (slot, _) in clip.streamed().iter().enumerate() {
+                clip.visit_times(slot, &mut visit)?;
+            }
+            if clip.counts().dense > 0 {
+                clip.visit_times(clip.counts().streamed, &mut visit)?;
+            }
+        }
+        for field in [
+            ClipField::Position,
+            ClipField::Rotation,
+            ClipField::Euler,
+            ClipField::Scale,
+            ClipField::Float,
+            ClipField::PPtr,
+            ClipField::CompressedRotation,
+        ] {
+            for row in dict.rows(field.name())? {
+                if field == ClipField::CompressedRotation {
+                    for &time in packed::read(&dict, row)?.times() {
+                        visit(time)?;
+                    }
+                    continue;
+                }
+                let curve = dict.required(row, "curve")?;
+                let keys = if field == ClipField::PPtr {
+                    curve
+                } else {
+                    dict.required(curve, "m_Curve")?
+                };
+                for key in dict.list(keys, "m_Curve")? {
+                    let time = dict.float(key, "time")?;
+                    if !time.is_finite() {
+                        return Err(AnimError::InvalidCurveKeys);
+                    }
+                    visit(time)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Serialized clip kind, independent of the owning Animation component.
+    pub fn legacy(&self, meter: &Arc<Meter>) -> Result<bool, AnimError> {
+        is_legacy(&Dict {
+            parsed: &self.parsed,
+            meter,
+        })
+    }
+
     /// Decode a packed legacy row for inspection even when another source
     /// owns the rotation. No playback slope semantics are assigned.
     pub fn packed_rotation(

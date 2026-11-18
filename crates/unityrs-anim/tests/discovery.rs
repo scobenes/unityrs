@@ -617,3 +617,46 @@ fn pre_52_controller_leaves_use_the_state_offset_table() {
     ));
     assert_eq!(rig.slots()[0].clip().unwrap().path_id(), -7);
 }
+
+#[test]
+fn malformed_clip_table_can_be_selected_by_its_source_address() {
+    let env = Environment::new(EnvOptions::unitypy());
+    let file = load(
+        &env,
+        b"bad-clips",
+        &[],
+        &[
+            Object::new(1, 1, s::game_object(b"rig", &[(0, 2), (0, 3)])),
+            Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+            a::animator(3, (0, 4)),
+            set_field(
+                a::controller(4, &[], &[]),
+                "m_AnimationClips",
+                V::Int(1),
+                None,
+            ),
+        ],
+    );
+    let meter = Meter::unlimited();
+    let graph = graph_from_scene_file(&env, &file, &GraphOptions::default(), &meter).unwrap();
+    let catalog = discover(&env, &graph, &meter).unwrap();
+    let rig = &catalog.rigs()[0];
+    let issue = &rig.issues()[0];
+    assert!(matches!(
+        issue.cause,
+        AnimError::Malformed("m_AnimationClips")
+    ));
+    for selector in [
+        ClipSelector::Source(&issue.source),
+        ClipSelector::SourceAddress {
+            owner: &file.object(4).unwrap(),
+            field: b"m_AnimationClips",
+            ordinal: 0,
+        },
+    ] {
+        assert!(matches!(
+            catalog.select(&rig.root, &rig.component, selector, &meter),
+            Err(SelectionError::Unresolved(found)) if std::ptr::eq(found, issue)
+        ));
+    }
+}

@@ -43,11 +43,12 @@
 
 mod animation;
 pub use animation::{
-    Animation, AnimationChannel, AnimationSampler, AnimationTarget, Interpolation,
+    Animation, AnimationChannel, AnimationSampler, AnimationTarget, Interpolation, align_rotation,
 };
 mod attribute_policy;
 mod collect;
-pub use collect::{collect, collect_with_mapper};
+pub use collect::animation::{CollectionTargets, MorphChannel, RendererAttachment};
+pub use collect::{collect, collect_with_animation, collect_with_mapper};
 mod image;
 mod json;
 mod layout;
@@ -81,6 +82,9 @@ pub enum GltfError {
     Invalid(&'static str),
     /// The output sink failed. It may contain a partial file.
     Io(std::io::Error),
+    UnsupportedControllerEvaluation,
+    UnsupportedSkinInfluences,
+    AnimationCallbackRequired,
 }
 const _: () = send_sync::<GltfError>();
 impl fmt::Display for GltfError {
@@ -90,6 +94,11 @@ impl fmt::Display for GltfError {
             Self::Mesh(e) => e.fmt(f),
             Self::Invalid(s) => f.write_str(s),
             Self::Io(e) => e.fmt(f),
+            Self::UnsupportedControllerEvaluation => {
+                f.write_str("unsupported_controller_evaluation")
+            }
+            Self::UnsupportedSkinInfluences => f.write_str("unsupported_skin_influences"),
+            Self::AnimationCallbackRequired => f.write_str("animation_callback_required"),
         }
     }
 }

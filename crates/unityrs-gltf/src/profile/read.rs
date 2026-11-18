@@ -3,6 +3,7 @@ use super::{
     Arc, Builtin, ExtrasNaming, GltfError, Inactive, Lod, Meter, MeteredVec, Profile, RootNaming,
     StaticBatch, Text,
 };
+use super::{ClipAddress, ClipRequest, Clips, MAX_SAMPLE_RATE, ObjectAddress};
 use crate::validate::invalid;
 type Result<T> = std::result::Result<T, GltfError>;
 struct Read<'a> {
@@ -121,6 +122,103 @@ impl Read<'_> {
         }
         Ok(n)
     }
+    fn digits(&mut self) -> Result<()> {
+        let begin = self.at;
+        while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit) {
+            self.at += 1;
+        }
+        if self.at == begin {
+            return Err(invalid("profile number"));
+        }
+        Ok(())
+    }
+    fn number<T: std::str::FromStr>(&mut self, fraction: bool) -> Result<T> {
+        self.ws();
+        let begin = self.at;
+        if self.bytes.get(self.at) == Some(&b'-') {
+            self.at += 1;
+        }
+        if self.bytes.get(self.at) == Some(&b'0') {
+            self.at += 1;
+        } else {
+            self.digits()?;
+        }
+        if fraction && self.bytes.get(self.at) == Some(&b'.') {
+            self.at += 1;
+            self.digits()?;
+        }
+        if fraction && matches!(self.bytes.get(self.at), Some(b'e' | b'E')) {
+            self.at += 1;
+            if matches!(self.bytes.get(self.at), Some(b'+' | b'-')) {
+                self.at += 1;
+            }
+            self.digits()?;
+        }
+        self.bytes
+            .get(begin..self.at)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .and_then(|text| text.parse().ok())
+            .ok_or_else(|| invalid("profile number"))
+    }
+    fn address(&mut self) -> Result<ObjectAddress> {
+        let mut address = ObjectAddress {
+            file_index: 0,
+            path_id: 0,
+        };
+        let seen = self.object(&[b"file_index", b"path_id"], |r, key| {
+            if key == 0 {
+                address.file_index = r.uint()?;
+            } else {
+                address.path_id = r.number(false)?;
+            }
+            Ok(())
+        })?;
+        if seen != 3 {
+            return Err(invalid("profile object address"));
+        }
+        Ok(address)
+    }
+    fn source(&mut self) -> Result<ClipAddress> {
+        let mut owner = None;
+        let mut field = None;
+        let mut ordinal = 0;
+        let seen = self.object(&[b"owner", b"field", b"ordinal"], |r, key| {
+            match key {
+                0 => owner = Some(r.address()?),
+                1 => field = Some(r.string()?),
+                _ => ordinal = r.uint()?,
+            }
+            Ok(())
+        })?;
+        match (seen, owner, field) {
+            (7, Some(owner), Some(field)) => Ok(ClipAddress::Source {
+                owner,
+                field,
+                ordinal,
+            }),
+            _ => Err(invalid("profile clip source address")),
+        }
+    }
+    fn clip(&mut self) -> Result<ClipRequest> {
+        let (mut root, mut component, mut clip) = (None, None, None);
+        let seen = self.object(&[b"root", b"component", b"clip", b"source"], |r, key| {
+            match key {
+                0 => root = Some(r.address()?),
+                1 => component = Some(r.address()?),
+                2 => clip = Some(ClipAddress::Resolved(r.address()?)),
+                _ => clip = Some(r.source()?),
+            }
+            Ok(())
+        })?;
+        match (seen, root, component, clip) {
+            (7 | 11, Some(root), Some(component), Some(clip)) => Ok(ClipRequest {
+                root,
+                component,
+                clip,
+            }),
+            _ => Err(invalid("profile clip selector")),
+        }
+    }
     fn boolean(&mut self) -> Result<bool> {
         self.ws();
         for (word, value) in [(b"true".as_slice(), true), (b"false".as_slice(), false)] {
@@ -209,6 +307,9 @@ pub(super) fn parse(bytes: &[u8], meter: &Arc<Meter>) -> Result<Profile> {
             b"static_batch",
             b"normalise",
             b"clip_states",
+            b"clips",
+            b"sample_rate",
+            b"skin_influences",
         ],
         |r, id| {
             match id {
@@ -293,10 +394,33 @@ pub(super) fn parse(bytes: &[u8], meter: &Arc<Meter>) -> Result<Profile> {
                     ])?;
                 }
                 13 => p.normalise = r.boolean()?,
-                _ => {
+                14 => {
                     r.need(b'[')?;
                     if !r.take(b']') {
-                        return Err(invalid("clip states require P2b"));
+                        return Err(GltfError::UnsupportedControllerEvaluation);
+                    }
+                }
+                15 => {
+                    r.ws();
+                    p.clips = if r.bytes.get(r.at) == Some(&b'[') {
+                        Clips::Explicit(r.list(Read::clip)?)
+                    } else {
+                        if r.string()?.as_bytes() != b"all_discovered" {
+                            return Err(invalid("profile clips selector"));
+                        }
+                        Clips::AllDiscovered
+                    };
+                }
+                16 => {
+                    let rate = r.number::<f64>(true)?;
+                    if !rate.is_finite() || rate <= 0. || rate > MAX_SAMPLE_RATE {
+                        return Err(invalid("profile sample rate"));
+                    }
+                    p.sample_rate = Some(rate);
+                }
+                _ => {
+                    if r.uint()? != 4 {
+                        return Err(GltfError::UnsupportedSkinInfluences);
                     }
                 }
             }
