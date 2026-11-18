@@ -35,7 +35,7 @@ renderer and mesh channel, in Unity weight units.
 
 The scalar slot order is streamed, dense, constant. Build the typed
 binding table before indexing those ranges. Where the stream has a
-`discreteCurveCount`, the streamed range holds `curveCount +
+`discreteCurveCount`, zero included, the streamed range holds `curveCount +
 discreteCurveCount` slots in serialized binding order, and its discrete
 bindings must number exactly `discreteCurveCount`. Dense and then constant
 slots follow. A built 2022.3 capture confirms a stream of continuous slots
@@ -54,10 +54,12 @@ shapes and mixed-storage Transform bindings need same-bundle evidence.
   confirmed layout. Use that seed up to the first real key, even if the
   first real key is later than the clip start. Built 2022.3 clips seed
   every slot, continuous ones with zero slopes and their first key's
-  value. The seed's cubic starts at `-FLT_MAX`, so no finite sample lies on
-  it: hold its constant term up to the first real key, and over the whole
-  interval for a slot with no real key. Accept any finite coefficients,
-  including signed zeros. Refuse a seed for a slot outside the stream, a
+  value. Accept any finite seed, since samples at and after the first real
+  key do not read it. Before the first real key, hold a continuous seed
+  only in that flat, first-key-equal pattern (signed zeros compare equal),
+  or when it is flat and the slot has no real key. Refuse any other
+  continuous seed there as unverified: a cubic from `-FLT_MAX` has no
+  confirmed playback value. Refuse a seed for a slot outside the stream, a
   repeated seed slot and a non-finite coefficient. An empty slot needs a
   supported initializer. Validate the terminal dummy separately and
   exclude it from the real keys and duration.

@@ -82,6 +82,8 @@ pub struct StreamKey {
 #[derive(Debug)]
 pub struct StreamSlot {
     seed: Option<SlotValue>,
+    /// Whether a continuous seed has zero slopes.
+    flat_seed: bool,
     keys: MeteredVec<StreamKey>,
 }
 
@@ -94,19 +96,29 @@ impl StreamSlot {
         }
     }
 
-    /// The typed value of the initial sentinel entry, held before the first
-    /// real key.
+    /// The typed value of the initial sentinel entry.
     #[must_use]
     pub fn seed_value(&self) -> Option<SlotValue> {
         self.seed
     }
 
-    /// The value held before the first real key: the seed, or else the
-    /// first key's value.
+    /// The value before the first real key. A discrete seed is held. A
+    /// continuous seed's cubic starts at `-FLT_MAX`, so it is held only in
+    /// the built pattern: zero slopes and the first key's value, or zero
+    /// slopes with no real key. Any other continuous seed is refused there.
     fn initial(&self, slot: usize) -> Result<SlotValue, AnimError> {
-        self.seed
-            .or_else(|| self.keys().first().map(|key| key.value))
-            .ok_or(AnimError::MissingStreamKey(slot))
+        let first = self.keys().first().map(|key| key.value);
+        match self.seed {
+            None => first.ok_or(AnimError::MissingStreamKey(slot)),
+            Some(SlotValue::Float(value)) => {
+                if self.flat_seed && first.is_none_or(|key| key == SlotValue::Float(value)) {
+                    Ok(SlotValue::Float(value))
+                } else {
+                    Err(AnimError::UnverifiedSeed(slot))
+                }
+            }
+            Some(seed) => Ok(seed),
+        }
     }
 
     #[must_use]
@@ -115,13 +127,16 @@ impl StreamSlot {
     }
 
     /// Record one seed entry, refusing a repeated slot or a non-finite
-    /// continuous coefficient. Its cubic starts at `-FLT_MAX`, so only the
-    /// constant term is held before the first real key.
+    /// continuous coefficient. Samples at and after the first real key do
+    /// not read it.
     fn seed_with(&mut self, value: SlotValue, coefficients: [u32; 4]) -> bool {
         let finite = !matches!(value, SlotValue::Float(_))
             || coefficients
                 .iter()
                 .all(|&bits| f32::from_bits(bits).is_finite());
+        self.flat_seed = coefficients[..3]
+            .iter()
+            .all(|&bits| f32::from_bits(bits) == 0.);
         finite && self.seed.replace(value).is_none()
     }
 
@@ -382,9 +397,11 @@ pub(super) fn decode(
     let stream = dict.required(clip, "m_StreamedClip")?;
     // The streamed range holds curveCount continuous and discreteCurveCount
     // discrete slots, in serialized binding order, before dense and constant.
+    // A present count, zero included, must match the streamed discrete
+    // bindings, so they cannot be counted as continuous instead.
     let discrete = match dict.field(stream, "discreteCurveCount")? {
-        None => 0,
-        Some(_) => dict.count(stream, "discreteCurveCount")?,
+        None => None,
+        Some(_) => Some(dict.count(stream, "discreteCurveCount")?),
     };
     let words = dict.words(stream, "data", false)?;
     let dense = dict.required(clip, "m_DenseClip")?;
@@ -396,7 +413,7 @@ pub(super) fn decode(
     let continuous = dict.count(stream, "curveCount")?;
     let counts = SlotCounts {
         streamed: continuous
-            .checked_add(discrete)
+            .checked_add(discrete.unwrap_or(0))
             .ok_or(AnimError::SlotOverflow)?,
         dense: dict.count(dense, "m_CurveCount")?,
         constant: constant_bits.len(),
@@ -432,7 +449,7 @@ pub(super) fn decode(
         }
     }
     let kinds = kinds.as_slice();
-    if discrete > 0
+    if let Some(discrete) = discrete
         && kinds.get(..counts.streamed).is_none_or(|streamed| {
             streamed.iter().filter(|&&kind| discrete_kind(kind)).count() != discrete
         })
@@ -521,6 +538,7 @@ fn decode_stream(
     for _ in 0..count {
         slots.push(StreamSlot {
             seed: None,
+            flat_seed: false,
             keys: MeteredVec::new(dict.meter),
         })?;
     }

@@ -119,7 +119,7 @@ fn positions(words: &[u32], times: &[f64]) -> Result<Vec<[f64; 3]>, AnimError> {
 }
 
 #[test]
-fn seeds_hold_their_constant_term_before_the_first_key() {
+fn only_built_seeds_are_held_before_the_first_key() {
     // The built pattern: each seed repeats its first key with zero slopes.
     let first = vector(0, [1., 2., 3.]);
     let words = stream(&first, &[(2., &first), (6., &vector(0, [4., 5., 6.]))]);
@@ -127,29 +127,44 @@ fn seeds_hold_their_constant_term_before_the_first_key() {
     assert_eq!(rows.len(), 3);
     assert_eq!(rows, [[1., 2., 3.], [1., 2., 3.], [4., 5., 6.]]);
 
-    // Sloped and signed-zero seeds are accepted. A cubic from -FLT_MAX has no
-    // finite value, so its constant term is held up to the first key, and a
-    // seed with no later key holds over the whole interval.
-    let seed = [
-        (
-            0,
-            [
-                1_f32.to_bits(),
-                2_f32.to_bits(),
-                3_f32.to_bits(),
-                9_f32.to_bits(),
-            ],
-        ),
-        (1, held(-0.)),
-        (2, held(5.)),
-    ];
+    // Before a later first key, a flat seed equal to that key is held, as is
+    // a flat seed with no real key. Signed zeros compare equal.
+    let seed = [(0, held(1.)), (1, held(-0.)), (2, held(5.))];
     let key = [(0, held(1.)), (1, held(0.))];
     let words = stream(&seed, &[(3., &key), (6., &key)]);
     let rows = positions(&words, &[2., 2.5, 3., 6.]).unwrap();
     assert_eq!(rows.len(), 4);
-    assert_eq!(rows[..2], [[9., -0., 5.]; 2]);
+    assert_eq!(rows[..2], [[1., -0., 5.]; 2]);
     assert!(rows[0][1].is_sign_negative());
     assert_eq!(rows[2..], [[1., 0., 5.]; 2]);
+
+    // Any finite seed is accepted when sampling starts at the first key.
+    let sloped = [1_f32, 2., 3., 9.].map(f32::to_bits);
+    let mut seed = first.clone();
+    seed[0].1 = sloped;
+    let words = stream(&seed, &[(2., &first), (6., &first)]);
+    let rows = positions(&words, &[2., 6.]).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows, [[1., 2., 3.]; 2]);
+
+    // Before a later first key, refuse a sloped seed, a flat seed with
+    // another value and a sloped seed with no real key.
+    let later = vector(0, [1., 2., 3.]);
+    let mut different = later.clone();
+    different[1].1 = held(7.);
+    let mut alone = later.clone();
+    alone[2].1 = sloped;
+    for (seed, keys, slot) in [
+        (seed.clone(), &later[..], 0),
+        (different, &later[..], 1),
+        (alone, &later[..2], 2),
+    ] {
+        let words = stream(&seed, &[(3., keys), (6., keys)]);
+        assert!(matches!(
+            positions(&words, &[2., 6.]),
+            Err(AnimError::UnverifiedSeed(s)) if s == slot
+        ));
+    }
 
     // Refuse a non-finite seed coefficient, a slot outside the stream and a
     // repeated seed slot.
@@ -310,13 +325,16 @@ fn several_discrete_curves_share_the_stream_in_binding_order() {
             .all(|row| row.pose.position == [1., 2., 3.])
     );
 
-    // The count must match the discrete bindings in the streamed range.
-    let (object, _) = load(built(&bindings, &words, &Layout2022::streamed(2, 3)), false);
-    let clip = read_clip(&object, &meter).unwrap();
-    assert!(matches!(
-        clip.compiled(),
-        Err(AnimError::UnsupportedClipLayout)
-    ));
+    // A present count, zero included, must match the discrete bindings in
+    // the streamed range.
+    for layout in [Layout2022::streamed(2, 3), Layout2022::streamed(5, 0)] {
+        let (object, _) = load(built(&bindings, &words, &layout), false);
+        let clip = read_clip(&object, &meter).unwrap();
+        assert!(matches!(
+            clip.compiled(),
+            Err(AnimError::UnsupportedClipLayout)
+        ));
+    }
 }
 
 #[test]

@@ -65,6 +65,7 @@ pub enum AnimError {
     NoPlayableChannels,
     InvalidStreamFrame,
     MissingStreamKey(usize),
+    UnverifiedSeed(usize),
     InvalidDenseGrid,
     InvalidPPtrIndex(usize),
 }
@@ -173,6 +174,7 @@ impl fmt::Display for AnimError {
             Self::NoPlayableChannels => f.write_str("no_playable_channels"),
             Self::InvalidStreamFrame => f.write_str("invalid_streamed_frame"),
             Self::MissingStreamKey(slot) => write!(f, "missing_streamed_key({slot})"),
+            Self::UnverifiedSeed(slot) => write!(f, "unverified_pre_first_key_seed({slot})"),
             Self::InvalidDenseGrid => f.write_str("invalid_dense_grid"),
             Self::InvalidPPtrIndex(slot) => write!(f, "invalid_pptr_index({slot})"),
         }
