@@ -34,7 +34,10 @@ renderer and mesh channel, in Unity weight units.
 ### Compiled storage
 
 The scalar slot order is streamed, dense, constant. Build the typed
-binding table before indexing those ranges. Public readers support the
+binding table before indexing those ranges. A built 2022.3 stream with a
+nonzero `discreteCurveCount` keys its discrete slots after the
+`curveCount` continuous ones, both in binding order. Refuse a split stream
+with dense or constant slots until their relative order is confirmed. Public readers support the
 layout, coefficient and value field positions. Sampling behavior, sentinel
 shapes and mixed-storage Transform bindings need same-bundle evidence.
 [AssetStudio reader](https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudio/Classes/AnimationClip.cs)
@@ -46,7 +49,9 @@ shapes and mixed-storage Transform bindings need same-bundle evidence.
   ordinary key and after the last real key, hold the first or last stored
   value respectively. An initial sentinel can seed a held PPtr in a
   confirmed layout. Use that seed up to the first real key, even if the
-  first real key is later than the clip start. An empty slot needs a
+  first real key is later than the clip start. Built 2022.3 clips also
+  seed each continuous slot with zero slopes and its first key's value.
+  Require that agreement and otherwise ignore the continuous seed. An empty slot needs a
   supported initializer. Validate the terminal dummy separately and
   exclude it from the real keys and duration.
 - Dense. Frame `i` is at `g(i) = m_BeginTime + i / m_SampleRate`, using
@@ -138,7 +143,11 @@ For Euler values, sample degrees without folding revolutions. About axis
 For application order `A,B,C`, compose `Q_C Q_B Q_A` using the Hamilton
 product and normalize. The confirmed enum layout uses
 `0..5 = XYZ, XZY, YZX, YXZ, ZXY, ZYX`. Where there is no stored order,
-use ZXY only for a layout with confirmed default behavior.
+use ZXY only for a layout with confirmed default behavior. Built 2022.3
+generic clips have no stored order on their Euler slots, which bind as
+Transform attribute 4 with custom type 4. Their replays match ZXY and no
+other order. A compiled blend-shape binding stores the CRC32 of the bare
+channel name, without the `blendShape.` prefix.
 [Unity Quaternion.Euler](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/Quaternion.Euler.html)
 · [Unity rotation-order enum](https://github.com/Unity-Technologies/UnityCsReference/blob/9778aaee88c7de7656c15184ba5c91ca66db7e94/Runtime/Transform/ScriptBindings/Transform.bindings.cs)
 

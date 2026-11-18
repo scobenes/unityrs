@@ -20,7 +20,7 @@ pub enum PathQuery<'a> {
 #[derive(Clone, Copy, Debug)]
 pub enum MorphProperty<'a> {
     Attribute(&'a [u8]),
-    /// IEEE CRC32 of the full `blendShape.<name>` attribute.
+    /// IEEE CRC32 of the bare channel name, as a compiled binding stores it.
     Hash(u32),
 }
 
@@ -351,15 +351,14 @@ impl<'a> RigPaths<'a> {
             ),
             MorphProperty::Hash(_) => None,
         };
-        // AssetStudio's ModelConverter hashes the full prefixed property.
-        // https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudioUtility/ModelConverter.cs#L480-L484
-        let prefix_crc = update_crc(!0, MORPH_PREFIX);
+        // Built 2022.3 clips store the CRC32 of the bare channel name, without
+        // the `blendShape.` prefix of the editor property.
         let mut found = None;
         for channel in channels {
             meter.count_decode((channel.name.len() as u64).saturating_add(1))?;
             let matches = match property {
                 MorphProperty::Attribute(_) => name == Some(channel.name),
-                MorphProperty::Hash(hash) => hash == !update_crc(prefix_crc, channel.name),
+                MorphProperty::Hash(hash) => hash == !update_crc(!0, channel.name),
             };
             if matches && found.replace(channel).is_some() {
                 return Err(AnimError::AmbiguousChannel(node));

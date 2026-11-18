@@ -1,12 +1,12 @@
 //! Rig-scoped property ownership and Unity-space sample output.
 use crate::{
-    AnimError, BindingKind, BindingTarget, Clip, ClipField, ClipSource, ClipTiming, CompiledClip,
-    MorphProperty, PathQuery, RendererChannels, RigPaths, StorageKind, TransformProperty,
+    AnimError, BindingTarget, Clip, ClipField, ClipSource, ClipTiming, CompiledClip, MorphProperty,
+    PathQuery, RendererChannels, RigPaths, StorageKind, TransformProperty,
     clip::{
         Playback,
         explicit::{Curve, Data, Property, visit_runtime},
     },
-    curve::{normalize, work_for_search},
+    curve::{EulerOrder, normalize, work_for_search},
     read::Dict,
 };
 use std::sync::Arc;
@@ -139,12 +139,6 @@ pub fn bind_clip<'a, 'r>(
                 }
                 if slot.binding.script.path_id != 0 {
                     return Err(AnimError::UnsupportedBindingTarget);
-                }
-                if let BindingKind::Transform(property) = slot.kind {
-                    // The generic slot table has no rotation-order field.
-                    if property == TransformProperty::Euler {
-                        return Err(AnimError::UnsupportedRotationOrder(None));
-                    }
                 }
                 tracks.push(BoundTrack {
                     target,
@@ -488,6 +482,17 @@ impl BoundTrack<'_, '_> {
         {
             meter.count_decode(256)?;
             return order.rotation(raw);
+        }
+        if let Evaluator::Compiled(..) = self.evaluator
+            && let BindingTarget::Transform {
+                property: TransformProperty::Euler,
+                ..
+            } = self.target
+        {
+            // The slot table has no order field. Built 2022.3 generic replays
+            // match Unity's default ZXY order and no other.
+            meter.count_decode(256)?;
+            return EulerOrder::ZXY.rotation(raw);
         }
         meter.count_decode(32)?;
         normalize(raw)

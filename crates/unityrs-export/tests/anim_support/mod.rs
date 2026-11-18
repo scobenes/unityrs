@@ -126,7 +126,7 @@ pub fn generic_clip(kind: GenericClip) -> Object {
             Binding {
                 class: 137,
                 custom: 20,
-                attribute: 2_753_195_566,
+                attribute: 1_339_427_383,
                 ..Binding::default()
             },
             Binding {

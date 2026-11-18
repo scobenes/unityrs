@@ -82,6 +82,8 @@ pub struct StreamKey {
 #[derive(Debug)]
 pub struct StreamSlot {
     seed: Option<PPtr>,
+    /// A continuous seed's value bits, which must repeat the first key's.
+    float_seed: Option<u32>,
     keys: MeteredVec<StreamKey>,
 }
 
@@ -94,6 +96,18 @@ impl StreamSlot {
     #[must_use]
     pub fn keys(&self) -> &[StreamKey] {
         self.keys.as_slice()
+    }
+
+    /// Record one seed entry. Built clips seed every continuous slot with
+    /// its first value and zero slopes, so that seed is only checked.
+    fn seed_with(&mut self, value: SlotValue, [c3, c2, c1, c0]: [u32; 4]) -> bool {
+        match value {
+            SlotValue::Object(pointer) => self.seed.replace(pointer).is_none(),
+            SlotValue::Float(_) if [c3, c2, c1].iter().all(|&c| f32::from_bits(c) == 0.) => {
+                self.float_seed.replace(c0).is_none()
+            }
+            _ => false,
+        }
     }
 
     fn at(&self, slot: usize, sample: f64, meter: &Meter) -> Result<SlotValue, AnimError> {
@@ -355,14 +369,13 @@ pub(super) fn decode(
     };
     let clip = dict.field(clip, "data")?.unwrap_or(clip);
     let stream = dict.required(clip, "m_StreamedClip")?;
-    // The split count introduced in newer trees needs fixture evidence for
-    // the relationship between the two counts and the serialized slots.
-    if dict
-        .field(stream, "discreteCurveCount")?
-        .is_some_and(|value| value.as_u64() != Some(0))
-    {
-        return Err(AnimError::UnsupportedClipLayout);
-    }
+    // Built 2022.3 clips stream their discrete slots after the continuous
+    // ones, in binding order. Their order against dense and constant slots
+    // has no fixture evidence, so a split stream must be the only storage.
+    let discrete = match dict.field(stream, "discreteCurveCount")? {
+        None => 0,
+        Some(_) => dict.count(stream, "discreteCurveCount")?,
+    };
     let words = dict.words(stream, "data", false)?;
     let dense = dict.required(clip, "m_DenseClip")?;
     let dense_bits = dict.words(dense, "m_SampleArray", true)?;
@@ -370,11 +383,17 @@ pub(super) fn decode(
         .field(clip, "m_ConstantClip")?
         .map_or(Ok(&[][..]), |constant| dict.words(constant, "data", true))?;
     let frame_count = dict.count(dense, "m_FrameCount")?;
+    let continuous = dict.count(stream, "curveCount")?;
     let counts = SlotCounts {
-        streamed: dict.count(stream, "curveCount")?,
+        streamed: continuous
+            .checked_add(discrete)
+            .ok_or(AnimError::SlotOverflow)?,
         dense: dict.count(dense, "m_CurveCount")?,
         constant: constant_bits.len(),
     };
+    if discrete > 0 && (counts.dense > 0 || counts.constant > 0) {
+        return Err(AnimError::UnsupportedClipLayout);
+    }
     if counts.dense.checked_mul(frame_count) != Some(dense_bits.len())
         || (counts.dense > 0 && frame_count == 0)
     {
@@ -406,6 +425,14 @@ pub(super) fn decode(
         }
     }
     let kinds = kinds.as_slice();
+    if discrete > 0
+        && kinds
+            .iter()
+            .enumerate()
+            .any(|(slot, &kind)| discrete_kind(kind) != (slot >= continuous))
+    {
+        return Err(AnimError::UnsupportedClipLayout);
+    }
     let mapping = table.pptr_mapping();
     let streams = decode_stream(dict, counts.streamed, words, kinds, mapping)?;
     let begin = dict.float(dense, "m_BeginTime")?;
@@ -456,6 +483,13 @@ pub(super) fn decode(
     }))
 }
 
+fn discrete_kind(kind: BindingKind) -> bool {
+    matches!(
+        kind,
+        BindingKind::PPtr | BindingKind::Integer | BindingKind::ManagedReference
+    )
+}
+
 fn decode_value(
     bits: u32,
     slot: usize,
@@ -481,6 +515,7 @@ fn decode_stream(
     for _ in 0..count {
         slots.push(StreamSlot {
             seed: None,
+            float_seed: None,
             keys: MeteredVec::new(dict.meter),
         })?;
     }
@@ -516,15 +551,13 @@ fn decode_stream(
                 .get_mut(slot)
                 .ok_or(AnimError::InvalidStreamFrame)?;
             let value = decode_value(c0, slot, kinds, mapping)?;
+            let coefficients = [c3, c2, c1, c0];
             if seed {
-                if let SlotValue::Object(pointer) = value
-                    && stream.seed.replace(pointer).is_none()
-                {
+                if stream.seed_with(value, coefficients) {
                     continue;
                 }
                 return Err(AnimError::InvalidStreamFrame);
             }
-            let coefficients = [c3, c2, c1, c0];
             if stream
                 .keys
                 .as_slice()
@@ -549,6 +582,13 @@ fn decode_stream(
     for (i, slot) in slots.as_slice().iter().enumerate() {
         if slot.keys.is_empty() && slot.seed.is_none() {
             return Err(AnimError::MissingStreamKey(i));
+        }
+        if slot.float_seed.is_some_and(|bits| {
+            slot.keys()
+                .first()
+                .is_none_or(|key| key.coefficients[3] != bits)
+        }) {
+            return Err(AnimError::InvalidStreamFrame);
         }
     }
     Ok(slots)
