@@ -36,6 +36,7 @@ pub struct RendererResource {
     pub owner_path_id: i64,
     pub pointer: unityrs_core::env::PPtr,
 }
+const _: () = crate::send_sync::<RendererResource>();
 
 /// Editable scene, already in glTF's right-handed coordinate and UV space.
 #[derive(Debug)]
