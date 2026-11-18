@@ -1,4 +1,4 @@
-"""Validate a version 1 L11 recording and derive its a priori f32 tolerances."""
+"""Complete and validate L11 recordings and derive their a priori f32 tolerances."""
 import argparse
 import hashlib
 import json
@@ -154,9 +154,16 @@ def _validate_clock(spec, start, stop, length):
     keys = evidence["key_times"]
     require(_ordered(keys) and keys[0] == start and keys[-1] == stop and set(boundaries) <= set(keys),
             "invalid clock evidence key times")
-    require(all(float(t) == t for t in (*boundaries, *keys, *times)), "time is not exactly representable as binary64")
+    authored_keys = evidence.get("authored_key_times", [])
+    if authored_keys:
+        require(_ordered(authored_keys) and authored_keys[0] == start and authored_keys[-1] == stop,
+                "invalid authored key times")
+    require(all(float(t) == t for t in (*boundaries, *keys, *authored_keys, *times)),
+            "time is not exactly representable as binary64")
     effective = [clocks(spec, time, length) for time in times]
     if stop > start:
+        runtime_source_bits = {f32_bits(t) for t in keys} if authored_keys else set()
+        keys = sorted(set(keys) | set(authored_keys))
         key_locals = sorted({f32_from_bits(f32_bits(t - start)) for t in keys})
         key_sources = (sorted({f32_from_bits(f32_bits(t)) for t in keys})
                        if spec["source_clock"] == "f32_add" else keys)
@@ -166,7 +173,8 @@ def _validate_clock(spec, start, stop, length):
             return 0 < i < len(keys) and time < keys[i]
 
         require(any(start < source < stop and between(key_locals, f32_from_bits(bits)) and between(key_sources, source)
-                    for bits, _, source in effective[1:-1]), "nonzero interval requires an effective f32 off-key sample")
+                    and (not authored_keys or between(keys, nominal) and f32_bits(source) not in runtime_source_bits)
+                    for bits, nominal, source in effective[1:-1]), "nonzero interval requires an effective f32 off-key sample")
         require(_ordered([f32_from_bits(bits) for bits, _, _ in effective]), "duplicate effective f32 sample times")
 
     targets = set(_targets(spec))
@@ -265,7 +273,7 @@ def _validate_humanoid_spec(spec, human):
             "hips must be a distinct descendant of the Animator root")
 
 
-def validate_spec(spec):
+def validate_spec(spec, *, pending_humanoid=False):
     _shape(SCHEMA["$defs"]["spec"], spec, "/spec")
     bundles = spec["bundles"]
     require(len({bundle["name"] for bundle in bundles}) == len(bundles), "duplicate bundle name")
@@ -333,7 +341,8 @@ def validate_spec(spec):
     require(all(("muscles" in row) == (spec["mode"] == "human_pose") for row in spec["schedule"]),
             "only known-vector playback requires muscles in the schedule")
     if spec["mode"] == "human_pose":
-        require(not spec["held_boundaries"] and "humanoid" in spec["evidence"], "invalid known-vector evidence")
+        require(not spec["held_boundaries"] and (pending_humanoid or "humanoid" in spec["evidence"]),
+                "invalid known-vector evidence")
     settings = spec["evidence"]["import_settings"]
     require(len({row["property"] for row in settings}) == len(settings), "duplicate effective import setting")
     human = spec["evidence"].get("humanoid")
@@ -467,8 +476,8 @@ def _validate_qualification(spec, capture, baselines):
                         f"{name} {prop} residual exceeds frozen replay bound at {sample['local']}")
 
 
-def _validate_recording(spec, capture, bundle_dir=None):
-    clock_discriminated = validate_spec(spec)
+def _validate_recording(spec, capture, bundle_dir=None, *, pending_humanoid=False):
+    clock_discriminated = validate_spec(spec, pending_humanoid=pending_humanoid)
     require(spec["build_target"] == capture["build_target"], "build target mismatch")
     require([b["sha256"] for b in spec["bundles"]] == capture["bundle_sha256"], "bundle digest mismatch")
     if bundle_dir is not None:
@@ -543,6 +552,8 @@ def _known_vector_id(recording):
 
 def validate(manifest, bundle_dir=None):
     """Check the recording and return whether a held probe discriminates the clock."""
+    require(not (isinstance(manifest, dict) and manifest.get("format") == "unityrs.anim_replay_pending"),
+            "pending replay needs the complete command")
     _shape(SCHEMA, manifest, "")
     spec, capture = manifest["spec"], manifest["capture"]
     clock_discriminated = _validate_recording(spec, capture, bundle_dir)
@@ -594,11 +605,25 @@ def derive(manifest, bundle_dir=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("validate", "validate-spec", "derive", "capture-id"))
-    parser.add_argument("file", type=Path)
+    parser.add_argument("mode", choices=("complete", "validate", "validate-spec", "derive", "capture-id"))
+    parser.add_argument("file", type=Path, help="replay file or output folder for complete")
     parser.add_argument("--bundle-dir", type=Path)
+    inspection = parser.add_mutually_exclusive_group()
+    inspection.add_argument("--unityrs", help="unityrs executable for complete (default: unityrs on PATH)")
+    inspection.add_argument("--inspect-dir", type=Path, help="saved inspect and show JSON for complete")
     args = parser.parse_args()
     try:
+        if args.mode == "complete":
+            from anim_replay_complete import complete_folder
+
+            require(args.bundle_dir is None, "complete reads bundles/ inside the output folder")
+            executable = args.unityrs or "unityrs"
+            if args.unityrs:
+                executable = str(Path(executable).resolve())
+            count = complete_folder(args.file, executable, args.inspect_dir, sys.modules[__name__])
+            print(f"Completed and validated {count} replay(s).")
+            return
+        require(args.unityrs is None and args.inspect_dir is None, "inspection options require complete")
         value = read_json(args.file.read_text(encoding="utf-8"))
         if args.mode == "validate-spec":
             require(args.bundle_dir is None, "bundle verification requires a capture")
