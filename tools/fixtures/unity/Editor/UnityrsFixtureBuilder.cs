@@ -427,16 +427,20 @@ static partial class UnityrsFixtureBuilder
             var source = fixture.Optional ? coverage : main;
             // A coverage build that failed has already set its cases.
             if (source == null) continue;
+            // Build-only runs check the built bundle too, so a missing one is an error.
+            void RequireBundle() => Require(source.TryGetValue(fixture.Bundle, out var dependencies)
+                && dependencies.Length == 0 && File.Exists(Path.Combine(bundles, fixture.Bundle)),
+                "Expected a self-contained replay bundle " + fixture.Bundle + " for " + name);
             if (!record)
             {
-                report.Set(name, "skipped", "The Build fixtures only menu item was used.");
+                if (report.Try("Check " + name, new[] { name }, RequireBundle))
+                    report.Set(name, "skipped", "The Build fixtures only menu item was used.");
                 continue;
             }
             Progress("Recording " + name, .6f + .36f * i / build.Replays.Count);
             log("Recording " + name);
             report.Try("Record " + name, new[] { name }, () => {
-                Require(source.TryGetValue(fixture.Bundle, out var dependencies) && dependencies.Length == 0,
-                    "Expected a self-contained replay bundle for " + name);
+                RequireBundle();
                 Directory.CreateDirectory(replays);
                 bool mixed = AnimReplayRecorder.RecordFixture(fixture, bundles, replays, run.run_id, log);
                 report.Set(name, "recorded");
