@@ -62,7 +62,9 @@ class CompleteReplayTests(unittest.TestCase):
             renderer["mesh_group"] = 0
         del spec["evidence"]["discovery"], spec["evidence"]["import_settings"]
         spec["evidence"]["layout"] = "editor_authored"
-        spec["evidence"]["editor"] = {"bindings": [{"path": "", "property": "blendShape.Lift"}]}
+        spec["evidence"]["editor"] = {
+            "bindings": [{"path": "", "property": "blendShape.Lift"}], "expected_discovery": "null_override"
+        }
 
         headers = []
         for path_id, class_id, name, value in (

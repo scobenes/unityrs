@@ -1,4 +1,4 @@
-// Copy to Assets/Editor in the owner-built fixture project. See docs/anim_reference.md.
+#if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -18,11 +18,14 @@ public static partial class AnimReplayRecorder
     // JsonUtility reads only the fields used to drive capture. Preserve the complete
     // validated specification verbatim, including the owner-inspected serialized evidence.
     [Serializable] class Id { public int bundle, file_index; public string file, path_id; }
-    [Serializable] class Bundle { public string name, sha256; }
+    [Serializable] class BundleName { public string name; }
+    [Serializable] class Bundle : BundleName { public string sha256; }
     [Serializable] class Node { public string address, name; }
     [Serializable] class Channel { public int index; public string name; public float[] full_weights; }
-    [Serializable] class RendererSpec { public string address; public int component; public Id mesh; public Channel[] channels; }
-    [Serializable] class Point { public double local; public float[] muscles; }
+    [Serializable] class RendererAddress { public string address; public int component; public Channel[] channels; }
+    [Serializable] class RendererSpec : RendererAddress { public Id mesh; public int mesh_group; }
+    [Serializable] class Timepoint { public double local; }
+    [Serializable] class Point : Timepoint { public float[] muscles; }
     [Serializable] class EndpointEvidence { public double source; public string field; }
     [Serializable] class ClockEvidence { public EndpointEvidence start, stop; }
     [Serializable] class Evidence { public ClockEvidence clock; }
@@ -98,41 +101,84 @@ public static partial class AnimReplayRecorder
     [MenuItem("Tools/unityrs/Record animation replay")]
     public static void Record()
     {
+        try
+        {
+            CheckEditMode();
+            string input = EditorUtility.OpenFilePanel("Select validated recording specification", "", "json");
+            if (input.Length == 0) return;
+            string output = EditorUtility.SaveFilePanel("Save animation replay", Path.GetDirectoryName(input), "replay", "json");
+            if (output.Length == 0) return;
+            Need(!File.Exists(output), "Choose a new replay filename.");
+            string json = File.ReadAllText(input);
+            var spec = JsonUtility.FromJson<Spec>(json);
+            var capture = RecordCapture(spec, Path.GetDirectoryName(input), pending: false);
+            WriteReplay(output, "unityrs.anim_replay", json, capture);
+            Debug.Log("Animation replay captured. Validate it before freezing tolerances.");
+        }
+        catch (Exception error)
+        {
+            Debug.LogException(error);
+            EditorUtility.DisplayDialog("Animation replay failed", error.Message, "OK");
+        }
+    }
+
+    static void CheckEditMode()
+    {
         Need(!EditorApplication.isPlayingOrWillChangePlaymode && !AnimationMode.InAnimationMode(),
             "Exit Play Mode and animation preview before recording.");
-        string input = EditorUtility.OpenFilePanel("Select validated recording specification", "", "json");
-        if (input.Length == 0) return;
-        string output = EditorUtility.SaveFilePanel("Save animation replay", Path.GetDirectoryName(input), "replay", "json");
-        if (output.Length == 0) return;
-        Need(!File.Exists(output), "Choose a new replay filename.");
-        string json = File.ReadAllText(input);
-        var spec = JsonUtility.FromJson<Spec>(json);
+    }
+
+    static void WriteReplay(string output, string format, string spec, Capture capture)
+    {
+        string staging = output + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(staging, FileMode.CreateNew))
+            using (var writer = new StreamWriter(stream))
+                writer.Write("{\"format\":\"" + format + "\",\"version\":1,\"spec\":" + spec
+                    + ",\"capture\":" + JsonUtility.ToJson(capture, true) + "}\n");
+            File.Move(staging, output);
+        }
+        finally
+        {
+            if (File.Exists(staging)) File.Delete(staging);
+        }
+    }
+
+    static Capture RecordCapture(Spec spec, string bundleDir, bool pending)
+    {
+        Need(spec != null && spec.bundles != null && spec.bundles.Length > 0, "Expected a replay specification with bundles.");
+        Need(pending || (spec.prefab != null && spec.clip != null
+            && (string.IsNullOrEmpty(spec.avatar_asset) || spec.avatar != null)), "Missing built asset identity.");
         var clock = ReadSourceClock(spec);
         var bundles = new List<AssetBundle>();
         var digests = new List<string>();
         try
         {
             Need(spec.build_target == EditorUserBuildSettings.activeBuildTarget.ToString(), "Build target mismatch.");
+            Need(!pending || spec.bundles.Length == 1, "Pending fixtures must use one self-contained bundle.");
             foreach (var row in spec.bundles)
             {
                 Need(!string.IsNullOrEmpty(row.name) && row.name != "." && row.name != ".."
                     && row.name.IndexOfAny(new[] { '/', '\\', ':' }) < 0, "Expected a bundle basename.");
                 // Hash the very bytes handed to Unity, including dependency bundles.
-                byte[] bytes = File.ReadAllBytes(Path.Combine(Path.GetDirectoryName(input), row.name));
+                byte[] bytes = File.ReadAllBytes(Path.Combine(bundleDir, row.name));
                 using (var sha = SHA256.Create())
                     digests.Add(BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant());
-                Need(digests[digests.Count - 1] == row.sha256, "Bundle digest mismatch: " + row.name);
+                Need(pending || digests[digests.Count - 1] == row.sha256, "Bundle digest mismatch: " + row.name);
                 var bundle = AssetBundle.LoadFromMemory(bytes);
                 Need(bundle != null, "Cannot load bundle: " + row.name);
                 bundles.Add(bundle);
             }
 
-            var prefab = LoadPrefab(FindAssetBundle(bundles, spec.prefab, spec.prefab_asset), spec.prefab_asset);
-            var clip = Load<AnimationClip>(bundles, spec.clip, spec.clip_asset);
+            var prefab = LoadPrefab(FindAssetBundle(bundles, pending ? 0 : spec.prefab.bundle, spec.prefab_asset),
+                spec.prefab_asset);
+            var clip = Load<AnimationClip>(bundles, pending ? 0 : spec.clip.bundle, spec.clip_asset);
             Need(clip.name == spec.clip_name, "Built clip name disagrees with the inspected clip.");
             foreach (var node in spec.nodes)
                 Need(At(prefab.transform, node.address).name == node.name, "Built node name disagrees with the inspected node.");
-            var avatar = string.IsNullOrEmpty(spec.avatar_asset) ? null : Load<Avatar>(bundles, spec.avatar, spec.avatar_asset);
+            var avatar = string.IsNullOrEmpty(spec.avatar_asset) ? null
+                : Load<Avatar>(bundles, pending ? 0 : spec.avatar.bundle, spec.avatar_asset);
             bool legacy = spec.mode == "legacy", knownPose = spec.mode == "human_pose";
             Need(legacy || knownPose || spec.mode == "animator", "Unknown playback mode.");
             Need(legacy == clip.legacy, "Clip legacy flag disagrees with playback mode.");
@@ -199,7 +245,7 @@ public static partial class AnimReplayRecorder
                         var target = binding as Animator;
                         if (target != null)
                             Need(target.avatar == avatar && target.hasTransformHierarchy, "Avatar or materialized hierarchy mismatch.");
-                        var rest = ReadPose(nodes, renderers, spec.renderers);
+                        var rest = ReadPose(nodes, renderers, spec.renderers, pending);
                         if (i == 0)
                         {
                             capture.rest = rest;
@@ -216,18 +262,18 @@ public static partial class AnimReplayRecorder
                         if (legacy)
                         {
                             SampleLegacy((Animation)binding, clip, time);
-                            sample.pose = ReadPose(nodes, renderers, spec.renderers);
+                            sample.pose = ReadPose(nodes, renderers, spec.renderers, pending);
                         }
                         else if (knownPose)
                         {
                             SampleMuscles(target, point.muscles);
                             sample.muscles_f32 = point.muscles.Select(Bits).ToArray();
-                            sample.pose = ReadPose(nodes, renderers, spec.renderers);
+                            sample.pose = ReadPose(nodes, renderers, spec.renderers, pending);
                         }
                         else
                         {
                             sample.pose = SampleAnimator(target, clip, time,
-                                () => ReadPose(nodes, renderers, spec.renderers));
+                                () => ReadPose(nodes, renderers, spec.renderers, pending));
                         }
                         capture.samples[i] = sample;
                     }
@@ -236,12 +282,7 @@ public static partial class AnimReplayRecorder
             }
             finally { EditorSceneManager.ClosePreviewScene(scene); }
 
-            string record = "{\"format\":\"unityrs.anim_replay\",\"version\":1,\"spec\":" + json
-                + ",\"capture\":" + JsonUtility.ToJson(capture, true) + "}\n";
-            using (var outputStream = new FileStream(output, FileMode.CreateNew))
-            using (var writer = new StreamWriter(outputStream))
-                writer.Write(record);
-            Debug.Log("Animation replay captured. Validate it before freezing tolerances.");
+            return capture;
         }
         finally
         {
@@ -249,10 +290,10 @@ public static partial class AnimReplayRecorder
         }
     }
 
-    static AssetBundle FindAssetBundle(List<AssetBundle> bundles, Id id, string key)
+    static AssetBundle FindAssetBundle(List<AssetBundle> bundles, int index, string key)
     {
-        Need(id != null && id.bundle >= 0 && id.bundle < bundles.Count, "Invalid bundle index.");
-        var bundle = bundles[id.bundle];
+        Need(index >= 0 && index < bundles.Count, "Invalid bundle index.");
+        var bundle = bundles[index];
         Need(bundle.GetAllAssetNames().Contains(key, StringComparer.Ordinal), "Unknown exact asset key: " + key);
         return bundle;
     }
@@ -265,9 +306,9 @@ public static partial class AnimReplayRecorder
         return roots[0];
     }
 
-    static T Load<T>(List<AssetBundle> bundles, Id id, string key) where T : Object
+    static T Load<T>(List<AssetBundle> bundles, int index, string key) where T : Object
     {
-        var matches = FindAssetBundle(bundles, id, key).LoadAssetWithSubAssets<T>(key);
+        var matches = FindAssetBundle(bundles, index, key).LoadAssetWithSubAssets<T>(key);
         Need(matches.Length == 1, "Use an unambiguous typed asset key: " + key);
         return matches[0];
     }
@@ -388,7 +429,7 @@ public static partial class AnimReplayRecorder
         return pose;
     }
 
-    static Pose ReadPose(Transform[] nodes, SkinnedMeshRenderer[] renderers, RendererSpec[] specs)
+    static Pose ReadPose(Transform[] nodes, SkinnedMeshRenderer[] renderers, RendererSpec[] specs, bool pending)
     {
         var meshIds = new Dictionary<Mesh, string>();
         var meshes = new Dictionary<string, Mesh>();
@@ -399,7 +440,8 @@ public static partial class AnimReplayRecorder
             var mesh = renderer.sharedMesh;
             var spec = specs[i];
             Need(mesh != null && mesh.blendShapeCount == spec.channels.Length, "Built mesh channel count mismatch.");
-            string id = spec.mesh.bundle + ":" + spec.mesh.file_index + ":" + spec.mesh.path_id;
+            string id = pending ? spec.mesh_group.ToString(CultureInfo.InvariantCulture)
+                : spec.mesh.bundle + ":" + spec.mesh.file_index + ":" + spec.mesh.path_id;
             Need(!meshIds.TryGetValue(mesh, out var prior) || prior == id, "Shared mesh identity mismatch.");
             Need(!meshes.TryGetValue(id, out var previous) || previous == mesh, "Mesh ID aliases two objects.");
             meshIds[mesh] = id;
@@ -511,3 +553,5 @@ public static partial class AnimReplayRecorder
         if (!condition) throw new InvalidOperationException(message);
     }
 }
+
+#endif

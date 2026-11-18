@@ -315,8 +315,8 @@ conflicting/collapsed sides refuses the jump.
 
 ## Same-bundle recorder and replay contract
 
-A replay document has an owner-prepared `spec` and recorder-generated
-`capture` under a versioned [JSON Schema](../tools/parity/anim_replay.schema.json).
+A completed replay document has a `spec` and recorder-generated `capture`
+under a versioned [JSON Schema](../tools/parity/anim_replay.schema.json).
 The [synthetic replay test](../tools/parity/tests/test_anim_replay.py) shows
 both halves on a one-node prefab with two renderers sharing a mesh.
 
@@ -361,7 +361,7 @@ any L11 row.
   contract](AGENTS.md#inspect-and-pagination). `file` is the exact stored
   name. `path_id` is a canonical signed 64-bit decimal string, which
   survives JSON number conversions.
-- Inspect the exact hashed artifacts before recording. Check the bundle
+- Inspect the exact hashed artifacts before completing a recording. Check the bundle
   container PPtr for each selected prefab, clip and Avatar asset key.
   From the prefab GameObject, walk Transform child and GameObject
   component PPtrs in stored order to establish the address-to-ID crosswalk
@@ -520,28 +520,73 @@ them. Record the typed `unsupported_…` causes for refusal probes.
 
 ### Owner workflow
 
-1. Build original fixture bundles in the [owner-built project](plans/static3d.md#8-the-editor-fixture-project-owner-built)
-   with a documented 2022.3 or 6000.x patch and active target. Place the
-   ordered bundle set beside the recording spec. Check the identity
-   crosswalk, timing and settings against these exact artifacts.
-2. Prepare the spec and include endpoints, off-key and held-boundary
-   times. Run `python3 -I tools/parity/anim_replay.py validate-spec synthetic-spec.json`.
-3. Copy [AnimReplayRecorder.cs](../tools/fixtures/AnimReplayRecorder.cs)
-   into `Assets/Editor`. In Edit Mode choose **Tools → unityrs → Record
-   animation replay**. Open the validated spec and save a new replay file.
-   Verify the endpoint behavior and held probes. Run
-   `python3 -I tools/parity/anim_replay.py validate synthetic-replay.json --bundle-dir .`
-   with the bundle directory to recheck the artifact bytes.
-4. Freeze the budgets and the resulting tolerance document as described
-   below. Keep the original fixture bundles and numeric records under
-   the repository's fixture rules. Record digest and project-relative
-   keys without machine-specific paths.
+Follow the [five Editor steps](../tools/fixtures/unity/README.md) to build
+the bundles and record all animation fixtures in one run. The recorder
+uses asset keys, hierarchy addresses and component ordinals. It selects
+endpoints, off-key samples and held probes from the authored keys and
+records the Editor-visible clip settings, curve bindings and model import
+settings. Built file and path IDs are filled in by repo-side completion.
 
-To check prefab lookup in the Editor, also copy
-[AnimReplayRecorderSmokeTest.cs](../tools/fixtures/AnimReplayRecorderSmokeTest.cs)
-to `Assets/Editor` and run **Tools → unityrs → Test animation replay prefab
-loading**. It builds a temporary three-node prefab bundle and checks the
-recorder's root selection and access to the nested node.
+#### Repo-side completion
+
+Pass the returned version-and-target folder, containing `bundles/` and
+`replays/`, to the completion command. The Unity operator's work ends
+when they send the folder.
+
+```sh
+python3 -I tools/parity/anim_replay.py complete "path/to/returned-folder" --unityrs target/debug/unityrs
+```
+
+Omit `--unityrs` to use `unityrs` on PATH. The `*.pending.json` files use
+the separate `unityrs.anim_replay_pending` format, version 1, and stay
+beside the completed files. Each pending spec has one bundle basename
+without a digest, uses integer mesh groups where renderers share a mesh,
+and omits built identities. The capture pins the digest of the bytes
+Unity loaded. Completion reads `inspect` for file occurrences and class
+headers, then uses `show` for the actual container entries, Transform and
+component PPtrs, mesh and Avatar PPtrs, controller slots, and clip settings.
+The automated fixtures keep these PPtrs within one bundle. Completion
+verifies the digest, writes the existing `unityrs.anim_replay` version 1
+format and runs its validator. The validator refuses pending recordings.
+
+For a saved inspection, pass `--inspect-dir DIR`. Use an unfiltered,
+complete `unityrs inspect BUNDLE --limit 10000 --max-bytes 1048576` response
+named `BUNDLE.inspect.json`. Run inspection with the bundle basename
+from inside `bundles/`. Save each needed
+`unityrs show BUNDLE --file-index 0:FILE_INDEX --path-id PATH_ID --value canonical --max-items 4096 --max-bytes 4194304`
+response as `BUNDLE.FILE_INDEX.PATH_ID.show.json`. Preserve exact file
+occurrences and signed path IDs from inspection.
+
+On the first run, confirm that `StaticBatchingUtility.Combine` persists
+the shared mesh and submesh ranges in the scene bundle, and that
+`LoadAssetWithSubAssets<GameObject>` returns the prefab root and hierarchy.
+In the animation bundles, check how `AnimationClip.SetCurve`,
+`AnimationUtility.SetAnimationClipSettings`, `EditorCurveBinding.DiscreteCurve`
+and `AnimatorOverrideController.ApplyOverrides` serialize the authored
+curves, nonzero interval, discrete binding, and null substitution. Check
+the native playback endpoints and held probes for the actual build.
+The optional FBX path also needs confirmation of the imported Avatar,
+asset extraction, and binding on the built rig.
+
+Unity chooses the serialized curve layout. Check compiled storage,
+packed rotations and the complete runtime key inventory using the
+same-bundle cross-checks. The optional FBX capture supplies observed
+playback and rig facts for one take. The two-rig humanoid qualification,
+runtime slot inventory, and known-vector baseline are later fixture work.
+Freeze the budgets and derive the tolerances below before comparing Rust
+output. Keep original built fixtures and their numeric records under the
+repository's fixture rules, with no machine-specific paths.
+
+For a manual case, copy the same [Editor folder](../tools/fixtures/unity/Editor).
+Put the validated spec beside its bundle set and choose **Tools → unityrs
+→ Record animation replay**. Open the spec and save a new replay file.
+The manual and automated paths share
+[`AnimReplayRecorder.cs`](../tools/fixtures/unity/Editor/AnimReplayRecorder.cs).
+`anim_replay.py validate-spec` checks the input and `anim_replay.py validate
+REPLAY --bundle-dir BUNDLE_DIR` checks the result and artifact bytes.
+**Tools → unityrs → Test animation replay prefab loading** builds a
+temporary three-node prefab bundle and checks root lookup and a nested
+address. [`AnimReplayRecorderSmokeTest.cs`](../tools/fixtures/unity/Editor/AnimReplayRecorderSmokeTest.cs)
 
 ### Per-recording f32 tolerances
 

@@ -307,6 +307,10 @@ def complete_recording(doc, bundle_dir, views, unityrs, inspect_dir, replay):
     clip_evidence(spec, capture, view.value(clip), replay)
     discovery, effective = view.discovery(binding, binding_class)
     replay.require(clip in effective, "selected clip is absent from built playback component discovery")
+    expected = spec["evidence"].get("editor", {}).get("expected_discovery")
+    if expected:
+        replay.require(any(row["outcome"] == expected and row["resolved"] == view.identity(clip)
+                           for row in discovery), f"missing expected built discovery outcome: {expected}")
     spec["evidence"]["discovery"] = discovery
     doc["format"] = "unityrs.anim_replay"
     replay.validate(doc, bundle_dir)

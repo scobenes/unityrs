@@ -341,12 +341,12 @@ About 1-2.5k non-test lines each.
 
 ## 8. The Editor fixture project (owner-built)
 
-`docs/DESIGN.md` section 3 names Unity-Editor-built fixtures as the 3D oracle, and none exist yet. The project owner is to build a minimal project with a licensed Unity Editor; no date is set. It holds:
+`docs/DESIGN.md` section 3 names Unity-Editor-built fixtures as the 3D oracle. The [owner workflow](../../tools/fixtures/unity/README.md) generates the initial assets in a minimal 2022.3 LTS Built-in project. The full fixture plan covers:
 - the primitives (Cube, Cylinder, Sphere, Capsule, Plane, Quad) and the default material;
 - a skinned mesh with blend shapes, in-between frames included;
 - a static-batched scene;
 - a LODGroup;
-- Built-in and URP materials;
-- built at 2022.3 and at 6000.x.
+- Built-in materials, with URP materials following in a project with that package;
+- builds at 2022.3 and at 6000.x.
 
 Its bundles are checked in, as `CLAUDE.md` allows for Editor-built fixtures. What waits on it: "verified P2a" on section 24's semantic rows (hierarchy and TRS, skins and morphs, materials, scene root order, built-in file ids), decision 9's `m_VariableBoneCountWeights` layout, decision 10's static-batching rule, and decision 13's root order. PRs 2 to 6 do not.

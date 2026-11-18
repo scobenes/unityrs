@@ -1,4 +1,4 @@
-// Copy beside AnimReplayRecorder.cs in Assets/Editor.
+#if UNITY_EDITOR
 using System;
 using System.IO;
 using UnityEditor;
@@ -9,6 +9,21 @@ public static partial class AnimReplayRecorder
 {
     [MenuItem("Tools/unityrs/Test animation replay prefab loading")]
     public static void TestPrefabLoading()
+    {
+        try
+        {
+            CheckEditMode();
+            TestTemporaryPrefab();
+            EditorUtility.DisplayDialog("Animation replay prefab loading", "The prefab loading test passed.", "OK");
+        }
+        catch (Exception error)
+        {
+            Debug.LogException(error);
+            EditorUtility.DisplayDialog("Animation replay prefab loading failed", error.Message, "OK");
+        }
+    }
+
+    static void TestTemporaryPrefab()
     {
         string name = "unityrs-replay-" + Guid.NewGuid().ToString("N");
         string assetDir = "Assets/" + name;
@@ -48,3 +63,5 @@ public static partial class AnimReplayRecorder
         }
     }
 }
+
+#endif
