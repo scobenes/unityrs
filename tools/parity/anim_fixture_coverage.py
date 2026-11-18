@@ -1,4 +1,4 @@
-"""Optional coverage fixtures: the two humanoid refusal probes.
+"""Optional coverage fixtures: the two humanoid refusal probes and the root basis matrix.
 
 Each case is optional in run.json unless REQUIRED_COVERAGE lists it for the
 run's Editor version. A case recorded there must have its pending recording,
@@ -38,6 +38,24 @@ COVERAGE_CASES = {
 }
 REFUSALS = {"humanoid-twist-refusal": "unsupported_humanoid_twist",
             "humanoid-non-neutral-setting-refusal": "unsupported_humanoid_clip_settings"}
+
+# The root basis matrix: the compact rig's muscle clip on a neutral Avatar in
+# each combination of the three keep-original flags, recorded under the same
+# playback. AnimationClipSettings has no start-at-origin field; the built
+# clip's flag is the complement of the XZ flag. Every combination but the
+# neutral one carries a root basis refusal label; the neutral one has none,
+# so its residual alone says whether it needs a hips correction.
+BASIS_FLAGS = ("keepOriginalOrientation", "keepOriginalPositionY", "keepOriginalPositionXZ")
+BASIS_CASES = {f"humanoid-root-basis-o{o}-y{y}-xz{xz}": (bool(o), bool(y), bool(xz))
+               for o in (0, 1) for y in (0, 1) for xz in (0, 1)}
+for _name in BASIS_CASES:
+    COVERAGE_CASES[_name] = Fixture("humanoid-root-basis", "humanoid-root-basis", "identity", _name, "animator",
+                                    SPINE_PROBE, MUSCLES, ("spine", "muscle_only", "basis"))
+    if any(BASIS_CASES[_name]):
+        REFUSALS[_name] = "unsupported_humanoid_root_basis"
+del _name
+# The built muscle clip's serialized flags, in BASIS_FLAGS order.
+BUILT_BASIS = ("m_KeepOriginalOrientation", "m_KeepOriginalPositionY", "m_KeepOriginalPositionXZ")
 
 # Distinct values catch a swapped field. The capture names come from
 # HumanDescription; the runtime and serialized Avatar fields follow Unity's names.
@@ -87,7 +105,9 @@ def check_coverage(name, fixture, doc, view, clip_key, avatar_key, replay):
         spec["evidence"]["expected_refusal"] = refusal
     if "twist" in checks:
         check_twist(editor, capture, view.value(clip_key), replay)
-    if refusal:
+    if "basis" in checks:
+        check_basis(BASIS_CASES[name], capture, view.value(clip_key), view.value(avatar_key), replay)
+    elif refusal:
         check_isolated(spec, capture, view.value(avatar_key), "twist" in checks, replay)
 
 
@@ -179,3 +199,26 @@ def check_isolated(spec, capture, avatar, twist, replay):
                 for field, name in AVATAR_TWIST.items())
             and all(same_f32(runtime.get(field), 0, replay) for field in AVATAR_NEUTRAL)
             and not runtime.get("m_HasTDoF"), "built Avatar settings differ from the probe's one trigger")
+
+
+def check_basis(flags, capture, clip, avatar, replay):
+    """A basis matrix clip: neutral but for its three flags, the built start-at-origin their XZ complement."""
+    require = replay.require
+    expected = NEUTRAL_CLIP | dict(zip(BASIS_FLAGS, flags))
+    settings = capture["clip_settings"]
+    require(settings.keys() == expected.keys() and all(
+        (settings[name] is want) if type(want) is bool else
+        settings[name] == (replay.f32_bits(want) if type(want) is float else want)
+        for name, want in expected.items()), "basis matrix clip has another clip setting")
+    muscle = clip.get("m_MuscleClip", {})
+    built = [muscle.get(field) for field in BUILT_BASIS]
+    require(built == list(flags) and muscle.get("m_StartAtOrigin") is (not flags[2])
+            and muscle.get("m_HeightFromFeet") is False,
+            "built basis matrix clip flags differ from the authored combination")
+    human = capture["humanoid"]
+    require(all(human[name] == replay.f32_bits(0) for name in (*TWIST, "arm_stretch", "leg_stretch", "feet_spacing"))
+            and human["translation_dof"] is False, "basis matrix Avatar is not neutral")
+    runtime = avatar.get("m_Avatar", {}).get("m_Human", {})
+    runtime = runtime.get("data", runtime)
+    require(all(same_f32(runtime.get(field), 0, replay) for field in (*AVATAR_TWIST, *AVATAR_NEUTRAL))
+            and not runtime.get("m_HasTDoF"), "built basis matrix Avatar is not neutral")

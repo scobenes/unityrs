@@ -1,13 +1,18 @@
 //! Runtime Avatar tables, the humanoid clip slot table and the ordered
 //! qualification refusals of `docs/plans/anim.md` section 2.4.
 //!
-//! No recorded clip qualifies for muscle-only playback. On the 2022.3 and
-//! 6000 fixture rigs, every humanoid clip with absent body slots still
-//! places the hips from the muscle pose: the recorded hips-local
-//! translation is the known-vector pose less the Avatar's `m_RootX`, and
-//! the hips rotation follows the spine muscles. Reconstructing hips-local
-//! TRS needs the unpublished body model, so a clip that passes every other
-//! check refuses as `unsupported_body_motion(hips_correction)`.
+//! The plan orders the refusals only partly: a missing Avatar or an
+//! unreconstructable hierarchy comes before any slot is interpreted, and
+//! the rest are independent causes. `humanoid_refusal` returns them in one
+//! fixed order consistent with that; the qualification evidence lists
+//! every cause a recorded clip has, and Rust's must be among them.
+//!
+//! A clip that passes every check still refuses. On the 2022.3 and 6000
+//! fixture rigs a clip with absent body slots places the body at the
+//! Animator root origin, so the hips move by the Avatar's rest body
+//! offset `m_RootX` (`unsupported_body_motion(hips_correction)`). A rig
+//! without that offset still has no qualified playback in P2b
+//! (`unsupported_humanoid_playback`).
 mod avatar;
 mod clip;
 
@@ -16,13 +21,14 @@ pub use avatar::{
 };
 pub use clip::{
     ABSENT_SLOT, ClipSetting, DOF_COUNT, DofKind, HumanoidClip, HumanoidSlot, MUSCLE_COUNT,
-    SettingValue,
+    ROOT_BASIS, SettingValue, TransformWriter,
 };
 pub(crate) use clip::{is_humanoid, read as read_humanoid_clip};
 
 use crate::{AnimError, BodyMotion, Clip, PathQuery, RigPaths, read::Dict};
 use std::sync::Arc;
 use unityrs_core::{ObjectRef, env::Environment, limits::Meter, value::Value};
+use unityrs_scene::Trs;
 
 /// `HumanBodyBones` indices of the bones `HumanTrait` requires.
 pub const REQUIRED_BONES: [usize; 15] = [0, 1, 2, 3, 4, 5, 6, 7, 10, 13, 14, 15, 16, 17, 18];
@@ -135,10 +141,37 @@ pub fn rig_avatar(
     })
 }
 
-/// The typed refusal for a humanoid clip on one rig, checked in plan order:
-/// Avatar and hierarchy, other pose features, body slots, muscle bones and
-/// axes, twist, Avatar settings, clip settings, then the body model. A read
-/// or resource failure is returned in place of the refusal.
+/// The Avatar twist and stretch values of the fixtures' neutral twin rig.
+/// The qualification evidence records the twin's values and the recorded
+/// test holds these to them; Unity documents no identity value.
+pub const NEUTRAL_TWIST: f32 = 0.;
+pub const NEUTRAL_STRETCH: f32 = 0.;
+
+/// The `HumanBodyBones` each twist setting redistributes over: upper arm
+/// twist between shoulder and elbow, lower arm twist between elbow and
+/// wrist, and the same for the legs.
+/// [Unity HumanDescription](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanDescription.html)
+pub const TWIST_BONES: [(&str, [usize; 4]); 4] = [
+    ("m_ArmTwist", [13, 14, 15, 16]),
+    ("m_ForeArmTwist", [15, 16, 17, 18]),
+    ("m_UpperLegTwist", [1, 2, 3, 4]),
+    ("m_LegTwist", [3, 4, 5, 6]),
+];
+
+/// The limbs each stretch setting lengthens: the arms, the legs, and the
+/// feet's spacing on the legs.
+pub const STRETCH_BONES: [(&str, [usize; 6]); 3] = [
+    ("m_ArmStretch", [13, 14, 15, 16, 17, 18]),
+    ("m_LegStretch", [1, 2, 3, 4, 5, 6]),
+    ("m_FeetSpacing", [1, 2, 3, 4, 5, 6]),
+];
+
+/// The typed refusal for a humanoid clip on one rig, in the order the
+/// module documents: Avatar and hierarchy, required bones, Animator root
+/// and generic writers, other pose features, body slots, muscle bones and
+/// axes, twist and stretch on the animated limbs, clip settings, root
+/// basis, then the body offset. A read or resource failure is returned in
+/// place of the refusal.
 pub fn humanoid_refusal(
     clip: &Clip,
     rig: &RigAvatar,
@@ -150,6 +183,20 @@ pub fn humanoid_refusal(
     }
 }
 
+/// The mapped muscles whose optional bone the Avatar leaves out. Playback
+/// drops them; the evidence counts them.
+#[must_use]
+pub fn dropped_muscles(clip: &HumanoidClip, human: &Human) -> usize {
+    clip.mapped(DofKind::Muscle)
+        .filter(|slot| {
+            muscle_bone(slot.ordinal).is_some_and(|bone| {
+                !REQUIRED_BONES.contains(&bone) && human.bone_node(bone).is_none()
+            })
+        })
+        .count()
+}
+
+#[allow(clippy::too_many_lines, reason = "one ordered list of refusals")]
 fn refusal(
     clip: &Clip,
     rig: &RigAvatar,
@@ -179,6 +226,19 @@ fn refusal(
     {
         return Ok(AnimError::MissingHumanBone(bone));
     }
+    if !identity_root(paths, meter)? {
+        return Ok(AnimError::UnsupportedAnimatorRoot);
+    }
+    let ids = human.skeleton.ids.as_slice();
+    meter
+        .count_decode((slots.transform_writers().len() as u64).saturating_mul(ids.len() as u64))?;
+    if let Some(writer) = slots
+        .transform_writers()
+        .iter()
+        .find(|writer| writer.path != 0 && ids.contains(&writer.path))
+    {
+        return Ok(AnimError::ConflictingHumanoidWriter(writer.binding));
+    }
     meter.count_decode(DOF_COUNT as u64 * 5)?;
     if slots.mapped(DofKind::Motion).next().is_some()
         || avatar.root_motion_bone >= 0
@@ -198,10 +258,15 @@ fn refusal(
     if slots.mapped(DofKind::Body).next().is_some() {
         return Ok(AnimError::UnsupportedBodyMotion(BodyMotion::BodySlots));
     }
+    // The animated bones, without the muscles of absent optional bones.
+    let mut animated = [false; 55];
     for slot in slots.mapped(DofKind::Muscle) {
         let bone = muscle_bone(slot.ordinal).ok_or(AnimError::UnknownHumanDof(slot.dof))?;
         let Some(node) = human.bone_node(bone) else {
-            return Ok(AnimError::MissingHumanBone(bone));
+            if REQUIRED_BONES.contains(&bone) {
+                return Ok(AnimError::MissingHumanBone(bone));
+            }
+            continue;
         };
         let has_axes = human
             .skeleton
@@ -212,23 +277,101 @@ fn refusal(
         if !has_axes {
             return Ok(AnimError::UnsupportedHumanoidAxes(bone));
         }
+        if let Some(flag) = animated.get_mut(bone) {
+            *flag = true;
+        }
     }
-    if let Some((field, _)) = human.twist.fields().into_iter().find(|(_, v)| *v != 0.) {
-        return Ok(AnimError::UnsupportedHumanoidTwist(field));
+    let moves = |bones: &[usize]| bones.iter().any(|&bone| animated.get(bone) == Some(&true));
+    for ((field, value), (_, bones)) in human.twist.fields().into_iter().zip(TWIST_BONES) {
+        if value != NEUTRAL_TWIST && moves(&bones) {
+            return Ok(AnimError::UnsupportedHumanoidTwist(field));
+        }
     }
-    for (field, value) in [
-        ("m_ArmStretch", human.arm_stretch),
-        ("m_LegStretch", human.leg_stretch),
-        ("m_FeetSpacing", human.feet_spacing),
-    ] {
-        if value != 0. {
+    for ((field, bones), value) in
+        STRETCH_BONES
+            .into_iter()
+            .zip([human.arm_stretch, human.leg_stretch, human.feet_spacing])
+    {
+        if value != NEUTRAL_STRETCH && moves(&bones) {
             return Ok(AnimError::UnsupportedHumanoidAvatarSetting(field));
         }
     }
-    if let Some(setting) = slots.settings().iter().find(|s| !s.neutral()) {
+    if let Some(setting) = slots
+        .settings()
+        .iter()
+        .find(|s| !s.is_root_basis() && !s.neutral())
+    {
         return Ok(AnimError::UnsupportedHumanoidClipSettings(setting.field));
     }
-    Ok(AnimError::UnsupportedBodyMotion(BodyMotion::HipsCorrection))
+    if let Some(field) = slots.root_basis_refusal() {
+        return Ok(AnimError::UnsupportedHumanoidRootBasis(field));
+    }
+    if body_offset(human) {
+        return Ok(AnimError::UnsupportedBodyMotion(BodyMotion::HipsCorrection));
+    }
+    Ok(AnimError::UnsupportedHumanoidPlayback)
+}
+
+/// Half an f32 ulp of `value`: a rest-valued track's output rounding,
+/// the bound `anim_replay.py` derives for an unanimated component.
+fn rest_bound(value: f32) -> f32 {
+    let magnitude = value.abs();
+    if magnitude < f32::MIN_POSITIVE {
+        return f32::from_bits(1) / 2.;
+    }
+    let ulp = f32::from_bits(magnitude.to_bits() + 1) - magnitude;
+    ulp / 2.
+}
+
+/// Whether a body at the Animator root origin moves the hips: the rest
+/// body offset `m_RootX` reaches past the rest bound of the hips' own
+/// rest translation, or its rotation past that of a unit quaternion.
+fn body_offset(human: &Human) -> bool {
+    let hips = human
+        .bone_node(0)
+        .and_then(|node| human.pose.as_slice().get(node))
+        .map_or([0.; 3], |pose| pose.t);
+    let root = human.root;
+    let near = |sign: f32| {
+        root.q
+            .iter()
+            .zip([0., 0., 0., sign])
+            .all(|(q, unit)| (q - unit).abs() <= rest_bound(1.))
+    };
+    root.t
+        .iter()
+        .zip(hips)
+        .any(|(offset, rest)| offset.abs() > rest_bound(rest))
+        || !(near(1.) || near(-1.))
+}
+
+/// Whether the Animator node and its ancestors all have identity local
+/// TRS, the only root configuration the fixtures verify.
+fn identity_root(paths: &RigPaths<'_>, meter: &Arc<Meter>) -> Result<bool, AnimError> {
+    let (graph, mut node) = paths.graph();
+    loop {
+        meter.count_decode(1)?;
+        let Some(row) = graph.nodes().get(node) else {
+            return Err(AnimError::MissingPath);
+        };
+        let Trs {
+            position,
+            rotation,
+            scale,
+        } = row.local;
+        // Exact: one is the only identity value, either sign of w.
+        let one = |v: f32| v.abs().to_bits() == 1f32.to_bits();
+        let [x, y, z, w] = rotation;
+        let unit = x == 0. && y == 0. && z == 0. && one(w);
+        let unscaled = scale.iter().all(|&v| v > 0. && one(v));
+        if !position.iter().all(|&v| v == 0.) || !unit || !unscaled {
+            return Ok(false);
+        }
+        match row.parent {
+            Some(parent) => node = parent,
+            None => return Ok(true),
+        }
+    }
 }
 
 /// The first human skeleton node whose `m_TOS` path is missing, does not

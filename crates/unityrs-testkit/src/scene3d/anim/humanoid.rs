@@ -33,6 +33,10 @@ pub const CLIP: i64 = 203;
 
 /// Rig and Avatar choices. The default is a valid neutral rig.
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent fixture switches"
+)]
 pub struct Rig {
     pub twist: [f32; 4],
     pub stretch: [f32; 3],
@@ -48,6 +52,10 @@ pub struct Rig {
     pub renamed: Option<usize>,
     pub transform_hierarchy: bool,
     pub avatar: bool,
+    /// The Avatar's rest body offset `m_RootX` translation.
+    pub body_offset: [f32; 3],
+    /// Move the Animator node off the identity.
+    pub root_offset: bool,
 }
 
 impl Default for Rig {
@@ -63,6 +71,8 @@ impl Default for Rig {
             renamed: None,
             transform_hierarchy: true,
             avatar: true,
+            body_offset: [0.; 3],
+            root_offset: false,
         }
     }
 }
@@ -100,10 +110,14 @@ fn uints(items: impl IntoIterator<Item = u32>) -> V {
 }
 
 fn xform() -> V {
+    xform_at([0.; 3])
+}
+
+fn xform_at(t: [f32; 3]) -> V {
     st(
         "xform",
         vec![
-            ("t", xyz("float3", &[0., 0., 0.])),
+            ("t", xyz("float3", &t)),
             ("q", xyz("float4", &[0., 0., 0., 1.])),
             ("s", xyz("float3", &[1., 1., 1.])),
         ],
@@ -204,7 +218,7 @@ pub fn avatar(rig: &Rig) -> Object {
     let human = data(st(
         "Human",
         vec![
-            ("m_RootX", xform()),
+            ("m_RootX", xform_at(rig.body_offset)),
             ("m_Skeleton", skeleton(rig, true)),
             ("m_SkeletonPose", pose(nodes)),
             ("m_LeftHand", hand()),
@@ -248,6 +262,29 @@ pub fn avatar(rig: &Rig) -> Object {
             ("m_HumanSkeletonIndexArray", identity()),
             ("m_HumanSkeletonReverseIndexArray", identity()),
             ("m_RootMotionBoneIndex", V::Int(rig.root_motion_bone)),
+            ("m_RootMotionBoneX", xform()),
+            (
+                "m_RootMotionSkeleton",
+                data(st(
+                    "Skeleton",
+                    vec![
+                        (
+                            "m_Node",
+                            vector(
+                                st(
+                                    "Node",
+                                    vec![("m_ParentId", V::Int(-1)), ("m_AxesId", V::Int(-1))],
+                                ),
+                                vec![],
+                            ),
+                        ),
+                        ("m_ID", uints([])),
+                        ("m_AxesArray", vector(axes(), vec![])),
+                    ],
+                )),
+            ),
+            ("m_RootMotionSkeletonPose", pose(0)),
+            ("m_RootMotionSkeletonIndexArray", ints([])),
         ],
     );
     Object::new(
@@ -270,7 +307,17 @@ pub fn avatar(rig: &Rig) -> Object {
 pub fn prefab(rig: &Rig) -> Vec<Object> {
     let mut objects = vec![
         Object::new(1, 1, game_object(b"rig", &[(0, 101), (0, ANIMATOR)])),
-        Object::new(101, 4, transform((0, 1), (0, 0), &[(0, 102)], false)),
+        Object::new(101, 4, {
+            let mut root = transform((0, 1), (0, 0), &[(0, 102)], false);
+            if rig.root_offset {
+                set(
+                    &mut root,
+                    "m_LocalPosition",
+                    xyz("Vector3f", &[2., 0.25, -1.]),
+                );
+            }
+            root
+        }),
     ];
     let children: Vec<_> = (1..BONES.len())
         .map(|i| (0, 102 + i64::try_from(i).unwrap_or_default()))
@@ -318,12 +365,26 @@ pub fn prefab(rig: &Rig) -> Vec<Object> {
     objects
 }
 
-/// A humanoid clip mapping each DOF to the next constant slot, with
-/// neutral settings unless `settings` overrides one.
+/// A humanoid clip mapping each DOF to the next constant slot, with the
+/// neutral settings and root basis unless `settings` overrides one.
 #[must_use]
 pub fn clip(dofs: &[u32], settings: &[(&str, V)]) -> Object {
+    clip_with(dofs, &[], settings, 0, &[])
+}
+
+/// A humanoid clip whose DOF bindings are followed by local position
+/// bindings on `transforms` (path hashes). The first `streamed` slots are
+/// streamed with the given frame words; the rest are constants.
+#[must_use]
+pub fn clip_with(
+    dofs: &[u32],
+    transforms: &[u32],
+    settings: &[(&str, V)],
+    streamed: u32,
+    words: &[u32],
+) -> Object {
     let mut object = p::explicit(CLIP, 30., &[]);
-    let bindings: Vec<_> = dofs
+    let mut bindings: Vec<_> = dofs
         .iter()
         .map(|&attribute| Binding {
             class: 95,
@@ -332,7 +393,14 @@ pub fn clip(dofs: &[u32], settings: &[(&str, V)]) -> Object {
             ..Binding::default()
         })
         .collect();
-    let constants = vec![0_u32; dofs.len()];
+    bindings.extend(transforms.iter().map(|&path| Binding {
+        path,
+        class: 4,
+        attribute: 1,
+        ..Binding::default()
+    }));
+    let slots = dofs.len() + 3 * transforms.len();
+    let constants = vec![0_u32; slots.saturating_sub(streamed as usize)];
     p::add_compiled(
         &mut object,
         Layout::Unity2022,
@@ -340,6 +408,8 @@ pub fn clip(dofs: &[u32], settings: &[(&str, V)]) -> Object {
         &[],
         p::Storage {
             interval: [0., 1.],
+            streamed_count: streamed,
+            words,
             constants: &constants,
             ..p::Storage::default()
         },
@@ -373,10 +443,11 @@ pub fn clip(dofs: &[u32], settings: &[(&str, V)]) -> Object {
         "m_KeepOriginalPositionY",
         "m_KeepOriginalPositionXZ",
         "m_HeightFromFeet",
-        "m_StartAtOrigin",
     ] {
         set(muscle, field, V::Bool(false));
     }
+    // The start-at-origin flag is the complement of the XZ basis flag.
+    set(muscle, "m_StartAtOrigin", V::Bool(true));
     for field in ["m_CycleOffset", "m_Level", "m_OrientationOffsetY"] {
         set(muscle, field, V::Float(0.));
     }

@@ -1,22 +1,28 @@
 """Humanoid qualification evidence for plan section 2.4.
 
 Point this at a completed Editor fixture run, the ``<version>/<target>/``
-folder ``anim_replay.py complete`` accepted. For each humanoid clip it reads
-the built clip and Avatar through ``unityrs show`` and records:
+folder ``anim_replay.py complete`` accepted. For each humanoid clip the run's
+``run.json`` lists as recorded it reads the built clip and Avatar through
+``unityrs show`` and records:
 
 - the slot inventory from ``m_IndexArray`` and its absent sentinel, with the
-  storage ranges, crosswalked against the built bindings, the Editor curve
-  bindings and the recorder's ``HumanTrait`` muscle and bone order;
-- the runtime axes of each mapped muscle, against the recorded limits;
-- the body-bearing test, the effective settings and Avatar twist;
-- the root and hips-local comparison with the reset rig and with the
+  storage ranges, crosswalked against the built bindings (each row at its
+  generic width), the Editor curve bindings and the recorder's
+  ``HumanTrait`` muscle and bone order;
+- the runtime axes of each mapped muscle, against the recorded limits, and
+  the muscles of absent optional bones, which playback drops;
+- the root and hips-local comparison with the reset rig, against the bound
+  ``anim_replay.py`` derives for a rest-valued track, and with the
   same-schedule known-vector ``SetHumanPose`` baseline;
 - the muscle-to-pose residual of the candidate joint-axis equation;
-- whether the clip qualifies and the typed refusal the Rust reader must give.
+- three independent verdicts (clip settings, root basis, residual) and
+  every typed cause the clip has, unordered. The Rust reader returns one of
+  them in its own order; ``recorded_humanoid_refusals`` checks it is listed.
+
+A clip qualifies when it has no cause and a known-vector baseline.
 
 ``python3 -I tools/parity/anim_humanoid_qualify.py RUN_DIR --unityrs CLI -o OUT``
-writes ``unityrs.anim_humanoid_qualification`` version 1. The Rust replay
-test ``recorded_humanoid_refusals`` reads it with the same bundles.
+writes ``unityrs.anim_humanoid_qualification`` version 2.
 """
 
 import argparse
@@ -29,28 +35,39 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import anim_replay as replay  # noqa: E402
+import anim_replay_budgets as budgets  # noqa: E402
 from anim_fixture_contract import REPLAY_CASES, VECTOR_SUFFIX  # noqa: E402
 from anim_fixture_coverage import COVERAGE_CASES, REFUSALS  # noqa: E402
 from anim_replay_complete import BundleView, read_manifest  # noqa: E402
 
 FORMAT = "unityrs.anim_humanoid_qualification"
+VERSION = 2
 ABSENT_SLOT = -1
 MUSCLE_COUNT = 95
 REQUIRED_BONES = (0, 1, 2, 3, 4, 5, 6, 7, 10, 13, 14, 15, 16, 17, 18)
 GOALS = ("LeftFoot", "RightFoot", "LeftHand", "RightHand")
 TQ = ("T.x", "T.y", "T.z", "Q.x", "Q.y", "Q.z", "Q.w")
-# Refusal order, as in crates/unityrs-anim/src/humanoid/clip.rs.
 SETTINGS = (
     "m_Mirror", "m_CycleOffset", "m_Level", "m_OrientationOffsetY", "m_LoopTime", "m_LoopBlend",
     "m_LoopBlendOrientation", "m_LoopBlendPositionY", "m_LoopBlendPositionXZ", "m_KeepOriginalOrientation",
     "m_KeepOriginalPositionY", "m_KeepOriginalPositionXZ", "m_HeightFromFeet", "m_StartAtOrigin",
 )
+# The root basis flags. Their neutral profile: the first four off, and the
+# start-at-origin flag the complement of the XZ basis flag.
+ROOT_BASIS = SETTINGS[-5:]
 TWIST = ("m_ArmTwist", "m_ForeArmTwist", "m_UpperLegTwist", "m_LegTwist")
 AVATAR_SETTINGS = ("m_ArmStretch", "m_LegStretch", "m_FeetSpacing")
-# Residuals at or below these bounds count as equal: a few f32 units at the
-# rig's metre scale, far below the decimetre and degree effects measured.
-TRANSLATION_BOUND = 1e-5
-ROTATION_BOUND_DEGREES = 1e-3
+# The HumanBodyBones each Avatar setting acts on (HumanDescription): a twist
+# redistributes between a limb's two joints, a stretch lengthens a limb.
+LIMBS = {"m_ArmTwist": (13, 14, 15, 16), "m_ForeArmTwist": (15, 16, 17, 18), "m_UpperLegTwist": (1, 2, 3, 4),
+         "m_LegTwist": (3, 4, 5, 6), "m_ArmStretch": (13, 14, 15, 16, 17, 18),
+         "m_LegStretch": (1, 2, 3, 4, 5, 6), "m_FeetSpacing": (1, 2, 3, 4, 5, 6)}
+# The clips every run records; recorded coverage cases join them.
+REQUIRED_CASES = tuple(sorted(name for name, fixture in REPLAY_CASES.items()
+                              if fixture.bundle.startswith("humanoid-")))
+# The neutral twin: a clip on the fixtures' neutral Avatar, the one whose
+# twist and stretch the recorder's neutral-twist twin evaluates with.
+NEUTRAL_TWINS = ("humanoid-non-neutral-setting-refusal", "humanoid-compact-muscles")
 require = replay.require
 
 
@@ -153,21 +170,43 @@ def trs(pose):
 
 
 def residual(actual, expected):
+    """Componentwise translation and scale differences, and the rotation angle in radians."""
     actual, expected = trs(actual), trs(expected)
     return {
-        "translation": max(abs(a - b) for a, b in zip(actual["translation"], expected["translation"])),
-        "rotation_degrees": angle_degrees(actual["rotation"], expected["rotation"]),
-        "scale": max(abs(a - b) for a, b in zip(actual["scale"], expected["scale"])),
+        "translation": [abs(a - b) for a, b in zip(actual["translation"], expected["translation"])],
+        "rotation": math.radians(angle_degrees(actual["rotation"], expected["rotation"])),
+        "scale": [abs(a - b) for a, b in zip(actual["scale"], expected["scale"])],
     }
 
 
-def worst(rows):
-    return {key: max(row[key] for row in rows) for key in rows[0]}
+def rest_bounds(rest, node, times):
+    """The bounds ``anim_replay.py derive`` gives an unanimated (rest) track of one node.
+
+    The rows are the ones ``anim_replay_budgets.py`` authors for a Transform
+    property no curve reads; the bound is the final f32 rounding at the rest
+    value's magnitude, widened as every derived bound is.
+    """
+    values = trs(rest[node])
+    bounds = {}
+    for prop in ("translation", "rotation", "scale"):
+        row = budgets.budget(prop, node, -1, values[prop], [], None, times)
+        model = replay.budget_model(row)
+        if prop == "rotation":
+            [(raw, _)] = model.errors(0.)
+            bounds[prop] = replay._bound(model, raw, 1.)
+        else:
+            bounds[prop] = [replay._bound(model, raw, reach) for raw, reach in model.errors(0.)]
+    return bounds
 
 
-def within(row):
-    return row["translation"] <= TRANSLATION_BOUND and row["scale"] <= TRANSLATION_BOUND \
-        and row["rotation_degrees"] <= ROTATION_BOUND_DEGREES
+def judge(pairs, bounds):
+    """The worst residual over sample pairs, and whether every component stays within its bound."""
+    rows = [residual(actual, expected) for actual, expected in pairs]
+    within = all(all(d <= b for d, b in zip(row[key], bounds[key])) for row in rows for key in ("translation", "scale")) \
+        and all(row["rotation"] <= bounds["rotation"] for row in rows)
+    return dict(translation=max(max(row["translation"]) for row in rows),
+                rotation_degrees=math.degrees(max(row["rotation"] for row in rows)),
+                scale=max(max(row["scale"]) for row in rows), within=within)
 
 
 def tos_paths(avatar):
@@ -201,6 +240,27 @@ def float_count(value):
     return len(value)
 
 
+def binding_rows(bindings):
+    """Each binding with its first slot, width and role, at the generic widths.
+
+    A humanoid DOF row (Animator class 95, ``customType`` 8) is one slot; a
+    local position, rotation, scale or Euler row is 3, 4, 3 or 3; any other row one.
+    """
+    rows, first = [], 0
+    for index, row in enumerate(bindings):
+        class_id, custom, attribute = row.get("typeID", row.get("classID")), row["customType"], row["attribute"]
+        if (class_id, custom) == (95, 8):
+            role, width = "human", 1
+        elif class_id == 4 or (class_id == 224 and 1 <= attribute <= 4):
+            require(custom == 0 or attribute == 4, f"unknown width of binding {index}")
+            role, width = "transform", {1: 3, 2: 4, 3: 3, 4: 3}[attribute]
+        else:
+            role, width = "other", 1
+        rows.append(dict(index=index, first=first, width=width, role=role, row=row))
+        first += width
+    return rows, first
+
+
 def inventory(clip, capture):
     muscle = clip["m_MuscleClip"]
     index = muscle["m_IndexArray"]
@@ -228,16 +288,24 @@ def inventory(clip, capture):
     return slots, counts
 
 
-def crosswalk(clip, avatar, spec, capture, slots):
-    """Check bindings, bones, muscles and limits against the recorder's order."""
+def crosswalk(clip, avatar, spec, capture, slots, counts):
+    """Check bindings, bones, muscles and limits against the recorder's order.
+
+    Returns the mapped muscles' axes, the mapped muscles of absent optional
+    bones, and the generic Transform bindings that write a human skeleton node.
+    """
     by_dof = {row["dof"]: row for row in slots}
-    bindings = clip["m_ClipBindingConstant"]["genericBindings"]
-    require(len(bindings) == sum(row["storage"] != "absent" for row in slots), "binding and slot counts differ")
-    for slot, row in enumerate(bindings):
-        require(row["typeID"] == 95 and row["customType"] == 8 and by_dof[row["attribute"]]["index_value"] == slot,
-                f"built binding {slot} disagrees with m_IndexArray")
-    editor = {row["property"] for row in spec["evidence"]["editor"]["bindings"]}
-    built = {by_dof[row["attribute"]]["name"] for row in bindings}
+    rows, width = binding_rows(clip["m_ClipBindingConstant"]["genericBindings"])
+    require(width == sum(counts.values()), "binding widths and slot counts differ")
+    human_rows = [row for row in rows if row["role"] == "human"]
+    require(len(human_rows) == sum(row["storage"] != "absent" for row in slots), "binding and slot counts differ")
+    for row in human_rows:
+        attribute = row["row"]["attribute"]
+        require(attribute in by_dof and by_dof[attribute]["index_value"] == row["first"],
+                f"built binding {row['index']} disagrees with m_IndexArray")
+    editor = {row["property"] for row in spec["evidence"]["editor"]["bindings"]
+              if row.get("type", "UnityEngine.Animator") == "UnityEngine.Animator"}
+    built = {by_dof[row["row"]["attribute"]]["name"] for row in human_rows}
     require(editor == built, f"Editor curve bindings {sorted(editor)} differ from built DOFs {sorted(built)}")
 
     human = data(avatar["m_Avatar"]["m_Human"])
@@ -249,20 +317,26 @@ def crosswalk(clip, avatar, spec, capture, slots):
     for bone, row in enumerate(bones):
         node = bone_node(human, bone)
         recorded = row["node"] if row["node"] >= 0 else None
-        built = None if node is None else paths.get(skeleton["m_ID"][node])
-        require((built is None) == (recorded is None) and (built is None or nodes.get(recorded) == built),
+        found = None if node is None else paths.get(skeleton["m_ID"][node])
+        require((found is None) == (recorded is None) and (found is None or nodes.get(recorded) == found),
                 f"human bone {row['name']} maps to a different node")
         require(row["required"] == (bone in REQUIRED_BONES), f"required flag differs for {row['name']}")
-    axes = []
+    axes, dropped, missing_axes = [], [], []
     limit_rows = {row["human"]: row for row in capture["humanoid"]["limits"]}
     for ordinal, row in enumerate(capture["humanoid"]["muscles"]):
         bone = muscle_bone(ordinal)
         require(row["bone"] == bone, f"muscle {row['name']} rotates another bone")
         node = bone_node(human, bone)
+        mapped = by_dof[42 + ordinal]["storage"] != "absent"
         if node is None:
+            if mapped and bone not in REQUIRED_BONES:
+                dropped.append(row["name"])
             continue
         record_id = skeleton["m_Node"][node]["m_AxesId"]
-        require(record_id >= 0, f"bone of {row['name']} has no runtime axes")
+        if record_id < 0:
+            if mapped:
+                missing_axes.append(bone)
+            continue
         record = skeleton["m_AxesArray"][record_id]
         limits = [math.degrees(record["m_Limit"][key]["xyz"[row["axis"]]]) for key in ("m_Min", "m_Max")]
         # The recorder's muscle rows hold HumanTrait's defaults; an Avatar's
@@ -274,16 +348,31 @@ def crosswalk(clip, avatar, spec, capture, slots):
             recorded = [replay.f32_from_bits(row[key]) for key in ("min", "max")]
         require(all(abs(a - b) <= 1e-4 * max(1, abs(b)) for a, b in zip(limits, recorded)),
                 f"runtime limits of {row['name']} differ from the recorder's")
-        if by_dof[42 + ordinal]["storage"] != "absent":
+        if mapped:
             axes.append(dict(muscle=row["name"], bone=bone, node=node, axis=row["axis"],
                              pre=vec(record["m_PreQ"]), post=vec(record["m_PostQ"]), sign=vec(record["m_Sgn"]),
                              min=vec(record["m_Limit"]["m_Min"]), max=vec(record["m_Limit"]["m_Max"]),
                              type=record["m_Type"]))
-    return axes
+    ids = {value for value in skeleton["m_ID"] if value}
+    writers = [row["index"] for row in rows if row["role"] == "transform" and row["row"]["path"] in ids]
+    return axes, dropped, missing_axes, writers
+
+
+def identity_root(spec, capture):
+    """Whether the Animator node and every recorded ancestor rest at the identity."""
+    root = spec["binding_address"]
+    chain = [i for i, row in enumerate(spec["nodes"])
+             if row["address"] == root or root.startswith(row["address"] + "/") or row["address"] == ""]
+    for node in chain:
+        values = trs(capture["rest"]["transforms"][node])
+        if values["translation"] != [0, 0, 0] or values["scale"] != [1, 1, 1] \
+                or values["rotation"][:3] != [0, 0, 0] or abs(values["rotation"][3]) != 1:
+            return False
+    return True
 
 
 def comparison(doc, baseline, avatar, spec):
-    """Root and hips-local TRS against the reset rig and the known-vector capture."""
+    """Root and hips-local TRS against the reset rig, within the rest-track bounds, and the known vectors."""
     capture = doc["capture"]
     root = next(i for i, row in enumerate(spec["nodes"]) if row["address"] == spec["binding_address"])
     hips = next(row["node"] for row in capture["humanoid"]["bones"] if row["name"] == "Hips")
@@ -291,9 +380,12 @@ def comparison(doc, baseline, avatar, spec):
     require(hips_address.rsplit("/", 1)[0] == spec["binding_address"], "hips parent is not the Animator node")
     rest = capture["rest"]["transforms"]
     samples = capture["samples"]
-    result = {"root_node": root, "hips_node": hips}
-    result["reset"] = {name: worst([residual(row["pose"]["transforms"][node], rest[node]) for row in samples])
-                       for name, node in (("root", root), ("hips_local", hips))}
+    times = sorted({row["local"] for row in samples})
+    result = {"root_node": root, "hips_node": hips, "bounds": {}, "reset": {}}
+    for name, node in (("root", root), ("hips_local", hips)):
+        bounds = rest_bounds(rest, node, times)
+        result["bounds"][name] = bounds
+        result["reset"][name] = judge([(row["pose"]["transforms"][node], rest[node]) for row in samples], bounds)
     if baseline is None:
         return result
     other = baseline["capture"]["samples"]
@@ -302,8 +394,8 @@ def comparison(doc, baseline, avatar, spec):
     require(baseline["capture"]["bundle_sha256"] == capture["bundle_sha256"], "known-vector bundle differs")
     # The raw recorder output, not a completed replay: its digest names the input.
     result["baseline_recording_id"] = replay._known_vector_id(baseline)
-    result["baseline"] = {name: worst([residual(a["pose"]["transforms"][node], b["pose"]["transforms"][node])
-                                       for a, b in zip(samples, other)])
+    result["baseline"] = {name: judge([(a["pose"]["transforms"][node], b["pose"]["transforms"][node])
+                                       for a, b in zip(samples, other)], result["bounds"][name])
                           for name, node in (("root", root), ("hips_local", hips))}
     # Absent body slots leave the body at the Animator root origin: the
     # clip's hips translation is the baseline's less the rest body offset.
@@ -353,44 +445,62 @@ def neutral(value):
     return value is False or (type(value) is float and value == 0.0)
 
 
-def refusal(entry, avatar, clip, axes):
-    """The first typed refusal in the Rust reader's order (``humanoid_refusal``)."""
+def basis_off(values):
+    """The root basis flags off their neutral profile."""
+    off = [name for name in ROOT_BASIS[:4] if values.get(name) is not False]
+    if values.get("m_StartAtOrigin") is not True:
+        off.append("m_StartAtOrigin")
+    return off
+
+
+def causes(entry, avatar, clip, neutral_avatar):
+    """Every typed cause the clip has, in no order (the Rust reader picks one)."""
     mapped = {row["kind"] for row in entry["slots"] if row["storage"] != "absent"}
+    human = data(avatar["m_Avatar"]["m_Human"])
+    found = [f"missing_human_bone({bone})" for bone in REQUIRED_BONES if bone_node(human, bone) is None]
+    if not entry["identity_root"]:
+        found.append("unsupported_animator_root")
+    found += [f"conflicting_humanoid_writer({index})" for index in entry["generic_writers"]]
     if "motion" in mapped or avatar["m_Avatar"]["m_RootMotionBoneIndex"] >= 0 \
             or clip.get("m_HasGenericRootTransform") or clip.get("m_HasMotionFloatCurves"):
-        return "unsupported_locomotion"
+        found.append("unsupported_locomotion")
     if "goal" in mapped:
-        return "unsupported_humanoid_ik"
+        found.append("unsupported_humanoid_ik")
     if "translation" in mapped or entry["avatar_settings"]["m_HasTDoF"]:
-        return "unsupported_translation_dof"
+        found.append("unsupported_translation_dof")
     if float_count(clip["m_MuscleClip"]["m_ValueArrayReferencePose"]):
-        return "unsupported_additive_pose"
+        found.append("unsupported_additive_pose")
     if "body" in mapped:
-        return "unsupported_body_motion(body_slots)"
-    for name in TWIST:
-        if entry["avatar_settings"][name] != 0:
-            return f"unsupported_humanoid_twist({name})"
-    for name in AVATAR_SETTINGS:
-        if entry["avatar_settings"][name] != 0:
-            return f"unsupported_humanoid_avatar_setting({name})"
-    for row in entry["settings"]:
-        if not neutral(row["serialized"]):
-            return f"unsupported_humanoid_clip_settings({row['field']})"
-    return "unsupported_body_motion(hips_correction)"
+        found.append("unsupported_body_motion(body_slots)")
+    found += [f"unsupported_humanoid_axes({bone})" for bone in entry["missing_axes"]]
+    animated = {row["bone"] for row in entry["axes"]}
+    for name in TWIST + AVATAR_SETTINGS:
+        if entry["avatar_settings"][name] != neutral_avatar[name] and animated & set(LIMBS[name]):
+            kind = "twist" if name in TWIST else "avatar_setting"
+            found.append(f"unsupported_humanoid_{kind}({name})")
+    found += [f"unsupported_humanoid_clip_settings({field})" for field in entry["verdicts"]["clip_settings"]]
+    found += [f"unsupported_humanoid_root_basis({field})" for field in entry["verdicts"]["root_basis"]]
+    residual = entry["verdicts"]["residual"]
+    if not residual["hips_local"]:
+        found.append("unsupported_body_motion(hips_correction)")
+    if not residual["root"]:
+        found.append("unsupported_body_motion(root_projection)")
+    return sorted(set(found))
 
 
 def reasons(entry):
-    """Every qualification criterion of plan section 2.4 the clip misses."""
+    """Every qualification criterion of plan section 2.4 the clip misses, in words."""
     result = [f"mapped {row['name']}" for row in entry["slots"]
               if row["storage"] != "absent" and row["kind"] != "muscle"]
     result += [f"Avatar {name} = {value}" for name, value in entry["avatar_settings"].items()
-               if name != "m_HasTDoF" and value != 0]
-    result += [f"{row['field']} = {row['serialized']}" for row in entry["settings"] if not neutral(row["serialized"])]
-    compared = entry["root_hips"]
-    for scope in ("reset", "baseline"):
-        for name, row in compared.get(scope, {}).items():
-            if not within(row):
-                result.append(f"{name} differs from the {scope} pose: {row}")
+               if name != "m_HasTDoF" and value != entry["neutral_avatar"].get(name, value)]
+    result += [f"{row['field']} = {row['serialized']}" for row in entry["settings"]
+               if row["field"] in entry["verdicts"]["clip_settings"] + entry["verdicts"]["root_basis"]]
+    for name, row in entry["root_hips"]["reset"].items():
+        if not row["within"]:
+            result.append(f"{name} differs from the reset pose beyond its rest bound: {row}")
+    if entry["root_hips"].get("baseline") is None:
+        result.append("no known-vector baseline")
     return result
 
 
@@ -400,66 +510,111 @@ def spec_identity(spec):
     return {key: spec[key] for key in keys}
 
 
-def qualify_clip(name, doc, baseline, view, run):
+def assets(doc, view):
+    spec = doc["spec"]
+    return (view.value((spec["clip"]["file_index"], int(spec["clip"]["path_id"]))),
+            view.value((spec["avatar"]["file_index"], int(spec["avatar"]["path_id"]))))
+
+
+def qualify_clip(name, doc, baseline, view, neutral_avatar):
     spec, capture = doc["spec"], doc["capture"]
     require(doc["format"] == "unityrs.anim_replay" and spec["mode"] == "animator"
             and capture["playback"]["clip_human_motion"], f"{name}: expected a completed humanoid clip replay")
-    clip = view.value((spec["clip"]["file_index"], int(spec["clip"]["path_id"])))
-    avatar = view.value((spec["avatar"]["file_index"], int(spec["avatar"]["path_id"])))
+    clip, avatar = assets(doc, view)
     slots, counts = inventory(clip, capture)
-    axes = crosswalk(clip, avatar, spec, capture, slots)
+    axes, dropped, missing_axes, writers = crosswalk(clip, avatar, spec, capture, slots, counts)
     clip_settings, avatar_settings = settings(clip, avatar)
+    values = {row["field"]: row["serialized"] for row in clip_settings}
     entry = dict(case=name, editor_version=capture["editor_version"], spec=spec_identity(spec),
                  absent_slot=ABSENT_SLOT, storage_counts=counts, slots=slots, axes=axes,
-                 settings=clip_settings, avatar_settings=avatar_settings,
+                 dropped_muscles=dict(count=len(dropped), names=dropped), missing_axes=missing_axes,
+                 generic_writers=writers, identity_root=identity_root(spec, capture),
+                 settings=clip_settings, avatar_settings=avatar_settings, neutral_avatar=neutral_avatar,
+                 root_basis_relation=dict(start_at_origin=values.get("m_StartAtOrigin"),
+                                          keep_original_position_xz=values.get("m_KeepOriginalPositionXZ")),
                  body_bearing=any(row["kind"] == "body" and row["storage"] != "absent" for row in slots),
                  root_hips=comparison(doc, baseline, avatar, spec))
+    reset = entry["root_hips"]["reset"]
+    entry["verdicts"] = dict(
+        clip_settings=[row["field"] for row in clip_settings
+                       if row["field"] not in ROOT_BASIS and not neutral(row["serialized"])],
+        root_basis=basis_off(values),
+        residual={key: row["within"] for key, row in reset.items()})
     entry["muscle_pose"] = {"known_vectors": None}
     if baseline is not None:
         entry["muscle_pose"]["known_vectors"] = muscle_pose(baseline, axes)
         spine = next(row["node"] for row in capture["humanoid"]["bones"] if row["name"] == "Spine")
         entry["muscle_pose"]["clip_vs_known_vectors_spine_degrees"] = max(
-            residual(a["pose"]["transforms"][spine], b["pose"]["transforms"][spine])["rotation_degrees"]
+            angle_degrees(trs(a["pose"]["transforms"][spine])["rotation"], trs(b["pose"]["transforms"][spine])["rotation"])
             for a, b in zip(capture["samples"], baseline["capture"]["samples"]))
+    entry["causes"] = causes(entry, avatar, clip, neutral_avatar)
     entry["reasons"] = reasons(entry)
-    entry["qualifies"] = False
-    entry["refusal"] = refusal(entry, avatar, clip, axes)
-    expected = REFUSALS.get(name)
-    require(expected is None or entry["refusal"].split("(")[0] == expected,
-            f"{name}: refusal {entry['refusal']} differs from the probe's {expected}")
+    entry["qualifies"] = not entry["causes"] and baseline is not None
+    expected = entry["expected_refusal"] = REFUSALS.get(name, "")
+    require(not expected or expected in {cause.split("(")[0] for cause in entry["causes"]},
+            f"{name}: causes {entry['causes']} lack the probe's {expected}")
     return entry
 
 
 def humanoid_cases():
+    """Every humanoid clip case: the required ones and the optional coverage cases."""
     cases = {name: fixture for name, fixture in REPLAY_CASES.items() if fixture.bundle.startswith("humanoid-")}
-    cases.update({name: fixture for name, fixture in COVERAGE_CASES.items() if name in REFUSALS})
+    cases.update({name: fixture for name, fixture in COVERAGE_CASES.items() if "spine" in fixture.checks})
     return dict(sorted(cases.items()))
+
+
+def expected_cases(manifest):
+    """The required clips and every optional humanoid clip ``run.json`` marks recorded."""
+    statuses = {row["name"]: row["status"] for row in manifest["cases"]}
+    optional = sorted(set(humanoid_cases()) - set(REQUIRED_CASES))
+    return [*REQUIRED_CASES, *(name for name in optional if statuses.get(name) == "recorded")]
 
 
 def qualify_folder(folder, unityrs):
     manifest, run = read_manifest(folder, replay)
-    del manifest
-    views, entries = {}, []
-    for name, fixture in humanoid_cases().items():
+    cases = humanoid_cases()
+    expected = sorted(expected_cases(manifest))
+    views, docs = {}, {}
+    for name in expected:
+        fixture = cases[name]
         path = folder / "replays" / f"{name}.json"
-        if not path.exists():
-            continue
+        require(path.is_file(), f"{name}: missing completed replay {path.name}")
         doc = replay.read_json(path.read_text(encoding="utf-8"))
-        vector = folder / "replays" / "known-vectors" / f"{name}{VECTOR_SUFFIX}.pending.json"
-        baseline = replay.read_json(vector.read_text(encoding="utf-8")) if vector.exists() else None
         bundle = folder / "bundles" / fixture.bundle
         digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
         require([row["sha256"] for row in doc["spec"]["bundles"]] == [digest], f"{name}: bundle digest differs")
         if fixture.bundle not in views:
             views[fixture.bundle] = BundleView(bundle, digest, 0, unityrs, None, replay, run)
+        docs[name] = (doc, views[fixture.bundle])
+    twin = next((name for name in NEUTRAL_TWINS if name in docs), None)
+    require(twin is not None, "no neutral twin clip recorded")
+    _, twin_avatar = assets(*docs[twin])
+    twin_values = settings({"m_MuscleClip": {}}, twin_avatar)[1]
+    neutral_avatar = {name: twin_values[name] for name in TWIST + AVATAR_SETTINGS}
+    entries = []
+    for name, (doc, view) in docs.items():
+        vector = folder / "replays" / "known-vectors" / f"{name}{VECTOR_SUFFIX}.pending.json"
+        baseline = replay.read_json(vector.read_text(encoding="utf-8")) if vector.exists() else None
         try:
-            entries.append(qualify_clip(name, doc, baseline, views[fixture.bundle], run))
+            entries.append(qualify_clip(name, doc, baseline, view, neutral_avatar))
         except (KeyError, TypeError, IndexError, ValueError, StopIteration) as exc:
             raise ValueError(f"{name}: {exc!r}") from exc
-    require(entries, "no completed humanoid replays")
-    return dict(format=FORMAT, version=1, run_id=run["run_id"], editor_version=run["editor_version"],
-                build_target=run["build_target"], bounds=dict(translation=TRANSLATION_BOUND,
-                                                              rotation_degrees=ROTATION_BOUND_DEGREES),
+    for entry in entries:
+        twin_case = entry["case"].removesuffix("-offset")
+        if twin_case != entry["case"] and twin_case in docs:
+            # The same clip on an identity Animator root, sampled on the same schedule.
+            doc, other = docs[entry["case"]][0], docs[twin_case][0]
+            hips = entry["root_hips"]["hips_node"]
+            samples, twins = doc["capture"]["samples"], other["capture"]["samples"]
+            require([row["local_f32"] for row in samples] == [row["local_f32"] for row in twins],
+                    f"{entry['case']}: identity twin schedule differs")
+            entry["root_hips"]["offset_vs_identity"] = judge(
+                [(a["pose"]["transforms"][hips], b["pose"]["transforms"][hips]) for a, b in zip(samples, twins)],
+                entry["root_hips"]["bounds"]["hips_local"])
+    require([entry["case"] for entry in entries] == expected and entries, "incomplete humanoid clip set")
+    return dict(format=FORMAT, version=VERSION, run_id=run["run_id"], editor_version=run["editor_version"],
+                build_target=run["build_target"], verified_editor_versions=[run["editor_version"]],
+                expected_cases=expected, neutral_twin=dict(case=twin, values=neutral_avatar),
                 qualified=[row["case"] for row in entries if row["qualifies"]], clips=entries)
 
 

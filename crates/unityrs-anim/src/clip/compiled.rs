@@ -529,7 +529,7 @@ fn decode_value(
     )
 }
 
-fn decode_stream(
+pub(crate) fn decode_stream(
     dict: &Dict<'_, '_>,
     count: usize,
     mut words: &[u32],

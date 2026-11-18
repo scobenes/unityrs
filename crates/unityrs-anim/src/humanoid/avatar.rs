@@ -102,6 +102,12 @@ pub struct Avatar {
     /// Human skeleton node per Avatar skeleton node, -1 absent.
     pub human_skeleton_reverse_index: MeteredVec<i32>,
     pub root_motion_bone: i32,
+    /// `m_RootMotionBoneX`, the root-motion bone's rest pose.
+    pub root_motion_x: Xform,
+    pub root_motion_skeleton: Skeleton,
+    pub root_motion_pose: MeteredVec<Xform>,
+    /// Avatar skeleton node per root-motion skeleton node, -1 absent.
+    pub root_motion_index: MeteredVec<i32>,
     /// `m_TOS` path hashes and the stored relative paths.
     pub tos: MeteredVec<(u32, RawStr)>,
 }
@@ -138,7 +144,7 @@ pub fn read_avatar(object: &ObjectRef, meter: &Arc<Meter>) -> Result<Avatar, Ani
     let runtime = dict
         .root("m_Avatar")?
         .ok_or(AnimError::Malformed("m_Avatar"))?;
-    let skeleton = skeleton(&dict, dict.required(runtime, "m_AvatarSkeleton")?)?;
+    let avatar_skeleton = skeleton(&dict, dict.required(runtime, "m_AvatarSkeleton")?)?;
     let skeleton_pose = pose(&dict, dict.required(runtime, "m_AvatarSkeletonPose")?)?;
     let default_pose = pose(&dict, dict.required(runtime, "m_DefaultPose")?)?;
     let name_ids = u32s(&dict, runtime, "m_SkeletonNameIDArray")?;
@@ -146,6 +152,10 @@ pub fn read_avatar(object: &ObjectRef, meter: &Arc<Meter>) -> Result<Avatar, Ani
     let human_skeleton_index = i32s(&dict, runtime, "m_HumanSkeletonIndexArray")?;
     let human_skeleton_reverse_index = i32s(&dict, runtime, "m_HumanSkeletonReverseIndexArray")?;
     let root_motion_bone = dict.int(runtime, "m_RootMotionBoneIndex")?;
+    let root_motion_x = xform(&dict, dict.required(runtime, "m_RootMotionBoneX")?)?;
+    let root_motion_skeleton = skeleton(&dict, dict.required(runtime, "m_RootMotionSkeleton")?)?;
+    let root_motion_pose = pose(&dict, dict.required(runtime, "m_RootMotionSkeletonPose")?)?;
+    let root_motion_index = i32s(&dict, runtime, "m_RootMotionSkeletonIndexArray")?;
     let mut tos = MeteredVec::new(meter);
     for row in dict.rows("m_TOS")? {
         let pair: &[Value] = match row {
@@ -165,7 +175,7 @@ pub fn read_avatar(object: &ObjectRef, meter: &Arc<Meter>) -> Result<Avatar, Ani
     }
     let avatar = Avatar {
         object: object.clone(),
-        skeleton,
+        skeleton: avatar_skeleton,
         skeleton_pose,
         default_pose,
         name_ids,
@@ -173,18 +183,27 @@ pub fn read_avatar(object: &ObjectRef, meter: &Arc<Meter>) -> Result<Avatar, Ani
         human_skeleton_index,
         human_skeleton_reverse_index,
         root_motion_bone,
+        root_motion_x,
+        root_motion_skeleton,
+        root_motion_pose,
+        root_motion_index,
         tos,
     };
     validate(&avatar, meter)?;
     Ok(avatar)
 }
 
+#[allow(clippy::too_many_lines, reason = "one ordered list of index checks")]
 fn validate(avatar: &Avatar, meter: &Arc<Meter>) -> Result<(), AnimError> {
     let nodes = avatar.skeleton.nodes.len();
     let human = &avatar.human;
     let human_nodes = human.skeleton.nodes.len();
     check_skeleton(&avatar.skeleton, "m_AvatarSkeleton", meter)?;
     check_skeleton(&human.skeleton, "m_Human.m_Skeleton", meter)?;
+    let motion_nodes = avatar.root_motion_skeleton.nodes.len();
+    if motion_nodes > 0 {
+        check_skeleton(&avatar.root_motion_skeleton, "m_RootMotionSkeleton", meter)?;
+    }
     let lengths = [
         (avatar.skeleton_pose.len(), nodes, "m_AvatarSkeletonPose"),
         (avatar.default_pose.len(), nodes, "m_DefaultPose"),
@@ -201,6 +220,16 @@ fn validate(avatar: &Avatar, meter: &Arc<Meter>) -> Result<(), AnimError> {
             "m_HumanSkeletonReverseIndexArray",
         ),
         (human.bones.len(), BODY_BONES, "m_HumanBoneIndex"),
+        (
+            avatar.root_motion_pose.len(),
+            motion_nodes,
+            "m_RootMotionSkeletonPose",
+        ),
+        (
+            avatar.root_motion_index.len(),
+            motion_nodes,
+            "m_RootMotionSkeletonIndexArray",
+        ),
     ];
     for (actual, expected, field) in lengths {
         if actual != expected {
@@ -229,6 +258,11 @@ fn validate(avatar: &Avatar, meter: &Arc<Meter>) -> Result<(), AnimError> {
             human_nodes,
             "m_HumanSkeletonReverseIndexArray",
         ),
+        (
+            avatar.root_motion_index.as_slice(),
+            nodes,
+            "m_RootMotionSkeletonIndexArray",
+        ),
     ];
     for (values, bound, field) in ranges {
         meter.count_decode(values.len() as u64)?;
@@ -249,6 +283,24 @@ fn validate(avatar: &Avatar, meter: &Arc<Meter>) -> Result<(), AnimError> {
             return Err(AnimError::InvalidAvatarIndex(
                 "m_HumanSkeletonReverseIndexArray",
             ));
+        }
+    }
+    // And the other way: a reverse entry names a human node mapped back.
+    for (node, &human_node) in avatar
+        .human_skeleton_reverse_index
+        .as_slice()
+        .iter()
+        .enumerate()
+    {
+        if let Ok(human_node) = usize::try_from(human_node)
+            && avatar
+                .human_skeleton_index
+                .as_slice()
+                .get(human_node)
+                .and_then(|&forward| usize::try_from(forward).ok())
+                != Some(node)
+        {
+            return Err(AnimError::InvalidAvatarIndex("m_HumanSkeletonIndexArray"));
         }
     }
     // A body bone maps to one human skeleton node at most once.

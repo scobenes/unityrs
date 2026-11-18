@@ -10,7 +10,7 @@ from uuid import uuid4
 from zlib import crc32
 
 import child
-from anim_fixture_coverage import COVERAGE_CASES, check_coverage, required_coverage
+from anim_fixture_coverage import BASIS_CASES, COVERAGE_CASES, check_coverage, required_coverage
 from anim_fixture_contract import (ASSETS, MOTION, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
                                    check_built_clip, check_built_static, check_discovery, check_evidence,
                                    check_identity, check_vectors)
@@ -19,7 +19,7 @@ PENDING_FORMAT = "unityrs.anim_replay_pending"
 OPTIONAL_CASES = {
     "urp-materials", "packed-rotation-slopes", "authored-runtime-precedence", "mixed-transform-storage",
     "humanoid-twist-refusal", "humanoid-non-neutral-setting-refusal", "humanoid-slot-axis-inventory",
-    "humanoid-root-hips-comparison", "integer-discrete-binding",
+    "humanoid-root-hips-comparison", "integer-discrete-binding", *BASIS_CASES,
 }
 
 

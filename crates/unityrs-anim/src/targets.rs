@@ -149,6 +149,12 @@ impl<'a> RigPaths<'a> {
         })
     }
 
+    /// The graph and the node the paths are relative to.
+    #[must_use]
+    pub const fn graph(&self) -> (&'a Graph, NodeId) {
+        (self.graph, self.root)
+    }
+
     /// All graph candidates in stored order, including the owner for hash zero.
     pub fn hash_candidates(
         &self,

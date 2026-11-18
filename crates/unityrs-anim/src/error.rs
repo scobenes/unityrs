@@ -79,6 +79,9 @@ pub enum AnimError {
     UnsupportedHumanoidTwist(&'static str),
     UnsupportedHumanoidAvatarSetting(&'static str),
     UnsupportedHumanoidClipSettings(&'static str),
+    UnsupportedHumanoidRootBasis(&'static str),
+    UnsupportedAnimatorRoot,
+    ConflictingHumanoidWriter(usize),
     UnsupportedBodyMotion(BodyMotion),
     UnsupportedLocomotion,
     UnsupportedTranslationDof,
@@ -91,9 +94,13 @@ pub enum AnimError {
 pub enum BodyMotion {
     /// A `RootT` or `RootQ` DOF maps to a runtime slot.
     BodySlots,
-    /// The body slots are absent, but recorded playback still places the
-    /// hips from the muscle pose, so hips-local TRS needs the body model.
+    /// The body slots are absent, but playback still moves the hips: a
+    /// body placed at the Animator root origin displaces them by the rest
+    /// body offset `m_RootX` beyond the rest-track bound.
     HipsCorrection,
+    /// The recorded Animator root moved beyond its bound with no motion
+    /// slot. Only the qualification evidence measures it.
+    RootProjection,
 }
 
 impl BodyMotion {
@@ -102,6 +109,7 @@ impl BodyMotion {
         match self {
             Self::BodySlots => "body_slots",
             Self::HipsCorrection => "hips_correction",
+            Self::RootProjection => "root_projection",
         }
     }
 }
@@ -143,6 +151,7 @@ impl From<DerefError> for AnimError {
 }
 
 impl fmt::Display for AnimError {
+    #[allow(clippy::too_many_lines, reason = "one arm per typed error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Charge(e) => e.fmt(f),
@@ -232,6 +241,13 @@ impl fmt::Display for AnimError {
             }
             Self::UnsupportedHumanoidClipSettings(field) => {
                 write!(f, "unsupported_humanoid_clip_settings({field})")
+            }
+            Self::UnsupportedHumanoidRootBasis(field) => {
+                write!(f, "unsupported_humanoid_root_basis({field})")
+            }
+            Self::UnsupportedAnimatorRoot => f.write_str("unsupported_animator_root"),
+            Self::ConflictingHumanoidWriter(binding) => {
+                write!(f, "conflicting_humanoid_writer({binding})")
             }
             Self::UnsupportedBodyMotion(cause) => {
                 write!(f, "unsupported_body_motion({})", cause.name())

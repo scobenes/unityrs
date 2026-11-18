@@ -7,8 +7,8 @@ using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
-// Optional coverage: two humanoid refusal probes, built in their own bundle
-// build, and a probe showing why the integer discrete binding is not covered. A case is not covered only when an
+// Optional coverage: two humanoid refusal probes and the root basis matrix
+// (UnityrsBasisFixtures.cs), built in their own bundle build, and a probe showing why the integer discrete binding is not covered. A case is not covered only when an
 // explicit check shows Unity cannot produce it (CoverageUnavailable, with the
 // reason); any other error fails the case and leaves the main fixtures intact.
 static partial class UnityrsFixtureBuilder
@@ -82,7 +82,7 @@ static partial class UnityrsFixtureBuilder
 
     static void AddCoverageCases(RunReport report)
     {
-        foreach (string name in CoverageCases)
+        foreach (string name in CoverageCases.Concat(BasisCases))
             report.AddDeferred(name, "The coverage fixture was not prepared.");
     }
 
@@ -93,6 +93,7 @@ static partial class UnityrsFixtureBuilder
             () => BuildRefusalRig(build, "humanoid-twist", TwistCase, twist: true), true);
         report.Prepare(build, "Prepare " + SettingsCase, new[] { SettingsCase },
             () => BuildRefusalRig(build, "humanoid-settings", SettingsCase, twist: false), true);
+        report.Prepare(build, "Prepare " + BasisBundle, BasisCases, () => BuildBasisMatrix(build), true);
     }
 
     // Build the coverage bundles apart from the main fixtures, then move them
@@ -148,7 +149,10 @@ static partial class UnityrsFixtureBuilder
                 && description.lowerLegTwist == (twist ? LowerLegTwist : 0),
                 "The built Avatar lost its authored twist in " + replay.Bundle + ".");
             var settings = AnimationUtility.GetAnimationClipSettings(clip);
-            Require(settings.level == (twist ? 0 : HeightOffset) && !settings.keepOriginalPositionY,
+            var basis = replay.RootBasis ?? new bool[3];
+            Require(settings.level == (twist || replay.RootBasis != null ? 0 : HeightOffset)
+                && settings.keepOriginalOrientation == basis[0] && settings.keepOriginalPositionY == basis[1]
+                && settings.keepOriginalPositionXZ == basis[2],
                 "The built clip lost its authored settings in " + replay.Bundle + ".");
         }
         finally { bundle.Unload(true); }
@@ -227,31 +231,17 @@ static partial class UnityrsFixtureBuilder
                 "The built Avatar did not keep the authored twist settings.");
 
             string dir = Folder(Assets + "/" + name);
-            string avatarPath = dir + "/avatar.asset";
-            string meshPath = dir + "/skin.asset";
-            string materialPath = dir + "/skin.mat";
-            string controllerPath = dir + "/humanoid.controller";
-            var animator = rig.AddComponent<Animator>();
-            animator.avatar = Save(avatar, avatarPath);
-            animator.applyRootMotion = false;
-            var skin = rig.AddComponent<SkinnedMeshRenderer>();
-            skin.bones = skeleton.Skip(1).ToArray();
-            skin.rootBone = hips;
-            skin.sharedMesh = Save(NewHumanoidSkin(rig.transform, skin.bones), meshPath);
-            var shader = Shader.Find("Standard");
-            Require(shader != null, "The Built-in Standard shader is required for the humanoid skin.");
-            skin.sharedMaterial = Save(new Material(shader) { name = "HumanoidBoxes" }, materialPath);
-
+            var animator = SaveCoverageRig(rig, hips, skeleton, avatar, dir, out var assets);
             var clip = AuthorHumanoidClip(dir, clipName, bodyMotion: false, extra: twist ? (Action<AnimationClip>)SetTwistMuscles : null);
             SetNeutralSettings(clip, twist ? 0 : HeightOffset);
-            animator.runtimeAnimatorController = Controller(controllerPath, new[] { clip });
+            animator.runtimeAnimatorController = Controller(assets[assets.Length - 1], new[] { clip });
 
             root = new GameObject("HumanoidFixture");
             rig.transform.SetParent(root.transform, false);
             string prefab = SavePrefab(root, dir + "/identity.prefab");
             string clipPath = AssetDatabase.GetAssetPath(clip);
-            build.AddCoverageBundle(name, clipPath, prefab, avatarPath, meshPath, materialPath, controllerPath);
-            var replay = HumanoidReplay(name, prefab, avatarPath, clipPath, clipName);
+            build.AddCoverageBundle(name, assets.Concat(new[] { clipPath, prefab }).ToArray());
+            var replay = HumanoidReplay(name, prefab, assets[0], clipPath, clipName);
             replay.Optional = true;
             replay.ExpectedRefusal = twist ? "unsupported_humanoid_twist" : "unsupported_humanoid_clip_settings";
             if (twist)
@@ -268,6 +258,30 @@ static partial class UnityrsFixtureBuilder
         }
     }
 
+    // Save a coverage rig's Avatar, skin and material beside its controller
+    // path, and give it a still Animator. The asset paths are the Avatar
+    // first and the controller last.
+    static Animator SaveCoverageRig(GameObject rig, Transform hips, Transform[] skeleton, Avatar avatar, string dir,
+        out string[] assets)
+    {
+        string avatarPath = dir + "/avatar.asset";
+        string meshPath = dir + "/skin.asset";
+        string materialPath = dir + "/skin.mat";
+        string controllerPath = dir + "/humanoid.controller";
+        var animator = rig.AddComponent<Animator>();
+        animator.avatar = Save(avatar, avatarPath);
+        animator.applyRootMotion = false;
+        var skin = rig.AddComponent<SkinnedMeshRenderer>();
+        skin.bones = skeleton.Skip(1).ToArray();
+        skin.rootBone = hips;
+        skin.sharedMesh = Save(NewHumanoidSkin(rig.transform, skin.bones), meshPath);
+        var shader = Shader.Find("Standard");
+        Require(shader != null, "The Built-in Standard shader is required for the humanoid skin.");
+        skin.sharedMaterial = Save(new Material(shader) { name = "HumanoidBoxes" }, materialPath);
+        assets = new[] { avatarPath, meshPath, materialPath, controllerPath };
+        return animator;
+    }
+
     static void SetTwistMuscles(AnimationClip clip)
     {
         var names = HumanTrait.MuscleName;
@@ -277,21 +291,25 @@ static partial class UnityrsFixtureBuilder
     }
 
     // Clear the code-made clip's default original-Y basis so the only
-    // non-neutral clip setting is the given height offset (zero for the twist probe).
-    static void SetNeutralSettings(AnimationClip clip, float level)
+    // non-neutral clip setting is the given height offset (zero for the twist
+    // probe), or set the given basis flags (orientation, Y, XZ) of the matrix.
+    static void SetNeutralSettings(AnimationClip clip, float level, bool[] basis = null)
     {
+        basis = basis ?? new bool[3];
         var settings = AnimationUtility.GetAnimationClipSettings(clip);
         settings.level = level;
-        settings.keepOriginalPositionY = false;
+        settings.keepOriginalOrientation = basis[0];
+        settings.keepOriginalPositionY = basis[1];
+        settings.keepOriginalPositionXZ = basis[2];
         AnimationUtility.SetAnimationClipSettings(clip, settings);
         EditorUtility.SetDirty(clip);
         var s = AnimationUtility.GetAnimationClipSettings(clip);
         Unavailable(s.level == level && s.startTime == 0 && s.stopTime == 1 && s.orientationOffsetY == 0
             && s.cycleOffset == 0 && s.additiveReferencePoseTime == 0 && s.additiveReferencePoseClip == null
             && !s.loopTime && !s.loopBlend && !s.loopBlendOrientation && !s.loopBlendPositionY
-            && !s.loopBlendPositionXZ && !s.keepOriginalOrientation && !s.keepOriginalPositionY
-            && !s.keepOriginalPositionXZ && !s.heightFromFeet && !s.mirror && !s.hasAdditiveReferencePose,
-            "Unity did not keep the clip's neutral settings and its height offset.");
+            && !s.loopBlendPositionXZ && s.keepOriginalOrientation == basis[0] && s.keepOriginalPositionY == basis[1]
+            && s.keepOriginalPositionXZ == basis[2] && !s.heightFromFeet && !s.mirror && !s.hasAdditiveReferencePose,
+            "Unity did not keep the clip's neutral settings, its height offset and its basis flags.");
     }
 }
 #endif

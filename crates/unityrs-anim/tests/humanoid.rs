@@ -145,184 +145,8 @@ fn the_slot_table_classifies_every_dof_and_refuses_generic_playback() {
     assert_eq!(settings[2].value, Some(SettingValue::Float(0.)));
 }
 
-#[test]
-#[allow(clippy::too_many_lines, reason = "one table in refusal order")]
-fn refusals_follow_the_plan_order() {
-    let neutral = Rig::default();
-    let muscle = || h::clip(&SPINE, &[]);
-    let cases: Vec<(Rig, Object, &str)> = vec![
-        (
-            neutral.clone(),
-            muscle(),
-            "unsupported_body_motion(hips_correction)",
-        ),
-        (
-            Rig {
-                avatar: false,
-                ..Rig::default()
-            },
-            muscle(),
-            "missing_avatar",
-        ),
-        (
-            Rig {
-                transform_hierarchy: false,
-                ..Rig::default()
-            },
-            muscle(),
-            "unsupported_humanoid_hierarchy(0)",
-        ),
-        (
-            Rig {
-                no_tos: Some(3),
-                ..Rig::default()
-            },
-            muscle(),
-            "unsupported_humanoid_hierarchy(4)",
-        ),
-        (
-            Rig {
-                renamed: Some(2),
-                ..Rig::default()
-            },
-            muscle(),
-            "unsupported_humanoid_hierarchy(3)",
-        ),
-        (
-            Rig {
-                unmapped_bone: Some(10),
-                ..Rig::default()
-            },
-            muscle(),
-            "missing_human_bone(10)",
-        ),
-        (
-            neutral.clone(),
-            h::clip(&[0, 42], &[]),
-            "unsupported_locomotion",
-        ),
-        (
-            Rig {
-                root_motion_bone: 1,
-                ..Rig::default()
-            },
-            muscle(),
-            "unsupported_locomotion",
-        ),
-        (
-            neutral.clone(),
-            h::clip(&[14, 42], &[]),
-            "unsupported_humanoid_ik",
-        ),
-        (
-            neutral.clone(),
-            h::clip(&[137], &[]),
-            "unsupported_translation_dof",
-        ),
-        (
-            Rig {
-                translation_dof: true,
-                ..Rig::default()
-            },
-            muscle(),
-            "unsupported_translation_dof",
-        ),
-        (
-            neutral.clone(),
-            h::clip(
-                &SPINE,
-                &[(
-                    "m_ValueArrayReferencePose",
-                    vector(V::Float(0.), vec![V::Float(1.)]),
-                )],
-            ),
-            "unsupported_additive_pose",
-        ),
-        (
-            neutral.clone(),
-            h::clip(&[42, 13], &[]),
-            "unsupported_body_motion(body_slots)",
-        ),
-        // An UpperChest muscle on a rig without UpperChest.
-        (
-            neutral.clone(),
-            h::clip(&[48], &[]),
-            "missing_human_bone(54)",
-        ),
-        (
-            Rig {
-                no_axes: Some(7),
-                ..Rig::default()
-            },
-            muscle(),
-            "unsupported_humanoid_axes(7)",
-        ),
-        (
-            Rig {
-                twist: [0., 0.25, 0., 0.],
-                ..Rig::default()
-            },
-            h::clip(&SPINE, &[("m_Level", V::Float(0.125))]),
-            "unsupported_humanoid_twist(m_ForeArmTwist)",
-        ),
-        (
-            Rig {
-                stretch: [0.05, 0., 0.],
-                ..Rig::default()
-            },
-            muscle(),
-            "unsupported_humanoid_avatar_setting(m_ArmStretch)",
-        ),
-        (
-            neutral.clone(),
-            h::clip(
-                &SPINE,
-                &[
-                    ("m_KeepOriginalPositionY", V::Bool(true)),
-                    ("m_Level", V::Float(0.125)),
-                ],
-            ),
-            "unsupported_humanoid_clip_settings(m_Level)",
-        ),
-        (
-            neutral.clone(),
-            h::clip(&SPINE, &[("m_KeepOriginalPositionY", V::Bool(true))]),
-            "unsupported_humanoid_clip_settings(m_KeepOriginalPositionY)",
-        ),
-        (
-            neutral.clone(),
-            h::clip(&SPINE, &[("m_StartAtOrigin", V::Bool(true))]),
-            "unsupported_humanoid_clip_settings(m_StartAtOrigin)",
-        ),
-    ];
-    for (rig, clip, expected) in cases {
-        assert_eq!(refusal(&rig, clip), expected);
-    }
-    assert_eq!(
-        refusal_on(Layout::Unity6000, &Rig::default(), h::clip(&SPINE, &[])),
-        "unsupported_body_motion(hips_correction)"
-    );
-}
-
-#[test]
-fn a_missing_setting_has_no_confirmed_default() {
-    let mut clip = h::clip(&SPINE, &[]);
-    let V::Struct(_, root) = &mut clip.value else {
-        panic!("clip")
-    };
-    let (_, V::Struct(_, muscle)) = root
-        .iter_mut()
-        .find(|(name, _)| name == "m_MuscleClip")
-        .unwrap()
-    else {
-        panic!("muscle clip")
-    };
-    muscle.retain(|(name, _)| name != "m_Mirror");
-    assert_eq!(
-        refusal(&Rig::default(), clip),
-        "unsupported_humanoid_clip_settings(m_Mirror)"
-    );
-}
+#[path = "humanoid/refusals.rs"]
+mod refusals;
 
 fn muscle_field(clip: &mut Object, name: &str, value: V) {
     let V::Struct(_, root) = &mut clip.value else {
@@ -396,10 +220,40 @@ fn malformed_slot_tables_refuse_with_their_causes() {
         issue(h::clip(&[42], &[]), Layout::Unity2019),
         "unsupported_humanoid_layout"
     );
+
+    // Widths are counted before any slot table is sized: a storage count
+    // past the bindings refuses as a slot count, however large.
+    assert_eq!(
+        issue(h::clip_with(&[42], &[], &[], 2, &[]), Layout::Unity2022),
+        "binding_slot_count(1, 2)"
+    );
+    assert_eq!(
+        issue(
+            h::clip_with(&[42], &[], &[], u32::MAX, &[]),
+            Layout::Unity2022
+        ),
+        "binding_slot_count(1, 4294967295)"
+    );
+    // A counted streamed slot needs a key in the serialized frames.
+    assert_eq!(
+        issue(h::clip_with(&[42], &[], &[], 1, &[]), Layout::Unity2022),
+        "missing_streamed_key(0)"
+    );
+    // A local position row is three slots wide; a DOF mapped onto one of
+    // its slots conflicts.
+    let mut generic = h::clip_with(&[42], &[h::crc32(b"Hips/Prop")], &[], 0, &[]);
+    muscle_field(
+        &mut generic,
+        "m_IndexArray",
+        index_array(&[(42, 0), (43, 2)], 200),
+    );
+    assert_eq!(
+        issue(generic, Layout::Unity2022),
+        "conflicting_human_mapping(43)"
+    );
 }
 
-#[test]
-fn invalid_avatar_indices_refuse_on_read() {
+fn avatar_with(name: &str, value: V) -> Result<(), AnimError> {
     let mut avatar = h::avatar(&Rig::default());
     let V::Struct(_, root) = &mut avatar.value else {
         panic!("avatar")
@@ -409,10 +263,44 @@ fn invalid_avatar_indices_refuse_on_read() {
         .find(|(name, _)| name == "m_Avatar")
         .unwrap()
         .1;
-    set(runtime, "m_RootMotionBoneIndex", V::Int(16));
+    set(runtime, name, value);
     let (_, file) = file(Layout::Unity2022, &[avatar]);
+    read_avatar(&file.object(AVATAR).unwrap(), &Meter::unlimited()).map(drop)
+}
+
+fn ints(values: impl IntoIterator<Item = i32>) -> V {
+    vector(V::Int(0), values.into_iter().map(V::Int).collect())
+}
+
+#[test]
+fn invalid_avatar_indices_refuse_on_read() {
     assert!(matches!(
-        read_avatar(&file.object(AVATAR).unwrap(), &Meter::unlimited()),
+        avatar_with("m_RootMotionBoneIndex", V::Int(16)),
         Err(AnimError::InvalidAvatarIndex("m_RootMotionBoneIndex"))
+    ));
+    // The root-motion tables: an index per root-motion skeleton node.
+    assert!(matches!(
+        avatar_with("m_RootMotionSkeletonIndexArray", ints([0])),
+        Err(AnimError::InvalidAvatarIndex(
+            "m_RootMotionSkeletonIndexArray"
+        ))
+    ));
+    // Human node 5 has no Avatar node, yet Avatar node 5 names it.
+    assert!(matches!(
+        avatar_with(
+            "m_HumanSkeletonIndexArray",
+            ints((0..16).map(|i| if i == 5 { -1 } else { i }))
+        ),
+        Err(AnimError::InvalidAvatarIndex("m_HumanSkeletonIndexArray"))
+    ));
+    // Human node 5 names Avatar node 6, which names human node 6.
+    assert!(matches!(
+        avatar_with(
+            "m_HumanSkeletonIndexArray",
+            ints((0..16).map(|i| if i == 5 { 6 } else { i }))
+        ),
+        Err(AnimError::InvalidAvatarIndex(
+            "m_HumanSkeletonReverseIndexArray"
+        ))
     ));
 }

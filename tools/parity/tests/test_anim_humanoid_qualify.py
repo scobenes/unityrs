@@ -1,9 +1,12 @@
-"""The humanoid qualification evidence on a synthetic three-node rig: the slot inventory and crosswalk,
-the root and hips-local comparisons, the candidate muscle-to-pose equation, and the refusal order the
-Rust reader shares. All values are made up here; none come from an Editor run."""
+"""The humanoid qualification evidence on a synthetic rig of the fifteen required bones: the slot inventory and
+crosswalk, the rest-track bounds on the root and hips, the candidate muscle-to-pose equation, the three
+verdicts and the unordered causes, the full clip set, and the case lists the Rust check shares. All values are
+made up here; none come from an Editor run."""
 
 import copy
+import json
 import math
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -14,10 +17,23 @@ sys.path.insert(0, str(HERE))
 
 import anim_humanoid_qualify as q  # noqa: E402
 import anim_replay as replay  # noqa: E402
+import scratch  # noqa: E402
 
 BITS = replay.f32_bits
 LIMIT = math.radians(40)
-ROOT_X = [0.0, 0.5, 0.0]
+BODY = [0.0, 0.5, 0.0]
+# HumanBodyBones index and name of each rig bone; every bone but Hips is the Hips' child.
+BONES = [(0, "Hips"), (1, "LeftUpperLeg"), (2, "RightUpperLeg"), (3, "LeftLowerLeg"), (4, "RightLowerLeg"),
+         (5, "LeftFoot"), (6, "RightFoot"), (7, "Spine"), (10, "Head"), (13, "LeftUpperArm"),
+         (14, "RightUpperArm"), (15, "LeftLowerArm"), (16, "RightLowerArm"), (17, "LeftHand"), (18, "RightHand")]
+SPINE_NODE = 1 + [bone for bone, _ in BONES].index(7)
+NEUTRAL = dict.fromkeys(q.TWIST + q.AVATAR_SETTINGS, 0.0)
+# Left Arm Twist In-Out (LeftUpperArm) and an UpperChest muscle the rig leaves out.
+ARM_TWIST, UPPER_CHEST = 42 + 41, 42 + 6
+
+
+def path(i):
+    return "Hips" if i == 0 else "Hips/" + BONES[i][1]
 
 
 def pose(translation, rotation=(0.0, 0.0, 0.0, 1.0)):
@@ -25,49 +41,54 @@ def pose(translation, rotation=(0.0, 0.0, 0.0, 1.0)):
                 scale=[BITS(1.0)] * 3)
 
 
-def rig_avatar(twist=0.0):
+def rig_avatar(twist=0.0, root_x=BODY):
     axes = dict(m_PreQ=dict(x=0.0, y=0.0, z=0.0, w=1.0), m_PostQ=dict(x=0.0, y=0.0, z=0.0, w=1.0),
                 m_Sgn=dict(x=1.0, y=1.0, z=1.0), m_Type=1,
                 m_Limit=dict(m_Min=dict(x=-LIMIT, y=-LIMIT, z=-LIMIT), m_Max=dict(x=LIMIT, y=LIMIT, z=LIMIT)))
     bones = [-1] * 25
-    bones[0], bones[7] = 1, 2
+    for node, (bone, _) in enumerate(BONES, 1):
+        bones[bone if bone <= 8 else bone + 1] = node
     hand = dict(data=dict(m_HandBoneIndex=[-1] * 15))
+    nodes = [dict(m_ParentId=-1, m_AxesId=-1)] + [dict(m_ParentId=0 if i == 0 else 1, m_AxesId=i)
+                                                   for i in range(len(BONES))]
+    ids = [0] + [crc32(path(i).encode()) for i in range(len(BONES))]
     human = dict(m_HumanBoneIndex=bones, m_LeftHand=hand, m_RightHand=hand,
-                 m_RootX=dict(t=dict(zip("xyz", ROOT_X))),
-                 m_Skeleton=dict(data=dict(
-                     m_Node=[dict(m_ParentId=-1, m_AxesId=-1), dict(m_ParentId=0, m_AxesId=0),
-                             dict(m_ParentId=1, m_AxesId=1)],
-                     m_ID=[0, crc32(b"Hips"), crc32(b"Hips/Spine")], m_AxesArray=[axes, axes])),
+                 m_RootX=dict(t=dict(zip("xyz", root_x))),
+                 m_Skeleton=dict(data=dict(m_Node=nodes, m_ID=ids, m_AxesArray=[axes] * len(BONES))),
                  m_ArmTwist=twist, m_ForeArmTwist=0.0, m_UpperLegTwist=0.0, m_LegTwist=0.0,
                  m_ArmStretch=0.0, m_LegStretch=0.0, m_FeetSpacing=0.0, m_HasTDoF=False)
     return dict(m_Avatar=dict(m_Human=dict(data=human), m_RootMotionBoneIndex=-1),
-                m_TOS=[[0, ""], [crc32(b"Hips"), "Hips"], [crc32(b"Hips/Spine"), "Hips/Spine"]])
+                m_TOS=[[0, ""]] + [[crc32(path(i).encode()), path(i)] for i in range(len(BONES))])
 
 
-def rig_clip(dofs=(42,), **settings):
+def rig_clip(dofs=(42,), writers=(), **settings):
     index = [-1] * 200
     for slot, dof in enumerate(dofs):
         index[dof] = slot
+    constants = 3 * len(writers)
     muscle = dict(m_IndexArray=index, m_ValueArrayReferencePose=[],
                   m_Clip=dict(data=dict(m_StreamedClip=dict(curveCount=len(dofs), discreteCurveCount=0),
                                         m_DenseClip=dict(m_CurveCount=0),
-                                        m_ConstantClip=dict(data={"t": "f32s", "v": ""}))))
+                                        m_ConstantClip=dict(data={"t": "f32s", "v": "00000000" * constants}))))
     for name in q.SETTINGS:
         muscle[name] = 0.0 if name in ("m_CycleOffset", "m_Level", "m_OrientationOffsetY") else False
+    muscle["m_StartAtOrigin"] = True
     muscle.update(settings)
-    bindings = [dict(typeID=95, customType=8, attribute=dof) for dof in dofs]
+    bindings = [dict(typeID=95, customType=8, attribute=dof, path=0) for dof in dofs]
+    bindings += [dict(typeID=4, customType=0, attribute=1, path=crc32(name.encode())) for name in writers]
     return dict(m_MuscleClip=muscle, m_ClipBindingConstant=dict(genericBindings=bindings))
 
 
 def capture_humanoid():
     names = ["Hips"] + [f"Bone{i}" for i in range(1, 54)] + ["UpperChest"]
-    names[7] = "Spine"
-    bones = [dict(name=name, node={0: 1, 7: 2}.get(i, -1), required=i in q.REQUIRED_BONES)
-             for i, name in enumerate(names)]
+    nodes = {}
+    for node, (bone, name) in enumerate(BONES, 1):
+        names[bone] = name
+        nodes[bone] = node + 1
+    bones = [dict(name=name, node=nodes.get(i, -1), required=i in q.REQUIRED_BONES) for i, name in enumerate(names)]
     muscles = [dict(name=f"Muscle {i}", bone=q.muscle_bone(i), axis=(2, 1, 0)[i % 3],
                     min=BITS(-40.0), max=BITS(40.0)) for i in range(q.MUSCLE_COUNT)]
-    limits = [dict(human="Spine", defaults=True)]
-    return dict(bones=bones, muscles=muscles, limits=limits)
+    return dict(bones=bones, muscles=muscles, limits=[dict(human="Spine", defaults=True)])
 
 
 def spine_rotation(value):
@@ -76,25 +97,29 @@ def spine_rotation(value):
     return q.muscle_rotation(record, [(value, 2)])
 
 
-def recordings(values=(0.0, 0.5)):
-    """A clip replay and its known-vector baseline: the clip's body sits at the root origin."""
-    spec = dict(mode="animator", binding_address="0", binding_component=0,
-                nodes=[dict(address="0", name="rig"), dict(address="0/0", name="Hips"),
-                       dict(address="0/0/0", name="Spine")],
-                evidence=dict(editor=dict(bindings=[dict(property="Muscle 0")])),
+def recordings(values=(0.0, 0.5), moved=True, root=(0.0, 0.0, 0.0), animator=(0.0, 0.0, 0.0)):
+    """A clip replay and its known-vector baseline. A moved clip has its body at the root origin; the
+    Animator node rests at `animator` and plays at `root` from there."""
+    nodes = [dict(address="", name="fixture"), dict(address="0", name="rig"), dict(address="0/0", name="Hips")]
+    nodes += [dict(address=f"0/0/{i}", name=name) for i, (_, name) in enumerate(BONES[1:])]
+    spec = dict(mode="animator", binding_address="0", binding_component=0, nodes=nodes,
+                evidence=dict(editor=dict(bindings=[])),
                 bundles=[dict(name="rig", sha256="0" * 64)], prefab_asset="p", clip_asset="c",
                 avatar_asset="a", prefab={}, binding={},
                 clip=dict(file_index=1, path_id="5"), avatar=dict(file_index=1, path_id="6"))
-    rest = [pose((0, 0, 0)), pose((0, 1, 0)), pose((0, 0.2, 0))]
+    rest = [pose((0, 0, 0)), pose(animator), pose((0, 1, 0))] + [pose((0, 0.2, 0)) for _ in BONES[1:]]
 
     def samples(baseline):
         rows = []
         for i, value in enumerate(values):
-            hips = (0.0, 1.0 - 0.01 * value, 0.0)
-            if not baseline:
-                hips = tuple(a - b for a, b in zip(hips, ROOT_X))
-            row = dict(local=float(i), local_f32=BITS(float(i)),
-                       pose=dict(transforms=[pose((0, 0, 0)), pose(hips), pose((0, 0.2, 0), spine_rotation(value))]))
+            transforms = copy.deepcopy(rest)
+            transforms[1] = pose(tuple(a + b for a, b in zip(animator, root)))
+            hips = (0.0, 1.0 - 0.01 * value, 0.0) if moved else (0.0, 1.0, 0.0)
+            if moved and not baseline:
+                hips = tuple(a - b for a, b in zip(hips, BODY))
+            transforms[2] = pose(hips)
+            transforms[1 + SPINE_NODE] = pose((0, 0.2, 0), spine_rotation(value))
+            row = dict(local=float(i), local_f32=BITS(float(i)), pose=dict(transforms=transforms))
             if baseline:
                 row["muscles_f32"] = [BITS(value)] + [BITS(0.0)] * (q.MUSCLE_COUNT - 1)
             rows.append(row)
@@ -119,16 +144,16 @@ class View:
         return self.objects[key]
 
 
-def qualify(clip=None, avatar=None, name="humanoid-synthetic", baseline=True):
-    doc, known = recordings()
+def qualify(clip=None, avatar=None, name="humanoid-synthetic", baseline=True, **recorded):
+    doc, known = recordings(**recorded)
     clip = clip or rig_clip()
-    # The Editor's curve names for the clip's own DOFs.
-    names = [f"Muscle {dof - 42}" if q.dof_kind(dof)[0] == "muscle" else q.dof_kind(dof)[2]
-             for dof in (row["attribute"] for row in clip["m_ClipBindingConstant"]["genericBindings"])
-             if dof < 200]
+    # The Editor's Animator curve names for the clip's own DOFs.
+    names = [f"Muscle {row['attribute'] - 42}" if q.dof_kind(row["attribute"])[0] == "muscle"
+             else q.dof_kind(row["attribute"])[2]
+             for row in clip["m_ClipBindingConstant"]["genericBindings"] if row["typeID"] == 95]
     doc["spec"]["evidence"]["editor"]["bindings"] = [dict(property=name) for name in names]
     view = View(clip, avatar or rig_avatar())
-    return q.qualify_clip(name, doc, known if baseline else None, view, None)
+    return q.qualify_clip(name, doc, known if baseline else None, view, NEUTRAL)
 
 
 class LayoutTests(unittest.TestCase):
@@ -157,46 +182,95 @@ class LayoutTests(unittest.TestCase):
         self.assertAlmostEqual(q.angle_degrees(rotation, (math.sin(-0.05), 0, 0, math.cos(0.05))), 0, places=9)
         self.assertEqual(q.muscle_rotation(record, []), (0.0, 0.0, 0.0, 1.0))
 
+    def test_generic_rows_take_their_widths(self):
+        rows, width = q.binding_rows([dict(typeID=95, customType=8, attribute=42),
+                                      dict(typeID=4, customType=0, attribute=2), dict(typeID=137, customType=20,
+                                                                                      attribute=7)])
+        self.assertEqual([(row["first"], row["width"], row["role"]) for row in rows],
+                         [(0, 1, "human"), (1, 4, "transform"), (5, 1, "other")])
+        self.assertEqual(width, 6)
 
-class QualificationTests(unittest.TestCase):
-    def test_inventory_crosswalk_and_comparison(self):
+
+class VerdictTests(unittest.TestCase):
+    def test_a_clip_within_the_rest_bounds_qualifies(self):
+        entry = qualify(moved=False, avatar=rig_avatar(root_x=(0.0, 0.0, 0.0)))
+        self.assertEqual(entry["causes"], [])
+        self.assertTrue(entry["qualifies"] and entry["verdicts"]["residual"] == dict(root=True, hips_local=True))
+        self.assertEqual(entry["verdicts"]["clip_settings"] + entry["verdicts"]["root_basis"], [])
+        # The same clip with no known-vector baseline does not.
+        self.assertFalse(qualify(moved=False, baseline=False)["qualifies"])
+
+    def test_a_clip_over_the_hips_bound_needs_a_correction(self):
         entry = qualify()
         mapped = [row for row in entry["slots"] if row["storage"] != "absent"]
         self.assertEqual(mapped, [dict(dof=42, kind="muscle", name="Muscle 0", index_value=0, storage="streamed")])
         self.assertTrue(all(row["index_value"] == -1 for row in entry["slots"] if row["storage"] == "absent"))
-        self.assertEqual(entry["storage_counts"], dict(streamed=1, dense=0, constant=0))
-        self.assertEqual([row["bone"] for row in entry["axes"]], [7])
-        compared = entry["root_hips"]
-        self.assertEqual(compared["reset"]["root"]["translation"], 0)
-        self.assertAlmostEqual(compared["reset"]["hips_local"]["translation"], 0.505, places=6)
-        self.assertAlmostEqual(compared["baseline"]["hips_local"]["translation"], 0.5, places=6)
-        self.assertLess(compared["body_origin_translation"], 1e-7)
+        reset = entry["root_hips"]["reset"]
+        self.assertTrue(reset["root"]["within"])
+        self.assertFalse(reset["hips_local"]["within"])
+        self.assertAlmostEqual(reset["hips_local"]["translation"], 0.505, places=6)
+        # The hips' rest bound is half an f32 ulp at 1, widened.
+        self.assertLess(entry["root_hips"]["bounds"]["hips_local"]["translation"][1], 2**-23)
+        self.assertLess(entry["root_hips"]["body_origin_translation"], 1e-7)
         self.assertLess(entry["muscle_pose"]["known_vectors"]["Spine"], 1e-4)
-        self.assertFalse(entry["body_bearing"] or entry["qualifies"])
-        self.assertEqual(entry["refusal"], "unsupported_body_motion(hips_correction)")
-        self.assertTrue(any("hips_local differs from the baseline" in reason for reason in entry["reasons"]))
+        self.assertEqual(entry["causes"], ["unsupported_body_motion(hips_correction)"])
+        self.assertFalse(entry["qualifies"] or entry["body_bearing"])
 
-    def test_refusal_order_matches_the_rust_reader(self):
-        cases = [
+    def test_root_motion_is_a_root_projection(self):
+        entry = qualify(moved=False, root=(0.0, 0.0, 0.25), avatar=rig_avatar(root_x=(0.0, 0.0, 0.0)))
+        self.assertEqual(entry["causes"], ["unsupported_body_motion(root_projection)"])
+
+    def test_the_three_verdicts_are_independent(self):
+        entry = qualify(clip=rig_clip(m_Level=0.125, m_KeepOriginalPositionY=True))
+        self.assertEqual(entry["verdicts"]["clip_settings"], ["m_Level"])
+        self.assertEqual(entry["verdicts"]["root_basis"], ["m_KeepOriginalPositionY"])
+        self.assertEqual(entry["verdicts"]["residual"], dict(root=True, hips_local=False))
+        self.assertEqual(entry["causes"], ["unsupported_body_motion(hips_correction)",
+                                           "unsupported_humanoid_clip_settings(m_Level)",
+                                           "unsupported_humanoid_root_basis(m_KeepOriginalPositionY)"])
+        # The start-at-origin flag is the complement of the XZ basis flag.
+        self.assertEqual(qualify(clip=rig_clip(m_StartAtOrigin=False))["verdicts"]["root_basis"], ["m_StartAtOrigin"])
+        self.assertEqual(qualify(clip=rig_clip(m_KeepOriginalPositionXZ=True, m_StartAtOrigin=False))
+                         ["verdicts"]["root_basis"], ["m_KeepOriginalPositionXZ", "m_StartAtOrigin"])
+
+
+class CauseTests(unittest.TestCase):
+    def causes(self, **kwargs):
+        return qualify(baseline=False, **kwargs)["causes"]
+
+    def test_each_cause(self):
+        for kwargs, expected in [
             (dict(clip=rig_clip((42, 7))), "unsupported_body_motion(body_slots)"),
             (dict(clip=rig_clip((0, 42))), "unsupported_locomotion"),
             (dict(clip=rig_clip((14,))), "unsupported_humanoid_ik"),
             (dict(clip=rig_clip((137,))), "unsupported_translation_dof"),
-            (dict(avatar=rig_avatar(twist=0.5), clip=rig_clip(m_Level=0.125)),
-             "unsupported_humanoid_twist(m_ArmTwist)"),
-            (dict(clip=rig_clip(m_KeepOriginalPositionY=True, m_Level=0.125)),
-             "unsupported_humanoid_clip_settings(m_Level)"),
-            (dict(clip=rig_clip(m_StartAtOrigin=True)), "unsupported_humanoid_clip_settings(m_StartAtOrigin)"),
-        ]
-        for kwargs, expected in cases:
+            (dict(clip=rig_clip(writers=("Hips/Spine",))), "conflicting_humanoid_writer(1)"),
+            (dict(animator=(2.0, 0.25, -1.0)), "unsupported_animator_root"),
+        ]:
             with self.subTest(expected):
-                self.assertEqual(qualify(**kwargs, baseline=False)["refusal"], expected)
+                self.assertIn(expected, self.causes(**kwargs))
 
-    def test_a_probe_must_give_its_contracted_refusal(self):
-        with self.assertRaisesRegex(ValueError, "differs from the probe's unsupported_humanoid_twist"):
-            qualify(name="humanoid-twist-refusal", baseline=False)
-        entry = qualify(name="humanoid-twist-refusal", avatar=rig_avatar(twist=0.25), baseline=False)
-        self.assertEqual(entry["refusal"], "unsupported_humanoid_twist(m_ArmTwist)")
+    def test_twist_acts_only_on_its_limb(self):
+        twist = rig_avatar(twist=0.5)
+        self.assertNotIn("unsupported_humanoid_twist(m_ArmTwist)", self.causes(avatar=twist))
+        self.assertIn("unsupported_humanoid_twist(m_ArmTwist)",
+                      self.causes(avatar=twist, clip=rig_clip((42, ARM_TWIST))))
+
+    def test_a_generic_writer_off_the_skeleton_is_not_a_conflict(self):
+        entry = qualify(baseline=False, clip=rig_clip(writers=("Hips/Prop",)))
+        self.assertEqual(entry["generic_writers"], [])
+
+    def test_an_absent_optional_bone_drops_its_muscle(self):
+        entry = qualify(baseline=False, clip=rig_clip((42, UPPER_CHEST)))
+        self.assertEqual(entry["dropped_muscles"], dict(count=1, names=["Muscle 6"]))
+        self.assertFalse([cause for cause in entry["causes"] if cause.startswith("missing_human_bone")])
+
+    def test_a_probe_must_list_its_contracted_cause(self):
+        with self.assertRaisesRegex(ValueError, "lack the probe's unsupported_humanoid_twist"):
+            qualify(name="humanoid-twist-refusal", avatar=rig_avatar(twist=0.25), baseline=False)
+        entry = qualify(name="humanoid-twist-refusal", avatar=rig_avatar(twist=0.25), baseline=False,
+                        clip=rig_clip((42, ARM_TWIST)))
+        self.assertIn("unsupported_humanoid_twist(m_ArmTwist)", entry["causes"])
 
     def test_disagreeing_tables_are_refused(self):
         clip = rig_clip()
@@ -205,16 +279,53 @@ class QualificationTests(unittest.TestCase):
             qualify(clip=clip)
         clip = rig_clip()
         clip["m_MuscleClip"]["m_IndexArray"][43] = 0
-        with self.assertRaisesRegex(ValueError, "share a slot|binding and slot counts"):
+        with self.assertRaisesRegex(ValueError, "share a slot"):
+            qualify(clip=clip)
+        clip = rig_clip()
+        clip["m_MuscleClip"]["m_Clip"]["data"]["m_StreamedClip"]["curveCount"] = 2
+        with self.assertRaisesRegex(ValueError, "binding widths and slot counts differ"):
             qualify(clip=clip)
         avatar = rig_avatar()
-        avatar["m_TOS"][2][1] = "Hips/Other"
+        avatar["m_TOS"][1 + SPINE_NODE - 1][1] = "Hips/Other"
         with self.assertRaisesRegex(ValueError, "maps to a different node"):
             qualify(avatar=avatar)
         avatar = rig_avatar()
-        avatar["m_Avatar"]["m_Human"]["data"]["m_Skeleton"]["data"]["m_AxesArray"][1]["m_Limit"]["m_Max"]["z"] = 0.1
+        skeleton = avatar["m_Avatar"]["m_Human"]["data"]["m_Skeleton"]["data"]
+        skeleton["m_AxesArray"] = copy.deepcopy(skeleton["m_AxesArray"])
+        skeleton["m_AxesArray"][SPINE_NODE - 1]["m_Limit"]["m_Max"]["z"] = 0.1
         with self.assertRaisesRegex(ValueError, "runtime limits"):
             qualify(avatar=avatar)
+
+
+class ClipSetTests(unittest.TestCase):
+    def test_the_expected_set_is_the_required_clips_and_the_recorded_coverage(self):
+        rows = [dict(name=name, status="recorded", reason="") for name in q.REQUIRED_CASES]
+        rows.append(dict(name="humanoid-twist-refusal", status="recorded", reason=""))
+        rows.append(dict(name="humanoid-non-neutral-setting-refusal", status="not_covered", reason="old run"))
+        self.assertEqual(q.expected_cases(dict(cases=rows)), [*q.REQUIRED_CASES, "humanoid-twist-refusal"])
+
+    def test_a_missing_replay_fails(self):
+        folder = scratch.for_case(self)
+        rows = [dict(name=name, status="recorded", reason="") for name in q.REQUIRED_CASES]
+        run = dict(run_id="0" * 32, editor_version="2022.3.0f1", build_target="StandaloneWindows64",
+                   build_target_id=19)
+        (folder / "run.json").write_text(json.dumps(dict(format="unityrs.fixture_run", version=1, run=run,
+                                                         cases=rows)), encoding="utf-8")
+        (folder / "replays").mkdir()
+        with self.assertRaisesRegex(ValueError, "missing completed replay"):
+            q.qualify_folder(folder, "unityrs")
+
+    def test_the_rust_check_shares_the_case_lists(self):
+        source = (HERE.parent.parent / "crates/unityrs-export/tests/anim_replay/humanoid.rs").read_text(
+            encoding="utf-8")
+
+        def listed(name):
+            block = re.search(rf"const {name}: &\[&str\] = &\[(.*?)\];", source, re.S)
+            self.assertIsNotNone(block, name)
+            return re.findall(r'"([^"]+)"', block.group(1))
+
+        self.assertEqual(listed("REQUIRED"), list(q.REQUIRED_CASES))
+        self.assertEqual(listed("OPTIONAL"), sorted(set(q.humanoid_cases()) - set(q.REQUIRED_CASES)))
 
 
 if __name__ == "__main__":

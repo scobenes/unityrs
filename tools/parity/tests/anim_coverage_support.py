@@ -6,10 +6,16 @@ import math
 from anim_fixture_support import ASSETS, ROOT_ID, RUN, archive, game_object, pointer, recording, stored_curves
 from test_anim_replay import bits
 
+from anim_fixture_coverage import BASIS_CASES, REFUSALS  # noqa: E402  (test_anim_replay puts it on the path)
+
 INTEGER, TWIST, SETTINGS = "integer-discrete-binding", "humanoid-twist-refusal", "humanoid-non-neutral-setting-refusal"
 # The integer case has no Built-in fixture: the run reports it as not covered.
 COVERAGE = (TWIST, SETTINGS)
-BUNDLES = {TWIST: "humanoid-twist", SETTINGS: "humanoid-settings"}
+BUNDLES = {TWIST: "humanoid-twist", SETTINGS: "humanoid-settings"} | dict.fromkeys(BASIS_CASES, "humanoid-root-basis")
+# Two basis matrix clips: the neutral combination and the original-Y one.
+NEUTRAL_BASIS, BASIS_Y = "humanoid-root-basis-o0-y0-xz0", "humanoid-root-basis-o0-y1-xz0"
+BASIS = (NEUTRAL_BASIS, BASIS_Y)
+BASIS_FIELDS = ("keepOriginalOrientation", "keepOriginalPositionY", "keepOriginalPositionXZ")
 TWIST_VALUES = dict(upper_arm_twist=.5, lower_arm_twist=.25, upper_leg_twist=.75, lower_leg_twist=.375)
 AVATAR_TWIST = dict(m_ArmTwist=.5, m_ForeArmTwist=.25, m_UpperLegTwist=.75, m_LegTwist=.375)
 # HumanTrait order puts these after the Spine muscles; the index sets the built attribute.
@@ -43,6 +49,10 @@ def human_recording(case, run):
     editor = spec["evidence"]["editor"]
     editor["fixture_case"] = case
     human = capture["humanoid"]
+    if case in BASIS_CASES:
+        editor["expected_refusal"] = REFUSALS.get(case, "")
+        capture["clip_settings"].update(zip(BASIS_FIELDS, BASIS_CASES[case]))
+        return doc
     if case == SETTINGS:
         editor["expected_refusal"] = "unsupported_humanoid_clip_settings"
         capture["clip_settings"].update(level=bits(.125))
@@ -110,10 +120,15 @@ def human_clip(case, spec, *, ramp=True):
             entries.append((slot, 0, 0, word(slope), word(value * t if ramp else value)))
         frames.append((word(t), entries))
     offset = case == SETTINGS
+    basis = {}
+    if case in BASIS_CASES:
+        orientation, y, xz = BASIS_CASES[case]
+        basis = {"m_KeepOriginalOrientation": orientation, "m_KeepOriginalPositionY": y,
+                 "m_KeepOriginalPositionXZ": xz, "m_HeightFromFeet": False, "m_StartAtOrigin": not xz}
     return {"m_SampleRate": 16., "m_Legacy": False, **stored_curves(spec), "m_MuscleClip": {
         "m_StartTime": 0., "m_StopTime": 1., "m_LoopTime": False, "m_CycleOffset": 0., "m_Mirror": False,
         "m_Level": .125 if offset else 0., "m_OrientationOffsetY": 0., "m_KeepOriginalPositionY": False,
-        "m_IndexArray": [0, 1, -1], "m_Clip": {"data": {
+        **basis, "m_IndexArray": [0, 1, -1], "m_Clip": {"data": {
             "m_StreamedClip": {"curveCount": len(muscles), "data": stream(frames)},
             "m_DenseClip": {"m_CurveCount": 0}, "m_ConstantClip": {"data": []}}}},
         "m_ClipBindingConstant": {"genericBindings": [
@@ -121,27 +136,35 @@ def human_clip(case, spec, *, ramp=True):
             for index in muscles], "pptrCurveMapping": []}}
 
 
-def coverage_archives(bundles, inspect, run=RUN, *, clips=None, avatar=None, ramp=True):
-    """Write the coverage bundles; `clips` and `avatar` replace a built value per case."""
-    recordings = {case: human_recording(case, run) for case in COVERAGE}
-    for case, doc in recordings.items():
-        spec = doc["spec"]
-        assets = {spec["prefab_asset"]: 1, spec["clip_asset"]: 2}
+def coverage_archives(bundles, inspect, run=RUN, *, clips=None, avatar=None, ramp=True, cases=COVERAGE):
+    """Write the coverage bundles; `clips` and `avatar` replace a built value per case.
+
+    Cases sharing a bundle, as the basis matrix clips do, share its prefab and Avatar.
+    """
+    recordings = {case: human_recording(case, run) for case in cases}
+    for bundle in dict.fromkeys(BUNDLES[case] for case in cases):
+        members = [case for case in cases if BUNDLES[case] == bundle]
+        spec = recordings[members[0]]["spec"]
+        assets = {spec["prefab_asset"]: 1}
         rows = []
         prefab_rows(rows, spec)
-        clip = human_clip(case, spec, ramp=ramp)
-        if clips and case in clips:
-            clip = clips[case](clip)
-        rows.append((2, 74, spec["clip_name"], clip))
-        rows.append((91, 91, "Controller", {"m_AnimationClips": [pointer(2)]}))
+        for i, case in enumerate(members):
+            clip = human_clip(case, recordings[case]["spec"], ramp=ramp)
+            if clips and case in clips:
+                clip = clips[case](clip)
+            assets[recordings[case]["spec"]["clip_asset"]] = 2 if i == 0 else 20 + i
+            rows.append((2 if i == 0 else 20 + i, 74, recordings[case]["spec"]["clip_name"], clip))
+        rows.append((91, 91, "Controller", {"m_AnimationClips": [pointer(2)] + [
+            pointer(20 + i) for i in range(1, len(members))]}))
         rows.append((3, 95, None, {"m_Controller": pointer(91), "m_Avatar": pointer(90)}))
         assets[spec["avatar_asset"]] = 90
-        twist = AVATAR_TWIST if case == TWIST else dict.fromkeys(AVATAR_TWIST, 0.)
+        twist = AVATAR_TWIST if bundle == BUNDLES[TWIST] else dict.fromkeys(AVATAR_TWIST, 0.)
         neutral = dict(m_ArmStretch=0., m_LegStretch=0., m_FeetSpacing=0., m_HasTDoF=False)
         value = {"m_Avatar": {"m_Human": {"data": {"m_RootX": {"t": {"x": 0.}}, **twist, **neutral}}},
                  "m_HumanDescription": dict(twist)}
-        rows.append((90, 90, BUNDLES[case], avatar(case, value) if avatar else value))
+        rows.append((90, 90, bundle, avatar(members[0], value) if avatar else value))
         rows.append((9, 43, "Shared", {}))
-        digest = archive(bundles, inspect, BUNDLES[case], assets, rows, run=run)
-        doc["capture"]["bundle_sha256"] = [digest]
+        digest = archive(bundles, inspect, bundle, assets, rows, run=run)
+        for case in members:
+            recordings[case]["capture"]["bundle_sha256"] = [digest]
     return recordings

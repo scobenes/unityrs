@@ -4,6 +4,7 @@ mod compiled;
 pub(crate) mod explicit;
 mod packed;
 
+pub(crate) use compiled::decode_stream;
 pub use compiled::{CompiledClip, SlotValue, StorageKind, StreamKey, StreamSlot};
 pub use packed::PackedRotation;
 
