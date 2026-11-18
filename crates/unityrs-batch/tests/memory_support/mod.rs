@@ -278,11 +278,12 @@ fn point(point: Point) {
                 return;
             }
             if config.inject {
-                // A deliberately uncharged holder, kept through exit. It
-                // exceeds the residual allowance even though I is much larger.
+                // Use the allowance derived from the selected bound, plus
+                // a margin for ledger variation. Keep the holder through exit.
+                let bytes = usize::try_from(ALLOWANCE.load(SeqCst) + (16 << 20)).unwrap();
                 let mut leak = Vec::new();
-                leak.try_reserve_exact(64 << 20).unwrap();
-                leak.resize(64 << 20, 0_u8);
+                leak.try_reserve_exact(bytes).unwrap();
+                leak.resize(bytes, 0_u8);
                 std::mem::forget(std::hint::black_box(leak));
             }
             let o = HELD.observe();

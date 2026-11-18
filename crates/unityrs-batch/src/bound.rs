@@ -7,11 +7,10 @@
 //!
 //! each term as 5.3 states it, in the charge unit (`heap_cost`).
 //!
-//! **Provisional.** The constants of [`PROVISIONAL`] (`c_base`, `m_thread`,
-//! `m_pool`, `m_dispatch`, `m_end`, `c_env`) are estimates until
-//! `docs/plans/extract.md` X12 measures them and the binary compiles the
-//! measured figures in; `c_net` is A1's stated bound. So the bound is
-//! provisional too: a caller sizes by it only as an estimate until then.
+//! [`SELECTED`] supplies the constants measured and generated as described in
+//! `docs/memory/README.md`. The base keeps the overlap in zero-deduction
+//! whole-run measurements. The connection allowance `c_net` follows A1.
+//! [`PROVISIONAL`] supplies estimates for bootstrap builds.
 //!
 //! **Certified for 4 KiB pages only.** The charge unit rounds a mapped
 //! chunk to a 4 KiB page (`heap_cost`), and the calibration is measured on
@@ -23,6 +22,7 @@
 use std::collections::HashSet;
 
 mod environment;
+#[allow(clippy::unreadable_literal)] // The generator emits plain decimal values.
 mod measured;
 pub use environment::execution_env_block;
 pub use measured::{CALIBRATED, SELECTED};
@@ -40,7 +40,7 @@ const MIB: u64 = 1 << 20;
 /// given.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Constants {
-    /// `c_base`: the heap no other term holds (X12 measures it).
+    /// `c_base`: the fixed base, including conservative whole-run overlap.
     pub c_base: u64,
     /// `m_thread`: the heap one more worker adds.
     pub m_thread: u64,
@@ -56,9 +56,7 @@ pub struct Constants {
     pub c_net: u64,
 }
 
-/// Today's constants: **provisional** estimates (module docs). `c_env`
-/// and `c_base` are those 5.6's example comes to (9 MiB of Environments
-/// at 8 threads and `max_view_bundles` 1,024; about 20 MiB of base).
+/// Bootstrap estimates selected when [`CALIBRATED`] is false.
 pub const PROVISIONAL: Constants = Constants {
     c_base: 18 * MIB,
     m_thread: 128 * KIB,
@@ -69,8 +67,8 @@ pub const PROVISIONAL: Constants = Constants {
     c_net: 4 * MIB,
 };
 
-/// Conservative provisional channel bookkeeping allowance per slot. B12
-/// measures this; the structural lower bound must hold in the meantime.
+/// Channel bookkeeping allowance per slot for the structural floor on `m_end`.
+/// Calibration also measures the full channel at multiple capacities.
 pub const END_SLOT_OVERHEAD: usize = 256;
 const _: () =
     assert!(PROVISIONAL.m_end >= (size_of::<crate::job::End>() + END_SLOT_OVERHEAD) as u64);
@@ -106,8 +104,8 @@ impl Certification {
     }
 
     /// The stderr line an uncertified bound adds to `--check`'s and a
-    /// run's output; none for a provisional one, whose label is the
-    /// documentation's (`docs/BATCH_SPEC.md` section 10).
+    /// run's output. Both calibrated and bootstrap bounds are silent on
+    /// 4 KiB pages (`docs/BATCH_SPEC.md` section 10).
     #[must_use]
     pub fn note(self, prog: &str) -> Option<String> {
         let Self::Uncertified { page_size } = self else {

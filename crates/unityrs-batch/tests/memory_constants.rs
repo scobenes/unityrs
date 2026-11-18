@@ -1,8 +1,8 @@
-//! Component probes of `docs/plans/batch.md` 5.3's provisional terms
+//! Component probes of `docs/plans/batch.md` 5.3's compiled constants
 //! (`docs/plans/extract.md` X12's coefficients), each measured alone on
 //! the engine's counting allocator through the testkit's ledger
 //! (`unityrs_testkit::ledger`), which every event observes coherently with
-//! the charges, and held against [`PROVISIONAL`] as an uncharged
+//! the charges, and held against [`SELECTED`] as an uncharged
 //! allowance: an event past it is a violation. These are component
 //! measurements, not B12's process-level calibration, which needs every
 //! engine thread registered.
@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 
 use serde_json::json;
 use unityrs_batch::alloc::{self, Counting, Hook};
-use unityrs_batch::bound::{END_SLOT_OVERHEAD, SELECTED as PROVISIONAL};
+use unityrs_batch::bound::{END_SLOT_OVERHEAD, SELECTED};
 use unityrs_batch::controller::{Boundary, Controller, NoHooks, PreparedSpool};
 use unityrs_batch::execution::Execution;
 use unityrs_batch::job::End;
@@ -200,7 +200,7 @@ fn end() -> End {
 /// `cap x m_end`.
 fn full_channel(cap: usize) -> (i64, bool) {
     alone("the end channel probe", move || {
-        LEDGER.arm(PROVISIONAL.m_end * cap as u64);
+        LEDGER.arm(SELECTED.m_end * cap as u64);
         let (tx, rx) = std::sync::mpsc::sync_channel::<End>(cap);
         let more = tx.clone();
         for _ in 0..cap {
@@ -256,7 +256,7 @@ fn a_private_environments_fixed_parts_fit_c_env_whatever_d() {
     let mut kept = Vec::new();
     for d in [0, 1 << 30] {
         let (k, peak, fits) = alone("the Environment probe", move || {
-            LEDGER.arm(PROVISIONAL.c_env);
+            LEDGER.arm(SELECTED.c_env);
             let mut options = EnvOptions::batch(Arc::new(FileContext::unitypy()));
             options.dep_cache_bytes = d;
             let env = Environment::new(options);
@@ -287,7 +287,7 @@ fn both_request_slot_tables_fit_the_pool_terms_at_maximum_concurrency() {
     for dc in [1_usize, 8, 256] {
         let (peak, fits, retained) = alone("the request-slot tables probe", move || {
             let baseline = LEDGER.observe().heap;
-            LEDGER.arm(PROVISIONAL.m_pool * 2 * (dc as u64 + 1));
+            LEDGER.arm(SELECTED.m_pool * 2 * (dc as u64 + 1));
             let controller = PermitPool::with_base(0, dc).unwrap();
             let finisher = PermitPool::with_base(FINISHER_BASE, dc).unwrap();
             let observation = LEDGER.observe();
@@ -312,7 +312,7 @@ fn initialized_pools_and_request_tables_fit_the_incremental_pool_coefficient() {
     for dc in [1, 4, 16] {
         let (peak, fits) = alone("both initialized pools", move || {
             let runtimes = unityrs_batch::lifetime::Runtimes::prepare_with(dc, register).unwrap();
-            LEDGER.arm(2 * u64::from(dc + 1) * PROVISIONAL.m_pool);
+            LEDGER.arm(2 * u64::from(dc + 1) * SELECTED.m_pool);
             let controller =
                 unityrs_batch::http::permit::PermitPool::with_base(0, dc as usize).unwrap();
             let finisher =
@@ -441,7 +441,7 @@ fn the_controller_keeps_no_bundle_proportional_heap_past_phase_1() {
 fn full_dispatch_channels_include_fixed_overhead_at_small_capacities() {
     for cap in [1, 2, 4, 16, 256, 1024] {
         alone("full dispatch channel", move || {
-            LEDGER.arm(PROVISIONAL.m_dispatch * cap as u64);
+            LEDGER.arm(SELECTED.m_dispatch * cap as u64);
             let mut peak = 0;
             let size = unityrs_batch::run::hooks::memory::probe_dispatch(cap, || {
                 let o = LEDGER.observe();
@@ -491,7 +491,7 @@ fn initialized_workers_fit_the_worker_increment() {
             let runtimes = unityrs_batch::lifetime::Runtimes::prepare_with(1, register).unwrap();
             runtimes.prewarm().unwrap();
             let wake = Arc::new(unityrs_batch::sys::Wake::new().unwrap());
-            LEDGER.arm(u64::from(n) * PROVISIONAL.m_thread);
+            LEDGER.arm(u64::from(n) * SELECTED.m_thread);
             let mut execution = Execution::prepare_hosted(
                 &prepared,
                 runtimes.controller.handle().clone(),

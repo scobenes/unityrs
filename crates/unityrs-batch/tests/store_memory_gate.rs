@@ -19,7 +19,7 @@ use std::{
 use store_support::fake::{Fake, Fault, Operation};
 use unityrs_batch::{
     alloc::{self, Counting},
-    bound::{self, SELECTED as PROVISIONAL},
+    bound::{self, SELECTED},
     phase1,
     progress::{Phase, clock::Clock},
     run::{

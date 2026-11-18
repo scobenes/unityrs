@@ -1,6 +1,7 @@
 //! Integrated directory/HTTP X12 (`extract.md` X12; `batch.md` 5.1–5.3,
 //! 5.8). Real process termination, both runtimes, all engine threads. These
-//! are verification scenes against provisional estimates, not calibration.
+//! scenes verify the compiled selection. Designated observations also
+//! supply raw evidence to the calibration pipeline.
 #![cfg(all(target_os = "linux", feature = "test-hooks"))]
 mod memory_support;
 mod run_support;
@@ -19,7 +20,7 @@ use std::{
 };
 use unityrs_batch::{
     alloc::{self, Counting},
-    bound::{self, SELECTED as PROVISIONAL},
+    bound::{self, SELECTED},
     phase1,
     progress::{Phase, clock::Clock},
     run::{
@@ -127,6 +128,8 @@ fn run_extra(
         }
         spec["threads"] = json!(threads);
         spec["download_concurrency"] = json!(dc);
+        // The negative control spends only a small part of this headroom
+        // beyond its residual allowance, so it can still fit the total bound.
         spec["max_inflight_uncompressed_bytes"] = json!(256 << 20);
         spec["stop_on_stdin_eof"] = json!(true);
         let origin = http.then(url_run_support::Origin::start);
@@ -576,7 +579,7 @@ fn output_and_zip_member_growth_leaves_no_count_proportional_residual() {
         residuals.iter().map(|r| r.1).max().unwrap() - residuals.iter().map(|r| r.1).min().unwrap();
     println!("X12 output/member residuals {residuals:?}");
     // One fixed 64 KiB cursor plus runtime scheduling/allocator granularity.
-    // This independent spread gate is far below the 18 MiB base estimate.
+    // The spread gate is independent of the selected base.
     assert!(peak_span <= 128 << 10, "peak count slope: {residuals:?}");
     assert!(kept_span <= 16 << 10, "retained count slope: {residuals:?}");
 }
