@@ -68,6 +68,7 @@ fn every_value_seed_is_written_at_each_memory_bound() {
     crunch_seeds_are_cases(&dir);
     mesh_seeds_are_cases(&dir);
     scene_seeds_are_cases(&dir);
+    anim_seeds_are_cases(&dir);
     shader_seeds_are_cases(&dir);
     for target in ["boost_read", "python_read", "write_after_read"] {
         let (mut small, mut large) = (Vec::new(), Vec::new());
@@ -744,4 +745,20 @@ fn scene_seeds_are_cases(dir: &Path) {
         targets.push(cases);
     }
     assert_eq!(targets[0], targets[1]);
+}
+
+fn anim_seeds_are_cases(dir: &Path) {
+    use unityrs_testkit::fuzz::SceneCase;
+    for target in ["anim_clip", "anim_gltf"] {
+        let (mut bundles, mut meters) = (0, BTreeSet::new());
+        for entry in std::fs::read_dir(dir.join(target)).expect("animation seeds") {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+            let case = SceneCase::decode(&bytes);
+            assert_eq!(case.encode(), bytes);
+            bundles += usize::from(case.data.starts_with(b"UnityFS"));
+            meters.insert(case.meter);
+        }
+        assert!(bundles >= 50, "{target}: {bundles} bundled scenes");
+        assert_eq!(meters, [0, 1, 16, 64].into());
+    }
 }
