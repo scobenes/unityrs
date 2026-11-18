@@ -374,27 +374,32 @@ class CompleteReplayTests(unittest.TestCase):
         completed = json.loads((self.replays / "generic-constant.json").read_text())
         self.assertEqual(completed["spec"]["evidence"]["layout"], "constant")
 
-    def compiled_euler(self, bindings):
-        # Shaped like a 2022.3 build: no explicit curves, streamed slots for
-        # translation and then Euler, whose binding has custom type 4.
+    def compiled_clip(self, case, fields, bindings, frames):
+        # Shaped like a 2022.3 build: no explicit curves, only streamed slots
+        # in binding order. Each frame is (time, per-slot values).
         def frame(t, values):
             return [int(bits(t), 16), len(values)] + [w for slot, v in enumerate(values)
                                                       for w in (slot, 0, 0, 0, int(bits(v), 16))]
-        words = frame(-3.4028234663852886e38, [2, 0, 0, 15, 30, 10]) + frame(0, [2, 0, 0, 15, 30, 10])
-        words += frame(.5, [3.5, 0, 0, 82.5, -25, 220]) + frame(1, [5, 0, 0, 150, -80, 430]) + [0x7f800000, 0]
+        words = frame(0, frames[0][1]) + [w for t, values in frames for w in frame(t, values)] + [0x7f800000, 0]
         words[0] = 0xff7fffff
-        motion = crc32("Mötión".encode())
 
         def edit(clip):
-            for field in ("m_PositionCurves", "m_EulerCurves"):
-                clip.pop(field)
+            for field in fields:
+                clip.pop(field, None)
             data = clip["m_MuscleClip"]["m_Clip"]["data"]
-            data["m_StreamedClip"] = {"curveCount": 6, "data": words}
+            data["m_StreamedClip"] = {"curveCount": len(frames[0][1]), "data": words}
             data["m_DenseClip"].update(m_CurveCount=0, m_SampleArray=[])
             clip["m_ClipBindingConstant"] = {"genericBindings": [
-                dict(path=motion, typeID=4, attribute=attribute, customType=custom, isPPtrCurve=False)
-                for attribute, custom in bindings], "pptrCurveMapping": []}
-        self.replace_clip_values("generic-euler", edit)
+                dict(path=crc32(path.encode()), typeID=class_id, attribute=attribute, customType=custom,
+                     isPPtrCurve=False) for path, class_id, attribute, custom in bindings], "pptrCurveMapping": []}
+        self.replace_clip_values(case, edit)
+
+    def compiled_euler(self, bindings):
+        # The Euler binding has custom type 4, translation custom type 0.
+        self.compiled_clip("generic-euler", ("m_PositionCurves", "m_EulerCurves"),
+                           [("Mötión", 4, attribute, custom) for attribute, custom in bindings],
+                           [(0, [2, 0, 0, 15, 30, 10]), (.5, [3.5, 0, 0, 82.5, -25, 220]),
+                            (1, [5, 0, 0, 150, -80, 430])])
 
     def test_complete_reads_euler_motion_from_its_compiled_binding(self):
         self.compiled_euler([(1, 0), (4, 4)])
@@ -406,6 +411,25 @@ class CompleteReplayTests(unittest.TestCase):
     def test_complete_refuses_compiled_euler_without_its_binding(self):
         self.compiled_euler([(1, 0), (3, 0)])
         self.assert_refused("missing built fixture curve for ('Mötión', 'Transform', 'localEulerAnglesRaw.x')")
+
+    def compiled_morph(self, channel):
+        # A blend-shape binding's attribute hashes the bare channel name.
+        self.compiled_clip("generic-morph", ("m_RotationCurves", "m_FloatCurves"),
+                           [("Skin/RootBone/Upper", 4, 2, 0)]
+                           + [(f"Skin/Renderer{r}", 137, crc32(channel.encode()), 20) for r in "AB"],
+                           [(0, [0, 0, 0, 1, 12.5, 70]), (.5, [0, .6, 0, .8, 46, 47.5]),
+                            (1, [0, .8, 0, .6, 80, 25])])
+
+    def test_complete_reads_morph_weights_bound_by_channel_name(self):
+        self.compiled_morph("Lift")
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_complete_refuses_morph_binding_for_another_channel(self):
+        for channel in ("blendShape.Lift", "Drop"):
+            with self.subTest(channel=channel):
+                self.compiled_morph(channel)
+                self.assert_refused("missing built fixture curve for ('Skin/RendererA', 'SkinnedMeshRenderer'")
 
     def test_complete_refuses_missing_built_curve_despite_editor_claim(self):
         for case, field in (("legacy-explicit", "m_RotationCurves"), ("generic-euler", "m_EulerCurves"),

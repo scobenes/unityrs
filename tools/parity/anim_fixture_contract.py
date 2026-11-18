@@ -319,7 +319,10 @@ def check_built_clip(name, fixture, view, clip_key, nodes, avatar, editor_bindin
                                  "invalid built quaternion in compiled slots")
                 track = family_tracks[axes.index(axis):axes.index(axis) + 1]
         elif kind == "SkinnedMeshRenderer":
-            track = by_hash.get((crc32(path.encode()), 137, crc32(prop.encode()), 20, False), [])
+            # The built attribute hashes the bare channel name, without the
+            # Editor's "blendShape." property prefix.
+            channel = prop.removeprefix("blendShape.")
+            track = by_hash.get((crc32(path.encode()), 137, crc32(channel.encode()), 20, False), [])
         elif kind == "Animator":
             track = by_hash.get((0, 95, HUMANOID_ATTRIBUTES[key], 8, False), [])
         if track and track[0][1] and all(isfinite(v) for _, co in track[0][1] for v in co):
