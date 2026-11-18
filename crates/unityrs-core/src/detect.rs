@@ -193,9 +193,39 @@ pub(crate) fn detect_at_position(
     reader: ReaderKind,
     position: i128,
 ) -> Result<FileType, DetectError> {
+    match by_signature(data, reader, position)? {
+        Signed::Type(ty) => Ok(ty),
+        // UnityPy helpers/ImportHelper.py:75-83
+        Signed::Gzip if is_web_data(&gzip_signature(data, limits.max_inflate, work)?) => {
+            Ok(FileType::WebFile)
+        }
+        Signed::Gzip => Ok(past_gzip(data)),
+    }
+}
+
+/// What detection decides from signatures and the header alone, before it
+/// inflates anything ([`by_signature`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Signed {
+    /// The verdict, reached without decoding.
+    Type(FileType),
+    /// Gzip magic on a file of 128 bytes or more: detection inflates the
+    /// stream, raises if it is bad, and is a `WebFile` if it holds web data,
+    /// else goes on to the brotli marker and the header.
+    Gzip,
+}
+
+/// Detection by the memory reader at the start ([`detect`]'s steps), up to
+/// the gzip probe, which it never runs: a prefix-signature check that reads
+/// at most 40 bytes and the length, and neither allocates nor decodes.
+pub(crate) fn signature_only(data: &[u8]) -> Result<Signed, DetectError> {
+    by_signature(data, ReaderKind::Memory, 0)
+}
+
+fn by_signature(data: &[u8], reader: ReaderKind, position: i128) -> Result<Signed, DetectError> {
     // UnityPy helpers/ImportHelper.py:54-55
     if data.len() < 20 {
-        return Ok(FileType::ResourceFile);
+        return Ok(Signed::Type(FileType::ResourceFile));
     }
     // UnityPy helpers/ImportHelper.py:57: the reader's
     // `read_string_to_null(20)` at the original cursor, then reset to zero.
@@ -212,27 +242,29 @@ pub(crate) fn detect_at_position(
     let signature = data.get(range).unwrap_or_default();
     // UnityPy helpers/ImportHelper.py:60-70
     if BUNDLE_SIGNATURES.contains(&signature) {
-        return Ok(FileType::BundleFile);
+        return Ok(Signed::Type(FileType::BundleFile));
     }
     if is_web_data(signature) {
-        return Ok(FileType::WebFile);
+        return Ok(Signed::Type(FileType::WebFile));
     }
     if signature == b"PK\x03\x04" {
-        return Ok(FileType::Zip);
+        return Ok(Signed::Type(FileType::Zip));
     }
     // UnityPy helpers/ImportHelper.py:72-73
     if data.len() < 128 {
-        return Ok(FileType::ResourceFile);
+        return Ok(Signed::Type(FileType::ResourceFile));
     }
-    // UnityPy helpers/ImportHelper.py:75-83
-    if data.get(..2) == Some(GZIP_MAGIC.as_slice())
-        && is_web_data(&gzip_signature(data, limits.max_inflate, work)?)
-    {
-        return Ok(FileType::WebFile);
+    if data.get(..2) == Some(GZIP_MAGIC.as_slice()) {
+        return Ok(Signed::Gzip);
     }
+    Ok(Signed::Type(past_gzip(data)))
+}
+
+/// The steps after the gzip probe, on a file of 128 bytes or more.
+fn past_gzip(data: &[u8]) -> FileType {
     // UnityPy helpers/ImportHelper.py:84-88
     if data.get(0x20..0x26) == Some(b"brotli".as_slice()) {
-        return Ok(FileType::WebFile);
+        return FileType::WebFile;
     }
     // UnityPy helpers/ImportHelper.py:90-124: the header read big-endian
     // (the reader's default) whatever the byte at 16 says; the file holds at
@@ -253,11 +285,11 @@ pub(crate) fn detect_at_position(
             .any(|x| *x < 0 || *x > len)
         || file_size < metadata_size
         || file_size < data_offset;
-    Ok(if bad {
+    if bad {
         FileType::ResourceFile
     } else {
         FileType::AssetsFile
-    })
+    }
 }
 
 /// The signatures that make a bundle (`ImportHelper.py:60-65`), as the UTF-8
