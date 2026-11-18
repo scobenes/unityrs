@@ -61,6 +61,8 @@ lists each input with a `files` array or an error, plus object headers.
 resource files. Each entry carries its `file_index`, kind, Unity version and
 platform (null where inapplicable). Each SerializedFile carries its own version and
 platform, so mixed-version containers need no guessed aggregate platform.
+When a SerializedFile has external references, `external_paths` lists their
+stored paths in PPtr file-ID order, starting with file ID 1.
 
 Headers carry the input's zero-based index, the file's zero-based `file_index`,
 SerializedFile name, signed path ID, class ID and name (`Unknown` for an unmapped ID), object name, container path,

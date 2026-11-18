@@ -43,7 +43,7 @@ public static partial class AnimReplayRecorder
     }
     [Serializable] sealed class EditorEvidence
     {
-        public string fixture_case;
+        public string fixture_case, run_id;
         public string animation_source;
         public string expected_discovery;
         public string length_f32, frame_rate_f32;
@@ -76,7 +76,7 @@ public static partial class AnimReplayRecorder
     [Serializable] sealed class PendingPoseSpec : PendingSpec { public Point[] schedule; }
 
     internal static bool RecordFixture(UnityrsFixtureBuilder.ReplayCase fixture, string bundles, string output,
-        Action<string> log)
+        string runId, Action<string> log)
     {
         var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(fixture.Prefab);
         var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(fixture.Clip);
@@ -160,6 +160,7 @@ public static partial class AnimReplayRecorder
         pending.renderers = renderers;
         var editor = new EditorEvidence {
             fixture_case = fixture.OutputName,
+            run_id = runId,
             animation_source = human ? "procedural_humanoid" : "procedural_clip",
             expected_discovery = fixture.ExpectedDiscovery,
             bindings = bindings, clip_settings = ReadSettings(clip), length_f32 = Bits(clip.length),
@@ -244,13 +245,13 @@ public static partial class AnimReplayRecorder
             var stream = playback.FindPropertyRelative("m_StreamedClip.curveCount");
             var dense = playback.FindPropertyRelative("m_DenseClip.m_CurveCount");
             var constant = playback.FindPropertyRelative("m_ConstantClip.data");
-            reason = "Unity did not expose all runtime storage counts on the bundle-loaded scale clip.";
-            if (stream == null || dense == null || constant == null || !constant.isArray) return false;
-            int[] counts = { stream.intValue, dense.intValue, constant.arraySize };
+            reason = "Unity did not expose valid runtime storage counts on the bundle-loaded scale clip.";
+            if (stream == null || dense == null || (constant != null && !constant.isArray)) return false;
+            int[] counts = { stream.intValue, dense.intValue, constant?.arraySize ?? 0 };
             reason = "The runtime counts do not show the three scale components split across storage ranges (streamed="
                 + counts[0] + ", dense=" + counts[1] + ", constant=" + counts[2] + ").";
             // The candidate has only one three-component local scale binding.
-            return counts.Sum() == 3 && counts.Count(count => count > 0) > 1;
+            return counts.All(count => count >= 0) && counts.Sum() == 3 && counts.Count(count => count > 0) > 1;
         }
     }
 
@@ -278,7 +279,7 @@ public static partial class AnimReplayRecorder
             Scene scene = EditorSceneManager.NewPreviewScene();
             try
             {
-                var anchor = new GameObject("Authored Spine probe");
+                var anchor = EditorUtility.CreateGameObjectWithHideFlags("Authored Spine probe", HideFlags.HideAndDontSave);
                 SceneManager.MoveGameObjectToScene(anchor, scene);
                 var instance = UnityEngine.Object.Instantiate(prefab, anchor.transform, false);
                 var animator = At<Animator>(instance.transform, fixture.BindingAddress, 0);

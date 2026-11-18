@@ -133,6 +133,18 @@ fn metadata(out: &mut Text, file: &File, file_index: usize) {
         }
         _ => out.push_str("null"),
     }
+    if let File::Serialized(f) = file
+        && !f.externals().is_empty()
+    {
+        out.push_str(",\"external_paths\":[");
+        for (i, external) in f.externals().iter().enumerate() {
+            if i != 0 {
+                out.push(',');
+            }
+            listing::string(out, external.path.as_bytes(), true);
+        }
+        out.push(']');
+    }
     out.push('}');
 }
 fn parsed_name(p: &Parsed) -> Option<&[u8]> {

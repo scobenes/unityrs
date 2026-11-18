@@ -549,7 +549,7 @@ bindings. Repo-side completion fills in the built file and path IDs.
 #### Repo-side completion
 
 Pass the returned version-and-target folder, containing `run.json`,
-`bundles/` and `replays/`, to the completion command. The Unity operator's work ends
+`build.log`, `bundles/` and `replays/`, to the completion command. The Unity operator's work ends
 when they send the folder.
 
 ```sh
@@ -561,6 +561,10 @@ in `run.json` and a recorded result for every required case, including the
 static bundles and raw known-vector recordings. It reports missing and failed
 cases before writing completed replays. The [fixture contract](../tools/parity/anim_fixture_contract.py)
 specifies each required bundle, asset key, playback route and evidence.
+Completion matches the run ID, Editor version and build target across the
+manifest, log, recordings and built bundles. Each bundle stores the stamp as
+a TextAsset or, for the scene, as an empty GameObject. The built clip curves,
+prefab components and scene references supply the required fixture evidence.
 Static asset keys are checked against the inspected AssetBundle container.
 A scene's container entry names its `.unity` path and has a null object
 pointer. [Unity AssetBundle format](https://github.com/Unity-Technologies/UnityDataTools/blob/main/Documentation/assetbundle-format.md#scenes-in-assetbundles)

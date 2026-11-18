@@ -4,12 +4,14 @@ import hashlib
 import json
 import math
 import os
+import re
 import struct
 from uuid import uuid4
 
 import child
 from anim_fixture_contract import (ASSETS, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
-                                   check_discovery, check_evidence, check_identity, check_vectors)
+                                   check_built_clip, check_built_static, check_discovery, check_evidence,
+                                   check_identity, check_vectors)
 
 PENDING_FORMAT = "unityrs.anim_replay_pending"
 OPTIONAL_CASES = {
@@ -46,7 +48,7 @@ def wire_value(value, replay):
 class BundleView:
     """One bundle's inspect headers and lazily visited show values."""
 
-    def __init__(self, path, digest, index, unityrs, inspect_dir, replay):
+    def __init__(self, path, digest, index, unityrs, inspect_dir, replay, run):
         self.path, self.index, self.unityrs, self.inspect_dir = path, index, unityrs, inspect_dir
         self.digest = digest
         self.require, self.read_json, self.replay = replay.require, replay.read_json, replay
@@ -80,6 +82,23 @@ class BundleView:
                 break
             self.require(inspect_dir is None and cursor not in seen, f"expected complete inspect for {path.name}")
             seen.add(cursor)
+        self.files = files
+        self.require(files[0]["unity_version"] == run["editor_version"]
+                     and all((row["unity_version"], row["target_platform"])
+                             == (run["editor_version"], run["build_target_id"])
+                             for row in files.values() if row["kind"] == "AssetsFile"),
+                     f"fixture run identity mismatch in bundle platform or Editor version: {path.name}")
+        self.check_run_stamp(run_stamp(run))
+
+    def check_run_stamp(self, stamp):
+        message = f"fixture run identity mismatch in built bundle stamp: {self.path.name}"
+        if self.path.name == "static-batch-scene":
+            markers = [key for key, row in self.headers.items() if row["class_id"] == 1
+                       and isinstance(row["name"], str) and row["name"].startswith("unityrs fixture run ")]
+            self.require(len(markers) == 1 and self.value(markers[0])["m_Name"] == stamp, message)
+        else:
+            key = self.asset(f"{ASSETS}run/{self.path.name}.txt", 49, ignore_case=True)
+            self.require(self.value(key)["m_Script"] == stamp, message)
 
     def document(self, command, options, json_name):
         if self.inspect_dir is None:
@@ -119,15 +138,24 @@ class BundleView:
         file_index, path_id = key
         return dict(bundle=self.index, file_index=file_index, file=self.headers[key]["file"], path_id=str(path_id))
 
-    def pointer(self, owner, ptr, classes=None):
+    def pointer(self, owner, ptr, classes=None, *, within_bundle=False):
         self.require(type(ptr["m_PathID"]) is int and type(ptr["m_FileID"]) is int,
                      f"invalid PPtr in {self.path.name}: {owner}")
         if ptr["m_PathID"] == 0:
             return None
         # The generator puts every replay dependency in the same bundle.
         # An external file ID cannot be resolved from inspect headers.
-        self.require(ptr["m_FileID"] == 0, f"external replay PPtr in {self.path.name}: {owner}")
-        key = (owner[0], ptr["m_PathID"])
+        file_index, file_id = owner[0], ptr["m_FileID"]
+        if file_id:
+            self.require(within_bundle, f"external replay PPtr in {self.path.name}: {owner}")
+            externals = self.files[file_index].get("external_paths", [])
+            self.require(0 < file_id <= len(externals), f"missing external file for {owner}: {file_id}")
+            name = externals[file_id - 1].replace("\\", "/").rsplit("/", 1)[-1]
+            candidates = [idx for idx, row in self.files.items() if row["kind"] == "AssetsFile"
+                          and row["file"].rsplit("/", 1)[-1].lower() == name.lower()]
+            self.require(len(candidates) == 1, f"unresolved external file in {self.path.name}: {name}")
+            file_index = candidates[0]
+        key = (file_index, ptr["m_PathID"])
         self.require(key in self.headers and (classes is None or self.headers[key]["class_id"] in classes),
                      f"unresolved or wrong-class PPtr in {self.path.name}: {owner} -> {key}")
         return key
@@ -150,17 +178,15 @@ class BundleView:
                      f"expected one AssetBundle container entry for {name} in {self.path.name}")
         return candidates[0]
 
+    def components(self, game_object):
+        return [key for row in self.value(game_object)["m_Component"]
+                if (key := self.pointer(game_object, row[1] if isinstance(row, list) else row["component"]))
+                is not None]
+
     def hierarchy(self, prefab):
         """Index Transform addresses and stored component order from the prefab root."""
-        nodes = {}
-        visited = set()
-
-        def components(game_object):
-            return [key for row in self.value(game_object)["m_Component"]
-                    if (key := self.pointer(game_object, row[1] if isinstance(row, list) else row["component"]))
-                    is not None]
-
-        roots = [key for key in components(prefab) if self.headers[key]["class_id"] == 4]
+        nodes, visited = {}, set()
+        roots = [key for key in self.components(prefab) if self.headers[key]["class_id"] == 4]
         self.require(len(roots) == 1, "prefab must have one root Transform")
         stack = [(roots[0], "", None)]
         while stack:
@@ -171,7 +197,7 @@ class BundleView:
             game_object = self.pointer(key, value["m_GameObject"], {1})
             self.require(game_object is not None and self.pointer(key, value["m_Father"], {4}) == parent,
                          f"inconsistent Transform links at address {address!r}")
-            ordered = components(game_object)
+            ordered = self.components(game_object)
             self.require(key in ordered and (address != "" or game_object == prefab),
                          f"inconsistent GameObject at address {address!r}")
             nodes[address] = (key, self.headers[game_object]["name"], ordered)
@@ -232,9 +258,9 @@ class BundleView:
         return rows, direct
 
 
-def streamed_times(words, require):
+def streamed_times(words, width, require):
     """Read frame times from the CLI's uint32 view of m_StreamedClip.data."""
-    cursor, previous = 0, -math.inf
+    cursor, previous, occupied = 0, -math.inf, set()
     while cursor < len(words):
         require(cursor + 2 <= len(words), "incomplete built streamed clip frame")
         bits, count = words[cursor:cursor + 2]
@@ -242,15 +268,21 @@ def streamed_times(words, require):
                 "invalid built streamed clip frame")
         time, = struct.unpack(">f", struct.pack(">I", bits))
         seed = cursor == 0 and bits == 0xff7fffff
-        cursor += 2 + 5 * count
+        start = cursor + 2
+        cursor = start + 5 * count
         require(cursor <= len(words), "incomplete built streamed clip frame")
         if time == math.inf:
             require(count == 0 and cursor == len(words), "invalid built streamed clip terminal frame")
             break
         require(math.isfinite(time) and time > previous, "invalid built streamed clip time")
         previous = time
+        slots = words[start:cursor:5]
+        require(all(type(slot) is int and 0 <= slot < width for slot in slots)
+                and len(set(slots)) == len(slots), "invalid built streamed clip slot")
+        occupied.update(slots)
         if count and not seed:
             yield time
+    require(len(occupied) == width, "missing built streamed clip frame data")
 
 
 def packed_times(times, require):
@@ -295,7 +327,7 @@ def built_key_times(value, playback, require):
         count, words = stream["curveCount"], stream.get("data")
         require(type(count) is int and count >= 0, "invalid built streamed clip curve count")
         require(isinstance(words, list) and (count == 0 or words), "missing built streamed clip frame data")
-        times.extend(streamed_times(words, require))
+        times.extend(streamed_times(words, count, require))
     dense = playback.get("m_DenseClip", {})
     if dense.get("m_CurveCount", 0):
         curves, count, rate, begin = (dense[k] for k in ("m_CurveCount", "m_FrameCount", "m_SampleRate", "m_BeginTime"))
@@ -371,11 +403,14 @@ def clip_evidence(spec, capture, value, replay):
             serialized_path=f"{fields}.{field}", serialized=stored))
 
 
-def complete_recording(name, fixture, doc, bundle_dir, views, unityrs, inspect_dir, replay):
+def complete_recording(name, fixture, doc, bundle_dir, views, unityrs, inspect_dir, replay, run):
     replay.require(set(doc) == {"format", "version", "spec", "capture"}
                    and doc["format"] == PENDING_FORMAT and type(doc["version"]) is int and doc["version"] == 1,
                    "expected unityrs.anim_replay_pending version 1")
     spec, capture = doc["spec"], doc["capture"]
+    replay.require((spec["evidence"]["editor"].get("run_id"), capture["editor_version"], capture["build_target"])
+                   == (run["run_id"], run["editor_version"], run["build_target"])
+                   and spec["build_target"] == run["build_target"], "fixture run identity mismatch in recording")
     replay.require(not {"prefab", "clip", "binding", "avatar"}.intersection(spec),
                    "pending replay already contains built identities")
     check_identity(name, fixture, spec, capture, replay)
@@ -383,7 +418,7 @@ def complete_recording(name, fixture, doc, bundle_dir, views, unityrs, inspect_d
     spec["bundles"][0]["sha256"] = digest
     view_key = path.name, digest
     if view_key not in views:
-        views[view_key] = BundleView(path, digest, 0, unityrs, inspect_dir, replay)
+        views[view_key] = BundleView(path, digest, 0, unityrs, inspect_dir, replay, run)
     view = views[view_key]
     prefab = view.asset(spec["prefab_asset"], 1)
     clip = view.asset(spec["clip_asset"], 74)
@@ -422,6 +457,7 @@ def complete_recording(name, fixture, doc, bundle_dir, views, unityrs, inspect_d
                                    if view.headers[key]["class_id"] == 137}, "built renderer coverage mismatch")
 
     clip_evidence(spec, capture, view.value(clip), replay)
+    check_built_clip(name, fixture, view, clip, nodes, avatar)
     discovery, effective = view.discovery(binding, binding_class)
     replay.require(clip in effective, "selected clip is absent from built playback component discovery")
     check_discovery(fixture, view, discovery, clip)
@@ -436,13 +472,23 @@ def complete_recording(name, fixture, doc, bundle_dir, views, unityrs, inspect_d
     return doc
 
 
+def run_stamp(run):
+    return "unityrs fixture run " + " ".join(run[key] for key in ("run_id", "editor_version", "build_target"))
+
+
 def recorded_paths(folder, replay):
     """Check the fixed v1 inventory before trusting any pending recording."""
     manifest = replay.read_json((folder / "run.json").read_text(encoding="utf-8"))
-    replay.require(isinstance(manifest, dict) and set(manifest) == {"format", "version", "cases"}
+    replay.require(isinstance(manifest, dict) and set(manifest) == {"format", "version", "run", "cases"}
                    and manifest["format"] == "unityrs.fixture_run" and type(manifest["version"]) is int
                    and manifest["version"] == 1 and isinstance(manifest["cases"], list),
                    "expected unityrs.fixture_run version 1 in run.json")
+    run = manifest["run"]
+    replay.require(isinstance(run, dict) and set(run) == {"run_id", "editor_version", "build_target", "build_target_id"}
+                   and all(isinstance(run[k], str) and re.fullmatch(pattern, run[k]) for k, pattern in (
+                       ("run_id", r"[0-9a-f]{32}"), ("editor_version", r"[A-Za-z0-9.]+"),
+                       ("build_target", r"[A-Za-z0-9_]+")))
+                   and type(run["build_target_id"]) is int, "invalid fixture run identity in run.json")
     replay_dir = folder / "replays"
     paths = {name: replay_dir / f"{name}.pending.json" for name in REPLAY_CASES}
     paths.update({name: replay_dir / "known-vectors" / f"{name}.pending.json" for name in VECTOR_CASES})
@@ -469,7 +515,15 @@ def recorded_paths(folder, replay):
     undocumented = set(replay_dir.rglob("*.pending.json")) - set(paths.values())
     errors.extend(f"unexpected pending recording: {path.relative_to(folder)}" for path in sorted(undocumented))
     replay.require(not errors, "incomplete fixture run:\n" + "\n".join(errors))
-    return sorted(paths.values()), statuses["mixed-transform-storage"] == "recorded"
+    expected_bundles = {fixture.bundle for fixture in REPLAY_CASES.values()} | {name for name, _ in STATIC_CASES.values()}
+    replay.require({path.name for path in (folder / "bundles").iterdir()} == expected_bundles,
+                   "unexpected fixture bundle inventory")
+    with (folder / "build.log").open(encoding="utf-8-sig") as log:
+        replay.require(log.readline().rstrip("\r\n") == run_stamp(run), "fixture run identity mismatch in build.log header")
+    marker = (folder / "unityrs-generated.txt").read_text(encoding="utf-8-sig").splitlines()
+    replay.require(marker == ["Generated by the unityrs fixture builder.", run_stamp(run)],
+                   "fixture run identity mismatch in generated folder marker")
+    return sorted(paths.values()), statuses["mixed-transform-storage"] == "recorded", run
 
 
 def pending_bundle(doc, bundle_dir, replay):
@@ -489,16 +543,15 @@ def bundle_digest(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def check_static(bundle_dir, views, unityrs, inspect_dir, replay):
+def check_static(bundle_dir, views, unityrs, inspect_dir, replay, run):
     bundles = {}
     for case, (bundle, assets) in STATIC_CASES.items():
         try:
             if bundle not in bundles:
                 path = bundle_dir / bundle
                 digest = bundle_digest(path)
-                bundles[bundle] = views[bundle, digest] = BundleView(path, digest, 0, unityrs, inspect_dir, replay)
-            for asset, class_id in assets.items():
-                bundles[bundle].asset(ASSETS + "static/" + asset, class_id, ignore_case=True)
+                bundles[bundle] = views[bundle, digest] = BundleView(path, digest, 0, unityrs, inspect_dir, replay, run)
+            check_built_static(case, bundles[bundle], assets)
         except (KeyError, TypeError, IndexError, AttributeError, ValueError, OSError) as exc:
             raise ValueError(f"{case}: {exc}") from exc
 
@@ -507,14 +560,14 @@ def complete_folder(folder, unityrs, inspect_dir, replay):
     """Validate every result before writing any completed recordings."""
     bundle_dir = folder / "bundles"
     results, views, recordings = [], {}, {}
-    paths, recorded_mixed = recorded_paths(folder, replay)
-    check_static(bundle_dir, views, unityrs, inspect_dir, replay)
+    paths, recorded_mixed, run = recorded_paths(folder, replay)
+    check_static(bundle_dir, views, unityrs, inspect_dir, replay, run)
     fixtures = REPLAY_CASES | VECTOR_CASES
     for path in paths:
         try:
             document = replay.read_json(path.read_text(encoding="utf-8"))
             name = path.name.removesuffix(".pending.json")
-            result = complete_recording(name, fixtures[name], document, bundle_dir, views, unityrs, inspect_dir, replay)
+            result = complete_recording(name, fixtures[name], document, bundle_dir, views, unityrs, inspect_dir, replay, run)
             recordings[name] = result
             if name in VECTOR_CASES and "humanoid" not in result["spec"]["evidence"]:
                 continue

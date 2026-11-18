@@ -219,7 +219,7 @@ public static partial class AnimReplayRecorder
             Scene scene = EditorSceneManager.NewPreviewScene();
             try
             {
-                var anchor = new GameObject("Recorder");
+                var anchor = EditorUtility.CreateGameObjectWithHideFlags("Recorder", HideFlags.HideAndDontSave);
                 SceneManager.MoveGameObjectToScene(anchor, scene);
                 for (int i = 0; i < spec.schedule.Length; ++i)
                 {

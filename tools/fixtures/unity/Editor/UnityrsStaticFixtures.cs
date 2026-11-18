@@ -9,13 +9,13 @@ using Object = UnityEngine.Object;
 
 static partial class UnityrsFixtureBuilder
 {
-    static void BuildStatic(Build build, RunReport report, Scene scene)
+    static void BuildStatic(Build build, RunReport report, Scene scene, string stamp)
     {
         string dir = null;
         if (!report.Try("Prepare static folder", StaticCases, () => dir = Folder(Assets + "/Static"))) return;
-        const string batch = "static-batch-scene";
-        if (report.Try("Prepare " + batch, new[] { batch }, () => build.AddBundle(batch, BuildBatchScene(dir, scene))))
-            build.StaticBundles.Add(batch, batch);
+        if (report.Try("Prepare " + BatchBundle, new[] { BatchBundle },
+            () => build.AddBundle(BatchBundle, BuildBatchScene(dir, scene, stamp))))
+            build.StaticBundles.Add(BatchBundle, BatchBundle);
 
         const string bundle = "static-objects";
         var assets = new List<string>();
@@ -109,7 +109,7 @@ static partial class UnityrsFixtureBuilder
         finally { Object.DestroyImmediate(root); }
     }
 
-    static string BuildBatchScene(string dir, Scene scene)
+    static string BuildBatchScene(string dir, Scene scene, string stamp)
     {
         // Use readable original meshes. The default primitive references are
         // exercised in the other bundle without depending on their readability.
@@ -117,7 +117,7 @@ static partial class UnityrsFixtureBuilder
         var source = Shader.Find("Standard");
         Require(source != null, "The Built-in Standard shader is required for static batching.");
         var material = Save(new Material(source) { name = "BatchMaterial" }, dir + "/batch.mat");
-        GameObject first = null, second = null;
+        GameObject first = null, second = null, runMarker = null;
         try
         {
             // The roots deliberately have different names and authored order.
@@ -157,6 +157,7 @@ static partial class UnityrsFixtureBuilder
             }
 
             string path = dir + "/batch.unity";
+            runMarker = new GameObject(stamp);
             Require(EditorSceneManager.SaveScene(scene, path, true), "Could not save " + path);
             return path;
         }
@@ -164,6 +165,7 @@ static partial class UnityrsFixtureBuilder
         {
             if (first != null) Object.DestroyImmediate(first);
             if (second != null) Object.DestroyImmediate(second);
+            if (runMarker != null) Object.DestroyImmediate(runMarker);
         }
     }
 

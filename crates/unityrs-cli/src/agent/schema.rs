@@ -125,7 +125,7 @@ pub fn run(name: &str) -> Result<Document> {
             "unity_version",
             "target_platform",
         ],
-        json!({"file":reference("listingstr"),"file_index":count,"kind":string,"unity_version":nullable(reference("listingstr")),"target_platform":nullable(integer.clone())}),
+        json!({"file":reference("listingstr"),"file_index":count,"kind":string,"unity_version":nullable(reference("listingstr")),"target_platform":nullable(integer.clone()),"external_paths":array(reference("listingstr"))}),
     );
     let cut = object(
         &["$unityrs", "reason", "omitted"],

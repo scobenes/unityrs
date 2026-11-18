@@ -1,7 +1,11 @@
 """Required case identities and evidence for the Windows Editor fixture run."""
 
 from dataclasses import dataclass
-from math import radians
+from math import isfinite, radians
+import struct
+from zlib import crc32
+
+from anim_reference import streamed, weighted
 
 ASSETS = "assets/unityrsfixtures/"
 STATIC_CASES = {
@@ -84,6 +88,299 @@ for rig in ("humanoid-compact", "humanoid-tall"):
 REPLAY_CASES["humanoid-compact-body-motion"] = Fixture(
     "humanoid-compact", "humanoid-compact", "identity", "humanoid-compact-body-motion", "animator",
     (SPINE_PATH, "rotation", None, None), MUSCLES + BODY, ("spine",))
+
+
+TRANSFORM_CURVES = {
+    "m_LocalPosition": ("m_PositionCurves", 1, "xyz"),
+    "m_LocalRotation": ("m_RotationCurves", 2, "xyzw"),
+    "m_LocalScale": ("m_ScaleCurves", 3, "xyz"),
+    "localEulerAnglesRaw": ("m_EulerCurves", 4, "xyz"),
+}
+# AnimatorMuscle bindings (custom type 8) reserve seven slots each for
+# Motion, Root and four IK goals before the three Spine muscle attributes.
+HUMANOID_ATTRIBUTES = dict(zip(BODY + MUSCLES, (*range(7, 14), *range(42, 45))))
+
+
+def built_transform_curves(clip):
+    curves = {}
+    for name, (field, _, axes) in TRANSFORM_CURVES.items():
+        for row in clip.get(field, []):
+            keys = row["curve"]["m_Curve"]
+            if keys and all(isinstance(key.get("value"), dict) and set(axes) <= key["value"].keys() for key in keys):
+                for axis in axes:
+                    curves[row["path"], "Transform", name + "." + axis] = keys, axis
+    return curves
+
+
+def built_float_curves(clip, field):
+    classes = {4: "Transform", 95: "Animator", 137: "SkinnedMeshRenderer"}
+    return {(row["path"], classes[row["classID"]], row["attribute"]): (keys, None)
+            for row in clip.get(field, []) if row["classID"] in classes
+            if (keys := row["curve"]["m_Curve"]) and all(type(key.get("value")) in (float, int) for key in keys)}
+
+
+def curve_member(key, field, axis):
+    value = key.get(field)
+    return value.get(axis) if axis is not None and isinstance(value, dict) else value
+
+
+def floats(values, replay):
+    if isinstance(values, dict):
+        replay.require(values.get("t") == "f32s" and len(values["v"]) % 8 == 0, "incomplete built float array")
+        return [replay.f32_from_bits(values["v"][i:i + 8]) for i in range(0, len(values["v"]), 8)]
+    return values
+
+
+def compiled_curves(clip, replay):
+    bindings = clip.get("m_ClipBindingConstant", {}).get("genericBindings", [])
+    if not bindings:
+        return {}
+    playback = clip.get("m_MuscleClip", {}).get("m_Clip", {})
+    playback = playback.get("data", playback)
+    stream = playback.get("m_StreamedClip", {})
+    dense = playback.get("m_DenseClip", {})
+    stream_count, dense_count = stream.get("curveCount", 0), dense.get("m_CurveCount", 0)
+    constants = floats(playback.get("m_ConstantClip", {}).get("data", []), replay)
+    slot_count = stream_count + dense_count + len(constants)
+    curves, slots = {}, []
+    widths = {attribute: len(axes) for _, attribute, axes in TRANSFORM_CURVES.values()}
+    for row in bindings:
+        path, class_id, attribute, custom = row["path"], row.get("typeID", row.get("classID")), row["attribute"], row["customType"]
+        width = widths.get(attribute, 1) if class_id == 4 else 1
+        span = tuple(range(len(slots), len(slots) + width))
+        slots.extend(span)
+        if not row.get("isPPtrCurve"):
+            curves[path, class_id, attribute, custom] = span
+    if len(slots) != slot_count:
+        return {}
+
+    def f32(word):
+        return struct.unpack(">f", struct.pack(">I", word))[0]
+
+    tracks = [[] for _ in range(stream_count)]
+    words = stream.get("data", [])
+    cursor = 0
+    while cursor < len(words):
+        bits, count = words[cursor:cursor + 2]
+        stop = cursor + 2 + 5 * count
+        if bits not in (0xff7fffff, 0x7f800000):
+            for i in range(cursor + 2, stop, 5):
+                slot, *coefficients = words[i:i+5]
+                tracks[slot].append((f32(bits), tuple(map(f32, coefficients))))
+        cursor = stop
+    data = floats(dense.get("m_SampleArray", []), replay)
+    dense_tracks = [[(dense["m_BeginTime"] + i / dense["m_SampleRate"], (0, 0, 0, p))
+                     for i, p in enumerate(data[slot::dense_count])] for slot in range(dense_count)]
+    tracks += dense_tracks + [[(0, (0, 0, 0, value))] for value in constants]
+    return {key: [(slot < stream_count, tracks[slot]) for slot in span] for key, span in curves.items()}
+
+
+def check_compiled_weight(track, scale):
+    if track is None:
+        return False
+    is_streamed, keys = track
+    stem = (0, 1, 1, .5, 3, -2, .25, .375) if scale else (0, 1, 1, 6, 5, -2, .25, .375)
+    if is_streamed:
+        samples = [(t, streamed(keys, t)) for t in (.25, .5, .75)] if len(keys) > 1 else []
+    else:
+        samples = [(t, co[3]) for t, co in keys if .125 <= t <= .875]
+    return len(samples) >= 2 and all(abs(value - weighted(*stem, t)) < .002 for t, value in samples)
+
+
+def check_built_clip(name, fixture, view, clip_key, nodes, avatar):
+    """Qualify required content from the stored clip and its actual targets."""
+    clip = view.value(clip_key)
+    runtime = built_transform_curves(clip) | built_float_curves(clip, "m_FloatCurves")
+    authored = built_float_curves(clip, "m_EditorCurves")
+    by_hash = compiled_curves(clip, view.replay) if fixture.playback != "legacy" else {}
+    compiled = {}
+    for path, kind, prop in fixture.bindings:
+        key = path, kind, prop
+        if key == REFERENCE:
+            rows = [row for row in clip.get("m_PPtrCurves", [])
+                    if (row["path"], row["classID"], row["attribute"]) == (path, 33, prop)]
+            expected = [view.asset(asset, 43, ignore_case=True) for asset in REFERENCE_ASSETS]
+            view.require(len(rows) == 1 and [(point["time"], view.pointer(clip_key, point["value"], {43}))
+                                            for point in rows[0]["curve"]] == list(zip((0, .5), expected)),
+                         "missing built fixture curve for MeshFilter.m_Mesh PPtr transition")
+            reference = [keys for _, node_name, keys in nodes.values() if node_name == path]
+            filters = [key for keys in reference for key in keys if view.headers[key]["class_id"] == 33]
+            view.require(len(filters) == 1 and view.pointer(filters[0], view.value(filters[0])["m_Mesh"], {43})
+                         == expected[0], "built object-reference curve has no matching MeshFilter target")
+            continue
+        track = []
+        if kind == "Transform":
+            family, _, axis = prop.rpartition(".")
+            _, attribute, axes = TRANSFORM_CURVES[family]
+            family_tracks = by_hash.get((crc32(path.encode()), 4, attribute, 0))
+            if family_tracks:
+                track = family_tracks[axes.index(axis):axes.index(axis) + 1]
+        elif kind == "SkinnedMeshRenderer":
+            track = by_hash.get((crc32(path.encode()), 137, crc32(prop.encode()), 20), [])
+        elif kind == "Animator":
+            track = by_hash.get((0, 95, HUMANOID_ATTRIBUTES[key], 8), [])
+        if track and track[0][1] and all(isfinite(v) for _, co in track[0][1] for v in co):
+            compiled[key] = track[0]
+        view.require(key in runtime or key in compiled or (kind == "Animator" and key in authored),
+                     f"missing built fixture curve for {key}")
+
+    if fixture.playback == "legacy":
+        view.require(all(key in built_transform_curves(clip) for key in ROTATION), "missing built legacy quaternion curves")
+    if "constant" in fixture.checks:
+        keys, axis = runtime.get(POSITION[0], ([], None))
+        _, stored = compiled.get(POSITION[0], (False, []))
+        view.require((stored and all(co == (0, 0, 0, 8) for _, co in stored))
+                     or (keys and all(curve_member(key, "value", axis) == 8
+                                      and curve_member(key, "inSlope", axis) == curve_member(key, "outSlope", axis) == 0
+                                      for key in keys)),
+                     "missing built fixture curve holding translation at 8")
+    if "held" in fixture.checks:
+        keys, axis = runtime.get(POSITION[0], ([], None))
+        is_streamed, stored = compiled.get(POSITION[0], (False, []))
+        held = is_streamed and stored[:2] == [(.5, (0, 0, 0, 4)), (.75, (0, 0, 0, 12))]
+        view.require(held or ([key["time"] for key in keys] == [.5, .75, 1.5]
+                     and [curve_member(key, "value", axis) for key in keys] == [4, 12, 12]
+                     and all(curve_member(key, "outSlope", axis) == {"t": "f32", "v": "7f800000"} for key in keys[:-1])),
+                     "missing built fixture curve for the stepped translation")
+    if "weighted" in fixture.checks:
+        scale = fixture.probe[1] == "scale"
+        key = SCALE[1] if scale else POSITION[0]
+        keys, axis = authored.get(key, runtime.get(key, ([], None)))
+        view.require((keys and curve_member(keys[0], "weightedMode", axis) in (2, 3)
+                      and curve_member(keys[-1], "weightedMode", axis) in (1, 3)
+                      and curve_member(keys[0], "outWeight", axis) == .25
+                      and curve_member(keys[-1], "inWeight", axis) == .375)
+                     or check_compiled_weight(compiled.get(key), scale),
+                     "missing built fixture curve with weighted keys")
+    if fixture.probe[1] == "weight":
+        renderers = [key for _, label, keys in nodes.values() for key in keys
+                     if label in ("RendererA", "RendererB") and view.headers[key]["class_id"] == 137]
+        check_skin(view, renderers, "built morph", expected_mesh=None)
+    if avatar is not None:
+        muscle = clip.get("m_MuscleClip", {})
+        view.require(muscle.get("m_IndexArray") and any(slot >= 0 for slot in muscle["m_IndexArray"]),
+                     "missing built fixture curve slots for humanoid playback")
+        view.require(view.value(avatar).get("m_Avatar", {}).get("m_Human"), "missing built humanoid Avatar")
+        has_body = any(key in runtime or key in authored or (0, 95, HUMANOID_ATTRIBUTES[key], 8) in by_hash
+                       for key in BODY)
+        view.require(has_body == ("muscle_only" not in fixture.checks), "built humanoid body motion mismatch")
+        if name.removesuffix(VECTOR_SUFFIX).endswith("-offset"):
+            transform = view.value(nodes["0"][0])
+            view.require(transform.get("m_LocalPosition") == {"x": 2, "y": .25, "z": -1}
+                         and transform.get("m_LocalRotation", {}).get("y", 0) != 0,
+                         "missing built humanoid rig offset")
+
+
+def prefab_components(view, root):
+    return {label: {view.headers[key]["class_id"]: key for key in components}
+            for _, label, components in view.hierarchy(root).values()}
+
+
+def mesh_parts(view, node):
+    view.require({23, 33} <= node.keys(), "missing built MeshFilter or MeshRenderer")
+    return node[33], view.value(node[33]), view.value(node[23])
+
+
+def check_skin(view, renderers, label, expected_mesh):
+    view.require(len(renderers) == 2, f"{label} renderer count")
+    meshes, bone_sets = set(), set()
+    for key in renderers:
+        value = view.value(key)
+        mesh = view.pointer(key, value["m_Mesh"], {43})
+        view.require(mesh is not None, f"{label} missing skin mesh")
+        meshes.add(mesh)
+        bones = tuple(view.pointer(key, ptr, {4}) for ptr in value.get("m_Bones", []))
+        view.require(len(bones) == len(set(bones)) == 4 and None not in bones
+                     and view.pointer(key, value["m_RootBone"], {4}) == bones[0],
+                     f"{label} bone count or root bone")
+        bone_sets.add(bones)
+    view.require(len(meshes) == len(bone_sets) == 1 and (expected_mesh is None or meshes == {expected_mesh}),
+                 f"{label} shared mesh or bones mismatch")
+    mesh = view.value(next(iter(meshes)))
+    shapes = mesh.get("m_Shapes", {})
+    weights = floats(shapes.get("fullWeights", []), view.replay)
+    frames = shapes.get("shapes", [])
+    channels = shapes.get("channels", [])
+    view.require(weights == [25, 80] and len(frames) == 2 and len(channels) == 1
+                 and (channels[0]["name"], channels[0]["frameIndex"], channels[0]["frameCount"]) == ("Lift", 0, 2)
+                 and all(0 <= row["firstVertex"] < row["firstVertex"] + row["vertexCount"]
+                         <= len(shapes.get("vertices", [])) for row in frames), "missing built Lift blend-shape frames")
+    view.require(len(mesh.get("m_BindPose", [])) == 4, f"{label} bind pose count")
+
+
+def entries(value):
+    return value if isinstance(value, dict) else dict(value)
+
+
+def check_built_static(case, view, assets):
+    built = {asset: view.asset(ASSETS + "static/" + asset, class_id, ignore_case=True)
+             for asset, class_id in assets.items()}
+    if case == "static-batch-scene":
+        check_batch_scene(view)
+        return
+    root = next(key for asset, key in built.items() if asset.endswith(".prefab"))
+    nodes = prefab_components(view, root)
+    if case == "static-primitives":
+        names = {"Cube", "Cylinder", "Sphere", "Capsule", "Plane", "Quad"}
+        view.require(names <= nodes.keys(), "missing built primitive nodes")
+        parts = [mesh_parts(view, nodes[name]) for name in names]
+        view.require(len({tuple(sorted(mesh["m_Mesh"].items())) for _, mesh, _ in parts}) == len(names)
+                     and all(mesh["m_Mesh"]["m_PathID"] and any(p["m_PathID"] for p in renderer["m_Materials"])
+                             for _, mesh, renderer in parts), "missing distinct built primitive meshes or materials")
+    elif case == "static-materials":
+        texture = built["checker.asset"]
+        image = view.value(texture)
+        view.require((image["m_Width"], image["m_Height"]) == (2, 2), "built checker texture size mismatch")
+        shaders = set()
+        for name in ("Metallic", "Unlit"):
+            material = built[name.lower() + ".mat"]
+            renderer = nodes[name][23]
+            value = view.value(material)
+            view.require([view.pointer(renderer, ptr, {21}) for ptr in view.value(renderer)["m_Materials"]] == [material],
+                         "built renderer material mismatch")
+            props = value["m_SavedProperties"]
+            main = entries(props["m_TexEnvs"])["_MainTex"]
+            view.require(view.pointer(material, main["m_Texture"], {28}) == texture and value["m_Shader"]["m_PathID"],
+                         "missing built material shader or checker reference")
+            shaders.add(tuple(sorted(value["m_Shader"].items())))
+            if name == "Metallic":
+                floats = entries(props["m_Floats"])
+                view.require((floats.get("_Metallic"), floats.get("_Glossiness")) == (.625, .375)
+                             and main["m_Scale"] == {"x": 2, "y": 3} and main["m_Offset"] == {"x": .25, "y": .5}
+                             and "_EmissionColor" in entries(props["m_Colors"]), "built metallic material properties mismatch")
+        view.require(len(shaders) == 2, "built fixture materials share one shader")
+    elif case == "static-lod":
+        group = nodes["LodGroup"].get(205)
+        lods = view.value(group).get("m_LODs", []) if group is not None else []
+        view.require(len(lods) == 2, "built LOD count must be two")
+        for lod, name, height in zip(lods, ("Near", "Far"), (.6, .2)):
+            view.require(view.replay.f32_bits(lod["screenRelativeHeight"]) == view.replay.f32_bits(height)
+                         and [view.pointer(group, row["renderer"], {23}) for row in lod["renderers"]] == [nodes[name][23]],
+                         "built LOD renderer or threshold mismatch")
+    elif case == "static-skin":
+        check_skin(view, [nodes[name][137] for name in ("RendererA", "RendererB")], "built skin", built["four-influence.asset"])
+
+
+def check_batch_scene(view):
+    meshes, ranges, scene_files = set(), set(), set()
+    for name in ("Alpha", "Zulu"):
+        objects = [key for key, row in view.headers.items() if row["class_id"] == 1 and row["name"] == name]
+        view.require(len(objects) == 1, f"missing built static batch object {name}")
+        obj = objects[0]
+        scene_files.add(obj[0])
+        components = {view.headers[key]["class_id"]: key for key in view.components(obj)}
+        owner, mesh, renderer = mesh_parts(view, components)
+        view.require(view.value(components[4])["m_Father"]["m_PathID"] == 0, "built static batch object is not a scene root")
+        ptr = mesh.get("m_Mesh")
+        view.require(ptr is not None and ptr["m_PathID"], "missing built static batch shared mesh")
+        meshes.add(view.pointer(owner, ptr, {43}, within_bundle=True))
+        batch = renderer.get("m_StaticBatchInfo", {})
+        ranges.add((batch.get("firstSubMesh"), batch.get("subMeshCount")))
+    view.require(len(scene_files) == len(meshes) == 1, "built static batch shared mesh mismatch")
+    view.require(ranges == {(0, 1), (1, 1)}, "built static batch submesh ranges mismatch")
+    mesh = view.value(next(iter(meshes)))
+    view.require(len(mesh.get("m_SubMeshes", [])) == 2 and all(row["indexCount"] == 6 for row in mesh["m_SubMeshes"]),
+                 "built static batch submesh ranges exceed the combined mesh")
 
 
 def check_identity(name, fixture, spec, capture, replay):

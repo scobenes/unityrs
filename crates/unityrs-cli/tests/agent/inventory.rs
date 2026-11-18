@@ -118,6 +118,22 @@ fn inspect_has_one_metadata_listing() {
 }
 
 #[test]
+fn inspect_lists_external_paths_in_file_id_order() {
+    let tmp = fixture();
+    let paths = [
+        "archive:/cab/cab.sharedasset",
+        "resources/unity_builtin_extra",
+    ];
+    let file = unityrs_testkit::env::serialized(&paths, &[]);
+    std::fs::write(tmp.join("scene.assets"), file).unwrap();
+    let page = json(&tmp, &["inspect", "scene.assets"], 0);
+    assert_eq!(
+        page["inputs"][0]["files"][0]["external_paths"],
+        serde_json::json!(paths)
+    );
+}
+
+#[test]
 fn large_name_matching_refuses_tight_memory_budget_without_aborting() {
     let tmp = fixture();
     let bytes = ngui::file(

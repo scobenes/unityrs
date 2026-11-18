@@ -14,12 +14,13 @@
    **Tools → unityrs → Build and record all fixtures**. Save the scene if
    Unity asks, then wait for the results dialog.
 4. If the dialog says **unityrs fixtures ready** or **unityrs fixtures built
-   with errors**, send the whole folder shown in the dialog. Find it in
-   your project folder (the one containing **Assets**). On Windows with
-   Unity 2022.3.62f3, it is usually
-   `UnityrsFixturesOutput\2022.3.62f3\StandaloneWindows64\`.
+   with errors**, zip the folder named after your Unity version (e.g.
+   `2022.3.62f3`) inside `UnityrsFixturesOutput`, and send the zip (USB stick
+   or cloud drive). `UnityrsFixturesOutput` is in your project folder, next to **Assets**.
    Keep `bundles`, `replays`, `run.json`, and `build.log` together.
    A new build that reaches this dialog replaces the previous results in that folder.
+   If the dialog says **unityrs fixtures staged**, close windows or terminals
+   using the output folders and zip the staged folder shown in the dialog instead.
 5. If the dialog says **unityrs fixture build failed**, send the
    `build.log` it points to in the folder ending in `-failed-<id>`.
    If the menu never appears or the log is missing, open
