@@ -52,7 +52,7 @@ static partial class UnityrsFixtureBuilder
         public bool IsHumanoid => Avatar.Length != 0;
     }
 
-    sealed class Build
+    sealed partial class Build
     {
         public readonly List<AssetBundleBuild> Bundles = new List<AssetBundleBuild>();
         public readonly List<ReplayCase> Replays = new List<ReplayCase>();
@@ -112,7 +112,8 @@ static partial class UnityrsFixtureBuilder
             cases[name].reason = reason;
         }
 
-        public bool Try(string step, IEnumerable<string> names, Action action, string status = "failed")
+        // Only an optional case's explicit capability failure is not covered; any other error fails it.
+        public bool Try(string step, IEnumerable<string> names, Action action, bool optional = false)
         {
             try
             {
@@ -122,6 +123,7 @@ static partial class UnityrsFixtureBuilder
             catch (Exception error)
             {
                 string reason = step + ": " + error.Message;
+                string status = optional && error is CoverageUnavailable ? "not_covered" : "failed";
                 foreach (var name in names) Set(name, status, reason);
                 log((status == "failed" ? "ERROR " : "NOT COVERED ") + reason);
                 Debug.LogException(error);
@@ -129,11 +131,12 @@ static partial class UnityrsFixtureBuilder
             }
         }
 
-        public void Prepare(Build build, string step, string[] names, Action action, string status = "failed")
+        public void Prepare(Build build, string step, string[] names, Action action, bool optional = false)
         {
-            int bundles = build.Bundles.Count, replays = build.Replays.Count;
-            if (Try(step, names, action, status)) return;
+            int bundles = build.Bundles.Count, coverage = build.CoverageBundles.Count, replays = build.Replays.Count;
+            if (Try(step, names, action, optional)) return;
             build.Bundles.RemoveRange(bundles, build.Bundles.Count - bundles);
+            build.CoverageBundles.RemoveRange(coverage, build.CoverageBundles.Count - coverage);
             build.Replays.RemoveRange(replays, build.Replays.Count - replays);
         }
 
@@ -369,7 +372,8 @@ static partial class UnityrsFixtureBuilder
         string bundles = Path.Combine(staging, "bundles");
         string replays = Path.Combine(staging, "replays");
         Progress("Building asset bundles", .5f);
-        StampBundleAssets(build, run.Stamp);
+        StampBundleAssets(build.Bundles, run.Stamp);
+        StampBundleAssets(build.CoverageBundles, run.Stamp);
         AssetDatabase.SaveAssets();
         Directory.CreateDirectory(bundles);
         var manifest = BuildPipeline.BuildAssetBundles(bundles, build.Bundles.ToArray(),
@@ -385,10 +389,14 @@ static partial class UnityrsFixtureBuilder
             if (built.Contains(entry.Value) && File.Exists(Path.Combine(bundles, entry.Value))) report.Set(entry.Key, "recorded");
             else report.Set(entry.Key, "failed", "Unity did not emit " + entry.Value + ".");
         }
+        // Coverage bundles build apart, so their errors fail only those cases.
+        var coverage = BuildCoverageBundles(build, report, staging, bundles, target);
         for (int i = 0; i < build.Replays.Count; i++)
         {
             var fixture = build.Replays[i];
             string name = fixture.OutputName;
+            var source = fixture.Optional ? coverage : manifest;
+            if (source == null) continue;
             if (!record)
             {
                 report.Set(name, "skipped", "The Build fixtures only menu item was used.");
@@ -396,15 +404,15 @@ static partial class UnityrsFixtureBuilder
             }
             Progress("Recording " + name, .6f + .36f * i / build.Replays.Count);
             log("Recording " + name);
-            // A coverage fixture Unity cannot reproduce stays not covered, with the reason.
             report.Try("Record " + name, new[] { name }, () => {
-                Require(built.Contains(fixture.Bundle) && manifest.GetAllDependencies(fixture.Bundle).Length == 0,
+                Require(source.GetAllAssetBundles().Contains(fixture.Bundle)
+                    && source.GetAllDependencies(fixture.Bundle).Length == 0,
                     "Expected a self-contained replay bundle for " + name);
                 Directory.CreateDirectory(replays);
                 bool mixed = AnimReplayRecorder.RecordFixture(fixture, bundles, replays, run.run_id, log);
                 report.Set(name, "recorded");
                 if (mixed) report.Set("mixed-transform-storage", "recorded", "Verified in the built generic-scale clip.");
-            }, fixture.Optional ? "not_covered" : "failed");
+            }, fixture.Optional);
         }
     }
 
@@ -421,19 +429,19 @@ static partial class UnityrsFixtureBuilder
     static void WriteMarker(string folder, string stamp) =>
         File.WriteAllLines(Path.Combine(folder, Marker), new[] { MarkerText, stamp });
 
-    static void StampBundleAssets(Build build, string stamp)
+    static void StampBundleAssets(List<AssetBundleBuild> bundles, string stamp)
     {
         string folder = Folder(Assets + "/Run");
-        for (int i = 0; i < build.Bundles.Count; i++)
+        for (int i = 0; i < bundles.Count; i++)
         {
-            var bundle = build.Bundles[i];
+            var bundle = bundles[i];
             // A streamed scene bundle cannot explicitly include non-scene assets.
             if (bundle.assetBundleName == BatchBundle) continue;
             string path = folder + "/" + bundle.assetBundleName + ".txt";
             File.WriteAllText(Path.Combine(Application.dataPath, path.Substring("Assets/".Length)), stamp);
             AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
             bundle.assetNames = bundle.assetNames.Concat(new[] { path }).ToArray();
-            build.Bundles[i] = bundle;
+            bundles[i] = bundle;
         }
     }
 

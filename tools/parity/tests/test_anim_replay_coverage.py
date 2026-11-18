@@ -4,16 +4,20 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from anim_coverage_support import (BUNDLES, COVERAGE, INTEGER, SETTINGS, TWIST, coverage_archives, integer_clip,
                                    turn, word)
 from anim_fixture_support import (DEFERRED, REPLAYS, RUN, STATIC, VECTORS, fixture_archives, stamp,
                                   static_bundles, write)
+from test_anim_replay import bits
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
+import anim_fixture_coverage  # noqa: E402
 import anim_replay as replay  # noqa: E402
+from anim_replay_complete import recorded_paths  # noqa: E402
 import child  # noqa: E402
 import scratch  # noqa: E402
 
@@ -86,6 +90,27 @@ class CoverageCompletionTests(unittest.TestCase):
             self.assertIn(f"Optional coverage not recorded: {name}: not_covered (Unity refused it)", result.stdout)
             self.assertFalse((self.replays / f"{name}.json").exists())
 
+    def required(self, table):
+        self.complete(written=())
+        with mock.patch.dict(anim_fixture_coverage.REQUIRED_COVERAGE, table):
+            return recorded_paths(self.folder, replay)
+
+    def test_no_coverage_case_is_required_until_confirmed(self):
+        self.statuses = {}
+        self.assertEqual(anim_fixture_coverage.REQUIRED_COVERAGE, {"2022.3": (), "6000": ()})
+        self.assertEqual(len(self.required({})[0]), len(REPLAYS) + len(VECTORS))
+
+    def test_a_required_case_fails_a_run_that_does_not_record_it(self):
+        self.statuses = {}
+        with self.assertRaisesRegex(ValueError, "integer-discrete-binding: required for Unity 2022.3.62f3 but not_covered"):
+            self.required({"2022.3": (INTEGER,)})
+        # Another version's requirement does not apply.
+        self.assertEqual(len(self.required({"6000": (INTEGER,)})[0]), len(REPLAYS) + len(VECTORS))
+
+    def test_a_failed_coverage_case_fails_the_run(self):
+        self.statuses = {TWIST: "failed"}
+        self.assert_refused("humanoid-twist-refusal: failed (Unity refused it)", written=())
+
     def test_unrecorded_coverage_may_leave_its_bundle_but_not_a_recording(self):
         self.build()
         self.statuses = {INTEGER: "recorded", TWIST: "recorded"}
@@ -119,12 +144,9 @@ class CoverageCompletionTests(unittest.TestCase):
         self.coverage[TWIST]["spec"]["evidence"]["editor"]["expected_refusal"] = "unsupported_humanoid_clip_settings"
         self.assert_refused("fixture refusal label mismatch for humanoid-twist-refusal")
 
-    def test_integer_accepts_a_float_encoded_slot(self):
+    def test_integer_refuses_a_float_encoded_built_slot(self):
         self.build(clips={INTEGER: lambda _: integer_clip(None, encode=lambda value: word(float(value)))})
-        result = self.complete()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.completed(INTEGER)["spec"]["evidence"]["integer_discrete"]["encoding"], "f32")
-
+        self.assert_refused("built integer discrete slot does not hold the authored step")
     def test_integer_refuses_a_wrong_stored_value(self):
         self.build(clips={INTEGER: lambda _: integer_clip(None, encode=lambda value: value + 1)})
         self.assert_refused("built integer discrete slot does not hold the authored step")
@@ -159,8 +181,20 @@ class CoverageCompletionTests(unittest.TestCase):
         self.build()
         editor = self.coverage[INTEGER]["spec"]["evidence"]["editor"]
         editor["bindings"][-1]["discrete"] = False
-        self.assert_refused("integer fixture binding is not the authored discrete step")
+        self.assert_refused("integer fixture binding is not the authored bit-cast discrete step")
 
+    def test_integer_refuses_plain_float_keys(self):
+        # Keys authored as 3.0 and 7.0 instead of the integers' bits.
+        self.build()
+        keys = self.coverage[INTEGER]["spec"]["evidence"]["editor"]["bindings"][-1]["keys"]
+        for key, value in zip(keys, (3., 7.)):
+            key["value_f32"] = bits(value)
+        self.assert_refused("integer fixture binding is not the authored bit-cast discrete step")
+
+    def test_integer_refuses_decoded_keys_that_disagree(self):
+        self.build()
+        self.coverage[INTEGER]["spec"]["evidence"]["editor"]["discrete_keys"][1]["value"] = 1088421888
+        self.assert_refused("integer fixture decoded keys mismatch")
     def test_integer_refuses_playback_evidence_that_misses_the_step(self):
         self.build()
         samples = self.coverage[INTEGER]["spec"]["evidence"]["editor"]["discrete_samples"]
@@ -175,8 +209,17 @@ class CoverageCompletionTests(unittest.TestCase):
     def test_twist_refuses_a_neutral_capture(self):
         self.build()
         self.coverage[TWIST]["capture"]["humanoid"]["lower_leg_twist"] = "00000000"
-        self.assert_refused("captured Avatar twist differs from the authored twist")
+        self.assert_refused("captured Avatar settings differ from the probe's one trigger")
 
+    def test_twist_refuses_a_constant_muscle_track(self):
+        self.build(ramp=False)
+        self.assert_refused("built twist muscle does not ramp to its authored value")
+
+    def test_twist_refuses_a_muscle_mapped_to_another_bone(self):
+        self.build()
+        muscles = self.coverage[TWIST]["capture"]["humanoid"]["muscles"]
+        next(row for row in muscles if row["name"] == "Left Arm Twist In-Out")["bone"] = 15
+        self.assert_refused("captured muscle mapping mismatch: Left Arm Twist In-Out")
     def test_twist_refuses_swapped_built_avatar_fields(self):
         def edit(case, value):
             if case == TWIST:
@@ -184,8 +227,7 @@ class CoverageCompletionTests(unittest.TestCase):
                 human["m_ArmTwist"], human["m_ForeArmTwist"] = human["m_ForeArmTwist"], human["m_ArmTwist"]
             return value
         self.build(avatar=edit)
-        self.assert_refused("built Avatar twist differs from the authored twist")
-
+        self.assert_refused("built Avatar settings differ from the probe's one trigger")
     def test_twist_refuses_a_missing_built_muscle_slot(self):
         def edit(clip):
             clip["m_ClipBindingConstant"]["genericBindings"][-1]["attribute"] = 99
@@ -214,27 +256,48 @@ class CoverageCompletionTests(unittest.TestCase):
     def test_twist_refuses_other_clip_offsets(self):
         self.build()
         self.coverage[TWIST]["capture"]["clip_settings"]["mirror"] = True
-        self.assert_refused("fixture refusal probe has other clip settings")
-
+        self.assert_refused("fixture refusal probe has another clip setting trigger")
     def test_settings_refuse_a_neutral_built_offset(self):
         def edit(clip):
             clip["m_MuscleClip"]["m_Level"] = 0.
             return clip
         self.build(clips={SETTINGS: edit})
-        self.assert_refused("fixture clip setting mismatch: level")
-
+        self.assert_refused("fixture refusal probe has another serialized clip setting trigger")
     def test_settings_refuse_an_absent_serialized_offset(self):
         def edit(clip):
-            del clip["m_MuscleClip"]["m_OrientationOffsetY"]
+            del clip["m_MuscleClip"]["m_Level"]
             return clip
         self.build(clips={SETTINGS: edit})
-        self.assert_refused("fixture clip setting mismatch: orientationOffsetY")
-
+        self.assert_refused("fixture refusal probe is missing the serialized height offset")
     def test_settings_refuse_a_neutral_capture(self):
         self.build()
         self.coverage[SETTINGS]["capture"]["clip_settings"]["level"] = "00000000"
-        self.assert_refused("level")
+        self.assert_refused("fixture refusal probe has another clip setting trigger")
 
+    def test_settings_refuse_an_extra_clip_trigger(self):
+        self.build()
+        self.coverage[SETTINGS]["capture"]["clip_settings"]["keepOriginalPositionY"] = True
+        self.assert_refused("fixture refusal probe has another clip setting trigger")
+
+    def test_settings_refuse_an_extra_serialized_trigger(self):
+        def edit(clip):
+            clip["m_MuscleClip"]["m_Mirror"] = True
+            return clip
+        self.build(clips={SETTINGS: edit})
+        self.assert_refused("fixture refusal probe has another serialized clip setting trigger")
+
+    def test_settings_refuse_a_non_neutral_avatar(self):
+        def edit(case, value):
+            if case == SETTINGS:
+                value["m_Avatar"]["m_Human"]["data"]["m_LegTwist"] = .5
+            return value
+        self.build(avatar=edit)
+        self.assert_refused("built Avatar settings differ from the probe's one trigger")
+
+    def test_settings_refuse_a_captured_twist(self):
+        self.build()
+        self.coverage[SETTINGS]["capture"]["humanoid"]["upper_arm_twist"] = bits(.5)
+        self.assert_refused("captured Avatar settings differ from the probe's one trigger")
     def test_settings_refuse_twist_evidence(self):
         self.build()
         twist = self.coverage[TWIST]["spec"]["evidence"]["editor"]["twist_effects"]

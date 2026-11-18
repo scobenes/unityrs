@@ -34,11 +34,22 @@ public static partial class AnimReplayRecorder
         var times = UnityrsFixtureBuilder.DiscreteTimes;
         var values = UnityrsFixtureBuilder.DiscreteValues;
         int expected = time < times[1] ? values[0] : values[1];
-        Need(renderer.sortingOrder == expected, "Built playback set MeshRenderer." + UnityrsFixtureBuilder.DiscreteProperty
+        UnityrsFixtureBuilder.Unavailable(renderer.sortingOrder == expected, "Built playback set MeshRenderer." + UnityrsFixtureBuilder.DiscreteProperty
             + " to " + renderer.sortingOrder.ToString(CultureInfo.InvariantCulture) + " at "
             + time.ToString("R", CultureInfo.InvariantCulture) + " instead of the authored "
             + expected.ToString(CultureInfo.InvariantCulture) + ".");
         return new DiscreteSample { time_f32 = Bits(time), value = renderer.sortingOrder };
+    }
+
+    // The authored integer keys, decoded from the bits Unity keeps in each key's value.
+    static DiscreteSample[] ReadDiscreteKeys(AnimationClip clip)
+    {
+        var bindings = AnimationUtility.GetCurveBindings(clip).Where(row => row.isDiscreteCurve && !row.isPPtrCurve
+            && row.path == UnityrsFixtureBuilder.DiscretePath).ToArray();
+        Need(bindings.Length == 1, "Expected one authored discrete integer binding.");
+        return AnimationUtility.GetEditorCurve(clip, bindings[0]).keys.Select(key => new DiscreteSample {
+            time_f32 = Bits(key.time), value = UnityrsFixtureBuilder.IntegerValue(key.value)
+        }).ToArray();
     }
 
     // Show that the authored Avatar twist redistributes the end-pose twist
@@ -80,7 +91,7 @@ public static partial class AnimReplayRecorder
             effects.Add(new TwistEffect { bone = bone, node = node, authored_f32 = Bits(authored[i]), neutral_f32 = Bits(neutral[i]) });
         }
         var invariant = CultureInfo.InvariantCulture;
-        Need(arm > 1 && leg > 1, "Unity posed the left limbs alike with neutral and authored Avatar twist (arm "
+        UnityrsFixtureBuilder.Unavailable(arm > 1 && leg > 1, "Unity posed the left limbs alike with neutral and authored Avatar twist (arm "
             + arm.ToString("R", invariant) + ", leg " + leg.ToString("R", invariant) + " degrees).");
         editor.twist_effects = effects.ToArray();
     }
@@ -96,6 +107,11 @@ public static partial class AnimReplayRecorder
             SceneManager.MoveGameObjectToScene(anchor, scene);
             var instance = UnityEngine.Object.Instantiate(prefab, anchor.transform, false);
             var animator = At<Animator>(instance.transform, fixture.BindingAddress, 0);
+            // BuildHumanAvatar needs the rig as a topmost object. Unparent it
+            // for both evaluations; the compared rotations are local.
+            var rig = animator.gameObject;
+            rig.transform.SetParent(null, false);
+            SceneManager.MoveGameObjectToScene(rig, scene);
             animator.runtimeAnimatorController = null;
             animator.applyRootMotion = false;
             if (neutralTwist)
@@ -103,7 +119,7 @@ public static partial class AnimReplayRecorder
                 var description = animator.avatar.humanDescription;
                 description.upperArmTwist = description.lowerArmTwist = 0;
                 description.upperLegTwist = description.lowerLegTwist = 0;
-                twin = AvatarBuilder.BuildHumanAvatar(animator.gameObject, description);
+                twin = AvatarBuilder.BuildHumanAvatar(rig, description);
                 Need(twin != null && twin.isValid && twin.isHuman, "Could not build the neutral-twist twin Avatar.");
                 animator.avatar = twin;
                 animator.Rebind();

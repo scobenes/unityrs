@@ -2,6 +2,7 @@
 
 import copy
 import math
+import struct
 from zlib import crc32
 
 from anim_fixture_support import ASSETS, ROOT_ID, RUN, archive, game_object, pointer, recording, stored_curves
@@ -13,8 +14,9 @@ BUNDLES = {INTEGER: "anim-discrete", TWIST: "humanoid-twist", SETTINGS: "humanoi
 TWIST_VALUES = dict(upper_arm_twist=.5, lower_arm_twist=.25, upper_leg_twist=.75, lower_leg_twist=.375)
 AVATAR_TWIST = dict(m_ArmTwist=.5, m_ForeArmTwist=.25, m_UpperLegTwist=.75, m_LegTwist=.375)
 # HumanTrait order puts these after the Spine muscles; the index sets the built attribute.
-TWIST_MUSCLES = {"Left Upper Leg Twist In-Out": (23, .5), "Left Lower Leg Twist In-Out": (25, -.375),
-                 "Left Arm Twist In-Out": (41, .625), "Left Forearm Twist In-Out": (43, -.5)}
+# name: (HumanTrait index, end value, HumanBodyBones bone)
+TWIST_MUSCLES = {"Left Upper Leg Twist In-Out": (23, .5, 1), "Left Lower Leg Twist In-Out": (25, -.375, 3),
+                 "Left Arm Twist In-Out": (41, .625, 13), "Left Forearm Twist In-Out": (43, -.5, 15)}
 LIMBS = ("LeftUpperArm", "LeftLowerArm", "LeftHand", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot")
 SPINE = ("Spine Front-Back", "Spine Left-Right", "Spine Twist Left-Right")
 
@@ -23,8 +25,13 @@ def word(value):
     return int(bits(value), 16)
 
 
-def key_rows(times, values):
-    return [dict(time_f32=bits(t), value_f32=bits(v), in_tangent_f32=bits(0), out_tangent_f32=bits(0),
+def int_bits(value):
+    """An integer as Unity keeps it in a discrete key's f32 value."""
+    return struct.pack(">i", value).hex()
+
+
+def key_rows(times, values, encode=bits):
+    return [dict(time_f32=bits(t), value_f32=encode(v), in_tangent_f32=bits(0), out_tangent_f32=bits(0),
                  in_weight_f32=bits(.25), out_weight_f32=bits(.25), weighted_mode="None")
             for t, v in zip(times, values)]
 
@@ -49,8 +56,9 @@ def integer_recording(run):
     editor["fixture_case"] = INTEGER
     editor["bindings"] = [row for row in editor["bindings"] if not row["object_reference"]] + [dict(
         path="Discrete", property="m_SortingOrder", type="UnityEngine.MeshRenderer", discrete=True,
-        object_reference=False, object_keys=[], keys=key_rows((0, .5), (3, 7)))]
+        object_reference=False, object_keys=[], keys=key_rows((0, .5), (3, 7), int_bits))]
     del editor["object_reference_samples"]
+    editor["discrete_keys"] = [dict(time_f32=bits(t), value=v) for t, v in ((0, 3), (.5, 7))]
     editor["discrete_samples"] = [dict(time_f32=s["local_f32"], value=3 if s["local"] < .5 else 7)
                                   for s in capture["samples"]]
     return doc
@@ -66,17 +74,22 @@ def human_recording(case, run):
     human = capture["humanoid"]
     if case == SETTINGS:
         editor["expected_refusal"] = "unsupported_humanoid_clip_settings"
-        capture["clip_settings"].update(level=bits(.125), orientationOffsetY=bits(20))
+        capture["clip_settings"].update(level=bits(.125))
         return doc
     editor["expected_refusal"] = "unsupported_humanoid_twist"
     human.update({name: bits(value) for name, value in TWIST_VALUES.items()})
-    for name, (index, value) in TWIST_MUSCLES.items():
-        human["muscles"][index]["name"] = name
+    for name, (index, value, bone) in TWIST_MUSCLES.items():
+        human["muscles"][index].update(name=name, bone=bone)
         editor["bindings"].append(dict(path="", property=name, type="UnityEngine.Animator", discrete=False,
                                        object_reference=False, object_keys=[], keys=key_rows((0, 1), (0, value))))
     first = len(spec["nodes"])
     spec["nodes"] += [dict(address=f"0/0/{i}", name=bone) for i, bone in enumerate(LIMBS, 1)]
-    human["bones"] += [dict(name=bone, node=first + i, required=True) for i, bone in enumerate(LIMBS)]
+    # The captured bones in HumanBodyBones order, through LeftHand.
+    order = {7: "Spine", 13: "LeftUpperArm", 15: "LeftLowerArm", 17: "LeftHand",
+             1: "LeftUpperLeg", 3: "LeftLowerLeg", 5: "LeftFoot"}
+    nodes = {"Spine": 3} | {bone: first + i for i, bone in enumerate(LIMBS)}
+    human["bones"] = [dict(name=order.get(i, f"Bone {i}"), node=nodes.get(order.get(i), -1), required=i in order)
+                      for i in range(18)]
     rest = capture["rest"]["transforms"][0]
     for pose in (capture["rest"], *(sample["pose"] for sample in capture["samples"])):
         pose["transforms"] += [copy.deepcopy(rest) for _ in LIMBS]
@@ -132,14 +145,21 @@ def integer_clip(spec, *, encode=lambda value: value):
                  isPPtrCurve=0, isIntCurve=1)], "pptrCurveMapping": []}}
 
 
-def human_clip(case, spec):
-    muscles = list(range(3)) + ([index for index, _ in TWIST_MUSCLES.values()] if case == TWIST else [])
-    entries = [(slot, 0, 0, 0, word(.25)) for slot in range(len(muscles))]
-    frames = [(word(t), entries) for t in (0., .5, 1.)]
+def human_clip(case, spec, *, ramp=True):
+    """Spine slots hold .25; each twist slot ramps linearly from 0 to its end value."""
+    twist = list(TWIST_MUSCLES.values()) if case == TWIST else []
+    muscles = list(range(3)) + [index for index, _, _ in twist]
+    frames = []
+    for t in (0., .5, 1.):
+        entries = [(slot, 0, 0, 0, word(.25)) for slot in range(3)]
+        for slot, (_, value, _) in enumerate(twist, 3):
+            slope = value if ramp and t < 1 else 0
+            entries.append((slot, 0, 0, word(slope), word(value * t if ramp else value)))
+        frames.append((word(t), entries))
     offset = case == SETTINGS
     return {"m_SampleRate": 16., "m_Legacy": False, **stored_curves(spec), "m_MuscleClip": {
         "m_StartTime": 0., "m_StopTime": 1., "m_LoopTime": False, "m_CycleOffset": 0., "m_Mirror": False,
-        "m_Level": .125 if offset else 0., "m_OrientationOffsetY": 20. if offset else 0.,
+        "m_Level": .125 if offset else 0., "m_OrientationOffsetY": 0., "m_KeepOriginalPositionY": False,
         "m_IndexArray": [0, 1, -1], "m_Clip": {"data": {
             "m_StreamedClip": {"curveCount": len(muscles), "data": stream(frames)},
             "m_DenseClip": {"m_CurveCount": 0}, "m_ConstantClip": {"data": []}}}},
@@ -148,7 +168,7 @@ def human_clip(case, spec):
             for index in muscles], "pptrCurveMapping": []}}
 
 
-def coverage_archives(bundles, inspect, run=RUN, *, clips=None, avatar=None):
+def coverage_archives(bundles, inspect, run=RUN, *, clips=None, avatar=None, ramp=True):
     """Write the three coverage bundles; `clips` and `avatar` replace a built value per case."""
     recordings = {INTEGER: integer_recording(run), TWIST: human_recording(TWIST, run),
                   SETTINGS: human_recording(SETTINGS, run)}
@@ -158,7 +178,7 @@ def coverage_archives(bundles, inspect, run=RUN, *, clips=None, avatar=None):
         rows = []
         human = case != INTEGER
         prefab_rows(rows, spec, None if human else {"Discrete": (23, 23, None, {"m_Materials": []})})
-        clip = integer_clip(spec) if not human else human_clip(case, spec)
+        clip = integer_clip(spec) if not human else human_clip(case, spec, ramp=ramp)
         if clips and case in clips:
             clip = clips[case](clip)
         rows.append((2, 74, spec["clip_name"], clip))
@@ -167,7 +187,8 @@ def coverage_archives(bundles, inspect, run=RUN, *, clips=None, avatar=None):
         if human:
             assets[spec["avatar_asset"]] = 90
             twist = AVATAR_TWIST if case == TWIST else dict.fromkeys(AVATAR_TWIST, 0.)
-            value = {"m_Avatar": {"m_Human": {"data": {"m_RootX": {"t": {"x": 0.}}, **twist}}},
+            neutral = dict(m_ArmStretch=0., m_LegStretch=0., m_FeetSpacing=0., m_HasTDoF=False)
+            value = {"m_Avatar": {"m_Human": {"data": {"m_RootX": {"t": {"x": 0.}}, **twist, **neutral}}},
                      "m_HumanDescription": dict(twist)}
             rows.append((90, 90, BUNDLES[case], avatar(case, value) if avatar else value))
             rows.append((9, 43, "Shared", {}))

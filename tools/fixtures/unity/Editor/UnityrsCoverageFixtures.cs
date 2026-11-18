@@ -1,18 +1,22 @@
 #if UNITY_EDITOR
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
 // Optional coverage: an integer discrete binding and two humanoid refusal
-// probes. A case Unity cannot reproduce is reported as not covered with
-// Unity's reason, and the rest of the run continues.
+// probes, built in their own bundle build. A case is not covered only when an
+// explicit check shows Unity cannot produce it (CoverageUnavailable, with the
+// reason); any other error fails the case and leaves the main fixtures intact.
 static partial class UnityrsFixtureBuilder
 {
     const string IntegerCase = "integer-discrete-binding";
     const string TwistCase = "humanoid-twist-refusal";
     const string SettingsCase = "humanoid-non-neutral-setting-refusal";
+    static readonly string[] CoverageCases = { IntegerCase, TwistCase, SettingsCase };
     const string MixedStorageReason = "Unity 2022.3 and 6000 keep the generic-scale binding in one storage range"
         + " (its constant z axis is streamed with x and y), and the Editor cannot read a bundle-loaded clip's"
         + " m_MuscleClip to confirm a split.";
@@ -33,7 +37,23 @@ static partial class UnityrsFixtureBuilder
         "Left Arm Twist In-Out", "Left Forearm Twist In-Out", "Left Upper Leg Twist In-Out", "Left Lower Leg Twist In-Out"
     };
     static readonly float[] TwistValues = { .625f, -.5f, .5f, -.375f };
-    const float HeightOffset = .125f, OrientationOffset = 20;
+    // The settings probe's single non-neutral clip setting.
+    const float HeightOffset = .125f;
+
+    internal sealed class CoverageUnavailable : Exception
+    {
+        public CoverageUnavailable(string message) : base(message) {}
+    }
+
+    internal static void Unavailable(bool condition, string message)
+    {
+        if (!condition) throw new CoverageUnavailable(message);
+    }
+
+    // Unity stores a discrete integer key as the integer's bits in the float
+    // value (UnityCsReference DiscreteEvaluationAttribute).
+    internal static float IntegerKey(int value) => BitConverter.ToSingle(BitConverter.GetBytes(value), 0);
+    internal static int IntegerValue(float key) => BitConverter.ToInt32(BitConverter.GetBytes(key), 0);
 
     internal sealed partial class ReplayCase
     {
@@ -43,19 +63,89 @@ static partial class UnityrsFixtureBuilder
         public float[] TwistValues;
     }
 
+    sealed partial class Build
+    {
+        public readonly List<AssetBundleBuild> CoverageBundles = new List<AssetBundleBuild>();
+
+        public void AddCoverageBundle(string name, params string[] assets)
+        {
+            CoverageBundles.Add(new AssetBundleBuild {
+                assetBundleName = name, assetNames = assets.OrderBy(path => path, StringComparer.Ordinal).ToArray()
+            });
+        }
+    }
+
     static void AddCoverageCases(RunReport report)
     {
-        foreach (string name in new[] { IntegerCase, TwistCase, SettingsCase })
+        foreach (string name in CoverageCases)
             report.AddDeferred(name, "The coverage fixture was not prepared.");
     }
 
     static void BuildCoverage(Build build, RunReport report)
     {
-        report.Prepare(build, "Prepare " + IntegerCase, new[] { IntegerCase }, () => BuildIntegerDiscrete(build), "not_covered");
+        report.Prepare(build, "Prepare " + IntegerCase, new[] { IntegerCase }, () => BuildIntegerDiscrete(build), true);
         report.Prepare(build, "Prepare " + TwistCase, new[] { TwistCase },
-            () => BuildRefusalRig(build, "humanoid-twist", TwistCase, twist: true), "not_covered");
+            () => BuildRefusalRig(build, "humanoid-twist", TwistCase, twist: true), true);
         report.Prepare(build, "Prepare " + SettingsCase, new[] { SettingsCase },
-            () => BuildRefusalRig(build, "humanoid-settings", SettingsCase, twist: false), "not_covered");
+            () => BuildRefusalRig(build, "humanoid-settings", SettingsCase, twist: false), true);
+    }
+
+    // Build the coverage bundles apart from the main fixtures, then move them
+    // beside the others. Returns null, with the cases failed, if that fails.
+    static AssetBundleManifest BuildCoverageBundles(Build build, RunReport report, string staging, string bundles,
+        BuildTarget target)
+    {
+        if (build.CoverageBundles.Count == 0) return null;
+        var names = build.Replays.Where(replay => replay.Optional).Select(replay => replay.OutputName).ToArray();
+        AssetBundleManifest manifest = null;
+        string folder = Path.Combine(staging, "coverage-bundles");
+        bool built = report.Try("Build coverage bundles", names, () => {
+            Directory.CreateDirectory(folder);
+            manifest = BuildPipeline.BuildAssetBundles(folder, build.CoverageBundles.ToArray(),
+                BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.StrictMode, target);
+            Require(manifest != null, "Unity could not build the coverage bundles. See the log and Console.");
+            foreach (var bundle in build.CoverageBundles)
+            {
+                string name = bundle.assetBundleName;
+                Require(manifest.GetAllAssetBundles().Contains(name), "Unity did not emit " + name + ".");
+                File.Move(Path.Combine(folder, name), Path.Combine(bundles, name));
+            }
+        });
+        try { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+        catch (IOException error) { Debug.LogException(error); }
+        catch (UnauthorizedAccessException error) { Debug.LogException(error); }
+        if (!built) return null;
+        // A failed check leaves its case failed and unrecorded.
+        build.Replays.RemoveAll(replay => replay.Optional && !report.Try("Check built " + replay.OutputName,
+            new[] { replay.OutputName }, () => CheckBuiltCoverage(replay, Path.Combine(bundles, replay.Bundle))));
+        return manifest;
+    }
+
+    // Catch serialization loss in the built bundle before recording.
+    static void CheckBuiltCoverage(ReplayCase replay, string path)
+    {
+        var bundle = AssetBundle.LoadFromFile(path);
+        Require(bundle != null, "Cannot load the built coverage bundle " + replay.Bundle + ".");
+        try
+        {
+            var keys = bundle.GetAllAssetNames();
+            string Key(string asset) => keys.Single(key => string.Equals(key, asset, StringComparison.OrdinalIgnoreCase));
+            var clip = bundle.LoadAsset<AnimationClip>(Key(replay.Clip));
+            Require(clip != null && !clip.legacy && clip.humanMotion == replay.IsHumanoid,
+                "The built coverage clip lost its playback mode in " + replay.Bundle + ".");
+            if (!replay.IsHumanoid) return;
+            var description = bundle.LoadAsset<Avatar>(Key(replay.Avatar)).humanDescription;
+            bool twist = replay.TwistMuscles != null;
+            Require(description.upperArmTwist == (twist ? UpperArmTwist : 0)
+                && description.lowerArmTwist == (twist ? LowerArmTwist : 0)
+                && description.upperLegTwist == (twist ? UpperLegTwist : 0)
+                && description.lowerLegTwist == (twist ? LowerLegTwist : 0),
+                "The built Avatar lost its authored twist in " + replay.Bundle + ".");
+            var settings = AnimationUtility.GetAnimationClipSettings(clip);
+            Require(settings.level == (twist ? 0 : HeightOffset) && !settings.keepOriginalPositionY,
+                "The built clip lost its authored settings in " + replay.Bundle + ".");
+        }
+        finally { bundle.Unload(true); }
     }
 
     static void BuildIntegerDiscrete(Build build)
@@ -73,16 +163,17 @@ static partial class UnityrsFixtureBuilder
             var clip = Author(dir, IntegerCase, authored => {
                 SetMotion(authored, AnimationCurve.Linear(0, 3, 1, 9));
                 AnimationUtility.SetEditorCurve(authored, binding, new AnimationCurve(
-                    new Keyframe(DiscreteTimes[0], DiscreteValues[0]), new Keyframe(DiscreteTimes[1], DiscreteValues[1])));
+                    new Keyframe(DiscreteTimes[0], IntegerKey(DiscreteValues[0])),
+                    new Keyframe(DiscreteTimes[1], IntegerKey(DiscreteValues[1]))));
             });
             var stored = AnimationUtility.GetCurveBindings(clip).Where(row => row.path == DiscretePath).ToArray();
-            Require(stored.Length == 1 && stored[0].isDiscreteCurve && !stored[0].isPPtrCurve
+            Unavailable(stored.Length == 1 && stored[0].isDiscreteCurve && !stored[0].isPPtrCurve
                 && stored[0].type == typeof(MeshRenderer) && stored[0].propertyName == DiscreteProperty,
                 "Unity did not keep MeshRenderer." + DiscreteProperty + " as a discrete curve.");
             var keys = AnimationUtility.GetEditorCurve(clip, stored[0]).keys;
-            Require(keys.Select(key => key.time).SequenceEqual(DiscreteTimes)
-                && keys.Select(key => key.value).SequenceEqual(DiscreteValues.Select(value => (float)value)),
-                "Unity did not retain both authored integer keys.");
+            Unavailable(keys.Select(key => key.time).SequenceEqual(DiscreteTimes)
+                && keys.Select(key => IntegerValue(key.value)).SequenceEqual(DiscreteValues),
+                "Unity did not retain both bit-cast integer keys.");
 
             string controllerPath = dir + "/discrete.controller";
             var animator = rig.AddComponent<Animator>();
@@ -90,7 +181,7 @@ static partial class UnityrsFixtureBuilder
             animator.runtimeAnimatorController = Controller(controllerPath, new[] { clip });
             string prefab = SavePrefab(rig, dir + "/discrete.prefab");
             string clipPath = AssetDatabase.GetAssetPath(clip);
-            build.AddBundle(bundle, prefab, clipPath, controllerPath);
+            build.AddCoverageBundle(bundle, prefab, clipPath, controllerPath);
             var replay = Case(bundle, prefab, clipPath, 3, 9);
             replay.Optional = replay.ProbeDiscrete = true;
             build.Replays.Add(replay);
@@ -107,18 +198,18 @@ static partial class UnityrsFixtureBuilder
         {
             var discrete = animatable.Where(row => row.isDiscreteCurve && !row.isPPtrCurve)
                 .Select(row => row.type.Name + "." + row.propertyName).Distinct().Take(8).ToArray();
-            throw new InvalidOperationException("Unity does not list MeshRenderer." + binding.propertyName
+            throw new CoverageUnavailable("Unity does not list MeshRenderer." + binding.propertyName
                 + " as an animatable discrete binding (discrete candidates: "
                 + (discrete.Length == 0 ? "none" : string.Join(", ", discrete)) + ").");
         }
         var type = AnimationUtility.GetEditorCurveValueType(root, binding);
-        Require(type == typeof(int), "Unity reports MeshRenderer." + binding.propertyName + " as "
+        Unavailable(type == typeof(int), "Unity reports MeshRenderer." + binding.propertyName + " as "
             + (type == null ? "untyped" : type.Name) + ", not an integer.");
     }
 
-    // A compact rig with one muscle clip. The twist probe sets non-neutral
-    // Avatar twist and animates the twist muscles; the settings probe keeps a
-    // neutral Avatar and sets the clip's height and orientation offsets.
+    // A compact rig with one muscle clip and exactly one refusal trigger: the
+    // twist probe's non-neutral Avatar twist (animating the twist muscles), or
+    // the settings probe's height offset on a neutral Avatar.
     static void BuildRefusalRig(Build build, string name, string clipName, bool twist)
     {
         var rig = new GameObject("HumanoidRig");
@@ -131,6 +222,8 @@ static partial class UnityrsFixtureBuilder
             var description = DescribeHumanoid(skeleton, false);
             if (twist)
             {
+                Unavailable(TwistMuscles.All(HumanTrait.MuscleName.Contains),
+                    "HumanTrait does not list the four left-limb twist muscles.");
                 description.upperArmTwist = UpperArmTwist;
                 description.lowerArmTwist = LowerArmTwist;
                 description.upperLegTwist = UpperLegTwist;
@@ -142,7 +235,7 @@ static partial class UnityrsFixtureBuilder
             avatar.name = name;
             avatar.hideFlags = HideFlags.None;
             var built = avatar.humanDescription;
-            Require(!twist || (built.upperArmTwist == UpperArmTwist && built.lowerArmTwist == LowerArmTwist
+            Unavailable(!twist || (built.upperArmTwist == UpperArmTwist && built.lowerArmTwist == LowerArmTwist
                 && built.upperLegTwist == UpperLegTwist && built.lowerLegTwist == LowerLegTwist),
                 "The built Avatar did not keep the authored twist settings.");
 
@@ -163,14 +256,14 @@ static partial class UnityrsFixtureBuilder
             skin.sharedMaterial = Save(new Material(shader) { name = "HumanoidBoxes" }, materialPath);
 
             var clip = AuthorHumanoidClip(dir, clipName, bodyMotion: false, extra: twist ? (Action<AnimationClip>)SetTwistMuscles : null);
-            if (!twist) SetClipOffsets(clip);
+            SetNeutralSettings(clip, twist ? 0 : HeightOffset);
             animator.runtimeAnimatorController = Controller(controllerPath, new[] { clip });
 
             root = new GameObject("HumanoidFixture");
             rig.transform.SetParent(root.transform, false);
             string prefab = SavePrefab(root, dir + "/identity.prefab");
             string clipPath = AssetDatabase.GetAssetPath(clip);
-            build.AddBundle(name, clipPath, prefab, avatarPath, meshPath, materialPath, controllerPath);
+            build.AddCoverageBundle(name, clipPath, prefab, avatarPath, meshPath, materialPath, controllerPath);
             var replay = HumanoidReplay(name, prefab, avatarPath, clipPath, clipName);
             replay.Optional = true;
             replay.ExpectedRefusal = twist ? "unsupported_humanoid_twist" : "unsupported_humanoid_clip_settings";
@@ -196,17 +289,22 @@ static partial class UnityrsFixtureBuilder
                 AnimationCurve.Linear(0, 0, 1, TwistValues[i]));
     }
 
-    static void SetClipOffsets(AnimationClip clip)
+    // Clear the code-made clip's default original-Y basis so the only
+    // non-neutral clip setting is the given height offset (zero for the twist probe).
+    static void SetNeutralSettings(AnimationClip clip, float level)
     {
         var settings = AnimationUtility.GetAnimationClipSettings(clip);
-        settings.level = HeightOffset;
-        settings.orientationOffsetY = OrientationOffset;
+        settings.level = level;
+        settings.keepOriginalPositionY = false;
         AnimationUtility.SetAnimationClipSettings(clip, settings);
         EditorUtility.SetDirty(clip);
-        var stored = AnimationUtility.GetAnimationClipSettings(clip);
-        Require(stored.level == HeightOffset && stored.orientationOffsetY == OrientationOffset
-            && stored.startTime == 0 && stored.stopTime == 1 && !stored.loopTime && !stored.mirror,
-            "Unity did not keep the authored height and orientation offsets.");
+        var s = AnimationUtility.GetAnimationClipSettings(clip);
+        Unavailable(s.level == level && s.startTime == 0 && s.stopTime == 1 && s.orientationOffsetY == 0
+            && s.cycleOffset == 0 && s.additiveReferencePoseTime == 0 && s.additiveReferencePoseClip == null
+            && !s.loopTime && !s.loopBlend && !s.loopBlendOrientation && !s.loopBlendPositionY
+            && !s.loopBlendPositionXZ && !s.keepOriginalOrientation && !s.keepOriginalPositionY
+            && !s.keepOriginalPositionXZ && !s.heightFromFeet && !s.mirror && !s.hasAdditiveReferencePose,
+            "Unity did not keep the clip's neutral settings and its height offset.");
     }
 }
 #endif

@@ -10,7 +10,7 @@ from uuid import uuid4
 from zlib import crc32
 
 import child
-from anim_fixture_coverage import COVERAGE_CASES, check_coverage
+from anim_fixture_coverage import COVERAGE_CASES, check_coverage, required_coverage
 from anim_fixture_contract import (ASSETS, MOTION, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
                                    check_built_clip, check_built_static, check_discovery, check_evidence,
                                    check_identity, check_vectors)
@@ -539,6 +539,10 @@ def recorded_paths(folder, replay):
         elif name in OPTIONAL_CASES and status == "recorded" and name != "mixed-transform-storage":
             errors.append(f"{name}: no recording defined for this optional case")
     errors.extend(f"missing run.json case: {name}" for name in sorted(expected - statuses.keys()))
+    # Coverage confirmed on this Editor version is no longer optional.
+    errors.extend(f"{name}: required for Unity {run['editor_version']} but {statuses[name]}"
+                  for name in sorted(required_coverage(run["editor_version"]))
+                  if statuses.get(name, "recorded") != "recorded")
     undocumented = set(replay_dir.rglob("*.pending.json")) - set(paths.values())
     errors.extend(f"unexpected pending recording: {path.relative_to(folder)}" for path in sorted(undocumented))
     replay.require(not errors, "incomplete fixture run:\n" + "\n".join(errors))

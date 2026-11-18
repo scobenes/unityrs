@@ -54,7 +54,7 @@ public static partial class AnimReplayRecorder
         public string[] spine_start_f32, spine_stop_f32;
         public float spine_endpoint_tolerance_degrees;
         public string expected_refusal;
-        public DiscreteSample[] discrete_samples;
+        public DiscreteSample[] discrete_samples, discrete_keys;
         public TwistEffect[] twist_effects;
     }
     [Serializable] sealed class PendingEvidence
@@ -204,6 +204,7 @@ public static partial class AnimReplayRecorder
         });
         editor.object_reference_samples = referenceSamples.ToArray();
         editor.discrete_samples = discreteSamples.ToArray();
+        if (fixture.ProbeDiscrete) editor.discrete_keys = ReadDiscreteKeys(clip);
         pending.prefab_asset = spec.prefab_asset;
         pending.clip_asset = spec.clip_asset;
         pending.avatar_asset = spec.avatar_asset;
