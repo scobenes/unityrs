@@ -53,6 +53,9 @@ public static partial class AnimReplayRecorder
         public ObjectKey[] object_reference_samples;
         public string[] spine_start_f32, spine_stop_f32;
         public float spine_endpoint_tolerance_degrees;
+        public string expected_refusal;
+        public DiscreteSample[] discrete_samples;
+        public TwistEffect[] twist_effects;
     }
     [Serializable] sealed class PendingEvidence
     {
@@ -167,7 +170,8 @@ public static partial class AnimReplayRecorder
             animation_source = human ? "procedural_humanoid" : "procedural_clip",
             expected_discovery = fixture.ExpectedDiscovery,
             bindings = bindings, clip_settings = ReadSettings(clip), length_f32 = Bits(clip.length),
-            frame_rate_f32 = Bits(clip.frameRate), model_import_settings = Array.Empty<string>()
+            frame_rate_f32 = Bits(clip.frameRate), model_import_settings = Array.Empty<string>(),
+            expected_refusal = fixture.ExpectedRefusal
         };
         pending.evidence = new PendingEvidence { clock = clock, editor = editor };
 
@@ -175,6 +179,7 @@ public static partial class AnimReplayRecorder
         if (referenceAssets != null) CheckAuthoredReferences(bindings, referenceAssets);
         Mesh[] builtReferences = null;
         var referenceSamples = new List<ObjectKey>();
+        var discreteSamples = new List<DiscreteSample>();
         bool mixed = false;
 
         var spec = JsonUtility.FromJson<Spec>(JsonUtility.ToJson(pending));
@@ -190,6 +195,7 @@ public static partial class AnimReplayRecorder
             Need(builtReferences.All(mesh => mesh != null) && builtReferences[0] != builtReferences[1],
                 "Built object-reference assets are missing or indistinguishable.");
         }, inspectPose: (root, time) => {
+            if (fixture.ProbeDiscrete) discreteSamples.Add(ReadDiscrete(root, time));
             if (referenceAssets == null) return;
             int key = time < .5f ? 0 : 1;
             var mesh = root.Find(UnityrsFixtureBuilder.ReferencePath).GetComponent<MeshFilter>().sharedMesh;
@@ -197,11 +203,14 @@ public static partial class AnimReplayRecorder
             referenceSamples.Add(new ObjectKey { time_f32 = Bits(time), asset = referenceAssets[key], name = mesh.name });
         });
         editor.object_reference_samples = referenceSamples.ToArray();
+        editor.discrete_samples = discreteSamples.ToArray();
         pending.prefab_asset = spec.prefab_asset;
         pending.clip_asset = spec.clip_asset;
         pending.avatar_asset = spec.avatar_asset;
         if (human)
             CheckHumanoidPlayback(capture as HumanCapture, fixture, prefab, clock, editor);
+        if (fixture.TwistMuscles != null)
+            CheckTwistEffects(capture as HumanCapture, fixture, prefab, editor);
         Need(ProbeMatches(clock.start.probe, capture.samples) && ProbeMatches(clock.stop.probe, capture.samples),
             "Built playback missed the authored endpoint probes for " + clip.name + ".");
         if (fixture.HeldTime.HasValue)

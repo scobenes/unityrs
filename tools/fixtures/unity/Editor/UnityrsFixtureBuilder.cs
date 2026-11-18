@@ -36,7 +36,7 @@ static partial class UnityrsFixtureBuilder
         return tall ? cases.ToArray() : cases.Concat(new[] { rig + "-body-motion" }).ToArray();
     }
 
-    internal sealed class ReplayCase
+    internal sealed partial class ReplayCase
     {
         public string Bundle, Prefab, Clip, Avatar = "", BindingAddress = "";
         public string ProbePath, ProbeProperty = "translation";
@@ -112,7 +112,7 @@ static partial class UnityrsFixtureBuilder
             cases[name].reason = reason;
         }
 
-        public bool Try(string step, IEnumerable<string> names, Action action)
+        public bool Try(string step, IEnumerable<string> names, Action action, string status = "failed")
         {
             try
             {
@@ -122,17 +122,17 @@ static partial class UnityrsFixtureBuilder
             catch (Exception error)
             {
                 string reason = step + ": " + error.Message;
-                foreach (var name in names) Set(name, "failed", reason);
-                log("ERROR " + reason);
+                foreach (var name in names) Set(name, status, reason);
+                log((status == "failed" ? "ERROR " : "NOT COVERED ") + reason);
                 Debug.LogException(error);
                 return false;
             }
         }
 
-        public void Prepare(Build build, string step, string[] names, Action action)
+        public void Prepare(Build build, string step, string[] names, Action action, string status = "failed")
         {
             int bundles = build.Bundles.Count, replays = build.Replays.Count;
-            if (Try(step, names, action)) return;
+            if (Try(step, names, action, status)) return;
             build.Bundles.RemoveRange(bundles, build.Bundles.Count - bundles);
             build.Replays.RemoveRange(replays, build.Replays.Count - replays);
         }
@@ -277,14 +277,12 @@ static partial class UnityrsFixtureBuilder
     static void AddDeferredCases(RunReport report)
     {
         report.AddDeferred("urp-materials", "Requires the URP package and a separate URP project.");
-        report.AddDeferred("packed-rotation-slopes", "Requires an imported clip that retains packed rotation slopes.");
-        report.AddDeferred("authored-runtime-precedence", "Requires independently conflicting authorship and runtime values in the built clip.");
-        report.AddDeferred("mixed-transform-storage", "The scale fixture varies interpolation by axis. A scale binding spanning runtime storage ranges was not verified.");
-        report.AddDeferred("humanoid-twist-refusal", "No rig with non-neutral Avatar twist settings is generated.");
-        report.AddDeferred("humanoid-non-neutral-setting-refusal", "No clip with non-neutral import settings is generated.");
+        report.AddDeferred("packed-rotation-slopes", PackedSlopesReason);
+        report.AddDeferred("authored-runtime-precedence", PrecedenceReason);
+        report.AddDeferred("mixed-transform-storage", MixedStorageReason);
         report.AddDeferred("humanoid-slot-axis-inventory", "The serialized body and muscle slots and runtime axis fields need an inspected crosswalk.");
         report.AddDeferred("humanoid-root-hips-comparison", "Qualification needs a comparison against the completed known-vector baselines.");
-        report.AddDeferred("integer-discrete-binding", "This run verifies a PPtr transition. An integer discrete flag needs its own fixture.");
+        AddCoverageCases(report);
     }
 
     static Build PrepareInFixtureScene(RunReport report, string stamp, ref bool preserveStaging)
@@ -359,6 +357,8 @@ static partial class UnityrsFixtureBuilder
             string name = tall ? "humanoid-tall" : "humanoid-compact";
             report.Prepare(build, "Prepare " + name, HumanoidCases(name, tall), () => BuildHumanoid(build, name, tall));
         }
+        Progress("Preparing coverage fixtures", .45f);
+        BuildCoverage(build, report);
         return build;
     }
 
@@ -396,6 +396,7 @@ static partial class UnityrsFixtureBuilder
             }
             Progress("Recording " + name, .6f + .36f * i / build.Replays.Count);
             log("Recording " + name);
+            // A coverage fixture Unity cannot reproduce stays not covered, with the reason.
             report.Try("Record " + name, new[] { name }, () => {
                 Require(built.Contains(fixture.Bundle) && manifest.GetAllDependencies(fixture.Bundle).Length == 0,
                     "Expected a self-contained replay bundle for " + name);
@@ -403,7 +404,7 @@ static partial class UnityrsFixtureBuilder
                 bool mixed = AnimReplayRecorder.RecordFixture(fixture, bundles, replays, run.run_id, log);
                 report.Set(name, "recorded");
                 if (mixed) report.Set("mixed-transform-storage", "recorded", "Verified in the built generic-scale clip.");
-            });
+            }, fixture.Optional ? "not_covered" : "failed");
         }
     }
 

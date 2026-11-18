@@ -90,6 +90,7 @@ Both sides write the canonical dump specified in [`docs/CANONICAL_DUMP.md`](../.
 | `anim_bounds.json` | the frozen transcription and bake bounds `docs/anim_reference.md` derives, read by the Rust replay |
 | `anim_replay.py`, `anim_replay_bounds.py` | validate a same-bundle Editor replay manifest for internal consistency and derive its f32 tolerances per recording; bundle-derivable facts are the Rust comparison's cross-checks |
 | `anim_fixture_contract.py` | required fixture asset keys, playback modes, built curves and static components, recorded probes, and the paired humanoid vector schedule |
+| `anim_fixture_coverage.py` | the optional coverage fixtures (an integer discrete binding, the humanoid twist and clip-settings refusal probes): their asset keys and the built slots, Avatar fields and playback evidence a recorded case must show |
 | `anim_replay_complete.py` | verify the Editor run stamp across the handoff, resolve identities and serialized key times through CLI inspect and show, and validate the required bundles and recordings |
 | `anim_replay.schema.json` | the replay manifest's schema |
 | `mesh_dump.py` | L6 corpus JSONL digests and exact masked comparison; standalone oracle dump, `unityrs dump --mesh` candidate; arrays preserve binary64 bits and numeric tags, triangles preserve partial/empty tuples, OBJ streams into SHA-256; output stays outside the repository |
@@ -224,6 +225,7 @@ scripts/dev python -m unittest discover -s tools/parity/tests -v
 | `test_anim_reference.py` | the f64 evaluator against hand-derived values: Hermite, weighted and stepped segments, streamed, dense and constant layouts, quaternion and Euler orders, timing and the f32 schedule | stdlib |
 | `test_anim_replay.py` | the replay manifest's validator and tolerance derivation on synthetic manifests, including the refusals | stdlib |
 | `test_anim_replay_complete.py`, with `anim_fixture_support.py` | complete a serialized synthetic Editor handoff and reject invalid quaternion keys, skin weights and compiled PPtr mappings, foreign known vectors, wrong mixed scale bindings, seed-only streamed slots, and stale inspections | stdlib |
+| `test_anim_replay_coverage.py`, with `anim_coverage_support.py` | complete the recorded coverage fixtures and refuse wrong integer slots and encodings, twist fields and limb evidence, clip offsets and refusal labels; a run without them completes and reports them | stdlib |
 | `test_anim_synthetic.py` | the synthetic clip replay's expectations (`crates/unityrs-anim/tests/support/clip_expected.json`) are what `anim_reference.py` computes now, and the file the Rust sampler is held to is regenerated, never edited | stdlib |
 
 **Samples.** The samples are UnityPy's `tests/samples` at commit `417d595`. They are read from `$UNITYRS_UNITYPY_SAMPLES` when set, else from the folder the corpus index (`$UNITYRS_CORPUS_INDEX`, default `/corpus/index.json`) gives for its `unitypy-sample` entries, and their sha256 is checked against pinned values. They are game bundles, so they are never copied into this repository. Without them the sample tests skip.

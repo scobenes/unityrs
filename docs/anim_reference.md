@@ -589,7 +589,11 @@ a reason. These sections are URP materials, packed rotation slopes,
 authored/runtime precedence, verified mixed Transform storage, integer discrete
 bindings, humanoid twist and non-neutral setting refusals, humanoid slot/axis
 inventory and the root/hips comparison. `build.log` and `run.json` give the
-reason for uncovered sections and fixture errors. The `*.pending.json` files use
+reason for uncovered sections and fixture errors. The button generates three of them: an integer discrete `MeshRenderer.m_SortingOrder` step, a humanoid rig with
+non-neutral Avatar twist that animates the twist muscles, and a muscle clip with height and orientation offsets.
+Unity reports one it cannot reproduce as not covered, with its reason. A case recorded in `run.json` needs its
+pending recording, which completion checks against the [coverage contract](../tools/parity/anim_fixture_coverage.py);
+any other status must leave none. Completion lists the optional cases not recorded. The `*.pending.json` files use
 the separate `unityrs.anim_replay_pending` format, version 1, and stay
 beside the completed files. Each pending spec has one bundle basename
 without a digest, uses integer mesh groups where renderers share a mesh,

@@ -633,8 +633,10 @@ def main():
             executable = args.unityrs or "unityrs"
             if args.unityrs:
                 executable = str(Path(executable).resolve())
-            count = complete_folder(args.file, executable, args.inspect_dir, sys.modules[__name__])
+            count, uncovered = complete_folder(args.file, executable, args.inspect_dir, sys.modules[__name__])
             print(f"Completed and validated {count} replay(s).")
+            for row in uncovered:
+                print(f"Optional coverage not recorded: {row}")
             return
         require(args.unityrs is None and args.inspect_dir is None, "inspection options require complete")
         value = read_json(args.file.read_text(encoding="utf-8"))
