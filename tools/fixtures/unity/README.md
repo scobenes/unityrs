@@ -34,7 +34,42 @@
    **Unity 6000.x**, for example **6000.6.9f1**. Keep the 2022.3 project in
    its original Unity version.
 
-URP fixtures will come later as a separate menu item.
+## URP material fixtures
+
+1. In Unity Hub, create a **new Universal 3D** project (the template is
+   also called **3D (URP)**) using **Unity 2022.3.62f3**. Use a separate
+   project from the Built-in one, for example `C:\unity\unityrs-urp-2022`.
+2. Copy the same **Editor** folder into the project's **Assets** folder, so
+   the result is `Assets/Editor`, and wait for the scripts to import.
+3. Choose **Tools → unityrs → Build URP material fixtures**. If the dialog
+   says the project needs URP, the project was not made from the Universal
+   3D template: create a new one as in step 1.
+4. When the dialog says **unityrs fixtures ready**, zip the
+   `UnityrsFixturesOutput/<Unity version>/URP-StandaloneWindows64` folder
+   and send it. Follow steps 4–5 above for the other dialogs.
+5. Later, repeat steps 1–4 in a separate new Universal 3D project using
+   **Unity 6000.x**, for example **6000.6.9f1**.
+
+## Android fixtures
+
+1. Close Unity. In Unity Hub, open **Installs**, click the gear next to
+   **2022.3.62f3**, choose **Add modules**, tick **Android Build Support**
+   and click **Install**. Unity Hub ticks the OpenJDK and Android SDK & NDK
+   tools under it; keep them ticked.
+2. Open the **3D (Built-in)** project from step 2 above. The active
+   platform can stay **Windows**: the menu item builds for Android itself.
+3. Choose **Tools → unityrs → Build Android fixtures**. Unity imports the
+   textures for Android first, which can take a few minutes. If the dialog
+   says **Android Build Support** is missing, repeat step 1.
+4. When the dialog says **unityrs fixtures ready**, zip the
+   `UnityrsFixturesOutput/<Unity version>/Android` folder and send it.
+   Follow steps 4–5 above for the other dialogs.
+5. Later, add the Android module to **6000.6.9f1** too and repeat steps 2–4
+   in the Unity 6000.x Built-in project.
+
+Each project has its own `UnityrsFixturesOutput` folder. In the Built-in
+project, the Windows and Android results sit side by side in the
+`<Unity version>` folder, so zipping that whole folder sends both.
 
 If the maintainer needs a manual FBX fallback, use a **CC0-licensed rigged
 model**. Exclude TurboSquid and Mixamo assets because their licences forbid

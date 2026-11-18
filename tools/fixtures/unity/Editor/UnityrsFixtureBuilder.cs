@@ -85,6 +85,7 @@ static partial class UnityrsFixtureBuilder
         public string editor_version = Application.unityVersion;
         public string build_target;
         public int build_target_id;
+        public string variant = "builtin";
 
         public string Stamp => "unityrs fixture run " + run_id + " " + editor_version + " " + build_target;
     }
@@ -94,11 +95,11 @@ static partial class UnityrsFixtureBuilder
         readonly Dictionary<string, RunCase> cases;
         readonly Action<string> log;
 
-        public RunReport(Action<string> log)
+        public RunReport(Action<string> log, IEnumerable<string> names = null)
         {
             this.log = log;
-            cases = StaticCases.Concat(LegacyCases).Concat(GenericCases)
-                .Concat(HumanoidCases("humanoid-compact", false)).Concat(HumanoidCases("humanoid-tall", true))
+            cases = (names ?? StaticCases.Concat(LegacyCases).Concat(GenericCases)
+                .Concat(HumanoidCases("humanoid-compact", false)).Concat(HumanoidCases("humanoid-tall", true)))
                 .ToDictionary(name => name, name => new RunCase { name = name }, StringComparer.Ordinal);
         }
 
@@ -151,17 +152,17 @@ static partial class UnityrsFixtureBuilder
     }
 
     [MenuItem("Tools/unityrs/Build and record all fixtures")]
-    static void BuildAndRecord() => Run(true);
+    static void BuildAndRecord() => Run(BuiltInVariant(true));
 
     [MenuItem("Tools/unityrs/Build fixtures only")]
-    static void BuildOnly() => Run(false);
+    static void BuildOnly() => Run(BuiltInVariant(false));
 
-    static void Run(bool record)
+    static void Run(Variant variant)
     {
-        var target = EditorUserBuildSettings.activeBuildTarget;
-        var run = new RunIdentity { build_target = target.ToString(), build_target_id = (int)target };
+        var target = variant.Target;
+        var run = new RunIdentity { build_target = target.ToString(), build_target_id = (int)target, variant = variant.Name };
         string version = run.editor_version;
-        string relative = Path.Combine(Output, version, target.ToString());
+        string relative = Path.Combine(Output, version, variant.Folder);
         string assetDirectory = Path.GetFullPath(Application.dataPath);
         string project = Path.GetDirectoryName(assetDirectory);
         string generated = Path.Combine(assetDirectory, AssetFolder);
@@ -193,17 +194,16 @@ static partial class UnityrsFixtureBuilder
                 {
                     Require(!EditorApplication.isPlayingOrWillChangePlaymode && !AnimationMode.InAnimationMode(),
                         "Exit Play Mode and animation preview, then try again.");
-                    Require(GraphicsSettings.currentRenderPipeline == null,
-                        "Open an empty 3D (Built-in) project to build these fixtures.");
+                    Require(variant.PipelineReady(), variant.PipelineMessage);
                     CheckOwned(generated);
                     Folder(Assets);
                     WriteMarker(generated, run.Stamp);
 
-                    var report = new RunReport(Log);
-                    AddDeferredCases(report);
+                    var report = new RunReport(Log, variant.Cases);
+                    variant.AddDeferred(report);
                     Progress("Preparing fixtures", .05f);
-                    var build = PrepareInFixtureScene(report, run.Stamp, ref preserveStaging);
-                    BuildAndCapture(build, report, staging, run, target, record, Log);
+                    var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
+                    BuildAndCapture(build, report, staging, run, target, variant.Record, Log);
                     failures = report.Write(staging, projectPath, run);
                     Log(failures.Length == 0 ? "Finished." : "Finished with fixture errors: " + string.Join(", ", failures));
                 }
@@ -276,7 +276,7 @@ static partial class UnityrsFixtureBuilder
 
     static void AddDeferredCases(RunReport report)
     {
-        report.AddDeferred("urp-materials", "Requires the URP package and a separate URP project.");
+        report.AddDeferred(UrpCase, "Requires a separate Universal 3D project: run " + UrpMenu + " there.");
         report.AddDeferred("packed-rotation-slopes", "Requires an imported clip that retains packed rotation slopes.");
         report.AddDeferred("authored-runtime-precedence", "Requires independently conflicting authorship and runtime values in the built clip.");
         report.AddDeferred("mixed-transform-storage", "The scale fixture varies interpolation by axis. A scale binding spanning runtime storage ranges was not verified.");
@@ -287,7 +287,8 @@ static partial class UnityrsFixtureBuilder
         report.AddDeferred("integer-discrete-binding", "This run verifies a PPtr transition. An integer discrete flag needs its own fixture.");
     }
 
-    static Build PrepareInFixtureScene(RunReport report, string stamp, ref bool preserveStaging)
+    static Build PrepareInFixtureScene(RunReport report, string stamp, Func<RunReport, Scene, string, Build> prepare,
+        ref bool preserveStaging)
     {
         // The fixtures are built in a single new scene, which Unity makes
         // active itself, and the owner's scenes are restored afterwards. An
@@ -304,7 +305,7 @@ static partial class UnityrsFixtureBuilder
             Require(scene.IsValid() && scene.isLoaded && active == scene,
                 "Could not open the fixture scene (valid " + scene.IsValid() + ", loaded " + scene.isLoaded
                 + ", active " + (active == scene) + ", open scenes " + SceneManager.sceneCount + ").");
-            return PrepareFixtures(report, scene, stamp);
+            return prepare(report, scene, stamp);
         }, () =>
         {
             // Restoring replaces the untitled fixture scene without saving it.
