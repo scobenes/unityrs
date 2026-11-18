@@ -14,7 +14,7 @@ Optional samples are [time, expected row] pairs in the same space, with sample
 times kept at reference precision to distinguish either side of a held key.
 A bake envelope [magnitude, combined rate, local time] selects the frozen
 component or quaternion-angle comparison. In this mode exact key arrays
-are optional.
+are optional and at least one sample is required.
 """
 import argparse
 from bisect import bisect_right
@@ -285,7 +285,7 @@ def check_accessors(doc, binary, expected, normalise=True):
                 raise AssertionError("animation interpolation")
             envelope = case.get("bake")
             samples = case.get("samples", [])
-            if envelope is not None and "times" not in case and "values" not in case and not samples:
+            if envelope is not None and not samples:
                 raise AssertionError("animation bake envelope has no compared values")
             if "times" in case or envelope is None:
                 equal([times], [list(map(f32, case["times"]))], "animation times")
@@ -298,9 +298,9 @@ def check_accessors(doc, binary, expected, normalise=True):
             for time, reference in samples:
                 actual = sample_animation(channel, time, rotation=rotation)
                 if envelope is not None and len(actual) == len(reference):
-                    error = (quaternion_angle(actual, reference) if rotation else
-                             max(abs(a-b) for a, b in zip(actual, reference)))
-                    matches = error <= bound
+                    errors = ([quaternion_angle(actual, reference)] if rotation else
+                              (abs(a-b) for a, b in zip(actual, reference)))
+                    matches = all(math.isfinite(error) and error <= bound for error in errors)
                 else:
                     matches = len(actual) == len(reference) and all(
                         math.isclose(a, b, rel_tol=1e-7, abs_tol=1e-7)

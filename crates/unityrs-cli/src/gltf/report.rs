@@ -97,8 +97,8 @@ impl Peak {
     pub fn peak(&self) -> u64 {
         self.home.peak.load(Ordering::Relaxed)
     }
-    /// Input loading and unit selection precede this boundary. Profile parsing,
-    /// graph construction, collection and writing charge export permits. Input
+    /// Profile parsing, input loading and unit selection precede this boundary.
+    /// Graph construction, collection and writing charge export permits. Input
     /// permits retained across the boundary stay in the input phase until drop.
     pub fn start_export(&self) {
         self.exporting.store(true, Ordering::Relaxed);

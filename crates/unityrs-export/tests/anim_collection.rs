@@ -1,5 +1,9 @@
 #![cfg(feature = "gltf")]
 #![allow(clippy::float_cmp)]
+#[allow(
+    dead_code,
+    reason = "replay also uses the specialized fixture variants"
+)]
 mod anim_support;
 #[path = "anim_collection/review.rs"]
 mod review;

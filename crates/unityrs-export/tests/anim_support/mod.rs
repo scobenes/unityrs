@@ -76,7 +76,16 @@ pub fn legacy_clip() -> Object {
     )
 }
 
-pub fn generic_clip(clamped_translation: bool) -> Object {
+#[derive(Clone, Copy)]
+pub enum GenericClip {
+    ConstantTrs,
+    ClampedTranslation,
+    HeldQuaternionFlip,
+}
+
+pub fn generic_clip(kind: GenericClip) -> Object {
+    let clamped_translation = matches!(kind, GenericClip::ClampedTranslation);
+    let held_rotation = matches!(kind, GenericClip::HeldQuaternionFlip);
     let mut object = p::explicit(9, 4., &[]);
     let mut words = Vec::new();
     p::frame(&mut words, f32::MIN, &[]);
@@ -84,13 +93,32 @@ pub fn generic_clip(clamped_translation: bool) -> Object {
         if clamped_translation && time == 3. {
             p::frame(&mut words, 2.75, &[(1, [0, 0, 0, 1000_f32.to_bits()])]);
         }
+        if held_rotation && time == 3. {
+            p::frame(&mut words, 2.75, &[(4, [0, 0, 0, (-1_f32).to_bits()])]);
+        }
         let mut keys = vec![(0, [0, 0, 0, weight.to_bits()])];
         if clamped_translation && time == 2. {
             keys.extend([(1, [0, 0, 1_f32.to_bits(), 0]), (2, [0; 4]), (3, [0; 4])]);
         }
+        if held_rotation {
+            let w = if time < 2.75 { 1_f32 } else { -1. };
+            keys.extend([
+                (1, [0; 4]),
+                (2, [0; 4]),
+                (3, [0; 4]),
+                (4, [0, 0, 0, w.to_bits()]),
+            ]);
+        }
         p::frame(&mut words, time, &keys);
     }
     p::frame(&mut words, f32::INFINITY, &[]);
+    let (transform_attributes, streamed_count, constants): (_, _, &[f32]) = match kind {
+        GenericClip::ConstantTrs => ([1, 2], 1, &[1., -2., 0., 0., 0., 0., 1.]),
+        GenericClip::ClampedTranslation => ([1, 2], 4, &[0., 0., 0., 1.]),
+        GenericClip::HeldQuaternionFlip => ([2, 1], 5, &[1., -2., 0.]),
+    };
+    let [first, second] = transform_attributes;
+    let constants = constants.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
     p::add_compiled(
         &mut object,
         Layout::Unity2022,
@@ -103,22 +131,21 @@ pub fn generic_clip(clamped_translation: bool) -> Object {
             },
             Binding {
                 class: 4,
-                attribute: 1,
+                attribute: first,
                 ..Binding::default()
             },
             Binding {
                 class: 4,
-                attribute: 2,
+                attribute: second,
                 ..Binding::default()
             },
         ],
         &[],
         Storage {
             interval: [2., 3.],
-            streamed_count: if clamped_translation { 4 } else { 1 },
+            streamed_count,
             words: &words,
-            constants: &[1_f32, -2., 0., 0., 0., 0., 1.].map(f32::to_bits)
-                [if clamped_translation { 3.. } else { 0.. }],
+            constants: &constants,
             ..Storage::default()
         },
     );
@@ -136,7 +163,7 @@ pub fn bundle(legacy: bool) -> Vec<u8> {
         if legacy {
             legacy_clip()
         } else {
-            generic_clip(false)
+            generic_clip(GenericClip::ConstantTrs)
         },
     )
 }

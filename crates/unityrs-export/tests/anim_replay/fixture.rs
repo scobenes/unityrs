@@ -410,7 +410,7 @@ fn replay_refuses_identity_mismatches() {
             ],
         );
     });
-    let mut clip = generic_clip(false);
+    let mut clip = generic_clip(GenericClip::ConstantTrs);
     unityrs_testkit::scene3d::set(&mut clip.value, "m_Legacy", V::Bool(true));
     with_clip(
         false,
@@ -482,7 +482,7 @@ fn legacy_replay_requires_key_bounds_and_hermite_ranges() {
     });
 }
 
-use crate::anim_support::{bundle_with_clip, generic_clip, legacy_clip};
+use crate::anim_support::{GenericClip, bundle_with_clip, generic_clip, legacy_clip};
 use unityrs_testkit::{
     ngui::{V, vector},
     scene3d::anim::playback::{self as p, Key},
@@ -593,7 +593,7 @@ fn legacy_euler_replay_requires_joint_input_range() {
 fn streamed_stage_range_covers_held_final_key() {
     with_clip(
         false,
-        generic_clip(true),
+        generic_clip(GenericClip::ClampedTranslation),
         |document| {
             document["spec"]["evidence"]["clock"]["key_times"] = json!([2, 2.25, 2.75, 3]);
             document["spec"]["budgets"][0] = budget(
@@ -679,6 +679,38 @@ fn held_rotation_probes_accept_the_opposite_quaternion_sign() {
 }
 
 #[test]
+fn held_quaternion_sign_flip_does_not_require_a_clock_probe() {
+    with_clip(
+        false,
+        generic_clip(GenericClip::HeldQuaternionFlip),
+        |document| {
+            // The held weight jump at 2.25 still distinguishes the source clocks.
+            document["spec"]["evidence"]["clock"]["key_times"] = json!([2, 2.25, 2.75, 3]);
+            let mut rotation = budget("rotation", 0, "held", &json!([[-1, 1]]));
+            rotation["stages"][0]["norm_ranges"] = json!([
+                [[0, 0], [0, 0], [0, 0], [1, 1]],
+                [[0, 0], [0, 0], [0, 0], [-1, -1]]
+            ]);
+            document["spec"]["budgets"][1] = rotation;
+            for (i, sample) in document["capture"]["samples"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .enumerate()
+            {
+                sample["pose"]["transforms"][0]["rotation"] = json!([
+                    bits(0.),
+                    bits(0.),
+                    bits(0.),
+                    bits(if i == 3 { -1. } else { 1. })
+                ]);
+            }
+        },
+        |dir, valid, frozen| compare(valid, dir, frozen).unwrap(),
+    );
+}
+
+#[test]
 fn f32_add_collisions_keep_probe_indices_and_check_each_pose() {
     with_recording(
         false,
@@ -697,10 +729,14 @@ fn f32_add_collisions_keep_probe_indices_and_check_each_pose() {
             samples[1]["effective_source"] = json!(2.25);
             samples[1]["sides"] = json!(["right"]);
             samples[1]["pose"]["weights"][0]["channels"][0] = json!(bits(17.5));
+            // Y sets the output rounding bound. The neighboring X values
+            // fit individually, but their separation exceeds either bound.
+            samples[1]["pose"]["transforms"][0]["translation"][0] = json!(bits(1_f32.next_up()));
             let mut same_time = samples[1].clone();
             same_time["local"] = json!(0.25);
             same_time["local_f32"] = json!(bits(0.25));
             same_time["source"] = json!(2.25);
+            same_time["pose"]["transforms"][0]["translation"][0] = json!(bits(1_f32.next_down()));
             samples.insert(2, same_time);
         },
         |dir, valid, frozen| {
@@ -709,11 +745,18 @@ fn f32_add_collisions_keep_probe_indices_and_check_each_pose() {
                 dir,
                 valid,
                 frozen,
-                &[(
-                    "/capture/samples/2/pose/transforms/0/translation/0",
-                    json!(bits(2.)),
-                    "inconsistent pose at the same effective source time",
-                )],
+                &[
+                    (
+                        "/capture/samples/1/pose/transforms/0/translation/0",
+                        json!(bits(2.)),
+                        "translation source 2.25:",
+                    ),
+                    (
+                        "/capture/samples/2/pose/transforms/0/translation/0",
+                        json!(bits(2.)),
+                        "translation source 2.25:",
+                    ),
+                ],
             );
         },
     );

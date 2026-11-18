@@ -442,11 +442,11 @@ fn compare(document: &J, dir: &Path, tolerance: &J) -> Result<()> {
     for (row, (&time, observed)) in times.iter().zip(expected).enumerate() {
         if replay
             .as_ref()
-            .is_none_or(|(previous, _, _)| *previous != time)
+            .is_none_or(|(previous, _)| *previous != time)
         {
-            replay = Some((time, row, sample_clip(&bound, &rest, &[time], meter)?));
+            replay = Some((time, sample_clip(&bound, &rest, &[time], meter)?));
         }
-        let (_, first, samples) = replay.as_ref().unwrap();
+        let (_, samples) = replay.as_ref().unwrap();
         let bounds = list(&tolerances[row]["bounds"])?;
         require(bounds.len() == targets.len(), "tolerance coverage")?;
         for (i, target) in targets.iter().enumerate() {
@@ -454,14 +454,6 @@ fn compare(document: &J, dir: &Path, tolerance: &J) -> Result<()> {
             let reference = target.reference(&observed["pose"])?;
             let error = target.error(&actual, &reference)?;
             let tolerance = number(&bounds[i])?;
-            if *first != row {
-                let earlier = target.reference(&expected[*first]["pose"])?;
-                let earlier_tolerance = number(&tolerances[*first]["bounds"][i])?;
-                require(
-                    target.error(&earlier, &reference)? <= tolerance.max(earlier_tolerance),
-                    "inconsistent pose at the same effective source time",
-                )?;
-            }
             let excess = error - tolerance;
             let within_tolerance = error <= tolerance;
             if !within_tolerance

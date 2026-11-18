@@ -146,41 +146,47 @@ fn prefab_diagnoses_discovery_and_refuses_an_explicit_unresolved_slot() {
 }
 
 #[test]
-fn static_gltf_ignores_input_root_storage_on_an_unrelated_meter() {
-    use unityrs_core::env::{EnvOptions, Environment, Source};
-
+fn empty_clip_profile_succeeds_below_the_input_root_storage_limit() {
     let scratch = Scratch::new("gltf-static-input-budget");
-    let unrelated = scratch.join("large.resource");
-    let padding = scratch.join("small.resource");
-    let prefab = scratch.join("level0");
-    let profile = scratch.join("static.json");
-    std::fs::write(&unrelated, vec![0; 256 * 1024]).unwrap();
-    std::fs::write(&padding, b"resource").unwrap();
-    std::fs::write(&prefab, fixture()).unwrap();
-    std::fs::write(&profile, br#"{"profile_version":1,"clips":[]}"#).unwrap();
+    std::fs::write(scratch.join("r.resource"), b"resource").unwrap();
+    std::fs::write(scratch.join("level0"), fixture()).unwrap();
+    std::fs::write(
+        scratch.join("static.json"),
+        br#"{"profile_version":1,"clips":[]}"#,
+    )
+    .unwrap();
 
-    let env = Environment::new(EnvOptions::unitypy());
-    let first = env.load(Source::Path(unrelated.clone())).unwrap();
-    let limit = (first.meter().used() + 4096).to_string();
+    let padding = 8192;
+    let limit = 96 * 1024;
+    assert!((padding + 1) * size_of::<unityrs_core::files::File>() > limit);
+    let run_profile = || {
+        child::output(
+            Command::new(env!("CARGO_BIN_EXE_unityrs"))
+                .current_dir(scratch.path())
+                .args(["gltf", "level0"])
+                .args(std::iter::repeat_n("r.resource", padding))
+                .args(["--path-id", "1", "--max-input-memory", &limit.to_string()])
+                .args(["--profile", "static.json", "-o", "result.glb"]),
+        )
+        .unwrap()
+    };
+    let result = run_profile();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(doc(&scratch).get("animations").is_none());
 
-    for explicit_profile in [false, true] {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_unityrs"));
-        cmd.arg("gltf").arg(&unrelated);
-        // Enough input arguments to exhaust the first meter if it pays
-        // for the root list. The selected prefab has a separate meter.
-        cmd.args(std::iter::repeat_n(&padding, 640))
-            .arg(&prefab)
-            .args(["--path-id", "1", "--max-input-memory", &limit, "-o"])
-            .arg(scratch.join("result.glb"));
-        if explicit_profile {
-            cmd.arg("--profile").arg(&profile);
-        }
-        let result = child::output(&mut cmd).unwrap();
-        assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        assert!(doc(&scratch).get("animations").is_none());
-    }
+    let explicit = json!({"profile_version":1,"clips":[
+        {"root":address(2),"component":address(3),"clip":address(9)}
+    ]});
+    std::fs::write(
+        scratch.join("static.json"),
+        serde_json::to_vec(&explicit).unwrap(),
+    )
+    .unwrap();
+    let result = run_profile();
+    assert_eq!(result.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("limit InputMemory"));
 }

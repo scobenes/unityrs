@@ -60,7 +60,7 @@ def attribute_fixture(attributes):
 
 
 def animation_fixture(path, rows, mode="LINEAR"):
-    shape = {"translation": "VEC3", "rotation": "VEC4", "weights": "SCALAR"}[path]
+    shape = {"translation": "VEC3", "scale": "VEC3", "rotation": "VEC4", "weights": "SCALAR"}[path]
     output = [v for row in rows for v in row]
     data = struct.pack(f"<{2 + len(output)}f", 0.25, 1.25, *output)
     doc = {
@@ -161,10 +161,22 @@ class Checks(unittest.TestCase):
         doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])
         case = {"animation": 0, "node": 0, "path": "translation", "interpolation": "LINEAR",
                 "bake": [6., 8., 1.25]}
-        for samples in ({}, {"samples": []}):
-            with self.subTest(samples=samples), self.assertRaisesRegex(AssertionError, "no compared values"):
-                g.check_accessors(doc, data, [case | samples])
-        self.assertEqual(g.check_accessors(doc, data, [case | {"times": [0.25, 1.25]}]), 1)
+        for fields in ({}, {"samples": []}, {"times": [0.25, 1.25]},
+                       {"values": [[1., 2., 3.], [4., 5., 6.]]}):
+            with self.subTest(fields=fields), self.assertRaisesRegex(AssertionError, "no compared values"):
+                g.check_accessors(doc, data, [case | fields])
+
+    def test_bake_envelope_rejects_nan_after_a_finite_component_error(self):
+        for path, row in (("translation", [1., 2., 3.]), ("scale", [1., 2., 3.]),
+                          ("weights", [1., 2.])):
+            with self.subTest(path=path):
+                doc, data = animation_fixture(path, [row, row])
+                case = {"animation": 0, "node": 0, "path": path, "interpolation": "LINEAR",
+                        "bake": [3., 0., 1.25], "samples": [[0.75, row.copy()]]}
+                self.assertEqual(g.check_accessors(doc, data, [case]), 1)
+                case["samples"][0][1][-1] = math.nan
+                with self.assertRaisesRegex(AssertionError, "sample at"):
+                    g.check_accessors(doc, data, [case])
 
     def test_animation_requires_dense_views_that_fit_the_counts(self):
         doc, data = animation_fixture("translation", [[1., 2., 3.], [4., 5., 6.]])

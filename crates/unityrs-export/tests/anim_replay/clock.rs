@@ -3,6 +3,7 @@
 use crate::{
     Arc, BoundClip, J, Meter, Result, Target, angle, f32_bits, index, list, number, require, string,
 };
+use unityrs_anim::{AnimError, BindingTarget, BoundTrack, TransformProperty};
 
 #[allow(clippy::too_many_lines)]
 pub(crate) fn check(
@@ -51,14 +52,8 @@ pub(crate) fn check(
     let mut boundaries = Vec::new();
     for track in bound.tracks() {
         track.visit_key_times(|time| {
-            if start <= time && time <= stop {
-                let left = track.raw_at(time, true, meter)?;
-                let right = track.raw_at(time, false, meter)?;
-                for (axis, (&a, &b)) in left.iter().zip(&right).enumerate().take(track.width()) {
-                    if track.segment(axis, time, true, meter)?.is_held() && a != b {
-                        boundaries.push(time);
-                    }
-                }
+            if (start..=stop).contains(&time) && held_jump(track, time, meter)? {
+                boundaries.push(time);
             }
             Ok(())
         })?;
@@ -179,9 +174,8 @@ pub(crate) fn check(
             .ok_or("held probe target")?;
         let target = &targets[target_index];
         let component = index(&right["component"])?;
-        let held = held_input(target, component, boundary, meter)?;
         require(
-            held && distinct_sides(target, component, boundary, meter)?,
+            held_probe(target, component, boundary, meter)?,
             "held probe does not distinguish bundle sides",
         )?;
         let split = times.partition_point(|&time| time < boundary);
@@ -244,18 +238,30 @@ pub(crate) fn check(
     Ok(times)
 }
 
-fn distinct_sides(
-    target: &Target<'_, '_, '_>,
-    axis: usize,
+fn held_jump(
+    track: &BoundTrack<'_, '_>,
     time: f64,
     meter: &Meter,
-) -> Result<bool> {
-    if target.property() == "rotation" {
-        let left = target.rotation_at(time, true, meter, true)?;
-        let right = target.rotation_at(time, false, meter, true)?;
-        return Ok(angle(&left, &right) > 0.);
+) -> std::result::Result<bool, AnimError> {
+    let left = track.raw_at(time, true, meter)?;
+    let right = track.raw_at(time, false, meter)?;
+    for (axis, (a, b)) in left.into_iter().zip(right).enumerate().take(track.width()) {
+        if a != b && track.segment(axis, time, true, meter)?.is_held() {
+            if matches!(
+                track.target,
+                BindingTarget::Transform {
+                    property: TransformProperty::Quaternion | TransformProperty::Euler,
+                    ..
+                }
+            ) {
+                let left = track.rotation(left, meter)?;
+                let right = track.rotation(right, meter)?;
+                return Ok(angle(&left, &right) > 0.);
+            }
+            return Ok(true);
+        }
     }
-    Ok(target.component(axis, time, true, meter)? != target.component(axis, time, false, meter)?)
+    Ok(false)
 }
 
 fn probe_error(
@@ -277,7 +283,7 @@ fn probe_error(
     Ok((target.component(axis, time, false, meter)? - observed).abs())
 }
 
-fn held_input(
+fn held_probe(
     target: &Target<'_, '_, '_>,
     component: usize,
     boundary: f64,
@@ -285,12 +291,8 @@ fn held_input(
 ) -> Result<bool> {
     if target.property() == "rotation" {
         for track in &target.tracks {
-            let a = track.raw_at(boundary, true, meter)?;
-            let b = track.raw_at(boundary, false, meter)?;
-            for (axis, (left, right)) in a.into_iter().zip(b).enumerate().take(track.width()) {
-                if left != right && track.segment(axis, boundary, true, meter)?.is_held() {
-                    return Ok(true);
-                }
+            if held_jump(track, boundary, meter)? {
+                return Ok(true);
             }
         }
         return Ok(false);
@@ -298,5 +300,7 @@ fn held_input(
     let (track, axis) = target
         .track(component)
         .ok_or("held probe has no bundle track")?;
-    Ok(track.segment(axis, boundary, true, meter)?.is_held())
+    Ok(track.segment(axis, boundary, true, meter)?.is_held()
+        && target.component(component, boundary, true, meter)?
+            != target.component(component, boundary, false, meter)?)
 }
