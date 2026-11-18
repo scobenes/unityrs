@@ -634,7 +634,8 @@ def main():
             if args.unityrs:
                 executable = str(Path(executable).resolve())
             count = complete_folder(args.file, executable, args.inspect_dir, sys.modules[__name__])
-            print(f"Completed and validated {count} replay(s).")
+            # A material or texture variant run has no replays and reports its cases instead.
+            print(count if isinstance(count, str) else f"Completed and validated {count} replay(s).")
             return
         require(args.unityrs is None and args.inspect_dir is None, "inspection options require complete")
         value = read_json(args.file.read_text(encoding="utf-8"))
