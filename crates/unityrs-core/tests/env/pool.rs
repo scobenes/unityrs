@@ -32,6 +32,7 @@ use unityrs_testkit::env::{
 use crate::{DepPool, ctx_with};
 
 mod refuse_once;
+mod with_handle;
 
 use refuse_once::RefuseOnce;
 

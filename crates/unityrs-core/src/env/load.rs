@@ -356,6 +356,8 @@ impl Environment {
 
     /// Load a dependency and give the caller an evictable handle to its exact
     /// occurrence, even if another dependency registers the same CAB name.
+    /// Uses the same dependency pool and eviction retry as
+    /// [`Self::load_dependency`].
     #[allow(clippy::needless_pass_by_value)]
     pub fn load_dependency_with_handle(
         &self,
