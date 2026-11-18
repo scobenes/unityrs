@@ -35,6 +35,7 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use unityrs_testkit::scene3d::{Layout, anim::playback, file};
 
 fn main() -> ExitCode {
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
@@ -114,7 +115,16 @@ fn main() -> ExitCode {
             })
             .collect()
     } else {
-        unityrs_testkit::bundle::matrix()
+        let mut files = unityrs_testkit::bundle::matrix();
+        for (name, object) in [
+            ("anim-explicit.assets", playback::explicit_replay()),
+            ("anim-compiled.assets", playback::compiled_fixture()),
+            ("anim-dense.assets", playback::dense_replay()),
+        ] {
+            let bytes = file(Layout::Unity2022, &[], &[object]).expect("animation fixture");
+            files.push((name.into(), bytes));
+        }
+        files
     };
     for (name, bytes) in &files {
         if let Err(e) = std::fs::write(dir.join(name), bytes) {

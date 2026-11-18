@@ -181,7 +181,8 @@ impl GenericBinding {
             _ if self.flags.is_int => Some((K::Integer, 1)),
             (137, 20) => Some((K::Morph, 1)),
             (23 | 137, 21 | 22) => Some((K::Material, 1)),
-            _ => Some((K::UnsupportedScalar, 1)),
+            (_, 0) => Some((K::UnsupportedScalar, 1)),
+            _ => None,
         }
     }
 }
@@ -205,13 +206,31 @@ pub fn read_bindings(clip: &ObjectRef, meter: &Arc<Meter>) -> Result<BindingTabl
         parsed: &parsed,
         meter,
     };
+    read_records(clip, &dict, layout)
+}
+
+pub(crate) fn read_table(
+    clip: &ObjectRef,
+    tree: &Tree,
+    dict: &Dict<'_, '_>,
+) -> Result<BindingTable, AnimError> {
+    let layout = layout(clip, tree, dict.meter)?;
+    read_records(clip, dict, layout)
+}
+
+fn read_records(
+    clip: &ObjectRef,
+    dict: &Dict<'_, '_>,
+    layout: BindingLayout,
+) -> Result<BindingTable, AnimError> {
+    let meter = dict.meter;
     let table = dict
         .root("m_ClipBindingConstant")?
         .ok_or(AnimError::UnsupportedBindingLayout)?;
     let records = dict.list(dict.required(table, "genericBindings")?, "genericBindings")?;
     let mut bindings = MeteredVec::with_capacity(meter, records.len())?;
     for (index, record) in records.iter().enumerate() {
-        let binding = read_record(&dict, record, layout)?;
+        let binding = read_record(dict, record, layout)?;
         let flags = binding.flags;
         let conflicting_flags = flags.is_pptr && flags.is_int
             || flags.is_managed_reference && (flags.is_pptr || flags.is_int);

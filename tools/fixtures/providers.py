@@ -513,7 +513,7 @@ def compare_image(path):
     sf = env.load_file(path.read_bytes(), name="stripped.assets")
     assert not sf._enable_type_tree
     assert all(t.node is None for t in sf.types)
-    result = {"rows": {str(c): rows(Tpk.get_typetree_node(c, sf.version)) for c in (49, 114, 115)},
+    result = {"rows": {str(c): rows(Tpk.get_typetree_node(c, sf.version)) for c in (49, 114, 115, 74)},
               "values": {str(i): obj.parse_as_dict() for i, obj in sf.objects.items()}}
     print(json.dumps(result))
 

@@ -5,7 +5,7 @@ use unityrs_core::walk::ParseError;
 use unityrs_scene::SceneError;
 
 /// A serialized data, target resolution or resource failure.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum AnimError {
     Charge(ChargeError),
     Parse(ParseError),
@@ -46,6 +46,27 @@ pub enum AnimError {
     MissingChannel(usize),
     AmbiguousChannel(usize),
     UnsupportedMorphProperty,
+    UnsupportedClipLayout,
+    UnsupportedHumanoidPlayback,
+    UnsupportedPackedRotationSlope,
+    UnsupportedSupplementalCurve,
+    UnsupportedMixedTransformStorage(usize),
+    UnsupportedCurveWrap(i32),
+    UnsupportedRotationOrder(Option<i32>),
+    UnsupportedTangentMode,
+    InvalidCurveKeys,
+    InvalidQuaternion,
+    InvalidSampleValue,
+    InvalidRestPose(usize),
+    InvalidClipInterval,
+    InvalidSampleRate,
+    InvalidSchedule,
+    AmbiguousPlaybackSource,
+    NoPlayableChannels,
+    InvalidStreamFrame,
+    MissingStreamKey(usize),
+    InvalidDenseGrid,
+    InvalidPPtrIndex(usize),
 }
 
 const _: () = crate::send_sync::<AnimError>();
@@ -127,6 +148,33 @@ impl fmt::Display for AnimError {
             Self::MissingChannel(node) => write!(f, "missing_renderer_channel({node})"),
             Self::AmbiguousChannel(node) => write!(f, "ambiguous_renderer_channel({node})"),
             Self::UnsupportedMorphProperty => f.write_str("unsupported_morph_property"),
+            Self::UnsupportedClipLayout => f.write_str("unsupported_clip_layout"),
+            Self::UnsupportedHumanoidPlayback => f.write_str("unsupported_humanoid_playback"),
+            Self::UnsupportedPackedRotationSlope => {
+                f.write_str("unsupported_packed_rotation_slope")
+            }
+            Self::UnsupportedSupplementalCurve => f.write_str("unsupported_supplemental_curve"),
+            Self::UnsupportedMixedTransformStorage(slot) => {
+                write!(f, "unsupported_mixed_transform_storage({slot})")
+            }
+            Self::UnsupportedCurveWrap(mode) => write!(f, "unsupported_curve_wrap({mode})"),
+            Self::UnsupportedRotationOrder(order) => {
+                write!(f, "unsupported_rotation_order({order:?})")
+            }
+            Self::UnsupportedTangentMode => f.write_str("unsupported_tangent_mode"),
+            Self::InvalidCurveKeys => f.write_str("invalid_curve_keys"),
+            Self::InvalidQuaternion => f.write_str("invalid_animation_quaternion"),
+            Self::InvalidSampleValue => f.write_str("invalid_animation_sample"),
+            Self::InvalidRestPose(node) => write!(f, "invalid_rest_pose({node})"),
+            Self::InvalidClipInterval => f.write_str("invalid_clip_interval"),
+            Self::InvalidSampleRate => f.write_str("invalid_clip_sample_rate"),
+            Self::InvalidSchedule => f.write_str("invalid_sample_schedule"),
+            Self::AmbiguousPlaybackSource => f.write_str("ambiguous_playback_source"),
+            Self::NoPlayableChannels => f.write_str("no_playable_channels"),
+            Self::InvalidStreamFrame => f.write_str("invalid_streamed_frame"),
+            Self::MissingStreamKey(slot) => write!(f, "missing_streamed_key({slot})"),
+            Self::InvalidDenseGrid => f.write_str("invalid_dense_grid"),
+            Self::InvalidPPtrIndex(slot) => write!(f, "invalid_pptr_index({slot})"),
         }
     }
 }

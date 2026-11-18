@@ -222,6 +222,28 @@ evaluated domains. Use the recorded norm lower bound for a complete
 interval, including off-key values, so a near-zero raw quaternion cannot
 hide under a generous angular tolerance.
 
+### Synthetic sampler replay
+
+The testkit emits explicit and compiled clips with a two-second source
+origin. The Rust replay binds their Transform and morph channels and
+compares 18 sampled poses against the independent f64 evaluator. The
+fixtures cover fractional scalar weights, an infinite one-sided tangent,
+stored Euler order and authored turns, sparse cubic streams, frame-major
+dense quaternions and morph weights, and constants. The serialized field
+fixtures and stripped TPK check exercise the read path separately.
+
+Regenerate the expected values and inverse-time bounds from the repository
+root with:
+
+```sh
+python3 -I tools/parity/tests/test_anim_synthetic.py --generate
+```
+
+The [generation test](../tools/parity/tests/test_anim_synthetic.py) checks
+the JSON for drift. The [Rust replay](../crates/unityrs-anim/tests/clip/replay.rs)
+loads that JSON and the frozen transcription constants. Same-bundle Editor
+playback remains the L11 gate.
+
 ## Frozen bake bounds
 
 Baking compares reconstructed f32 accessors with the mirrored source

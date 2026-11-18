@@ -42,23 +42,29 @@ fn stripped(big_endian: bool, version: &[u8]) -> Vec<u8> {
     for s in ["Example", "Synthetic", "Assembly.dll"] {
         string(&mut script, s);
     }
-    let types = [49, 114, 115]
+    let types = [49, 114, 115, 74]
         .into_iter()
         .map(|class_id| TypeSpec {
             class_id,
             ..TypeSpec::default()
         })
         .collect();
-    let objects = [text, mono, script]
-        .into_iter()
-        .enumerate()
-        .map(|(i, w)| ObjectSpec {
-            path_id: i64::try_from(i + 1).unwrap(),
-            type_id: i32::try_from(i).unwrap(),
-            data: w.into_inner(),
-            ..ObjectSpec::default()
-        })
-        .collect();
+    let animation = unityrs_testkit::scene3d::anim::playback::stripped_position_payload(big_endian);
+    let objects = [
+        text.into_inner(),
+        mono.into_inner(),
+        script.into_inner(),
+        animation,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, data)| ObjectSpec {
+        path_id: i64::try_from(i + 1).unwrap(),
+        type_id: i32::try_from(i).unwrap(),
+        data,
+        ..ObjectSpec::default()
+    })
+    .collect();
     build(&SerializedSpec {
         type_trees: false,
         big_endian,
@@ -75,6 +81,9 @@ fn value(parsed: &Parsed, v: &Value) -> J {
         Value::Int(v) => json!(v),
         Value::UInt(v) => json!(v),
         Value::Str(s) => json!(s.to_str().unwrap()),
+        Value::F32(bits) => json!(f32::from_bits(*bits)),
+        Value::List(values) => J::Array(values.iter().map(|v| value(parsed, v)).collect()),
+        Value::Prims(values) if values.is_empty() => json!([]),
         Value::Dict(m) => J::Object(
             parsed
                 .entries(m)
@@ -146,7 +155,7 @@ fn stripped_l2_and_l2b_match_the_image_provider_at_test_time() {
                 panic!()
             };
             assert!(file.types().iter().all(|t| t.nodes.is_none()));
-            for c in [49, 114, 115] {
+            for c in [49, 114, 115, 74] {
                 let list = provider
                     .node_list(c, &file.version().unwrap().version)
                     .unwrap()
@@ -171,7 +180,7 @@ fn stripped_l2_and_l2b_match_the_image_provider_at_test_time() {
                     .collect();
                 assert_eq!(json!(got), want["rows"][c.to_string()], "class {c}");
             }
-            for id in 1..=3 {
+            for id in 1..=4 {
                 let obj = file.object(id).unwrap();
                 let tree = env.object_tree(&obj, None).unwrap().unwrap();
                 let parsed = obj.read_typetree(Some(&tree.tree), true).unwrap();
@@ -180,6 +189,20 @@ fn stripped_l2_and_l2b_match_the_image_provider_at_test_time() {
                     want["values"][id.to_string()]
                 );
             }
+            check_animation(&file.object(4).unwrap());
         }
     }
+}
+
+fn check_animation(object: &unityrs_core::ObjectRef) {
+    let meter = unityrs_core::limits::Meter::unlimited();
+    let bytes = object.raw_data().unwrap();
+    let clip = unityrs_anim::read_clip(object, &meter).unwrap();
+    let timing = clip.timing().unwrap().unwrap();
+    assert_eq!(
+        [timing.start(), timing.stop(), timing.rate()],
+        [2., 2., 24.]
+    );
+    assert!(!object.file().is_changed());
+    assert_eq!(object.raw_data().unwrap(), bytes);
 }
