@@ -17,6 +17,7 @@ pub struct Graph {
     pub(crate) nodes: MeteredVec<Node>,
     pub(crate) roots: MeteredVec<NodeId>,
     pub(crate) issues: MeteredVec<Issue>,
+    pub(crate) held: crate::held::Held,
 }
 impl Graph {
     /// Nodes in depth-first first-reach order.

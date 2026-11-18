@@ -24,6 +24,8 @@ pub enum FinishCause {
     /// After phase 7, the controller's last check saw no stop: a later stop
     /// changes only the finisher's try budget, never the head.
     Normal,
+    /// Phase 6 found an override absent from a completed prefab plan.
+    UnknownPrefab(u32),
     /// The controller saw a stop at a check, or requested one itself.
     Stop,
     /// A 69, 7 or 74 in preflight or at the `running` write: no head, and

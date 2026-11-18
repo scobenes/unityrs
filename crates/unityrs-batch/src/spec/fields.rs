@@ -21,10 +21,12 @@ pub const MAX_INT: u64 = (1 << 53) - 1;
 
 use unityrs_export::ngui::TEXTURE_FORMATS;
 
+pub use super::prefab::{CLIP, EMPTY, PROFILE};
+
 const MIB: u64 = 1 << 20;
 
 /// One member of an object.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Field {
     /// Its name.
     pub name: &'static str,
@@ -39,7 +41,7 @@ pub struct Field {
 }
 
 /// A value's type.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Ty {
     /// `true` or `false`.
     Bool,
@@ -77,10 +79,24 @@ pub enum Ty {
     TextureFormat,
     /// PNG encoding strings or the closed WebP options object.
     Image,
+    /// A bounded inline glTF policy.
+    GlbProfile,
+    /// An animation source address, exactly one of clip and source.
+    ClipSelector,
+    /// A signed path ID.
+    PathId,
+    /// A positive finite sample rate.
+    SampleRate,
+    /// A glTF profile digest, with either case for hexadecimal digits.
+    ProfileDigest,
+    /// The default animation selector.
+    DefaultClips,
+    /// A JSON object whose property names are dynamic.
+    Map { value: &'static Ty, entries: usize },
 }
 
 /// A string's constraints.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Str {
     /// The fewest bytes.
     pub min: u64,
@@ -175,7 +191,7 @@ impl Format {
     }
 }
 
-const fn field(name: &'static str, ty: Ty) -> Field {
+pub(super) const fn field(name: &'static str, ty: Ty) -> Field {
     Field {
         name,
         ty,
@@ -185,7 +201,7 @@ const fn field(name: &'static str, ty: Ty) -> Field {
     }
 }
 
-const fn required(name: &'static str, ty: Ty) -> Field {
+pub(super) const fn required(name: &'static str, ty: Ty) -> Field {
     Field {
         name,
         ty,
@@ -215,11 +231,11 @@ const fn nullable(name: &'static str, ty: Ty, default: Option<&'static str>) -> 
     }
 }
 
-const fn int(min: u64, max: u64) -> Ty {
+pub(super) const fn int(min: u64, max: u64) -> Ty {
     Ty::Int { min, max }
 }
 
-const fn string(min: u64, max: Option<u64>, format: Option<Format>) -> Ty {
+pub(super) const fn string(min: u64, max: Option<u64>, format: Option<Format>) -> Ty {
     Ty::Str(Str {
         min,
         max,
@@ -228,7 +244,7 @@ const fn string(min: u64, max: Option<u64>, format: Option<Format>) -> Ty {
     })
 }
 
-const fn one_of(values: &'static [&'static str]) -> Ty {
+pub(super) const fn one_of(values: &'static [&'static str]) -> Ty {
     Ty::Str(Str {
         min: 0,
         max: None,
@@ -589,9 +605,36 @@ pub static TOP_V2: [Field; 27] = [
     ),
 ];
 
+/// Version 3 adds opt-in loose prefab GLBs.
+pub static TOP_V3: [Field; 27] = {
+    let mut fields = TOP_V2;
+    fields[0] = required("spec_version", int(3, 3));
+    fields[20] = required("outputs", Ty::Object(&OUTPUTS_V3));
+    fields
+};
+
+static OUTPUTS_V3: [Field; 6] = [
+    OUTPUTS_V2[0],
+    OUTPUTS_V2[1],
+    OUTPUTS_V2[2],
+    OUTPUTS_V2[3],
+    OUTPUTS_V2[4],
+    field(
+        "glb",
+        Ty::Object(&[
+            required("prefab_key_template", string(1, Some(1024), None)),
+            field("profile", Ty::GlbProfile),
+        ]),
+    ),
+];
+
 /// The top level's table for `version`, 1 or 2: version 1's for any other
 /// (its `version` rule is `spec_version`'s own, reported first).
 #[must_use]
 pub fn top(version: u64) -> &'static [Field] {
-    if version == 2 { &TOP_V2 } else { &TOP }
+    match version {
+        2 => &TOP_V2,
+        3 => &TOP_V3,
+        _ => &TOP,
+    }
 }

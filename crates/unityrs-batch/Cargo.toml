@@ -16,14 +16,15 @@ unityrs-core = { path = "../unityrs-core" }
 # The key templates and the key rules (docs/BATCH_SPEC.md 2.1 to 2.3),
 # which validation checks a spec's templates and literal keys with: one
 # copy, the cutter's.
-unityrs-export = { path = "../unityrs-export" }
+unityrs-export = { path = "../unityrs-export", features = ["gltf"] }
+unityrs-gltf = { path = "../unityrs-gltf" }
 # The spec's order-preserving tree is built by a serde `Visitor` over
 # serde_json's parser (spec/parse), which keeps its recursion limit. Both
 # already in the lock. `float_roundtrip` reads a number as the nearest
 # double, as Python's `json` does (docs/BATCH_SPEC.md 1's conventions):
 # without it `9007199254740991.4` rounds twice, to 2^53.
 serde = "=1.0.229"
-serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+serde_json = { version = "=1.0.154", features = ["float_roundtrip", "raw_value"] }
 # A bundle's `url` and a sink's `endpoint` are capped as this crate
 # serializes them (docs/BATCH_SPEC.md 1.2, 1.6), and their form is its
 # parse.
@@ -81,6 +82,7 @@ name = "url_runs_scale"
 required-features = ["test-hooks"]
 
 [dev-dependencies]
+unityrs-scene = { path = "../unityrs-scene" }
 # Decision 19's source guard uses the fallback Rust lexer, not proc macros.
 proc-macro2 = { version = "=1.0.107", default-features = false }
 # Parser fixtures collect response DATA; production polls its bounded body.

@@ -218,6 +218,7 @@ use bytes::Bytes;
 pub use container_index::{ContainerItem, ContainerItems};
 pub use deref::FileOccurrence;
 pub use listing::{FileEntries, FileEntry, Objects};
+pub use load::DependencyFile;
 pub use pptr::{DerefError, PPtr};
 pub use registry::{Cab, HeldCab, Keys, RawCab, Registry};
 pub use resource::{Candidate, SUFFIXES, resource_candidates};

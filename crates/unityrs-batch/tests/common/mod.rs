@@ -1,9 +1,7 @@
 //! A valid spec to break one rule at a time, and the refusal's detail.
 //!
 //! Every fixture these helpers parse goes through a JSON Schema 2020-12
-//! validator too, on `docs/batch/spec-v1.schema.json`, or
-//! `docs/batch/spec-v2.schema.json` for a document whose `spec_version` is
-//! 2, and the two must
+//! validator for the document's `spec_version`, and the two must
 //! agree (`docs/plans/extract.md` section 3, item 4): the parser accepts
 //! what the validator accepts, and refuses by a per-value rule what it
 //! refuses, but for the differences item 4 lists, each of which is checked
@@ -47,14 +45,17 @@ impl Validator {
 }
 
 thread_local! {
-    static VALIDATORS: [Validator; 2] = [Validator::new(1), Validator::new(2)];
+    static VALIDATORS: [Validator; 3] = [Validator::new(1), Validator::new(2), Validator::new(3)];
 }
 
-/// Whether the schema of `doc`'s version holds `doc`: version 2's when its
-/// `spec_version` is 2, else version 1's.
+/// Whether the schema of `doc`'s version holds `doc`.
 pub fn schema_valid(doc: &Value) -> bool {
     // JSON Schema's `integer` holds 2.0 too (`Difference::IntegerToken`).
-    let at = usize::from(doc["spec_version"].as_f64() == Some(2.0));
+    let at = match doc["spec_version"].as_f64() {
+        Some(2.0) => 1,
+        Some(3.0) => 2,
+        _ => 0,
+    };
     VALIDATORS.with(|v| v[at].valid(doc))
 }
 

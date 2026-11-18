@@ -19,6 +19,60 @@ fn candidate() -> String {
     )
     .into()
 }
+
+#[test]
+fn legacy_committed_streams_reject_glb_skips() {
+    let skip = concat!(
+        "{\"type\":\"skip\",\"input\":\"input\",\"serialized_file\":\"CAB-rig\",\"path_id\":1,",
+        "\"class\":\"GameObject\",\"output\":\"glb\",\"sprite\":null,",
+        "\"reason\":\"missing_clip_selection\",\"detail\":null,\"cut\":false,",
+        "\"container_file_index\":1,\"container_row\":0,\"container_file\":\"CAB-index\",",
+        "\"container_path\":\"a\",\"root_serialized_file\":\"CAB-rig\",\"root_path_id\":1}\n"
+    );
+    let terminal = summary()
+        .replace("\"complete\"", "\"complete_with_skips\"")
+        .replace("\"skips\": 0", "\"skips\": 1");
+    reject_legacy_glb(&(skip.to_owned() + &terminal), |row| {
+        matches!(row, Row::Skip(_))
+    });
+}
+
+#[test]
+fn legacy_committed_streams_reject_glb_degradation_diagnostics() {
+    let diagnostic = concat!(
+        "{\"type\":\"diagnostic\",\"input\":\"input\",\"kind\":\"glb_degraded\",",
+        "\"name\":\"CAB-rig\",\"bundle\":null,\"key\":\"a.glb\",\"node\":0,",
+        "\"reason\":\"static batch submesh range\",\"cut\":false}\n"
+    );
+    reject_legacy_glb(&(diagnostic.to_owned() + &summary()), |row| {
+        matches!(row, Row::Diagnostic(_))
+    });
+}
+
+fn reject_legacy_glb(stream: &str, expected: impl FnOnce(Row<'_>) -> bool) {
+    let account = Account::new(64 << 20);
+    for version in [1, 2] {
+        let mut reader = Reader::new(
+            Cursor::new(stream),
+            "input",
+            false,
+            0,
+            version,
+            account.meter(),
+        )
+        .unwrap();
+        assert_eq!(reader.next(&|| false).unwrap_err(), Error::internal());
+    }
+    let mut reader =
+        Reader::new(Cursor::new(stream), "input", false, 0, 3, account.meter()).unwrap();
+    assert!(expected(reader.next(&|| false).unwrap().unwrap()));
+    assert!(matches!(
+        reader.next(&|| false).unwrap(),
+        Some(Row::Summary(_))
+    ));
+    assert!(reader.next(&|| false).unwrap().is_none());
+}
+
 #[test]
 fn typed_reader_preserves_repaired_text_and_summary_whitespace() {
     let account = Account::new(64 << 20);
@@ -27,6 +81,7 @@ fn typed_reader_preserves_repaired_text_and_summary_whitespace() {
         "input",
         false,
         2,
+        1,
         account.meter(),
     )
     .unwrap();
@@ -67,7 +122,7 @@ fn corrupt_committed_records_are_internal() {
     for bytes in cases {
         let account = Account::new(64 << 20);
         let mut reader =
-            Reader::new(Cursor::new(bytes), "input", false, 0, account.meter()).unwrap();
+            Reader::new(Cursor::new(bytes), "input", false, 0, 1, account.meter()).unwrap();
         loop {
             match reader.next(&|| false) {
                 Err(e) => {
@@ -90,7 +145,7 @@ fn read_errors_have_no_input_culprit_and_stops_do_not_read() {
         }
     }
     let account = Arc::new(Account::new(64 << 20));
-    let mut reader = Reader::new(Broken, "input", false, 0, account.meter()).unwrap();
+    let mut reader = Reader::new(Broken, "input", false, 0, 1, account.meter()).unwrap();
     assert_eq!(reader.next(&|| true).unwrap_err(), Error::Stopped);
     assert!(
         matches!(reader.next(&|| false), Err(Error::Run(f)) if f.reason == unityrs_batch::attempt::ReasonCode::HostIo)
@@ -108,6 +163,7 @@ fn member_indices_identities_and_digests_are_checked_without_a_table() {
         Cursor::new(candidate() + member + &summary()),
         "input",
         false,
+        1,
         1,
         account.meter(),
     )
@@ -138,6 +194,7 @@ fn member_indices_identities_and_digests_are_checked_without_a_table() {
             "input",
             false,
             1,
+            1,
             account.meter(),
         )
         .unwrap();
@@ -148,6 +205,7 @@ fn member_indices_identities_and_digests_are_checked_without_a_table() {
         Cursor::new(member.to_owned() + &summary()),
         "input",
         false,
+        1,
         1,
         account.meter(),
     )
@@ -160,7 +218,8 @@ fn exact_line_bound_failure_only_summary_and_repaired_text_are_preserved() {
     let account = Account::new(64 << 20);
     let bytes = " ".repeat(unityrs_batch::records::LINE - summary().len()) + &summary();
     assert_eq!(bytes.len(), unityrs_batch::records::LINE);
-    let mut reader = Reader::new(Cursor::new(bytes), "input", false, 0, account.meter()).unwrap();
+    let mut reader =
+        Reader::new(Cursor::new(bytes), "input", false, 0, 1, account.meter()).unwrap();
     assert!(matches!(
         reader.next(&|| false).unwrap(),
         Some(Row::Summary(_))
@@ -174,6 +233,7 @@ fn exact_line_bound_failure_only_summary_and_repaired_text_are_preserved() {
         "input",
         true,
         0,
+        1,
         account.meter(),
     )
     .unwrap();
@@ -186,6 +246,7 @@ fn exact_line_bound_failure_only_summary_and_repaired_text_are_preserved() {
         "input",
         true,
         0,
+        1,
         account.meter(),
     )
     .unwrap();
@@ -193,7 +254,8 @@ fn exact_line_bound_failure_only_summary_and_repaired_text_are_preserved() {
     drop(reader);
     let repaired = "�".repeat(1024);
     let bytes = candidate().replace("\\ud83d\\ude00\\u0000", &repaired) + &summary();
-    let mut reader = Reader::new(Cursor::new(bytes), "input", false, 0, account.meter()).unwrap();
+    let mut reader =
+        Reader::new(Cursor::new(bytes), "input", false, 0, 1, account.meter()).unwrap();
     assert!(
         matches!(reader.next(&|| false).unwrap(), Some(Row::Candidate(c)) if c.serialized_file == repaired && c.cut)
     );
@@ -203,13 +265,15 @@ fn exact_line_bound_failure_only_summary_and_repaired_text_are_preserved() {
 fn c1_code_points_are_valid_key_bytes_and_ascii_controls_are_rejected() {
     let account = Account::new(64 << 20);
     let bytes = candidate().replace("a/é", "a/\u{85}") + &summary();
-    let mut reader = Reader::new(Cursor::new(bytes), "input", false, 0, account.meter()).unwrap();
+    let mut reader =
+        Reader::new(Cursor::new(bytes), "input", false, 0, 1, account.meter()).unwrap();
     assert!(
         matches!(reader.next(&|| false).unwrap(), Some(Row::Candidate(c)) if c.key == "a/\u{85}")
     );
     drop(reader);
     let bytes = candidate().replace("a/é", "a/\\u007f") + &summary();
-    let mut reader = Reader::new(Cursor::new(bytes), "input", false, 0, account.meter()).unwrap();
+    let mut reader =
+        Reader::new(Cursor::new(bytes), "input", false, 0, 1, account.meter()).unwrap();
     assert_eq!(reader.next(&|| false).unwrap_err(), Error::internal());
 }
 
@@ -226,7 +290,7 @@ fn candidate_modes_follow_the_spec_including_luminance() {
             )
             + &summary();
         let mut reader =
-            Reader::new(Cursor::new(bytes), "input", false, 0, account.meter()).unwrap();
+            Reader::new(Cursor::new(bytes), "input", false, 0, 1, account.meter()).unwrap();
         let Some(Row::Candidate(c)) = reader.next(&|| false).unwrap() else {
             panic!("candidate")
         };

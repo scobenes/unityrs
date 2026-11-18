@@ -29,6 +29,12 @@ mod export;
 mod kept;
 pub mod keys;
 mod plan;
+#[cfg(feature = "gltf")]
+mod prefab;
+#[cfg(feature = "gltf")]
+pub use prefab::failure::export as classify_gltf;
+#[cfg(feature = "gltf")]
+pub use prefab::{Prefabs, Selection, cut_prefabs};
 pub mod read;
 pub mod recognize;
 pub mod register;
@@ -130,6 +136,8 @@ pub enum OutputKind {
     AtlasJson,
     /// `atlas_sprite`.
     AtlasSprite,
+    /// `glb`.
+    Glb,
 }
 
 impl OutputKind {
@@ -141,6 +149,7 @@ impl OutputKind {
             Self::Sprite => "sprite",
             Self::AtlasJson => "atlas_json",
             Self::AtlasSprite => "atlas_sprite",
+            Self::Glb => "glb",
         }
     }
 }
@@ -158,6 +167,8 @@ pub enum SkipOutput {
     AtlasSprite,
     /// `atlas`: an atlas's JSON and crops together.
     Atlas,
+    /// `glb`.
+    Glb,
 }
 
 impl SkipOutput {
@@ -170,6 +181,7 @@ impl SkipOutput {
             Self::AtlasJson => "atlas_json",
             Self::AtlasSprite => "atlas_sprite",
             Self::Atlas => "atlas",
+            Self::Glb => "glb",
         }
     }
 }
@@ -212,9 +224,29 @@ pub struct Rejected {
     pub cut: bool,
 }
 
+/// Stored row identity, separate from the resolved root and chosen key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrefabRow {
+    pub file_index: u32,
+    pub ordinal: u32,
+    pub serialized_file: RawStr,
+    pub path: Option<RawStr>,
+    pub root: Option<(RawStr, i64)>,
+}
+
+#[derive(Debug)]
+pub struct GlbDiagnostic {
+    #[cfg(feature = "gltf")]
+    pub resource: Option<unityrs_gltf::RendererResource>,
+    pub key: String,
+    pub node: usize,
+    pub reason: &'static str,
+}
+
 /// An output the cut made, handed to the sink as it is made.
 #[derive(Debug)]
 pub struct Output {
+    pub prefab: Option<PrefabRow>,
     /// Stable planning ordinal, independent of export grouping.
     pub plan_index: u64,
     /// Its key.
@@ -260,6 +292,13 @@ pub struct Skip {
     pub reason: Reason,
 }
 
+/// The prefab's stored row accompanies its skip without growing 2D rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrefabSkip {
+    pub skip: Skip,
+    pub row: PrefabRow,
+}
+
 /// How an atlas's sheet was found (section 5 step 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SheetBy {
@@ -288,6 +327,9 @@ pub struct SheetRow {
 /// sink.
 #[derive(Debug, Default)]
 pub struct Cut {
+    pub glb_diagnostics: Vec<GlbDiagnostic>,
+    pub prefab_plan_skips: Vec<PrefabSkip>,
+    pub prefab_export_skips: Vec<PrefabSkip>,
     /// The plan's skips, in plan order.
     pub plan_skips: Vec<Skip>,
     /// The export's skips, in export order; record order is the plan's,
@@ -332,6 +374,19 @@ impl From<Class> for Failure {
 /// own handle, plans and exports, every output to the sink. A failure the
 /// site rules make the input's, or the run's, or a stop, ends the cut.
 pub fn cut(ctx: Context<'_>, options: &Options) -> Result<Cut, Failure> {
+    cut_inner(
+        ctx,
+        options,
+        #[cfg(feature = "gltf")]
+        None,
+    )
+}
+
+fn cut_inner(
+    ctx: Context<'_>,
+    options: &Options,
+    #[cfg(feature = "gltf")] mut prefabs: Option<Prefabs<'_, '_>>,
+) -> Result<Cut, Failure> {
     let Context {
         registered,
         meter,
@@ -355,7 +410,16 @@ pub fn cut(ctx: Context<'_>, options: &Options) -> Result<Cut, Failure> {
     let mut attempt = attempt::Attempt::new(seam, options, input, keys, sink)?;
     let files = attempt.select()?;
     let planned = attempt.plan(files.as_slice())?;
+    #[cfg(feature = "gltf")]
+    let prefab_plan = prefabs
+        .as_mut()
+        .map(|prefabs| attempt.plan_prefabs(files.as_slice(), planned.next_ordinal, prefabs))
+        .transpose()?;
     attempt.export(&planned)?;
+    #[cfg(feature = "gltf")]
+    if let Some((prefabs, plan)) = prefabs.as_ref().zip(prefab_plan) {
+        attempt.export_prefabs(prefabs, plan)?;
+    }
     drop(planned);
     drop(files);
     Ok(attempt.finish())

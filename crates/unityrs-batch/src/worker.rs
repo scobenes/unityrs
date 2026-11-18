@@ -291,6 +291,11 @@ fn execute(context: &Context, job: &Dispatch) -> Result<End, ()> {
                     hooks: &hooks,
                 },
                 context.memory.attempts.get(job.id as usize).ok_or(())?,
+                context
+                    .extraction
+                    .glb
+                    .as_ref()
+                    .zip(spec.outputs.glb.as_ref()),
             )))
         }
     }

@@ -186,6 +186,7 @@ pub(super) fn diagnostic(
     engine.records(|work| {
         writer.append(
             Record::Diagnostic(records::Diagnostic {
+                glb: None,
                 kind,
                 input,
                 bundle,

@@ -88,6 +88,8 @@ impl AtlasPlan {
 
 /// The plan, and its strings' charge, dropped with it.
 pub(super) struct Planned {
+    #[cfg(feature = "gltf")]
+    pub next_ordinal: u64,
     pub textures: MeteredVec<TexturePlan>,
     pub sprites: super::sprites::Sprites,
     pub atlases: MeteredVec<AtlasPlan>,
@@ -218,19 +220,24 @@ impl Attempt<'_> {
     pub fn plan(&mut self, files: &[Arc<SerializedFile>]) -> Result<Planned, Failure> {
         let meter = self.seam.meter;
         let mut behaviours: MeteredVec<ObjectRef> = MeteredVec::new(meter);
-        for f in files {
-            for obj in f.objects() {
-                match obj.class_id() {
-                    TEXTURE_2D => {
-                        let texs = &mut self.texs;
-                        self.seam
-                            .probe(|| table::push(texs, Tex::new(obj)))
-                            .map_err(Failure::from)?;
+        if self.options.texture_key.is_some()
+            || self.options.sprites_key.is_some()
+            || self.options.atlases
+        {
+            for f in files {
+                for obj in f.objects() {
+                    match obj.class_id() {
+                        TEXTURE_2D => {
+                            let texs = &mut self.texs;
+                            self.seam
+                                .probe(|| table::push(texs, Tex::new(obj)))
+                                .map_err(Failure::from)?;
+                        }
+                        MONO_BEHAVIOUR if self.options.atlases => {
+                            self.charged(|| table::push(&mut behaviours, obj))?;
+                        }
+                        _ => {}
                     }
-                    MONO_BEHAVIOUR if self.options.atlases => {
-                        self.charged(|| table::push(&mut behaviours, obj))?;
-                    }
-                    _ => {}
                 }
             }
         }
@@ -275,6 +282,8 @@ impl Attempt<'_> {
         drop(behaviours);
         let strings = std::mem::replace(&mut self.plan_strings, Charge::zero(meter));
         Ok(Planned {
+            #[cfg(feature = "gltf")]
+            next_ordinal: ordinal,
             textures,
             sprites,
             atlases,

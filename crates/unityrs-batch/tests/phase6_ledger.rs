@@ -76,6 +76,7 @@ fn commit_empty_inputs(
             bundle.id(),
             false,
             u64::try_from(spec.archives.len()).unwrap(),
+            spec.spec_version,
             account.meter(),
         )
         .unwrap();

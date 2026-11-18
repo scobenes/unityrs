@@ -75,6 +75,11 @@ const CALLS: &[(&str, Pool, &[&str])] = &[
         Pool::Own,
         &[SWEEP, FETCH, CALLERS],
     ),
+    (
+        "Environment::load_dependency_with_handle",
+        Pool::Own,
+        &["load_dependency_with_handle_retries_each_pool_refusal"],
+    ),
     ("Environment::get_cab", Pool::Own, &[SWEEP, RESOLVER]),
     ("Environment::get_cab_held", Pool::Own, &[SWEEP]),
     ("Environment::find_file", Pool::Own, &[SWEEP, RESOLVER]),

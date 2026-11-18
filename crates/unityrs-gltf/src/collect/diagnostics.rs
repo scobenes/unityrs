@@ -9,7 +9,9 @@ pub(crate) fn record(
 ) -> Result<()> {
     scene.collection_issues.push(crate::CollectionIssue {
         node,
+        resource: None,
         reason,
+        dropped_renderer: false,
         count,
     })?;
     // unresolved_skin already carries its detailed reason at the call site.
@@ -69,7 +71,14 @@ pub(crate) fn renderer(
         key,
         reason.as_bytes(),
     )?;
-    record(scene, node, reason, 1, meter)
+    record(scene, node, reason, 1, meter)?;
+    scene
+        .collection_issues
+        .as_mut_slice()
+        .last_mut()
+        .ok_or_else(|| invalid("renderer diagnostic"))?
+        .dropped_renderer = true;
+    Ok(())
 }
 
 /// Repeated markers form a sorted, unique semicolon-separated set. Per-renderer

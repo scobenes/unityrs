@@ -20,6 +20,7 @@ pub enum Kind {
     AtlasJson,
     AtlasSprite,
     Atlas,
+    Glb,
 }
 fn kind(text: &str) -> Result<Kind, Error> {
     match text {
@@ -28,11 +29,13 @@ fn kind(text: &str) -> Result<Kind, Error> {
         "atlas_json" => Ok(Kind::AtlasJson),
         "atlas_sprite" => Ok(Kind::AtlasSprite),
         "atlas" => Ok(Kind::Atlas),
+        "glb" => Ok(Kind::Glb),
         _ => Err(Error::internal()),
     }
 }
 #[derive(Debug)]
 pub struct Candidate<'a> {
+    pub prefab: Option<super::Prefab<&'a str>>,
     pub key: &'a str,
     pub unit: Option<&'a str>,
     pub input: &'a str,
@@ -60,6 +63,7 @@ pub struct Member<'a> {
 }
 #[derive(Debug)]
 pub struct Skip<'a> {
+    pub prefab: Option<super::Prefab<&'a str>>,
     pub input: &'a str,
     pub serialized_file: &'a str,
     pub path_id: i64,
@@ -72,6 +76,7 @@ pub struct Skip<'a> {
 }
 #[derive(Debug)]
 pub struct Diagnostic<'a> {
+    pub glb: Option<super::GlbDiagnostic<'a>>,
     pub kind: super::DiagnosticKind,
     pub input: &'a str,
     pub bundle: Option<&'a str>,
@@ -103,6 +108,7 @@ pub struct Reader<'a, R> {
     expected: &'a str,
     failed_input: bool,
     archives: u64,
+    spec_version: u64,
     input: Buffer<u8>,
     position: usize,
     available: usize,
@@ -120,6 +126,7 @@ impl<'a, R: Read> Reader<'a, R> {
         expected: &'a str,
         failed_input: bool,
         archives: u64,
+        spec_version: u64,
         meter: &Arc<Meter>,
     ) -> Result<Self, Error> {
         let mut input = Buffer::new(meter, BUFFER)?;
@@ -129,6 +136,7 @@ impl<'a, R: Read> Reader<'a, R> {
             expected,
             failed_input,
             archives,
+            spec_version,
             input,
             position: 0,
             available: 0,
@@ -236,6 +244,17 @@ impl<'a, R: Read> Reader<'a, R> {
             return Err(Error::internal());
         }
         let row = decode(&fields, &self.line)?;
+        if self.spec_version < 3 {
+            let glb = match &row {
+                Row::Candidate(c) => c.kind == Kind::Glb,
+                Row::Skip(s) => s.output == Kind::Glb,
+                Row::Diagnostic(d) => matches!(d.kind, super::DiagnosticKind::GlbDegraded),
+                _ => false,
+            };
+            if glb {
+                return Err(Error::internal());
+            }
+        }
         match &row {
             Row::Candidate(c) => {
                 self.last_key.clear();
@@ -314,24 +333,28 @@ fn key(text: &str) -> Result<&str, Error> {
     Ok(text)
 }
 fn candidate<'a>(f: &Fields, b: &'a [u8]) -> Result<Candidate<'a>, Error> {
-    f.shape(&[
-        "type",
-        "key",
-        "unit",
-        "input",
-        "serialized_file",
-        "kind",
-        "path_id",
-        "md5",
-        "crc32",
-        "visible_hash",
-        "mode",
-        "size",
-        "etag",
-        "file",
-        "cut",
-    ])?;
     let kind = kind(f.text(b, "kind")?)?;
+    let is_glb = kind == Kind::Glb;
+    f.shape_with(
+        &[
+            "type",
+            "key",
+            "unit",
+            "input",
+            "serialized_file",
+            "kind",
+            "path_id",
+            "md5",
+            "crc32",
+            "visible_hash",
+            "mode",
+            "size",
+            "etag",
+            "file",
+            "cut",
+        ],
+        if is_glb { super::PREFAB_FIELDS } else { &[] },
+    )?;
     if kind == Kind::Atlas {
         return Err(Error::internal());
     }
@@ -357,9 +380,21 @@ fn candidate<'a>(f: &Fields, b: &'a [u8]) -> Result<Candidate<'a>, Error> {
     if (size > 16 * 1024 * 1024) != etag.is_some() {
         return Err(Error::internal());
     }
+    let output_key = key(f.text(b, "key")?)?;
+    let unit = f.optional_text(b, "unit")?.map(key).transpose()?;
+    let prefab = is_glb.then(|| prefab(f, b)).transpose()?;
+    if is_glb
+        && (unit != Some(output_key)
+            || mode.is_some()
+            || prefab.and_then(|p| p.root)
+                != Some((f.text(b, "serialized_file")?, f.number(b, "path_id")?)))
+    {
+        return Err(Error::internal());
+    }
     Ok(Candidate {
-        key: key(f.text(b, "key")?)?,
-        unit: f.optional_text(b, "unit")?.map(key).transpose()?,
+        prefab,
+        key: output_key,
+        unit,
         input: f.text(b, "input")?,
         serialized_file: f.text(b, "serialized_file")?,
         kind,
@@ -477,18 +512,23 @@ fn decode<'a>(f: &Fields, b: &'a [u8]) -> Result<Row<'a>, Error> {
         "member" => member(f, b).map(Row::Member),
         "input_summary" => summary(f, b).map(Row::Summary),
         "skip" => {
-            f.shape(&[
-                "type",
-                "input",
-                "serialized_file",
-                "path_id",
-                "class",
-                "output",
-                "sprite",
-                "reason",
-                "detail",
-                "cut",
-            ])?;
+            let output = kind(f.text(b, "output")?)?;
+            let is_glb = output == Kind::Glb;
+            f.shape_with(
+                &[
+                    "type",
+                    "input",
+                    "serialized_file",
+                    "path_id",
+                    "class",
+                    "output",
+                    "sprite",
+                    "reason",
+                    "detail",
+                    "cut",
+                ],
+                if is_glb { super::PREFAB_FIELDS } else { &[] },
+            )?;
             let class = f.text(b, "class")?;
             if class.len() > 64 || !class.bytes().all(|b| b.is_ascii_graphic()) {
                 return Err(Error::internal());
@@ -501,31 +541,75 @@ fn decode<'a>(f: &Fields, b: &'a [u8]) -> Result<Row<'a>, Error> {
                 serialized_file: f.text(b, "serialized_file")?,
                 path_id: f.number(b, "path_id")?,
                 class,
-                output: kind(f.text(b, "output")?)?,
+                output,
+                prefab: is_glb.then(|| prefab(f, b)).transpose()?,
                 sprite: f.optional_number(b, "sprite")?,
                 reason: f.text(b, "reason")?,
                 detail: f.optional_text(b, "detail")?,
                 cut: f.boolean("cut")?,
             }))
         }
-        "diagnostic" => {
-            f.shape(&["type", "kind", "input", "bundle", "name", "cut"])?;
-            let kind = match f.text(b, "kind")? {
-                "same_named_cab" => super::DiagnosticKind::SameNamedCab,
-                "undeclared_dependency" => super::DiagnosticKind::UndeclaredDependency,
-                "nested_container" => super::DiagnosticKind::NestedContainer,
-                _ => return Err(Error::internal()),
-            };
-            Ok(Row::Diagnostic(Diagnostic {
-                kind,
-                input: f.text(b, "input")?,
-                bundle: f.optional_text(b, "bundle")?,
-                name: f.text(b, "name")?,
-                cut: f.boolean("cut")?,
-            }))
-        }
+        "diagnostic" => diagnostic(f, b).map(Row::Diagnostic),
         _ => Err(Error::internal()),
     }
+}
+
+fn diagnostic<'a>(f: &Fields, b: &'a [u8]) -> Result<Diagnostic<'a>, Error> {
+    let kind = match f.text(b, "kind")? {
+        "same_named_cab" => super::DiagnosticKind::SameNamedCab,
+        "undeclared_dependency" => super::DiagnosticKind::UndeclaredDependency,
+        "nested_container" => super::DiagnosticKind::NestedContainer,
+        "glb_degraded" => super::DiagnosticKind::GlbDegraded,
+        _ => return Err(Error::internal()),
+    };
+    let is_glb = matches!(kind, super::DiagnosticKind::GlbDegraded);
+    let has_resource = is_glb && f.contains("renderer_path_id");
+    let core = ["type", "kind", "input", "bundle", "name", "cut"];
+    let glb_fields = [
+        "type", "kind", "input", "bundle", "name", "cut", "key", "node", "reason",
+    ];
+    if is_glb {
+        f.shape_with(
+            &glb_fields,
+            if has_resource {
+                super::RESOURCE_FIELDS
+            } else {
+                &[]
+            },
+        )?;
+    } else {
+        f.shape(&core)?;
+    }
+    let glb = if is_glb {
+        let resource = if has_resource {
+            Some(unityrs_gltf::RendererResource {
+                renderer_path_id: f.number(b, "renderer_path_id")?,
+                owner_path_id: f.number(b, "resource_owner_path_id")?,
+                pointer: unityrs_core::env::PPtr {
+                    file_id: f.number(b, "resource_file_id")?,
+                    path_id: f.number(b, "resource_path_id")?,
+                },
+            })
+        } else {
+            None
+        };
+        Some(super::GlbDiagnostic {
+            key: key(f.text(b, "key")?)?,
+            node: f.number(b, "node")?,
+            reason: f.text(b, "reason")?,
+            resource,
+        })
+    } else {
+        None
+    };
+    Ok(Diagnostic {
+        glb,
+        kind,
+        input: f.text(b, "input")?,
+        bundle: f.optional_text(b, "bundle")?,
+        name: f.text(b, "name")?,
+        cut: f.boolean("cut")?,
+    })
 }
 
 fn input_reason(s: &str) -> bool {
@@ -554,4 +638,37 @@ fn input_reason(s: &str) -> bool {
     inner
         .match_indices(", ")
         .any(|(i, _)| inner.get(i + 2..).is_some_and(plain))
+}
+
+pub(crate) fn prefab<'a>(
+    fields: &Fields,
+    bytes: &'a [u8],
+) -> Result<super::Prefab<&'a str>, Error> {
+    let root = match (
+        fields.optional_text(bytes, "root_serialized_file")?,
+        fields.optional_number(bytes, "root_path_id")?,
+    ) {
+        (None, None) => None,
+        (Some(file), Some(id)) => Some((file, id)),
+        _ => return Err(Error::internal()),
+    };
+    let p = super::Prefab {
+        file_index: fields.number(bytes, "container_file_index")?,
+        row: fields.number(bytes, "container_row")?,
+        container_file: fields.text(bytes, "container_file")?,
+        container_path: fields.optional_text(bytes, "container_path")?,
+        root,
+    };
+    if [
+        Some(p.container_file),
+        p.container_path,
+        p.root.map(|root| root.0),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|text| text.len() > 3072)
+    {
+        return Err(Error::internal());
+    }
+    Ok(p)
 }

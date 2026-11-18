@@ -70,6 +70,12 @@ fn located(spec: &Spec, site: TemplateSite) -> Option<(&str, TemplateKind, bool,
             false,
             pointer(&["outputs", "atlases", "json_key"]),
         ),
+        TemplateSite::Prefab => (
+            o.glb.as_ref()?.prefab_key_template.as_str(),
+            TemplateKind::Glb,
+            false,
+            pointer(&["outputs", "glb", "prefab_key_template"]),
+        ),
         TemplateSite::Member { archive, member } => {
             let m = spec.archives.get(archive)?.members.get(member)?;
             let kind = match m.kind {
@@ -107,6 +113,15 @@ pub(super) fn key(spec: &Spec, sites: &Sites) -> Result<(), BadSpec> {
                 for (key, _) in spec.prefer() {
                     if let Err(r) = keys::check_prefixed(key.as_bytes(), prefix, &mut scratch) {
                         return Err(refused(r, pointer(&["prefer", key])));
+                    }
+                }
+            }
+            KeySite::Prefab => {
+                if let Some(glb) = &spec.outputs.glb {
+                    for key in &glb.keys {
+                        if let Err(r) = keys::check_prefixed(key.as_bytes(), prefix, &mut scratch) {
+                            return Err(refused(r, super::super::prefab::key_pointer(key)));
+                        }
                     }
                 }
             }

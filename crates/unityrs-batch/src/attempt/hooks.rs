@@ -106,6 +106,9 @@ impl ngui::Hooks for Engine<'_> {
     fn allocator_refusals(&self) -> u64 {
         self.budget.allocator_refusals()
     }
+    fn export_work_remaining(&self) -> u64 {
+        self.work.borrow().remaining()
+    }
     fn export_work(&self, bytes: u64) -> Result<(), Reason> {
         self.work
             .borrow_mut()

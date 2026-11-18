@@ -63,7 +63,7 @@ fn an_exit_line_holds_every_field_in_order() {
     let line = s.line(Some(&exit));
     assert_eq!(
         line,
-        "{\"p\":1,\"type\":\"exit\",\"seq\":0,\"ms\":12,\"phase\":\"validate\",\
+        "{\"p\":2,\"type\":\"exit\",\"seq\":0,\"ms\":12,\"phase\":\"validate\",\
          \"inputs\":{\"total\":3,\"complete\":0,\"failed\":0,\"running\":0,\"queued\":3,\"not_run\":0},\
          \"transfers\":{\"stages_active\":0,\"stages_done\":0,\"stages_failed\":0,\
          \"uploads_active\":0,\"uploads_done\":0,\"uploads_failed\":0},\

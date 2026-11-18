@@ -84,6 +84,8 @@ pub(super) enum TemplateSite {
     SpriteKey,
     /// `outputs.atlases.json_key`.
     JsonKey,
+    /// `outputs.glb.prefab_key_template`.
+    Prefab,
     /// `archives[archive].members[member].path`.
     Member { archive: usize, member: usize },
 }
@@ -93,6 +95,8 @@ pub(super) enum TemplateSite {
 pub(super) enum KeySite {
     /// `prefer`'s keys, each in its order.
     Prefer,
+    /// `outputs.glb.profile.clips_by_prefab` keys.
+    Prefab,
     /// `archives[i].key`.
     Archive(usize),
     /// The object store sink's `prefix`.
@@ -413,6 +417,7 @@ impl<'a> Builder<'a> {
             textures: None,
             sprites: None,
             atlases: None,
+            glb: None,
             formats: Formats::V1,
             image: Image::Png,
         };
@@ -428,6 +433,11 @@ impl<'a> Builder<'a> {
                         out.sprites = Some(b.template_object(value)?);
                     }
                     "atlases" => out.atlases = Some(b.atlases(value)?),
+                    "glb" => {
+                        b.sites.templates.push(TemplateSite::Prefab);
+                        b.sites.keys.push(KeySite::Prefab);
+                        out.glb = Some(super::prefab::build(value, &b.ptr)?);
+                    }
                     "formats" => out.formats = b.formats(value)?,
                     "image" => {
                         out.image = match value {

@@ -613,6 +613,18 @@ impl Body<'_> {
         });
         handover.phase = Phase::Winners;
         self.options.observer.seam(Seam::Selection);
+        if let Some(missing) = facts
+            .inputs
+            .iter()
+            .filter_map(|input| input.received.and_then(|attempt| attempt.missing_prefab))
+            .min()
+        {
+            if !control.stopped() {
+                handover.cause = FinishCause::UnknownPrefab(missing);
+            }
+            stamp(handover, Phase::Winners);
+            return Ok(());
+        }
         let Some((workspace, handoff)) = phases::select(
             &facts,
             &started,

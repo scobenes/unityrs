@@ -115,7 +115,7 @@ fn normal_cli_replays_the_versioned_synthetic_goldens() {
             assert_ne!(lines.len(), 0);
             for (index, line) in lines.iter().enumerate() {
                 assert_eq!(line["seq"], index);
-                assert_eq!(line["p"], 1);
+                assert_eq!(line["p"], 2);
                 let inputs = &line["inputs"];
                 let sum: u64 = ["complete", "failed", "running", "queued", "not_run"]
                     .iter()

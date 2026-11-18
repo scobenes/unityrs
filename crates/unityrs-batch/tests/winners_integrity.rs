@@ -102,6 +102,7 @@ fn maximum_repaired_candidate_and_all_projection_frames_fit_twice_counted_work()
         writer
             .append(
                 Record::Candidate(records::Candidate {
+                    prefab: None,
                     key: k,
                     unit: Some(&root),
                     input: "a",
@@ -248,5 +249,37 @@ fn empty_and_failure_only_inputs_with_256_archives_leave_no_b6b_spool_files() {
         assert_eq!(counter.used(), baseline);
         assert!(counter.peak() - baseline <= 4096);
         assert_eq!(account.snapshot().input.used, 0);
+    }
+}
+
+#[test]
+fn legacy_committed_streams_reject_glb_records() {
+    let scratch = Scratch::new("winner-legacy-glb");
+    let mut case = Case::new(vec![candidate("a", "a.glb", Some("a.glb"), 1)]);
+    case.glbs.insert(("a".into(), "a.glb".into()));
+    let mut spec = case.spec().spec;
+    let counter = Counter::new(u64::MAX, 0, 4096).unwrap();
+    let account = Account::new(64 << 20);
+    let (commits, _) = case.commit(&scratch, &counter, &account, &spec);
+    let mut workspace = Workspace::create(scratch.join("w"), counter, Arc::new(Host)).unwrap();
+    for version in [1, 2, 3] {
+        spec.spec_version = version;
+        let prepared = Prepared::from_spec(&spec).unwrap();
+        let result = winners::run(&mut Context {
+            spec: &spec,
+            prepared: &prepared,
+            inputs: &commits,
+            workspace: &mut workspace,
+            account: &account,
+            options: Options::default(),
+            stopped: &|| false,
+            hooks: &NoHooks,
+            observer: &winners::NoObserver,
+        });
+        if version < 3 {
+            assert_eq!(result.unwrap_err(), Error::internal());
+        } else {
+            assert!(result.is_ok());
+        }
     }
 }

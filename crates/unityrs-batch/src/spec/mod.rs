@@ -20,6 +20,8 @@ pub mod read;
 pub mod store;
 
 mod build;
+mod prefab;
+pub use prefab::Glb;
 pub(crate) mod formats;
 pub(crate) mod node;
 mod parse;
@@ -33,14 +35,14 @@ use crate::view::Graph;
 
 /// The highest `spec_version` this crate reads; it reads every version
 /// from 1 up to it.
-pub const SPEC_VERSION: u64 = 2;
+pub const SPEC_VERSION: u64 = 3;
 
-/// `docs/batch/spec-v2.schema.json`, byte for byte, the schema of the
+/// `docs/batch/spec-v3.schema.json`, byte for byte, the schema of the
 /// highest version: what `unityrs batch --schema` prints. `tests/schema.rs`
 /// holds it, and version 1's file, to the parser's tables.
 pub const SCHEMA: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/batch/spec-v2.schema.json"
+    "/../../docs/batch/spec-v3.schema.json"
 ));
 
 /// The largest `JOB.json`, in bytes (`docs/BATCH_SPEC.md` section 1).

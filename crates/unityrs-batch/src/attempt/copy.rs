@@ -27,6 +27,7 @@ pub(super) fn output(
     engine.records(|work| {
         writer.append(
             Record::Candidate(records::Candidate {
+                prefab: output.prefab.as_ref().map(prefab),
                 key: &output.key,
                 unit: output.unit.as_deref(),
                 input: args.view.input.id,
@@ -86,6 +87,7 @@ pub(super) fn skip(
     writer: &mut Writer,
     end: &mut AttemptEnd,
     skip: &ngui::Skip,
+    row: Option<&ngui::PrefabRow>,
 ) -> Result<(), Failure> {
     engine.check()?;
     let code = skip_code(&skip.reason.reason).ok_or_else(internal)?;
@@ -98,6 +100,7 @@ pub(super) fn skip(
         writer.append(
             Record::Skip(records::Skip {
                 input,
+                prefab: row.map(prefab),
                 serialized_file: Text::Raw(skip.serialized_file.as_bytes()),
                 path_id: skip.path_id,
                 class: &skip.class,
@@ -110,6 +113,49 @@ pub(super) fn skip(
                     .as_deref()
                     .map(|value| Text::Prepared(value, skip.reason.cut)),
                 cut: skip.reason.cut,
+            }),
+            work,
+        )
+    })
+}
+
+fn prefab(row: &ngui::PrefabRow) -> records::Prefab<Text<'_>> {
+    records::Prefab {
+        file_index: row.file_index,
+        row: row.ordinal,
+        container_file: Text::Raw(row.serialized_file.as_bytes()),
+        container_path: row.path.as_ref().map(|path| Text::Raw(path.as_bytes())),
+        root: row
+            .root
+            .as_ref()
+            .map(|(file, id)| (Text::Raw(file.as_bytes()), *id)),
+    }
+}
+
+pub(super) fn degraded(
+    input: &str,
+    engine: &Engine<'_>,
+    writer: &mut Writer,
+    end: &mut AttemptEnd,
+    issue: &ngui::GlbDiagnostic,
+) -> Result<(), Failure> {
+    engine.check()?;
+    end.code = end.code.worst(crate::reason::Code::CompleteWithSkips);
+    end.diagnostics = end.diagnostics.checked_add(1).ok_or_else(internal)?;
+    engine.records(|work| {
+        writer.append(
+            Record::Diagnostic(records::Diagnostic {
+                kind: records::DiagnosticKind::GlbDegraded,
+                input,
+                bundle: None,
+                name: Text::from(issue.reason),
+                glb: Some(records::GlbDiagnostic {
+                    resource: issue.resource,
+                    key: &issue.key,
+                    node: issue.node as u64,
+                    reason: issue.reason,
+                }),
+                cut: false,
             }),
             work,
         )

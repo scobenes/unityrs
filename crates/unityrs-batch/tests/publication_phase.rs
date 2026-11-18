@@ -30,6 +30,7 @@ fn capacity_wait_is_not_a_refusal_and_phase_audits_are_distinct() {
 fn committed_failures_use_receipts_and_never_probe_payload_presence() {
     let scratch = Scratch::new("committed-receipts");
     let facts = AttemptFacts {
+        missing_prefab: None,
         state: unityrs_batch::attempt::State::Failed,
         figures: Figures::default(),
         spooled_part: 0,

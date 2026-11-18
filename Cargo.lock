@@ -1555,6 +1555,8 @@ dependencies = [
  "tokio-rustls",
  "unityrs-core",
  "unityrs-export",
+ "unityrs-gltf",
+ "unityrs-scene",
  "unityrs-testkit",
  "url",
  "webpki-roots",

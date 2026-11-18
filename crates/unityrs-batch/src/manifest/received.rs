@@ -139,6 +139,7 @@ pub(super) fn inputs(
             id,
             cx.inputs.failed(index)?,
             u64::try_from(cx.facts.spec.archives.len()).map_err(|_| Error::internal())?,
+            cx.facts.spec.spec_version,
             cx.account.meter(),
         )?;
         while let Some(row) = reader.next(cx.stopped)? {
@@ -236,27 +237,36 @@ fn skip(json: &mut Json, s: &read::Skip<'_>) -> Result<(), Error> {
             read::Kind::AtlasJson => "atlas_json",
             read::Kind::AtlasSprite => "atlas_sprite",
             read::Kind::Atlas => "atlas",
+            read::Kind::Glb => "glb",
         }),
     )?;
     json.optional("sprite", s.sprite)?;
     json.text("reason", Some(s.reason))?;
     json.text("detail", s.detail)?;
+    json.prefab(s.prefab)?;
     json.value("cut", s.cut)
 }
 fn diagnostic(json: &mut Json, d: &read::Diagnostic<'_>) -> Result<(), Error> {
-    json.start("kind", diagnostic_name(d.kind))?;
+    json.start("kind", d.kind.name())?;
     json.text("input", Some(d.input))?;
     json.text("bundle", d.bundle)?;
     json.text("name", Some(d.name))?;
-    json.value("cut", d.cut)
-}
-fn diagnostic_name(kind: crate::records::DiagnosticKind) -> &'static str {
-    use crate::records::DiagnosticKind;
-    match kind {
-        DiagnosticKind::SameNamedCab => "same_named_cab",
-        DiagnosticKind::UndeclaredDependency => "undeclared_dependency",
-        DiagnosticKind::NestedContainer => "nested_container",
+    if let Some(glb) = d.glb {
+        json.text("key", Some(glb.key))?;
+        json.value("node", glb.node)?;
+        json.text("reason", Some(glb.reason))?;
+        if let Some(resource) = glb.resource {
+            for (field, value) in crate::records::RESOURCE_FIELDS.iter().zip([
+                resource.renderer_path_id,
+                resource.owner_path_id,
+                i64::from(resource.pointer.file_id),
+                resource.pointer.path_id,
+            ]) {
+                json.value(field, value)?;
+            }
+        }
     }
+    json.value("cut", d.cut)
 }
 fn expected(reason: &str) -> bool {
     crate::attempt::classify::skip_code(reason) == Some(crate::reason::Code::Complete)

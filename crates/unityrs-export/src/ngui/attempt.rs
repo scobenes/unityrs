@@ -69,20 +69,23 @@ pub(super) struct Site<'o> {
 }
 
 /// The records, as the cut grows them.
-struct Records {
+pub(super) struct Records {
     plan_skips: MeteredVec<Skip>,
+    pub(super) glb_diagnostics: MeteredVec<super::GlbDiagnostic>,
+    pub(super) prefab_plan_skips: MeteredVec<super::PrefabSkip>,
+    pub(super) prefab_export_skips: MeteredVec<super::PrefabSkip>,
     export_skips: MeteredVec<Skip>,
     sheets: MeteredVec<SheetRow>,
     nested: MeteredVec<RawStr>,
     /// The skip rows' strings.
-    strings: Charge,
+    pub(super) strings: Charge,
     unresolved: u64,
 }
 
 /// The key scratch: an expansion, and a key joined to the sink's prefix,
 /// each at most [`STOP`] bytes, allocated once after their charge.
-struct Scratch {
-    key: Vec<u8>,
+pub(super) struct Scratch {
+    pub(super) key: Vec<u8>,
     /// How many of `key`'s last bytes start a code point the stop cut.
     tail: usize,
     full: Vec<u8>,
@@ -120,6 +123,7 @@ pub(super) fn expand(
             Var::Name | Var::SafeName => vars.name,
             Var::Atlas | Var::SafeAtlas => vars.atlas,
             Var::Sprite | Var::SafeSprite => vars.sprite,
+            Var::ContainerPath | Var::SafeContainerPath => &[],
         },
         out,
     )
@@ -130,7 +134,7 @@ pub(super) struct Attempt<'a> {
     pub seam: Seam<'a>,
     pub options: &'a Options,
     pub input: &'a str,
-    keys: &'a mut KeyTable,
+    pub(super) keys: &'a mut KeyTable,
     sink: &'a mut dyn FnMut(Output) -> Result<(), Failure>,
     pub reader: Reader,
     pub texs: MeteredVec<Tex>,
@@ -147,8 +151,8 @@ pub(super) struct Attempt<'a> {
     late_named: usize,
     /// Whether the export runs: its skips are recorded apart.
     pub exporting: bool,
-    records: Records,
-    scratch: Scratch,
+    pub(super) records: Records,
+    pub(super) scratch: Scratch,
     /// The plan's strings (keys, member paths), until the plan is dropped.
     pub plan_strings: Charge,
 }
@@ -194,6 +198,9 @@ impl<'a> Attempt<'a> {
             exporting: false,
             records: Records {
                 plan_skips: MeteredVec::new(meter),
+                glb_diagnostics: MeteredVec::new(meter),
+                prefab_plan_skips: MeteredVec::new(meter),
+                prefab_export_skips: MeteredVec::new(meter),
                 export_skips: MeteredVec::new(meter),
                 sheets: MeteredVec::new(meter),
                 nested: MeteredVec::new(meter),
@@ -209,6 +216,9 @@ impl<'a> Attempt<'a> {
     pub fn finish(self) -> Cut {
         let Records {
             plan_skips,
+            glb_diagnostics,
+            prefab_plan_skips,
+            prefab_export_skips,
             export_skips,
             sheets,
             nested,
@@ -225,7 +235,16 @@ impl<'a> Attempt<'a> {
         strings.absorb(c);
         let (nested_containers, c) = nested.into_parts();
         strings.absorb(c);
+        let (glb_diagnostics, charge) = glb_diagnostics.into_parts();
+        strings.absorb(charge);
+        let (prefab_plan_skips, charge) = prefab_plan_skips.into_parts();
+        strings.absorb(charge);
+        let (prefab_export_skips, charge) = prefab_export_skips.into_parts();
+        strings.absorb(charge);
         Cut {
+            glb_diagnostics,
+            prefab_plan_skips,
+            prefab_export_skips,
             plan_skips,
             export_skips,
             unresolved_scripts: unresolved,

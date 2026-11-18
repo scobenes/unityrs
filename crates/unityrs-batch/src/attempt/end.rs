@@ -132,6 +132,7 @@ pub struct AttemptEnd {
     pub outputs: u64,
     pub skips_expected: u64,
     pub diagnostics: u64,
+    pub missing_prefab: Option<u32>,
     pub accounts: Snapshot,
     /// False after a leak, even if another run failure also occurred.
     pub slot_releasable: bool,
@@ -153,6 +154,7 @@ impl AttemptEnd {
             outputs: 0,
             skips_expected: 0,
             diagnostics: 0,
+            missing_prefab: None,
             accounts: Snapshot::default(),
             slot_releasable: true,
         }
