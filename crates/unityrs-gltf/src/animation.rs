@@ -287,6 +287,16 @@ fn dot(a: [f64; 4], b: [f64; 4]) -> f64 {
     a.into_iter().zip(b).map(|(a, b)| a * b).sum()
 }
 
+/// Choose the sign of a rounded XYZW key using the writer's exact dot sign.
+#[must_use]
+pub fn align_rotation(previous: [f32; 4], current: [f32; 4]) -> [f32; 4] {
+    if negative_rotation_dot(previous.map(f64::from), current.map(f64::from)) {
+        current.map(|value| -value)
+    } else {
+        current
+    }
+}
+
 fn negative_rotation_dot(a: [f64; 4], b: [f64; 4]) -> bool {
     // The f32 products are exact in f64. Grow a nonoverlapping expansion
     // with TwoSum so the most significant nonzero component gives the sign.

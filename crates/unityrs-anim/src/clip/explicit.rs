@@ -123,6 +123,70 @@ fn clamp(raw: i32) -> Result<(), AnimError> {
 }
 
 impl Curve {
+    pub(crate) fn key_times(&self) -> impl Iterator<Item = f64> + '_ {
+        self.keys.as_slice().iter().map(|key| key.time)
+    }
+
+    pub(crate) fn width(&self) -> usize {
+        self.width
+    }
+
+    pub(crate) fn segment(
+        &self,
+        axis: usize,
+        time: f64,
+        left_side: bool,
+        meter: &Meter,
+    ) -> Result<crate::ScalarSegment, AnimError> {
+        use crate::ScalarSegment as S;
+        let keys = self.keys.as_slice();
+        meter.count_decode(work_for_search(keys.len()) + 8)?;
+        let next = keys.partition_point(|key| key.time < time || (!left_side && key.time <= time));
+        let Some(left) = next.checked_sub(1).and_then(|index| keys.get(index)) else {
+            if keys.first().is_some_and(|key| time < key.time) {
+                clamp(self.pre)?;
+            }
+            let first = keys.first().ok_or(AnimError::InvalidCurveKeys)?;
+            return Ok(S::Constant(component(&first.value, axis)?));
+        };
+        let a = component(&left.value, axis)?;
+        let Some(right) = keys.get(next) else {
+            if time > left.time {
+                clamp(self.post)?;
+            }
+            return Ok(S::Constant(a));
+        };
+        let values = [a, component(&right.value, axis)?];
+        let slopes = [
+            component(&left.outgoing, axis)?,
+            component(&right.incoming, axis)?,
+        ];
+        let key = left.time;
+        let duration = right.time - key;
+        Ok(if slopes.iter().any(|slope| slope.is_infinite()) {
+            S::Held(a)
+        } else if left.out_weight.is_some() || right.in_weight.is_some() {
+            let weights = [
+                handle(left.out_weight.as_ref(), axis)?,
+                handle(right.in_weight.as_ref(), axis)?,
+            ];
+            S::Weighted {
+                values,
+                slopes,
+                key,
+                duration,
+                weights,
+            }
+        } else {
+            S::Hermite {
+                values,
+                slopes,
+                key,
+                duration,
+            }
+        })
+    }
+
     pub(crate) fn at(&self, time: f64, meter: &Meter) -> Result<[f64; 4], AnimError> {
         let keys = self.keys.as_slice();
         meter.count_decode(work_for_search(keys.len()))?;

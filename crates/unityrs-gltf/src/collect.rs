@@ -5,16 +5,14 @@ use crate::{
     Extras, ExtrasNaming, GltfError, Inactive, Lod, Node, Profile, RootNaming, Scene, StaticBatch,
     Text,
 };
-use std::{
-    fmt::{self, Write as _},
-    sync::Arc,
-};
+use std::sync::Arc;
 use unityrs_core::{
     ObjectRef,
     env::Environment,
     limits::{Meter, MeteredVec},
 };
 use unityrs_scene::{Component, Graph, PPtrTarget, RendererInfo, SkinInfo};
+pub(crate) mod animation;
 mod attachment;
 mod batch;
 pub(crate) mod builtin;
@@ -23,6 +21,8 @@ mod geometry;
 mod morph;
 mod selection;
 mod skin;
+mod text;
+pub(crate) use text::{append_fmt, extra, number, raw_text};
 type Result<T> = std::result::Result<T, GltfError>;
 struct Cached {
     object: ObjectRef,
@@ -51,13 +51,55 @@ pub fn collect(
     collect_with_mapper(env, graph, profile, &crate::UnlitExtras, meter)
 }
 /// Collect using an injected material mapping policy. All caches are per unit.
-#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
 pub fn collect_with_mapper(
     env: &Environment,
     graph: &Graph,
     profile: &Profile,
     mapper: &dyn crate::MaterialMapper,
     meter: &Arc<Meter>,
+) -> Result<Scene> {
+    if profile.clips.requested() {
+        return Err(GltfError::AnimationCallbackRequired);
+    }
+    collect_impl(env, graph, profile, mapper, meter, false, |_, _| ())
+}
+
+/// Collect geometry first, then give the caller the emitted targets and
+/// editable scene. The callback's error type preserves caller-side refusals.
+pub fn collect_with_animation<E: From<GltfError>>(
+    env: &Environment,
+    graph: &Graph,
+    profile: &Profile,
+    mapper: &dyn crate::MaterialMapper,
+    meter: &Arc<Meter>,
+    callback: impl FnOnce(&mut Scene, animation::CollectionTargets<'_>) -> std::result::Result<(), E>,
+) -> std::result::Result<Scene, E> {
+    // Separate the static errors from the callback's error without allocating.
+    let mut callback_result = Ok(());
+    let scene = collect_impl(
+        env,
+        graph,
+        profile,
+        mapper,
+        meter,
+        true,
+        |scene, targets| {
+            callback_result = callback(scene, targets);
+        },
+    )?;
+    callback_result?;
+    Ok(scene)
+}
+
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
+fn collect_impl(
+    env: &Environment,
+    graph: &Graph,
+    profile: &Profile,
+    mapper: &dyn crate::MaterialMapper,
+    meter: &Arc<Meter>,
+    map_animations: bool,
+    callback: impl FnOnce(&mut Scene, animation::CollectionTargets<'_>),
 ) -> Result<Scene> {
     let mut scene = Scene::new(meter);
     let mut unresolved_skins = 0u64;
@@ -155,11 +197,21 @@ pub fn collect_with_mapper(
             scene.roots.push(id)?;
         }
     }
+    let mut instances = MeteredVec::new(meter);
+    let mut filtered_renderers = MeteredVec::new(meter);
     let mut sources: MeteredVec<Cached> = MeteredVec::new(meter);
     let mut bindings: MeteredVec<Binding> = MeteredVec::new(meter);
     let mut material_state = crate::materials::State::new(meter);
     for (i, n) in graph.nodes().iter().enumerate() {
         if !selection.as_slice().get(i).is_some_and(|s| s.render) {
+            if map_animations {
+                meter.count_decode(n.components.len() as u64)?;
+                for component in n.components.as_slice() {
+                    if let Component::SkinnedMeshRenderer(skin) = component {
+                        filtered_renderers.push(&skin.renderer.object)?;
+                    }
+                }
+            }
             continue;
         }
         let Some(id) = ids.as_slice().get(i).copied().flatten() else {
@@ -173,6 +225,9 @@ pub fn collect_with_mapper(
                 _ => continue,
             };
             if !r.enabled || !selection::renderer(graph, &r.object, profile, meter)? {
+                if map_animations && skin.is_some() {
+                    filtered_renderers.push(&r.object)?;
+                }
                 continue;
             }
             let mut has_skin = skin.is_some_and(|s| !s.bones.is_empty());
@@ -246,6 +301,15 @@ pub fn collect_with_mapper(
                                 .get_mut(attachment)
                                 .ok_or_else(|| invalid("builtin node"))?;
                             node.mesh = Some(mesh);
+                            if map_animations {
+                                instances.push(animation::Instance {
+                                    renderer: &r.object,
+                                    transform: i,
+                                    node: attachment,
+                                    source: None,
+                                    batched: selection::batched(r),
+                                })?;
+                            }
                             extra(
                                 &mut node.extras,
                                 meter,
@@ -390,6 +454,15 @@ pub fn collect_with_mapper(
                 && profile.static_batch == StaticBatch::KeepCombined
                 && let Some(root) = combined_root
             {
+                if map_animations {
+                    instances.push(animation::Instance {
+                        renderer: &r.object,
+                        transform: i,
+                        node: root,
+                        source: None,
+                        batched: true,
+                    })?;
+                }
                 if selection.as_slice().get(i).is_some_and(|s| s.active) {
                     let extras = &mut scene
                         .nodes
@@ -615,6 +688,15 @@ pub fn collect_with_mapper(
             }
             node.mesh = Some(mesh);
             node.skin = skin_id;
+            if map_animations {
+                instances.push(animation::Instance {
+                    renderer: &r.object,
+                    transform: i,
+                    node: attachment,
+                    source: skin.map(|_| source),
+                    batched,
+                })?;
+            }
             if let Some(s) = skin {
                 meter.count_decode((s.blend_weights.len() + g.targets.len()) as u64 * 8)?;
                 for (index, channel) in g.source.blend_shapes.channels.as_slice().iter().enumerate()
@@ -679,80 +761,19 @@ pub fn collect_with_mapper(
             )?;
         }
     }
+    if map_animations {
+        let renderers = animation::attachments(instances.as_slice(), sources.as_slice(), meter)?;
+        callback(
+            &mut scene,
+            animation::CollectionTargets {
+                transforms: ids.as_slice(),
+                renderers: renderers.as_slice(),
+                filtered_renderers: filtered_renderers.as_slice(),
+            },
+        );
+    }
     Ok(scene)
 }
 pub(crate) fn same(a: &ObjectRef, b: &ObjectRef) -> bool {
     Arc::ptr_eq(a.file(), b.file()) && a.path_id() == b.path_id()
-}
-pub(crate) fn extra(extras: &mut Extras, meter: &Arc<Meter>, key: &str, value: Text) -> Result<()> {
-    meter.count_decode(extras.len() as u64 * key.len() as u64)?;
-    if extras
-        .as_slice()
-        .iter()
-        .any(|(k, _)| k.as_bytes() == key.as_bytes())
-    {
-        return Err(invalid("duplicate collect extra"));
-    }
-    extras.push((crate::text(meter, key)?, value))?;
-    extras
-        .as_mut_slice()
-        .sort_unstable_by(|(a, _), (b, _)| a.as_bytes().cmp(b.as_bytes()));
-    Ok(())
-}
-pub(crate) fn raw_text(meter: &Arc<Meter>, mut bytes: &[u8]) -> Result<Text> {
-    meter.count_decode(bytes.len() as u64 * 3)?;
-    let mut out = MeteredVec::new(meter);
-    while !bytes.is_empty() {
-        match std::str::from_utf8(bytes) {
-            Ok(_) => {
-                out.extend_from_slice(bytes)?;
-                break;
-            }
-            Err(e) => {
-                let valid = e.valid_up_to();
-                out.extend_from_slice(bytes.get(..valid).ok_or_else(|| invalid("text range"))?)?;
-                out.extend_from_slice("�".as_bytes())?;
-                bytes = bytes
-                    .get(valid + e.error_len().unwrap_or(bytes.len() - valid)..)
-                    .ok_or_else(|| invalid("text range"))?;
-            }
-        }
-    }
-    Ok(Text(out))
-}
-pub(crate) fn number(meter: &Arc<Meter>, n: impl fmt::Display) -> Result<Text> {
-    let mut t = Text(MeteredVec::new(meter));
-    append_fmt(&mut t, meter, format_args!("{n}"))?;
-    Ok(t)
-}
-pub(crate) fn append_fmt(t: &mut Text, meter: &Arc<Meter>, args: fmt::Arguments<'_>) -> Result<()> {
-    struct Sink<'a> {
-        t: &'a mut Text,
-        meter: &'a Meter,
-        error: Option<GltfError>,
-    }
-    impl fmt::Write for Sink<'_> {
-        fn write_str(&mut self, s: &str) -> fmt::Result {
-            let result = (|| {
-                self.meter.count_decode(s.len() as u64)?;
-                self.t.0.extend_from_slice(s.as_bytes())?;
-                Ok(())
-            })();
-            if let Err(e) = result {
-                self.error = Some(e);
-                return Err(fmt::Error);
-            }
-            Ok(())
-        }
-    }
-    let mut sink = Sink {
-        t,
-        meter,
-        error: None,
-    };
-    let result = sink.write_fmt(args);
-    if result.is_err() {
-        return Err(sink.error.unwrap_or_else(|| invalid("metadata formatting")));
-    }
-    Ok(())
 }

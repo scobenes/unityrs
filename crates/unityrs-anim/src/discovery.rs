@@ -17,7 +17,7 @@ use retain::{
 
 /// Serialized occurrence. Only the file/object identity, field and ordinal
 /// participate in selection. The pointer remains available for diagnostics.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SourceSlot {
     pub owner: ObjectRef,
     pub field: &'static str,
@@ -34,7 +34,7 @@ impl SourceSlot {
 }
 
 /// A failed reference and the exact occurrence that failed.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SlotError {
     pub source: SourceSlot,
     pub cause: AnimError,
@@ -103,6 +103,11 @@ pub struct Discovery(MeteredVec<RigClips>);
 pub enum ClipSelector<'a> {
     Clip(&'a ObjectRef),
     Source(&'a SourceSlot),
+    SourceAddress {
+        owner: &'a ObjectRef,
+        field: &'a [u8],
+        ordinal: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -155,6 +160,15 @@ impl Discovery {
                         }
                     }
                     ClipSelector::Source(source) => slot.source.matches(source),
+                    ClipSelector::SourceAddress {
+                        owner,
+                        field,
+                        ordinal,
+                    } => {
+                        slot.source.ordinal == ordinal
+                            && slot.source.field.as_bytes() == field
+                            && same_object(&slot.source.owner, owner)
+                    }
                 };
                 if matches && found.replace(slot).is_some() {
                     return Err(SelectionError::Ambiguous);

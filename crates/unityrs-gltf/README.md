@@ -308,7 +308,43 @@ Parsing uses charged fallible owners and has no input-sized serde allocation.
 | `lod` | `lod0`, `all` | `lod0` |
 | `static_batch` | `unbatch`, `keep_combined` | `unbatch` |
 | `normalise` | boolean; false may produce spec-invalid BIN values | true |
-| `clip_states` | empty array; nonempty arrays require P2b | `[]` |
+| `clip_states` | empty array; nonempty arrays refuse controller state and blend-tree evaluation | `[]` |
+| `clips` | `"all_discovered"` or an array of direct clip selectors | `[]` |
+| `sample_rate` | finite samples per second in `(0, 1024]` | clip's serialized rate |
+| `skin_influences` | `4`; other influence counts give a typed refusal | `4` |
+
+Standalone `unityrs gltf` exports a static scene when `clips` is omitted
+or empty. `"all_discovered"` selects resolved clips in rig and source order
+and reports unresolved slots. Each explicit selector has `root` (Transform)
+and `component` (Animation or Animator) object addresses. Supply either a
+`clip` object address or a `source` object with `owner` (object address),
+`field` (serialized array or field name) and `ordinal` (zero-based slot).
+A selected unresolved source returns its original error.
+
+An object address has a zero-based `file_index` and a signed 64-bit
+`path_id`. Concatenate the input views in argument order and count their
+entries as listed by `unityrs inspect`, including each root and resource
+entry. For one standalone SerializedFile, use file index zero.
+
+```json
+{
+  "profile_version": 1,
+  "clips": [{
+    "root": {"file_index": 0, "path_id": 2},
+    "component": {"file_index": 0, "path_id": 3},
+    "clip": {"file_index": 0, "path_id": 9}
+  }],
+  "sample_rate": 30
+}
+```
+
+The shared `unityrs_export::gltf::collect` path binds each selected clip to
+its component, then maps sampled TRS to the original model nodes and morph
+weights to the emitted mesh instance. It returns decoded clip metadata and
+discovery diagnostics alongside the editable scene. Animation uses the
+static X reflection, STEP for held properties and bounded LINEAR for
+continuous properties. Morph weights follow each channel's last-frame
+threshold and record in-between approximations in the export report.
 
 Built-in placeholders retain a sorted, unique array of structured identities in
 `extras.unity_builtin`, for example

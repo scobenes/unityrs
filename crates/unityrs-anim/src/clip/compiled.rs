@@ -211,6 +211,92 @@ impl CompiledClip {
         }
     }
 
+    pub(crate) fn visit_times(
+        &self,
+        slot: usize,
+        mut visit: impl FnMut(f64) -> Result<(), AnimError>,
+    ) -> Result<(), AnimError> {
+        if let Some(stream) = self.streamed().get(slot) {
+            for key in stream.keys() {
+                visit(key.time)?;
+            }
+        } else if self.storage(slot) == StorageKind::Dense {
+            for &time in self.dense.grid.as_slice() {
+                visit(time)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn segment(
+        &self,
+        slot: usize,
+        time: f64,
+        left_side: bool,
+        meter: &Meter,
+    ) -> Result<crate::ScalarSegment, AnimError> {
+        use crate::ScalarSegment as S;
+        if let Some(stream) = self.streamed().get(slot) {
+            let keys = stream.keys();
+            meter.count_decode(work_for_search(keys.len()) + 8)?;
+            let next =
+                keys.partition_point(|key| key.time < time || (!left_side && key.time <= time));
+            let left = keys
+                .get(next.saturating_sub(1))
+                .ok_or(AnimError::MissingStreamKey(slot))?;
+            if next == 0 || next == keys.len() {
+                return Ok(S::Constant(left.value.continuous()?));
+            }
+            let coefficients = left
+                .coefficients
+                .map(|word| f64::from(f32::from_bits(word)));
+            let [c3, c2, c1, c0] = coefficients;
+            return Ok(if [c3, c2, c1].iter().all(|&c| c == 0.) {
+                S::Held(c0)
+            } else {
+                S::Streamed {
+                    key: left.time,
+                    coefficients,
+                }
+            });
+        }
+        let slot = slot - self.streams.len();
+        let dense = &self.dense;
+        if slot < dense.size {
+            let grid = dense.grid.as_slice();
+            meter.count_decode(work_for_search(grid.len()) + 8)?;
+            let next = grid.partition_point(|&key| key < time || (!left_side && key <= time));
+            let frame = next.saturating_sub(1);
+            let get = |i: usize| {
+                dense
+                    .values
+                    .as_slice()
+                    .get(i * dense.size + slot)
+                    .ok_or(AnimError::InvalidDenseGrid)?
+                    .continuous()
+            };
+            let a = get(frame)?;
+            if next == 0 || next == grid.len() {
+                return Ok(S::Constant(a));
+            }
+            return Ok(S::Dense {
+                values: [a, get(next)?],
+                key: *grid.get(frame).ok_or(AnimError::InvalidDenseGrid)?,
+                rate: dense.rate,
+                begin: dense.begin,
+                offset: f64::from(u32::try_from(frame).map_err(|_| AnimError::InvalidDenseGrid)?)
+                    / dense.rate,
+            });
+        }
+        meter.count_decode(1)?;
+        Ok(S::Constant(
+            self.constants()
+                .get(slot - dense.size)
+                .ok_or(AnimError::SlotOverflow)?
+                .continuous()?,
+        ))
+    }
+
     /// Inspect one slot at a source time, retaining the typed metadata value.
     /// Object references are returned unresolved and events remain inert.
     pub fn slot_value(

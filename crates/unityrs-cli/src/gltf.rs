@@ -163,11 +163,15 @@ fn run(raw: &[Vec<u8>]) -> Result<()> {
     }
     let env = Environment::new(options);
     let mut scene = None;
+    let mut roots = None;
     for input in args.inputs() {
         let file = env.load(Source::Path(input.to_owned()))?;
         if let args::Selection::Scene(requested) = args.selection {
             scene_in_file(&mut scene, &file, requested)?;
         }
+        roots
+            .get_or_insert_with(|| unityrs_core::limits::MeteredVec::new(file.meter()))
+            .push(file)?;
     }
     let unit = select(&env, &args, scene)?;
     peak.start_export();
@@ -184,7 +188,34 @@ fn run(raw: &[Vec<u8>]) -> Result<()> {
     } else {
         &unityrs_gltf::UnlitExtras
     };
-    let scene = unityrs_gltf::collect_with_mapper(&env, &graph, &profile, mapper, meter)?;
+    let collected = unityrs_export::gltf::collect(
+        &env,
+        roots.as_ref().ok_or("missing input")?.as_slice(),
+        &graph,
+        &profile,
+        mapper,
+        meter,
+    )?;
+    if let Some(discovery) = collected.discovery {
+        for rig in discovery.rigs() {
+            for issue in rig
+                .issues()
+                .iter()
+                .chain(rig.slots().iter().filter_map(|slot| slot.clip().err()))
+            {
+                eprintln!(
+                    "unityrs gltf: rig {} component {} {}[{}]: {}",
+                    rig.root.path_id(),
+                    rig.component.path_id(),
+                    issue.source.field,
+                    issue.source.ordinal,
+                    issue.cause
+                );
+            }
+        }
+    }
+    let scene = collected.scene;
+    drop(collected.clips);
     let mut outputs = output::Outputs::new(meter);
     let mut written = None;
     outputs.write(args.output, |out| {

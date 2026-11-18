@@ -58,8 +58,58 @@ pub struct ExportMetadata {
     pub input_sha256: Option<Text>,
 }
 const _: () = crate::send_sync::<ExportMetadata>();
+/// A SerializedFile occurrence in the ordered loaded view, and its signed path ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObjectAddress {
+    pub file_index: u32,
+    pub path_id: i64,
+}
+const _: () = crate::send_sync::<ObjectAddress>();
+
+#[derive(Debug)]
+pub enum ClipAddress {
+    Resolved(ObjectAddress),
+    Source {
+        owner: ObjectAddress,
+        field: Text,
+        ordinal: u32,
+    },
+}
+const _: () = crate::send_sync::<ClipAddress>();
+
+#[derive(Debug)]
+pub struct ClipRequest {
+    pub root: ObjectAddress,
+    pub component: ObjectAddress,
+    pub clip: ClipAddress,
+}
+const _: () = crate::send_sync::<ClipRequest>();
+
+#[derive(Debug, Default)]
+pub enum Clips {
+    #[default]
+    Static,
+    AllDiscovered,
+    Explicit(MeteredVec<ClipRequest>),
+}
+const _: () = crate::send_sync::<Clips>();
+
+impl Clips {
+    #[must_use]
+    pub fn requested(&self) -> bool {
+        match self {
+            Self::Static => false,
+            Self::AllDiscovered => true,
+            Self::Explicit(rows) => !rows.is_empty(),
+        }
+    }
+}
+
+/// Maximum override rate in samples per second.
+pub const MAX_SAMPLE_RATE: f64 = 1024.;
+
 /// Typed profile, independently charged while alive. Missing fields use defaults;
-/// JSON must explicitly supply `profile_version: 1`. Clip states are P2b-only.
+/// JSON must explicitly supply `profile_version: 1`. Direct clip selection is optional.
 #[derive(Debug)]
 pub struct Profile {
     pub root_naming: RootNaming,
@@ -75,6 +125,8 @@ pub struct Profile {
     pub lod: Lod,
     pub static_batch: StaticBatch,
     pub normalise: bool,
+    pub clips: Clips,
+    pub sample_rate: Option<f64>,
 }
 const _: () = crate::send_sync::<Profile>();
 impl Profile {
@@ -98,6 +150,8 @@ impl Profile {
             lod: Lod::Lod0,
             static_batch: StaticBatch::Unbatch,
             normalise: true,
+            clips: Clips::Static,
+            sample_rate: None,
         }
     }
     pub fn parse(json: &[u8], meter: &Arc<Meter>) -> Result<Self, GltfError> {

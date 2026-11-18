@@ -87,6 +87,13 @@ pub(super) fn frame_weight(
     mesh: &unityrs_mesh::Mesh,
     channel: &unityrs_mesh::BlendShapeChannel,
 ) -> Result<f64> {
+    Ok(f64::from(endpoint(mesh, channel)?.1))
+}
+
+pub(super) fn endpoint(
+    mesh: &unityrs_mesh::Mesh,
+    channel: &unityrs_mesh::BlendShapeChannel,
+) -> Result<(usize, f32)> {
     let end = channel
         .frame_index
         .checked_add(channel.frame_count)
@@ -102,5 +109,5 @@ pub(super) fn frame_weight(
     if !value.is_finite() || value == 0. {
         return Err(invalid("invalid morph frame weight"));
     }
-    Ok(f64::from(value))
+    Ok((end, value))
 }

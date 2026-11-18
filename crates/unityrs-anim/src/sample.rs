@@ -361,7 +361,7 @@ pub fn sample_clip<'b, 'a, 'r>(
         })?;
         let mut pose = None;
         for track in clip.tracks() {
-            let (values, order) = track.evaluate(source, meter)?;
+            let values = track.evaluate(source, meter)?;
             let [x, y, z, _] = values;
             match track.target {
                 BindingTarget::Transform { node, property } => {
@@ -385,15 +385,8 @@ pub fn sample_clip<'b, 'a, 'r>(
                         TransformProperty::Scale => {
                             write_vector(&mut pose.scale, track.component, [x, y, z])?;
                         }
-                        TransformProperty::Quaternion => {
-                            meter.count_decode(32)?;
-                            pose.rotation = normalize(values)?;
-                        }
-                        TransformProperty::Euler => {
-                            meter.count_decode(256)?;
-                            pose.rotation = order
-                                .ok_or(AnimError::UnsupportedRotationOrder(None))?
-                                .rotation(values)?;
+                        TransformProperty::Quaternion | TransformProperty::Euler => {
+                            pose.rotation = track.rotation(values, meter)?;
                         }
                     }
                 }
@@ -415,13 +408,94 @@ pub fn sample_clip<'b, 'a, 'r>(
 }
 
 impl BoundTrack<'_, '_> {
-    fn evaluate(
+    #[must_use]
+    pub fn width(&self) -> usize {
+        match self.evaluator {
+            Evaluator::Explicit(curve) => curve.width(),
+            Evaluator::Compiled(_, _, width) => usize::from(width),
+        }
+    }
+
+    pub fn visit_key_times(
+        &self,
+        mut visit: impl FnMut(f64) -> Result<(), AnimError>,
+    ) -> Result<(), AnimError> {
+        match self.evaluator {
+            Evaluator::Explicit(curve) => {
+                for time in curve.key_times() {
+                    visit(time)?;
+                }
+                Ok(())
+            }
+            Evaluator::Compiled(clip, first, width) => {
+                // Dense slots share one grid. Streamed slots can be sparse.
+                let count = if self.storage == Some(StorageKind::Streamed) {
+                    usize::from(width)
+                } else {
+                    1
+                };
+                for slot in first..first + count {
+                    clip.visit_times(slot, &mut visit)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn segment(
+        &self,
+        axis: usize,
+        source: f64,
+        left_side: bool,
+        meter: &Meter,
+    ) -> Result<crate::ScalarSegment, AnimError> {
+        if axis >= self.width() {
+            return Err(AnimError::InvalidSampleValue);
+        }
+        match self.evaluator {
+            Evaluator::Explicit(curve) => curve.segment(axis, source, left_side, meter),
+            Evaluator::Compiled(clip, first, _) => {
+                clip.segment(first + axis, source, left_side, meter)
+            }
+        }
+    }
+
+    /// Evaluate a track's raw components (before quaternion normalization or
+    /// Euler conversion), optionally taking the exact left limit at a key.
+    pub fn raw_at(
         &self,
         source: f64,
+        left_side: bool,
         meter: &Meter,
-    ) -> Result<([f64; 4], Option<crate::curve::EulerOrder>), AnimError> {
-        let (values, order) = match self.evaluator {
-            Evaluator::Explicit(curve) => (curve.at(source, meter)?, curve.order),
+    ) -> Result<[f64; 4], AnimError> {
+        if !left_side {
+            return self.evaluate(source, meter);
+        }
+        let mut values = [0.; 4];
+        for (axis, value) in values.iter_mut().enumerate().take(self.width()) {
+            *value = self.segment(axis, source, true, meter)?.at(source, meter)?;
+        }
+        if values.iter().any(|value| !value.is_finite()) {
+            return Err(AnimError::InvalidSampleValue);
+        }
+        Ok(values)
+    }
+
+    /// Convert a raw quaternion or the chosen Euler source to local XYZW.
+    pub fn rotation(&self, raw: [f64; 4], meter: &Meter) -> Result<[f64; 4], AnimError> {
+        if let Evaluator::Explicit(curve) = self.evaluator
+            && let Some(order) = curve.order
+        {
+            meter.count_decode(256)?;
+            return order.rotation(raw);
+        }
+        meter.count_decode(32)?;
+        normalize(raw)
+    }
+
+    fn evaluate(&self, source: f64, meter: &Meter) -> Result<[f64; 4], AnimError> {
+        let values = match self.evaluator {
+            Evaluator::Explicit(curve) => curve.at(source, meter)?,
             Evaluator::Compiled(compiled, first, width) => {
                 let mut values = [0.; 4];
                 for (i, value) in values.iter_mut().enumerate().take(usize::from(width)) {
@@ -429,13 +503,13 @@ impl BoundTrack<'_, '_> {
                         .slot_value(first + i, source, meter)?
                         .continuous()?;
                 }
-                (values, None)
+                values
             }
         };
         if values.iter().any(|value| !value.is_finite()) {
             return Err(AnimError::InvalidSampleValue);
         }
-        Ok((values, order))
+        Ok(values)
     }
 }
 
