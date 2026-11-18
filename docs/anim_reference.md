@@ -546,6 +546,22 @@ version-and-target folder to the maintainer's fixture inbox. If the run
 stops with **unityrs fixture build failed**, send the log from the separate
 `-failed-<id>` folder shown in the dialog.
 
+Two more menu items build variant runs with no replays. **Build URP
+material fixtures** runs only in a Universal 3D project and writes
+`<version>/URP-<target>/` with the `urp-materials` bundle: URP Lit and
+Unlit materials with textures, keywords and properties. **Build Android
+fixtures** needs Android Build Support and writes `<version>/Android-variant/` with
+the static bundles and an `android-textures` bundle whose textures carry
+explicit ASTC and ETC/ETC2 Android overrides. Their `run.json` names the
+variant (`urp` or `android`), and `complete` checks it against
+[`anim_fixture_variants.py`](../tools/parity/anim_fixture_variants.py):
+shader names, keywords and properties for URP, and each override's texture
+format, data size and `.resS` stream for Android, with each texture decoded by
+`unityrs extract` at its declared size. The Android folder is
+separate from `<version>/Android/`, where a Built-in run publishes when
+Android is the active target. A Built-in run keeps `urp-materials` as
+`not_covered`.
+
 The button generates both humanoid rigs and their clips. Each rig has
 skinned boxes in a T-pose and a procedurally built Avatar. The taller rig
 has asymmetric Spine limits and omits UpperChest. Each rig has an

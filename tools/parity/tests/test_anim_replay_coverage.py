@@ -17,7 +17,7 @@ sys.path.insert(0, str(HERE))
 
 import anim_fixture_coverage  # noqa: E402
 import anim_replay as replay  # noqa: E402
-from anim_replay_complete import recorded_paths  # noqa: E402
+from anim_replay_complete import read_manifest, recorded_paths  # noqa: E402
 import child  # noqa: E402
 import scratch  # noqa: E402
 
@@ -93,7 +93,7 @@ class CoverageCompletionTests(unittest.TestCase):
     def required(self, table):
         self.complete(written=())
         with mock.patch.dict(anim_fixture_coverage.REQUIRED_COVERAGE, table):
-            return recorded_paths(self.folder, replay)
+            return recorded_paths(self.folder, replay, *read_manifest(self.folder, replay))
 
     def test_no_coverage_case_is_required_until_confirmed(self):
         self.statuses = {}

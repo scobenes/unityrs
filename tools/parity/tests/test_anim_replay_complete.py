@@ -69,6 +69,13 @@ class CompleteReplayTests(unittest.TestCase):
         path = self.inspect / f"{bundle}.1.{header['path_id']}.show.json"
         return path, json.loads(path.read_text())
 
+    def test_builtin_variant_field_completes_the_full_run(self):
+        # The Editor now names the variant; a Built-in run keeps the full contract.
+        self.run["run"] = RUN | {"variant": "builtin"}
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Completed and validated 16 replay(s)", result.stdout)
+
     def test_complete_resolves_exact_ids_from_container_and_pointers(self):
         self.replace_clip_values("generic-object-reference", lambda clip: clip.pop("m_PPtrCurves"))
         result = self.complete()
