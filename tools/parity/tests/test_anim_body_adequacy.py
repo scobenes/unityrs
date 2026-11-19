@@ -123,13 +123,19 @@ class CheckpointTests(unittest.TestCase):
     def setUp(self):
         self.folder = scratch.for_case(self)
         (self.folder / "replays" / "body").mkdir(parents=True)
+        self.recorded = set()
 
     def record(self, names, samples=10, edit=None):
+        """Each case's recording at its case table path, and run.json listing every one recorded so far."""
         for name in names:
             doc = body_doc(name, RUN, samples=samples)
+            doc["spec"]["bundles"] = [dict(name=body.BODY_CASES[name].bundle)]
             if edit:
                 edit(doc)
             write(self.folder / "replays" / "body" / f"{name}.pending.json", doc)
+            self.recorded.add(name)
+        cases = [dict(name=name, status="recorded", reason="") for name in sorted(self.recorded)]
+        write(self.folder / "run.json", dict(format="unityrs.fixture_run", version=1, run=RUN, cases=cases))
 
     def run_checkpoint(self):
         out = io.StringIO()

@@ -6,6 +6,7 @@ the adequacy checkpoint sees a consistent fit.
 """
 
 import copy
+import struct
 
 from test_anim_replay import bits
 
@@ -301,24 +302,45 @@ def clip_case(doc, variant_name):
     built = dict(zip(("m_LoopBlendOrientation", "m_LoopBlendPositionY", "m_LoopBlendPositionXZ"), variant["bake"]))
     built |= dict(zip(("m_KeepOriginalOrientation", "m_KeepOriginalPositionY", "m_KeepOriginalPositionXZ"),
                       map(int, variant["keep"])))
-    stream = compiled(extras)
+    body = [(7 + i, BODY_TIMES, [p[i] for p in path]) for i in range(3)]
+    body += [(10 + i, BODY_TIMES, [q[i] for q in rotations]) for i in range(4)]
+    stream = compiled(extras, body)
+    start = dict(t=dict(zip("xyz", (f32(v) for v in path[0]))), q=dict(zip("xyzw", (f32(v) for v in rotations[0]))),
+                 s=dict(x=1., y=1., z=1.))
     return {"m_MuscleClip": built | dict(m_HeightFromFeet=variant["height_from_feet"], m_Level=variant["level"],
                                          m_OrientationOffsetY=variant["orientation"], m_StartAtOrigin=True,
-                                         m_Clip=stream["m_Clip"], m_IndexArray=stream["m_IndexArray"]),
+                                         m_StartX=start, m_Clip=stream["m_Clip"], m_IndexArray=stream["m_IndexArray"]),
             "m_ClipBindingConstant": stream["m_ClipBindingConstant"]}
+
+
+def f32(value):
+    return struct.unpack(">f", struct.pack(">f", value))[0]
+
+
+def hermite(times, values):
+    """Streamed keys (time, (c3, c2, c1, c0)) of a curve through `values` with zero tangents, as f32."""
+    keys = []
+    for k, (t, v) in enumerate(zip(times, values)):
+        if k + 1 < len(times):
+            dt, dv = times[k + 1] - t, values[k + 1] - v
+            keys.append((t, (f32(-2 * dv / dt ** 3), f32(3 * dv / dt ** 2), 0., f32(v))))
+        else:
+            keys.append((t, (0., 0., 0., f32(v))))
+    return keys
 
 def word(value):
     return int(bits(value), 16)
 
 
-def compiled(extras):
-    """The built clip's streamed slots: the body's seven held at zero, then each distinguishing curve."""
-    slots = [(a, (0, 1), (0, 0)) for a in range(7, 14)]
+def compiled(extras, body=None):
+    """The built clip's streamed slots: the body's seven (`body`'s curves, or held at zero), then each
+    distinguishing curve, each a Hermite cubic through its keys with zero tangents."""
+    slots = body or [(a, (0, 1), (0, 0)) for a in range(7, 14)]
     slots += [(attribute, times, values) for group in extras for _, attribute, times, values in group]
     frames = {}
     for slot, (_, times, values) in enumerate(slots):
-        for t, v in zip(times, values):
-            frames.setdefault(t, []).append((slot, 0, 0, 0, word(v)))
+        for t, coefficients in hermite(times, values):
+            frames.setdefault(t, []).append((slot, *(word(c) for c in coefficients)))
     data = []
     for t in sorted(frames):
         data += [word(t), len(frames[t])]

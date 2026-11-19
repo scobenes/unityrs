@@ -13,10 +13,14 @@ are f64 from the recorded f32 inputs, taken exactly. Standard library only.
 **Scope (plan section 8, frozen on the training rigs).** `topology_scope`
 refuses an Avatar whose Chest or Neck is absent or that maps exactly one
 Shoulder: 2.1's per-edge fractions fit every other training rig jointly but
-not these. `frame_scope` refuses a pose whose shoulder-hip twist (the angle
-about up between the upper-arm and upper-leg laterals) exceeds TWIST_LIMIT:
-there 2.2's lateral sum leaves Unity's yaw about up by more than the bound.
-Both, and solve_hips and body_rotation through frame_scope, raise `Refused`.
+not these. It admits only a recorded pattern of absent body slots
+(RECORDED_ABSENT, the in-scope training rigs'), so an unrecorded topology,
+such as one mapped eye, refuses too. `frame_scope` refuses a pose whose
+shoulder-hip twist (the angle about up between the upper-arm and upper-leg
+laterals) exceeds TWIST_LIMIT: there 2.2's lateral sum leaves Unity's yaw
+about up by more than the bound. A twist with a lateral along up, or no up,
+is undefined and refuses as well. All of them, and solve_hips and
+body_rotation through frame_scope, raise `Refused`.
 - 2.3, `solve_hips`: H_A = B_A F(T) F_h^-1, P_A = h T_A - k H_A c_h with
   k = sigma_p s_h, t = sigma_p^-1 R_p^-1 (P_A - t_p), q = R_p^-1 H_A, and the
   hips keep their own scale s_h.
@@ -45,13 +49,14 @@ plus gamma(2) of the angle, unbounded as (q_y, q_w) vanishes (a half turn
 about a horizontal axis). `turn_angle` maps a
 bound on how far a rotation turns a unit vector (a 2-norm, which the
 Frobenius bounds of anim_body_tolerance dominate) to an angle,
-2 asin(min(1, d / 2)); the angular metric (anim_reference.angle) adds
+2 asin(d / 2), and to NaN, which no comparison passes, from d >= 2; the angular metric (anim_reference.angle) adds
 ANGLE_FLOOR.
 """
 
 import math
 
 from anim_body_tolerance import (
+    BODY_SLOTS,
     FRAME_BONES,
     U32,
     U64,
@@ -84,10 +89,17 @@ HYPOTHESES = {
     "root": "2.4: X_A = X_r^-1 o X_b, the m_StartAtOrigin rebase shared by root and body",
     "yaw": "2.4: a yaw is the twist about up, 2 atan2(q_y, q_w)",
     "height_from_feet": "2.4: undecided between candidates A and B; refused",
-    "topology_scope": "section 8: refused when Chest or Neck is absent or exactly one Shoulder is mapped",
-    "frame_scope": "section 8: refused when the shoulder-hip twist about up exceeds 4.25 degrees",
+    "topology_scope": "section 8: refused when Chest or Neck is absent, exactly one Shoulder is mapped or the "
+                      "absent body slots are not a recorded training pattern",
+    "frame_scope": "section 8: refused when the shoulder-hip twist about up exceeds 4.25 degrees or is undefined",
 }
 TWIST_LIMIT = math.radians(4.25)
+# The absent body slots of each in-scope training rig (anim_fixture_body.PROBE_RIGS): the only admitted patterns.
+RECORDED_ABSENT = frozenset(frozenset(absent) for absent in (
+    (), ("Jaw",), ("LeftEye", "RightEye"), ("Jaw", "LeftEye", "RightEye"),
+    ("Jaw", "LeftEye", "RightEye", "UpperChest"), ("Jaw", "LeftEye", "RightEye", "LeftToes"),
+    ("Jaw", "LeftEye", "RightEye", "RightToes"), ("Jaw", "LeftEye", "RightEye", "LeftToes", "RightToes"),
+    ("Jaw", "LeftEye", "RightEye", "LeftShoulder", "RightShoulder")))
 ANGLE_FLOOR = gamma(16, U64)
 
 
@@ -143,17 +155,26 @@ def topology_scope(mapped):
         raise Refused("topology: Neck absent")
     if ("LeftShoulder" in mapped) != ("RightShoulder" in mapped):
         raise Refused("topology: exactly one Shoulder")
+    absent = BODY_SLOTS - set(mapped)
+    if absent not in RECORDED_ABSENT:
+        raise Refused(f"topology: unrecorded pattern (absent {sorted(absent)})")
 
 
 def shoulder_hip_twist(points):
     """The angle about 2.2's up between the upper-arm and the upper-leg laterals (radians, unsigned)."""
     ul, ur, ll, lr = (points[name] for name in FRAME_BONES)
     up = sub(tuple(a + b for a, b in zip(ul, ur)), tuple(a + b for a, b in zip(ll, lr)))
+    if not norm(up) > 0:
+        raise Refused("frame: undefined shoulder-hip twist (no up)")
     up = tuple(v / norm(up) for v in up)
 
     def flat(v):
         along = sum(a * b for a, b in zip(v, up))
-        return tuple(a - along * b for a, b in zip(v, up))
+        moved = tuple(a - along * b for a, b in zip(v, up))
+        # A lateral along up has no direction about it: the twist is undefined.
+        if not norm(moved) > 64 * U64 * norm(v):
+            raise Refused("frame: undefined shoulder-hip twist (a lateral along up)")
+        return moved
 
     top, bottom = flat(sub(ur, ul)), flat(sub(lr, ll))
     return abs(math.atan2(sum(a * b for a, b in zip(cross(bottom, top), up)), sum(a * b for a, b in zip(bottom, top))))
@@ -273,8 +294,9 @@ def projection_error(body, root, human_scale, yaw_bound, unit=U64):
 
 
 def turn_angle(turn):
-    """The angle of a rotation that moves a unit vector by at most `turn`."""
-    return math.pi if not turn < 2 else 2 * math.asin(turn / 2)
+    """The angle of a rotation that moves a unit vector by at most `turn`; NaN when `turn` bounds nothing
+    (2 or more, or not finite), so that every comparison against it fails rather than passing at pi."""
+    return 2 * math.asin(turn / 2) if turn < 2 else math.nan
 
 
 def curve(keys, time):

@@ -10,7 +10,8 @@ from uuid import uuid4
 from zlib import crc32
 
 import child
-from anim_fixture_body import BODY_BUNDLES, BODY_CASES, BODY_INFO, EXTRA_CASES, check_body, primary_probes
+from anim_fixture_body import (BODY_BUNDLES, BODY_CASES, BODY_INFO, EXTRA_CASES, HOLDOUT, check_body,
+                               primary_probes)
 from anim_fixture_coverage import BASIS_CASES, COVERAGE_CASES, check_coverage, required_coverage
 from anim_fixture_contract import (ASSETS, MOTION, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
                                    check_built_clip, check_built_static, check_discovery, check_evidence,
@@ -651,8 +652,12 @@ def check_static(bundle_dir, views, unityrs, inspect_dir, replay, run):
             raise ValueError(f"{case}: {exc}") from exc
 
 
-def complete_folder(folder, unityrs, inspect_dir, replay):
-    """Validate every result before writing any completed recordings."""
+def complete_folder(folder, unityrs, inspect_dir, replay, unseal=None):
+    """Validate every result before writing any completed recordings; returns (count, uncovered, sealed).
+
+    The hold-out rig's body cases (by the builder's case table) stay sealed: neither their recordings nor
+    their bundles are opened, and they are listed as sealed, until `unseal` names a freeze artifact that
+    anim_body_freeze.verify_unseal accepts for this run."""
     manifest, run = read_manifest(folder, replay)
     if run.get("variant", "builtin") != "builtin":
         from anim_fixture_variants import complete_variant
@@ -661,6 +666,15 @@ def complete_folder(folder, unityrs, inspect_dir, replay):
     bundle_dir = folder / "bundles"
     results, views, recordings = [], {}, {}
     paths, recorded_mixed, run, uncovered = recorded_paths(folder, replay, manifest, run)
+    holdout = {folder / "replays" / "body" / f"{name}.pending.json": name for name, info in BODY_INFO.items()
+               if info["rig"] == HOLDOUT}
+    sealed = sorted(holdout[path] for path in paths if path in holdout)
+    if sealed and unseal is not None:
+        from anim_body_freeze import verify_unseal
+
+        verify_unseal(folder, unseal)
+    elif sealed:
+        paths = [path for path in paths if path not in holdout]
     check_static(bundle_dir, views, unityrs, inspect_dir, replay, run)
     fixtures = REPLAY_CASES | VECTOR_CASES | COVERAGE_CASES | BODY_CASES
     for path in paths:
@@ -707,4 +721,4 @@ def complete_folder(folder, unityrs, inspect_dir, replay):
                                f"{output.name} already exists with different content")
         finally:
             staged.unlink(missing_ok=True)
-    return len(results), uncovered
+    return len(results), uncovered, [] if unseal is not None else sealed

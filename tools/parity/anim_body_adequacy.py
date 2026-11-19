@@ -103,14 +103,13 @@ def default_masses(documents):
     slots are read: their hierarchy masses exclude the fingers (each Hand's
     equals its own), and Unity 6 returns unspecified values for the finger
     bones."""
-    tables = {json.dumps(doc["spec"]["evidence"]["editor"]["human_bones"], sort_keys=True)
+    tables = {json.dumps(body_rows(doc["spec"]["evidence"]["editor"]["human_bones"]))
               for doc in documents if doc["spec"]["evidence"]["editor"].get("human_bones")}
     if len(tables) != 1:
         raise ValueError("expected one HumanTrait bone table across the body recordings")
     rows = json.loads(tables.pop())
-    names = [row["name"] for row in rows]
-    parents = {row["name"]: names[row["parent"]] if row["parent"] >= 0 else None for row in rows}
-    hierarchy = {row["name"]: F32(row["mass"]) for row in rows if row["name"] in BODY_SLOTS}
+    parents = {name: parent for name, parent, _ in rows}
+    hierarchy = {name: F32(mass) for name, _, mass in rows}
     children = {name: [child for child in hierarchy if parents[child] == name] for name in hierarchy}
     masses, errors = {}, {}
     for name in hierarchy:
@@ -124,13 +123,30 @@ def default_masses(documents):
     return parents, masses, errors
 
 
-def samples(name, doc, parents, masses):
-    """One row per sample: its coefficient columns in A, its J_s rows, epsilon, E_unity and E_eval."""
+def body_rows(table):
+    """A recorder bone table's body slots as sorted (name, parent name, hierarchy mass bits): the fingers'
+    rows are discarded before any comparison, since Unity 6 leaves their masses unspecified."""
+    names = [row["name"] for row in table]
+    rows = [(row["name"], names[row["parent"]] if row["parent"] >= 0 else None, row["mass"])
+            for row in table if row["name"] in BODY_SLOTS]
+    if any(parent is not None and parent not in BODY_SLOTS for _, parent, _ in rows):
+        raise ValueError("a body slot's HumanTrait parent is not a body slot")
+    return sorted(rows)
+
+
+def samples(name, doc, parents, masses, skeleton=None):
+    """One row per sample: its coefficient columns in A, its J_s rows, epsilon, E_unity and E_eval.
+
+    `skeleton` is the Avatar's m_SkeletonPose as body-slot positions in A (2.2's F(T) comes from it); the
+    recorded rest pose stands in without it. The hips solve's bones take the rest translations and scales
+    under their sampled rotations, and the hips the rest scale; `drift` names each node whose sampled
+    translation or scale is not the rest's, for E3 to compare."""
     spec, capture = doc["spec"], doc["capture"]
     human, bones_rows = capture["humanoid"], capture["humanoid"]["bones"]
     editor = spec["evidence"]["editor"]
-    readbacks = editor.get("body_samples") or [None] * len(capture["samples"])
-    targets = editor.get("body_targets") or [None] * len(capture["samples"])
+    count = len(capture["samples"])
+    readbacks = editor.get("body_samples") or [None] * count
+    targets = editor.get("body_targets") or [None] * count
     info = BODY_INFO.get(name)
     nodes, animator = spec["nodes"], spec["binding_address"]
     scale = F32(human["human_scale"])
@@ -138,14 +154,28 @@ def samples(name, doc, parents, masses):
     links = recorded_edges(bones_rows, nodes)
     rest_transforms = capture["rest"]["transforms"]
     rest = bone_frames(bones_rows, nodes, kinematics(nodes, rest_transforms, F32, animator))
-    rest_frame = body_frame({name: frame.position for name, frame in rest.items()})
+    rest_frame = body_frame(skeleton or {name: frame.position for name, frame in rest.items()})
+    hips_node = next(i for i, node in enumerate(nodes) if node["address"] == hips_address)
+    under = [i for i, node in enumerate(nodes) if node["address"].startswith(hips_address + "/")]
+
+    def posed(transforms):
+        """The sampled rotations on the rest translations and scales below the hips, and the rest hips scale."""
+        rows = list(transforms)
+        for i in under:
+            rows[i] = dict(transforms[i], translation=rest_transforms[i]["translation"],
+                           scale=rest_transforms[i]["scale"])
+        rows[hips_node] = dict(transforms[hips_node], scale=rest_transforms[hips_node]["scale"])
+        return rows
     # Unity's T-pose frame and the model's, from the hips-local rest pose.
     rest_local = {unit: body_states(nodes, rest_transforms, F32, bones_rows, links, hips_address, unit)[0]
                   for unit in (U32, U64)}
     rest_turn = frame_error({n: b.position for n, b in rest_local[U32].items()},
                             {n: b.e_position for n, b in rest_local[U32].items()})
-    for sample, readback, known in zip(capture["samples"], readbacks, targets):
+    for sample, readback, known in zip(capture["samples"], readbacks, targets, strict=True):
         transforms = sample["pose"]["transforms"]
+        drift = [nodes[i]["address"] for i in (*under, hips_node)
+                 for field in ("translation", "scale") if (i != hips_node or field == "scale")
+                 and transforms[i][field] != rest_transforms[i][field]]
         frames = kinematics(nodes, transforms, F32, animator)
         bones = bone_frames(bones_rows, nodes, frames)
         mapped = set(bones)
@@ -153,11 +183,12 @@ def samples(name, doc, parents, masses):
         weights = folded_masses(masses, parents, mapped)
         columns = {f"{i}>{j}": tuple(weights[i] * (b - a) for a, b in zip(bones[i].position, bones[j].position))
                    for i, j in links}
-        local = {unit: body_states(nodes, transforms, F32, bones_rows, links, hips_address, unit) for unit in (U32, U64)}
+        local = {unit: body_states(nodes, posed(transforms), F32, bones_rows, links, hips_address, unit)
+                 for unit in (U32, U64)}
         chain = {unit: tracked(nodes, transforms, F32, animator, unit)[hips_address.rpartition("/")[0]]
                  for unit in (U32, U64)}
-        hips_row = transforms[next(i for i, node in enumerate(nodes) if node["address"] == hips_address)]
-        hips_scale = uniform(decode(hips_row["scale"], 3, F32))
+        hips_row = transforms[hips_node]
+        hips_scale = uniform(decode(rest_transforms[hips_node]["scale"], 3, F32))
         hips_local = decode(hips_row["translation"], 3, F32)
         epsilon, turn, world_bones, root = None, 0., None, None
         if readback is not None:
@@ -202,7 +233,7 @@ def samples(name, doc, parents, masses):
                             target_error=target_error, turn=turn, rest_frame=rest_frame, hips_scale=hips_scale,
                             hips_local=hips_local, hips_rotation=decode(hips_row["rotation"], 4, F32),
                             readback=readback, known=known, world_bones=world_bones, root=root,
-                            rest_turn=rest_turn, sample=sample, case=name,
+                            rest_turn=rest_turn, sample=sample, case=name, drift=drift,
                             muscle_names=[muscle["name"] for muscle in human["muscles"]])
         yield row
 
@@ -376,16 +407,11 @@ def missing_planned(documents):
 
 
 def load(folder):
-    """Every humanoid recording but the hold-out rig's, which the checkpoint never reads."""
-    documents = {}
-    for path in sorted((folder / "replays").rglob("*.pending.json")):
-        name = path.name.removesuffix(".pending.json")
-        if BODY_INFO.get(name, {}).get("rig") == HOLDOUT:
-            continue
-        doc = replay.read_json(path.read_text(encoding="utf-8"))
-        if "humanoid" in doc.get("capture", {}):
-            documents[name] = doc
-    return documents
+    """Every humanoid recording of the training role (anim_body_runs: by run.json and the case table), so
+    the hold-out rig's are never read."""
+    from anim_body_runs import Run
+
+    return Run(folder, "training", pending=True).documents
 
 
 def main(argv=None):

@@ -4,9 +4,10 @@ import copy
 import json
 import math
 import unittest
+from unittest import mock
 
 import anim_body_support as support
-from anim_body_model_support import BITS, F32, avatar, coefficients, recording, write_run
+from anim_body_model_support import BITS, CLIPS, F32, avatar, coefficients, recording, write_run
 
 import anim_body_adequacy as adequacy  # noqa: E402  (test_anim_replay puts it on the path)
 import anim_body_check as check  # noqa: E402
@@ -32,15 +33,25 @@ def avatars(run, doc):
     return avatar(doc)
 
 
+def clips(run, doc):
+    return CLIPS[doc["spec"]["evidence"]["editor"]["fixture_case"]]
+
+
+def checked(mode, folder, docs, avatar_of=avatars, clip_of=clips):
+    """run_mode on a run of `docs`, whose training cases are the required ones."""
+    write_run(folder, docs)
+    required = frozenset(name for name in docs if runs.role_of(name) == "training")
+    with mock.patch.object(runs, "REQUIRED", required):
+        return freeze.run_mode(mode, [folder], avatar_of=avatar_of, clip_of=clip_of)
+
+
 class Checks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.docs = {name: recording(name, samples=12) for name in CASES}
 
-    def run_mode(self, mode, docs=None, avatar_of=avatars, folder=None):
-        folder = folder or scratch.for_case(self)
-        write_run(folder, docs if docs is not None else self.docs)
-        return freeze.run_mode(mode, [folder], avatar_of=avatar_of)
+    def run_mode(self, mode, docs=None, avatar_of=avatars, clip_of=clips):
+        return checked(mode, scratch.for_case(self), docs if docs is not None else self.docs, avatar_of, clip_of)
 
     def edited(self, name, edit):
         docs = copy.deepcopy(self.docs)
@@ -79,8 +90,36 @@ class Checks(unittest.TestCase):
         # An absent slot must hold no mass.
         report = self.run_mode("e0", avatar_of=edited(lambda human: mass(human, 22, 1e-3)))
         self.assertTrue(any("E0b LeftEye" in line for line in report["failures"]))
-        report = self.run_mode("e0", avatar_of=edited(lambda human: human["m_HumanBoneIndex"].__setitem__(22, 3)))
-        self.assertTrue(any("E0a slot mapping ['LeftEye']" in line for line in report["failures"]))
+        # E0 alone on an Avatar the fit did not read: a mapping the capture lacks refuses the fit's rows.
+        folder = write_run(scratch.for_case(self), self.docs)
+        with mock.patch.object(runs, "REQUIRED", frozenset(self.docs)):
+            loaded = runs.load([folder], "training")
+        design = runs.Design(runs.observe(loaded, avatar_of=avatars))
+        coefficients = runs.solve(design)
+
+        def e0(change):
+            return check.e0(loaded, edited(change), design, coefficients)
+
+        report = e0(lambda human: human["m_HumanBoneIndex"].__setitem__(22, 3))
+        self.assertTrue(any("E0a LeftEye on" in line for line in report["failures"]))
+
+        def swap(human):
+            index = human["m_HumanBoneIndex"]
+            index[14], index[15] = index[15], index[14]
+
+        # Two slots swapped keep the mapped set; their paths do not match the capture.
+        report = e0(swap)
+        self.assertTrue(any("E0a LeftUpperArm on" in line for line in report["failures"]))
+        self.assertTrue(any("E0a RightUpperArm on" in line for line in report["failures"]))
+        # Two slots on one node.
+        report = e0(lambda human: human["m_HumanBoneIndex"].__setitem__(15, human["m_HumanBoneIndex"][14]))
+        self.assertTrue(any("two slots share one node in the Avatar" in line for line in report["failures"]))
+
+        def moved(human):
+            human["m_SkeletonPose"]["data"]["m_X"][3]["t"]["x"] += 1e-3
+
+        report = e0(moved)
+        self.assertTrue(any("E0d" in line and "off m_SkeletonPose" in line for line in report["failures"]))
         report = self.run_mode("e0", avatar_of=edited(
             lambda human: human["m_RootX"]["t"].update(y=human["m_RootX"]["t"]["y"] + 1e-4)))
         self.assertTrue(any("E0c m_RootX.t" in line for line in report["failures"]))
@@ -149,17 +188,71 @@ class Checks(unittest.TestCase):
         self.assertTrue(report["passed"])
         self.assertEqual(report["combinations"]["keep-o1-y0-xz0"]["start_offset"], "fail")
 
-    def test_e4_refuses_an_incomplete_clip(self):
-        def strip(doc):
-            del doc["spec"]["evidence"]["body_settings"]
+    def test_e4_refuses_a_built_clip_without_body_slots(self):
+        def stripped(run, doc):
+            clip = copy.deepcopy(clips(run, doc))
+            clip["m_MuscleClip"]["m_IndexArray"][7:14] = [-1] * 7
+            return clip
 
-        with self.assertRaisesRegex(ValueError, "not completed"):
-            self.run_mode("e4", self.edited("body-clip-level", strip))
+        with self.assertRaisesRegex(ValueError, "no body slots"):
+            self.run_mode("e4", clip_of=stripped)
 
-    def test_e3_against_a_known_vector_needs_its_target(self):
-        rows = [dict(state=dict(target_kind=None))]
-        with self.assertRaisesRegex(ValueError, "no sample with a body target"):
-            check.e3(rows, None, {})
+    def test_e4_fails_a_start_variant_without_its_twin(self):
+        docs = {name: doc for name, doc in self.docs.items() if name != "body-clip-keep-o0-y0-xz0"}
+        report = self.run_mode("e4", docs)
+        self.assertTrue(any("no start-offset twin" in line for line in report["failures"]))
+        self.assertEqual(report["combinations"]["keep-o0-y0-xz0"]["start_offset"], "fail")
+
+    def test_e4_refuses_an_unbounded_yaw(self):
+        with mock.patch("anim_body_e4.yaw_error", return_value=math.inf):
+            report = self.run_mode("e4")
+        self.assertEqual({row["status"] for row in report["combinations"].values()}, {"refused", "undecided"})
+        self.assertIn("E4: no comparison", report["failures"])
+
+    def test_no_comparison_or_a_missing_case_fails(self):
+        self.assertIn("E3: no comparison", check.e3([], None, {})["failures"])
+        self.assertIn("E2: no comparison", check.e2([])["failures"])
+        # A body case's sample without a target fails; a P2b case's is excluded by its role, and listed.
+        rows = [dict(name="v/body-probes-compact", case="body-probes-compact", local=0, state=dict(target_kind=None)),
+                dict(name="v/humanoid-compact-muscles", case="humanoid-compact-muscles", local=0,
+                     state=dict(target_kind=None))]
+        report = check.e3(rows, None, {})
+        self.assertIn("v/body-probes-compact@0: a body case's sample without a target", report["failures"])
+        self.assertEqual(report["excluded"], ["v/humanoid-compact-muscles"])
+        # A required case the run does not record fails every check.
+        folder = scratch.for_case(self)
+        write_run(folder, self.docs)
+        with mock.patch.object(runs, "REQUIRED", frozenset({*self.docs, "body-probes-tall"})):
+            report = freeze.run_mode("e2", [folder], avatar_of=avatars, clip_of=clips)
+        self.assertIn("2022.3.62f3: required case body-probes-tall not recorded", report["failures"])
+
+    def test_e3_fails_an_unbounded_uncertainty_or_a_moved_rest(self):
+        with mock.patch.object(runs.Design, "hips_uncertainty", return_value=math.inf):
+            report = self.run_mode("e3a")
+        self.assertTrue(report["failures"] and all("over E_unity,s" in line or "T_s" in line
+                                                   for line in report["failures"]))
+
+        def grow(doc):
+            pose = doc["capture"]["samples"][3]["pose"]["transforms"]
+            spine = next(row["node"] for row in doc["capture"]["humanoid"]["bones"] if row["name"] == "Spine")
+            pose[spine]["scale"] = [BITS(1.001)] * 3
+
+        report = self.run_mode("e3a", self.edited("body-chain-armature-targets", grow))
+        self.assertTrue(any("off the rest" in line for line in report["failures"]))
+
+    def test_the_topology_comes_from_the_avatar_before_any_kinematics(self):
+        def lone_eye(run, doc):
+            value = avatar(doc)
+            check.human_of(value)["m_HumanBoneIndex"][22] = 3
+            return value
+
+        docs = {"body-probes-compact": self.docs["body-probes-compact"]}
+        folder = scratch.for_case(self)
+        write_run(folder, docs)
+        with mock.patch.object(adequacy, "samples", side_effect=AssertionError("kinematics")):
+            rows = runs.observe(runs.load([folder], "training"), avatar_of=lone_eye)
+        self.assertTrue(rows and all(row["refused"] == "the Avatar maps ['LeftEye'] unlike the capture"
+                                     for row in rows))
 
 
 class SmokeCauses(unittest.TestCase):
@@ -176,6 +269,15 @@ class SmokeCauses(unittest.TestCase):
         # The finger bones are not read (Unity 6 returns unspecified values for them).
         next(row for row in rows if row["name"] == "Finger 0")["mass"] = "7fc00000"
         self.assertEqual(adequacy.bone_table([doc])[1], masses)
+        # Two tables that differ only in the fingers are one table; in a body slot, two.
+        other = copy.deepcopy(doc)
+        next(row for row in other["spec"]["evidence"]["editor"]["human_bones"]
+             if row["name"] == "Finger 3")["mass"] = "7f800000"
+        self.assertEqual(adequacy.bone_table([doc, other])[1], masses)
+        next(row for row in other["spec"]["evidence"]["editor"]["human_bones"]
+             if row["name"] == "Spine")["mass"] = BITS(.5)
+        with self.assertRaisesRegex(ValueError, "expected one HumanTrait bone table"):
+            adequacy.bone_table([doc, other])
         # A table whose Hips hold less than their children is not a hierarchy table.
         hips["mass"] = BITS(support.MASSES["Hips"])
         with self.assertRaisesRegex(ValueError, "Hips is below its children"):
@@ -213,9 +315,7 @@ class FitCheck(unittest.TestCase):
         cls.docs["body-chain-armature-clip"] = recording("body-chain-armature-clip")
 
     def e1(self, docs):
-        folder = scratch.for_case(self)
-        write_run(folder, docs)
-        return freeze.run_mode("e1", [folder], avatar_of=avatars)
+        return checked("e1", scratch.for_case(self), docs)
 
     def test_e1_passes_and_recovers_the_coefficients(self):
         report = self.e1(self.docs)

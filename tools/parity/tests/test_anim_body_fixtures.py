@@ -17,7 +17,7 @@ import anim_body_model as model  # noqa: E402  (test_anim_replay puts it on the 
 import anim_fixture_body as body  # noqa: E402
 import anim_fixture_coverage  # noqa: E402
 import anim_replay as replay  # noqa: E402
-from anim_replay_complete import OPTIONAL_CASES  # noqa: E402
+from anim_replay_complete import OPTIONAL_CASES, complete_folder  # noqa: E402
 
 EDITOR = Path(__file__).resolve().parents[2] / "fixtures" / "unity" / "Editor"
 
@@ -328,13 +328,15 @@ class CheckBodyTests(unittest.TestCase):
             slot = [row["attribute"] for row in bindings].index(attribute)
             changed = copy.deepcopy(built)
             data = changed["m_MuscleClip"]["m_Clip"]["data"]["m_StreamedClip"]["data"]
-            cursor, frame = 0, 0
+            cursor, keys = 0, 0
             while data[cursor] != 0x7f800000:
                 count = data[cursor + 1]
                 for i in range(cursor + 2, cursor + 2 + 5 * count, 5):
-                    if data[i] == slot and frame == 1:
-                        data[i + 4] = int(replay.f32_bits(.75), 16)
-                cursor, frame = cursor + 2 + 5 * count, frame + 1
+                    if data[i] == slot:
+                        keys += 1
+                        if keys == 2:
+                            data[i + 4] = int(replay.f32_bits(.75), 16)
+                cursor += 2 + 5 * count
             self.assert_refused("built clip lost its", name, doc, changed)
         name = "body-clip-keep-o1-y1-xz1-motion"
         doc = body_doc(name, RUN)
@@ -403,6 +405,29 @@ class BodyRunTests(unittest.TestCase):
         (self.bundles / "body-unknown").write_bytes(b"UnityFS\0")
         result = self.run_with(body.BODY_CASES)
         self.assertIn("unexpected fixture bundle inventory", result.stderr)
+
+    def test_the_hold_out_stays_sealed_until_a_freeze_unseals_it(self):
+        name = "body-probes-holdout"
+        (self.replays / "body").mkdir()
+        recording, bundle = self.replays / "body" / f"{name}.pending.json", self.bundles / body.BODY_CASES[name].bundle
+        # Neither file can be read: completion that opens either fails.
+        recording.write_text("{", encoding="utf-8")
+        bundle.write_bytes(b"not a bundle")
+        for path in (recording, bundle):
+            path.chmod(0)
+            self.addCleanup(path.chmod, 0o600)
+        result = self.run_with(body.BODY_CASES, {name: "recorded"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Sealed hold-out case, not opened: {name}", result.stdout)
+        self.assertFalse(recording.with_name(f"{name}.json").exists())
+        # --unseal needs a valid freeze before any hold-out file opens; with one, the hold-out is read.
+        artifact = self.folder / "freeze.json"
+        with self.assertRaisesRegex(ValueError, "no freeze artifact"):
+            complete_folder(self.folder, "unityrs", self.inspect, replay, artifact)
+        with mock.patch("anim_body_freeze.verify_unseal") as verify, \
+                self.assertRaisesRegex(ValueError, f"{name}.pending.json: .*Permission denied"):
+            complete_folder(self.folder, "unityrs", self.inspect, replay, artifact)
+        verify.assert_called_once_with(self.folder, artifact)
 
     def test_an_ordinary_case_claiming_body_rows_is_refused(self):
         self.coverage = coverage.coverage_archives(self.bundles, self.inspect)

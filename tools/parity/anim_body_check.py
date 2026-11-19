@@ -5,9 +5,12 @@ the model anim_body_model's, and every bound is derived from
 anim_body_tolerance's operation model (Unity's f32 path) plus the model's own
 f64 path:
 
-- **E0** per recorded Avatar. E0a: m_HumanBoneMass and m_HumanBoneIndex hold
+- **E0** per recorded Avatar (every one the training recordings play; the
+  hold-out's in E3b only). E0a: m_HumanBoneMass and m_HumanBoneIndex hold
   one entry per slot of the 25-slot order (HumanBodyBones 0-8, UpperChest,
-  9-23), finite and non-negative, with a node exactly for the mapped slots.
+  9-23), finite and non-negative, and each mapped slot's skeleton node is
+  the captured bone's node, by path (m_Skeleton.m_ID through m_TOS against
+  the capture's node names), no two slots on one node.
   E0b: each slot's mass against the E0b fold of HumanTrait's default (own)
   masses, which the recorder's hierarchy masses give
   (anim_body_adequacy.default_masses), an absent slot exactly zero, within
@@ -16,8 +19,11 @@ f64 path:
   E0c: c(T) from m_SkeletonPose with the Avatar's masses and the
   coefficients against m_RootX.t, and its height against m_Scale, within
   Unity's and the model's centre-of-mass bounds at the skeleton pose, the
-  store, the mass fold's own bound and the coefficients' uncertainty, and
-  m_RootX.t.y against m_Scale within two f32 roundings.
+  store, the mass fold's own bound and the coefficients' uncertainty (an
+  edge the design lacks leaves it unbounded, which fails), and
+  m_RootX.t.y against m_Scale within two f32 roundings. E0d: each mapped
+  bone of the recorded rest pose against m_SkeletonPose, which 2.2's F(T)
+  and the hips solve take, within both forward kinematics' errors.
 - **E1**: the checkpoint of anim_body_adequacy on the training rows (rank,
   condition, u_s <= E_unity,s, inventory, coverage, planned samples), the
   fitted coefficients within |a| <= 1 (anim_body_tolerance's centre-of-mass
@@ -32,14 +38,16 @@ f64 path:
   turn and Unity's solve (`solve_turn`).
 - **E3**: the 2.3 hips from the recorded non-hips pose and the target body
   pose (a known vector's request, a clip's read-back), against the recorded
-  hips: each translation component within T_s = E_unity,s + u_s + E_eval,s,
-  the rotation within Unity's and the model's solve turns, the scale exact.
-- **E4**: per clip sample, 2.4's (T_A, B_A) from the authored body curves
-  and the built clip's root settings against the read-back residual body
-  pose, within epsilon, Unity's solve (sigma_p E_unity,s), the f32 curve
-  sample and both projections' bounds; and each start-offset variant's
-  read-back against its twin's. A cell 2.4 refuses or leaves undecided is
-  listed, not evaluated.
+  hips: u_s within E_unity,s, each translation component within
+  T_s = E_unity,s + u_s + E_eval,s, the rotation within Unity's and the
+  model's solve turns, and the translations and scales below the hips and
+  the hips' scale exactly the rest's. A body case's sample without a target
+  fails; a P2b case's is excluded by its role and listed.
+- **E4** is anim_body_e4's.
+
+No check passes on nothing: E0, E2, E3 and E4 fail with no comparison, and
+a bound that bounds nothing (anim_body_model.turn_angle's NaN, an infinite
+u_s) fails every comparison against it.
 """
 
 import math
@@ -49,21 +57,15 @@ import anim_replay as replay
 from anim_body_model import (
     ANGLE_FLOOR,
     Refused,
-    Undecided,
-    animator_body,
     body_rotation,
-    cells,
     centre,
     columns,
-    project,
-    projection_error,
     quaternion,
-    sample_curves,
     solve_hips,
     turn_angle,
-    yaw_error,
 )
-from anim_body_runs import F32, SLOTS, floats, human_of, residuals, solve
+from anim_body_runs import (F32, SLOTS, avatar_paths, captured_paths, floats, human_of, mapping, residuals,
+                            skeleton_rows, solve)
 from anim_body_tolerance import (
     U32,
     U64,
@@ -80,7 +82,6 @@ from anim_body_tolerance import (
     gamma,
     norm,
     orientation_rounding,
-    readback_position,
     readback_turn,
     turn_sensitivity,
 )
@@ -103,18 +104,23 @@ def vector(value, axes):
 
 
 def e0_avatar(label, avatar, doc, parents, masses, errors, design, coefficients):
-    """E0a, E0b and E0c on one recorded Avatar; `doc` is a recording that plays it."""
+    """E0a, E0b, E0c and E0d on one recorded Avatar; `doc` is a recording that plays it."""
     failures = []
     human = human_of(avatar)
     weights = floats(human.get("m_HumanBoneMass"), "m_HumanBoneMass")
-    index = human.get("m_HumanBoneIndex")
-    replay.require(len(weights) == len(SLOTS) and isinstance(index, list) and len(index) == len(SLOTS)
-                   and all(type(i) is int and i >= -1 for i in index) and min(weights) >= 0,
-                   f"{label}: malformed m_HumanBoneMass or m_HumanBoneIndex")
-    mapped = {row["name"] for row in doc["capture"]["humanoid"]["bones"] if row["name"] in SLOTS and row["node"] >= 0}
-    present = {slot for slot, node in zip(SLOTS, index) if node >= 0}
-    if present != mapped:
-        failures.append(f"{label}: E0a slot mapping {sorted(present ^ mapped)} differs from the captured bones")
+    replay.require(len(weights) == len(SLOTS) and min(weights) >= 0, f"{label}: malformed m_HumanBoneMass")
+    index = mapping(human)
+    # E0a: every mapped slot on the captured bone's node, by path, and no two slots on one node.
+    paths, captured = avatar_paths(avatar), captured_paths(doc)
+    mapped = set(captured)
+    for slot in sorted(index.keys() | mapped):
+        if paths.get(slot) is None or paths.get(slot) != captured.get(slot):
+            failures.append(f"{label}: E0a {slot} on {paths.get(slot)!r}, captured on {captured.get(slot)!r}")
+    for kind, table in (("Avatar", index), ("capture", captured)):
+        if len(set(table.values())) != len(table):
+            failures.append(f"{label}: E0a two slots share one node in the {kind}")
+    assigned = not failures
+    present = set(index)
     avatar_masses = dict(zip(SLOTS, weights))
     folded = folded_masses(masses, parents, mapped)
     # The own masses' errors from the hierarchy masses (anim_body_adequacy.default_masses), through the fold.
@@ -126,26 +132,15 @@ def e0_avatar(label, avatar, doc, parents, masses, errors, design, coefficients)
                  + (moved.get(slot, 0.) + want * spread) / total)
         if not abs(avatar_masses[slot] - want) <= bound:
             failures.append(f"{label}: E0b {slot} mass {avatar_masses[slot]!r} against {want!r} (bound {bound:.3e})")
-    if present != mapped:
-        return failures, dict(avatar=label, rest_distance=None, rest_bound=None)
+    row = dict(avatar=label, rest_distance=None, rest_bound=None)
+    if not assigned:
+        return failures, row
     refused = adequacy.scope_refusal(present)
     if refused:
         # Outside the frozen topology scope the model refuses the Avatar: E0a and E0b only.
-        return failures, dict(avatar=label, rest_distance=None, rest_bound=None, refused=refused)
-    # E0c: forward kinematics of m_SkeletonPose from its root node, as rows anim_body_tolerance can walk.
-    skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
-    pose = human["m_SkeletonPose"].get("data", human["m_SkeletonPose"])["m_X"]
-    parent_ids = [row["m_ParentId"] for row in skeleton["m_Node"]]
-    replay.require(len(pose) == len(parent_ids) and parent_ids and parent_ids[0] == -1
-                   and all(0 <= p < k for k, p in enumerate(parent_ids) if k), f"{label}: malformed skeleton")
-    addresses = []
-    for k, p in enumerate(parent_ids):
-        addresses.append("r" if p < 0 else f"{addresses[p]}/{k}")
-    nodes = [dict(address=a) for a in addresses]
-    transforms = [dict(translation=[replay.f32_bits(v) for v in vector(x["t"], "xyz")],
-                       rotation=[replay.f32_bits(v) for v in vector(x["q"], "xyzw")],
-                       scale=[replay.f32_bits(v) for v in vector(x["s"], "xyz")]) for x in pose]
-    bones_rows = [dict(name=slot, node=node) for slot, node in zip(SLOTS, index) if node >= 0]
+        return failures, row | dict(refused=refused)
+    # E0c: c(T) from m_SkeletonPose with the Avatar's masses and the coefficients against m_RootX.t.
+    nodes, transforms, bones_rows = skeleton_rows(human)
     links = edges(parents, present)
     weights_present = {slot: avatar_masses[slot] for slot in present}
     states = {unit: body_states(nodes, transforms, F32, bones_rows, links, "r", unit) for unit in (U32, U64)}
@@ -160,30 +155,43 @@ def e0_avatar(label, avatar, doc, parents, masses, errors, design, coefficients)
     rest = vector(root["t"], "xyz")
     bound = error + gamma(FOLD_DEPTH, U32) * magnitude + U32 * norm(rest) + math.sqrt(sum(v * v for v in u))
     distance = math.dist(c, rest)
-    if not distance <= bound:
+    if not math.isfinite(bound):
+        failures.append(f"{label}: E0c unbounded (an edge the design lacks)")
+    elif not distance <= bound:
         failures.append(f"{label}: E0c m_RootX.t {rest} against c(T) {c} ({distance:.3e} > {bound:.3e})")
     scale = float(human["m_Scale"])
     if not abs(scale - rest[1]) <= 2 * U32 * abs(scale):
         failures.append(f"{label}: E0c m_Scale {scale!r} against m_RootX.t.y {rest[1]!r}")
-    return failures, dict(avatar=label, rest_distance=distance, rest_bound=bound)
+    # E0d: the recorded rest pose against m_SkeletonPose, which 2.2's F(T) and the solve's rest take.
+    spec, capture = doc["spec"], doc["capture"]
+    recorded, _ = body_states(spec["nodes"], capture["rest"]["transforms"], F32, capture["humanoid"]["bones"],
+                              links, spec["binding_address"])
+    for slot in sorted(present):
+        apart = math.dist(points[slot], recorded[slot].position)
+        allowed = states[U32][0][slot].e_position + recorded[slot].e_position
+        if not apart <= allowed:
+            failures.append(f"{label}: E0d {slot} rest {apart:.3e} off m_SkeletonPose (bound {allowed:.3e})")
+    return failures, row | dict(rest_distance=distance, rest_bound=bound)
 
 
-def e0(runs, avatar_of, design, coefficients):
-    """E0 on every recorded Avatar: one per bundle and Editor version. `avatar_of(run, doc)` reads it."""
+def e0(runs, avatar_of, design, coefficients, table=None):
+    """E0 on every recorded Avatar: one per bundle, Avatar asset and Editor version. `avatar_of(run, doc)` reads
+    it; `table` is the HumanTrait table (parents, own masses, errors), by default each run's own."""
     failures, avatars = [], []
     for run in runs:
-        parents, masses, errors = adequacy.default_masses(run.documents.values())
+        parents, masses, errors = table or adequacy.default_masses(run.documents.values())
         seen = set()
         for case, doc in sorted(run.documents.items()):
             key = (doc["spec"]["bundles"][0]["name"], doc["spec"]["avatar_asset"])
-            if case not in BODY_INFO or key in seen:
+            if key in seen:
                 continue
             seen.add(key)
             found, row = e0_avatar(f"{run.version}/{key[0]}", avatar_of(run, doc), doc, parents, masses, errors,
                                    design, coefficients)
             failures += found
             avatars.append(row)
-    replay.require(avatars, "no recorded body Avatar")
+    if not avatars:
+        failures.append("E0: no recorded Avatar")
     return verdict(failures, avatars=avatars)
 
 
@@ -199,7 +207,7 @@ def terminals(rows):
     """H-pos: each probe sample turning only terminal bones against its case's neutral sample."""
     failures, checked, by_case = [], 0, {}
     for row in rows:
-        if BODY_INFO.get(row["case"], {}).get("kind") == "probes":
+        if BODY_INFO.get(row["case"], {}).get("kind") == "probes" and not row.get("refused"):
             by_case.setdefault(row["name"], []).append(row)
     for name, case_rows in by_case.items():
         neutral = next((row for row in case_rows if not moved_bones(row["state"])), None)
@@ -269,8 +277,10 @@ def e2(rows):
     failures, checked, worst, refused = [], 0, 0., 0
     for row in rows:
         state = row["state"]
-        if state["readback"] is None or row.get("refused"):
-            refused += bool(row.get("refused"))
+        if row.get("refused"):
+            refused += 1
+            continue
+        if state["readback"] is None:
             continue
         observed, turn = readback_rotation(state)
         points = {name: frame.position for name, frame in state["bones"].items()}
@@ -289,34 +299,50 @@ def e2(rows):
             if not residual <= bound:
                 failures.append(f"{row['name']}@{row['local']}: {label} to read-back {math.degrees(residual):.4g} deg "
                                 f"> {math.degrees(bound):.4g} deg")
+    if not checked:
+        failures.append("E2: no comparison")
     return verdict(failures, residuals=checked, worst_ratio=worst, refused=refused)
 
 
 def hips(row, design, coefficients):
     """E3 at one sample: (failures, |dt| / T_s)."""
     state = row["state"]
+    where = f"{row['name']}@{row['local']}"
     local = {name: bone.position for name, bone in state["local"][U64][0].items()}
     t, q = solve_hips(state["target"], state["body_rotation"], state["scale"], local, state["weights"],
                       state["links"], coefficients, state["rest_frame"], state["chain"][U64], state["hips_scale"])
-    tolerance = row["unity"] + design.hips_uncertainty(row) + row["evaluation"]
+    # u_s within Unity's own floor (the bounds assume it); an edge the design lacks leaves it unbounded.
+    u = design.hips_uncertainty(row)
+    failures = [] if u <= row["unity"] else [f"{where}: u_s {u:.3e} over E_unity,s {row['unity']:.3e}"]
+    tolerance = row["unity"] + u + row["evaluation"]
     delta = max(abs(a - b) for a, b in zip(t, state["hips_local"]))
     turn = solve_turn(state, U32) + state["turn"] + solve_turn(state, U64)
     bound = turn_angle(turn) + ANGLE_FLOOR
     residual = angle(q, state["hips_rotation"])
-    where = f"{row['name']}@{row['local']}"
-    failures = [] if delta <= tolerance else [f"{where}: hips translation off by {delta:.3e} > T_s {tolerance:.3e}"]
+    if not delta <= tolerance:
+        failures.append(f"{where}: hips translation off by {delta:.3e} > T_s {tolerance:.3e}")
     if not residual <= bound:
         failures.append(f"{where}: hips rotation off by {math.degrees(residual):.4g} deg")
-    return failures, delta / tolerance if tolerance > 0 else math.inf
+    # 2.3 keeps the rest translations and scales below the hips and the hips' rest scale, exactly.
+    if state["drift"]:
+        failures.append(f"{where}: translation or scale off the rest at {state['drift']}")
+    ratio = delta / tolerance if 0 < tolerance < math.inf else math.inf
+    return failures, ratio
 
 
 def e3(rows, design, coefficients):
-    failures, checked, worst, refused = [], 0, 0., 0
+    """E3 on every row with a body target. A P2b case's row without one (no known vector, no read-back) is
+    excluded by its role and listed; a body case's row without one fails."""
+    failures, checked, worst, refused, excluded = [], 0, 0., 0, set()
     for row in rows:
-        if row["state"]["target_kind"] is None:
-            continue
         if row.get("refused"):
             refused += 1
+            continue
+        if row["state"]["target_kind"] is None:
+            if row["case"] in BODY_INFO:
+                failures.append(f"{row['name']}@{row['local']}: a body case's sample without a target")
+            else:
+                excluded.add(row["name"])
             continue
         try:
             found, ratio = hips(row, design, coefficients)
@@ -326,95 +352,6 @@ def e3(rows, design, coefficients):
         checked += 1
         failures += found
         worst = max(worst, ratio)
-    replay.require(checked, "no sample with a body target")
-    return verdict(failures, samples=checked, worst_ratio=worst, refused=refused)
-
-
-# E4: the root projection.
-
-def authored(doc):
-    return {row["property"]: row for row in doc["spec"]["evidence"]["editor"]["bindings"]
-            if (row["path"], row["type"]) == ("", "UnityEngine.Animator")}
-
-
-def clip_sample(row, doc, serialized):
-    """(T_A, B_A, position bound, rotation bound) of 2.4 at one clip sample."""
-    state, curves = row["state"], authored(doc)
-    time = float(state["sample"]["source"])
-    start_time = float(doc["spec"]["start"])
-    rules = cells(serialized)
-    (t, e_t), (q, e_q) = sample_curves(curves, "RootT", time), sample_curves(curves, "RootQ", time)
-    replay.require(t is not None and q is not None, f"{row['name']}: no authored body curves")
-    start = tuple(sample_curves(curves, prefix, start_time)[0] for prefix in ("RootT", "RootQ"))
-    motion = [sample_curves(curves, prefix, time) for prefix in ("MotionT", "MotionQ")]
-    original = None if motion[0][0] is None or motion[1][0] is None else (motion[0][0], motion[1][0])
-    root = project(rules, (t, q), start, original, float(serialized["m_Level"]),
-                   float(serialized["m_OrientationOffsetY"]))
-    source = {"bake": start, "original": original, "body": (t, q)}[rules["yaw"]][1]
-    source_error = e_q if rules["yaw"] == "body" else motion[1][1] if rules["yaw"] == "original" else 0.
-    h = state["scale"]
-    target, rotation = animator_body((t, q), root, h)
-    position, turn = 0., 0.
-    for unit, dq in ((U32, source_error), (U64, 0.)):
-        extra = projection_error((t, q), root, h, yaw_error(source, dq, unit), unit)
-        position, turn = position + extra[0], turn + extra[1]
-    position += h * e_t + row["epsilon"] + state["chain"][U32].scale * row["unity"]
-    turn += turn_sensitivity(q) * e_q + state["turn"] + solve_turn(state, U32)
-    return target, rotation, position, turn_angle(turn) + 2 * ANGLE_FLOOR
-
-
-def e4(rows, documents):
-    """`documents` maps a row's name to its recording."""
-    failures, combinations, samples, readbacks = [], {}, 0, {}
-    for row in rows:
-        info = BODY_INFO.get(row["case"])
-        if info is None or info["kind"] != "clip" or row["state"]["readback"] is None:
-            continue
-        doc = documents[row["name"]]
-        settings = doc["spec"]["evidence"].get("body_settings")
-        replay.require(settings is not None, f"{row['name']}: not completed (no built root settings)")
-        combination = combinations.setdefault(info["variant"].removesuffix("-start"), {"status": "pass"})
-        state = row["state"]
-        readback = (tuple(state["scale"] * v for v in readback_position(state["readback"], state["root"], F32)),
-                    decode(state["readback"]["readback_rotation"], 4, F32))
-        readbacks[row["name"], row["local"]] = (readback, row, info)
-        try:
-            target, rotation, position, bound = clip_sample(row, doc, settings["serialized"])
-        except (Refused, Undecided) as exc:
-            if combination["status"] == "pass":
-                combination.update(status="undecided" if isinstance(exc, Undecided) else "refused", reason=str(exc))
-            continue
-        samples += 1
-        where = f"{row['name']}@{row['local']}"
-        off, turned = math.dist(target, readback[0]), angle(rotation, readback[1])
-        if not off <= position:
-            failures.append(f"{where}: T_A off the read-back by {off:.3e} > {position:.3e}")
-        if not turned <= bound:
-            failures.append(f"{where}: B_A off the read-back by {math.degrees(turned):.4g} deg")
-        if not (off <= position and turned <= bound):
-            combination["status"] = "fail"
-    # The start-offset variants: the same residual body pose as their twins.
-    pairs = 0
-    for (name, local), ((position, rotation), row, info) in readbacks.items():
-        if not info["variant"].endswith("-start"):
-            continue
-        twin_case = next((case for case, other in BODY_INFO.items() if other["kind"] == "clip"
-                          and other["variant"] == info["variant"].removesuffix("-start")
-                          and other["root"] == info["root"]
-                          and other["rig"] == info["rig"]), None)
-        twin = readbacks.get((f"{row['version']}/{twin_case}", local))
-        if twin is None:
-            continue
-        pairs += 1
-        (other_position, other_rotation), other, _ = twin
-        bound = sum(r["epsilon"] + r["state"]["chain"][U32].scale * r["unity"] for r in (row, other))
-        turn = turn_angle(sum(r["state"]["turn"] + solve_turn(r["state"], U32) for r in (row, other)))
-        combination = combinations[info["variant"].removesuffix("-start")]
-        kept = math.dist(position, other_position) <= bound and angle(rotation, other_rotation) <= turn + ANGLE_FLOOR
-        if combination.get("start_offset") != "fail":
-            combination["start_offset"] = "pass" if kept else "fail"
-        # A combination 2.4 refuses or leaves undecided is not supported, so its pairs only inform.
-        if not kept and combination["status"] in ("pass", "fail"):
-            failures.append(f"{name}@{local}: the start offset changed the residual body pose")
-            combination["status"] = "fail"
-    return verdict(failures, combinations=dict(sorted(combinations.items())), samples=samples, start_pairs=pairs)
+    if not checked:
+        failures.append("E3: no comparison")
+    return verdict(failures, samples=checked, worst_ratio=worst, refused=refused, excluded=sorted(excluded))

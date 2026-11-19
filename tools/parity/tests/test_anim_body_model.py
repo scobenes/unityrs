@@ -85,6 +85,12 @@ class ScopeTests(unittest.TestCase):
                          {"no-chest": "topology: Chest absent", "no-neck": "topology: Neck absent",
                           "no-left-shoulder": "topology: exactly one Shoulder",
                           "no-right-shoulder": "topology: exactly one Shoulder"})
+        # The admitted patterns are exactly the in-scope training rigs'; any other refuses, such as one eye.
+        self.assertEqual(model.RECORDED_ABSENT, {tolerance.BODY_SLOTS - body.rig_bones(rig)
+                                                 for rig in body.PROBE_RIGS.keys() - {body.HOLDOUT}
+                                                 if not refusals[rig]})
+        with self.assertRaisesRegex(model.Refused, r"unrecorded pattern \(absent \['Jaw', 'RightEye'\]\)"):
+            model.topology_scope(body.rig_bones("compact") | {"LeftEye"})
 
     def test_the_twist_scope(self):
         def twisted(degrees):
@@ -99,6 +105,14 @@ class ScopeTests(unittest.TestCase):
                                                  rest, IDENTITY, 1.)):
             with self.assertRaisesRegex(model.Refused, "shoulder-hip twist 5.000 deg"):
                 refused()
+        # A lateral along up has no twist about it: undefined, refused rather than read as zero.
+        along = dict(LOCAL)
+        mid = tuple((a + b) / 2 for a, b in zip(LOCAL["LeftUpperArm"], LOCAL["RightUpperArm"]))
+        up = tuple(a - (b + c) / 2 for a, b, c in zip(mid, LOCAL["LeftUpperLeg"], LOCAL["RightUpperLeg"]))
+        along["LeftUpperArm"] = tuple(m - u / 4 for m, u in zip(mid, up))
+        along["RightUpperArm"] = tuple(m + u / 4 for m, u in zip(mid, up))
+        with self.assertRaisesRegex(model.Refused, "undefined shoulder-hip twist"):
+            model.shoulder_hip_twist(along)
 
 
 class SolveTests(unittest.TestCase):
@@ -262,7 +276,9 @@ class ProjectionTests(unittest.TestCase):
         self.assertAlmostEqual(model.yaw(multiply(yaw(40), q)), model.yaw(q) + math.radians(40), places=14)
         self.assertAlmostEqual(model.yaw(euler((-90, 0, 0), 4)), 0., places=15)
         self.assertAlmostEqual(model.turn_angle(2 * math.sin(.25)), .5, places=14)
-        self.assertEqual(model.turn_angle(3.), math.pi)
+        # A turn of 2 or more bounds nothing: no comparison against it passes.
+        self.assertTrue(math.isnan(model.turn_angle(3.)) and math.isnan(model.turn_angle(math.inf)))
+        self.assertFalse(0. <= model.turn_angle(2.))
 
     def test_authored_curves(self):
         def keys(*rows):

@@ -5,16 +5,30 @@ replays/). Each recording is read from its completed `.json` where
 completion wrote one (a clip, with its built root settings) and from its
 `.pending.json` otherwise (a known vector keeps the pending schema).
 
-**Roles.** `training` is every humanoid recording but the hold-out rig's
-(anim_fixture_body.HOLDOUT), and `holdout` is the hold-out rig's alone. The
-role is decided from the file's case name before the file is opened, so a
-training load never reads a hold-out byte, and `load` checks the loaded
-rigs again. `solve` refuses any hold-out row as well, so no fit can take
-one in by another path.
+**Inventory and roles.** The cases come from run.json, never from file
+names: each case it lists as recorded that the builder's case tables
+(anim_fixture_body, anim_fixture_contract, anim_fixture_coverage) give a
+humanoid Avatar is read from the path the table lays out for it, and its
+role comes from the same table: `holdout` for the hold-out rig's cases
+(anim_fixture_body.HOLDOUT), `training` for every other. The role is
+decided before the file is opened, so a training load never reads a
+hold-out byte. A read recording must name its own case and the table's
+bundle, so a hold-out recording under a training case's name refuses.
+Every training body case is required (REQUIRED): `Run.missing` lists those
+run.json does not record, which fails every check and refuses the freeze.
+`load` checks the loaded rigs again, and `solve` refuses any hold-out row,
+so no fit can take one in by another path.
 
 **Digest.** Each loaded file is named by its run's Editor version, case,
 rig and sha256; the digest is the sha256 of that sorted list as canonical
 JSON. The freeze records the training digest; E3b recomputes it.
+
+**Avatars.** With an Avatar reader (anim_body_freeze.readers), `observe`
+takes each recording's masses from its Avatar's m_HumanBoneMass (decision
+1), decides the topology scope from the Avatar's m_HumanBoneIndex before any
+forward kinematics (a case outside it, or whose Avatar maps other slots
+than the capture, yields refused rows only), and takes 2.2's F(T) from the
+Avatar's m_SkeletonPose (`skeleton_points`).
 
 **Fit.** The fitting rows (anim_body_adequacy's: read-back body positions of
 the training body cases) give a block-weighted least-squares problem in
@@ -32,46 +46,73 @@ import math
 import anim_body_adequacy as adequacy
 import anim_replay as replay
 from anim_body_model import centre
-from anim_body_tolerance import NAMES, readback_position
-from anim_fixture_body import BODY_INFO, HOLDOUT
+from anim_body_tolerance import NAMES, U64, body_states, edges, readback_position
+from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT
+from anim_fixture_contract import REPLAY_CASES, VECTOR_CASES
+from anim_fixture_coverage import COVERAGE_CASES
 
 ROLES = ("training", "holdout")
 # The 25 slots of m_HumanBoneIndex and m_HumanBoneMass: HumanBodyBones 0-8, UpperChest, 9-23.
 SLOTS = (*NAMES[:9], "UpperChest", *NAMES[9:24])
 F32 = replay.f32_from_bits
+# Every humanoid case of the builder's tables: (its fixture, its folder under replays/).
+CASES = {**{name: (fixture, "") for name, fixture in (REPLAY_CASES | COVERAGE_CASES).items() if fixture.avatar},
+         **{name: (fixture, "known-vectors") for name, fixture in VECTOR_CASES.items() if fixture.avatar},
+         **{name: (fixture, "body") for name, fixture in BODY_CASES.items()}}
 
 
 def role_of(case):
     return "holdout" if BODY_INFO.get(case, {}).get("rig") == HOLDOUT else "training"
 
 
-def recording_paths(folder, role):
-    """{case: path} for one role, chosen by name alone: a completed `.json` over its `.pending.json`."""
+REQUIRED = frozenset(name for name in BODY_CASES if role_of(name) == "training")
+
+
+def statuses(manifest):
+    """run.json's case statuses by name."""
+    rows = manifest["cases"]
+    replay.require(isinstance(rows, list) and all(isinstance(row, dict) and isinstance(row.get("name"), str)
+                                                  and isinstance(row.get("status"), str) for row in rows),
+                   "invalid run.json case rows")
+    result = {row["name"]: row["status"] for row in rows}
+    replay.require(len(result) == len(rows), "duplicate run.json case")
+    return result
+
+
+def recording_paths(folder, role, *, pending=False):
+    """{case: path} for one role: run.json's recorded humanoid cases at the case table's paths, a completed
+    `.json` over its `.pending.json` unless `pending`."""
     replay.require(role in ROLES, f"unknown role {role}")
+    manifest = replay.read_json((folder / "run.json").read_text(encoding="utf-8"))
     paths = {}
-    for pending in sorted((folder / "replays").rglob("*.pending.json")):
-        case = pending.name.removesuffix(".pending.json")
-        if role_of(case) != role:
+    for case, status in sorted(statuses(manifest).items()):
+        if status != "recorded" or case not in CASES or role_of(case) != role:
             continue
-        completed = pending.with_name(case + ".json")
-        replay.require(case not in paths, f"two recordings of {case}")
-        paths[case] = completed if completed.is_file() else pending
+        path = folder / "replays" / CASES[case][1] / f"{case}.pending.json"
+        completed = path.with_name(case + ".json")
+        paths[case] = completed if completed.is_file() and not pending else path
     return paths
 
 
 class Run:
-    """One run's recordings of one role: documents, the files' digests and the HumanTrait table."""
+    """One run's recordings of one role: documents, the files' digests, and the required cases it lacks."""
 
-    def __init__(self, folder, role):
+    def __init__(self, folder, role, *, pending=False):
         manifest = replay.read_json((folder / "run.json").read_text(encoding="utf-8"))
         self.folder, self.role = folder, role
         self.version = manifest["run"]["editor_version"]
+        recorded = {case for case, status in statuses(manifest).items() if status == "recorded"}
+        self.missing = sorted(REQUIRED - recorded) if role == "training" else []
         self.documents, self.inputs = {}, []
-        for case, path in recording_paths(folder, role).items():
+        for case, path in recording_paths(folder, role, pending=pending).items():
             data = path.read_bytes()
             doc = replay.read_json(data.decode("utf-8"))
-            if "humanoid" not in doc.get("capture", {}):
-                continue
+            spec = doc["spec"]
+            replay.require("humanoid" in doc.get("capture", {}), f"{case}: a humanoid case without a humanoid capture")
+            replay.require(spec["evidence"]["editor"].get("fixture_case") == case,
+                           f"{path.name} records another case than {case}")
+            replay.require([bundle["name"] for bundle in spec["bundles"]] == [CASES[case][0].bundle],
+                           f"{case} plays another bundle than the case table's {CASES[case][0].bundle}")
             replay.require(doc["capture"].get("editor_version", self.version) == self.version,
                            f"{case} was recorded by another Editor version")
             self.documents[case] = doc
@@ -118,20 +159,106 @@ def avatar_masses(avatar):
     return dict(zip(SLOTS, weights))
 
 
+def skeleton_rows(human):
+    """m_SkeletonPose as rows anim_body_tolerance can walk: (nodes, transforms, bone rows), the root node "r"
+    at the Animator, and each mapped slot's m_HumanBoneIndex node."""
+    skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
+    pose = human["m_SkeletonPose"].get("data", human["m_SkeletonPose"])["m_X"]
+    parent_ids = [row["m_ParentId"] for row in skeleton["m_Node"]]
+    replay.require(len(pose) == len(parent_ids) and parent_ids and parent_ids[0] == -1
+                   and all(0 <= p < k for k, p in enumerate(parent_ids) if k), "malformed Avatar skeleton")
+    addresses = []
+    for k, p in enumerate(parent_ids):
+        addresses.append("r" if p < 0 else f"{addresses[p]}/{k}")
+
+    def bits(value, axes):
+        return [replay.f32_bits(float(value[axis])) for axis in axes]
+
+    transforms = [dict(translation=bits(x["t"], "xyz"), rotation=bits(x["q"], "xyzw"), scale=bits(x["s"], "xyz"))
+                  for x in pose]
+    index = mapping(human)
+    replay.require(all(node < len(pose) for node in index.values()), "m_HumanBoneIndex outside the skeleton")
+    return [dict(address=a) for a in addresses], transforms, [dict(name=slot, node=node)
+                                                             for slot, node in index.items()]
+
+
+def mapping(human):
+    """{slot: skeleton node} of m_HumanBoneIndex's mapped slots."""
+    index = human.get("m_HumanBoneIndex")
+    replay.require(isinstance(index, list) and len(index) == len(SLOTS)
+                   and all(type(i) is int and i >= -1 for i in index), "malformed m_HumanBoneIndex")
+    return {slot: node for slot, node in zip(SLOTS, index) if node >= 0}
+
+
+def skeleton_points(human, parents, unit=U64):
+    """The mapped slots' m_SkeletonPose positions in A, and their position errors at `unit`."""
+    nodes, transforms, bones = skeleton_rows(human)
+    states, _ = body_states(nodes, transforms, F32, bones, edges(parents, {row["name"] for row in bones}), "r", unit)
+    return {name: state.position for name, state in states.items()}, \
+        {name: state.e_position for name, state in states.items()}
+
+
+def captured_paths(doc):
+    """{slot: the bone's path under the Animator node} from the capture's bone rows and nodes."""
+    spec = doc["spec"]
+    names = {node["address"]: node["name"] for node in spec["nodes"]}
+    base = spec["binding_address"]
+    paths = {}
+    for row in doc["capture"]["humanoid"]["bones"]:
+        if row["name"] in SLOTS and row["node"] >= 0:
+            address = spec["nodes"][row["node"]]["address"]
+            replay.require(address.startswith(base + "/"), f"{row['name']} is not under the Animator")
+            parts = address[len(base) + 1:].split("/")
+            paths[row["name"]] = "/".join(names[base + "/" + "/".join(parts[:k + 1])] for k in range(len(parts)))
+    return paths
+
+
+def avatar_paths(avatar):
+    """{slot: its skeleton node's path} through m_HumanBoneIndex, m_Skeleton.m_ID and the Avatar's m_TOS."""
+    human = human_of(avatar)
+    skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
+    ids, tos = skeleton.get("m_ID") or [], dict(map(tuple, avatar.get("m_TOS") or []))
+    return {slot: tos.get(ids[node]) if node < len(ids) else None for slot, node in mapping(human).items()}
+
+
+def avatar_scope(avatar, doc, parents):
+    """(the Avatar's 2.2 rest points, or None, and the refusal, or None) for one recording, from its Avatar
+    alone before any forward kinematics: its slots' nodes against the capture's, then the topology scope."""
+    human = human_of(avatar)
+    paths, captured = avatar_paths(avatar), captured_paths(doc)
+    if paths != captured:
+        moved = sorted(slot for slot in paths.keys() | captured.keys() if paths.get(slot) != captured.get(slot))
+        return None, f"the Avatar maps {moved} unlike the capture"
+    mapped = set(paths)
+    refused = adequacy.scope_refusal(mapped)
+    return (None, refused) if refused else (skeleton_points(human, parents)[0], None)
+
+
 def observe(runs, table=None, avatar_of=None):
     """Every sample row of the runs (anim_body_adequacy.samples), named `version/case`. `table` is the
     HumanTrait table (parents, masses) to use; by default each run's own. With `avatar_of(run, doc)`, each
-    recording's masses are its Avatar's m_HumanBoneMass (decision 1); the checkpoint's fold then keeps
-    them, renormalized over the mapped slots."""
+    recording's masses are its Avatar's m_HumanBoneMass (decision 1), the checkpoint's fold then keeping
+    them renormalized over the mapped slots, and its scope and F(T) are the Avatar's (avatar_scope)."""
     rows = []
     for run in runs:
         if not run.documents:
             continue
         parents, masses = table or adequacy.bone_table(run.documents.values())
         for case, doc in run.documents.items():
-            weights = avatar_masses(avatar_of(run, doc)) if avatar_of else masses
-            for row in adequacy.samples(case, doc, parents, weights):
-                row.update(name=f"{run.version}/{case}", case=case, version=run.version)
+            skeleton, refused, weights = None, None, masses
+            if avatar_of:
+                avatar = avatar_of(run, doc)
+                weights = avatar_masses(avatar)
+                skeleton, refused = avatar_scope(avatar, doc, parents)
+            if refused:
+                # Out of scope: no forward kinematics, no bound; every sample is refused.
+                case_rows = [dict(local=sample["local"], refused=refused, fit=False, state=None, edges=None,
+                                  columns={}, jacobian={}) for sample in doc["capture"]["samples"]]
+            else:
+                case_rows = adequacy.samples(case, doc, parents, weights, skeleton)
+            for row in case_rows:
+                row.update(name=f"{run.version}/{case}", case=case, version=run.version,
+                           rig=BODY_INFO.get(case, {}).get("rig", "p2b"))
                 rows.append(row)
     return rows
 

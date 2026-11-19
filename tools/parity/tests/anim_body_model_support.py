@@ -12,18 +12,22 @@ and m_Scale), and `write_run` lays recordings out as a completed run.
 import copy
 import json
 import struct
+import zlib
 from unittest import mock
 
 from anim_body_support import COEFFICIENT, body_doc, clip_case
 from anim_fixture_support import RUN
 
 import anim_body_adequacy as adequacy  # noqa: E402  (test_anim_replay puts it on the path)
+import anim_body_e4 as e4  # noqa: E402
 import anim_body_model as model  # noqa: E402
 import anim_body_tolerance as tolerance  # noqa: E402
 import anim_replay as replay  # noqa: E402
 from anim_fixture_body import BODY_CASES, BODY_INFO, SERIALIZED_ROOT  # noqa: E402
 
 F32 = replay.f32_from_bits
+# The built clip of each clip case clip_doc made, by case: what E4's reader returns.
+CLIPS = {}
 BITS = replay.f32_bits
 HUMAN_SCALE = 1.0625
 
@@ -53,15 +57,11 @@ def coefficients(links, value=COEFFICIENT):
 
 
 def clip_target(doc, sample, scale):
-    """The 2.4 body pose in A (normalized) at a clip sample, from its authored curves and built settings."""
-    curves = {row["property"]: row for row in doc["spec"]["evidence"]["editor"]["bindings"]}
-    serialized = doc["spec"]["evidence"]["body_settings"]["serialized"]
-    time = sample["source"]
-    body = tuple(model.sample_curves(curves, prefix, time)[0] for prefix in ("RootT", "RootQ"))
-    start = tuple(model.sample_curves(curves, prefix, 0.)[0] for prefix in ("RootT", "RootQ"))
-    motion = tuple(model.sample_curves(curves, prefix, time)[0] for prefix in ("MotionT", "MotionQ"))
-    root = model.project(model.cells(serialized), body, start, None if motion[0] is None else motion,
-                         serialized["m_Level"], serialized["m_OrientationOffsetY"])
+    """The 2.4 body pose in A (normalized) at a clip sample, from its built clip as E4 reads it."""
+    serialized, body, start, original, _ = e4.built_pose(CLIPS[doc["spec"]["evidence"]["editor"]["fixture_case"]],
+                                                         sample["source"])
+    root = model.project(model.cells(serialized), body, start, original, serialized["m_Level"],
+                         serialized["m_OrientationOffsetY"])
     position, rotation = model.animator_body(body, root, scale)
     return tuple(v / scale for v in position), rotation
 
@@ -114,9 +114,10 @@ def consistent(doc, value=COEFFICIENT):
 
 
 def clip_doc(name, samples=None):
-    """A clip case with its authored curves, captured settings and completion's built root settings."""
+    """A clip case with its authored curves, captured settings and completion's built root settings; its built
+    clip goes to CLIPS."""
     doc = body_doc(name, RUN, samples=samples)
-    built = clip_case(doc, BODY_INFO[name]["variant"])
+    built = CLIPS[name] = clip_case(doc, BODY_INFO[name]["variant"])
     doc["spec"]["start"], doc["spec"]["stop"] = 0., 1.
     doc["spec"]["evidence"]["body_settings"] = dict(
         serialized={key: built["m_MuscleClip"].get(key) for key in SERIALIZED_ROOT}, animator_attributes=[])
@@ -126,7 +127,9 @@ def clip_doc(name, samples=None):
 def recording(name, samples=None, value=COEFFICIENT):
     doc = clip_doc(name, samples) if BODY_INFO[name]["kind"] == "clip" else body_doc(name, RUN, samples=samples)
     bundle = BODY_CASES[name].bundle
-    doc["spec"].update(bundles=[dict(name=bundle)], avatar_asset=f"assets/unityrsfixtures/{bundle}/avatar.asset")
+    doc["spec"].update(bundles=[dict(name=bundle)], avatar_asset=f"assets/unityrsfixtures/{bundle}/avatar.asset",
+                       clip_asset=f"assets/unityrsfixtures/{bundle}/{name}.anim")
+    doc["capture"]["bundle_sha256"] = ["0" * 64]
     return consistent(replay.read_json(json.dumps(doc)), value)
 
 
@@ -149,13 +152,20 @@ def avatar(doc, value=COEFFICIENT):
     rest_points, _ = points(nodes, rest, bones, animator)
     c = model.centre(rest_points, {slot: m for slot, m in zip(slots, masses) if slot in rest_points}, links,
                      coefficients(links, value))
+    names = {node["address"]: node["name"] for node in nodes}
+
+    def path(address):
+        parts = address[len(animator) + 1:].split("/") if address != animator else []
+        return "/".join(names[animator + "/" + "/".join(parts[:k + 1])] for k in range(len(parts)))
+    paths = [path(nodes[i]["address"]) for i in under]
     human = dict(m_HumanBoneMass={"t": "f32s", "v": "".join(BITS(m) for m in masses)},
                  m_HumanBoneIndex=[slot_of.get(slot, -1) for slot in slots],
-                 m_Skeleton=dict(data=dict(m_Node=[dict(m_ParentId=p, m_AxesId=-1) for p in parent])),
+                 m_Skeleton=dict(data=dict(m_Node=[dict(m_ParentId=p, m_AxesId=-1) for p in parent],
+                                           m_ID=[zlib.crc32(p.encode()) for p in paths])),
                  m_SkeletonPose=dict(data=dict(m_X=pose)),
                  m_RootX=dict(t=dict(zip("xyz", map(f32, c))), q=dict(x=0., y=0., z=0., w=1.)),
                  m_Scale=f32(c[1]))
-    return {"m_Avatar": {"m_Human": {"data": human}}}
+    return {"m_Avatar": {"m_Human": {"data": human}}, "m_TOS": [[zlib.crc32(p.encode()), p] for p in paths]}
 
 
 def write_run(folder, docs, version=RUN["editor_version"]):
@@ -163,7 +173,9 @@ def write_run(folder, docs, version=RUN["editor_version"]):
     body = folder / "replays" / "body"
     body.mkdir(parents=True, exist_ok=True)
     run = dict(RUN, editor_version=version)
-    (folder / "run.json").write_text(json.dumps(dict(format="unityrs.fixture_run", version=1, run=run, cases=[])),
+    cases = [dict(name=name, status="recorded" if name in docs else "skipped", reason="" if name in docs else "-")
+             for name in BODY_CASES]
+    (folder / "run.json").write_text(json.dumps(dict(format="unityrs.fixture_run", version=1, run=run, cases=cases)),
                                      encoding="utf-8")
     for name, doc in docs.items():
         doc = copy.deepcopy(doc)
