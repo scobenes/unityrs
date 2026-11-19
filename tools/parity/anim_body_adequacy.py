@@ -38,6 +38,10 @@ read from its `.pending.json`. The checkpoint, with B1's own tolerances
    (anim_fixture_body.EXTRA_PROBES) recorded with read-back, or the missing
    ones named.
 
+The twist sweeps (anim_fixture_body.TWIST_RIGS) take no part: they measure
+2.2's frame against the shoulder-hip twist for B2, not the centre of mass.
+A run with or without them gives the same checkpoint.
+
 With --design-only, each extra probe case the run lacks is predicted from
 its rig's recorded geometry (anim_body_design.py), with conservative
 epsilon and E_unity,s over an envelope of the rig's recorded hips, and the
@@ -65,7 +69,8 @@ from anim_body_tolerance import (BODY_SLOTS, U32, U64, body_frame, body_states, 
                                  matrix_quaternion, measurement_tolerance, norm, ordered, product, quaternion_matrix,
                                  readback_turn, recorded_edges, rotate, tracked, uniform)
 from anim_body_design import conservative, planned  # noqa: E402
-from anim_fixture_body import BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, probe_schedule, rig_bones  # noqa: E402
+from anim_fixture_body import (BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, TWIST_CASES, probe_schedule,  # noqa: E402
+                               rig_bones)
 
 CONDITION_LIMIT = 1e6
 TRAINING_RIGS = PROBE_RIGS.keys() - {HOLDOUT}
@@ -324,11 +329,12 @@ def missing_planned(documents):
 
 
 def load(folder):
-    """Every humanoid recording but the hold-out rig's, which the checkpoint never reads."""
+    """Every humanoid recording but the hold-out rig's, which the checkpoint never reads, and the twist
+    sweeps', which it does not use."""
     documents = {}
     for path in sorted((folder / "replays").rglob("*.pending.json")):
         name = path.name.removesuffix(".pending.json")
-        if BODY_INFO.get(name, {}).get("rig") == HOLDOUT:
+        if BODY_INFO.get(name, {}).get("rig") == HOLDOUT or name in TWIST_CASES:
             continue
         doc = replay.read_json(path.read_text(encoding="utf-8"))
         if "humanoid" in doc.get("capture", {}):

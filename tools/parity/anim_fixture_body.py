@@ -91,6 +91,15 @@ EXTRA_PROBES = {
     ),
 }
 EXTRA_RIGS = {"body-probes-tall-2": "tall"}
+# Twist sweeps, each on its own bundle of a training rig (never the hold-out): the shoulder-hip twist swept by
+# the Spine and Chest twist muscles together (HumanTrait's default limits, +-40 degrees each, so a value of
+# degrees / 80 for both), crossed with an upright body and three pitch and roll tilts of the body target taken
+# from F3's tilts (Euler degrees, no yaw). They measure the read-back frame against the twist (2.2) for B2.
+TWIST_RIGS = {"body-probes-twist-compact": "compact", "body-probes-twist-tall": "tall"}
+TWIST_DEGREES = (0, *(sign * d for d in (2, 4, 6, 8, 10, 15, 20, 30, 45, 60) for sign in (1, -1)))
+TWIST_RANGE = 80
+TWIST_MUSCLES = ("Spine Twist Left-Right", "Chest Twist Left-Right")
+TWIST_TILTS = ((0, 0, 0), (12, 0, 7), (-9, 0, -11), (12, 0, -11))
 PROBE_VALUES = (1, -.9, .8)
 COMBINED_VALUES = ((.3, -.2, .25, -.35, .15), (-.25, .4, -.15, .2, -.3), (.2, .2, -.3, -.1, .35))
 TARGETS = (((.05, -.03, .04), (12, -20, 7)), ((-.04, .02, -.06), (-9, 35, -11)))
@@ -174,9 +183,10 @@ def _cases():
             for prefab, suffix in (("identity", ""), ("offset", "-offset")):
                 add(f"body-targets-{rig}{suffix}", _fixture(bundle, prefab, bundle + "-muscles", "targets"),
                     "targets", rig, root=prefab)
-    for name, rig in EXTRA_RIGS.items():
-        add(name, _fixture(name.replace("probes-", ""), "identity", name.replace("probes-", "") + "-muscles", "probes"),
-            "probes", rig, "extra")
+    for variant, rigs in (("extra", EXTRA_RIGS), ("twist", TWIST_RIGS)):
+        for name, rig in rigs.items():
+            bundle = name.replace("probes-", "")
+            add(name, _fixture(bundle, "identity", bundle + "-muscles", "probes"), "probes", rig, variant)
     for variant in CLIP_VARIANTS:
         for prefab, suffix in (("identity", ""), ("offset", "-offset")):
             add(f"body-clip-{variant}{suffix}", _fixture("body-clips", prefab, "body-clip-" + variant, "clip"),
@@ -191,6 +201,10 @@ def _cases():
 
 BODY_CASES, BODY_INFO = _cases()
 EXTRA_CASES = frozenset(name for name, info in BODY_INFO.items() if info["variant"] == "extra")
+TWIST_CASES = frozenset(TWIST_RIGS)
+# The body cases added after the first body run, each generation absent from older runs and required once its
+# rig's own probe case records.
+LATER_CASES = (EXTRA_CASES, TWIST_CASES)
 
 
 def primary_probes(rig):
@@ -257,16 +271,42 @@ def compose(rig, names, sources):
     return vector
 
 
+def twist_plan():
+    """[(twist muscle value, body tilt)] of a twist sweep, in schedule order: each tilt, then each twist."""
+    return [(degrees / TWIST_RANGE, tilt) for tilt in TWIST_TILTS for degrees in TWIST_DEGREES]
+
+
 def probe_schedule(rig, names, targets, extra=None):
     """[(time, vector)] in schedule order, vectors over the captured HumanTrait muscle names; `extra`
-    names an extra probe case (EXTRA_PROBES) of the rig."""
+    names an extra probe case (EXTRA_PROBES) or a twist sweep (TWIST_RIGS) of the rig."""
     index = {name: i for i, name in enumerate(names)}
     _, singles, combined = _probe_vectors(rig, index)
-    if extra is not None:
+    if extra in TWIST_RIGS:
+        vectors = [{index[muscle]: value for muscle in TWIST_MUSCLES} for value, _ in twist_plan()]
+    elif extra is not None:
         vectors = [compose(rig, names, sources) for sources in EXTRA_PROBES[extra]]
     else:
         vectors = combined if targets else singles + combined
     return _scheduled(vectors, index, len(names))
+
+
+def schedule_name(name):
+    """The `extra` argument of probe_schedule for the body case `name`."""
+    return name if BODY_INFO[name]["variant"] in ("extra", "twist") else None
+
+
+def body_requests(name, count):
+    """The (offset, tilt) the recorder adds to the rest body at each of the case's `count` known vectors: F3's
+    alternating targets, a twist sweep's tilts (its spine anchors upright), or none."""
+    info = BODY_INFO[name]
+    if info["kind"] == "targets":
+        return [TARGETS[i % 2] for i in range(count)]
+    if info["variant"] != "twist":
+        return [((0, 0, 0), (0, 0, 0))] * count
+    tilts = [tilt for _, tilt in twist_plan()]
+    first = (len(tilts) + 1) // 2
+    upright = (0, 0, 0)
+    return [((0, 0, 0), tilt) for tilt in (upright, *tilts[:first], upright, *tilts[first:], upright)]
 
 def _f32s(values, replay, width, label="body row"):
     """A row of f32 bits the analysis reads: well formed and finite, or refused with the field named."""
@@ -370,7 +410,7 @@ def check_nodes(name, rows, nodes, hips, replay):
 def check_targets(name, info, spec, capture, editor, replay):
     require = replay.require
     names = [row["name"] for row in capture["humanoid"]["muscles"]]
-    expected = probe_schedule(info["rig"], names, info["kind"] == "targets", name if info["variant"] == "extra" else None)
+    expected = probe_schedule(info["rig"], names, info["kind"] == "targets", schedule_name(name))
     require([point["local"] for point in spec["schedule"]] == [t for t, _ in expected]
             and all([replay.f32_bits(v) for v in point["muscles"]] == [replay.f32_bits(v) for v in vector]
                     for point, (_, vector) in zip(spec["schedule"], expected)),
@@ -382,10 +422,9 @@ def check_targets(name, info, spec, capture, editor, replay):
     rest_position = _f32s(human["rest_body_position"], replay, 3)
     rest_rotation = _f32s(human["rest_body_rotation"], replay, 4)
     zero = [replay.f32_bits(0)] * 3
-    for i, row in enumerate(rows):
+    for row, (offset, tilt) in zip(rows, body_requests(name, len(rows)), strict=True):
         position = _f32s(row.get("position"), replay, 3, f"body_targets position in {name}")
         rotation = _f32s(row.get("rotation"), replay, 4, f"body_targets rotation in {name}")
-        offset, tilt = TARGETS[i % 2] if info["kind"] == "targets" else ((0, 0, 0), (0, 0, 0))
         require(row.get("offset") == ([replay.f32_bits(v) for v in offset] if any(offset) else zero)
                 and row.get("tilt") == ([replay.f32_bits(v) for v in tilt] if any(tilt) else zero),
                 f"body target request mismatch for {name}")

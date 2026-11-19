@@ -253,6 +253,16 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(after, before)
         self.assertNotIn("body-probes-holdout", {row["name"] for row in after["samples"]})
 
+    def test_the_twist_sweeps_take_no_part(self):
+        # They measure the frame for B2: recorded or not, the checkpoint is the same, here and predicted.
+        self.record([name for name in self.design() if name != "body-probes-holdout"])
+        _, before, _ = self.run_checkpoint()
+        self.record(sorted(body.TWIST_CASES))
+        _, after, _ = self.run_checkpoint()
+        self.assertEqual(after, before)
+        self.assertFalse(body.TWIST_CASES & {row["name"] for row in after["samples"]})
+        self.assertFalse(body.TWIST_CASES & set(design.planned(adequacy.load(self.folder))))
+
     def test_every_planned_sample_is_required(self):
         name = sorted(body.EXTRA_CASES)[0]
         self.record([case for case in self.design() if case != name])

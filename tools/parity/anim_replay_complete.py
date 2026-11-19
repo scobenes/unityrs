@@ -10,7 +10,7 @@ from uuid import uuid4
 from zlib import crc32
 
 import child
-from anim_fixture_body import BODY_BUNDLES, BODY_CASES, BODY_INFO, EXTRA_CASES, check_body, primary_probes
+from anim_fixture_body import BODY_BUNDLES, BODY_CASES, BODY_INFO, LATER_CASES, check_body, primary_probes
 from anim_fixture_coverage import BASIS_CASES, COVERAGE_CASES, check_coverage, required_coverage
 from anim_fixture_contract import (ASSETS, MOTION, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
                                    check_built_clip, check_built_static, check_discovery, check_evidence,
@@ -592,13 +592,16 @@ def recorded_paths(folder, replay, manifest, run):
             errors.append(f"{name}: no recording defined for this optional case")
     # A run older than the basis matrix has no rows for it; one older than the
     # body fixtures has none of theirs, and a newer one has them all. The extra
-    # probe cases came later again, as a generation of their own.
-    body = BODY_CASES.keys() - EXTRA_CASES
-    older = (BASIS_CASES.keys() | (set() if statuses.keys() & body else body)
-             | (set() if statuses.keys() & EXTRA_CASES else EXTRA_CASES))
+    # probe cases and then the twist sweeps came later again, each a generation
+    # of its own.
+    body = BODY_CASES.keys() - set().union(*LATER_CASES)
+    older = BASIS_CASES.keys() | (set() if statuses.keys() & body else body)
+    for generation in LATER_CASES:
+        older |= set() if statuses.keys() & generation else generation
     errors.extend(f"missing run.json case: {name}" for name in sorted(expected - statuses.keys() - older))
-    # An extra probe case is required once its rig's own probe case records.
-    errors.extend(f"{name}: required once {primary} records, but {statuses[name]}" for name in sorted(EXTRA_CASES)
+    # A later case is required once its rig's own probe case records.
+    errors.extend(f"{name}: required once {primary} records, but {statuses[name]}"
+                  for name in sorted(set().union(*LATER_CASES))
                   for primary in [primary_probes(BODY_INFO[name]["rig"])]
                   if statuses.get(primary) == "recorded" and statuses.get(name, "recorded") != "recorded")
     # Coverage confirmed on this Editor version is no longer optional.

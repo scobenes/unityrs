@@ -1007,7 +1007,7 @@ the plan's hypotheses. None of it is a playback claim.
 
 ### Body fixtures
 
-The main menu item builds 107 optional `body-…` cases, each kind in its own
+The main menu item builds 109 optional `body-…` cases, each kind in its own
 bundle build after the main and coverage builds. Their tables are in
 `UnityrsBodyFixtures.cs` and `UnityrsBodyClips.cs`, mirrored by
 [`anim_fixture_body.py`](../tools/parity/anim_fixture_body.py).
@@ -1016,6 +1016,7 @@ bundle build after the main and coverage builds. Their tables are in
 |---|---|---|
 | `body-probes-<rig>` (16) | F1, F6 | Known-vector `SetHumanPose` on each rig. The rigs are the two P2b rigs, each F6 topology, a noncoplanar rig and the hold-out rig. The vectors are one per probe muscle of each mapped bone, then three combined vectors over every probe muscle. Twist and stretch stay out. |
 | `body-probes-tall-2` (1) | F1 | 26 extra known vectors on the tall rig, in a bundle of their own. Each moves two of the trunk, shoulder, upper-arm and upper-leg bones, the poses the adequacy checkpoint predicts it needs (below). |
+| `body-probes-twist-{compact,tall}` (2) | F2 | Twist sweeps on the two P2b rigs, each in a bundle of its own: 84 known vectors, the shoulder-hip twist swept by the Spine and Chest twist muscles under an upright and three tilted body targets (below) |
 | `body-targets-{compact,tall}[-offset]` (4) | F3 | The three combined vectors with nonidentity body targets on identity and offset roots |
 | `body-clip-<variant>[-offset]` (78) | F4 | 39 body-motion clips on the compact rig, each on an identity and an offset root |
 | `body-chain-<f5>-{targets,clip}` (8) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale. Each plays F3's targets and the all-original F4 clip with changing `MotionT` and `MotionQ` curves, whose residual body translation and tilt change through the chain and whose motion the original-root rule keeps. Completion requires its built motion slots; if Unity drops them, that clip case is not covered. |
@@ -1048,6 +1049,19 @@ for the extra cases predates them and completes. Once the rig's own probe
 case records, its extra case is required: in the builder, Unity refusing
 it is an error rather than not covered, and completion refuses a run where
 it is not recorded.
+
+**Twist sweeps.** A twist sweep (`TwistProbes`, mirrored by `TWIST_RIGS`)
+sets the Spine and Chest twist muscles together to `degrees / 80`, so with
+HumanTrait's default limits (±40° each) the upper body turns about the
+spine by 0, ±2, ±4, ±6, ±8, ±10, ±15, ±20, ±30, ±45 and ±60°. Every other
+muscle is zero. Each twist runs under four body targets without offset:
+upright, and the pitch and roll pairs (12°, 7°), (−9°, −11°) and
+(12°, −11°) from F3's tilts, with no yaw. The anchors stay upright. That is
+84 vectors plus the anchors, so the read-back frame's turn about `up` can
+be measured against the twist and the tilt (2.2). The sweeps are a later
+generation than the extra probes, required the same way once their rig's
+probe case records, and only on training rigs. The adequacy checkpoint
+does not read them.
 
 **F3 targets.** The targets alternate two requests. One moves the rest
 body by `(.05, -.03, .04)` and tilts it by `Euler(12, -20, 7)`. The other
