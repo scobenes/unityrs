@@ -6,8 +6,8 @@
 The same script for both sides: `--impl unitypy` imports UnityPy, `--impl unityrs` does `import unityrs as UnityPy`
 (the wheel), and every line after the import is shared. Each run has three phases:
 
-1. setup, neither timed nor counted: the import, the fixture's bytes read, and for the API rows after `load` the
-   environment loaded and the objects listed;
+1. setup, neither timed nor counted: the imports, the fixture's bytes read, a warm-up (`warm`), and for the API
+   rows after `load` the environment loaded and the objects listed;
 2. the scope, the only part timed, whose outputs are held in memory;
 3. the digest, after the timer stops: the outputs hashed, so both sides' work can be compared.
 
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import sys
 import time
@@ -136,9 +137,22 @@ def digest_texture(out) -> tuple[str, dict]:
     return h.hexdigest(), {"textures": len(out), "pixels": sum(w * hh for _, (w, hh), _ in out)}
 
 
+def warm(UnityPy, data: bytes) -> None:
+    """Each side's one-time set-up, done before the timer as `import` would do it, so the scope holds the operation
+    and not a first call's initialisation (the plan's "after imports"). Both sides defer some to a first use, and
+    differently: UnityPy imports its `export` package (fmod_toolkit, numpy) on the first `.image`; the wheel builds
+    its `classes` on the first `read()`, imports Pillow on the first `.image`, and reads its config, TPK and file
+    system on the first `load`. So both import `classes`, `export` and `PIL.Image`, and load the fixture once,
+    dropping the result: no output is reused."""
+    for name in (f"{UnityPy.__name__}.classes", f"{UnityPy.__name__}.export", "PIL.Image"):
+        importlib.import_module(name)
+    UnityPy.load(data)
+
+
 def run(impl: str, op: str, fixture: Path) -> dict:
     UnityPy = implementation(impl)
     data = fixture.read_bytes()
+    warm(UnityPy, data)
     counts = {"source_bytes": len(data)}
     if op in ("load", "load_entries"):
         work = (op_load if op == "load" else op_load_entries, (UnityPy, data))

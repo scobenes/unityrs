@@ -101,10 +101,19 @@ class Image:
         return b"\x01\x02\x03\x04" * 2
 
 
-def fake(objects):
-    """A module with UnityPy's `load` over one bundle holding one SerializedFile of `objects`."""
+def fake(objects, loads=None):
+    """`sys.modules` entries for a UnityPy whose `load` gives one bundle holding one SerializedFile of `objects`
+    (each call counted in `loads`), with the modules `warm` imports."""
     bundle = types.SimpleNamespace(files={"CAB-x": SerializedFile(objects)})
-    return types.SimpleNamespace(load=lambda data: types.SimpleNamespace(files={"x": bundle}))
+
+    def load(data):
+        if loads is not None:
+            loads.append(data)
+        return types.SimpleNamespace(files={"x": bundle})
+
+    module = types.SimpleNamespace(load=load, __name__="UnityPy")
+    return {"UnityPy": module, "UnityPy.classes": types.ModuleType("UnityPy.classes"),
+            "UnityPy.export": types.ModuleType("UnityPy.export"), "PIL.Image": types.ModuleType("PIL.Image")}
 
 
 class ScriptTests(unittest.TestCase):
@@ -115,7 +124,7 @@ class ScriptTests(unittest.TestCase):
         self.fixture.write_bytes(b"synthetic")
 
     def run_with(self, objects, op):
-        with mock.patch.dict(sys.modules, {"UnityPy": fake(objects)}):
+        with mock.patch.dict(sys.modules, fake(objects)):
             return py_workloads.run("unitypy", op, self.fixture)
 
     def test_each_op_digests_its_outputs_and_counts_them(self):
@@ -131,13 +140,26 @@ class ScriptTests(unittest.TestCase):
         load = self.run_with([Reader({})], "load")
         self.assertEqual(load["counts"]["objects"], 1)
 
+    def test_setup_warms_both_sides_one_time_initialisation_before_the_timer(self):
+        """`warm` imports `classes`, `export` and Pillow and loads the fixture once, untimed; the timed load is
+        another."""
+        loads = []
+        modules = fake([Reader({})], loads)
+        del modules["UnityPy.export"]
+        with mock.patch.dict(sys.modules, modules), self.assertRaises(ImportError):
+            py_workloads.run("unitypy", "load", self.fixture)
+        loads.clear()
+        with mock.patch.dict(sys.modules, fake([Reader({})], loads)):
+            self.assertEqual(py_workloads.run("unitypy", "load", self.fixture)["status"], "ok")
+        self.assertEqual(loads, [b"synthetic", b"synthetic"])
+
     def test_a_side_that_raises_is_a_result_with_no_digest(self):
         got = self.run_with([Reader(ValueError("bad image mode\nmore"))], "typetree")
         self.assertEqual((got["status"], got["digest"]), ("ValueError: bad image mode", None))
 
     def test_the_script_prints_one_json_line(self):
         out = []
-        with mock.patch.dict(sys.modules, {"UnityPy": fake([Reader({"x": 1})])}), \
+        with mock.patch.dict(sys.modules, fake([Reader({"x": 1})])), \
                 mock.patch("builtins.print", lambda text: out.append(text)):
             self.assertEqual(py_workloads.main(["--impl", "unitypy", "typetree-objects-lz4", str(self.fixture)]), 0)
         self.assertEqual(json.loads(out[0])["status"], "ok")
