@@ -88,6 +88,9 @@ static partial class UnityrsFixtureBuilder
     // Spine and Chest twist muscles together at degrees / TwistRange (HumanTrait's default limits,
     // +-40 degrees each), crossed with an upright body and three pitch and roll tilts of the body
     // target from F3's tilts. They measure the read-back frame against the shoulder-hip twist.
+    // The degree values only label the muscle settings: a rig with its own limits (the tall
+    // rig's Spine is -18/+42) realizes a different twist, so the analysis measures the twist
+    // from the recorded upper and lower laterals, never from these labels.
     static readonly (string name, string rig)[] TwistProbes = {
         ("body-probes-twist-compact", "compact"), ("body-probes-twist-tall", "tall"),
     };
