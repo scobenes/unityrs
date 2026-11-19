@@ -8,7 +8,7 @@
 
 use super::{External, ObjectInfo, SerializedFile, SerializedHeader, SerializedType};
 use crate::RawStr;
-use crate::files::save::{SaveError, SaveOptions, Writer, narrow, required};
+use crate::files::save::{SaveError, SaveLayout, SaveOptions, Writer, narrow, required};
 use crate::stream::Endian;
 use bytes::Bytes;
 
@@ -50,6 +50,11 @@ impl SerializedFile {
     /// matches UnityPy 1.25.2's uncompressed save through format 22 and
     /// HEAD 417d595 for formats 23-26. HEAD's absent per-type node assertion
     /// and formats above 26 refuse before building or charging output.
+    ///
+    /// `Semantic` refuses with a `Range` collision an output that detection
+    /// would not reload as a SerializedFile (a bundle signature or gzip magic
+    /// in the header's sizes, the brotli marker at 0x20 in metadata or object
+    /// bytes below format 22); the `UnityPy` layout writes it unchecked.
     pub fn save(&self, options: SaveOptions) -> Result<Bytes, SaveError> {
         self.save_impl(options, None)
     }
@@ -155,7 +160,7 @@ impl SerializedFile {
         drop(edits);
         self.write_references(&mut meta, trees, options, snapshot)?;
         meta.end_metadata()?;
-        self.finish_file(h, &meta, &data)
+        self.finish_file(h, &meta, &data, options.layout)
     }
 
     fn write_object(
@@ -294,6 +299,7 @@ impl SerializedFile {
         h: &SerializedHeader,
         meta: &Writer,
         data: &Writer,
+        layout: SaveLayout,
     ) -> Result<Bytes, SaveError> {
         let v = h.version;
         let mut out = Writer::new(self.meter(), Endian::Big)?;
@@ -358,6 +364,9 @@ impl SerializedFile {
             out.boolean(h.endian == Endian::Big)?;
             out.bytes(meta.slice())?;
         }
+        if layout == SaveLayout::Semantic {
+            reloads_as_serialized(out.slice())?;
+        }
         out.finish()
     }
 
@@ -368,6 +377,33 @@ impl SerializedFile {
             .read(self.data.len(), start, i64::from(row.byte_size))?;
         Ok(self.data.slice(range))
     }
+}
+
+/// The semantic layout's reload guard, a pure prefix-signature check: it
+/// runs detection's steps as a bundle or WebFile entry gets them
+/// (`check_entry_type`, `helpers/ImportHelper.py:44-124`) on `bytes`, the
+/// whole output, in place, up to the gzip probe, and neither allocates nor
+/// decodes. The output must detect as an `AssetsFile`, or, under 128 bytes,
+/// as the `ResourceFile` every such small file is. Below format 22 the
+/// header's sizes and the metadata or object bytes that follow can spell a
+/// signature, gzip magic or the brotli marker. Gzip magic is refused without
+/// inflating, conservatively: detection would inflate the stream, which in
+/// a rare output could fall back to the header and detect as this file, but
+/// that needs a metadata size of at least 0x1f8b0800 (about 529 MB).
+fn reloads_as_serialized(bytes: &[u8]) -> Result<(), SaveError> {
+    use crate::detect::{FileType, Signed, signature_only};
+    let reason = match signature_only(bytes) {
+        Ok(Signed::Type(FileType::AssetsFile)) => return Ok(()),
+        Ok(Signed::Type(FileType::ResourceFile)) if bytes.len() < 128 => return Ok(()),
+        Ok(Signed::Type(FileType::BundleFile)) => "SerializedFile bundle signature collision",
+        Ok(Signed::Type(FileType::WebFile)) => "SerializedFile WebFile marker collision",
+        Ok(Signed::Type(FileType::Zip)) => "SerializedFile zip signature collision",
+        Ok(Signed::Type(FileType::ResourceFile)) => "SerializedFile header detected as a resource",
+        Ok(Signed::Gzip) => "SerializedFile gzip magic collision",
+        // A 20-byte output with no NUL, which detection raises for.
+        Err(_) => "SerializedFile unterminated signature collision",
+    };
+    Err(SaveError::Range(reason))
 }
 
 impl SerializedType {
@@ -437,5 +473,108 @@ impl SerializedType {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::reloads_as_serialized;
+    use crate::files::save::{SaveError, SaveLayout, SaveOptions};
+    use std::sync::Arc;
+
+    /// A format-17 header (big-endian sizes, then the endian byte and three
+    /// reserved bytes), zero-padded to `len`.
+    fn header(metadata: u32, file: u32, len: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for field in [metadata, file, 17, 0x40] {
+            out.extend_from_slice(&field.to_be_bytes());
+        }
+        out.resize(len, 0);
+        out
+    }
+
+    fn collision(reason: &'static str) -> Result<(), SaveError> {
+        Err(SaveError::Range(reason))
+    }
+
+    #[test]
+    fn only_outputs_detected_as_serialized_files_pass() {
+        let guard = reloads_as_serialized;
+        assert_eq!(guard(&header(0x10, 128, 128)), Ok(()));
+        // Under 128 bytes detection says resource for any unsigned file.
+        assert_eq!(guard(&header(0x10, 64, 64)), Ok(()));
+        // Metadata sizes from 0x1f8b0000 open with gzip magic: refused
+        // without inflating, a bad stream (method 0) and a plausible deflate
+        // header (method 8) alike.
+        for metadata in [0x1f8b_0000, 0x1f8b_0804] {
+            assert_eq!(
+                guard(&header(metadata, 128, 128)),
+                collision("SerializedFile gzip magic collision")
+            );
+        }
+        // Sizes 0x556e6974 and 0x79465300 spell `UnityFS\0`, and
+        // 0x504b0304 then a zero byte `PK\x03\x04\0`.
+        assert_eq!(
+            guard(&header(0x556e_6974, 0x7946_5300, 128)),
+            collision("SerializedFile bundle signature collision")
+        );
+        assert_eq!(
+            guard(&header(0x504b_0304, 128, 128)),
+            collision("SerializedFile zip signature collision")
+        );
+        let mut marked = header(0x10, 128, 128);
+        marked[0x20..0x26].copy_from_slice(b"brotli");
+        assert_eq!(
+            guard(&marked),
+            collision("SerializedFile WebFile marker collision")
+        );
+        // Sizes past the file fail the header check: a resource.
+        assert_eq!(
+            guard(&header(0x10, 4096, 128)),
+            collision("SerializedFile header detected as a resource")
+        );
+    }
+
+    /// The save path refuses with the guard's verdict on its own output. Only
+    /// the brotli marker is reachable end to end: the gzip, bundle and zip
+    /// sizes need metadata of hundreds of megabytes or more.
+    #[test]
+    fn semantic_save_refuses_with_the_guards_verdict_on_its_output() {
+        use unityrs_testkit::blob::NodeSpec;
+        use unityrs_testkit::serialized::{ObjectSpec, build, one_object};
+        // Path 2's data, which opens with `brotli`, moves from 0x10 to 0x20
+        // when the save writes path 1's 16 bytes first (the bundle test).
+        let mut marked = b"brotli".to_vec();
+        marked.resize(32, 1);
+        let mut spec = one_object(49, vec![NodeSpec::new(0, "aa", "aa")], marked);
+        spec.format = 8;
+        spec.objects[0].type_id = 49;
+        spec.objects[0].path_id = 2;
+        spec.objects.push(ObjectSpec {
+            path_id: 1,
+            type_id: 49,
+            class_id: 49,
+            data: vec![0; 16],
+            ..ObjectSpec::default()
+        });
+        let file = super::SerializedFile::parse(
+            crate::RawStr::from_static(b"CAB-marker"),
+            bytes::Bytes::from(build(&spec)),
+            None,
+            &crate::limits::Meter::unlimited(),
+            &Arc::new(crate::options::FileContext::unitypy()),
+        )
+        .unwrap();
+        let written = file
+            .save(SaveOptions {
+                layout: SaveLayout::UnityPy,
+            })
+            .unwrap();
+        let verdict = reloads_as_serialized(&written);
+        assert_eq!(
+            verdict,
+            collision("SerializedFile WebFile marker collision")
+        );
+        assert_eq!(file.save(SaveOptions::default()).map(|_| ()), verdict);
     }
 }
