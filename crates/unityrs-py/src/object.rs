@@ -204,35 +204,18 @@ impl NativeObject {
                 self.inner.info().clone(),
             )
         });
-        {
-            let d = p::dict()?;
-            p::field(&d, "_has_embedded_nodes", &p::boolean(embedded)?)?;
-            for (key, val) in [
-                ("path_id", i.path_id),
-                ("class_id", i.class_id.into()),
-                ("type_id", i.type_id.into()),
-                ("byte_size", i.byte_size.into()),
-            ] {
-                p::field(&d, key, &p::int(val)?)?;
-            }
-            // byte_start can exceed i64: add the signed header offset in Python.
-            let start = p::wide_int(i.byte_start)?;
-            p::field(&d, "byte_start", &start)?;
-            for (key, val) in [
-                ("is_destroyed", i.is_destroyed.map(i64::from)),
-                ("is_stripped", i.is_stripped.map(i64::from)),
-            ] {
-                p::field(
-                    &d,
-                    key,
-                    &match val {
-                        Some(n) => p::int(n)?,
-                        None => p::none(),
-                    },
-                )?;
-            }
-            Ok(d)
-        }
+        // Built attached, with interned keys: callers read it on every parse.
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item(pyo3::intern!(py, "_has_embedded_nodes"), embedded)?;
+        d.set_item(pyo3::intern!(py, "path_id"), i.path_id)?;
+        d.set_item(pyo3::intern!(py, "class_id"), i.class_id)?;
+        d.set_item(pyo3::intern!(py, "type_id"), i.type_id)?;
+        d.set_item(pyo3::intern!(py, "byte_size"), i.byte_size)?;
+        // byte_start can exceed i64: add the signed header offset in Python.
+        d.set_item(pyo3::intern!(py, "byte_start"), p::wide_int(i.byte_start)?)?;
+        d.set_item(pyo3::intern!(py, "is_destroyed"), i.is_destroyed)?;
+        d.set_item(pyo3::intern!(py, "is_stripped"), i.is_stripped)?;
+        Ok(d.into_any().unbind())
     }
     fn raw_data(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         py.detach(|| {

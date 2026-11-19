@@ -71,7 +71,8 @@ pub(crate) fn render<'py>(
     charge: &mut Charge,
     fields: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let mut tasks = MeteredVec::new(meter);
+    // Room for a typical object's pending values: one reservation, not one per doubling.
+    let mut tasks = MeteredVec::with_capacity(meter, 64).map_err(charged)?;
     tasks
         .push(Task::Value(parsed.value(), Target::Root))
         .map_err(charged)?;

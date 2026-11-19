@@ -88,10 +88,11 @@ impl NativeFile {
             Ok::<_, PyErr>((bytes, next, copy))
         })?;
         // Built attached, once the core's part is done.
-        let result = p::list()?;
-        p::push(&result, &p::bytes(bytes)?)?;
-        p::push(&result, &p::wide_int(next)?)?;
-        p::tuple(&result)
+        let items = [
+            p::held::bytes(py, bytes)?,
+            p::wide_int(next)?.into_bound(py),
+        ];
+        Ok(pyo3::types::PyTuple::new(py, items)?.into_any().unbind())
     }
     fn save_serialized_snapshot(
         &self,
