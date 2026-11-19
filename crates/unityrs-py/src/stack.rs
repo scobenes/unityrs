@@ -31,11 +31,13 @@ fn fits(here: usize, low: usize, high: usize, allowance: usize) -> bool {
 }
 
 /// Whether this thread's stack is fixed: any thread but the process's main.
+/// A failed query counts as the main thread.
 #[cfg(target_os = "linux")]
 fn fixed() -> bool {
     // SAFETY: neither call has preconditions. The raw syscall avoids
     // glibc's newer gettid wrapper.
-    unsafe { libc::syscall(libc::SYS_gettid) != libc::c_long::from(libc::getpid()) }
+    let (thread, process) = unsafe { (libc::syscall(libc::SYS_gettid), libc::getpid()) };
+    thread > 0 && thread != libc::c_long::from(process)
 }
 
 #[cfg(target_os = "macos")]
