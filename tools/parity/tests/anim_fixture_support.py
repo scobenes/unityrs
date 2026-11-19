@@ -45,6 +45,7 @@ DEFERRED = (
     "urp-materials", "packed-rotation-slopes", "authored-runtime-precedence", "mixed-transform-storage",
     "humanoid-twist-refusal", "humanoid-non-neutral-setting-refusal", "humanoid-slot-axis-inventory",
     "humanoid-root-hips-comparison", "integer-discrete-binding",
+    *(f"humanoid-root-basis-o{o}-y{y}-xz{xz}" for o in (0, 1) for y in (0, 1) for xz in (0, 1)),
 )
 SPINE = ("Spine Front-Back", "Spine Left-Right", "Spine Twist Left-Right")
 VECTOR_TIMES = (0, 391 / 2048, .5, .5 + 391 / 2048, 1)

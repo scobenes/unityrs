@@ -22,6 +22,7 @@ mod controller;
 mod curve;
 mod discovery;
 mod error;
+pub mod humanoid;
 mod read;
 mod sample;
 mod segment;
@@ -51,7 +52,7 @@ pub use controller::{ControllerLeaf, ControllerTable};
 pub use discovery::{
     ClipSelector, ClipSlot, Discovery, RigClips, SelectionError, SlotError, SourceSlot, discover,
 };
-pub use error::AnimError;
+pub use error::{AnimError, BodyMotion};
 
 const fn send_sync<T: Send + Sync + ?Sized>() {}
 

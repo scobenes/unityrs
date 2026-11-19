@@ -60,6 +60,7 @@ jobs:
           - obj_text
           - anim_clip
           - anim_gltf
+          - anim_humanoid
           - zlib_match
           - webp
           - unitycn

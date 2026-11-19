@@ -25,12 +25,14 @@ NEUTRAL_SETTINGS = dict.fromkeys((
     "loop", "loopTime", "loopPose", "loopBlend", "loopBlendOrientation", "loopBlendPositionY",
     "loopBlendPositionXZ", "lockRootRotation", "lockRootHeightY", "lockRootPositionXZ",
     "keepOriginalOrientation", "keepOriginalPositionY", "keepOriginalPositionXZ",
-    "heightFromFeet", "startAtOrigin", "mirror", "hasAdditiveReferencePose", "translation_dof",
+    "heightFromFeet", "mirror", "hasAdditiveReferencePose", "translation_dof",
 ), False) | dict.fromkeys((
     "orientationOffsetY", "level", "rotationOffset", "heightOffset", "cycleOffset",
     "additiveReferencePoseTime", "upper_arm_twist", "lower_arm_twist", "upper_leg_twist",
     "lower_leg_twist",
-), 0) | {"additiveReferencePoseClipName": ""}
+), 0) | {"additiveReferencePoseClipName": ""} | {"startAtOrigin": True}
+# The neutral root basis starts at the origin: every built fixture clip stores
+# start-at-origin on, whatever its XZ basis flag.
 
 
 def require(ok, message):
@@ -464,7 +466,11 @@ def _validate_qualification(spec, capture, baselines):
     for slot, muscle in zip(muscles, captured["muscles"]):
         if slot["storage"] != "absent":
             bone, axis = muscle["bone"], muscle["axis"]
-            require(bones[bone]["node"] >= 0 and bone in axes, "mapped muscle needs a bone and runtime axes")
+            if bones[bone]["node"] < 0:
+                # Playback drops a muscle of an absent optional bone.
+                require(not bones[bone]["required"], "mapped muscle needs a required bone and runtime axes")
+                continue
+            require(bone in axes, "mapped muscle needs a bone and runtime axes")
             record = axes[bone]
             require(all(any(map(f32_from_bits, record[name])) for name in ("pre", "post"))
                     and f32_from_bits(record["sign"][axis]) in (-1, 1)

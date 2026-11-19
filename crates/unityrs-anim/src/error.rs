@@ -68,9 +68,48 @@ pub enum AnimError {
     UnverifiedSeed(usize),
     InvalidDenseGrid,
     InvalidPPtrIndex(usize),
+    MissingAvatar,
+    InvalidAvatarIndex(&'static str),
+    UnsupportedHumanoidLayout,
+    UnknownHumanDof(usize),
+    ConflictingHumanMapping(usize),
+    MissingHumanBone(usize),
+    UnsupportedHumanoidHierarchy(usize),
+    UnsupportedHumanoidAxes(usize),
+    UnsupportedHumanoidTwist(&'static str),
+    UnsupportedHumanoidAvatarSetting(&'static str),
+    UnsupportedHumanoidClipSettings(&'static str),
+    UnsupportedHumanoidRootBasis(&'static str),
+    UnsupportedAnimatorRoot,
+    ConflictingHumanoidWriter(usize),
+    UnsupportedBodyMotion(BodyMotion),
+    UnsupportedLocomotion,
+    UnsupportedTranslationDof,
+    UnsupportedAdditivePose,
+    UnsupportedHumanoidIk,
+}
+
+/// Why a humanoid clip needs the unsupported body model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyMotion {
+    /// A `RootT` or `RootQ` DOF maps to a runtime slot. The hips
+    /// correction and root projection a recorded clip may need with absent
+    /// body slots are measured on recordings, so only the qualification
+    /// evidence reports them.
+    BodySlots,
+}
+
+impl BodyMotion {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::BodySlots => "body_slots",
+        }
+    }
 }
 
 const _: () = crate::send_sync::<AnimError>();
+const _: () = crate::send_sync::<BodyMotion>();
 
 impl AnimError {
     pub(crate) fn resource_refusal(&self) -> bool {
@@ -106,6 +145,7 @@ impl From<DerefError> for AnimError {
 }
 
 impl fmt::Display for AnimError {
+    #[allow(clippy::too_many_lines, reason = "one arm per typed error")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Charge(e) => e.fmt(f),
@@ -177,6 +217,39 @@ impl fmt::Display for AnimError {
             Self::UnverifiedSeed(slot) => write!(f, "unverified_pre_first_key_seed({slot})"),
             Self::InvalidDenseGrid => f.write_str("invalid_dense_grid"),
             Self::InvalidPPtrIndex(slot) => write!(f, "invalid_pptr_index({slot})"),
+            Self::MissingAvatar => f.write_str("missing_avatar"),
+            Self::InvalidAvatarIndex(field) => write!(f, "invalid_avatar_index({field})"),
+            Self::UnsupportedHumanoidLayout => f.write_str("unsupported_humanoid_layout"),
+            Self::UnknownHumanDof(dof) => write!(f, "unknown_human_dof({dof})"),
+            Self::ConflictingHumanMapping(dof) => write!(f, "conflicting_human_mapping({dof})"),
+            Self::MissingHumanBone(bone) => write!(f, "missing_human_bone({bone})"),
+            Self::UnsupportedHumanoidHierarchy(node) => {
+                write!(f, "unsupported_humanoid_hierarchy({node})")
+            }
+            Self::UnsupportedHumanoidAxes(bone) => write!(f, "unsupported_humanoid_axes({bone})"),
+            Self::UnsupportedHumanoidTwist(field) => {
+                write!(f, "unsupported_humanoid_twist({field})")
+            }
+            Self::UnsupportedHumanoidAvatarSetting(field) => {
+                write!(f, "unsupported_humanoid_avatar_setting({field})")
+            }
+            Self::UnsupportedHumanoidClipSettings(field) => {
+                write!(f, "unsupported_humanoid_clip_settings({field})")
+            }
+            Self::UnsupportedHumanoidRootBasis(field) => {
+                write!(f, "unsupported_humanoid_root_basis({field})")
+            }
+            Self::UnsupportedAnimatorRoot => f.write_str("unsupported_animator_root"),
+            Self::ConflictingHumanoidWriter(binding) => {
+                write!(f, "conflicting_humanoid_writer({binding})")
+            }
+            Self::UnsupportedBodyMotion(cause) => {
+                write!(f, "unsupported_body_motion({})", cause.name())
+            }
+            Self::UnsupportedLocomotion => f.write_str("unsupported_locomotion"),
+            Self::UnsupportedTranslationDof => f.write_str("unsupported_translation_dof"),
+            Self::UnsupportedAdditivePose => f.write_str("unsupported_additive_pose"),
+            Self::UnsupportedHumanoidIk => f.write_str("unsupported_humanoid_ik"),
         }
     }
 }

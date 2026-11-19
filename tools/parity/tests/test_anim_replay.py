@@ -399,6 +399,26 @@ class TestAnimReplay(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "HumanTrait inventory"):
             replay.validate(m)
 
+    def test_a_muscle_of_an_absent_optional_bone_is_dropped(self):
+        m = qualified_humanoid()
+        human = m["spec"]["evidence"]["humanoid"]
+        human["storage_counts"]["constant"] = 2
+        # Muscle 3 rotates Optional 1, which the rig leaves out.
+        human["slots"][9 + 3].update(index_value=1, storage="constant")
+        replay.validate(m)
+        # A required bone cannot be absent at all.
+        m["capture"]["humanoid"]["bones"][1]["required"] = True
+        with self.assertRaisesRegex(ValueError, "bone"):
+            replay.validate(m)
+
+    def test_the_neutral_basis_starts_at_the_origin(self):
+        self.assertIs(replay.NEUTRAL_SETTINGS["startAtOrigin"], True)
+        m = qualified_humanoid()
+        setting = next(row for row in m["spec"]["evidence"]["import_settings"] if row["property"] == "startAtOrigin")
+        setting["serialized"] = False
+        with self.assertRaisesRegex(ValueError, "startAtOrigin"):
+            replay.validate(m)
+
     def test_qualification_refuses_missing_non_neutral_or_unserialized_settings(self):
         for name, field, value in (("mirror", "effective", True), ("mirror", "serialized", True),
                                    ("cycleOffset", "effective", .125), ("startAtOrigin", "serialized", None)):
