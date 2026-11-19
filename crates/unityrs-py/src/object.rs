@@ -258,11 +258,10 @@ impl NativeObject {
                     .inner
                     .read_object_fields_with_nodes(tree.as_ref())
                     .map_err(|error| Failure::parse(error, self.inner.info().byte_size > 0))?;
-                Ok::<_, Failure>(object_fields(&self.inner, parsed, progress))
+                Ok::<_, Failure>(object_result(&self.inner, parsed, progress))
             })
         })?;
-        let fields = crate::worker_error::finish(native)??;
-        py.detach(|| object_output(&self.inner, fields))
+        crate::worker_error::finish(native)?
     }
     fn parse(&self, py: Python<'_>, check_read: bool) -> PyResult<Py<PyAny>> {
         self.parse_with_position(py, check_read, None)
@@ -270,22 +269,15 @@ impl NativeObject {
     }
 }
 
-/// `object_data`'s value, with what its metadata needs from the parse.
-struct Fields {
-    value: Py<PyAny>,
-    lists: unityrs_core::limits::MeteredVec<unityrs_core::typetree::SharedNodes>,
-    bytes_read: i64,
-    progress: unityrs_core::walk::FieldProgress,
-    charge: unityrs_core::limits::Charge,
-}
-
-/// Render the value, then drop the parsed tree (on the worker's stack)
-/// before the node metadata adds its staging, keeping only the node lists.
-fn object_fields(
+/// `object_data`'s result, on the worker. The value is rendered, then the
+/// parsed tree dropped (on the worker's stack) before the node metadata
+/// adds its staging; only the node lists stay.
+fn object_result(
     inner: &ObjectRef,
     parsed: unityrs_core::Parsed,
     progress: unityrs_core::walk::FieldProgress,
-) -> PyResult<Fields> {
+) -> PyResult<Py<PyAny>> {
+    use p::held as h;
     let meter = inner.file().meter();
     let mut charge = unityrs_core::limits::Charge::zero(meter);
     charge.grow(128).map_err(errors::charge)?;
@@ -297,25 +289,6 @@ fn object_fields(
     }
     let bytes_read = parsed.bytes_read;
     drop(parsed);
-    Ok(Fields {
-        value,
-        lists,
-        bytes_read,
-        progress,
-        charge,
-    })
-}
-
-/// `object_data`'s result, from a detached caller.
-fn object_output(inner: &ObjectRef, fields: Fields) -> PyResult<Py<PyAny>> {
-    use p::held as h;
-    let Fields {
-        value,
-        lists,
-        bytes_read,
-        progress,
-        mut charge,
-    } = fields;
     let nodes = crate::object_nodes::convert(lists.as_slice(), &mut charge)?;
     let references =
         crate::object_nodes::references(lists.as_slice(), inner.file().ref_types(), &mut charge)?;
@@ -330,15 +303,16 @@ fn object_output(inner: &ObjectRef, fields: Fields) -> PyResult<Py<PyAny>> {
                         .saturating_mul(8),
                 )
                 .map_err(errors::charge)?;
-            let [class, namespace, assembly] = names;
-            let args = (
-                p::string(class.as_bytes())?,
-                p::string(namespace.as_bytes())?,
-                p::string(assembly.as_bytes())?,
-            );
             crate::python::relay::attach(|py| -> PyResult<PyErr> {
-                let message = pyo3::types::PyString::new(py, "Referenced type not found: {} {} {}")
-                    .call_method1("format", args)?;
+                let mut args = Vec::new();
+                args.try_reserve_exact(names.len())
+                    .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("diagnostic"))?;
+                for name in &names {
+                    args.push(h::string(py, name.as_bytes())?);
+                }
+                let message = h::string(py, b"Referenced type not found: {} {} {}")?
+                    .getattr(h::string(py, b"format")?.cast_into::<pyo3::types::PyString>()?)?
+                    .call1(h::tuple_of(py, &args)?.cast_into::<pyo3::types::PyTuple>()?)?;
                 Ok(pyo3::exceptions::PyValueError::new_err(message.unbind()))
             })?
         } else {

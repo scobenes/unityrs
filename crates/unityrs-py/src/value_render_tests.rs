@@ -8,7 +8,7 @@ use unityrs_core::{
     value::{PrimRun, ValueBuilder},
 };
 
-/// A list of `n` dicts `{"x": i}`, each beside a list of floats.
+/// A list of `n` lists `[floats, {"x": i}, (i, (i, {"x": i}))]`.
 fn lists_of_dicts(n: i64) -> unityrs_core::Parsed {
     let rows = vec![
         NodeRow::new(0, "Base", "Object"),
@@ -33,6 +33,20 @@ fn lists_of_dicts(n: i64) -> unityrs_core::Parsed {
         }
         let _ = entries.push((NodeId(1), Value::Int(i)));
         let _ = pair.push_built(builder.map(0, entries));
+        // Nested tuples, one ending in a dict: parts wait while others build.
+        let mut inner = builder.vec();
+        let _ = inner.push(Value::Int(i));
+        let mut entries = builder.vec();
+        let _ = entries.push((NodeId(1), Value::Int(i)));
+        let _ = inner.push_built(builder.map(0, entries));
+        let mut outer = builder.vec();
+        let _ = outer.push(Value::Int(i));
+        if let Ok(inner) = builder.tuple(inner) {
+            let _ = outer.push_built(inner);
+        }
+        if let Ok(outer) = builder.tuple(outer) {
+            let _ = pair.push_built(outer);
+        }
         let _ = items.push_built(builder.list(pair));
     }
     let root = builder.list(items);
@@ -90,7 +104,7 @@ gc.set_threshold(50)
         py.run(
             c"
 assert len(value) == 2000, len(value)
-assert value[5] == [[0.0, 1.0, 2.0, 3.0], {'x': 5}], value[5]
+assert value[5] == [[0.0, 1.0, 2.0, 3.0], {'x': 5}, (5, (5, {'x': 5}))], value[5]
 assert walks[0] > 0, 'no collection ran while rendering'
 ",
             Some(scope),

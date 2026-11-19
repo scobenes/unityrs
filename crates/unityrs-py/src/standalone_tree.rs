@@ -174,12 +174,14 @@ fn parse(
             _ => None,
         }
     };
-    convert(&parsed, progress, refs, as_dict, meter)
+    convert(parsed, progress, refs, as_dict, meter)
 }
 
-/// The result, staged detached; each part is built with one attachment.
+/// The result, staged detached; each part is built with one attachment. The
+/// parsed tree is dropped (on the worker's stack) once the value is built,
+/// before the node metadata adds its staging; only its node lists stay.
 fn convert(
-    parsed: &unityrs_core::Parsed,
+    parsed: unityrs_core::Parsed,
     progress: unityrs_core::walk::FieldProgress,
     refs: Option<&[unityrs_core::files::SerializedType]>,
     as_dict: bool,
@@ -188,13 +190,19 @@ fn convert(
     use crate::python::held as h;
     let mut charge = unityrs_core::limits::Charge::zero(meter);
     charge.grow(512).map_err(errors::charge)?;
-    let value = crate::value_render::convert(parsed, meter, &mut charge, !as_dict)?;
-    let nodes = crate::object_nodes::convert(parsed.lists(), &mut charge)?;
-    let references = crate::object_nodes::references(parsed.lists(), refs, &mut charge)?;
+    let value = crate::value_render::convert(&parsed, meter, &mut charge, !as_dict)?;
+    let mut lists =
+        MeteredVec::with_capacity(meter, parsed.lists().len()).map_err(errors::charge)?;
+    for list in parsed.lists() {
+        lists.push(list.clone()).map_err(errors::charge)?;
+    }
+    let bytes_read = parsed.bytes_read;
+    drop(parsed);
+    let nodes = crate::object_nodes::convert(lists.as_slice(), &mut charge)?;
+    let references = crate::object_nodes::references(lists.as_slice(), refs, &mut charge)?;
     let error = progress
         .error
         .map(|error| errors::parse_reader(&error.into(), true));
-    let bytes_read = parsed.bytes_read;
     crate::python::relay::attach(move |py| {
         let error = error.map_or_else(|| h::none(py), |error| error.value(py).clone().into_any());
         let construction = Bound::new(py, crate::construction::Construction { charge })?;

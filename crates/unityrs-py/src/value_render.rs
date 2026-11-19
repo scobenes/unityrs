@@ -23,7 +23,7 @@ const CHUNK: u32 = 8192;
 /// Counts built objects; every [`CHUNK`], detaches briefly so a large
 /// render does not keep other Python threads waiting for its whole length.
 /// Whatever another thread can see meanwhile is complete: lists hold `None`
-/// until filled.
+/// until filled, and tuples are made from ready parts.
 pub(crate) struct Pace(u32);
 
 impl Pace {
@@ -161,28 +161,31 @@ fn schedule<'a>(
     Ok(())
 }
 
-// A tuple is completed after its children because tuples are immutable.
+// A tuple is completed after its children because tuples are immutable: they
+// wait on a stack of parts, the tuple's own from where it started.
 enum Target<'py> {
     Root,
-    /// Appended to a list a tuple is made from.
-    List(Bound<'py, PyAny>),
+    /// Pushed on the parts a tuple is made from.
+    Part,
     /// Slot `n` of a list made at its final length (holding `None` till then).
     Slot(Bound<'py, PyAny>, usize),
     Dict(Bound<'py, PyAny>, Bound<'py, PyAny>),
 }
 enum Task<'a, 'py> {
     Value(&'a Value, Target<'py>),
-    Tuple(Bound<'py, PyAny>, Target<'py>),
+    /// A tuple of the parts from this index on.
+    Tuple(usize, Target<'py>),
 }
 
 fn assign<'py>(
     target: Target<'py>,
     item: Bound<'py, PyAny>,
     result: &mut Option<Bound<'py, PyAny>>,
+    parts: &mut MeteredVec<Bound<'py, PyAny>>,
 ) -> PyResult<()> {
     match target {
         Target::Root => *result = Some(item),
-        Target::List(parent) => h::push(&parent, &item)?,
+        Target::Part => parts.push(item).map_err(charged)?,
         Target::Slot(parent, at) => h::put(&parent, at, item)?,
         Target::Dict(parent, key) => h::set(&parent, &key, &item)?,
     }
@@ -197,14 +200,17 @@ impl Staged<'_> {
         tasks
             .push(Task::Value(parsed.value(), Target::Root))
             .map_err(charged)?;
+        let mut parts = MeteredVec::new(self.meter);
         let mut result = None;
+        // Paced per child scheduled (each value but the root) and per element.
         let mut pace = Pace::new();
         while let Some(task) = tasks.pop() {
-            pace.tick(py);
             let (v, target) = match task {
                 Task::Value(v, target) => (v, target),
-                Task::Tuple(items, target) => {
-                    assign(target, h::tuple(&items)?, &mut result)?;
+                Task::Tuple(start, target) => {
+                    let tuple = h::tuple_of(py, parts.as_slice().get(start..).unwrap_or_default())?;
+                    parts.truncate(start);
+                    assign(target, tuple, &mut result, &mut parts)?;
                     continue;
                 }
             };
@@ -221,6 +227,7 @@ impl Staged<'_> {
                     // Children are set in forward order as the traversal reaches
                     // them, so a repeated name keeps its first place and last value.
                     for (key, v) in map.entries().iter().rev() {
+                        pace.tick(py);
                         let key = if self.fields {
                             h::uint(py, u64::from(key.0))?
                         } else {
@@ -235,6 +242,7 @@ impl Staged<'_> {
                 Value::List(xs) => {
                     let out = h::list_of(py, xs.len())?;
                     for (at, v) in xs.iter().enumerate().rev() {
+                        pace.tick(py);
                         tasks
                             .push(Task::Value(v, Target::Slot(out.clone(), at)))
                             .map_err(charged)?;
@@ -242,20 +250,18 @@ impl Staged<'_> {
                     out
                 }
                 Value::Tuple(xs) => {
-                    let out = h::list(py)?;
                     tasks
-                        .push(Task::Tuple(out.clone(), target))
+                        .push(Task::Tuple(parts.len(), target))
                         .map_err(charged)?;
                     for v in xs.iter().rev() {
-                        tasks
-                            .push(Task::Value(v, Target::List(out.clone())))
-                            .map_err(charged)?;
+                        pace.tick(py);
+                        tasks.push(Task::Value(v, Target::Part)).map_err(charged)?;
                     }
                     continue;
                 }
                 Value::Prims(array) => primitives(py, array, &mut pace)?,
             };
-            assign(target, item, &mut result)?;
+            assign(target, item, &mut result, &mut parts)?;
         }
         result.ok_or_else(|| Failure::Static("ValueError", "empty conversion").into())
     }

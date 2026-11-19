@@ -100,6 +100,7 @@ fn build_nodes<'py>(py: Python<'py>, node_lists: &[SharedNodes]) -> PyResult<Bou
             h::set(&out, hash, &ref_hash)?;
             let kids = h::list(py)?;
             for child in list.children(id) {
+                pace.tick(py);
                 h::push(&kids, &h::uint(py, u64::from(child.0))?)?;
             }
             h::set(&out, children, &kids)?;
@@ -140,9 +141,6 @@ pub(crate) fn references(
             .copied()
     };
     let mut records = Vec::new();
-    records
-        .try_reserve_exact(refs.iter().filter(|r| found(r).is_some()).count())
-        .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("reference record allocation"))?;
     for reference in refs {
         let Some(index) = found(reference) else {
             continue;
@@ -157,6 +155,10 @@ pub(crate) fn references(
                 .count_decode((name.len() as u64).saturating_mul(4))
                 .map_err(errors::charge)?;
         }
+        // Grown after the record's charge, which covers its slot.
+        records
+            .try_reserve(1)
+            .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("reference record allocation"))?;
         records.push((reference, index));
     }
     crate::python::relay::attach(|py| {
