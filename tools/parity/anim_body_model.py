@@ -99,7 +99,9 @@ RECORDED_ABSENT = frozenset(frozenset(absent) for absent in (
     (), ("Jaw",), ("LeftEye", "RightEye"), ("Jaw", "LeftEye", "RightEye"),
     ("Jaw", "LeftEye", "RightEye", "UpperChest"), ("Jaw", "LeftEye", "RightEye", "LeftToes"),
     ("Jaw", "LeftEye", "RightEye", "RightToes"), ("Jaw", "LeftEye", "RightEye", "LeftToes", "RightToes"),
-    ("Jaw", "LeftEye", "RightEye", "LeftShoulder", "RightShoulder")))
+    ("Jaw", "LeftEye", "RightEye", "LeftShoulder", "RightShoulder"),
+    ("Jaw", "LeftEye", "RightEye", "UpperChest", "LeftToes", "RightToes"),
+    ("Jaw", "LeftEye", "RightEye", "UpperChest", "LeftToes"), ("Jaw", "LeftEye", "RightEye", "UpperChest", "RightToes")))
 ANGLE_FLOOR = gamma(16, U64)
 
 

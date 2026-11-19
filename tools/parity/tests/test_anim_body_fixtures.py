@@ -36,11 +36,14 @@ def source(name):
 
 class BodyInventoryTests(unittest.TestCase):
     def test_cases_mirror_the_builder(self):
-        self.assertEqual(len(body.BODY_CASES), 109)
+        self.assertEqual(len(body.BODY_CASES), 115)
         kinds = [info["kind"] for info in body.BODY_INFO.values()]
-        self.assertEqual((kinds.count("probes"), kinds.count("targets"), kinds.count("clip")), (19, 8, 82))
+        self.assertEqual((kinds.count("probes"), kinds.count("targets"), kinds.count("clip")), (25, 8, 82))
         self.assertEqual(body.EXTRA_CASES, {"body-probes-tall-2"})
         self.assertEqual(body.TWIST_CASES, {"body-probes-twist-compact", "body-probes-twist-tall"})
+        self.assertEqual(body.RANGE_CASES, {"body-probes-range-compact", "body-probes-range-tall",
+                                            "body-probes-range-noncoplanar"})
+        self.assertLessEqual(set(body.LATER_RIGS), set(body.PROBE_RIGS))
         self.assertEqual(len(body.CLIP_VARIANTS), 39)
         self.assertLessEqual(body.BODY_CASES.keys(), OPTIONAL_CASES)
         self.assertTrue(body.BODY_CASES.keys().isdisjoint(anim_fixture_coverage.COVERAGE_CASES))
@@ -76,6 +79,17 @@ class BodyInventoryTests(unittest.TestCase):
         self.assertEqual(((0, 0, 0), *((int(x), int(y), int(z)) for x, y, z in
                                        re.findall(r"new Vector3\((-?\d+), (-?\d+), (-?\d+)\)", tilts))),
                          body.TWIST_TILTS)
+        # The range sweeps: their cases, point count, bones and Sobol direction numbers.
+        self.assertEqual(dict(re.findall(r'\("(body-probes-range-[a-z]+)", "([a-z]+)"\)', builder)), body.RANGE_RIGS)
+        self.assertIn(f"const int RangePoints = {body.RANGE_POINTS};", builder)
+        self.assertIn(f"const int SobolBits = {body.SOBOL_BITS};", builder)
+        bones = re.search(r"RangeBones = \{ ([^}]*) \}", builder).group(1)
+        self.assertEqual(tuple(re.findall(r'"([^"]+)"', bones)), body.RANGE_BONES)
+        table = builder[builder.index("SobolDirections = {"):]
+        table = table[:table.index("};")]
+        self.assertEqual(tuple((int(d), int(a), tuple(int(v) for v in m.split(", ")))
+                               for d, a, m in re.findall(r"\((\d+), (\d+), new\[\] \{ ([\d, ]+) \}\)", table)),
+                         body.SOBOL_DIRECTIONS)
         clips = source("UnityrsBodyClips.cs")
         for name in body.CLIP_VARIANTS:
             stem = re.sub(r"-start$", "", name)
@@ -152,6 +166,49 @@ class BodyInventoryTests(unittest.TestCase):
             self.assertEqual(swept, {(d, tilt) for d in body.TWIST_DEGREES for tilt in body.TWIST_TILTS})
 
 
+    def test_range_sweeps_fill_each_spine_bones_muscle_cube_on_training_rigs(self):
+        # The published start of Joe and Kuo's sequence, then the design: corpus-independent, on the cube.
+        self.assertEqual(body.sobol(8, 3)[4:], [(.375, .375, .625), (.875, .875, .125), (.625, .125, .875),
+                                                (.125, .625, .375)])
+        points = body.sobol(body.RANGE_POINTS, 9)
+        self.assertEqual(len(set(points)), body.RANGE_POINTS)
+        for d in range(9):
+            # Each dimension's first 2^k points take each of the 2^k equal cells once.
+            for k in range(1, 9):
+                self.assertEqual(sorted(int(point[d] * 2 ** k) for point in points[:2 ** k]), list(range(2 ** k)))
+        names = list(MUSCLES)
+        spine = [names.index(muscle) for muscle in body.SPINE]
+        self.assertNotIn(body.HOLDOUT, body.RANGE_RIGS.values())
+        for name, rig in body.RANGE_RIGS.items():
+            info = body.BODY_INFO[name]
+            self.assertEqual((info["kind"], info["variant"], body.BODY_CASES[name].bundle),
+                             ("probes", "range", name.replace("probes-", "")))
+            groups = [[names.index(muscle) for muscle in group] for bone, group in body.PROBE_GROUPS
+                      if bone in body.RANGE_BONES and bone in body.rig_bones(rig)]
+            self.assertEqual(len(groups), 2 if rig == "tall" else 3)
+            points = body.probe_schedule(rig, names, False, body.schedule_name(name))
+            self.assertEqual(len(points), body.RANGE_POINTS + 7 + 3)
+            self.assertLess(len(points), 400)
+            times = [t for t, _ in points]
+            self.assertEqual(times, sorted(set(times)))
+            self.assertTrue(all(t * 65536 == int(t * 65536) for t in times))
+            self.assertEqual({t: [vector[i] for i in spine] for t, vector in points if t in (0, .5, 1)},
+                             {t: list(v) for t, v in body.ANCHORS.items()})
+            self.assertTrue(all(r == ((0, 0, 0), (0, 0, 0)) for r in body.body_requests(name, len(points))))
+            moved = [i for group in groups for i in group]
+            vectors = [vector for t, vector in points if t not in (0, .5, 1)]
+            for vector in vectors:
+                self.assertTrue(all(v == 0 for i, v in enumerate(vector) if i not in moved))
+                self.assertTrue(all(-1 <= vector[i] <= 1 and replay.f32_from_bits(replay.f32_bits(vector[i])) == vector[i]
+                                    for i in moved))
+            # Every joint corner, every bone at the same corner of its cube.
+            corners = {tuple(vector[i] for i in groups[0]) for vector in vectors
+                       if all(abs(vector[i]) == 1 for i in moved)
+                       and all([vector[i] for i in group] == [vector[i] for i in groups[0]] for group in groups)}
+            self.assertEqual(corners, {(a, b, c) for a in (-1, 1) for b in (-1, 1) for c in (-1, 1)})
+            self.assertEqual(len(vectors), len({tuple(vector) for vector in vectors}))
+
+
 class CheckBodyTests(unittest.TestCase):
     def check(self, name, doc, clip=None):
         return body.check_body(name, body.BODY_CASES[name], doc, View(clip), None, replay)
@@ -162,7 +219,7 @@ class CheckBodyTests(unittest.TestCase):
 
     def test_accepts_each_kind(self):
         for name in ("body-probes-compact", "body-probes-no-chest", "body-targets-tall-offset",
-                     "body-probes-twist-tall",
+                     "body-probes-twist-tall", "body-probes-range-tall", "body-probes-no-upper-chest-toes",
                      "body-chain-armature-targets", "body-chain-large-targets", "body-chain-hips-scale-targets",
                      "body-chain-scaled-animator-targets"):
             with self.subTest(name=name):
@@ -438,8 +495,18 @@ class BodyRunTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("missing run.json case: body-probes-twist-tall", result.stderr)
 
+    def test_a_run_before_the_range_sweeps_completes(self):
+        # A run with the twist sweeps and none of the range sweeps or their topology rigs is from between them.
+        later = body.LATER_CASES[-1]
+        self.assertEqual(later, body.RANGE_CASES | {"body-probes-" + rig for rig in body.LATER_RIGS})
+        result = self.run_with([name for name in body.BODY_CASES if name not in later])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_with([name for name in body.BODY_CASES if name != "body-probes-no-upper-chest-toes"])
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("missing run.json case: body-probes-no-upper-chest-toes", result.stderr)
+
     def test_an_extra_probe_case_is_required_once_its_rig_records(self):
-        for name in (sorted(body.EXTRA_CASES)[0], "body-probes-twist-compact"):
+        for name in (sorted(body.EXTRA_CASES)[0], "body-probes-twist-compact", "body-probes-range-noncoplanar"):
             primary = body.primary_probes(body.BODY_INFO[name]["rig"])
             result = self.run_with(body.BODY_CASES, {primary: "recorded"})
             self.assertEqual(result.returncode, 1, result.stdout)

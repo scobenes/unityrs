@@ -28,6 +28,9 @@ PROBE_RIGS = {
     "no-shoulders": ("compact", ("LeftShoulder", "RightShoulder"), ()),
     "no-left-toes": ("compact", ("LeftToes",), ()), "no-right-toes": ("compact", ("RightToes",), ()),
     "no-toes": ("compact", ("LeftToes", "RightToes"), ()),
+    "no-upper-chest-toes": ("compact", ("UpperChest", "LeftToes", "RightToes"), ()),
+    "no-upper-chest-left-toes": ("compact", ("UpperChest", "LeftToes"), ()),
+    "no-upper-chest-right-toes": ("compact", ("UpperChest", "RightToes"), ()),
     "eyes": ("compact", (), ("LeftEye", "RightEye")), "jaw": ("compact", (), ("Jaw",)),
     "eyes-jaw": ("compact", (), ("LeftEye", "RightEye", "Jaw")),
     "noncoplanar": ("compact", (), ()), "holdout": ("compact", (), ()),
@@ -100,6 +103,21 @@ TWIST_DEGREES = (0, *(sign * d for d in (2, 4, 6, 8, 10, 15, 20, 30, 45, 60) for
 TWIST_RANGE = 80
 TWIST_MUSCLES = ("Spine Twist Left-Right", "Chest Twist Left-Right")
 TWIST_TILTS = ((0, 0, 0), (12, 0, 7), (-9, 0, -11), (12, 0, -11))
+# Full-range spine sweeps, each on its own bundle of a training rig (never the hold-out): every mapped spine
+# bone's three muscles over the whole muscle cube [-1, 1]^3, jointly. The vectors are the first RANGE_POINTS
+# points of a 9-d Sobol sequence (Joe and Kuo's direction numbers for dimensions 2-9, unscrambled, 16 bits),
+# each coordinate x as 2 x - 1 (exact in f32): Spine Front-Back, Left-Right and Twist, then Chest's, then
+# UpperChest's, a rig without UpperChest taking the first six. Then the joint corners: every mapped spine bone at
+# the same corner of its cube, all but (-1, -1, -1), which is the sequence's first point. Every other muscle is
+# zero and the body upright. The design comes from the cube alone, never from recorded or corpus poses.
+RANGE_RIGS = {"body-probes-range-compact": "compact", "body-probes-range-tall": "tall",
+              "body-probes-range-noncoplanar": "noncoplanar"}
+RANGE_POINTS = 256
+RANGE_BONES = ("Spine", "Chest", "UpperChest")
+# (degree s, coefficients a, initial m_1..m_s) of dimensions 2-9.
+SOBOL_DIRECTIONS = ((1, 0, (1,)), (2, 1, (1, 3)), (3, 1, (1, 3, 1)), (3, 2, (1, 1, 1)), (4, 1, (1, 1, 3, 3)),
+                    (4, 4, (1, 3, 5, 13)), (5, 2, (1, 1, 5, 5, 17)), (5, 4, (1, 1, 5, 5, 5)))
+SOBOL_BITS = 16
 PROBE_VALUES = (1, -.9, .8)
 COMBINED_VALUES = ((.3, -.2, .25, -.35, .15), (-.25, .4, -.15, .2, -.3), (.2, .2, -.3, -.1, .35))
 TARGETS = (((.05, -.03, .04), (12, -20, 7)), ((-.04, .02, -.06), (-9, 35, -11)))
@@ -183,7 +201,7 @@ def _cases():
             for prefab, suffix in (("identity", ""), ("offset", "-offset")):
                 add(f"body-targets-{rig}{suffix}", _fixture(bundle, prefab, bundle + "-muscles", "targets"),
                     "targets", rig, root=prefab)
-    for variant, rigs in (("extra", EXTRA_RIGS), ("twist", TWIST_RIGS)):
+    for variant, rigs in (("extra", EXTRA_RIGS), ("twist", TWIST_RIGS), ("range", RANGE_RIGS)):
         for name, rig in rigs.items():
             bundle = name.replace("probes-", "")
             add(name, _fixture(bundle, "identity", bundle + "-muscles", "probes"), "probes", rig, variant)
@@ -202,9 +220,12 @@ def _cases():
 BODY_CASES, BODY_INFO = _cases()
 EXTRA_CASES = frozenset(name for name, info in BODY_INFO.items() if info["variant"] == "extra")
 TWIST_CASES = frozenset(TWIST_RIGS)
+RANGE_CASES = frozenset(RANGE_RIGS)
+# The rigs added with the range sweeps: UpperChest absent with both, the left or the right Toes.
+LATER_RIGS = ("no-upper-chest-toes", "no-upper-chest-left-toes", "no-upper-chest-right-toes")
 # The body cases added after the first body run, each generation absent from older runs and required once its
 # rig's own probe case records.
-LATER_CASES = (EXTRA_CASES, TWIST_CASES)
+LATER_CASES = (EXTRA_CASES, TWIST_CASES, RANGE_CASES | {"body-probes-" + rig for rig in LATER_RIGS})
 
 
 def primary_probes(rig):
@@ -276,13 +297,50 @@ def twist_plan():
     return [(degrees / TWIST_RANGE, tilt) for tilt in TWIST_TILTS for degrees in TWIST_DEGREES]
 
 
+def sobol(count, dims):
+    """The first `count` points of the unscrambled Sobol sequence in `dims` (at most 9) dimensions, in [0, 1):
+    dimension 1 is the van der Corput sequence in base 2, the others SOBOL_DIRECTIONS', by Gray code."""
+    directions = [[1 << (31 - k) for k in range(SOBOL_BITS)]]
+    for degree, a, m in SOBOL_DIRECTIONS[:dims - 1]:
+        v = [m[k] << (31 - k) for k in range(degree)]
+        for k in range(degree, SOBOL_BITS):
+            x = v[k - degree] ^ (v[k - degree] >> degree)
+            for j in range(1, degree):
+                x ^= (a >> (degree - 1 - j) & 1) * v[k - j]
+            v.append(x)
+        directions.append(v)
+    if count > 1 << SOBOL_BITS:
+        raise ValueError("more Sobol points than the direction numbers' bits")
+    x, points = [0] * dims, []
+    for i in range(count):
+        points.append(tuple(v / 2 ** 32 for v in x))
+        low = (~i & (i + 1)).bit_length() - 1
+        x = [v ^ directions[d][low] for d, v in enumerate(x)] if i + 1 < count else x
+    return points
+
+
+def range_vectors(rig, index):
+    """A range sweep's vectors over the rig's mapped spine bones (RANGE_RIGS): the Sobol points, then the
+    joint corners but the first."""
+    groups = [[index[muscle] for muscle in group] for bone, group in PROBE_GROUPS
+              if bone in RANGE_BONES and bone in rig_bones(rig)]
+    corners = [tuple(1 if k >> (2 - j) & 1 else -1 for j in range(3)) for k in range(1, 8)]
+    points = [tuple(2 * x - 1 for x in point) for point in sobol(RANGE_POINTS, 3 * len(groups))]
+    points += [corner * len(groups) for corner in corners]
+    return [{muscle: point[3 * g + k] for g, group in enumerate(groups) for k, muscle in enumerate(group)}
+            for point in points]
+
+
 def probe_schedule(rig, names, targets, extra=None):
     """[(time, vector)] in schedule order, vectors over the captured HumanTrait muscle names; `extra`
-    names an extra probe case (EXTRA_PROBES) or a twist sweep (TWIST_RIGS) of the rig."""
+    names an extra probe case (EXTRA_PROBES), a twist sweep (TWIST_RIGS) or a range sweep (RANGE_RIGS)
+    of the rig."""
     index = {name: i for i, name in enumerate(names)}
     _, singles, combined = _probe_vectors(rig, index)
     if extra in TWIST_RIGS:
         vectors = [{index[muscle]: value for muscle in TWIST_MUSCLES} for value, _ in twist_plan()]
+    elif extra in RANGE_RIGS:
+        vectors = range_vectors(rig, index)
     elif extra is not None:
         vectors = [compose(rig, names, sources) for sources in EXTRA_PROBES[extra]]
     else:
@@ -292,7 +350,7 @@ def probe_schedule(rig, names, targets, extra=None):
 
 def schedule_name(name):
     """The `extra` argument of probe_schedule for the body case `name`."""
-    return name if BODY_INFO[name]["variant"] in ("extra", "twist") else None
+    return name if BODY_INFO[name]["variant"] in ("extra", "twist", "range") else None
 
 
 def body_requests(name, count):

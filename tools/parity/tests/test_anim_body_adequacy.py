@@ -1,6 +1,7 @@
 """B1's tolerances and adequacy checkpoint for the humanoid body model, on synthetic rigs."""
 
 import contextlib
+import copy
 import io
 import json
 import math
@@ -15,7 +16,7 @@ import anim_body_adequacy as adequacy  # noqa: E402  (test_anim_replay puts it o
 import anim_body_design as design  # noqa: E402
 import anim_body_tolerance as tolerance  # noqa: E402
 import anim_fixture_body as body  # noqa: E402
-from anim_reference import euler  # noqa: E402
+from anim_reference import angle, euler  # noqa: E402
 import anim_replay as replay  # noqa: E402
 import scratch  # noqa: E402
 
@@ -224,6 +225,49 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no recorded pose of"):
             design.predict(name, short)
 
+    def test_the_design_mode_predicts_a_range_sweep_from_its_rigs_probes(self):
+        # Each spine bone turns by Unity's muscle map rebuilt from its single-muscle probes; the rest stay neutral.
+        name, rig = "body-probes-range-compact", "compact"
+        source = replay.read_json(json.dumps(body_doc(f"body-probes-{rig}", RUN)))
+        capture = source["capture"]
+        bones = {row["name"]: row["node"] for row in capture["humanoid"]["bones"] if row["node"] >= 0}
+        spine = design.muscle_map(capture, bones)
+        self.assertEqual(set(spine), {"Spine", "Chest", "UpperChest"})
+        for sample in capture["samples"]:
+            vector = [replay.f32_from_bits(bits) for bits in sample["muscles_f32"]]
+            for bone, entry in spine.items():
+                if sum(1 for i in entry[3] if vector[i]) == 1 and sum(1 for v in vector if v) == 1:
+                    want = [replay.f32_from_bits(b) for b in sample["pose"]["transforms"][bones[bone]]["rotation"]]
+                    self.assertLess(angle(design.spine_rotation(entry, vector), want), 1e-6, (sample["local"], bone))
+        predicted = design.predict(name, source)
+        recorded = body_doc(name, RUN)
+        self.assertEqual([point["local"] for point in predicted["spec"]["schedule"]],
+                         [point["local"] for point in recorded["spec"]["schedule"]])
+        neutral = capture["samples"][0]["pose"]["transforms"]
+        for got, want in zip(predicted["capture"]["samples"], recorded["capture"]["samples"]):
+            self.assertEqual(got["muscles_f32"], want["muscles_f32"])
+            vector = [replay.f32_from_bits(bits) for bits in got["muscles_f32"]]
+            for bone, node in bones.items():
+                rotation = got["pose"]["transforms"][node]["rotation"]
+                if bone in spine:
+                    self.assertEqual(rotation, [replay.f32_bits(v) for v in design.spine_rotation(spine[bone], vector)])
+                elif bone != "Hips":
+                    self.assertEqual(rotation, neutral[node]["rotation"], bone)
+        parents, masses = adequacy.bone_table([source])
+        self.assertTrue(all(row["fit"] for row in adequacy.samples(name, predicted, parents, masses)))
+        # The bone's own limit row comes first; a probe that misses its limit angle refuses.
+        rows = {row["name"]: row for row in capture["humanoid"]["muscles"]}
+        own = copy.deepcopy(source)
+        for row in own["capture"]["humanoid"]["muscles"]:
+            if row["name"].startswith("Spine "):
+                row.update(min=replay.f32_bits(-30), max=replay.f32_bits(30))
+        with self.assertRaisesRegex(ValueError, "does not turn by its limit angle"):
+            design.muscle_map(own["capture"], bones)
+        limits = [rows[muscle][key] for muscle in ("Spine Twist Left-Right", "Spine Left-Right", "Spine Front-Back")
+                  for key in ("min", "max")]
+        own["capture"]["humanoid"]["limits"] = [dict(human="Spine", defaults=False, min=limits[0::2], max=limits[1::2])]
+        self.assertEqual(design.muscle_map(own["capture"], bones)["Spine"][2], spine["Spine"][2])
+
     def test_the_envelope_bounds_a_planned_pose_conservatively(self):
         # Every recorded identity-root pose of the rig lends its hips and read-back; the merged row takes
         # the largest epsilon and E_eval and the smallest E_unity.
@@ -272,15 +316,18 @@ class CheckpointTests(unittest.TestCase):
 
     def test_every_planned_sample_is_required(self):
         name = sorted(body.EXTRA_CASES)[0]
-        self.record([case for case in self.design() if case != name])
+        self.record([case for case in self.design() if case not in body.RANGE_CASES | {name}])
         _, report, text = self.run_checkpoint()
-        self.assertEqual(report["missing_planned"], [f"{name}: not recorded"])
-        self.assertIn(f"missing planned samples ['{name}: not recorded']", text)
+        self.assertEqual(report["missing_planned"], [f"{case}: not recorded" for case in sorted(body.RANGE_CASES | {name})])
+        self.assertIn(f"missing planned samples ['{sorted(body.RANGE_CASES)[0]}: not recorded'", text)
         self.assertFalse(report["adequate"])
-        self.record([name], samples=5)
+        self.record([name, *body.RANGE_CASES], samples=5)
         _, report, _ = self.run_checkpoint()
-        times = [t for t, _ in body.probe_schedule(body.EXTRA_RIGS[name], list(support.MUSCLES), False, name)]
-        self.assertEqual(report["missing_planned"], [f"{name}@{t}" for t in times[5:]])
+        want = []
+        for case in sorted(body.RANGE_CASES | {name}):
+            rig = body.BODY_INFO[case]["rig"]
+            want += [f"{case}@{t}" for t, _ in body.probe_schedule(rig, list(support.MUSCLES), False, case)[5:]]
+        self.assertEqual(report["missing_planned"], want)
         self.assertFalse(report["adequate"])
 
     def test_design_only_adds_every_unrecorded_extra_case(self):
@@ -292,10 +339,13 @@ class CheckpointTests(unittest.TestCase):
             code = adequacy.main([str(self.folder), "--design-only", "--json", str(self.folder / "report.json")])
         report = json.loads((self.folder / "report.json").read_text(encoding="utf-8"))
         self.assertIn(code, (0, 1))
-        self.assertEqual(report["predicted"], [name])
-        self.assertIn(f"(predicted with {name})", out.getvalue())
+        # The tall rig's planned cases are predicted; the compact rig's probe case is short, and the noncoplanar
+        # rig's unrecorded, so their range sweeps stay missing.
+        self.assertEqual(report["predicted"], ["body-probes-range-tall", name])
+        self.assertIn(f"(predicted with body-probes-range-tall, {name})", out.getvalue())
         self.assertIn(name, {row["name"] for row in report["samples"]})
-        self.assertEqual(report["missing_planned"], [])
+        self.assertEqual(report["missing_planned"], ["body-probes-range-compact: not recorded",
+                                                     "body-probes-range-noncoplanar: not recorded"])
         # Without the flag the checkpoint reads only what was recorded.
         self.assertNotIn(name, {row["name"] for row in self.run_checkpoint()[1]["samples"]})
 
