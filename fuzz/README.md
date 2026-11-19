@@ -45,6 +45,7 @@ toolchain and cargo-fuzz, and nothing in it ships.
 | `obj_text` | raw mesh OBJ plus corrected renderer OBJ/MTL/texture export to a streaming digest; repeated fresh exports must match, smaller-meter exports must match or name their memory/work refusal, and operation meters return to zero | `SceneCase`, sharing the synthetic scene seeds |
 | `anim_clip` | a serialized file or bundle's first file holding a `GameObject`, as a scene or prefab graph; `unityrs-anim` discovery, then for every discovered clip slot `read_clip`, its key-time inventory, endpoints and packed rotations, `bind_clip` against present or filtered renderer channels, and `sample_clip` at the clip's ends and midpoint or on its own schedule; content errors are typed and hashed, fresh runs must repeat, smaller-meter runs must match or name their memory/work refusal, and operation meters return to zero | `SceneCase` (empty profile): flag 1 prefab, 2 filtered renderers, 4 clip schedule |
 | `anim_gltf` | the same graph selection, then `unityrs_export::gltf::collect` (feature `gltf`: discovery, clip selection, binding and baking into `unityrs-gltf`'s scene) and streaming GLB writing twice, under the `scene_collect` rules | `SceneCase`: strict profile with `clips` and `sample_rate`; flag 1 prefab, 2 CorePbr |
+| `anim_humanoid` | the same file selection; every Avatar's `humanoid::read_avatar` (index-table validation, `bone_node`, `tos_path`) and every clip's `read_clip` with its humanoid slot table (slots, storage, settings, root basis, transform writers), then graph discovery and, for each rig, `humanoid::rig_avatar`, `RigPaths` and `humanoid_refusal` with `dropped_muscles` for each of its clip slots; content errors and refusals are hashed, under the `anim_clip` rules | `SceneCase` (empty profile): flag 1 prefab, 2 every rig against every humanoid clip of the file (at most 16) |
 | `fsb5` | `unityrs_audio::plan` and `decode`: bounded parsing, PCM and float WAV lengths, repeatability and charge release | raw audio bytes |
 | `image_writers` | `Image::new` and palette validation, then default image writers: deterministic output and typed refusals, charged output and released charges; at most 65,536 source pixels and 4 MiB per writer run; ICNS uses a zero allocation budget to bound its mandatory resize | width/height u32 LE, mode, format, dimension policy, budget selector, filename selector, then repeating pixel/palette bytes |
 | `set_image` | Raw texture conversion, BICUBIC mips, all 23 Pillow modes, format promotion, platform gates, native BC/ETC/ASTC encoding and encoder refusals with the `encode` feature enabled; at most 65,536 generated pixel bytes and 8 MiB per run; deterministic output and released charges | width/height u32 LE, format/mips i32 LE, mode, platform, flip, exponent, memory and size policies, then repeating pixels |
@@ -133,6 +134,16 @@ rigs, each as a plain serialized file and inside a bundle, at meters 0,
 clip's schedule with filtered renderers; `anim_gltf` under all-discovered
 selection (with and without a sample-rate override) and an explicit
 selection by file index and path id.
+The `anim_humanoid` seeds are `unityrs_testkit::fuzz`'s humanoid rigs (the
+`scene3d::anim::humanoid` builders): the neutral rig and one refusal cause
+at a time (missing Avatar, optimized hierarchy, missing or renamed TOS
+paths, unmapped bones, an offset Animator root, root motion, translation
+DOFs, missing axes, twist and stretch), clip slot tables with writers,
+locomotion, IK, body, translation and dropped muscles, non-neutral and
+missing settings, dense, constant and streamed storage with non-finite
+values, malformed index arrays, and broken Avatar index tables, in 2022.3,
+6000.x and 2019.4 layouts, each with a second clip outside the controller,
+as a plain serialized file and inside a bundle, at meters 0, 1, 16 and 64.
 The `shader` seeds are synthetic program blobs on either side of the
 2019.3 entry-table change and each subprogram-header boundary, with empty
 and textual code, global and local keywords, repeated entries, truncated
@@ -200,10 +211,10 @@ at step 1.
 - `.github/workflows/ci.yml`'s `fuzz-build`: on every push, every target
   built and run for 30 seconds from the seeds, the harness's own tests
   (`cargo test --lib`), and `cargo fmt --check` over this crate.
-  The smoke lists and nightly matrix include all 29 targets, including
+  The smoke lists and nightly matrix include all 30 targets, including
   `image_writers`, `set_image`, `scene_collect`, `obj_text`, `anim_clip`,
-  `anim_gltf`, `shader` and `extractor_paths`, run from their
-  generated seeds.
+  `anim_gltf`, `anim_humanoid`, `shader` and `extractor_paths`, run from
+  their generated seeds.
 
 ## Licences
 

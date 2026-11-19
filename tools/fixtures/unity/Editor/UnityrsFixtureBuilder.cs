@@ -36,7 +36,7 @@ static partial class UnityrsFixtureBuilder
         return tall ? cases.ToArray() : cases.Concat(new[] { rig + "-body-motion" }).ToArray();
     }
 
-    internal sealed class ReplayCase
+    internal sealed partial class ReplayCase
     {
         public string Bundle, Prefab, Clip, Avatar = "", BindingAddress = "";
         public string ProbePath, ProbeProperty = "translation";
@@ -52,7 +52,7 @@ static partial class UnityrsFixtureBuilder
         public bool IsHumanoid => Avatar.Length != 0;
     }
 
-    sealed class Build
+    sealed partial class Build
     {
         public readonly List<AssetBundleBuild> Bundles = new List<AssetBundleBuild>();
         public readonly List<ReplayCase> Replays = new List<ReplayCase>();
@@ -66,9 +66,11 @@ static partial class UnityrsFixtureBuilder
         }
     }
 
+    const string NeverProduced = "Fixture was never produced.";
+
     [Serializable] sealed class RunCase
     {
-        public string name, status = "failed", reason = "Fixture was never produced.";
+        public string name, status = "failed", reason = NeverProduced;
     }
 
     [Serializable] sealed class RunManifest
@@ -85,6 +87,7 @@ static partial class UnityrsFixtureBuilder
         public string editor_version = Application.unityVersion;
         public string build_target;
         public int build_target_id;
+        public string variant = "builtin";
 
         public string Stamp => "unityrs fixture run " + run_id + " " + editor_version + " " + build_target;
     }
@@ -94,11 +97,11 @@ static partial class UnityrsFixtureBuilder
         readonly Dictionary<string, RunCase> cases;
         readonly Action<string> log;
 
-        public RunReport(Action<string> log)
+        public RunReport(Action<string> log, IEnumerable<string> names = null)
         {
             this.log = log;
-            cases = StaticCases.Concat(LegacyCases).Concat(GenericCases)
-                .Concat(HumanoidCases("humanoid-compact", false)).Concat(HumanoidCases("humanoid-tall", true))
+            cases = (names ?? StaticCases.Concat(LegacyCases).Concat(GenericCases)
+                .Concat(HumanoidCases("humanoid-compact", false)).Concat(HumanoidCases("humanoid-tall", true)))
                 .ToDictionary(name => name, name => new RunCase { name = name }, StringComparer.Ordinal);
         }
 
@@ -106,13 +109,25 @@ static partial class UnityrsFixtureBuilder
             name = name, status = "not_covered", reason = reason
         });
 
+        // Fail, with an error line, each case no step has reached yet.
+        public void FailUnreached(IEnumerable<string> names, string reason)
+        {
+            foreach (string name in names)
+            {
+                if (!cases.TryGetValue(name, out var row) || row.reason != NeverProduced) continue;
+                Set(name, "failed", reason);
+                log("ERROR " + name + ": " + reason);
+            }
+        }
+
         public void Set(string name, string status, string reason = "")
         {
             cases[name].status = status;
             cases[name].reason = reason;
         }
 
-        public bool Try(string step, IEnumerable<string> names, Action action)
+        // Only an optional case's explicit capability failure is not covered; any other error fails it.
+        public bool Try(string step, IEnumerable<string> names, Action action, bool optional = false)
         {
             try
             {
@@ -122,18 +137,20 @@ static partial class UnityrsFixtureBuilder
             catch (Exception error)
             {
                 string reason = step + ": " + error.Message;
-                foreach (var name in names) Set(name, "failed", reason);
-                log("ERROR " + reason);
+                string status = optional && error is CoverageUnavailable ? "not_covered" : "failed";
+                foreach (var name in names) Set(name, status, reason);
+                log((status == "failed" ? "ERROR " : "NOT COVERED ") + reason);
                 Debug.LogException(error);
                 return false;
             }
         }
 
-        public void Prepare(Build build, string step, string[] names, Action action)
+        public void Prepare(Build build, string step, string[] names, Action action, bool optional = false)
         {
-            int bundles = build.Bundles.Count, replays = build.Replays.Count;
-            if (Try(step, names, action)) return;
+            int bundles = build.Bundles.Count, coverage = build.CoverageBundles.Count, replays = build.Replays.Count;
+            if (Try(step, names, action, optional)) return;
             build.Bundles.RemoveRange(bundles, build.Bundles.Count - bundles);
+            build.CoverageBundles.RemoveRange(coverage, build.CoverageBundles.Count - coverage);
             build.Replays.RemoveRange(replays, build.Replays.Count - replays);
         }
 
@@ -151,17 +168,17 @@ static partial class UnityrsFixtureBuilder
     }
 
     [MenuItem("Tools/unityrs/Build and record all fixtures")]
-    static void BuildAndRecord() => Run(true);
+    static void BuildAndRecord() => Run(BuiltInVariant(true));
 
     [MenuItem("Tools/unityrs/Build fixtures only")]
-    static void BuildOnly() => Run(false);
+    static void BuildOnly() => Run(BuiltInVariant(false));
 
-    static void Run(bool record)
+    static void Run(Variant variant)
     {
-        var target = EditorUserBuildSettings.activeBuildTarget;
-        var run = new RunIdentity { build_target = target.ToString(), build_target_id = (int)target };
+        var target = variant.Target;
+        var run = new RunIdentity { build_target = target.ToString(), build_target_id = (int)target, variant = variant.Name };
         string version = run.editor_version;
-        string relative = Path.Combine(Output, version, target.ToString());
+        string relative = Path.Combine(Output, version, variant.Folder);
         string assetDirectory = Path.GetFullPath(Application.dataPath);
         string project = Path.GetDirectoryName(assetDirectory);
         string generated = Path.Combine(assetDirectory, AssetFolder);
@@ -193,17 +210,16 @@ static partial class UnityrsFixtureBuilder
                 {
                     Require(!EditorApplication.isPlayingOrWillChangePlaymode && !AnimationMode.InAnimationMode(),
                         "Exit Play Mode and animation preview, then try again.");
-                    Require(GraphicsSettings.currentRenderPipeline == null,
-                        "Open an empty 3D (Built-in) project to build these fixtures.");
+                    Require(variant.PipelineReady(), variant.PipelineMessage);
                     CheckOwned(generated);
                     Folder(Assets);
                     WriteMarker(generated, run.Stamp);
 
-                    var report = new RunReport(Log);
-                    AddDeferredCases(report);
+                    var report = new RunReport(Log, variant.Cases);
+                    variant.AddDeferred(report);
                     Progress("Preparing fixtures", .05f);
-                    var build = PrepareInFixtureScene(report, run.Stamp, ref preserveStaging);
-                    BuildAndCapture(build, report, staging, run, target, record, Log);
+                    var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
+                    BuildAndCapture(build, report, staging, run, target, variant.Record, Log);
                     failures = report.Write(staging, projectPath, run);
                     Log(failures.Length == 0 ? "Finished." : "Finished with fixture errors: " + string.Join(", ", failures));
                 }
@@ -276,41 +292,48 @@ static partial class UnityrsFixtureBuilder
 
     static void AddDeferredCases(RunReport report)
     {
-        report.AddDeferred("urp-materials", "Requires the URP package and a separate URP project.");
-        report.AddDeferred("packed-rotation-slopes", "Requires an imported clip that retains packed rotation slopes.");
-        report.AddDeferred("authored-runtime-precedence", "Requires independently conflicting authorship and runtime values in the built clip.");
-        report.AddDeferred("mixed-transform-storage", "The scale fixture varies interpolation by axis. A scale binding spanning runtime storage ranges was not verified.");
-        report.AddDeferred("humanoid-twist-refusal", "No rig with non-neutral Avatar twist settings is generated.");
-        report.AddDeferred("humanoid-non-neutral-setting-refusal", "No clip with non-neutral import settings is generated.");
+        report.AddDeferred(UrpCase, "Requires a separate Universal 3D project: run " + UrpMenu + " there.");
+        report.AddDeferred("packed-rotation-slopes", PackedSlopesReason);
+        report.AddDeferred("authored-runtime-precedence", PrecedenceReason);
+        report.AddDeferred("mixed-transform-storage", MixedStorageReason);
         report.AddDeferred("humanoid-slot-axis-inventory", "The serialized body and muscle slots and runtime axis fields need an inspected crosswalk.");
         report.AddDeferred("humanoid-root-hips-comparison", "Qualification needs a comparison against the completed known-vector baselines.");
-        report.AddDeferred("integer-discrete-binding", "This run verifies a PPtr transition. An integer discrete flag needs its own fixture.");
+        AddCoverageCases(report);
     }
 
-    static Build PrepareInFixtureScene(RunReport report, string stamp, ref bool preserveStaging)
+    static Build PrepareInFixtureScene(RunReport report, string stamp, Func<RunReport, Scene, string, Build> prepare,
+        ref bool preserveStaging)
     {
-        // Unity cannot create an additive scene while an untitled scene is open.
-        for (int i = 0; i < SceneManager.sceneCount; i++)
-        {
-            var open = SceneManager.GetSceneAt(i);
-            if (string.IsNullOrEmpty(open.path))
-                Require(EditorSceneManager.SaveScene(open), "Save the untitled scene before building fixtures.");
-        }
-        var previous = SceneManager.GetActiveScene();
-        var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+        // The fixtures are built in a single new scene, which Unity makes
+        // active itself, and the owner's scenes are restored afterwards. An
+        // additive untitled scene could not be activated on the first owner
+        // run (2022.3.62f3), so no SetActiveScene call is needed here.
+        // Cancel at Unity's save prompt stops the run; Don't Save discards.
+        Require(EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo(),
+            "Save or discard your open scene changes, then run the menu again.");
+        var setup = EditorSceneManager.GetSceneManagerSetup();
         return PrepareAndCloseScene(() =>
         {
-            Require(SceneManager.SetActiveScene(scene), "Could not activate the fixture scene.");
-            return PrepareFixtures(report, scene, stamp);
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            var active = SceneManager.GetActiveScene();
+            Require(scene.IsValid() && scene.isLoaded && active == scene,
+                "Could not open the fixture scene (valid " + scene.IsValid() + ", loaded " + scene.isLoaded
+                + ", active " + (active == scene) + ", open scenes " + SceneManager.sceneCount + ").");
+            return prepare(report, scene, stamp);
         }, () =>
         {
-            try
+            // Restoring replaces the untitled fixture scene without saving it.
+            // Saved scene paths only: an untitled scene with no changes is
+            // not restorable and is replaced by a new default scene instead.
+            var restorable = Array.FindAll(setup, s => !string.IsNullOrEmpty(s.path));
+            if (restorable.Length > 0)
             {
-                if (previous.IsValid() && !SceneManager.SetActiveScene(previous))
-                    Debug.LogError("Could not restore the previously active scene.");
+                if (!Array.Exists(restorable, s => s.isActive)) restorable[0].isActive = true;
+                EditorSceneManager.RestoreSceneManagerSetup(restorable);
             }
-            catch (Exception error) { Debug.LogException(error); }
-            return EditorSceneManager.CloseScene(scene, true);
+            else
+                EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
+            return true;
         }, ref preserveStaging);
     }
 
@@ -351,8 +374,24 @@ static partial class UnityrsFixtureBuilder
             string name = tall ? "humanoid-tall" : "humanoid-compact";
             report.Prepare(build, "Prepare " + name, HumanoidCases(name, tall), () => BuildHumanoid(build, name, tall));
         }
+        // Every main fixture is prepared or has failed with a reason here.
+        var prepared = new HashSet<string>(build.Replays.Select(replay => replay.OutputName), StringComparer.Ordinal);
+        report.FailUnreached(MainAnimationCases().Where(name => !prepared.Contains(name)),
+            "No preparation step produced this fixture.");
+        Progress("Preparing coverage fixtures", .45f);
+        BuildCoverage(build, report);
         return build;
     }
+
+    static IEnumerable<string> MainAnimationCases() => LegacyCases.Concat(GenericCases)
+        .Concat(HumanoidCases("humanoid-compact", false)).Concat(HumanoidCases("humanoid-tall", true));
+
+    // A built manifest's bundles and their dependencies as plain data. A later
+    // BuildAssetBundles call destroys the previous AssetBundleManifest, which
+    // then compares equal to null.
+    static Dictionary<string, string[]> BundleContents(AssetBundleManifest manifest) =>
+        manifest.GetAllAssetBundles().ToDictionary(name => name, name => manifest.GetAllDependencies(name),
+            StringComparer.Ordinal);
 
     static void BuildAndCapture(Build build, RunReport report, string staging, RunIdentity run, BuildTarget target,
         bool record, Action<string> log)
@@ -361,14 +400,16 @@ static partial class UnityrsFixtureBuilder
         string bundles = Path.Combine(staging, "bundles");
         string replays = Path.Combine(staging, "replays");
         Progress("Building asset bundles", .5f);
-        StampBundleAssets(build, run.Stamp);
+        StampBundleAssets(build.Bundles, run.Stamp);
+        StampBundleAssets(build.CoverageBundles, run.Stamp);
         AssetDatabase.SaveAssets();
         Directory.CreateDirectory(bundles);
         var manifest = BuildPipeline.BuildAssetBundles(bundles, build.Bundles.ToArray(),
             BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.StrictMode, target);
         Require(manifest != null, "Unity could not build the fixture bundles. See the log and Console.");
 
-        var built = new HashSet<string>(manifest.GetAllAssetBundles(), StringComparer.Ordinal);
+        var main = BundleContents(manifest);
+        var built = new HashSet<string>(main.Keys, StringComparer.Ordinal);
         // Unity writes an extra manifest bundle and text manifests. The handoff contains the stamped case bundles.
         foreach (string path in Directory.EnumerateFiles(bundles))
             if (!built.Contains(Path.GetFileName(path))) File.Delete(path);
@@ -377,26 +418,37 @@ static partial class UnityrsFixtureBuilder
             if (built.Contains(entry.Value) && File.Exists(Path.Combine(bundles, entry.Value))) report.Set(entry.Key, "recorded");
             else report.Set(entry.Key, "failed", "Unity did not emit " + entry.Value + ".");
         }
+        // Coverage bundles build apart, so their errors fail only those cases.
+        var coverage = BuildCoverageBundles(build, report, staging, bundles, target);
         for (int i = 0; i < build.Replays.Count; i++)
         {
             var fixture = build.Replays[i];
             string name = fixture.OutputName;
+            var source = fixture.Optional ? coverage : main;
+            // A coverage build that failed has already set its cases.
+            if (source == null) continue;
+            // Build-only runs check the built bundle too, so a missing one is an error.
+            void RequireBundle() => Require(source.TryGetValue(fixture.Bundle, out var dependencies)
+                && dependencies.Length == 0 && File.Exists(Path.Combine(bundles, fixture.Bundle)),
+                "Expected a self-contained replay bundle " + fixture.Bundle + " for " + name);
             if (!record)
             {
-                report.Set(name, "skipped", "The Build fixtures only menu item was used.");
+                if (report.Try("Check " + name, new[] { name }, RequireBundle))
+                    report.Set(name, "skipped", "The Build fixtures only menu item was used.");
                 continue;
             }
             Progress("Recording " + name, .6f + .36f * i / build.Replays.Count);
             log("Recording " + name);
             report.Try("Record " + name, new[] { name }, () => {
-                Require(built.Contains(fixture.Bundle) && manifest.GetAllDependencies(fixture.Bundle).Length == 0,
-                    "Expected a self-contained replay bundle for " + name);
+                RequireBundle();
                 Directory.CreateDirectory(replays);
                 bool mixed = AnimReplayRecorder.RecordFixture(fixture, bundles, replays, run.run_id, log);
                 report.Set(name, "recorded");
                 if (mixed) report.Set("mixed-transform-storage", "recorded", "Verified in the built generic-scale clip.");
-            });
+            }, fixture.Optional);
         }
+        report.FailUnreached(build.Replays.Select(replay => replay.OutputName),
+            "Prepared, but the capture loop never reached this fixture.");
     }
 
     static void CheckOwned(string folder)
@@ -412,19 +464,19 @@ static partial class UnityrsFixtureBuilder
     static void WriteMarker(string folder, string stamp) =>
         File.WriteAllLines(Path.Combine(folder, Marker), new[] { MarkerText, stamp });
 
-    static void StampBundleAssets(Build build, string stamp)
+    static void StampBundleAssets(List<AssetBundleBuild> bundles, string stamp)
     {
         string folder = Folder(Assets + "/Run");
-        for (int i = 0; i < build.Bundles.Count; i++)
+        for (int i = 0; i < bundles.Count; i++)
         {
-            var bundle = build.Bundles[i];
+            var bundle = bundles[i];
             // A streamed scene bundle cannot explicitly include non-scene assets.
             if (bundle.assetBundleName == BatchBundle) continue;
             string path = folder + "/" + bundle.assetBundleName + ".txt";
             File.WriteAllText(Path.Combine(Application.dataPath, path.Substring("Assets/".Length)), stamp);
             AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
             bundle.assetNames = bundle.assetNames.Concat(new[] { path }).ToArray();
-            build.Bundles[i] = bundle;
+            bundles[i] = bundle;
         }
     }
 

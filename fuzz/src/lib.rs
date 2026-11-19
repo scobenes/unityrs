@@ -2,11 +2,11 @@
 //! context and meter of one input, a thread with the stack a read needs,
 //! a [`TreeCase`]'s tree and ref types as the core's, and the `lz4`,
 //! `texture`, `astc`, `crunch`, `meshdecode`, `fsb5`, `image_writers`,
-//! `scene_collect`, `obj_text`, `anim_clip`, `anim_gltf`, `shader` and
-//! `extractor_paths` targets' checks ([`lz4`], [`texture`], [`astc`],
-//! [`crunch`], [`meshdecode`], [`fsb5`], [`image_writers`], [`scene_collect`],
-//! [`obj_text`], [`anim_clip`], [`anim_gltf`], [`shader`]), here so that
-//! their tests run.
+//! `scene_collect`, `obj_text`, `anim_clip`, `anim_gltf`, `anim_humanoid`,
+//! `shader` and `extractor_paths` targets' checks ([`lz4`], [`texture`],
+//! [`astc`], [`crunch`], [`meshdecode`], [`fsb5`], [`image_writers`],
+//! [`scene_collect`], [`obj_text`], [`anim_clip`], [`anim_gltf`],
+//! [`anim_humanoid`], [`shader`]), here so that their tests run.
 //!
 //! Every target uses the public API of the crate it runs (the core's,
 //! `unityrs-texture`'s, `unityrs-meshdecode`'s, `unityrs-audio`'s,
@@ -16,6 +16,7 @@
 
 pub mod anim_clip;
 pub mod anim_gltf;
+pub mod anim_humanoid;
 pub mod astc;
 pub mod bundle_save;
 pub mod crunch;

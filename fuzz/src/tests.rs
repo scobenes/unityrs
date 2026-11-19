@@ -549,3 +549,18 @@ fn anim_checks_run_every_synthetic_seed_and_truncations() {
         "targets must reach successful runs: clips={clips}, gltfs={gltfs}, explicit={explicit}"
     );
 }
+
+#[test]
+fn humanoid_check_runs_every_synthetic_seed_and_truncations() {
+    let mut done = 0;
+    for (_, case) in unityrs_testkit::fuzz::anim_humanoid_cases() {
+        let bytes = case.encode();
+        done += usize::from(crate::anim_humanoid::check(&bytes));
+        if case.meter == 0 {
+            for cut in [0, 3, bytes.len() / 2, bytes.len() - 1] {
+                crate::anim_humanoid::check(&bytes[..cut]);
+            }
+        }
+    }
+    assert!(done >= 800, "the target must reach successful runs: {done}");
+}

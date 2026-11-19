@@ -8,7 +8,7 @@ static partial class UnityrsFixtureBuilder
     static readonly float[] SingleAxis = { .5f, 0, 0 };
     static readonly float[] CombinedAxes = { -.25f, .375f, -.5f };
 
-    static AnimationClip AuthorHumanoidClip(string dir, string name, bool bodyMotion)
+    static AnimationClip AuthorHumanoidClip(string dir, string name, bool bodyMotion, Action<AnimationClip> extra = null)
     {
         var clip = Author(dir, name, authored => {
             // On the first run, confirm HumanTrait names bind as Animator muscle
@@ -25,6 +25,7 @@ static partial class UnityrsFixtureBuilder
                     new Keyframe(1, endValue, lastSlope, 0)));
             }
 
+            extra?.Invoke(authored);
             if (!bodyMotion) return;
             // Keep RootT/RootQ on a separate probe. Even constant body
             // curves can make a clip ineligible for muscle-only playback.

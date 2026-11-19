@@ -13,6 +13,7 @@ from anim_fixture_support import (
     DEFERRED, REPLAYS, ROOT_ID, RUN, STATIC, VECTORS, bits, canonical, fixture_archives, rebuild_bundle,
     stamp, static_bundles, untag, write,
 )
+from anim_coverage_support import COVERAGE, coverage_archives
 from test_anim_replay import identity
 
 HERE = Path(__file__).resolve().parents[1]
@@ -34,9 +35,11 @@ class CompleteReplayTests(unittest.TestCase):
             folder.mkdir()
         self.run_path = self.folder / "run.json"
         self.run = dict(format="unityrs.fixture_run", version=1, run=RUN, cases=[
-            dict(name=name, status="recorded", reason="") for name in (*STATIC, *REPLAYS, *VECTORS)
-        ] + [dict(name=name, status="not_covered", reason="Separate fixture needed") for name in DEFERRED])
-        self.recordings = fixture_archives(self.bundles, self.inspect)
+            dict(name=name, status="recorded", reason="") for name in (*STATIC, *REPLAYS, *VECTORS, *COVERAGE)
+        ] + [dict(name=name, status="not_covered", reason="Separate fixture needed")
+             for name in DEFERRED if name not in COVERAGE])
+        # The run's Editor version requires the humanoid refusal probes.
+        self.recordings = fixture_archives(self.bundles, self.inspect) | coverage_archives(self.bundles, self.inspect)
         static_bundles(self.bundles, self.inspect)
         (self.folder / "build.log").write_text(stamp(RUN) + "\n", encoding="utf-8")
         (self.folder / "unityrs-generated.txt").write_text(
@@ -69,11 +72,18 @@ class CompleteReplayTests(unittest.TestCase):
         path = self.inspect / f"{bundle}.1.{header['path_id']}.show.json"
         return path, json.loads(path.read_text())
 
+    def test_builtin_variant_field_completes_the_full_run(self):
+        # The Editor now names the variant; a Built-in run keeps the full contract.
+        self.run["run"] = RUN | {"variant": "builtin"}
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Completed and validated 18 replay(s)", result.stdout)
+
     def test_complete_resolves_exact_ids_from_container_and_pointers(self):
         self.replace_clip_values("generic-object-reference", lambda clip: clip.pop("m_PPtrCurves"))
         result = self.complete()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Completed and validated 16 replay(s)", result.stdout)
+        self.assertIn("Completed and validated 18 replay(s)", result.stdout)
         for name in REPLAYS:
             finished = replay.read_json((self.replays / f"{name}.json").read_text(encoding="utf-8"))
             self.assertEqual(finished["capture"], self.recordings[name]["capture"])
@@ -97,6 +107,38 @@ class CompleteReplayTests(unittest.TestCase):
         self.assertEqual(cycle["serialized"], struct.unpack(">f", struct.pack(">f", .1))[0])
         self.assertEqual(sorted((self.replays / "known-vectors").glob("*.json")),
                          sorted((self.replays / "known-vectors").glob("*.pending.json")))
+
+    def test_complete_requires_the_reported_late_start_length(self):
+        playback = self.recordings["generic-offset-stepped"]["capture"]["playback"]
+        self.assertEqual(playback["clip_length_f32"], bits(1.5))
+        playback["clip_length_f32"] = bits(1)
+        self.assert_refused("clip length")
+
+    def test_complete_refuses_a_late_start_probe_that_fits_a_zero_origin(self):
+        # With no sample in playable [.25, .75), the held probes sit on the
+        # same sides if playable time were source time.
+        doc = self.recordings["generic-offset-stepped"]
+        spec, capture = doc["spec"], doc["capture"]
+        times = (0, .1, .25, 1)
+        first, last = capture["samples"][0], capture["samples"][-1]
+        spec["schedule"] = [dict(local=t) for t in times]
+        capture["samples"] = []
+        for t in times:
+            sample = copy.deepcopy(first if t < .25 else last)
+            local = struct.unpack(">f", struct.pack(">f", t))[0]
+            sample.update(local=t, local_f32=bits(t), source=.5 + t, effective_source=.5 + local,
+                          sides=["left" if t < .25 else "right"])
+            capture["samples"].append(sample)
+        clock = spec["evidence"]["clock"]
+        clock["held"][0]["left"]["sample"], clock["held"][0]["right"]["sample"] = 1, 2
+        clock["stop"]["probe"]["sample"] = 3
+        self.assertEqual(self.complete().returncode, 0)
+        (self.replays / "generic-offset-stepped.json").unlink()
+        (self.replays / "legacy-explicit.json").unlink()
+        capture["samples"][2].update(local=.8, local_f32=bits(.8), source=1.3,
+                                     effective_source=.5 + struct.unpack(">f", struct.pack(">f", .8))[0])
+        spec["schedule"][2] = dict(local=.8)
+        self.assert_refused("late-start interval clock is not discriminated from a zero origin")
 
     def test_complete_refuses_changed_bundle(self):
         (self.bundles / "anim-legacy").write_bytes(b"different bytes")
@@ -344,6 +386,96 @@ class CompleteReplayTests(unittest.TestCase):
         completed = json.loads((self.replays / "generic-constant.json").read_text())
         self.assertEqual(completed["spec"]["evidence"]["layout"], "constant")
 
+    def compiled_clip(self, case, fields, bindings, frames):
+        # Shaped like a 2022.3 build: no explicit curves, only streamed slots
+        # in binding order. Each frame is (time, per-slot values).
+        def frame(t, values):
+            return [int(bits(t), 16), len(values)] + [w for slot, v in enumerate(values)
+                                                      for w in (slot, 0, 0, 0, int(bits(v), 16))]
+        words = frame(0, frames[0][1]) + [w for t, values in frames for w in frame(t, values)] + [0x7f800000, 0]
+        words[0] = 0xff7fffff
+
+        def edit(clip):
+            for field in fields:
+                clip.pop(field, None)
+            data = clip["m_MuscleClip"]["m_Clip"]["data"]
+            data["m_StreamedClip"] = {"curveCount": len(frames[0][1]), "data": words}
+            data["m_DenseClip"].update(m_CurveCount=0, m_SampleArray=[])
+            clip["m_ClipBindingConstant"] = {"genericBindings": [
+                dict(path=crc32(path.encode()), typeID=class_id, attribute=attribute, customType=custom,
+                     isPPtrCurve=False) for path, class_id, attribute, custom in bindings], "pptrCurveMapping": []}
+        self.replace_clip_values(case, edit)
+
+    def compiled_euler(self, bindings):
+        # The Euler binding has custom type 4, translation custom type 0.
+        self.compiled_clip("generic-euler", ("m_PositionCurves", "m_EulerCurves"),
+                           [("Mötión", 4, attribute, custom) for attribute, custom in bindings],
+                           [(0, [2, 0, 0, 15, 30, 10]), (.5, [3.5, 0, 0, 82.5, -25, 220]),
+                            (1, [5, 0, 0, 150, -80, 430])])
+
+    def test_complete_reads_euler_motion_from_its_compiled_binding(self):
+        self.compiled_euler([(1, 0), (4, 4)])
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        completed = json.loads((self.replays / "generic-euler.json").read_text())
+        self.assertEqual(completed["spec"]["evidence"]["layout"], "streamed")
+
+    def test_complete_refuses_compiled_euler_without_its_binding(self):
+        self.compiled_euler([(1, 0), (3, 0)])
+        self.assert_refused("missing built fixture curve for ('Mötión', 'Transform', 'localEulerAnglesRaw.x')")
+
+    def compiled_morph(self, channel):
+        # A blend-shape binding's attribute hashes the bare channel name.
+        self.compiled_clip("generic-morph", ("m_RotationCurves", "m_FloatCurves"),
+                           [("Skin/RootBone/Upper", 4, 2, 0)]
+                           + [(f"Skin/Renderer{r}", 137, crc32(channel.encode()), 20) for r in "AB"],
+                           [(0, [0, 0, 0, 1, 12.5, 70]), (.5, [0, .6, 0, .8, 46, 47.5]),
+                            (1, [0, .8, 0, .6, 80, 25])])
+
+    def test_complete_reads_morph_weights_bound_by_channel_name(self):
+        self.compiled_morph("Lift")
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_complete_refuses_morph_binding_for_another_channel(self):
+        for channel in ("blendShape.Lift", "Drop"):
+            with self.subTest(channel=channel):
+                self.compiled_morph(channel)
+                self.assert_refused("missing built fixture curve for ('Skin/RendererA', 'SkinnedMeshRenderer'")
+
+    def compiled_reference(self, discrete, dense=0):
+        # As built by 2022.3: three translation slots, then the PPtr slot,
+        # which the streamed clip counts apart as a discrete curve.
+        words = [0xff7fffff, 4] + [w for slot, value in enumerate((3, 0, 0, 0))
+                                   for w in (slot, 0, 0, 0, int(bits(value), 16))]
+        words += [0, 3, 0, 0, 0, int(bits(6), 16), int(bits(3), 16), 1, 0, 0, 0, 0, 2, 0, 0, 0, 0]
+        words += [int(bits(.5), 16), 1, 3, 0, 0, 0, int(bits(1), 16)]
+        words += [int(bits(1), 16), 3, 0, 0, 0, 0, int(bits(9), 16), 1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0x7f800000, 0]
+
+        def edit(clip):
+            for field in ("m_PositionCurves", "m_PPtrCurves"):
+                clip.pop(field, None)
+            data = clip["m_MuscleClip"]["m_Clip"]["data"]
+            data.update(m_StreamedClip={"curveCount": 3, "discreteCurveCount": discrete, "data": words},
+                        m_ConstantClip={"data": [0.] * dense})
+            data["m_DenseClip"].update(m_CurveCount=0, m_SampleArray=[])
+            clip["m_ClipBindingConstant"]["genericBindings"] = [
+                dict(path=crc32("Mötión".encode()), typeID=4, attribute=1, customType=0, isPPtrCurve=False),
+                dict(path=crc32(b"Reference"), typeID=33, attribute=crc32(b"m_Mesh"), customType=41, isPPtrCurve=True),
+            ] + [dict(path=0, typeID=4, attribute=3, customType=0, isPPtrCurve=False)] * bool(dense)
+        self.replace_clip_values("generic-object-reference", edit)
+
+    def test_complete_reads_a_discrete_streamed_reference_slot(self):
+        self.compiled_reference(1)
+        result = self.complete()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_complete_refuses_unplaced_or_uncounted_discrete_slots(self):
+        self.compiled_reference(0)
+        self.assert_refused("invalid built streamed clip slot")
+        self.compiled_reference(1, dense=3)
+        self.assert_refused("missing built fixture curve for ('Mötión', 'Transform', 'm_LocalPosition.x')")
+
     def test_complete_refuses_missing_built_curve_despite_editor_claim(self):
         for case, field in (("legacy-explicit", "m_RotationCurves"), ("generic-euler", "m_EulerCurves"),
                             ("generic-quaternion", "m_RotationCurves"), ("generic-constant", "m_PositionCurves"),
@@ -511,6 +643,17 @@ class CompleteReplayTests(unittest.TestCase):
                 write(path, doc)
                 rebuild_bundle(self.bundles, self.inspect, "static-objects", self.recordings)
                 self.assert_refused("built skin per-vertex bone weights")
+
+    def test_complete_refuses_a_lod_prefab_root_without_its_group(self):
+        path = self.inspect / "static-objects.1.6.show.json"
+        doc = json.loads(path.read_text())
+        value = untag(doc["value"])
+        self.assertEqual(doc["object"]["name"], "lod")
+        value["m_Component"] = [row for row in value["m_Component"] if row["component"]["m_PathID"] != 205]
+        doc["value"] = canonical(value)
+        write(path, doc)
+        rebuild_bundle(self.bundles, self.inspect, "static-objects", self.recordings)
+        self.assert_refused("built LOD count must be two")
 
     def test_complete_refuses_missing_built_static_features(self):
         for bundle, path_id, field, message in (

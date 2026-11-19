@@ -53,6 +53,8 @@ public static partial class AnimReplayRecorder
         public ObjectKey[] object_reference_samples;
         public string[] spine_start_f32, spine_stop_f32;
         public float spine_endpoint_tolerance_degrees;
+        public string expected_refusal;
+        public TwistEffect[] twist_effects;
     }
     [Serializable] sealed class PendingEvidence
     {
@@ -84,8 +86,11 @@ public static partial class AnimReplayRecorder
         var settings = AnimationUtility.GetAnimationClipSettings(clip);
         double start = fixture.Start ?? (clip.legacy ? 0 : settings.startTime);
         double stop = fixture.Stop ?? (clip.legacy ? clip.length : settings.stopTime);
-        Need(0 <= start && start <= stop && clip.length == (float)(stop - start),
-            "Editor clip interval differs from the authored interval for " + clip.name);
+        Need(0 <= start && start <= stop, "Editor clip interval is not ordered for " + clip.name);
+        var invariant = CultureInfo.InvariantCulture;
+        Need(clip.length == ClipLength(start, stop, clip.legacy), "Clip length for " + clip.name + " is "
+            + clip.length.ToString("R", invariant) + " for the interval " + start.ToString("R", invariant)
+            + " to " + stop.ToString("R", invariant) + ".");
         if (fixture.Start.HasValue && !clip.legacy)
             Need(start == settings.startTime && stop == settings.stopTime, "Unity did not retain the authored clip interval.");
 
@@ -164,7 +169,8 @@ public static partial class AnimReplayRecorder
             animation_source = human ? "procedural_humanoid" : "procedural_clip",
             expected_discovery = fixture.ExpectedDiscovery,
             bindings = bindings, clip_settings = ReadSettings(clip), length_f32 = Bits(clip.length),
-            frame_rate_f32 = Bits(clip.frameRate), model_import_settings = Array.Empty<string>()
+            frame_rate_f32 = Bits(clip.frameRate), model_import_settings = Array.Empty<string>(),
+            expected_refusal = fixture.ExpectedRefusal
         };
         pending.evidence = new PendingEvidence { clock = clock, editor = editor };
 
@@ -199,10 +205,12 @@ public static partial class AnimReplayRecorder
         pending.avatar_asset = spec.avatar_asset;
         if (human)
             CheckHumanoidPlayback(capture as HumanCapture, fixture, prefab, clock, editor);
+        if (fixture.TwistMuscles != null)
+            CheckTwistEffects(capture as HumanCapture, fixture, prefab, editor);
         Need(ProbeMatches(clock.start.probe, capture.samples) && ProbeMatches(clock.stop.probe, capture.samples),
             "Built playback missed the authored endpoint probes for " + clip.name + ".");
         if (fixture.HeldTime.HasValue)
-            SetHeldEvidence(pending, spec, capture, fixture, target, clip.length);
+            SetHeldEvidence(pending, spec, capture, fixture, target);
 
         // The final human_pose schema needs an inspected runtime slot
         // inventory. Keep these captures until the maintainer adds it.
@@ -349,13 +357,13 @@ public static partial class AnimReplayRecorder
     }
 
     static void SetHeldEvidence(PendingSpec pending, Spec spec, Capture capture,
-        UnityrsFixtureBuilder.ReplayCase fixture, int target, float length)
+        UnityrsFixtureBuilder.ReplayCase fixture, int target)
     {
         double boundary = fixture.HeldTime.Value;
         Need(pending.evidence.clock.key_times.Contains(boundary), "Held boundary is missing from the authored curves.");
         foreach (SourceClock clock in new[] { SourceClock.Widened, SourceClock.F32Add })
         {
-            var clocks = spec.schedule.Select(point => ReadClock(spec, clock, length, point.local, (float)point.local)).ToArray();
+            var clocks = spec.schedule.Select(point => ReadClock(spec, clock, point.local, (float)point.local)).ToArray();
             int right = Array.FindIndex(clocks, point => point.effective_source >= boundary);
             Need(right > 0, "Held boundary must have probes on both sides.");
             var leftProbe = ProbeAt(fixture, target, right - 1, fixture.HeldLeft.Value);
@@ -370,7 +378,18 @@ public static partial class AnimReplayRecorder
             }
             return;
         }
-        throw new InvalidOperationException("Built playback did not match either held-boundary source clock for " + spec.clip_name);
+        // Report the probed component at every playable time, so the step
+        // shows where Unity's playable clock reaches the boundary.
+        var probe = ProbeAt(fixture, target, 0, 0);
+        var invariant = CultureInfo.InvariantCulture;
+        string trace = string.Join(", ", spec.schedule.Select((point, i) => {
+            probe.sample = i;
+            uint bits = uint.Parse(ProbeValue(probe, capture.samples), NumberStyles.HexNumber, invariant);
+            float value = BitConverter.ToSingle(BitConverter.GetBytes(bits), 0);
+            return point.local.ToString("R", invariant) + "->" + value.ToString("R", invariant);
+        }));
+        throw new InvalidOperationException("Built playback did not match either held-boundary source clock for "
+            + spec.clip_name + " (playable time->probe: " + trace + ").");
     }
 
     static Probe ProbeAt(UnityrsFixtureBuilder.ReplayCase fixture, int target, int sample, float value) => new Probe {
@@ -378,16 +397,18 @@ public static partial class AnimReplayRecorder
         component = 0, sample = sample, value = Bits(value)
     };
 
-    static bool ProbeMatches(Probe probe, Sample[] samples)
+    static bool ProbeMatches(Probe probe, Sample[] samples) => probe.value == ProbeValue(probe, samples);
+
+    static string ProbeValue(Probe probe, Sample[] samples)
     {
         var pose = samples[probe.sample].pose;
-        if (probe.property == "weight") return probe.value == pose.weights[probe.target].channels[probe.channel];
+        if (probe.property == "weight") return pose.weights[probe.target].channels[probe.channel];
         var transform = pose.transforms[probe.target];
         switch (probe.property)
         {
-            case "rotation": return probe.value == transform.rotation[probe.component];
-            case "scale": return probe.value == transform.scale[probe.component];
-            case "translation": return probe.value == transform.translation[probe.component];
+            case "rotation": return transform.rotation[probe.component];
+            case "scale": return transform.scale[probe.component];
+            case "translation": return transform.translation[probe.component];
             default: throw new InvalidOperationException("Unknown clock probe property " + probe.property + ".");
         }
     }

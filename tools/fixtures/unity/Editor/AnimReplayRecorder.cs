@@ -194,8 +194,9 @@ public static partial class AnimReplayRecorder
             Need(legacy || knownPose || spec.mode == "animator", "Unknown playback mode.");
             Need(legacy == clip.legacy, "Clip legacy flag disagrees with playback mode.");
             Need(spec.mode != "animator" || !clip.isLooping, "Build a nonlooping Animator fixture for endpoint replay.");
-            Need(clip.length == (float)(spec.stop - spec.start) && clip.frameRate == spec.sample_rate,
-                "Built clip length or rate disagrees with the inspected source clock.");
+            Need(clip.length == ClipLength(spec.start, spec.stop, legacy) && clip.frameRate == spec.sample_rate,
+                "Built clip length " + clip.length.ToString("R", CultureInfo.InvariantCulture)
+                + " or rate disagrees with the inspected source clock.");
             Need(prefab.GetComponentsInChildren<MonoBehaviour>(true).Length == 0,
                 "Use a fixture prefab without scripts, including root-motion and IK callbacks.");
             bool humanClip = avatar != null && avatar.isHuman && avatar.isValid;
@@ -268,7 +269,7 @@ public static partial class AnimReplayRecorder
 
                         var point = spec.schedule[i];
                         float time = (float)point.local;
-                        var sample = ReadClock(spec, clock, clip.length, point.local, time);
+                        var sample = ReadClock(spec, clock, point.local, time);
                         sample.muscles_f32 = Array.Empty<string>();
                         if (legacy)
                         {
@@ -365,13 +366,22 @@ public static partial class AnimReplayRecorder
         }
     }
 
-    static Sample ReadClock(Spec spec, SourceClock clock, float length, double local, float time)
+    // Unity 2022.3 reports the length of a Mecanim clip whose interval starts
+    // late as its stop time, measured from zero. Playback still starts at the
+    // interval start: an offset fixture's held probes put the step at
+    // playable time key - start, not at the key's source time.
+    static float ClipLength(double start, double stop, bool legacy) =>
+        !legacy && start > 0 ? (float)stop : (float)(stop - start);
+
+    static Sample ReadClock(Spec spec, SourceClock clock, double local, float time)
     {
         Need(0 <= local && local <= spec.stop - spec.start, "Sample outside source interval.");
         double source = local == spec.stop - spec.start ? spec.stop : spec.start + local;
         double effective = spec.start + time;
         if (clock == SourceClock.F32Add) effective = (float)effective;
-        effective = time == length ? spec.stop : Math.Max(spec.start, Math.Min(spec.stop, effective));
+        // The playable endpoint is the interval length, not clip.length.
+        effective = time == (float)(spec.stop - spec.start) ? spec.stop
+            : Math.Max(spec.start, Math.Min(spec.stop, effective));
         return new Sample {
             local = local, source = source, local_f32 = Bits(time), effective_source = effective,
             sides = spec.held_boundaries.Select(t => effective < t ? "left" : "right").ToArray()

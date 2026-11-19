@@ -186,7 +186,7 @@ fn parse(data: Bytes, meter: &Arc<Meter>, kind: ReaderKind) -> Arc<SerializedFil
 }
 
 #[test]
-fn semantic_head_save_refuses_truncated_stream_reference_hash() {
+fn a_truncated_stream_reference_hash_is_refused_on_read() {
     let mut handler = vec![b'T'; 16];
     handler.extend_from_slice(&60u32.to_le_bytes());
     handler.extend_from_slice(b"mhtt");
@@ -200,22 +200,25 @@ fn semantic_head_save_refuses_truncated_stream_reference_hash() {
     handler.extend_from_slice(&[0; 16]); // index, meta, ref type hash
     handler.extend_from_slice(b"S\0Base\0");
     handler.extend_from_slice(&1u32.to_le_bytes());
-    handler.push(b'x'); // truncated reference hash, accepted by stream reads
-    let file = parse(
-        input(&[handler], false),
-        &Meter::unlimited(),
-        ReaderKind::Stream,
-    );
-    assert_eq!(
-        file.save(SaveOptions::default()),
-        Err(SaveError::Range("HEAD reference hash"))
-    );
-    assert!(
-        file.save(SaveOptions {
-            layout: SaveLayout::UnityPy
-        })
-        .is_ok()
-    );
+    handler.push(b'x'); // truncated reference hash, accepted by HEAD's stream reads
+    // The list is bounded by its envelope (Tier C, PARITY.md section 19.1),
+    // so the hash no reader could complete is refused before any save.
+    for kind in [ReaderKind::Memory, ReaderKind::Stream] {
+        let error = SerializedFile::parse_with_reader(
+            RawStr::from_static(b"CAB-synthetic"),
+            input(std::slice::from_ref(&handler), false),
+            None,
+            &Meter::unlimited(),
+            &Arc::new(FileContext::unitypy()),
+            kind,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("reference hashes exceed the envelope")
+        );
+    }
 }
 
 #[test]

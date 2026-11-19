@@ -24,13 +24,15 @@ sys.path.insert(0, str(HERE / "tests"))
 import scratch  # noqa: E402
 from export_support import element, index_buffer, submeshes, vertex_data  # noqa: E402
 from rows_support import ORACLE, load  # noqa: E402
-from test_rows_objects import VERSION, pptr, tpk_file, tpk_object  # noqa: E402
+from test_rows_objects import VERSION, default_value, pptr, tpk_file, tpk_object  # noqa: E402
 
 if ORACLE:
     from UnityPy.classes import ChannelInfo, StreamInfo
     from UnityPy.enums import ClassIDType
     from UnityPy.export import MeshExporter, MeshRendererExporter
-    from UnityPy.helpers import MeshHelper, PackedBitVector, Tpk
+    from UnityPy.helpers import MeshHelper, PackedBitVector, Tpk, TypeTreeHelper
+    from UnityPy.helpers.TypeTreeNode import TypeTreeNode
+    from UnityPy.streams import EndianBinaryWriter
     from UnityPy.helpers.UnityVersion import UnityVersion
     from UnityPy.tools import extractor
 
@@ -592,3 +594,44 @@ class ExportRows(unittest.TestCase):
         data = tpk_object(329, m_Name="v", m_FrameCount=3)
         reader = load(tpk_file([(1, 329, data)]))[0].objects[1]
         self.assertEqual((reader.parse_as_dict()["m_FrameCount"], type(reader.parse_as_object())), (3, VideoClip))
+
+    # Section 19.1, Unity 6000.6 Mesh without `m_MeshUsageFlags`: a Mesh laid out as 6000.6.9f1 writes it, the field
+    # gone and the two `m_PreBake*` flags added. 1.25.2's Mesh requires the field, so object mode builds an
+    # UnknownObject and MeshHandler.process raises; the TPK's own layout, with the field, is the control. unityrs's
+    # side: crates/unityrs-meshdecode/tests/unity6000_mesh.rs.
+    def test_a_mesh_without_usage_flags_is_an_unknown_object(self):
+        from UnityPy.classes import Mesh
+
+        tpk = Tpk.get_typetree_node(43, UnityVersion.from_str(VERSION))
+        # Each row with no children of its own: from_list attaches them by level.
+        rows = [{**row, "m_Children": []} for row in tpk.to_dict_list()]
+        readable = next(r for r in rows if r["m_Name"] == "m_IsReadable")
+        at = next(i for i, r in enumerate(rows) if r["m_Name"] == "m_MeshUsageFlags")
+        rows[at : at + 1] = [
+            {**readable, "m_Name": name} for name in ("m_PreBakeConvexCollisionMesh", "m_PreBakeTriangleCollisionMesh")
+        ]
+        flagless = TypeTreeNode.from_list(rows)
+        positions = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 1.0, 0.0)]
+        version = UnityVersion.from_str("6000.6.9f1")
+        for node in (tpk, flagless):
+            value = default_value(node)
+            value.update(
+                m_Name="quad",
+                m_SubMeshes=submeshes(4, (0, 6, 0)),
+                m_IndexBuffer=index_buffer([0, 1, 2, 2, 1, 3]),
+                m_VertexData=vertex_data(4, {0: (0, 0, "f", positions)}),
+            )
+            writer = EndianBinaryWriter(endian="<")  # the file's byte order, as tpk_object writes it
+            TypeTreeHelper.write_typetree(value, node, writer)
+            mesh = load(tpk_file([(1, 43, writer.bytes)]))[0].objects[1].parse_as_object(node)
+            handler = MeshHelper.MeshHandler(mesh, version=version)
+            with self.subTest(flagless=node is flagless):
+                if node is tpk:
+                    self.assertIsInstance(mesh, Mesh)
+                    handler.process()
+                    triangles = [[(0, 1, 2), (2, 1, 3)]]
+                    self.assertEqual((handler.m_Vertices, handler.get_triangles()), (positions, triangles))
+                else:
+                    self.assertNotIsInstance(mesh, Mesh)
+                    with self.assertRaisesRegex(ValueError, "Unknown mesh type"):
+                        handler.process()

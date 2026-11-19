@@ -1,12 +1,12 @@
 //! Rig-scoped property ownership and Unity-space sample output.
 use crate::{
-    AnimError, BindingKind, BindingTarget, Clip, ClipField, ClipSource, ClipTiming, CompiledClip,
-    MorphProperty, PathQuery, RendererChannels, RigPaths, StorageKind, TransformProperty,
+    AnimError, BindingTarget, Clip, ClipField, ClipSource, ClipTiming, CompiledClip, MorphProperty,
+    PathQuery, RendererChannels, RigPaths, StorageKind, TransformProperty,
     clip::{
         Playback,
         explicit::{Curve, Data, Property, visit_runtime},
     },
-    curve::{normalize, work_for_search},
+    curve::{EulerOrder, normalize, work_for_search},
     read::Dict,
 };
 use std::sync::Arc;
@@ -139,12 +139,6 @@ pub fn bind_clip<'a, 'r>(
                 }
                 if slot.binding.script.path_id != 0 {
                     return Err(AnimError::UnsupportedBindingTarget);
-                }
-                if let BindingKind::Transform(property) = slot.kind {
-                    // The generic slot table has no rotation-order field.
-                    if property == TransformProperty::Euler {
-                        return Err(AnimError::UnsupportedRotationOrder(None));
-                    }
                 }
                 tracks.push(BoundTrack {
                     target,
@@ -488,6 +482,22 @@ impl BoundTrack<'_, '_> {
         {
             meter.count_decode(256)?;
             return order.rotation(raw);
+        }
+        if let Evaluator::Compiled(compiled, first, _) = self.evaluator
+            && let BindingTarget::Transform {
+                property: TransformProperty::Euler,
+                ..
+            } = self.target
+        {
+            // A compiled Euler row's custom type is its rotation order.
+            let slots = compiled.slot_bindings();
+            meter.count_decode(work_for_search(slots.len()) + 256)?;
+            let i = slots.partition_point(|slot| slot.first < first);
+            let slot = slots
+                .get(i)
+                .filter(|slot| slot.first == first)
+                .ok_or(AnimError::SlotOverflow)?;
+            return EulerOrder::read(Some(i32::from(slot.binding.custom_type)))?.rotation(raw);
         }
         meter.count_decode(32)?;
         normalize(raw)

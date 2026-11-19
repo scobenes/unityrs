@@ -3,6 +3,8 @@
     reason = "assert exact stored values and key boundaries"
 )]
 
+#[path = "clip/built.rs"]
+mod built;
 #[path = "clip/compiled.rs"]
 mod compiled;
 #[path = "clip/explicit.rs"]
