@@ -151,15 +151,16 @@ static partial class UnityrsFixtureBuilder
             }
         }
 
-        public void Prepare(Build build, string step, string[] names, Action action, bool optional = false)
+        public bool Prepare(Build build, string step, string[] names, Action action, bool optional = false)
         {
             int bundles = build.Bundles.Count, coverage = build.CoverageBundles.Count, body = build.BodyBundles.Count;
             int replays = build.Replays.Count;
-            if (Try(step, names, action, optional)) return;
+            if (Try(step, names, action, optional)) return true;
             build.Bundles.RemoveRange(bundles, build.Bundles.Count - bundles);
             build.CoverageBundles.RemoveRange(coverage, build.CoverageBundles.Count - coverage);
             build.BodyBundles.RemoveRange(body, build.BodyBundles.Count - body);
             build.Replays.RemoveRange(replays, build.Replays.Count - replays);
+            return false;
         }
 
         public string[] Write(string directory, Regex projectPath, RunIdentity run)

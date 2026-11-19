@@ -191,6 +191,12 @@ def _cases():
 
 BODY_CASES, BODY_INFO = _cases()
 EXTRA_CASES = frozenset(name for name, info in BODY_INFO.items() if info["variant"] == "extra")
+
+
+def primary_probes(rig):
+    """The rig's own probe case, as against its extra ones."""
+    return next(name for name, info in BODY_INFO.items()
+                if info["kind"] == "probes" and info["rig"] == rig and not info["variant"])
 BODY_BUNDLES = {fixture.bundle for fixture in BODY_CASES.values()}
 
 

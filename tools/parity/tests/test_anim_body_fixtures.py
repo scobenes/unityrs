@@ -364,6 +364,13 @@ class BodyRunTests(unittest.TestCase):
         self.assertIn("missing run.json case: body-probes-holdout", result.stderr)
         self.assertNotIn(missing, result.stderr)
 
+    def test_an_extra_probe_case_is_required_once_its_rig_records(self):
+        name = sorted(body.EXTRA_CASES)[0]
+        primary = body.primary_probes(body.EXTRA_RIGS[name])
+        result = self.run_with(body.BODY_CASES, {primary: "recorded"})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"{name}: required once {primary} records, but not_covered", result.stderr)
+
     def test_a_run_lists_all_body_cases_or_none(self):
         missing = "body-probes-holdout"
         result = self.run_with([name for name in body.BODY_CASES if name != missing])

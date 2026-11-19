@@ -177,12 +177,16 @@ static partial class UnityrsFixtureBuilder
 
     static void BuildBody(Build build, RunReport report)
     {
+        var builtRigs = new HashSet<string>(StringComparer.Ordinal);
         foreach (var rig in ProbeRigs)
-            report.Prepare(build, "Prepare body-" + rig.Name, RigCases(rig, false).ToArray(),
-                () => BuildBodyRig(build, report, rig, chain: false), true);
+            if (report.Prepare(build, "Prepare body-" + rig.Name, RigCases(rig, false).ToArray(),
+                    () => BuildBodyRig(build, report, rig, chain: false), true))
+                builtRigs.Add(rig.Name);
+        // Once its rig builds, an extra probe case is required: Unity refusing it is an error.
         foreach (var extra in ExtraProbes)
             report.Prepare(build, "Prepare " + extra.name, new[] { extra.name },
-                () => BuildBodyRig(build, report, ProbeRigs.Single(rig => rig.Name == extra.rig), false, extra), true);
+                () => BuildBodyRig(build, report, ProbeRigs.Single(rig => rig.Name == extra.rig), false, extra),
+                !builtRigs.Contains(extra.rig));
         foreach (var rig in ChainRigs)
             report.Prepare(build, "Prepare body-chain-" + rig.Name, RigCases(rig, true).ToArray(),
                 () => BuildBodyRig(build, report, rig, chain: true), true);

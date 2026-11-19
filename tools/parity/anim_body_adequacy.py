@@ -9,11 +9,13 @@ read from its `.pending.json`. The checkpoint, with B1's own tolerances
 
 1. The weighted design matrix A_w over the edge coefficients: its column
    rank and 2-norm condition number (at most 1e6). Fitting rows are the
-   read-back body positions of every body sample of the training rigs (all
-   but the hold-out rig). Each sample's three scalar equations form one
+   read-back body positions of every body sample of the training rigs. The
+   hold-out rig takes no part in this checkpoint at all: its recordings are
+   not read, so they cannot change the verdict. Only the post-freeze
+   evaluation (E3b) reads them. Each sample's three scalar equations form one
    block weighted by 1/epsilon, since epsilon bounds the Euclidean norm of
    that sample's residual.
-2. For every body sample, hold-out and P2b humanoid sample, each component
+2. For every training body sample and P2b humanoid sample, each component
    k of the propagated coefficient uncertainty against the recording's own
    noise floor: u_s,k = sum over blocks b of ||(J_s A_w^+)_k,b||_2 <=
    E_unity,s, the derived bound on Unity's own error in the recorded hips
@@ -30,8 +32,16 @@ read from its `.pending.json`. The checkpoint, with B1's own tolerances
 3. The coefficient inventory: each sample's edges, from the recorded
    hierarchy, must be those HumanTrait's parents give its mapped bones, and
    every edge of the F1 and F6 training rigs must have fitting rows.
-4. The topology coverage: every F1 and F6 rig recorded by its own probe
-   case, with read-back rows and the rig's mapped bones.
+4. The topology coverage: every F1 and F6 training rig recorded by its own
+   probe case, with read-back rows and the rig's mapped bones.
+5. The extra probe plan: every scheduled sample of every extra probe case
+   (anim_fixture_body.EXTRA_PROBES) recorded with read-back, or the missing
+   ones named.
+
+With --design-only, each extra probe case the run lacks is predicted from
+its rig's recorded geometry (anim_body_design.py), with conservative
+epsilon and E_unity,s over an envelope of the rig's recorded hips, and the
+same checkpoint runs.
 
 There is no per-sample veto from E_unity against epsilon: ||A_w A_w^+||_inf >= 1
 holds for the projector as a whole, not for each of its rows. Rank and
@@ -54,10 +64,11 @@ from anim_body_tolerance import (BODY_SLOTS, U32, U64, body_frame, body_states, 
                                  edges, evaluation_error, folded_masses, frame_error, hips_error, kinematics,
                                  matrix_quaternion, measurement_tolerance, norm, ordered, product, quaternion_matrix,
                                  readback_turn, recorded_edges, rotate, tracked, uniform)
-from anim_body_design import planned  # noqa: E402
-from anim_fixture_body import BODY_INFO, HOLDOUT, PROBE_RIGS, rig_bones  # noqa: E402
+from anim_body_design import conservative, planned  # noqa: E402
+from anim_fixture_body import BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, probe_schedule, rig_bones  # noqa: E402
 
 CONDITION_LIMIT = 1e6
+TRAINING_RIGS = PROBE_RIGS.keys() - {HOLDOUT}
 F32 = replay.f32_from_bits
 
 
@@ -170,7 +181,7 @@ def hips_sensitivity(column, parent, solved=None):
 
 def expected_inventory(parents):
     """Every edge of the F1 and F6 training rigs, by HumanTrait's parents."""
-    return sorted({f"{i}>{j}" for rig in PROBE_RIGS if rig != HOLDOUT for i, j in edges(parents, rig_bones(rig))})
+    return sorted({f"{i}>{j}" for rig in TRAINING_RIGS for i, j in edges(parents, rig_bones(rig))})
 
 
 def householder_r(rows, width):
@@ -277,14 +288,15 @@ def adequate(report):
     return (not report.get("errors") and report["rank"] == len(report["coefficients"])
             and report["condition"] is not None and report["condition"] <= CONDITION_LIMIT
             and not report["uncertainty_failures"] and not report["untrained"] and not report["edge_mismatches"]
-            and not report["missing_coefficients"] and not report["coverage"]["missing"])
+            and not report["missing_coefficients"] and not report["coverage"]["missing"]
+            and not report.get("missing_planned"))
 
 
 def coverage_of(documents):
     """F1 and F6 rigs credited only by their own probe case with read-back rows and the rig's topology."""
     recorded = set()
     probes = {info["rig"]: name for name, info in BODY_INFO.items() if info["kind"] == "probes" and not info["variant"]}
-    for rig in PROBE_RIGS:
+    for rig in TRAINING_RIGS:
         doc = documents.get(probes.get(rig))
         if doc is None or not doc["spec"]["evidence"]["editor"].get("body_samples"):
             continue
@@ -292,15 +304,35 @@ def coverage_of(documents):
                   if row["name"] in BODY_SLOTS and row["node"] >= 0}
         if mapped == rig_bones(rig):
             recorded.add(rig)
-    return {"recorded": sorted(recorded), "missing": sorted(PROBE_RIGS.keys() - recorded)}
+    return {"recorded": sorted(recorded), "missing": sorted(TRAINING_RIGS - recorded)}
+
+
+def missing_planned(documents):
+    """Every scheduled sample of the extra probe plan that has no recording with read-back, by name."""
+    missing = []
+    for name in sorted(EXTRA_CASES):
+        doc = documents.get(name)
+        if doc is None:
+            missing.append(f"{name}: not recorded")
+            continue
+        names = [row["name"] for row in doc["capture"]["humanoid"]["muscles"]]
+        readbacks = doc["spec"]["evidence"]["editor"].get("body_samples") or []
+        have = {sample["local"] for sample, _ in zip(doc["capture"]["samples"], readbacks)}
+        missing += [f"{name}@{t}" for t, _ in probe_schedule(BODY_INFO[name]["rig"], names, False, name)
+                    if t not in have]
+    return missing
 
 
 def load(folder):
+    """Every humanoid recording but the hold-out rig's, which the checkpoint never reads."""
     documents = {}
     for path in sorted((folder / "replays").rglob("*.pending.json")):
+        name = path.name.removesuffix(".pending.json")
+        if BODY_INFO.get(name, {}).get("rig") == HOLDOUT:
+            continue
         doc = replay.read_json(path.read_text(encoding="utf-8"))
         if "humanoid" in doc.get("capture", {}):
-            documents[path.name.removesuffix(".pending.json")] = doc
+            documents[name] = doc
     return documents
 
 
@@ -316,10 +348,12 @@ def main(argv=None):
         documents = load(args.folder)
         extra = planned(documents) if args.design_only else {}
         predicted = sorted(extra)
-        documents |= extra
         parents, masses = bone_table(documents.values())
         rows = [row for name, doc in documents.items() for row in samples(name, doc, parents, masses)]
+        for name, variants in extra.items():
+            rows += conservative([list(samples(name, doc, parents, masses)) for doc in variants])
         report = adequacy(rows, coverage_of(documents), expected_inventory(parents))
+        report["missing_planned"] = missing_planned(documents | {name: variants[0] for name, variants in extra.items()})
     except (KeyError, TypeError, IndexError, ValueError, OSError, StopIteration) as exc:
         print(f"anim_body_adequacy: {exc}", file=sys.stderr)
         return 2
@@ -331,7 +365,8 @@ def main(argv=None):
     print(f"rank {report.get('rank')}/{len(report.get('coefficients', []))}, condition {report.get('condition')}, "
           f"{len(report.get('uncertainty_failures', []))} u_s failures, worst margin E_unity,s/u_s "
           f"{report.get('worst_margin')}, margins {report.get('margins')}, "
-          f"missing rigs {report['coverage']['missing']}, missing edges {report['missing_coefficients']}: "
+          f"missing rigs {report['coverage']['missing']}, missing edges {report['missing_coefficients']}, "
+          f"missing planned samples {report['missing_planned']}: "
           + ("adequate" if report["adequate"] else "short")
           + (f" (predicted with {', '.join(predicted)})" if predicted else ""))
     return 0 if report["adequate"] else 1

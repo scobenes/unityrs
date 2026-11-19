@@ -169,8 +169,8 @@ class CheckpointTests(unittest.TestCase):
         self.assertFalse(report["adequate"])
 
     def test_coverage_comes_only_from_probe_cases(self):
-        # A clip on the compact rig, a probe case without read-back and one whose
-        # Avatar lost a bone credit nothing.
+        # A clip on the compact rig, the hold-out (never read), a probe case without
+        # read-back and one whose Avatar lost a bone credit nothing.
         self.record(["body-clip-level", "body-probes-holdout"], samples=6)
         self.record(["body-probes-eyes"], samples=4,
                     edit=lambda doc: doc["spec"]["evidence"]["editor"].update(body_samples=[]))
@@ -180,8 +180,9 @@ class CheckpointTests(unittest.TestCase):
         self.record(["body-probes-jaw"], samples=4, edit=drop_jaw)
         code, report, _ = self.run_checkpoint()
         self.assertEqual(code, 1)
-        self.assertEqual(report["coverage"]["recorded"], ["holdout"])
+        self.assertEqual(report["coverage"]["recorded"], [])
         self.assertIn("compact", report["coverage"]["missing"])
+        self.assertNotIn("holdout", report["coverage"]["missing"])
         self.assertIn("Spine>Neck", report["missing_coefficients"])
         self.assertTrue(report["untrained"] and all("Head>" in line for line in report["untrained"]))
 
@@ -216,6 +217,55 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no recorded pose of"):
             design.predict(name, short)
 
+    def test_the_envelope_bounds_a_planned_pose_conservatively(self):
+        # Every recorded identity-root pose of the rig lends its hips and read-back; the merged row takes
+        # the largest epsilon and E_eval and the smallest E_unity.
+        name = sorted(body.EXTRA_CASES)[0]
+        rig = body.EXTRA_RIGS[name]
+        docs = {case: replay.read_json(json.dumps(body_doc(case, RUN, samples=None if case.startswith("body-probes")
+                                                                     else 4)))
+                for case in (f"body-probes-{rig}", f"body-targets-{rig}", f"body-targets-{rig}-offset",
+                             "body-probes-holdout")}
+        pairs = design.envelope(docs, rig)
+        self.assertEqual(len(pairs), len(docs[f"body-probes-{rig}"]["capture"]["samples"]) + 4)
+        variants = design.planned(docs)[name]
+        self.assertEqual(len(variants), len(pairs))
+        hips = next(row["node"] for row in docs[f"body-probes-{rig}"]["capture"]["humanoid"]["bones"]
+                    if row["name"] == "Hips")
+        self.assertEqual([doc["capture"]["samples"][0]["pose"]["transforms"][hips] for doc in variants],
+                         [transform for transform, _ in pairs])
+        with self.assertRaisesRegex(ValueError, "hold-out"):
+            design.envelope(docs, body.HOLDOUT)
+        rows = [[row("a", (1, 0, 0), (1, 0, 0), e, u, v)] for e, u, v in ((1, 5, 0), (3, 4, 2), (2, 6, 1))]
+        merged = design.conservative(rows)
+        self.assertEqual([(r["epsilon"], r["unity"], r["evaluation"]) for r in merged], [(3, 4, 2)])
+
+    def test_the_hold_out_cannot_change_the_verdict(self):
+        self.record([name for name in self.design() if name != "body-probes-holdout"])
+        _, before, _ = self.run_checkpoint()
+
+        def poison(doc):
+            # A foreign bone table and a broken pose would fail every check that read them.
+            doc["spec"]["evidence"]["editor"]["human_bones"][0].update(mass=replay.f32_bits(.5))
+            doc["capture"]["samples"][1]["pose"]["transforms"][1]["rotation"] = [replay.f32_bits(.6)] * 4
+        self.record(["body-probes-holdout"], edit=poison)
+        _, after, _ = self.run_checkpoint()
+        self.assertEqual(after, before)
+        self.assertNotIn("body-probes-holdout", {row["name"] for row in after["samples"]})
+
+    def test_every_planned_sample_is_required(self):
+        name = sorted(body.EXTRA_CASES)[0]
+        self.record([case for case in self.design() if case != name])
+        _, report, text = self.run_checkpoint()
+        self.assertEqual(report["missing_planned"], [f"{name}: not recorded"])
+        self.assertIn(f"missing planned samples ['{name}: not recorded']", text)
+        self.assertFalse(report["adequate"])
+        self.record([name], samples=5)
+        _, report, _ = self.run_checkpoint()
+        times = [t for t, _ in body.probe_schedule(body.EXTRA_RIGS[name], list(support.MUSCLES), False, name)]
+        self.assertEqual(report["missing_planned"], [f"{name}@{t}" for t in times[5:]])
+        self.assertFalse(report["adequate"])
+
     def test_design_only_adds_every_unrecorded_extra_case(self):
         name = sorted(body.EXTRA_CASES)[0]
         self.record([f"body-probes-{body.EXTRA_RIGS[name]}"], samples=None)
@@ -228,6 +278,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(report["predicted"], [name])
         self.assertIn(f"(predicted with {name})", out.getvalue())
         self.assertIn(name, {row["name"] for row in report["samples"]})
+        self.assertEqual(report["missing_planned"], [])
         # Without the flag the checkpoint reads only what was recorded.
         self.assertNotIn(name, {row["name"] for row in self.run_checkpoint()[1]["samples"]})
 

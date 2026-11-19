@@ -1044,7 +1044,10 @@ muscle is zero. Each bone's local rotation is then one its rig's probe case
 records, so the case can be predicted before it is recorded. Its schedule
 keeps the anchors and the grid. It builds its own bundle, so a rerun
 leaves the other cases' bundles unchanged. A run with body rows but none
-for the extra cases predates them and completes.
+for the extra cases predates them and completes. Once the rig's own probe
+case records, its extra case is required: in the builder, Unity refusing
+it is an error rather than not covered, and completion refuses a run where
+it is not recorded.
 
 **F3 targets.** The targets alternate two requests. One moves the rest
 body by `(.05, -.03, .04)` and tilts it by `Euler(12, -20, 7)`. The other
@@ -1297,19 +1300,25 @@ folder lacks, built from its rig's recorded probe case by
 same checkpoint, and the report lists the predicted cases.
 
 - Each planned bone takes the local rotation Unity recorded for the same
-  muscles, bit for bit.
-- The hips keep the neutral sample's transform. A turn of the whole body
-  turns each block and its Jacobian alike, so `u_s` does not change.
-- The neutral sample's read-back and target set `ε` and `E_unity`'s
-  magnitudes.
+  muscles, bit for bit. The pose's hips-local kinematics, its columns (up
+  to a turn of the block, which leaves `u_s` unchanged) and its `J_s` are
+  then exact. Its body target is the recorder's known vector, the same in
+  every probe sample.
+- Unity's solved hips transform and world read-back are not known before a
+  run, and they set `ε` and `E_unity,s`. They are bounded by an envelope:
+  every recorded sample of the rig's identity-root probe and target cases
+  lends the planned pose its hips transform and read-back.
+- Each planned sample takes the largest `ε` and `E_eval,s` and the
+  smallest `E_unity,s` over the envelope. A larger `ε` weights its block
+  less, so it can only raise `u_s` elsewhere. A smaller `E_unity,s` lowers
+  the sample's own bound. The predicted margin is therefore conservative.
 
-Rank, `u_s` and `E_unity` depend on the rig geometry and the schedule,
-not on Unity's outputs, so the prediction holds the design. A recorded run
-of the planned case stays the checkpoint of record.
+A recorded run of the planned case stays the checkpoint of record.
 
 [`anim_body_adequacy.py`](../tools/parity/anim_body_adequacy.py) builds a
-row block from every body read-back sample of the training rigs (every rig
-but the hold-out). Each sample's three equations are weighted by `1/ε`.
+row block from every body read-back sample of the training rigs. The
+hold-out rig takes no part: its recordings are never read, so they cannot
+change the verdict. Only the post-freeze evaluation, E3b, reads them. Each sample's three equations are weighted by `1/ε`.
 Each coefficient `a_ij`, keyed by edge, has the column `m_i (p_ij − p_i)`
 in `A`. Edges come from the recorded hierarchy: a mapped body-slot bone and
 its nearest mapped ancestor by node address. Masses are the E0b-folded
@@ -1320,7 +1329,7 @@ defaults from `human_bones`. The checkpoint reports:
    `σ_max · max(R, N) · 2^-52`, and the condition limit is `1e6`. Each null
    direction is listed as a free combination.
 2. **`u_s ≤ E_unity,s`**, per component of the hips translation, on every
-   body sample (the hold-out included) and every P2b humanoid recording:
+   training body sample and every P2b humanoid recording:
    the coefficients' worst-case uncertainty within the recording's own
    noise floor. The report lists each failure, every sample's `E_unity,s`,
    `u_s`, `E_eval,s` and `T_s`, and the distribution of the margins
@@ -1338,8 +1347,10 @@ defaults from `human_bones`. The checkpoint reports:
      give its mapped bones.
    - Every edge of the F1 and F6 training rigs must have fitting rows.
    - A sample whose edges no fitting row trains is listed apart.
-4. **Topology coverage.** A rig counts only through its own `body-probes-`
-   case, with read-back rows and that rig's mapped bones.
+4. **Topology coverage.** A training rig counts only through its own
+   `body-probes-` case, with read-back rows and that rig's mapped bones.
+5. **The extra probe plan.** Every scheduled sample of every extra probe
+   case must be recorded with read-back. A missing case or sample is named.
 
 Rank and `u_s` do not depend on column scale, so the masses matter only to
 the condition number. The right-hand side is never needed. The script exits
