@@ -102,9 +102,16 @@ impl std::fmt::Display for ContainerCount {
 }
 impl std::error::Error for ContainerCount {}
 
-fn container_unit(env: &Environment, requested: &[u8], prefab: bool) -> Result<Unit> {
-    let mut selected = None;
-    let mut count = 0usize;
+/// The rows the walk matches are classified once it is over, with the
+/// built-in resources armed, so a row whose asset is in the supplied file is
+/// counted by its class like any other.
+fn container_unit(
+    env: &Environment,
+    requested: &[u8],
+    prefab: bool,
+    builtin: Option<&BuiltinFile>,
+) -> Result<Unit> {
+    let mut matched: Option<MeteredVec<_>> = None;
     for entry in env.container()? {
         let entry = entry?;
         entry.file.meter().count_decode(requested.len() as u64)?;
@@ -116,7 +123,17 @@ fn container_unit(env: &Environment, requested: &[u8], prefab: bool) -> Result<U
         {
             continue;
         }
-        let unit = unityrs_scene::unit_from_container(env, &entry.file, &entry.row)?;
+        matched
+            .get_or_insert_with(|| MeteredVec::new(entry.file.meter()))
+            .push((entry.file, entry.row))?;
+    }
+    if let Some(builtin) = builtin {
+        builtin.armed.store(true, Ordering::Release);
+    }
+    let mut selected = None;
+    let mut count = 0usize;
+    for (file, row) in matched.iter().flat_map(MeteredVec::as_slice) {
+        let unit = unityrs_scene::unit_from_container(env, file, row)?;
         if let Some(unit) = unit.filter(|unit| matches!(unit, Unit::Prefab(_)) == prefab) {
             count = count.checked_add(1).ok_or("container count overflow")?;
             selected = Some(unit);
@@ -136,15 +153,16 @@ fn select(
     env: &Environment,
     args: &args::Args<'_>,
     scene: Option<Arc<SerializedFile>>,
+    builtin: Option<&BuiltinFile>,
 ) -> Result<Unit> {
     use args::Selection;
     if let Selection::Prefab(requested) = args.selection {
-        return container_unit(env, requested, true);
+        return container_unit(env, requested, true, builtin);
     }
     if let Selection::Scene(requested) = args.selection {
         return match scene {
             Some(scene) => Ok(Unit::Scene(scene)),
-            None => container_unit(env, requested, false),
+            None => container_unit(env, requested, false, builtin),
         };
     }
     let Selection::PathId(id) = args.selection else {
@@ -221,7 +239,7 @@ fn run(raw: &[Vec<u8>]) -> Result<()> {
             roots.push(file)?;
         }
     }
-    let unit = select(&env, &args, scene)?;
+    let unit = select(&env, &args, scene, builtin.as_deref())?;
     if let Some(builtin) = &builtin {
         builtin.armed.store(true, Ordering::Release);
     }

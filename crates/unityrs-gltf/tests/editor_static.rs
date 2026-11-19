@@ -4,10 +4,12 @@
 //! `UnityrsUrpFixtures.cs`), mirrored into glTF's space; the bundles are read
 //! from the run folder at test time, never committed.
 //!
-//! `UNITYRS_STATIC_RUN` names a main run's `<version>/StandaloneWindows64`
-//! folder (its `run.json` beside `bundles/`), and `UNITYRS_STATIC_URP_RUN`
-//! a URP run's `<version>/URP-StandaloneWindows64`. Unity 6000 bundles need a
-//! build whose core reads their Mesh layout.
+//! Each test runs on both Editor lines and fails unless both runs are named:
+//! `UNITYRS_STATIC_RUN_2022` a 2022.3 main run's `<version>/StandaloneWindows64`
+//! folder (its `run.json` beside `bundles/`), `UNITYRS_STATIC_RUN_6000` a
+//! 6000.6 one's. `UNITYRS_STATIC_URP_RUN_6000` names a 6000.6 URP run's
+//! `<version>/URP-StandaloneWindows64`; no 2022.3 URP run is checked yet.
+//! The 6000.6 bundles need the core's Unity 6 type-tree and Mesh readers.
 mod collect_support;
 mod editor_support;
 mod material_support;
@@ -27,9 +29,6 @@ const PRIMITIVES: [(&str, i64); 6] = [
     ("Quad", 10210),
 ];
 
-fn main_run(cases: &[&str]) -> Run {
-    e::run("UNITYRS_STATIC_RUN", "builtin", cases)
-}
 fn prefab(run: &Run, name: &str, profile: &[u8], mapper: &dyn MaterialMapper) -> Glb {
     let path = format!("{STATIC}{name}.prefab");
     e::export(
@@ -55,14 +54,18 @@ fn batch(run: &Run) -> Glb {
 /// Unity names a saved prefab's root after its asset file. Children keep the
 /// order the script adds them in, with their authored local TRS.
 #[test]
-#[ignore = "set UNITYRS_STATIC_RUN to an owner-built Editor fixture run"]
+#[ignore = "set UNITYRS_STATIC_RUN_2022 and UNITYRS_STATIC_RUN_6000 to owner-built Editor fixture runs"]
 fn editor_hierarchy_and_trs() {
-    let run = main_run(&[
+    for run in e::runs(&[
         "static-primitives",
         "static-materials",
         "static-lod",
         "static-skin",
-    ]);
+    ]) {
+        hierarchy_and_trs(&run);
+    }
+}
+fn hierarchy_and_trs(run: &Run) {
     let bones = vec![
         node("Upper", [0., 1., 0.], vec![]),
         node("Right", [1., 0., 0.], vec![]),
@@ -112,7 +115,7 @@ fn editor_hierarchy_and_trs() {
         ),
     ];
     for (name, tree) in &trees {
-        let glb = prefab(&run, name, DEFAULT, &UnlitExtras);
+        let glb = prefab(run, name, DEFAULT, &UnlitExtras);
         let roots = glb.roots();
         assert_eq!(roots[0], 0, "{name}: the prefab root comes first");
         e::assert_tree(&glb, roots[0], tree, &run.version);
@@ -135,10 +138,14 @@ fn editor_hierarchy_and_trs() {
 /// identity and translations down, left and right, a two-frame `Lift`
 /// channel at 25 and 80, and renderer weights 12.5 and 50.
 #[test]
-#[ignore = "set UNITYRS_STATIC_RUN to an owner-built Editor fixture run"]
+#[ignore = "set UNITYRS_STATIC_RUN_2022 and UNITYRS_STATIC_RUN_6000 to owner-built Editor fixture runs"]
 fn editor_skins_and_morph_targets() {
-    let run = main_run(&["static-skin"]);
-    let glb = prefab(&run, "skin", DEFAULT, &UnlitExtras);
+    for run in e::runs(&["static-skin"]) {
+        skins_and_morph_targets(&run);
+    }
+}
+fn skins_and_morph_targets(run: &Run) {
+    let glb = prefab(run, "skin", DEFAULT, &UnlitExtras);
     let bind = [[0., 0., 0.], [0., -1., 0.], [-1., 0., 0.], [1., 0., 0.]];
     let indices = [
         [0., 1., 2., 3.],
@@ -161,7 +168,14 @@ fn editor_skins_and_morph_targets() {
         assert_eq!(names, ["RootBone", "Upper", "Right", "Left"], "{renderer}");
         assert_eq!(glb.nodes()[e::usize(&skin["skeleton"])]["name"], "RootBone");
         // diag(-1, 1, 1, 1) B diag(-1, 1, 1, 1): a translation's x negates.
-        for (matrix, t) in glb.accessor(&skin["inverseBindMatrices"]).iter().zip(bind) {
+        let matrices = glb.accessor(&skin["inverseBindMatrices"]);
+        assert_eq!(
+            matrices.len(),
+            names.len(),
+            "{renderer}: one bind per joint"
+        );
+        assert_eq!(matrices.len(), bind.len(), "{renderer}");
+        for (matrix, t) in matrices.iter().zip(bind) {
             let mut want = vec![0.; 16];
             for i in 0..4 {
                 want[i * 5] = 1.;
@@ -211,10 +225,14 @@ fn reversed_panel_indices() -> Vec<Vec<f64>> {
 /// rotated 45 degrees about y and scaled (2, 1, 0.5), share one combined
 /// mesh. Each renderer's range must land where Unity placed the panel.
 #[test]
-#[ignore = "set UNITYRS_STATIC_RUN to an owner-built Editor fixture run"]
+#[ignore = "set UNITYRS_STATIC_RUN_2022 and UNITYRS_STATIC_RUN_6000 to owner-built Editor fixture runs"]
 fn editor_static_batch_placement() {
-    let run = main_run(&["static-batch-scene"]);
-    let glb = batch(&run);
+    for run in e::runs(&["static-batch-scene"]) {
+        static_batch_placement(&run);
+    }
+}
+fn static_batch_placement(run: &Run) {
+    let glb = batch(run);
     let objects = [
         ("Zulu", [3., 1., -2.], [0., 0., 0., 1.], [1.; 3]),
         ("Alpha", [-1., 2., 4.], e::euler(0., 45., 0.), [2., 1., 0.5]),
@@ -235,6 +253,12 @@ fn editor_static_batch_placement() {
             attached["extras"]["source_path_id"],
             original["extras"]["path_id"]
         );
+        // The range's vertices are already in world space: an identity
+        // attachment places them once.
+        assert_eq!(attached["translation"], json!([0, 0, 0]), "{name}");
+        assert_eq!(attached["rotation"], json!([0, 0, 0, 1]), "{name}");
+        assert_eq!(attached["scale"], json!([1, 1, 1]), "{name}");
+        assert!(attached.get("matrix").is_none() && attached.get("children").is_none());
         assert!(
             glb.roots()
                 .contains(&glb.nodes().iter().position(|n| n == attached).unwrap())
@@ -275,36 +299,42 @@ fn editor_static_batch_placement() {
             assert_eq!(uvs[corner], [u, 1. - v], "{label}");
         }
     }
-    // The scene's roots are its three parentless Transforms, in the scene
-    // file's object-table order (decision 13), before the attachments. The
-    // Editor keeps no authored root order in the build: the same authored
-    // Zulu, Alpha, marker appear in a different table order from run to run.
+    // The scene's roots are its three parentless Transforms, then the two
+    // attachments. Their order is not compared: the Editor keeps no authored
+    // root order in the build, and the same authored Zulu, Alpha and marker
+    // take a different object-table order from run to run.
     let roots: Vec<_> = glb
         .roots()
         .iter()
         .map(|&r| glb.nodes()[r]["name"].clone())
         .collect();
+    assert_eq!(roots.len(), 5);
     let mut originals: Vec<_> = roots[..3].iter().map(|n| n.as_str().unwrap()).collect();
-    eprintln!("{} object-table root order: {originals:?}", run.version);
     originals.sort_unstable();
     let mut authored = vec!["Zulu", "Alpha", run.stamp.as_str()];
     authored.sort_unstable();
     assert_eq!(originals, authored);
-    assert_eq!(roots.len(), 5);
+    let mut attachments: Vec<_> = roots[3..].iter().map(|n| n.as_str().unwrap()).collect();
+    attachments.sort_unstable();
+    assert_eq!(attachments, ["Alpha", "Zulu"]);
 }
 
 /// Each primitive is `GameObject.CreatePrimitive(type)`, named after its
 /// type, so its `MeshFilter` names the built-in mesh of that type. The
 /// default material is copied into an asset bundle, never referenced.
 #[test]
-#[ignore = "set UNITYRS_STATIC_RUN to an owner-built Editor fixture run"]
+#[ignore = "set UNITYRS_STATIC_RUN_2022 and UNITYRS_STATIC_RUN_6000 to owner-built Editor fixture runs"]
 fn editor_builtin_mesh_file_ids() {
-    let run = main_run(&[
+    for run in e::runs(&[
         "static-primitives",
         "static-materials",
         "static-lod",
         "static-skin",
-    ]);
+    ]) {
+        builtin_mesh_file_ids(&run);
+    }
+}
+fn builtin_mesh_file_ids(run: &Run) {
     let builtin = |glb: &Glb, name: &str, kind: &str| {
         let id = PRIMITIVES.iter().find(|(n, _)| *n == kind).unwrap().1;
         assert_eq!(
@@ -314,16 +344,16 @@ fn editor_builtin_mesh_file_ids() {
             run.version
         );
     };
-    let glb = prefab(&run, "primitives", DEFAULT, &UnlitExtras);
+    let glb = prefab(run, "primitives", DEFAULT, &UnlitExtras);
     for (name, _) in PRIMITIVES {
         builtin(&glb, name, name);
     }
     assert_eq!(glb.issues("builtin_placeholder"), 6);
-    let glb = prefab(&run, "materials", DEFAULT, &UnlitExtras);
+    let glb = prefab(run, "materials", DEFAULT, &UnlitExtras);
     builtin(&glb, "Metallic", "Cube");
     builtin(&glb, "Unlit", "Quad");
     // LOD 0 holds Near; the default profile exports only that level.
-    let glb = prefab(&run, "lod", DEFAULT, &UnlitExtras);
+    let glb = prefab(run, "lod", DEFAULT, &UnlitExtras);
     builtin(&glb, "Near", "Sphere");
     assert!(
         glb.named("Far", false)["extras"]
@@ -332,7 +362,7 @@ fn editor_builtin_mesh_file_ids() {
     );
     // `AddSkins` assigns the Cube's default material; the bundle holds its
     // own copy, so the skin maps a local material and names no built-in.
-    let glb = prefab(&run, "skin", DEFAULT, &UnlitExtras);
+    let glb = prefab(run, "skin", DEFAULT, &UnlitExtras);
     let material = glb.material("Default-Material");
     assert_eq!(material["extras"]["shader"], "Standard");
     assert!(!glb.json.to_string().contains("unity_builtin"));
@@ -340,6 +370,16 @@ fn editor_builtin_mesh_file_ids() {
 
 fn linear(c: [f32; 4]) -> Vec<f64> {
     material_support::linear_color(c.map(f64::from)).to_vec()
+}
+/// A material's base colour texture binding, which must exist, on set 0.
+fn bound<'a>(factors: &'a Value, material: &str) -> &'a Value {
+    let base = &factors["baseColorTexture"];
+    assert!(base["index"].is_u64(), "{material}: no base colour texture");
+    assert!(
+        base.get("texCoord").is_none_or(|set| set == 0),
+        "{material}"
+    );
+    base
 }
 fn transform(info: &Value) -> &Value {
     &info["extensions"]["KHR_texture_transform"]
@@ -350,9 +390,13 @@ fn transform(info: &Value) -> &Value {
 /// (2, 3) and offset (.25, .5)) and `Unlit/Texture` `Unlit` (the checker).
 /// A user-supplied resource file gives their Cube and Quad UVs.
 #[test]
-#[ignore = "set UNITYRS_STATIC_RUN to an owner-built Editor fixture run"]
+#[ignore = "set UNITYRS_STATIC_RUN_2022 and UNITYRS_STATIC_RUN_6000 to owner-built Editor fixture runs"]
 fn editor_builtin_materials() {
-    let run = main_run(&["static-materials"]);
+    for run in e::runs(&["static-materials"]) {
+        builtin_materials(&run);
+    }
+}
+fn builtin_materials(run: &Run) {
     // `SetPixels32` fills rows bottom first; PNG output writes the top first.
     let checker: Vec<u8> = [
         [80, 20, 120, 128],
@@ -368,7 +412,7 @@ fn editor_builtin_materials() {
     ] {
         let resolver = Some(e::Builtins::new());
         let glb = e::export(
-            &run,
+            run,
             "static-objects",
             &Select::Prefab(&path),
             RESOLVE,
@@ -378,7 +422,7 @@ fn editor_builtin_materials() {
         let metallic = glb.material("metallic");
         let factors = &metallic["pbrMetallicRoughness"];
         material_support::assert_factor(&factors["baseColorFactor"], &linear([0.4, 0.6, 0.8, 1.]));
-        let base = &factors["baseColorTexture"];
+        let base = bound(factors, "metallic");
         assert_eq!(transform(base)["scale"], json!([2, 3]));
         assert_eq!(transform(base)["offset"], json!([0.25, -2.5]));
         let image = &glb.json["textures"][e::usize(&base["index"])]["source"];
@@ -398,7 +442,7 @@ fn editor_builtin_materials() {
         let unlit = glb.material("unlit");
         assert_eq!(unlit["extensions"], json!({"KHR_materials_unlit": {}}));
         assert_eq!(unlit["extras"]["shader"], "Unlit/Texture");
-        let base = &unlit["pbrMetallicRoughness"]["baseColorTexture"];
+        let base = bound(&unlit["pbrMetallicRoughness"], "unlit");
         assert!(transform(base).is_null(), "{unlit}");
         let image = &glb.json["textures"][e::usize(&base["index"])]["source"];
         material_support::assert_pixels_sized(&glb.image(image), (2, 2), &checker);
@@ -410,9 +454,14 @@ fn editor_builtin_materials() {
 /// metallic .625, smoothness .375, emission (.125, .25, .5)) and `UrpUnlit`
 /// (base colour (1, .5, .25), alpha clip at .375).
 #[test]
-#[ignore = "set UNITYRS_STATIC_URP_RUN to an owner-built URP Editor fixture run"]
+#[ignore = "set UNITYRS_STATIC_URP_RUN_6000 to an owner-built URP Editor fixture run"]
 fn editor_urp_materials() {
-    let run = e::run("UNITYRS_STATIC_URP_RUN", "urp", &["urp-materials"]);
+    let run = e::run(
+        "UNITYRS_STATIC_URP_RUN_6000",
+        "6000.6.",
+        "urp",
+        &["urp-materials"],
+    );
     // C#'s byte casts wrap, as `as u8` does.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let pixels: Vec<u8> = (0..16i32)
@@ -451,7 +500,7 @@ fn editor_urp_materials() {
             &factors["baseColorFactor"],
             &linear([0.25, 0.5, 0.75, 1.]),
         );
-        let base = &factors["baseColorTexture"];
+        let base = bound(factors, "lit");
         assert_eq!(transform(base)["scale"], json!([2, 3]));
         assert_eq!(transform(base)["offset"], json!([0.25, -2.5]));
         let image = &glb.json["textures"][e::usize(&base["index"])]["source"];
@@ -473,8 +522,7 @@ fn editor_urp_materials() {
             (&unlit["alphaMode"], &unlit["alphaCutoff"]),
             (&json!("MASK"), &json!(0.375))
         );
-        let image =
-            &glb.json["textures"][e::usize(&factors["baseColorTexture"]["index"])]["source"];
+        let image = &glb.json["textures"][e::usize(&bound(factors, "unlit")["index"])]["source"];
         material_support::assert_pixels_sized(&glb.image(image), (4, 4), &pixels);
     }
 }

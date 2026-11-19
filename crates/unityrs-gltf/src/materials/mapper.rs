@@ -194,9 +194,7 @@ fn base(m: &MaterialInput<'_>, cx: &mut MapCx<'_>) -> Result<Material> {
     let mut out = Material::new(cx.meter);
     out.name = Some(raw_text(cx.meter, m.name.as_bytes())?);
     let urp = m.shader_name == b"Universal Render Pipeline/Lit";
-    // Every URP shader draws `_BaseColor` and `_BaseMap`; `_Color` and
-    // `_MainTex` are aliases its material editor syncs through a round trip.
-    let urp_base = m.shader_name.starts_with(b"Universal Render Pipeline/");
+    let urp_base = urp_base(m.shader_name);
     let texture_only_unlit = matches!(
         m.shader_name,
         b"Unlit/Texture" | b"Unlit/Transparent" | b"Unlit/Transparent Cutout"
@@ -228,7 +226,14 @@ fn base(m: &MaterialInput<'_>, cx: &mut MapCx<'_>) -> Result<Material> {
         saved_extra(&mut out, m, cx, b"_BaseMap")?;
         None
     } else if urp_base {
-        map_texture_as(m, cx, &[b"_BaseMap", b"_MainTex"], usage)?
+        // A saved `_BaseMap` is the texture the shader samples, its null the
+        // shader's white default; `_MainTex` stands in only when none is saved.
+        let key: &[u8] = if m.texture(b"_BaseMap")?.is_some() {
+            b"_BaseMap"
+        } else {
+            b"_MainTex"
+        };
+        map_texture_as(m, cx, &[key], usage)?
     } else {
         map_texture_as(m, cx, &[b"_MainTex", b"_BaseMap"], usage)?
     };
@@ -314,6 +319,20 @@ fn ignores_vertex_colors(shader: &[u8]) -> bool {
             | b"Unlit/Color"
             | b"Unlit/Transparent"
             | b"Unlit/Transparent Cutout"
+    )
+}
+/// The URP shaders that draw `_BaseColor` and `_BaseMap`, whose `_Color` and
+/// `_MainTex` are aliases the material editor keeps in step. Others, such as
+/// `SpeedTree8`, draw `_Color` and `_MainTex`:
+/// <https://github.com/Unity-Technologies/Graphics/tree/6000.0/staging/Packages/com.unity.render-pipelines.universal/Shaders>
+fn urp_base(shader: &[u8]) -> bool {
+    matches!(
+        shader,
+        b"Universal Render Pipeline/Lit"
+            | b"Universal Render Pipeline/Unlit"
+            | b"Universal Render Pipeline/Simple Lit"
+            | b"Universal Render Pipeline/Baked Lit"
+            | b"Universal Render Pipeline/Particles/Unlit"
     )
 }
 fn base_texture<'a>(m: &MaterialInput<'_>) -> Result<Option<(&'a [u8], super::TextureInput)>> {

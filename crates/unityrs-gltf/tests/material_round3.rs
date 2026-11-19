@@ -165,32 +165,22 @@ fn equal_size_packed_maps_report_filter_conflicts_and_keep_metallic_sampler() {
     }
 }
 
-// URP's Unlit, Simple Lit and Baked Lit shaders draw `_BaseColor` and
-// `_BaseMap`; `_Color` and `_MainTex` are aliases the URP material editor
-// keeps in step through an sRGB round trip, which the 6000 Editor fixture
-// saves as 0.24999997 for an authored 0.25.
+const URP_BASE: [&[u8]; 5] = [
+    b"Universal Render Pipeline/Lit",
+    b"Universal Render Pipeline/Unlit",
+    b"Universal Render Pipeline/Simple Lit",
+    b"Universal Render Pipeline/Baked Lit",
+    b"Universal Render Pipeline/Particles/Unlit",
+];
+
+// These URP shaders draw `_BaseColor` and `_BaseMap`; `_Color` and `_MainTex`
+// are aliases the URP material editor keeps in step, so a stale alias never
+// wins over them.
 #[test]
 fn every_urp_shader_prefers_its_base_properties_over_the_legacy_aliases() {
-    for shader in [
-        b"Universal Render Pipeline/Unlit".as_slice(),
-        b"Universal Render Pipeline/Simple Lit",
-        b"Universal Render Pipeline/Baked Lit",
-    ] {
+    for shader in URP_BASE {
         for mapper in [&CorePbr as &dyn MaterialMapper, &UnlitExtras] {
-            let objects = h::objects(
-                shader,
-                &[],
-                &[
-                    ("_Color", [0.9, 0.1, 0.2, 1.]),
-                    ("_BaseColor", [0.25, 0.5, 0.75, 1.]),
-                ],
-                &[
-                    ("_MainTex", s::tex_env((0, 12), [1.; 2], [0.; 2])),
-                    ("_BaseMap", s::tex_env((0, 12), [2., 3.], [0.25, 0.5])),
-                ],
-            );
-            let scene = h::collect(&objects, mapper, h::DEFAULT_PROFILE);
-            let json = h::json(&scene);
+            let json = aliased(shader, (0, 12), mapper);
             let pbr = &json["materials"][0]["pbrMetallicRoughness"];
             h::assert_factor(
                 &pbr["baseColorFactor"],
@@ -201,4 +191,63 @@ fn every_urp_shader_prefers_its_base_properties_over_the_legacy_aliases() {
             assert_eq!(tr["offset"], serde_json::json!([0.25, -2.5]), "{shader:?}");
         }
     }
+}
+
+// A cleared `_BaseMap` is the shader's white default: a `_MainTex` left
+// behind is not drawn, so no base texture is exported.
+#[test]
+fn a_null_urp_base_map_is_no_texture_even_with_a_main_tex() {
+    for shader in URP_BASE {
+        for mapper in [&CorePbr as &dyn MaterialMapper, &UnlitExtras] {
+            let json = aliased(shader, (0, 0), mapper);
+            let pbr = &json["materials"][0]["pbrMetallicRoughness"];
+            assert!(pbr.get("baseColorTexture").is_none(), "{shader:?}: {json}");
+            assert!(json.get("textures").is_none(), "{shader:?}: {json}");
+        }
+    }
+}
+
+// Other URP shaders, SpeedTree8 among them, draw `_Color` and `_MainTex`; a
+// `_BaseColor` or `_BaseMap` a shader switch left behind does not win.
+#[test]
+fn urp_shaders_outside_the_base_set_keep_color_and_main_tex() {
+    for shader in [
+        b"Universal Render Pipeline/Nature/SpeedTree8".as_slice(),
+        b"Universal Render Pipeline/Terrain/Lit",
+    ] {
+        for mapper in [&CorePbr as &dyn MaterialMapper, &UnlitExtras] {
+            let json = aliased(shader, (0, 12), mapper);
+            let pbr = &json["materials"][0]["pbrMetallicRoughness"];
+            h::assert_factor(
+                &pbr["baseColorFactor"],
+                &h::linear_color([0.75, 0.125, 0.5, 1.]),
+            );
+            let tr = &pbr["baseColorTexture"]["extensions"]["KHR_texture_transform"];
+            assert_eq!(tr["scale"], serde_json::json!([0.5, 0.25]), "{shader:?}");
+            assert_eq!(
+                tr["offset"],
+                serde_json::json!([0.125, 0.375]),
+                "{shader:?}"
+            );
+        }
+    }
+}
+
+/// A material of `shader` holding both the URP base properties and their
+/// legacy aliases, each with its own values; `base_map` is `_BaseMap`'s
+/// texture reference.
+fn aliased(shader: &[u8], base_map: (i32, i64), mapper: &dyn MaterialMapper) -> serde_json::Value {
+    let objects = h::objects(
+        shader,
+        &[],
+        &[
+            ("_Color", [0.75, 0.125, 0.5, 1.]),
+            ("_BaseColor", [0.25, 0.5, 0.75, 1.]),
+        ],
+        &[
+            ("_MainTex", s::tex_env((0, 12), [0.5, 0.25], [0.125, 0.375])),
+            ("_BaseMap", s::tex_env(base_map, [2., 3.], [0.25, 0.5])),
+        ],
+    );
+    h::json(&h::collect(&objects, mapper, h::DEFAULT_PROFILE))
 }

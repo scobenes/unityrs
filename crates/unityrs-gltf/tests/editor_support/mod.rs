@@ -30,6 +30,13 @@ pub const ROTATION: f64 = 1. / 1_048_576.;
 /// that rotation: below magnitude 8 they keep 8 ulps of 2^-21.
 pub const PLACEMENT: f64 = 1. / 262_144.;
 
+/// The two Editor lines a static row is verified on, each run named by its
+/// variable and required to be that line's: a missing or other run fails.
+pub const LINES: [(&str, &str); 2] = [
+    ("UNITYRS_STATIC_RUN_2022", "2022.3."),
+    ("UNITYRS_STATIC_RUN_6000", "6000.6."),
+];
+
 /// One run folder: `<version>/StandaloneWindows64` or `URP-StandaloneWindows64`.
 pub struct Run {
     pub dir: PathBuf,
@@ -37,8 +44,17 @@ pub struct Run {
     pub stamp: String,
 }
 
-/// Read `run.json`, requiring the variant and each named case recorded.
-pub fn run(var: &str, variant: &str, cases: &[&str]) -> Run {
+/// Both lines' main runs, each with the named cases recorded.
+pub fn runs(cases: &[&str]) -> Vec<Run> {
+    LINES
+        .iter()
+        .map(|(var, line)| run(var, line, "builtin", cases))
+        .collect()
+}
+
+/// Read `run.json`, requiring an Editor of `line`, the variant and each named
+/// case recorded.
+pub fn run(var: &str, line: &str, variant: &str, cases: &[&str]) -> Run {
     let dir = PathBuf::from(std::env::var_os(var).unwrap_or_else(|| panic!("set {var}")));
     let doc: Value = serde_json::from_slice(&std::fs::read(dir.join("run.json")).unwrap()).unwrap();
     assert_eq!(doc["format"], "unityrs.fixture_run");
@@ -55,6 +71,8 @@ pub fn run(var: &str, variant: &str, cases: &[&str]) -> Run {
         assert_eq!(row["status"], "recorded", "{case}: {row}");
     }
     let field = |key: &str| run[key].as_str().unwrap().to_owned();
+    let version = field("editor_version");
+    assert!(version.starts_with(line), "{var}: {version} is not {line}x");
     let stamp = format!(
         "unityrs fixture run {} {} {}",
         field("run_id"),
@@ -63,7 +81,7 @@ pub fn run(var: &str, variant: &str, cases: &[&str]) -> Run {
     );
     Run {
         dir,
-        version: field("editor_version"),
+        version,
         stamp,
     }
 }
@@ -201,7 +219,7 @@ impl Glb {
     }
     fn view(&self, view: &Value, component: &Value, n: usize) -> Vec<f64> {
         let view = &self.json["bufferViews"][usize(view)];
-        let at = usize(&view["byteOffset"]);
+        let at = offset(view);
         let size = match component.as_u64().unwrap() {
             5121 => 1,
             5123 => 2,
@@ -222,7 +240,7 @@ impl Glb {
     pub fn image(&self, index: &Value) -> Vec<u8> {
         let view =
             &self.json["bufferViews"][usize(&self.json["images"][usize(index)]["bufferView"])];
-        let at = usize(&view["byteOffset"]);
+        let at = offset(view);
         self.bin[at..at + usize(&view["byteLength"])].to_vec()
     }
     pub fn nodes(&self) -> &[Value] {
@@ -268,8 +286,13 @@ impl Glb {
     }
 }
 
+/// A glTF index; a missing one fails rather than reading as 0.
 pub fn usize(v: &Value) -> usize {
-    usize::try_from(v.as_u64().unwrap_or(0)).unwrap()
+    usize::try_from(v.as_u64().unwrap_or_else(|| panic!("not an index: {v}"))).unwrap()
+}
+/// A buffer view's `byteOffset`, which glTF defaults to 0.
+fn offset(view: &Value) -> usize {
+    view.get("byteOffset").map_or(0, usize)
 }
 /// An index accessor's value, an integer below 2^32.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

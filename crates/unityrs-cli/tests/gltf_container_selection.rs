@@ -178,3 +178,74 @@ fn prefab_selection_with_a_builtin_file_resolves_after_the_container_walk() {
         }
     }
 }
+
+// A matching row whose asset is in the supplied resource file is classified
+// once the walk is over, with the file offered: a GameObject there is the
+// one prefab, and no SceneAsset is counted for `--scene`.
+#[test]
+fn a_selected_row_into_the_builtin_file_is_classified_after_the_walk() {
+    let tmp = Scratch::new("gltf-cli-builtin-row");
+    let index = e::serialized(
+        &["CAB-roots", "Library/unity default resources"],
+        &[e::Obj::asset_bundle(
+            100,
+            e::Bundle {
+                preload: vec![(2, 5)],
+                rows: vec![e::row("assets/supplied.prefab", (0, 1), (2, 5))],
+                ..e::Bundle::default()
+            },
+        )],
+    );
+    let roots = s::file(
+        s::Layout::Unity2022,
+        &[],
+        &[
+            Object::new(1, 1, s::game_object(b"local", &[(0, 2)])),
+            Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+        ],
+    )
+    .unwrap();
+    let input = tmp.join("bundle");
+    std::fs::write(
+        &input,
+        e::bundle(&[("CAB-index", index), ("CAB-roots", roots)]),
+    )
+    .unwrap();
+    let resource = tmp.join("supplied.resources");
+    let supplied = [
+        Object::new(5, 1, s::game_object(b"supplied", &[(0, 6)])),
+        Object::new(6, 4, s::transform((0, 5), (0, 0), &[], false)),
+    ];
+    std::fs::write(
+        &resource,
+        s::file(s::Layout::Unity2022, &[], &supplied).unwrap(),
+    )
+    .unwrap();
+    for selector in ["--prefab", "--scene"] {
+        let output = tmp.join("output.glb");
+        let result = child::output(
+            Command::new(env!("CARGO_BIN_EXE_unityrs"))
+                .arg("gltf")
+                .arg(&input)
+                .args([selector, "assets/supplied.prefab", "--builtin-file"])
+                .arg(&resource)
+                .arg("-o")
+                .arg(&output),
+        )
+        .unwrap();
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        if selector == "--prefab" {
+            assert!(result.status.success(), "{stderr}");
+            let bytes = std::fs::read(&output).unwrap();
+            let len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+            let scene: serde_json::Value = serde_json::from_slice(&bytes[20..20 + len]).unwrap();
+            assert_eq!(scene["nodes"][0]["name"], "supplied", "{scene}");
+        } else {
+            assert!(!result.status.success());
+            assert!(
+                stderr.contains("requires exactly one SceneAsset; found 0 SceneAsset entries"),
+                "{stderr}"
+            );
+        }
+    }
+}
