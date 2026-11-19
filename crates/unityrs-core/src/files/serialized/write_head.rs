@@ -54,9 +54,13 @@ impl Handler {
             options.layout,
             file.ctx.providers.common_strings(),
         )?;
-        info.u32(narrow(self.refs.len(), "HEAD reference count")?)?;
-        for hash in self.refs.as_slice() {
-            info.fixed16(hash, "HEAD reference hash")?;
+        // A bare envelope (formats 23-25, Tier C) stays bare: no list. The
+        // blob above is rebuilt, so the envelope keeps its layout, not its bytes.
+        if self.listed_refs {
+            info.u32(narrow(self.refs.len(), "HEAD reference count")?)?;
+            for hash in self.refs.as_slice() {
+                info.fixed16(hash, "HEAD reference hash")?;
+            }
         }
         out.u32(narrow(info.len(), "HEAD serialized size")?)?;
         out.bytes(info.slice())

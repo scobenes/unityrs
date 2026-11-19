@@ -109,10 +109,22 @@ class MemoryWorkflowTests(unittest.TestCase):
         self.assertIn('uname -m', commands)
         self.assertIn('getconf PAGESIZE', commands)
         self.assertIn('tools/memory/collect.py --native', commands)
-        self.assertIn('--bootstrap', commands)
-        self.assertIn('--compiled-evidence docs/memory/constants-v1.json', commands)
         self.assertNotIn('--emulated', commands)
         self.assertNotIn('--allow-dirty', commands)
+
+    def test_compiled_evidence_is_checked_unconditionally_before_collection(self):
+        steps = self.job['steps']
+        checks = [i for i, step in enumerate(steps)
+                  if 'tools/memory/regenerate.py' in step.get('run', '')]
+        self.assertEqual(len(checks), 1)
+        check, = checks
+        self.assertNotIn('if', steps[check])
+        self.assertEqual(steps[check]['run'].split(), [
+            'python3', 'tools/memory/regenerate.py',
+            '--compiled-evidence', 'docs/memory/constants-v1.json',
+            '--rust-output', 'crates/unityrs-batch/src/bound/measured.rs', '--check'])
+        collect = next(i for i, s in enumerate(steps) if 'tools/memory/collect.py' in s.get('run', ''))
+        self.assertLess(check, collect)
 
     def test_bound_changes_and_manual_dispatch_trigger_calibration(self):
         triggers = self.workflow.get('on', self.workflow.get(True))
