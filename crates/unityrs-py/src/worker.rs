@@ -1,9 +1,10 @@
 //! Python threads may have tiny stacks. Parser work gets the core's advertised
-//! stack allowance: inline on the caller when its own stack is known to cover
-//! the allowance, else on a pooled worker that parks between calls (a thread
-//! per call mapped and tore down its stack every time). Either way the caller
-//! is detached while the work runs, and a panic is the call's error, also a
-//! callback's (which is answered with an error, so neither side waits on).
+//! stack allowance: inline on a caller (never the main thread) whose fixed
+//! stack is known to cover the allowance, else on a pooled worker that parks
+//! between calls (a thread per call mapped and tore down its stack every
+//! time). Either way the caller is detached while the work runs, and a panic
+//! is the call's error, also a callback's (which is answered with an error,
+//! so neither side waits on).
 use pyo3::{
     PyResult,
     exceptions::{PyOSError, PyRuntimeError},

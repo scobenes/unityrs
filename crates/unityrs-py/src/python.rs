@@ -108,20 +108,48 @@ pub(crate) mod held {
             Ok(())
         }
     }
+    /// A tuple of a list's items, read out before the tuple is made (never
+    /// `PyList_AsTuple`, whose allocation can run code that resizes the
+    /// list it is copying).
     pub(crate) fn tuple<'py>(list: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-        // SAFETY: a live borrowed list; the result is a new reference or null.
-        unsafe { Bound::from_owned_ptr_or_err(list.py(), ffi::PyList_AsTuple(list.as_ptr())) }
+        let py = list.py();
+        // SAFETY: PyList_Size checks the type; each borrowed item is owned
+        // by a new Bound before anything else runs.
+        let items = unsafe {
+            let n = ffi::PyList_Size(list.as_ptr());
+            if n < 0 {
+                return Err(PyErr::fetch(py));
+            }
+            let mut items = Vec::new();
+            items
+                .try_reserve_exact(usize::try_from(n)?)
+                .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("tuple items"))?;
+            for at in 0..n {
+                let item = ffi::PyList_GetItem(list.as_ptr(), at);
+                items.push(Bound::from_borrowed_ptr_or_err(py, item)?);
+            }
+            items
+        };
+        tuple_of(py, &items)
     }
-    /// A tuple of `items`, through a list: every allocation is checked.
+    /// A tuple of ready `items`: no allocation or Python code comes between
+    /// the tuple's creation and its filling, so nothing sees an empty slot.
     pub(crate) fn tuple_of<'py>(
         py: Python<'py>,
         items: &[Bound<'py, PyAny>],
     ) -> PyResult<Bound<'py, PyAny>> {
-        let list = list(py)?;
-        for item in items {
-            push(&list, item)?;
+        let n = isize::try_from(items.len())?;
+        // SAFETY: a new tuple or null; PyTuple_SetItem steals each new
+        // reference, and every index is in range.
+        unsafe {
+            let tuple = Bound::from_owned_ptr_or_err(py, ffi::PyTuple_New(n))?;
+            for (at, item) in (0..n).zip(items) {
+                if ffi::PyTuple_SetItem(tuple.as_ptr(), at, item.clone().into_ptr()) == -1 {
+                    return Err(PyErr::fetch(py));
+                }
+            }
+            Ok(tuple)
         }
-        tuple(&list)
     }
     pub(crate) fn none(py: Python<'_>) -> Bound<'_, PyAny> {
         py.None().into_bound(py)

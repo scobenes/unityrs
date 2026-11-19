@@ -7,78 +7,46 @@
 /// larger than the allowance's estimate.
 const MARGIN: usize = 1 << 20;
 
-/// Whether this thread has `allowance` of stack left (plus the margin).
+/// Whether this thread has `allowance` of stack left (plus the margin). The
+/// main thread never answers yes: its stack grows on demand, and how far
+/// depends on `RLIMIT_STACK` and on what is later mapped below it. Other
+/// threads' stacks are fixed; their bounds are read on every call.
 pub(crate) fn covers(allowance: usize) -> bool {
-    // This thread's stack, once asked: `(low, high)`, `(0, 0)` unknown.
-    // A pthread's bounds are fixed for its life; the main thread's limit
-    // is read again below, on every call.
-    thread_local! {
-        static BOUNDS: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
+    if !fixed() {
+        return false;
     }
-    let (low, high) = BOUNDS.with(|cell| {
-        cell.get().unwrap_or_else(|| {
-            let bounds = bounds().unwrap_or((0, 0));
-            cell.set(Some(bounds));
-            bounds
-        })
-    });
+    let Some((low, high)) = bounds() else {
+        return false;
+    };
     let marker = 0_u8;
     let here = std::hint::black_box(std::ptr::from_ref(&marker)) as usize;
-    match main_limit() {
-        Limit::Fixed => fits(here, low, high, None, allowance),
-        Limit::Grows(limit) => fits(here, low, high, Some(limit), allowance),
-        Limit::Unknown => false,
-    }
+    fits(here, low, high, allowance)
 }
 
 /// Whether a frame at `here` has `allowance` plus the margin left in the
-/// stack `low..high`, of which at most `limit` below `high` may be used
-/// (the main thread's `RLIMIT_STACK`). A frame outside the stack (one
-/// switched to another stack) has unknown room.
-fn fits(here: usize, low: usize, high: usize, limit: Option<usize>, allowance: usize) -> bool {
-    let low = limit.map_or(low, |limit| low.max(high.saturating_sub(limit)));
+/// stack `low..high`. A frame outside it (on a stack switched to) has
+/// unknown room.
+fn fits(here: usize, low: usize, high: usize, allowance: usize) -> bool {
     low != 0 && low < here && here < high && here - low >= allowance.saturating_add(MARGIN)
 }
 
-/// How far this thread's stack may grow below its top.
-enum Limit {
-    /// A thread made with a fixed stack, or an unlimited main thread.
-    Fixed,
-    /// The main thread, whose stack grows on demand up to the current
-    /// `RLIMIT_STACK`, which can be lowered after its bounds are read.
-    Grows(usize),
-    Unknown,
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn main_limit() -> Limit {
-    #[cfg(target_os = "linux")]
+/// Whether this thread's stack is fixed: any thread but the process's main.
+#[cfg(target_os = "linux")]
+fn fixed() -> bool {
     // SAFETY: neither call has preconditions. The raw syscall avoids
     // glibc's newer gettid wrapper.
-    let main = unsafe { libc::syscall(libc::SYS_gettid) == libc::c_long::from(libc::getpid()) };
-    #[cfg(target_os = "macos")]
+    unsafe { libc::syscall(libc::SYS_gettid) != libc::c_long::from(libc::getpid()) }
+}
+
+#[cfg(target_os = "macos")]
+fn fixed() -> bool {
     // SAFETY: no preconditions.
-    let main = unsafe { libc::pthread_main_np() } == 1;
-    if !main {
-        return Limit::Fixed;
-    }
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: getrlimit writes the struct it is given.
-    if unsafe { libc::getrlimit(libc::RLIMIT_STACK, &raw mut limit) } != 0 {
-        return Limit::Unknown;
-    }
-    if limit.rlim_cur == libc::RLIM_INFINITY {
-        return Limit::Fixed;
-    }
-    Limit::Grows(usize::try_from(limit.rlim_cur).unwrap_or(usize::MAX))
+    unsafe { libc::pthread_main_np() == 0 }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn main_limit() -> Limit {
-    Limit::Unknown
+fn fixed() -> bool {
+    false
 }
 
 /// This thread's stack, lowest and highest address; stacks grow down on
@@ -128,22 +96,13 @@ mod tests {
     #[test]
     fn room_is_measured_inside_the_stack_only() {
         let (low, high) = (100 * MIB, 108 * MIB);
-        assert!(fits(107 * MIB, low, high, None, 4 * MIB));
-        assert!(!fits(low + 4 * MIB + MARGIN - 1, low, high, None, 4 * MIB));
+        assert!(fits(107 * MIB, low, high, 4 * MIB));
+        assert!(!fits(low + 4 * MIB + MARGIN - 1, low, high, 4 * MIB));
         // A frame on a stack switched to elsewhere, above or below.
-        assert!(!fits(200 * MIB, low, high, None, MIB));
-        assert!(!fits(50 * MIB, low, high, None, MIB));
+        assert!(!fits(200 * MIB, low, high, MIB));
+        assert!(!fits(50 * MIB, low, high, MIB));
         // Unknown bounds.
-        assert!(!fits(107 * MIB, 0, 0, None, MIB));
-    }
-
-    #[test]
-    fn a_lowered_stack_limit_shrinks_the_main_thread_stack() {
-        let (low, high) = (100 * MIB, 108 * MIB);
-        assert!(fits(107 * MIB, low, high, Some(8 * MIB), 4 * MIB));
-        assert!(!fits(107 * MIB, low, high, Some(2 * MIB), 4 * MIB));
-        // A raised limit never extends the stack past its known bounds.
-        assert!(!fits(107 * MIB, low, high, Some(64 * MIB), 7 * MIB));
+        assert!(!fits(107 * MIB, 0, 0, MIB));
     }
 
     #[test]
