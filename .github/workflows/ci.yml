@@ -677,7 +677,7 @@ jobs:
           echo "64ac4614db292ae8c5aa26de0295bf1623dbb3985054cb656c55e67431def17c  $archive" | sha256sum -c -
           python scripts/webp_vendor.py verify "$archive"
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
-        run: python scripts/unittest-suites tools/parity/tests=904 tools/perf/tests=10 crates/unityrs-bench-lzma=8
+        run: python scripts/unittest-suites tools/parity/tests=905 tools/perf/tests=10 crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6
       # and 10), each a unityrs dump compared with the oracle's: compare.py
       # and value_cases.py exit non-zero on any difference, and compare.py's

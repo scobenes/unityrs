@@ -109,7 +109,11 @@ TWIST_TILTS = ((0, 0, 0), (12, 0, 7), (-9, 0, -11), (12, 0, -11))
 # each coordinate x as 2 x - 1 (exact in f32): Spine Front-Back, Left-Right and Twist, then Chest's, then
 # UpperChest's, a rig without UpperChest taking the first six. Then the joint corners: every mapped spine bone at
 # the same corner of its cube, all but (-1, -1, -1), which is the sequence's first point. Every other muscle is
-# zero and the body upright. The design comes from the cube alone, never from recorded or corpus poses.
+# zero. The body target takes the twist sweeps' tilts (TWIST_TILTS), each over a quarter of the Sobol points: an
+# aligned block of RANGE_POINTS / 4 consecutive points, itself a net filling the whole cube (every fourth point
+# would not be: its Spine Front-Back and Left-Right stay in one quadrant), and the corners cycle through the
+# tilts. The spine anchors stay upright. The design comes from the cube alone, never from recorded or corpus
+# poses.
 RANGE_RIGS = {"body-probes-range-compact": "compact", "body-probes-range-tall": "tall",
               "body-probes-range-noncoplanar": "noncoplanar"}
 RANGE_POINTS = 256
@@ -331,6 +335,14 @@ def range_vectors(rig, index):
             for point in points]
 
 
+def range_tilts():
+    """Each range-sweep vector's body tilt, in range_vectors' order: a block of the Sobol points per tilt, then
+    the corners cycling through them."""
+    block = RANGE_POINTS // len(TWIST_TILTS)
+    return [TWIST_TILTS[k // block] for k in range(RANGE_POINTS)] + [TWIST_TILTS[k % len(TWIST_TILTS)]
+                                                                      for k in range(7)]
+
+
 def probe_schedule(rig, names, targets, extra=None):
     """[(time, vector)] in schedule order, vectors over the captured HumanTrait muscle names; `extra`
     names an extra probe case (EXTRA_PROBES), a twist sweep (TWIST_RIGS) or a range sweep (RANGE_RIGS)
@@ -355,13 +367,13 @@ def schedule_name(name):
 
 def body_requests(name, count):
     """The (offset, tilt) the recorder adds to the rest body at each of the case's `count` known vectors: F3's
-    alternating targets, a twist sweep's tilts (its spine anchors upright), or none."""
+    alternating targets, a twist or range sweep's tilts (its spine anchors upright), or none."""
     info = BODY_INFO[name]
     if info["kind"] == "targets":
         return [TARGETS[i % 2] for i in range(count)]
-    if info["variant"] != "twist":
+    if info["variant"] not in ("twist", "range"):
         return [((0, 0, 0), (0, 0, 0))] * count
-    tilts = [tilt for _, tilt in twist_plan()]
+    tilts = [tilt for _, tilt in twist_plan()] if info["variant"] == "twist" else range_tilts()
     first = (len(tilts) + 1) // 2
     upright = (0, 0, 0)
     return [((0, 0, 0), tilt) for tilt in (upright, *tilts[:first], upright, *tilts[first:], upright)]

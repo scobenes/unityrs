@@ -599,11 +599,19 @@ def recorded_paths(folder, replay, manifest, run):
     for generation in LATER_CASES:
         older |= set() if statuses.keys() & generation else generation
     errors.extend(f"missing run.json case: {name}" for name in sorted(expected - statuses.keys() - older))
-    # A later case is required once its rig's own probe case records.
+    # A later case is required once its rig's own probe case records; a later rig's own probe case is required
+    # whenever the run has its generation, so an Avatar Unity refuses is an error, not lost coverage.
     errors.extend(f"{name}: required once {primary} records, but {statuses[name]}"
                   for name in sorted(set().union(*LATER_CASES))
                   for primary in [primary_probes(BODY_INFO[name]["rig"])]
-                  if statuses.get(primary) == "recorded" and statuses.get(name, "recorded") != "recorded")
+                  if primary != name and statuses.get(primary) == "recorded"
+                  and statuses.get(name, "recorded") != "recorded")
+    for generation in LATER_CASES:
+        rigs = sorted(name for name in generation if name == primary_probes(BODY_INFO[name]["rig"]))
+        missing = [f"{name} ({statuses[name]})" for name in rigs
+                   if statuses.keys() & generation and statuses.get(name, "recorded") != "recorded"]
+        if missing:
+            errors.append("training rigs not recorded: " + ", ".join(missing))
     # Coverage confirmed on this Editor version is no longer optional.
     errors.extend(f"{name}: required for Unity {run['editor_version']} but {statuses[name]}"
                   for name in sorted(required_coverage(run["editor_version"]))

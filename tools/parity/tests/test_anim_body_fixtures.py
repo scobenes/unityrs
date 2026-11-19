@@ -19,6 +19,8 @@ import anim_replay as replay  # noqa: E402
 from anim_replay_complete import OPTIONAL_CASES  # noqa: E402
 
 EDITOR = Path(__file__).resolve().parents[2] / "fixtures" / "unity" / "Editor"
+# A run's body cases from before the range sweeps and their topology rigs.
+EARLIER = [name for name in body.BODY_CASES if name not in body.LATER_CASES[-1]]
 
 
 class View:
@@ -77,6 +79,11 @@ class BodyInventoryTests(unittest.TestCase):
         self.assertEqual(dict(re.findall(r'\("(body-probes-range-[a-z]+)", "([a-z]+)"\)', builder)), body.RANGE_RIGS)
         self.assertIn(f"const int RangePoints = {body.RANGE_POINTS};", builder)
         self.assertIn(f"const int SobolBits = {body.SOBOL_BITS};", builder)
+        self.assertIn("int block = RangePoints / TwistTilts.Length;", builder)
+        self.assertIn("TwistTilts[k < RangePoints ? k / block : (k - RangePoints) % TwistTilts.Length]", builder)
+        later = re.search(r"LaterRigs = \{ ([^}]*) \}", builder).group(1)
+        self.assertEqual(tuple(re.findall(r'"([^"]+)"', later)), body.LATER_RIGS)
+        self.assertIn("() => BuildBodyRig(build, report, rig, chain: false), !LaterRigs.Contains(rig.Name)))", builder)
         bones = re.search(r"RangeBones = \{ ([^}]*) \}", builder).group(1)
         self.assertEqual(tuple(re.findall(r'"([^"]+)"', bones)), body.RANGE_BONES)
         table = builder[builder.index("SobolDirections = {"):]
@@ -188,9 +195,23 @@ class BodyInventoryTests(unittest.TestCase):
             self.assertTrue(all(t * 65536 == int(t * 65536) for t in times))
             self.assertEqual({t: [vector[i] for i in spine] for t, vector in points if t in (0, .5, 1)},
                              {t: list(v) for t, v in body.ANCHORS.items()})
-            self.assertTrue(all(r == ((0, 0, 0), (0, 0, 0)) for r in body.body_requests(name, len(points))))
             moved = [i for group in groups for i in group]
             vectors = [vector for t, vector in points if t not in (0, .5, 1)]
+            # Each tilt takes an aligned quarter of the Sobol points, which itself fills the cube (each pair of
+            # dimensions reaching every quadrant), and the corners cycle; the anchors stay upright.
+            requests = body.body_requests(name, len(points))
+            self.assertTrue(all(offset == (0, 0, 0) for offset, _ in requests))
+            self.assertEqual([tilt for (t, _), (_, tilt) in zip(points, requests) if t in (0, .5, 1)], [(0, 0, 0)] * 3)
+            tilts = [tilt for (t, _), (_, tilt) in zip(points, requests) if t not in (0, .5, 1)]
+            self.assertEqual(tilts, body.range_tilts())
+            block = body.RANGE_POINTS // 4
+            for k, tilt in enumerate(body.TWIST_TILTS):
+                self.assertEqual(tilts[k * block:(k + 1) * block], [tilt] * block)
+                cell = [[vector[i] > 0 for i in moved] for vector in vectors[k * block:(k + 1) * block]]
+                for a in range(len(moved)):
+                    for c in range(a + 1, len(moved)):
+                        self.assertEqual(len({(row[a], row[c]) for row in cell}), 4, (name, tilt, a, c))
+            self.assertEqual(tilts[body.RANGE_POINTS:], [body.TWIST_TILTS[k % 4] for k in range(7)])
             for vector in vectors:
                 self.assertTrue(all(v == 0 for i, v in enumerate(vector) if i not in moved))
                 self.assertTrue(all(-1 <= vector[i] <= 1 and replay.f32_from_bits(replay.f32_bits(vector[i])) == vector[i]
@@ -465,13 +486,30 @@ class BodyRunTests(unittest.TestCase):
             return self.complete(**kwargs)
 
     def test_a_run_with_every_body_case_unrecorded_completes(self):
-        result = self.run_with(body.BODY_CASES)
+        # Every body case but the later training rigs may go unrecorded (from before them, none is listed).
+        result = self.run_with(EARLIER)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("body-clip-level-offset: not_covered (Unity refused it)", result.stdout)
 
+    def test_a_later_training_rig_unrecorded_fails(self):
+        # The UpperChest-and-Toes rigs are required whenever the run has their generation: an Avatar Unity
+        # refused is an error, even with their rig's own probe case unrecorded, and each is named.
+        self.assertEqual({body.primary_probes(rig) for rig in body.LATER_RIGS} & set(EARLIER), set())
+        result = self.run_with(body.BODY_CASES)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("training rigs not recorded: body-probes-no-upper-chest-left-toes (not_covered), "
+                      "body-probes-no-upper-chest-right-toes (not_covered), "
+                      "body-probes-no-upper-chest-toes (not_covered)", result.stderr)
+        self.assertNotIn("required once body-probes-no-upper-chest", result.stderr)
+        result = self.run_with(body.BODY_CASES, {"body-probes-no-upper-chest-toes": "failed"})
+        self.assertIn("body-probes-no-upper-chest-toes: failed", result.stderr)
+        self.assertIn("training rigs not recorded: body-probes-no-upper-chest-left-toes (not_covered), "
+                      "body-probes-no-upper-chest-right-toes (not_covered), body-probes-no-upper-chest-toes "
+                      "(failed)", result.stderr)
+
     def test_a_run_before_the_extra_probes_completes(self):
         # A run with every other body row and none for the extra probe cases is from before them.
-        result = self.run_with([name for name in body.BODY_CASES if name not in body.EXTRA_CASES])
+        result = self.run_with([name for name in EARLIER if name not in body.EXTRA_CASES])
         self.assertEqual(result.returncode, 0, result.stderr)
         missing = sorted(body.EXTRA_CASES)[0]
         result = self.run_with([name for name in body.BODY_CASES if name != "body-probes-holdout"])
@@ -481,7 +519,7 @@ class BodyRunTests(unittest.TestCase):
     def test_a_run_before_the_twist_sweeps_completes(self):
         # A run with the extra probe cases and none of the twist sweeps is from between them; one holding a
         # single twist sweep is from after, and lacks the other.
-        result = self.run_with([name for name in body.BODY_CASES if name not in body.TWIST_CASES])
+        result = self.run_with([name for name in EARLIER if name not in body.TWIST_CASES])
         self.assertEqual(result.returncode, 0, result.stderr)
         result = self.run_with([name for name in body.BODY_CASES if name != "body-probes-twist-tall"])
         self.assertEqual(result.returncode, 1, result.stdout)
@@ -522,13 +560,13 @@ class BodyRunTests(unittest.TestCase):
     def test_refuses_an_unlisted_body_recording_or_bundle(self):
         (self.replays / "body").mkdir()
         write(self.replays / "body" / "body-probes-jaw.pending.json", body_doc("body-probes-jaw", RUN))
-        result = self.run_with(body.BODY_CASES)
+        result = self.run_with(EARLIER)
         self.assertIn("unexpected pending recording: replays/body/body-probes-jaw.pending.json", result.stderr)
         (self.replays / "body" / "body-probes-jaw.pending.json").unlink()
         (self.bundles / "body-jaw").write_bytes(b"UnityFS\0")
-        self.assertEqual(self.run_with(body.BODY_CASES).returncode, 0)
+        self.assertEqual(self.run_with(EARLIER).returncode, 0)
         (self.bundles / "body-unknown").write_bytes(b"UnityFS\0")
-        result = self.run_with(body.BODY_CASES)
+        result = self.run_with(EARLIER)
         self.assertIn("unexpected fixture bundle inventory", result.stderr)
 
     def test_an_ordinary_case_claiming_body_rows_is_refused(self):
