@@ -323,6 +323,30 @@ class CheckBodyTests(unittest.TestCase):
                              and low < max(abs(vector[group[1]]) for group in groups) < high]
                     self.assertTrue(found and min(found) <= -.5 and max(found) >= .5, (name, tilt, low, found))
 
+    def test_no_authored_muscle_value_is_a_negative_zero(self):
+        # The recordings compare f32 bits, and -0 is not +0's. Every probe, target, twist, range and band schedule
+        # holds +0 alone.
+        names = list(MUSCLES)
+        for name, info in body.BODY_INFO.items():
+            if info["kind"] in ("probes", "targets"):
+                for _, vector in body.probe_schedule(info["rig"], names, info["kind"] == "targets",
+                                                     body.schedule_name(name)):
+                    self.assertFalse(any(v == 0 and math.copysign(1, v) < 0 for v in vector), name)
+        self.assertEqual(replay.f32_bits(body.canonical(-0.)), replay.f32_bits(0))
+        # The builder writes a pure bend's twist as sign * 0 in double, -0 at the negative sign; its probe
+        # points and every known vector's schedule, pose and bits go through AnimReplayRecorder.Canonical.
+        builder = source("UnityrsBodyFixtures.cs")
+        bends = builder[builder.index("BandBends = {"):]
+        twists = [0. if twist == "0" else (-1. if sign else 1.) * body.BAND_TWIST for sign, twist in
+                  re.findall(r"\([0-9.]+ / [0-9.]+, (-?)(BandTwist|0)\)", bends[:bends.index("};")])]
+        raw = [sign * twist for twist in twists for sign in (1., -1.)]
+        self.assertTrue(any(math.copysign(1, v) < 0 for v in raw if v == 0))
+        self.assertFalse(any(math.copysign(1, body.canonical(v)) < 0 for v in raw if v == 0))
+        self.assertIn("Muscles = AnimReplayRecorder.Canonical(vector) };", builder)
+        recording = source("UnityrsFixtureRecording.cs")
+        self.assertIn("if (values[i] == 0f) values[i] = 0f;", recording)
+        self.assertIn("muscles = Canonical(fixture.KnownMuscles((float)point.local))", recording)
+
     def test_accepts_each_kind(self):
         for name in ("body-probes-compact", "body-probes-no-chest", "body-targets-tall-offset",
                      "body-probes-twist-tall", "body-probes-range-tall", "body-probes-no-upper-chest-toes",
