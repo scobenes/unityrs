@@ -33,6 +33,7 @@ mod row_copy_test;
 mod save;
 mod save_snapshot;
 mod settings;
+mod stack;
 mod standalone_tree;
 mod text_snapshot;
 mod tpk;
@@ -43,7 +44,7 @@ mod value;
 mod value_input;
 #[cfg(test)]
 mod value_input_tests;
-mod value_plan;
+mod value_render;
 mod worker;
 mod worker_error;
 
@@ -67,6 +68,15 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(test)]
     m.add_class::<row_copy_test::RowCopyBarrier>()?;
     m.add_function(wrap_pyfunction!(tpk::mit_common_strings, m)?)?;
+    let release = wrap_pyfunction!(worker::_release_workers, m)?;
+    // Pooled workers are joined before os.fork() (POSIX only).
+    let os = m.py().import("os")?;
+    if os.hasattr("register_at_fork")? {
+        let hook = pyo3::types::PyDict::new(m.py());
+        hook.set_item("before", &release)?;
+        os.call_method("register_at_fork", (), Some(&hook))?;
+    }
+    m.add_function(release)?;
     m.add(
         "_class_ids",
         m.py().detach(|| {

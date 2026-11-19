@@ -1,6 +1,7 @@
 //! Synchronous configuration callbacks run on the original Python caller thread.
-//! The relay is stack-owned by a scoped worker; it allocates no channel,
-//! closure or request buffer. No relay lock is held across Python code.
+//! The relay is stack-owned by the call running the work, on a worker or
+//! inline on the caller; it allocates no channel, closure or request buffer.
+//! No relay lock is held across Python code.
 use pyo3::{prelude::*, pybacked::PyBackedBytes, types::PyBytes};
 use std::{
     cell::Cell,
@@ -83,11 +84,20 @@ pub(crate) fn attach<T: Send>(operation: impl for<'py> FnOnce(Python<'py>) -> T 
             Err(panic) => std::panic::resume_unwind(panic),
         }
     }
-    if CURRENT.get().is_null() {
-        Python::attach(operation)
-    } else {
+    if relayed() {
         run(operation)
+    } else {
+        Python::attach(operation)
     }
+}
+
+/// Whether this thread is a worker whose caller answers its requests. Off a
+/// worker, and on a caller running its own work inline, requests are emitted
+/// on this thread.
+pub(crate) fn relayed() -> bool {
+    let pointer = CURRENT.get();
+    // SAFETY: the same scoped lifetime as request() below.
+    !pointer.is_null() && !unsafe { &*pointer }.inline
 }
 
 #[derive(Default)]
@@ -102,6 +112,9 @@ struct State {
 pub(crate) struct Relay {
     state: Mutex<State>,
     changed: Condvar,
+    /// Work runs on the caller itself: requests are emitted in place, and
+    /// only a callback's failure is kept for the caller.
+    inline: bool,
 }
 
 thread_local! {
@@ -109,6 +122,13 @@ thread_local! {
 }
 
 impl Relay {
+    pub(crate) fn inline() -> Self {
+        Self {
+            inline: true,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn enter<T>(&self, operation: impl FnOnce() -> T) -> T {
         struct Guard<'a> {
             relay: &'a Relay,
@@ -239,7 +259,7 @@ fn emit(request: Request) -> PyResult<Response> {
 pub(crate) fn request(request: Request) -> PyResult<Response> {
     CURRENT.with(|slot| {
         let pointer = slot.get();
-        if pointer.is_null() {
+        if !relayed() {
             return emit(request);
         }
         // SAFETY: enter installs only its borrowed, stack-owned Relay. Its

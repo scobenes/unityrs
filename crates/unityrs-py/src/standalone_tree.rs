@@ -184,10 +184,22 @@ fn convert(
     as_dict: bool,
     meter: &Arc<Meter>,
 ) -> PyResult<Py<PyAny>> {
-    let mut plan = p::plan::Plan::new(meter);
-    plan.charge.grow(512).map_err(errors::charge)?;
-    plan.root = crate::value_plan::convert(parsed, meter, &mut plan, !as_dict)?;
-    let (value, mut charge) = plan.handoff()?;
+    // One relayed attachment for the whole result, not one per value: the
+    // free constructors below find this thread attached and do not relay.
+    crate::python::relay::attach(move |py| output(py, parsed, progress, refs, as_dict, meter))
+}
+
+fn output(
+    py: Python<'_>,
+    parsed: &unityrs_core::Parsed,
+    progress: unityrs_core::walk::FieldProgress,
+    refs: Option<&[unityrs_core::files::SerializedType]>,
+    as_dict: bool,
+    meter: &Arc<Meter>,
+) -> PyResult<Py<PyAny>> {
+    let mut charge = unityrs_core::limits::Charge::zero(meter);
+    charge.grow(512).map_err(errors::charge)?;
+    let value = crate::value_render::render(py, parsed, meter, &mut charge, !as_dict)?.unbind();
     let result = p::list()?;
     p::push(&result, &value)?;
     p::push(

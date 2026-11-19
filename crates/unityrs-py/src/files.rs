@@ -61,7 +61,7 @@ impl NativeFile {
         })
     }
     fn serialized_read(&self, py: Python<'_>, position: i128, size: i64) -> PyResult<Py<PyAny>> {
-        py.detach(|| {
+        let (bytes, next, _copy) = py.detach(|| {
             let File::Serialized(file) = &self.inner else {
                 return Err(pyo3::exceptions::PyAttributeError::new_err(
                     "not a serialized reader",
@@ -81,15 +81,17 @@ impl NativeFile {
             file.meter()
                 .count_decode(bytes.len() as u64)
                 .map_err(errors::charge)?;
-            let _copy = file
+            let copy = file
                 .meter()
                 .charge(unityrs_core::limits::heap_cost(bytes.len() as u64) + 256)
                 .map_err(errors::charge)?;
-            let result = p::list()?;
-            p::push(&result, &p::bytes(bytes)?)?;
-            p::push(&result, &p::wide_int(next)?)?;
-            p::tuple(&result)
-        })
+            Ok::<_, PyErr>((bytes, next, copy))
+        })?;
+        // Built attached, once the core's part is done.
+        let result = p::list()?;
+        p::push(&result, &p::bytes(bytes)?)?;
+        p::push(&result, &p::wide_int(next)?)?;
+        p::tuple(&result)
     }
     fn save_serialized_snapshot(
         &self,
