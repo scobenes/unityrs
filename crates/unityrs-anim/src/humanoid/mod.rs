@@ -12,11 +12,18 @@
 //! such a clip's hips or root need a correction is measured on Editor
 //! recordings, so only the qualification evidence reports it
 //! (`unsupported_body_motion(hips_correction)` or `(root_projection)`).
+//!
+//! `body_avatar` validates the Avatar inputs of the humanoid body model
+//! (`docs/plans/humanoid-body.md`); no refusal above calls it yet.
 mod avatar;
+mod body;
 mod clip;
 
 pub use avatar::{
     Avatar, Axes, BODY_BONES, HAND_BONES, Human, Skeleton, SkeletonNode, Twist, Xform, read_avatar,
+};
+pub use body::{
+    BODY_SLOTS, BodyAvatar, RECORDED_ABSENT, body_avatar, mass_sum_bound, slot_bone, topology_scope,
 };
 pub use clip::{
     ABSENT_SLOT, ClipSetting, DOF_COUNT, DofKind, HumanoidClip, HumanoidSlot, MUSCLE_COUNT,

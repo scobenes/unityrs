@@ -76,6 +76,9 @@ pub struct Human {
     pub pose: MeteredVec<Xform>,
     /// `m_HumanBoneIndex`: human skeleton node per internal body bone, -1 absent.
     pub bones: MeteredVec<i32>,
+    /// `m_HumanBoneMass` as stored, one entry per body bone, or `None` when
+    /// the Avatar serializes none. `body::body_avatar` validates it.
+    pub bone_mass: Option<MeteredVec<f32>>,
     pub left_hand: MeteredVec<i32>,
     pub right_hand: MeteredVec<i32>,
     pub scale: f32,
@@ -429,6 +432,17 @@ fn human(dict: &Dict<'_, '_>, value: &Value) -> Result<Human, AnimError> {
         skeleton: skeleton(dict, dict.required(value, "m_Skeleton")?)?,
         pose: pose(dict, dict.required(value, "m_SkeletonPose")?)?,
         bones: i32s(dict, value, "m_HumanBoneIndex")?,
+        bone_mass: match dict.field(value, "m_HumanBoneMass")? {
+            Some(_) => {
+                let words = dict.words(value, "m_HumanBoneMass", true)?;
+                let mut masses = MeteredVec::with_capacity(dict.meter, words.len())?;
+                for &bits in words {
+                    masses.push(f32::from_bits(bits))?;
+                }
+                Some(masses)
+            }
+            None => None,
+        },
         left_hand: hand("m_LeftHand")?,
         right_hand: hand("m_RightHand")?,
         scale: float(dict, value, "m_Scale")?,

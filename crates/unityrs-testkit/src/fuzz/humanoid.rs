@@ -10,7 +10,7 @@ use crate::{
     scene3d::{
         self as s, Layout,
         anim::{
-            humanoid::{self as h, AVATAR, Rig},
+            humanoid::{self as h, AVATAR, OPTIONAL_BONES, Rig},
             playback::{self as p, Dense, Storage},
         },
     },
@@ -91,6 +91,20 @@ fn variants() -> Vec<(String, Layout, Vec<Object>)> {
         }
         out.push((format!("avatar-{name}"), Layout::Unity2022, objects));
     }
+    // A mass array of integers, which the reader refuses as malformed.
+    let mut objects = rig_with(&body(&[]), muscles());
+    for object in &mut objects {
+        if object.path_id == AVATAR {
+            let ints = vector(V::Int(0), vec![V::Int(0); 25]);
+            edit(
+                &mut object.value,
+                &["m_Avatar", "m_Human", "data"],
+                "m_HumanBoneMass",
+                ints,
+            );
+        }
+    }
+    out.push(("avatar-mass-ints".to_owned(), Layout::Unity2022, objects));
     for (name, layout) in [("6000", Layout::Unity6000), ("2019", Layout::Unity2019)] {
         out.push((
             format!("layout-{name}"),
@@ -138,7 +152,64 @@ fn rigs() -> Vec<(&'static str, Rig)> {
         ("no-axes", rig(|r| r.no_axes = Some(7))),
         ("twist", rig(|r| r.twist = [0.5, 0.25, 0.75, 0.375])),
         ("stretch", rig(|r| r.stretch = [0.05, 0.1, 0.2])),
+        ("body", body(&[])),
+        ("body-no-extras", body(&[21, 22, 23])),
+        ("body-no-shoulders", body(&[11, 12, 21, 22, 23])),
+        ("body-no-chest", body(&[8, 54])),
+        ("body-no-neck", body(&[9])),
+        ("body-one-shoulder", body(&[11])),
+        ("body-one-eye", body(&[21])),
+        ("body-mass-nan", body_mass(|m| m[7] = f32::NAN)),
+        ("body-mass-negative", body_mass(|m| m[3] = -m[3])),
+        ("body-mass-short", body_mass(|m| m.truncate(24))),
+        ("body-mass-heavy", body_mass(|m| m[0] *= 1.5)),
+        ("body-mass-absent", {
+            let mut rig = body_mass(|_| {});
+            rig.optional.retain(|&bone| bone != 23);
+            rig
+        }),
+        (
+            "body-scale",
+            Rig {
+                scale: 0.,
+                body_offset: [0.; 3],
+                ..body(&[])
+            },
+        ),
+        (
+            "body-root-height",
+            Rig {
+                body_offset: [0., 1.5, 0.],
+                ..body(&[])
+            },
+        ),
     ]
+}
+
+/// A rig with every optional body bone but `absent`, its rest body at
+/// `m_Scale`.
+fn body(absent: &[usize]) -> Rig {
+    Rig {
+        optional: OPTIONAL_BONES
+            .iter()
+            .map(|&(bone, _)| bone)
+            .filter(|bone| !absent.contains(bone))
+            .collect(),
+        body_offset: [0., 1., 0.],
+        ..Rig::default()
+    }
+}
+
+/// `body(&[])` with dyadic masses summing to one (1/32 per slot but Hips,
+/// which holds the rest), edited by `edit`.
+fn body_mass(edit: impl FnOnce(&mut Vec<f32>)) -> Rig {
+    let mut masses = vec![1. / 32.; 25];
+    masses[0] = 1. - 24. / 32.;
+    edit(&mut masses);
+    Rig {
+        bone_mass: Some(masses),
+        ..body(&[])
+    }
 }
 
 fn flag(name: &'static str, value: bool) -> (&'static str, V) {

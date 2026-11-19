@@ -52,7 +52,7 @@ pub use controller::{ControllerLeaf, ControllerTable};
 pub use discovery::{
     ClipSelector, ClipSlot, Discovery, RigClips, SelectionError, SlotError, SourceSlot, discover,
 };
-pub use error::{AnimError, BodyMotion};
+pub use error::{AnimError, BodyAvatarFault, BodyModel, BodyMotion};
 
 const fn send_sync<T: Send + Sync + ?Sized>() {}
 
