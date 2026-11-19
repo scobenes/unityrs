@@ -23,8 +23,15 @@ any other mass refuses. `frame_scope` refuses a pose whose
 shoulder-hip twist (the angle about up between the upper-arm and upper-leg
 laterals) exceeds TWIST_LIMIT: there 2.2's lateral sum leaves Unity's yaw
 about up by more than the bound. A twist with a lateral along up, or no up,
-is undefined and refuses as well. All of them, and solve_hips and
-body_rotation through frame_scope, raise `Refused`.
+is undefined and refuses as well. `lateral_scope` refuses a pose whose
+largest spine Left-Right muscle (Spine, Chest or UpperChest; LATERAL_MUSCLES)
+exceeds the lateral limit the checker sets from the training runs
+(anim_body_check.lateral_limit) and the freeze records: past it 2.2's frame
+leaves Unity's read-back by an unexplained second-order yaw (up to 0.08 deg
+in the training runs), as a combined side bend tilts the arm and leg
+laterals oppositely about up. Every rule weighting the two laterals is
+exact at a zero yaw gap there, so none explains it. All of them, and
+solve_hips and body_rotation through frame_scope, raise `Refused`.
 - 2.3, `solve_hips`: H_A = B_A F(T) F_h^-1, P_A = h T_A - k H_A c_h with
   k = sigma_p s_h, t = sigma_p^-1 R_p^-1 (P_A - t_p), q = R_p^-1 H_A, and the
   hips keep their own scale s_h.
@@ -89,6 +96,8 @@ HYPOTHESES = {
     "body_position": "2.1: bodyPosition = c / m_Scale",
     "frame": "2.2: up = mid(upper arms) - mid(upper legs), lateral = (R - L UpperArm) + (R - L UpperLeg), "
              "forward = lateral x up, right = up x forward; bodyRotation = F(pose) F(T)^-1",
+    "lateral": "section 8: 2.2 and 2.3 hold up to the lateral limit, the largest spine Left-Right value of a "
+               "training sample below every failing sample's in E2 and E3a, and at least one step below those",
     "solve": "2.3: closed form, H_A = B_A F(T) F_h^-1, P_A = h T_A - k H_A c_h, k = sigma_p s_h",
     "root": "2.4: X_A = X_r^-1 o X_b, the m_StartAtOrigin rebase shared by root and body",
     "yaw": "2.4: a yaw is the twist about up, 2 atan2(q_y, q_w)",
@@ -99,6 +108,8 @@ HYPOTHESES = {
     "frame_scope": "section 8: refused when the shoulder-hip twist about up exceeds 4.25 degrees or is undefined",
 }
 TWIST_LIMIT = math.radians(4.25)
+# The spine Left-Right muscles of lateral_scope.
+LATERAL_MUSCLES = ("Spine Left-Right", "Chest Left-Right", "UpperChest Left-Right")
 # The body slots of zero mass in every recorded Avatar, no edge's parent: their presence leaves c unchanged.
 LEAVES = frozenset(("LeftEye", "RightEye", "Jaw"))
 # The absent body slots but the leaves of each in-scope training rig (anim_fixture_body.PROBE_RIGS): the only
@@ -189,6 +200,18 @@ def shoulder_hip_twist(points):
 
     top, bottom = flat(sub(ur, ul)), flat(sub(lr, ll))
     return abs(math.atan2(sum(a * b for a, b in zip(cross(bottom, top), up)), sum(a * b for a, b in zip(bottom, top))))
+
+
+def spine_lateral(muscles):
+    """The largest |value| of the spine Left-Right muscles in `muscles` (name: value), 0 for none."""
+    return max((abs(muscles[name]) for name in LATERAL_MUSCLES if name in muscles), default=0.)
+
+
+def lateral_scope(muscles, limit):
+    """Refuses a pose outside 2.2's validated lateral domain, `muscles` by name."""
+    lateral = spine_lateral(muscles)
+    if not lateral <= limit:
+        raise Refused(f"spine_lateral_range: spine Left-Right {lateral:.6g} over {limit:.6g}")
 
 
 def frame_scope(points):

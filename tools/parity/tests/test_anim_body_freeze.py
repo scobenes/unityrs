@@ -208,6 +208,8 @@ class FreezeTests(unittest.TestCase):
                               (lambda a: a["bounds"].update(fold_depth=49), "bounds differ"),
                               (lambda a: a["code"].update(model_digest="0" * 64), "source files differ"),
                               (lambda a: a["bounds"].update(rank=1), "rank or condition differs"),
+                              (lambda a: a["scope"].update(lateral_limit="0.1"), "malformed frozen lateral limit"),
+                              (lambda a: a["scope"].update(lateral_limit=.0625), "lateral limit differs"),
                               (lambda a: a["coefficients"].popitem(), "do not match the training design"),
                               # One coefficient tampered and committed: not the training fit.
                               (lambda a: a["coefficients"].update({key: a["coefficients"][key] + 1e-9}),
@@ -233,13 +235,14 @@ class FreezeTests(unittest.TestCase):
         seen = []
         e3 = freeze.check.e3
 
-        def spy(rows, design, coefficients):
-            seen.append(coefficients)
-            return e3(rows, design, coefficients)
+        def spy(rows, design, coefficients, limit=None, compared=None):
+            seen.append((coefficients, limit))
+            return e3(rows, design, coefficients, limit, compared)
 
         with mock.patch.object(freeze.check, "e3", spy):
             self.e3b(code=0)
-        self.assertEqual(seen, [artifact["coefficients"]])
+        # The frozen training rows give the frozen limit once more, then the hold-out compares within it.
+        self.assertEqual(seen[-1], (artifact["coefficients"], artifact["scope"]["lateral_limit"]))
         # One hold-out observation moved: e3b fails on that sample alone.
         docs = copy.deepcopy(self.docs)
         doc = docs[HOLDOUT]

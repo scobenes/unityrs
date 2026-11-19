@@ -62,7 +62,9 @@ from anim_body_model import (
     body_rotation,
     centre,
     columns,
+    lateral_scope,
     quaternion,
+    spine_lateral,
     solve_hips,
     turn_angle,
 )
@@ -97,6 +99,49 @@ MUSCLE_BONES = {muscle: bone for bone, group in PROBE_GROUPS for muscle in group
 
 def verdict(failures, **fields):
     return dict(passed=not failures, failures=failures, **fields)
+
+
+# The lateral domain (section 8): the step kept below the smallest failing spine Left-Right value, and the
+# smallest limit that still validates anything (below it the checks fail, never pass on nothing).
+LATERAL_STEP = 1 / 32
+LATERAL_FLOOR = 1 / 16
+
+
+def muscles_of(row):
+    state = row["state"]
+    return {name: F32(bits) for name, bits in zip(state["muscle_names"], state["sample"].get("muscles_f32") or [])}
+
+
+def lateral_of(row):
+    """The row's largest spine Left-Right muscle value."""
+    return spine_lateral(muscles_of(row))
+
+
+def outside(row, limit):
+    """Whether `limit` (None for none) refuses the row's pose (anim_body_model.lateral_scope)."""
+    if limit is None:
+        return False
+    try:
+        lateral_scope(muscles_of(row), limit)
+    except Refused:
+        return True
+    return False
+
+
+def lateral_limit(rows, design, coefficients):
+    """(limit, smallest failing value): the largest spine Left-Right value of a training sample the model
+    compared (2.2's frame in E2, or the hips in E3) below every sample failing E2 or E3, and at least
+    LATERAL_STEP below them; with no failure, the largest one. A sample the scope refused validates nothing."""
+    compared = set()
+    failed = {line.split(": ", 1)[0] for line in e2(rows, compared=compared)["failures"]
+              + e3(rows, design, coefficients, compared=compared)["failures"]}
+    values = {f"{row['name']}@{row['local']}": lateral_of(row) for row in rows if not row.get("refused")}
+    worst = min((values[key] for key in failed if key in values), default=math.inf)
+    if failed - values.keys():
+        worst = 0.
+    passing = [value for key, value in values.items() if value < worst and key in compared - failed]
+    limit = min(max(passing, default=0.), worst - LATERAL_STEP)
+    return limit, worst
 
 
 # E0: the Avatar's masses and rest body.
@@ -275,11 +320,12 @@ def readback_rotation(state):
                                    decode(readback["world_rotation"], 4, F32), state["root"])
 
 
-def e2(rows):
+def e2(rows, limit=None, compared=None):
+    """E2 within `limit` (lateral_scope); `compared` (a set) collects each sample whose frame was compared."""
     failures, checked, worst, refused = [], 0, 0., 0
     for row in rows:
         state = row["state"]
-        if row.get("refused"):
+        if row.get("refused") or outside(row, limit):
             refused += 1
             continue
         if state["readback"] is None:
@@ -290,6 +336,8 @@ def e2(rows):
         try:
             pairs.append(("model", body_rotation(points, state["rest_frame"]),
                           turn_angle(turn + solve_turn(state, U64)) + 2 * ANGLE_FLOOR))
+            if compared is not None:
+                compared.add(f"{row['name']}@{row['local']}")
         except Refused:
             refused += 1
         if state["target_kind"] == "known":
@@ -332,12 +380,13 @@ def hips(row, design, coefficients):
     return failures, ratio
 
 
-def e3(rows, design, coefficients):
+def e3(rows, design, coefficients, limit=None, compared=None):
     """E3 on every row with a body target. A P2b case's row without one (no known vector, no read-back) is
-    excluded by its role and listed; a body case's row without one fails."""
+    excluded by its role and listed; a body case's row without one fails. `limit` refuses a pose past it
+    (lateral_scope); `compared` (a set) collects each sample compared."""
     failures, checked, worst, refused, excluded = [], 0, 0., 0, set()
     for row in rows:
-        if row.get("refused"):
+        if row.get("refused") or row["state"]["target_kind"] is not None and outside(row, limit):
             refused += 1
             continue
         if row["state"]["target_kind"] is None:
@@ -354,6 +403,8 @@ def e3(rows, design, coefficients):
         checked += 1
         failures += found
         worst = max(worst, ratio)
+        if compared is not None:
+            compared.add(f"{row['name']}@{row['local']}")
     if not checked:
         failures.append("E3: no comparison")
     return verdict(failures, samples=checked, worst_ratio=worst, refused=refused, excluded=sorted(excluded))

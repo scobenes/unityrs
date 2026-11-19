@@ -158,6 +158,22 @@ from the middle points of the hips and shoulders. The candidate:
   laterals from left-versus-right mass centroids, mass-weighted sums of the
   projected laterals, normalized laterals and an up from mass-weighted
   midpoints, alone and combined. Each was worse than the plain sum.
+- Lateral domain (B2): within the twist scope, the frame still leaves the
+  read-back by a pure turn about `up` of up to 0.08° once the spine bends
+  sideways. Every such sample has a spine Left-Right muscle (Spine, Chest
+  or UpperChest) of at least 0.32. The turn is second-order and
+  unexplained: it stays at a near-zero arm-leg yaw gap with oppositely
+  tilted laterals, where every rule weighting the two laterals (and their
+  sum) is exact. Read-back muscles match the requested ones, so no muscle
+  clamp causes it. Axial, polar, half-angle, cosine-power and averaged
+  candidates were all ruled out. So 2.2 holds up to the lateral limit,
+  set by the checker from the training runs and recorded in the freeze:
+  the largest spine Left-Right value of a training sample the model
+  compared (a sample the twist scope refused validates nothing) below
+  every sample failing E2 or E3a, and at least 1/32 below those. A pose past it
+  refuses (section 8). A limit under 1/16 validates nothing, and E2 and
+  E3a then fail. F9's band sweeps sample the band past it on the training
+  rigs.
 
 ### 2.3 Hips-local TRS and scale
 
@@ -469,7 +485,7 @@ coefficient is shipped from a fit.
 |---|---|---|---|---|
 | B0 | Plan | This document, the `anim.md` 2.6 link, and the "Humanoid local poses" tier X row's cells | docs | — |
 | B1 | Recorder and fixtures | F1–F8 in the builder; read-back, root, mass and setting rows in the recorder; contract and `complete` checks; owner workflow notes; 2.5's tolerance derivation. **Adequacy checkpoint:** after the first owner run, a script computes 2.5's rank, conditioning and `u_s ≤ E_unity,s` with B1's own tolerances, and the topology coverage. If any is short, B1 extends the fixtures before B2 starts. The first runs left a few tall-rig samples short of `u_s ≤ E_unity,s`. `body-probes-tall-2` adds the extra tall-rig poses, and `--design-only` predicts their adequacy conservatively from the recorded geometry before the rerun. Under B2's frozen scope (fifteen training rigs, 29 coefficients), the conservative worst margin with the predicted `body-probes-tall-2` stays above 1 in both versions, and the checkpoint is adequate. F8's range sweeps are fitted with the probes: `--design-only` predicts them from each rig's single-muscle probes, and with them (eighteen training rigs, the three UpperChest-and-Toes rigs not yet recorded) the conservative worst margin over every planned and recorded sample stays above 1 in both versions. The checkpoint never reads the hold-out rig; E3b does, after the freeze. | 0.7–1.0k | B0 |
-| B2 | Reference and body checker | 2.1–2.5 in the f64 reference with frozen bounds and the analytic cases. A checker runs E0–E4. **Input:** a completed run in both 2022.3 and 6000, read with Unity 6 reader support on main. **Order:** first E3a on the training rigs, then the freeze commit (model choices, coefficients, scope, bounds), then E3b on the hold-out rig against that commit. | 0.6–0.9k | B1 recordings |
+| B2 | Reference and body checker | 2.1–2.5 in the f64 reference with frozen bounds and the analytic cases. A checker runs E0–E4. **Input:** a completed run in both 2022.3 and 6000, read with Unity 6 reader support on main. **Order:** first E3a on the training rigs, then the freeze commit (model choices, coefficients, scope with the lateral limit E2 and E3a set, bounds), then E3b on the hold-out rig against that commit. | 0.6–0.9k | B1 recordings |
 | B3 | Rust body model | Read and validate `m_HumanBoneMass`; E0 checks; the centre of mass, frame and closed-form hips solve; the free-combination refusal; synthetic tests and fuzz targets for the new reads | 0.5–0.7k | B2 (E3b passing) and E2 passing |
 | B4 | Root projection and frames | Target body pose per verified 2.4 combination, conversion from the Animator to the hips parent with scale, narrowed refusals | 0.4–0.6k | B3, F4, F5 |
 | B5 | Integration and L11 | Lift the body-bearing refusal behind the release gate below, add collector integration, run the gated same-bundle replay (E5), and promote the PARITY row | 0.4–0.6k | B4 |
@@ -531,6 +547,13 @@ frozen constants.
   undefined, refuses in 2.2 and therefore in the hips solve. The hold-out rig's topology, read
   from the builder's table and not from its recordings, is inside the
   scope.
+- **Spine lateral range (B2, a scope rule).** A pose whose largest spine
+  Left-Right muscle (Spine, Chest or UpperChest) exceeds the frozen
+  lateral limit refuses as
+  `unsupported_humanoid_body_model(spine_lateral_range)`, in 2.2 and
+  therefore in the hips solve. The checker sets the limit after a run
+  (2.2), and E3b applies the frozen one. The reason: past it, 2.2's frame
+  leaves Unity by an unexplained second-order yaw of up to 0.08°.
 - **Unsupported rigs.** These refuse: topologies outside F6, an Avatar
   whose geometry depends on a free coefficient combination, a terminal
   bone whose probe moved the hips, non-uniform scale, and a non-TRS link

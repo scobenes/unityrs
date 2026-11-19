@@ -161,12 +161,15 @@ class Checks(unittest.TestCase):
             row["readback_rotation"] = [BITS(v) for v in rotation]
 
         report = self.run_mode("e2", self.edited("body-targets-tall", turn))
-        self.assertEqual(len(report["failures"]), 2)
+        self.assertEqual(len(report["failures"]), 3)
         self.assertIn("model to read-back", report["failures"][0])
         self.assertIn("request to read-back", report["failures"][1])
+        # The sample bends no spine sideways: no lateral domain is left, and every pose is compared.
+        self.assertIn("no validated spine lateral domain", report["failures"][2])
+        self.assertIsNone(report["lateral_limit"])
         # A clip has no request: only the model residual.
         report = self.run_mode("e2", self.edited("body-clip-level", turn))
-        self.assertEqual(len(report["failures"]), 1)
+        self.assertEqual(len(report["failures"]), 2)
 
     def test_e3a_fails_a_moved_or_turned_hips(self):
         def move(doc):
@@ -174,8 +177,9 @@ class Checks(unittest.TestCase):
             pose["translation"][0] = BITS(F32(pose["translation"][0]) + 5e-4)
 
         report = self.run_mode("e3a", self.edited("body-probes-compact", move))
-        self.assertEqual(len(report["failures"]), 1)
+        self.assertEqual(len(report["failures"]), 2)
         self.assertIn("hips translation off", report["failures"][0])
+        self.assertIn("no validated spine lateral domain", report["failures"][1])
         self.assertGreater(report["worst_ratio"], 1)
 
         def turn(doc):
@@ -252,7 +256,8 @@ class Checks(unittest.TestCase):
         with mock.patch.object(runs.Design, "hips_uncertainty", return_value=math.inf):
             report = self.run_mode("e3a")
         self.assertTrue(report["failures"] and all("over E_unity,s" in line or "T_s" in line
-                                                   for line in report["failures"]))
+                                                   for line in report["failures"][:-1]))
+        self.assertIn("no validated spine lateral domain", report["failures"][-1])
 
         def grow(doc):
             pose = doc["capture"]["samples"][3]["pose"]["transforms"]
@@ -261,6 +266,64 @@ class Checks(unittest.TestCase):
 
         report = self.run_mode("e3a", self.edited("body-chain-armature-targets", grow))
         self.assertTrue(any("off the rest" in line for line in report["failures"]))
+
+    def test_the_lateral_limit_is_the_largest_passing_value_a_step_below_every_failing_one(self):
+        def row(name, lateral):
+            muscles = dict(zip(model.LATERAL_MUSCLES, (lateral / 2, -lateral, 0.)))
+            return dict(name=name, local=0, state=dict(target_kind="known", muscle_names=list(muscles),
+                                                       sample=dict(muscles_f32=[BITS(v) for v in muscles.values()])))
+
+        values = (0, .046875, .109375, .125, .3125, .3203125, .5)
+        rows = [row(f"s{k}", value) for k, value in enumerate(values)]
+
+        def limit(failing, unnamed=False, refused=()):
+            lines = [f"s{k}@0: off" for k, value in enumerate(values) if value in failing]
+            lines += ["E3: no comparison"] * unnamed
+            def e2(rows, compared):
+                compared.update(f"s{k}@0" for k, value in enumerate(values) if value not in refused)
+                return dict(failures=lines)
+
+            with mock.patch.object(check, "e2", e2), \
+                    mock.patch.object(check, "e3", return_value=dict(failures=[])):
+                return check.lateral_limit(rows, None, None)
+
+        self.assertEqual(limit(()), (.5, math.inf))
+        # The largest passing value below the smallest failing one, here more than a step below it.
+        self.assertEqual(limit((.3203125, .5)), (.3203125 - check.LATERAL_STEP, .3203125))
+        self.assertEqual(limit((.125, .5)), (.125 - check.LATERAL_STEP, .125))
+        # Or the largest passing value, when it is more than a step below.
+        self.assertEqual(limit((.5,)), (.3203125, .5))
+        # A passing value above a failing one widens nothing.
+        self.assertEqual(limit((.3125,)), (.125, .3125))
+        # A sample the scope refused (never compared) validates nothing.
+        self.assertEqual(limit((.3203125, .5), refused=(.3125,)), (.125, .3203125))
+        # A failure at no sample, or at an unbent spine, leaves no domain.
+        self.assertLess(limit((), unnamed=True)[0], check.LATERAL_FLOOR)
+        self.assertLess(limit((0,))[0], check.LATERAL_FLOOR)
+        # The model's refusal, named, past the limit, inclusive at it.
+        model.lateral_scope({"Chest Left-Right": -.25, "Spine Front-Back": 1}, .25)
+        with self.assertRaisesRegex(model.Refused, "^spine_lateral_range: spine Left-Right 0.3 over 0.25"):
+            model.lateral_scope({"UpperChest Left-Right": .3}, .25)
+
+    def test_e2_and_e3_refuse_a_pose_past_the_lateral_limit(self):
+        folder = scratch.for_case(self)
+        write_run(folder, self.docs)
+        with mock.patch.object(runs, "REQUIRED", frozenset()):
+            rows = runs.observe(runs.load([folder], "training"), avatar_of=avatars)
+        design = runs.Design(rows)
+        fit = runs.solve(design)
+        compared = [row for row in rows if not row.get("refused") and row["state"]["target_kind"] is not None]
+        values = sorted({check.lateral_of(row) for row in compared})
+        self.assertGreater(len(values), 2)
+        self.assertEqual(check.lateral_limit(rows, design, fit), (values[-1], math.inf))
+        cut = values[len(values) // 2]
+        past = sum(check.lateral_of(row) > cut for row in compared)
+        self.assertGreater(past, 0)
+        # Past the cut a pose refuses, unless the frame's twist scope already refused it.
+        for refused in (lambda limit: check.e3(rows, design, fit, limit)["refused"],
+                        lambda limit: check.e2(rows, limit)["refused"]):
+            self.assertTrue(0 < refused(cut) - refused(None) <= past)
+            self.assertEqual(refused(values[-1]), refused(None))
 
     def test_e3a_takes_the_translations_below_the_hips_from_the_avatar(self):
         # Unity's playback writes m_SkeletonPose's translations, which the prefab's can miss by f32 rounding:
