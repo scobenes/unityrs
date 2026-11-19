@@ -132,6 +132,23 @@ class Checks(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "give --unityrs"):
             self.run_mode("e0", avatar_of=None)
 
+    def test_a_twist_sweep_is_evaluated_within_the_scope_and_never_fitted(self):
+        name = "body-probes-twist-compact"
+        docs = dict(self.docs, **{name: recording(name)})
+        before, after = self.run_mode("e2"), self.run_mode("e2", docs)
+        self.assertTrue(after["passed"], after["failures"])
+        # Its twists up to the scope's limit compare, with the neutral and single-axis anchors; the larger ones
+        # refuse, as does the noncommuting anchor's spine twist.
+        within = sum(abs(d) <= 4 for d in body.TWIST_DEGREES) * len(body.TWIST_TILTS) + 2
+        total = len(body.TWIST_DEGREES) * len(body.TWIST_TILTS) + 3
+        self.assertEqual(after["refused"] - before["refused"], total - within)
+        self.assertGreater(after["residuals"], before["residuals"])
+        folder = scratch.for_case(self)
+        write_run(folder, docs)
+        with mock.patch.object(runs, "REQUIRED", frozenset()):
+            rows = runs.observe(runs.load([folder], "training"), avatar_of=avatars)
+        self.assertEqual({row["fit"] for row in rows if name in row["name"]}, {False})
+
     def test_e2_fails_a_turned_read_back(self):
         def turn(doc):
             row = doc["spec"]["evidence"]["editor"]["body_samples"][3]

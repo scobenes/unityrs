@@ -38,6 +38,10 @@ read from its `.pending.json`. The checkpoint, with B1's own tolerances
    (anim_fixture_body.EXTRA_PROBES) recorded with read-back, or the missing
    ones named.
 
+The twist sweeps (anim_fixture_body.TWIST_RIGS) take no part: they measure
+2.2's frame against the shoulder-hip twist for B2, not the centre of mass.
+A run with or without them gives the same checkpoint.
+
 With --design-only, each extra probe case the run lacks is predicted from
 its rig's recorded geometry (anim_body_design.py), with conservative
 epsilon and E_unity,s over an envelope of the rig's recorded hips, and the
@@ -67,7 +71,8 @@ from anim_body_tolerance import (BODY_SLOTS, U32, U64, body_frame, body_states, 
 from anim_body_design import conservative, planned  # noqa: E402
 from anim_body_model import Refused, topology_scope  # noqa: E402
 from anim_reference import gamma  # noqa: E402
-from anim_fixture_body import BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, probe_schedule, rig_bones  # noqa: E402
+from anim_fixture_body import (BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, TWIST_CASES, probe_schedule,  # noqa: E402
+                               rig_bones)
 
 CONDITION_LIMIT = 1e6
 
@@ -224,8 +229,9 @@ def samples(name, doc, parents, masses, skeleton=None):
                    jacobian=jacobian, unity=unity, evaluation=evaluation, fit=False, epsilon=epsilon,
                    edges=None if links == expected else f"recorded {links} but HumanTrait gives {expected}")
         row["refused"] = scope_refusal(mapped & BODY_SLOTS)
+        # A twist sweep measures the frame (E2) and is evaluated (E3), never fitted.
         row["fit"] = (epsilon is not None and info is not None and info["rig"] != HOLDOUT
-                      and row["refused"] is None)
+                      and info["variant"] != "twist" and row["refused"] is None)
         # What B2's checks (anim_body_check.py) evaluate the model and its bounds from.
         row["state"] = dict(bones=bones, local=local, rest_local=rest_local, chain=chain, weights=weights,
                             links=links, scale=scale, target=target, body_rotation=body_rotation,
@@ -408,10 +414,11 @@ def missing_planned(documents):
 
 def load(folder):
     """Every humanoid recording of the training role (anim_body_runs: by run.json and the case table), so
-    the hold-out rig's are never read."""
+    the hold-out rig's are never read, but the twist sweeps', which the checkpoint does not use."""
     from anim_body_runs import Run
 
-    return Run(folder, "training", pending=True).documents
+    documents = Run(folder, "training", pending=True).documents
+    return {name: doc for name, doc in documents.items() if name not in TWIST_CASES}
 
 
 def main(argv=None):

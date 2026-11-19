@@ -36,10 +36,11 @@ def source(name):
 
 class BodyInventoryTests(unittest.TestCase):
     def test_cases_mirror_the_builder(self):
-        self.assertEqual(len(body.BODY_CASES), 107)
+        self.assertEqual(len(body.BODY_CASES), 109)
         kinds = [info["kind"] for info in body.BODY_INFO.values()]
-        self.assertEqual((kinds.count("probes"), kinds.count("targets"), kinds.count("clip")), (17, 8, 82))
+        self.assertEqual((kinds.count("probes"), kinds.count("targets"), kinds.count("clip")), (19, 8, 82))
         self.assertEqual(body.EXTRA_CASES, {"body-probes-tall-2"})
+        self.assertEqual(body.TWIST_CASES, {"body-probes-twist-compact", "body-probes-twist-tall"})
         self.assertEqual(len(body.CLIP_VARIANTS), 39)
         self.assertLessEqual(body.BODY_CASES.keys(), OPTIONAL_CASES)
         self.assertTrue(body.BODY_CASES.keys().isdisjoint(anim_fixture_coverage.COVERAGE_CASES))
@@ -64,6 +65,17 @@ class BodyInventoryTests(unittest.TestCase):
             vectors = [[(bone, int(source)) for bone, source in re.findall(r'\("([A-Za-z]+)", (-?\d)\)', line)]
                        for line in re.findall(r'new\[\] \{ (\(.*?\)) \}', plan)]
             self.assertEqual(vectors, [list(sources) for sources in body.EXTRA_PROBES[name]], name)
+        # The twist sweeps: their cases, degrees, range, muscles and tilts.
+        self.assertEqual(dict(re.findall(r'\("(body-probes-twist-[a-z]+)", "([a-z]+)"\)', builder)), body.TWIST_RIGS)
+        degrees = re.search(r"TwistDegrees = \{ ([^}]*) \}", builder).group(1)
+        self.assertEqual(tuple(int(v) for v in degrees.split(", ")), body.TWIST_DEGREES)
+        self.assertIn(f"const double TwistRange = {body.TWIST_RANGE};", builder)
+        muscles = re.search(r"BodyTwistMuscles = \{ ([^}]*) \}", builder).group(1)
+        self.assertEqual(tuple(re.findall(r'"([^"]+)"', muscles)), body.TWIST_MUSCLES)
+        tilts = re.search(r"TwistTilts = \{ Vector3\.zero, (.*) \};", builder).group(1)
+        self.assertEqual(((0, 0, 0), *((int(x), int(y), int(z)) for x, y, z in
+                                       re.findall(r"new Vector3\((-?\d+), (-?\d+), (-?\d+)\)", tilts))),
+                         body.TWIST_TILTS)
         clips = source("UnityrsBodyClips.cs")
         for name in body.CLIP_VARIANTS:
             stem = re.sub(r"-start$", "", name)
@@ -107,6 +119,39 @@ class BodyInventoryTests(unittest.TestCase):
                                         (name, t, bone))
 
 
+    def test_twist_sweeps_cross_each_twist_with_each_tilt_on_training_rigs(self):
+        names = list(MUSCLES)
+        spine = [names.index(muscle) for muscle in body.SPINE]
+        twist = [names.index(muscle) for muscle in body.TWIST_MUSCLES]
+        self.assertNotIn(body.HOLDOUT, body.TWIST_RIGS.values())
+        self.assertEqual(sorted(set(body.TWIST_DEGREES)), sorted(body.TWIST_DEGREES))
+        for name, rig in body.TWIST_RIGS.items():
+            info = body.BODY_INFO[name]
+            self.assertEqual((info["kind"], info["variant"], body.BODY_CASES[name].bundle),
+                             ("probes", "twist", name.replace("probes-", "")))
+            points = body.probe_schedule(rig, names, False, body.schedule_name(name))
+            requests = body.body_requests(name, len(points))
+            self.assertEqual(len(points), len(body.TWIST_DEGREES) * len(body.TWIST_TILTS) + 3)
+            self.assertLess(len(points), 300)
+            times = [t for t, _ in points]
+            self.assertEqual(times, sorted(set(times)))
+            self.assertTrue(all(t * 65536 == int(t * 65536) for t in times))
+            self.assertEqual({t: [vector[i] for i in spine] for t, vector in points if t in (0, .5, 1)},
+                             {t: list(v) for t, v in body.ANCHORS.items()})
+            swept = set()
+            for (t, vector), (offset, tilt) in zip(points, requests, strict=True):
+                self.assertEqual(offset, (0, 0, 0))
+                if t in (0, .5, 1):
+                    self.assertEqual(tilt, (0, 0, 0))
+                    continue
+                # Both twist muscles together, at degrees over their summed default limits, and nothing else.
+                value = vector[twist[0]]
+                self.assertEqual(vector[twist[1]], value)
+                self.assertTrue(all(v == 0 for i, v in enumerate(vector) if i not in twist))
+                swept.add((round(value * body.TWIST_RANGE), tilt))
+            self.assertEqual(swept, {(d, tilt) for d in body.TWIST_DEGREES for tilt in body.TWIST_TILTS})
+
+
 class CheckBodyTests(unittest.TestCase):
     def check(self, name, doc, clip=None):
         return body.check_body(name, body.BODY_CASES[name], doc, View(clip), None, replay)
@@ -117,6 +162,7 @@ class CheckBodyTests(unittest.TestCase):
 
     def test_accepts_each_kind(self):
         for name in ("body-probes-compact", "body-probes-no-chest", "body-targets-tall-offset",
+                     "body-probes-twist-tall",
                      "body-chain-armature-targets", "body-chain-large-targets", "body-chain-hips-scale-targets",
                      "body-chain-scaled-animator-targets"):
             with self.subTest(name=name):
@@ -246,6 +292,17 @@ class CheckBodyTests(unittest.TestCase):
         doc = body_doc(name, RUN)
         doc["spec"]["evidence"]["editor"]["body_targets"][0]["tilt"] = ["00000000"] * 3
         self.assert_refused("body target request mismatch", name, doc)
+        # A twist sweep's tilted point: untilted, or its applied body left upright.
+        name = "body-probes-twist-compact"
+        last = len(body.TWIST_DEGREES) * len(body.TWIST_TILTS) + 1
+        doc = body_doc(name, RUN)
+        targets = doc["spec"]["evidence"]["editor"]["body_targets"]
+        self.assertNotEqual(targets[last]["tilt"], ["00000000"] * 3)
+        targets[last]["tilt"] = ["00000000"] * 3
+        self.assert_refused("body target request mismatch", name, doc)
+        doc = body_doc(name, RUN)
+        doc["spec"]["evidence"]["editor"]["body_targets"][last]["rotation"] = [replay.f32_bits(v) for v in (0, 0, 0, 1)]
+        self.assert_refused("applied body target differs", name, doc)
 
     def test_refuses_a_chain_off_its_rig(self):
         name = "body-chain-hips-scale-targets"
@@ -372,12 +429,21 @@ class BodyRunTests(unittest.TestCase):
         self.assertIn("missing run.json case: body-probes-holdout", result.stderr)
         self.assertNotIn(missing, result.stderr)
 
-    def test_an_extra_probe_case_is_required_once_its_rig_records(self):
-        name = sorted(body.EXTRA_CASES)[0]
-        primary = body.primary_probes(body.EXTRA_RIGS[name])
-        result = self.run_with(body.BODY_CASES, {primary: "recorded"})
+    def test_a_run_before_the_twist_sweeps_completes(self):
+        # A run with the extra probe cases and none of the twist sweeps is from between them; one holding a
+        # single twist sweep is from after, and lacks the other.
+        result = self.run_with([name for name in body.BODY_CASES if name not in body.TWIST_CASES])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_with([name for name in body.BODY_CASES if name != "body-probes-twist-tall"])
         self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertIn(f"{name}: required once {primary} records, but not_covered", result.stderr)
+        self.assertIn("missing run.json case: body-probes-twist-tall", result.stderr)
+
+    def test_an_extra_probe_case_is_required_once_its_rig_records(self):
+        for name in (sorted(body.EXTRA_CASES)[0], "body-probes-twist-compact"):
+            primary = body.primary_probes(body.BODY_INFO[name]["rig"])
+            result = self.run_with(body.BODY_CASES, {primary: "recorded"})
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn(f"{name}: required once {primary} records, but not_covered", result.stderr)
 
     def test_a_run_lists_all_body_cases_or_none(self):
         missing = "body-probes-holdout"

@@ -84,6 +84,17 @@ static partial class UnityrsFixtureBuilder
             new[] { ("LeftUpperLeg", -3), ("RightUpperArm", -3) },
         }),
     };
+    // Twist sweeps, each on its own bundle of a training rig (anim_fixture_body.py TWIST_RIGS): the
+    // Spine and Chest twist muscles together at degrees / TwistRange (HumanTrait's default limits,
+    // +-40 degrees each), crossed with an upright body and three pitch and roll tilts of the body
+    // target from F3's tilts. They measure the read-back frame against the shoulder-hip twist.
+    static readonly (string name, string rig)[] TwistProbes = {
+        ("body-probes-twist-compact", "compact"), ("body-probes-twist-tall", "tall"),
+    };
+    static readonly int[] TwistDegrees = { 0, 2, -2, 4, -4, 6, -6, 8, -8, 10, -10, 15, -15, 20, -20, 30, -30, 45, -45, 60, -60 };
+    const double TwistRange = 80;
+    static readonly string[] BodyTwistMuscles = { "Spine Twist Left-Right", "Chest Twist Left-Right" };
+    static readonly Vector3[] TwistTilts = { Vector3.zero, new Vector3(12, 0, 7), new Vector3(-9, 0, -11), new Vector3(12, 0, -11) };
     const float AnimatorScale = 1.25f, ArmatureScale = .8f;
     internal const float BodyAnimatorScale = AnimatorScale, BodyArmatureScale = ArmatureScale;
 
@@ -169,7 +180,7 @@ static partial class UnityrsFixtureBuilder
             ? new[] { "body-targets-" + rig.Name, "body-targets-" + rig.Name + "-offset" } : Array.Empty<string>());
 
     static IEnumerable<string> BodyCases() => ProbeRigs.SelectMany(rig => RigCases(rig, false))
-        .Concat(ExtraProbes.Select(extra => extra.name))
+        .Concat(ExtraProbes.Select(extra => extra.name)).Concat(TwistProbes.Select(twist => twist.name))
         .Concat(ClipCases()).Concat(ChainRigs.SelectMany(rig => RigCases(rig, true)));
 
     // Each body case fails until a step prepares it, so none can vanish unseen.
@@ -187,6 +198,11 @@ static partial class UnityrsFixtureBuilder
             report.Prepare(build, "Prepare " + extra.name, new[] { extra.name },
                 () => BuildBodyRig(build, report, ProbeRigs.Single(rig => rig.Name == extra.rig), false, extra),
                 !builtRigs.Contains(extra.rig));
+        foreach (var twist in TwistProbes)
+            report.Prepare(build, "Prepare " + twist.name, new[] { twist.name },
+                () => BuildBodyRig(build, report, ProbeRigs.Single(rig => rig.Name == twist.rig), false,
+                    (twist.name, twist.rig, null)),
+                !builtRigs.Contains(twist.rig));
         foreach (var rig in ChainRigs)
             report.Prepare(build, "Prepare body-chain-" + rig.Name, RigCases(rig, true).ToArray(),
                 () => BuildBodyRig(build, report, rig, chain: true), true);
@@ -346,6 +362,33 @@ static partial class UnityrsFixtureBuilder
         return Scheduled(vectors, false);
     }
 
+    // A twist sweep: each tilt, then each twist, every point a body target
+    // without offset (the spine anchors upright).
+    static BodyProbe[] TwistSchedule()
+    {
+        var names = HumanTrait.MuscleName;
+        var vectors = new List<float[]>();
+        var tilts = new List<Vector3>();
+        foreach (var tilt in TwistTilts)
+        {
+            foreach (int degrees in TwistDegrees)
+            {
+                var vector = new float[names.Length];
+                foreach (var muscle in BodyTwistMuscles) vector[MuscleIndex(names, muscle)] = (float)(degrees / TwistRange);
+                vectors.Add(vector);
+                tilts.Add(tilt);
+            }
+        }
+        var probes = Scheduled(vectors, false);
+        foreach (var probe in probes)
+        {
+            int k = vectors.IndexOf(probe.Muscles);
+            probe.Targeted = true;
+            probe.Tilt = k < 0 ? Vector3.zero : tilts[k];
+        }
+        return probes;
+    }
+
     static BodyProbe[] Scheduled(List<float[]> vectors, bool targets)
     {
         int first = (vectors.Count + 1) / 2, second = vectors.Count - first;
@@ -389,7 +432,7 @@ static partial class UnityrsFixtureBuilder
     static void BuildBodyRig(Build build, RunReport report, BodyRig rig, bool chain,
         (string name, string rig, (string bone, int source)[][] plan) extra = default)
     {
-        // An extra probe case has its own bundle, so a rerun leaves the rig's other cases unchanged.
+        // An extra probe case or twist sweep has its own bundle, so a rerun leaves the rig's other cases unchanged.
         string bundle = extra.name != null ? extra.name.Replace("probes-", "") : (chain ? "body-chain-" : "body-") + rig.Name;
         var rigObject = new GameObject("HumanoidRig");
         GameObject root = null;
@@ -461,9 +504,10 @@ static partial class UnityrsFixtureBuilder
             }
             if (extra.name != null)
             {
+                // A null plan is a twist sweep.
                 var extraReplay = Replay(extra.name, prefab, clipPaths[0], "probes", "identity");
-                extraReplay.Body.Variant = "extra";
-                AddProbeReplay(build, extraReplay, ExtraSchedule(mapped, extra.plan));
+                extraReplay.Body.Variant = extra.plan == null ? "twist" : "extra";
+                AddProbeReplay(build, extraReplay, extra.plan == null ? TwistSchedule() : ExtraSchedule(mapped, extra.plan));
                 return;
             }
             AddProbeReplay(build, Replay("body-probes-" + rig.Name, prefab, clipPaths[0], "probes", "identity"),

@@ -12,9 +12,8 @@ from test_anim_replay import bits
 
 import anim_body_tolerance as tolerance  # noqa: E402  (test_anim_replay puts it on the path)
 from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CLIP_VARIANTS,  # noqa: E402
-                               distinguishing_curves, PROBE_GROUPS, PROBE_RIGS, SPINE, START_OFFSET, START_YAW, TARGETS,
-                               expected_case_row,
-                               probe_schedule)
+                               body_requests, distinguishing_curves, PROBE_GROUPS, PROBE_RIGS, SPINE,
+                               START_OFFSET, START_YAW, expected_case_row, probe_schedule, schedule_name)
 from anim_reference import euler, multiply  # noqa: E402
 import anim_replay as replay  # noqa: E402
 
@@ -191,7 +190,8 @@ def body_doc(name, run, *, samples=None):
         spine = [MUSCLES.index(muscle) for muscle in SPINE]
         schedule = [(t, None) for t in (0, .25 * 391 / 1024, .25, .5, .75, 1)]
     else:
-        schedule = probe_schedule(rig, MUSCLES, kind == "targets", name if info["variant"] == "extra" else None)
+        schedule = probe_schedule(rig, MUSCLES, kind == "targets", schedule_name(name))
+    requests = body_requests(name, len(schedule))
     if samples:
         schedule = schedule[:samples]
     human_bones = [dict(name=b, node=index.get(b, -1), required=b in ("Hips", "Spine")) for b in BONES]
@@ -246,7 +246,7 @@ def body_doc(name, run, *, samples=None):
             for field in ("root_rotation", "motion_rotation", "motion_delta_rotation"):
                 rows[-1][field] = [bits(0)] * 3 + [bits(1)]
         else:
-            offset, tilt = TARGETS[len(targets) % 2] if kind == "targets" else ((0, 0, 0), (0, 0, 0))
+            offset, tilt = requests[len(targets)]
             targets.append(dict(offset=[bits(v) for v in offset], tilt=[bits(v) for v in tilt],
                                 position=[bits(v + (k == 1)) for k, v in enumerate(offset)],
                                 rotation=[bits(v) for v in euler(tilt, 4)]))
