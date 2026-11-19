@@ -77,10 +77,11 @@ from anim_fixture_body import (BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, RANG
 CONDITION_LIMIT = 1e6
 
 
-def scope_refusal(mapped):
-    """The model's topology refusal for these mapped body slots (anim_body_model.topology_scope), or None."""
+def scope_refusal(mapped, masses=None):
+    """The model's topology refusal for these mapped body slots and, when given, the masses by slot
+    (anim_body_model.topology_scope), or None."""
     try:
-        topology_scope(mapped)
+        topology_scope(mapped, masses)
     except Refused as exc:
         return str(exc)
     return None
@@ -139,13 +140,15 @@ def body_rows(table):
     return sorted(rows)
 
 
-def samples(name, doc, parents, masses, skeleton=None):
+def samples(name, doc, parents, masses, skeleton=None, translations=None):
     """One row per sample: its coefficient columns in A, its J_s rows, epsilon, E_unity and E_eval.
 
     `skeleton` is the Avatar's m_SkeletonPose as body-slot positions in A (2.2's F(T) comes from it); the
-    recorded rest pose stands in without it. The hips solve's bones take the rest translations and scales
-    under their sampled rotations, and the hips the rest scale; `drift` names each node whose sampled
-    translation or scale is not the rest's, for E3 to compare."""
+    recorded rest pose stands in without it. `translations` (capture node: f32 bits) are the Avatar's own
+    translations below the hips (anim_body_runs.rest_translations), the ones Unity's playback writes; the
+    recorded rest pose's stand in without them. The hips solve's bones take those translations and the rest
+    scales under their sampled rotations, and the hips the rest scale; `drift` names each node whose sampled
+    translation or scale is not those, for E3 to compare."""
     spec, capture = doc["spec"], doc["capture"]
     human, bones_rows = capture["humanoid"], capture["humanoid"]["bones"]
     editor = spec["evidence"]["editor"]
@@ -158,6 +161,9 @@ def samples(name, doc, parents, masses, skeleton=None):
     hips_address = nodes[next(row["node"] for row in bones_rows if row["name"] == "Hips")]["address"]
     links = recorded_edges(bones_rows, nodes)
     rest_transforms = capture["rest"]["transforms"]
+    if translations is not None:
+        rest_transforms = [dict(row, translation=translations[i]) if i in translations else row
+                           for i, row in enumerate(rest_transforms)]
     rest = bone_frames(bones_rows, nodes, kinematics(nodes, rest_transforms, F32, animator))
     rest_frame = body_frame(skeleton or {name: frame.position for name, frame in rest.items()})
     hips_node = next(i for i, node in enumerate(nodes) if node["address"] == hips_address)
@@ -228,7 +234,7 @@ def samples(name, doc, parents, masses, skeleton=None):
         row = dict(name=name, local=sample["local"], rig=info["rig"] if info else "p2b", columns=columns,
                    jacobian=jacobian, unity=unity, evaluation=evaluation, fit=False, epsilon=epsilon,
                    edges=None if links == expected else f"recorded {links} but HumanTrait gives {expected}")
-        row["refused"] = scope_refusal(mapped & BODY_SLOTS)
+        row["refused"] = scope_refusal(mapped & BODY_SLOTS, masses)
         # A twist sweep measures the frame (E2) and is evaluated (E3), never fitted.
         row["fit"] = (epsilon is not None and info is not None and info["rig"] != HOLDOUT
                       and info["variant"] != "twist" and row["refused"] is None)

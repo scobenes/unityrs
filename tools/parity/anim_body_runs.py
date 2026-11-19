@@ -198,6 +198,40 @@ def skeleton_points(human, parents, unit=U64):
         {name: state.e_position for name, state in states.items()}
 
 
+def node_paths(doc):
+    """{capture node index: its path under the Animator node} for every node below the Animator."""
+    spec = doc["spec"]
+    names = {node["address"]: node["name"] for node in spec["nodes"]}
+    base = spec["binding_address"]
+    out = {}
+    for i, node in enumerate(spec["nodes"]):
+        if node["address"].startswith(base + "/"):
+            parts = node["address"][len(base) + 1:].split("/")
+            out[i] = "/".join(names[base + "/" + "/".join(parts[:k + 1])] for k in range(len(parts)))
+    return out
+
+
+def rest_translations(avatar, doc):
+    """{capture node index: its m_SkeletonPose local translation bits} for every node below the hips, through
+    m_Skeleton.m_ID and m_TOS: the translations Unity's humanoid playback writes (E3a), against which the prefab's
+    differ by f32 rounding. A node below the hips the Avatar's skeleton lacks refuses."""
+    human = human_of(avatar)
+    skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
+    pose = human["m_SkeletonPose"].get("data", human["m_SkeletonPose"])["m_X"]
+    tos = dict(map(tuple, avatar.get("m_TOS") or []))
+    by_path = {tos.get(node_id): k for k, node_id in enumerate(skeleton.get("m_ID") or []) if k < len(pose)}
+    spec = doc["spec"]
+    hips = spec["nodes"][next(row["node"] for row in doc["capture"]["humanoid"]["bones"] if row["name"] == "Hips")]
+    out = {}
+    for i, path in node_paths(doc).items():
+        if not spec["nodes"][i]["address"].startswith(hips["address"] + "/"):
+            continue
+        k = by_path.get(path)
+        replay.require(k is not None, f"{path}: below the hips but not in the Avatar's skeleton")
+        out[i] = [replay.f32_bits(float(pose[k]["t"][axis])) for axis in "xyz"]
+    return out
+
+
 def captured_paths(doc):
     """{slot: the bone's path under the Animator node} from the capture's bone rows and nodes."""
     spec = doc["spec"]
@@ -230,7 +264,7 @@ def avatar_scope(avatar, doc, parents):
         moved = sorted(slot for slot in paths.keys() | captured.keys() if paths.get(slot) != captured.get(slot))
         return None, f"the Avatar maps {moved} unlike the capture"
     mapped = set(paths)
-    refused = adequacy.scope_refusal(mapped)
+    refused = adequacy.scope_refusal(mapped, avatar_masses(avatar))
     return (None, refused) if refused else (skeleton_points(human, parents)[0], None)
 
 
@@ -238,24 +272,26 @@ def observe(runs, table=None, avatar_of=None):
     """Every sample row of the runs (anim_body_adequacy.samples), named `version/case`. `table` is the
     HumanTrait table (parents, masses) to use; by default each run's own. With `avatar_of(run, doc)`, each
     recording's masses are its Avatar's m_HumanBoneMass (decision 1), the checkpoint's fold then keeping
-    them renormalized over the mapped slots, and its scope and F(T) are the Avatar's (avatar_scope)."""
+    them renormalized over the mapped slots, its scope and F(T) are the Avatar's (avatar_scope), and the
+    translations below its hips are its m_SkeletonPose's (rest_translations)."""
     rows = []
     for run in runs:
         if not run.documents:
             continue
         parents, masses = table or adequacy.bone_table(run.documents.values())
         for case, doc in run.documents.items():
-            skeleton, refused, weights = None, None, masses
+            skeleton, refused, weights, translations = None, None, masses, None
             if avatar_of:
                 avatar = avatar_of(run, doc)
                 weights = avatar_masses(avatar)
                 skeleton, refused = avatar_scope(avatar, doc, parents)
+                translations = None if refused else rest_translations(avatar, doc)
             if refused:
                 # Out of scope: no forward kinematics, no bound; every sample is refused.
                 case_rows = [dict(local=sample["local"], refused=refused, fit=False, state=None, edges=None,
                                   columns={}, jacobian={}) for sample in doc["capture"]["samples"]]
             else:
-                case_rows = adequacy.samples(case, doc, parents, weights, skeleton)
+                case_rows = adequacy.samples(case, doc, parents, weights, skeleton, translations)
             for row in case_rows:
                 row.update(name=f"{run.version}/{case}", case=case, version=run.version,
                            rig=BODY_INFO.get(case, {}).get("rig", "p2b"))

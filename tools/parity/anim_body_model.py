@@ -14,8 +14,12 @@ are f64 from the recorded f32 inputs, taken exactly. Standard library only.
 refuses an Avatar whose Chest or Neck is absent or that maps exactly one
 Shoulder: 2.1's per-edge fractions fit every other training rig jointly but
 not these. It admits only a recorded pattern of absent body slots
-(RECORDED_ABSENT, the in-scope training rigs'), so an unrecorded topology,
-such as one mapped eye, refuses too. `frame_scope` refuses a pose whose
+(RECORDED_ABSENT, the in-scope training rigs'), so an unrecorded topology
+refuses too. The zero-mass leaves (LEAVES: the Eyes and the Jaw) take no
+part in the pattern: every recorded Avatar gives them zero mass, so absent
+they fold nothing into the Head, and mapped their edges' fitted fractions
+vanish (plan 2.5). That holds only at zero mass, so an Avatar giving a leaf
+any other mass refuses. `frame_scope` refuses a pose whose
 shoulder-hip twist (the angle about up between the upper-arm and upper-leg
 laterals) exceeds TWIST_LIMIT: there 2.2's lateral sum leaves Unity's yaw
 about up by more than the bound. A twist with a lateral along up, or no up,
@@ -89,19 +93,20 @@ HYPOTHESES = {
     "root": "2.4: X_A = X_r^-1 o X_b, the m_StartAtOrigin rebase shared by root and body",
     "yaw": "2.4: a yaw is the twist about up, 2 atan2(q_y, q_w)",
     "height_from_feet": "2.4: undecided between candidates A and B; refused",
-    "topology_scope": "section 8: refused when Chest or Neck is absent, exactly one Shoulder is mapped or the "
-                      "absent body slots are not a recorded training pattern",
+    "topology_scope": "section 8: refused when Chest or Neck is absent, exactly one Shoulder is mapped, an Eye or "
+                      "the Jaw has a nonzero mass, or the absent body slots other than the zero-mass leaves (Eyes, "
+                      "Jaw) are not a recorded training pattern",
     "frame_scope": "section 8: refused when the shoulder-hip twist about up exceeds 4.25 degrees or is undefined",
 }
 TWIST_LIMIT = math.radians(4.25)
-# The absent body slots of each in-scope training rig (anim_fixture_body.PROBE_RIGS): the only admitted patterns.
+# The body slots of zero mass in every recorded Avatar, no edge's parent: their presence leaves c unchanged.
+LEAVES = frozenset(("LeftEye", "RightEye", "Jaw"))
+# The absent body slots but the leaves of each in-scope training rig (anim_fixture_body.PROBE_RIGS): the only
+# admitted patterns.
 RECORDED_ABSENT = frozenset(frozenset(absent) for absent in (
-    (), ("Jaw",), ("LeftEye", "RightEye"), ("Jaw", "LeftEye", "RightEye"),
-    ("Jaw", "LeftEye", "RightEye", "UpperChest"), ("Jaw", "LeftEye", "RightEye", "LeftToes"),
-    ("Jaw", "LeftEye", "RightEye", "RightToes"), ("Jaw", "LeftEye", "RightEye", "LeftToes", "RightToes"),
-    ("Jaw", "LeftEye", "RightEye", "LeftShoulder", "RightShoulder"),
-    ("Jaw", "LeftEye", "RightEye", "UpperChest", "LeftToes", "RightToes"),
-    ("Jaw", "LeftEye", "RightEye", "UpperChest", "LeftToes"), ("Jaw", "LeftEye", "RightEye", "UpperChest", "RightToes")))
+    (), ("UpperChest",), ("LeftToes",), ("RightToes",), ("LeftToes", "RightToes"),
+    ("LeftShoulder", "RightShoulder"), ("UpperChest", "LeftToes", "RightToes"), ("UpperChest", "LeftToes"),
+    ("UpperChest", "RightToes")))
 ANGLE_FLOOR = gamma(16, U64)
 
 
@@ -149,15 +154,19 @@ def quaternion(m):
     return tuple(-v for v in q) if q[3] < 0 else q
 
 
-def topology_scope(mapped):
-    """Refuses the topologies outside the frozen scope; `mapped` holds the mapped body slots."""
+def topology_scope(mapped, masses=None):
+    """Refuses the topologies outside the frozen scope; `mapped` holds the mapped body slots and `masses`, when
+    given, the Avatar's m_HumanBoneMass by slot, mapped or not."""
+    heavy = sorted(slot for slot in LEAVES if masses is not None and masses.get(slot) != 0)
+    if heavy:
+        raise Refused(f"topology: nonzero mass on a zero-mass leaf ({heavy})")
     if "Chest" not in mapped:
         raise Refused("topology: Chest absent")
     if "Neck" not in mapped:
         raise Refused("topology: Neck absent")
     if ("LeftShoulder" in mapped) != ("RightShoulder" in mapped):
         raise Refused("topology: exactly one Shoulder")
-    absent = BODY_SLOTS - set(mapped)
+    absent = BODY_SLOTS - LEAVES - set(mapped)
     if absent not in RECORDED_ABSENT:
         raise Refused(f"topology: unrecorded pattern (absent {sorted(absent)})")
 

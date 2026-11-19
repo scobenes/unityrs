@@ -87,8 +87,13 @@ class Checks(unittest.TestCase):
         report = self.run_mode("e0", avatar_of=edited(lambda human: mass(human, 7, F32(BITS(.051)))))
         e0b = [line for line in report["failures"] if "E0b" in line]
         self.assertTrue(e0b and all("E0b Spine" in line for line in e0b))
-        # An absent slot must hold no mass.
-        report = self.run_mode("e0", avatar_of=edited(lambda human: mass(human, 22, 1e-3)))
+        # An absent slot must hold no mass; a leaf's then refuses its Avatar too (the fit keeps the others).
+        def heavy_eye(run, doc):
+            value = avatar(doc)
+            if doc["spec"]["evidence"]["editor"]["fixture_case"] == "body-probes-compact":
+                mass(check.human_of(value), 22, 1e-3)
+            return value
+        report = self.run_mode("e0", avatar_of=heavy_eye)
         self.assertTrue(any("E0b LeftEye" in line for line in report["failures"]))
         # E0 alone on an Avatar the fit did not read: a mapping the capture lacks refuses the fit's rows.
         folder = write_run(scratch.for_case(self), self.docs)
@@ -256,6 +261,57 @@ class Checks(unittest.TestCase):
 
         report = self.run_mode("e3a", self.edited("body-chain-armature-targets", grow))
         self.assertTrue(any("off the rest" in line for line in report["failures"]))
+
+    def test_e3a_takes_the_translations_below_the_hips_from_the_avatar(self):
+        # Unity's playback writes m_SkeletonPose's translations, which the prefab's can miss by f32 rounding:
+        # every sample at the Avatar's translation passes, and at the prefab's then fails.
+        name = "body-chain-armature-targets"
+        doc = self.docs[name]
+        spine = next(row["node"] for row in doc["capture"]["humanoid"]["bones"] if row["name"] == "Spine")
+        y = doc["capture"]["rest"]["transforms"][spine]["translation"][1]
+        self.assertGreater(F32(y), 0)
+        nudged = F32(f"{int(y, 16) + 1:08x}")  # one f32 ulp up
+
+        def nudge(run, recorded):
+            value = avatar(recorded)
+            if recorded["spec"]["evidence"]["editor"]["fixture_case"] == name:
+                path = runs.node_paths(recorded)[spine]
+                k = next(k for k, (_, p) in enumerate(value["m_TOS"]) if p == path)
+                check.human_of(value)["m_SkeletonPose"]["data"]["m_X"][k]["t"]["y"] = nudged
+            return value
+
+        def played(recorded):
+            for sample in recorded["capture"]["samples"]:
+                sample["pose"]["transforms"][spine]["translation"][1] = BITS(nudged)
+
+        docs = self.edited(name, played)
+        self.assertEqual(runs.rest_translations(nudge(None, docs[name]), docs[name])[spine][1], BITS(nudged))
+        report = self.run_mode("e3a", docs, avatar_of=nudge)
+        self.assertFalse(any("off the rest" in line for line in report["failures"]), report["failures"])
+        report = self.run_mode("e3a", docs)
+        self.assertTrue(any(f"{name}@" in line and "off the rest" in line for line in report["failures"]))
+        # A node below the hips the Avatar's skeleton lacks refuses.
+        bare = avatar(doc)
+        bare["m_TOS"] = [row for row in bare["m_TOS"] if row[1] != runs.node_paths(doc)[spine]]
+        with self.assertRaisesRegex(ValueError, "not in the Avatar's skeleton"):
+            runs.rest_translations(bare, doc)
+
+    def test_a_leaf_with_mass_refuses_before_any_kinematics(self):
+        def heavy(run, doc):
+            value = avatar(doc)
+            human = check.human_of(value)
+            masses = [F32(human["m_HumanBoneMass"]["v"][8 * k:8 * k + 8]) for k in range(25)]
+            masses[24] = 1e-3  # the Jaw, absent from the compact rig
+            human["m_HumanBoneMass"]["v"] = "".join(BITS(m) for m in masses)
+            return value
+
+        docs = {"body-probes-compact": self.docs["body-probes-compact"]}
+        folder = scratch.for_case(self)
+        write_run(folder, docs)
+        with mock.patch.object(adequacy, "samples", side_effect=AssertionError("kinematics")):
+            rows = runs.observe(runs.load([folder], "training"), avatar_of=heavy)
+        self.assertTrue(rows and all(row["refused"] == "topology: nonzero mass on a zero-mass leaf (['Jaw'])"
+                                     for row in rows))
 
     def test_the_topology_comes_from_the_avatar_before_any_kinematics(self):
         def lone_eye(run, doc):

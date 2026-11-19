@@ -117,8 +117,11 @@ T-pose. The candidate:
   sparse cross-bone terms. So these topologies refuse at the Avatar
   (section 8), and the fit runs on the other eighteen training rigs. The
   scope admits only a pattern of absent body slots that a training rig
-  recorded, so an unrecorded topology (one mapped eye) refuses too. The
-  check reads the Avatar's `m_HumanBoneIndex` before any forward kinematics.
+  recorded, over every slot but the Eyes and the Jaw (the zero-mass leaves
+  of 2.5), so an unrecorded topology (UpperChest and one Shoulder absent)
+  refuses too. A leaf's mass must be exactly 0, mapped or not. The check
+  reads the Avatar's `m_HumanBoneIndex` and `m_HumanBoneMass` before any
+  forward kinematics.
 
 [Unity 2022.3 root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html) ·
 [HumanPose (bodyPosition, bodyRotation)](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanPose.html) ·
@@ -169,8 +172,10 @@ The chain from the Animator node to the hips has these parts:
 The solve, given the target body pose `(T_A, B_A)` in `A` in metres (2.4):
 
 1. Evaluate `c_h` and `F_h` in the hips local frame from every non-hips
-   local rotation (P2b's muscle equation) and the descendants' rest local
-   translations and scales. `c_h` excludes `s_h` and every ancestor's scale.
+   local rotation (P2b's muscle equation), the descendants' local
+   translations from the Avatar's `m_SkeletonPose` (the ones the playback
+   writes, E3a) and their rest scales. `c_h` excludes `s_h` and every
+   ancestor's scale.
 2. `H_A = B_A · F(T) · F_h⁻¹` (scale-free).
 3. `P_A = T_A − k · H_A · c_h`.
 4. Local hips: `t = σ_p⁻¹ · R_p⁻¹ (P_A − t_p)`, `q = R_p⁻¹ H_A`, scale `s_h`.
@@ -291,6 +296,15 @@ on every rig that has its edge, including each F6 rig.
 | Terminal: Head (no Eyes or Jaw), L/R Hand, L/R Toes, L/R Foot (that Toes absent), each mapped Eye, Jaw | That bone's own muscles alone | No coefficient under H-pos. The probe must leave the hips unmoved within the hips tolerance, or that terminal refuses `unsupported_humanoid_body_model`. |
 | Twist muscles | Arm, forearm, upper and lower leg twist | Excite nothing when the child lies on the twist axis. Twist stays refused (section 8). |
 
+**Zero-mass leaves.** The Eyes and the Jaw take no part in the topology
+scope. Their mass is exactly 0 in every recorded Avatar of both versions,
+and no edge leaves them. Their only columns are the Head edges', whose
+fitted coefficients stay within `|a| ≤ 8e-6`. Dropping those edges from
+the fit changes no shared coefficient by more than 7.4e-6. So a pattern
+differing from a recorded one only in its Eyes or Jaw is the recorded
+pattern. This holds only while their mass is 0, so an Avatar with a
+nonzero Eye or Jaw mass refuses the scope (section 8).
+
 **Tolerances.** Two are derived separately in B1, from the replay tolerance
 procedure already in the tree (`anim_reference.md`, per-recording f32
 tolerances), so B1 does not depend on B2's freeze.
@@ -387,7 +401,7 @@ bone, a noncommuting pose, and each projection cell of 2.4.
 | E0d | 2.2's `F(T)` and 2.3's rest translations and scales come from `m_SkeletonPose`. Compare each mapped bone of the recorded rest pose with it. | Within both forward kinematics' errors |
 | E1 | Each coefficient that 2.5 calls identifiable, pinned by its probes on the training rigs | 2.5's conditioning criterion with B1's tolerances |
 | E2 | F2 read-back on the failing combined-axis pose and on independent noncommuting probes (F1 combined vectors, F3 tilted targets). Convert the world read-back to `A` as the recorder converts the rest body: position by the inverse Animator transform of `bodyPosition · humanScale`, divided by `humanScale`; rotation by the inverse Animator rotation. GetHumanPose's `bodyPosition` is already free of the Animator's scale, so the recorded position is divided by that scale once too often; the checks multiply it back. Bound two residuals separately: requested-to-read-back, and model (2.2 on the recorded bones) to read-back. | Both residuals within their own derived angular bounds on every probe. Anything else is a frame or solve failure, and B3 stays blocked. |
-| E3a | Training checkpoint, before the freeze: Python hips TRS (2.3) from the recorded non-hips rotations under the rest translations and scales, against every known-vector and clip recording of the training rigs (every rig but the hold-out), all roots and scaled rigs, in both versions. The case inventory is run.json's, and every training body case is required. | `u_s ≤ E_unity,s` and within `T_s = E_unity,s + u_s + E_eval,s` (2.5) per sample, with the translations and scales below the hips and the hips' scale exactly the rest's. A body sample without a target fails, and a P2b case without one is excluded by role. It must pass before B2 commits the freeze. |
+| E3a | Training checkpoint, before the freeze: Python hips TRS (2.3) from the recorded non-hips rotations under the Avatar's `m_SkeletonPose` translations and the rest scales, against every known-vector and clip recording of the training rigs (every rig but the hold-out), all roots and scaled rigs, in both versions. The case inventory is run.json's, and every training body case is required. | `u_s ≤ E_unity,s` and within `T_s = E_unity,s + u_s + E_eval,s` (2.5) per sample, with the translations below the hips exactly the Avatar's `m_SkeletonPose` and the scales below the hips and the hips' scale exactly the rest's. The playback writes `m_SkeletonPose`'s translations: on the training rigs of both versions every sampled one equals it bit for bit, while the prefab rest, `m_AvatarSkeletonPose` and `m_DefaultPose` miss it by up to 9e-8 m of f32 rounding. The sampled scales equal the rest's, which `m_SkeletonPose` misses by one ulp. A node below the hips that the Avatar's skeleton lacks refuses. A body sample without a target fails, and a P2b case without one is excluded by role. It must pass before B2 commits the freeze. |
 | E3b | Hold-out evaluation, after the freeze: E0 on the hold-out's Avatar and the same comparison on the hold-out rig, with the stored coefficients only. The checker refuses an artifact that git does not hold unmodified at HEAD, or whose E3a, model, bounds, model-source digest or reproduced fit differ from the code's. | Within `T_s` (2.5) per sample, with the frozen coefficients' `u_s` |
 | E4 | Root projection (2.4) from the built clip's runtime body and motion slots and serialized `m_StartX`, against the root or residual body pose that F4 records, independently of the hips solve | Within bound, with each slot's f32 sampling error, ε once, and an unbounded yaw refused, per combination supported. A start variant without its twin fails. |
 | E5 | Rust same-bundle L11: Rust reads the bundle, samples the clip and writes the full pose, compared with the same replays. | B5's release gate |
@@ -512,7 +526,7 @@ frozen constants.
 - **Frozen model scope (B2, training rigs only).** An Avatar with Neck
   absent, Chest absent or exactly one Shoulder mapped refuses at the
   Avatar check (2.1), as does any pattern of absent body slots no training
-  rig recorded. A pose whose shoulder-hip twist exceeds 4.25°, or is
+  rig recorded (the Eyes and Jaw aside) and any nonzero Eye or Jaw mass. A pose whose shoulder-hip twist exceeds 4.25°, or is
   undefined, refuses in 2.2 and therefore in the hips solve. The hold-out rig's topology, read
   from the builder's table and not from its recordings, is inside the
   scope.

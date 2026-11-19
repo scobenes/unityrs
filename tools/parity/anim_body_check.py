@@ -40,8 +40,10 @@ f64 path:
   pose (a known vector's request, a clip's read-back), against the recorded
   hips: u_s within E_unity,s, each translation component within
   T_s = E_unity,s + u_s + E_eval,s, the rotation within Unity's and the
-  model's solve turns, and the translations and scales below the hips and
-  the hips' scale exactly the rest's. A body case's sample without a target
+  model's solve turns, the translations below the hips exactly the Avatar's
+  m_SkeletonPose (the source Unity's playback writes; the prefab's differ by
+  f32 rounding), and the scales below the hips and the hips' scale exactly
+  the rest's. A body case's sample without a target
   fails; a P2b case's is excluded by its role and listed.
 - **E4** is anim_body_e4's.
 
@@ -135,7 +137,7 @@ def e0_avatar(label, avatar, doc, parents, masses, errors, design, coefficients)
     row = dict(avatar=label, rest_distance=None, rest_bound=None)
     if not assigned:
         return failures, row
-    refused = adequacy.scope_refusal(present)
+    refused = adequacy.scope_refusal(present, avatar_masses)
     if refused:
         # Outside the frozen topology scope the model refuses the Avatar: E0a and E0b only.
         return failures, row | dict(refused=refused)
@@ -323,7 +325,7 @@ def hips(row, design, coefficients):
         failures.append(f"{where}: hips translation off by {delta:.3e} > T_s {tolerance:.3e}")
     if not residual <= bound:
         failures.append(f"{where}: hips rotation off by {math.degrees(residual):.4g} deg")
-    # 2.3 keeps the rest translations and scales below the hips and the hips' rest scale, exactly.
+    # 2.3 keeps the Avatar's translations and the rest scales below the hips and the hips' rest scale, exactly.
     if state["drift"]:
         failures.append(f"{where}: translation or scale off the rest at {state['drift']}")
     ratio = delta / tolerance if 0 < tolerance < math.inf else math.inf

@@ -28,7 +28,9 @@ PARENT = {"Hips": None, "LeftUpperLeg": "Hips", "RightUpperLeg": "Hips", "LeftLo
           "LeftEye": "Head", "RightEye": "Head", "Jaw": "Head"}
 BONES = (*BODY, *(f"Finger {i}" for i in range(30)), "UpperChest")
 # Each body slot's own default mass, exact in f32 so its hierarchy sums are too.
-MASSES = {name: (2 + i % 7) / 128 for i, name in enumerate(tolerance.NAMES)}
+# The Eyes and the Jaw weigh nothing, as in every recorded Avatar.
+MASSES = {name: 0. if name in ("LeftEye", "RightEye", "Jaw") else (2 + i % 7) / 128
+          for i, name in enumerate(tolerance.NAMES)}
 
 
 def hierarchy_masses(parents):
