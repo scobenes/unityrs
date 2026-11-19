@@ -230,21 +230,45 @@ def check_body(name, fixture, doc, view, clip_key, replay):
     rows = editor.get("body_samples")
     playback = info["kind"] == "clip"
     require(isinstance(rows, list) and len(rows) == len(samples), f"body read-back rows mismatch for {name}")
+    hips = next(row["node"] for row in human["bones"] if row["name"] == "Hips")
     for row in rows:
         _f32s(row["readback_position"], replay, 3), _f32s(row["world_position"], replay, 3)
         require(all(_unit(_f32s(row[field], replay, 4)) for field in ("readback_rotation", "world_rotation")),
                 f"body read-back rotation is not a unit quaternion in {name}")
-        for field, width in (("root_position", 3), ("root_rotation", 4), ("body_position", 3), ("body_rotation", 4)):
-            value = row[field]
-            require(isinstance(value, list) and all(isinstance(v, str) and len(v) == 8 and int(v, 16) >= 0
-                                                    for v in value) and len(value) == (width if playback else 0),
-                    f"body root rows mismatch for {name}")
+        require(_raw(row.get("readback_muscles"), len(human["muscles"])), f"body read-back muscles mismatch for {name}")
+        # The getter rows during playback, and the root-motion playback's rows for a clip.
+        for field, width in (("root_position", 3), ("root_rotation", 4), ("body_position", 3), ("body_rotation", 4),
+                             ("motion_position", 3), ("motion_rotation", 4), ("motion_delta_position", 3),
+                             ("motion_delta_rotation", 4)):
+            require(_raw(row.get(field), width if playback else 0), f"body root rows mismatch for {name}")
+        check_nodes(name, row.get("nodes"), spec["nodes"], hips, replay)
     check_chain(info["rig"], spec, capture, replay)
     if playback:
         require(not editor.get("body_targets"), f"clip playback has known-vector targets in {name}")
         return check_clip(name, info, editor, capture, view.value(clip_key), replay)
     check_targets(name, info, spec, capture, editor, replay)
     return None
+
+
+def _raw(value, width):
+    return (isinstance(value, list) and len(value) == width
+            and all(isinstance(v, str) and len(v) == 8 and all(c in "0123456789abcdef" for c in v) for v in value))
+
+
+def check_nodes(name, rows, nodes, hips, replay):
+    """Unity's own world transform of every node at a sample, and its position and rotation about the hips."""
+    require = replay.require
+    require(isinstance(rows, list) and len(rows) == len(nodes), f"body node rows mismatch for {name}")
+    for row in rows:
+        require(isinstance(row, dict), f"body node rows mismatch for {name}")
+        _f32s(row.get("position"), replay, 3), _f32s(row.get("scale"), replay, 3)
+        _f32s(row.get("hips_position"), replay, 3)
+        require(all(_unit(_f32s(row.get(field), replay, 4)) for field in ("rotation", "hips_rotation")),
+                f"body node rotation is not a unit quaternion in {name}")
+    at_hips = rows[hips]
+    require(all(abs(v) <= 1e-5 for v in _f32s(at_hips["hips_position"], replay, 3))
+            and angle(_f32s(at_hips["hips_rotation"], replay, 4), (0, 0, 0, 1)) <= 1e-5,
+            f"the hips are not at the origin of their own frame in {name}")
 
 
 def check_targets(name, info, spec, capture, editor, replay):

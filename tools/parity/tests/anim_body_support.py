@@ -148,6 +148,21 @@ def pose_rotations(vector):
     return {bone: euler(turn, 4) for bone, turn in angles.items()}
 
 
+def world_nodes(nodes, pose, human_bones):
+    """Unity's world transform of every node, and its position and rotation about the hips."""
+    frames = tolerance.kinematics(nodes, pose, replay.f32_from_bits, "", include_base=True)
+    hips = frames[nodes[next(row["node"] for row in human_bones if row["name"] == "Hips")]["address"]]
+    inverse = (*(-v for v in hips.rotation[:3]), hips.rotation[3])
+    rows = []
+    for node in nodes:
+        frame = frames[node["address"]]
+        about = tolerance.rotate(inverse, tolerance.sub(frame.position, hips.position))
+        rows.append(dict(position=[bits(v) for v in frame.position], rotation=[bits(v) for v in frame.rotation],
+                         scale=[bits(frame.scale)] * 3, hips_position=[bits(v / hips.scale) for v in about],
+                         hips_rotation=[bits(v) for v in multiply(inverse, frame.rotation)]))
+    return rows
+
+
 def body_doc(name, run, *, samples=None):
     """A pending body recording posed by its muscle vectors, with consistent read-back rows.
 
@@ -199,12 +214,15 @@ def body_doc(name, run, *, samples=None):
         # The model's body rotation, F(pose) F(T)^-1 (2.2), as Unity's read-back.
         turn = tolerance.matrix_quaternion(tolerance.product(frame(pose), rest_frame, transpose=True))
         rows.append(dict(readback_position=centre("0", False), readback_rotation=[bits(v) for v in turn],
+                         readback_muscles=[bits(v) for v in muscles],
                          world_position=centre("", True), world_rotation=[bits(0)] * 3 + [bits(1)],
-                         **dict.fromkeys(("root_position", "root_rotation", "body_position", "body_rotation"),
-                                         [bits(0)] * 3 if kind == "clip" else [])))
+                         nodes=world_nodes(nodes, pose, human_bones),
+                         **dict.fromkeys(("root_position", "root_rotation", "body_position", "body_rotation",
+                                          "motion_position", "motion_rotation", "motion_delta_position",
+                                          "motion_delta_rotation"), [bits(0)] * 3 if kind == "clip" else [])))
         if kind == "clip":
-            for field, width in (("root_rotation", 4), ("body_rotation", 4)):
-                rows[-1][field] = [bits(0)] * (width - 1) + [bits(1)]
+            for field in ("root_rotation", "body_rotation", "motion_rotation", "motion_delta_rotation"):
+                rows[-1][field] = [bits(0)] * 3 + [bits(1)]
         else:
             offset, tilt = TARGETS[len(targets) % 2] if kind == "targets" else ((0, 0, 0), (0, 0, 0))
             targets.append(dict(offset=[bits(v) for v in offset], tilt=[bits(v) for v in tilt],

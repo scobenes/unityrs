@@ -372,7 +372,7 @@ recorder, so they need no new assets. The recorder also writes
 | # | Fixture | Settles |
 |---|---|---|
 | F1 | Known vectors for each probe in the 2.5 table, each muscle group alone and left and right separately, then combined noncommuting vectors. They run on both P2b rigs and again on every F6 rig, for the edges that rig adds. | E1 and the terminal (H-pos) checks |
-| F2 | After each `SetHumanPose`, record `GetHumanPose`'s body position and rotation, converted to `A`. | E2 |
+| F2 | After each `SetHumanPose`, record `GetHumanPose`'s body position, rotation and muscles, converted to `A`, with Unity's own world and hips-relative transform of every node. A clip also plays again with root motion applied. | E2 |
 | F3 | Known vectors with nonidentity body targets: an offset position and a tilted rotation | The solve away from the rest body pose |
 | F4 | See F4 below. | E4 and the open questions of 2.4 |
 | F5 | A uniformly scaled Animator node; a proportionally larger skeleton; an extra node with a non-unit uniform scale, a translation and a rotation between the Animator and the hips; and a non-unit hips local scale `s_h`. Each is played with nonzero body translation and a tilted body rotation (F3 targets and the all-original F4 clip with changing `MotionT`/`MotionQ` curves). | Scale and parent-frame conversion (2.3) |

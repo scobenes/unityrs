@@ -52,6 +52,7 @@ static partial class UnityrsFixtureBuilder
     };
     static readonly string[] TargetRigs = { "compact", "tall" };
     const float AnimatorScale = 1.25f, ArmatureScale = .8f;
+    internal const float BodyAnimatorScale = AnimatorScale, BodyArmatureScale = ArmatureScale;
 
     // Each bone's probe muscles, in this order; twist and stretch of the
     // limbs stay out (section 8). A group runs only where its bone is mapped.
@@ -92,7 +93,13 @@ static partial class UnityrsFixtureBuilder
     static readonly Vector3[] TargetOffsets = { new Vector3(.05f, -.03f, .04f), new Vector3(-.04f, .02f, -.06f) };
     static readonly Vector3[] TargetTilts = { new Vector3(12, -20, 7), new Vector3(-9, 35, -11) };
 
-    internal sealed class BodyCase { public string Kind, Rig, Variant = "", Root = "identity"; }
+    // A case's rig and the body bones its schedule assumes the built Avatar maps.
+    internal sealed class BodyCase
+    {
+        public string Kind, Rig, Variant = "", Root = "identity";
+        public BodyRig Spec;
+        public string[] Mapped;
+    }
 
     // One known-vector point: its time, muscles and, for F3, its body target.
     internal sealed class BodyProbe
@@ -148,7 +155,7 @@ static partial class UnityrsFixtureBuilder
             "No preparation step produced this body fixture.");
     }
 
-    sealed class BodyNode { public string Name, Parent; public Vector3 Offset; }
+    internal sealed class BodyNode { public string Name, Parent; public Vector3 Offset; }
 
     // The P2b rigs' T-pose (BuildHumanoidSkeleton) with F6's and F5's changes.
     // Unchanged, it repeats the P2b offsets exactly and in the same sibling order.
@@ -187,10 +194,30 @@ static partial class UnityrsFixtureBuilder
         return nodes;
     }
 
-    static Transform BuildBodySkeleton(Transform root, BodyRig rig)
+    // The rig's bones in creation order, each with its parent and offset: an
+    // omitted bone's children keep their place from its parent.
+    internal static List<BodyNode> RigNodes(BodyRig rig)
     {
         var layout = BodyLayout(rig);
         var byName = layout.ToDictionary(node => node.Name, StringComparer.Ordinal);
+        var nodes = new List<BodyNode>();
+        foreach (var node in layout)
+        {
+            if (rig.Omit.Contains(node.Name)) continue;
+            var offset = node.Offset;
+            string parent = node.Parent;
+            while (rig.Omit.Contains(parent))
+            {
+                offset += byName[parent].Offset;
+                parent = byName[parent].Parent;
+            }
+            nodes.Add(new BodyNode { Name = node.Name, Parent = parent, Offset = offset });
+        }
+        return nodes;
+    }
+
+    static Transform BuildBodySkeleton(Transform root, BodyRig rig)
+    {
         var created = new Dictionary<string, Transform>(StringComparer.Ordinal);
         var top = root;
         if (rig.Armature)
@@ -201,19 +228,8 @@ static partial class UnityrsFixtureBuilder
             top.localRotation = Quaternion.Euler(-90, 0, 0);
             top.localScale = Vector3.one * ArmatureScale;
         }
-        foreach (var node in layout)
-        {
-            if (rig.Omit.Contains(node.Name)) continue;
-            // An omitted bone's children keep their place from its parent.
-            var offset = node.Offset;
-            string parent = node.Parent;
-            while (rig.Omit.Contains(parent))
-            {
-                offset += byName[parent].Offset;
-                parent = byName[parent].Parent;
-            }
-            created[node.Name] = Child(parent.Length == 0 ? top : created[parent], node.Name, offset);
-        }
+        foreach (var node in RigNodes(rig))
+            created[node.Name] = Child(node.Parent.Length == 0 ? top : created[node.Parent], node.Name, node.Offset);
         var hips = created["Hips"];
         if (rig.Armature)
         {
@@ -348,7 +364,8 @@ static partial class UnityrsFixtureBuilder
             var mapped = skeleton.Select(bone => bone.name).Where(HumanTrait.BoneName.Contains).ToArray();
             string probe = rig.Armature ? "HumanoidRig/Armature/Hips/Spine" : "HumanoidRig/Hips/Spine";
             ReplayCase Replay(string name, string path, string clip, string kind, string rootKind) =>
-                BodyReplay(bundle, path, assets[0], clip, name, new BodyCase { Kind = kind, Rig = rig.Name, Root = rootKind }, probe);
+                BodyReplay(bundle, path, assets[0], clip, name,
+                    new BodyCase { Kind = kind, Rig = rig.Name, Root = rootKind, Spec = rig, Mapped = mapped }, probe);
             if (chain)
             {
                 AddProbeReplay(build, Replay(bundle + "-targets", prefab, clipPaths[0], "targets", "identity"),

@@ -231,13 +231,15 @@ static partial class UnityrsFixtureBuilder
             rig.transform.localRotation = Quaternion.Euler(0, 35, 0);
             string offsetPrefab = SavePrefab(root, dir + "/offset.prefab");
             var clipPaths = clips.Select(row => AssetDatabase.GetAssetPath(row.clip)).ToArray();
+            var mapped = skeleton.Select(bone => bone.name).Where(HumanTrait.BoneName.Contains).ToArray();
             build.AddBodyBundle(BodyClipBundle, assets.Concat(clipPaths).Concat(new[] { prefab, offsetPrefab }).ToArray());
             for (int i = 0; i < clips.Count; i++)
             {
                 var variant = clips[i].variant;
                 foreach (var (path, suffix, rootKind) in new[] { (prefab, "", "identity"), (offsetPrefab, "-offset", "offset") })
                 {
-                    var body = new BodyCase { Kind = "clip", Rig = "compact", Variant = variant.Name, Root = rootKind };
+                    var body = new BodyCase { Kind = "clip", Rig = "compact", Variant = variant.Name, Root = rootKind,
+                        Spec = ProbeRigs[0], Mapped = mapped };
                     var replay = BodyReplay(BodyClipBundle, path, assets[0], clipPaths[i],
                         "body-clip-" + variant.Name + suffix, body, "HumanoidRig/Hips/Spine");
                     replay.BodyClip = variant;
@@ -268,10 +270,69 @@ static partial class UnityrsFixtureBuilder
             var avatar = bundle.LoadAsset<Avatar>(Key(replay.Avatar));
             Require(avatar != null && avatar.isValid && avatar.isHuman, "The built body Avatar is invalid in " + replay.Bundle + ".");
             if (replay.BodyClip != null)
+            {
                 Unavailable(BodySettingsMatch(AnimationUtility.GetAnimationClipSettings(clip), replay.BodyClip),
                     "The built clip did not keep its authored root settings in " + replay.Bundle + ".");
+                CheckCompiledTracks(clip, replay.BodyClip, replay.OutputName);
+            }
         }
         finally { bundle.Unload(true); }
+    }
+
+    // Animator attributes of the compiled humanoid tracks (as tools/parity/anim_fixture_body.py):
+    // MotionT and MotionQ 0 to 6, RootT and RootQ 7 to 13, the foot goals 14 to 27, muscles from 42.
+    const int MotionAttribute = 0, RootAttribute = 7, LeftFootGoal = 14, RightFootGoal = 21, MuscleAttribute = 42;
+
+    static IEnumerable<(string track, int attribute)> CompiledTracks(BodyClipVariant variant)
+    {
+        IEnumerable<(string, int)> Span(string prefix, int first, string axes) =>
+            axes.Select((axis, i) => (prefix + "." + axis, first + i));
+        var tracks = Span("RootT", RootAttribute, "xyz").Concat(Span("RootQ", RootAttribute + 3, "xyzw"));
+        if (variant.Motion)
+            tracks = tracks.Concat(Span("MotionT", MotionAttribute, "xyz")).Concat(Span("MotionQ", MotionAttribute + 3, "xyzw"));
+        if (variant.Knee)
+        {
+            var names = HumanTrait.MuscleName;
+            tracks = tracks.Concat(KneeCurves.Select(row => (row.muscle, MuscleAttribute + MuscleIndex(names, row.muscle))));
+        }
+        if (variant.Goals)
+            foreach (var (goal, first) in new[] { ("LeftFoot", LeftFootGoal), ("RightFoot", RightFootGoal) })
+                tracks = tracks.Concat(Span(goal + "T", first, "xyz")).Concat(Span(goal + "Q", first + 3, "xyzw"));
+        return tracks;
+    }
+
+    // Before an F4 or F5 clip case records: every track it relies on is compiled
+    // into the built clip, bound to the Animator root (path 0, Animator class 95,
+    // humanoid custom type 8) in m_ClipBindingConstant, the runtime track table.
+    // Where Unity exposes m_MuscleClip.m_IndexArray on the bundle-loaded clip,
+    // the track's attribute must also index that same slot, as playback reads it.
+    // Otherwise the case fails with the missing tracks; completion then checks
+    // the slots' values in the runtime data.
+    static void CheckCompiledTracks(AnimationClip clip, BodyClipVariant variant, string name)
+    {
+        using (var serialized = new SerializedObject(clip))
+        {
+            var bindings = serialized.FindProperty("m_ClipBindingConstant.genericBindings");
+            Require(bindings != null && bindings.isArray,
+                "Unity did not expose the compiled track table of the built clip for " + name + ".");
+            int Field(SerializedProperty row, string field, string alias = null) =>
+                (row.FindPropertyRelative(field) ?? (alias == null ? null : row.FindPropertyRelative(alias)))?.intValue ?? -1;
+            var slots = new Dictionary<int, int>();
+            for (int i = 0; i < bindings.arraySize; i++)
+            {
+                var row = bindings.GetArrayElementAtIndex(i);
+                if (Field(row, "path") == 0 && Field(row, "typeID", "classID") == 95 && Field(row, "customType") == 8
+                    && !slots.ContainsKey(Field(row, "attribute")))
+                    slots.Add(Field(row, "attribute"), i);
+            }
+            var index = serialized.FindProperty("m_MuscleClip.m_IndexArray");
+            bool indexed = index != null && index.isArray;
+            var missing = CompiledTracks(variant).Where(track => !slots.TryGetValue(track.attribute, out int slot)
+                || indexed && (track.attribute >= index.arraySize
+                    || index.GetArrayElementAtIndex(track.attribute).intValue != slot)).Select(track => track.track).ToArray();
+            Require(missing.Length == 0, "The built clip lost or moved its compiled " + string.Join(", ", missing)
+                + " track(s) in " + name + (indexed ? " (m_IndexArray checked)." : " (m_IndexArray not exposed)."));
+        }
     }
 }
 #endif

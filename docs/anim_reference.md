@@ -1057,8 +1057,18 @@ whose yaw turns back and forth. Both are on linear segments, with keys at
   goal curves.
 
 The builder confirms each variant's settings after authoring and after the
-build. If Unity changes a setting, or drops the motion or goal curves, that
-variant is not covered and the rest still record.
+build. If Unity changes a setting, or drops the motion or goal curves while
+authoring, that variant is not covered and the rest still record.
+
+Before an F4 or F5 clip case records, the builder also checks the built
+clip's compiled tracks: `RootT` and `RootQ` (Animator attributes 7–13),
+and, where the variant relies on them, `MotionT` and `MotionQ` (0–6), the
+knee muscles (42 onward) and the foot goals (14–27). Each must be in
+`m_ClipBindingConstant`'s runtime track table, bound to the Animator root.
+Where Unity exposes `m_MuscleClip.m_IndexArray` on the bundle-loaded clip,
+the attribute must index that same slot. A missing or moved track fails the
+case with the tracks named, and it is not recorded. `complete` then checks
+the slots' values.
 
 ### Recorder rows
 
@@ -1069,13 +1079,42 @@ A body case's editor evidence holds:
   - F2's `GetHumanPose` read-back, converted to `A` as the rest body is (an
     inverse Animator transform of `bodyPosition · humanScale`, divided by
     `humanScale`);
-  - the raw world read-back;
-  - during clip playback, `Animator.rootPosition`, `rootRotation`,
-    `bodyPosition` and `bodyRotation`, as raw bits;
+  - the raw world read-back and its muscle array (`readback_muscles`, raw
+    bits);
+  - `nodes`: Unity's own evaluation of every node, its world position,
+    rotation and `lossyScale`, and about the hips its
+    `hips.InverseTransformPoint` position and `hips.rotation⁻¹` rotation;
+  - during clip playback, the getter values `Animator.rootPosition`,
+    `rootRotation`, `bodyPosition` and `bodyRotation`, as raw bits
+    (`root_*`, `body_*`). Playback runs with `applyRootMotion` off, so
+    `rootPosition` and `rootRotation` may be the Animator node's own
+    transform rather than the clip's root projection;
+  - for a clip, a second playback with `applyRootMotion` on (`motion_*`):
+    a fresh instance each sample, the graph set to 0, evaluated once at 0
+    and once by the sample time. It records the Animator node's resulting
+    local position and rotation, and `deltaPosition` and `deltaRotation`
+    as Unity reports them, all as raw bits;
 - `body_targets`: each known vector's requested offset and tilt, and the
   body pose `SetHumanPose` received;
 - `human_bones`: HumanTrait's 55 bones with `GetParentBone`, `RequiredBone`
   and `GetBoneDefaultHierarchyMass`, for E0b.
+
+Analysis uses them as follows:
+
+- The read-back is E2's and the adequacy checkpoint's target for a clip.
+- `nodes` checks B2's forward kinematics and hips-local positions against
+  Unity's own, sample by sample, before any fit.
+- The getter rows are evidence of what those getters return with root motion
+  off. They are not taken as the clip's root projection.
+- The root-motion rows are the projection: B2's root-motion model (keep
+  original, bake and the offsets) must reproduce the Animator node's
+  transform from its rest transform.
+
+While recording, every body sample also checks that the built Avatar maps
+exactly the bones the case's schedule assumes (`GetBoneTransform`). It also
+checks the F5 chain at that sample: the Animator node's scale, the armature
+and its scale, the sampled hips scale, and every other mapped bone's
+authored offset. Any difference fails the case.
 
 Known-vector body cases keep the pending human_pose schema, as the P2b known
 vectors do.
@@ -1094,8 +1133,10 @@ For each recording `complete` checks:
 - the case row, against the builder's tables;
 - the bone and mass table;
 - that the captured mapped bones are the rig's topology;
-- read-back rows for every sample, with unit rotations and root rows
-  exactly in clip playback;
+- read-back rows for every sample, with unit rotations, the read-back
+  muscles, and root and root-motion rows exactly in clip playback;
+- a node row per node per sample, with unit rotations and the hips at the
+  origin of their own frame;
 - the schedule's times and muscles, exactly;
 - each body target, as requested (zero for probes) and as applied, within
   `1e-5`;

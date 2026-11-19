@@ -117,6 +117,37 @@ class CheckBodyTests(unittest.TestCase):
         doc["spec"]["evidence"]["editor"]["body_samples"][0]["root_position"] = ["00000000"] * 3
         self.assert_refused("body root rows mismatch", name, doc)
 
+    def test_refuses_missing_muscles_or_node_rows(self):
+        name = "body-probes-compact"
+        for edit, message in (
+                (lambda row: row["readback_muscles"].pop(), "body read-back muscles mismatch"),
+                (lambda row: row.pop("nodes"), "body node rows mismatch"),
+                (lambda row: row["nodes"].pop(), "body node rows mismatch"),
+                (lambda row: row["nodes"][4].__setitem__("rotation", [replay.f32_bits(.6)] * 4),
+                 "body node rotation is not a unit quaternion"),
+                (lambda row: row["nodes"][4].__setitem__("scale", ["7f800000"] * 3), "expected finite f32 bits"),
+                (lambda row: row["nodes"][2].__setitem__("hips_position", [replay.f32_bits(.1)] * 3),
+                 "hips are not at the origin")):
+            with self.subTest(message=message):
+                doc = body_doc(name, RUN)
+                edit(doc["spec"]["evidence"]["editor"]["body_samples"][1])
+                self.assert_refused(message, name, doc)
+
+    def test_a_clip_needs_its_root_motion_rows(self):
+        name = "body-clip-keep-o1-y1-xz1-motion"
+        doc = body_doc(name, RUN)
+        built = clip_case(doc, "keep-o1-y1-xz1-motion")
+        self.check(name, doc, built)
+        for field in ("motion_position", "motion_delta_rotation"):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(doc)
+                changed["spec"]["evidence"]["editor"]["body_samples"][0][field] = []
+                self.assert_refused("body root rows mismatch", name, changed, built)
+        # A known-vector case has no playback and so no root-motion rows.
+        doc = body_doc("body-probes-compact", RUN)
+        doc["spec"]["evidence"]["editor"]["body_samples"][0]["motion_position"] = ["00000000"] * 3
+        self.assert_refused("body root rows mismatch", "body-probes-compact", doc)
+
     def test_refuses_a_schedule_or_target_off_the_contract(self):
         name = "body-targets-compact"
         doc = body_doc(name, RUN)

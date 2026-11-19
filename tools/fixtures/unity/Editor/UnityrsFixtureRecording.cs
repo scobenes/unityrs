@@ -186,7 +186,7 @@ public static partial class AnimReplayRecorder
         bool mixed = false;
 
         var spec = JsonUtility.FromJson<Spec>(JsonUtility.ToJson(pending));
-        var body = fixture.Body == null ? null : new BodyHooks { Probes = fixture.BodyProbes };
+        var body = fixture.Body == null ? null : new BodyHooks { Probes = fixture.BodyProbes, Case = fixture.Body };
         Need(body == null || knownPose == (fixture.BodyProbes != null), "Body known vectors need their probe schedule.");
         var capture = RecordCapture(spec, bundles, pending: true, body: body, inspectClip: (builtClip, bundle) => {
             if (fixture.ProbeMixedStorage)

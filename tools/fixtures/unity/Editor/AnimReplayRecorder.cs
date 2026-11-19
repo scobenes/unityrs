@@ -245,15 +245,7 @@ public static partial class AnimReplayRecorder
                             animation.Stop();
                             animation.enabled = animation == binding;
                         }
-                        foreach (var animator in rig.GetComponentsInChildren<Animator>(true))
-                        {
-                            animator.enabled = animator == binding;
-                            animator.applyRootMotion = false;
-                            animator.fireEvents = false;
-                            animator.runtimeAnimatorController = null;
-                            animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
-                            animator.speed = 1;
-                        }
+                        DisableAnimators(rig, binding);
 
                         var target = binding as Animator;
                         if (target != null)
@@ -283,20 +275,27 @@ public static partial class AnimReplayRecorder
                             else SampleMuscles(target, point.muscles);
                             sample.muscles_f32 = point.muscles.Select(Bits).ToArray();
                             sample.pose = ReadPose(nodes, renderers, spec.renderers, pending);
-                            body?.Read(target, playback: false);
+                            body?.Read(target, nodes, playback: false);
                         }
                         else
                         {
                             sample.pose = SampleAnimator(target, clip, time, () => {
                                 if (inspectPose != null) inspectPose(root, time);
                                 // Read back while the graph still owns the pose.
-                                body?.Read(target, playback: true);
+                                body?.Read(target, nodes, playback: true);
                                 return ReadPose(nodes, renderers, spec.renderers, pending);
                             });
                         }
                         capture.samples[i] = sample;
                     }
                     finally { Object.DestroyImmediate(rig); }
+                    if (body != null && body.RootMotion)
+                    {
+                        // The second, root-motion playback, from a fresh instance.
+                        var moving = Object.Instantiate(prefab, anchor.transform, false);
+                        try { body.PlayRootMotion(PrepareAnimators(moving, spec), clip, (float)spec.schedule[i].local); }
+                        finally { Object.DestroyImmediate(moving); }
+                    }
                 }
             }
             finally { EditorSceneManager.ClosePreviewScene(scene); }
@@ -307,6 +306,33 @@ public static partial class AnimReplayRecorder
         {
             for (int i = bundles.Count - 1; i >= 0; --i) bundles[i].Unload(true);
         }
+    }
+
+    static void DisableAnimators(GameObject rig, Behaviour binding)
+    {
+        foreach (var animator in rig.GetComponentsInChildren<Animator>(true))
+        {
+            animator.enabled = animator == binding;
+            animator.applyRootMotion = false;
+            animator.fireEvents = false;
+            animator.runtimeAnimatorController = null;
+            animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            animator.speed = 1;
+        }
+    }
+
+    // A fresh instance's bound Animator, set up as the main playback's.
+    static Animator PrepareAnimators(GameObject rig, Spec spec)
+    {
+        var binding = At<Animator>(rig.transform, spec.binding_address, spec.binding_component);
+        foreach (var animation in rig.GetComponentsInChildren<Animation>(true))
+        {
+            animation.playAutomatically = false;
+            animation.Stop();
+            animation.enabled = false;
+        }
+        DisableAnimators(rig, binding);
+        return binding;
     }
 
     static string BuiltAssetKey(string[] keys, string assetPath)
