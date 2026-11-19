@@ -201,6 +201,15 @@ def _validate_clock(spec, start, stop, length):
             require((_target_key(left), left["component"]) == (_target_key(right), right["component"])
                     and f32_from_bits(left["value"]) != f32_from_bits(right["value"]),
                     "held probes must distinguish both sides of the same component")
+    if spec["mode"] == "animator" and 0 < start < stop:
+        # Unity 2022.3 reports a late-start clip's length as its stop time,
+        # yet plays it from the interval start. Require a held probe on the
+        # other side from where reading playable time as source time puts it.
+        end = f32_from_bits(f32_bits(stop))
+        as_source = [stop if f32_from_bits(bits) == end else max(start, min(stop, f32_from_bits(bits)))
+                     for bits, _, _ in effective]
+        require(any(bisect_left(effective_sources, jump) != bisect_left(as_source, jump) for jump in boundaries),
+                "late-start interval clock is not discriminated from a zero origin by a held probe")
     return _clock_discriminated(spec, times, length, effective_sources)
 
 
@@ -499,9 +508,13 @@ def _validate_recording(spec, capture, bundle_dir=None, *, pending_humanoid=Fals
             "legacy state mismatch")
     require(mode != "animator" or not playback["clip_looping"], "looping Animator endpoint is unconfirmed")
     require(mode != "legacy" or playback["wrap_mode"] == "ClampForever", "legacy endpoint must be clamped")
-    length = f32_from_bits(playback["clip_length_f32"])
-    require(playback["clip_length_f32"] == f32_bits(float(spec["stop"]) - float(spec["start"]))
+    start, stop = float(spec["start"]), float(spec["stop"])
+    # Unity 2022.3 measures a late-start Mecanim clip's length from zero.
+    # Playback still runs over the interval, so the clocks use its length.
+    reported = stop if mode != "legacy" and start > 0 else stop - start
+    require(playback["clip_length_f32"] == f32_bits(reported)
             and f32_from_bits(playback["frame_rate_f32"]) == spec["sample_rate"], "clip length or sample rate mismatch")
+    length = f32_from_bits(f32_bits(stop - start))
     human = capture.get("humanoid")
     require(human is not None or ("humanoid" not in spec["evidence"] and not playback["clip_human_motion"]),
             "missing humanoid capture")

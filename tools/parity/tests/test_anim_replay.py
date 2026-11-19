@@ -89,7 +89,8 @@ def synthetic():
                                  reset="fresh_prefab", speed=1, delta_time=0, apply_root_motion=False,
                                  foot_ik=False, playable_ik=False, animator_move=False,
                                  controller_blending=False, events=False, legacy_state="unused",
-                                 clip_length_f32=bits(1), frame_rate_f32=bits(60)), rest=rest, samples=samples,
+                                 # 2022.3 reports a late-start clip's length as its stop.
+                                 clip_length_f32=bits(3), frame_rate_f32=bits(60)), rest=rest, samples=samples,
                    clip_settings=settings)
     return dict(format="unityrs.anim_replay", version=1, spec=spec, capture=capture)
 
@@ -261,6 +262,24 @@ class TestAnimReplay(unittest.TestCase):
         m["capture"]["samples"][1].update(effective_source=replay.f32_from_bits(bits(2.1)), sides=["left"])
         m["capture"]["samples"][1]["pose"]["weights"][0]["channels"][0] = bits(12.5)
         self.assertTrue(replay.derive(m)["clock_discriminated"])
+
+    def test_late_start_clip_reports_its_stop_as_length_but_plays_its_interval(self):
+        m = synthetic()
+        replay.validate(m)
+        # The final playable time, stop - start, still reaches the stop.
+        self.assertEqual(replay.clocks(m["spec"], 1, 1.), (bits(1), 3., 3.))
+        self.assertEqual(m["capture"]["samples"][-1]["effective_source"], 3)
+        m["capture"]["playback"]["clip_length_f32"] = bits(1)
+        with self.assertRaisesRegex(ValueError, "clip length"):
+            replay.validate(m)
+        # Legacy playback and an interval starting at zero keep the interval length.
+        m["spec"]["mode"] = "legacy"
+        m["capture"]["playback"].update(api="Animation.Sample", wrap_mode="ClampForever",
+                                        legacy_state="enabled_weight_one_clamp_forever")
+        replay.validate(m)
+        m["capture"]["playback"]["clip_length_f32"] = bits(3)
+        with self.assertRaisesRegex(ValueError, "clip length"):
+            replay.validate(m)
 
     def test_sample_clock_and_endpoints_cannot_be_inferred_from_the_observations(self):
         m = synthetic()
@@ -646,7 +665,7 @@ class TestAnimReplay(unittest.TestCase):
         m["spec"].update(stop=2, held_boundaries=[], schedule=[dict(local=0)])
         clock = m["spec"]["evidence"]["clock"]
         clock.update(stop=dict(clock["start"]), key_times=[2], held=[])
-        m["capture"]["playback"]["clip_length_f32"] = bits(0)
+        m["capture"]["playback"]["clip_length_f32"] = bits(2)
         m["capture"]["samples"] = m["capture"]["samples"][:1]
         m["capture"]["samples"][0]["sides"] = []
         replay.validate(m)
@@ -672,7 +691,7 @@ class TestAnimReplay(unittest.TestCase):
         m = synthetic()
         m["spec"]["mode"] = "legacy"
         m["capture"]["playback"].update(api="Animation.Sample", wrap_mode="ClampForever", clip_looping=True,
-                                        legacy_state="enabled_weight_one_clamp_forever")
+                                        legacy_state="enabled_weight_one_clamp_forever", clip_length_f32=bits(1))
         replay.validate(m)
         m["capture"]["playback"]["wrap_mode"] = "Loop"
         with self.assertRaisesRegex(ValueError, "clamped"):

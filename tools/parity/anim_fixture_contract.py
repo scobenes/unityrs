@@ -146,6 +146,13 @@ def compiled_curves(clip, replay):
     dense = playback.get("m_DenseClip", {})
     stream_count, dense_count = stream.get("curveCount", 0), dense.get("m_CurveCount", 0)
     constants = floats(playback.get("m_ConstantClip", {}).get("data", []), replay)
+    # 2022.3 counts discrete (PPtr) streamed slots apart and serializes them
+    # after the other streamed slots. Their place before dense and constant
+    # ranges is unconfirmed, so refuse that combination.
+    discrete = stream.get("discreteCurveCount", 0)
+    if discrete and (dense_count or constants):
+        return {}
+    stream_count += discrete
     slot_count = stream_count + dense_count + len(constants)
     curves, slots = {}, []
     widths = {attribute: len(axes) for _, attribute, axes in TRANSFORM_CURVES.values()}
@@ -304,7 +311,10 @@ def check_built_clip(name, fixture, view, clip_key, nodes, avatar, editor_bindin
         if kind == "Transform":
             family, _, axis = prop.rpartition(".")
             _, attribute, axes = TRANSFORM_CURVES[family]
-            family_tracks = by_hash.get((crc32(path.encode()), 4, attribute, 0, False))
+            # Unity 2022.3 builds a Euler binding with custom type 4 and the
+            # other Transform families with custom type 0.
+            custom = 4 if attribute == 4 else 0
+            family_tracks = by_hash.get((crc32(path.encode()), 4, attribute, custom, False))
             if family_tracks:
                 if attribute == 2 and axis == "x":
                     properties = {family + "." + channel for channel in axes}
@@ -316,7 +326,10 @@ def check_built_clip(name, fixture, view, clip_key, nodes, avatar, editor_bindin
                                  "invalid built quaternion in compiled slots")
                 track = family_tracks[axes.index(axis):axes.index(axis) + 1]
         elif kind == "SkinnedMeshRenderer":
-            track = by_hash.get((crc32(path.encode()), 137, crc32(prop.encode()), 20, False), [])
+            # The built attribute hashes the bare channel name, without the
+            # Editor's "blendShape." property prefix.
+            channel = prop.removeprefix("blendShape.")
+            track = by_hash.get((crc32(path.encode()), 137, crc32(channel.encode()), 20, False), [])
         elif kind == "Animator":
             track = by_hash.get((0, 95, HUMANOID_ATTRIBUTES[key], 8, False), [])
         if track and track[0][1] and all(isfinite(v) for _, co in track[0][1] for v in co):
@@ -494,7 +507,9 @@ def check_built_static(case, view, assets):
                              and "_EmissionColor" in entries(props["m_Colors"]), "built metallic material properties mismatch")
         view.require(len(shaders) == 2, "built fixture materials share one shader")
     elif case == "static-lod":
-        group = nodes["LodGroup"].get(205)
+        # Unity names a saved prefab's root after the asset file, so find
+        # the group on the root node rather than by its authored name.
+        group = {view.headers[key]["class_id"]: key for key in view.hierarchy(root)[""][2]}.get(205)
         lods = view.value(group).get("m_LODs", []) if group is not None else []
         view.require(len(lods) == 2, "built LOD count must be two")
         for lod, name, height in zip(lods, ("Near", "Far"), (.6, .2)):

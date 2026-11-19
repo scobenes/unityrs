@@ -129,7 +129,8 @@ fn manifest(pin: &str, legacy: bool) -> J {
                 "apply_root_motion":false,"foot_ik":false,"playable_ik":false,"animator_move":false,
                 "controller_blending":false,"events":false,
                 "legacy_state":if legacy {"enabled_weight_one_clamp_forever"} else {"unused"},
-                "clip_length_f32":one,"frame_rate_f32":bits(4.)
+                // 2022.3 reports a late-start Mecanim clip's length as its stop.
+                "clip_length_f32":if legacy {one} else {bits(3.)},"frame_rate_f32":bits(4.)
             }
         }
     })

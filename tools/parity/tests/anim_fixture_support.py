@@ -241,7 +241,8 @@ def static_bundles(bundles, inspect):
     specs = (
         (1, "Primitives", ("Cube", "Cylinder", "Sphere", "Capsule", "Plane", "Quad"), ()),
         (2, "BuiltInMaterials", ("Metallic", "Unlit"), ()),
-        (6, "LodGroup", ("Near", "Far"), (205,)),
+        # As built, the saved prefab root takes the asset file's name.
+        (6, "lod", ("Near", "Far"), (205,)),
     )
     for root, name, children, components in specs:
         base = 1000 * root
@@ -347,7 +348,12 @@ def recording(case, bundle, prefab, clip, avatar, run):
     start = .5 if case == "generic-offset-stepped" else 0
     held = [.75] if start else []
     keys = [start, (start + .25 if held else .5), start + 1]
-    times = [0, .1, .25, 1] if held else list(VECTOR_TIMES)
+    # The recorder's schedule for the late start: keys, off-key samples, and
+    # the f32 predecessor and a 1/4096 left sample of the held boundary at
+    # playable .25. Unity plays from the interval start.
+    before = struct.unpack(">f", struct.pack(">I", struct.unpack(">I", struct.pack(">f", .25))[0] - 1))[0]
+    times = ([0, .25 * 391 / 1024, .25 - 1 / 4096, before, .25, .25 + .75 * 391 / 1024, 1]
+             if held else list(VECTOR_TIMES))
     nodes = rig_nodes(human, not legacy and not human, not legacy and not human)
     discovery = {"generic-override-morph": "override", "generic-null-override": "null_override"}.get(case, "")
     bindings = clip_bindings(case, prop, keys, first, last)
@@ -390,10 +396,12 @@ def recording(case, bundle, prefab, clip, avatar, run):
     spec["evidence"] = dict(layout="editor_authored", editor=editor, clock=dict(
         start=dict(source=start, field="editor_interval", probe=probe(0, first)),
         stop=dict(source=start + 1, field="editor_interval", probe=probe(len(times) - 1, last)),
-        key_times=keys, held=[dict(source=.75, left=probe(1, first), right=probe(2, last))] if held else []))
+        key_times=keys, held=[dict(source=.75, left=probe(3, first), right=probe(4, last))] if held else []))
     capture.update(rest=rest, samples=samples, editor_version=run["editor_version"], build_target=run["build_target"])
     capture["playback"].update(api="Animation.Sample" if legacy else "AnimationClipPlayable", clip_human_motion=human,
                                wrap_mode="ClampForever" if legacy else "Once", frame_rate_f32=bits(16),
+                               # As built by 2022.3: a late start's length is its stop time.
+                               clip_length_f32=bits(start + 1),
                                legacy_state="enabled_weight_one_clamp_forever" if legacy else "unused")
     capture["clip_settings"].update(startTime=bits(start), stopTime=bits(start + 1))
     if case == "generic-object-reference":

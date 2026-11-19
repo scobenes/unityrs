@@ -289,28 +289,36 @@ static partial class UnityrsFixtureBuilder
 
     static Build PrepareInFixtureScene(RunReport report, string stamp, ref bool preserveStaging)
     {
-        // Unity cannot create an additive scene while an untitled scene is open.
-        for (int i = 0; i < SceneManager.sceneCount; i++)
-        {
-            var open = SceneManager.GetSceneAt(i);
-            if (string.IsNullOrEmpty(open.path))
-                Require(EditorSceneManager.SaveScene(open), "Save the untitled scene before building fixtures.");
-        }
-        var previous = SceneManager.GetActiveScene();
-        var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+        // The fixtures are built in a single new scene, which Unity makes
+        // active itself, and the owner's scenes are restored afterwards. An
+        // additive untitled scene could not be activated on the first owner
+        // run (2022.3.62f3), so no SetActiveScene call is needed here.
+        // Cancel at Unity's save prompt stops the run; Don't Save discards.
+        Require(EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo(),
+            "Save or discard your open scene changes, then run the menu again.");
+        var setup = EditorSceneManager.GetSceneManagerSetup();
         return PrepareAndCloseScene(() =>
         {
-            Require(SceneManager.SetActiveScene(scene), "Could not activate the fixture scene.");
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            var active = SceneManager.GetActiveScene();
+            Require(scene.IsValid() && scene.isLoaded && active == scene,
+                "Could not open the fixture scene (valid " + scene.IsValid() + ", loaded " + scene.isLoaded
+                + ", active " + (active == scene) + ", open scenes " + SceneManager.sceneCount + ").");
             return PrepareFixtures(report, scene, stamp);
         }, () =>
         {
-            try
+            // Restoring replaces the untitled fixture scene without saving it.
+            // Saved scene paths only: an untitled scene with no changes is
+            // not restorable and is replaced by a new default scene instead.
+            var restorable = Array.FindAll(setup, s => !string.IsNullOrEmpty(s.path));
+            if (restorable.Length > 0)
             {
-                if (previous.IsValid() && !SceneManager.SetActiveScene(previous))
-                    Debug.LogError("Could not restore the previously active scene.");
+                if (!Array.Exists(restorable, s => s.isActive)) restorable[0].isActive = true;
+                EditorSceneManager.RestoreSceneManagerSetup(restorable);
             }
-            catch (Exception error) { Debug.LogException(error); }
-            return EditorSceneManager.CloseScene(scene, true);
+            else
+                EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
+            return true;
         }, ref preserveStaging);
     }
 
