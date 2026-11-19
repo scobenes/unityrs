@@ -21,8 +21,8 @@ import scratch  # noqa: E402
 G = tolerance.g
 
 
-def row(name, column, jacobian, epsilon, tau, evaluation=0., fit=True):
-    return dict(name=name, local=0, fit=fit, epsilon=epsilon, tau=tau, evaluation=evaluation,
+def row(name, column, jacobian, epsilon, unity, evaluation=0., fit=True):
+    return dict(name=name, local=0, fit=fit, epsilon=epsilon, unity=unity, evaluation=evaluation,
                 columns={"Hips>Spine": column}, jacobian={"Hips>Spine": jacobian})
 
 
@@ -47,31 +47,38 @@ class LinearAlgebraTests(unittest.TestCase):
 
     def test_uncertainty_is_the_block_norm_of_the_pseudo_inverse(self):
         # One coefficient: A_w^+ = A_w^T / |A_w|^2, one block, so u = |J| |A_w| / |A_w|^2 = |J| / |A_w|,
-        # against tau - E_eval = 1 - .25.
+        # against E_unity = 1; E3's tolerance is T = E_unity + u + E_eval.
         report = checkpoint([row("r", (1., 2., 0.), (.5, 0., 0.), .5, 1., .25)])
-        weighted = math.hypot(2., 4.)
+        u = .5 / math.hypot(2., 4.)
         self.assertEqual((report["rank"], report["condition"]), (1, 1))
-        self.assertAlmostEqual(report["worst_margin"], .75 / (.5 / weighted), places=13)
+        self.assertAlmostEqual(report["worst_margin"], 1 / u, places=13)
         self.assertEqual(report["margins"]["p0"], report["worst_margin"])
+        self.assertAlmostEqual(report["samples"][0]["tolerance"], 1 + u + .25, places=15)
 
-    def test_the_direct_check_needs_no_tau_against_epsilon_veto(self):
+    def test_the_direct_check_needs_no_unity_error_against_epsilon_veto(self):
         # Sample b's own row is weak, but a's strong row pins the coefficient:
         # A_w^+ = (1, .1) / 1.01 over the two blocks, so u_b = .1 (1 + .1) / 1.01 = .109,
-        # within tau_b - E_eval,b = .15, though tau_b < 2 epsilon_b.
+        # within E_unity,b = .25, though E_unity,b < 2 epsilon_b.
         rows = [row("a", (1., 0., 0.), (1., 0., 0.), 1., 4.), row("b", (.1, 0., 0.), (.1, 0., 0.), 1., .25, .1)]
         report = checkpoint(rows)
         self.assertEqual(report["uncertainty_failures"], [])
         self.assertTrue(adequacy.adequate(report))
-        self.assertLess(rows[1]["tau"], 2 * rows[1]["epsilon"])
-        self.assertAlmostEqual(report["worst_margin"], min(4 / (1.1 / 1.01), .15 / (.11 / 1.01)), places=12)
+        self.assertLess(rows[1]["unity"], 2 * rows[1]["epsilon"])
+        self.assertAlmostEqual(report["worst_margin"], min(4 / (1.1 / 1.01), .25 / (.11 / 1.01)), places=12)
 
     def test_a_short_design_is_reported_short(self):
-        # u = .1 / .1 = 1: within tau alone, but not once E_eval takes its share.
-        self.assertEqual(checkpoint([row("weak", (.1, 0., 0.), (.1, 0., 0.), 1., 1.)])["uncertainty_failures"], [])
-        report = checkpoint([row("weak", (.1, 0., 0.), (.1, 0., 0.), 1., 1., .5)])
+        # u = .1 / .1 = 1: within an E_unity of 1, but not of .5. E_eval is T's, not the criterion's.
+        self.assertEqual(checkpoint([row("weak", (.1, 0., 0.), (.1, 0., 0.), 1., 1., 5.)])["uncertainty_failures"], [])
+        report = checkpoint([row("weak", (.1, 0., 0.), (.1, 0., 0.), 1., .5)])
         self.assertEqual(len(report["uncertainty_failures"]), 1)
         self.assertAlmostEqual(report["worst_margin"], .5)
         self.assertFalse(adequacy.adequate(report))
+        # The inequality itself decides: u = 0 passes, with no finite margin; a NaN bound fails.
+        rows = [row("pinned", (1., 0., 0.), (1., 0., 0.), 1., 2.), row("still", (0., 1., 0.), (0., 0., 0.), 1., 0.)]
+        report = checkpoint(rows)
+        self.assertEqual(report["uncertainty_failures"], [])
+        self.assertEqual(len(report["samples"]), 2)
+        self.assertEqual(len(checkpoint([row("nan", (1., 0., 0.), (1., 0., 0.), 1., math.nan)])["uncertainty_failures"]), 1)
 
     def test_the_jacobian_is_the_hips_local_derivative_through_a_turned_scaled_parent(self):
         parent = tolerance.Frame((.3, .2, -.1), euler((-90, 30, 0), 4), .8, 0., 1)
@@ -87,6 +94,28 @@ class LinearAlgebraTests(unittest.TestCase):
         numeric = tuple((b - a) / step for a, b in zip(hips_local(0.), hips_local(step)))
         for want, got in zip(numeric, adequacy.hips_sensitivity(column, parent)):
             self.assertAlmostEqual(want, got, places=10)
+        # With the solved orientation, the column turns by H_A H_rec^-1 first.
+        solved = tolerance.quaternion_matrix(euler((0, 0, 40), 4))
+        turned = tuple(sum(solved[r][k] * column[k] for k in range(3)) for r in range(3))
+        for want, got in zip(adequacy.hips_sensitivity(turned, parent), adequacy.hips_sensitivity(column, parent, solved)):
+            self.assertAlmostEqual(want, got, places=15)
+
+    def test_the_solved_orientation_follows_the_target_body_rotation(self):
+        # At the T-pose, H_A H_rec^-1 = B_A F(T) F(T)^-1 = B_A.
+        doc = body_doc("body-probes-compact", RUN, samples=1)
+        nodes = doc["spec"]["nodes"]
+        rest = tolerance.bone_frames(doc["capture"]["humanoid"]["bones"], nodes,
+                                     tolerance.kinematics(nodes, doc["capture"]["rest"]["transforms"], replay.f32_from_bits))
+        frame = tolerance.body_frame({name: bone.position for name, bone in rest.items()})
+        body_rotation = euler((5, 30, -10), 4)
+        got = adequacy.solved_turn(body_rotation, frame, rest)
+        for want_row, got_row in zip(tolerance.quaternion_matrix(body_rotation), got):
+            for want, value in zip(want_row, got_row):
+                self.assertAlmostEqual(want, value, places=12)
+        # The synthetic read-back is the model's own body rotation, so the solved and recorded hips agree.
+        parents, masses = adequacy.bone_table([replay.read_json(json.dumps(doc))])
+        sample = next(adequacy.samples("body-probes-compact", replay.read_json(json.dumps(doc)), parents, masses))
+        self.assertGreater(sample["unity"], 0)
 
 
 class Bone:
@@ -167,7 +196,7 @@ class ToleranceTests(unittest.TestCase):
             tolerance.frame_error(dict(zip(tolerance.FRAME_BONES, ((0, 2, 0), (0, 3, 0), (0, -2, 0), (0, -1, 0)))),
                                   errors)
 
-    def test_the_model_evaluation_is_the_f64_path_and_one_output_rounding(self):
+    def test_the_model_evaluation_is_the_f64_path_and_one_rounding_of_its_own_translation(self):
         self.assertEqual(G("solve", 1, tolerance.U64), 8 * 2. ** -53 / (1 - 8 * 2. ** -53))
         doc = replay.read_json(json.dumps(body_doc("body-probes-compact", RUN, samples=1)))
         parents, masses = adequacy.bone_table([doc])
@@ -175,9 +204,40 @@ class ToleranceTests(unittest.TestCase):
         hips = doc["spec"]["nodes"].index(next(node for node in doc["spec"]["nodes"] if node["name"] == "Hips"))
         local = tolerance.decode(doc["capture"]["samples"][0]["pose"]["transforms"][hips]["translation"], 3,
                                  replay.f32_from_bits)
-        rounding = tolerance.U32 * tolerance.norm(local)
-        self.assertGreater(sample["evaluation"], rounding)
-        self.assertLess(sample["evaluation"], rounding + sample["tau"] * 2. ** -25)
+        # The store's allowance bounds the model's pre-cast translation, at least the recorded one here.
+        self.assertGreater(sample["evaluation"], tolerance.U32 * tolerance.norm(local))
+        self.assertLess(sample["evaluation"], 4 * tolerance.U32 * tolerance.norm(local) + sample["unity"] * 2. ** -25)
+
+    def test_the_hips_parent_chain_is_budgeted(self):
+        # The same parent at depth 0 (the Animator node) and at depth 2: t_p, R_p, sigma_p and k add exactly.
+        doc = body_doc("body-probes-compact", RUN, samples=1)
+        nodes, transforms = doc["spec"]["nodes"], doc["capture"]["samples"][0]["pose"]["transforms"]
+        human = doc["capture"]["humanoid"]["bones"]
+        bones = tolerance.bone_frames(human, nodes, tolerance.kinematics(nodes, transforms, replay.f32_from_bits))
+        masses = tolerance.folded_masses({b: support.MASSES[b] for b in tolerance.BODY_SLOTS}, support.PARENT,
+                                         set(bones))
+        links = tolerance.edges(support.PARENT, set(bones))
+        target, position, length = (0., 1., 0.), (.1, .2, .3), .5
+        near = tolerance.Frame(position, (0., 0., 0., 1.), 1., length, 0)
+        far = tolerance.Frame(position, (0., 0., 0., 1.), 1., length, 2)
+        args = (bones, bones, masses, links, 1., target, 0., 0.)
+        _, magnitude = tolerance.com_error(*tolerance.about_hips(bones)[:1], masses, links,
+                                           tolerance.about_hips(bones)[1])
+        span = 1. + magnitude + tolerance.norm(position)
+        want = (tolerance.fk_error(2, length) + (tolerance.rotation_error(8) + G("scale", 2)) * span
+                + (G("scale", 3) - G("scale", 1)) * magnitude)
+        self.assertAlmostEqual(tolerance.unity_error(*args, far) - tolerance.unity_error(*args, near), want,
+                               delta=want * 1e-12)
+        self.assertEqual(tolerance.rotation_error(8), 8 * 8 * 2. ** -24 / (1 - 8 * 2. ** -24))
+
+    def test_positions_about_the_hips_round_at_their_absolute_magnitude(self):
+        hips = Bone((100., 0., 0.), depth=1, length=100.)
+        spine = Bone((100., 1., 0.), depth=2, length=101.)
+        positions, errors = tolerance.about_hips({"Hips": hips, "Spine": spine})
+        self.assertEqual(positions["Spine"], (0., 1., 0.))
+        want = G("level") * 101. + 24 * 2. ** -126 + G("relative") * (math.hypot(100., 1.) + 100.)
+        self.assertAlmostEqual(errors["Spine"], want, delta=1e-22)
+        self.assertEqual(errors["Hips"], 0.)
 
     def test_bounds_are_positive_and_grow_with_depth(self):
         doc = body_doc("body-probes-compact", RUN, samples=1)

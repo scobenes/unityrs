@@ -266,9 +266,22 @@ tolerances), so B1 does not depend on B2's freeze.
   the recorded pose that row is built from. This covers Unity's f32 path
   for that pose and the rounding of its recorded outputs, propagated
   through the f64 centre-of-mass equation.
-- **Hips tolerance `τ_s`**, for each predicted sample: the hips-local
-  comparison bound of E3 along the body path. That path is forward
-  kinematics, the weighted sum, the frame, the solve and the f32 output.
+- **Unity's error `E_unity,s`**, for each predicted sample: the derived
+  bound on Unity's own f32 error in the recorded hips-local translation,
+  along the body path. That path is the hips parent's composed transform,
+  forward kinematics at the absolute magnitudes, the weighted sum, the
+  frame and the target body rotation, the solve and the f32 output. It is
+  the recording's noise floor.
+- **Model error `E_eval,s`**: the derived error of evaluating the model at
+  `s` with the fitted coefficients. B2's f64 reference runs the same path
+  from the recorded f32 inputs, each rounding counted once at `2^-53`,
+  plus one f32 rounding of the hips translation it stores, bounded by the
+  model's pre-cast magnitude.
+- **Coefficient uncertainty `u_s`**, from the conditioning criterion below.
+
+E3's comparison tolerance is their sum, `T_s = E_unity,s + u_s + E_eval,s`:
+a recorded hips translation and the model's differ by at most Unity's
+error, the fitted coefficients' worst-case error and the model's own.
 
 B2 reruns the check with its frozen bounds if they differ.
 
@@ -280,23 +293,22 @@ B2 reruns the check with its frozen bounds if they differ.
 2. For every recorded and hold-out sample `s`, let `J_s` be the
    sensitivity of its hips translation to the coefficients. The propagated
    coefficient uncertainty `u_s = ‖J_s A_w⁺‖_∞` must satisfy
-   `u_s ≤ τ_s − E_eval,s`. `E_eval,s` is the derived error of evaluating
-   the model at `s` with the fitted coefficients: B2's f64 reference on
-   the path of `τ_s`, with each rounding counted once at `2^-53`, plus one
-   f32 rounding of the hips translation it stores.
+   `u_s ≤ E_unity,s`: the fitted coefficients' worst-case uncertainty may
+   not exceed the recording's own noise floor. A design that fails this is
+   short. `J_s` uses the solved hips orientation `H_A` of 2.3, not the
+   recorded one.
 
-The split is derived, not halved. `τ_s` bounds Unity's f32 path; the model
-adds its own roundings, which `E_eval,s` bounds, and the coefficient
-uncertainty may use the rest. A fixed half would reserve for the model's
-evaluation far more than it can err (`E_eval,s` stays under `τ_s / 3000`
-on B1's synthetic design) and charge that to the fixtures.
+The budget is closed by construction: `T_s` adds each error once, and the
+criterion keeps the coefficient term no larger than Unity's own. Neither
+`u_s` nor `E_eval,s` is carved out of `E_unity,s`, so no fixed split is
+needed.
 
 `‖A_w A_w⁺‖_∞ ≥ 1` bounds the projector as a whole, not each of its rows,
-so a sample's own `τ_s` against its `ε` is no veto. The check compares
-`u_s` directly, per component of the hips translation, against
-`τ_s − E_eval,s`. Each `ε` bounds the Euclidean norm of one sample's
-residual, so its three equations form one block, and `u_s` sums the
-2-norms of `J_s A_w⁺`'s blocks.
+so a sample's own `E_unity,s` against its `ε` is no veto. The check
+compares `u_s` directly, per component of the hips translation, against
+`E_unity,s`. Each `ε` bounds the Euclidean norm of one sample's residual,
+so its three equations form one block, and `u_s` sums the 2-norms of
+`J_s A_w⁺`'s blocks.
 
 **Free combinations.** A coefficient combination that fails the criterion
 stays free. B3 computes, for the target Avatar, whether the Avatar's geometry
@@ -337,8 +349,8 @@ bone, a noncommuting pose, and each projection cell of 2.4.
 | E0c | Reproduce `m_RootX.t` from `m_SkeletonPose` with 2.1, and `m_RootX.t.y` against `m_Scale`. | Within its own derived bound (forward kinematics of the skeleton pose plus the weighted sum), on every recorded Avatar |
 | E1 | Each coefficient that 2.5 calls identifiable, pinned by its probes on the training rigs | 2.5's conditioning criterion with B1's tolerances |
 | E2 | F2 read-back on the failing combined-axis pose and on independent noncommuting probes (F1 combined vectors, F3 tilted targets). Convert the world read-back to `A` as the recorder converts the rest body: position by the inverse Animator transform of `bodyPosition · humanScale`, divided by `humanScale`; rotation by the inverse Animator rotation. Bound two residuals separately: requested-to-read-back, and model (2.2 on the recorded bones) to read-back. | Both residuals within their own derived angular bounds on every probe. Anything else is a frame or solve failure, and B3 stays blocked. |
-| E3a | Training checkpoint, before the freeze: Python hips TRS (2.3) from the recorded non-hips rotations, against every known-vector and clip recording of the training rigs (every rig but the hold-out), all roots and scaled rigs, in both versions | Within `τ_s` per sample. It must pass before B2 commits the freeze. |
-| E3b | Hold-out evaluation, after the freeze: the same comparison on the hold-out rig, run by a checker that takes the frozen commit and cannot refit | Within `τ_s` per sample |
+| E3a | Training checkpoint, before the freeze: Python hips TRS (2.3) from the recorded non-hips rotations, against every known-vector and clip recording of the training rigs (every rig but the hold-out), all roots and scaled rigs, in both versions | Within `T_s = E_unity,s + u_s + E_eval,s` (2.5) per sample. It must pass before B2 commits the freeze. |
+| E3b | Hold-out evaluation, after the freeze: the same comparison on the hold-out rig, run by a checker that takes the frozen commit and cannot refit | Within `T_s` (2.5) per sample, with the frozen coefficients' `u_s` |
 | E4 | Root projection (2.4) against the root or residual body pose that F4 records, independently of the hips solve | Within bound, per combination supported |
 | E5 | Rust same-bundle L11: Rust reads the bundle, samples the clip and writes the full pose, compared with the same replays. | B5's release gate |
 
@@ -359,7 +371,7 @@ recorder, so they need no new assets. The recorder also writes
 | F2 | After each `SetHumanPose`, record `GetHumanPose`'s body position and rotation, converted to `A`. | E2 |
 | F3 | Known vectors with nonidentity body targets: an offset position and a tilted rotation | The solve away from the rest body pose |
 | F4 | See F4 below. | E4 and the open questions of 2.4 |
-| F5 | A uniformly scaled Animator node; a proportionally larger skeleton; an extra node with a non-unit uniform scale, a translation and a rotation between the Animator and the hips; and a non-unit hips local scale `s_h`. Each is played with nonzero body translation and a tilted body rotation (F3 targets and an F4 clip). | Scale and parent-frame conversion (2.3) |
+| F5 | A uniformly scaled Animator node; a proportionally larger skeleton; an extra node with a non-unit uniform scale, a translation and a rotation between the Animator and the hips; and a non-unit hips local scale `s_h`. Each is played with nonzero body translation and a tilted body rotation (F3 targets and the all-original F4 clip with changing `MotionT`/`MotionQ` curves). | Scale and parent-frame conversion (2.3) |
 | F6 | One rig per supported topology, each on the compact base rig. The absences: Chest (so also UpperChest), UpperChest alone, Neck, the left Shoulder, the right Shoulder, both Shoulders, the left Toes, the right Toes, both Toes. Mapped extras: Eyes only, Jaw only, Eyes and Jaw. Also a rig whose hip and shoulder child offsets are not coplanar, and a third-proportion rig (long arms, short legs) kept as the hold-out. | Folding, branch coefficients and transfer to an unseen rig (E0b, E1, E3b) |
 
 **F4: body-motion clips.** Each clip runs on identity and offset roots. It
@@ -401,7 +413,7 @@ coefficient is shipped from a fit.
 | # | PR | Contents | ~Non-test lines | Depends on |
 |---|---|---|---|---|
 | B0 | Plan | This document, the `anim.md` 2.6 link, and the "Humanoid local poses" tier X row's cells | docs | — |
-| B1 | Recorder and fixtures | F1–F6 in the builder; read-back, root, mass and setting rows in the recorder; contract and `complete` checks; owner workflow notes; 2.5's tolerance derivation. **Adequacy checkpoint:** after the first owner run, a script computes 2.5's rank, conditioning and `u_s ≤ τ_s − E_eval,s` with B1's own tolerances, and the topology coverage. If any is short, B1 extends the fixtures before B2 starts. | 0.7–1.0k | B0 |
+| B1 | Recorder and fixtures | F1–F6 in the builder; read-back, root, mass and setting rows in the recorder; contract and `complete` checks; owner workflow notes; 2.5's tolerance derivation. **Adequacy checkpoint:** after the first owner run, a script computes 2.5's rank, conditioning and `u_s ≤ E_unity,s` with B1's own tolerances, and the topology coverage. If any is short, B1 extends the fixtures before B2 starts. | 0.7–1.0k | B0 |
 | B2 | Reference and body checker | 2.1–2.5 in the f64 reference with frozen bounds and the analytic cases. A checker runs E0–E4. **Input:** a completed run in both 2022.3 and 6000, read with Unity 6 reader support on main. **Order:** first E3a on the training rigs, then the freeze commit (model choices, coefficients, scope, bounds), then E3b on the hold-out rig against that commit. | 0.6–0.9k | B1 recordings |
 | B3 | Rust body model | Read and validate `m_HumanBoneMass`; E0 checks; the centre of mass, frame and closed-form hips solve; the free-combination refusal; synthetic tests and fuzz targets for the new reads | 0.5–0.7k | B2 (E3b passing) and E2 passing |
 | B4 | Root projection and frames | Target body pose per verified 2.4 combination, conversion from the Animator to the hips parent with scale, narrowed refusals | 0.4–0.6k | B3, F4, F5 |

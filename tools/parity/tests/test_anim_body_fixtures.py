@@ -155,7 +155,8 @@ class CheckBodyTests(unittest.TestCase):
 
 
     def test_a_variant_counts_only_with_its_built_distinguishing_slots(self):
-        self.assertEqual(body.CHAIN_VARIANT, "keep-o1-y1-xz1")
+        self.assertEqual(body.CHAIN_VARIANT, "keep-o1-y1-xz1-motion")
+        self.assertTrue(body.CLIP_VARIANTS[body.CHAIN_VARIANT]["motion"])
         self.assertEqual(len({y for _, y, _ in body.MOTION_PATH}), len(body.MOTION_PATH))
         self.assertTrue(all(y for _, y, _ in body.MOTION_PATH))
         for name, attribute in (("body-clip-keep-o1-y1-xz1-motion", 1), ("body-clip-height-from-feet-knee-goals", 15),
@@ -169,6 +170,18 @@ class CheckBodyTests(unittest.TestCase):
             lost = copy.deepcopy(built)
             lost["m_ClipBindingConstant"]["genericBindings"] = [row for row in bindings if row["attribute"] != attribute]
             self.assert_refused("built clip lost its", name, doc, lost)
+            # An Editor curve copy does not stand in for the runtime slot.
+            variant = body.CLIP_VARIANTS[body.BODY_INFO[name]["variant"]]
+            prop, times, values = next((prop, times, values) for group in body.distinguishing_curves(variant, list(MUSCLES))
+                                       for prop, slot, times, values in group if slot == attribute)
+            lost["m_EditorCurves"] = lost["m_FloatCurves"] = [dict(path="", classID=95, attribute=prop, curve=dict(
+                m_Curve=[dict(time=t, value=v) for t, v in zip(times, values)]))]
+            self.assert_refused("built clip lost its", name, doc, lost)
+            # The DOF absent from m_IndexArray, or pointing at another DOF's slot.
+            for value in (-1, (built["m_MuscleClip"]["m_IndexArray"][attribute] + 1) % len(bindings)):
+                moved = copy.deepcopy(built)
+                moved["m_MuscleClip"]["m_IndexArray"][attribute] = value
+                self.assert_refused("built clip lost its", name, doc, moved)
             # The same slot with another value at its middle key.
             slot = [row["attribute"] for row in bindings].index(attribute)
             changed = copy.deepcopy(built)

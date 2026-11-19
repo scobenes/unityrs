@@ -1017,7 +1017,7 @@ bundle build after the main and coverage builds. Their tables are in
 | `body-probes-<rig>` (16) | F1, F6 | Known-vector `SetHumanPose` on each rig. The rigs are the two P2b rigs, each F6 topology, a noncoplanar rig and the hold-out rig. The vectors are one per probe muscle of each mapped bone, then three combined vectors over every probe muscle. Twist and stretch stay out. |
 | `body-targets-{compact,tall}[-offset]` (4) | F3 | The three combined vectors with nonidentity body targets on identity and offset roots |
 | `body-clip-<variant>[-offset]` (78) | F4 | 39 body-motion clips on the compact rig, each on an identity and an offset root |
-| `body-chain-<f5>-{targets,clip}` (8) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale. Each plays F3's targets and the all-original F4 clip, whose residual body translation and tilt change through the chain. |
+| `body-chain-<f5>-{targets,clip}` (8) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale. Each plays F3's targets and the all-original F4 clip with changing `MotionT` and `MotionQ` curves, whose residual body translation and tilt change through the chain and whose motion the original-root rule keeps. Completion requires its built motion slots; if Unity drops them, that clip case is not covered. |
 
 **Rig geometry.** One parameterized layout gives every rig. Unchanged, it
 repeats the P2b offsets in the same sibling order. An omitted bone's
@@ -1102,10 +1102,13 @@ For each recording `complete` checks:
 - the F5 chain in the rest pose;
 - for a clip, the authored body, knee, motion and goal curves, and the
   captured and built root settings;
-- for a knee, motion or goal variant, that the built clip keeps each of
-  those slots (Animator attributes 0–6, 14–27 and 42 onward), with the
-  authored value at every key. Otherwise the variant does not count as
-  covered.
+- for a knee, motion or goal variant (and F5's clip), that the built clip
+  keeps each of those slots (Animator attributes 0–6, 14–27 and 42 onward)
+  where playback reads them: the DOF's `m_IndexArray` entry is present (not
+  -1) and names a slot of `m_MuscleClip`'s data bound to that attribute,
+  with the authored value at every key. A surviving `m_EditorCurves` or
+  `m_FloatCurves` copy does not count. Otherwise the variant does not
+  count as covered.
 
 It copies the built `m_MuscleClip` root fields and the compiled Animator
 attributes into `evidence.body_settings` for B2. Any other case that
@@ -1114,7 +1117,7 @@ claims body rows is refused.
 ### B1 tolerances
 
 [`anim_body_tolerance.py`](../tools/parity/anim_body_tolerance.py) derives
-section 2.5's two tolerances, and its docstring holds the derivation. The
+section 2.5's bounds, and its docstring holds the derivation. The
 operation model is the one the per-recording tolerances above use:
 
 - A stage of `n` roundings errs by at most
@@ -1136,6 +1139,10 @@ Both bounds are on a vector's Euclidean norm.
 | `rotation` | 12 | `H_A = B_A F_T F_h⁻¹` and its conversion |
 | `solve` | 8 | Rotating `c_h`, scaling by `k` and subtracting from `h T_A` |
 | `local` | 7 | Subtracting `t_p`, the inverse rotation and the division by `σ_p` |
+| `compose` | 4 per link | One quaternion product of the hips parent's rotation `R_p` (four products summed per component) |
+| `scale` | 1 per link | One product of the uniform scales giving `σ_p`, and one more for `k = σ_p s_h` |
+| `relative` | 1 | A bone's position less the hips position |
+| `turn` | 5 | The recorder's read-back rotation: Unity's inverse Animator rotation times it, stored |
 
 **Centre of mass.** Under `|a_ij| ≤ 1` (B2 refits and checks it), the bone
 errors `E` reach `c` as `Σ_i m_i((1 + n_i) E_i + Σ_j E_j)`. The sums run in
@@ -1147,23 +1154,43 @@ rounding, of the stored `w`. The recorder's conversion adds its own:
 
 `ε = (E_c + 2^-24 h|w| + γ32(30)(h|w| + |t_root|)) / s_root`.
 
-**`τ`.** The frame error runs through both normalized frames. Each
-normalization multiplies its vector's error by `2 / |v|`, for the up
-vector and for `lateral × û`, so the bound grows without limit as that
-cross product vanishes. With the pose's and the T-pose's frame errors, the
-target path's error `e_T` (one rounding of `h T_A` for a known vector, or
-the read-back's output error for a clip), the centre of mass about the
+**`E_unity`.** Unity's own error in the recorded hips-local translation,
+the recording's noise floor.
+
+- **Positions about the hips.** Unity's links add to the running absolute
+  position, so each bone below the hips errs by `γ32(24 d)` of its whole
+  chain length from `A`'s origin (`d` links below the hips), plus one
+  rounding of `|p| + |p_hips|` for the difference. The hips' own error is
+  common to both and cancels.
+- **The frame** runs through both normalized frames. Each normalization
+  multiplies its vector's error by `2 / |v|`, for the up vector and for
+  `lateral × û`, so the bound grows without limit as that cross product
+  vanishes. The target body rotation `B_A` adds `8 γ32(4 d_root + 5)` when
+  it is a read-back: a quaternion whose components err by `γ` turns a unit
+  vector by at most `4 · 2γ`.
+- **The hips parent** at depth `d_p` below the Animator node adds
+  `δt_p = γ32(24 d_p) L_p`, `|δR_p| ≤ 8 γ32(4 d_p)` and
+  `|δσ_p| / σ_p ≤ γ32(d_p)`, each over `S = h|T_A| + M_h + |t_p|`, and `k`
+  errs by `γ32(d_p + 1)` of `M_h`.
+
+With the target path's error `e_T` (one rounding of `h T_A` for a known
+vector, or the read-back's output error), the centre of mass about the
 hips, the solve and the local conversion:
 
-`τ = (e_T + E_ch + (|dF_h| + |dF_T| + γ32(12)) M_h + γ32(8)(h|T_A| + M_h)
-+ γ32(7)(h|T_A| + M_h + |t_p|)) / σ_p`.
+`E_unity = (e_T + E_ch + (|dF_h| + |dF_T| + γ32(12) + |δB_A|) M_h
++ γ32(d_p + 1) M_h + γ32(8)(h|T_A| + M_h) + γ32(7) S + δt_p
++ (|δR_p| + |δσ_p|/σ_p) S) / σ_p`.
 
 **`E_eval`.** The model's own error at a sample, with the fitted
 coefficients. B2's f64 reference runs the same path from the recorded f32
 rotations and target, so each stage keeps its rounding count at
-`u = 2^-53`, with `h T_A` one f64 product. Storing the hips translation as
-f32 adds `2^-24 |t_hips|`. These roundings are the model's, not Unity's, so
-`τ` does not count them.
+`u = 2^-53`, with `h T_A` one f64 product and the read-back rotation
+exact. Storing the hips translation as f32 adds `2^-24` of a bound on the
+model's pre-cast translation, `S / σ_p` plus the path's own error. These
+roundings are the model's, not Unity's, so `E_unity` does not count them.
+
+**`T`.** E3's comparison tolerance is `T_s = E_unity,s + u_s + E_eval,s`
+(section 2.5).
 
 The tests check each piece against a hand computation.
 
@@ -1191,15 +1218,19 @@ defaults from `human_bones`. The checkpoint reports:
    one-sided Jacobi SVD of its triangle. The numerical rank uses
    `σ_max · max(R, N) · 2^-52`, and the condition limit is `1e6`. Each null
    direction is listed as a free combination.
-2. **`u_s ≤ τ_s − E_eval,s`**, per component of the hips translation, on
-   every body sample (the hold-out included) and every P2b humanoid
-   recording. The report lists each failure and the distribution of the
-   margins `(τ_s − E_eval,s) / u_s`.
+2. **`u_s ≤ E_unity,s`**, per component of the hips translation, on every
+   body sample (the hold-out included) and every P2b humanoid recording:
+   the coefficients' worst-case uncertainty within the recording's own
+   noise floor. The report lists each failure, every sample's `E_unity,s`,
+   `u_s`, `E_eval,s` and `T_s`, and the distribution of the margins
+   `E_unity,s / u_s`.
    - `u_s` sums, over the blocks, the 2-norm of each block of `J_s A_w⁺`.
-   - `J_s` is the full sensitivity `−σ_p⁻¹ R_p⁻¹ m_i (p_ij − p_i)` through
-     the hips parent's rotation and scale.
+   - `J_s` is the full sensitivity `−σ_p⁻¹ R_p⁻¹ (H_A H_rec⁻¹) m_i
+     (p_ij − p_i)` with the solved hips orientation of 2.3:
+     `H_A H_rec⁻¹ = B_A F(T) F(pose)⁻¹`, with `B_A` the read-back body
+     rotation, or the model's own when a sample has no read-back.
    - `A_w⁺ = V Σ⁻² Vᵀ A_wᵀ`, over the kept singular values.
-   - There is no per-sample `τ` against `ε` veto (section 2.5).
+   - There is no per-sample `E_unity` against `ε` veto (section 2.5).
 3. **The coefficient inventory.**
    - Each sample's recorded edges must be the edges HumanTrait's parents
      give its mapped bones.

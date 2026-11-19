@@ -138,10 +138,10 @@ static partial class UnityrsFixtureBuilder
     {
         foreach (var rig in ProbeRigs)
             report.Prepare(build, "Prepare body-" + rig.Name, RigCases(rig, false).ToArray(),
-                () => BuildBodyRig(build, rig, chain: false), true);
+                () => BuildBodyRig(build, report, rig, chain: false), true);
         foreach (var rig in ChainRigs)
             report.Prepare(build, "Prepare body-chain-" + rig.Name, RigCases(rig, true).ToArray(),
-                () => BuildBodyRig(build, rig, chain: true), true);
+                () => BuildBodyRig(build, report, rig, chain: true), true);
         report.Prepare(build, "Prepare " + BodyClipBundle, ClipCases().ToArray(), () => BuildBodyClips(build, report), true);
         var prepared = new HashSet<string>(build.Replays.Select(replay => replay.OutputName), StringComparer.Ordinal);
         report.FailUnreached(BodyCases().Where(name => !prepared.Contains(name)),
@@ -294,7 +294,7 @@ static partial class UnityrsFixtureBuilder
     }
 
     // A probe rig (F1, with F3 on the P2b rigs) or a chain rig (F5).
-    static void BuildBodyRig(Build build, BodyRig rig, bool chain)
+    static void BuildBodyRig(Build build, RunReport report, BodyRig rig, bool chain)
     {
         string bundle = (chain ? "body-chain-" : "body-") + rig.Name;
         var rigObject = new GameObject("HumanoidRig");
@@ -315,7 +315,18 @@ static partial class UnityrsFixtureBuilder
             var muscles = AuthorHumanoidClip(dir, bundle + "-muscles", bodyMotion: false);
             SetNeutralSettings(muscles, 0);
             var clips = new List<AnimationClip> { muscles };
-            if (chain) clips.Add(AuthorBodyClip(dir, bundle + "-clip", ChainVariant));
+            // The chain clip counts only with its motion curves; without them its
+            // case is not covered and the chain's targets still record.
+            string chainMissing = null;
+            if (chain)
+            {
+                AnimationClip chainClip = null;
+                try { chainClip = AuthorBodyClip(dir, bundle + "-clip", ChainVariant); }
+                catch (CoverageUnavailable error) { chainMissing = error.Message; }
+                if (chainMissing == null && !KeepsCurves(chainClip, "MotionT.x", "MotionQ.w"))
+                    chainMissing = "The Editor dropped the chain clip's MotionT and MotionQ curves.";
+                if (chainMissing == null) clips.Add(chainClip);
+            }
             animator.runtimeAnimatorController = Controller(assets[assets.Length - 1], clips.ToArray());
 
             root = new GameObject("HumanoidFixture");
@@ -342,6 +353,11 @@ static partial class UnityrsFixtureBuilder
             {
                 AddProbeReplay(build, Replay(bundle + "-targets", prefab, clipPaths[0], "targets", "identity"),
                     BodySchedule(mapped, targets: true));
+                if (chainMissing != null)
+                {
+                    report.Set(bundle + "-clip", "not_covered", chainMissing);
+                    return;
+                }
                 var clipReplay = Replay(bundle + "-clip", prefab, clipPaths[1], "clip", "identity");
                 clipReplay.Body.Variant = ChainVariant.Name;
                 clipReplay.BodyClip = ChainVariant;

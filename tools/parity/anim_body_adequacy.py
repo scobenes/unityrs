@@ -14,22 +14,24 @@ read from its `.pending.json`. The checkpoint, with B1's own tolerances
    block weighted by 1/epsilon, since epsilon bounds the Euclidean norm of
    that sample's residual.
 2. For every body sample, hold-out and P2b humanoid sample, each component
-   k of the propagated coefficient uncertainty against what the model's
-   own evaluation leaves of the hips budget (2.5's derived split):
-   u_s,k = sum over blocks b of ||(J_s A_w^+)_k,b||_2 <= tau_s - E_eval,s,
-   where J_s is the full sensitivity of the hips-local translation to the
-   coefficients, through the hips parent's rotation and scale, and E_eval,s
-   bounds the model's evaluation at s with the fitted coefficients
-   (anim_body_tolerance.evaluation_error). The bound holds for any residual
-   within its blocks' epsilon. The report gives each sample's margin
-   (tau_s - E_eval,s) / u_s and their distribution.
+   k of the propagated coefficient uncertainty against the recording's own
+   noise floor: u_s,k = sum over blocks b of ||(J_s A_w^+)_k,b||_2 <=
+   E_unity,s, the derived bound on Unity's own error in the recorded hips
+   translation (anim_body_tolerance.unity_error). J_s is the full
+   sensitivity of the hips-local translation to the coefficients, with the
+   solved hips orientation H_A of 2.3 and through the hips parent's
+   rotation and scale. The bound holds for any residual within its blocks'
+   epsilon. The report lists each sample's E_unity,s, u_s, E_eval,s (the
+   model's own evaluation, anim_body_tolerance.evaluation_error) and E3's
+   comparison tolerance T_s = E_unity,s + u_s + E_eval,s, and the
+   distribution of the margins E_unity,s / u_s.
 3. The coefficient inventory: each sample's edges, from the recorded
    hierarchy, must be those HumanTrait's parents give its mapped bones, and
    every edge of the F1 and F6 training rigs must have fitting rows.
 4. The topology coverage: every F1 and F6 rig recorded by its own probe
    case, with read-back rows and the rig's mapped bones.
 
-There is no per-sample veto from tau against epsilon: ||A_w A_w^+||_inf >= 1
+There is no per-sample veto from E_unity against epsilon: ||A_w A_w^+||_inf >= 1
 holds for the projector as a whole, not for each of its rows. Rank and
 u_s do not depend on the column scale, so the masses (E0b-folded defaults)
 matter only to the condition number. The right-hand side is not needed.
@@ -46,9 +48,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import anim_replay as replay  # noqa: E402
-from anim_body_tolerance import (BODY_SLOTS, U32, bone_frames, decode, edges, evaluation_error,  # noqa: E402
-                                 folded_masses, hips_tolerance, kinematics, measurement_tolerance, norm, ordered, readback_error,
-                                 recorded_edges, rotate)
+from anim_body_tolerance import (BODY_SLOTS, OPERATIONS, U32, body_frame, bone_frames, decode, edges,  # noqa: E402
+                                 evaluation_error, folded_masses, kinematics, measurement_tolerance, norm, ordered,
+                                 product, quaternion_matrix, readback_error, recorded_edges, rotate, rotation_error,
+                                 unity_error)
 from anim_fixture_body import BODY_INFO, HOLDOUT, PROBE_RIGS, rig_bones  # noqa: E402
 
 CONDITION_LIMIT = 1e6
@@ -71,16 +74,16 @@ def bone_table(documents):
 
 
 def samples(name, doc, parents, masses):
-    """One row per sample: its coefficient columns in A, its J_s rows, epsilon and tau."""
+    """One row per sample: its coefficient columns in A, its J_s rows, epsilon, E_unity and E_eval."""
     spec, capture = doc["spec"], doc["capture"]
     human = capture["humanoid"]
     editor = spec["evidence"]["editor"]
     readbacks = editor.get("body_samples") or [None] * len(capture["samples"])
     info = BODY_INFO.get(name)
     nodes, animator = spec["nodes"], spec["binding_address"]
-    index = {node["address"]: i for i, node in enumerate(nodes)}
     scale = F32(human["human_scale"])
     rest = bone_frames(human["bones"], nodes, kinematics(nodes, capture["rest"]["transforms"], F32, animator))
+    rest_frame = body_frame({name: frame.position for name, frame in rest.items()})
     for sample, readback in zip(capture["samples"], readbacks):
         transforms = sample["pose"]["transforms"]
         frames = kinematics(nodes, transforms, F32, animator)
@@ -93,21 +96,24 @@ def samples(name, doc, parents, masses):
         parent = frames[hips_address.rpartition("/")[0]]
         columns = {f"{i}>{j}": tuple(weights[i] * (b - a) for a, b in zip(bones[i].position, bones[j].position))
                    for i, j in links}
-        jacobian = {key: hips_sensitivity(column, parent) for key, column in columns.items()}
-        world = None
+        world, turn, solved = None, 0., None
         if readback is not None:
             target = decode(readback["readback_position"], 3, F32)
             world = decode(readback["world_position"], 3, F32)
             root = kinematics(nodes, transforms, F32, "", include_base=True)[animator]
             target_error = readback_error(scale, world, root.position, root.scale)
+            # The recorder turns the world read-back by Unity's inverse Animator rotation (root.depth links).
+            turn = rotation_error(OPERATIONS["compose"] * root.depth + OPERATIONS["turn"])
+            solved = solved_turn(decode(readback["readback_rotation"], 4, F32), rest_frame, bones)
         else:
+            # Without a read-back the target body rotation is the model's own (2.2), so H_A is the recorded hips'.
             target = tuple(sum(weights[b] * bones[b].position[k] for b in ordered(bones)) / scale for k in range(3))
             target_error = U32 * scale * norm(target)
-        tau = hips_tolerance(bones, rest, weights, links, scale, target, target_error, parent)
-        hips_local = decode(transforms[index[hips_address]]["translation"], 3, F32)
-        evaluation = evaluation_error(bones, rest, weights, links, scale, target, parent, hips_local)
+        jacobian = {key: hips_sensitivity(column, parent, solved) for key, column in columns.items()}
+        unity = unity_error(bones, rest, weights, links, scale, target, target_error, turn, parent)
+        evaluation = evaluation_error(bones, rest, weights, links, scale, target, parent)
         row = dict(name=name, local=sample["local"], rig=info["rig"] if info else "p2b", columns=columns,
-                   jacobian=jacobian, tau=tau, evaluation=evaluation, fit=False, epsilon=None,
+                   jacobian=jacobian, unity=unity, evaluation=evaluation, fit=False, epsilon=None,
                    edges=None if links == expected else f"recorded {links} but HumanTrait gives {expected}")
         if readback is not None:
             world_bones = bone_frames(human["bones"], nodes, kinematics(nodes, transforms, F32, "", include_base=True))
@@ -116,8 +122,23 @@ def samples(name, doc, parents, masses):
         yield row
 
 
-def hips_sensitivity(column, parent):
-    """d(hips-local translation)/d(a_ij): P_A = h T_A - (c_A - p_hips), then sigma_p^-1 R_p^-1 (P_A - t_p)."""
+def solved_turn(body_rotation, rest_frame, bones):
+    """H_A H_rec^-1 = B_A F(T) F(pose)^-1 (2.3 step 2): from the recorded hips orientation to the solved one.
+
+    F_h = H_rec^-1 F(pose in A), since F depends only on directions, so the
+    recorded hips rotation cancels."""
+    pose = body_frame({name: frame.position for name, frame in bones.items()})
+    return product(product(quaternion_matrix(body_rotation), rest_frame), pose, transpose=True)
+
+
+def hips_sensitivity(column, parent, solved=None):
+    """d(hips-local translation)/d(a_ij) with the solved hips orientation H_A.
+
+    P_A = h T_A - k H_A c_h, and k H_rec c_h's column is the recorded column
+    in A, so the column turns by H_A H_rec^-1 (`solved`; None when the two
+    agree), then sigma_p^-1 R_p^-1 (P_A - t_p)."""
+    if solved is not None:
+        column = tuple(sum(solved[r][k] * column[k] for k in range(3)) for r in range(3))
     inverse = (*(-v for v in parent.rotation[:3]), parent.rotation[3])
     return tuple(-v / parent.scale for v in rotate(inverse, column))
 
@@ -173,7 +194,7 @@ def jacobi_svd(matrix, width, sweeps=60):
 
 def adequacy(rows, coverage, inventory=()):
     report = {"coverage": coverage, "coefficients": [], "rank": 0, "condition": None, "free": [],
-              "uncertainty_failures": [], "untrained": [], "worst_margin": None, "margins": {},
+              "uncertainty_failures": [], "untrained": [], "worst_margin": None, "margins": {}, "samples": [],
               "edge_mismatches": sorted({f"{row['name']}: {row['edges']}" for row in rows if row.get("edges")})}
     fitting = [row for row in rows if row["fit"]]
     keys = sorted({key for row in fitting for key in row["columns"]})
@@ -197,20 +218,23 @@ def adequacy(rows, coverage, inventory=()):
     # A_w^+ = (A_w^T A_w)^+ A_w^T, with (A_w^T A_w)^+ = V diag(1/sigma^2) V^T over the kept singular values.
     gram = [[sum(vectors[k][i] * vectors[k][j] / sigma[k] ** 2 for k in kept) for j in range(width)]
             for i in range(width)]
-    failures, untrained, margins = [], [], []
+    failures, untrained, margins, table = [], [], [], []
     for row in rows:
         if not row["jacobian"].keys() <= set(keys):
             untrained.append(f"{row['name']}@{row['local']}: {sorted(row['jacobian'].keys() - set(keys))}")
             continue
         u = max(uncertainty([row["jacobian"].get(key, (0., 0., 0.))[k] for key in keys], gram, design)
                 for k in range(3))
-        budget = row["tau"] - row["evaluation"]
-        margin = budget / u if u > 0 else math.inf
+        # Adequacy: the coefficients' worst-case uncertainty within the recording's own noise floor.
+        if not u <= row["unity"]:
+            failures.append(f"{row['name']}@{row['local']}: u={u:.3e} E_unity={row['unity']:.3e}")
+        margin = row["unity"] / u if u > 0 else math.inf
         margins.append(margin)
-        if not margin >= 1:
-            failures.append(f"{row['name']}@{row['local']}: u={u:.3e} tau-E_eval={budget:.3e}")
+        # E3's comparison tolerance, T_s = E_unity,s + u_s + E_eval,s.
+        table.append(dict(name=row["name"], local=row["local"], unity=row["unity"], uncertainty=u,
+                          evaluation=row["evaluation"], tolerance=row["unity"] + u + row["evaluation"]))
     finite = sorted(m for m in margins if math.isfinite(m))
-    report.update(uncertainty_failures=failures, untrained=untrained,
+    report.update(uncertainty_failures=failures, untrained=untrained, samples=table,
                   worst_margin=finite[0] if finite else None,
                   margins={f"p{q}": finite[min(len(finite) - 1, q * len(finite) // 100)] for q in (0, 1, 5, 25, 50)}
                   if finite else {})
@@ -272,7 +296,7 @@ def main(argv=None):
     if args.json:
         args.json.write_text(text, encoding="utf-8")
     print(f"rank {report.get('rank')}/{len(report.get('coefficients', []))}, condition {report.get('condition')}, "
-          f"{len(report.get('uncertainty_failures', []))} u_s failures, worst margin (tau_s - E_eval,s)/u_s "
+          f"{len(report.get('uncertainty_failures', []))} u_s failures, worst margin E_unity,s/u_s "
           f"{report.get('worst_margin')}, margins {report.get('margins')}, "
           f"missing rigs {report['coverage']['missing']}, missing edges {report['missing_coefficients']}: "
           + ("adequate" if report["adequate"] else "short"))

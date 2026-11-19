@@ -32,9 +32,10 @@ static partial class UnityrsFixtureBuilder
     }
 
     static readonly BodyClipVariant[] ClipVariants = ClipVariantTable();
-    // F5's clip: the original basis on every axis, so the residual body
-    // translation and tilt change through each scaled chain.
-    static BodyClipVariant ChainVariant => ClipVariants.Single(row => row.Name == "keep-o1-y1-xz1");
+    // F5's clip: the original basis on every axis with MotionT and MotionQ
+    // curves that change, so the residual body translation and tilt change
+    // through each scaled chain and the original-root rule has motion to keep.
+    static BodyClipVariant ChainVariant => ClipVariants.Single(row => row.Name == "keep-o1-y1-xz1-motion");
 
     static string FlagName(int flags) => "-o" + (flags >> 2 & 1) + "-y" + (flags >> 1 & 1) + "-xz" + (flags & 1);
 

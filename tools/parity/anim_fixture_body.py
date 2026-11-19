@@ -12,7 +12,7 @@ applied body target, and HumanTrait's bone table with the default masses.
 
 from math import isfinite
 
-from anim_fixture_contract import BODY, MUSCLES, SPINE, Fixture, built_float_curves, compiled_curves
+from anim_fixture_contract import BODY, MUSCLES, SPINE, Fixture, compiled_curves
 from anim_reference import angle, euler, multiply
 
 # name: (base rig, omitted bones, mapped extras). F6 rigs are on the compact
@@ -89,8 +89,9 @@ def _clip_variants():
 
 
 CLIP_VARIANTS = _clip_variants()
-# F5 plays the all-original clip, so the residual body translation and tilt change through each chain.
-CHAIN_VARIANT = "keep-o1-y1-xz1"
+# F5 plays the all-original clip with changing MotionT and MotionQ, so the residual body translation and tilt
+# change through each chain and the original-root rule has motion to keep; completion requires its motion slots.
+CHAIN_VARIANT = "keep-o1-y1-xz1-motion"
 NEUTRAL_CLIP = CLIP_VARIANTS["keep-o0-y0-xz0"]
 BODY_TIMES = (0, .25, .5, .75, 1)
 BODY_PATH = ((0, 1, 0), (.08, .97, .1), (.2, 1.02, .12), (.26, .95, .25), (.3, 1, .3))
@@ -358,11 +359,12 @@ def check_clip(name, info, editor, capture, clip, replay):
     attributes = sorted({row.get("attribute") for row in bindings
                          if row.get("path") == 0 and row.get("customType") == 8
                          and row.get("typeID", row.get("classID")) == 95})
-    # A variant counts as covered only when the built clip keeps its distinguishing slots and values.
-    tracks = compiled_curves(clip, replay)
-    floats = built_float_curves(clip, "m_FloatCurves") | built_float_curves(clip, "m_EditorCurves")
+    # A variant counts as covered only when the built clip keeps its distinguishing slots and values
+    # where playback reads them: m_MuscleClip's data at the DOF's m_IndexArray slot. Editor curve copies do not count.
+    runtime = _runtime_slots(clip, replay)
     for group in extras:
-        sampled = {prop: _built_track(tracks, floats, prop, attribute) for prop, attribute, _, _ in group}
+        sampled = {prop: _built_track(runtime, muscle.get("m_IndexArray") or [], attribute)
+                   for prop, attribute, _, _ in group}
         require(all(sampled.values()) and _matches(group, lambda prop, i, t: sampled[prop](t)),
                 f"built clip lost its {group[0][0]} slot or values in {name}")
     return dict(serialized={key: muscle.get(key) for key in SERIALIZED_ROOT}, animator_attributes=attributes)
@@ -402,11 +404,24 @@ def _matches(group, sample):
     return all(abs(sample(prop, i, t) - values[i]) <= 1e-5 for prop, _, _, values in group for i, t in enumerate(times))
 
 
-def _built_track(tracks, floats, prop, attribute):
-    """A function of time over a built Animator slot, compiled or explicit, or None if the clip lost it."""
-    track = tracks.get((0, 95, attribute, 8, False))
-    if track and track[0][1]:
-        entries = sorted(track[0][1], key=lambda entry: entry[0])
+def _runtime_slots(clip, replay):
+    """m_MuscleClip's slots in storage order (streamed, dense, constant), each with its built binding key;
+    none when two bindings share a key, since the slots could not then be told apart."""
+    tracks = compiled_curves(clip, replay)
+    if len(tracks) != len(clip.get("m_ClipBindingConstant", {}).get("genericBindings", [])):
+        return []
+    return [(key, track) for key, spans in tracks.items() for track in spans]
+
+
+def _built_track(runtime, index, attribute):
+    """A function of time over the runtime slot m_IndexArray gives an Animator DOF (its attribute),
+    or None if the DOF is absent (-1), outside the data or bound to another attribute."""
+    slot = index[attribute] if 0 <= attribute < len(index) and type(index[attribute]) is int else -1
+    if not 0 <= slot < len(runtime) or runtime[slot][0] != (0, 95, attribute, 8, False):
+        return None
+    track = runtime[slot][1]
+    if track[1]:
+        entries = sorted(track[1], key=lambda entry: entry[0])
 
         def compiled(t):
             prior = [entry for entry in entries if entry[0] <= t + 1e-6]
@@ -416,9 +431,4 @@ def _built_track(tracks, floats, prop, attribute):
             d = t - start
             return ((c3 * d + c2) * d + c1) * d + c0
         return compiled
-    keys = floats.get(("", "Animator", prop), ([], None))[0]
-    if keys:
-        def explicit(t):
-            return next((key["value"] for key in keys if abs(key["time"] - t) <= 1e-6), float("nan"))
-        return explicit
     return None

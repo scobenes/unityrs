@@ -1,6 +1,6 @@
 """B1's tolerances for the humanoid body model (docs/plans/humanoid-body.md 2.5).
 
-Both bounds come from an explicit f32 operation model, in the manner of the
+The bounds come from an explicit f32 operation model, in the manner of the
 per-recording f32 tolerances of docs/anim_reference.md. A stage of n
 roundings errs by at most gamma32(n) = n*u/(1-n*u), u = 2^-24, of the
 magnitudes it combines, plus n*2^-126 for flush-to-zero. Recorded f32 values
@@ -35,28 +35,49 @@ stored value), relative to `h |w| + |t_root|`. Into the Animator frame A
 every world error divides by the root scale `s`:
 `epsilon = (E_c + u h |w| + gamma32(readback) (h |w| + |t_root|)) / s`.
 
-**tau (`hips_tolerance`).** The hips-local translation of 2.3 in the hips
-parent's units:
+**E_unity (`unity_error`).** Unity's own error in the recorded hips-local
+translation of 2.3, in the hips parent's units: the recording's noise floor.
 
-- forward kinematics below the hips (depth and length from the hips) and
-  the centre of mass `c_h` about the hips, as above (`E_ch`, magnitude `M_h`);
-- the frame of 2.2, propagated through both normalized frames (`frame_error`):
-  for the pose and for the T-pose, so `|dH| <= |dF_h| + |dF_T| + gamma32(rotation)`;
+- positions about the hips (`about_hips`): Unity's links add to the running
+  absolute position, so a bone `d` links below the hips errs by
+  `gamma32(level d)` of its whole chain length from A's origin, plus one
+  rounding (`relative`) of `|p| + |p_hips|` for the difference; the hips'
+  own error is common to both and cancels. Then the centre of mass `c_h`
+  about the hips, as above (`E_ch`, magnitude `M_h`);
+- the frame of 2.2, propagated through both normalized frames
+  (`frame_error`), for the pose and for the T-pose, and the target body
+  rotation `B_A` (`target_turn`: a read-back turned by Unity's inverse
+  Animator rotation, `rotation_error(compose d_root + turn)`), so
+  `|dH| <= |dF_h| + |dF_T| + gamma32(rotation) + |dB_A|`;
 - the target path: `target_error`, the caller's bound on `h T_A`;
+- the hips parent's composed transform at depth `d_p` below the Animator
+  node: `|dt_p| <= gamma32(level d_p) L_p`, `|dR_p| <=
+  rotation_error(compose d_p)` and `|dsigma_p| / sigma_p <= gamma32(scale
+  d_p)`, each over `S = h |T_A| + M_h + |t_p|`, and `k = sigma_p s_h` errs
+  by `gamma32(scale (d_p + 1))` of `M_h`;
 - the solve `P_A = h T_A - k H c_h` (`solve` roundings over `h |T_A| + M_h`);
 - the local conversion `sigma_p^-1 R_p^-1 (P_A - t_p)` (`local` roundings,
-  the last the stored hips translation, over `h |T_A| + M_h + |t_p|`).
+  the last the stored hips translation, over `S`).
 
-`tau = (target_error + E_ch + |dH| M_h + gamma32(solve)(h|T_A| + M_h)
-+ gamma32(local)(h|T_A| + M_h + |t_p|)) / sigma_p`.
+`E_unity = (target_error + E_ch + (|dH| + gamma32(scale (d_p + 1))) M_h
++ gamma32(solve)(h|T_A| + M_h) + gamma32(local) S + |dt_p|
++ (|dR_p| + |dsigma_p| / sigma_p) S) / sigma_p`.
+
+`rotation_error(n)`: a quaternion whose components each err by
+`gamma(n)` of unit magnitude errs by `|dq| <= 2 gamma(n)`, and rotating a
+unit vector by it moves the result by at most `4 |dq|`.
 
 **E_eval (`evaluation_error`).** The model's own error at a sample, with
 the fitted coefficients taken as exact: B2's f64 reference (E3) runs the
 same path from the recorded f32 rotations and target, so each stage has
 the same rounding count at u = 2^-53 (flush 2^-1022), with `h T_A` one f64
-product; storing the hips translation as f32 adds `u |t_hips|`. These are
-the model's roundings, not Unity's, so neither is in `tau`'s count. The
-checkpoint holds the coefficient uncertainty to `tau_s - E_eval,s`.
+product and the read-back rotation exact. Storing the hips translation as
+f32 adds `u32` of a bound on the model's pre-cast translation:
+`S / sigma_p` plus the path's own error. These are the model's roundings,
+not Unity's, so neither is in E_unity's count.
+
+E3 compares within `T_s = E_unity,s + u_s + E_eval,s`; the checkpoint holds
+the coefficient uncertainty to `u_s <= E_unity,s`.
 """
 
 import math
@@ -78,6 +99,10 @@ OPERATIONS = {
     "rotation": 12,   # H_A = B_A F_T F_h^-1: two rotation products and the conversion
     "solve": 8,       # rotate c_h (5), scale by k, subtract from h T_A
     "local": 7,       # subtract t_p, inverse rotate (5), divide by sigma_p (stored)
+    "compose": 4,     # one quaternion product: four products summed per component
+    "scale": 1,       # one product of uniform scales
+    "relative": 1,    # a bone's position less the hips' position, per component
+    "turn": 5,        # the recorder's read-back rotation: the inverse Animator rotation times it (4), stored
 }
 NAMES = ("Hips", "LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg", "LeftFoot", "RightFoot",
          "Spine", "Chest", "Neck", "Head", "LeftShoulder", "RightShoulder", "LeftUpperArm", "RightUpperArm",
@@ -276,35 +301,91 @@ def frame_error(points, errors, unit=U32):
     return math.sqrt(d_right ** 2 + d_up ** 2 + d_forward ** 2)
 
 
+def rotation_error(roundings, unit=U32):
+    """A bound on how far rotating by a quaternion moves a unit vector, when each of the quaternion's
+    components errs by gamma(roundings) of unit magnitude: |dq| <= 2 gamma, and |dR| <= 4 |dq|."""
+    return 8 * gamma(roundings, unit) if roundings else 0.
+
+
+def cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def body_frame(points):
+    """2.2's frame F as rows of the matrix whose columns are (right, up, forward)."""
+    ul, ur, ll, lr = (points[name] for name in FRAME_BONES)
+    up = tuple((a + b - c - d) / 2 for a, b, c, d in zip(ul, ur, ll, lr))
+    lateral = tuple((b - a) + (d - c) for a, b, c, d in zip(ul, ur, ll, lr))
+    up = tuple(v / norm(up) for v in up)
+    forward = cross(lateral, up)
+    forward = tuple(v / norm(forward) for v in forward)
+    right = cross(up, forward)
+    return [[right[r], up[r], forward[r]] for r in range(3)]
+
+
+def quaternion_matrix(q):
+    x, y, z, w = q
+    return [[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]]
+
+
+def product(a, b, transpose=False):
+    """a b, or a b^T."""
+    return [[sum(a[r][k] * (b[c][k] if transpose else b[k][c]) for k in range(3)) for c in range(3)] for r in range(3)]
+
+
 def about_hips(bones, unit=U32):
-    """Positions about the hips and the error bounds of forward kinematics below the hips, by bone name."""
+    """Positions about the hips and their error bounds, by bone name.
+
+    The links below the hips add to the running absolute position, so each
+    rounds relative to the absolute magnitudes (the chain's whole length from
+    A's origin), and the difference from the hips position rounds once more,
+    relative to both. The hips' own error is common to both and cancels."""
     hips = bones["Hips"]
     positions = {name: sub(frame.position, hips.position) for name, frame in bones.items()}
-    errors = {name: fk_error(frame.depth - hips.depth, max(frame.length - hips.length, 0.), unit)
+    errors = {name: 0. if name == "Hips" else
+              fk_error(frame.depth - hips.depth, max(frame.length, norm(frame.position)), unit)
+              + g("relative", 1, unit) * (norm(frame.position) + norm(hips.position))
               for name, frame in bones.items()}
     return positions, errors
 
 
-def hips_tolerance(bones, rest_bones, masses, links, human_scale, target, target_error, hips_parent, unit=U32):
-    """tau for one sample's hips-local translation (in the hips parent's units).
-
-    `bones` and `rest_bones` are the sample's and the T-pose's Frames in A,
-    `target` the body position in A (normalized) with `target_error` bounding
-    `h T_A`, and `hips_parent` the hips parent's Frame in A."""
+def _hips_path(bones, rest_bones, masses, links, human_scale, target, target_error, target_turn, hips_parent,
+               unit):
+    """The hips-local translation's error bound along 2.3's path at `unit`, and a bound on its magnitude."""
     positions, errors = about_hips(bones, unit)
     error, magnitude = com_error(positions, masses, links, errors, unit)
     rest = frame_error(*about_hips(rest_bones, unit), unit)
-    turn = frame_error(positions, errors, unit) + rest + g("rotation", 1, unit)
+    turn = frame_error(positions, errors, unit) + rest + g("rotation", 1, unit) + target_turn
     body = human_scale * norm(target)
-    total = (target_error + error + turn * magnitude + g("solve", 1, unit) * (body + magnitude)
-             + g("local", 1, unit) * (body + magnitude + norm(hips_parent.position)))
-    return total / hips_parent.scale
+    # The hips parent's composed transform in A: t_p from forward kinematics, R_p from one
+    # quaternion product per link, sigma_p from one scale product per link, and k = sigma_p s_h one more.
+    depth, offset = hips_parent.depth, norm(hips_parent.position)
+    span = body + magnitude + offset
+    parent = (fk_error(depth, max(hips_parent.length, offset), unit)
+              + (rotation_error(OPERATIONS["compose"] * depth, unit) + gamma(OPERATIONS["scale"] * depth, unit)) * span)
+    scale = gamma(OPERATIONS["scale"] * (depth + 1), unit) * magnitude
+    total = (target_error + error + turn * magnitude + scale + g("solve", 1, unit) * (body + magnitude)
+             + g("local", 1, unit) * span + parent)
+    return total / hips_parent.scale, span / hips_parent.scale
 
 
-def evaluation_error(bones, rest_bones, masses, links, human_scale, target, hips_parent, hips_local):
-    """E_eval at one sample (module docstring): `tau`'s operation counts at
-    u = 2^-53 from an exactly recorded target, plus one f32 rounding of the
-    hips translation."""
-    path = hips_tolerance(bones, rest_bones, masses, links, human_scale, target,
-                          U64 * human_scale * norm(target), hips_parent, U64)
-    return path + U32 * norm(hips_local)
+def unity_error(bones, rest_bones, masses, links, human_scale, target, target_error, target_turn, hips_parent):
+    """E_unity for one sample's hips-local translation (in the hips parent's units): Unity's f32 path.
+
+    `bones` and `rest_bones` are the sample's and the T-pose's Frames in A,
+    `target` the body position in A (normalized) with `target_error` bounding
+    `h T_A`, `target_turn` bounding the target body rotation's error (as
+    `rotation_error`), and `hips_parent` the hips parent's Frame in A."""
+    return _hips_path(bones, rest_bones, masses, links, human_scale, target, target_error, target_turn,
+                      hips_parent, U32)[0]
+
+
+def evaluation_error(bones, rest_bones, masses, links, human_scale, target, hips_parent):
+    """E_eval at one sample (module docstring): E_unity's operation counts at u = 2^-53 from an
+    exactly recorded target, plus one f32 rounding of the model's pre-cast hips translation, whose
+    magnitude is bounded by (h |T_A| + M_h + |t_p|) / sigma_p and the path's own error."""
+    path, magnitude = _hips_path(bones, rest_bones, masses, links, human_scale, target,
+                                 U64 * human_scale * norm(target), 0., hips_parent, U64)
+    return path + U32 * (magnitude + path)

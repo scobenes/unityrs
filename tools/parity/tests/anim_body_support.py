@@ -6,6 +6,7 @@ the adequacy checkpoint sees a consistent fit.
 """
 
 import copy
+import math
 
 from test_anim_replay import bits
 
@@ -125,6 +126,15 @@ def muscle_axes():
 AXES = muscle_axes()
 
 
+def matrix_quaternion(m):
+    """The unit quaternion (x, y, z, w) of a rotation matrix, w >= 0."""
+    w = math.sqrt(max(0., 1 + m[0][0] + m[1][1] + m[2][2])) / 2
+    x = math.copysign(math.sqrt(max(0., 1 + m[0][0] - m[1][1] - m[2][2])) / 2, m[2][1] - m[1][2])
+    y = math.copysign(math.sqrt(max(0., 1 - m[0][0] + m[1][1] - m[2][2])) / 2, m[0][2] - m[2][0])
+    z = math.copysign(math.sqrt(max(0., 1 - m[0][0] - m[1][1] + m[2][2])) / 2, m[1][0] - m[0][1])
+    return x, y, z, w
+
+
 def limits(muscle):
     """A muscle's default (min, max) in degrees."""
     name = muscle.removeprefix("Left ").removeprefix("Right ")
@@ -169,6 +179,12 @@ def body_doc(name, run, *, samples=None):
                   required=row["required"]) for b, row in zip(BONES, human_bones)]
     masses = {b: MASSES[b] for b in tolerance.BODY_SLOTS}
     rows, samples_out, targets = [], [], []
+
+    def frame(transforms):
+        bones = tolerance.bone_frames(human_bones, nodes, tolerance.kinematics(nodes, transforms, replay.f32_from_bits))
+        return tolerance.body_frame({b: bone.position for b, bone in bones.items()})
+
+    rest_frame = frame(rest)
     for t, vector in schedule:
         pose = copy.deepcopy(rest)
         muscles = vector
@@ -190,7 +206,9 @@ def body_doc(name, run, *, samples=None):
                     c[k] += COEFFICIENT * weights[i] * (bones[j].position[k] - bones[i].position[k])
             return [bits(v) for v in c]
 
-        rows.append(dict(readback_position=centre("0", False), readback_rotation=[bits(0)] * 3 + [bits(1)],
+        # The model's body rotation, F(pose) F(T)^-1 (2.2), as Unity's read-back.
+        turn = matrix_quaternion(tolerance.product(frame(pose), rest_frame, transpose=True))
+        rows.append(dict(readback_position=centre("0", False), readback_rotation=[bits(v) for v in turn],
                          world_position=centre("", True), world_rotation=[bits(0)] * 3 + [bits(1)],
                          **dict.fromkeys(("root_position", "root_rotation", "body_position", "body_rotation"),
                                          [bits(0)] * 3 if kind == "clip" else [])))
@@ -257,7 +275,7 @@ def clip_case(doc, variant_name):
     stream = compiled(extras)
     return {"m_MuscleClip": built | dict(m_HeightFromFeet=variant["height_from_feet"], m_Level=variant["level"],
                                          m_OrientationOffsetY=variant["orientation"], m_StartAtOrigin=True,
-                                         m_Clip=stream["m_Clip"]),
+                                         m_Clip=stream["m_Clip"], m_IndexArray=stream["m_IndexArray"]),
             "m_ClipBindingConstant": stream["m_ClipBindingConstant"]}
 
 def word(value):
@@ -277,8 +295,11 @@ def compiled(extras):
         data += [word(t), len(frames[t])]
         for entry in frames[t]:
             data += list(entry)
+    index = [-1] * 200
+    for slot, (attribute, _, _) in enumerate(slots):
+        index[attribute] = slot
     return {"m_ClipBindingConstant": {"genericBindings": [
         dict(path=0, typeID=95, attribute=attribute, customType=8, isPPtrCurve=0, isIntCurve=0)
-        for attribute, _, _ in slots]}, "m_Clip": {"data": {
+        for attribute, _, _ in slots]}, "m_IndexArray": index, "m_Clip": {"data": {
             "m_StreamedClip": {"curveCount": len(slots), "data": data + [0x7f800000, 0]},
             "m_DenseClip": {"m_CurveCount": 0}, "m_ConstantClip": {"data": []}}}}
