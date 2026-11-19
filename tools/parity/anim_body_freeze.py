@@ -23,7 +23,8 @@ E2 and E3a compare only poses inside the lateral limit (plan section 8):
 the largest spine Left-Right value of a training sample the model compared
 (never one the twist scope refused) below every sample failing either, and
 at least LATERAL_STEP below them
-(anim_body_check.lateral_limit). A limit under LATERAL_FLOOR fails. The
+(anim_body_check.lateral_limit). A required band sweep unrecorded leaves
+no limit, as does one under LATERAL_FLOOR, and both fail. The
 freeze records it, E3b refuses past it, and a freeze whose training runs
 give another limit is refused.
 
@@ -71,7 +72,7 @@ import child  # noqa: E402
 from anim_body_model import ANGLE_FLOOR, HYPOTHESES, TWIST_LIMIT  # noqa: E402
 from anim_body_runs import Design, digest, load, observe, role_of, solve  # noqa: E402
 from anim_body_tolerance import OPERATIONS, U32, U64  # noqa: E402
-from anim_fixture_body import BODY_INFO, HOLDOUT, rig_bones  # noqa: E402
+from anim_fixture_body import BAND_CASES, BODY_INFO, HOLDOUT, rig_bones  # noqa: E402
 
 FORMAT = "unityrs.anim_body_freeze"
 VERSION = 3
@@ -121,10 +122,15 @@ def missing(runs):
     return [f"{run.version}: required case {case} not recorded" for run in runs for case in run.missing]
 
 
-def lateral(rows, design, coefficients):
+def lateral(runs, rows, design, coefficients):
     """(limit, smallest failing value, failures): the training runs' lateral limit
-    (anim_body_check.lateral_limit). Below LATERAL_FLOOR it fails, and the checks then compare every pose
-    (limit None), so the failures that set it show."""
+    (anim_body_check.lateral_limit). With a required band sweep unrecorded, or below LATERAL_FLOOR, there is
+    none: it fails, and the checks then compare every pose (limit None), so the failures that would set it
+    show."""
+    absent = [f"{run.version}: {case}" for run in runs for case in run.missing if case in BAND_CASES]
+    if absent:
+        return None, float("inf"), ["no spine lateral limit: the band sweeps that validate it are not recorded ("
+                                    + ", ".join(absent) + ")"]
     limit, worst = check.lateral_limit(rows, design, coefficients)
     if limit >= check.LATERAL_FLOOR:
         return limit, worst, []
@@ -135,7 +141,7 @@ def lateral(rows, design, coefficients):
 def e3a(folders, avatar_of):
     runs, rows, design = training(folders, avatar_of)
     coefficients = solve(design)
-    limit, worst, failures = lateral(rows, design, coefficients)
+    limit, worst, failures = lateral(runs, rows, design, coefficients)
     report = check.e3(rows, design, coefficients, limit)
     report["failures"] += failures + missing(runs)
     report["passed"] = not report["failures"]
@@ -304,7 +310,7 @@ def run_mode(mode, folders, freeze_path=None, avatar_of=None, clip_of=None):
                    for line in adequacy.missing_planned(docs)]
         report = check.e1(rows, design, adequacy.expected_inventory(parents), merged, planned)
     elif mode == "e2":
-        limit, worst, failures = lateral(rows, design, solve(design))
+        limit, worst, failures = lateral(runs, rows, design, solve(design))
         report = check.e2(rows, limit) | dict(lateral_limit=limit, lateral_failing=worst)
         report["failures"] += failures
     else:

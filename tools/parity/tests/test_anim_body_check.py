@@ -305,6 +305,21 @@ class Checks(unittest.TestCase):
         with self.assertRaisesRegex(model.Refused, "^spine_lateral_range: spine Left-Right 0.3 over 0.25"):
             model.lateral_scope({"UpperChest Left-Right": .3}, .25)
 
+    def test_no_lateral_limit_without_every_band_sweep(self):
+        # A required band sweep unrecorded sets no limit, even with the rig's own probe case missing too: E2 and
+        # E3a fail and compare every pose.
+        folder = scratch.for_case(self)
+        write_run(folder, self.docs)
+        required = {name for name in self.docs if runs.role_of(name) == "training"}
+        version = runs.load([folder], "training")[0].version
+        with mock.patch.object(runs, "REQUIRED", frozenset({*required, "body-probes-band-tall", "body-probes-tall"})):
+            for mode in ("e2", "e3a"):
+                report = freeze.run_mode(mode, [folder], avatar_of=avatars, clip_of=clips)
+                self.assertIsNone(report["lateral_limit"])
+                self.assertIn("no spine lateral limit: the band sweeps that validate it are not recorded "
+                              f"({version}: body-probes-band-tall)", report["failures"])
+                self.assertFalse(report["passed"])
+
     def test_e2_and_e3_refuse_a_pose_past_the_lateral_limit(self):
         folder = scratch.for_case(self)
         write_run(folder, self.docs)

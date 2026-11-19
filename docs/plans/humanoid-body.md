@@ -171,8 +171,9 @@ from the middle points of the hips and shoulders. The candidate:
   the largest spine Left-Right value of a training sample the model
   compared (a sample the twist scope refused validates nothing) below
   every sample failing E2 or E3a, and at least 1/32 below those. A pose past it
-  refuses (section 8). A limit under 1/16 validates nothing, and E2 and
-  E3a then fail. F9's band sweeps sample the band past it on the training
+  refuses (section 8). Without every required band sweep recorded there is
+  no limit, and a limit under 1/16 validates nothing: E2 and E3a then
+  fail. F9's band sweeps sample the band past it on the training
   rigs.
 
 ### 2.3 Hips-local TRS and scale
