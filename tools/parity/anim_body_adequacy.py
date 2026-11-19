@@ -122,7 +122,7 @@ def samples(name, doc, parents, masses):
         hips_row = transforms[next(i for i, node in enumerate(nodes) if node["address"] == hips_address)]
         hips_scale = uniform(decode(hips_row["scale"], 3, F32))
         hips_local = decode(hips_row["translation"], 3, F32)
-        epsilon, turn = None, 0.
+        epsilon, turn, world_bones, root = None, 0., None, None
         if readback is not None:
             world = decode(readback["world_position"], 3, F32)
             world_bones, differences = body_states(nodes, transforms, F32, bones_rows, links, "")
@@ -155,6 +155,15 @@ def samples(name, doc, parents, masses):
                    jacobian=jacobian, unity=unity, evaluation=evaluation, fit=False, epsilon=epsilon,
                    edges=None if links == expected else f"recorded {links} but HumanTrait gives {expected}")
         row["fit"] = epsilon is not None and info is not None and info["rig"] != HOLDOUT
+        # What B2's checks (anim_body_check.py) evaluate the model and its bounds from.
+        row["state"] = dict(bones=bones, local=local, rest_local=rest_local, chain=chain, weights=weights,
+                            links=links, scale=scale, target=target, body_rotation=body_rotation,
+                            target_kind="known" if known is not None else "readback" if readback else None,
+                            target_error=target_error, turn=turn, rest_frame=rest_frame, hips_scale=hips_scale,
+                            hips_local=hips_local, hips_rotation=decode(hips_row["rotation"], 4, F32),
+                            readback=readback, known=known, world_bones=world_bones, root=root,
+                            rest_turn=rest_turn, sample=sample, case=name,
+                            muscle_names=[muscle["name"] for muscle in human["muscles"]])
         yield row
 
 
