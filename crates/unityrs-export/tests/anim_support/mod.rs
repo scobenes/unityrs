@@ -81,11 +81,18 @@ pub enum GenericClip {
     ConstantTrs,
     ClampedTranslation,
     HeldQuaternionFlip,
+    /// Translation X moves at unit rate to 0.5, then a zero-slope key holds it.
+    StreamedThenHeld,
+    /// Translation X ramps from 0 to 1 beside a Y held at 2^20.
+    RampBesideLarge,
 }
 
 pub fn generic_clip(kind: GenericClip) -> Object {
     let clamped_translation = matches!(kind, GenericClip::ClampedTranslation);
     let held_rotation = matches!(kind, GenericClip::HeldQuaternionFlip);
+    let then_held = matches!(kind, GenericClip::StreamedThenHeld);
+    let large = (2_f32.powi(20)).to_bits();
+    let beside_large = matches!(kind, GenericClip::RampBesideLarge);
     let mut object = p::explicit(9, 4., &[]);
     let mut words = Vec::new();
     p::frame(&mut words, f32::MIN, &[]);
@@ -93,11 +100,27 @@ pub fn generic_clip(kind: GenericClip) -> Object {
         if clamped_translation && time == 3. {
             p::frame(&mut words, 2.75, &[(1, [0, 0, 0, 1000_f32.to_bits()])]);
         }
+        if then_held && time == 3. {
+            p::frame(&mut words, 2.5, &[(1, [0, 0, 0, 0.5_f32.to_bits()])]);
+        }
         if held_rotation && time == 3. {
             p::frame(&mut words, 2.75, &[(4, [0, 0, 0, (-1_f32).to_bits()])]);
         }
         let mut keys = vec![(0, [0, 0, 0, weight.to_bits()])];
-        if clamped_translation && time == 2. {
+        if then_held && time == 3. {
+            keys.push((1, [0, 0, 0, 0.5_f32.to_bits()]));
+        }
+        if beside_large && time == 2. {
+            keys.extend([
+                (1, [0, 0, 1_f32.to_bits(), 0]),
+                (2, [0, 0, 0, large]),
+                (3, [0; 4]),
+            ]);
+        }
+        if beside_large && time == 3. {
+            keys.extend([(1, [0, 0, 0, 1_f32.to_bits()]), (2, [0, 0, 0, large])]);
+        }
+        if (clamped_translation || then_held) && time == 2. {
             keys.extend([(1, [0, 0, 1_f32.to_bits(), 0]), (2, [0; 4]), (3, [0; 4])]);
         }
         if held_rotation {
@@ -114,7 +137,9 @@ pub fn generic_clip(kind: GenericClip) -> Object {
     p::frame(&mut words, f32::INFINITY, &[]);
     let (transform_attributes, streamed_count, constants): (_, _, &[f32]) = match kind {
         GenericClip::ConstantTrs => ([1, 2], 1, &[1., -2., 0., 0., 0., 0., 1.]),
-        GenericClip::ClampedTranslation => ([1, 2], 4, &[0., 0., 0., 1.]),
+        GenericClip::ClampedTranslation
+        | GenericClip::StreamedThenHeld
+        | GenericClip::RampBesideLarge => ([1, 2], 4, &[0., 0., 0., 1.]),
         GenericClip::HeldQuaternionFlip => ([2, 1], 5, &[1., -2., 0.]),
     };
     let [first, second] = transform_attributes;
@@ -126,7 +151,7 @@ pub fn generic_clip(kind: GenericClip) -> Object {
             Binding {
                 class: 137,
                 custom: 20,
-                attribute: 2_753_195_566,
+                attribute: 1_339_427_383,
                 ..Binding::default()
             },
             Binding {

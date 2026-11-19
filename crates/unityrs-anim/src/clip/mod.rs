@@ -4,12 +4,14 @@ mod compiled;
 pub(crate) mod explicit;
 mod packed;
 
+pub(crate) use compiled::decode_stream;
 pub use compiled::{CompiledClip, SlotValue, StorageKind, StreamKey, StreamSlot};
 pub use packed::PackedRotation;
 
 use crate::{
     AnimError, BindingTable, ClipTiming,
     bindings::read_table,
+    humanoid::{HumanoidClip, is_humanoid, read_humanoid_clip},
     read::{Dict, flag, int, version},
     timing::check_rate,
 };
@@ -81,6 +83,7 @@ pub struct Clip {
     bindings: Option<BindingTable>,
     timing: Option<ClipTiming>,
     has_metadata_tracks: bool,
+    humanoid: Option<HumanoidClip>,
     pub(crate) playback: Result<Playback, AnimError>,
 }
 
@@ -98,6 +101,13 @@ impl Clip {
             meter,
         }
         .root(field.name())
+    }
+
+    /// The humanoid slot table of a clip whose `m_IndexArray` maps a DOF.
+    /// Generic playback refuses such a clip; see `humanoid_refusal`.
+    #[must_use]
+    pub fn humanoid(&self) -> Option<&HumanoidClip> {
+        self.humanoid.as_ref()
     }
 
     #[must_use]
@@ -250,16 +260,25 @@ pub fn read_clip(object: &ObjectRef, meter: &Arc<Meter>) -> Result<Clip, AnimErr
         meter,
     };
     let mut bindings = None;
+    let mut humanoid = None;
     let decoded = (|| {
         let explicit_layout = is_legacy(&dict)?
             || (dict.root("m_MuscleClip")?.is_none()
                 && dict.root("m_AnimationClipSettings")?.is_some());
+        let human = match dict.root("m_MuscleClip")? {
+            Some(muscle) if !explicit_layout => is_humanoid(&dict, muscle)?,
+            _ => false,
+        };
         if dict.root("m_ClipBindingConstant")?.is_some() {
             match read_table(object, &tree.tree, &dict) {
                 Ok(table) => bindings = Some(table),
-                Err(error) if explicit_layout && !error.resource_refusal() => {}
+                Err(error) if (explicit_layout || human) && !error.resource_refusal() => {}
                 Err(error) => return Err(error),
             }
+        }
+        if human && let Some(muscle) = dict.root("m_MuscleClip")? {
+            humanoid = Some(read_humanoid_clip(object, &dict, muscle)?);
+            return Err(AnimError::UnsupportedHumanoidPlayback);
         }
         decode(object, &dict, explicit_layout, bindings.as_ref())
     })();
@@ -275,6 +294,7 @@ pub fn read_clip(object: &ObjectRef, meter: &Arc<Meter>) -> Result<Clip, AnimErr
         playback,
         timing,
         has_metadata_tracks,
+        humanoid,
     })
 }
 

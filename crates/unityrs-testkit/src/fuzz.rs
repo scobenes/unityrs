@@ -20,13 +20,17 @@
 //!   byte order, its resource and the meter, for the `meshdecode` target.
 //! - [`ShaderCase`]: a shader program blob, its Unity version and the meter,
 //!   for the `shader` target.
+//! - [`anim_humanoid_cases`]: [`SceneCase`] humanoid rigs, for the
+//!   `anim_humanoid` target.
 //!
 //! Every decoder here takes any bytes: a field the input does not reach is
 //! empty (a row, a reference, the data), never an error.
 
 mod anim;
+mod humanoid;
 mod scene;
 pub use anim::{anim_clip_cases, anim_gltf_cases};
+pub use humanoid::anim_humanoid_cases;
 pub use scene::scene_cases;
 
 /// A synthetic serialized scene and strict export profile for the 3D targets.

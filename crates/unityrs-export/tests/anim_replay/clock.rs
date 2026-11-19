@@ -207,7 +207,9 @@ pub(crate) fn check(
             )?;
             let sample = index(&probe["sample"])?;
             let observed = f32_bits(&probe["value"])?;
-            let budget = number(&frozen[sample]["bounds"][target_index])?;
+            let bound = &frozen[sample]["bounds"][target_index];
+            // A row with its own component ranges has a bound per component.
+            let budget = number(bound.get(component).unwrap_or(bound))?;
             let error = probe_error(
                 target,
                 component,
@@ -231,10 +233,24 @@ pub(crate) fn check(
             }
         }
     }
-    require(
-        distinguished && tolerance["clock_discriminated"] == true,
-        "bundle held probe did not distinguish clocks",
-    )?;
+    // A recording is clock-independent when both candidate clocks give every
+    // sample the same effective source time; otherwise a held probe must
+    // tell them apart.
+    let independent = times
+        .iter()
+        .zip(&alternative)
+        .all(|(a, b)| a.to_bits() == b.to_bits());
+    if independent {
+        require(
+            tolerance["clock_discriminated"] == "independent",
+            "bundle clock independence",
+        )?;
+    } else {
+        require(
+            distinguished && tolerance["clock_discriminated"] == true,
+            "bundle held probe did not distinguish clocks",
+        )?;
+    }
     Ok(times)
 }
 

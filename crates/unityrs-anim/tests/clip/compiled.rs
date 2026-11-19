@@ -63,12 +63,8 @@ fn compiled_pointer_seed_and_integer_float_bits_are_distinct() {
             begin: 3.,
             bits: &[integer_bits, u32::MAX],
         },
-        constants: &[
-            12_f32.to_bits(),
-            4_f32.to_bits(),
-            5_f32.to_bits(),
-            6_f32.to_bits(),
-        ],
+        constants: &[12, 4, 5, 6].map(|x: u16| f32::from(x).to_bits()),
+        discrete_count: None,
     };
     let (clip, graph) = load(
         object(&[pointer, integer, material, transform(1)], storage),
@@ -452,6 +448,8 @@ fn bad_dense_dimensions_rate_and_interval_are_distinct() {
     ));
 }
 
+/// An eight-entry `m_IndexArray` maps a DOF in no confirmed humanoid layout,
+/// so the generic slots never play it (tests/humanoid.rs has the 200-DOF one).
 #[test]
 fn humanoid_slots_refuse_generic_playback() {
     let mut object = f::compiled_fixture();
@@ -459,7 +457,7 @@ fn humanoid_slots_refuse_generic_playback() {
     let (clip, _) = load(object, false);
     assert!(matches!(
         read_clip(&clip, &Meter::unlimited()).unwrap().issue(),
-        Some(AnimError::UnsupportedHumanoidPlayback)
+        Some(AnimError::UnsupportedHumanoidLayout)
     ));
 }
 
@@ -498,7 +496,7 @@ fn humanoid_mapping_refuses_even_with_empty_storage_and_explicit_curves() {
     let clip = read_clip(&clip, &meter).unwrap();
     assert!(matches!(
         bind(&clip, &graph, &meter),
-        Err(AnimError::UnsupportedHumanoidPlayback)
+        Err(AnimError::UnsupportedHumanoidLayout)
     ));
 }
 

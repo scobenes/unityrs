@@ -5,7 +5,9 @@ mod anim_support;
 mod anim_replay {
     pub mod clock;
     pub mod fixture;
+    pub mod humanoid;
     pub mod ranges;
+    pub mod rules;
 }
 use anim_replay::{clock, ranges};
 use serde_json::Value as J;
@@ -250,6 +252,30 @@ fn derive(manifest: &Path, dir: &Path) -> Result<J> {
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
+/// Author the budget rows again from the bundles through the CLI and
+/// refuse stored rows that differ, such as rows widened after a capture.
+fn verify_budgets(manifest: &Path, dir: &Path, cli: &str) -> Result<()> {
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/parity/anim_replay_budgets.py");
+    let output = child::output(
+        Command::new("python3")
+            .args(["-I"])
+            .arg(script)
+            .arg(manifest)
+            .arg("--bundle-dir")
+            .arg(dir)
+            .args(["--unityrs", cli, "--verify"]),
+    )?;
+    if !output.status.success() {
+        return Err(format!(
+            "replay budgets: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn import_settings(spec: &J, clip: &unityrs_anim::Clip) -> Result<()> {
     use unityrs_core::value::Value;
     for setting in list(&spec["evidence"]["import_settings"])? {
@@ -452,8 +478,7 @@ fn compare(document: &J, dir: &Path, tolerance: &J) -> Result<()> {
         for (i, target) in targets.iter().enumerate() {
             let actual = target.sampled(samples.transforms(), samples.morphs());
             let reference = target.reference(&observed["pose"])?;
-            let error = target.error(&actual, &reference)?;
-            let tolerance = number(&bounds[i])?;
+            let (error, tolerance) = target.worst(&actual, &reference, &bounds[i])?;
             let excess = error - tolerance;
             let within_tolerance = error <= tolerance;
             if !within_tolerance
@@ -461,8 +486,10 @@ fn compare(document: &J, dir: &Path, tolerance: &J) -> Result<()> {
             {
                 failed = Some((excess, i, time, error, tolerance));
             }
-            if error > worst[i].0 {
-                worst[i] = (error, time);
+            // Report the largest component error, whatever its bound.
+            let largest = target.error(&actual, &reference)?;
+            if largest > worst[i].0 {
+                worst[i] = (largest, time);
             }
         }
     }
@@ -529,6 +556,28 @@ impl Target<'_, '_, '_> {
             .zip(reference)
             .map(|(a, b)| (a - b).abs())
             .fold(0., f64::max))
+    }
+
+    /// The error and bound of the translation or scale component furthest
+    /// past its bound, or of a rotation or weight target's one bound.
+    fn worst(&self, sampled: &[f64], reference: &[f64], bound: &J) -> Result<(f64, f64)> {
+        let vector = matches!(self.property(), "translation" | "scale");
+        let Some(bounds) = bound.as_array() else {
+            require(!vector, "component tolerance coverage")?;
+            return Ok((self.error(sampled, reference)?, number(bound)?));
+        };
+        require(
+            vector && bounds.len() == sampled.len() && sampled.len() == reference.len(),
+            "component tolerance coverage",
+        )?;
+        let mut worst = None;
+        for ((a, b), bound) in sampled.iter().zip(reference).zip(bounds) {
+            let (error, bound) = ((a - b).abs(), number(bound)?);
+            if worst.is_none_or(|(e, t): (f64, f64)| (error - bound).total_cmp(&(e - t)).is_gt()) {
+                worst = Some((error, bound));
+            }
+        }
+        worst.ok_or_else(|| "component tolerance coverage".into())
     }
 
     fn sampled(
@@ -674,10 +723,21 @@ fn recorded_generic_or_legacy() {
     let frozen = std::env::var("UNITYRS_ANIM_TOLERANCES").unwrap();
     let manifest = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     let tolerance = serde_json::from_slice(&std::fs::read(frozen).unwrap()).unwrap();
+    let cli = std::env::var("UNITYRS_ANIM_CLI").unwrap();
+    verify_budgets(Path::new(&path), Path::new(&dir), &cli).unwrap();
     let derived = derive(Path::new(&path), Path::new(&dir)).unwrap();
     assert_eq!(
         derived, tolerance,
         "frozen tolerances differ from replay derivation"
     );
     compare(&manifest, Path::new(&dir), &tolerance).unwrap();
+}
+
+#[test]
+#[ignore = "owner-built Editor humanoid qualification evidence is required"]
+fn recorded_humanoid_refusals() {
+    let path = std::env::var("UNITYRS_ANIM_HUMANOID").unwrap();
+    let dir = std::env::var("UNITYRS_ANIM_BUNDLES").unwrap();
+    let document = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    anim_replay::humanoid::check_document(&document, Path::new(&dir)).unwrap();
 }

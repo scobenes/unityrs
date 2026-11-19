@@ -166,12 +166,15 @@ impl GenericBinding {
         // AssetStudio's FindBinding uses widths 3/4/3/3 for local TRS/Euler
         // and one slot for each non-Transform binding.
         // https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudio/Classes/AnimationClip.cs#L792-L824
+        // An Euler row's custom type is its rotation order, in Unity's
+        // `RotationOrder` enum: 0..5 = XYZ, XZY, YZX, YXZ, ZXY, ZYX. Built
+        // 2022.3 clips store the default ZXY (4).
         if self.is_transform() {
             return match (self.custom_type, self.attribute) {
                 (0, 1) => Some((K::Transform(T::Translation), 3)),
                 (0, 2) => Some((K::Transform(T::Quaternion), 4)),
                 (0, 3) => Some((K::Transform(T::Scale), 3)),
-                (0, 4) => Some((K::Transform(T::Euler), 3)),
+                (0..=5, 4) => Some((K::Transform(T::Euler), 3)),
                 _ => None,
             };
         }

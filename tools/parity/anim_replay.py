@@ -25,12 +25,14 @@ NEUTRAL_SETTINGS = dict.fromkeys((
     "loop", "loopTime", "loopPose", "loopBlend", "loopBlendOrientation", "loopBlendPositionY",
     "loopBlendPositionXZ", "lockRootRotation", "lockRootHeightY", "lockRootPositionXZ",
     "keepOriginalOrientation", "keepOriginalPositionY", "keepOriginalPositionXZ",
-    "heightFromFeet", "startAtOrigin", "mirror", "hasAdditiveReferencePose", "translation_dof",
+    "heightFromFeet", "mirror", "hasAdditiveReferencePose", "translation_dof",
 ), False) | dict.fromkeys((
     "orientationOffsetY", "level", "rotationOffset", "heightOffset", "cycleOffset",
     "additiveReferencePoseTime", "upper_arm_twist", "lower_arm_twist", "upper_leg_twist",
     "lower_leg_twist",
-), 0) | {"additiveReferencePoseClipName": ""}
+), 0) | {"additiveReferencePoseClipName": ""} | {"startAtOrigin": True}
+# The neutral root basis starts at the origin: every built fixture clip stores
+# start-at-origin on, whatever its XZ basis flag.
 
 
 def require(ok, message):
@@ -71,6 +73,7 @@ def _matches(schema, value, path):
 
 def _shape(schema, value, path):
     """The small Draft 2020-12 subset used by this checked-in schema."""
+    require(schema is not False, f"{path}: member not allowed")
     if "$ref" in schema:
         _shape(SCHEMA["$defs"][schema["$ref"].split("/")[-1]], value, path)
         return
@@ -121,6 +124,10 @@ def f32_bits(value):
         raise ValueError("f32 overflow") from exc
     f32_from_bits(bits)
     return bits
+
+
+def f64_bits(value):
+    return struct.unpack("<Q", struct.pack("<d", value))[0]
 
 
 def f32_from_bits(bits):
@@ -201,21 +208,33 @@ def _validate_clock(spec, start, stop, length):
             require((_target_key(left), left["component"]) == (_target_key(right), right["component"])
                     and f32_from_bits(left["value"]) != f32_from_bits(right["value"]),
                     "held probes must distinguish both sides of the same component")
+    if spec["mode"] == "animator" and 0 < start < stop:
+        # Unity 2022.3 reports a late-start clip's length as its stop time,
+        # yet plays it from the interval start. Require a held probe on the
+        # other side from where reading playable time as source time puts it.
+        end = f32_from_bits(f32_bits(stop))
+        as_source = [stop if f32_from_bits(bits) == end else max(start, min(stop, f32_from_bits(bits)))
+                     for bits, _, _ in effective]
+        require(any(bisect_left(effective_sources, jump) != bisect_left(as_source, jump) for jump in boundaries),
+                "late-start interval clock is not discriminated from a zero origin by a held probe")
     return _clock_discriminated(spec, times, length, effective_sources)
 
 
 def _clock_discriminated(spec, times, length, selected_sources):
+    """True, False, or "independent" when no sample's time depends on the clock."""
     boundaries = spec["held_boundaries"]
-    if not boundaries:
-        return False
     other = "f32_add" if spec["source_clock"] == "widened" else "widened"
     try:
-        if other == "f32_add" and f32_from_bits(f32_bits(spec["start"])) != spec["start"]:
-            return False
         alternative = spec | {"source_clock": other}
         other_sources = [clocks(alternative, time, length)[2] for time in times]
     except ValueError:
         # There is no f32-add prediction when source time overflows f32.
+        return False
+    # Both candidate clocks give every sample the same effective source
+    # time, so the recording needs no held probe to tell them apart.
+    if [f64_bits(t) for t in other_sources] == [f64_bits(t) for t in selected_sources]:
+        return "independent"
+    if not boundaries or (other == "f32_add" and f32_from_bits(f32_bits(spec["start"])) != spec["start"]):
         return False
     # Different splits put at least one of the validated adjacent probes
     # on the opposite side under the other model.
@@ -447,7 +466,11 @@ def _validate_qualification(spec, capture, baselines):
     for slot, muscle in zip(muscles, captured["muscles"]):
         if slot["storage"] != "absent":
             bone, axis = muscle["bone"], muscle["axis"]
-            require(bones[bone]["node"] >= 0 and bone in axes, "mapped muscle needs a bone and runtime axes")
+            if bones[bone]["node"] < 0:
+                # Playback drops a muscle of an absent optional bone.
+                require(not bones[bone]["required"], "mapped muscle needs a required bone and runtime axes")
+                continue
+            require(bone in axes, "mapped muscle needs a bone and runtime axes")
             record = axes[bone]
             require(all(any(map(f32_from_bits, record[name])) for name in ("pre", "post"))
                     and f32_from_bits(record["sign"][axis]) in (-1, 1)
@@ -470,10 +493,13 @@ def _validate_qualification(spec, capture, baselines):
             actual = sample["pose"]["transforms"][target]
             for axis, prop in enumerate(TRS):
                 measured, expected = (tuple(map(f32_from_bits, pose[prop])) for pose in (actual, expected_pose))
-                residual = (angle(measured, expected) if prop == "rotation"
-                            else max(abs(a - b) for a, b in zip(measured, expected)))
-                require(residual <= bounds[3 * target + axis],
-                        f"{name} {prop} residual exceeds frozen replay bound at {sample['local']}")
+                bound = bounds[3 * target + axis]
+                if prop == "rotation":
+                    within = angle(measured, expected) <= bound
+                else:
+                    # Translation and scale have a bound per component.
+                    within = all(abs(a - b) <= c for a, b, c in zip(measured, expected, bound, strict=True))
+                require(within, f"{name} {prop} residual exceeds frozen replay bound at {sample['local']}")
 
 
 def _validate_recording(spec, capture, bundle_dir=None, *, pending_humanoid=False):
@@ -499,9 +525,13 @@ def _validate_recording(spec, capture, bundle_dir=None, *, pending_humanoid=Fals
             "legacy state mismatch")
     require(mode != "animator" or not playback["clip_looping"], "looping Animator endpoint is unconfirmed")
     require(mode != "legacy" or playback["wrap_mode"] == "ClampForever", "legacy endpoint must be clamped")
-    length = f32_from_bits(playback["clip_length_f32"])
-    require(playback["clip_length_f32"] == f32_bits(float(spec["stop"]) - float(spec["start"]))
+    start, stop = float(spec["start"]), float(spec["stop"])
+    # Unity 2022.3 measures a late-start Mecanim clip's length from zero.
+    # Playback still runs over the interval, so the clocks use its length.
+    reported = stop if mode != "legacy" and start > 0 else stop - start
+    require(playback["clip_length_f32"] == f32_bits(reported)
             and f32_from_bits(playback["frame_rate_f32"]) == spec["sample_rate"], "clip length or sample rate mismatch")
+    length = f32_from_bits(f32_bits(stop - start))
     human = capture.get("humanoid")
     require(human is not None or ("humanoid" not in spec["evidence"] and not playback["clip_human_motion"]),
             "missing humanoid capture")
@@ -567,31 +597,42 @@ def validate(manifest, bundle_dir=None):
     return clock_discriminated
 
 
+def _bound(model, raw, reach):
+    # Final f32 storage rounds by half an ulp at the largest value the
+    # ranges admit, never at an observed value.
+    output = .5 * ulp32(reach)
+    if model.min_norm is not None:
+        unit_error = output + roundoff(32, 1)
+        bound = angular_bound(raw, model.min_norm) + angular_bound(unit_error, 1.) + F64_ANGLE_FLOOR
+    else:
+        bound = raw + output
+    bound = math.nextafter(bound * (1 + 2**-45), math.inf)
+    require(math.isfinite(bound) and (model.min_norm is None or bound < math.pi),
+            "replay tolerance is nonfinite or reaches pi")
+    return bound
+
+
 def _sample_bounds(spec, capture):
+    """Per-sample bounds: a number per target, or one per component where the row has its own."""
     keys = _targets(spec)
     budgets = {_target_key(row): row for row in spec["budgets"]}
     models = [budget_model(budgets[key]) for key in keys]
     for sample in capture["samples"]:
         dt = abs(sample["effective_source"] - sample["source"])
         bounds = []
-        for model, values in zip(models, _pose_values(spec, sample["pose"])):
-            raw = model.error(dt)
-            output = .5 * ulp32(max(map(abs, values)))
+        for model in models:
             if model.min_norm is not None:
-                unit_error = output + roundoff(32, 1)
-                bound = (angular_bound(raw, model.min_norm) + angular_bound(unit_error, 1.)
-                         + F64_ANGLE_FLOOR)
-            else:
-                bound = raw + output
-            bound = math.nextafter(bound * (1 + 2**-45), math.inf)
-            require(math.isfinite(bound) and (model.min_norm is None or bound < math.pi),
-                    "replay tolerance is nonfinite or reaches pi")
-            bounds.append(bound)
+                [(raw, _)] = model.errors(dt)
+                reach = 1.
+                bounds.append(_bound(model, raw, reach))
+                continue
+            each = [_bound(model, raw, reach) for raw, reach in model.errors(dt)]
+            bounds.append(each if model.per_component else each[0])
         yield bounds
 
 
 def derive(manifest, bundle_dir=None):
-    """Return per-sample bounds in target order. Observations supply only the output ulp."""
+    """Return per-sample bounds in target order. Observations supply no part of a bound."""
     clock_discriminated = validate(manifest, bundle_dir)
     spec, capture = manifest["spec"], manifest["capture"]
     require("budgets" in spec, "derivation requires recorded budgets")
@@ -620,8 +661,15 @@ def main():
             executable = args.unityrs or "unityrs"
             if args.unityrs:
                 executable = str(Path(executable).resolve())
-            count = complete_folder(args.file, executable, args.inspect_dir, sys.modules[__name__])
+            result = complete_folder(args.file, executable, args.inspect_dir, sys.modules[__name__])
+            # A material or texture variant run has no replays and reports its cases instead.
+            if isinstance(result, str):
+                print(result)
+                return
+            count, uncovered = result
             print(f"Completed and validated {count} replay(s).")
+            for row in uncovered:
+                print(f"Optional coverage not recorded: {row}")
             return
         require(args.unityrs is None and args.inspect_dir is None, "inspection options require complete")
         value = read_json(args.file.read_text(encoding="utf-8"))

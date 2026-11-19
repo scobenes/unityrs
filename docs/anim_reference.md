@@ -34,7 +34,13 @@ renderer and mesh channel, in Unity weight units.
 ### Compiled storage
 
 The scalar slot order is streamed, dense, constant. Build the typed
-binding table before indexing those ranges. Public readers support the
+binding table before indexing those ranges. Where the stream has a
+`discreteCurveCount`, zero included, the streamed range holds `curveCount +
+discreteCurveCount` slots in serialized binding order, and its discrete
+bindings must number exactly `discreteCurveCount`. Dense and then constant
+slots follow. A built 2022.3 capture confirms a stream of continuous slots
+followed by a discrete PPtr slot. Discrete slots beside dense or constant
+storage follow the format and are unverified by a real capture. Public readers support the
 layout, coefficient and value field positions. Sampling behavior, sentinel
 shapes and mixed-storage Transform bindings need same-bundle evidence.
 [AssetStudio reader](https://github.com/Perfare/AssetStudio/blob/v0.16.47/AssetStudio/Classes/AnimationClip.cs)
@@ -46,7 +52,15 @@ shapes and mixed-storage Transform bindings need same-bundle evidence.
   ordinary key and after the last real key, hold the first or last stored
   value respectively. An initial sentinel can seed a held PPtr in a
   confirmed layout. Use that seed up to the first real key, even if the
-  first real key is later than the clip start. An empty slot needs a
+  first real key is later than the clip start. Built 2022.3 clips seed
+  every slot, continuous ones with zero slopes and their first key's
+  value. Accept any finite seed, since samples at and after the first real
+  key do not read it. Before the first real key, hold a continuous seed
+  only in that flat, first-key-equal pattern (signed zeros compare equal),
+  or when it is flat and the slot has no real key. Refuse any other
+  continuous seed there as unverified: a cubic from `-FLT_MAX` has no
+  confirmed playback value. Refuse a seed for a slot outside the stream, a
+  repeated seed slot and a non-finite coefficient. An empty slot needs a
   supported initializer. Validate the terminal dummy separately and
   exclude it from the real keys and duration.
 - Dense. Frame `i` is at `g(i) = m_BeginTime + i / m_SampleRate`, using
@@ -138,7 +152,14 @@ For Euler values, sample degrees without folding revolutions. About axis
 For application order `A,B,C`, compose `Q_C Q_B Q_A` using the Hamilton
 product and normalize. The confirmed enum layout uses
 `0..5 = XYZ, XZY, YZX, YXZ, ZXY, ZYX`. Where there is no stored order,
-use ZXY only for a layout with confirmed default behavior.
+use ZXY only for a layout with confirmed default behavior. A compiled
+Euler binding (Transform attribute 4) stores its order in `customType`,
+in the same enum; refuse other values. Built 2022.3 generic clips store
+4, and their replays match ZXY and no other order. A compiled
+blend-shape binding of a built 2022.3 clip stores the CRC32 of the bare
+channel name. AssetStudio's model converter hashes the
+`blendShape.<name>` property instead. Accept either, and refuse a hash
+that names two channels under the two conventions as ambiguous.
 [Unity Quaternion.Euler](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/Quaternion.Euler.html)
 · [Unity rotation-order enum](https://github.com/Unity-Technologies/UnityCsReference/blob/9778aaee88c7de7656c15184ba5c91ca66db7e94/Runtime/Transform/ScriptBindings/Transform.bindings.cs)
 
@@ -423,8 +444,22 @@ The boundaries are source seconds for all held tracks. The recorder uses
 sample. The API receives `float(l)`. For `source_clock = widened`, add
 that f32 value to the serialized start in f64. For `f32_add` round that
 sum to f32 and require an exact f32 start. Clamp to the serialized
-interval. At `float(l) == clip.length`, the endpoint convention selects
-the exact stored stop.
+interval. At `float(l) == float(stop - start)`, the endpoint convention
+selects the exact stored stop.
+
+Unity 2022.3 reports `AnimationClip.length` for a Mecanim clip whose
+interval starts late (`start > 0`) as `stop`, measured from zero, while
+its built `m_MuscleClip` keeps the interval and its keys in source
+seconds. Playback still starts at the interval start. An Editor fixture
+with stepped keys at 0.5 and 0.75 on the interval 0.5 to 1.5, sampled at
+playable times from 0 to 1.5, read the left value only at playable 0 and
+the right value from playable 0.5 on. Reading playable time as source
+time would have kept the left value up to 0.75. The capture records the
+reported length: `float(stop)` for such a clip, and `float(stop - start)`
+for a legacy clip or one starting at zero. Validation refuses any other
+length. For a late-start Animator clip, a held probe must also fall on
+the other side from where a zero origin would put it, so the probes
+either side of playable `boundary - start` are required.
 
 The public playable or legacy time checks the supplied time. Use the
 `source_clock` enum to declare the clock model. Inspect the source
@@ -448,11 +483,20 @@ before the jump and the first one at or after it. A jump at the clip
 start needs only the right probe. Use a held component with distinct,
 independently known values on its two sides. The validator compares the
 expected values with the captured pose and predicts the held sides under
-both clock models. When no held probe changes sides between the models,
-`validate` reports `clock not discriminated` for clip playback and
-`derive` sets `clock_discriminated` to false. Promotion requires at least
-one held probe whose independently observed side distinguishes the models
-and a true `clock_discriminated` in the frozen tolerances used as clock evidence.
+both clock models. A recording is clock-independent when both candidate
+clocks give every sample a bit-identical effective source time, as when
+each `start + f32(local)` is exact in f32 (a zero start, for one). Then
+`derive` sets `clock_discriminated` to `"independent"`, and no held probe is
+needed to choose between the models. Otherwise, when no held probe changes
+sides between the models, `validate` reports `clock not discriminated` for
+clip playback and `derive` sets `clock_discriminated` to false. Promotion
+requires a clock-independent recording, or at least one held probe whose
+independently observed side distinguishes the models, and the matching
+`"independent"` or true `clock_discriminated` in the frozen tolerances used
+as clock evidence. The Rust comparison recomputes both clocks per sample
+and refuses a recording whose clocks differ anywhere without a
+discriminating probe. A late-start Mecanim interval still needs its own
+held probe against a zero origin.
 
 Include the cases in [plan section 8](plans/anim.md#8-editor-fixture-project-owner-built).
 All local TRS and renderer weights are eight-digit IEEE 754 f32 bit
@@ -521,6 +565,85 @@ layout defaults or twist behavior pending until the rig fixtures establish
 them. Record the typed `unsupported_…` causes for refusal probes.
 [Unity clip import settings](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/ModelImporterClipAnimation.html)
 
+**PR 8's outcome.** `tools/parity/anim_humanoid_qualify.py FOLDER --unityrs BIN -o OUT`
+reads a completed run's humanoid clip recordings, their known-vector
+baselines and the same built bundles through `unityrs show`. The clip set is
+the run's: every required humanoid clip and every optional coverage clip
+`run.json` marks recorded. A missing replay, or an empty or partial set,
+fails. Per clip it writes the slot inventory, the crosswalk against the
+recorder's `HumanTrait` order (each built binding at its generic width), the
+muscles of absent optional bones, the generic Transform writers on human
+skeleton nodes, the root and hips-local residuals against the reset rig and
+the baseline, and the muscle-to-pose residual of the candidate equation in
+`muscle_rotation`.
+
+It then gives three independent verdicts:
+
+- **Clip settings.** Each non-basis setting (`m_Mirror`, `m_CycleOffset`,
+  `m_Level`, the loop flags and the orientation offset) at its neutral
+  value.
+- **Root basis.** The keep-original orientation, Y, XZ and height-from-feet
+  flags off and `m_StartAtOrigin` on. The Editor's
+  `AnimationClipSettings` has no field for `m_StartAtOrigin`, and every
+  built clip of the basis matrix stores it on, whatever its XZ flag, so the
+  neutral profile has it on and the XZ flag off. The Rust reader refuses an
+  unverified basis as `unsupported_humanoid_root_basis(field)`, apart from
+  the non-neutral settings.
+  [Root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html),
+  [AnimationClipSettings](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/AnimationClipSettings.html)
+- **Residual.** The root and hips-local samples against the reset rig,
+  within the bound `anim_replay.py derive` gives an unanimated (rest)
+  track of that node: the rows `anim_replay_budgets.py` authors for a
+  Transform property no curve reads, through `budget_model` and `_bound`.
+  That is half an f32 ulp at each rest component's magnitude (the
+  subnormal half ulp at zero), widened by `1 + 2^-45` as every derived
+  bound is; for rotation the box's raw error and that storage error plus
+  the f32 unit roundoff map to an angle with `angular_bound`. A hips residual over its bound
+  is `unsupported_body_motion(hips_correction)`, a root residual
+  `unsupported_body_motion(root_projection)`.
+
+The evidence lists every typed cause a clip has, unordered. A clip
+qualifies only with no cause and a baseline within its bound: the
+known-vector `SetHumanPose` recording of the same prefab, clip, Animator,
+Avatar, hierarchy and reset rig, whose own root stays at its rest and which
+the clip's root and hips match within the rest-track bounds. A root basis
+matrix clip has no known-vector recording, so its baseline is its own
+prefab's reset rig, which the residual verdict compares. A qualifying
+clip's verdict is `qualified_pending_playback`. The Rust reader cannot see
+recordings, so it never reports a residual cause; it returns one static
+cause, in the partial order the plan implies: identity before
+the rig (Avatar, hierarchy, required bones), the rig before the Animator
+root and conflicting generic writers, those before the slots it plays
+(locomotion, IK, translation DOFs, additive pose, body slots, muscle axes),
+the slots before the Avatar settings that act on them (twist and stretch,
+only where the clip animates a bone the setting redistributes or
+lengthens), and those before the clip's own settings and its root basis.
+A clip with none of these refuses as `unsupported_humanoid_playback`,
+since positive playback is not built.
+The Rust test `recorded_humanoid_refusals` (`UNITYRS_ANIM_HUMANOID`,
+`UNITYRS_ANIM_BUNDLES`, with `run.json` beside the bundles folder) reads
+the same bundles, checks the run's clip set, the inventory, settings,
+Avatar twist and stretch, the dropped muscles and the neutral twin's
+values, binds each clip to its own completed replay (bundle digests,
+prefab, clip, Animator and Avatar) and the `-offset` clips to a translated
+and rotated Animator rest. Its refusal must be one of the listed causes, a
+refusal probe's carrying the probe's code, or
+`unsupported_humanoid_playback` for a qualified clip or one whose causes
+are all residual. The neutral twist and stretch are
+the values on the recorded probes' neutral Avatar, not an assumed zero.
+
+On the 2022.3 and 6000 fixture runs no clip qualified, and no muscle clip's
+hips residual is within its bound: absent body slots leave the hips at the
+Animator root origin, the baseline's hips less the Avatar's `m_RootX`
+translation. The body-motion clip maps body slots. The builder's muscle
+clips also keep the original Y position, which refuses first as a root
+basis. The candidate equation matched the known-vector Spine poses on both
+rigs. The optional `humanoid-root-basis-*` coverage matrix records the
+compact rig's muscle clip in each combination of the three keep-original
+flags under the same playback, every other setting neutral, so the basis
+and the residual can be told apart on one rig. A run older than the matrix
+has no rows for it in `run.json` and still completes. Positive playback waits for the Humanoid body motion slice.
+
 ### Owner workflow
 
 Follow the [Windows Editor steps](../tools/fixtures/unity/README.md). Run
@@ -531,6 +654,22 @@ project. The button uses the active build target, which defaults to
 version-and-target folder to the maintainer's fixture inbox. If the run
 stops with **unityrs fixture build failed**, send the log from the separate
 `-failed-<id>` folder shown in the dialog.
+
+Two more menu items build variant runs with no replays. **Build URP
+material fixtures** runs only in a Universal 3D project and writes
+`<version>/URP-<target>/` with the `urp-materials` bundle: URP Lit and
+Unlit materials with textures, keywords and properties. **Build Android
+fixtures** needs Android Build Support and writes `<version>/Android-variant/` with
+the static bundles and an `android-textures` bundle whose textures carry
+explicit ASTC and ETC/ETC2 Android overrides. Their `run.json` names the
+variant (`urp` or `android`), and `complete` checks it against
+[`anim_fixture_variants.py`](../tools/parity/anim_fixture_variants.py):
+shader names, keywords and properties for URP, and each override's texture
+format, data size and `.resS` stream for Android, with each texture decoded by
+`unityrs extract` at its declared size. The Android folder is
+separate from `<version>/Android/`, where a Built-in run publishes when
+Android is the active target. A Built-in run keeps `urp-materials` as
+`not_covered`.
 
 The button generates both humanoid rigs and their clips. Each rig has
 skinned boxes in a T-pose and a procedurally built Avatar. The taller rig
@@ -575,7 +714,20 @@ a reason. These sections are URP materials, packed rotation slopes,
 authored/runtime precedence, verified mixed Transform storage, integer discrete
 bindings, humanoid twist and non-neutral setting refusals, humanoid slot/axis
 inventory and the root/hips comparison. `build.log` and `run.json` give the
-reason for uncovered sections and fixture errors. The `*.pending.json` files use
+reason for uncovered sections and fixture errors. The button generates two of them in a separate bundle build: a
+humanoid rig with non-neutral Avatar twist that ramps the twist muscles, and a muscle clip whose one non-neutral
+setting is a height offset. Integer discrete bindings stay not covered on Built-in. Unity keeps an integer as a
+discrete curve only on a script field: `EditorCurveBinding.DiscreteCurve` accepts only an enum or an int with
+`[DiscreteEvaluation]`, and `DiscreteEvaluationAttribute` targets fields
+([UnityCsReference](https://github.com/Unity-Technologies/UnityCsReference/blob/2022.3/Editor/Mono/Animation/EditorCurveBinding.bindings.cs)).
+Built-in components bind their integers as float curves, and the fixture prefabs carry no scripts. The run's reason
+lists the discrete candidates that `GetAnimatableBindings` reported on the probe's built-in components. A case is not covered only when an explicit check
+shows Unity cannot produce it, with the reason; any other error fails it. A case recorded in `run.json` needs its
+pending recording, which completion checks against the [coverage contract](../tools/parity/anim_fixture_coverage.py);
+any other status must leave none. Completion lists the optional cases not recorded. Its `REQUIRED_COVERAGE` table
+names, per Editor version, the cases a run must record; add a case there once a real run of that version has
+recorded it and completion has accepted it. Real 2022.3 and 6000 runs recorded both humanoid refusal probes, so
+both versions now require them, and a run of either version without them is refused. The `*.pending.json` files use
 the separate `unityrs.anim_replay_pending` format, version 1, and stay
 beside the completed files. Each pending spec has one bundle basename
 without a digest, uses integer mesh groups where renderers share a mesh,
@@ -682,8 +834,71 @@ sequence, with each stage appearing once.
 | `euler_constant`, `euler_held`, `euler_streamed`, `euler_dense`, `euler_hermite`, `euler_weighted` | The named input stage, then `joint`, for rotation. |
 | `muscle_constant`, `muscle_streamed`, `muscle_dense` | The named input stage, then `muscle`, then `joint`, for rotation. |
 
-Mixed-stage inputs need a documented track kind and a matching budget
-derivation before promotion.
+A streamed track whose key intervals mix held (zero `c3`, `c2` and `c1`)
+and streamed segments has track kind `streamed`. A held segment is the
+streamed cubic with zero slopes, so the streamed stage bounds it, and its
+value lies in the `c0` range. Other mixed-stage inputs need a documented
+track kind and a matching budget derivation before promotion.
+
+`tools/parity/anim_replay_budgets.py REPLAY --bundle-dir DIR` writes the
+budget rows of a completed generic or legacy replay without them, and
+`--verify` refuses stored rows that differ from the ones it writes. It
+checks each bundle's SHA-256 pin, then reads the bundles through
+`unityrs show --value canonical`, refusing any truncated document or one
+for another file or object, and
+takes the tagged f32 bits of infinite tangents as they are. It reads the
+serialized rest pose, the compiled or explicit curves and the playback
+interval, never the observed poses. It walks each interval between the
+start, the stop and every key strictly inside them, and records every
+coefficient, key-relative time, Hermite control and clamped or rest value
+the path reads. A translation or scale row must also give each component
+its own ranges in `component_ranges`, in the stage's layout, with `[0, 0]`
+for a range the component never reads. The schema, `derive` and the Rust
+audit refuse a translation or scale row without them, and any other row
+with them; no shared envelope ever bounds a vector component. The derivation then bounds each
+component from its own ranges, so a large clamped Y never widens X's
+tolerance, and the Rust audit checks each component against them. The
+author supports rest, constant, held and streamed compiled slots, clamped
+unweighted explicit Hermite curves and Euler input through `joint`, and
+refuses dense, weighted and humanoid paths until they have an author.
+Its choices, provisional until review:
+
+- Every computed enclosure is widened by `2^-40` of the magnitudes of the
+  terms that produced it, never of the result, so cancellation and trig
+  zeros keep their margin. The tool computes in f64, where each rounding
+  errs by at most `2^-53` of its operands' scale. `2^-40` covers about
+  4096 such roundings, yet is `2^-16` of an f32 ulp, so the derived bounds
+  do not grow measurably. Exact f32 inputs are widened by `2^-40` of their
+  own magnitude. A further absolute `2^-1022`, the smallest normal f64,
+  covers the f64 underflow of the tool's own arithmetic, whose absolute
+  error is at most `2^-1075` per operation. It is far below the smallest
+  f32 subnormal, `2^-149`.
+- An Euler box widens each half angle by `2^-40` of its magnitude before
+  the trig. That covers the rounding of the degree conversion and the
+  difference between the f64 constant and π, below `2^-52` of π. Sine
+  and cosine are enclosed over the widened interval, including any
+  extremum inside it, and the axis quaternions are multiplied as
+  intervals. A constant angle whose half falls on a trig zero, such as
+  3060°, still lies inside its box.
+- The rotation `norm_ranges` hold a point box at every walked time, using
+  that time's own segment, so a held jump at a key or at the stop is
+  enclosed. Each interval is halved at its midpoint, as the Rust audit
+  halves its pieces, until every box's guaranteed largest component is at
+  least half its largest possible one. A unit quaternion's largest
+  component is at least one half, so the floor stays at least one
+  quarter. A path that gets this close to the origin, such as a raw
+  quaternion whose W changes sign beside an X of `2^-14`, is refused as
+  `rotation path too close to the origin to bound` after 16 halvings, as
+  is a box holding the origin, a rest pose included.
+- The Rust audit halves its own pieces up to 20 times. It expands each
+  piece's chord by a curvature bound, per component, and for a `joint`
+  output clamps it to `[-1, 1]`, since a normalized quaternion lies there.
+  With at most one turning Euler axis, the other two vector components are
+  exactly zero and get no expansion, so a Z-only turn the author accepts,
+  such as 0° to 3000°, passes the audit (a test runs that case through
+  both). A piece that still fits no box is refused as `rotation path too
+  close to the origin to bound` when its chord's norm is below every box's
+  guaranteed floor, and as `bundle rotation output boxes` otherwise.
 
 | Stage | Recorded ranges in order | Continuous derivative bound |
 |---|---|---|
@@ -748,16 +963,19 @@ component magnitude no greater than `2^60` to keep f32 length
 arithmetic in range. For a `joint` output each box must admit a unit
 quaternion, and the floor is capped at one. Convert propagated raw
 component error with this norm floor. Budget normalization with 32
-operations in unit space. Add half an f32 ulp at the largest captured
-component for final storage. For rotation, convert the normalization and storage
+operations in unit space. Add half an f32 ulp for final storage at the
+largest value the stage ranges admit, never at a captured value: one for
+a normalized quaternion, else the stage's value magnitude times the weight
+gain plus the arithmetic error. For rotation, convert the normalization and storage
 errors with norm one, sum the two angular budgets and include the f64
 angle metric floor. Refuse any rotation tolerance that reaches π.
 
 Run `python3 -I tools/parity/anim_replay.py derive synthetic-replay.json --bundle-dir . > synthetic-tolerances.json`.
 The result contains the manifest SHA-256 (sorted compact UTF-8 JSON),
-`clock_discriminated`, ordered property, target and channel keys, and
-per-sample clocks, held sides and bounds. Freeze it alongside the inputs
-before comparison.
+`clock_discriminated` (true, false or `"independent"`), ordered property, target and channel keys, and
+per-sample clocks, held sides and bounds. A translation or scale row has
+one bound per component, compared component by component; a rotation or
+weight row has one bound. Freeze it alongside the inputs before comparison.
 Investigate discrepancies against the recorded layout, settings and
 equations.
 
@@ -765,6 +983,7 @@ After deriving and freezing the tolerances, run the Rust comparison from
 the repository root:
 
 ```sh
+UNITYRS_ANIM_CLI=target/release/unityrs \
 UNITYRS_ANIM_REPLAY=synthetic-replay.json \
 UNITYRS_ANIM_BUNDLES=. \
 UNITYRS_ANIM_TOLERANCES=synthetic-tolerances.json \
@@ -772,6 +991,8 @@ cargo test -p unityrs-export --features gltf --test anim_replay \
   recorded_generic_or_legacy -- --ignored --nocapture
 ```
 
+The gated test first runs `anim_replay_budgets.py --verify` with that CLI,
+so it refuses budget rows that differ from the ones the bundles give.
 The same-bundle comparator checks the captured rig, clip and renderer
 identities, derives clocks and ranges from serialized playback, and reports
 worst Unity-space errors by rig, node or renderer, property and source time.

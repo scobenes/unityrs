@@ -749,7 +749,7 @@ fn scene_seeds_are_cases(dir: &Path) {
 
 fn anim_seeds_are_cases(dir: &Path) {
     use unityrs_testkit::fuzz::SceneCase;
-    for target in ["anim_clip", "anim_gltf"] {
+    for target in ["anim_clip", "anim_gltf", "anim_humanoid"] {
         let (mut bundles, mut meters) = (0, BTreeSet::new());
         for entry in std::fs::read_dir(dir.join(target)).expect("animation seeds") {
             let bytes = std::fs::read(entry.unwrap().path()).unwrap();

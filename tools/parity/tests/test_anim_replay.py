@@ -89,7 +89,8 @@ def synthetic():
                                  reset="fresh_prefab", speed=1, delta_time=0, apply_root_motion=False,
                                  foot_ik=False, playable_ik=False, animator_move=False,
                                  controller_blending=False, events=False, legacy_state="unused",
-                                 clip_length_f32=bits(1), frame_rate_f32=bits(60)), rest=rest, samples=samples,
+                                 # 2022.3 reports a late-start clip's length as its stop.
+                                 clip_length_f32=bits(3), frame_rate_f32=bits(60)), rest=rest, samples=samples,
                    clip_settings=settings)
     return dict(format="unityrs.anim_replay", version=1, spec=spec, capture=capture)
 
@@ -110,6 +111,14 @@ def declare_budgets(manifest):
     spec = manifest["spec"]
     spec["budgets"] = [row(prop, i) for i in range(len(spec["nodes"])) for prop in ("translation", "rotation", "scale")]
     spec["budgets"] += [row("weight", i, 0) for i in range(len(spec["renderers"]))]
+    return own_ranges(manifest)
+
+
+def own_ranges(manifest):
+    """Give each translation and scale row's components the row's stage ranges."""
+    for budget in manifest["spec"]["budgets"]:
+        if budget["property"] in ("translation", "scale"):
+            budget["component_ranges"] = [copy.deepcopy(budget["stages"][0]["range"]) for _ in range(3)]
     return manifest
 
 
@@ -262,6 +271,38 @@ class TestAnimReplay(unittest.TestCase):
         m["capture"]["samples"][1]["pose"]["weights"][0]["channels"][0] = bits(12.5)
         self.assertTrue(replay.derive(m)["clock_discriminated"])
 
+    def test_a_recording_whose_clocks_agree_at_every_sample_is_clock_independent(self):
+        m = declare_budgets(synthetic())
+        # The other clock moves sample 1, and its probe stays on the left.
+        self.assertIs(replay.derive(m)["clock_discriminated"], False)
+        jump = 2.25
+        m["spec"]["held_boundaries"] = [jump]
+        m["spec"]["evidence"]["clock"] = clock_evidence(jump)
+        m["spec"]["schedule"][1]["local"] = .125
+        m["capture"]["samples"][1].update(local=.125, local_f32=bits(.125), source=2.125, effective_source=2.125)
+        # 2 + 0.125 is exact in f32, so neither clock moves a sample.
+        self.assertEqual(replay.derive(m)["clock_discriminated"], "independent")
+        m["spec"]["source_clock"] = "f32_add"
+        self.assertEqual(replay.derive(m)["clock_discriminated"], "independent")
+
+    def test_late_start_clip_reports_its_stop_as_length_but_plays_its_interval(self):
+        m = synthetic()
+        replay.validate(m)
+        # The final playable time, stop - start, still reaches the stop.
+        self.assertEqual(replay.clocks(m["spec"], 1, 1.), (bits(1), 3., 3.))
+        self.assertEqual(m["capture"]["samples"][-1]["effective_source"], 3)
+        m["capture"]["playback"]["clip_length_f32"] = bits(1)
+        with self.assertRaisesRegex(ValueError, "clip length"):
+            replay.validate(m)
+        # Legacy playback and an interval starting at zero keep the interval length.
+        m["spec"]["mode"] = "legacy"
+        m["capture"]["playback"].update(api="Animation.Sample", wrap_mode="ClampForever",
+                                        legacy_state="enabled_weight_one_clamp_forever")
+        replay.validate(m)
+        m["capture"]["playback"]["clip_length_f32"] = bits(3)
+        with self.assertRaisesRegex(ValueError, "clip length"):
+            replay.validate(m)
+
     def test_sample_clock_and_endpoints_cannot_be_inferred_from_the_observations(self):
         m = synthetic()
         m["capture"]["samples"][1]["source"] = .1
@@ -356,6 +397,26 @@ class TestAnimReplay(unittest.TestCase):
         m = qualified_humanoid()
         m["spec"]["evidence"]["humanoid"]["slots"][-1]["dof"] = "invented muscle"
         with self.assertRaisesRegex(ValueError, "HumanTrait inventory"):
+            replay.validate(m)
+
+    def test_a_muscle_of_an_absent_optional_bone_is_dropped(self):
+        m = qualified_humanoid()
+        human = m["spec"]["evidence"]["humanoid"]
+        human["storage_counts"]["constant"] = 2
+        # Muscle 3 rotates Optional 1, which the rig leaves out.
+        human["slots"][9 + 3].update(index_value=1, storage="constant")
+        replay.validate(m)
+        # A required bone cannot be absent at all.
+        m["capture"]["humanoid"]["bones"][1]["required"] = True
+        with self.assertRaisesRegex(ValueError, "bone"):
+            replay.validate(m)
+
+    def test_the_neutral_basis_starts_at_the_origin(self):
+        self.assertIs(replay.NEUTRAL_SETTINGS["startAtOrigin"], True)
+        m = qualified_humanoid()
+        setting = next(row for row in m["spec"]["evidence"]["import_settings"] if row["property"] == "startAtOrigin")
+        setting["serialized"] = False
+        with self.assertRaisesRegex(ValueError, "startAtOrigin"):
             replay.validate(m)
 
     def test_qualification_refuses_missing_non_neutral_or_unserialized_settings(self):
@@ -492,9 +553,9 @@ class TestAnimReplay(unittest.TestCase):
                 m = declare_budgets(synthetic())
                 m["spec"]["budgets"][0]["track_kind"] = stage
                 m["spec"]["budgets"][0]["stages"] = [dict(stage=stage, range=ranges)]
-                first, off_key, *_ = replay.derive(m)["samples"]
+                first, off_key, *_ = replay.derive(own_ranges(m))["samples"]
                 dt = abs(off_key["source"] - off_key["effective_source"])
-                self.assertAlmostEqual(off_key["bounds"][0] - first["bounds"][0], rate * dt, delta=1e-17)
+                self.assertAlmostEqual(off_key["bounds"][0][0] - first["bounds"][0][0], rate * dt, delta=1e-17)
 
     def test_weighted_budget_encloses_flat_time_inverse(self):
         m = declare_budgets(synthetic())
@@ -502,9 +563,9 @@ class TestAnimReplay(unittest.TestCase):
         m["spec"]["budgets"][0]["track_kind"] = "weighted"
         stages[:] = [dict(stage="weighted", range=[[0, 0], [1, 1], [0, 0], [0, 0],
                                                      [1, 1], [1, 1], [1, 1]])]
-        flat = replay.derive(m)["samples"][1]["bounds"][0]
+        flat = replay.derive(own_ranges(m))["samples"][1]["bounds"][0][0]
         stages[0]["range"][-2:] = [[.25, .25], [.25, .25]]
-        regular = replay.derive(m)["samples"][1]["bounds"][0]
+        regular = replay.derive(own_ranges(m))["samples"][1]["bounds"][0][0]
         self.assertGreater(flat, .01)
         self.assertLess(regular, .001)
 
@@ -567,6 +628,7 @@ class TestAnimReplay(unittest.TestCase):
                 with self.subTest(stage=stage, duration=duration):
                     budget.update(track_kind=stage, stages=[dict(
                         stage=stage, range=[[0, 0]] * 4 + [[duration, 1]] + weights)])
+                    own_ranges(m)
                     if duration < 2**-126:
                         with self.assertRaisesRegex(ValueError, "normal f32 duration"):
                             replay.derive(m)
@@ -610,12 +672,38 @@ class TestAnimReplay(unittest.TestCase):
         m = declare_budgets(synthetic())
         result = replay.derive(m)
         frame = result["samples"][1]
-        trans, rot, _, small_weight, larger_ulp_weight = frame["bounds"]
-        expected = 8 / (2**20 - 1) + 2 * abs(frame["effective_source"] - frame["source"])
-        self.assertAlmostEqual(trans, expected, delta=1e-18)
+        trans, rot, _, weight, _ = frame["bounds"]
+        # The ranges reach 8, where half an f32 ulp is 2^-21.
+        expected = 8 / (2**20 - 1) + 2 * abs(frame["effective_source"] - frame["source"]) + 2**-21
+        self.assertEqual(len(trans), 3)
+        self.assertAlmostEqual(trans[0], expected, delta=1e-18)
         self.assertGreater(rot, 0)
-        self.assertGreater(small_weight, larger_ulp_weight)
         self.assertEqual(replay.derive(m), result)
+        # A wider value range reaches a coarser f32 ulp.
+        m["spec"]["budgets"][4]["stages"][0]["range"][3] = [6, 60]
+        self.assertGreater(replay.derive(m)["samples"][1]["bounds"][4], weight)
+
+    def test_vector_rows_and_only_they_need_component_ranges(self):
+        m = declare_budgets(synthetic())
+        del m["spec"]["budgets"][2]["component_ranges"]
+        with self.assertRaisesRegex(ValueError, "no schema alternative"):
+            replay.derive(m)
+        m = declare_budgets(synthetic())
+        m["spec"]["budgets"][3]["component_ranges"] = [m["spec"]["budgets"][3]["stages"][0]["range"]] * 3
+        with self.assertRaisesRegex(ValueError, "no schema alternative"):
+            replay.derive(m)
+        m = declare_budgets(synthetic())
+        m["spec"]["budgets"][0]["component_ranges"][1] = [[0, 0]]
+        with self.assertRaisesRegex(ValueError, "wrong component range width"):
+            replay.derive(m)
+
+    def test_bounds_ignore_the_captured_pose(self):
+        m = declare_budgets(synthetic())
+        result = replay.derive(m)
+        for sample in m["capture"]["samples"]:
+            sample["pose"]["transforms"][0]["translation"][0] = bits(3e6)
+            sample["pose"]["weights"][1]["channels"][0] = bits(1e9)
+        self.assertEqual(replay.derive(m)["samples"], result["samples"])
 
     def test_derivation_requires_explicit_complete_property_budgets(self):
         with self.assertRaisesRegex(ValueError, "budgets"):
@@ -630,7 +718,8 @@ class TestAnimReplay(unittest.TestCase):
         result = replay.derive(m)["samples"][0]["bounds"][3]
         m["spec"]["budgets"][3]["weight_units"] = "fraction_of_100"
         bound = replay.derive(m)["samples"][0]["bounds"][3]
-        self.assertAlmostEqual(bound - result, 99 * 8 / (2**20 - 1), delta=1e-16)
+        # The output ulp moves from 8 to 800 with the units.
+        self.assertAlmostEqual(bound - result, 99 * 8 / (2**20 - 1) + 2**-15 - 2**-21, delta=1e-16)
 
         # The percent conversion can flush a subnormal result to zero.
         m["spec"]["budgets"][4].update(weight_units="fraction_of_100",
@@ -646,7 +735,7 @@ class TestAnimReplay(unittest.TestCase):
         m["spec"].update(stop=2, held_boundaries=[], schedule=[dict(local=0)])
         clock = m["spec"]["evidence"]["clock"]
         clock.update(stop=dict(clock["start"]), key_times=[2], held=[])
-        m["capture"]["playback"]["clip_length_f32"] = bits(0)
+        m["capture"]["playback"]["clip_length_f32"] = bits(2)
         m["capture"]["samples"] = m["capture"]["samples"][:1]
         m["capture"]["samples"][0]["sides"] = []
         replay.validate(m)
@@ -672,7 +761,7 @@ class TestAnimReplay(unittest.TestCase):
         m = synthetic()
         m["spec"]["mode"] = "legacy"
         m["capture"]["playback"].update(api="Animation.Sample", wrap_mode="ClampForever", clip_looping=True,
-                                        legacy_state="enabled_weight_one_clamp_forever")
+                                        legacy_state="enabled_weight_one_clamp_forever", clip_length_f32=bits(1))
         replay.validate(m)
         m["capture"]["playback"]["wrap_mode"] = "Loop"
         with self.assertRaisesRegex(ValueError, "clamped"):

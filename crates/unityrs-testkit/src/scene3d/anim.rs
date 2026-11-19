@@ -228,4 +228,5 @@ pub fn bound_clip(id: i64, layout: super::Layout, bindings: &[Binding], mapping:
     )
 }
 
+pub mod humanoid;
 pub mod playback;

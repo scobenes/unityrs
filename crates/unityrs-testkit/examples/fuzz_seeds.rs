@@ -76,7 +76,7 @@ mod webp;
 mod zip;
 
 /// The targets, each a folder of `DIR`.
-const TARGETS: [&str; 29] = [
+const TARGETS: [&str; 30] = [
     "detect",
     "bundle",
     "bundle_save",
@@ -104,6 +104,7 @@ const TARGETS: [&str; 29] = [
     "obj_text",
     "anim_clip",
     "anim_gltf",
+    "anim_humanoid",
     "shader",
     "extractor_paths",
 ];
@@ -610,13 +611,17 @@ fn scene_seeds(s: &mut Seeds) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The animation targets' synthetic scenes, plain and bundled.
+/// The animation targets' synthetic scenes and humanoid rigs, plain and
+/// bundled.
 fn anim_seeds(s: &mut Seeds) -> std::io::Result<()> {
     for (name, case) in unityrs_testkit::fuzz::anim_clip_cases() {
         s.add("anim_clip", &name, &case.encode())?;
     }
     for (name, case) in unityrs_testkit::fuzz::anim_gltf_cases() {
         s.add("anim_gltf", &name, &case.encode())?;
+    }
+    for (name, case) in unityrs_testkit::fuzz::anim_humanoid_cases() {
+        s.add("anim_humanoid", &name, &case.encode())?;
     }
     Ok(())
 }

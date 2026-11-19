@@ -1,10 +1,11 @@
 //! Synthetic bundle, Editor-shaped observations and predeclared ranges.
+use super::rules::move_interior;
 use crate::anim_support::{CAB, CLIP, PREFAB, bundle};
 use crate::{J, Path, compare, derive, digest};
 use serde_json::json;
 use unityrs_testkit::scratch::Scratch;
 
-fn bits(x: f32) -> String {
+pub(crate) fn bits(x: f32) -> String {
     format!("{:08x}", x.to_bits())
 }
 
@@ -12,7 +13,7 @@ fn id(path: i64) -> J {
     json!({"bundle":0,"file_index":2,"file":CAB,"path_id":path.to_string()})
 }
 
-fn budget(prop: &str, target: usize, kind: &str, range: &J) -> J {
+pub(crate) fn budget(prop: &str, target: usize, kind: &str, range: &J) -> J {
     let channel = if prop == "weight" { 0 } else { -1 };
     let mut out = json!({"property":prop,"target":target,"channel":channel,
         "track_kind":kind,"stages":[{"stage":kind,"range":range}]});
@@ -21,6 +22,9 @@ fn budget(prop: &str, target: usize, kind: &str, range: &J) -> J {
     }
     if prop == "rotation" {
         out["stages"][0]["norm_ranges"] = json!([[[0, 0], [0, 0], [0, 0], [1, 1]]]);
+    }
+    if prop == "translation" || prop == "scale" {
+        out["component_ranges"] = json!([range, range, range]);
     }
     out
 }
@@ -129,13 +133,14 @@ fn manifest(pin: &str, legacy: bool) -> J {
                 "apply_root_motion":false,"foot_ik":false,"playable_ik":false,"animator_move":false,
                 "controller_blending":false,"events":false,
                 "legacy_state":if legacy {"enabled_weight_one_clamp_forever"} else {"unused"},
-                "clip_length_f32":one,"frame_rate_f32":bits(4.)
+                // 2022.3 reports a late-start Mecanim clip's length as its stop.
+                "clip_length_f32":if legacy {one} else {bits(3.)},"frame_rate_f32":bits(4.)
             }
         }
     })
 }
 
-fn with_fixture(legacy: bool, action: impl FnOnce(&Path, &J, &J)) {
+pub(crate) fn with_fixture(legacy: bool, action: impl FnOnce(&Path, &J, &J)) {
     with_recording(legacy, bundle(legacy), |_| {}, action);
 }
 
@@ -257,7 +262,7 @@ fn a_request_that_rounds_onto_a_bundle_key_is_not_an_off_key_probe() {
     });
 }
 
-fn rejects(dir: &Path, manifest: &J, tolerance: &J, expected: &str) {
+pub(crate) fn rejects(dir: &Path, manifest: &J, tolerance: &J, expected: &str) {
     let error = compare(manifest, dir, tolerance).unwrap_err();
     assert!(
         error.to_string().contains(expected),
@@ -333,19 +338,18 @@ fn replay_refuses_clock_and_held_evidence_mismatches() {
         );
 
         // Keep the held probe on the left under both models, while retaining
-        // a valid off-key sample and a frozen claim of discrimination.
-        let mut manifest = valid.clone();
-        let mut frozen = tolerance.clone();
-        manifest["spec"]["schedule"][1]["local"] = json!(0.125);
-        manifest["capture"]["samples"][1]["local"] = json!(0.125);
-        manifest["capture"]["samples"][1]["local_f32"] = json!(bits(0.125));
-        for row in [
-            &mut manifest["capture"]["samples"][1],
-            &mut frozen["samples"][1],
-        ] {
-            row["source"] = json!(2.125);
-            row["effective_source"] = json!(2.125);
-        }
+        // a valid off-key sample and a frozen claim of discrimination. The
+        // f32 sum drops the local time's last bit, so the clocks differ.
+        let local = 0.125 + 2f64.powi(-25);
+        let (manifest, frozen) = move_interior(valid, tolerance, local, 2. + local);
+        rejects(
+            dir,
+            &manifest,
+            &frozen,
+            "bundle held probe did not distinguish clocks",
+        );
+        let mut frozen = frozen;
+        frozen["clock_discriminated"] = json!("independent");
         rejects(
             dir,
             &manifest,
@@ -488,7 +492,7 @@ use unityrs_testkit::{
     scene3d::anim::playback::{self as p, Key},
 };
 
-fn with_clip(
+pub(crate) fn with_clip(
     legacy: bool,
     clip: unityrs_testkit::ngui::Object,
     edit: impl FnOnce(&mut J),
@@ -625,7 +629,7 @@ fn streamed_stage_range_covers_held_final_key() {
     );
 }
 
-fn legacy_euler_clip(keys: &[Key<3>]) -> unityrs_testkit::ngui::Object {
+pub(crate) fn legacy_euler_clip(keys: &[Key<3>]) -> unityrs_testkit::ngui::Object {
     let mut clip = legacy_clip();
     let V::Struct(_, fields) = &mut clip.value else {
         unreachable!()
