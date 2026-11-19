@@ -1007,7 +1007,7 @@ the plan's hypotheses. None of it is a playback claim.
 
 ### Body fixtures
 
-The main menu item builds 115 optional `body-…` cases, each kind in its own
+The main menu item builds 118 optional `body-…` cases, each kind in its own
 bundle build after the main and coverage builds. Their tables are in
 `UnityrsBodyFixtures.cs` and `UnityrsBodyClips.cs`, mirrored by
 [`anim_fixture_body.py`](../tools/parity/anim_fixture_body.py).
@@ -1018,6 +1018,7 @@ bundle build after the main and coverage builds. Their tables are in
 | `body-probes-tall-2` (1) | F1 | 26 extra known vectors on the tall rig, in a bundle of their own. Each moves two of the trunk, shoulder, upper-arm and upper-leg bones, the poses the adequacy checkpoint predicts it needs (below). |
 | `body-probes-twist-{compact,tall}` (2) | F2 | Twist sweeps on the two P2b rigs, each in a bundle of its own: 84 known vectors, the shoulder-hip twist swept by the Spine and Chest twist muscles under an upright and three tilted body targets (below) |
 | `body-probes-range-{compact,tall,noncoplanar}` (3) | F8 | Range sweeps on three training rigs, each in a bundle of its own: 263 known vectors filling every mapped spine bone's muscle cube jointly under the twist sweeps' tilts (below) |
+| `body-probes-band-{compact,tall,noncoplanar}` (3) | F9 | Lateral band sweeps on the same three rigs, each in a bundle of its own: 296 known vectors crossing combined spine Left-Right values up to ±3/8 with tilts and small arm-leg yaw gaps, and the pure side bends (below) |
 | `body-targets-{compact,tall}[-offset]` (4) | F3 | The three combined vectors with nonidentity body targets on identity and offset roots |
 | `body-clip-<variant>[-offset]` (78) | F4 | 39 body-motion clips on the compact rig, each on an identity and an offset root |
 | `body-chain-<f5>-{targets,clip}` (8) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale. Each plays F3's targets and the all-original F4 clip with changing `MotionT` and `MotionQ` curves, whose residual body translation and tilt change through the chain and whose motion the original-root rule keeps. Completion requires its built motion slots; if Unity drops them, that clip case is not covered. |
@@ -1084,6 +1085,25 @@ is required once its rig records. The three rigs with UpperChest absent and
 both, the left or the right Toes absent came with them, in the same later
 generation. Those rigs are required whenever a run has that generation: an
 Avatar Unity refuses fails the run instead of going uncovered.
+
+**Lateral band sweeps.** A band sweep (`BandProbes`, mirrored by
+`BAND_RIGS`) validates the frame past its lateral domain. B2's checker
+refuses a spine Left-Right value beyond the largest one at which every
+training sample passes E2 and E3a. Past it, 2.2's frame leaves Unity's
+read-back by an unexplained second-order yaw of up to 0.08°. The vectors are
+the range sweeps' 256 Sobol points, rescaled per bone: Front-Back over
+`[-1, 1]`, Left-Right over `±3/8` and Twist over `±1/32`. Each is `2 x - 1`
+times a power of two, so exact in f32. The twists stay small, so most poses
+stay inside the frame's shoulder-hip twist scope, and they open an arm-leg
+yaw gap of a few degrees. The tilts are the range sweeps'. Then come 40
+pure side bends: every mapped spine bone at Left-Right `±1/8`, `±3/16`,
+`±1/4`, `±5/16` or `±3/8`, with Front-Back and Twist zero, under each
+tilt. That is the oppositely tilted arm and leg laterals at a near-zero
+yaw gap, the shape no lateral-weighting rule fits. With the anchors that is
+299 samples per case. The sweeps are required once their rig records, and
+a later generation of their own. They are evaluated (E2, E3a, and their
+margins in the adequacy checkpoint) but never fitted, so they validate
+the fit without moving it. The design comes from the cube alone.
 
 **F3 targets.** The targets alternate two requests. One moves the rest
 body by `(.05, -.03, .04)` and tilts it by `Euler(12, -20, 7)`. The other

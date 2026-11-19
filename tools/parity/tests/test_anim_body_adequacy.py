@@ -272,6 +272,15 @@ class CheckpointTests(unittest.TestCase):
             self.assertTrue(all(abs(f32(v) - c - d) < 1e-6 for v, c, d in zip(got["translation"], pivot, arm)))
         parents, masses = adequacy.bone_table([source])
         self.assertTrue(all(row["fit"] for row in adequacy.samples(name, predicted, parents, masses)))
+        # A band sweep is predicted the same way, its scaled vectors through the same map, and never fitted.
+        band = design.predict("body-probes-band-compact", source)
+        self.assertEqual(len(band["capture"]["samples"]), body.RANGE_POINTS + 40 + 3)
+        for sample in band["capture"]["samples"]:
+            vector = [replay.f32_from_bits(bits) for bits in sample["muscles_f32"]]
+            for bone, entry in spine.items():
+                self.assertEqual(sample["pose"]["transforms"][bones[bone]]["rotation"],
+                                 [replay.f32_bits(v) for v in design.spine_rotation(entry, vector)])
+        self.assertFalse(any(row["fit"] for row in adequacy.samples("body-probes-band-compact", band, parents, masses)))
         # The bone's own limit row comes first; a probe that misses its limit angle refuses.
         rows = {row["name"]: row for row in capture["humanoid"]["muscles"]}
         own = copy.deepcopy(source)
@@ -333,15 +342,16 @@ class CheckpointTests(unittest.TestCase):
 
     def test_every_planned_sample_is_required(self):
         name = sorted(body.EXTRA_CASES)[0]
-        self.record([case for case in self.design() if case not in body.RANGE_CASES | {name}])
+        sweeps = body.RANGE_CASES | body.BAND_CASES
+        self.record([case for case in self.design() if case not in sweeps | {name}])
         _, report, text = self.run_checkpoint()
-        self.assertEqual(report["missing_planned"], [f"{case}: not recorded" for case in sorted(body.RANGE_CASES | {name})])
-        self.assertIn(f"missing planned samples ['{sorted(body.RANGE_CASES)[0]}: not recorded'", text)
+        self.assertEqual(report["missing_planned"], [f"{case}: not recorded" for case in sorted(sweeps | {name})])
+        self.assertIn(f"missing planned samples ['{sorted(sweeps)[0]}: not recorded'", text)
         self.assertFalse(report["adequate"])
-        self.record([name, *body.RANGE_CASES], samples=5)
+        self.record([name, *sweeps], samples=5)
         _, report, _ = self.run_checkpoint()
         want = []
-        for case in sorted(body.RANGE_CASES | {name}):
+        for case in sorted(sweeps | {name}):
             rig = body.BODY_INFO[case]["rig"]
             want += [f"{case}@{t}" for t, _ in body.probe_schedule(rig, list(support.MUSCLES), False, case)[5:]]
         self.assertEqual(report["missing_planned"], want)
@@ -357,12 +367,12 @@ class CheckpointTests(unittest.TestCase):
         report = json.loads((self.folder / "report.json").read_text(encoding="utf-8"))
         self.assertIn(code, (0, 1))
         # The tall rig's planned cases are predicted; the compact rig's probe case is short, and the noncoplanar
-        # rig's unrecorded, so their range sweeps stay missing.
-        self.assertEqual(report["predicted"], ["body-probes-range-tall", name])
-        self.assertIn(f"(predicted with body-probes-range-tall, {name})", out.getvalue())
+        # rig's unrecorded, so their range and band sweeps stay missing.
+        self.assertEqual(report["predicted"], ["body-probes-band-tall", "body-probes-range-tall", name])
+        self.assertIn(f"(predicted with body-probes-band-tall, body-probes-range-tall, {name})", out.getvalue())
         self.assertIn(name, {row["name"] for row in report["samples"]})
-        self.assertEqual(report["missing_planned"], ["body-probes-range-compact: not recorded",
-                                                     "body-probes-range-noncoplanar: not recorded"])
+        self.assertEqual(report["missing_planned"], [f"body-probes-{kind}-{rig}: not recorded" for kind in ("band", "range")
+                                                     for rig in ("compact", "noncoplanar")])
         # Without the flag the checkpoint reads only what was recorded.
         self.assertNotIn(name, {row["name"] for row in self.run_checkpoint()[1]["samples"]})
 
