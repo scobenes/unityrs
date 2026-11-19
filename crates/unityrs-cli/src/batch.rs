@@ -16,11 +16,10 @@
 //! `--check` runs phase 1 (2.11 step 2: read, validate and prepare `JOB.json`) under
 //! the counting allocator's measure, and writes the `exit` line with `seq`
 //! 0: for a valid spec code 0 and the detail `memory_bound <bytes>`, 5.1's
-//! bound (**provisional** until X12 measures its constants:
-//! `unityrs_batch::bound`; on a host whose pages are not 4 KiB also
-//! uncertified, which a stderr line says), else 78 and the `bad_spec`
-//! detail. A bad
-//! command line is 78 `usage`. `--schema` and `--version` write stdout and
+//! bound using the compiled constants (`unityrs_batch::bound::SELECTED`).
+//! Pages other than 4 KiB or of unknown size produce an uncertified-bound
+//! note on stderr. An invalid spec gets code 78 and the `bad_spec` detail.
+//! A bad command line is 78 `usage`. `--schema` and `--version` write stdout and
 //! exit 74 when that write fails.
 //!
 //! A run starts with 2.11 step 1's services

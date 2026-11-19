@@ -74,7 +74,7 @@ fn bit_boundaries_do_not_grow_or_alias_and_end_slots_cover_the_actual_union() {
     }
     assert_eq!(bits.set(65, true), None);
     assert_eq!(bits.get(64), Some(false));
-    assert!(bound::PROVISIONAL.m_end >= (size_of::<job::End>() + bound::END_SLOT_OVERHEAD) as u64);
+    assert!(bound::SELECTED.m_end >= (size_of::<job::End>() + bound::END_SLOT_OVERHEAD) as u64);
     assert!(size_of::<job::End>() >= size_of::<unityrs_batch::attempt::AttemptEnd>());
     assert!(size_of::<job::End>() >= size_of::<unityrs_batch::peek::PeekEnd>());
 }

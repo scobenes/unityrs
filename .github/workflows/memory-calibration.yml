@@ -87,14 +87,8 @@ jobs:
             fi
           done
       - name: Check a committed selection without regenerating it
-        if: hashFiles('docs/memory/constants-v1.json') != ''
         run: >-
           python3 tools/memory/regenerate.py --compiled-evidence docs/memory/constants-v1.json
-          --rust-output crates/unityrs-batch/src/bound/measured.rs --check
-      - name: Check the provisional fallback while evidence is absent
-        if: hashFiles('docs/memory/constants-v1.json') == ''
-        run: >-
-          python3 tools/memory/regenerate.py --bootstrap
           --rust-output crates/unityrs-batch/src/bound/measured.rs --check
       # In a container job the runner.temp and github.workspace expressions
       # name the host's paths; steps use the container's $RUNNER_TEMP, and the
