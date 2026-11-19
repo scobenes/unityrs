@@ -16,6 +16,8 @@ mod codec_bridge;
 mod codecs;
 mod construction;
 mod crypto_shader;
+mod direct;
+mod direct_object;
 mod environment;
 mod errors;
 mod exports;

@@ -316,6 +316,24 @@ fn every_path_fits_the_stack_the_limits_name() {
     });
 }
 
+/// UnityPyBoost's reader keeps the values it is reading on the heap, and a
+/// value drops without recursion: on a thread of 64 KiB, far below
+/// [`Limits::stack_needed`], every shape reads to `max_value_depth`, is
+/// refused one past it as on any stack, and drops. So the binding runs
+/// this reader inline on any thread, the main thread included.
+#[test]
+fn the_boost_reader_takes_a_fixed_stack() {
+    on_thread(64 << 10, || {
+        for shape in shapes() {
+            run(&shape, Path::Refused(Reader::Boost));
+            let n = deepest(&shape, Reader::Boost);
+            let p = read(&shape, Reader::Boost, &shape.data(n)).unwrap();
+            assert_eq!(p.bytes_read, i64::try_from(shape.data(n).len()).unwrap());
+            drop(p);
+        }
+    });
+}
+
 const PROBE: &str = "UNITYRS_STACK_PROBE";
 
 /// The child process `stack_measured` runs: one path on a thread of the

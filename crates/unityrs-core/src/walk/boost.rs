@@ -26,16 +26,15 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use super::dict::{Dict, FindError, RefIndex, RefNode, Trees, ref_tree, visit};
+use super::dict::{FindError, RefIndex, RefNode, Trees, ref_tree};
 use super::{
     FloatMode, Out, ReadCtx, ReadDetail, ReadError, ReadErrorKind, RefTypes, Work, charge_error,
-    f32_bits, grow_step, int, limit_refused, py_size_field_is_zero, uint,
+    f32_bits, int, limit_refused, py_size_field_is_zero, uint,
 };
 use crate::limits::MeteredVec;
-use crate::raw::RawStr;
 use crate::stream::Endian;
-use crate::typetree::{Kind, NodeId, NodeInfo, Shape, Tree};
-use crate::value::{ListIx, Parsed, PrimArray, PrimRun, Value, ValueBuilder};
+use crate::typetree::{Kind, NodeId, Tree};
+use crate::value::{Parsed, PrimRun, Value, ValueBuilder};
 
 /// Reads one value from exactly `data` (the object's bytes). `TypelessData`
 /// and `vector<UInt8>` values are zero-copy slices of `data`.
@@ -247,108 +246,6 @@ impl Reader<'_, '_, '_, '_, '_> {
         })
     }
 
-    fn value(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId) -> Result<Out, ReadError> {
-        if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
-            return Ok(Out::Plain(Value::Int(0)));
-        }
-        let at = self.at();
-        self.work.enter(at)?;
-        let out = self.value_inner(t, lx, node);
-        self.work.leave();
-        match (out, &mut self.progress) {
-            (Err(error), Some(progress)) => progress.recover(error),
-            (out, _) => out,
-        }
-    }
-
-    /// A class's or a `ReferencedObject`'s child, read by `read`: under a
-    /// name a sibling repeats, every value it builds counts against
-    /// `max_values_per_object` (`Work`'s docs).
-    #[inline]
-    fn child(
-        &mut self,
-        repeated: bool,
-        read: impl FnOnce(&mut Self) -> Result<Out, ReadError>,
-    ) -> Result<Out, ReadError> {
-        if !repeated {
-            return read(self);
-        }
-        self.work.enter_repeated();
-        let out = read(self);
-        self.work.leave_repeated();
-        out
-    }
-
-    /// `read_typetree_value` (UnityPy TypeTreeHelper.cpp:702-883).
-    fn value_inner(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId) -> Result<Out, ReadError> {
-        let me = t.info(node).copied().ok_or_else(|| {
-            self.fail(
-                ReadErrorKind::Other,
-                ReadDetail::Python("node outside its tree"),
-            )
-        })?;
-        self.work.kept(self.at())?;
-        // R15: a flagged node aligns after its value.
-        let mut align = me.align;
-        let out = match me.shape {
-            Shape::Prim => Out::Plain(self.prim(me.kind)?),
-            // R6 (UnityPy TypeTreeHelper.cpp:288-305): length, bounds, the
-            // raw bytes, then always aligned.
-            Shape::Str => {
-                let len = self.length()?;
-                self.method = "read_str";
-                let end = self.bound(len, "EOFError")?;
-                let s = RawStr::from_shared(self.data.slice(self.pos..end));
-                self.pos = end;
-                self.align4();
-                Out::Plain(Value::Str(s))
-            }
-            // R7 (UnityPy TypeTreeHelper.cpp:307-323): aligned only by its flag.
-            Shape::Bytes => {
-                let len = self.length()?;
-                self.method = "read_bytes";
-                let end = self.bound(len, "ValueError")?;
-                let b = self.data.slice(self.pos..end);
-                self.pos = end;
-                Out::Plain(Value::Bytes(b))
-            }
-            // R8 (UnityPy TypeTreeHelper.cpp:325-351).
-            Shape::Pair => {
-                let (a, b) = two(t, node);
-                let first = self.value(t, lx, a)?;
-                let second = self.value(t, lx, b)?;
-                self.tuple2(first, second)?
-            }
-            Shape::BadPair => {
-                return Err(self.fail(ReadErrorKind::Other, ReadDetail::PairChildren));
-            }
-            Shape::RefObject => self.ref_object(t, lx, node)?,
-            // R9 (UnityPy TypeTreeHelper.cpp:812-861).
-            Shape::Vector {
-                elem,
-                run,
-                array_align,
-            } => {
-                align |= array_align;
-                let count = self.length()?;
-                let ei = t.info(elem).copied().unwrap_or(me);
-                if run {
-                    self.run(t, lx, elem, ei, count)?
-                } else {
-                    self.list(t, lx, elem, ei, count)?
-                }
-            }
-            Shape::BadVector => {
-                return Err(self.fail(ReadErrorKind::Other, ReadDetail::ArrayChildren));
-            }
-            Shape::Class => self.class(t, lx, node, me)?,
-        };
-        if align {
-            self.align4();
-        }
-        Ok(out)
-    }
-
     fn tuple2(&mut self, first: Out, second: Out) -> Result<Out, ReadError> {
         let at = self.at();
         let mut items = self.builder.vec();
@@ -359,82 +256,6 @@ impl Reader<'_, '_, '_, '_, '_> {
             .map_err(|e| charge_error(at, e))?;
         let built = self.builder.tuple(items).map_err(|e| charge_error(at, e))?;
         Ok(Out::Built(built))
-    }
-
-    /// R11 (UnityPy TypeTreeHelper.cpp:846-855): elements read one by one,
-    /// each aligning itself.
-    fn list(
-        &mut self,
-        t: &Arc<Tree>,
-        lx: ListIx,
-        elem: NodeId,
-        ei: NodeInfo,
-        count: usize,
-    ) -> Result<Out, ReadError> {
-        let at = self.at();
-        let remaining = self.bytes.len().saturating_sub(self.pos);
-        let first = self.work.first_room(count, remaining, ei.min_size);
-        let mut items = self.builder.vec();
-        items
-            .reserve_exact(first)
-            .map_err(|e| charge_error(at, e))?;
-        for i in 0..count {
-            grow_step(&mut items, count).map_err(|e| charge_error(self.at(), e))?;
-            let (before, mark) = (self.pos, self.work.discards());
-            let v = self.value(t, lx, elem)?;
-            if self.pos <= before {
-                self.work.zero_size(mark, self.at())?;
-            }
-            v.push_to(&mut items)
-                .map_err(|e| charge_error(self.at(), e))?;
-            if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
-                break;
-            }
-            self.work.filled(i, first);
-        }
-        Ok(Out::Built(self.builder.list(items)))
-    }
-
-    /// R10: `read_typetree_value_array` (UnityPy TypeTreeHelper.cpp:886-940):
-    /// a primitive or `pair` run, aligned once after when the element is
-    /// flagged.
-    fn run(
-        &mut self,
-        t: &Arc<Tree>,
-        lx: ListIx,
-        elem: NodeId,
-        ei: NodeInfo,
-        count: usize,
-    ) -> Result<Out, ReadError> {
-        let big = self.big;
-        let floats = self.floats;
-        self.method = read_method(ei.kind, true);
-        let out = match ei.kind {
-            Kind::U8 => {
-                let end = self.bound(count, "ValueError")?;
-                self.work.run(as_u64(count), self.at())?;
-                let b = self.data.slice(self.pos..end);
-                self.pos = end;
-                Out::Plain(Value::Prims(PrimArray::U8(b)))
-            }
-            Kind::Bool => self.nums::<1, _>(count, |b| u8::from_le_bytes(b) != 0, PrimRun::Bool)?,
-            Kind::S8 => self.nums::<1, _>(count, i8::from_le_bytes, PrimRun::I8)?,
-            Kind::U16 => self.nums::<2, _>(count, |b| num!(big, u16, b), PrimRun::U16)?,
-            Kind::S16 => self.nums::<2, _>(count, |b| num!(big, i16, b), PrimRun::I16)?,
-            Kind::U32 => self.nums::<4, _>(count, |b| num!(big, u32, b), PrimRun::U32)?,
-            Kind::S32 => self.nums::<4, _>(count, |b| num!(big, i32, b), PrimRun::I32)?,
-            Kind::U64 => self.nums::<8, _>(count, |b| num!(big, u64, b), PrimRun::U64)?,
-            Kind::S64 => self.nums::<8, _>(count, |b| num!(big, i64, b), PrimRun::I64)?,
-            Kind::F32 => {
-                self.nums::<4, _>(count, |b| f32_bits(num!(big, u32, b), floats), PrimRun::F32)?
-            }
-            Kind::F64 => self.nums::<8, _>(count, |b| num!(big, u64, b), PrimRun::F64)?,
-            _ => self.pairs(t, lx, elem, ei, count)?,
-        };
-        if ei.align {
-            self.align4();
-        }
-        Ok(out)
     }
 
     /// `read_num_array` and friends (UnityPy TypeTreeHelper.cpp:86-264):
@@ -472,190 +293,6 @@ impl Reader<'_, '_, '_, '_, '_> {
             .prims(wrap(items))
             .map_err(|e| charge_error(at, e))?;
         Ok(Out::Built(built))
-    }
-
-    /// `read_pair_array` (UnityPy TypeTreeHelper.cpp:353-392): the arity is
-    /// checked once, before the first element (R10), so even an empty run of
-    /// malformed pairs fails.
-    fn pairs(
-        &mut self,
-        t: &Arc<Tree>,
-        lx: ListIx,
-        elem: NodeId,
-        ei: NodeInfo,
-        count: usize,
-    ) -> Result<Out, ReadError> {
-        if ei.shape != Shape::Pair {
-            return Err(self.fail(ReadErrorKind::Other, ReadDetail::PairChildren));
-        }
-        let (a, b) = two(t, elem);
-        let at = self.at();
-        let remaining = self.bytes.len().saturating_sub(self.pos);
-        let reserved = self.work.first_room(count, remaining, ei.min_size);
-        let mut items = self.builder.vec();
-        items
-            .reserve_exact(reserved)
-            .map_err(|e| charge_error(at, e))?;
-        for i in 0..count {
-            grow_step(&mut items, count).map_err(|e| charge_error(self.at(), e))?;
-            self.work.kept(self.at())?;
-            let (before, mark) = (self.pos, self.work.discards());
-            let first = self.value(t, lx, a)?;
-            let second = self.value(t, lx, b)?;
-            if self.pos <= before {
-                self.work.zero_size(mark, self.at())?;
-            }
-            let pair = self.tuple2(first, second)?;
-            pair.push_to(&mut items)
-                .map_err(|e| charge_error(self.at(), e))?;
-            if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
-                break;
-            }
-            self.work.filled(i, reserved);
-        }
-        Ok(Out::Built(self.builder.list(items)))
-    }
-
-    /// R12, R13: `read_class` (UnityPy TypeTreeHelper.cpp:394-445). Its
-    /// dict grows as its children are read ([`Dict`]): no pass over them
-    /// first (review round 7: a class whose children repeat a name or hold
-    /// a registry passed over all of them to size its dict, so a read that
-    /// failed at its first child cost what all of them did).
-    fn class(
-        &mut self,
-        t: &Arc<Tree>,
-        lx: ListIx,
-        node: NodeId,
-        me: NodeInfo,
-    ) -> Result<Out, ReadError> {
-        let at = self.at();
-        let kids = t.list().children(node);
-        let mut dict = Dict::new(
-            &self.builder,
-            kids.len(),
-            me.dup_names && self.progress.is_none(),
-            at,
-        )?;
-        let mut changed = false;
-        for c in kids {
-            visit();
-            let ci = t.info(*c).copied().unwrap_or(me);
-            if ci.kind == Kind::ManagedReferencesRegistry {
-                if self.has_registry {
-                    // A skipped child counts as a value (plan 3.10, "Bounds").
-                    self.work.skipped(self.at())?;
-                    continue;
-                }
-                changed = true;
-                self.has_registry = true;
-            }
-            let v = self.child(ci.repeated, |r| r.value(t, lx, *c))?;
-            let at = self.at();
-            dict.set(
-                &mut self.work,
-                if self.progress.is_some() { *c } else { ci.key },
-                ci.slot,
-                v,
-                at,
-            )?;
-            if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
-                break;
-            }
-        }
-        if changed {
-            self.has_registry = false;
-        }
-        let result = dict.finish(&self.builder, lx, self.at())?;
-        if let Some(progress) = &mut self.progress {
-            progress.finish_class();
-        }
-        Ok(result)
-    }
-
-    /// R14: a `ReferencedObject` (UnityPy TypeTreeHelper.cpp:751-811). Its
-    /// dict grows as its children are read and keeps each name's position
-    /// ([`Dict`]), and its `type` is the entry of the first child named
-    /// `type` read so far: no pass over its children first (review round 7).
-    fn ref_object(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId) -> Result<Out, ReadError> {
-        let at = self.at();
-        let kids = t.list().children(node);
-        let mut dict = Dict::new(&self.builder, kids.len(), true, at)?;
-        dict.preserve_fields(self.progress.is_some());
-        // The slot of the children named `type`, once one is visited: a
-        // data child before it finds no `type`, as UnityPyBoost's lookup in
-        // the dict read so far finds none.
-        let mut type_slot = None;
-        let mut object_type = false;
-        // The current `type`'s resolution, made at the first data child that
-        // asks and kept until a child sets `type` again: a node of many data
-        // children resolves each `type` value once (claude X, review round 2).
-        let mut resolved: Option<Option<RefNode>> = None;
-        for c in kids {
-            visit();
-            let Some(ci) = t.info(*c).copied() else {
-                continue;
-            };
-            if type_slot.is_none() && t.list().name(*c) == b"type" {
-                type_slot = Some(ci.slot);
-            }
-            if t.list().name(*c) == b"type" {
-                object_type = self.progress.is_some() && ci.kind != Kind::ReferencedObject;
-            }
-            let v = if ci.kind == Kind::ReferencedObjectData {
-                let node = if let Some(r) = &resolved {
-                    r.clone()
-                } else {
-                    let ty = type_slot
-                        .and_then(|s| dict.position(s))
-                        .and_then(|p| dict.entries.as_slice().get(p))
-                        .map(|(_, v)| v);
-                    let found = match self.ref_node(ty, object_type) {
-                        Ok(found) => found,
-                        Err(error) => {
-                            if let Some(progress) = &mut self.progress {
-                                progress.recover(error)?;
-                                break;
-                            }
-                            return Err(error);
-                        }
-                    };
-                    resolved.insert(found).clone()
-                };
-                match node {
-                    None | Some(RefNode::NoTree) => {
-                        // A skipped child counts as a value (plan 3.10, "Bounds").
-                        self.work.skipped(self.at())?;
-                        continue;
-                    }
-                    Some(RefNode::Tree(rt)) => {
-                        let at = self.at();
-                        let rlx = self.trees.index(&mut self.builder, &rt, at)?;
-                        self.child(ci.repeated, |r| r.value(&rt, rlx, rt.root()))?
-                    }
-                }
-            } else {
-                self.child(ci.repeated, |r| r.value(t, lx, *c))?
-            };
-            let at = self.at();
-            dict.set(
-                &mut self.work,
-                if self.progress.is_some() { *c } else { ci.key },
-                ci.slot,
-                v,
-                at,
-            )?;
-            if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
-                break;
-            }
-            if Some(ci.slot) == type_slot {
-                resolved = None;
-            }
-        }
-        let result = dict.finish(&self.builder, lx, self.at())?;
-        if let Some(progress) = &mut self.progress {
-            progress.finish_class();
-        }
-        Ok(result)
     }
 
     /// `get_ref_type_node` (UnityPy TypeTreeHelper.cpp:585-681) on the dict
@@ -755,3 +392,12 @@ fn read_method(kind: Kind, array: bool) -> &'static str {
         _ => "read_length",
     }
 }
+
+// After `num!`, which its steps use.
+#[path = "boost_states.rs"]
+mod states;
+#[path = "boost_steps.rs"]
+mod steps;
+
+#[cfg(test)]
+pub(crate) use steps::OPEN_SIZE;
