@@ -15,8 +15,12 @@
   `benchmarks/gate.json`; without wall.json the section reads "Results pending" and BENCHMARKS.md does not exist.
   `--check` fails when the committed text differs.
 - `check --wall-run` (CI) verifies a committed wall.json the PR changes against the named `bench-wall.yml` run:
-  its workflow, event and conclusion, no change to the measured paths between its commit and the base or the head,
-  and the run's artifact byte-equal to the file. A PR that leaves wall.json alone has nothing to verify.
+  its workflow, event, branch (main) and conclusion, no change to the measured paths (`measured_paths`: the
+  workflow, the inputs and every repository module the measurement imports) between its commit and the base or
+  the head, and the run's artifact byte-equal to the file. A PR that leaves wall.json alone has nothing to verify.
+
+`run` fails, writing no wall.json, when a child crashes, its setup fails or it prints no result; children's
+stderr goes only to DIR/logs, never to the console or wall.json (which `run` uploads alone).
 
 Standard library only; children run through tools/parity/child.py, scratch through tools/parity/scratch.py.
 """
@@ -24,6 +28,7 @@ Standard library only; children run through tools/parity/child.py, scratch throu
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import io
 import json
@@ -37,6 +42,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+WORKFLOW = ".github/workflows/bench-wall.yml"
 sys.path.insert(0, str(ROOT / "tools" / "parity"))
 sys.path.insert(0, str(ROOT / "tools" / "perf"))
 sys.path.insert(0, str(HERE))
@@ -51,11 +57,47 @@ GATE = ROOT / "benchmarks" / "gate.json"
 README = ROOT / "README.md"
 BENCHMARKS = ROOT / "BENCHMARKS.md"
 WORKLOADS = HERE / "workloads.json"
-WORKFLOW = ".github/workflows/bench-wall.yml"
-# The paths a published run measured (plan section 5.2): a change to any between the run's commit and the PR's
-# base or head means the numbers are not this code's.
+# The paths a published run measured (plan section 5.2), beside the modules `measured_paths` derives: a change to
+# any between the run's commit and the PR's base or head means the numbers are not this code's.
 MEASURED = ("crates/", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/bench/",
-            "tools/parity/requirements-oracle.txt", "benchmarks/fixtures.json")
+            "tools/parity/requirements-oracle.txt", "benchmarks/fixtures.json", WORKFLOW)
+# Where the measurement's own modules are found: the folders this file and py_workloads.py put on sys.path.
+IMPORT_DIRS = (HERE, ROOT / "tools" / "parity", ROOT / "tools" / "perf")
+
+
+def local_imports(entries, dirs=IMPORT_DIRS) -> set[Path]:
+    """Every repository file `entries` import, transitively, read from their source: each `import` or absolute
+    `from` at any depth (a function's included) whose top name is a module beside the importer or in `dirs`; a
+    package counts whole. Names found nowhere there (the standard library, UnityPy, unityrs) are not ours."""
+    seen, todo = set(), list(entries)
+    while todo:
+        path = todo.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        if path.is_dir():
+            todo += sorted(path.rglob("*.py"))
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module]
+            else:
+                continue
+            for top in {n.split(".")[0] for n in names}:
+                places = [c for d in (path.parent, *dirs) for c in (d / f"{top}.py", d / top)]
+                todo += [c for c in places if c.is_file() or (c / "__init__.py").is_file()][:1]
+    return seen
+
+
+def measured_paths() -> list[str]:
+    """`MEASURED` and every repository module the measurement (bench.py and py_workloads.py) imports, as
+    pathspecs: a module under a listed folder is already covered."""
+    found = local_imports([HERE / "bench.py", HERE / "py_workloads.py"])
+    rel = sorted(str(f.relative_to(ROOT)) + ("/" if f.is_dir() else "") for f in found)
+    covered = [m for m in MEASURED if m.endswith("/")]
+    return [*MEASURED, *(r for r in rel if not any(r.startswith(m) for m in covered))]
 
 
 def load_json(path: Path):
@@ -192,8 +234,13 @@ def machine_info() -> dict:
             "runner_image": os.environ.get("ImageVersion"), "emulated": emulated}
 
 
-def one_run(impl: str, spec: dict, fixture: Path) -> dict:
-    """One fresh process of `py_workloads.py`: its result, with whole-process wall and CPU time and peak PSS."""
+class ChildFailed(Exception):
+    """A child crashed, failed its setup or printed no result: the run stops (its stderr is in the log file)."""
+
+
+def one_run(impl: str, spec: dict, fixture: Path, log: Path) -> dict:
+    """One fresh process of `py_workloads.py`: its result, with whole-process wall and CPU time and peak PSS
+    (setup and warm-up included)."""
     cmd = [sys.executable, str(HERE / "py_workloads.py"), "--impl", impl, spec["name"], str(fixture)]
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     t0 = time.perf_counter()
@@ -208,15 +255,25 @@ def one_run(impl: str, spec: dict, fixture: Path) -> dict:
     process_s = time.perf_counter() - t0
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
     cpu = (after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime)
+    got = child_result(proc, f"{spec['name']} {impl}", log)
+    return {**got, "process_s": process_s, "cpu_s": cpu, "peak_pss_bytes": pss}
+
+
+def child_result(proc, what: str, log: Path) -> dict:
+    """A finished child's result line; `ChildFailed` when it exited non-zero or printed no valid result. Its
+    stderr, when any, is written to `log` and nowhere else."""
+    if proc.stderr:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(proc.stderr, encoding="utf-8")
     lines = proc.stdout.strip().splitlines()
     try:
-        got = json.loads(lines[-1]) if proc.returncode == 0 else None
-    except (IndexError, ValueError):
+        got = json.loads(lines[-1]) if proc.returncode == 0 and lines else None
+    except ValueError:
         got = None
-    if got is None:
-        tail = (proc.stderr.strip().splitlines() or ["(no output)"])[-1][:200]
-        got = {"status": f"exit {proc.returncode}: {tail}", "scope_s": None, "counts": {}, "digest": None}
-    return {**got, "process_s": process_s, "cpu_s": cpu, "peak_pss_bytes": pss}
+    if not isinstance(got, dict) or not results.STATUS.fullmatch(str(got.get("status"))):
+        code = "no result" if proc.returncode == 0 else f"exit {proc.returncode}"
+        raise ChildFailed(f"{what}: {code} (stderr, if any, in {log.name})")
+    return got
 
 
 def commit_sha() -> str | None:
@@ -251,7 +308,12 @@ def cmd_run(args) -> int:
         order = results.IMPLS if rnd % 2 == 0 else tuple(reversed(results.IMPLS))
         for spec in specs:
             for impl in order:
-                got = one_run(impl, spec, folder / spec["fixture"])
+                log = args.out / "logs" / f"{rnd}-{spec['name']}-{impl}.stderr"
+                try:
+                    got = one_run(impl, spec, folder / spec["fixture"], log)
+                except ChildFailed as e:
+                    print(f"bench run: round {rnd}: {e}; stopping, no wall.json", file=sys.stderr)
+                    return 1
                 print(f"bench: round {rnd} {spec['name']} {impl}: {got['status']} {got['scope_s']}", flush=True)
                 if rnd >= table["warmup"]:
                     runs[(spec["name"], impl)].append({"round": rnd - table["warmup"], **got})
@@ -300,7 +362,7 @@ def rendered(root: Path) -> tuple[str, str | None, list[str]]:
     gate = load_json(gate_path) if gate_path.exists() else None
     bad = []
     if wall is not None:
-        bad = results.problems(wall, table) or results.publish_problems(wall)
+        bad = results.problems(wall, table) or results.publish_problems(wall, table)
         if bad:
             return "", None, [f"benchmarks/wall.json: {b}" for b in bad]
     readme = results.splice((root / "README.md").read_text(encoding="utf-8"), results.readme_section(wall, table))
@@ -363,18 +425,20 @@ def check_wall_run(run_id, base: str, repo: str, gh=gh_api, git=git, wall_path: 
         return []
     data = wall_path.read_bytes()
     wall = json.loads(data)
-    bad = results.problems(wall, load_json(WORKLOADS)) + results.publish_problems(wall)
+    table = load_json(WORKLOADS)
+    bad = results.problems(wall, table) or results.publish_problems(wall, table)
     if run_id is not None and int(run_id) != wall["run_id"]:
         bad.append(f"run {run_id} is not wall.json's run {wall['run_id']}")
     rid, attempt = wall["run_id"], wall["run_attempt"]
     run = json.loads(gh(f"repos/{repo}/actions/runs/{rid}/attempts/{attempt}"))
     if run.get("path", "").split("@")[0] != WORKFLOW:
         bad.append(f"run {rid}: workflow {run.get('path')!r}, not {WORKFLOW}")
-    for key, want in (("event", "workflow_dispatch"), ("conclusion", "success"), ("head_sha", wall["commit"])):
+    for key, want in (("event", "workflow_dispatch"), ("head_branch", "main"), ("conclusion", "success"),
+                      ("head_sha", wall["commit"])):
         if run.get(key) != want:
             bad.append(f"run {rid}: {key} {run.get(key)!r}, not {want!r}")
     for ref in (base, "HEAD"):
-        rc, names = git("diff", "--name-only", str(run.get("head_sha")), ref, "--", *MEASURED)
+        rc, names = git("diff", "--name-only", str(run.get("head_sha")), ref, "--", *measured_paths())
         if rc != 0 or names.strip():
             changed = ", ".join(names.split()) or f"git exited {rc}"
             bad.append(f"the measured paths changed between the run's commit and {ref}: {changed}")

@@ -34,11 +34,12 @@ def counts(spec: dict) -> dict:
     return out
 
 
-def wall(names=NAMES, times=None, status=None, digest=None, rounds=7, emulated=False) -> dict:
-    """A wall.json of `names`: run r of (name, impl) takes `times[(name, impl)][r]` seconds (by default UnityPy
+def wall(names=None, times=None, status=None, digest=None, rounds=7, emulated=False) -> dict:
+    """A wall.json of `names` (by default every workload, as a published run holds): run r of (name, impl) takes `times[(name, impl)][r]` seconds (by default UnityPy
     1.0 + r/100 and unityrs a tenth of it), with status `status[(name, impl, r)]` (default ok) and digest
     `digest[(name, impl, r)]` (default one per name). Its stored pairing is the computed one."""
     times, status, digest = times or {}, status or {}, digest or {}
+    names = names or tuple(SPECS)
     doc = {
         "schema_version": 1, "run_id": 12345, "run_attempt": 1, "commit": "0123456789abcdef" * 2 + "01234567",
         "date": "2026-11-19", "scale": "full", "rounds": rounds, "warmup": 1,

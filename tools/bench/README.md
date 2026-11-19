@@ -24,10 +24,16 @@ python tools/bench/bench.py render [--check]
 Fixtures are cached under `$UNITYRS_BENCH_CACHE` (outside the checkout) when it is set, else under the run's DIR.
 `$UNITYRS_BENCH_BIN` names a prebuilt `unityrs-bench`; otherwise `bench.py` builds it with cargo.
 
-**Publishing.** Only a run of `.github/workflows/bench-wall.yml` (`workflow_dispatch`, GitHub's `ubuntu-24.04`
-runner) is published: a PR commits its `wall.json` artifact as `benchmarks/wall.json` with the rendered docs, and
-CI's `check --wall-run` step verifies the run (its workflow, event and conclusion, no change to the measured paths
-since its commit, and the artifact byte-equal to the file). A run on an emulated host is refused.
+**Publishing.** Only a run of `.github/workflows/bench-wall.yml` (`workflow_dispatch` on `main`, GitHub's
+`ubuntu-24.04` runner) is published: a PR commits its `wall.json` artifact as `benchmarks/wall.json` with the
+rendered docs, and CI's `check --wall-run` step verifies the run (its workflow, event, branch and conclusion, no
+change since its commit to the measured paths, which are the workflow, the inputs and every repository module the
+measurement imports, and the artifact byte-equal to the file). A run on an emulated host, at the gate scale, with
+fewer rounds than `workloads.json` names or missing a workload is refused.
+
+**Failures.** A scope that raises is a result, published as `raised:` and the exception's class name (unpaired). A
+child that crashes, fails its setup or prints no result stops the run with no `wall.json`. Children's stderr is kept
+in `DIR/logs` only, never in the console output or `wall.json`.
 
 | file | role |
 |---|---|

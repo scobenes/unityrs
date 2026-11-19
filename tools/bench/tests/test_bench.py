@@ -4,6 +4,7 @@ Standard library only."""
 
 import io
 import json
+import types
 import unittest
 import zipfile
 
@@ -24,8 +25,8 @@ class WallRunTests(unittest.TestCase):
         self.doc = wall()
         self.root = scratch_tree(self, self.doc)
         self.path = self.root / "benchmarks" / "wall.json"
-        self.run = {"path": bench.WORKFLOW, "event": "workflow_dispatch", "conclusion": "success",
-                    "head_sha": self.doc["commit"]}
+        self.run = {"path": bench.WORKFLOW, "event": "workflow_dispatch", "head_branch": "main",
+                    "conclusion": "success", "head_sha": self.doc["commit"]}
         self.artifacts = {"artifacts": [{"name": "bench-wall-12345-1", "id": 9}]}
         self.artifact = zipped(self.path.read_bytes())
         self.changed_wall, self.measured = True, ""
@@ -44,7 +45,7 @@ class WallRunTests(unittest.TestCase):
             return (1 if self.changed_wall else 0), ""
         if args[:2] == ("diff", "--name-only"):
             self.assertEqual(args[2], str(self.run.get("head_sha")))
-            self.assertEqual(args[4:], ("--", *bench.MEASURED))
+            self.assertEqual(args[4:], ("--", *bench.measured_paths()))
             return 0, self.measured
         raise AssertionError(args)
 
@@ -62,8 +63,8 @@ class WallRunTests(unittest.TestCase):
         self.assertEqual(self.check(), [])
 
     def test_each_property_of_the_run_is_checked(self):
-        for key, value in (("path", ".github/workflows/ci.yml"), ("event", "push"), ("conclusion", "failure"),
-                           ("head_sha", "f" * 40)):
+        for key, value in (("path", ".github/workflows/ci.yml"), ("event", "push"), ("head_branch", "topic"),
+                           ("conclusion", "failure"), ("head_sha", "f" * 40)):
             with self.subTest(key):
                 self.setUp()
                 self.run[key] = value
@@ -88,6 +89,49 @@ class WallRunTests(unittest.TestCase):
         self.path.write_text(bench.dump_json(wall(emulated=True)), encoding="utf-8")
         self.artifact = zipped(self.path.read_bytes())
         self.assertTrue(any("emulated" in b for b in self.check()))
+
+
+class MeasuredPathTests(unittest.TestCase):
+    def test_the_workflow_and_every_imported_helper_are_measured(self):
+        paths = bench.measured_paths()
+        for path in (bench.WORKFLOW, "tools/perf/mem_peak.py", "tools/perf/bench_unitypy.py",
+                     "tools/parity/child.py", "tools/parity/scratch.py", "tools/parity/unitypy_dump.py"):
+            self.assertIn(path, paths)
+        self.assertFalse([p for p in paths if p.startswith("tools/bench/") and p != "tools/bench/"], paths)
+
+    def test_imports_are_followed_from_source_at_any_depth(self):
+        root = scratch_tree(self)
+        (root / "lib").mkdir()
+        (root / "pkg").mkdir()
+        (root / "a.py").write_text("import json\n\ndef f():\n    import b\n", encoding="utf-8")
+        (root / "b.py").write_text("from c import x\nimport pkg.sub, lone\nimport UnityPy\n", encoding="utf-8")
+        (root / "lib" / "c.py").write_text("x = 1\n", encoding="utf-8")
+        (root / "lib" / "unused.py").write_text("", encoding="utf-8")
+        (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (root / "pkg" / "sub.py").write_text("from c import x\n", encoding="utf-8")
+        (root / "lone.py").write_text("", encoding="utf-8")
+        got = bench.local_imports([root / "a.py"], dirs=(root / "lib",))
+        want = {root / n for n in ("a.py", "b.py", "lib/c.py", "pkg", "pkg/__init__.py", "pkg/sub.py", "lone.py")}
+        self.assertEqual(got, want)
+
+
+class ChildResultTests(unittest.TestCase):
+    def proc(self, code, out, err):
+        return types.SimpleNamespace(returncode=code, stdout=out, stderr=err)
+
+    def test_a_crash_a_failed_setup_or_no_result_stops_the_run_with_stderr_kept_locally(self):
+        log = scratch_tree(self) / "logs" / "0-x-unityrs.stderr"
+        ok = json.dumps({"status": "ok", "scope_s": 1.0, "counts": {}, "digest": "d"})
+        self.assertEqual(bench.child_result(self.proc(0, ok + "\n", ""), "x unityrs", log)["status"], "ok")
+        self.assertFalse(log.exists())
+        for proc in (self.proc(-11, "", "Segmentation fault /private/secret\n"), self.proc(1, ok, "Traceback\n"),
+                     self.proc(0, "", ""), self.proc(0, "not json", ""),
+                     self.proc(0, json.dumps({"status": "ValueError: /private/x"}), "")):
+            with self.assertRaises(bench.ChildFailed) as cm:
+                bench.child_result(proc, "x unityrs", log)
+            self.assertNotIn("secret", str(cm.exception))
+            self.assertNotIn("/private", str(cm.exception))
+        self.assertEqual(log.read_text(encoding="utf-8"), "Traceback\n")  # the last stderr written
 
 
 class ManifestTests(unittest.TestCase):

@@ -27,6 +27,9 @@ jobs:
       run:
         shell: bash
     steps:
+      # Only main's code is published; CI's bench-wall-check also requires it.
+      - name: Refuse a ref other than main
+        run: test "$GITHUB_REF" = refs/heads/main
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
@@ -53,6 +56,8 @@ jobs:
           "$RUNNER_TEMP/bench/bin/python" -m pip check
       - name: Build the fixture generator
         run: cargo build --release --locked -p unityrs-bench
+      # Children's stderr stays in bench-out/logs on the runner: only
+      # wall.json is uploaded, and the log shows statuses alone.
       - name: Time both implementations on the full fixture set
         env:
           UNITYRS_BENCH_BIN: target/release/unityrs-bench

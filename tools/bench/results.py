@@ -24,6 +24,9 @@ TOOLS = ("unityrs", "rustc", "unitypy", "unitypyboost_sha256", "pillow", "python
 MACHINE = ("cpu", "cores", "memory_bytes", "kernel", "runner_image", "emulated")
 ENTRY = ("name", "impl", "category", "timer", "paired", "reason", "parity_row", "tier", "runs")
 RUN = ("round", "scope_s", "process_s", "cpu_s", "peak_pss_bytes", "status", "counts", "digest")
+# A run's status: `ok`, or `raised:` and the class name of what the scope raised (py_workloads.raised); never a
+# message, which can carry paths or data.
+STATUS = re.compile(r"ok|raised:[A-Za-z_][A-Za-z0-9_]{0,63}")
 # An absolute path in any string field: a host path (section 4.5 allows none).
 HOST_PATH = re.compile(r"(^|[\s=:'\"(])(/(home|Users|root|tmp|private|var|work|mnt|opt)/|[A-Za-z]:\\)")
 
@@ -80,6 +83,8 @@ def problems(wall: dict, workloads: dict) -> list[str]:
             lacking = [k for k in RUN if k not in r]
             if lacking:
                 out.append(f"{e['name']}/{e['impl']}: a run lacks {', '.join(lacking)}")
+            elif not STATUS.fullmatch(str(r["status"])):
+                out.append(f"{e['name']}/{e['impl']}: a run's status is not `ok` or `raised:<class>`")
     if out:
         return out
     for name, (paired, reason) in pairings(wall, workloads).items():
@@ -91,9 +96,15 @@ def problems(wall: dict, workloads: dict) -> list[str]:
     return out
 
 
-def publish_problems(wall: dict) -> list[str]:
-    """Why `wall` may not be published (decision 8): an emulated host, or a scale other than full."""
+def publish_problems(wall: dict, workloads: dict) -> list[str]:
+    """Why `wall` may not be published (decision 8): an emulated host, a scale other than full, fewer rounds than
+    workloads.json's, or a workload of it missing for either implementation."""
     out = []
+    if wall.get("rounds") != workloads["rounds"]:
+        out.append(f"{wall.get('rounds')!r} rounds, not workloads.json's {workloads['rounds']}")
+    have = {(e.get("name"), e.get("impl")) for e in wall.get("workloads", [])}
+    out += [f"{w['name']}/{impl}: missing" for w in workloads["workloads"] for impl in IMPLS
+            if (w["name"], impl) not in have]
     if wall["machine"].get("emulated") is not False:
         out.append(f"an emulated host ({wall['machine'].get('cpu')!r}) is refused for publishing")
     if wall.get("scale") != "full":
@@ -393,8 +404,8 @@ def benchmarks_md(wall: dict, gate: dict | None, workloads: dict, fixtures: dict
         "- The timer covers only the scope named in each row; setup and the digest are outside it.",
         "- A speedup is published only for a paired workload: Tier A in PARITY.md, every round `ok` on both sides,",
         "  and one digest across all of them.",
-        "- Process CPU is the whole run's (imports and setup included); peak PSS is the summed proportional set size",
-        "  of the run's process tree, sampled every 50 ms.",
+        "- Process CPU and peak PSS are the whole process's (imports, setup and the warm-up included); peak PSS is",
+        "  the summed proportional set size of the run's process tree, sampled every 50 ms.",
         "- Wall clock on a shared runner is noisy; CI gates on instruction counts instead (section 7).",
         "",
     ]

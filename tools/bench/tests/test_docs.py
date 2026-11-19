@@ -32,9 +32,10 @@ class RenderTests(unittest.TestCase):
         readme = (root / "README.md").read_text(encoding="utf-8")
         inner = readme.split(results.BEGIN)[1].split(results.END)[0]
         self.assertNotIn("Results pending", inner)
-        self.assertIn("| load and list objects | objects-lz4 (20,000 objects) |", inner)
+        self.assertIn("| load and list objects | objects-lz4 (20,000 objects), objects-lzma (20,000 objects), "
+                      "objects-2019 (20,000 objects), many-blocks (64.0 MiB entry) |", inner)
         self.assertIn("| read every typetree | 40,000 objects in 2 layouts |", inner)
-        self.assertIn("| read and decode textures | 1 formats, 8.4 Mpixel |", inner)
+        self.assertIn("| read and decode textures | 15 formats, 113.2 Mpixel |", inner)
         self.assertIn("×10.0 |", inner)
         md = (root / "BENCHMARKS.md").read_text(encoding="utf-8")
         for n in range(1, 9):

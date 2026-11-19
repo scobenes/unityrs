@@ -3,6 +3,8 @@ exist with the tier it declares (decision 4 pairs only Tier A), and its operatio
 py_workloads.py itself, on a fake implementation: the scope's result, its digest and a side that raises.
 Standard library only."""
 
+import contextlib
+import io
 import json
 import re
 import sys
@@ -101,14 +103,29 @@ class Image:
         return b"\x01\x02\x03\x04" * 2
 
 
-def fake(objects, loads=None):
+class Entry:
+    """A non-serialized entry whose `bytes` copies, as both sides' readers do; `reads` counts the copies."""
+
+    def __init__(self, data):
+        self.data, self.reads = data, 0
+
+    @property
+    def bytes(self):
+        self.reads += 1
+        return bytes(self.data)
+
+
+def fake(objects, loads=None, entries=()):
     """`sys.modules` entries for a UnityPy whose `load` gives one bundle holding one SerializedFile of `objects`
-    (each call counted in `loads`), with the modules `warm` imports."""
-    bundle = types.SimpleNamespace(files={"CAB-x": SerializedFile(objects)})
+    and the `entries` (each call counted in `loads`; data b"fail" raises), with the modules `warm` imports."""
+    bundle = types.SimpleNamespace(files={"CAB-x": SerializedFile(objects),
+                                          **{f"CAB-{i}.resS": e for i, e in enumerate(entries)}})
 
     def load(data):
         if loads is not None:
             loads.append(data)
+        if data == b"fail":
+            raise OSError("setup failed")
         return types.SimpleNamespace(files={"x": bundle})
 
     module = types.SimpleNamespace(load=load, __name__="UnityPy")
@@ -140,22 +157,41 @@ class ScriptTests(unittest.TestCase):
         load = self.run_with([Reader({})], "load")
         self.assertEqual(load["counts"]["objects"], 1)
 
-    def test_setup_warms_both_sides_one_time_initialisation_before_the_timer(self):
-        """`warm` imports `classes`, `export` and Pillow and loads the fixture once, untimed; the timed load is
-        another."""
-        loads = []
-        modules = fake([Reader({})], loads)
-        del modules["UnityPy.export"]
-        with mock.patch.dict(sys.modules, modules), self.assertRaises(ImportError):
-            py_workloads.run("unitypy", "load", self.fixture)
-        loads.clear()
-        with mock.patch.dict(sys.modules, fake([Reader({})], loads)):
-            self.assertEqual(py_workloads.run("unitypy", "load", self.fixture)["status"], "ok")
-        self.assertEqual(loads, [b"synthetic", b"synthetic"])
+    def test_setup_warms_only_what_the_op_needs_before_the_timer(self):
+        """The load ops load the fixture once more, untimed; only the texture op imports `classes`, `export` and
+        Pillow; the typetree op warms nothing."""
+        texture = ["UnityPy.classes", "UnityPy.export", "PIL.Image"]
+        for op, want_loads, want_imports in (("load", 2, []), ("load_entries", 2, []), ("typetree", 1, []),
+                                             ("texture", 1, texture)):
+            loads, imported = [], []
+            with mock.patch.dict(sys.modules, fake([Reader({}, Image())], loads)), \
+                    mock.patch.object(py_workloads.importlib, "import_module", imported.append):
+                self.assertEqual(py_workloads.run("unitypy", op, self.fixture)["status"], "ok", op)
+            self.assertEqual((len(loads), imported), (want_loads, want_imports), op)
 
-    def test_a_side_that_raises_is_a_result_with_no_digest(self):
-        got = self.run_with([Reader(ValueError("bad image mode\nmore"))], "typetree")
-        self.assertEqual((got["status"], got["digest"]), ("ValueError: bad image mode", None))
+    def test_the_entry_op_reads_each_entry_once(self):
+        """`bytes` copies on both sides: the scope reads each entry's exactly once."""
+        entries = [Entry(b"abc"), Entry(b"de")]
+        with mock.patch.dict(sys.modules, fake([], entries=entries)):
+            got = py_workloads.run("unitypy", "load_entries", self.fixture)
+        self.assertEqual((got["counts"]["entries"], got["counts"]["entry_bytes"]), (2, 5))
+        self.assertEqual([e.reads for e in entries], [1, 1])
+
+    def test_a_side_that_raises_is_a_result_with_its_class_name_only(self):
+        """The message, which can carry paths or data, goes to stderr only; an odd class name is not published."""
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = self.run_with([Reader(ValueError("bad image mode /private/x"))], "typetree")
+            odd = self.run_with([Reader(type("odd name", (Exception,), {})("x"))], "typetree")
+        self.assertEqual((got["status"], got["digest"]), ("raised:ValueError", None))
+        self.assertEqual(odd["status"], "raised:Exception")
+        self.assertIn("bad image mode", err.getvalue())
+
+    def test_a_failing_setup_is_not_a_result(self):
+        self.fixture.write_bytes(b"fail")
+        for op in ("load", "typetree"):
+            with mock.patch.dict(sys.modules, fake([])), self.assertRaises(OSError):
+                py_workloads.run("unitypy", op, self.fixture)
 
     def test_the_script_prints_one_json_line(self):
         out = []

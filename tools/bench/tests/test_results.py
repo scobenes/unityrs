@@ -14,11 +14,10 @@ class PairingTests(unittest.TestCase):
         self.assertEqual(results.pairings(wall(), WORKLOADS)["texture-BC6H"], (False, "PARITY.md row is Tier B"))
 
     def test_a_failed_round_on_either_side_unpairs(self):
-        doc = wall(status={("texture-DXT1", "unitypy", 3): "ValueError: bad image mode"})
-        self.assertEqual(results.pairings(doc, WORKLOADS)["texture-DXT1"],
-                         (False, "unitypy: ValueError: bad image mode"))
-        doc = wall(status={("texture-DXT1", "unityrs", 0): "exit 1: boom"})
-        self.assertEqual(results.pairings(doc, WORKLOADS)["texture-DXT1"], (False, "unityrs: exit 1: boom"))
+        doc = wall(status={("texture-DXT1", "unitypy", 3): "raised:ValueError"})
+        self.assertEqual(results.pairings(doc, WORKLOADS)["texture-DXT1"], (False, "unitypy: raised:ValueError"))
+        doc = wall(status={("texture-DXT1", "unityrs", 0): "raised:KeyError"})
+        self.assertEqual(results.pairings(doc, WORKLOADS)["texture-DXT1"], (False, "unityrs: raised:KeyError"))
 
     def test_a_different_digest_in_any_round_unpairs(self):
         for impl in results.IMPLS:
@@ -53,7 +52,7 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(x, {"ratio": 6.0, "low": 2.5, "high": 14.0})
 
     def test_unpaired_workloads_count_in_no_category(self):
-        doc = wall(status={("texture-DXT1", "unitypy", 0): "KeyError: x"})
+        doc = wall(NAMES, status={("texture-DXT1", "unitypy", 0): "raised:KeyError"})
         cats = [r["category"] for r in results.summary(doc, WORKLOADS)]
         self.assertNotIn("texture", cats)  # DXT1 failed and BC6H is Tier B: no paired texture row
         self.assertEqual(cats, ["load", "typetree"])
@@ -83,12 +82,25 @@ class SchemaTests(unittest.TestCase):
         doc["tools"]["rustc"] = "rustc 1.99.1\nsysroot: /home/runner/.rustup"
         self.assertTrue(any("host path" in p for p in results.problems(doc, WORKLOADS)))
 
+    def test_a_status_is_ok_or_a_class_name_never_a_message(self):
+        for status in ("ValueError: bad image mode", "exit 1: boom", "raised:Value Error", "raised:"):
+            doc = wall(status={("texture-DXT1", "unitypy", 0): status})
+            self.assertTrue(any("status is not" in p for p in results.problems(doc, WORKLOADS)), status)
+
     def test_an_emulated_or_partial_run_is_not_published(self):
-        self.assertEqual(results.publish_problems(wall()), [])
-        self.assertTrue(results.publish_problems(wall(emulated=True)))
+        self.assertEqual(results.publish_problems(wall(), WORKLOADS), [])
+        self.assertTrue(results.publish_problems(wall(emulated=True), WORKLOADS))
         doc = wall()
         doc["scale"] = "gate"
-        self.assertTrue(results.publish_problems(doc))
+        self.assertTrue(results.publish_problems(doc, WORKLOADS))
+
+    def test_a_full_run_missing_a_workload_or_rounds_is_not_published(self):
+        doc = wall()
+        doc["workloads"] = [e for e in doc["workloads"] if not (e["name"] == NAMES[0] and e["impl"] == "unityrs")]
+        self.assertEqual(results.publish_problems(doc, WORKLOADS), [f"{NAMES[0]}/unityrs: missing"])
+        doc = wall()
+        doc["rounds"] = 3
+        self.assertEqual(results.publish_problems(doc, WORKLOADS), ["3 rounds, not workloads.json's 7"])
 
 
 if __name__ == "__main__":

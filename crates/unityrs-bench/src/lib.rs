@@ -23,7 +23,7 @@ pub mod many_blocks;
 pub mod objects;
 pub mod textures;
 
-pub use files::{BuildError, bundle, serialized};
+pub use files::{BuildError, bundle, bundle_lz4hc, serialized};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};

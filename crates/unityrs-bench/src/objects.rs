@@ -2,7 +2,8 @@
 //! scale) of ten classes, each with its typetree embedded, about 1.2 KB
 //! decoded, in three files:
 //!
-//! - `objects-lz4.bundle`: 2022.3, LZ4HC blocks of 128 KiB;
+//! - `objects-lz4.bundle`: 2022.3, LZ4HC blocks of 128 KiB (liblz4's HC
+//!   at level 9, as Unity writes them);
 //! - `objects-lzma.bundle`: the same, one LZMA block;
 //! - `objects-2019.assets`: the same objects, uncompressed, in the 2019.4
 //!   layout (`SerializedFile` format 21).
@@ -16,7 +17,7 @@ use unityrs_testkit::Rng;
 use unityrs_testkit::bundle::TestCodec;
 use unityrs_testkit::ngui::{Object, V, pptr, st, vector};
 
-use crate::{Fixture, Scale, UNITY_2019, UNITY_VERSION, bundle, seed_of, serialized};
+use crate::{Fixture, Scale, UNITY_2019, UNITY_VERSION, bundle, bundle_lz4hc, seed_of, serialized};
 
 /// The three files, in build order.
 pub const NAMES: [&str; 3] = [
@@ -164,12 +165,14 @@ pub fn build(name: &str, scale: Scale) -> Result<Fixture, String> {
         serialized(21, UNITY_2019, &objects).map_err(|e| e.to_string())?
     } else {
         let file = serialized(22, UNITY_VERSION, &objects).map_err(|e| e.to_string())?;
-        let (codec, block, cab) = if name == "objects-lzma.bundle" {
-            (TestCodec::Lzma, file.len().max(1), "CAB-bench-objects-lzma")
+        if name == "objects-lzma.bundle" {
+            let block = file.len().max(1);
+            let entry = vec![("CAB-bench-objects-lzma".to_owned(), file, 4)];
+            bundle(UNITY_VERSION, entry, TestCodec::Lzma, block)
         } else {
-            (TestCodec::Lz4Hc, 128 << 10, "CAB-bench-objects-lz4")
-        };
-        bundle(UNITY_VERSION, vec![(cab.to_owned(), file, 4)], codec, block)
+            let entry = vec![("CAB-bench-objects-lz4".to_owned(), file, 4)];
+            bundle_lz4hc(UNITY_VERSION, entry, 128 << 10)?
+        }
     };
     Ok(Fixture {
         name: name.to_owned(),

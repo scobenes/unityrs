@@ -14,9 +14,9 @@
      "sha256": "636b1dc471c93fb79ede6fe19b202e52d41c518a6639fa9fdcd9d45fca825f8d"
     },
     {
-     "bytes": 7492822,
+     "bytes": 5087065,
      "name": "objects-lz4.bundle",
-     "sha256": "60732993e576df91e6ea635cc434dbd2d802725c239096d7e0cb264c51427a50"
+     "sha256": "b00dcd729c4fc1017b07937f5339350c0d8e3c2f96f0bfd33776a879053ceedf"
     },
     {
      "bytes": 3826117,
@@ -374,9 +374,9 @@
      "sha256": "bb67d77d04eb9e0801f9ed8167d68bba236770ef9e024b44a1695daef3450f50"
     },
     {
-     "bytes": 374001,
+     "bytes": 255236,
      "name": "objects-lz4.bundle",
-     "sha256": "c3dffa35eda1e3a81137a623c014a7af3488ea942bbd37d989cb8d85558815f4"
+     "sha256": "bfebacfb49952e28492ecc9f3e9b1c4cd999a9667b88433c19ff7b538b13b84e"
     },
     {
      "bytes": 191691,
