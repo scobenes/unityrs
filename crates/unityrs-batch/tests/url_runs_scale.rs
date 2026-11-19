@@ -16,7 +16,7 @@ use std::{
 };
 use unityrs_batch::{
     alloc::{Counting, Hook},
-    bound::{self, PROVISIONAL},
+    bound::{self, SELECTED},
     controller,
     http::permit::{NETWORK_ALLOWANCE, Snapshot as Permits},
     phase1,
@@ -106,7 +106,7 @@ fn a_thousand_urls_stage_within_the_permits() {
         phase1::prepare(unityrs_batch::spec::parse(serde_json::to_vec(&spec).unwrap()).unwrap())
             .unwrap()
     });
-    let run_bound = bound::memory_bound(&prepared.spec, measured, 0, &PROVISIONAL);
+    let run_bound = bound::memory_bound(&prepared.spec, measured, 0, &SELECTED);
     let service = Service::start(
         fs::File::create(scratch.join("progress")).unwrap(),
         Snapshot::validate(0),

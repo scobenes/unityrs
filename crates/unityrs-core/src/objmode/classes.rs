@@ -1,4 +1,5 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/classes/generated.py, object-mode class fields. See THIRD_PARTY_LICENSES.
+// Ported from UnityPy git 417d595 (MIT): UnityPy/classes/generated.py, the Mesh class. See THIRD_PARTY_LICENSES.
 /// A class's attrs fields (`classes/generated.py`), and whether object
 /// mode builds it as an `UnknownObject` when given a field it lacks
 /// (`PARITY.md` section 9.2.1: a non-empty `__slots__`).
@@ -44,6 +45,59 @@ pub const MESH: Class = Class {
         "m_MeshMetrics_0_",
         "m_MeshMetrics_1_",
         "m_Normals",
+        "m_RootBoneNameHash",
+        "m_ShapeVertices",
+        "m_Shapes",
+        "m_Skin",
+        "m_StreamCompression",
+        "m_StreamData",
+        "m_Tangents",
+        "m_UV",
+        "m_UV1",
+        "m_Use16BitIndices",
+        "m_VariableBoneCountWeights",
+        "m_VertexData",
+        "m_Vertices",
+    ],
+    slotted: false,
+};
+
+/// `Mesh` from Unity 6000 (Tier C, `PARITY.md` section 19.1): UnityPy git
+/// 417d595's fields (`HEAD classes/generated.py:4813-4852`, unchanged at
+/// master), from a newer TPK: `m_MeshUsageFlags`,
+/// which Unity 6000.6 no longer writes, has the default `None`, and the two
+/// `m_PreBake*` flags are new. 1.25.2 requires it, so builds an `UnknownObject`.
+pub const MESH_6000: Class = Class {
+    types: &["Mesh"],
+    required: &[
+        "m_BindPose",
+        "m_CompressedMesh",
+        "m_IndexBuffer",
+        "m_LocalAABB",
+        "m_MeshCompression",
+        "m_Name",
+        "m_SubMeshes",
+    ],
+    optional: &[
+        "m_BakedConvexCollisionMesh",
+        "m_BakedTriangleCollisionMesh",
+        "m_BoneNameHashes",
+        "m_BonesAABB",
+        "m_CollisionTriangles",
+        "m_CollisionVertexCount",
+        "m_Colors",
+        "m_CookingOptions",
+        "m_IndexFormat",
+        "m_IsReadable",
+        "m_KeepIndices",
+        "m_KeepVertices",
+        "m_MeshLodInfo",
+        "m_MeshMetrics_0_",
+        "m_MeshMetrics_1_",
+        "m_MeshUsageFlags",
+        "m_Normals",
+        "m_PreBakeConvexCollisionMesh",
+        "m_PreBakeTriangleCollisionMesh",
         "m_RootBoneNameHash",
         "m_ShapeVertices",
         "m_Shapes",

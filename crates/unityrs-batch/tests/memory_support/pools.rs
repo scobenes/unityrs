@@ -93,7 +93,7 @@ fn actual_lookup_cells_on_both_pools_fit_the_pool_increment() {
                 // Adding maxima is conservative; no incompatible peak is
                 // ever subtracted to make a coefficient appear smaller.
                 let raw = startup + cells;
-                assert!(raw <= PROVISIONAL.m_pool, "pool increment {raw}");
+                assert!(raw <= SELECTED.m_pool, "pool increment {raw}");
                 println!("\nB12_COEFFICIENT m_pool {raw}");
             }
         });
@@ -125,7 +125,7 @@ fn store_owner_tables_at_maximum_concurrency_fit_the_pool_slope() {
             .unwrap()
             .into_provider();
             let slots = 2 * u64::from(dc + 1);
-            LEDGER.arm(slots * PROVISIONAL.m_pool);
+            LEDGER.arm(slots * SELECTED.m_pool);
             unityrs_batch::run::hooks::memory::probe_store_preparation(spec, &provider, || {
                 let o = LEDGER.observe();
                 assert!(o.first_violation.is_none(), "store tables: {o:?}");

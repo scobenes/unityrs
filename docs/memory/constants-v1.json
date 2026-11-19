@@ -1,0 +1,1566 @@
+{
+  "coefficients": {
+    "c_base": {
+      "margin": 63350924,
+      "raw": 253403696,
+      "selected": 316755968,
+      "structural_floor": 0
+    },
+    "c_env": {
+      "margin": 65536,
+      "raw": 2432,
+      "selected": 69632,
+      "structural_floor": 0
+    },
+    "m_dispatch": {
+      "margin": 176,
+      "raw": 704,
+      "selected": 896,
+      "structural_floor": 64
+    },
+    "m_end": {
+      "margin": 992,
+      "raw": 3968,
+      "selected": 4992,
+      "structural_floor": 3544
+    },
+    "m_pool": {
+      "margin": 65536,
+      "raw": 19608,
+      "selected": 86016,
+      "structural_floor": 0
+    },
+    "m_thread": {
+      "margin": 65536,
+      "raw": 103008,
+      "selected": 172032,
+      "structural_floor": 0
+    }
+  },
+  "pending": [],
+  "records": [
+    {
+      "attribution": {
+        "base_download_concurrency": 1,
+        "base_workers": 1,
+        "coherent_observations": true,
+        "held_charges_only": true,
+        "live_deductions_only": true,
+        "native_only_charges_excluded": true,
+        "observer_allocation_free": true,
+        "parent_startup_included": true,
+        "peer_excluded": true,
+        "raw_incremental_coefficients": true
+      },
+      "coefficients": {
+        "c_base": 17428112,
+        "c_env": 2432,
+        "m_dispatch": 704,
+        "m_end": 3968,
+        "m_pool": 19608,
+        "m_thread": 102656
+      },
+      "coverage": {
+        "base-archive": true,
+        "base-failed-input": true,
+        "base-lookup": true,
+        "base-old-journal": true,
+        "base-resume": true,
+        "base-startup": true,
+        "environment": true,
+        "full-dispatch-channel": true,
+        "full-end-channel": true,
+        "header-ownership": true,
+        "http-tls": true,
+        "loose-publication": true,
+        "native-components": true,
+        "normal-run": true,
+        "pool-controller": true,
+        "pool-finisher": true,
+        "retention": true,
+        "scale-residual": true,
+        "stop-phase-1": true,
+        "stop-phase-2": true,
+        "stop-phase-3": true,
+        "stop-phase-4": true,
+        "stop-phase-5": true,
+        "stop-phase-6": true,
+        "stop-phase-7": true,
+        "store-final-head": true,
+        "store-journal": true,
+        "store-list": true,
+        "store-multipart": true,
+        "store-verification": true,
+        "view-paths": true,
+        "worker-count": true,
+        "zip-publication": true
+      },
+      "fixed_envelopes": {
+        "abort_pair": 2080,
+        "archive_resume_entry": 160,
+        "connection": 4194304,
+        "credential_holders": 6,
+        "credential_id": 128,
+        "credential_secret": 128,
+        "credential_token": 16384,
+        "finisher": 25165824,
+        "header_copies": 4,
+        "header_table_entry": 48,
+        "journal_line": 16384,
+        "mask_entry": 32,
+        "multipart_list": 2097152,
+        "panic_slot": 2048,
+        "response_body": 65536,
+        "view_member": 1024,
+        "worker_state": 115344
+      },
+      "kind": "synthetic",
+      "profile": "debug",
+      "provenance": {
+        "allocator": "system-glibc",
+        "arena_extra": 2,
+        "clean": true,
+        "features": "test-hooks",
+        "glibc": [
+          2,
+          36
+        ],
+        "kernel": [
+          7,
+          0,
+          0
+        ],
+        "lockfile_sha256": "6d2fd1f1a577559c0d3790157402a56e16bdc569fc2c07be0159a6f090a02da4",
+        "mmap_threshold": 131072,
+        "native": true,
+        "native_compilers": {
+          "c": [
+            12,
+            2,
+            0
+          ],
+          "cxx": [
+            12,
+            2,
+            0
+          ]
+        },
+        "native_flags_sha256": "18276c5014cf4e30360b7835ace0bcbe4979065b9cb9c51663ac98105c05306c",
+        "native_libraries_sha256": "6fb657e4f503561ae10c0716a3d7bb2f5f149f6a388863d75ce16faf119a6453",
+        "page_size": 4096,
+        "revision": "8d419d7db8ab42696a436bf89091ed5ac2015990",
+        "rustc": [
+          1,
+          99,
+          1
+        ]
+      },
+      "sink": "directory",
+      "structural_floors": {
+        "m_dispatch": 64,
+        "m_end": 3544
+      },
+      "target": "aarch64-unknown-linux-gnu"
+    },
+    {
+      "attribution": {
+        "base_download_concurrency": 1,
+        "base_workers": 1,
+        "coherent_observations": true,
+        "held_charges_only": true,
+        "live_deductions_only": true,
+        "native_only_charges_excluded": true,
+        "observer_allocation_free": true,
+        "parent_startup_included": true,
+        "peer_excluded": true,
+        "raw_incremental_coefficients": true
+      },
+      "coefficients": {
+        "c_base": 17428112,
+        "c_env": 2432,
+        "m_dispatch": 704,
+        "m_end": 3968,
+        "m_pool": 19608,
+        "m_thread": 102656
+      },
+      "coverage": {
+        "base-archive": true,
+        "base-failed-input": true,
+        "base-lookup": true,
+        "base-old-journal": true,
+        "base-resume": true,
+        "base-startup": true,
+        "environment": true,
+        "full-dispatch-channel": true,
+        "full-end-channel": true,
+        "header-ownership": true,
+        "http-tls": true,
+        "loose-publication": true,
+        "native-components": true,
+        "normal-run": true,
+        "pool-controller": true,
+        "pool-finisher": true,
+        "retention": true,
+        "scale-residual": true,
+        "stop-phase-1": true,
+        "stop-phase-2": true,
+        "stop-phase-3": true,
+        "stop-phase-4": true,
+        "stop-phase-5": true,
+        "stop-phase-6": true,
+        "stop-phase-7": true,
+        "store-final-head": true,
+        "store-journal": true,
+        "store-list": true,
+        "store-multipart": true,
+        "store-verification": true,
+        "view-paths": true,
+        "worker-count": true,
+        "zip-publication": true
+      },
+      "fixed_envelopes": {
+        "abort_pair": 2080,
+        "archive_resume_entry": 160,
+        "connection": 4194304,
+        "credential_holders": 6,
+        "credential_id": 128,
+        "credential_secret": 128,
+        "credential_token": 16384,
+        "finisher": 25165824,
+        "header_copies": 4,
+        "header_table_entry": 48,
+        "journal_line": 16384,
+        "mask_entry": 32,
+        "multipart_list": 2097152,
+        "panic_slot": 2048,
+        "response_body": 65536,
+        "view_member": 1024,
+        "worker_state": 115344
+      },
+      "kind": "synthetic",
+      "profile": "debug",
+      "provenance": {
+        "allocator": "system-glibc",
+        "arena_extra": 2,
+        "clean": true,
+        "features": "test-hooks",
+        "glibc": [
+          2,
+          36
+        ],
+        "kernel": [
+          7,
+          0,
+          0
+        ],
+        "lockfile_sha256": "6d2fd1f1a577559c0d3790157402a56e16bdc569fc2c07be0159a6f090a02da4",
+        "mmap_threshold": 131072,
+        "native": true,
+        "native_compilers": {
+          "c": [
+            12,
+            2,
+            0
+          ],
+          "cxx": [
+            12,
+            2,
+            0
+          ]
+        },
+        "native_flags_sha256": "18276c5014cf4e30360b7835ace0bcbe4979065b9cb9c51663ac98105c05306c",
+        "native_libraries_sha256": "6fb657e4f503561ae10c0716a3d7bb2f5f149f6a388863d75ce16faf119a6453",
+        "page_size": 4096,
+        "revision": "8d419d7db8ab42696a436bf89091ed5ac2015990",
+        "rustc": [
+          1,
+          99,
+          1
+        ]
+      },
+      "sink": "store",
+      "structural_floors": {
+        "m_dispatch": 64,
+        "m_end": 3544
+      },
+      "target": "aarch64-unknown-linux-gnu"
+    },
+    {
+      "attribution": {
+        "base_download_concurrency": 1,
+        "base_workers": 1,
+        "coherent_observations": true,
+        "held_charges_only": true,
+        "live_deductions_only": true,
+        "native_only_charges_excluded": true,
+        "observer_allocation_free": true,
+        "parent_startup_included": true,
+        "peer_excluded": true,
+        "raw_incremental_coefficients": true
+      },
+      "coefficients": {
+        "c_base": 17428016,
+        "c_env": 2432,
+        "m_dispatch": 704,
+        "m_end": 3968,
+        "m_pool": 19584,
+        "m_thread": 102992
+      },
+      "coverage": {
+        "base-archive": true,
+        "base-failed-input": true,
+        "base-lookup": true,
+        "base-old-journal": true,
+        "base-resume": true,
+        "base-startup": true,
+        "environment": true,
+        "full-dispatch-channel": true,
+        "full-end-channel": true,
+        "header-ownership": true,
+        "http-tls": true,
+        "loose-publication": true,
+        "native-components": true,
+        "normal-run": true,
+        "pool-controller": true,
+        "pool-finisher": true,
+        "retention": true,
+        "scale-residual": true,
+        "stop-phase-1": true,
+        "stop-phase-2": true,
+        "stop-phase-3": true,
+        "stop-phase-4": true,
+        "stop-phase-5": true,
+        "stop-phase-6": true,
+        "stop-phase-7": true,
+        "store-final-head": true,
+        "store-journal": true,
+        "store-list": true,
+        "store-multipart": true,
+        "store-verification": true,
+        "view-paths": true,
+        "worker-count": true,
+        "zip-publication": true
+      },
+      "fixed_envelopes": {
+        "abort_pair": 2080,
+        "archive_resume_entry": 160,
+        "connection": 4194304,
+        "credential_holders": 6,
+        "credential_id": 128,
+        "credential_secret": 128,
+        "credential_token": 16384,
+        "finisher": 25165824,
+        "header_copies": 4,
+        "header_table_entry": 48,
+        "journal_line": 16384,
+        "mask_entry": 32,
+        "multipart_list": 2097152,
+        "panic_slot": 2048,
+        "response_body": 65536,
+        "view_member": 1024,
+        "worker_state": 115344
+      },
+      "kind": "synthetic",
+      "profile": "release",
+      "provenance": {
+        "allocator": "system-glibc",
+        "arena_extra": 2,
+        "clean": true,
+        "features": "test-hooks",
+        "glibc": [
+          2,
+          36
+        ],
+        "kernel": [
+          7,
+          0,
+          0
+        ],
+        "lockfile_sha256": "6d2fd1f1a577559c0d3790157402a56e16bdc569fc2c07be0159a6f090a02da4",
+        "mmap_threshold": 131072,
+        "native": true,
+        "native_compilers": {
+          "c": [
+            12,
+            2,
+            0
+          ],
+          "cxx": [
+            12,
+            2,
+            0
+          ]
+        },
+        "native_flags_sha256": "18276c5014cf4e30360b7835ace0bcbe4979065b9cb9c51663ac98105c05306c",
+        "native_libraries_sha256": "6fb657e4f503561ae10c0716a3d7bb2f5f149f6a388863d75ce16faf119a6453",
+        "page_size": 4096,
+        "revision": "8d419d7db8ab42696a436bf89091ed5ac2015990",
+        "rustc": [
+          1,
+          99,
+          1
+        ]
+      },
+      "sink": "directory",
+      "structural_floors": {
+        "m_dispatch": 64,
+        "m_end": 3544
+      },
+      "target": "aarch64-unknown-linux-gnu"
+    },
+    {
+      "attribution": {
+        "base_download_concurrency": 1,
+        "base_workers": 1,
+        "coherent_observations": true,
+        "held_charges_only": true,
+        "live_deductions_only": true,
+        "native_only_charges_excluded": true,
+        "observer_allocation_free": true,
+        "parent_startup_included": true,
+        "peer_excluded": true,
+        "raw_incremental_coefficients": true
+      },
+      "coefficients": {
+        "c_base": 17428016,
+        "c_env": 2432,
+        "m_dispatch": 704,
+        "m_end": 3968,
+        "m_pool": 19584,
+        "m_thread": 102992
+      },
+      "coverage": {
+        "base-archive": true,
+        "base-failed-input": true,
+        "base-lookup": true,
+        "base-old-journal": true,
+        "base-resume": true,
+        "base-startup": true,
+        "environment": true,
+        "full-dispatch-channel": true,
+        "full-end-channel": true,
+        "header-ownership": true,
+        "http-tls": true,
+        "loose-publication": true,
+        "native-components": true,
+        "normal-run": true,
+        "pool-controller": true,
+        "pool-finisher": true,
+        "retention": true,
+        "scale-residual": true,
+        "stop-phase-1": true,
+        "stop-phase-2": true,
+        "stop-phase-3": true,
+        "stop-phase-4": true,
+        "stop-phase-5": true,
+        "stop-phase-6": true,
+        "stop-phase-7": true,
+        "store-final-head": true,
+        "store-journal": true,
+        "store-list": true,
+        "store-multipart": true,
+        "store-verification": true,
+        "view-paths": true,
+        "worker-count": true,
+        "zip-publication": true
+      },
+      "fixed_envelopes": {
+        "abort_pair": 2080,
+        "archive_resume_entry": 160,
+        "connection": 4194304,
+        "credential_holders": 6,
+        "credential_id": 128,
+        "credential_secret": 128,
+        "credential_token": 16384,
+        "finisher": 25165824,
+        "header_copies": 4,
+        "header_table_entry": 48,
+        "journal_line": 16384,
+        "mask_entry": 32,
+        "multipart_list": 2097152,
+        "panic_slot": 2048,
+        "response_body": 65536,
+        "view_member": 1024,
+        "worker_state": 115344
+      },
+      "kind": "synthetic",
+      "profile": "release",
+      "provenance": {
+        "allocator": "system-glibc",
+        "arena_extra": 2,
+        "clean": true,
+        "features": "test-hooks",
+        "glibc": [
+          2,
+          36
+        ],
+        "kernel": [
+          7,
+          0,
+          0
+        ],
+        "lockfile_sha256": "6d2fd1f1a577559c0d3790157402a56e16bdc569fc2c07be0159a6f090a02da4",
+        "mmap_threshold": 131072,
+        "native": true,
+        "native_compilers": {
+          "c": [
+            12,
+            2,
+            0
+          ],
+          "cxx": [
+            12,
+            2,
+            0
+          ]
+        },
+        "native_flags_sha256": "18276c5014cf4e30360b7835ace0bcbe4979065b9cb9c51663ac98105c05306c",
+        "native_libraries_sha256": "6fb657e4f503561ae10c0716a3d7bb2f5f149f6a388863d75ce16faf119a6453",
+        "page_size": 4096,
+        "revision": "8d419d7db8ab42696a436bf89091ed5ac2015990",
+        "rustc": [
+          1,
+          99,
+          1
+        ]
+      },
+      "sink": "store",
+      "structural_floors": {
+        "m_dispatch": 64,
+        "m_end": 3544
+      },
+      "target": "aarch64-unknown-linux-gnu"
+    },
+    {
+      "attribution": {
+        "base_download_concurrency": 1,
+        "base_workers": 1,
+        "coherent_observations": true,
+        "held_charges_only": true,
+        "live_deductions_only": true,
+        "native_only_charges_excluded": true,
+        "observer_allocation_free": true,
+        "parent_startup_included": true,
+        "peer_excluded": true,
+        "raw_incremental_coefficients": true
+      },
+      "coefficients": {
+        "c_base": 17419920,
+        "c_env": 2432,
+        "m_dispatch": 704,
+        "m_end": 3968,
+        "m_pool": 17564,
+        "m_thread": 102992
+      },
+      "coverage": {
+        "base-archive": true,
+        "base-failed-input": true,
+        "base-lookup": true,
+        "base-old-journal": true,
+        "base-resume": true,
+        "base-startup": true,
+        "environment": true,
+        "full-dispatch-channel": true,
+        "full-end-channel": true,
+        "header-ownership": true,
+        "http-tls": true,
+        "loose-publication": true,
+        "native-components": true,
+        "normal-run": true,
+        "pool-controller": true,
+        "pool-finisher": true,
+        "retention": true,
+        "scale-residual": true,
+        "stop-phase-1": true,
+        "stop-phase-2": true,
+        "stop-phase-3": true,
+        "stop-phase-4": true,
+        "stop-phase-5": true,
+        "stop-phase-6": true,
+        "stop-phase-7": true,
+        "store-final-head": true,
+        "store-journal": true,
+        "store-list": true,
+        "store-multipart": true,
+        "store-verification": true,
+        "view-paths": true,
+        "worker-count": true,
+        "zip-publication": true
+      },
+      "fixed_envelopes": {
+        "abort_pair": 2080,
+        "archive_resume_entry": 160,
+        "connection": 4194304,
+        "credential_holders": 6,
+        "credential_id": 128,
+        "credential_secret": 128,
+        "credential_token": 16384,
+        "finisher": 25165824,
+        "header_copies": 4,
+        "header_table_entry": 48,
+        "journal_line": 16384,
+        "mask_entry": 32,
+        "multipart_list": 2097152,
+        "panic_slot": 2048,
+        "response_body": 65536,
+        "view_member": 1024,
+        "worker_state": 115344
+      },
+      "kind": "synthetic",
+      "profile": "debug",
+      "provenance": {
+        "allocator": "system-glibc",
+        "arena_extra": 2,
+        "clean": true,
+        "features": "test-hooks",
+        "glibc": [
+          2,
+          36
+        ],
+        "kernel": [
+          7,
+          0,
+          0
+        ],
+        "lockfile_sha256": "6d2fd1f1a577559c0d3790157402a56e16bdc569fc2c07be0159a6f090a02da4",
+        "mmap_threshold": 131072,
+        "native": true,
+        "native_compilers": {
+          "c": [
+            12,
+            2,
+            0
+          ],
+          "cxx": [
+            12,
+            2,
+            0
+          ]
+        },
+        "native_flags_sha256": "18276c5014cf4e30360b7835ace0bcbe4979065b9cb9c51663ac98105c05306c",
+        "native_libraries_sha256": "6fb657e4f503561ae10c0716a3d7bb2f5f149f6a388863d75ce16faf119a6453",
+        "page_size": 4096,
+        "revision": "8d419d7db8ab42696a436bf89091ed5ac2015990",
+        "rustc": [
+          1,
+          99,
+          1
+        ]
+      },
+      "sink": "directory",
+      "structural_floors": {
+        "m_dispatch": 64,
+        "m_end": 3544
+      },
+      "target": "x86_64-unknown-linux-gnu"
+    },
+    {
+      "attribution": {
+        "base_download_concurrency": 1,
+        "base_workers": 1,
+        "coherent_observations": true,
+        "held_charges_only": true,
+        "live_deductions_only": true,
+        "native_only_charges_excluded": true,
+        "observer_allocation_free": true,
+        "parent_startup_included": true,
+        "peer_excluded": true,
+        "raw_incremental_coefficients": true
+      },
+      "coefficients": {
+        "c_base": 17419920,
+        "c_env": 2432,
+        "m_dispatch": 704,
+        "m_end": 3968,
+        "m_pool": 17564,
+        "m_thread": 102992
+      },
+      "coverage": {
+        "base-archive": true,
+        "base-failed-input": true,
+        "base-lookup": true,
+        "base-old-journal": true,
+        "base-resume": true,
+        "base-startup": true,
+        "environment": true,
+        "full-dispatch-channel": true,
+        "full-end-channel": true,
+        "header-ownership": true,
+        "http-tls": true,
+        "loose-publication": true,
+        "native-components": true,
+        "normal-run": true,
+        "pool-controller": true,
+        "pool-finisher": true,
+        "retention": true,
+        "scale-residual": true,
+        "stop-phase-1": true,
+        "stop-phase-2": true,
+        "stop-phase-3": true,
+        "stop-phase-4": true,
+        "stop-phase-5": true,
+        "stop-phase-6": true,
+        "stop-phase-7": true,
+        "store-final-head": true,
+        "store-journal": true,
+        "store-list": true,
+        "store-multipart": true,
+        "store-verification": true,
+        "view-paths": true,
+        "worker-count": true,
+        "zip-publication": true
+      },
+      "fixed_envelopes": {
+        "abort_pair": 2080,
+        "archive_resume_entry": 160,
+        "connection": 4194304,
+        "credential_holders": 6,
+        "credential_id": 128,
+        "credential_secret": 128,
+        "credential_token": 16384,
+        "finisher": 25165824,
+        "header_copies": 4,
+        "header_table_entry": 48,
+        "journal_line": 16384,
+        "mask_entry": 32,
+        "multipart_list": 2097152,
+        "panic_slot": 2048,
+        "response_body": 65536,
+        "view_member": 1024,
+        "worker_state": 115344
+      },
+      "kind": "synthetic",
+      "profile": "debug",
+      "provenance": {
+        "allocator": "system-glibc",
+        "arena_extra": 2,
+        "clean": true,
+        "features": "test-hooks",
+        "glibc": [
+          2,
+          36
+        ],
+        "kernel": [
+          7,
+          0,
+          0
+        ],
+        "lockfile_sha256": "6d2fd1f1a577559c0d3790157402a56e16bdc569fc2c07be0159a6f090a02da4",
+        "mmap_threshold": 131072,
+        "native": true,
+        "native_compilers": {
+          "c": [
+            12,
+            2,
+            0
+          ],
+          "cxx": [
+            12,
+            2,
+            0
+          ]
+        },
+        "native_flags_sha256": "18276c5014cf4e30360b7835ace0bcbe4979065b9cb9c51663ac98105c05306c",
+        "native_libraries_sha256": "6fb657e4f503561ae10c0716a3d7bb2f5f149f6a388863d75ce16faf119a6453",
+        "page_size": 4096,
+        "revision": "8d419d7db8ab42696a436bf89091ed5ac2015990",
+        "rustc": [
+          1,
+          99,
+          1
+        ]
+      },
+      "sink": "store",
+      "structural_floors": {
+        "m_dispatch": 64,
+        "m_end": 3544
+      },
+      "target": "x86_64-unknown-linux-gnu"
+    },
+    {
+      "attribution": {
+        "base_download_concurrency": 1,
+        "base_workers": 1,
+        "coherent_observations": true,
+        "held_charges_only": true,
+        "live_deductions_only": true,
+        "native_only_charges_excluded": true,
+        "observer_allocation_free": true,
+        "parent_startup_included": true,
+        "peer_excluded": true,
+        "raw_incremental_coefficients": true
+      },
+      "coefficients": {
+        "c_base": 17419824,
+        "c_env": 2432,
+        "m_dispatch": 704,
+        "m_end": 3968,
+        "m_pool": 17540,
+        "m_thread": 102992
+      },
+      "coverage": {
+        "base-archive": true,
+        "base-failed-input": true,
+        "base-lookup": true,
+        "base-old-journal": true,
+        "base-resume": true,
+        "base-startup": true,
+        "environment": true,
+        "full-dispatch-channel": true,
+        "full-end-channel": true,
+        "header-ownership": true,
+        "http-tls": true,
+        "loose-publication": true,
+        "native-components": true,
+        "normal-run": true,
+        "pool-controller": true,
+        "pool-finisher": true,
+        "retention": true,
+        "scale-residual": true,
+        "stop-phase-1": true,
+        "stop-phase-2": true,
+        "stop-phase-3": true,
+        "stop-phase-4": true,
+        "stop-phase-5": true,
+        "stop-phase-6": true,
+        "stop-phase-7": true,
+        "store-final-head": true,
+        "store-journal": true,
+        "store-list": true,
+        "store-multipart": true,
+        "store-verification": true,
+        "view-paths": true,
+        "worker-count": true,
+        "zip-publication": true
+      },
+      "fixed_envelopes": {
+        "abort_pair": 2080,
+        "archive_resume_entry": 160,
+        "connection": 4194304,
+        "credential_holders": 6,
+        "credential_id": 128,
+        "credential_secret": 128,
+        "credential_token": 16384,
+        "finisher": 25165824,
+        "header_copies": 4,
+        "header_table_entry": 48,
+        "journal_line": 16384,
+        "mask_entry": 32,
+        "multipart_list": 2097152,
+        "panic_slot": 2048,
+        "response_body": 65536,
+        "view_member": 1024,
+        "worker_state": 115344
+      },
+      "kind": "synthetic",
+      "profile": "release",
+      "provenance": {
+        "allocator": "system-glibc",
+        "arena_extra": 2,
+        "clean": true,
+        "features": "test-hooks",
+        "glibc": [
+          2,
+          36
+        ],
+        "kernel": [
+          7,
+          0,
+          0
+        ],
+        "lockfile_sha256": "6d2fd1f1a577559c0d3790157402a56e16bdc569fc2c07be0159a6f090a02da4",
+        "mmap_threshold": 131072,
+        "native": true,
+        "native_compilers": {
+          "c": [
+            12,
+            2,
+            0
+          ],
+          "cxx": [
+            12,
+            2,
+            0
+          ]
+        },
+        "native_flags_sha256": "18276c5014cf4e30360b7835ace0bcbe4979065b9cb9c51663ac98105c05306c",
+        "native_libraries_sha256": "6fb657e4f503561ae10c0716a3d7bb2f5f149f6a388863d75ce16faf119a6453",
+        "page_size": 4096,
+        "revision": "8d419d7db8ab42696a436bf89091ed5ac2015990",
+        "rustc": [
+          1,
+          99,
+          1
+        ]
+      },
+      "sink": "directory",
+      "structural_floors": {
+        "m_dispatch": 64,
+        "m_end": 3544
+      },
+      "target": "x86_64-unknown-linux-gnu"
+    },
+    {
+      "attribution": {
+        "base_download_concurrency": 1,
+        "base_workers": 1,
+        "coherent_observations": true,
+        "held_charges_only": true,
+        "live_deductions_only": true,
+        "native_only_charges_excluded": true,
+        "observer_allocation_free": true,
+        "parent_startup_included": true,
+        "peer_excluded": true,
+        "raw_incremental_coefficients": true
+      },
+      "coefficients": {
+        "c_base": 17419824,
+        "c_env": 2432,
+        "m_dispatch": 704,
+        "m_end": 3968,
+        "m_pool": 17540,
+        "m_thread": 102992
+      },
+      "coverage": {
+        "base-archive": true,
+        "base-failed-input": true,
+        "base-lookup": true,
+        "base-old-journal": true,
+        "base-resume": true,
+        "base-startup": true,
+        "environment": true,
+        "full-dispatch-channel": true,
+        "full-end-channel": true,
+        "header-ownership": true,
+        "http-tls": true,
+        "loose-publication": true,
+        "native-components": true,
+        "normal-run": true,
+        "pool-controller": true,
+        "pool-finisher": true,
+        "retention": true,
+        "scale-residual": true,
+        "stop-phase-1": true,
+        "stop-phase-2": true,
+        "stop-phase-3": true,
+        "stop-phase-4": true,
+        "stop-phase-5": true,
+        "stop-phase-6": true,
+        "stop-phase-7": true,
+        "store-final-head": true,
+        "store-journal": true,
+        "store-list": true,
+        "store-multipart": true,
+        "store-verification": true,
+        "view-paths": true,
+        "worker-count": true,
+        "zip-publication": true
+      },
+      "fixed_envelopes": {
+        "abort_pair": 2080,
+        "archive_resume_entry": 160,
+        "connection": 4194304,
+        "credential_holders": 6,
+        "credential_id": 128,
+        "credential_secret": 128,
+        "credential_token": 16384,
+        "finisher": 25165824,
+        "header_copies": 4,
+        "header_table_entry": 48,
+        "journal_line": 16384,
+        "mask_entry": 32,
+        "multipart_list": 2097152,
+        "panic_slot": 2048,
+        "response_body": 65536,
+        "view_member": 1024,
+        "worker_state": 115344
+      },
+      "kind": "synthetic",
+      "profile": "release",
+      "provenance": {
+        "allocator": "system-glibc",
+        "arena_extra": 2,
+        "clean": true,
+        "features": "test-hooks",
+        "glibc": [
+          2,
+          36
+        ],
+        "kernel": [
+          7,
+          0,
+          0
+        ],
+        "lockfile_sha256": "6d2fd1f1a577559c0d3790157402a56e16bdc569fc2c07be0159a6f090a02da4",
+        "mmap_threshold": 131072,
+        "native": true,
+        "native_compilers": {
+          "c": [
+            12,
+            2,
+            0
+          ],
+          "cxx": [
+            12,
+            2,
+            0
+          ]
+        },
+        "native_flags_sha256": "18276c5014cf4e30360b7835ace0bcbe4979065b9cb9c51663ac98105c05306c",
+        "native_libraries_sha256": "6fb657e4f503561ae10c0716a3d7bb2f5f149f6a388863d75ce16faf119a6453",
+        "page_size": 4096,
+        "revision": "8d419d7db8ab42696a436bf89091ed5ac2015990",
+        "rustc": [
+          1,
+          99,
+          1
+        ]
+      },
+      "sink": "store",
+      "structural_floors": {
+        "m_dispatch": 64,
+        "m_end": 3544
+      },
+      "target": "x86_64-unknown-linux-gnu"
+    },
+    {
+      "attribution": {
+        "base_download_concurrency": 1,
+        "base_workers": 1,
+        "coherent_observations": true,
+        "held_charges_only": true,
+        "live_deductions_only": true,
+        "native_only_charges_excluded": true,
+        "observer_allocation_free": true,
+        "parent_startup_included": true,
+        "peer_excluded": true,
+        "raw_incremental_coefficients": true
+      },
+      "coefficients": {
+        "c_base": 253364320,
+        "c_env": 2432,
+        "m_dispatch": 704,
+        "m_end": 3968,
+        "m_pool": 19608,
+        "m_thread": 103008
+      },
+      "coverage": {
+        "base-archive": false,
+        "base-failed-input": false,
+        "base-lookup": false,
+        "base-old-journal": false,
+        "base-resume": false,
+        "base-startup": false,
+        "environment": false,
+        "full-dispatch-channel": false,
+        "full-end-channel": false,
+        "header-ownership": false,
+        "http-tls": false,
+        "loose-publication": false,
+        "native-components": false,
+        "normal-run": false,
+        "pool-controller": false,
+        "pool-finisher": false,
+        "retention": false,
+        "scale-residual": false,
+        "stop-phase-1": false,
+        "stop-phase-2": false,
+        "stop-phase-3": false,
+        "stop-phase-4": false,
+        "stop-phase-5": false,
+        "stop-phase-6": false,
+        "stop-phase-7": false,
+        "store-final-head": false,
+        "store-journal": false,
+        "store-list": false,
+        "store-multipart": false,
+        "store-verification": false,
+        "view-paths": false,
+        "worker-count": false,
+        "zip-publication": false
+      },
+      "fixed_envelopes": {
+        "abort_pair": 2080,
+        "archive_resume_entry": 160,
+        "connection": 4194304,
+        "credential_holders": 6,
+        "credential_id": 128,
+        "credential_secret": 128,
+        "credential_token": 16384,
+        "finisher": 25165824,
+        "header_copies": 4,
+        "header_table_entry": 48,
+        "journal_line": 16384,
+        "mask_entry": 32,
+        "multipart_list": 2097152,
+        "panic_slot": 2048,
+        "response_body": 65536,
+        "view_member": 1024,
+        "worker_state": 115344
+      },
+      "kind": "whole-run",
+      "profile": "debug",
+      "provenance": {
+        "allocator": "system-glibc",
+        "arena_extra": 2,
+        "clean": true,
+        "features": "test-hooks",
+        "glibc": [
+          2,
+          36
+        ],
+        "kernel": [
+          7,
+          2,
+          12
+        ],
+        "lockfile_sha256": "6d2fd1f1a577559c0d3790157402a56e16bdc569fc2c07be0159a6f090a02da4",
+        "mmap_threshold": 131072,
+        "native": true,
+        "native_compilers": {
+          "c": [
+            12,
+            2,
+            0
+          ],
+          "cxx": [
+            12,
+            2,
+            0
+          ]
+        },
+        "native_flags_sha256": "18276c5014cf4e30360b7835ace0bcbe4979065b9cb9c51663ac98105c05306c",
+        "native_libraries_sha256": "6fb657e4f503561ae10c0716a3d7bb2f5f149f6a388863d75ce16faf119a6453",
+        "page_size": 4096,
+        "revision": "8d419d7db8ab42696a436bf89091ed5ac2015990",
+        "rustc": [
+          1,
+          99,
+          1
+        ]
+      },
+      "sink": "directory",
+      "structural_floors": {
+        "m_dispatch": 64,
+        "m_end": 3544
+      },
+      "target": "aarch64-unknown-linux-gnu",
+      "whole_run_coverage": {
+        "archive": true,
+        "both-builds": true,
+        "component-probes": true,
+        "eight-workers": true,
+        "loose": true,
+        "one-worker": true,
+        "phase-seven": true,
+        "resume": true,
+        "store-roundtrip": false
+      }
+    },
+    {
+      "attribution": {
+        "base_download_concurrency": 1,
+        "base_workers": 1,
+        "coherent_observations": true,
+        "held_charges_only": true,
+        "live_deductions_only": true,
+        "native_only_charges_excluded": true,
+        "observer_allocation_free": true,
+        "parent_startup_included": true,
+        "peer_excluded": true,
+        "raw_incremental_coefficients": true
+      },
+      "coefficients": {
+        "c_base": 253403696,
+        "c_env": 2432,
+        "m_dispatch": 704,
+        "m_end": 3968,
+        "m_pool": 19608,
+        "m_thread": 103008
+      },
+      "coverage": {
+        "base-archive": false,
+        "base-failed-input": false,
+        "base-lookup": false,
+        "base-old-journal": false,
+        "base-resume": false,
+        "base-startup": false,
+        "environment": false,
+        "full-dispatch-channel": false,
+        "full-end-channel": false,
+        "header-ownership": false,
+        "http-tls": false,
+        "loose-publication": false,
+        "native-components": false,
+        "normal-run": false,
+        "pool-controller": false,
+        "pool-finisher": false,
+        "retention": false,
+        "scale-residual": false,
+        "stop-phase-1": false,
+        "stop-phase-2": false,
+        "stop-phase-3": false,
+        "stop-phase-4": false,
+        "stop-phase-5": false,
+        "stop-phase-6": false,
+        "stop-phase-7": false,
+        "store-final-head": false,
+        "store-journal": false,
+        "store-list": false,
+        "store-multipart": false,
+        "store-verification": false,
+        "view-paths": false,
+        "worker-count": false,
+        "zip-publication": false
+      },
+      "fixed_envelopes": {
+        "abort_pair": 2080,
+        "archive_resume_entry": 160,
+        "connection": 4194304,
+        "credential_holders": 6,
+        "credential_id": 128,
+        "credential_secret": 128,
+        "credential_token": 16384,
+        "finisher": 25165824,
+        "header_copies": 4,
+        "header_table_entry": 48,
+        "journal_line": 16384,
+        "mask_entry": 32,
+        "multipart_list": 2097152,
+        "panic_slot": 2048,
+        "response_body": 65536,
+        "view_member": 1024,
+        "worker_state": 115344
+      },
+      "kind": "whole-run",
+      "profile": "debug",
+      "provenance": {
+        "allocator": "system-glibc",
+        "arena_extra": 2,
+        "clean": true,
+        "features": "test-hooks",
+        "glibc": [
+          2,
+          36
+        ],
+        "kernel": [
+          7,
+          2,
+          12
+        ],
+        "lockfile_sha256": "6d2fd1f1a577559c0d3790157402a56e16bdc569fc2c07be0159a6f090a02da4",
+        "mmap_threshold": 131072,
+        "native": true,
+        "native_compilers": {
+          "c": [
+            12,
+            2,
+            0
+          ],
+          "cxx": [
+            12,
+            2,
+            0
+          ]
+        },
+        "native_flags_sha256": "18276c5014cf4e30360b7835ace0bcbe4979065b9cb9c51663ac98105c05306c",
+        "native_libraries_sha256": "6fb657e4f503561ae10c0716a3d7bb2f5f149f6a388863d75ce16faf119a6453",
+        "page_size": 4096,
+        "revision": "8d419d7db8ab42696a436bf89091ed5ac2015990",
+        "rustc": [
+          1,
+          99,
+          1
+        ]
+      },
+      "sink": "store",
+      "structural_floors": {
+        "m_dispatch": 64,
+        "m_end": 3544
+      },
+      "target": "aarch64-unknown-linux-gnu",
+      "whole_run_coverage": {
+        "archive": true,
+        "both-builds": true,
+        "component-probes": true,
+        "eight-workers": true,
+        "loose": true,
+        "one-worker": true,
+        "phase-seven": true,
+        "resume": true,
+        "store-roundtrip": true
+      }
+    },
+    {
+      "attribution": {
+        "base_download_concurrency": 1,
+        "base_workers": 1,
+        "coherent_observations": true,
+        "held_charges_only": true,
+        "live_deductions_only": true,
+        "native_only_charges_excluded": true,
+        "observer_allocation_free": true,
+        "parent_startup_included": true,
+        "peer_excluded": true,
+        "raw_incremental_coefficients": true
+      },
+      "coefficients": {
+        "c_base": 253364224,
+        "c_env": 2432,
+        "m_dispatch": 704,
+        "m_end": 3968,
+        "m_pool": 19584,
+        "m_thread": 102992
+      },
+      "coverage": {
+        "base-archive": false,
+        "base-failed-input": false,
+        "base-lookup": false,
+        "base-old-journal": false,
+        "base-resume": false,
+        "base-startup": false,
+        "environment": false,
+        "full-dispatch-channel": false,
+        "full-end-channel": false,
+        "header-ownership": false,
+        "http-tls": false,
+        "loose-publication": false,
+        "native-components": false,
+        "normal-run": false,
+        "pool-controller": false,
+        "pool-finisher": false,
+        "retention": false,
+        "scale-residual": false,
+        "stop-phase-1": false,
+        "stop-phase-2": false,
+        "stop-phase-3": false,
+        "stop-phase-4": false,
+        "stop-phase-5": false,
+        "stop-phase-6": false,
+        "stop-phase-7": false,
+        "store-final-head": false,
+        "store-journal": false,
+        "store-list": false,
+        "store-multipart": false,
+        "store-verification": false,
+        "view-paths": false,
+        "worker-count": false,
+        "zip-publication": false
+      },
+      "fixed_envelopes": {
+        "abort_pair": 2080,
+        "archive_resume_entry": 160,
+        "connection": 4194304,
+        "credential_holders": 6,
+        "credential_id": 128,
+        "credential_secret": 128,
+        "credential_token": 16384,
+        "finisher": 25165824,
+        "header_copies": 4,
+        "header_table_entry": 48,
+        "journal_line": 16384,
+        "mask_entry": 32,
+        "multipart_list": 2097152,
+        "panic_slot": 2048,
+        "response_body": 65536,
+        "view_member": 1024,
+        "worker_state": 115344
+      },
+      "kind": "whole-run",
+      "profile": "release",
+      "provenance": {
+        "allocator": "system-glibc",
+        "arena_extra": 2,
+        "clean": true,
+        "features": "test-hooks",
+        "glibc": [
+          2,
+          36
+        ],
+        "kernel": [
+          7,
+          2,
+          12
+        ],
+        "lockfile_sha256": "6d2fd1f1a577559c0d3790157402a56e16bdc569fc2c07be0159a6f090a02da4",
+        "mmap_threshold": 131072,
+        "native": true,
+        "native_compilers": {
+          "c": [
+            12,
+            2,
+            0
+          ],
+          "cxx": [
+            12,
+            2,
+            0
+          ]
+        },
+        "native_flags_sha256": "18276c5014cf4e30360b7835ace0bcbe4979065b9cb9c51663ac98105c05306c",
+        "native_libraries_sha256": "6fb657e4f503561ae10c0716a3d7bb2f5f149f6a388863d75ce16faf119a6453",
+        "page_size": 4096,
+        "revision": "8d419d7db8ab42696a436bf89091ed5ac2015990",
+        "rustc": [
+          1,
+          99,
+          1
+        ]
+      },
+      "sink": "directory",
+      "structural_floors": {
+        "m_dispatch": 64,
+        "m_end": 3544
+      },
+      "target": "aarch64-unknown-linux-gnu",
+      "whole_run_coverage": {
+        "archive": true,
+        "both-builds": true,
+        "component-probes": true,
+        "eight-workers": true,
+        "loose": true,
+        "one-worker": true,
+        "phase-seven": true,
+        "resume": true,
+        "store-roundtrip": false
+      }
+    },
+    {
+      "attribution": {
+        "base_download_concurrency": 1,
+        "base_workers": 1,
+        "coherent_observations": true,
+        "held_charges_only": true,
+        "live_deductions_only": true,
+        "native_only_charges_excluded": true,
+        "observer_allocation_free": true,
+        "parent_startup_included": true,
+        "peer_excluded": true,
+        "raw_incremental_coefficients": true
+      },
+      "coefficients": {
+        "c_base": 253403600,
+        "c_env": 2432,
+        "m_dispatch": 704,
+        "m_end": 3968,
+        "m_pool": 19584,
+        "m_thread": 102992
+      },
+      "coverage": {
+        "base-archive": false,
+        "base-failed-input": false,
+        "base-lookup": false,
+        "base-old-journal": false,
+        "base-resume": false,
+        "base-startup": false,
+        "environment": false,
+        "full-dispatch-channel": false,
+        "full-end-channel": false,
+        "header-ownership": false,
+        "http-tls": false,
+        "loose-publication": false,
+        "native-components": false,
+        "normal-run": false,
+        "pool-controller": false,
+        "pool-finisher": false,
+        "retention": false,
+        "scale-residual": false,
+        "stop-phase-1": false,
+        "stop-phase-2": false,
+        "stop-phase-3": false,
+        "stop-phase-4": false,
+        "stop-phase-5": false,
+        "stop-phase-6": false,
+        "stop-phase-7": false,
+        "store-final-head": false,
+        "store-journal": false,
+        "store-list": false,
+        "store-multipart": false,
+        "store-verification": false,
+        "view-paths": false,
+        "worker-count": false,
+        "zip-publication": false
+      },
+      "fixed_envelopes": {
+        "abort_pair": 2080,
+        "archive_resume_entry": 160,
+        "connection": 4194304,
+        "credential_holders": 6,
+        "credential_id": 128,
+        "credential_secret": 128,
+        "credential_token": 16384,
+        "finisher": 25165824,
+        "header_copies": 4,
+        "header_table_entry": 48,
+        "journal_line": 16384,
+        "mask_entry": 32,
+        "multipart_list": 2097152,
+        "panic_slot": 2048,
+        "response_body": 65536,
+        "view_member": 1024,
+        "worker_state": 115344
+      },
+      "kind": "whole-run",
+      "profile": "release",
+      "provenance": {
+        "allocator": "system-glibc",
+        "arena_extra": 2,
+        "clean": true,
+        "features": "test-hooks",
+        "glibc": [
+          2,
+          36
+        ],
+        "kernel": [
+          7,
+          2,
+          12
+        ],
+        "lockfile_sha256": "6d2fd1f1a577559c0d3790157402a56e16bdc569fc2c07be0159a6f090a02da4",
+        "mmap_threshold": 131072,
+        "native": true,
+        "native_compilers": {
+          "c": [
+            12,
+            2,
+            0
+          ],
+          "cxx": [
+            12,
+            2,
+            0
+          ]
+        },
+        "native_flags_sha256": "18276c5014cf4e30360b7835ace0bcbe4979065b9cb9c51663ac98105c05306c",
+        "native_libraries_sha256": "6fb657e4f503561ae10c0716a3d7bb2f5f149f6a388863d75ce16faf119a6453",
+        "page_size": 4096,
+        "revision": "8d419d7db8ab42696a436bf89091ed5ac2015990",
+        "rustc": [
+          1,
+          99,
+          1
+        ]
+      },
+      "sink": "store",
+      "structural_floors": {
+        "m_dispatch": 64,
+        "m_end": 3544
+      },
+      "target": "aarch64-unknown-linux-gnu",
+      "whole_run_coverage": {
+        "archive": true,
+        "both-builds": true,
+        "component-probes": true,
+        "eight-workers": true,
+        "loose": true,
+        "one-worker": true,
+        "phase-seven": true,
+        "resume": true,
+        "store-roundtrip": true
+      }
+    }
+  ],
+  "schema_version": 1,
+  "shipping_replacement": true,
+  "status": "final"
+}
