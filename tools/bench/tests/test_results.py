@@ -79,7 +79,7 @@ class SchemaTests(unittest.TestCase):
 
     def test_a_host_path_is_refused(self):
         doc = wall()
-        doc["tools"]["rustc"] = "rustc 1.99.1\nsysroot: /home/runner/.rustup"
+        doc["tools"]["rustc"] = "rustc 1.99.1\nsysroot: /opt/runner/.rustup"
         self.assertTrue(any("host path" in p for p in results.problems(doc, WORKLOADS)))
 
     def test_a_status_is_ok_or_a_class_name_never_a_message(self):
