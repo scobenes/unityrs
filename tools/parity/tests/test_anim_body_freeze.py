@@ -80,6 +80,11 @@ class FreezeTests(unittest.TestCase):
         self.artifact = self.repo / "freeze.json"
         self.ledger_dir = root / "ledger"
         self.ledger = self.ledger_dir / "ledger.jsonl"
+        # The canonical artifact is the scratch repository's here; the checkout's own one, if committed, is then
+        # just another file the sources name.
+        canonical = mock.patch.object(seal, "FREEZE_PATH", self.artifact)
+        canonical.start()
+        self.addCleanup(canonical.stop)
         # The code's own git binding (test_anim_body_seal) is the checkout's: here, a commit that holds it.
         code = ("c" * 40, seal.sources(), seal.source_digest())
         patches = (mock.patch.object(runs, "REQUIRED", frozenset(TRAINING)),
@@ -87,7 +92,6 @@ class FreezeTests(unittest.TestCase):
                    mock.patch.object(seal, "code_state", return_value=code),
                    mock.patch.object(seal, "code_history"),
                    mock.patch.object(seal, "MIN_COMPARISONS", 1),
-                   mock.patch.object(seal, "FREEZE_PATH", self.artifact),
                    mock.patch.object(seal, "LEDGER_DIR", self.ledger_dir),
                    mock.patch.object(seal, "reader_sha256", return_value="5" * 64),
                    mock.patch.object(freeze, "completion", return_value=sealed_completion))
