@@ -105,7 +105,10 @@ class FreezeTests(unittest.TestCase):
         artifact = self.frozen()
         self.assertEqual(artifact["format"], freeze.FORMAT)
         self.assertEqual(set(artifact), {"format", "version", "model", "coefficients", "scope", "bounds", "training",
-                                         "e3a", "code"})
+                                         "e3a", "code", "evidence"})
+        self.assertEqual(artifact["scope"]["refusals"], freeze.REFUSALS)
+        self.assertEqual(set(freeze.REFUSALS), {"topology", "frame", "spine_lateral_range"})
+        self.assertEqual(artifact["evidence"]["runs"], [])
         self.assertEqual(artifact["model"], freeze.HYPOTHESES)
         self.assertTrue(artifact["e3a"]["passed"])
         self.assertEqual(artifact["code"]["model_digest"], freeze.model_digest())
@@ -134,6 +137,42 @@ class FreezeTests(unittest.TestCase):
         code, text = self.main("e3b", "--freeze", str(self.artifact), "--json", str(self.artifact))
         self.assertEqual(code, 2)
         self.assertIn("--json and --freeze name one file", text)
+
+    def test_supporting_runs_are_checked_within_the_limit_and_never_inputs(self):
+        root = self.repo.parent / "earlier"
+        earlier = [write_run(root / version, self.docs, version) for version in VERSIONS]
+        code, text = self.main("e3a", "--evidence", *map(str, earlier))
+        self.assertEqual(code, 2)
+        self.assertIn("--evidence is for freeze", text)
+        code, text = self.main("freeze", "--freeze", str(self.artifact), "--evidence", *map(str, self.folders))
+        self.assertEqual(code, 2)
+        self.assertIn("one of the freeze's own", text)
+        # A supporting run whose hips moved refuses the freeze.
+        docs = copy.deepcopy(self.docs)
+        doc = docs["body-targets-tall"]
+        hips = next(row["node"] for row in doc["capture"]["humanoid"]["bones"] if row["name"] == "Hips")
+        pose = doc["capture"]["samples"][0]["pose"]["transforms"][hips]
+        pose["translation"][1] = BITS(F32(pose["translation"][1]) + 1e-3)
+        write_run(earlier[0], docs, VERSIONS[0])
+        code, text = self.main("freeze", "--freeze", str(self.artifact), "--evidence", *map(str, earlier))
+        self.assertEqual(code, 2)
+        self.assertIn("the supporting runs fail within the lateral limit", text)
+        self.assertFalse(self.artifact.exists())
+        write_run(earlier[0], self.docs, VERSIONS[0])
+        code, text = self.main("freeze", "--freeze", str(self.artifact), "--evidence", *map(str, earlier))
+        self.assertEqual(code, 0, text)
+        self.commit()
+        artifact = json.loads(self.artifact.read_text(encoding="utf-8"))
+        support = artifact["evidence"]["runs"]
+        self.assertEqual([entry["run"] for entry in support], list(VERSIONS))
+        self.assertTrue(all(entry["e2"]["passed"] and entry["e3"]["passed"] and entry["e3"]["samples"]
+                            for entry in support))
+        self.assertEqual([entry["digest"] for entry in support],
+                         [runs.digest(run.inputs) for run in runs.load(earlier, "training")])
+        # Never an input: the training digest is the freeze's own runs', and e3b passes on them.
+        self.assertEqual(artifact["training"]["digest"], runs.digest([row for run in runs.load(self.folders, "training")
+                                                                      for row in run.inputs]))
+        self.e3b(code=0)
 
     def test_the_freeze_waits_for_e3a_both_versions_and_every_case(self):
         docs = copy.deepcopy(self.docs)

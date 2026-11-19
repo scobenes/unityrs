@@ -10,13 +10,17 @@ version); MODE is one of:
 - `e1`, `e2`, `e4`: on the training rows;
 - `e3a`: the training checkpoint, the hips of every training sample within
   T_s with coefficients fitted on the training rows;
-
 - `freeze`: E3a, and when it passes, the freeze artifact at `--freeze` (a
   new file): the model choices (anim_body_model.HYPOTHESES), coefficients,
   scope (Editor versions, training rigs and their topologies, the lateral
-  limit, cases, free combinations) and bounds (unit roundoffs, operation depths, limits, the
-  comparison), with the training inputs (Editor version, case, rig and
-  sha256 per file) and their digest;
+  limit, the named refusals, cases, free combinations) and bounds (unit
+  roundoffs, operation depths, limits, the comparison), with the training
+  inputs (Editor version, case, rig and sha256 per file) and their digest.
+  `--evidence` names other completed training runs (one per version, an
+  earlier run of the same cases, say) as supporting evidence, never an
+  input: E2 and E3 within the lateral limit with the training design and
+  coefficients, each recorded with its run's digest, and the freeze refused
+  unless they pass;
 - `e3b`: the hold-out rig against the freeze artifact at `--freeze`.
 
 E2 and E3a compare only poses inside the lateral limit (plan section 8):
@@ -149,10 +153,37 @@ def e3a(folders, avatar_of):
                          lateral_failing=worst), runs, design
 
 
-def freeze(folders, path, avatar_of):
+def supporting(folders, design, coefficients, limit, avatar_of):
+    """Other training runs' E2 and E3 within the frozen limit, with the training design and coefficients: one
+    entry per run, its digest and the counts. Their rows never reach the fit."""
+    entries = []
+    for run in load(folders, "training"):
+        rows = observe([run], avatar_of=avatar_of)
+        e2, e3 = check.e2(rows, limit), check.e3(rows, design, coefficients, limit)
+        entries.append(dict(run=run.version, digest=digest(run.inputs), cases=len(run.documents),
+                            e2=dict(passed=e2["passed"], residuals=e2["residuals"], refused=e2["refused"],
+                                    worst_ratio=e2["worst_ratio"]),
+                            e3=dict(passed=e3["passed"], samples=e3["samples"], refused=e3["refused"],
+                                    worst_ratio=e3["worst_ratio"]),
+                            failures=(e2["failures"] + e3["failures"])[:10]))
+    return entries
+
+
+# Each named refusal of the frozen scope (plan section 8) and what bounds it.
+REFUSALS = {"topology": "an Avatar outside the training rigs' recorded topologies (scope.topologies)",
+            "frame": "a shoulder-hip twist over bounds.twist_limit, or an undefined one",
+            "spine_lateral_range": "a spine Left-Right muscle over scope.lateral_limit"}
+
+
+def freeze(folders, path, avatar_of, evidence=()):
     replay.require(path is not None and not path.exists(), "freeze writes a new artifact: give a new --freeze path")
     report, runs, design = e3a(folders, avatar_of)
     replay.require(report["passed"], "E3a must pass before the freeze")
+    replay.require(not {str(f.resolve()) for f in folders} & {str(f.resolve()) for f in evidence},
+                   "a supporting run is one of the freeze's own")
+    support = supporting(evidence, design, report["coefficients"], report["lateral_limit"], avatar_of)
+    replay.require(all(entry["e2"]["passed"] and entry["e3"]["passed"] for entry in support),
+                   "the supporting runs fail within the lateral limit")
     versions = sorted({run.version for run in runs})
     replay.require(sorted(v.split(".")[0] for v in versions) == list(EDITORS),
                    f"the freeze needs one run of each Editor version {EDITORS}, not {versions}")
@@ -169,6 +200,7 @@ def freeze(folders, path, avatar_of):
     artifact = dict(
         format=FORMAT, version=VERSION, model=HYPOTHESES, coefficients=coefficients,
         scope=dict(editor_versions=versions, training_rigs=rigs, lateral_limit=report["lateral_limit"],
+                   refusals=REFUSALS,
                    topologies={rig: sorted(rig_bones(rig)) for rig in rigs if rig in adequacy.TRAINING_RIGS},
                    cases=sorted({row["case"] for row in inputs}), free=design.free, holdout=HOLDOUT),
         bounds=bounds(design),
@@ -176,7 +208,9 @@ def freeze(folders, path, avatar_of):
                       holdout_rows=0),
         e3a=dict(passed=True, samples=report["samples"], worst_ratio=report["worst_ratio"],
                  refused=report["refused"]),
-        code=dict(commit=commit, model_digest=model_digest(), files=list(MODEL_FILES)))
+        code=dict(commit=commit, model_digest=model_digest(), files=list(MODEL_FILES)),
+        evidence=dict(note="supporting runs, never inputs: E2 and E3 within the lateral limit with the frozen "
+                           "design and coefficients", runs=support))
     path.write_text(json.dumps(artifact, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
     return report
 
@@ -286,13 +320,13 @@ def readers(unityrs):
     return avatar_of, clip_of
 
 
-def run_mode(mode, folders, freeze_path=None, avatar_of=None, clip_of=None):
+def run_mode(mode, folders, freeze_path=None, avatar_of=None, clip_of=None, evidence=()):
     replay.require(avatar_of is not None and (mode != "e4" or clip_of is not None),
                    f"{mode} reads the Avatars (decision 1) and built clips from the bundles: give --unityrs")
     if mode == "e3a":
         return e3a(folders, avatar_of)[0]
     if mode == "freeze":
-        return freeze(folders, freeze_path, avatar_of)
+        return freeze(folders, freeze_path, avatar_of, evidence)
     if mode == "e3b":
         return e3b(folders, freeze_path, avatar_of)
     runs, rows, design = training(folders, avatar_of)
@@ -340,12 +374,15 @@ def main(argv=None):
     parser.add_argument("--freeze", type=Path, help="the freeze artifact: written by freeze, read by e3b (and e0)")
     parser.add_argument("--unityrs", help="unityrs CLI for the Avatar and built clip reads")
     parser.add_argument("--json", type=Path, help="write the report here")
+    parser.add_argument("--evidence", type=Path, nargs="+", default=[],
+                        help="freeze: other completed training runs, one per version, checked as supporting evidence")
     args = parser.parse_args(argv)
     try:
         replay.require(not (args.json and args.freeze and args.json.resolve() == args.freeze.resolve()),
                        "--json and --freeze name one file")
         avatar_of, clip_of = readers(args.unityrs) if args.unityrs else (None, None)
-        report = run_mode(args.mode, args.runs, args.freeze, avatar_of, clip_of)
+        replay.require(not args.evidence or args.mode == "freeze", "--evidence is for freeze")
+        report = run_mode(args.mode, args.runs, args.freeze, avatar_of, clip_of, args.evidence)
     except (KeyError, TypeError, IndexError, ValueError, OSError, StopIteration, ZeroDivisionError) as exc:
         print(f"anim_body_freeze {args.mode}: refused: {exc}", file=sys.stderr)
         return 2

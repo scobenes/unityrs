@@ -161,7 +161,7 @@ from the middle points of the hips and shoulders. The candidate:
 - Lateral domain (B2): within the twist scope, the frame still leaves the
   read-back by a pure turn about `up` of up to 0.08° once the spine bends
   sideways. Every such sample has a spine Left-Right muscle (Spine, Chest
-  or UpperChest) of at least 0.32. The turn is second-order and
+  or UpperChest) past the frozen limit. The turn is second-order and
   unexplained: it stays at a near-zero arm-leg yaw gap with oppositely
   tilted laterals, where every rule weighting the two laterals (and their
   sum) is exact. Read-back muscles match the requested ones, so no muscle
@@ -174,7 +174,9 @@ from the middle points of the hips and shoulders. The candidate:
   refuses (section 8). Without every required band sweep recorded there is
   no limit, and a limit under 1/16 validates nothing: E2 and E3a then
   fail. F9's band sweeps sample the band past it on the training
-  rigs.
+  rigs. A clip past the limit gets the named refusal
+  (`spine_lateral_range`, section 8). The scope widens only if a later
+  model explains the second-order yaw and passes the band sweeps.
 
 ### 2.3 Hips-local TRS and scale
 
@@ -510,6 +512,14 @@ coefficient is shipped from a fit.
   commit and a digest of the model's source files. Until it exists,
   `complete` seals the hold-out's cases: it opens neither their recordings
   nor their bundles, and `--unseal` with a valid freeze completes them.
+  The freeze binds one completed run per version, the first with the band
+  sweeps, and E3b reads that run's own hold-out recording: until E3b only
+  the sealed tools touched it, and nothing opened it. An earlier run's
+  hold-out stays sealed and unused. The lateral limit was chosen from the
+  training rigs alone. An earlier run of the same training cases can be
+  recorded with the freeze as supporting evidence (`--evidence`: E2 and E3
+  within the limit with the frozen design and coefficients), never as an
+  input.
 - **No pass on nothing.** E0, E2, E3 and E4 fail with no comparison, and a
   bound that bounds nothing (an unknown design column, an infinite `u_s`, a
   turn of 2 or more) fails every comparison against it.
