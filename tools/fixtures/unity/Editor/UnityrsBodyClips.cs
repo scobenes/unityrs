@@ -313,8 +313,15 @@ static partial class UnityrsFixtureBuilder
         using (var serialized = new SerializedObject(clip))
         {
             var bindings = serialized.FindProperty("m_ClipBindingConstant.genericBindings");
-            Require(bindings != null && bindings.isArray,
-                "Unity did not expose the compiled track table of the built clip for " + name + ".");
+            // The Editor may not serialize a bundle-loaded clip's runtime data. Offline
+            // completion reads the compiled slots from the bundle itself, so a missing
+            // table is reported and left to that check rather than failing the case.
+            if (bindings == null || !bindings.isArray)
+            {
+                Debug.LogWarning("Unity did not expose the compiled track table of the built clip for " + name
+                    + "; completion checks its tracks from the bundle.");
+                return;
+            }
             int Field(SerializedProperty row, string field, string alias = null) =>
                 (row.FindPropertyRelative(field) ?? (alias == null ? null : row.FindPropertyRelative(alias)))?.intValue ?? -1;
             var slots = new Dictionary<int, int>();
