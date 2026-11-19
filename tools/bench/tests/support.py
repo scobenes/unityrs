@@ -3,6 +3,7 @@ times, statuses and digests. Standard library only."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import sys
@@ -34,6 +35,11 @@ def counts(spec: dict) -> dict:
     return out
 
 
+def hex_digest(label: str) -> str:
+    """A digest as py_workloads.py writes one (64 hex digits), standing for `label`."""
+    return hashlib.sha256(label.encode()).hexdigest()
+
+
 def wall(names=None, times=None, status=None, digest=None, rounds=7, emulated=False) -> dict:
     """A wall.json of `names` (by default every workload, as a published run holds): run r of (name, impl) takes `times[(name, impl)][r]` seconds (by default UnityPy
     1.0 + r/100 and unityrs a tenth of it), with status `status[(name, impl, r)]` (default ok) and digest
@@ -57,8 +63,11 @@ def wall(names=None, times=None, status=None, digest=None, rounds=7, emulated=Fa
             runs = [{
                 "round": r, "scope_s": got[r], "process_s": got[r] + 0.5, "cpu_s": got[r] + 0.4,
                 "peak_pss_bytes": 64 * 2**20, "status": status.get((name, impl, r), "ok"),
-                "counts": counts(spec), "digest": digest.get((name, impl, r), f"digest-{name}"),
+                "counts": counts(spec), "digest": hex_digest(digest.get((name, impl, r), f"digest-{name}")),
             } for r in range(rounds)]
+            for run in runs:
+                if run["status"] != "ok":
+                    run["digest"] = None
             doc["workloads"].append({
                 "name": name, "impl": impl, "category": spec["category"], "timer": spec["timer"], "paired": None,
                 "reason": None, "parity_row": spec["parity_row"], "tier": spec["tier"], "runs": runs,

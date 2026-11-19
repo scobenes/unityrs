@@ -87,6 +87,19 @@ class SchemaTests(unittest.TestCase):
             doc = wall(status={("texture-DXT1", "unitypy", 0): status})
             self.assertTrue(any("status is not" in p for p in results.problems(doc, WORKLOADS)), status)
 
+    def test_each_round_appears_once(self):
+        doc = wall()
+        for r in doc["workloads"][0]["runs"]:
+            r["round"] = 0
+        self.assertIn(f"{NAMES[0]}/unitypy: its rounds are not 0 to 6, once each", results.problems(doc, WORKLOADS))
+
+    def test_a_run_holds_its_fields_alone_each_well_typed_and_finite(self):
+        for change in ({"extra": 1}, {"scope_s": float("nan")}, {"cpu_s": float("inf")}, {"round": "0"},
+                       {"peak_pss_bytes": "64"}, {"counts": {"other": 1}}, {"digest": "digest"}):
+            doc = wall()
+            doc["workloads"][0]["runs"][0].update(change)
+            self.assertTrue(any(NAMES[0] in p for p in results.problems(doc, WORKLOADS)), change)
+
     def test_an_emulated_or_partial_run_is_not_published(self):
         self.assertEqual(results.publish_problems(wall(), WORKLOADS), [])
         self.assertTrue(results.publish_problems(wall(emulated=True), WORKLOADS))

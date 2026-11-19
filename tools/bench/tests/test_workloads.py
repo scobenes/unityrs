@@ -158,9 +158,10 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(load["counts"]["objects"], 1)
 
     def test_setup_warms_only_what_the_op_needs_before_the_timer(self):
-        """The load ops load the fixture once more, untimed; only the texture op imports `classes`, `export` and
-        Pillow; the typetree op warms nothing."""
-        texture = ["UnityPy.classes", "UnityPy.export", "PIL.Image"]
+        """The load ops load the fixture once more, untimed; only the texture op imports, what that side's first
+        read would (UnityPy's `export` package too); the typetree op warms nothing."""
+        texture = list(py_workloads.TEXTURE_IMPORTS["UnityPy"])
+        self.assertNotIn("unityrs.export", py_workloads.TEXTURE_IMPORTS["unityrs"])
         for op, want_loads, want_imports in (("load", 2, []), ("load_entries", 2, []), ("typetree", 1, []),
                                              ("texture", 1, texture)):
             loads, imported = [], []

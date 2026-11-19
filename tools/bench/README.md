@@ -32,7 +32,8 @@ measurement imports, and the artifact byte-equal to the file). A run on an emula
 fewer rounds than `workloads.json` names or missing a workload is refused.
 
 **Failures.** A scope that raises is a result, published as `raised:` and the exception's class name (unpaired). A
-child that crashes, fails its setup or prints no result stops the run with no `wall.json`. Children's stderr is kept
+child that crashes, is killed (even from outside: a measured run is never run again), fails its setup or prints
+no valid result (its keys, their types, finite numbers) stops the run with no `wall.json`. Children's stderr is kept
 in `DIR/logs` only, never in the console output or `wall.json`.
 
 | file | role |

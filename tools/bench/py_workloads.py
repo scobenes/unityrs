@@ -146,8 +146,9 @@ def digest_texture(out) -> tuple[str, dict]:
     return h.hexdigest(), {"textures": len(out), "pixels": sum(w * hh for _, (w, hh), _ in out)}
 
 
-# What the texture op's first call would import, done in setup instead.
-TEXTURE_IMPORTS = ("{}.classes", "{}.export", "PIL.Image")
+# What each side's first texture read would import, done in setup instead.
+TEXTURE_IMPORTS = {"UnityPy": ("UnityPy.classes", "UnityPy.export", "PIL.Image"),
+                   "unityrs": ("unityrs.classes", "unityrs._object", "PIL.Image")}
 
 
 def warm(UnityPy, op: str, data: bytes) -> None:
@@ -155,12 +156,13 @@ def warm(UnityPy, op: str, data: bytes) -> None:
     scope holds the operation and not a first use's initialisation (the plan's "after imports"). Both sides defer
     some, differently: UnityPy imports its `export` package (fmod_toolkit, numpy) on the first `.image`; the wheel
     builds its `classes` on the first `read()`, imports Pillow on the first `.image`, and reads its config, TPK
-    and file system on the first `load`. So the texture op imports `classes`, `export` and `PIL.Image` on both
-    sides; the load ops load the fixture once and drop the result (the API ops' own setup load is their first);
-    the typetree op needs nothing. Process CPU and peak PSS are whole-process, this included."""
+    and file system on the first `load`. So the texture op imports what that side's first read would
+    (`TEXTURE_IMPORTS`: the wheel's `.image` uses no `export`); the load ops load the fixture once and drop the
+    result (the API ops' own setup load is their first); the typetree op needs nothing. Process CPU and peak PSS
+    are whole-process, this included, and BENCHMARKS.md's columns say so."""
     if op == "texture":
-        for name in TEXTURE_IMPORTS:
-            importlib.import_module(name.format(UnityPy.__name__))
+        for name in TEXTURE_IMPORTS[UnityPy.__name__]:
+            importlib.import_module(name)
     if op in ("load", "load_entries"):
         UnityPy.load(data)
 

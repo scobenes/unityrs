@@ -13,6 +13,7 @@ min(UnityPy) / max(unityrs) to max(UnityPy) / min(unityrs), over the round total
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 
@@ -27,6 +28,9 @@ RUN = ("round", "scope_s", "process_s", "cpu_s", "peak_pss_bytes", "status", "co
 # A run's status: `ok`, or `raised:` and the class name of what the scope raised (py_workloads.raised); never a
 # message, which can carry paths or data.
 STATUS = re.compile(r"ok|raised:[A-Za-z_][A-Za-z0-9_]{0,63}")
+# What a child may count (py_workloads.py's digests).
+COUNTS = frozenset(("source_bytes", "objects", "entries", "entry_bytes", "textures", "pixels"))
+DIGEST = re.compile(r"[0-9a-f]{64}")
 # An absolute path in any string field: a host path (section 4.5 allows none).
 HOST_PATH = re.compile(r"(^|[\s=:'\"(])(/(home|Users|root|tmp|private|var|work|mnt|opt)/|[A-Za-z]:\\)")
 
@@ -42,6 +46,45 @@ def strings(value):
     elif isinstance(value, list):
         for v in value:
             yield from strings(v)
+
+
+def finite(value, allow_none=False) -> bool:
+    """A finite, non-negative int or float (not a bool), or None when `allow_none`."""
+    if value is None:
+        return allow_none
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+
+
+def result_problems(got) -> list[str]:
+    """Why `got` is not a child's result line (py_workloads.py): exactly `status` (`STATUS`), `scope_s` (finite),
+    `counts` (`COUNTS` to non-negative ints) and `digest` (64 hex digits when ok, null when it raised). The
+    driver prints and writes nothing of a result that has any, and names none of its values."""
+    if not isinstance(got, dict) or set(got) != {"status", "scope_s", "counts", "digest"}:
+        return ["not exactly status, scope_s, counts and digest"]
+    out = []
+    if not isinstance(got["status"], str) or not STATUS.fullmatch(got["status"]):
+        out.append("status is not `ok` or `raised:<class>`")
+    if not finite(got["scope_s"]):
+        out.append("scope_s is not a finite time")
+    counts = got["counts"]
+    if not isinstance(counts, dict) or not set(counts) <= COUNTS or not all(
+            isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in counts.values()):
+        out.append("counts are not known counts")
+    ok = got["status"] == "ok"
+    if not (isinstance(got["digest"], str) and DIGEST.fullmatch(got["digest"]) if ok else got["digest"] is None):
+        out.append("digest is not 64 hex digits for ok, or null for raised")
+    return out
+
+
+def run_problems(run: dict) -> list[str]:
+    """Why a wall.json run is malformed: its child result (`result_problems`) and the driver's own fields."""
+    out = result_problems({k: run.get(k) for k in ("status", "scope_s", "counts", "digest")})
+    if not isinstance(run.get("round"), int) or isinstance(run.get("round"), bool):
+        out.append("round is not an int")
+    if not (finite(run.get("process_s")) and finite(run.get("cpu_s"))
+            and finite(run.get("peak_pss_bytes"), allow_none=True)):
+        out.append("process_s, cpu_s or peak_pss_bytes is not a finite number")
+    return out
 
 
 def problems(wall: dict, workloads: dict) -> list[str]:
@@ -81,10 +124,14 @@ def problems(wall: dict, workloads: dict) -> list[str]:
             out.append(f"{e['name']}/{e['impl']}: {len(e['runs'])} runs, not {wall['rounds']}")
         for r in e["runs"]:
             lacking = [k for k in RUN if k not in r]
-            if lacking:
-                out.append(f"{e['name']}/{e['impl']}: a run lacks {', '.join(lacking)}")
-            elif not STATUS.fullmatch(str(r["status"])):
-                out.append(f"{e['name']}/{e['impl']}: a run's status is not `ok` or `raised:<class>`")
+            if lacking or set(r) != set(RUN):
+                out.append(f"{e['name']}/{e['impl']}: a run's fields are not {', '.join(RUN)}")
+                continue
+            out += [f"{e['name']}/{e['impl']}: a run's {p}" for p in run_problems(r)]
+        if out:
+            continue
+        if sorted(r["round"] for r in e["runs"]) != list(range(wall["rounds"])):
+            out.append(f"{e['name']}/{e['impl']}: its rounds are not 0 to {wall['rounds'] - 1}, once each")
     if out:
         return out
     for name, (paired, reason) in pairings(wall, workloads).items():
@@ -370,7 +417,8 @@ def benchmarks_md(wall: dict, gate: dict | None, workloads: dict, fixtures: dict
         if not names:
             continue
         out += [f"### {cat['label']}", "",
-                "| workload | timer | impl | median (min–max) | process CPU | peak PSS | throughput | speedup |",
+                "| workload | timer | impl | median (min–max) | process CPU (with warm-up) | peak PSS (with warm-up) "
+                "| throughput | speedup |",
                 "|---|---|---|---|---|---|---|---|"]
         for n in names:
             figs = workload_figures(wall, n)
