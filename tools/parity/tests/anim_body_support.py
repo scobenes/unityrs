@@ -175,7 +175,7 @@ def body_doc(name, run, *, samples=None):
         spine = [MUSCLES.index(muscle) for muscle in SPINE]
         schedule = [(t, None) for t in (0, .25 * 391 / 1024, .25, .5, .75, 1)]
     else:
-        schedule = probe_schedule(rig, MUSCLES, kind == "targets")
+        schedule = probe_schedule(rig, MUSCLES, kind == "targets", name if info["variant"] == "extra" else None)
     if samples:
         schedule = schedule[:samples]
     human_bones = [dict(name=b, node=index.get(b, -1), required=b in ("Hips", "Spine")) for b in BONES]

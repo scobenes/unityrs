@@ -1007,7 +1007,7 @@ the plan's hypotheses. None of it is a playback claim.
 
 ### Body fixtures
 
-The main menu item builds 106 optional `body-…` cases, each kind in its own
+The main menu item builds 107 optional `body-…` cases, each kind in its own
 bundle build after the main and coverage builds. Their tables are in
 `UnityrsBodyFixtures.cs` and `UnityrsBodyClips.cs`, mirrored by
 [`anim_fixture_body.py`](../tools/parity/anim_fixture_body.py).
@@ -1015,6 +1015,7 @@ bundle build after the main and coverage builds. Their tables are in
 | Cases | Plan | Contents |
 |---|---|---|
 | `body-probes-<rig>` (16) | F1, F6 | Known-vector `SetHumanPose` on each rig. The rigs are the two P2b rigs, each F6 topology, a noncoplanar rig and the hold-out rig. The vectors are one per probe muscle of each mapped bone, then three combined vectors over every probe muscle. Twist and stretch stay out. |
+| `body-probes-tall-2` (1) | F1 | 26 extra known vectors on the tall rig, in a bundle of their own. Each moves two of the trunk, shoulder, upper-arm and upper-leg bones, the poses the adequacy checkpoint predicts it needs (below). |
 | `body-targets-{compact,tall}[-offset]` (4) | F3 | The three combined vectors with nonidentity body targets on identity and offset roots |
 | `body-clip-<variant>[-offset]` (78) | F4 | 39 body-motion clips on the compact rig, each on an identity and an offset root |
 | `body-chain-<f5>-{targets,clip}` (8) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale. Each plays F3's targets and the all-original F4 clip with changing `MotionT` and `MotionQ` curves, whose residual body translation and tilt change through the chain and whose motion the original-root rule keeps. Completion requires its built motion slots; if Unity drops them, that clip case is not covered. |
@@ -1035,6 +1036,15 @@ hold. The probes fill each half at `.5 (k + 391/1024) / n`, rounded to a
 muscle to 1, -.9 or .8 by its place in its group, near the muscle's limits,
 so each probe turns its edges as far as it can. The combined vectors cycle
 five values per probe muscle.
+
+**Extra probes.** An extra probe case (`ExtraProbes`, mirrored by
+`EXTRA_PROBES`) gives each listed bone the muscles of one of its rig's own
+probe vectors: single probe `k`, or combined vector `c`. Every other
+muscle is zero. Each bone's local rotation is then one its rig's probe case
+records, so the case can be predicted before it is recorded. Its schedule
+keeps the anchors and the grid. It builds its own bundle, so a rerun
+leaves the other cases' bundles unchanged. A run with body rows but none
+for the extra cases predates them and completes.
 
 **F3 targets.** The targets alternate two requests. One moves the rest
 body by `(.05, -.03, .04)` and tilts it by `Euler(12, -20, 7)`. The other
@@ -1280,6 +1290,22 @@ version's folder:
 ```sh
 python3 -I tools/parity/anim_body_adequacy.py <folder> --json report.json
 ```
+
+`--design-only` predicts before a run. It adds every extra probe case the
+folder lacks, built from its rig's recorded probe case by
+[`anim_body_design.py`](../tools/parity/anim_body_design.py), then runs the
+same checkpoint, and the report lists the predicted cases.
+
+- Each planned bone takes the local rotation Unity recorded for the same
+  muscles, bit for bit.
+- The hips keep the neutral sample's transform. A turn of the whole body
+  turns each block and its Jacobian alike, so `u_s` does not change.
+- The neutral sample's read-back and target set `ε` and `E_unity`'s
+  magnitudes.
+
+Rank, `u_s` and `E_unity` depend on the rig geometry and the schedule,
+not on Unity's outputs, so the prediction holds the design. A recorded run
+of the planned case stays the checkpoint of record.
 
 [`anim_body_adequacy.py`](../tools/parity/anim_body_adequacy.py) builds a
 row block from every body read-back sample of the training rigs (every rig

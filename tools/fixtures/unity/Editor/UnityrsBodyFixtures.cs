@@ -51,6 +51,39 @@ static partial class UnityrsFixtureBuilder
         new BodyRig { Name = "hips-scale", HipsScale = 1.2f },
     };
     static readonly string[] TargetRigs = { "compact", "tall" };
+    // Extra probe cases, each on its own bundle of a probe rig (tools/parity/anim_fixture_body.py
+    // EXTRA_PROBES): independent poses where B1's adequacy checkpoint found the rig short.
+    static readonly (string name, string rig, (string bone, int source)[][] plan)[] ExtraProbes = {
+        ("body-probes-tall-2", "tall", new[]
+        {
+            new[] { ("Chest", 2), ("RightUpperLeg", 1) },
+            new[] { ("LeftUpperLeg", 2), ("RightUpperLeg", 1) },
+            new[] { ("Chest", -3), ("RightUpperLeg", -2) },
+            new[] { ("LeftUpperLeg", 1), ("RightUpperLeg", -2) },
+            new[] { ("LeftUpperLeg", 1), ("RightUpperLeg", 2) },
+            new[] { ("Chest", 1), ("LeftUpperLeg", 2) },
+            new[] { ("LeftUpperLeg", 2), ("LeftUpperArm", -3) },
+            new[] { ("LeftUpperLeg", 2), ("RightUpperLeg", -2) },
+            new[] { ("Chest", 3), ("LeftUpperLeg", 2) },
+            new[] { ("LeftUpperLeg", -3), ("RightUpperLeg", 1) },
+            new[] { ("Chest", -1), ("LeftUpperArm", 2) },
+            new[] { ("Chest", 2), ("LeftUpperArm", 2) },
+            new[] { ("LeftUpperLeg", -3), ("RightUpperLeg", 2) },
+            new[] { ("Chest", -1), ("LeftUpperLeg", -3) },
+            new[] { ("Chest", 2), ("LeftUpperLeg", -2) },
+            new[] { ("LeftUpperLeg", -3), ("RightUpperArm", 1) },
+            new[] { ("Spine", 3), ("LeftUpperLeg", 2) },
+            new[] { ("LeftUpperArm", 2), ("RightUpperArm", -3) },
+            new[] { ("Chest", -1), ("RightUpperLeg", 1) },
+            new[] { ("Chest", -3), ("LeftUpperArm", 2) },
+            new[] { ("Neck", 2), ("LeftUpperLeg", -3) },
+            new[] { ("Chest", -2), ("RightUpperLeg", 1) },
+            new[] { ("Chest", -3), ("RightUpperArm", 2) },
+            new[] { ("Chest", 1), ("LeftUpperLeg", -1) },
+            new[] { ("LeftUpperLeg", -3), ("RightUpperLeg", -2) },
+            new[] { ("LeftUpperLeg", -3), ("RightUpperArm", -3) },
+        }),
+    };
     const float AnimatorScale = 1.25f, ArmatureScale = .8f;
     internal const float BodyAnimatorScale = AnimatorScale, BodyArmatureScale = ArmatureScale;
 
@@ -136,6 +169,7 @@ static partial class UnityrsFixtureBuilder
             ? new[] { "body-targets-" + rig.Name, "body-targets-" + rig.Name + "-offset" } : Array.Empty<string>());
 
     static IEnumerable<string> BodyCases() => ProbeRigs.SelectMany(rig => RigCases(rig, false))
+        .Concat(ExtraProbes.Select(extra => extra.name))
         .Concat(ClipCases()).Concat(ChainRigs.SelectMany(rig => RigCases(rig, true)));
 
     // Each body case fails until a step prepares it, so none can vanish unseen.
@@ -146,6 +180,9 @@ static partial class UnityrsFixtureBuilder
         foreach (var rig in ProbeRigs)
             report.Prepare(build, "Prepare body-" + rig.Name, RigCases(rig, false).ToArray(),
                 () => BuildBodyRig(build, report, rig, chain: false), true);
+        foreach (var extra in ExtraProbes)
+            report.Prepare(build, "Prepare " + extra.name, new[] { extra.name },
+                () => BuildBodyRig(build, report, ProbeRigs.Single(rig => rig.Name == extra.rig), false, extra), true);
         foreach (var rig in ChainRigs)
             report.Prepare(build, "Prepare body-chain-" + rig.Name, RigCases(rig, true).ToArray(),
                 () => BuildBodyRig(build, report, rig, chain: true), true);
@@ -249,7 +286,8 @@ static partial class UnityrsFixtureBuilder
     // Neutral, the spine single-axis vector and the spine noncommuting vector at
     // 0, .5 and 1, as the P2b known vectors, so the Spine endpoint checks hold.
     // The probes (or, for targets, the three combined vectors) fill each half.
-    static BodyProbe[] BodySchedule(IEnumerable<string> mapped, bool targets)
+    // The rig's single-muscle probes and its three combined vectors over every probe muscle.
+    static (List<float[]> singles, List<float[]> combined) ProbeVectors(IEnumerable<string> mapped)
     {
         var names = HumanTrait.MuscleName;
         var present = new HashSet<string>(mapped, StringComparer.Ordinal);
@@ -270,8 +308,42 @@ static partial class UnityrsFixtureBuilder
             var vector = new float[names.Length];
             for (int g = 0; g < muscles.Count; g++) vector[muscles[g]] = values[g % values.Length];
             return vector;
-        });
-        var vectors = (targets ? combined : singles.Concat(combined)).ToList();
+        }).ToList();
+        return (singles, combined);
+    }
+
+    static BodyProbe[] BodySchedule(IEnumerable<string> mapped, bool targets)
+    {
+        var (singles, combined) = ProbeVectors(mapped);
+        return Scheduled((targets ? combined : singles.Concat(combined)).ToList(), targets);
+    }
+
+    // An extra probe case: each listed bone takes its muscles from one of the
+    // rig's own probe vectors (single probe k from 1, or combined vector c as
+    // -1 - c), every other muscle zero, so each bone's local rotation is one
+    // the rig's probe case records.
+    static BodyProbe[] ExtraSchedule(IEnumerable<string> mapped, (string bone, int source)[][] plan)
+    {
+        var names = HumanTrait.MuscleName;
+        var (_, combined) = ProbeVectors(mapped);
+        var vectors = plan.Select(sources => {
+            var vector = new float[names.Length];
+            foreach (var (bone, source) in sources)
+            {
+                var group = ProbeGroups.Single(row => row[0] == bone);
+                for (int k = 1; k < group.Length; k++)
+                {
+                    int index = MuscleIndex(names, group[k]);
+                    vector[index] = source > 0 ? (k == source ? ProbeValues[k - 1] : 0) : combined[-1 - source][index];
+                }
+            }
+            return vector;
+        }).ToList();
+        return Scheduled(vectors, false);
+    }
+
+    static BodyProbe[] Scheduled(List<float[]> vectors, bool targets)
+    {
         int first = (vectors.Count + 1) / 2, second = vectors.Count - first;
         // Times on a 2^-16 grid, so every one is exact in the JSON and as an f32.
         BodyProbe Point(double time, float[] vector) => new BodyProbe { Time = Math.Round(time * 65536) / 65536, Muscles = vector };
@@ -310,9 +382,11 @@ static partial class UnityrsFixtureBuilder
     }
 
     // A probe rig (F1, with F3 on the P2b rigs) or a chain rig (F5).
-    static void BuildBodyRig(Build build, RunReport report, BodyRig rig, bool chain)
+    static void BuildBodyRig(Build build, RunReport report, BodyRig rig, bool chain,
+        (string name, string rig, (string bone, int source)[][] plan) extra = default)
     {
-        string bundle = (chain ? "body-chain-" : "body-") + rig.Name;
+        // An extra probe case has its own bundle, so a rerun leaves the rig's other cases unchanged.
+        string bundle = extra.name != null ? extra.name.Replace("probes-", "") : (chain ? "body-chain-" : "body-") + rig.Name;
         var rigObject = new GameObject("HumanoidRig");
         GameObject root = null;
         Avatar avatar = null;
@@ -349,7 +423,7 @@ static partial class UnityrsFixtureBuilder
             rigObject.transform.SetParent(root.transform, false);
             if (rig.ScaledAnimator) rigObject.transform.localScale = Vector3.one * AnimatorScale;
             string prefab = SavePrefab(root, dir + "/identity.prefab");
-            bool targets = !chain && TargetRigs.Contains(rig.Name);
+            bool targets = !chain && extra.name == null && TargetRigs.Contains(rig.Name);
             string offsetPrefab = null;
             if (targets)
             {
@@ -379,6 +453,13 @@ static partial class UnityrsFixtureBuilder
                 clipReplay.Body.Variant = ChainVariant.Name;
                 clipReplay.BodyClip = ChainVariant;
                 build.Replays.Add(clipReplay);
+                return;
+            }
+            if (extra.name != null)
+            {
+                var extraReplay = Replay(extra.name, prefab, clipPaths[0], "probes", "identity");
+                extraReplay.Body.Variant = "extra";
+                AddProbeReplay(build, extraReplay, ExtraSchedule(mapped, extra.plan));
                 return;
             }
             AddProbeReplay(build, Replay("body-probes-" + rig.Name, prefab, clipPaths[0], "probes", "identity"),

@@ -57,6 +57,40 @@ PROBE_GROUPS = (
     *((side + "Eye", (f"{side} Eye Down-Up", f"{side} Eye In-Out")) for side in SIDES),
     ("Jaw", ("Jaw Close", "Jaw Left-Right")),
 )
+# Extra probe cases, each on its own bundle of a probe rig: vectors whose every bone takes its muscles from one of
+# the rig's own probe vectors, as (bone, source) pairs for `compose`. They add independent poses where the
+# adequacy checkpoint found the rig short; anim_body_design.py predicts them from the rig's recorded geometry.
+EXTRA_PROBES = {
+    "body-probes-tall-2": (
+        (("Chest", 2), ("RightUpperLeg", 1)),
+        (("LeftUpperLeg", 2), ("RightUpperLeg", 1)),
+        (("Chest", -3), ("RightUpperLeg", -2)),
+        (("LeftUpperLeg", 1), ("RightUpperLeg", -2)),
+        (("LeftUpperLeg", 1), ("RightUpperLeg", 2)),
+        (("Chest", 1), ("LeftUpperLeg", 2)),
+        (("LeftUpperLeg", 2), ("LeftUpperArm", -3)),
+        (("LeftUpperLeg", 2), ("RightUpperLeg", -2)),
+        (("Chest", 3), ("LeftUpperLeg", 2)),
+        (("LeftUpperLeg", -3), ("RightUpperLeg", 1)),
+        (("Chest", -1), ("LeftUpperArm", 2)),
+        (("Chest", 2), ("LeftUpperArm", 2)),
+        (("LeftUpperLeg", -3), ("RightUpperLeg", 2)),
+        (("Chest", -1), ("LeftUpperLeg", -3)),
+        (("Chest", 2), ("LeftUpperLeg", -2)),
+        (("LeftUpperLeg", -3), ("RightUpperArm", 1)),
+        (("Spine", 3), ("LeftUpperLeg", 2)),
+        (("LeftUpperArm", 2), ("RightUpperArm", -3)),
+        (("Chest", -1), ("RightUpperLeg", 1)),
+        (("Chest", -3), ("LeftUpperArm", 2)),
+        (("Neck", 2), ("LeftUpperLeg", -3)),
+        (("Chest", -2), ("RightUpperLeg", 1)),
+        (("Chest", -3), ("RightUpperArm", 2)),
+        (("Chest", 1), ("LeftUpperLeg", -1)),
+        (("LeftUpperLeg", -3), ("RightUpperLeg", -2)),
+        (("LeftUpperLeg", -3), ("RightUpperArm", -3)),
+    ),
+}
+EXTRA_RIGS = {"body-probes-tall-2": "tall"}
 PROBE_VALUES = (1, -.9, .8)
 COMBINED_VALUES = ((.3, -.2, .25, -.35, .15), (-.25, .4, -.15, .2, -.3), (.2, .2, -.3, -.1, .35))
 TARGETS = (((.05, -.03, .04), (12, -20, 7)), ((-.04, .02, -.06), (-9, 35, -11)))
@@ -140,6 +174,9 @@ def _cases():
             for prefab, suffix in (("identity", ""), ("offset", "-offset")):
                 add(f"body-targets-{rig}{suffix}", _fixture(bundle, prefab, bundle + "-muscles", "targets"),
                     "targets", rig, root=prefab)
+    for name, rig in EXTRA_RIGS.items():
+        add(name, _fixture(name.replace("probes-", ""), "identity", name.replace("probes-", "") + "-muscles", "probes"),
+            "probes", rig, "extra")
     for variant in CLIP_VARIANTS:
         for prefab, suffix in (("identity", ""), ("offset", "-offset")):
             add(f"body-clip-{variant}{suffix}", _fixture("body-clips", prefab, "body-clip-" + variant, "clip"),
@@ -153,6 +190,7 @@ def _cases():
 
 
 BODY_CASES, BODY_INFO = _cases()
+EXTRA_CASES = frozenset(name for name, info in BODY_INFO.items() if info["variant"] == "extra")
 BODY_BUNDLES = {fixture.bundle for fixture in BODY_CASES.values()}
 
 
@@ -163,18 +201,22 @@ def rig_bones(rig):
     return {bone for bone in bones if bone not in omit}
 
 
-def probe_schedule(rig, names, targets):
-    """[(time, vector)] in schedule order, vectors over the captured HumanTrait muscle names."""
+def _probe_vectors(rig, index):
+    """The rig's probe muscles by group, its single-muscle probes and its three combined vectors."""
     mapped = rig_bones(rig)
-    index = {name: i for i, name in enumerate(names)}
-    muscles, vectors = [], []
+    groups, muscles, singles = {}, [], []
     for bone, group in PROBE_GROUPS:
         if bone in mapped:
+            groups[bone] = [index[muscle] for muscle in group]
             for value, muscle in zip(PROBE_VALUES, group):
                 muscles.append(index[muscle])
-                vectors.append({index[muscle]: value})
+                singles.append({index[muscle]: value})
     combined = [{muscle: values[g % len(values)] for g, muscle in enumerate(muscles)} for values in COMBINED_VALUES]
-    vectors = combined if targets else vectors + combined
+    return groups, singles, combined
+
+
+def _scheduled(vectors, index, length):
+    """Spine anchors at 0, .5 and 1, and the vectors filling each half on a 2^-16 grid."""
     first = (len(vectors) + 1) // 2
     second = len(vectors) - first
     times = [.5 * (k + 391 / 1024) / first for k in range(first)]
@@ -188,8 +230,37 @@ def probe_schedule(rig, names, targets):
 
     points = [(0, anchor(0)), *zip(times[:first], vectors[:first]), (.5, anchor(.5)),
               *zip(times[first:], vectors[first:]), (1, anchor(1))]
-    return [(t, [vector.get(i, 0) for i in range(len(names))]) for t, vector in points]
+    return [(t, [vector.get(i, 0) for i in range(length)]) for t, vector in points]
 
+
+def compose(rig, names, sources):
+    """One extra probe vector: each listed bone's muscles as in one of the rig's own probe vectors, a
+    single-muscle probe k (1 to 3) or a combined vector c (given as -1 - c), every other muscle zero.
+    Each bone's local rotation is then one the rig's own probe case recorded."""
+    index = {name: i for i, name in enumerate(names)}
+    groups, singles, combined = _probe_vectors(rig, index)
+    vector = {}
+    if len({bone for bone, _ in sources}) != len(sources):
+        raise ValueError(f"extra probe vector lists a bone twice: {sources}")
+    for bone, source in sources:
+        muscles = groups[bone]
+        if source > 0:
+            vector[muscles[source - 1]] = PROBE_VALUES[source - 1]
+        else:
+            vector |= {muscle: combined[-1 - source][muscle] for muscle in muscles}
+    return vector
+
+
+def probe_schedule(rig, names, targets, extra=None):
+    """[(time, vector)] in schedule order, vectors over the captured HumanTrait muscle names; `extra`
+    names an extra probe case (EXTRA_PROBES) of the rig."""
+    index = {name: i for i, name in enumerate(names)}
+    _, singles, combined = _probe_vectors(rig, index)
+    if extra is not None:
+        vectors = [compose(rig, names, sources) for sources in EXTRA_PROBES[extra]]
+    else:
+        vectors = combined if targets else singles + combined
+    return _scheduled(vectors, index, len(names))
 
 def _f32s(values, replay, width, label="body row"):
     """A row of f32 bits the analysis reads: well formed and finite, or refused with the field named."""
@@ -293,7 +364,7 @@ def check_nodes(name, rows, nodes, hips, replay):
 def check_targets(name, info, spec, capture, editor, replay):
     require = replay.require
     names = [row["name"] for row in capture["humanoid"]["muscles"]]
-    expected = probe_schedule(info["rig"], names, info["kind"] == "targets")
+    expected = probe_schedule(info["rig"], names, info["kind"] == "targets", name if info["variant"] == "extra" else None)
     require([point["local"] for point in spec["schedule"]] == [t for t, _ in expected]
             and all([replay.f32_bits(v) for v in point["muscles"]] == [replay.f32_bits(v) for v in vector]
                     for point, (_, vector) in zip(spec["schedule"], expected)),

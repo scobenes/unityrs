@@ -12,6 +12,7 @@ from anim_body_support import body_doc
 from anim_fixture_support import RUN, write
 
 import anim_body_adequacy as adequacy  # noqa: E402  (test_anim_replay puts it on the path)
+import anim_body_design as design  # noqa: E402
 import anim_body_tolerance as tolerance  # noqa: E402
 import anim_fixture_body as body  # noqa: E402
 from anim_reference import euler  # noqa: E402
@@ -193,6 +194,42 @@ class CheckpointTests(unittest.TestCase):
         _, report, _ = self.run_checkpoint()
         self.assertTrue(report["edge_mismatches"])
         self.assertFalse(report["adequate"])
+
+    def test_the_design_mode_predicts_an_extra_probe_case_from_its_rig(self):
+        # Synthetic poses turn each bone by its own muscles, as Unity does, so the prediction is the recording.
+        name = sorted(body.EXTRA_CASES)[0]
+        rig = body.EXTRA_RIGS[name]
+        source = replay.read_json(json.dumps(body_doc(f"body-probes-{rig}", RUN)))
+        predicted = design.predict(name, source)
+        recorded = body_doc(name, RUN)
+        nodes = {row["name"]: row["node"] for row in recorded["capture"]["humanoid"]["bones"] if row["node"] >= 0}
+        self.assertEqual([point["local"] for point in predicted["spec"]["schedule"]],
+                         [point["local"] for point in recorded["spec"]["schedule"]])
+        for got, want in zip(predicted["capture"]["samples"], recorded["capture"]["samples"]):
+            self.assertEqual(got["muscles_f32"], want["muscles_f32"])
+            for bone, node in nodes.items():
+                if bone != "Hips":
+                    self.assertEqual(got["pose"]["transforms"][node]["rotation"],
+                                     want["pose"]["transforms"][node]["rotation"], (got["local"], bone))
+        # A pose the rig's probe case never recorded cannot be predicted.
+        short = replay.read_json(json.dumps(body_doc(f"body-probes-{rig}", RUN, samples=4)))
+        with self.assertRaisesRegex(ValueError, "no recorded pose of"):
+            design.predict(name, short)
+
+    def test_design_only_adds_every_unrecorded_extra_case(self):
+        name = sorted(body.EXTRA_CASES)[0]
+        self.record([f"body-probes-{body.EXTRA_RIGS[name]}"], samples=None)
+        self.record(["body-probes-compact"], samples=4)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = adequacy.main([str(self.folder), "--design-only", "--json", str(self.folder / "report.json")])
+        report = json.loads((self.folder / "report.json").read_text(encoding="utf-8"))
+        self.assertIn(code, (0, 1))
+        self.assertEqual(report["predicted"], [name])
+        self.assertIn(f"(predicted with {name})", out.getvalue())
+        self.assertIn(name, {row["name"] for row in report["samples"]})
+        # Without the flag the checkpoint reads only what was recorded.
+        self.assertNotIn(name, {row["name"] for row in self.run_checkpoint()[1]["samples"]})
 
     def test_unreadable_input_exits_two(self):
         self.assertEqual(self.run_checkpoint()[0], 2)

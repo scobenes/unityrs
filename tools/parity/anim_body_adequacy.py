@@ -54,6 +54,7 @@ from anim_body_tolerance import (BODY_SLOTS, U32, U64, body_frame, body_states, 
                                  edges, evaluation_error, folded_masses, frame_error, hips_error, kinematics,
                                  matrix_quaternion, measurement_tolerance, norm, ordered, product, quaternion_matrix,
                                  readback_turn, recorded_edges, rotate, tracked, uniform)
+from anim_body_design import planned  # noqa: E402
 from anim_fixture_body import BODY_INFO, HOLDOUT, PROBE_RIGS, rig_bones  # noqa: E402
 
 CONDITION_LIMIT = 1e6
@@ -282,7 +283,7 @@ def adequate(report):
 def coverage_of(documents):
     """F1 and F6 rigs credited only by their own probe case with read-back rows and the rig's topology."""
     recorded = set()
-    probes = {info["rig"]: name for name, info in BODY_INFO.items() if info["kind"] == "probes"}
+    probes = {info["rig"]: name for name, info in BODY_INFO.items() if info["kind"] == "probes" and not info["variant"]}
     for rig in PROBE_RIGS:
         doc = documents.get(probes.get(rig))
         if doc is None or not doc["spec"]["evidence"]["editor"].get("body_samples"):
@@ -307,9 +308,15 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("folder", type=Path)
     parser.add_argument("--json", type=Path)
+    parser.add_argument("--design-only", action="store_true",
+                        help="add every extra probe case the run lacks, predicted from its rig's recorded geometry "
+                             "(anim_body_design.py)")
     args = parser.parse_args(argv)
     try:
         documents = load(args.folder)
+        extra = planned(documents) if args.design_only else {}
+        predicted = sorted(extra)
+        documents |= extra
         parents, masses = bone_table(documents.values())
         rows = [row for name, doc in documents.items() for row in samples(name, doc, parents, masses)]
         report = adequacy(rows, coverage_of(documents), expected_inventory(parents))
@@ -317,6 +324,7 @@ def main(argv=None):
         print(f"anim_body_adequacy: {exc}", file=sys.stderr)
         return 2
     report["adequate"] = adequate(report)
+    report["predicted"] = predicted
     text = json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
     if args.json:
         args.json.write_text(text, encoding="utf-8")
@@ -324,7 +332,8 @@ def main(argv=None):
           f"{len(report.get('uncertainty_failures', []))} u_s failures, worst margin E_unity,s/u_s "
           f"{report.get('worst_margin')}, margins {report.get('margins')}, "
           f"missing rigs {report['coverage']['missing']}, missing edges {report['missing_coefficients']}: "
-          + ("adequate" if report["adequate"] else "short"))
+          + ("adequate" if report["adequate"] else "short")
+          + (f" (predicted with {', '.join(predicted)})" if predicted else ""))
     return 0 if report["adequate"] else 1
 
 

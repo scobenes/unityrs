@@ -35,9 +35,10 @@ def source(name):
 
 class BodyInventoryTests(unittest.TestCase):
     def test_cases_mirror_the_builder(self):
-        self.assertEqual(len(body.BODY_CASES), 106)
+        self.assertEqual(len(body.BODY_CASES), 107)
         kinds = [info["kind"] for info in body.BODY_INFO.values()]
-        self.assertEqual((kinds.count("probes"), kinds.count("targets"), kinds.count("clip")), (16, 8, 82))
+        self.assertEqual((kinds.count("probes"), kinds.count("targets"), kinds.count("clip")), (17, 8, 82))
+        self.assertEqual(body.EXTRA_CASES, {"body-probes-tall-2"})
         self.assertEqual(len(body.CLIP_VARIANTS), 39)
         self.assertLessEqual(body.BODY_CASES.keys(), OPTIONAL_CASES)
         self.assertTrue(body.BODY_CASES.keys().isdisjoint(anim_fixture_coverage.COVERAGE_CASES))
@@ -48,6 +49,15 @@ class BodyInventoryTests(unittest.TestCase):
         groups = re.findall(r'new\[\] \{ "([A-Za-z]+)", ((?:"[^"]+"(?:, )?)+) \}', table[:table.index("};")])
         self.assertEqual([(bone, tuple(re.findall(r'"([^"]+)"', muscles))) for bone, muscles in groups],
                          [(bone, tuple(muscles)) for bone, muscles in body.PROBE_GROUPS])
+        # The extra probe cases, entry for entry.
+        table = builder[builder.index("ExtraProbes = {"):]
+        table = table[:table.index("\n    };")]
+        cases = re.findall(r'\("([a-z0-9-]+)", "([a-z-]+)", new\[\]\s*\{(.*?)\n        \}\)', table, re.S)
+        self.assertEqual({name: rig for name, rig, _ in cases}, body.EXTRA_RIGS)
+        for name, _, plan in cases:
+            vectors = [[(bone, int(source)) for bone, source in re.findall(r'\("([A-Za-z]+)", (-?\d)\)', line)]
+                       for line in re.findall(r'new\[\] \{ (\(.*?\)) \}', plan)]
+            self.assertEqual(vectors, [list(sources) for sources in body.EXTRA_PROBES[name]], name)
         clips = source("UnityrsBodyClips.cs")
         for name in body.CLIP_VARIANTS:
             stem = re.sub(r"-start$", "", name)
@@ -69,6 +79,26 @@ class BodyInventoryTests(unittest.TestCase):
                 self.assertEqual(len(points), 6 if targets else probes + 6)
         self.assertNotIn("Chest", body.rig_bones("no-chest"))
         self.assertEqual(body.rig_bones("eyes-jaw") - body.rig_bones("compact"), {"LeftEye", "RightEye", "Jaw"})
+
+    def test_extra_probes_take_each_bone_from_a_recorded_probe_vector(self):
+        names = list(MUSCLES)
+        spine = [names.index(muscle) for muscle in body.SPINE]
+        for name in body.EXTRA_CASES:
+            rig = body.EXTRA_RIGS[name]
+            own = [vector for _, vector in body.probe_schedule(rig, names, False)]
+            points = body.probe_schedule(rig, names, False, name)
+            times = [t for t, _ in points]
+            self.assertEqual(times, sorted(set(times)))
+            self.assertTrue(all(t * 65536 == int(t * 65536) for t in times))
+            self.assertEqual({t: [vector[i] for i in spine] for t, vector in points if t in (0, .5, 1)},
+                             {t: list(v) for t, v in body.ANCHORS.items()})
+            self.assertEqual(len(points), len(body.EXTRA_PROBES[name]) + 3)
+            for t, vector in points:
+                for bone, group in body.PROBE_GROUPS:
+                    if bone in body.rig_bones(rig):
+                        muscles = [names.index(muscle) for muscle in group]
+                        self.assertTrue(any([vector[i] for i in muscles] == [other[i] for i in muscles] for other in own),
+                                        (name, t, bone))
 
 
 class CheckBodyTests(unittest.TestCase):
@@ -324,6 +354,15 @@ class BodyRunTests(unittest.TestCase):
         result = self.run_with(body.BODY_CASES)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("body-clip-level-offset: not_covered (Unity refused it)", result.stdout)
+
+    def test_a_run_before_the_extra_probes_completes(self):
+        # A run with every other body row and none for the extra probe cases is from before them.
+        result = self.run_with([name for name in body.BODY_CASES if name not in body.EXTRA_CASES])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        missing = sorted(body.EXTRA_CASES)[0]
+        result = self.run_with([name for name in body.BODY_CASES if name != "body-probes-holdout"])
+        self.assertIn("missing run.json case: body-probes-holdout", result.stderr)
+        self.assertNotIn(missing, result.stderr)
 
     def test_a_run_lists_all_body_cases_or_none(self):
         missing = "body-probes-holdout"
