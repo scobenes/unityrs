@@ -141,22 +141,22 @@ class BindingTests(unittest.TestCase):
         git(self.repo, "add", "freeze.json")
         git(self.repo, "commit", "-q", "-m", "freeze")
         frozen = git(self.repo, "rev-parse", "HEAD")
-        self.assertEqual(seal.bind_artifact(self.artifact, commit, self.repo), frozen)
+        self.assertEqual(seal.bind_artifact(self.artifact, commit), frozen)
         # The freeze commit is not after the code commit.
         with self.assertRaisesRegex(ValueError, "does not precede its freeze commit"):
-            seal.bind_artifact(self.artifact, frozen, self.repo)
+            seal.bind_artifact(self.artifact, frozen)
         # A replacement committed later: the file is HEAD's, but not the freeze commit's.
         self.artifact.write_text('{"x": 1}\n', encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "differs from its committed version"):
-            seal.bind_artifact(self.artifact, commit, self.repo)
+            seal.bind_artifact(self.artifact, commit)
         git(self.repo, "commit", "-q", "-am", "replaced")
         with self.assertRaisesRegex(ValueError, "changed after its freeze commit"):
-            seal.bind_artifact(self.artifact, commit, self.repo)
+            seal.bind_artifact(self.artifact, commit)
         # HEAD on a branch without the freeze commit: untracked there.
         git(self.repo, "checkout", "-q", "-b", "before", commit)
         self.artifact.write_text("{}\n", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "not tracked by git"):
-            seal.bind_artifact(self.artifact, commit, self.repo)
+            seal.bind_artifact(self.artifact, commit)
 
 
 class LedgerTests(unittest.TestCase):
@@ -175,9 +175,27 @@ class LedgerTests(unittest.TestCase):
 
     def test_the_ledger_and_the_artifact_are_fixed_paths(self):
         self.assertEqual(seal.FREEZE_PATH.parent, seal.HERE)
+        # Under the account's home from its passwd entry, whatever $HOME says.
+        import pwd
+
+        self.assertTrue(seal.LEDGER_DIR.is_relative_to(pwd.getpwuid(os.getuid()).pw_dir))
         self.assertTrue(seal.LEDGER_DIR.is_absolute())
         # Outside the repository.
         self.assertFalse(seal.LEDGER_DIR.is_relative_to(seal.HERE.parents[1]))
+
+
+class ReaderTests(unittest.TestCase):
+    def test_the_cli_resolves_once_to_an_absolute_real_path(self):
+        folder = scratch.for_case(self)
+        (folder / "real").write_bytes(b"cli")
+        (folder / "link").symlink_to(folder / "real")
+        resolved = seal.executable(str(folder / "link"))
+        self.assertEqual(resolved, str((folder / "real").resolve()))
+        self.assertEqual(seal.reader_sha256(resolved), seal.hashlib.sha256(b"cli").hexdigest())
+        with self.assertRaisesRegex(ValueError, "not resolved"):
+            seal.reader_sha256("real")
+        with self.assertRaisesRegex(ValueError, "no unityrs executable"):
+            seal.executable(str(folder / "absent"))
 
 
 class MinimumTests(unittest.TestCase):

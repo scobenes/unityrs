@@ -1,5 +1,11 @@
 """B2's seal (docs/plans/humanoid-body.md 6): the freeze's git and source binding, and E3b's one-shot unseal.
 
+**Threat model.** These guards stop accidental re-runs, stale inputs and
+honest mistakes: a second E3b on one freeze, a replaced or edited artifact,
+changed code, another reader, a run that changed underneath. They do not
+stop a deliberately adversarial local user, who could edit this code
+anyway.
+
 **Sources.** The freeze binds every local module its entry points
 (ENTRY_POINTS: the checker CLI, the checks, and this E3b path) import,
 transitively, at any depth and inside functions, and every data file of
@@ -7,19 +13,21 @@ this folder those modules name (anim_replay.schema.json, anim_bounds.json),
 all from the modules' syntax trees (`sources`): the model, the checks, run
 loading, recording validation, case tables and Avatar decoding.
 `source_digest` is the sha256 of their names and digests. The unityrs CLI
-that read the Avatars and built clips is pinned by its sha256
-(`reader_sha256`): E3b needs the same executable.
+that read the Avatars and built clips is resolved once to an absolute real
+path (`executable`), which is hashed and given to every child, and pinned by
+its sha256 (`reader_sha256`): E3b needs the same executable.
 
-**Git binding** (`bind_artifact`, `bind_code`). E3b takes only the
-canonical artifact, FREEZE_PATH (a constant of these sources), and
-refuses unless:
+**Git binding** (`canonical`, `bind_artifact`, `bind_code`). E3b takes only
+the canonical artifact, FREEZE_PATH (a constant of these sources), with no
+symlink at it or its parents inside this code's checkout, reads its bytes
+once (their sha256 is the claim key, and the same bytes are parsed and
+compared with git), and refuses unless:
 
 - the artifact is tracked and its file is byte-identical to HEAD's;
 - exactly one commit added that path (the freeze commit), nothing changed
   it since, and the freeze commit is an ancestor of HEAD;
-- the code commit it records is an ancestor of HEAD (and of the freeze
-  commit, in one repository), and no source file differs from it, at HEAD
-  or in the working tree;
+- the code commit it records precedes the freeze commit and is an ancestor
+  of HEAD, and no source file differs from it, at HEAD or in the work tree;
 - the sources' digest is the recorded one, and the Editor versions, the
   hold-out cases and the minimum it records are the code's constants.
 
@@ -29,14 +37,17 @@ frozen runs (anim_body_freeze.frozen_training) and checks, by listing
 names only, that each Editor version's run records every hold-out case
 (HOLDOUT_CASES) with its recording and bundle present. Then it claims the
 shot: an exclusive create (O_CREAT | O_EXCL) of a marker named by the
-freeze's sha256 in LEDGER_DIR, a fixed directory outside the repository; an
-existing marker refuses. The claim appends a ledger row; after it, any
-failure is a recorded failed attempt and the shot stays consumed. The
-hold-out is read only through sealed completion
-(anim_replay_complete.complete_folder with an `Unseal`), which validates
-it (run identity, fixture topology, probe schedule and bundle) and hands it
-over; a second row records the hold-out recordings' sha256 before any
-evaluation, and a last one the result.
+freeze's sha256 in LEDGER_DIR, a fixed directory under the account's home
+(from its passwd entry, never $HOME); an existing marker refuses. After
+the claim, any failure is a recorded failed attempt and the shot stays
+consumed. The first ledger row records each run's run.json and hold-out
+recordings by sha256. The hold-out is read only through sealed completion
+(anim_replay_complete.complete_folder with the freeze's sha256), which
+itself refuses unless that claim exists (`require_claim`), validates the
+hold-out (run identity, fixture topology, probe schedule and bundle) and
+returns it with the sha256 of the bytes it read; E3b evaluates those
+documents only if their sha256 and the run's run.json are the recorded
+ones, so a run swapped underneath fails closed.
 
 **Per version.** E3b evaluates each Editor version alone: E0 on its
 hold-out Avatar, and E3 within the frozen lateral limit, with at least
@@ -49,6 +60,7 @@ import datetime
 import hashlib
 import json
 import os
+import pwd
 import shutil
 from pathlib import Path
 
@@ -60,8 +72,9 @@ from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT
 HERE = Path(__file__).resolve().parent
 ENTRY_POINTS = ("anim_body_freeze.py", "anim_body_check.py", "anim_body_seal.py")
 # The one artifact E3b reads (bound separately, so never a source), and E3b's fixed ledger directory.
-FREEZE_PATH = HERE / "anim_body_freeze_v5.json"
-LEDGER_DIR = Path.home() / ".local" / "state" / "unityrs" / "e3b"
+FREEZE_PATH = HERE / "anim_body_freeze_v6.json"
+# The account's own home (its passwd entry, never $HOME).
+LEDGER_DIR = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local" / "state" / "unityrs" / "e3b"
 HOLDOUT_CASES = tuple(sorted(name for name, info in BODY_INFO.items() if info["rig"] == HOLDOUT))
 # The in-scope comparisons each Editor version's hold-out must reach, from its design: body-probes-holdout's
 # schedule (anim_fixture_body.probe_schedule) has 45 known vectors on the compact topology. Seven bend the spine
@@ -105,12 +118,19 @@ def sources(folder=HERE, entries=None):
     return sorted(found | data)
 
 
-def reader_sha256(unityrs):
-    """The sha256 of the unityrs executable `unityrs` names (a path, or a name on PATH)."""
+def executable(unityrs):
+    """The unityrs CLI `unityrs` names (a path, or a name on PATH) as an absolute real path, resolved once: the
+    one path hashed and given to every child."""
     replay.require(unityrs is not None, "the freeze and E3b pin the unityrs CLI: give --unityrs")
-    path = Path(shutil.which(unityrs) or unityrs)
+    path = Path(shutil.which(unityrs) or unityrs).resolve()
     replay.require(path.is_file(), f"no unityrs executable at {unityrs}")
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return str(path)
+
+
+def reader_sha256(unityrs):
+    """The sha256 of the unityrs executable at the absolute path `unityrs` (`executable`)."""
+    replay.require(unityrs is not None and Path(unityrs).is_absolute(), "the unityrs CLI is not resolved")
+    return hashlib.sha256(Path(unityrs).read_bytes()).hexdigest()
 
 
 def source_digest(folder=HERE, files=None):
@@ -155,11 +175,31 @@ def bind_code(code, folder=HERE):
     replay.require(code["digest"] == source_digest(folder, files), "the sources differ from the frozen ones")
 
 
-def bind_artifact(path, code_commit, code_folder=HERE):
-    """E3b's artifact binding, returning the freeze commit: tracked, identical to HEAD's and to the one commit
-    that added it, unchanged since, that commit an ancestor of HEAD and, given the code commit and in the code's
-    repository, a descendant of it."""
-    folder, name = path.resolve().parent, path.name
+def code_repo():
+    """The top of the git checkout holding this code."""
+    return Path(git(HERE, "rev-parse", "--show-toplevel")[1]).resolve()
+
+
+def canonical(path):
+    """Refuses unless `path` is FREEZE_PATH itself (never resolved through a link), with no symlink at it or at
+    any of its parents inside the checkout, and that checkout this code's."""
+    replay.require(path is not None and Path(path).absolute() == FREEZE_PATH,
+                   f"E3b reads only the canonical freeze artifact {FREEZE_PATH.name}")
+    status, top = git(FREEZE_PATH.parent, "rev-parse", "--show-toplevel")
+    replay.require(status == 0 and Path(top).resolve() == code_repo(),
+                   "the freeze artifact is not in this code's checkout")
+    for part in (FREEZE_PATH, *FREEZE_PATH.parents):
+        replay.require(not part.is_symlink(), f"the freeze path holds a symlink: {part.name}")
+        if part.resolve() == code_repo():
+            break
+
+
+def bind_artifact(path, code_commit, data=None):
+    """E3b's artifact binding, returning the freeze commit: tracked, identical to HEAD's, and `data` (its bytes
+    as read once, by default read now) those of the one commit that added it, unchanged since, that commit an
+    ancestor of HEAD and, given the code commit, a descendant of it."""
+    folder, name = path.parent, path.name
+    data = path.read_bytes() if data is None else data
     replay.require(git(folder, "ls-files", "--error-unmatch", "--", name)[0] == 0,
                    "the freeze artifact is not tracked by git")
     replay.require(git(folder, "diff", "--quiet", "HEAD", "--", name)[0] == 0,
@@ -173,31 +213,12 @@ def bind_artifact(path, code_commit, code_folder=HERE):
                    "the freeze commit is not an ancestor of HEAD")
     _, relative = git(folder, "ls-files", "--full-name", "--", name)
     shown = child.run(["git", "-C", str(folder), "show", f"{commit}:{relative}"], capture_output=True)
-    replay.require(shown.returncode == 0 and shown.stdout == path.read_bytes(),
+    replay.require(shown.returncode == 0 and shown.stdout == data,
                    "the freeze artifact differs from the one its freeze commit added")
-    same = git(folder, "rev-parse", "--show-toplevel") == git(code_folder, "rev-parse", "--show-toplevel")
-    replay.require(code_commit is None or not same or (code_commit != commit
-                                and git(folder, "merge-base", "--is-ancestor", code_commit, commit)[0] == 0),
+    replay.require(code_commit is None or (code_commit != commit
+                                           and git(folder, "merge-base", "--is-ancestor", code_commit, commit)[0] == 0),
                    "the freeze's code commit does not precede its freeze commit")
     return commit
-
-
-class Unseal:
-    """complete_folder's unseal: `verify(folder)` before any hold-out file opens, `accept` for each validated
-    hold-out recording."""
-
-    def __init__(self, folders, check_folder):
-        self.folders = {str(Path(folder).resolve()) for folder in folders}
-        self.check_folder = check_folder
-        self.documents = {}
-
-    def verify(self, folder):
-        replay.require(str(Path(folder).resolve()) in self.folders, "the unsealed run is not one of the frozen runs")
-        self.check_folder(folder)
-
-    def accept(self, folder, case, sha256, document):
-        replay.require(BODY_INFO.get(case, {}).get("rig") == HOLDOUT, f"{case} is not a hold-out case")
-        self.documents.setdefault(str(Path(folder).resolve()), {})[case] = (sha256, document)
 
 
 def claim(freeze_sha256, ledger_dir=None):
@@ -209,6 +230,13 @@ def claim(freeze_sha256, ledger_dir=None):
     except FileExistsError:
         raise ValueError("E3b already ran on this freeze (its claim exists): it runs once") from None
     os.close(handle)
+
+
+def require_claim(freeze_sha256, ledger_dir=None):
+    """Sealed completion's check before it opens a hold-out file: this freeze's claim exists."""
+    replay.require(isinstance(freeze_sha256, str) and len(freeze_sha256) == 64
+                   and (Path(ledger_dir or LEDGER_DIR) / f"{freeze_sha256}.claim").is_file(),
+                   "the hold-out opens only after E3b claims its shot (anim_body_freeze.py e3b)")
 
 
 def record(freeze_sha256, row, ledger_dir=None):
@@ -232,26 +260,38 @@ def preflight(runs):
         replay.require(not absent, f"{run.version}: hold-out case(s) {absent} not recorded")
 
 
+def sha256_of(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def run_files(runs):
+    """{version: {run.json and each hold-out recording: sha256}} from the bytes read now."""
+    return {run.version: {"run.json": sha256_of(run.folder / "run.json"),
+                          **{case: sha256_of(run.folder / "replays" / "body" / f"{case}.pending.json")
+                             for case in HOLDOUT_CASES}} for run in runs}
+
+
 def e3b(folders, path, unityrs, readers, complete_folder):
-    """E3b through sealed completion, once per freeze, per Editor version."""
+    """E3b through sealed completion, once per freeze, per Editor version. `unityrs` is `executable`'s."""
     import anim_body_freeze as freeze
 
-    replay.require(path is not None and path.resolve() == FREEZE_PATH.resolve(),
-                   f"E3b reads only the canonical freeze artifact {FREEZE_PATH.name}")
-    artifact = freeze.read_freeze(path)
-    commit = bind_artifact(path, artifact["code"]["commit"])
+    canonical(path)
+    replay.require(path.is_file(), "no freeze artifact: E3b runs only after the freeze")
+    data = path.read_bytes()
+    freeze_sha256 = hashlib.sha256(data).hexdigest()
+    artifact = freeze.read_freeze(path, data)
+    commit = bind_artifact(path, artifact["code"]["commit"], data)
     reader = reader_sha256(unityrs)
     replay.require(reader == artifact["reader"]["sha256"], "the unityrs CLI is not the frozen one")
     avatar_of, clip_of = readers(unityrs)
     runs, _, design = freeze.frozen_training(folders, artifact, avatar_of, clip_of)
     preflight(runs)
-    freeze_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
     claim(freeze_sha256)
-    record(freeze_sha256, dict(event="claimed", freeze_commit=commit, code_commit=artifact["code"]["commit"],
-                               training=artifact["training"]["digest"], reader=reader,
-                               runs=sorted(run.version for run in runs)))
     try:
-        report = evaluate(runs, design, artifact, avatar_of, freeze_sha256, unityrs, complete_folder)
+        files = run_files(runs)
+        record(freeze_sha256, dict(event="claimed", freeze_commit=commit, code_commit=artifact["code"]["commit"],
+                                   training=artifact["training"]["digest"], reader=reader, files=files))
+        report = evaluate(runs, design, artifact, avatar_of, freeze_sha256, files, unityrs, complete_folder)
     except Exception as exc:
         record(freeze_sha256, dict(event="failed", error=f"{type(exc).__name__}: {exc}"[:500]))
         raise
@@ -259,30 +299,22 @@ def e3b(folders, path, unityrs, readers, complete_folder):
     return report
 
 
-def evaluate(runs, design, artifact, avatar_of, freeze_sha256, unityrs, complete_folder):
-    """After the claim: the hold-out through sealed completion, recorded, then each version alone."""
+def evaluate(runs, design, artifact, avatar_of, freeze_sha256, files, unityrs, complete_folder):
+    """After the claim: the hold-out through sealed completion, its bytes those recorded at the claim and its run
+    unchanged, then each version alone."""
     import anim_body_check as check
     from anim_body_adequacy import default_masses
     from anim_body_runs import observe
 
-    frozen = {(row["run"], row["case"], row["sha256"]) for row in artifact["training"]["inputs"]}
-
-    def check_folder(folder):
-        run = next(run for run in runs if str(run.folder.resolve()) == str(Path(folder).resolve()))
-        replay.require({(row["run"], row["case"], row["sha256"]) for row in run.inputs} <= frozen,
-                       f"the freeze does not hold this run's ({run.version}) training recordings")
-
-    unseal = Unseal([run.folder for run in runs], check_folder)
-    for run in runs:
-        complete_folder(Path(run.folder), unityrs, None, replay, unseal)
     holdout = []
     for run in runs:
-        documents = unseal.documents.get(str(run.folder.resolve()), {})
-        absent = [case for case in HOLDOUT_CASES if case not in documents]
-        replay.require(not absent, f"{run.version}: hold-out case(s) {absent} not recorded")
+        _, _, unsealed = complete_folder(Path(run.folder), unityrs, None, replay, freeze_sha256)
+        documents = {name: (sha256, document) for name, sha256, document in unsealed}
+        replay.require(sorted(documents) == sorted(HOLDOUT_CASES), f"{run.version}: hold-out case(s) not recorded")
+        replay.require({name: sha256 for name, (sha256, _) in documents.items()} | {
+            "run.json": sha256_of(run.folder / "run.json")} == files[run.version],
+                       f"{run.version}: the run changed after the claim")
         holdout.append(Run.sealed(run.folder, run.version, documents))
-    record(freeze_sha256, dict(event="unsealed", holdout={run.version: {row["case"]: row["sha256"]
-                                                                        for row in run.inputs} for run in holdout}))
     table = default_masses([doc for run in runs for doc in run.documents.values()])
     limit = artifact["scope"]["lateral_limit"]
     versions, failures = {}, []

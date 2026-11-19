@@ -46,13 +46,14 @@ def clips(run, doc):
 
 
 def sealed_completion(folder, unityrs, inspect_dir, replay_module, unseal):
-    """Completion's unseal (anim_replay_complete.complete_folder, test_anim_body_fixtures checks it): verify,
-    then each recorded hold-out recording to the unseal."""
-    unseal.verify(folder)
+    """Completion's unseal (anim_replay_complete.complete_folder, test_anim_body_fixtures checks it): the claim
+    checked, then each recorded hold-out recording with the sha256 of its bytes."""
+    seal.require_claim(unseal)
+    unsealed = []
     if runs.statuses(json.loads((folder / "run.json").read_text(encoding="utf-8"))).get(HOLDOUT) == "recorded":
         data = (folder / "replays" / "body" / f"{HOLDOUT}.pending.json").read_bytes()
-        unseal.accept(folder, HOLDOUT, runs.hashlib.sha256(data).hexdigest(), replay.read_json(data.decode("utf-8")))
-    return 0, [], []
+        unsealed.append((HOLDOUT, runs.hashlib.sha256(data).hexdigest(), replay.read_json(data.decode("utf-8"))))
+    return 0, [], unsealed
 
 
 def git(folder, *args):
@@ -77,6 +78,11 @@ class FreezeTests(unittest.TestCase):
         self.repo = root / "repo"
         self.repo.mkdir()
         git(self.repo, "init", "-q")
+        # The code commit precedes the freeze commit, in the one checkout.
+        (self.repo / "code.py").write_text("", encoding="utf-8")
+        git(self.repo, "add", "code.py")
+        git(self.repo, "commit", "-q", "-m", "code")
+        self.code_commit = git(self.repo, "rev-parse", "HEAD").stdout.strip()
         self.artifact = self.repo / "freeze.json"
         self.ledger_dir = root / "ledger"
         self.ledger = self.ledger_dir / "ledger.jsonl"
@@ -86,7 +92,7 @@ class FreezeTests(unittest.TestCase):
         canonical.start()
         self.addCleanup(canonical.stop)
         # The code's own git binding (test_anim_body_seal) is the checkout's: here, a commit that holds it.
-        code = ("c" * 40, seal.sources(), seal.source_digest())
+        code = (self.code_commit, seal.sources(), seal.source_digest())
         patches = (mock.patch.object(runs, "REQUIRED", frozenset(TRAINING)),
                    mock.patch.dict(os.environ, {key: "" for key in GIT_VARIABLES}),
                    mock.patch.object(seal, "code_state", return_value=code),
@@ -94,6 +100,8 @@ class FreezeTests(unittest.TestCase):
                    mock.patch.object(seal, "MIN_COMPARISONS", 1),
                    mock.patch.object(seal, "LEDGER_DIR", self.ledger_dir),
                    mock.patch.object(seal, "reader_sha256", return_value="5" * 64),
+                   mock.patch.object(seal, "executable", side_effect=lambda unityrs: unityrs),
+                   mock.patch.object(seal, "code_repo", return_value=self.repo.resolve()),
                    mock.patch.object(freeze, "completion", return_value=sealed_completion))
         for patch in patches:
             patch.start()
@@ -156,6 +164,15 @@ class FreezeTests(unittest.TestCase):
         git(self.repo, "commit", "-q", "-m", "copy")
         code, text = self.main("e3b", "--freeze", str(other))
         self.assertIn("only the canonical freeze artifact", text)
+        # A symlink at the canonical path, to that valid copy.
+        self.artifact.unlink()
+        self.artifact.symlink_to(other)
+        self.e3b("the freeze path holds a symlink")
+        self.artifact.unlink()
+        git(self.repo, "checkout", "-q", "--", "freeze.json")
+        # Another checkout's artifact.
+        with mock.patch.object(seal, "code_repo", return_value=self.repo.parent):
+            self.e3b("not in this code's checkout")
         # The frozen unityrs CLI, and the code's Editor versions, hold-out cases and minimum.
         with mock.patch.object(seal, "reader_sha256", return_value="6" * 64):
             self.e3b("the unityrs CLI is not the frozen one")
@@ -179,22 +196,34 @@ class FreezeTests(unittest.TestCase):
             self.e3b(code=0)
         # Claimed, with its row, before completion opened either hold-out.
         self.assertEqual(seen, [(True, ["claimed"])] * 2)
-        [claimed, unsealed, evaluated] = self.rows()
+        [claimed, evaluated] = self.rows()
         sha = runs.hashlib.sha256(self.artifact.read_bytes()).hexdigest()
         self.assertEqual([path.name for path in self.ledger_dir.glob("*.claim")], [f"{sha}.claim"])
         self.assertEqual({row["freeze_sha256"] for row in self.rows()}, {sha})
         self.assertEqual((claimed["freeze_commit"], claimed["code_commit"], claimed["training"], claimed["reader"]),
                          (git(self.repo, "rev-parse", "HEAD").stdout.strip(), artifact["code"]["commit"],
                           artifact["training"]["digest"], "5" * 64))
-        self.assertEqual(unsealed["holdout"], {version: {HOLDOUT: runs.hashlib.sha256(
-            (folder / "replays" / "body" / f"{HOLDOUT}.pending.json").read_bytes()).hexdigest()}
-            for version, folder in zip(VERSIONS, self.folders)})
+        self.assertEqual(claimed["files"], {version: {name: runs.hashlib.sha256((folder / path).read_bytes()).hexdigest()
+                                                      for name, path in (("run.json", "run.json"), (HOLDOUT, (
+                                                          f"replays/body/{HOLDOUT}.pending.json")))}
+                                            for version, folder in zip(VERSIONS, self.folders)})
         self.assertEqual((evaluated["event"], evaluated["passed"]), ("evaluated", True))
         self.assertRegex(claimed["time"], r"^\d{4}-\d\d-\d\dT")
         # Once: the same freeze again refuses before any hold-out file opens.
-        with mock.patch.object(seal.Unseal, "verify", side_effect=AssertionError("unsealed")):
+        with mock.patch.object(freeze, "completion", return_value=mock.Mock(side_effect=AssertionError("unsealed"))):
             self.e3b("E3b already ran on this freeze")
-        self.assertEqual(len(self.rows()), 3)
+        self.assertEqual(len(self.rows()), 2)
+        # A run changed between the claim and completion fails closed, recorded.
+        self.unclaim()
+
+        def swapped(folder, *args):
+            recording = folder / "replays" / "body" / f"{HOLDOUT}.pending.json"
+            recording.write_bytes(recording.read_bytes() + b" ")
+            return complete(folder, *args)
+
+        with mock.patch.object(freeze, "completion", return_value=swapped):
+            self.e3b("the run changed after the claim")
+        self.assertEqual([row["event"] for row in self.rows()], ["claimed", "failed"])
         # A failure after the claim is recorded and keeps the shot consumed.
         self.unclaim()
         for folder in self.folders:
@@ -257,7 +286,8 @@ class FreezeTests(unittest.TestCase):
         self.assertEqual(artifact["evidence"]["runs"], [])
         self.assertEqual(artifact["model"], freeze.HYPOTHESES)
         self.assertTrue(artifact["e3a"]["passed"])
-        self.assertEqual(artifact["code"], dict(commit="c" * 40, digest=seal.source_digest(), files=seal.sources()))
+        self.assertEqual(artifact["code"], dict(commit=self.code_commit, digest=seal.source_digest(),
+                                                files=seal.sources()))
         # T and the observations that bracket it: the passing sample at T, no failing one here.
         lateral = artifact["scope"]["lateral"]
         self.assertEqual((lateral["limit"], lateral["failing"]), (artifact["scope"]["lateral_limit"], None))

@@ -24,8 +24,9 @@ samples' epsilon and Unity's solve; a variant without its twin fails, and so
 does a run with no comparison. A cell 2.4 refuses or leaves undecided is
 listed, not evaluated. Results are per configuration (variant, rig, Editor
 version, root placement), never pooled: a sample without a read-back is
-counted as excluded, and a configuration with nothing compared is excluded,
-never passing.
+counted as excluded, and a configuration with nothing compared is excluded
+(or refused, when the topology scope refused every sample), never passing.
+Each Editor version needs a comparison of its own.
 """
 
 import math
@@ -54,9 +55,9 @@ from anim_reference import angle, dense, normalize, streamed
 BODY_T, BODY_Q, MOTION_T, MOTION_Q = (7, 8, 9), (10, 11, 12, 13), (0, 1, 2), (3, 4, 5, 6)
 
 
-def runtime(clip, dofs=(*MOTION_T, *MOTION_Q, *BODY_T, *BODY_Q)):
+def runtime(clip, dofs=(*MOTION_T, *MOTION_Q, *BODY_T, *BODY_Q), strict=False):
     """{DOF: (is_streamed, keys)} of the built clip's Animator slots `dofs`, in storage order through
-    m_IndexArray."""
+    m_IndexArray. A DOF m_IndexArray marks -1 is unbound; `strict` refuses any other index naming no slot."""
     tracks = compiled_curves(clip, replay)
     bindings = clip.get("m_ClipBindingConstant", {}).get("genericBindings", [])
     replay.require(tracks and len(tracks) == len(bindings), "unreadable built clip slots")
@@ -64,7 +65,10 @@ def runtime(clip, dofs=(*MOTION_T, *MOTION_Q, *BODY_T, *BODY_Q)):
     index = clip["m_MuscleClip"].get("m_IndexArray") or []
     result = {}
     for dof in dofs:
-        slot = index[dof] if dof < len(index) and type(index[dof]) is int else -1
+        slot = index[dof] if dof < len(index) and type(index[dof]) is int else None
+        replay.require(not strict or slot == -1 or slot is not None and 0 <= slot < len(slots),
+                       f"built clip DOF {dof} has an invalid slot index")
+        slot = -1 if slot is None else slot
         if 0 <= slot < len(slots):
             replay.require(slots[slot][0] == (0, 95, dof, 8, False), f"built slot {slot} is not DOF {dof}")
             result[dof] = slots[slot][1]
@@ -98,9 +102,10 @@ def sample(track, grid, time):
 
 def clip_muscles(clip, names, time):
     """The spine Left-Right muscles (anim_body_model.LATERAL_MUSCLES) of a built humanoid clip at `time`, as
-    playback samples them (an unbound muscle is 0); `names` are HumanTrait's muscle names in order."""
+    playback samples them (a muscle m_IndexArray marks unbound is 0; an invalid index refuses); `names` are
+    HumanTrait's muscle names in order."""
     dofs = {muscle: MUSCLE_ATTRIBUTE + names.index(muscle) for muscle in LATERAL_MUSCLES}
-    tracks = runtime(clip, tuple(dofs.values()))
+    tracks = runtime(clip, tuple(dofs.values()), strict=True)
     playback = clip["m_MuscleClip"]["m_Clip"]
     grid = playback.get("data", playback).get("m_DenseClip", {})
     return {muscle: sample(tracks[dof], grid, time)[0] if dof in tracks else 0. for muscle, dof in dofs.items()}
@@ -178,13 +183,17 @@ def e4(rows, clips):
     (`configuration`): its status (pass, fail, or the refused or undecided 2.4 cell), compared samples, start
     offset and the samples excluded without a read-back. `passing` names the configurations that compared and
     passed, the only ones B4 and B5 implement; `excluded` those with nothing compared."""
-    failures, configurations, samples, readbacks = [], {}, 0, {}
+    failures, configurations, samples, readbacks, versions = [], {}, 0, {}, {}
     for row in rows:
         info = BODY_INFO.get(row["case"])
-        if info is None or info["kind"] != "clip" or row.get("refused"):
+        if info is None or info["kind"] != "clip":
             continue
         entry = configurations.setdefault(configuration(row, info),
-                                          {"status": "pass", "samples": 0, "no_readback": 0})
+                                          {"status": "pass", "samples": 0, "no_readback": 0, "topology": 0})
+        versions.setdefault(row["version"], 0)
+        if row.get("refused"):
+            entry["topology"] += 1
+            continue
         state = row["state"]
         if state["readback"] is None:
             entry["no_readback"] += 1
@@ -200,6 +209,7 @@ def e4(rows, clips):
             continue
         samples += 1
         entry["samples"] += 1
+        versions[row["version"]] += 1
         where = f"{row['name']}@{row['local']}"
         off, turned = math.dist(target, readback[0]), angle(rotation, readback[1])
         if not off <= position:
@@ -236,9 +246,15 @@ def e4(rows, clips):
             entry["status"] = "fail"
     if not samples:
         failures.append("E4: no comparison")
+    failures += [f"E4: no comparison in {version}" for version, count in sorted(versions.items())
+                 if not count and samples]
     for entry in configurations.values():
         if entry["status"] == "pass" and not entry["samples"]:
-            entry["status"] = "excluded"
+            # Nothing compared: every sample refused on topology is a refusal, any other an exclusion.
+            if entry["topology"] and not entry["no_readback"]:
+                entry.update(status="refused", reason="topology: every sample refused")
+            else:
+                entry["status"] = "excluded"
     configurations = dict(sorted(configurations.items()))
     return verdict(failures, configurations=configurations, samples=samples, start_pairs=pairs,
                    passing=[key for key, entry in configurations.items() if entry["status"] == "pass"],

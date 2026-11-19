@@ -670,12 +670,13 @@ def check_static(bundle_dir, views, unityrs, inspect_dir, replay, run):
 
 
 def complete_folder(folder, unityrs, inspect_dir, replay, unseal=None):
-    """Validate every result before writing any completed recordings; returns (count, uncovered, sealed).
+    """Validate every result before writing any completed recordings; returns (count, uncovered, sealed), or
+    with `unseal` (count, uncovered, [(hold-out case, sha256 of the bytes read, its validated document)]).
 
     The hold-out rig's body cases (by the builder's case table) stay sealed: neither their recordings nor
-    their bundles are opened, and they are listed as sealed. Only E3b unseals them (anim_body_seal.Unseal):
-    `unseal.verify` before any hold-out file opens, then each validated hold-out recording to `unseal.accept`
-    once every check has passed, so E3b never reads a hold-out file itself."""
+    their bundles are opened, and they are listed as sealed. Only E3b unseals them: `unseal` is its freeze's
+    sha256, and before any hold-out file opens anim_body_seal.require_claim refuses unless E3b claimed that
+    freeze's one shot; the validated hold-out recordings are returned once every check has passed."""
     manifest, run = read_manifest(folder, replay)
     if run.get("variant", "builtin") != "builtin":
         from anim_fixture_variants import complete_variant
@@ -687,10 +688,12 @@ def complete_folder(folder, unityrs, inspect_dir, replay, unseal=None):
     holdout = {folder / "replays" / "body" / f"{name}.pending.json": name for name, info in BODY_INFO.items()
                if info["rig"] == HOLDOUT}
     sealed = sorted(holdout[path] for path in paths if path in holdout)
-    replay.require(unseal is None or callable(getattr(unseal, "accept", None)),
-                   "the hold-out unseals only through E3b (anim_body_freeze.py e3b), never by a path")
+    replay.require(unseal is None or isinstance(unseal, str),
+                   "the hold-out unseals only through E3b's claim (anim_body_freeze.py e3b)")
     if sealed and unseal is not None:
-        unseal.verify(folder)
+        from anim_body_seal import require_claim
+
+        require_claim(unseal)
     elif sealed:
         paths = [path for path in paths if path not in holdout]
     check_static(bundle_dir, views, unityrs, inspect_dir, replay, run)
@@ -743,6 +746,4 @@ def complete_folder(folder, unityrs, inspect_dir, replay, unseal=None):
                                f"{output.name} already exists with different content")
         finally:
             staged.unlink(missing_ok=True)
-    for name, sha256, document in unsealed:
-        unseal.accept(folder, name, sha256, document)
-    return len(results), uncovered, [] if unseal is not None else sealed
+    return len(results), uncovered, unsealed if unseal is not None else sealed

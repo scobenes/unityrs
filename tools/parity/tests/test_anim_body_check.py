@@ -72,7 +72,7 @@ class Checks(unittest.TestCase):
                 self.assertEqual(report["failures"], [])
                 self.assertTrue(report["passed"])
         report = self.run_mode("e4")
-        self.assertEqual(config(report, "keep-o0-y0-xz0"), dict(status="pass", samples=12, no_readback=0,
+        self.assertEqual(config(report, "keep-o0-y0-xz0"), dict(status="pass", samples=12, no_readback=0, topology=0,
                                                                 start_offset="pass"))
         self.assertEqual(config(report, "keep-o1-y1-xz1-motion")["status"], "pass")
         self.assertEqual(config(report, "keep-o1-y0-xz0")["status"], "refused")
@@ -244,6 +244,31 @@ class Checks(unittest.TestCase):
         self.assertTrue(report["passed"])
         self.assertEqual(config(report, "keep-o1-y0-xz0")["start_offset"], "fail")
 
+    def test_e4_needs_a_comparison_in_each_version_and_names_topology_refusals(self):
+        def unread(doc):
+            doc["spec"]["evidence"]["editor"].pop("body_samples", None)
+        root = scratch.for_case(self)
+        quiet = copy.deepcopy(self.docs)
+        for name in quiet:
+            if body.BODY_INFO[name]["kind"] == "clip":
+                unread(quiet[name])
+        folders = [write_run(root / "a", self.docs), write_run(root / "b", quiet, "6000.6.9f1")]
+        with mock.patch.object(runs, "REQUIRED", frozenset()):
+            report = freeze.run_mode("e4", folders, avatar_of=avatars, clip_of=clips)
+        self.assertEqual(report["failures"], ["E4: no comparison in 6000.6.9f1"])
+        # A configuration whose every sample the topology scope refused is a named refusal, never omitted.
+        with mock.patch.object(runs, "REQUIRED", frozenset()):
+            loaded = runs.load(folders[:1], "training")
+        rows = freeze.observed(loaded, avatars, clips)
+        for row in rows:
+            if row["case"] == "body-clip-level":
+                row["refused"] = "topology: outside"
+        report = e4.e4(rows, {f"{run.version}/{case}": clips(run, doc) for run in loaded
+                              for case, doc in run.documents.items() if body.BODY_INFO[case]["kind"] == "clip"})
+        self.assertEqual((config(report, "level")["status"], config(report, "level")["reason"]),
+                         ("refused", "topology: every sample refused"))
+        self.assertNotIn(f"level/compact/{write_run.__defaults__[0]}/identity", report["passing"])
+
     def test_e4_refuses_a_built_clip_without_body_slots(self):
         def stripped(run, doc):
             clip = copy.deepcopy(clips(run, doc))
@@ -394,6 +419,12 @@ class Checks(unittest.TestCase):
                          {"Spine Left-Right": .375, "Chest Left-Right": 0., "UpperChest Left-Right": 0.})
         self.assertEqual(e4.clip_muscles(clip, list(support.MUSCLES), .5)["Spine Left-Right"], 0.)
         self.assertAlmostEqual(e4.clip_muscles(clip, list(support.MUSCLES), .75)["Spine Left-Right"], .1875, 6)
+        # An index naming no slot, or none at all, refuses rather than reading 0.
+        for index in ([*clip["m_MuscleClip"]["m_IndexArray"][:attribute], 99, *range(200)], [0] * 3):
+            broken = copy.deepcopy(clip)
+            broken["m_MuscleClip"]["m_IndexArray"] = index
+            with self.assertRaisesRegex(ValueError, "invalid slot index"):
+                e4.clip_muscles(broken, list(support.MUSCLES), 1.)
         # A clip sample records no applied muscles: unread, its lateral value refuses rather than reading 0.
         folder = scratch.for_case(self)
         write_run(folder, self.docs)
@@ -402,6 +433,19 @@ class Checks(unittest.TestCase):
         clip_row = next(row for row in runs.observe(loaded, avatar_of=avatars) if row["case"] == "body-clip-level")
         with self.assertRaisesRegex(ValueError, "a clip sample's muscles are unread"):
             check.lateral_of(clip_row)
+        # Sampled at the clock playback used: the effective source where it differs from the nominal one.
+        times = []
+
+        def spy(clip, names, time):
+            times.append(time)
+            return dict.fromkeys(model.LATERAL_MUSCLES, 0.)
+
+        docs = self.edited("body-clip-level", lambda doc: doc["capture"]["samples"][1].update(effective_source=.875))
+        write_run(folder, docs)
+        with mock.patch.object(runs, "REQUIRED", frozenset()), mock.patch.object(e4, "clip_muscles", spy):
+            freeze.observed(runs.load([folder], "training"), avatars, clips)
+        self.assertIn(.875, times)
+        write_run(folder, self.docs)
         # Read from the clip, it decides the lateral scope as a known vector's does.
         bent = dict.fromkeys(model.LATERAL_MUSCLES, 0.) | {"Spine Left-Right": .5}
         with mock.patch.object(e4, "clip_muscles", return_value=bent):

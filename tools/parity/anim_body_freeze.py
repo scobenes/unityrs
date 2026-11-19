@@ -91,7 +91,7 @@ from anim_body_tolerance import OPERATIONS, U32, U64  # noqa: E402
 from anim_fixture_body import BAND_CASES, BODY_INFO, HOLDOUT, rig_bones  # noqa: E402
 
 FORMAT = "unityrs.anim_body_freeze"
-VERSION = 5
+VERSION = 6
 MODES = ("e0", "e1", "e2", "e3a", "e4", "freeze", "e3b")
 EDITORS = ("2022", "6000")
 
@@ -108,7 +108,8 @@ def bounds(design=None):
 
 
 def with_clip_muscles(runs, rows, clip_of):
-    """`rows` with each clip sample's spine Left-Right muscles from its built clip at its clock
+    """`rows` with each clip sample's spine Left-Right muscles from its built clip at the clock playback used
+    (its effective source)
     (anim_body_e4.clip_muscles): a clip records no applied muscles, and the lateral scope and limit need them."""
     documents = {f"{run.version}/{case}": (run, doc) for run in runs for case, doc in run.documents.items()}
     clips = {}
@@ -119,7 +120,7 @@ def with_clip_muscles(runs, rows, clip_of):
         if row["name"] not in clips:
             clips[row["name"]] = clip_of(*documents[row["name"]])
         state["clip_muscles"] = e4_check.clip_muscles(clips[row["name"]], state["muscle_names"],
-                                                      float(state["sample"]["source"]))
+                                                      float(state["sample"]["effective_source"]))
     return rows
 
 
@@ -245,16 +246,17 @@ def freeze(folders, path, avatar_of, clip_of, evidence=(), unityrs=None):
     return report
 
 
-def read_freeze(path):
-    """The freeze artifact, refused unless git binds it (anim_body_seal: its one freeze commit, its code commit,
-    the sources), it came from training inputs alone after a passed E3a and E4, and the code's model and bounds
-    are the frozen ones."""
+def read_freeze(path, data=None):
+    """The freeze artifact parsed from `data` (its bytes as read once; by default read now), refused unless git
+    binds those bytes (anim_body_seal: its one freeze commit, its code commit, the sources), it came from
+    training inputs alone after a passed E3a and E4, and the code's model and bounds are the frozen ones."""
     replay.require(path is not None and path.is_file(), "no freeze artifact: E3b runs only after the freeze")
-    seal.bind_artifact(path, None)
-    artifact = replay.read_json(path.read_text(encoding="utf-8"))
+    data = path.read_bytes() if data is None else data
+    seal.bind_artifact(path, None, data)
+    artifact = replay.read_json(data.decode("utf-8"))
     replay.require(artifact.get("format") == FORMAT and artifact.get("version") == VERSION,
                    f"expected {FORMAT} version {VERSION}")
-    seal.bind_artifact(path, artifact["code"]["commit"])
+    seal.bind_artifact(path, artifact["code"]["commit"], data)
     seal.bind_code(artifact["code"])
     data = artifact["training"]
     inputs = data["inputs"]
@@ -397,9 +399,10 @@ def main(argv=None):
     try:
         replay.require(not (args.json and args.freeze and args.json.resolve() == args.freeze.resolve()),
                        "--json and --freeze name one file")
-        avatar_of, clip_of = readers(args.unityrs) if args.unityrs else (None, None)
+        unityrs = seal.executable(args.unityrs) if args.unityrs else None
+        avatar_of, clip_of = readers(unityrs) if unityrs else (None, None)
         replay.require(not args.evidence or args.mode == "freeze", "--evidence is for freeze")
-        report = run_mode(args.mode, args.runs, args.freeze, avatar_of, clip_of, args.evidence, args.unityrs)
+        report = run_mode(args.mode, args.runs, args.freeze, avatar_of, clip_of, args.evidence, unityrs)
     except (KeyError, TypeError, IndexError, ValueError, OSError, StopIteration, ZeroDivisionError) as exc:
         print(f"anim_body_freeze {args.mode}: refused: {exc}", file=sys.stderr)
         return 2

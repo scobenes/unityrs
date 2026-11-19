@@ -516,14 +516,18 @@ coefficient is shipped from a fit.
   passed, full rank and every coefficient within `|a| ≤ 1`. It records E4
   per configuration (variant, rig, Editor version, root placement, each F5
   chain its own): B4 and B5 implement only the passing configurations it
-  names, and a configuration with no comparison is listed as excluded,
-  never passing. It records the code's git commit and a digest of its
+  names, a configuration with no comparison is listed as excluded (or as
+  refused, when the topology scope refused all its samples), never
+  passing, and each Editor version needs a comparison of its own. It records the code's git commit and a digest of its
   sources: the checker's entry points, every local module they import,
   transitively (recording validation, case tables and Avatar decoding
   among them), and the data files they name (the recording schema, the
   bounds), all committed and unchanged; and the sha256 of the unityrs CLI
-  that read the Avatars and built clips. E3b takes only the canonical
-  artifact path, a constant of the sources, and refuses unless the code
+  that read the Avatars and built clips, resolved once to an absolute real
+  path that is both hashed and run. E3b takes only the canonical artifact
+  path, a constant of the sources, with no symlink at it or its parents
+  inside this code's checkout; it reads the artifact's bytes once, hashes
+  and parses those same bytes, and refuses unless the code
   commit is an ancestor of HEAD and of the freeze commit, no source
   changed since it, the artifact is byte-identical to the one the single
   commit that added that path holds, the CLI is the frozen one, and the
@@ -534,11 +538,14 @@ coefficient is shipped from a fit.
   reproducing the frozen fit and lateral limit from the frozen training
   runs and checking, by file names alone, that each version recorded every
   hold-out case. It then claims its one shot: an exclusive create of a
-  marker named by the freeze's digest, in a fixed directory outside the
-  repository, refused if it exists, and a ledger row. From the claim on,
-  any failure is a recorded failed attempt and the shot stays consumed;
-  a second row holds the hold-out recordings' digests before anything is
-  evaluated. Each version is evaluated alone: it needs every hold-out case, at least 30
+  marker named by the freeze's digest, in a fixed directory under the
+  account's home (from its passwd entry, never `$HOME`), refused if it
+  exists, and a ledger row holding each run's manifest and hold-out
+  recordings by sha256. From the claim on, any failure is a recorded
+  failed attempt and the shot stays consumed. Sealed completion itself
+  refuses to open a hold-out file unless that claim exists, and E3b
+  evaluates only the documents whose bytes match the claimed digests, so a
+  run swapped underneath fails closed. Each version is evaluated alone: it needs every hold-out case, at least 30
   in-scope comparisons (the hold-out schedule's 45 known vectors leave 33
   inside the lateral and frame scopes by design; 30 allows three more
   frame refusals for its longer arms), and a pass. Nothing pools across
@@ -551,6 +558,9 @@ coefficient is shipped from a fit.
   recorded with the freeze as supporting evidence (`--evidence`: E2 and E3
   within the limit with the frozen design and coefficients), never as an
   input.
+  These guards protect against accidental re-runs, stale inputs and honest
+  mistakes, not against a deliberately adversarial local user, who could
+  edit the code anyway.
 - **No pass on nothing.** E0, E2, E3 and E4 fail with no comparison, and a
   bound that bounds nothing (an unknown design column, an infinite `u_s`, a
   turn of 2 or more) fails every comparison against it.
