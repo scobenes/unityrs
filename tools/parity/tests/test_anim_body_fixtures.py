@@ -2,6 +2,7 @@
 fail-closed, and a run without them, or with all of them unrecorded, still completes."""
 
 import copy
+import math
 import re
 import unittest
 from pathlib import Path
@@ -102,7 +103,7 @@ class CheckBodyTests(unittest.TestCase):
         self.assert_refused("captured Avatar topology differs", "body-probes-eyes", doc)
         doc = body_doc("body-probes-eyes", RUN)
         doc["spec"]["evidence"]["editor"]["human_bones"][4]["mass"] = "7f800000"
-        self.assert_refused("expected finite f32 bits", "body-probes-eyes", doc)
+        self.assert_refused("nonfinite human_bones mass of RightLowerLeg in body-probes-eyes", "body-probes-eyes", doc)
 
     def test_refuses_missing_or_malformed_rows(self):
         name = "body-probes-compact"
@@ -125,13 +126,63 @@ class CheckBodyTests(unittest.TestCase):
                 (lambda row: row["nodes"].pop(), "body node rows mismatch"),
                 (lambda row: row["nodes"][4].__setitem__("rotation", [replay.f32_bits(.6)] * 4),
                  "body node rotation is not a unit quaternion"),
-                (lambda row: row["nodes"][4].__setitem__("scale", ["7f800000"] * 3), "expected finite f32 bits"),
+                (lambda row: row["nodes"][4].__setitem__("scale", ["7f800000"] * 3), "nonfinite node scale of "),
+                (lambda row: row["readback_position"].__setitem__(1, "7fc00000"), "nonfinite readback_position in "),
+                (lambda row: row.pop("world_rotation"), "malformed world_rotation in "),
                 (lambda row: row["nodes"][2].__setitem__("hips_position", [replay.f32_bits(.1)] * 3),
                  "hips are not at the origin")):
             with self.subTest(message=message):
                 doc = body_doc(name, RUN)
                 edit(doc["spec"]["evidence"]["editor"]["body_samples"][1])
                 self.assert_refused(message, name, doc)
+
+    def test_keeps_nonfinite_values_the_analysis_does_not_read(self):
+        # Raw rows: a finger's hierarchy mass, the read-back muscles and the getter rows; and an older
+        # recording's Animator.bodyPosition and bodyRotation rows, no longer recorded, are ignored.
+        name = "body-clip-keep-o1-y1-xz1-motion"
+        doc = body_doc(name, RUN)
+        built = clip_case(doc, "keep-o1-y1-xz1-motion")
+        editor = doc["spec"]["evidence"]["editor"]
+        next(row for row in editor["human_bones"] if row["name"] == "Finger 0")["mass"] = "7fc00000"
+        row = editor["body_samples"][1]
+        row["readback_muscles"][3] = "ff800000"
+        row["root_position"] = ["7fc00000"] * 3
+        row["motion_delta_rotation"] = ["7fc00000"] * 4
+        row["body_position"], row["body_rotation"] = ["7fc00000"] * 3, ["7fc00000"] * 4
+        self.check(name, doc, built)
+        # The root-motion transform is read, so it must be finite.
+        row["motion_position"][0] = "7f800000"
+        self.assert_refused("nonfinite motion_position in " + name, name, doc, built)
+
+    def test_rig_identity_comes_from_the_case_table_not_the_name(self):
+        # The orientation-offset setting on the identity rig, and its offset-rig twin.
+        self.assertEqual(body.BODY_CASES["body-clip-orientation-offset"].prefab, "identity")
+        self.assertEqual(body.BODY_CASES["body-clip-orientation-offset-offset"].prefab, "offset")
+        self.assertEqual(body.BODY_CASES["body-clip-orientation-offset-start"].prefab, "identity")
+        self.assertEqual(body.BODY_CASES["body-clip-orientation-offset-start-offset"].prefab, "offset")
+        for module in ("anim_fixture_contract.py", "anim_humanoid_qualify.py", "anim_replay_complete.py",
+                       "anim_fixture_body.py"):
+            source = (Path(body.__file__).parent / module).read_text(encoding="utf-8")
+            self.assertNotRegex(source, r'(endswith|removesuffix)\("-offset"\)', module)
+
+    def test_restores_a_schedule_time_misparsed_by_one_ulp(self):
+        from anim_replay_complete import restore_parsed_clock
+        local = 61451 / 65536  # 0.9376678466796875: 2022.3's JsonUtility read it one ulp up
+        spec = dict(start=0., stop=1., source_clock="widened", schedule=[dict(local=local), dict(local=.5)])
+
+        def capture(recorded, f32=None):
+            return dict(samples=[dict(local=recorded, source=recorded, local_f32=f32 or replay.f32_bits(local),
+                                      effective_source=local), dict(local=.5, source=.5, local_f32=replay.f32_bits(.5),
+                                                                    effective_source=.5)])
+        misparsed = capture(math.nextafter(local, 2))
+        restore_parsed_clock(spec, misparsed, replay)
+        self.assertEqual((misparsed["samples"][0]["local"], misparsed["samples"][0]["source"]), (local, local))
+        # Two ulps off, or a different f32 sample time, stays and is refused by the clock check.
+        for recorded, f32 in ((math.nextafter(math.nextafter(local, 2), 2), None),
+                              (math.nextafter(local, 2), replay.f32_bits(.9))):
+            kept = capture(recorded, f32)
+            restore_parsed_clock(spec, kept, replay)
+            self.assertEqual(kept["samples"][0]["local"], recorded)
 
     def test_a_clip_needs_its_root_motion_rows(self):
         name = "body-clip-keep-o1-y1-xz1-motion"

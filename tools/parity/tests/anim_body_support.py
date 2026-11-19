@@ -217,11 +217,11 @@ def body_doc(name, run, *, samples=None):
                          readback_muscles=[bits(v) for v in muscles],
                          world_position=centre("", True), world_rotation=[bits(0)] * 3 + [bits(1)],
                          nodes=world_nodes(nodes, pose, human_bones),
-                         **dict.fromkeys(("root_position", "root_rotation", "body_position", "body_rotation",
+                         **dict.fromkeys(("root_position", "root_rotation",
                                           "motion_position", "motion_rotation", "motion_delta_position",
                                           "motion_delta_rotation"), [bits(0)] * 3 if kind == "clip" else [])))
         if kind == "clip":
-            for field in ("root_rotation", "body_rotation", "motion_rotation", "motion_delta_rotation"):
+            for field in ("root_rotation", "motion_rotation", "motion_delta_rotation"):
                 rows[-1][field] = [bits(0)] * 3 + [bits(1)]
         else:
             offset, tilt = TARGETS[len(targets) % 2] if kind == "targets" else ((0, 0, 0), (0, 0, 0))

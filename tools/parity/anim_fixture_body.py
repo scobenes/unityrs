@@ -10,8 +10,10 @@ rows during clip playback) per sample, each known vector's requested and
 applied body target, and HumanTrait's bone table with the default masses.
 """
 
+import struct
 from math import isfinite
 
+from anim_body_tolerance import BODY_SLOTS
 from anim_fixture_contract import BODY, MUSCLES, SPINE, Fixture, compiled_curves
 from anim_reference import angle, dense, euler, multiply, streamed
 
@@ -189,10 +191,12 @@ def probe_schedule(rig, names, targets):
     return [(t, [vector.get(i, 0) for i in range(len(names))]) for t, vector in points]
 
 
-def _f32s(values, replay, width):
-    replay.require(isinstance(values, list) and len(values) == width and all(isinstance(v, str) for v in values),
-                   "malformed body row")
-    return tuple(map(replay.f32_from_bits, values))
+def _f32s(values, replay, width, label="body row"):
+    """A row of f32 bits the analysis reads: well formed and finite, or refused with the field named."""
+    replay.require(_raw(values, width), f"malformed {label}")
+    numbers = tuple(struct.unpack(">f", bytes.fromhex(v))[0] for v in values)
+    replay.require(all(isfinite(v) for v in numbers), f"nonfinite {label}")
+    return numbers
 
 
 def _unit(q):
@@ -219,28 +223,42 @@ def check_body(name, fixture, doc, view, clip_key, replay):
     require(editor.get("body_case") == [expected_case_row(name, replay)], f"body case row mismatch for {name}")
     human = capture["humanoid"]
     bones = editor.get("human_bones")
-    require(isinstance(bones, list) and [row.get("name") for row in bones] == [row["name"] for row in human["bones"]]
+    require(isinstance(bones, list) and all(isinstance(row, dict) for row in bones)
+            and [row.get("name") for row in bones] == [row["name"] for row in human["bones"]]
             and all(type(row.get("parent")) is int and -1 <= row["parent"] < len(bones)
-                    and type(row.get("required")) is bool for row in bones)
-            and all(isfinite(mass) and mass >= 0 for mass in (replay.f32_from_bits(row["mass"]) for row in bones)),
+                    and type(row.get("required")) is bool for row in bones),
             f"body bone and mass rows mismatch for {name}")
+    # The analysis folds the body slots' masses; other bones' masses are kept as recorded, even if nonfinite.
+    for row in bones:
+        if row["name"] in BODY_SLOTS:
+            mass, = _f32s([row.get("mass")], replay, 1, f"human_bones mass of {row['name']} in {name}")
+            require(mass >= 0, f"negative human_bones mass of {row['name']} in {name}")
+        else:
+            require(_raw([row.get("mass")], 1), f"malformed human_bones mass of {row['name']} in {name}")
     mapped = {row["name"] for row in human["bones"] if row["node"] >= 0}
     require(mapped == rig_bones(info["rig"]), f"captured Avatar topology differs from the {info['rig']} rig")
     samples = capture["samples"]
     rows = editor.get("body_samples")
     playback = info["kind"] == "clip"
-    require(isinstance(rows, list) and len(rows) == len(samples), f"body read-back rows mismatch for {name}")
+    require(isinstance(rows, list) and len(rows) == len(samples) and all(isinstance(row, dict) for row in rows),
+            f"body read-back rows mismatch for {name}")
     hips = next(row["node"] for row in human["bones"] if row["name"] == "Hips")
     for row in rows:
-        _f32s(row["readback_position"], replay, 3), _f32s(row["world_position"], replay, 3)
-        require(all(_unit(_f32s(row[field], replay, 4)) for field in ("readback_rotation", "world_rotation")),
+        # What the analysis reads must be finite; the rest is kept as recorded, raw bits.
+        _f32s(row.get("readback_position"), replay, 3, f"readback_position in {name}")
+        _f32s(row.get("world_position"), replay, 3, f"world_position in {name}")
+        require(all(_unit(_f32s(row.get(field), replay, 4, f"{field} in {name}"))
+                    for field in ("readback_rotation", "world_rotation")),
                 f"body read-back rotation is not a unit quaternion in {name}")
         require(_raw(row.get("readback_muscles"), len(human["muscles"])), f"body read-back muscles mismatch for {name}")
-        # The getter rows during playback, and the root-motion playback's rows for a clip.
-        for field, width in (("root_position", 3), ("root_rotation", 4), ("body_position", 3), ("body_rotation", 4),
-                             ("motion_position", 3), ("motion_rotation", 4), ("motion_delta_position", 3),
+        # The getter rows during playback, raw; the root-motion playback's transform, finite, and its deltas, raw.
+        for field, width in (("root_position", 3), ("root_rotation", 4), ("motion_delta_position", 3),
                              ("motion_delta_rotation", 4)):
             require(_raw(row.get(field), width if playback else 0), f"body root rows mismatch for {name}")
+        for field, width in (("motion_position", 3), ("motion_rotation", 4)):
+            require(_raw(row.get(field), width if playback else 0), f"body root rows mismatch for {name}")
+            if playback:
+                _f32s(row[field], replay, width, f"{field} in {name}")
         check_nodes(name, row.get("nodes"), spec["nodes"], hips, replay)
     check_chain(info["rig"], spec, capture, replay)
     if playback:
@@ -259,11 +277,12 @@ def check_nodes(name, rows, nodes, hips, replay):
     """Unity's own world transform of every node at a sample, and its position and rotation about the hips."""
     require = replay.require
     require(isinstance(rows, list) and len(rows) == len(nodes), f"body node rows mismatch for {name}")
-    for row in rows:
-        require(isinstance(row, dict), f"body node rows mismatch for {name}")
-        _f32s(row.get("position"), replay, 3), _f32s(row.get("scale"), replay, 3)
-        _f32s(row.get("hips_position"), replay, 3)
-        require(all(_unit(_f32s(row.get(field), replay, 4)) for field in ("rotation", "hips_rotation")),
+    require(all(isinstance(row, dict) for row in rows), f"body node rows mismatch for {name}")
+    for row, node in zip(rows, nodes):
+        for field in ("position", "scale", "hips_position"):
+            _f32s(row.get(field), replay, 3, f"node {field} of {node['address'] or 'the root'} in {name}")
+        require(all(_unit(_f32s(row.get(field), replay, 4, f"node {field} of {node['address'] or 'the root'} in {name}"))
+                    for field in ("rotation", "hips_rotation")),
                 f"body node rotation is not a unit quaternion in {name}")
     at_hips = rows[hips]
     require(all(abs(v) <= 1e-5 for v in _f32s(at_hips["hips_position"], replay, 3))
@@ -280,16 +299,18 @@ def check_targets(name, info, spec, capture, editor, replay):
                     for point, (_, vector) in zip(spec["schedule"], expected)),
             f"body known-vector schedule mismatch for {name}")
     rows = editor.get("body_targets")
-    require(isinstance(rows, list) and len(rows) == len(expected), f"body target rows mismatch for {name}")
+    require(isinstance(rows, list) and len(rows) == len(expected) and all(isinstance(row, dict) for row in rows),
+            f"body target rows mismatch for {name}")
     human = capture["humanoid"]
     rest_position = _f32s(human["rest_body_position"], replay, 3)
     rest_rotation = _f32s(human["rest_body_rotation"], replay, 4)
     zero = [replay.f32_bits(0)] * 3
     for i, row in enumerate(rows):
-        position, rotation = _f32s(row["position"], replay, 3), _f32s(row["rotation"], replay, 4)
+        position = _f32s(row.get("position"), replay, 3, f"body_targets position in {name}")
+        rotation = _f32s(row.get("rotation"), replay, 4, f"body_targets rotation in {name}")
         offset, tilt = TARGETS[i % 2] if info["kind"] == "targets" else ((0, 0, 0), (0, 0, 0))
-        require(row["offset"] == ([replay.f32_bits(v) for v in offset] if any(offset) else zero)
-                and row["tilt"] == ([replay.f32_bits(v) for v in tilt] if any(tilt) else zero),
+        require(row.get("offset") == ([replay.f32_bits(v) for v in offset] if any(offset) else zero)
+                and row.get("tilt") == ([replay.f32_bits(v) for v in tilt] if any(tilt) else zero),
                 f"body target request mismatch for {name}")
         want = multiply(euler(tilt, 4), rest_rotation)
         require(all(abs(a - (b + c)) <= 1e-5 for a, b, c in zip(position, rest_position, offset))

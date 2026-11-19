@@ -1084,20 +1084,39 @@ A body case's editor evidence holds:
   - `nodes`: Unity's own evaluation of every node, its world position,
     rotation and `lossyScale`, and about the hips its
     `hips.InverseTransformPoint` position and `hips.rotation⁻¹` rotation;
-  - during clip playback, the getter values `Animator.rootPosition`,
-    `rootRotation`, `bodyPosition` and `bodyRotation`, as raw bits
-    (`root_*`, `body_*`). Playback runs with `applyRootMotion` off, so
-    `rootPosition` and `rootRotation` may be the Animator node's own
-    transform rather than the clip's root projection;
+  - during clip playback, the getter values `Animator.rootPosition` and
+    `rootRotation` (`root_*`). Playback runs with `applyRootMotion` off, so
+    they may be the Animator node's own transform rather than the clip's
+    root projection. `Animator.bodyPosition` and `bodyRotation` are not
+    read: outside `OnAnimatorIK` Unity warns on every call, and
+    `GetHumanPose` already gives the body. Recordings that hold them keep
+    them, unread;
   - for a clip, a second playback with `applyRootMotion` on (`motion_*`):
     a fresh instance each sample, the graph set to 0, evaluated once at 0
     and once by the sample time. It records the Animator node's resulting
     local position and rotation, and `deltaPosition` and `deltaRotation`
-    as Unity reports them, all as raw bits;
+    as Unity reports them;
 - `body_targets`: each known vector's requested offset and tilt, and the
   body pose `SetHumanPose` received;
 - `human_bones`: HumanTrait's 55 bones with `GetParentBone`, `RequiredBone`
   and `GetBoneDefaultHierarchyMass`, for E0b.
+
+Every body value is raw f32 bits, nonfinite included, so a case records
+whatever Unity returns. After each case the recorder logs one warning per
+field that held nonfinite values, with the count and the first value
+(`Nonfinite <field> in <case>: <count> of <n> values (NaN)`).
+`complete` refuses a nonfinite value, naming the field, wherever the
+analysis reads it: the read-back pose, every node row, the body targets,
+the root-motion transform and the body slots' masses. The read-back
+muscles, the getter rows, the root-motion deltas and the other bones'
+masses are kept as recorded.
+
+The recorder samples from its own copy of the spec. It keeps the
+schedule's exact times there, because 2022.3's `JsonUtility` read some
+16-digit times on the 2^-16 grid one ulp off. `complete` restores a
+recording made before that fix only where a sample's `local` and
+`source` are the schedule's time one double ulp away, at exactly the
+scheduled f32 sample time and effective source.
 
 Analysis uses them as follows:
 
@@ -1134,7 +1153,8 @@ For each recording `complete` checks:
 - the bone and mass table;
 - that the captured mapped bones are the rig's topology;
 - read-back rows for every sample, with unit rotations, the read-back
-  muscles, and root and root-motion rows exactly in clip playback;
+  muscles, and root and root-motion rows exactly in clip playback, each
+  finite where the analysis reads it;
 - a node row per node per sample, with unit rotations and the hips at the
   origin of their own frame;
 - the schedule's times and muscles, exactly;

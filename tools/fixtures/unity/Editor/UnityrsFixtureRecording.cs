@@ -186,26 +186,39 @@ public static partial class AnimReplayRecorder
         bool mixed = false;
 
         var spec = JsonUtility.FromJson<Spec>(JsonUtility.ToJson(pending));
+        // JsonUtility does not parse every double it writes back exactly (2022.3 read a
+        // 16-digit time on the 2^-16 grid one ulp off), so the capture keeps the exact clock.
+        Need(spec.schedule.Length == points.Length, "The pending schedule did not survive its JSON round trip.");
+        for (int i = 0; i < points.Length; i++) spec.schedule[i].local = points[i].local;
+        spec.start = start;
+        spec.stop = stop;
+        spec.held_boundaries = pending.held_boundaries;
         var body = fixture.Body == null ? null : new BodyHooks { Probes = fixture.BodyProbes, Case = fixture.Body };
         Need(body == null || knownPose == (fixture.BodyProbes != null), "Body known vectors need their probe schedule.");
-        var capture = RecordCapture(spec, bundles, pending: true, body: body, inspectClip: (builtClip, bundle) => {
-            if (fixture.ProbeMixedStorage)
-            {
-                mixed = HasMixedTransformStorage(builtClip, out string reason);
-                if (!mixed) log("mixed-transform-storage not covered: " + reason);
-            }
-            if (referenceAssets == null) return;
-            var keysInBundle = bundle.GetAllAssetNames();
-            builtReferences = referenceAssets.Select(path => bundle.LoadAsset<Mesh>(BuiltAssetKey(keysInBundle, path))).ToArray();
-            Need(builtReferences.All(mesh => mesh != null) && builtReferences[0] != builtReferences[1],
-                "Built object-reference assets are missing or indistinguishable.");
-        }, inspectPose: (root, time) => {
-            if (referenceAssets == null) return;
-            int key = time < .5f ? 0 : 1;
-            var mesh = root.Find(UnityrsFixtureBuilder.ReferencePath).GetComponent<MeshFilter>().sharedMesh;
-            Need(mesh == builtReferences[key], "Built playback missed the authored MeshFilter object reference at " + time + ".");
-            referenceSamples.Add(new ObjectKey { time_f32 = Bits(time), asset = referenceAssets[key], name = mesh.name });
-        });
+        Capture capture;
+        try
+        {
+            capture = RecordCapture(spec, bundles, pending: true, body: body, inspectClip: (builtClip, bundle) => {
+                if (fixture.ProbeMixedStorage)
+                {
+                    mixed = HasMixedTransformStorage(builtClip, out string reason);
+                    if (!mixed) log("mixed-transform-storage not covered: " + reason);
+                }
+                if (referenceAssets == null) return;
+                var keysInBundle = bundle.GetAllAssetNames();
+                builtReferences = referenceAssets.Select(path => bundle.LoadAsset<Mesh>(BuiltAssetKey(keysInBundle, path))).ToArray();
+                Need(builtReferences.All(mesh => mesh != null) && builtReferences[0] != builtReferences[1],
+                    "Built object-reference assets are missing or indistinguishable.");
+            }, inspectPose: (root, time) => {
+                if (referenceAssets == null) return;
+                int key = time < .5f ? 0 : 1;
+                var mesh = root.Find(UnityrsFixtureBuilder.ReferencePath).GetComponent<MeshFilter>().sharedMesh;
+                Need(mesh == builtReferences[key], "Built playback missed the authored MeshFilter object reference at " + time + ".");
+                referenceSamples.Add(new ObjectKey { time_f32 = Bits(time), asset = referenceAssets[key], name = mesh.name });
+            });
+        }
+        // A body case's nonfinite values are named even when it fails.
+        finally { body?.ReportNonfinite(fixture.OutputName); }
         editor.object_reference_samples = referenceSamples.ToArray();
         pending.prefab_asset = spec.prefab_asset;
         pending.clip_asset = spec.clip_asset;

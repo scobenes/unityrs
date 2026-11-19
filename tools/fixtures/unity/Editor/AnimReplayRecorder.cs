@@ -273,7 +273,7 @@ public static partial class AnimReplayRecorder
                         {
                             if (body != null) body.Apply(i, target, point.muscles);
                             else SampleMuscles(target, point.muscles);
-                            sample.muscles_f32 = point.muscles.Select(Bits).ToArray();
+                            sample.muscles_f32 = point.muscles.Select((value, k) => Bits(value, "known muscle " + k)).ToArray();
                             sample.pose = ReadPose(nodes, renderers, spec.renderers, pending);
                             body?.Read(target, nodes, playback: false);
                         }
@@ -515,12 +515,13 @@ public static partial class AnimReplayRecorder
                     && channel.full_weights.Length == mesh.GetBlendShapeFrameCount(j), "Blend-shape layout mismatch.");
                 for (int k = 0; k < channel.full_weights.Length; ++k)
                     Need(channel.full_weights[k] == mesh.GetBlendShapeFrameWeight(j, k), "Blend-shape full weight mismatch.");
-                values[j] = Bits(renderer.GetBlendShapeWeight(j));
+                values[j] = Bits(renderer.GetBlendShapeWeight(j), "blend-shape weight " + channel.name);
             }
             weights[i] = new Weights { channels = values };
         }
         return new Pose { transforms = nodes.Select(n => new Trs {
-            translation = Bits(n.localPosition), rotation = Bits(n.localRotation), scale = Bits(n.localScale)
+            translation = Bits(n.localPosition, "translation of " + n.name), rotation = Bits(n.localRotation, "rotation of " + n.name),
+            scale = Bits(n.localScale, "scale of " + n.name)
         }).ToArray(), weights = weights };
     }
 
@@ -554,14 +555,16 @@ public static partial class AnimReplayRecorder
             int bone = HumanTrait.BoneFromMuscle(i);
             int axis = Enumerable.Range(0, 3).Single(a => HumanTrait.MuscleFromBone(bone, a) == i);
             return new Muscle { name = muscleNames[i], bone = bone, axis = axis,
-                min = Bits(HumanTrait.GetMuscleDefaultMin(i)), max = Bits(HumanTrait.GetMuscleDefaultMax(i)) };
+                min = Bits(HumanTrait.GetMuscleDefaultMin(i), "muscle min " + muscleNames[i]),
+                max = Bits(HumanTrait.GetMuscleDefaultMax(i), "muscle max " + muscleNames[i]) };
         }).ToArray();
         var description = animator.avatar.humanDescription;
         result.limits = (description.human ?? Array.Empty<HumanBone>()).Select(b => new Limit {
-            bone = b.boneName, human = b.humanName, axis_length = Bits(b.limit.axisLength),
-            min = Bits(b.limit.min), max = Bits(b.limit.max), center = Bits(b.limit.center), defaults = b.limit.useDefaultValues
+            bone = b.boneName, human = b.humanName, axis_length = Bits(b.limit.axisLength, "limit axis length " + b.humanName),
+            min = Bits(b.limit.min, "limit min " + b.humanName), max = Bits(b.limit.max, "limit max " + b.humanName),
+            center = Bits(b.limit.center, "limit center " + b.humanName), defaults = b.limit.useDefaultValues
         }).ToArray();
-        result.human_scale = Bits(animator.humanScale);
+        result.human_scale = Bits(animator.humanScale, "human_scale");
         result.upper_arm_twist = Bits(description.upperArmTwist);
         result.lower_arm_twist = Bits(description.lowerArmTwist);
         result.upper_leg_twist = Bits(description.upperLegTwist);
@@ -574,9 +577,9 @@ public static partial class AnimReplayRecorder
         using (var handler = new HumanPoseHandler(animator.avatar, animator.transform))
         {
             var pose = ReadRestBody(animator, handler);
-            result.rest_body_position = Bits(pose.bodyPosition);
-            result.rest_body_rotation = Bits(pose.bodyRotation);
-            result.rest_muscles = pose.muscles.Select(Bits).ToArray();
+            result.rest_body_position = Bits(pose.bodyPosition, "rest_body_position");
+            result.rest_body_rotation = Bits(pose.bodyRotation, "rest_body_rotation");
+            result.rest_muscles = pose.muscles.Select((value, i) => Bits(value, "rest muscle " + i)).ToArray();
         }
         return result;
     }
@@ -602,11 +605,17 @@ public static partial class AnimReplayRecorder
             }).ToArray();
     }
 
-    static string[] Bits(Vector3 v) => new[] { Bits(v.x), Bits(v.y), Bits(v.z) };
-    static string[] Bits(Quaternion q) => new[] { Bits(q.x), Bits(q.y), Bits(q.z), Bits(q.w) };
-    static string Bits(float f)
+    static string[] Bits(Vector3 v) => Bits(v, null);
+    static string[] Bits(Quaternion q) => Bits(q, null);
+    static string[] Bits(Vector3 v, string field) => new[] { Bits(v.x, field), Bits(v.y, field), Bits(v.z, field) };
+    static string[] Bits(Quaternion q, string field) =>
+        new[] { Bits(q.x, field), Bits(q.y, field), Bits(q.z, field), Bits(q.w, field) };
+    static string Bits(float f) => Bits(f, null);
+    // Strict: a nonfinite value fails the capture, naming its field where the caller gives one.
+    static string Bits(float f, string field)
     {
-        Need(!float.IsNaN(f) && !float.IsInfinity(f), "Nonfinite f32 in fixture capture.");
+        Need(!float.IsNaN(f) && !float.IsInfinity(f), "Nonfinite f32 in fixture capture"
+            + (field == null ? "" : ": " + field) + " (" + f.ToString(CultureInfo.InvariantCulture) + ").");
         return BitConverter.ToUInt32(BitConverter.GetBytes(f), 0).ToString("x8", CultureInfo.InvariantCulture);
     }
     static void Need(bool condition, string message)

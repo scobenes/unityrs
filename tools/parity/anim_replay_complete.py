@@ -490,6 +490,7 @@ def complete_recording(name, fixture, doc, bundle_dir, views, unityrs, inspect_d
     check_discovery(fixture, view, discovery, clip)
     spec["evidence"]["discovery"] = discovery
     doc["format"] = "unityrs.anim_replay"
+    restore_parsed_clock(spec, capture, replay)
     if pending_pose(name, doc):
         replay._shape(replay.SCHEMA["$defs"]["capture"], capture, "/capture")
         replay._validate_recording(spec, capture, pending_humanoid=True)
@@ -504,6 +505,25 @@ def complete_recording(name, fixture, doc, bundle_dir, views, unityrs, inspect_d
     elif spec["evidence"]["editor"].get("body_case"):
         replay.require(False, f"{name} claims body fixture evidence")
     return doc
+
+
+def restore_parsed_clock(spec, capture, replay):
+    """Undo JsonUtility's misparse of a schedule time in a recording made before the recorder kept its clock.
+
+    The recorder captured from a JSON round trip of its own spec, and 2022.3's JsonUtility read some 16-digit
+    times on the 2^-16 grid one ulp off. A sample whose `local` (and so `source`) is the schedule's time one
+    double ulp away, at exactly the schedule's f32 sample time and effective source, was sampled at the
+    scheduled time: its double labels take the schedule's value. Any other difference stays and is refused."""
+    start, stop = float(spec["start"]), float(spec["stop"])
+    for point, sample in zip(spec["schedule"], capture["samples"]):
+        local, recorded = point["local"], sample.get("local")
+        if (type(local) is not float or type(recorded) is not float or recorded == local
+                or abs(recorded - local) > math.ulp(local)):
+            continue
+        local_f32, source, effective = replay.clocks(spec, local, replay.f32_from_bits(replay.f32_bits(stop - start)))
+        if (sample.get("local_f32"), sample.get("effective_source")) == (local_f32, effective) \
+                and sample.get("source") in (start + recorded, stop if recorded == stop - start else None):
+            sample["local"], sample["source"] = local, source
 
 
 def run_stamp(run):

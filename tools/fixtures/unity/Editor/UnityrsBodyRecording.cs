@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.Animations;
@@ -8,7 +9,7 @@ using UnityEngine.Playables;
 
 // Recorder rows for the body fixtures (UnityrsBodyFixtures.cs), kept in the
 // editor evidence beside the capture: the case, F2's GetHumanPose read-back
-// and the Animator's root and body rows for each sample, each known vector's
+// and the Animator's root rows for each sample, each known vector's
 // requested and applied body target, and HumanTrait's bone table with the
 // default hierarchy masses.
 public static partial class AnimReplayRecorder
@@ -21,17 +22,16 @@ public static partial class AnimReplayRecorder
     }
     // Per sample: GetHumanPose's read-back in the Animator's space (position
     // over human scale), as the rest body, its raw world pose and its muscles;
-    // during clip playback, the Animator's rootPosition, rootRotation,
-    // bodyPosition and bodyRotation getter values with applyRootMotion off
-    // (rootPosition and rootRotation may then be the GameObject's own
-    // transform, not the clip's projection), bit for bit even if nonfinite;
+    // during clip playback, the Animator's rootPosition and rootRotation
+    // getter values with applyRootMotion off (they may then be the
+    // GameObject's own transform, not the clip's projection);
     // Unity's own world transform of every node and, about the hips, its
     // position and rotation; and, for a clip, a second playback with root
-    // motion applied (motion_*).
+    // motion applied (motion_*). Every value is raw bits, nonfinite included.
     [Serializable] sealed class BodySampleRow
     {
         public string[] readback_position, readback_rotation, readback_muscles, world_position, world_rotation,
-            root_position, root_rotation, body_position, body_rotation,
+            root_position, root_rotation,
             motion_position, motion_rotation, motion_delta_position, motion_delta_rotation;
         public BodyNodeRow[] nodes;
     }
@@ -52,14 +52,45 @@ public static partial class AnimReplayRecorder
         // A clip case also plays with root motion applied.
         public bool RootMotion => Case.Kind == "clip";
 
+        // Every body float is kept as raw bits, nonfinite included, and
+        // counted by field: values seen, nonfinite values and the first.
+        readonly Dictionary<string, (int total, int bad, float first)> fields =
+            new Dictionary<string, (int, int, float)>(StringComparer.Ordinal);
+
+        public string[] Raw(string field, params float[] values)
+        {
+            fields.TryGetValue(field, out var seen);
+            foreach (float value in values)
+            {
+                bool bad = float.IsNaN(value) || float.IsInfinity(value);
+                seen = (seen.total + 1, seen.bad + (bad ? 1 : 0), seen.bad == 0 && bad ? value : seen.first);
+            }
+            fields[field] = seen;
+            return values.Select(RawBits).ToArray();
+        }
+
+        public string[] Raw(string field, Vector3 v) => Raw(field, v.x, v.y, v.z);
+        public string[] Raw(string field, Quaternion q) => Raw(field, q.x, q.y, q.z, q.w);
+
+        // One warning per field that held nonfinite values since the last
+        // report; the case still records, and completion decides.
+        public void ReportNonfinite(string name)
+        {
+            foreach (var pair in fields.Where(pair => pair.Value.bad > 0).OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                Debug.LogWarning("Nonfinite " + pair.Key + " in " + name + ": " + pair.Value.bad + " of " + pair.Value.total
+                    + " values (" + pair.Value.first.ToString(CultureInfo.InvariantCulture) + ")");
+            fields.Clear();
+        }
+
         public void Apply(int index, Animator animator, float[] muscles)
         {
             var probe = Probes[index];
             var tilt = Quaternion.Euler(probe.Tilt.x, probe.Tilt.y, probe.Tilt.z);
             var applied = SampleMuscles(animator, muscles, probe.Offset, probe.Targeted ? tilt : (Quaternion?)null);
             Targets.Add(new BodyTargetRow {
-                offset = Bits(probe.Offset), tilt = Bits(probe.Tilt),
-                position = Bits(applied.bodyPosition), rotation = Bits(applied.bodyRotation)
+                offset = Raw("body_targets.offset", probe.Offset), tilt = Raw("body_targets.tilt", probe.Tilt),
+                position = Raw("body_targets.position", applied.bodyPosition),
+                rotation = Raw("body_targets.rotation", applied.bodyRotation)
             });
         }
 
@@ -73,25 +104,27 @@ public static partial class AnimReplayRecorder
                 var local = InAnimatorSpace(animator, world);
                 var hips = animator.GetBoneTransform(HumanBodyBones.Hips);
                 var row = new BodySampleRow {
-                    readback_position = Bits(local.bodyPosition), readback_rotation = Bits(local.bodyRotation),
-                    readback_muscles = (world.muscles ?? Array.Empty<float>()).Select(RawBits).ToArray(),
-                    world_position = Bits(world.bodyPosition), world_rotation = Bits(world.bodyRotation),
+                    readback_position = Raw("readback_position", local.bodyPosition),
+                    readback_rotation = Raw("readback_rotation", local.bodyRotation),
+                    readback_muscles = Raw("readback_muscles", world.muscles ?? Array.Empty<float>()),
+                    world_position = Raw("world_position", world.bodyPosition),
+                    world_rotation = Raw("world_rotation", world.bodyRotation),
                     root_position = Array.Empty<string>(), root_rotation = Array.Empty<string>(),
-                    body_position = Array.Empty<string>(), body_rotation = Array.Empty<string>(),
                     motion_position = Array.Empty<string>(), motion_rotation = Array.Empty<string>(),
                     motion_delta_position = Array.Empty<string>(), motion_delta_rotation = Array.Empty<string>(),
                     nodes = nodes.Select(node => new BodyNodeRow {
-                        position = Bits(node.position), rotation = Bits(node.rotation), scale = Bits(node.lossyScale),
-                        hips_position = Bits(hips.InverseTransformPoint(node.position)),
-                        hips_rotation = Bits(Quaternion.Inverse(hips.rotation) * node.rotation)
+                        position = Raw("nodes.position", node.position), rotation = Raw("nodes.rotation", node.rotation),
+                        scale = Raw("nodes.scale", node.lossyScale),
+                        hips_position = Raw("nodes.hips_position", hips.InverseTransformPoint(node.position)),
+                        hips_rotation = Raw("nodes.hips_rotation", Quaternion.Inverse(hips.rotation) * node.rotation)
                     }).ToArray()
                 };
+                // Animator.bodyPosition and bodyRotation are not read: outside
+                // OnAnimatorIK Unity warns on them, and GetHumanPose gives the body.
                 if (playback)
                 {
-                    row.root_position = RawBits(animator.rootPosition);
-                    row.root_rotation = RawBits(animator.rootRotation);
-                    row.body_position = RawBits(animator.bodyPosition);
-                    row.body_rotation = RawBits(animator.bodyRotation);
+                    row.root_position = Raw("root_position", animator.rootPosition);
+                    row.root_rotation = Raw("root_rotation", animator.rootRotation);
                 }
                 Samples.Add(row);
             }
@@ -120,10 +153,10 @@ public static partial class AnimReplayRecorder
                 Need(playable.GetTime() == time, "Root-motion playback did not reach the sample time.");
                 var row = Samples[Samples.Count - 1];
                 var node = animator.transform;
-                row.motion_position = RawBits(node.localPosition);
-                row.motion_rotation = RawBits(node.localRotation);
-                row.motion_delta_position = RawBits(animator.deltaPosition);
-                row.motion_delta_rotation = RawBits(animator.deltaRotation);
+                row.motion_position = Raw("motion_position", node.localPosition);
+                row.motion_rotation = Raw("motion_rotation", node.localRotation);
+                row.motion_delta_position = Raw("motion_delta_position", animator.deltaPosition);
+                row.motion_delta_rotation = Raw("motion_delta_rotation", animator.deltaRotation);
             }
             finally { graph.Destroy(); }
         }
@@ -172,20 +205,20 @@ public static partial class AnimReplayRecorder
         return pose;
     }
 
-    static HumanBoneRow[] HumanBones() => Enumerable.Range(0, HumanTrait.BoneCount).Select(i => new HumanBoneRow {
+    static HumanBoneRow[] HumanBones(BodyHooks hooks) => Enumerable.Range(0, HumanTrait.BoneCount).Select(i => new HumanBoneRow {
         name = HumanTrait.BoneName[i], parent = HumanTrait.GetParentBone(i),
-        mass = Bits(HumanTrait.GetBoneDefaultHierarchyMass(i)), required = HumanTrait.RequiredBone(i)
+        mass = hooks.Raw("human_bones.mass", HumanTrait.GetBoneDefaultHierarchyMass(i))[0], required = HumanTrait.RequiredBone(i)
     }).ToArray();
 
-    static BodyCaseRow BodyCaseOf(UnityrsFixtureBuilder.ReplayCase fixture)
+    static BodyCaseRow BodyCaseOf(UnityrsFixtureBuilder.ReplayCase fixture, BodyHooks hooks)
     {
         var body = fixture.Body;
         var clip = fixture.BodyClip;
         return new BodyCaseRow {
             kind = body.Kind, rig = body.Rig, variant = body.Variant, root = body.Root,
             bake = clip?.Bake ?? new bool[3], keep = clip?.Keep ?? new bool[3],
-            height_from_feet = clip?.HeightFromFeet ?? false, level = Bits(clip?.Level ?? 0),
-            orientation_offset = Bits(clip?.Orientation ?? 0), start_offset = clip?.Start ?? false,
+            height_from_feet = clip?.HeightFromFeet ?? false, level = hooks.Raw("body_case.level", clip?.Level ?? 0)[0],
+            orientation_offset = hooks.Raw("body_case.orientation_offset", clip?.Orientation ?? 0)[0], start_offset = clip?.Start ?? false,
             motion_curves = clip?.Motion ?? false, knee_bend = clip?.Knee ?? false, foot_goals = clip?.Goals ?? false
         };
     }
@@ -208,13 +241,12 @@ public static partial class AnimReplayRecorder
             "Body read-back rows do not cover every sample of " + fixture.OutputName + ".");
         Need(body.Samples.All(row => row.motion_position.Length == (body.RootMotion ? 3 : 0)),
             "Root-motion rows do not cover every sample of " + fixture.OutputName + ".");
-        editor.body_case = new[] { BodyCaseOf(fixture) };
+        editor.body_case = new[] { BodyCaseOf(fixture, body) };
         editor.body_samples = body.Samples.ToArray();
         editor.body_targets = body.Targets.ToArray();
-        editor.human_bones = HumanBones();
+        editor.human_bones = HumanBones(body);
+        body.ReportNonfinite(fixture.OutputName);
     }
 
-    static string[] RawBits(Vector3 v) => new[] { RawBits(v.x), RawBits(v.y), RawBits(v.z) };
-    static string[] RawBits(Quaternion q) => new[] { RawBits(q.x), RawBits(q.y), RawBits(q.z), RawBits(q.w) };
 }
 #endif

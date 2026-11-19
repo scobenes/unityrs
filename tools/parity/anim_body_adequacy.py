@@ -282,8 +282,9 @@ def adequate(report):
 def coverage_of(documents):
     """F1 and F6 rigs credited only by their own probe case with read-back rows and the rig's topology."""
     recorded = set()
+    probes = {info["rig"]: name for name, info in BODY_INFO.items() if info["kind"] == "probes"}
     for rig in PROBE_RIGS:
-        doc = documents.get("body-probes-" + rig)
+        doc = documents.get(probes.get(rig))
         if doc is None or not doc["spec"]["evidence"]["editor"].get("body_samples"):
             continue
         mapped = {row["name"] for row in doc["capture"]["humanoid"]["bones"]
