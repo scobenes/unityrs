@@ -65,11 +65,24 @@ from anim_body_tolerance import (BODY_SLOTS, U32, U64, body_frame, body_states, 
                                  matrix_quaternion, measurement_tolerance, norm, ordered, product, quaternion_matrix,
                                  readback_position, readback_turn, recorded_edges, rotate, tracked, uniform)
 from anim_body_design import conservative, planned  # noqa: E402
+from anim_body_model import Refused, topology_scope  # noqa: E402
 from anim_reference import gamma  # noqa: E402
 from anim_fixture_body import BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, probe_schedule, rig_bones  # noqa: E402
 
 CONDITION_LIMIT = 1e6
-TRAINING_RIGS = PROBE_RIGS.keys() - {HOLDOUT}
+
+
+def scope_refusal(mapped):
+    """The model's topology refusal for these mapped body slots (anim_body_model.topology_scope), or None."""
+    try:
+        topology_scope(mapped)
+    except Refused as exc:
+        return str(exc)
+    return None
+
+
+# The training rigs inside the frozen topology scope; the others' samples are refused, never fitted.
+TRAINING_RIGS = {rig for rig in PROBE_RIGS.keys() - {HOLDOUT} if scope_refusal(rig_bones(rig)) is None}
 F32 = replay.f32_from_bits
 
 
@@ -179,7 +192,9 @@ def samples(name, doc, parents, masses):
         row = dict(name=name, local=sample["local"], rig=info["rig"] if info else "p2b", columns=columns,
                    jacobian=jacobian, unity=unity, evaluation=evaluation, fit=False, epsilon=epsilon,
                    edges=None if links == expected else f"recorded {links} but HumanTrait gives {expected}")
-        row["fit"] = epsilon is not None and info is not None and info["rig"] != HOLDOUT
+        row["refused"] = scope_refusal(mapped & BODY_SLOTS)
+        row["fit"] = (epsilon is not None and info is not None and info["rig"] != HOLDOUT
+                      and row["refused"] is None)
         # What B2's checks (anim_body_check.py) evaluate the model and its bounds from.
         row["state"] = dict(bones=bones, local=local, rest_local=rest_local, chain=chain, weights=weights,
                             links=links, scale=scale, target=target, body_rotation=body_rotation,
@@ -289,7 +304,10 @@ def adequacy(rows, coverage, inventory=()):
     gram = [[sum(vectors[k][i] * vectors[k][j] / sigma[k] ** 2 for k in kept) for j in range(width)]
             for i in range(width)]
     failures, untrained, margins, table = [], [], [], []
+    report["refused"] = sorted({f"{row['name']}: {row['refused']}" for row in rows if row.get("refused")})
     for row in rows:
+        if row.get("refused"):
+            continue
         if not row["jacobian"].keys() <= set(keys):
             untrained.append(f"{row['name']}@{row['local']}: {sorted(row['jacobian'].keys() - set(keys))}")
             continue

@@ -151,22 +151,23 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn(code, (0, 1))
         self.assertEqual(report["coverage"]["missing"], [])
         self.assertEqual(report["rank"], len(report["coefficients"]))
-        self.assertIn("Spine>Neck", report["coefficients"])
+        self.assertIn("Chest>Neck", report["coefficients"])
         self.assertLess(report["condition"], adequacy.CONDITION_LIMIT)
         self.assertEqual((report["untrained"], report["edge_mismatches"], report["missing_coefficients"]), ([], [], []))
         self.assertNotIn("necessary", report)
         self.assertEqual(report["adequate"], adequacy.adequate(report))
         self.assertIn(f"rank {report['rank']}/{report['rank']}", text)
 
-    def test_a_coplanar_branch_stays_free(self):
-        with mock.patch.object(support, "NONCOPLANAR", {"noncoplanar"}):
-            self.record(self.design())
-        code, report, _ = self.run_checkpoint()
-        self.assertEqual(code, 1)
-        self.assertEqual(report["rank"], len(report["coefficients"]) - 1)
-        self.assertEqual(set(report["free"][0]), {"Spine>Neck", "Spine>LeftShoulder", "Spine>RightShoulder"})
-        self.assertIsNone(report["condition"])
-        self.assertFalse(report["adequate"])
+    def test_out_of_scope_rigs_are_refused_not_fitted(self):
+        # The frozen topology scope: Chest or Neck absent, or one Shoulder, is never fitted or credited.
+        self.record(self.design())
+        _, report, _ = self.run_checkpoint()
+        self.assertEqual(adequacy.TRAINING_RIGS & {"no-chest", "no-neck", "no-left-shoulder", "no-right-shoulder"},
+                         set())
+        refused = {line.split(": ", 1)[1] for line in report["refused"]}
+        self.assertEqual(refused, {"topology: Chest absent", "topology: Neck absent", "topology: exactly one Shoulder"})
+        self.assertFalse({"Spine>Neck", "UpperChest>Head"} & set(report["coefficients"]))
+        self.assertFalse(any(sample["name"].startswith("body-probes-no-neck") for sample in report["samples"]))
 
     def test_coverage_comes_only_from_probe_cases(self):
         # A clip on the compact rig, the hold-out (never read), a probe case without
@@ -183,7 +184,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(report["coverage"]["recorded"], [])
         self.assertIn("compact", report["coverage"]["missing"])
         self.assertNotIn("holdout", report["coverage"]["missing"])
-        self.assertIn("Spine>Neck", report["missing_coefficients"])
+        self.assertIn("Chest>Neck", report["missing_coefficients"])
         self.assertTrue(report["untrained"] and all("Head>" in line for line in report["untrained"]))
 
     def test_an_edge_off_the_hierarchy_is_reported(self):

@@ -13,7 +13,8 @@ from anim_body_support import MUSCLES, body_doc, clip_case
 from anim_coverage_support import COVERAGE
 from anim_fixture_support import RUN, write
 
-import anim_fixture_body as body  # noqa: E402  (test_anim_replay puts it on the path)
+import anim_body_model as model  # noqa: E402  (test_anim_replay puts it on the path)
+import anim_fixture_body as body  # noqa: E402
 import anim_fixture_coverage  # noqa: E402
 import anim_replay as replay  # noqa: E402
 from anim_replay_complete import OPTIONAL_CASES  # noqa: E402
@@ -45,6 +46,11 @@ class BodyInventoryTests(unittest.TestCase):
         builder = source("UnityrsBodyFixtures.cs")
         rigs = re.findall(r'new BodyRig \{ Name = "([a-z-]+)"', builder)
         self.assertEqual(rigs, [*body.PROBE_RIGS, *body.CHAIN_RIGS])
+        # The hold-out rig, by its topology in the builder's table alone, is inside the frozen scope.
+        holdout = re.search(r'new BodyRig \{ Name = "holdout"([^}]*)\}', builder).group(1)
+        self.assertFalse(re.search(r"Omit|Extras", holdout))
+        self.assertEqual(body.PROBE_RIGS[body.HOLDOUT], ("compact", (), ()))
+        model.topology_scope(body.rig_bones(body.HOLDOUT))
         table = builder[builder.index("ProbeGroups = {"):]
         groups = re.findall(r'new\[\] \{ "([A-Za-z]+)", ((?:"[^"]+"(?:, )?)+) \}', table[:table.index("};")])
         self.assertEqual([(bone, tuple(re.findall(r'"([^"]+)"', muscles))) for bone, muscles in groups],

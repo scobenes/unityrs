@@ -9,6 +9,14 @@ are f64 from the recorded f32 inputs, taken exactly. Standard library only.
   m_HumanBoneMass entry. `columns` is c's derivative in each a_ij, the fit's
   design column.
 - 2.2, `body_rotation`: F(pose) F(T)^-1, F from anim_body_tolerance.body_frame.
+
+**Scope (plan section 8, frozen on the training rigs).** `topology_scope`
+refuses an Avatar whose Chest or Neck is absent or that maps exactly one
+Shoulder: 2.1's per-edge fractions fit every other training rig jointly but
+not these. `frame_scope` refuses a pose whose shoulder-hip twist (the angle
+about up between the upper-arm and upper-leg laterals) exceeds TWIST_LIMIT:
+there 2.2's lateral sum leaves Unity's yaw about up by more than the bound.
+Both, and solve_hips and body_rotation through frame_scope, raise `Refused`.
 - 2.3, `solve_hips`: H_A = B_A F(T) F_h^-1, P_A = h T_A - k H_A c_h with
   k = sigma_p s_h, t = sigma_p^-1 R_p^-1 (P_A - t_p), q = R_p^-1 H_A, and the
   hips keep their own scale s_h.
@@ -16,8 +24,9 @@ are f64 from the recorded f32 inputs, taken exactly. Standard library only.
   cell (bake: the start value; keep original: the original root, MotionT
   and MotionQ, with the level and orientation offset; otherwise the body,
   with them), and X_A = X_r^-1 o X_b: T_A = m_Scale y^-1 (RootT - r),
-  B_A = y^-1 RootQ. A yaw is that of a rotation's forward, atan2(f_x, f_z)
-  of q (0, 0, 1). The m_StartAtOrigin rebase is taken as shared by the root
+  B_A = y^-1 RootQ. A yaw is a rotation's twist about the up axis,
+  2 atan2(q_y, q_w) (the training fixtures' body-yaw cells match it, not
+  the forward's yaw atan2(f_x, f_z)). The m_StartAtOrigin rebase is taken as shared by the root
   and the body, so it cancels and the projection runs in the clip's own
   motion space; E4's start variants test that. Height from feet stays
   undecided (`Undecided`) until F4 tells candidates A and B apart, and an
@@ -30,9 +39,10 @@ weighted sum, the frame and its normalizations and the solve. For 2.4,
 roundoff u: the subtraction at |RootT| + |r|, the rotation by y^-1 at its
 operands (rotate_rounding), the product by m_Scale at its result, and the
 yaw's own error turning the horizontal offset; `yaw_error` bounds a yaw
-from a quaternion error dq: the forward moves by kappa(q) |dq| plus its
-rotation's rounding, and atan2 turns that by at most |df| / |f_xz| plus
-gamma(2), unbounded as the forward turns vertical. `turn_angle` maps a
+from a quaternion error dq: (q_y, q_w) moves by at most |dq| plus its
+representation, which turns 2 atan2 by at most 2 |d| / (|(q_y, q_w)| - |d|),
+plus gamma(2) of the angle, unbounded as (q_y, q_w) vanishes (a half turn
+about a horizontal axis). `turn_angle` maps a
 bound on how far a rotation turns a unit vector (a 2-norm, which the
 Frobenius bounds of anim_body_tolerance dominate) to an angle,
 2 asin(min(1, d / 2)); the angular metric (anim_reference.angle) adds
@@ -42,11 +52,13 @@ ANGLE_FLOOR.
 import math
 
 from anim_body_tolerance import (
+    FRAME_BONES,
     U32,
     U64,
     body_frame,
     compose_rounding,
     conjugate,
+    cross,
     gamma,
     norm,
     ordered,
@@ -55,14 +67,14 @@ from anim_body_tolerance import (
     rotate,
     rotate_rounding,
     sub,
-    turn_sensitivity,
 )
 from anim_reference import multiply, normalize
 from anim_replay import f32_from_bits as f32
 
 HYPOTHESES = {
     "masses": "decision 1: each mapped body slot's Avatar m_HumanBoneMass entry, renormalized over the mapped "
-              "slots; E0b compares it with the fold of the recorder's HumanTrait default masses",
+              "slots; E0b compares it with the fold of HumanTrait's own default masses (the recorder's hierarchy "
+              "masses less their children's)",
     "mass_points": "2.1 H-pos: a mass point is p_i + sum_j a_ij (p_j - p_i) over the edges to the nearest mapped "
                    "human descendants, one coefficient per edge, left and right separate",
     "body_position": "2.1: bodyPosition = c / m_Scale",
@@ -70,9 +82,12 @@ HYPOTHESES = {
              "forward = lateral x up, right = up x forward; bodyRotation = F(pose) F(T)^-1",
     "solve": "2.3: closed form, H_A = B_A F(T) F_h^-1, P_A = h T_A - k H_A c_h, k = sigma_p s_h",
     "root": "2.4: X_A = X_r^-1 o X_b, the m_StartAtOrigin rebase shared by root and body",
-    "yaw": "2.4: a yaw is atan2(f_x, f_z) of the forward f = q (0, 0, 1)",
+    "yaw": "2.4: a yaw is the twist about up, 2 atan2(q_y, q_w)",
     "height_from_feet": "2.4: undecided between candidates A and B; refused",
+    "topology_scope": "section 8: refused when Chest or Neck is absent or exactly one Shoulder is mapped",
+    "frame_scope": "section 8: refused when the shoulder-hip twist about up exceeds 4.25 degrees",
 }
+TWIST_LIMIT = math.radians(4.25)
 ANGLE_FLOOR = gamma(16, U64)
 
 
@@ -120,8 +135,40 @@ def quaternion(m):
     return tuple(-v for v in q) if q[3] < 0 else q
 
 
+def topology_scope(mapped):
+    """Refuses the topologies outside the frozen scope; `mapped` holds the mapped body slots."""
+    if "Chest" not in mapped:
+        raise Refused("topology: Chest absent")
+    if "Neck" not in mapped:
+        raise Refused("topology: Neck absent")
+    if ("LeftShoulder" in mapped) != ("RightShoulder" in mapped):
+        raise Refused("topology: exactly one Shoulder")
+
+
+def shoulder_hip_twist(points):
+    """The angle about 2.2's up between the upper-arm and the upper-leg laterals (radians, unsigned)."""
+    ul, ur, ll, lr = (points[name] for name in FRAME_BONES)
+    up = sub(tuple(a + b for a, b in zip(ul, ur)), tuple(a + b for a, b in zip(ll, lr)))
+    up = tuple(v / norm(up) for v in up)
+
+    def flat(v):
+        along = sum(a * b for a, b in zip(v, up))
+        return tuple(a - along * b for a, b in zip(v, up))
+
+    top, bottom = flat(sub(ur, ul)), flat(sub(lr, ll))
+    return abs(math.atan2(sum(a * b for a, b in zip(cross(bottom, top), up)), sum(a * b for a, b in zip(bottom, top))))
+
+
+def frame_scope(points):
+    """Refuses a pose outside 2.2's frozen twist scope."""
+    twist = shoulder_hip_twist(points)
+    if not twist <= TWIST_LIMIT:
+        raise Refused(f"frame: shoulder-hip twist {math.degrees(twist):.3f} deg over {math.degrees(TWIST_LIMIT)} deg")
+
+
 def body_rotation(points, rest_frame):
     """2.2: F(pose) F(T)^-1 as a quaternion, F(T) given as its matrix."""
+    frame_scope(points)
     return quaternion(product(body_frame(points), rest_frame, transpose=True))
 
 
@@ -131,6 +178,7 @@ def solve_hips(target, rotation, human_scale, local_points, masses, links, coeff
 
     `local_points` are the mapped bones in the hips frame (hips at the origin, identity, unit scale);
     `parent` has the hips parent's position, rotation and uniform scale in A."""
+    frame_scope(local_points)
     c_h = centre(local_points, masses, links, coefficients)
     solved = product(product(quaternion_matrix(rotation), rest_frame), body_frame(local_points), transpose=True)
     k = parent.scale * hips_scale
@@ -173,10 +221,10 @@ def about_up(radians):
 
 
 def yaw(q):
+    """The twist of q about the up axis (swing-twist), in radians."""
     if yaw_error(q) == math.inf:
-        raise Refused("the forward is vertical: no yaw")
-    f = rotate(q, (0., 0., 1.))
-    return math.atan2(f[0], f[2])
+        raise Refused("a half turn about a horizontal axis: no yaw")
+    return 2 * math.atan2(q[1], q[3])
 
 
 def project(rules, body, start, original=None, level=0., offset_degrees=0.):
@@ -205,13 +253,12 @@ def animator_body(body, root, human_scale):
 
 
 def yaw_error(q, dq=0., unit=U64):
-    """A bound on the yaw of q's forward when q errs by dq (quaternion 2-norm) and the yaw rounds at `unit`."""
-    f = rotate(q, (0., 0., 1.))
-    across = math.hypot(f[0], f[2])
-    moved = turn_sensitivity(q) * dq + rotate_rounding(q, (0., 0., 1.), unit)
+    """A bound on q's twist about up when q errs by dq (quaternion 2-norm) and the yaw rounds at `unit`."""
+    across = math.hypot(q[1], q[3])
+    moved = dq + unit * across
     if not across > 2 * moved:
         return math.inf
-    return moved / across + gamma(2, unit) * abs(math.atan2(f[0], f[2])) + 2 * unit
+    return 2 * moved / (across - moved) + gamma(2, unit) * abs(2 * math.atan2(q[1], q[3])) + 2 * unit
 
 
 def projection_error(body, root, human_scale, yaw_bound, unit=U64):

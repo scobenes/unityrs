@@ -12,6 +12,7 @@ and m_Scale), and `write_run` lays recordings out as a completed run.
 import copy
 import json
 import struct
+from unittest import mock
 
 from anim_body_support import COEFFICIENT, body_doc, clip_case
 from anim_fixture_support import RUN
@@ -91,8 +92,10 @@ def consistent(doc, value=COEFFICIENT):
             _, frames = points(nodes, pose, bones, animator)
             parent = frames[hips_address.rpartition("/")[0]]
             hips_scale = tolerance.uniform([F32(b) for b in pose[hips]["scale"]])
-            t, q = model.solve_hips(target, rotation, HUMAN_SCALE, local, weights, links, a, rest_frame, parent,
-                                    hips_scale)
+            # Unity places the hips at any twist; the model's twist scope only limits what it claims.
+            with mock.patch.object(model, "frame_scope", lambda points: None):
+                t, q = model.solve_hips(target, rotation, HUMAN_SCALE, local, weights, links, a, rest_frame,
+                                        parent, hips_scale)
             pose[hips]["translation"] = [BITS(v) for v in t]
             pose[hips]["rotation"] = [BITS(v) for v in q]
         placed, _ = points(nodes, pose, bones, animator)
@@ -102,7 +105,7 @@ def consistent(doc, value=COEFFICIENT):
         # its scale, and the recorder's InverseTransformPoint divides by that scale once more.
         body = model.centre(placed, weights, links, a)
         row["readback_position"] = [BITS(v / (HUMAN_SCALE * root.scale)) for v in body]
-        turn = model.body_rotation(placed, rest_frame)
+        turn = tolerance.matrix_quaternion(tolerance.product(tolerance.body_frame(placed), rest_frame, transpose=True))
         row["readback_rotation"] = [BITS(v) for v in turn]
         row["world_position"] = [BITS((p + v) / HUMAN_SCALE) for p, v in zip(root.position,
                                                                             tolerance.rotate(root.rotation, body))]

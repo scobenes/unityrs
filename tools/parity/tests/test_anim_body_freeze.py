@@ -73,7 +73,9 @@ class FreezeTests(unittest.TestCase):
         code, text = self.main("e3b", "--freeze", str(self.artifact), "--json", str(self.folder.parent / "r.json"))
         self.assertEqual((code, text.strip()), (0, "e3b: pass"))
         report = json.loads((self.folder.parent / "r.json").read_text(encoding="utf-8"))
-        self.assertEqual(report["samples"], len(self.docs[HOLDOUT]["capture"]["samples"]))
+        # Every hold-out sample is checked or, twisted past 2.2's scope, refused.
+        self.assertEqual(report["samples"] + report["refused"], len(self.docs[HOLDOUT]["capture"]["samples"]))
+        self.assertGreater(report["samples"], report["refused"])
         self.assertEqual(report["digest"], artifact["training"]["digest"])
         # A freeze is made once.
         code, text = self.main("freeze", "--freeze", str(self.artifact))

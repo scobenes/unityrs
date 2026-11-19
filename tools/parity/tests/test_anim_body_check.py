@@ -118,7 +118,8 @@ class Checks(unittest.TestCase):
         self.assertGreater(report["worst_ratio"], 1)
 
         def turn(doc):
-            pose = doc["capture"]["samples"][2]["pose"]["transforms"][hips_index(doc)]
+            # Sample 3 is untwisted, inside 2.2's twist scope (samples 1, 2, 4 and 5 are refused).
+            pose = doc["capture"]["samples"][3]["pose"]["transforms"][hips_index(doc)]
             pose["rotation"] = [BITS(v) for v in multiply([F32(b) for b in pose["rotation"]], euler((.1, 0, 0), 4))]
 
         report = self.run_mode("e3a", self.edited("body-chain-armature-targets", turn))

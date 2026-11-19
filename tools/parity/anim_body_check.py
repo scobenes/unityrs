@@ -128,6 +128,10 @@ def e0_avatar(label, avatar, doc, parents, masses, errors, design, coefficients)
             failures.append(f"{label}: E0b {slot} mass {avatar_masses[slot]!r} against {want!r} (bound {bound:.3e})")
     if present != mapped:
         return failures, dict(avatar=label, rest_distance=None, rest_bound=None)
+    refused = adequacy.scope_refusal(present)
+    if refused:
+        # Outside the frozen topology scope the model refuses the Avatar: E0a and E0b only.
+        return failures, dict(avatar=label, rest_distance=None, rest_bound=None, refused=refused)
     # E0c: forward kinematics of m_SkeletonPose from its root node, as rows anim_body_tolerance can walk.
     skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
     pose = human["m_SkeletonPose"].get("data", human["m_SkeletonPose"])["m_X"]
@@ -262,16 +266,20 @@ def readback_rotation(state):
 
 
 def e2(rows):
-    failures, checked, worst = [], 0, 0.
+    failures, checked, worst, refused = [], 0, 0., 0
     for row in rows:
         state = row["state"]
-        if state["readback"] is None:
+        if state["readback"] is None or row.get("refused"):
+            refused += bool(row.get("refused"))
             continue
         observed, turn = readback_rotation(state)
         points = {name: frame.position for name, frame in state["bones"].items()}
-        model = body_rotation(points, state["rest_frame"])
-        own = solve_turn(state, U64)
-        pairs = [("model", model, turn_angle(turn + own) + 2 * ANGLE_FLOOR)]
+        pairs = []
+        try:
+            pairs.append(("model", body_rotation(points, state["rest_frame"]),
+                          turn_angle(turn + solve_turn(state, U64)) + 2 * ANGLE_FLOOR))
+        except Refused:
+            refused += 1
         if state["target_kind"] == "known":
             pairs.append(("request", state["body_rotation"], turn_angle(turn + solve_turn(state, U32)) + ANGLE_FLOOR))
         for label, want, bound in pairs:
@@ -281,7 +289,7 @@ def e2(rows):
             if not residual <= bound:
                 failures.append(f"{row['name']}@{row['local']}: {label} to read-back {math.degrees(residual):.4g} deg "
                                 f"> {math.degrees(bound):.4g} deg")
-    return verdict(failures, residuals=checked, worst_ratio=worst)
+    return verdict(failures, residuals=checked, worst_ratio=worst, refused=refused)
 
 
 def hips(row, design, coefficients):
@@ -303,16 +311,23 @@ def hips(row, design, coefficients):
 
 
 def e3(rows, design, coefficients):
-    failures, checked, worst = [], 0, 0.
+    failures, checked, worst, refused = [], 0, 0., 0
     for row in rows:
         if row["state"]["target_kind"] is None:
             continue
+        if row.get("refused"):
+            refused += 1
+            continue
+        try:
+            found, ratio = hips(row, design, coefficients)
+        except Refused:
+            refused += 1
+            continue
         checked += 1
-        found, ratio = hips(row, design, coefficients)
         failures += found
         worst = max(worst, ratio)
     replay.require(checked, "no sample with a body target")
-    return verdict(failures, samples=checked, worst_ratio=worst)
+    return verdict(failures, samples=checked, worst_ratio=worst, refused=refused)
 
 
 # E4: the root projection.

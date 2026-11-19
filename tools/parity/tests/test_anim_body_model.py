@@ -8,6 +8,7 @@ from anim_body_model_support import BITS, F32, f32
 
 import anim_body_model as model  # noqa: E402  (test_anim_replay puts it on the path)
 import anim_body_tolerance as tolerance  # noqa: E402
+import anim_fixture_body as body  # noqa: E402
 from anim_reference import angle, euler, multiply  # noqa: E402
 
 # A five-bone rig in its hips frame: the four frame bones straight under the hips, F(T) the identity.
@@ -70,6 +71,34 @@ class CentreTests(unittest.TestCase):
         turn = euler((10, -35, 20), 4)
         turned = {name: tolerance.rotate(turn, p) for name, p in LOCAL.items()}
         self.assertLess(angle(model.body_rotation(turned, tolerance.body_frame(LOCAL)), turn), 1e-14)
+
+
+class ScopeTests(unittest.TestCase):
+    def test_the_topology_scope(self):
+        refusals = {rig: None for rig in body.PROBE_RIGS}
+        for rig in body.PROBE_RIGS:
+            try:
+                model.topology_scope(body.rig_bones(rig))
+            except model.Refused as exc:
+                refusals[rig] = str(exc)
+        self.assertEqual({rig: reason for rig, reason in refusals.items() if reason},
+                         {"no-chest": "topology: Chest absent", "no-neck": "topology: Neck absent",
+                          "no-left-shoulder": "topology: exactly one Shoulder",
+                          "no-right-shoulder": "topology: exactly one Shoulder"})
+
+    def test_the_twist_scope(self):
+        def twisted(degrees):
+            turn = yaw(degrees)
+            return {name: tolerance.rotate(turn, p) if "Arm" in name else p for name, p in LOCAL.items()}
+
+        rest = tolerance.body_frame(LOCAL)
+        self.assertAlmostEqual(math.degrees(model.shoulder_hip_twist(twisted(4))), 4., places=12)
+        model.body_rotation(twisted(4), rest)
+        for refused in (lambda: model.body_rotation(twisted(-5), rest),
+                        lambda: model.solve_hips(TARGET, (0., 0., 0., 1.), SCALE, twisted(5), MASSES, LINKS, HALF,
+                                                 rest, IDENTITY, 1.)):
+            with self.assertRaisesRegex(model.Refused, "shoulder-hip twist 5.000 deg"):
+                refused()
 
 
 class SolveTests(unittest.TestCase):
@@ -167,7 +196,7 @@ class ProjectionTests(unittest.TestCase):
         self.assertLess(angle(root[1], yaw(degrees)), 1e-14)
 
     def test_each_cell(self):
-        # Body: its XZ, height plus the level, its forward's yaw plus the offset.
+        # Body: its XZ, height plus the level, its twist about up plus the offset.
         self.assertRoot(self.project(), (1., 1.025, 2.), 40)
         # Bake: the start values, with no level or offset.
         self.assertRoot(self.project(bake=(1, 1, 1)), (.5, 1., .2), -20)
@@ -217,11 +246,21 @@ class ProjectionTests(unittest.TestCase):
         root = self.project()
         position, turn = model.projection_error(self.BODY, root, 1.5, model.yaw_error(self.BODY[1]))
         self.assertTrue(0 < position < 1e-14 and 0 < turn < 1e-14)
-        # A forward turned vertical has no yaw.
-        up = euler((-90, 0, 0), 4)
-        self.assertEqual(model.yaw_error(up), math.inf)
+        # A half turn about a horizontal axis has no twist about up.
+        flipped = (1., 0., 0., 0.)
+        self.assertEqual(model.yaw_error(flipped), math.inf)
         with self.assertRaises(model.Refused):
-            model.yaw(up)
+            model.yaw(flipped)
+
+    def test_a_yaw_is_the_twist_about_up(self):
+        # A tilted body: its twist about up, not its forward's heading, as the training fixtures show.
+        q = multiply(yaw(25), euler((10, 0, 15), 4))
+        f = tolerance.rotate(q, (0., 0., 1.))
+        self.assertAlmostEqual(model.yaw(q), 2 * math.atan2(q[1], q[3]), places=15)
+        self.assertGreater(abs(model.yaw(q) - math.atan2(f[0], f[2])), math.radians(.1))
+        # Turned on the vertical, the twist passes through; a forward pointing up keeps its twist.
+        self.assertAlmostEqual(model.yaw(multiply(yaw(40), q)), model.yaw(q) + math.radians(40), places=14)
+        self.assertAlmostEqual(model.yaw(euler((-90, 0, 0), 4)), 0., places=15)
         self.assertAlmostEqual(model.turn_angle(2 * math.sin(.25)), .5, places=14)
         self.assertEqual(model.turn_angle(3.), math.pi)
 

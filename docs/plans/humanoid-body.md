@@ -108,6 +108,14 @@ T-pose. The candidate:
   human descendant) therefore cannot move `c`. The terminal probes of 2.5
   test this.
 - `bodyPosition = c / m_Scale`. `RootT` is in this normalized space.
+- Scope, frozen on the training rigs (B2): the per-edge fractions fit
+  every training topology jointly except four. Those are Neck absent,
+  Chest absent, and exactly one Shoulder mapped. Each fits alone, but no
+  shared coefficient set fits it beside the others. Folding the absent
+  mass to siblings or descendants did not fit them, nor did one fraction
+  toward the children's centroid, fractions keyed by the child set, or
+  sparse cross-bone terms. So these topologies refuse at the Avatar
+  (section 8), and the fit runs on the other fifteen training rigs.
 
 [Unity 2022.3 root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html) ·
 [HumanPose (bodyPosition, bodyRotation)](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanPose.html) ·
@@ -129,6 +137,17 @@ from the middle points of the hips and shoulders. The candidate:
   `bodyRotation = F(pose) · F(T)⁻¹`, where `T` is the Avatar T-pose
   (`m_SkeletonPose`). `RootQ` is this rotation. `F` depends only on
   directions, so a uniform scale does not change it.
+- Scope, frozen on the training rigs (B2): the read-back differs from this
+  frame only by a turn about `up`. That turn grows with the shoulder-hip
+  twist, the angle about `up` between the upper-arm and upper-leg
+  laterals. A bounded search on the training rigs found no rule that keeps
+  every sample within bound. It tried mass-weighted laterals, a yaw
+  average or nlerp of an upper and a lower frame, lateral-first and
+  symmetric orthogonalization, and laterals from other bones. A global
+  lateral weight made it worse on either side of 1. So 2.2 holds up to a
+  twist of 4.25°, just under the smallest twist that failed: every
+  training sample at or below it is within bound, in both versions. A
+  larger twist refuses (section 8).
 
 ### 2.3 Hips-local TRS and scale
 
@@ -169,12 +188,19 @@ axis only. The body in `A` is the rigid inverse composition
 - `T_A = m_Scale · y(t)⁻¹ (RootT(t) − r(t))`
 - `B_A = y(t)⁻¹ · RootQ(t)`
 
+A rotation's yaw is its twist about the up axis, `2·atan2(q_y, q_w)`.
+The evidence is the training fixtures (B2's smoke on the F4 clips, both
+versions). The yaw implied by the read-back, `RootQ · B_A⁻¹`, is a pure
+turn about up. It equals the twist, not the forward's heading
+`atan2(f_x, f_z)`, which is off by tenths of a degree on tilted `RootQ`.
+With the twist, every evaluable F4 combination passes E4.
+
 The root's components come from the serialized clip fields. The bake flags
 are pinned apart from the keep-original flags:
 
 | Component | Bake into pose (`m_LoopBlendOrientation`, `m_LoopBlendPositionY`, `m_LoopBlendPositionXZ`) on | Off, keep original on (`m_KeepOriginalOrientation`, `m_KeepOriginalPositionY`, `m_KeepOriginalPositionXZ`) | Off, based on the body |
 |---|---|---|---|
-| `y` (yaw) | constant: the start value | original root yaw plus `m_OrientationOffsetY` | the body forward's yaw plus `m_OrientationOffsetY` |
+| `y` (yaw) | constant: the start value | original root yaw plus `m_OrientationOffsetY` | the body's yaw plus `m_OrientationOffsetY` |
 | `r.y` | constant: the start value | original root height plus `m_Level` | body height plus `m_Level`, or the lowest foot with `m_HeightFromFeet` |
 | `r.xz` | constant: the start value | original root XZ | body XZ |
 
@@ -349,10 +375,10 @@ bone, a noncommuting pose, and each projection cell of 2.4.
 | Level | Evidence | Pass |
 |---|---|---|
 | E0a | Decode `m_HumanBoneMass` in both versions: the read is as AssetStudio's, with one f32 per slot of the 25-slot `m_HumanBoneIndex` order (HumanBodyBones 0–8, UpperChest, 9–23). | Exact length and slot mapping. Malformed data refuses. |
-| E0b | Normalization and folding, specified before any comparison: each entry is the Editor's default mass for that slot plus those of the absent optional slots it is the nearest present ancestor of, divided by the sum over present slots. An absent slot is zero. Compare with the recorder's `GetBoneDefaultHierarchyMass` values on every F6 topology. | Within a derived bound for the sum and division |
+| E0b | Normalization and folding, specified before any comparison: each entry is the Editor's default (own) mass for that slot plus those of the absent optional slots it is the nearest present ancestor of, divided by the sum over present slots. An absent slot is zero. The recorder gives `GetBoneDefaultHierarchyMass`, the slot's mass plus all its descendants', so a slot's own mass is its hierarchy mass less its body-slot children's. Only the body slots are read: Unity 6 returns unspecified finger values. Compare on every F6 topology. | Within a derived bound for the sum and division, plus the own masses' subtraction error |
 | E0c | Reproduce `m_RootX.t` from `m_SkeletonPose` with 2.1, and `m_RootX.t.y` against `m_Scale`. | Within its own derived bound (forward kinematics of the skeleton pose plus the weighted sum), on every recorded Avatar |
 | E1 | Each coefficient that 2.5 calls identifiable, pinned by its probes on the training rigs | 2.5's conditioning criterion with B1's tolerances |
-| E2 | F2 read-back on the failing combined-axis pose and on independent noncommuting probes (F1 combined vectors, F3 tilted targets). Convert the world read-back to `A` as the recorder converts the rest body: position by the inverse Animator transform of `bodyPosition · humanScale`, divided by `humanScale`; rotation by the inverse Animator rotation. Bound two residuals separately: requested-to-read-back, and model (2.2 on the recorded bones) to read-back. | Both residuals within their own derived angular bounds on every probe. Anything else is a frame or solve failure, and B3 stays blocked. |
+| E2 | F2 read-back on the failing combined-axis pose and on independent noncommuting probes (F1 combined vectors, F3 tilted targets). Convert the world read-back to `A` as the recorder converts the rest body: position by the inverse Animator transform of `bodyPosition · humanScale`, divided by `humanScale`; rotation by the inverse Animator rotation. GetHumanPose's `bodyPosition` is already free of the Animator's scale, so the recorded position is divided by that scale once too often; the checks multiply it back. Bound two residuals separately: requested-to-read-back, and model (2.2 on the recorded bones) to read-back. | Both residuals within their own derived angular bounds on every probe. Anything else is a frame or solve failure, and B3 stays blocked. |
 | E3a | Training checkpoint, before the freeze: Python hips TRS (2.3) from the recorded non-hips rotations, against every known-vector and clip recording of the training rigs (every rig but the hold-out), all roots and scaled rigs, in both versions | Within `T_s = E_unity,s + u_s + E_eval,s` (2.5) per sample. It must pass before B2 commits the freeze. |
 | E3b | Hold-out evaluation, after the freeze: the same comparison on the hold-out rig, run by a checker that takes the frozen commit and cannot refit | Within `T_s` (2.5) per sample, with the frozen coefficients' `u_s` |
 | E4 | Root projection (2.4) against the root or residual body pose that F4 records, independently of the hips solve | Within bound, per combination supported |
@@ -417,7 +443,7 @@ coefficient is shipped from a fit.
 | # | PR | Contents | ~Non-test lines | Depends on |
 |---|---|---|---|---|
 | B0 | Plan | This document, the `anim.md` 2.6 link, and the "Humanoid local poses" tier X row's cells | docs | — |
-| B1 | Recorder and fixtures | F1–F6 in the builder; read-back, root, mass and setting rows in the recorder; contract and `complete` checks; owner workflow notes; 2.5's tolerance derivation. **Adequacy checkpoint:** after the first owner run, a script computes 2.5's rank, conditioning and `u_s ≤ E_unity,s` with B1's own tolerances, and the topology coverage. If any is short, B1 extends the fixtures before B2 starts. The first runs left a few tall-rig samples short of `u_s ≤ E_unity,s`. `body-probes-tall-2` adds the extra tall-rig poses, and `--design-only` predicts their adequacy conservatively from the recorded geometry before the rerun. The checkpoint never reads the hold-out rig; E3b does, after the freeze. | 0.7–1.0k | B0 |
+| B1 | Recorder and fixtures | F1–F6 in the builder; read-back, root, mass and setting rows in the recorder; contract and `complete` checks; owner workflow notes; 2.5's tolerance derivation. **Adequacy checkpoint:** after the first owner run, a script computes 2.5's rank, conditioning and `u_s ≤ E_unity,s` with B1's own tolerances, and the topology coverage. If any is short, B1 extends the fixtures before B2 starts. The first runs left a few tall-rig samples short of `u_s ≤ E_unity,s`. `body-probes-tall-2` adds the extra tall-rig poses, and `--design-only` predicts their adequacy conservatively from the recorded geometry before the rerun. Under B2's frozen scope (fifteen training rigs, 29 coefficients), the conservative worst margin with the predicted `body-probes-tall-2` stays above 1 in both versions, and the checkpoint is adequate. The checkpoint never reads the hold-out rig; E3b does, after the freeze. | 0.7–1.0k | B0 |
 | B2 | Reference and body checker | 2.1–2.5 in the f64 reference with frozen bounds and the analytic cases. A checker runs E0–E4. **Input:** a completed run in both 2022.3 and 6000, read with Unity 6 reader support on main. **Order:** first E3a on the training rigs, then the freeze commit (model choices, coefficients, scope, bounds), then E3b on the hold-out rig against that commit. | 0.6–0.9k | B1 recordings |
 | B3 | Rust body model | Read and validate `m_HumanBoneMass`; E0 checks; the centre of mass, frame and closed-form hips solve; the free-combination refusal; synthetic tests and fuzz targets for the new reads | 0.5–0.7k | B2 (E3b passing) and E2 passing |
 | B4 | Root projection and frames | Target body pose per verified 2.4 combination, conversion from the Animator to the hips parent with scale, narrowed refusals | 0.4–0.6k | B3, F4, F5 |
@@ -465,6 +491,12 @@ frozen constants.
   with no passing F4 recording stay `unsupported_humanoid_root_basis` or
   `unsupported_humanoid_clip_settings`. So do `m_StartAtOrigin` off and any
   original-root or lowest-foot rule F4 leaves undecided.
+- **Frozen model scope (B2, training rigs only).** An Avatar with Neck
+  absent, Chest absent or exactly one Shoulder mapped refuses at the
+  Avatar check (2.1). A pose whose shoulder-hip twist exceeds 4.25° refuses
+  in 2.2 and therefore in the hips solve. The hold-out rig's topology, read
+  from the builder's table and not from its recordings, is inside the
+  scope.
 - **Unsupported rigs.** These refuse: topologies outside F6, an Avatar
   whose geometry depends on a free coefficient combination, a terminal
   bone whose probe moved the hips, non-uniform scale, and a non-TRS link
