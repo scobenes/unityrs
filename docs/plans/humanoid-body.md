@@ -280,13 +280,21 @@ B2 reruns the check with its frozen bounds if they differ.
 2. For every recorded and hold-out sample `s`, let `J_s` be the
    sensitivity of its hips translation to the coefficients. The propagated
    coefficient uncertainty `u_s = ‖J_s A_w⁺‖_∞` must satisfy
-   `u_s ≤ τ_s / 2`. The other half of `τ_s` covers the model's own f32
-   evaluation.
+   `u_s ≤ τ_s − E_eval,s`. `E_eval,s` is the derived error of evaluating
+   the model at `s` with the fitted coefficients: B2's f64 reference on
+   the path of `τ_s`, with each rounding counted once at `2^-53`, plus one
+   f32 rounding of the hips translation it stores.
+
+The split is derived, not halved. `τ_s` bounds Unity's f32 path; the model
+adds its own roundings, which `E_eval,s` bounds, and the coefficient
+uncertainty may use the rest. A fixed half would reserve for the model's
+evaluation far more than it can err (`E_eval,s` stays under `τ_s / 3000`
+on B1's synthetic design) and charge that to the fixtures.
 
 `‖A_w A_w⁺‖_∞ ≥ 1` bounds the projector as a whole, not each of its rows,
 so a sample's own `τ_s` against its `ε` is no veto. The check compares
-`u_s` directly, per component of the hips translation, against half of
-`τ_s` (the split above). Each `ε` bounds the Euclidean norm of one sample's
+`u_s` directly, per component of the hips translation, against
+`τ_s − E_eval,s`. Each `ε` bounds the Euclidean norm of one sample's
 residual, so its three equations form one block, and `u_s` sums the
 2-norms of `J_s A_w⁺`'s blocks.
 
@@ -393,7 +401,7 @@ coefficient is shipped from a fit.
 | # | PR | Contents | ~Non-test lines | Depends on |
 |---|---|---|---|---|
 | B0 | Plan | This document, the `anim.md` 2.6 link, and the "Humanoid local poses" tier X row's cells | docs | — |
-| B1 | Recorder and fixtures | F1–F6 in the builder; read-back, root, mass and setting rows in the recorder; contract and `complete` checks; owner workflow notes; 2.5's tolerance derivation. **Adequacy checkpoint:** after the first owner run, a script computes 2.5's rank, conditioning and `u_s ≤ τ_s / 2` with B1's own tolerances, and the topology coverage. If any is short, B1 extends the fixtures before B2 starts. | 0.7–1.0k | B0 |
+| B1 | Recorder and fixtures | F1–F6 in the builder; read-back, root, mass and setting rows in the recorder; contract and `complete` checks; owner workflow notes; 2.5's tolerance derivation. **Adequacy checkpoint:** after the first owner run, a script computes 2.5's rank, conditioning and `u_s ≤ τ_s − E_eval,s` with B1's own tolerances, and the topology coverage. If any is short, B1 extends the fixtures before B2 starts. | 0.7–1.0k | B0 |
 | B2 | Reference and body checker | 2.1–2.5 in the f64 reference with frozen bounds and the analytic cases. A checker runs E0–E4. **Input:** a completed run in both 2022.3 and 6000, read with Unity 6 reader support on main. **Order:** first E3a on the training rigs, then the freeze commit (model choices, coefficients, scope, bounds), then E3b on the hold-out rig against that commit. | 0.6–0.9k | B1 recordings |
 | B3 | Rust body model | Read and validate `m_HumanBoneMass`; E0 checks; the centre of mass, frame and closed-form hips solve; the free-combination refusal; synthetic tests and fuzz targets for the new reads | 0.5–0.7k | B2 (E3b passing) and E2 passing |
 | B4 | Root projection and frames | Target body pose per verified 2.4 combination, conversion from the Animator to the hips parent with scale, narrowed refusals | 0.4–0.6k | B3, F4, F5 |

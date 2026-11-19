@@ -21,9 +21,9 @@ import scratch  # noqa: E402
 G = tolerance.g
 
 
-def row(name, column, jacobian, epsilon, tau, fit=True):
-    return dict(name=name, local=0, fit=fit, epsilon=epsilon, tau=tau, columns={"Hips>Spine": column},
-                jacobian={"Hips>Spine": jacobian})
+def row(name, column, jacobian, epsilon, tau, evaluation=0., fit=True):
+    return dict(name=name, local=0, fit=fit, epsilon=epsilon, tau=tau, evaluation=evaluation,
+                columns={"Hips>Spine": column}, jacobian={"Hips>Spine": jacobian})
 
 
 def checkpoint(rows):
@@ -46,27 +46,31 @@ class LinearAlgebraTests(unittest.TestCase):
         self.assertLess(min(sigma), max(sigma) * 1e-13)
 
     def test_uncertainty_is_the_block_norm_of_the_pseudo_inverse(self):
-        # One coefficient: A_w^+ = A_w^T / |A_w|^2, one block, so u = |J| |A_w| / |A_w|^2 = |J| / |A_w|.
-        report = checkpoint([row("r", (1., 2., 0.), (.5, 0., 0.), .5, 1.)])
+        # One coefficient: A_w^+ = A_w^T / |A_w|^2, one block, so u = |J| |A_w| / |A_w|^2 = |J| / |A_w|,
+        # against tau - E_eval = 1 - .25.
+        report = checkpoint([row("r", (1., 2., 0.), (.5, 0., 0.), .5, 1., .25)])
         weighted = math.hypot(2., 4.)
         self.assertEqual((report["rank"], report["condition"]), (1, 1))
-        self.assertAlmostEqual(report["worst_ratio"], (.5 / weighted) / .5, places=15)
+        self.assertAlmostEqual(report["worst_margin"], .75 / (.5 / weighted), places=13)
+        self.assertEqual(report["margins"]["p0"], report["worst_margin"])
 
     def test_the_direct_check_needs_no_tau_against_epsilon_veto(self):
         # Sample b's own row is weak, but a's strong row pins the coefficient:
         # A_w^+ = (1, .1) / 1.01 over the two blocks, so u_b = .1 (1 + .1) / 1.01 = .109,
-        # within tau_b / 2 = .125, though tau_b < 2 epsilon_b.
-        rows = [row("a", (1., 0., 0.), (1., 0., 0.), 1., 4.), row("b", (.1, 0., 0.), (.1, 0., 0.), 1., .25)]
+        # within tau_b - E_eval,b = .15, though tau_b < 2 epsilon_b.
+        rows = [row("a", (1., 0., 0.), (1., 0., 0.), 1., 4.), row("b", (.1, 0., 0.), (.1, 0., 0.), 1., .25, .1)]
         report = checkpoint(rows)
         self.assertEqual(report["uncertainty_failures"], [])
         self.assertTrue(adequacy.adequate(report))
         self.assertLess(rows[1]["tau"], 2 * rows[1]["epsilon"])
-        self.assertAlmostEqual(report["worst_ratio"], max(1.1 / 1.01 / 2, .11 / 1.01 / .125), places=12)
+        self.assertAlmostEqual(report["worst_margin"], min(4 / (1.1 / 1.01), .15 / (.11 / 1.01)), places=12)
 
     def test_a_short_design_is_reported_short(self):
-        report = checkpoint([row("weak", (.1, 0., 0.), (.1, 0., 0.), 1., 1.)])
+        # u = .1 / .1 = 1: within tau alone, but not once E_eval takes its share.
+        self.assertEqual(checkpoint([row("weak", (.1, 0., 0.), (.1, 0., 0.), 1., 1.)])["uncertainty_failures"], [])
+        report = checkpoint([row("weak", (.1, 0., 0.), (.1, 0., 0.), 1., 1., .5)])
         self.assertEqual(len(report["uncertainty_failures"]), 1)
-        self.assertAlmostEqual(report["worst_ratio"], 1 / .5)
+        self.assertAlmostEqual(report["worst_margin"], .5)
         self.assertFalse(adequacy.adequate(report))
 
     def test_the_jacobian_is_the_hips_local_derivative_through_a_turned_scaled_parent(self):
@@ -163,6 +167,18 @@ class ToleranceTests(unittest.TestCase):
             tolerance.frame_error(dict(zip(tolerance.FRAME_BONES, ((0, 2, 0), (0, 3, 0), (0, -2, 0), (0, -1, 0)))),
                                   errors)
 
+    def test_the_model_evaluation_is_the_f64_path_and_one_output_rounding(self):
+        self.assertEqual(G("solve", 1, tolerance.U64), 8 * 2. ** -53 / (1 - 8 * 2. ** -53))
+        doc = replay.read_json(json.dumps(body_doc("body-probes-compact", RUN, samples=1)))
+        parents, masses = adequacy.bone_table([doc])
+        sample = next(adequacy.samples("body-probes-compact", doc, parents, masses))
+        hips = doc["spec"]["nodes"].index(next(node for node in doc["spec"]["nodes"] if node["name"] == "Hips"))
+        local = tolerance.decode(doc["capture"]["samples"][0]["pose"]["transforms"][hips]["translation"], 3,
+                                 replay.f32_from_bits)
+        rounding = tolerance.U32 * tolerance.norm(local)
+        self.assertGreater(sample["evaluation"], rounding)
+        self.assertLess(sample["evaluation"], rounding + sample["tau"] * 2. ** -25)
+
     def test_bounds_are_positive_and_grow_with_depth(self):
         doc = body_doc("body-probes-compact", RUN, samples=1)
         nodes, sample = doc["spec"]["nodes"], doc["capture"]["samples"][0]
@@ -198,8 +214,12 @@ class CheckpointTests(unittest.TestCase):
     def probes(self):
         return [name for name, info in body.BODY_INFO.items() if info["kind"] == "probes"]
 
+    def design(self):
+        # Ten samples of each probe case reach the trunk probes; the targets' combined vectors move the limbs.
+        return self.probes() + ["body-chain-armature-clip", "body-targets-tall-offset"]
+
     def test_every_rig_gives_full_rank_and_the_whole_inventory(self):
-        self.record(self.probes() + ["body-chain-armature-clip", "body-targets-tall-offset"])
+        self.record(self.design())
         code, report, text = self.run_checkpoint()
         self.assertIn(code, (0, 1))
         self.assertEqual(report["coverage"]["missing"], [])
@@ -213,7 +233,7 @@ class CheckpointTests(unittest.TestCase):
 
     def test_a_coplanar_branch_stays_free(self):
         with mock.patch.object(support, "NONCOPLANAR", {"noncoplanar"}):
-            self.record(self.probes())
+            self.record(self.design())
         code, report, _ = self.run_checkpoint()
         self.assertEqual(code, 1)
         self.assertEqual(report["rank"], len(report["coefficients"]) - 1)

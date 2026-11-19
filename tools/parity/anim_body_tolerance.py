@@ -49,6 +49,14 @@ parent's units:
 
 `tau = (target_error + E_ch + |dH| M_h + gamma32(solve)(h|T_A| + M_h)
 + gamma32(local)(h|T_A| + M_h + |t_p|)) / sigma_p`.
+
+**E_eval (`evaluation_error`).** The model's own error at a sample, with
+the fitted coefficients taken as exact: B2's f64 reference (E3) runs the
+same path from the recorded f32 rotations and target, so each stage has
+the same rounding count at u = 2^-53 (flush 2^-1022), with `h T_A` one f64
+product; storing the hips translation as f32 adds `u |t_hips|`. These are
+the model's roundings, not Unity's, so neither is in `tau`'s count. The
+checkpoint holds the coefficient uncertainty to `tau_s - E_eval,s`.
 """
 
 import math
@@ -57,6 +65,8 @@ from anim_reference import gamma, multiply
 
 U32 = 2. ** -24
 FLUSH = 2. ** -126
+# The model's own evaluation: f64 throughout, from the recorded f32 inputs.
+U64, FLUSH64 = 2. ** -53, 2. ** -1022
 # Roundings per stage of the operation model, each counted once.
 OPERATIONS = {
     "level": 24,      # one link: quaternion-vector rotate (18), scale (3), add (3)
@@ -78,8 +88,8 @@ BODY_SLOTS = frozenset(NAMES)
 FRAME_BONES = ("LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg")
 
 
-def g(stage, times=1):
-    return gamma(OPERATIONS[stage] * times, U32)
+def g(stage, times=1, unit=U32):
+    return gamma(OPERATIONS[stage] * times, unit)
 
 
 def ordered(names):
@@ -200,16 +210,16 @@ def folded_masses(masses, parents, mapped):
     return {name: mass / total for name, mass in folded.items()}
 
 
-def fk_error(depth, length):
-    """Unity's f32 forward kinematics of one bone `depth` links and `length` from its origin."""
-    return g("level", depth) * length + OPERATIONS["level"] * depth * FLUSH
+def fk_error(depth, length, unit=U32):
+    """Forward kinematics of one bone `depth` links and `length` from its origin, in f32 (Unity) or f64."""
+    return g("level", depth, unit) * length + OPERATIONS["level"] * depth * (FLUSH if unit == U32 else FLUSH64)
 
 
 def position_error(frame):
     return fk_error(frame.depth, frame.length)
 
 
-def com_error(positions, masses, links, errors):
+def com_error(positions, masses, links, errors, unit=U32):
     """The centre of mass's error bound and magnitude M, given each bone's position and error.
 
     `positions` and `errors` are by bone name, about the frame the sum runs in."""
@@ -222,7 +232,7 @@ def com_error(positions, masses, links, errors):
         total += mass * ((1 + len(kids)) * errors[i] + sum(errors[j] for j in kids))
         magnitude += mass * ((1 + len(kids)) * norm(positions[i]) + sum(norm(positions[j]) for j in kids))
     widest = max(map(len, children.values()), default=0)
-    return total + gamma(widest + 2 * len(masses) + 5, U32) * magnitude, magnitude
+    return total + gamma(widest + 2 * len(masses) + 5, unit) * magnitude, magnitude
 
 
 def measurement_tolerance(world_bones, masses, links, human_scale, world, root_translation, root_scale):
@@ -244,7 +254,7 @@ def readback_error(human_scale, world, root_translation, root_scale):
             + g("readback") * (human_scale * norm(world) + norm(root_translation))) / root_scale
 
 
-def frame_error(points, errors):
+def frame_error(points, errors, unit=U32):
     """A bound on the Frobenius change of 2.2's frame F = (right, up, forward) from
     position errors of the upper arms and legs, through both normalizations."""
     ul, ur, ll, lr = (points[name] for name in FRAME_BONES)
@@ -254,37 +264,47 @@ def frame_error(points, errors):
     lateral = tuple((b - a) + (d - c) for a, b, c, d in zip(ul, ur, ll, lr))
     if not norm(up) > 0:
         raise ValueError("degenerate body frame: no up vector")
-    d_up = 2 * (e / 2 + g("midpoint") * size / 2) / norm(up) + g("normalize")
+    d_up = 2 * (e / 2 + g("midpoint", 1, unit) * size / 2) / norm(up) + g("normalize", 1, unit)
     hat = tuple(v / norm(up) for v in up)
     cross = (lateral[1] * hat[2] - lateral[2] * hat[1], lateral[2] * hat[0] - lateral[0] * hat[2],
              lateral[0] * hat[1] - lateral[1] * hat[0])
     if not norm(cross) > 0:
         raise ValueError("degenerate body frame: lateral along up")
-    d_cross = e + g("lateral") * size + norm(lateral) * d_up + 2 * g("cross") * norm(lateral)
-    d_forward = 2 * d_cross / norm(cross) + g("normalize")
-    d_right = d_up + d_forward + 2 * g("cross")
+    d_cross = e + g("lateral", 1, unit) * size + norm(lateral) * d_up + 2 * g("cross", 1, unit) * norm(lateral)
+    d_forward = 2 * d_cross / norm(cross) + g("normalize", 1, unit)
+    d_right = d_up + d_forward + 2 * g("cross", 1, unit)
     return math.sqrt(d_right ** 2 + d_up ** 2 + d_forward ** 2)
 
 
-def about_hips(bones):
-    """Positions about the hips and Unity's error bounds below the hips, by bone name."""
+def about_hips(bones, unit=U32):
+    """Positions about the hips and the error bounds of forward kinematics below the hips, by bone name."""
     hips = bones["Hips"]
     positions = {name: sub(frame.position, hips.position) for name, frame in bones.items()}
-    errors = {name: fk_error(frame.depth - hips.depth, max(frame.length - hips.length, 0.))
+    errors = {name: fk_error(frame.depth - hips.depth, max(frame.length - hips.length, 0.), unit)
               for name, frame in bones.items()}
     return positions, errors
 
 
-def hips_tolerance(bones, rest_bones, masses, links, human_scale, target, target_error, hips_parent):
+def hips_tolerance(bones, rest_bones, masses, links, human_scale, target, target_error, hips_parent, unit=U32):
     """tau for one sample's hips-local translation (in the hips parent's units).
 
     `bones` and `rest_bones` are the sample's and the T-pose's Frames in A,
     `target` the body position in A (normalized) with `target_error` bounding
     `h T_A`, and `hips_parent` the hips parent's Frame in A."""
-    positions, errors = about_hips(bones)
-    error, magnitude = com_error(positions, masses, links, errors)
-    turn = frame_error(positions, errors) + frame_error(*about_hips(rest_bones)) + g("rotation")
+    positions, errors = about_hips(bones, unit)
+    error, magnitude = com_error(positions, masses, links, errors, unit)
+    rest = frame_error(*about_hips(rest_bones, unit), unit)
+    turn = frame_error(positions, errors, unit) + rest + g("rotation", 1, unit)
     body = human_scale * norm(target)
-    total = (target_error + error + turn * magnitude + g("solve") * (body + magnitude)
-             + g("local") * (body + magnitude + norm(hips_parent.position)))
+    total = (target_error + error + turn * magnitude + g("solve", 1, unit) * (body + magnitude)
+             + g("local", 1, unit) * (body + magnitude + norm(hips_parent.position)))
     return total / hips_parent.scale
+
+
+def evaluation_error(bones, rest_bones, masses, links, human_scale, target, hips_parent, hips_local):
+    """E_eval at one sample (module docstring): `tau`'s operation counts at
+    u = 2^-53 from an exactly recorded target, plus one f32 rounding of the
+    hips translation."""
+    path = hips_tolerance(bones, rest_bones, masses, links, human_scale, target,
+                          U64 * human_scale * norm(target), hips_parent, U64)
+    return path + U32 * norm(hips_local)

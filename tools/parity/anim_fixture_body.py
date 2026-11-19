@@ -55,7 +55,7 @@ PROBE_GROUPS = (
     *((side + "Eye", (f"{side} Eye Down-Up", f"{side} Eye In-Out")) for side in SIDES),
     ("Jaw", ("Jaw Close", "Jaw Left-Right")),
 )
-PROBE_VALUES = (.6, -.5, .4)
+PROBE_VALUES = (1, -.9, .8)
 COMBINED_VALUES = ((.3, -.2, .25, -.35, .15), (-.25, .4, -.15, .2, -.3), (.2, .2, -.3, -.1, .35))
 TARGETS = (((.05, -.03, .04), (12, -20, 7)), ((-.04, .02, -.06), (-9, 35, -11)))
 # The P2b known vectors at 0, .5 and 1: neutral, single-axis, noncommuting.

@@ -81,8 +81,9 @@ static partial class UnityrsFixtureBuilder
         new[] { "RightEye", "Right Eye Down-Up", "Right Eye In-Out" },
         new[] { "Jaw", "Jaw Close", "Jaw Left-Right" },
     };
-    // A probe sets one muscle to the value for its place in the group.
-    static readonly float[] ProbeValues = { .6f, -.5f, .4f };
+    // A probe sets one muscle to the value for its place in the group: near
+    // the muscle's limits, so each probe turns its edges as far as it can.
+    static readonly float[] ProbeValues = { 1f, -.9f, .8f };
     // Three noncommuting vectors over every probe muscle of the rig, cycling these values.
     static readonly float[][] CombinedValues = {
         new[] { .3f, -.2f, .25f, -.35f, .15f }, new[] { -.25f, .4f, -.15f, .2f, -.3f }, new[] { .2f, .2f, -.3f, -.1f, .35f }

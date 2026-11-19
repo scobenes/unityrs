@@ -14,12 +14,15 @@ read from its `.pending.json`. The checkpoint, with B1's own tolerances
    block weighted by 1/epsilon, since epsilon bounds the Euclidean norm of
    that sample's residual.
 2. For every body sample, hold-out and P2b humanoid sample, each component
-   k of the propagated coefficient uncertainty against half the hips
-   budget (2.5's split, the other half for the model's own evaluation):
-   u_s,k = sum over blocks b of ||(J_s A_w^+)_k,b||_2 <= tau_s / 2, where J_s
-   is the full sensitivity of the hips-local translation to the
-   coefficients, through the hips parent's rotation and scale. The bound
-   holds for any residual within its blocks' epsilon.
+   k of the propagated coefficient uncertainty against what the model's
+   own evaluation leaves of the hips budget (2.5's derived split):
+   u_s,k = sum over blocks b of ||(J_s A_w^+)_k,b||_2 <= tau_s - E_eval,s,
+   where J_s is the full sensitivity of the hips-local translation to the
+   coefficients, through the hips parent's rotation and scale, and E_eval,s
+   bounds the model's evaluation at s with the fitted coefficients
+   (anim_body_tolerance.evaluation_error). The bound holds for any residual
+   within its blocks' epsilon. The report gives each sample's margin
+   (tau_s - E_eval,s) / u_s and their distribution.
 3. The coefficient inventory: each sample's edges, from the recorded
    hierarchy, must be those HumanTrait's parents give its mapped bones, and
    every edge of the F1 and F6 training rigs must have fitting rows.
@@ -43,8 +46,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import anim_replay as replay  # noqa: E402
-from anim_body_tolerance import (BODY_SLOTS, U32, bone_frames, decode, edges, folded_masses,  # noqa: E402
-                                 hips_tolerance, kinematics, measurement_tolerance, norm, ordered, readback_error,
+from anim_body_tolerance import (BODY_SLOTS, U32, bone_frames, decode, edges, evaluation_error,  # noqa: E402
+                                 folded_masses, hips_tolerance, kinematics, measurement_tolerance, norm, ordered, readback_error,
                                  recorded_edges, rotate)
 from anim_fixture_body import BODY_INFO, HOLDOUT, PROBE_RIGS, rig_bones  # noqa: E402
 
@@ -101,8 +104,10 @@ def samples(name, doc, parents, masses):
             target = tuple(sum(weights[b] * bones[b].position[k] for b in ordered(bones)) / scale for k in range(3))
             target_error = U32 * scale * norm(target)
         tau = hips_tolerance(bones, rest, weights, links, scale, target, target_error, parent)
+        hips_local = decode(transforms[index[hips_address]]["translation"], 3, F32)
+        evaluation = evaluation_error(bones, rest, weights, links, scale, target, parent, hips_local)
         row = dict(name=name, local=sample["local"], rig=info["rig"] if info else "p2b", columns=columns,
-                   jacobian=jacobian, tau=tau, fit=False, epsilon=None,
+                   jacobian=jacobian, tau=tau, evaluation=evaluation, fit=False, epsilon=None,
                    edges=None if links == expected else f"recorded {links} but HumanTrait gives {expected}")
         if readback is not None:
             world_bones = bone_frames(human["bones"], nodes, kinematics(nodes, transforms, F32, "", include_base=True))
@@ -168,7 +173,7 @@ def jacobi_svd(matrix, width, sweeps=60):
 
 def adequacy(rows, coverage, inventory=()):
     report = {"coverage": coverage, "coefficients": [], "rank": 0, "condition": None, "free": [],
-              "uncertainty_failures": [], "untrained": [], "worst_ratio": None,
+              "uncertainty_failures": [], "untrained": [], "worst_margin": None, "margins": {},
               "edge_mismatches": sorted({f"{row['name']}: {row['edges']}" for row in rows if row.get("edges")})}
     fitting = [row for row in rows if row["fit"]]
     keys = sorted({key for row in fitting for key in row["columns"]})
@@ -192,17 +197,23 @@ def adequacy(rows, coverage, inventory=()):
     # A_w^+ = (A_w^T A_w)^+ A_w^T, with (A_w^T A_w)^+ = V diag(1/sigma^2) V^T over the kept singular values.
     gram = [[sum(vectors[k][i] * vectors[k][j] / sigma[k] ** 2 for k in kept) for j in range(width)]
             for i in range(width)]
-    failures, untrained, worst = [], [], 0.
+    failures, untrained, margins = [], [], []
     for row in rows:
         if not row["jacobian"].keys() <= set(keys):
             untrained.append(f"{row['name']}@{row['local']}: {sorted(row['jacobian'].keys() - set(keys))}")
             continue
         u = max(uncertainty([row["jacobian"].get(key, (0., 0., 0.))[k] for key in keys], gram, design)
                 for k in range(3))
-        worst = max(worst, u / (row["tau"] / 2))
-        if u > row["tau"] / 2:
-            failures.append(f"{row['name']}@{row['local']}: u={u:.3e} tau/2={row['tau'] / 2:.3e}")
-    report.update(uncertainty_failures=failures, untrained=untrained, worst_ratio=worst)
+        budget = row["tau"] - row["evaluation"]
+        margin = budget / u if u > 0 else math.inf
+        margins.append(margin)
+        if not margin >= 1:
+            failures.append(f"{row['name']}@{row['local']}: u={u:.3e} tau-E_eval={budget:.3e}")
+    finite = sorted(m for m in margins if math.isfinite(m))
+    report.update(uncertainty_failures=failures, untrained=untrained,
+                  worst_margin=finite[0] if finite else None,
+                  margins={f"p{q}": finite[min(len(finite) - 1, q * len(finite) // 100)] for q in (0, 1, 5, 25, 50)}
+                  if finite else {})
     return report
 
 
@@ -261,7 +272,8 @@ def main(argv=None):
     if args.json:
         args.json.write_text(text, encoding="utf-8")
     print(f"rank {report.get('rank')}/{len(report.get('coefficients', []))}, condition {report.get('condition')}, "
-          f"{len(report.get('uncertainty_failures', []))} u_s failures, worst u_s/(tau_s/2) {report.get('worst_ratio')}, "
+          f"{len(report.get('uncertainty_failures', []))} u_s failures, worst margin (tau_s - E_eval,s)/u_s "
+          f"{report.get('worst_margin')}, margins {report.get('margins')}, "
           f"missing rigs {report['coverage']['missing']}, missing edges {report['missing_coefficients']}: "
           + ("adequate" if report["adequate"] else "short"))
     return 0 if report["adequate"] else 1

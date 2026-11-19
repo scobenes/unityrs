@@ -1032,8 +1032,9 @@ hips to keep the feet on the ground.
 (neutral, single-axis, noncommuting), so the Spine endpoint checks still
 hold. The probes fill each half at `.5 (k + 391/1024) / n`, rounded to a
 `2^-16` grid, so each time is exact in JSON and as an f32. A probe sets one
-muscle to .6, -.5 or .4 by its place in its group. The combined vectors
-cycle five values per probe muscle.
+muscle to 1, -.9 or .8 by its place in its group, near the muscle's limits,
+so each probe turns its edges as far as it can. The combined vectors cycle
+five values per probe muscle.
 
 **F3 targets.** The targets alternate two requests. One moves the rest
 body by `(.05, -.03, .04)` and tilts it by `Euler(12, -20, 7)`. The other
@@ -1157,6 +1158,13 @@ hips, the solve and the local conversion:
 `τ = (e_T + E_ch + (|dF_h| + |dF_T| + γ32(12)) M_h + γ32(8)(h|T_A| + M_h)
 + γ32(7)(h|T_A| + M_h + |t_p|)) / σ_p`.
 
+**`E_eval`.** The model's own error at a sample, with the fitted
+coefficients. B2's f64 reference runs the same path from the recorded f32
+rotations and target, so each stage keeps its rounding count at
+`u = 2^-53`, with `h T_A` one f64 product. Storing the hips translation as
+f32 adds `2^-24 |t_hips|`. These roundings are the model's, not Unity's, so
+`τ` does not count them.
+
 The tests check each piece against a hand computation.
 
 These are B1's bounds. B2 freezes its own and reruns the check if they
@@ -1183,8 +1191,10 @@ defaults from `human_bones`. The checkpoint reports:
    one-sided Jacobi SVD of its triangle. The numerical rank uses
    `σ_max · max(R, N) · 2^-52`, and the condition limit is `1e6`. Each null
    direction is listed as a free combination.
-2. **`u_s ≤ τ_s / 2`**, per component of the hips translation, on every body
-   sample (the hold-out included) and every P2b humanoid recording.
+2. **`u_s ≤ τ_s − E_eval,s`**, per component of the hips translation, on
+   every body sample (the hold-out included) and every P2b humanoid
+   recording. The report lists each failure and the distribution of the
+   margins `(τ_s − E_eval,s) / u_s`.
    - `u_s` sums, over the blocks, the 2-norm of each block of `J_s A_w⁺`.
    - `J_s` is the full sensitivity `−σ_p⁻¹ R_p⁻¹ m_i (p_ij − p_i)` through
      the hips parent's rotation and scale.

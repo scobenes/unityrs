@@ -6,13 +6,12 @@ the adequacy checkpoint sees a consistent fit.
 """
 
 import copy
-import random
 
 from test_anim_replay import bits
 
 import anim_body_tolerance as tolerance  # noqa: E402  (test_anim_replay puts it on the path)
 from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CLIP_VARIANTS,  # noqa: E402
-                               distinguishing_curves, PROBE_GROUPS, PROBE_RIGS, START_OFFSET, START_YAW, TARGETS,
+                               distinguishing_curves, PROBE_GROUPS, PROBE_RIGS, SPINE, START_OFFSET, START_YAW, TARGETS,
                                expected_case_row,
                                probe_schedule)
 from anim_reference import euler, multiply  # noqa: E402
@@ -32,6 +31,19 @@ MASSES = {name: .02 + .01 * (i % 7) for i, name in enumerate(tolerance.NAMES)}
 PROBE_MUSCLES = tuple(muscle for _, group in PROBE_GROUPS for muscle in group)
 MUSCLES = (*PROBE_MUSCLES, *(f"Other muscle {i}" for i in range(95 - len(PROBE_MUSCLES))))
 COEFFICIENT = .4
+# A stand-in for the muscle-to-rotation map: each probe muscle turns its bone
+# about one local axis, by its value times its default limit in degrees
+# (HumanTrait.GetMuscleDefaultMin below zero, GetMuscleDefaultMax above).
+MUSCLE_LIMITS = {
+    "Spine": (-40, 40), "Chest": (-40, 40), "UpperChest": (-20, 20), "Neck": (-40, 40), "Head": (-40, 40),
+    "Upper Leg Front-Back": (-90, 50), "Upper Leg In-Out": (-60, 60), "Lower Leg Stretch": (-80, 80),
+    "Foot Up-Down": (-50, 50), "Toes Up-Down": (-50, 50), "Shoulder Down-Up": (-15, 30),
+    "Shoulder Front-Back": (-15, 15), "Arm Down-Up": (-60, 100), "Arm Front-Back": (-100, 100),
+    "Forearm Stretch": (-80, 80), "Hand Down-Up": (-80, 80), "Hand In-Out": (-40, 40),
+    "Eye Down-Up": (-10, 15), "Eye In-Out": (-20, 20), "Jaw": (-10, 10),
+}
+GROUP_AXES = {3: "XZY", 2: "XZ", 1: "X"}
+ARM_AXES = {"Shoulder": "ZY", "UpperArm": "ZY", "LowerArm": "Y", "Hand": "ZY", "Eye": "XY", "Jaw": "XY"}
 # The rigs whose hip and shoulder children leave the plane, as the builder's.
 NONCOPLANAR = {"noncoplanar", "no-chest"}
 
@@ -100,19 +112,57 @@ def rig_nodes(rig):
     return [dict(address=a, name=n) for a, n in nodes], rest, top
 
 
-def body_doc(name, run, *, seed=1, samples=None):
-    """A pending body recording with consistent read-back rows; `samples` limits the count."""
+def muscle_axes():
+    """Each probe muscle's bone and axis."""
+    axes = {}
+    for bone, group in PROBE_GROUPS:
+        part = next((key for key in ARM_AXES if bone.endswith(key)), None)
+        letters = ARM_AXES[part] if part else GROUP_AXES[len(group)]
+        axes.update({muscle: (bone, "XYZ".index(axis)) for muscle, axis in zip(group, letters)})
+    return axes
+
+
+AXES = muscle_axes()
+
+
+def limits(muscle):
+    """A muscle's default (min, max) in degrees."""
+    name = muscle.removeprefix("Left ").removeprefix("Right ")
+    return next(value for key, value in MUSCLE_LIMITS.items() if name.startswith(key + " ") or name == key)
+
+
+def spine_vector(t):
+    """The P2b known vectors' spine muscles along a clip, as an Editor clip plays them."""
+    alpha = 2 * t - 1
+    return (t, 0, 0) if t <= .5 else (.5 - .75 * alpha, .375 * alpha, -.5 * alpha)
+
+
+def pose_rotations(vector):
+    """Local rotations by bone from a muscle vector over MUSCLES."""
+    angles = {}
+    for muscle, value in zip(MUSCLES, vector):
+        if value and muscle in AXES:
+            bone, axis = AXES[muscle]
+            turn = angles.setdefault(bone, [0., 0., 0.])
+            turn[axis] += value * limits(muscle)[value > 0]
+    return {bone: euler(turn, 4) for bone, turn in angles.items()}
+
+
+def body_doc(name, run, *, samples=None):
+    """A pending body recording posed by its muscle vectors, with consistent read-back rows.
+
+    `samples` limits the count."""
     info = BODY_INFO[name]
     rig, kind = info["rig"], info["kind"]
     nodes, rest, _ = rig_nodes(rig)
     index = {node["name"]: i for i, node in enumerate(nodes)}
     if kind == "clip":
+        spine = [MUSCLES.index(muscle) for muscle in SPINE]
         schedule = [(t, None) for t in (0, .25 * 391 / 1024, .25, .5, .75, 1)]
     else:
         schedule = probe_schedule(rig, MUSCLES, kind == "targets")
     if samples:
         schedule = schedule[:samples]
-    rng = random.Random(seed)
     human_bones = [dict(name=b, node=index.get(b, -1), required=b in ("Hips", "Spine")) for b in BONES]
     parents = {b: PARENT.get(b) for b in BONES}
     table = [dict(name=b, parent=BONES.index(parents[b]) if parents[b] else -1, mass=bits(MASSES.get(b, 0.)),
@@ -121,21 +171,27 @@ def body_doc(name, run, *, seed=1, samples=None):
     rows, samples_out, targets = [], [], []
     for t, vector in schedule:
         pose = copy.deepcopy(rest)
-        for bone, i in index.items():
-            if bone in PARENT and bone != "Hips":
-                angles = tuple(rng.uniform(-25, 25) for _ in range(3))
-                pose[i]["rotation"] = [bits(v) for v in euler(angles, 4)]
-        frames = tolerance.kinematics(nodes, pose, replay.f32_from_bits)
-        bones = tolerance.bone_frames(human_bones, nodes, frames)
-        links = tolerance.edges(parents, set(bones))
-        weights = tolerance.folded_masses(masses, parents, set(bones))
-        c = [sum(weights[b] * bones[b].position[k] for b in bones) for k in range(3)]
-        for i, j in links:
-            for k in range(3):
-                c[k] += COEFFICIENT * weights[i] * (bones[j].position[k] - bones[i].position[k])
-        readback = [bits(v) for v in c]
-        rows.append(dict(readback_position=readback, readback_rotation=[bits(0)] * 3 + [bits(1)],
-                         world_position=readback, world_rotation=[bits(0)] * 3 + [bits(1)],
+        muscles = vector
+        if muscles is None:
+            muscles = [0.] * len(MUSCLES)
+            for i, value in zip(spine, spine_vector(t)):
+                muscles[i] = value
+        for bone, rotation in pose_rotations(muscles).items():
+            if bone in index:
+                pose[index[bone]]["rotation"] = [bits(v) for v in rotation]
+
+        def centre(base, include):
+            frames = tolerance.kinematics(nodes, pose, replay.f32_from_bits, base, include_base=include)
+            bones = tolerance.bone_frames(human_bones, nodes, frames)
+            weights = tolerance.folded_masses(masses, parents, set(bones))
+            c = [sum(weights[b] * bones[b].position[k] for b in tolerance.ordered(bones)) for k in range(3)]
+            for i, j in tolerance.edges(parents, set(bones)):
+                for k in range(3):
+                    c[k] += COEFFICIENT * weights[i] * (bones[j].position[k] - bones[i].position[k])
+            return [bits(v) for v in c]
+
+        rows.append(dict(readback_position=centre("0", False), readback_rotation=[bits(0)] * 3 + [bits(1)],
+                         world_position=centre("", True), world_rotation=[bits(0)] * 3 + [bits(1)],
                          **dict.fromkeys(("root_position", "root_rotation", "body_position", "body_rotation"),
                                          [bits(0)] * 3 if kind == "clip" else [])))
         if kind == "clip":
