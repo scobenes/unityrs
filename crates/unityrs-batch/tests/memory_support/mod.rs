@@ -13,10 +13,11 @@ use std::{
     time::Instant,
 };
 use unityrs_batch::{
-    alloc::Hook,
-    bound,
+    alloc::{Hook, Measured},
+    bound::{self, SELECTED},
     progress::Phase,
     run::hooks::memory::{self, Point},
+    spec::model::{Sink as SpecSink, Spec},
 };
 use unityrs_core::limits::heap_cost;
 use unityrs_testkit::{
@@ -85,6 +86,7 @@ pub struct Config {
 static CONFIG: OnceLock<Config> = OnceLock::new();
 static BOUND: AtomicU64 = AtomicU64::new(u64::MAX);
 static ALLOWANCE: AtomicU64 = AtomicU64::new(u64::MAX);
+static EXPECTED: AtomicU64 = AtomicU64::new(u64::MAX);
 static SPEC: AtomicU64 = AtomicU64::new(0);
 static FROZEN: AtomicU64 = AtomicU64::new(0);
 static IO_HELD: AtomicBool = AtomicBool::new(false);
@@ -230,7 +232,11 @@ pub fn start(config: Config) {
     POST_STAGE.arm(u64::MAX);
     register();
 }
-pub fn selected(b: bound::Bound, workers: u32, phase1_peak: u64) {
+pub fn selected(b: bound::Bound, spec: &Spec, phase1: Measured) {
+    let workers = spec.threads;
+    if CONFIG.get().unwrap().inject {
+        EXPECTED.store(expected_allowance(spec, phase1), SeqCst);
+    }
     SPEC.store(b.c_spec, SeqCst);
     BOUND.store(b.total(), SeqCst);
     // Stacks are not Rust heap. Input/phase/finisher charges are observed;
@@ -243,7 +249,54 @@ pub fn selected(b: bound::Bound, workers: u32, phase1_peak: u64) {
         + b.c_base
         + u64::from(workers) * (bound::WORKER_STATE + bound::PANIC_SLOT);
     ALLOWANCE.store(uncharged, SeqCst);
-    assert!(phase1_peak <= b.total());
+    assert!(phase1.peak <= b.total());
+}
+
+/// The negative control's own figure for the residual allowance, restated
+/// from `batch.md` 5.1 and 5.3 over the spec, phase 1's measure and
+/// [`SELECTED`]. It never reads `ALLOWANCE` or the selected [`bound::Bound`],
+/// so a gate allowance that grows (by unused admission capacity `I`, say)
+/// does not grow the injected holder with it. The control's scene is a
+/// directory run with no header, credential or key: its `C_hdr` is zero.
+fn expected_allowance(spec: &Spec, phase1: Measured) -> u64 {
+    const KIB: u64 = 1 << 10;
+    assert!(
+        !matches!(spec.sink, SpecSink::ObjectStore(_))
+            && spec.unitycn_key.is_none()
+            && spec.bundles().all(|b| b.headers().next().is_none()),
+        "the negative control's scene must have no C_hdr"
+    );
+    let threads = u64::from(spec.threads);
+    let dc = u64::from(spec.download_concurrency);
+    let pool = 2 * (dc + 1);
+    let sockets = 2 * dc + 1;
+    let c_env = threads * (SELECTED.c_env + u64::from(spec.max_view_bundles) * KIB);
+    let c_net = sockets * (SELECTED.c_net + 64 * KIB) + dc * (2 << 20);
+    let c_parse = phase1
+        .peak
+        .saturating_sub(phase1.kept + spec.max_inflight_uncompressed_bytes + bound::C_FIN);
+    let c_base = SELECTED.c_base
+        + threads * (SELECTED.m_thread + SELECTED.m_dispatch + SELECTED.m_end)
+        + pool * SELECTED.m_pool
+        + dc * 2080
+        + 16 * KIB
+        + spec.archives.len() as u64 * 160;
+    let workers = threads * (bound::WORKER_STATE + bound::PANIC_SLOT);
+    c_env + c_net + phase1.kept + c_parse + c_base + workers
+}
+
+/// An allocation admission should have charged and did not, made on a
+/// counted engine thread as phase 5 opens (its slots are reserved against
+/// `I`, 5.1 step 2) and held through exit. Sized past the expected
+/// allowance by a margin for ledger variation, and well under `I`, so an
+/// allowance that also counted unused admission capacity would hide it.
+fn inject_uncharged() {
+    assert!(counted::counted(), "injected holder on an uncounted thread");
+    let bytes = usize::try_from(EXPECTED.load(SeqCst) + (16 << 20)).unwrap();
+    let mut leak = Vec::new();
+    leak.try_reserve_exact(bytes).unwrap();
+    leak.resize(bytes, 0_u8);
+    std::mem::forget(std::hint::black_box(leak));
 }
 fn point(point: Point) {
     let config = CONFIG.get().unwrap();
@@ -255,6 +308,9 @@ fn point(point: Point) {
             if phase == Phase::Extract {
                 let (heap, charged) = POST_STAGE.arm(u64::MAX);
                 POST_BASE.store(heap - charged, SeqCst);
+                if config.inject {
+                    inject_uncharged();
+                }
             }
             CURRENT.store(phase as u64, SeqCst);
             PHASES.fetch_or(1 << phase as u32, SeqCst);
@@ -276,14 +332,6 @@ fn point(point: Point) {
         Point::Exit => {
             if REPORTED.swap(true, SeqCst) {
                 return;
-            }
-            if config.inject {
-                // A deliberately uncharged holder, kept through exit. It
-                // exceeds the residual allowance even though I is much larger.
-                let mut leak = Vec::new();
-                leak.try_reserve_exact(64 << 20).unwrap();
-                leak.resize(64 << 20, 0_u8);
-                std::mem::forget(std::hint::black_box(leak));
             }
             let o = HELD.observe();
             let whole = WHOLE.observe();
