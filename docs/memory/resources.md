@@ -63,8 +63,11 @@ official tally registrations and the allocation-free testkit ledger. Every
 allocation/charge transition contributes to a coherent maximum residual. It
 checks live held charges plus applicable uncharged terms separately from the
 whole bound. It never adds unused admission capacity to the residual allowance.
-The negative control sizes an uncharged holder above the residual allowance
-derived from the compiled selection. It exceeds that allowance while the
+The negative control allocates an uncharged holder as phase 5's admission
+opens and keeps it through exit. Its size is an expected allowance the test
+restates from 5.3's inputs and the compiled selection, never the gate's own
+allowance, plus a margin well under `I`. An allowance that also counted the
+unused `I` would let it pass. It exceeds the residual allowance while the
 whole-process peak stays below the total bound.
 Observation code is absent without `test-hooks` and never runs in a signal
 handler. Test-only report/hold descriptors are outside the measured heap.

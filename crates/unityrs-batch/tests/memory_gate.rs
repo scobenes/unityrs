@@ -517,6 +517,9 @@ fn every_phase_stop_keeps_the_counted_owners_through_exit() {
     }
 }
 
+/// The holder is a phase-5 allocation admission did not charge, sized from
+/// the support's independent expected allowance, not from the gate's. An
+/// allowance that also counted the unused `I` would let it pass.
 #[test]
 fn an_uncharged_holder_fails_even_with_unused_admission_capacity() {
     let report = run(&sample(), false, 1, 1, None, true);

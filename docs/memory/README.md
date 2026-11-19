@@ -68,8 +68,12 @@ threads and outstanding task cells require independent probes.
 Whole-run records combine a directly observed zero-deduction one-worker,
 one-download base with the five independent component increments, representation
 floors and fixed-envelope certificates from the matching synthetic axis. They
-must not understate that axis's component/floor/envelope evidence. This is
-explicitly mixed evidence, not six slopes fitted from a corpus run.
+must not understate that axis's component/floor/envelope evidence. When the
+same build's synthetic axis was also measured on another host, each component
+coefficient, floor and envelope is the maximum over every matching
+target/profile/sink record of that build. `c_base` stays the directly observed
+whole-run base. This is explicitly mixed evidence, not six slopes fitted from a
+corpus run.
 `whole_run_coverage` names both-builds, one-worker, eight-workers, resume, loose,
 archive, phase-seven and component-probes, plus store-roundtrip for a store
 record. All are required true in final mode, with store-roundtrip false and
