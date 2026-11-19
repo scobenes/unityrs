@@ -11,6 +11,7 @@ from anim_body_model_support import BITS, CLIPS, F32, avatar, coefficients, reco
 
 import anim_body_adequacy as adequacy  # noqa: E402  (test_anim_replay puts it on the path)
 import anim_body_check as check  # noqa: E402
+import anim_body_e4 as e4  # noqa: E402
 import anim_body_freeze as freeze  # noqa: E402
 import anim_body_model as model  # noqa: E402
 import anim_body_runs as runs  # noqa: E402
@@ -22,7 +23,8 @@ from anim_reference import euler, multiply  # noqa: E402
 CASES = ("body-probes-compact", "body-probes-no-upper-chest", "body-targets-tall", "body-chain-armature-targets",
          "body-chain-hips-scale-targets", "body-chain-scaled-animator-targets", "body-clip-keep-o0-y0-xz0",
          "body-clip-keep-o0-y0-xz0-start", "body-clip-bake-o1-y1-xz1-offset", "body-clip-level",
-         "body-clip-keep-o1-y1-xz1-motion", "body-clip-keep-o1-y0-xz0", "body-clip-height-from-feet")
+         "body-clip-keep-o1-y1-xz1-motion", "body-clip-keep-o1-y0-xz0", "body-clip-height-from-feet",
+         "body-chain-armature-clip")
 
 
 def hips_index(doc):
@@ -37,9 +39,9 @@ def clips(run, doc):
     return CLIPS[doc["spec"]["evidence"]["editor"]["fixture_case"]]
 
 
-def config(report, variant, root="identity"):
+def config(report, variant, root="identity", rig="compact"):
     """E4's entry for one configuration of the synthetic run."""
-    return report["configurations"][f"{variant}/{write_run.__defaults__[0]}/{root}"]
+    return report["configurations"][f"{variant}/{rig}/{write_run.__defaults__[0]}/{root}"]
 
 
 def checked(mode, folder, docs, avatar_of=avatars, clip_of=clips):
@@ -76,11 +78,13 @@ class Checks(unittest.TestCase):
         self.assertEqual(config(report, "keep-o1-y0-xz0")["status"], "refused")
         self.assertEqual(config(report, "height-from-feet")["status"], "undecided")
         self.assertEqual(report["start_pairs"], 6)
-        # Per configuration (variant, Editor version, root placement), naming exactly the passing ones.
+        # Per configuration (variant, rig, Editor version, root placement), naming exactly the passing ones: the
+        # F5 chain its own, apart from the compact clip of its variant.
         version = write_run.__defaults__[0]
-        self.assertEqual(report["passing"], [f"{variant}/{version}/{root}" for variant, root in (
-            ("bake-o1-y1-xz1", "offset"), ("keep-o0-y0-xz0", "identity"), ("keep-o1-y1-xz1-motion", "identity"),
-            ("level", "identity"))])
+        self.assertEqual(report["passing"], [f"{variant}/{rig}/{version}/{root}" for variant, rig, root in (
+            ("bake-o1-y1-xz1", "compact", "offset"), ("keep-o0-y0-xz0", "compact", "identity"),
+            ("keep-o1-y1-xz1-motion", "armature", "identity"), ("keep-o1-y1-xz1-motion", "compact", "identity"),
+            ("level", "compact", "identity"))])
         self.assertEqual(report["excluded"], [])
 
     def test_e4_excludes_a_configuration_without_read_back(self):
@@ -90,8 +94,12 @@ class Checks(unittest.TestCase):
         entry = config(report, "level")
         self.assertEqual((entry["status"], entry["samples"]), ("excluded", 0))
         self.assertGreater(entry["no_readback"], 0)
-        self.assertEqual(report["excluded"], [f"level/{write_run.__defaults__[0]}/identity"])
+        self.assertEqual(report["excluded"], [f"level/compact/{write_run.__defaults__[0]}/identity"])
         self.assertNotIn(report["excluded"][0], report["passing"])
+        # A chain without a comparison is excluded, never carried by its variant's passing compact clip.
+        report = self.run_mode("e4", self.edited("body-chain-armature-clip", unread))
+        self.assertEqual(config(report, "keep-o1-y1-xz1-motion", rig="armature")["status"], "excluded")
+        self.assertEqual(config(report, "keep-o1-y1-xz1-motion")["status"], "pass")
 
     def test_e0_refuses_or_fails_a_wrong_avatar(self):
         def edited(change):
@@ -359,7 +367,7 @@ class Checks(unittest.TestCase):
         folder = scratch.for_case(self)
         write_run(folder, self.docs)
         with mock.patch.object(runs, "REQUIRED", frozenset()):
-            rows = runs.observe(runs.load([folder], "training"), avatar_of=avatars)
+            rows = freeze.observed(runs.load([folder], "training"), avatars, clips)
         design = runs.Design(rows)
         fit = runs.solve(design)
         compared = [row for row in rows if not row.get("refused") and row["state"]["target_kind"] is not None]
@@ -375,6 +383,40 @@ class Checks(unittest.TestCase):
                         lambda limit: check.e2(rows, limit)["refused"]):
             self.assertTrue(0 < refused(cut) - refused(None) <= past)
             self.assertEqual(refused(values[-1]), refused(None))
+
+    def test_a_clip_sample_takes_its_lateral_value_from_its_built_clip(self):
+        # A built clip's spine Left-Right slot, sampled as playback does; an unbound muscle is 0.
+        attribute = body.MUSCLE_ATTRIBUTE + support.MUSCLES.index("Spine Left-Right")
+        stream = support.compiled([[("Spine Left-Right", attribute, (0, .5, 1), (0, 0, .375))]])
+        clip = {"m_MuscleClip": dict(m_Clip=stream["m_Clip"], m_IndexArray=stream["m_IndexArray"]),
+                "m_ClipBindingConstant": stream["m_ClipBindingConstant"]}
+        self.assertEqual(e4.clip_muscles(clip, list(support.MUSCLES), 1.),
+                         {"Spine Left-Right": .375, "Chest Left-Right": 0., "UpperChest Left-Right": 0.})
+        self.assertEqual(e4.clip_muscles(clip, list(support.MUSCLES), .5)["Spine Left-Right"], 0.)
+        self.assertAlmostEqual(e4.clip_muscles(clip, list(support.MUSCLES), .75)["Spine Left-Right"], .1875, 6)
+        # A clip sample records no applied muscles: unread, its lateral value refuses rather than reading 0.
+        folder = scratch.for_case(self)
+        write_run(folder, self.docs)
+        with mock.patch.object(runs, "REQUIRED", frozenset()):
+            loaded = runs.load([folder], "training")
+        clip_row = next(row for row in runs.observe(loaded, avatar_of=avatars) if row["case"] == "body-clip-level")
+        with self.assertRaisesRegex(ValueError, "a clip sample's muscles are unread"):
+            check.lateral_of(clip_row)
+        # Read from the clip, it decides the lateral scope as a known vector's does.
+        bent = dict.fromkeys(model.LATERAL_MUSCLES, 0.) | {"Spine Left-Right": .5}
+        with mock.patch.object(e4, "clip_muscles", return_value=bent):
+            rows = freeze.observed(loaded, avatars, clips)
+        fit = runs.solve(runs.Design(rows))
+        clipped = [row for row in rows if not row.get("refused") and "clip_muscles" in row["state"]
+                   and row["state"]["target_kind"] is not None]
+        self.assertTrue(clipped and all(check.lateral_of(row) == .5 for row in clipped))
+        design = runs.Design(rows)
+        compared = set()
+        check.e3(rows, design, fit, compared=compared)
+        within = [row for row in clipped if f"{row['name']}@{row['local']}" in compared]
+        self.assertTrue(within)
+        added = check.e3(rows, design, fit, .25)["refused"] - check.e3(rows, design, fit)["refused"]
+        self.assertTrue(len(within) <= added <= len(clipped))
 
     def test_e3a_takes_the_translations_below_the_hips_from_the_avatar(self):
         # Unity's playback writes m_SkeletonPose's translations, which the prefab's can miss by f32 rounding:

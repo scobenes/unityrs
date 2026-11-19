@@ -22,7 +22,7 @@ pose within:
 Each start-offset variant's read-back must match its twin's within both
 samples' epsilon and Unity's solve; a variant without its twin fails, and so
 does a run with no comparison. A cell 2.4 refuses or leaves undecided is
-listed, not evaluated. Results are per configuration (variant, Editor
+listed, not evaluated. Results are per configuration (variant, rig, Editor
 version, root placement), never pooled: a sample without a read-back is
 counted as excluded, and a configuration with nothing compared is excluded,
 never passing.
@@ -35,6 +35,7 @@ import anim_replay as replay
 from anim_body_check import solve_turn, verdict
 from anim_body_model import (
     ANGLE_FLOOR,
+    LATERAL_MUSCLES,
     Refused,
     Undecided,
     animator_body,
@@ -46,22 +47,23 @@ from anim_body_model import (
 )
 from anim_body_runs import F32
 from anim_body_tolerance import U32, U64, decode, gamma, hips_error, norm, readback_position, turn_sensitivity
-from anim_fixture_body import BODY_INFO, SERIALIZED_ROOT
+from anim_fixture_body import BODY_INFO, MUSCLE_ATTRIBUTE, SERIALIZED_ROOT
 from anim_fixture_contract import compiled_curves
 from anim_reference import angle, dense, normalize, streamed
 
 BODY_T, BODY_Q, MOTION_T, MOTION_Q = (7, 8, 9), (10, 11, 12, 13), (0, 1, 2), (3, 4, 5, 6)
 
 
-def runtime(clip):
-    """{DOF: (is_streamed, keys)} of the built clip's Animator slots, in storage order through m_IndexArray."""
+def runtime(clip, dofs=(*MOTION_T, *MOTION_Q, *BODY_T, *BODY_Q)):
+    """{DOF: (is_streamed, keys)} of the built clip's Animator slots `dofs`, in storage order through
+    m_IndexArray."""
     tracks = compiled_curves(clip, replay)
     bindings = clip.get("m_ClipBindingConstant", {}).get("genericBindings", [])
     replay.require(tracks and len(tracks) == len(bindings), "unreadable built clip slots")
     slots = [(key, track) for key, spans in tracks.items() for track in spans]
     index = clip["m_MuscleClip"].get("m_IndexArray") or []
     result = {}
-    for dof in (*MOTION_T, *MOTION_Q, *BODY_T, *BODY_Q):
+    for dof in dofs:
         slot = index[dof] if dof < len(index) and type(index[dof]) is int else -1
         if 0 <= slot < len(slots):
             replay.require(slots[slot][0] == (0, 95, dof, 8, False), f"built slot {slot} is not DOF {dof}")
@@ -92,6 +94,16 @@ def sample(track, grid, time):
     slope = abs((3 * c3 * dt + 2 * c2) * dt + c1)
     # Horner's rounding at its operands, and the clock's: dt = time - start rounds at their magnitude.
     return value, gamma(6, U32) * magnitude + slope * U32 * (abs(time) + abs(start))
+
+
+def clip_muscles(clip, names, time):
+    """The spine Left-Right muscles (anim_body_model.LATERAL_MUSCLES) of a built humanoid clip at `time`, as
+    playback samples them (an unbound muscle is 0); `names` are HumanTrait's muscle names in order."""
+    dofs = {muscle: MUSCLE_ATTRIBUTE + names.index(muscle) for muscle in LATERAL_MUSCLES}
+    tracks = runtime(clip, tuple(dofs.values()))
+    playback = clip["m_MuscleClip"]["m_Clip"]
+    grid = playback.get("data", playback).get("m_DenseClip", {})
+    return {muscle: sample(tracks[dof], grid, time)[0] if dof in tracks else 0. for muscle, dof in dofs.items()}
 
 
 def pose_at(tracks, grid, dofs, time):
@@ -156,9 +168,9 @@ def clip_sample(row, clip):
 
 
 def configuration(row, info):
-    """A clip row's E4 configuration: its variant (a start-offset variant with its twin), Editor version and
-    root placement."""
-    return f"{info['variant'].removesuffix('-start')}/{row['version']}/{info['root']}"
+    """A clip row's E4 configuration: its variant (a start-offset variant with its twin), rig (each F5 chain
+    its own), Editor version and root placement."""
+    return f"{info['variant'].removesuffix('-start')}/{info['rig']}/{row['version']}/{info['root']}"
 
 
 def e4(rows, clips):

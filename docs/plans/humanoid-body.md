@@ -170,7 +170,9 @@ from the middle points of the hips and shoulders. The candidate:
   set by the checker from the training runs and recorded in the freeze:
   the largest spine Left-Right value of a training sample the model
   compared and passed (a sample the twist scope refused validates nothing)
-  that is at least 1/32 below every sample failing E2 or E3a. It is
+  that is at least 1/32 below every sample failing E2 or E3a, over every
+  training observation: a known vector's applied muscles, or a clip
+  sample's muscles sampled from its built clip at its clock. It is
   always an observed passing value, never a clamped untested one, and the
   freeze records the two observations that bracket it: the passing sample
   at the limit and the smallest failing one. A pose past it refuses
@@ -512,23 +514,31 @@ coefficient is shipped from a fit.
   fixes the model choices, coefficients, scope and bounds that B3–B5 use.
   The freeze needs E3a passed on every required case of both versions, E4
   passed, full rank and every coefficient within `|a| ≤ 1`. It records E4
-  per configuration (variant, Editor version, root placement): B4 and B5
-  implement only the passing configurations it names, and a configuration
-  without a read-back is listed as excluded, never passing. It records the
-  code's git commit and a digest of its sources: the checker's entry
-  points and every local module they import, transitively (recording
-  validation, case tables and Avatar decoding among them), all committed
-  and unchanged. E3b refuses unless the code commit is an ancestor of HEAD
-  and of the freeze commit, no source changed since it, and the artifact
-  is byte-identical to the one its single freeze commit added. `complete`
-  seals the hold-out's cases: it opens neither their recordings nor their
-  bundles. Only E3b unseals them, through `complete` itself (run identity,
-  topology, probe schedule and bundle checks), after reproducing the
-  frozen fit and lateral limit from the frozen training runs. Before
-  evaluating, E3b writes a one-shot ledger entry, kept outside the
-  repository, with the hold-out recordings' digests, the freeze's digest
-  and the time, and it refuses a freeze the ledger already holds. Each
-  version is evaluated alone: it needs every hold-out case, at least 30
+  per configuration (variant, rig, Editor version, root placement, each F5
+  chain its own): B4 and B5 implement only the passing configurations it
+  names, and a configuration with no comparison is listed as excluded,
+  never passing. It records the code's git commit and a digest of its
+  sources: the checker's entry points, every local module they import,
+  transitively (recording validation, case tables and Avatar decoding
+  among them), and the data files they name (the recording schema, the
+  bounds), all committed and unchanged; and the sha256 of the unityrs CLI
+  that read the Avatars and built clips. E3b takes only the canonical
+  artifact path, a constant of the sources, and refuses unless the code
+  commit is an ancestor of HEAD and of the freeze commit, no source
+  changed since it, the artifact is byte-identical to the one the single
+  commit that added that path holds, the CLI is the frozen one, and the
+  Editor versions, hold-out cases and minimum it records are the code's
+  constants. `complete` seals the hold-out's cases: it opens neither their
+  recordings nor their bundles. Only E3b unseals them, through `complete`
+  itself (run identity, topology, probe schedule and bundle checks), after
+  reproducing the frozen fit and lateral limit from the frozen training
+  runs and checking, by file names alone, that each version recorded every
+  hold-out case. It then claims its one shot: an exclusive create of a
+  marker named by the freeze's digest, in a fixed directory outside the
+  repository, refused if it exists, and a ledger row. From the claim on,
+  any failure is a recorded failed attempt and the shot stays consumed;
+  a second row holds the hold-out recordings' digests before anything is
+  evaluated. Each version is evaluated alone: it needs every hold-out case, at least 30
   in-scope comparisons (the hold-out schedule's 45 known vectors leave 33
   inside the lateral and frame scopes by design; 30 allows three more
   frame refusals for its longer arms), and a pass. Nothing pools across

@@ -4,9 +4,11 @@ The hold-out stays out of everything before E3b by construction; the freeze
 needs both Editor versions, every required case, E4, full rank and |a| <= 1;
 E3b refuses an artifact git does not bind, or whose E3a, E4, model, bounds,
 sources, fit or lateral limit are not the code's and the training runs',
-reads the hold-out only through sealed completion, once per freeze (its
-ledger), and evaluates each Editor version alone with the stored
-coefficients. The git binding itself is test_anim_body_seal's."""
+takes only the canonical artifact and the frozen unityrs CLI, checks the
+hold-out by name before claiming its one shot (an exclusive marker, then
+ledger rows; any later failure keeps it consumed), reads the hold-out only
+through sealed completion, and evaluates each Editor version alone with
+the stored coefficients. The git binding itself is test_anim_body_seal's."""
 
 import contextlib
 import copy
@@ -68,11 +70,16 @@ class FreezeTests(unittest.TestCase):
     def setUp(self):
         root = scratch.for_case(self)
         self.folders = [write_run(root / version, self.docs, version) for version in VERSIONS]
+        # The hold-out's bundle by name (E3b's preflight lists it; the fake completion never reads it).
+        for folder in self.folders:
+            (folder / "bundles").mkdir(exist_ok=True)
+            (folder / "bundles" / body.BODY_CASES[HOLDOUT].bundle).write_bytes(b"")
         self.repo = root / "repo"
         self.repo.mkdir()
         git(self.repo, "init", "-q")
         self.artifact = self.repo / "freeze.json"
-        self.ledger = root / "ledger.json"
+        self.ledger_dir = root / "ledger"
+        self.ledger = self.ledger_dir / "ledger.jsonl"
         # The code's own git binding (test_anim_body_seal) is the checkout's: here, a commit that holds it.
         code = ("c" * 40, seal.sources(), seal.source_digest())
         patches = (mock.patch.object(runs, "REQUIRED", frozenset(TRAINING)),
@@ -80,6 +87,9 @@ class FreezeTests(unittest.TestCase):
                    mock.patch.object(seal, "code_state", return_value=code),
                    mock.patch.object(seal, "code_history"),
                    mock.patch.object(seal, "MIN_COMPARISONS", 1),
+                   mock.patch.object(seal, "FREEZE_PATH", self.artifact),
+                   mock.patch.object(seal, "LEDGER_DIR", self.ledger_dir),
+                   mock.patch.object(seal, "reader_sha256", return_value="5" * 64),
                    mock.patch.object(freeze, "completion", return_value=sealed_completion))
         for patch in patches:
             patch.start()
@@ -109,64 +119,107 @@ class FreezeTests(unittest.TestCase):
         if commit:
             self.commit(amend=True)
 
+    def rows(self):
+        """The ledger's rows."""
+        return [json.loads(line) for line in self.ledger.read_text(encoding="utf-8").splitlines()]
+
+    def claimed(self):
+        return self.ledger_dir.is_dir() and any(self.ledger_dir.glob("*.claim"))
+
+    def unclaim(self):
+        """A test's fresh shot: the ledger directory emptied (a scratch one here)."""
+        for path in self.ledger_dir.iterdir():
+            path.unlink()
+
     def e3b(self, message=None, code=2, *args):
-        found, text = self.main("e3b", "--freeze", str(self.artifact), "--ledger", str(self.ledger), *args)
+        found, text = self.main("e3b", "--freeze", str(self.artifact), *args)
         self.assertEqual(found, code, text)
         if message:
             self.assertIn(message, text)
         return text
 
-    def test_e3b_refuses_without_a_freeze_artifact_or_a_ledger(self):
+    def test_e3b_refuses_without_the_canonical_artifact(self):
         code, text = self.main("e3b")
         self.assertEqual(code, 2)
-        self.assertIn("E3b needs --ledger", text)
+        self.assertIn("only the canonical freeze artifact", text)
         self.e3b("no freeze artifact")
-        self.assertFalse(self.artifact.exists() or self.ledger.exists())
-        code, text = self.main("e3a", "--ledger", str(self.ledger))
-        self.assertIn("--ledger is for e3b", text)
+        self.assertFalse(self.artifact.exists() or self.claimed())
+        # A copy committed under another path, however valid, is not the freeze.
+        self.frozen()
+        other = self.repo / "other.json"
+        other.write_bytes(self.artifact.read_bytes())
+        git(self.repo, "add", "other.json")
+        git(self.repo, "commit", "-q", "-m", "copy")
+        code, text = self.main("e3b", "--freeze", str(other))
+        self.assertIn("only the canonical freeze artifact", text)
+        # The frozen unityrs CLI, and the code's Editor versions, hold-out cases and minimum.
+        with mock.patch.object(seal, "reader_sha256", return_value="6" * 64):
+            self.e3b("the unityrs CLI is not the frozen one")
+        with mock.patch.object(seal, "MIN_COMPARISONS", 2):
+            self.e3b("hold-out cases or minimum are not the code's")
+        with mock.patch.object(seal, "HOLDOUT_CASES", ()):
+            self.e3b("hold-out cases or minimum are not the code's")
+        with mock.patch.object(freeze, "EDITORS", ("2022", "6000", "2023")):
+            self.e3b("frozen Editor versions are not the code's")
+        self.assertFalse(self.claimed())
 
-    def test_e3b_runs_once_per_freeze_with_its_ledger_entry_written_first(self):
+    def test_e3b_claims_its_one_shot_before_opening_the_hold_out(self):
         artifact = self.frozen()
-        e0, entries = freeze.check.e0, []
+        complete, seen = sealed_completion, []
 
-        def spy(*args, **kwargs):
-            entries.append(json.loads(self.ledger.read_text(encoding="utf-8")))
-            return e0(*args, **kwargs)
+        def spy(folder, *args):
+            seen.append((self.claimed(), [row["event"] for row in self.rows()]))
+            return complete(folder, *args)
 
-        with mock.patch.object(freeze.check, "e0", spy):
+        with mock.patch.object(freeze, "completion", return_value=spy):
             self.e3b(code=0)
-        # Written before any evaluation: the hold-out's digests, the freeze's digest and commit, the time.
-        [entry] = entries[0]
-        self.assertEqual(entries, [[entry]] * 2)
-        self.assertEqual(entry["freeze_sha256"], runs.hashlib.sha256(self.artifact.read_bytes()).hexdigest())
-        self.assertEqual(entry["freeze_commit"], git(self.repo, "rev-parse", "HEAD").stdout.strip())
-        self.assertEqual((entry["code_commit"], entry["training"]), (artifact["code"]["commit"],
-                                                                     artifact["training"]["digest"]))
-        self.assertEqual(entry["holdout"], {version: {HOLDOUT: runs.hashlib.sha256(
+        # Claimed, with its row, before completion opened either hold-out.
+        self.assertEqual(seen, [(True, ["claimed"])] * 2)
+        [claimed, unsealed, evaluated] = self.rows()
+        sha = runs.hashlib.sha256(self.artifact.read_bytes()).hexdigest()
+        self.assertEqual([path.name for path in self.ledger_dir.glob("*.claim")], [f"{sha}.claim"])
+        self.assertEqual({row["freeze_sha256"] for row in self.rows()}, {sha})
+        self.assertEqual((claimed["freeze_commit"], claimed["code_commit"], claimed["training"], claimed["reader"]),
+                         (git(self.repo, "rev-parse", "HEAD").stdout.strip(), artifact["code"]["commit"],
+                          artifact["training"]["digest"], "5" * 64))
+        self.assertEqual(unsealed["holdout"], {version: {HOLDOUT: runs.hashlib.sha256(
             (folder / "replays" / "body" / f"{HOLDOUT}.pending.json").read_bytes()).hexdigest()}
             for version, folder in zip(VERSIONS, self.folders)})
-        self.assertRegex(entry["time"], r"^\d{4}-\d\d-\d\dT")
+        self.assertEqual((evaluated["event"], evaluated["passed"]), ("evaluated", True))
+        self.assertRegex(claimed["time"], r"^\d{4}-\d\d-\d\dT")
         # Once: the same freeze again refuses before any hold-out file opens.
         with mock.patch.object(seal.Unseal, "verify", side_effect=AssertionError("unsealed")):
             self.e3b("E3b already ran on this freeze")
-        self.assertEqual(json.loads(self.ledger.read_text(encoding="utf-8")), [entry])
-        # Another freeze's entry leaves this one free.
-        self.ledger.write_text(json.dumps([dict(entry, freeze_sha256="0" * 64)]), encoding="utf-8")
-        self.e3b(code=0)
-        self.assertEqual(len(json.loads(self.ledger.read_text(encoding="utf-8"))), 2)
+        self.assertEqual(len(self.rows()), 3)
+        # A failure after the claim is recorded and keeps the shot consumed.
+        self.unclaim()
+        for folder in self.folders:
+            (folder / "replays" / "body" / f"{HOLDOUT}.pending.json").write_text("{", encoding="utf-8")
+        self.e3b("Expecting")
+        self.assertEqual([row["event"] for row in self.rows()], ["claimed", "failed"])
+        self.e3b("E3b already ran on this freeze")
+
+    def test_two_claims_on_one_freeze_cannot_both_succeed(self):
+        seal.claim("a" * 64, self.ledger_dir)
+        seal.claim("b" * 64, self.ledger_dir)
+        with self.assertRaisesRegex(ValueError, "already ran on this freeze"):
+            seal.claim("a" * 64, self.ledger_dir)
 
     def test_e3b_needs_each_version_with_every_hold_out_case_and_its_own_comparisons(self):
         limit = self.frozen()["scope"]["lateral_limit"]
         # A missing Editor version.
-        found, text = self.main("e3b", "--freeze", str(self.artifact), "--ledger", str(self.ledger),
-                                folders=self.folders[1:])
+        found, text = self.main("e3b", "--freeze", str(self.artifact), folders=self.folders[1:])
         self.assertEqual(found, 2)
         self.assertIn("training inputs differ from the frozen ones", text)
-        # A version without the hold-out case.
+        # A version without the hold-out case, or without its file, refuses by names alone, before the claim.
         write_run(self.folders[1], {name: doc for name, doc in self.docs.items() if name != HOLDOUT}, VERSIONS[1])
         self.e3b(f"{VERSIONS[1]}: hold-out case(s) ['{HOLDOUT}'] not recorded")
-        self.assertFalse(self.ledger.exists())
         write_run(self.folders[1], self.docs, VERSIONS[1])
+        recording = self.folders[0] / "replays" / "body" / f"{HOLDOUT}.pending.json"
+        recording.rename(recording.with_name("moved"))
+        self.e3b(f"{VERSIONS[0]}: hold-out case(s) ['{HOLDOUT}'] not recorded")
+        recording.with_name("moved").rename(recording)
+        self.assertFalse(self.claimed())
         # A version whose every hold-out sample its scope refuses (here past the lateral limit) fails alone,
         # however the other version passes.
         docs = copy.deepcopy(self.docs)
@@ -179,20 +232,22 @@ class FreezeTests(unittest.TestCase):
         self.assertIn(f"{VERSIONS[0]}: 0 in-scope comparison(s), under the minimum 1", text)
         self.assertIn(f"{VERSIONS[0]}: E3: no comparison", text)
         self.assertNotIn(VERSIONS[1], text)
-        # The design's minimum: a hold-out short of it fails in each version.
-        write_run(self.folders[0], self.docs, VERSIONS[0])
-        self.ledger.unlink()
+
+    def test_e3b_fails_each_version_under_the_design_minimum(self):
         with mock.patch.object(seal, "MIN_COMPARISONS", seal.IN_SCOPE_BY_DESIGN - 3):
+            self.assertEqual(self.frozen()["scope"]["holdout_minimum"], 30)
             text = self.e3b(code=1)
         self.assertIn("2 failure(s)", text)
-        self.assertIn(f"{VERSIONS[1]}: ", text)
-        self.assertIn(f"under the minimum {seal.IN_SCOPE_BY_DESIGN - 3}", text)
+        for version in VERSIONS:
+            self.assertRegex(text, f"{version}: [0-9]+ in-scope comparison\\(s\\), under the minimum 30")
 
     def test_the_freeze_then_the_hold_out(self):
         artifact = self.frozen()
         self.assertEqual(artifact["format"], freeze.FORMAT)
         self.assertEqual(set(artifact), {"format", "version", "model", "coefficients", "scope", "bounds", "training",
-                                         "e3a", "e4", "code", "evidence"})
+                                         "e3a", "e4", "code", "reader", "evidence"})
+        self.assertEqual(artifact["reader"]["sha256"], "5" * 64)
+        self.assertEqual((artifact["scope"]["holdout_cases"], artifact["scope"]["holdout_minimum"]), ([HOLDOUT], 1))
         self.assertEqual(artifact["scope"]["refusals"], freeze.REFUSALS)
         self.assertEqual(set(freeze.REFUSALS), {"topology", "frame", "spine_lateral_range"})
         self.assertEqual(artifact["evidence"]["runs"], [])
@@ -204,7 +259,7 @@ class FreezeTests(unittest.TestCase):
         self.assertEqual((lateral["limit"], lateral["failing"]), (artifact["scope"]["lateral_limit"], None))
         self.assertEqual(lateral["passing"]["value"], lateral["limit"])
         # E4 per configuration, naming the passing ones.
-        self.assertEqual(artifact["e4"]["passing"], [f"level/{VERSIONS[0]}/identity", f"level/{VERSIONS[1]}/identity"])
+        self.assertEqual(artifact["e4"]["passing"], [f"level/compact/{version}/identity" for version in VERSIONS])
         self.assertEqual(artifact["e4"]["excluded"], [])
         self.assertEqual(artifact["scope"]["editor_versions"], list(VERSIONS))
         cases = {row["case"] for row in artifact["training"]["inputs"]}
@@ -337,7 +392,7 @@ class FreezeTests(unittest.TestCase):
         self.e3b("not added by exactly one commit")
         git(self.repo, "rm", "-q", "--cached", "freeze.json")
         self.e3b("not tracked by git")
-        self.assertFalse(self.ledger.exists())
+        self.assertFalse(self.claimed())
 
     def test_e3b_refuses_a_changed_artifact_or_training_set(self):
         artifact = self.frozen()
@@ -398,7 +453,7 @@ class FreezeTests(unittest.TestCase):
         pose = doc["capture"]["samples"][0]["pose"]["transforms"][hips]
         pose["translation"][1] = BITS(F32(pose["translation"][1]) + 1e-3)
         write_run(self.folders[0], docs, VERSIONS[0])
-        self.ledger.unlink()
+        self.unclaim()
         text = self.e3b(code=1)
         self.assertIn(f"{VERSIONS[0]}/{HOLDOUT}@{doc['capture']['samples'][0]['local']}: hips translation off", text)
         self.assertIn("1 failure(s)", text)
@@ -424,8 +479,9 @@ class FreezeTests(unittest.TestCase):
             (folder / "replays" / "body" / f"{HOLDOUT}.pending.json").write_text("{", encoding="utf-8")
         self.assertEqual(self.main("e3a", "--json", str(report_path)), before)
         self.assertEqual(report_path.read_text(encoding="utf-8"), report)
+        # E3b reads it only through sealed completion, after its claim.
         self.e3b("Expecting")
-        self.assertFalse(self.ledger.exists())
+        self.assertEqual([row["event"] for row in self.rows()], ["claimed", "failed"])
 
     def test_the_roles_come_from_run_json_and_the_case_table(self):
         folder = self.folders[0]

@@ -43,12 +43,18 @@ class SourceTests(unittest.TestCase):
         (folder / "c.py").write_text("import os.path\nfrom unused import x\n", encoding="utf-8")
         self.assertEqual(seal.sources(folder, ("a.py",)), ["a.py", "b.py", "c.py", "unused.py"])
         self.assertNotEqual(seal.source_digest(folder, seal.sources(folder, ("a.py",))), before)
+        # So is a data file of the folder a source names, but never the freeze artifact.
+        (folder / "table.json").write_text("{}", encoding="utf-8")
+        (folder / seal.FREEZE_PATH.name).write_text("{}", encoding="utf-8")
+        (folder / "b.py").write_text(f"T = 'table.json'\nF = '{seal.FREEZE_PATH.name}'\nG = 'missing.json'\n"
+                                     "def f():\n    from c import g\n", encoding="utf-8")
+        self.assertEqual(seal.sources(folder, ("a.py",)), ["a.py", "b.py", "c.py", "table.json", "unused.py"])
 
     def test_the_freeze_sources_hold_validation_cases_and_decoding(self):
         files = seal.sources()
         for name in ("anim_body_freeze.py", "anim_body_check.py", "anim_body_seal.py", "anim_replay.py",
                      "anim_fixture_contract.py", "anim_replay_complete.py", "anim_fixture_body.py",
-                     "anim_body_runs.py", "anim_body_model.py"):
+                     "anim_body_runs.py", "anim_body_model.py", "anim_replay.schema.json", "anim_bounds.json"):
             self.assertIn(name, files)
         # Every module of this folder that the checker, E3b and completion load is one of them.
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import anim_body_freeze as f, anim_body_seal as s; "
@@ -154,17 +160,24 @@ class BindingTests(unittest.TestCase):
 
 
 class LedgerTests(unittest.TestCase):
-    def test_one_entry_per_freeze(self):
-        ledger = scratch.for_case(self) / "ledger.json"
-        seal.ledger_entry(ledger, "a" * 64, dict(freeze_sha256="a" * 64, time="t"))
-        seal.ledger_entry(ledger, "b" * 64, dict(freeze_sha256="b" * 64, time="t"))
+    def test_one_claim_per_freeze_and_appended_rows(self):
+        folder = scratch.for_case(self) / "ledger"
+        seal.claim("a" * 64, folder)
+        seal.claim("b" * 64, folder)
         with self.assertRaisesRegex(ValueError, "already ran on this freeze"):
-            seal.ledger_entry(ledger, "a" * 64, dict(freeze_sha256="a" * 64, time="u"))
-        self.assertEqual([row["freeze_sha256"] for row in json.loads(ledger.read_text(encoding="utf-8"))],
-                         ["a" * 64, "b" * 64])
-        ledger.write_text("{}", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "malformed E3b ledger"):
-            seal.ledger_rows(ledger, "c" * 64)
+            seal.claim("a" * 64, folder)
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), [f"{'a' * 64}.claim", f"{'b' * 64}.claim"])
+        seal.record("a" * 64, dict(event="claimed"), folder)
+        seal.record("a" * 64, dict(event="failed", error="x"), folder)
+        rows = [json.loads(line) for line in (folder / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([(row["freeze_sha256"], row["event"]) for row in rows], [("a" * 64, "claimed"),
+                                                                                  ("a" * 64, "failed")])
+
+    def test_the_ledger_and_the_artifact_are_fixed_paths(self):
+        self.assertEqual(seal.FREEZE_PATH.parent, seal.HERE)
+        self.assertTrue(seal.LEDGER_DIR.is_absolute())
+        # Outside the repository.
+        self.assertFalse(seal.LEDGER_DIR.is_relative_to(seal.HERE.parents[1]))
 
 
 class MinimumTests(unittest.TestCase):

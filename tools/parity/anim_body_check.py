@@ -108,8 +108,14 @@ LATERAL_FLOOR = 1 / 16
 
 
 def muscles_of(row):
+    """The sample's muscles: a known vector's applied ones, or a clip sample's spine Left-Right muscles from its
+    built clip (`clip_muscles`, anim_body_freeze.with_clip_muscles), refused when unread."""
     state = row["state"]
-    return {name: F32(bits) for name, bits in zip(state["muscle_names"], state["sample"].get("muscles_f32") or [])}
+    if "clip_muscles" in state:
+        return state["clip_muscles"]
+    bits = state["sample"].get("muscles_f32") or []
+    replay.require(bits, f"{row['name']}@{row['local']}: a clip sample's muscles are unread (give its built clip)")
+    return {name: F32(value) for name, value in zip(state["muscle_names"], bits)}
 
 
 def lateral_of(row):
