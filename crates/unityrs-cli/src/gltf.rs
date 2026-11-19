@@ -3,7 +3,14 @@ mod args;
 pub(crate) use args::options;
 mod output;
 mod report;
-use std::{path::PathBuf, process::ExitCode, sync::Arc};
+use std::{
+    path::PathBuf,
+    process::ExitCode,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use unityrs_core::{
     budget::Reservation,
     env::{CabResolver, EnvOptions, Environment, Source, read_path},
@@ -14,15 +21,25 @@ use unityrs_core::{
 use unityrs_scene::Unit;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// The supplied built-in resources, offered only once a unit is selected.
+/// Selection walks the container, whose preload table names the built-ins a
+/// bundle's prefabs use; a file loaded under that walk ends it, as UnityPy's
+/// pass ends when its CABs grow.
 #[derive(Debug)]
-struct BuiltinFile(PathBuf);
+struct BuiltinFile {
+    path: PathBuf,
+    armed: AtomicBool,
+}
 impl CabResolver for BuiltinFile {
     fn resolve(&self, name: &[u8]) -> Option<Source> {
+        if !self.armed.load(Ordering::Acquire) {
+            return None;
+        }
         let name = name.rsplit(|b| matches!(b, b'/' | b'\\')).next()?;
         if name.eq_ignore_ascii_case(b"unity default resources")
             || name.eq_ignore_ascii_case(b"unity_builtin_extra")
         {
-            Some(Source::Path(self.0.clone()))
+            Some(Source::Path(self.path.clone()))
         } else {
             None
         }
@@ -85,9 +102,16 @@ impl std::fmt::Display for ContainerCount {
 }
 impl std::error::Error for ContainerCount {}
 
-fn container_unit(env: &Environment, requested: &[u8], prefab: bool) -> Result<Unit> {
-    let mut selected = None;
-    let mut count = 0usize;
+/// The rows the walk matches are classified once it is over, with the
+/// built-in resources armed, so a row whose asset is in the supplied file is
+/// counted by its class like any other.
+fn container_unit(
+    env: &Environment,
+    requested: &[u8],
+    prefab: bool,
+    builtin: Option<&BuiltinFile>,
+) -> Result<Unit> {
+    let mut matched: Option<MeteredVec<_>> = None;
     for entry in env.container()? {
         let entry = entry?;
         entry.file.meter().count_decode(requested.len() as u64)?;
@@ -99,7 +123,17 @@ fn container_unit(env: &Environment, requested: &[u8], prefab: bool) -> Result<U
         {
             continue;
         }
-        let unit = unityrs_scene::unit_from_container(env, &entry.file, &entry.row)?;
+        matched
+            .get_or_insert_with(|| MeteredVec::new(entry.file.meter()))
+            .push((entry.file, entry.row))?;
+    }
+    if let Some(builtin) = builtin {
+        builtin.armed.store(true, Ordering::Release);
+    }
+    let mut selected = None;
+    let mut count = 0usize;
+    for (file, row) in matched.iter().flat_map(MeteredVec::as_slice) {
+        let unit = unityrs_scene::unit_from_container(env, file, row)?;
         if let Some(unit) = unit.filter(|unit| matches!(unit, Unit::Prefab(_)) == prefab) {
             count = count.checked_add(1).ok_or("container count overflow")?;
             selected = Some(unit);
@@ -119,15 +153,16 @@ fn select(
     env: &Environment,
     args: &args::Args<'_>,
     scene: Option<Arc<SerializedFile>>,
+    builtin: Option<&BuiltinFile>,
 ) -> Result<Unit> {
     use args::Selection;
     if let Selection::Prefab(requested) = args.selection {
-        return container_unit(env, requested, true);
+        return container_unit(env, requested, true, builtin);
     }
     if let Selection::Scene(requested) = args.selection {
         return match scene {
             Some(scene) => Ok(Unit::Scene(scene)),
-            None => container_unit(env, requested, false),
+            None => container_unit(env, requested, false, builtin),
         };
     }
     let Selection::PathId(id) = args.selection else {
@@ -147,9 +182,11 @@ fn select(
         &object.ok_or("no GameObject or SceneAsset with that path id")?,
     )?)
 }
-fn run(raw: &[Vec<u8>]) -> Result<()> {
-    let args = args::Args::parse(raw)?;
-    let peak = Arc::new(report::Peak::default());
+/// The input Environment, and the built-in resources it holds unarmed.
+fn environment(
+    args: &args::Args<'_>,
+    peak: &Arc<report::Peak>,
+) -> Result<(Environment, Option<Arc<BuiltinFile>>)> {
     let mut options = EnvOptions::unitypy();
     let mut context = (*options.context).clone();
     context.limits = args.limits;
@@ -160,10 +197,21 @@ fn run(raw: &[Vec<u8>]) -> Result<()> {
         )]));
     }
     options.context = Arc::new(context);
-    if let Some(path) = args.builtin_file {
-        options.resolver = Some(Arc::new(BuiltinFile(path.to_owned())));
+    let builtin = args.builtin_file.map(|path| {
+        Arc::new(BuiltinFile {
+            path: path.to_owned(),
+            armed: AtomicBool::new(false),
+        })
+    });
+    if let Some(builtin) = &builtin {
+        options.resolver = Some(builtin.clone());
     }
-    let env = Environment::new(options);
+    Ok((Environment::new(options), builtin))
+}
+fn run(raw: &[Vec<u8>]) -> Result<()> {
+    let args = args::Args::parse(raw)?;
+    let peak = Arc::new(report::Peak::default());
+    let (env, builtin) = environment(&args, &peak)?;
     // Read the profile before loading inputs so only explicit selectors
     // retain file occurrences in argument order, including repeated paths.
     let (profile, mut input_roots) = if let Some(path) = args.profile {
@@ -191,7 +239,10 @@ fn run(raw: &[Vec<u8>]) -> Result<()> {
             roots.push(file)?;
         }
     }
-    let unit = select(&env, &args, scene)?;
+    let unit = select(&env, &args, scene, builtin.as_deref())?;
+    if let Some(builtin) = &builtin {
+        builtin.armed.store(true, Ordering::Release);
+    }
     peak.start_export();
     let meter = unit.meter();
     let profile = profile.unwrap_or_else(|| unityrs_gltf::Profile::new(meter));
