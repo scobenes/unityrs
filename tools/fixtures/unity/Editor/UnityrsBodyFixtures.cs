@@ -46,6 +46,8 @@ static partial class UnityrsFixtureBuilder
         new BodyRig { Name = "noncoplanar", Noncoplanar = true },
         new BodyRig { Name = "holdout", Arms = 1.3f, Legs = .8f },
     };
+    // F6 rigs that came with the range sweeps (anim_fixture_body.py LATER_RIGS), each required.
+    static readonly string[] LaterRigs = { "no-upper-chest-toes", "no-upper-chest-left-toes", "no-upper-chest-right-toes" };
     // F5: each plays F3's targets and the F4 all-off clip.
     static readonly BodyRig[] ChainRigs = {
         new BodyRig { Name = "scaled-animator", ScaledAnimator = true },
@@ -106,7 +108,9 @@ static partial class UnityrsFixtureBuilder
     // first RangePoints points of a 9-d Sobol sequence (Joe and Kuo's direction numbers, unscrambled), each
     // coordinate x as 2 x - 1: Spine Front-Back, Left-Right and Twist, then Chest's, then UpperChest's (a rig
     // without UpperChest takes the first six). Then the joint corners, every mapped spine bone at the same
-    // corner, but (-1, -1, -1), the sequence's first point. Every other muscle is zero, the body upright.
+    // corner, but (-1, -1, -1), the sequence's first point. Every other muscle is zero. The body target takes
+    // TwistTilts, each over an aligned block of RangePoints / 4 Sobol points (a net filling the whole cube;
+    // every fourth point would not), the corners cycling through them, the spine anchors upright.
     static readonly (string name, string rig)[] RangeProbes = {
         ("body-probes-range-compact", "compact"), ("body-probes-range-tall", "tall"),
         ("body-probes-range-noncoplanar", "noncoplanar"),
@@ -215,9 +219,10 @@ static partial class UnityrsFixtureBuilder
     static void BuildBody(Build build, RunReport report)
     {
         var builtRigs = new HashSet<string>(StringComparer.Ordinal);
+        // A rig that came with the range sweeps is a required training rig: Unity refusing its Avatar is an error.
         foreach (var rig in ProbeRigs)
             if (report.Prepare(build, "Prepare body-" + rig.Name, RigCases(rig, false).ToArray(),
-                    () => BuildBodyRig(build, report, rig, chain: false), true))
+                    () => BuildBodyRig(build, report, rig, chain: false), !LaterRigs.Contains(rig.Name)))
                 builtRigs.Add(rig.Name);
         // Once its rig builds, an extra probe case is required: Unity refusing it is an error.
         foreach (var extra in ExtraProbes)
@@ -473,7 +478,16 @@ static partial class UnityrsFixtureBuilder
                 for (int k = 0; k < 3; k++) vector[groups[g][k]] = point[3 * g + k];
             return vector;
         }).ToList();
-        return Scheduled(vectors, false);
+        int block = RangePoints / TwistTilts.Length;
+        var probes = Scheduled(vectors, false);
+        foreach (var probe in probes)
+        {
+            int k = vectors.IndexOf(probe.Muscles);
+            probe.Targeted = true;
+            probe.Tilt = k < 0 ? Vector3.zero
+                : TwistTilts[k < RangePoints ? k / block : (k - RangePoints) % TwistTilts.Length];
+        }
+        return probes;
     }
 
     static BodyProbe[] Scheduled(List<float[]> vectors, bool targets)

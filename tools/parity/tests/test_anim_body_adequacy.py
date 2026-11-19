@@ -16,7 +16,7 @@ import anim_body_adequacy as adequacy  # noqa: E402  (test_anim_replay puts it o
 import anim_body_design as design  # noqa: E402
 import anim_body_tolerance as tolerance  # noqa: E402
 import anim_fixture_body as body  # noqa: E402
-from anim_reference import angle, euler  # noqa: E402
+from anim_reference import angle, euler, multiply  # noqa: E402
 import anim_replay as replay  # noqa: E402
 import scratch  # noqa: E402
 
@@ -253,6 +253,30 @@ class CheckpointTests(unittest.TestCase):
                     self.assertEqual(rotation, [replay.f32_bits(v) for v in design.spine_rotation(spine[bone], vector)])
                 elif bone != "Hips":
                     self.assertEqual(rotation, neutral[node]["rotation"], bone)
+        # A tilted sample's body turns about its centre of mass: the known target as the recorder requests it,
+        # the hips and read-back rotations turned with it, the centre of mass where it was.
+        f32 = replay.f32_from_bits
+        at = next(i for i, sample in enumerate(capture["samples"]) if not any(f32(v) for v in sample["muscles_f32"]))
+        hips, readback = neutral[bones["Hips"]], source["spec"]["evidence"]["editor"]["body_samples"][at]
+        pivot = [f32(capture["humanoid"]["human_scale"]) * f32(v) for v in readback["world_position"]]
+        editor = predicted["spec"]["evidence"]["editor"]
+        requests = body.body_requests(name, len(predicted["capture"]["samples"]))
+        self.assertEqual(len({tilt for _, tilt in requests}), 4)
+        for sample, row, target, want, (_, tilt) in zip(predicted["capture"]["samples"], editor["body_samples"],
+                                                         editor["body_targets"],
+                                                         recorded["spec"]["evidence"]["editor"]["body_targets"],
+                                                         requests, strict=True):
+            tau = euler(tilt, 4)
+            self.assertEqual(target["tilt"], want["tilt"])
+            self.assertLess(angle([f32(v) for v in target["rotation"]], [f32(v) for v in want["rotation"]]), 1e-6)
+            got = sample["pose"]["transforms"][bones["Hips"]]
+            self.assertLess(angle([f32(v) for v in got["rotation"]],
+                                  multiply(tau, [f32(v) for v in hips["rotation"]])), 1e-6)
+            for key in ("readback_rotation", "world_rotation"):
+                self.assertLess(angle([f32(v) for v in row[key]], multiply(tau, [f32(v) for v in readback[key]])), 1e-6)
+            self.assertEqual(row["world_position"], readback["world_position"])
+            arm = tolerance.rotate(tau, [f32(v) - c for v, c in zip(hips["translation"], pivot)])
+            self.assertTrue(all(abs(f32(v) - c - d) < 1e-6 for v, c, d in zip(got["translation"], pivot, arm)))
         parents, masses = adequacy.bone_table([source])
         self.assertTrue(all(row["fit"] for row in adequacy.samples(name, predicted, parents, masses)))
         # The bone's own limit row comes first; a probe that misses its limit angle refuses.

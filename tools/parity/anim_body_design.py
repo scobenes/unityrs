@@ -33,16 +33,23 @@ over scalar part, divided by that probe's own t (q_0^-1 q = (t e, 1)
 normalized), so Unity's PreQ, PostQ and sign are inside e. A probe whose turn
 angle is not its value's theta, within ANGLE_SLACK, refuses: the map would
 not hold. Every other bone keeps its neutral rotation, as the vector sets no
-other muscle. The envelope and the merge are the extra cases'.
+other muscle. The envelope and the merge are the extra cases'. A sample whose
+body target the recorder tilts by tau (anim_fixture_body.body_requests) turns
+the whole body about its centre of mass: the known target's rotation, the
+envelope pair's hips rotation and read-back rotations each premultiplied by
+tau, the hips position turned by tau about the pair's centre of mass
+(human scale times its world body position, the hips' parents being identity
+on an identity root), every other value the pair's.
 """
 
 import copy
 import math
 
 import anim_replay as replay
-from anim_fixture_body import (BODY_INFO, HOLDOUT, PROBE_GROUPS, PROBE_VALUES, RANGE_BONES, primary_probes,
-                               probe_schedule)
-from anim_reference import multiply, normalize
+from anim_body_tolerance import rotate
+from anim_fixture_body import (BODY_INFO, HOLDOUT, PROBE_GROUPS, PROBE_VALUES, RANGE_BONES, body_requests,
+                               primary_probes, probe_schedule)
+from anim_reference import euler, multiply, normalize
 
 # Degrees by which a probe's recorded turn may miss its value's limit angle: f32 rotations hold some 1e-5.
 ANGLE_SLACK = 1e-3
@@ -121,6 +128,24 @@ def spine_rotation(entry, vector):
     return normalize(multiply(multiply(rest, swing), twist))
 
 
+def tilted(tilt, hips, readback, target, scale):
+    """The (hips transform, read-back, known target) of a body turned by the Euler-degree `tilt` about its
+    centre of mass."""
+    if not any(tilt):
+        return hips, readback, target
+    tau = euler(tilt, 4)
+
+    def turn(q):
+        return [replay.f32_bits(v) for v in normalize(multiply(tau, [replay.f32_from_bits(b) for b in q]))]
+    pivot = [scale * replay.f32_from_bits(b) for b in readback["world_position"]]
+    arm = rotate(tau, [replay.f32_from_bits(b) - c for b, c in zip(hips["translation"], pivot)])
+    hips = dict(hips, translation=[replay.f32_bits(c + v) for c, v in zip(pivot, arm)], rotation=turn(hips["rotation"]))
+    readback = dict(readback, readback_rotation=turn(readback["readback_rotation"]),
+                    world_rotation=turn(readback["world_rotation"]))
+    target = dict(target, rotation=turn(target["rotation"]), tilt=[replay.f32_bits(v) for v in tilt])
+    return hips, readback, target
+
+
 def predict(name, source, hips=None):
     """A pending-recording stand-in for the planned extra probe case `name`, from `source`, the rig's
     recorded probe case, with `hips` (a recorded hips transform and read-back) on every sample, or the
@@ -141,12 +166,15 @@ def predict(name, source, hips=None):
     probed = {i for muscles in groups.values() for i in muscles}
     plan = probe_schedule(info["rig"], names, False, name)
     spine = muscle_map(capture, bones) if info["variant"] == "range" else {}
+    scale = replay.f32_from_bits(capture["humanoid"]["human_scale"])
+    turned = [tilted(tilt, hips_transform, readback, editor["body_targets"][at], scale)
+              for _, tilt in body_requests(name, len(plan))]
     samples = []
-    for t, vector in plan:
+    for (t, vector), (hips_at, _, _) in zip(plan, turned, strict=True):
         replay.require(not any(v for i, v in enumerate(vector) if i not in probed),
                        f"{name}: a planned muscle is off the rig's probe groups")
         pose = copy.deepcopy(neutral["pose"])
-        pose["transforms"][bones["Hips"]] = copy.deepcopy(hips_transform)
+        pose["transforms"][bones["Hips"]] = copy.deepcopy(hips_at)
         for bone, entry in spine.items():
             pose["transforms"][bones[bone]]["rotation"] = [replay.f32_bits(v) for v in spine_rotation(entry, vector)]
         for bone, muscles in groups.items():
@@ -164,8 +192,8 @@ def predict(name, source, hips=None):
     doc["spec"]["schedule"] = [dict(local=t, muscles=list(vector)) for t, vector in plan]
     doc["capture"]["samples"] = samples
     editor = doc["spec"]["evidence"]["editor"]
-    editor["body_samples"] = [copy.deepcopy(readback) for _ in plan]
-    editor["body_targets"] = [copy.deepcopy(editor["body_targets"][at]) for _ in plan]
+    editor["body_samples"] = [copy.deepcopy(row) for _, row, _ in turned]
+    editor["body_targets"] = [copy.deepcopy(row) for _, _, row in turned]
     editor["body_case"] = [dict(editor["body_case"][0], variant=info["variant"])]
     return doc
 
