@@ -1007,16 +1007,17 @@ the plan's hypotheses. None of it is a playback claim.
 
 ### Body fixtures
 
-The main menu item builds 109 optional `body-…` cases, each kind in its own
+The main menu item builds 115 optional `body-…` cases, each kind in its own
 bundle build after the main and coverage builds. Their tables are in
 `UnityrsBodyFixtures.cs` and `UnityrsBodyClips.cs`, mirrored by
 [`anim_fixture_body.py`](../tools/parity/anim_fixture_body.py).
 
 | Cases | Plan | Contents |
 |---|---|---|
-| `body-probes-<rig>` (16) | F1, F6 | Known-vector `SetHumanPose` on each rig. The rigs are the two P2b rigs, each F6 topology, a noncoplanar rig and the hold-out rig. The vectors are one per probe muscle of each mapped bone, then three combined vectors over every probe muscle. Twist and stretch stay out. |
+| `body-probes-<rig>` (19) | F1, F6 | Known-vector `SetHumanPose` on each rig. The rigs are the two P2b rigs, each F6 topology, a noncoplanar rig and the hold-out rig. The vectors are one per probe muscle of each mapped bone, then three combined vectors over every probe muscle. Twist and stretch stay out. |
 | `body-probes-tall-2` (1) | F1 | 26 extra known vectors on the tall rig, in a bundle of their own. Each moves two of the trunk, shoulder, upper-arm and upper-leg bones, the poses the adequacy checkpoint predicts it needs (below). |
 | `body-probes-twist-{compact,tall}` (2) | F2 | Twist sweeps on the two P2b rigs, each in a bundle of its own: 84 known vectors, the shoulder-hip twist swept by the Spine and Chest twist muscles under an upright and three tilted body targets (below) |
+| `body-probes-range-{compact,tall,noncoplanar}` (3) | F8 | Range sweeps on three training rigs, each in a bundle of its own: 263 known vectors filling every mapped spine bone's muscle cube jointly, upright (below) |
 | `body-targets-{compact,tall}[-offset]` (4) | F3 | The three combined vectors with nonidentity body targets on identity and offset roots |
 | `body-clip-<variant>[-offset]` (78) | F4 | 39 body-motion clips on the compact rig, each on an identity and an offset root |
 | `body-chain-<f5>-{targets,clip}` (8) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale. Each plays F3's targets and the all-original F4 clip with changing `MotionT` and `MotionQ` curves, whose residual body translation and tilt change through the chain and whose motion the original-root rule keeps. Completion requires its built motion slots; if Unity drops them, that clip case is not covered. |
@@ -1062,6 +1063,22 @@ be measured against the twist and the tilt (2.2). The sweeps are a later
 generation than the extra probes, required the same way once their rig's
 probe case records, and only on training rigs. The adequacy checkpoint
 does not read them.
+
+**Range sweeps.** A range sweep (`RangeProbes`, mirrored by `RANGE_RIGS`)
+moves every mapped spine bone's three muscles (Front-Back, Left-Right and
+Twist of Spine, Chest and UpperChest) over the whole cube `[-1, 1]^3`
+together. The vectors are the first 256 points of the unscrambled 9-d Sobol
+sequence with Joe and Kuo's direction numbers, each coordinate `x` as
+`2 x - 1`, so every value is exact in f32. A rig without UpperChest takes
+the first six coordinates. Then come the seven joint corners the sequence
+lacks, every mapped spine bone at the same corner; `(-1, -1, -1)` is the
+sequence's first point. Every other muscle is zero and the body upright.
+The design comes from the cube alone, never from recorded or real
+animation. With the anchors that is 266 samples per case, on the compact,
+tall and noncoplanar rigs. The sweeps are fitted with the probes. The
+three rigs with UpperChest absent and both, the left or the right Toes
+absent came with them, in the same later generation, required the same
+way once their rig records.
 
 **F3 targets.** The targets alternate two requests. One moves the rest
 body by `(.05, -.03, .04)` and tilts it by `Euler(12, -20, 7)`. The other

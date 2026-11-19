@@ -35,15 +35,15 @@ read from its `.pending.json`. The checkpoint, with B1's own tolerances
 4. The topology coverage: every F1 and F6 training rig recorded by its own
    probe case, with read-back rows and the rig's mapped bones.
 5. The extra probe plan: every scheduled sample of every extra probe case
-   (anim_fixture_body.EXTRA_PROBES) recorded with read-back, or the missing
-   ones named.
+   (anim_fixture_body.EXTRA_PROBES) and range sweep (RANGE_RIGS) recorded
+   with read-back, or the missing ones named. The range sweeps are fitted.
 
 The twist sweeps (anim_fixture_body.TWIST_RIGS) take no part: they measure
 2.2's frame against the shoulder-hip twist for B2, not the centre of mass.
 A run with or without them gives the same checkpoint.
 
-With --design-only, each extra probe case the run lacks is predicted from
-its rig's recorded geometry (anim_body_design.py), with conservative
+With --design-only, each extra probe case or range sweep the run lacks is
+predicted from its rig's recorded geometry (anim_body_design.py), with conservative
 epsilon and E_unity,s over an envelope of the rig's recorded hips, and the
 same checkpoint runs.
 
@@ -69,7 +69,7 @@ from anim_body_tolerance import (BODY_SLOTS, U32, U64, body_frame, body_states, 
                                  matrix_quaternion, measurement_tolerance, norm, ordered, product, quaternion_matrix,
                                  readback_turn, recorded_edges, rotate, tracked, uniform)
 from anim_body_design import conservative, planned  # noqa: E402
-from anim_fixture_body import (BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, TWIST_CASES, probe_schedule,  # noqa: E402
+from anim_fixture_body import (BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, RANGE_CASES, TWIST_CASES, probe_schedule,  # noqa: E402
                                rig_bones)
 
 CONDITION_LIMIT = 1e6
@@ -313,9 +313,10 @@ def coverage_of(documents):
 
 
 def missing_planned(documents):
-    """Every scheduled sample of the extra probe plan that has no recording with read-back, by name."""
+    """Every scheduled sample of the extra probe plan and the range sweeps that has no recording with
+    read-back, by name."""
     missing = []
-    for name in sorted(EXTRA_CASES):
+    for name in sorted(EXTRA_CASES | RANGE_CASES):
         doc = documents.get(name)
         if doc is None:
             missing.append(f"{name}: not recorded")

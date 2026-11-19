@@ -122,6 +122,8 @@ def muscle_axes():
 
 
 AXES = muscle_axes()
+# The recorder's axis of each three-muscle group's muscles: Front-Back z, Left-Right y, Twist x.
+MUSCLE_SLOTS = {muscle: slot for _, group in PROBE_GROUPS if len(group) == 3 for muscle, slot in zip(group, (2, 1, 0))}
 
 
 def limits(muscle):
@@ -231,8 +233,10 @@ def body_doc(name, run, *, samples=None):
         samples_out.append(dict(local=t, local_f32=bits(t), source=t, effective_source=t, sides=[],
                                 muscles_f32=[bits(v) for v in vector] if vector else [],
                                 pose=dict(transforms=pose, weights=[])))
-    human = dict(bones=human_bones, muscles=[dict(name=m, bone=0, axis=0, min=bits(-40), max=bits(40))
-                                             for m in MUSCLES],
+    muscle_rows = [dict(name=m, bone=0, axis=MUSCLE_SLOTS.get(m, 0),
+                        **dict(zip(("min", "max"), map(bits, limits(m) if m in AXES else (-40, 40)))))
+                   for m in MUSCLES]
+    human = dict(bones=human_bones, muscles=muscle_rows, limits=[],
                  human_scale=bits(1), rest_body_position=[bits(0), bits(1), bits(0)],
                  rest_body_rotation=[bits(0)] * 3 + [bits(1)])
     editor = dict(fixture_case=name, run_id=run["run_id"], body_case=[expected_case_row(name, replay)],
