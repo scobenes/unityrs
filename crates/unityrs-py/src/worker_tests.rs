@@ -5,7 +5,7 @@ use pyo3::{exceptions::PyRuntimeError, exceptions::PyValueError, prelude::*};
 use std::thread::ThreadId;
 
 /// Run `body` attached on a new thread with `stack` bytes of stack.
-fn on_thread<T: Send + 'static>(
+pub(crate) fn on_thread<T: Send + 'static>(
     stack: usize,
     body: impl FnOnce(Python<'_>) -> T + Send + 'static,
 ) -> T {
@@ -31,7 +31,12 @@ fn ids(py: Python<'_>) -> PyResult<(ThreadId, ThreadId, ThreadId)> {
 fn a_caller_with_room_runs_its_work_inline() -> PyResult<()> {
     let _serial = crate::tests::serial();
     let (caller, work, callback) = on_thread(256 << 20, ids)?;
-    assert_eq!(work, caller);
+    // Only Linux and macOS can tell a thread's stack; elsewhere work pools.
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
+        assert_eq!(work, caller);
+    } else {
+        assert_ne!(work, caller);
+    }
     assert_eq!(callback, caller);
     Ok(())
 }

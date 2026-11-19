@@ -1,7 +1,7 @@
 // Ported from UnityPy 1.25.2 (MIT): helpers/TypeTreeHelper.py:123-158. See THIRD_PARTY_LICENSES.
 //! Explicit helper reads share the bounded parser and Python construction policy.
 use crate::{
-    errors, python as p,
+    errors,
     settings::{Budget, Limits},
 };
 use pyo3::prelude::*;
@@ -177,6 +177,7 @@ fn parse(
     convert(&parsed, progress, refs, as_dict, meter)
 }
 
+/// The result, staged detached; each part is built with one attachment.
 fn convert(
     parsed: &unityrs_core::Parsed,
     progress: unityrs_core::walk::FieldProgress,
@@ -184,44 +185,33 @@ fn convert(
     as_dict: bool,
     meter: &Arc<Meter>,
 ) -> PyResult<Py<PyAny>> {
-    // One relayed attachment for the whole result, not one per value: the
-    // free constructors below find this thread attached and do not relay.
-    crate::python::relay::attach(move |py| output(py, parsed, progress, refs, as_dict, meter))
-}
-
-fn output(
-    py: Python<'_>,
-    parsed: &unityrs_core::Parsed,
-    progress: unityrs_core::walk::FieldProgress,
-    refs: Option<&[unityrs_core::files::SerializedType]>,
-    as_dict: bool,
-    meter: &Arc<Meter>,
-) -> PyResult<Py<PyAny>> {
+    use crate::python::held as h;
     let mut charge = unityrs_core::limits::Charge::zero(meter);
     charge.grow(512).map_err(errors::charge)?;
-    let value = crate::value_render::render(py, parsed, meter, &mut charge, !as_dict)?.unbind();
-    let result = p::list()?;
-    p::push(&result, &value)?;
-    p::push(
-        &result,
-        &crate::object_nodes::convert(parsed.lists(), &mut charge)?,
-    )?;
-    p::push(
-        &result,
-        &crate::object_nodes::references(parsed.lists(), refs, &mut charge)?,
-    )?;
-    p::push(&result, &p::int(parsed.bytes_read)?)?;
-    p::push(&result, &p::uint(progress.completed as u64)?)?;
-    let error = progress.error.map_or_else(p::none, |error| {
-        let error = errors::parse_reader(&error.into(), true);
-        crate::python::relay::attach(|py| error.value(py).clone().into_any().unbind())
-    });
-    p::push(&result, &error)?;
-    let construction = crate::python::relay::attach(|py| {
-        Py::new(py, crate::construction::Construction { charge }).map(Py::into_any)
-    })?;
-    p::push(&result, &construction)?;
-    p::tuple(&result)
+    let value = crate::value_render::convert(parsed, meter, &mut charge, !as_dict)?;
+    let nodes = crate::object_nodes::convert(parsed.lists(), &mut charge)?;
+    let references = crate::object_nodes::references(parsed.lists(), refs, &mut charge)?;
+    let error = progress
+        .error
+        .map(|error| errors::parse_reader(&error.into(), true));
+    let bytes_read = parsed.bytes_read;
+    crate::python::relay::attach(move |py| {
+        let error = error.map_or_else(|| h::none(py), |error| error.value(py).clone().into_any());
+        let construction = Bound::new(py, crate::construction::Construction { charge })?;
+        h::tuple_of(
+            py,
+            &[
+                value.into_bound(py),
+                nodes.into_bound(py),
+                references.into_bound(py),
+                h::int(py, bytes_read)?,
+                h::uint(py, progress.completed as u64)?,
+                error,
+                construction.into_any(),
+            ],
+        )
+        .map(Bound::unbind)
+    })
 }
 
 #[cfg(test)]

@@ -51,12 +51,26 @@ pub(crate) mod held {
         // SAFETY: a new empty list or null.
         unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyList_New(0)) }
     }
-    /// A list of `len` slots, each to be filled once by [`put`] before the
-    /// list is shared.
+    /// A list of `len` slots holding `None`, each to be replaced by [`put`].
+    /// No slot is ever null: a garbage collection or finalizer run by a
+    /// later allocation, or another thread while rendering detaches, can
+    /// reach the list through `gc.get_objects()` before it is complete.
     pub(crate) fn list_of(py: Python<'_>, len: usize) -> PyResult<Bound<'_, PyAny>> {
         let n = isize::try_from(len)?;
-        // SAFETY: a new list of null slots or null; `put` fills every slot.
-        unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyList_New(n)) }
+        // SAFETY: a new list of null slots or null. Each slot is given a new
+        // reference to `None` before anything else can run: no allocation or
+        // Python code comes between the list's creation and its filling.
+        unsafe {
+            let list = Bound::from_owned_ptr_or_err(py, ffi::PyList_New(n))?;
+            for at in 0..n {
+                let none = ffi::Py_None();
+                ffi::Py_IncRef(none);
+                if ffi::PyList_SetItem(list.as_ptr(), at, none) == -1 {
+                    return Err(PyErr::fetch(py));
+                }
+            }
+            Ok(list)
+        }
     }
     /// Fill slot `at` of a list from [`list_of`], taking `item`'s reference.
     pub(crate) fn put(list: &Bound<'_, PyAny>, at: usize, item: Bound<'_, PyAny>) -> PyResult<()> {
@@ -97,6 +111,20 @@ pub(crate) mod held {
     pub(crate) fn tuple<'py>(list: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         // SAFETY: a live borrowed list; the result is a new reference or null.
         unsafe { Bound::from_owned_ptr_or_err(list.py(), ffi::PyList_AsTuple(list.as_ptr())) }
+    }
+    /// A tuple of `items`, through a list: every allocation is checked.
+    pub(crate) fn tuple_of<'py>(
+        py: Python<'py>,
+        items: &[Bound<'py, PyAny>],
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let list = list(py)?;
+        for item in items {
+            push(&list, item)?;
+        }
+        tuple(&list)
+    }
+    pub(crate) fn none(py: Python<'_>) -> Bound<'_, PyAny> {
+        py.None().into_bound(py)
     }
 }
 

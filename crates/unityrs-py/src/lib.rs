@@ -72,9 +72,17 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Pooled workers are joined before os.fork() (POSIX only).
     let os = m.py().import("os")?;
     if os.hasattr("register_at_fork")? {
-        let hook = pyo3::types::PyDict::new(m.py());
-        hook.set_item("before", &release)?;
-        os.call_method("register_at_fork", (), Some(&hook))?;
+        let hook = python::held::dict(m.py())?;
+        python::held::set(
+            &hook,
+            &python::held::string(m.py(), b"before")?,
+            release.as_any(),
+        )?;
+        os.call_method(
+            "register_at_fork",
+            (),
+            Some(hook.cast::<pyo3::types::PyDict>()?),
+        )?;
     }
     m.add_function(release)?;
     m.add(
