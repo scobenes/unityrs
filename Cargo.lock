@@ -1563,6 +1563,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs-bench"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "sha2 0.11.1",
+ "unityrs-testkit",
+ "unityrs-texture",
+]
+
+[[package]]
 name = "unityrs-bench-lzma"
 version = "0.0.1"
 dependencies = [

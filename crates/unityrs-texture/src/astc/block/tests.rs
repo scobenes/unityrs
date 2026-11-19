@@ -133,3 +133,24 @@ fn illegal_modes_are_error_blocks() {
     let mut large = Tables::new(Footprint::new(12, 12).unwrap(), &meter).unwrap();
     assert!(small.mode(4).is_none() && large.mode(4).is_some());
 }
+
+/// The public error status agrees with the colour the decoder writes:
+/// the reserved and void-extent error blocks above are errors, the
+/// all-ones void extent is not, and a footprint astcenc lacks is `None`.
+#[test]
+fn error_status_matches_the_error_blocks() {
+    let mut ones = [0xff; 16];
+    ones[0] = 0xfc;
+    ones[1] = 0xfd;
+    let mut reserved = ones;
+    reserved[1] &= !0x08;
+    let mut data = ones.to_vec();
+    data.extend_from_slice(&reserved);
+    data.extend_from_slice(&[0; 16]);
+    data.push(0);
+    assert_eq!(
+        crate::astc_ldr_error_blocks(4, 4, &data),
+        Some(vec![false, true, true])
+    );
+    assert_eq!(crate::astc_ldr_error_blocks(7, 7, &data), None);
+}

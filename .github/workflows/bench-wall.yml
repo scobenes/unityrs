@@ -1,0 +1,71 @@
+name: Benchmark (published comparison)
+
+# The published comparison (docs/plans/bench.md section 5.2): unityrs's wheel
+# against UnityPy 1.25.2 with UnityPyBoost, the same script on both, on the
+# full fixture set, on GitHub's ubuntu-24.04 runner, the reference host. It
+# runs only when dispatched, never gates anything, and uploads wall.json as
+# the artifact bench-wall-<run id>-<attempt>. A PR that publishes commits that
+# file as benchmarks/wall.json with the rendered docs, and CI's
+# bench-wall-check job verifies it against this run.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-wall
+  cancel-in-progress: false
+
+jobs:
+  wall:
+    runs-on: ubuntu-24.04
+    # Not yet measured on a runner (it can run only once this file is on the
+    # default branch); BN-1b states the measured time and sets this to twice it.
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      # As CI's python-wheel job builds and installs it: the abi3 wheel,
+      # --no-deps into a fresh venv holding the oracle's exact wheels, so both
+      # sides share Python 3.11 and Pillow 9.5.0.
+      - name: Build the abi3 wheel
+        run: |
+          python -m venv "$RUNNER_TEMP/builder"
+          "$RUNNER_TEMP/builder/bin/python" -m pip install maturin==1.9.6
+          "$RUNNER_TEMP/builder/bin/maturin" build --locked --release \
+            --manifest-path crates/unityrs-py/Cargo.toml --out "$RUNNER_TEMP/wheels"
+      - name: Install the wheel and oracle in a fresh runtime venv
+        run: |
+          python -m venv "$RUNNER_TEMP/bench"
+          echo "$RUNNER_TEMP/bench/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bench/bin/python" -m pip install --require-hashes -r tools/parity/requirements-oracle.txt
+          "$RUNNER_TEMP/bench/bin/python" -m pip install --no-deps "$RUNNER_TEMP"/wheels/*.whl
+          "$RUNNER_TEMP/bench/bin/python" -m pip check
+      - name: Build the fixture generator
+        run: cargo build --release --locked -p unityrs-bench
+      - name: Time both implementations on the full fixture set
+        env:
+          UNITYRS_BENCH_BIN: target/release/unityrs-bench
+          UNITYRS_BENCH_CACHE: ${{ runner.temp }}/bench-cache
+        run: python tools/bench/bench.py run --out "$RUNNER_TEMP/bench-out"
+      - name: Stage wall.json for upload
+        run: |
+          mkdir bench-wall
+          cp "$RUNNER_TEMP/bench-out/wall.json" bench-wall/wall.json
+      - name: Upload wall.json
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bench-wall-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bench-wall/wall.json
+          if-no-files-found: error
+          retention-days: 90
