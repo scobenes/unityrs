@@ -202,9 +202,10 @@ impl Staged<'_> {
             .map_err(charged)?;
         let mut parts = MeteredVec::new(self.meter);
         let mut result = None;
-        // Paced per child scheduled (each value but the root) and per element.
+        // Paced per value built, per child scheduled, and per element.
         let mut pace = Pace::new();
         while let Some(task) = tasks.pop() {
+            pace.tick(py);
             let (v, target) = match task {
                 Task::Value(v, target) => (v, target),
                 Task::Tuple(start, target) => {

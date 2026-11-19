@@ -113,8 +113,10 @@ pub(crate) mod held {
     /// list it is copying).
     pub(crate) fn tuple<'py>(list: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let py = list.py();
-        // SAFETY: PyList_Size checks the type; each borrowed item is owned
-        // by a new Bound before anything else runs.
+        // SAFETY: PyList_Size checks the type; PySequence_GetItem returns a
+        // strong reference (never a borrowed one, which another thread could
+        // free first on a free-threaded build; this abi3 wheel loads on none
+        // today, but the read stays sound if it ever does).
         let items = unsafe {
             let n = ffi::PyList_Size(list.as_ptr());
             if n < 0 {
@@ -125,8 +127,8 @@ pub(crate) mod held {
                 .try_reserve_exact(usize::try_from(n)?)
                 .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("tuple items"))?;
             for at in 0..n {
-                let item = ffi::PyList_GetItem(list.as_ptr(), at);
-                items.push(Bound::from_borrowed_ptr_or_err(py, item)?);
+                let item = ffi::PySequence_GetItem(list.as_ptr(), at);
+                items.push(Bound::from_owned_ptr_or_err(py, item)?);
             }
             items
         };
