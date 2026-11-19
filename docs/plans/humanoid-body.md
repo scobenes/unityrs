@@ -1,22 +1,22 @@
 # Plan: humanoid body motion
 
-**Status.** Draft, 2026-11-18. The deferred slice of
-[`anim.md` section 2.6](anim.md#26-later-slices). A feasibility study on the
-P2b fixture recordings (both rigs, both Animator roots, Unity 2022.3 and
-6000) found the model's shape but not all of its constants, so the slice
-stays deferred: section 4 lists the Editor recordings that would settle it,
-and PR B1 is the only one that can start now. The body-bearing refusal
-(`unsupported_body_motion`) stays until section 3's gates pass.
+**Status.** Draft, 2026-11-18, with one review round folded in. This is the
+deferred slice of [`anim.md` section 2.6](anim.md#26-later-slices). A
+feasibility study on the P2b fixture recordings found the shape of the
+model but not all of its constants, so the slice stays deferred. Section 4
+lists the Editor recordings that would settle it. PR B1 is the only one
+that can start now. The body-bearing refusal (`unsupported_body_motion`)
+stays until section 3's gates and B5's release gate pass.
 
 **Deliverables.** Positive humanoid playback for clips whose hips Unity
-places from the body pose: muscle-only clips (the P2b fixtures show their
-hips always need this correction) and clips with `RootT`/`RootQ` body
-curves, on the root-basis settings section 2.4 verifies. Each recovers the
+places from the body pose. These are muscle-only clips (on the P2b fixtures
+their hips always need this correction) and clips with `RootT`/`RootQ` body
+curves, in the configurations B5's predicate admits. Each clip recovers the
 hips-local TRS from the muscle vector, the body pose and the Avatar's
 runtime tables, then feeds P2b's collector unchanged. Everything else keeps
 its typed refusal (section 8).
 
-**Starting point.** P2b PR 8: the runtime Avatar reader (`m_RootX`,
+**Starting point.** P2b PR 8 supplies the runtime Avatar reader (`m_RootX`,
 `m_Scale`, `m_Human.m_SkeletonPose`, axes, limits and the slot table), the
 muscle-to-local-rotation equation confirmed on known vectors, the typed
 refusals, the qualification tool `tools/parity/anim_humanoid_qualify.py`
@@ -25,76 +25,90 @@ and the recorder's `human_pose` mode
 still holds: humanoid retargeting has no permissive reference other than a
 Python implementation, and L11 must pass before any tuning.
 
+**PARITY row.** This slice owns the tier X row "Humanoid local poses" in
+`PARITY.md`, now `deferred (Humanoid body motion)`. B0 names it. B5 promotes
+it to verified for the configurations its predicate admits, and nothing
+else.
+
 ## 0. Decisions
 
 | # | Decision | Reason |
 |---|---|---|
-| 1 | Read the per-bone mass from the target Avatar's runtime `m_Human.m_HumanBoneMass`, never from a table in the source. | The Avatar serializes it, already normalized, with an absent optional bone's share folded into its parent. AssetStudio reads the field. A source table would be tuning. |
-| 2 | Every placement constant and frame convention is a named hypothesis in the reference notes, frozen only when a recording isolates it (section 3.2). A constant only a least-squares fit pins stays a refusal. | DESIGN's L11-before-tuning rule. The feasibility fit matches every recording but leaves several constants free. |
-| 3 | Solve the hips in closed form from the body pose: rotation from the body frame, then translation from the centre of mass. Add any iteration only if the read-back recording (F2) shows Unity's own solve is approximate. | The closed form reproduces all but one recorded sample (section 1). |
-| 4 | Ship root projection only for the setting combinations a body-motion recording covers. The rest keep `unsupported_humanoid_root_basis` or `unsupported_humanoid_clip_settings`. | One recorded combination carries body slots today. |
-| 5 | Lift the body-bearing refusal per verified configuration, not globally. | As P2b PR 8 did for muscle-only clips. |
+| 1 | Read the per-bone mass from the target Avatar's runtime `m_Human.m_HumanBoneMass`, never from a table in the source. | The Avatar serializes it, and AssetStudio reads the field. A table in the source would be tuning. Its normalization and folding are checked in E0. |
+| 2 | Every placement coefficient and frame convention is a named hypothesis in the reference notes. Each is frozen only when a probe excites it under the conditioning criterion of 2.5. A coefficient that only a least-squares fit over unisolated poses pins stays a refusal. | DESIGN's L11-before-tuning rule. The feasibility fit matches the recordings it was fitted on but leaves several coefficients free. |
+| 3 | Solve the hips in closed form from the body pose: rotation from the body frame, then translation from the centre of mass. B3 waits for E2 to show that Unity's own solve is that closed form. | The closed form reproduces all but one recorded sample (section 1). |
+| 4 | Ship root projection only for the setting combinations an F4 recording covers. The rest keep `unsupported_humanoid_root_basis` or `unsupported_humanoid_clip_settings`. | Today one recorded combination carries body slots. |
+| 5 | Lift the body-bearing refusal per configuration, through a runtime predicate over recorded configurations (B5), never globally. | P2b PR 8 qualified no clip. This slice is the first to lift the refusal, so its scope has to be explicit. |
 
 ## 1. Feasibility
 
-Scripts outside the repository read the recordings through the repository's
-replay files and `unityrs show`. Results, qualitatively:
+Scripts kept outside the repository read the recordings through the
+repository's replay files and `unityrs show`. The data were two rigs of
+different proportions: one mirror-symmetric rig with every optional torso
+bone, and a taller one without UpperChest. Each had an identity Animator
+root and one translated and rotated root, in Unity 2022.3 and 6000. Every
+claim below is limited to those rigs, roots and versions.
 
-- **Body position.** Masses at bone origins miss Unity by centimetres.
-  Placing each bone's mass at a fixed fraction along its segment toward its
-  human child reproduces the body position, and hence the hips translation,
-  within the derived f32 bound on every recording: both rigs, identity and
-  translated/rotated Animator roots, muscle and body-motion clips,
-  known-vector `SetHumanPose` poses, and both Editor versions. A fit on one
-  version and on identity roots predicts the other version and the offset
-  roots within the bound, so the model is frame and version independent.
+- **Body position, fitted.** With masses at bone origins the model misses
+  Unity by centimetres. With each bone's mass at a fixed point along its
+  segments toward its mapped human children (2.1), one set of coefficients
+  fitted on all the recordings reproduces the body position, and so the
+  hips translation, within the derived f32 bound. This is an in-sample fit.
+- **Body position, predicted.** A fit on the 2022.3 identity-root
+  recordings alone predicts the 6000 recordings and the offset-root
+  recordings within the bound. Those recordings share the fitted rigs and
+  poses, so this tests only frame and version independence. A fit on one rig
+  predicts the other rig's hips centimetres off, so it is not yet known
+  whether the coefficients are the same for every rig (section 2.5).
 - **Not identified.** The fixtures only bend the spine and twist the left
-  limbs, so the fractions of the spine chain, neck, head, shoulders and toes
-  are fixed only in combination. Fractions fitted on one rig miss the other
-  rig by centimetres. The identified ones are simple ratios (the hips at the
-  centroid of its children, the shins and forearms at mid-segment).
-- **Not mirror-symmetric.** On mirror-symmetric rigs the Avatar's rest body
-  position is off the mid-plane by an amount that scales exactly with the
-  upper-arm segment: the two upper arms' mass points sit at different
-  fractions. The model must not assume left/right symmetry.
-- **Body orientation.** The frame from Unity's description (up from the
-  mid upper legs to the mid upper arms, lateral from the left-to-right
-  vectors of both pairs, up kept exact) matches the recorded body rotation
-  within the bound on the taller rig. On the compact rig its largest
-  noncommuting sample is over the bound, while every alternative tested
-  (equal-weight or single-pair lateral, other reference points, lateral kept
-  exact, blended upper and lower frames) is much worse. Either the frame
-  differs at second order or Unity's hips solve is inexact. F2 tells them
-  apart.
-- **Root projection.** Clips without body slots put the body at the Animator
-  origin with identity rotation, under all eight keep-original combinations.
-  The body-motion clip (Y kept, XZ and orientation from the body) leaves
-  only the body height in the Animator frame. No other combination carries
-  body slots.
+  limbs, so several coefficients are fixed only in combination (2.5).
+- **Not mirror-symmetric.** On the mirror-symmetric rig the Avatar's rest
+  body position lies off the mid-plane. Left and right coefficients are
+  therefore separate unknowns.
+- **Body orientation.** The frame from Unity's description (2.2) matches the
+  recorded body rotation within the bound on the taller rig. On the other
+  rig, the largest noncommuting sample is over the bound. Every alternative
+  frame tested (equal-weight or single-pair lateral, other reference points,
+  lateral kept exact, blended upper and lower frames) does much worse. Either
+  the frame differs at second order or Unity's hips solve is inexact. E2
+  tells the two apart.
+- **Root projection.** Clips without body slots put the body at the
+  Animator origin with identity rotation, in all eight keep-original
+  combinations with bake off. The one body-motion clip (Y kept original, XZ
+  and orientation from the body, bake off) leaves only the body height in
+  the Animator frame. Every recorded clip stores `m_StartAtOrigin` on. No
+  other combination carries body slots.
 
-So a mass model partly reproduces Unity's hips: translation within the
-bound wherever its constants are pinned, rotation within the bound on one
-rig. It is not established until section 4's recordings pin every constant.
+So a mass model partly reproduces Unity's hips, on the tested rigs and
+frames only. Its translation is within the bound when fitted, and its
+rotation is within the bound on one rig. It is not established until section 4's
+recordings pin every coefficient, and its constancy across rigs stays a
+hypothesis until the hold-out rig passes.
 
 ## 2. Model
 
+All of section 2 is hypothesis (decision 2). Frames: `A` is the Animator
+node's local frame. Clip body quantities are in the clip's motion space,
+with position in normalized units, meaning metres divided by `m_Scale`.
+
 ### 2.1 Body position
 
-Unity documents the body position as the humanoid's centre of mass from an
-average body-part mass distribution, divided by the Avatar's human scale,
-and the human scale as the centre-of-mass height in T-pose. The candidate:
+Unity documents the body position as the humanoid's centre of mass, taken
+from an average body-part mass distribution and divided by the Avatar's
+human scale. It documents the human scale as the centre-of-mass height in
+T-pose. The candidate:
 
-- `c(pose) = Σ_i m_i · (p_i + Σ_j a_ij (p_child_ij − p_i))` over the mapped
-  human bones, with `m_i` from `m_HumanBoneMass` and `p` positions in the
-  Animator root frame. `a_ij` are per-segment fractions, constant across
-  rigs, toward the nearest mapped human descendants. An unmapped bone
-  contributes nothing.
-- The T-pose check `c(m_SkeletonPose) = m_RootX.t` and
-  `m_RootX.t.y = m_Scale` holds on every Avatar before any clip is played,
-  and refuses `unsupported_humanoid_body_model` otherwise.
-- `bodyPosition = c / m_Scale`. Clip `RootT` is in this normalized space.
+- `c(pose) = Σ_i m_i · (p_i + Σ_j a_ij (p_ij − p_i))` over the mapped human
+  bones `i`. Here `m_i` is the bone's `m_HumanBoneMass` entry (E0), `p` are
+  positions in one frame, and `p_ij` are the nearest mapped human
+  descendants of `i`. The `a_ij` are dimensionless coefficients (2.5).
+- Position-only hypothesis (H-pos): a mass point is an affine combination
+  of mapped bone positions. Rotating a terminal bone (one with no mapped
+  human descendant) therefore cannot move `c`. The terminal probes of 2.5
+  test this.
+- `bodyPosition = c / m_Scale`. `RootT` is in this normalized space.
 
-[Unity root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html) ·
+[Unity 2022.3 root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html) ·
 [HumanPose.bodyPosition](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanPose-bodyPosition.html) ·
 [HumanPoseHandler.GetHumanPose](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanPoseHandler.GetHumanPose.html) ·
 [HumanTrait.GetBoneDefaultHierarchyMass](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanTrait.GetBoneDefaultHierarchyMass.html) ·
@@ -104,136 +118,254 @@ and the human scale as the centre-of-mass height in T-pose. The candidate:
 ### 2.2 Body rotation
 
 Unity describes the body orientation as an average of the lower and upper
-body orientations relative to the Avatar T-pose, with the up vector from
-the hips and shoulders middle points. The candidate:
+body orientations relative to the Avatar T-pose, with the up vector taken
+from the middle points of the hips and shoulders. The candidate:
 
 - `up = normalize(mid(L,R UpperArm) − mid(L,R UpperLeg))`,
   `lateral = (R − L UpperArm) + (R − L UpperLeg)`,
   `forward = normalize(lateral × up)`, `right = up × forward`.
-- `F(pose)` is the rotation with columns `(right, up, forward)`, and
-  `bodyRotation = F(pose) · F(T-pose)⁻¹`. `RootQ` is this rotation.
+- `F(pose)` is the rotation with columns `(right, up, forward)`.
+  `bodyRotation = F(pose) · F(T)⁻¹`, where `T` is the Avatar T-pose
+  (`m_SkeletonPose`). `RootQ` is this rotation. `F` depends only on
+  directions, so a uniform scale does not change it.
 
-The lateral weighting, the reference points and which axis is kept exact
-are hypotheses (decision 2). F2 decides whether the compact rig's residual
-belongs to the frame or to the solve.
 [HumanPose.bodyRotation](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/HumanPose-bodyRotation.html)
 
-### 2.3 Hips-local TRS
+### 2.3 Hips-local TRS and scale
 
-With every non-hips local rotation from P2b's muscle equation, place the
-hips at the identity and evaluate `c_h` and `F_h` in the hips frame. For the
-target body pose `(T, B)` in the Animator root frame (2.4):
-`H = B · F(T-pose) · F_h⁻¹` and `P = T · m_Scale − H · c_h`. Then convert
-`(P, H)` from the Animator root frame to the hips parent's frame as
-section 2.4 of `anim.md` prescribes for a nonidentity root. A singular or
-non-TRS chain refuses. Hips scale stays at rest.
+The chain from the Animator node to the hips has these parts:
+
+- `(t_p, R_p, σ_p)` is the hips parent's transform in `A`: the composed
+  translation, rotation and uniform scale of the nodes between the Animator
+  node and the hips parent. `σ_p = 1` when the parent is the Animator node.
+- `s_h` is the hips' own uniform local scale, held at rest.
+- `k = σ_p · s_h` is the scale of the hips frame in `A`.
+
+The solve, given the target body pose `(T_A, B_A)` in `A` in metres (2.4):
+
+1. Evaluate `c_h` and `F_h` in the hips local frame from every non-hips
+   local rotation (P2b's muscle equation) and the descendants' rest local
+   translations and scales. `c_h` excludes `s_h` and every ancestor's scale.
+2. `H_A = B_A · F(T) · F_h⁻¹` (scale-free).
+3. `P_A = T_A − k · H_A · c_h`.
+4. Local hips: `t = σ_p⁻¹ · R_p⁻¹ (P_A − t_p)`, `q = R_p⁻¹ H_A`, scale `s_h`.
+
+`T_A` is the body position in metres in `A` (2.4). Whether the Animator
+node's own scale applies on top of `m_Scale` is a question for F5. A
+non-uniform scale, a non-TRS link anywhere from the Animator node to a
+mapped human bone, or a singular chain refuses
+(`unsupported_animator_root`).
 
 ### 2.4 Target body pose and root projection
 
-- No body slots: `T = 0`, `B = identity`, for the verified settings.
-- Body slots: `RootT`/`RootQ` minus the root transform, which is the
-  Y-plane projection of the body under the clip's keep-original flags,
-  `m_StartAtOrigin`, height-from-feet and the level and orientation offsets.
-  With `applyRootMotion` off the projection is removed from the pose, and
-  the root motion itself is not exported (section 7).
-- Each combination is supported only once a body-motion recording covers it
-  (decision 4). The first target is the recorded one: Y kept, XZ and
-  orientation from the body.
+For a clip with body slots, `X_b(t) = (RootT(t), RootQ(t))` is the body in
+motion space, in normalized units. The root `X_r(t) = (r(t), y(t))` is the
+projection of the body onto the Y plane. `y` is a rotation about the up
+axis only. The body in `A` is the rigid inverse composition
+`X_r(t)⁻¹ ∘ X_b(t)`:
 
-[AnimationClipSettings](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/AnimationClipSettings.html) ·
-[Unity root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html)
+- `T_A = m_Scale · y(t)⁻¹ (RootT(t) − r(t))`
+- `B_A = y(t)⁻¹ · RootQ(t)`
+
+The root's components come from the serialized clip fields. The bake flags
+are pinned apart from the keep-original flags:
+
+| Component | Bake into pose (`m_LoopBlendOrientation`, `m_LoopBlendPositionY`, `m_LoopBlendPositionXZ`) on | Off, keep original on (`m_KeepOriginalOrientation`, `m_KeepOriginalPositionY`, `m_KeepOriginalPositionXZ`) | Off, based on the body |
+|---|---|---|---|
+| `y` (yaw) | constant: the start value | the clip's original root yaw plus `m_OrientationOffsetY` | the body forward's yaw plus `m_OrientationOffsetY` |
+| `r.y` | constant: the start value | original root height plus `m_Level` | body height plus `m_Level`, or the lowest foot with `m_HeightFromFeet` |
+| `r.xz` | constant: the start value | original root XZ | body XZ |
+
+- **Start reference.** "Start value" means the projection at the clip's
+  start time. With `m_StartAtOrigin` on, the start XZ and yaw are
+  subtracted, so the root starts at the motion-space origin.
+  `AnimationClipSettings` exposes no field for `m_StartAtOrigin`. Its value
+  comes from the built clip, and every recorded built clip stores it on
+  ([crosswalk](../anim_reference.md#humanoid-qualification)). A clip that
+  stores it off refuses until a recording covers that case.
+- **No body slots.** `T_A = 0` and `B_A` = identity, as recorded for the
+  bake-off combinations.
+- **Root motion off.** With `applyRootMotion` off the projection only
+  re-expresses the pose. The root trajectory itself is not exported
+  (section 8).
+- **Scope.** Each cell, and each combination of cells, is a hypothesis
+  until an F4 recording of that combination passes E4 (decision 4).
+
+[Unity 2022.3 root motion](https://docs.unity3d.com/2022.3/Documentation/Manual/RootMotion.html) ·
+[ModelImporterClipAnimation](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/ModelImporterClipAnimation.html) ·
+[AnimationClipSettings, UnityCsReference 2022.3](https://github.com/Unity-Technologies/UnityCsReference/blob/a322ce5f78a82cf7ea211857a45338136ed7a22f/Editor/Mono/Animation/AnimationClipSettings.bindings.cs) ·
+[Bake Into Pose toggles, UnityCsReference 2022.3](https://github.com/Unity-Technologies/UnityCsReference/blob/a322ce5f78a82cf7ea211857a45338136ed7a22f/Editor/Mono/Inspector/AnimationClipEditor.cs)
+
+### 2.5 Coefficients, probes and identifiability
+
+`a_ij` enters `c` only through the vector `v_i = Σ_j a_ij t_ij`, where
+`t_ij` is child `j`'s offset in bone `i`'s frame. `v_i` is excited only by
+rotating bone `i` relative to the hips. The individual `a_ij` of a branch
+bone separate only across rigs whose child offsets `t_ij` are linearly
+independent.
+
+| Coefficients | Probe that excites them (F1 unless named) | Identifiability |
+|---|---|---|
+| Hips → Spine, L/R UpperLeg | None: a fixed vector in the hips frame | `v_Hips` comes from the T-pose and every pose once the rest are pinned. The individual coefficients need non-coplanar hip offsets across rigs (F6). Until then a combination stays free; it is irrelevant on a rig whose offsets lie in the same plane, and the rig refuses otherwise. |
+| L/R UpperLeg → LowerLeg | Upper Leg Front-Back and In-Out, per side | Per side |
+| L/R LowerLeg → Foot | Lower Leg Stretch, per side | Per side |
+| L/R Foot → Toes | Foot Up-Down, per side | Per side |
+| Spine → Chest | Spine muscles with the chest held | The spine rotates the whole chain above it, so this separates only together with the chest probes |
+| Chest → UpperChest, or Chest → Neck, L/R Shoulder without UpperChest | Chest muscles | A branch: as for the hips |
+| UpperChest → Neck, L/R Shoulder | Upper Chest muscles | A branch: as for the hips |
+| Neck → Head | Neck Nod, Tilt and Turn | Single |
+| L/R Shoulder → UpperArm | Shoulder Down-Up and Front-Back, per side | Per side |
+| L/R UpperArm → LowerArm | Arm Down-Up and Front-Back, per side | Per side, including the left/right difference |
+| L/R LowerArm → Hand | Forearm Stretch, per side | Per side |
+| Terminal: Head, L/R Hand, L/R Toes, mapped Eyes and Jaw | Head, Hand, Toes, Eye and Jaw muscles alone | No coefficient under H-pos. The probe must leave the hips unmoved within the bound, or that terminal refuses `unsupported_humanoid_body_model`. |
+| Twist muscles | Arm, forearm, upper and lower leg twist | Excite nothing when the child lies on the twist axis. Twist stays refused (section 8). |
+
+**Conditioning criterion.** Weight each recorded component by the inverse
+of its derived f32 bound and solve for the coefficients that 2.5 calls
+identifiable.
+
+- The weighted design matrix must have full column rank.
+- Its 2-norm condition number must be at most `1e6`.
+- Take the worst-case coefficient error `δa_k = Σ_r |A⁺_kr|`, which allows
+  each weighted residual up to 1. On every pose of every recorded rig and
+  of the hold-out rig, the hips displacement it induces, `Σ_k |∂c/∂a_k| δa_k`,
+  must stay under a tenth of the hips translation bound.
+
+A coefficient that fails stays free. B3 then computes, for the target
+Avatar, whether its geometry projects onto any free combination. If it
+does, the Avatar refuses `unsupported_humanoid_body_model`. A combination
+that projects to zero on that Avatar is irrelevant to its hips.
+
+**Topologies.** The optional bones in the 25 mass slots are Chest,
+UpperChest, Neck, each Shoulder, each Toes, both Eyes and Jaw. F6 records
+each absence alone, and eyes and jaw present. B5's predicate admits only
+recorded topologies.
 
 ## 3. Verification
 
 ### 3.1 f64 transcription
 
-Extend `tools/parity/anim_reference.py` and its notes with 2.1–2.4, citing
-only the public sources above, and freeze f64 bounds derived as in
-[`anim.md` 4.2](anim.md#42-l11-and-f64-transcription): operation counts and
-magnitude bounds through forward kinematics, the weighted sum, the
-cross-product frame and its normalization, the quaternion solve and the
-angular metric. Analytic cases: a single-segment rig, a rotated and
-translated root, a uniform scale, an absent optional bone, and a
-noncommuting pose.
+Extend `tools/parity/anim_reference.py` and its notes with 2.1–2.5,
+citing only the public sources above. Freeze f64 bounds derived as in
+[`anim.md` 4.2](anim.md#42-l11-and-f64-transcription), from the operation
+counts and magnitude bounds through these steps:
+
+- forward kinematics with scale
+- the weighted sum
+- the cross-product frame and its normalization
+- the quaternion solve
+- the inverse rigid composition of 2.4
+- the angular metric
+
+The analytic cases are a single-segment rig, a rotated and translated root,
+a uniform intermediate scale, an absent optional bone, a noncommuting pose,
+and each projection cell of 2.4.
 
 ### 3.2 Evidence levels
 
-| Level | Evidence | Gate |
+| Level | Evidence | Pass |
 |---|---|---|
-| E0 | Every recorded Avatar's `m_HumanBoneMass`, read through `unityrs show`, against the Editor's `HumanTrait` values; the T-pose check of 2.1. | Exact f32, both versions. |
-| E1 | Each placement constant pinned by a known-vector recording that moves only its segment (F1). | One least-squares solution, with full rank. A constant that F1 leaves free stays a refusal. |
-| E2 | The read-back (F2): Unity's own body pose after `SetHumanPose` against the requested one, and against 2.1–2.2 on the resulting bones. | Decides decision 3 and the frame hypothesis. |
-| E3 | Python hips TRS (2.3) from the recorded non-hips rotations against every known-vector and clip recording: both rigs, the hold-out rig, all roots, scaled rigs and both versions. | Within the derived f32 bound per sample. The hold-out rig enters no fit. |
-| E4 | Root projection: each body-motion recording of F4 under 2.4. | Within bound, per combination supported. |
-| E5 | Rust same-bundle L11: Rust reads the bundle, samples the clip and writes the full pose, compared with the same replays. | Within the frozen replay bounds; this promotes the PARITY row. |
+| E0a | Decode `m_HumanBoneMass` in both versions: the read is as AssetStudio's, with one f32 per slot of the 25-slot `m_HumanBoneIndex` order (HumanBodyBones 0–8, UpperChest, 9–23). | Exact length and slot mapping. Malformed data refuses. |
+| E0b | Normalization and folding, specified before any comparison: each entry is the Editor's default mass for that slot plus those of the absent optional slots it is the nearest present ancestor of, divided by the sum over present slots. An absent slot is zero. Compare with the recorder's `GetBoneDefaultHierarchyMass` values on every recorded topology. | Within a derived bound for the sum and division. |
+| E0c | Reproduce `m_RootX.t` from `m_SkeletonPose` with 2.1, and `m_RootX.t.y` against `m_Scale`. | Within its own derived bound (forward kinematics of the skeleton pose plus the weighted sum), on every recorded Avatar |
+| E1 | Each coefficient that 2.5 calls identifiable, pinned by its probe. | 2.5's conditioning criterion |
+| E2 | F2 read-back on the failing combined-axis pose and on independent noncommuting probes (F1 combined vectors, F3 tilted targets). Convert the world read-back to `A` as the recorder converts the rest body: position by the inverse Animator transform of `bodyPosition · humanScale`, divided by `humanScale`; rotation by the inverse Animator rotation. Bound two residuals separately: requested-to-read-back, and model (2.2 on the recorded bones) to read-back. | Both residuals within their own derived angular bounds on every probe. Anything else is a frame or solve failure, and B3 stays blocked. |
+| E3 | Python hips TRS (2.3) from the recorded non-hips rotations, against every known-vector and clip recording: all rigs, roots and scaled rigs, in both versions. | Within the derived f32 bound per sample |
+| E4 | Root projection (2.4) against the root or residual body pose that F4 records, independently of the hips solve | Within bound, per combination supported |
+| E5 | Rust same-bundle L11: Rust reads the bundle, samples the clip and writes the full pose, compared with the same replays. | B5's release gate |
 
 The derived Editor bound for a computed hips TRS follows the replay
 tolerance procedure (`anim_reference.md`, per-recording f32 tolerances),
-extended to the body path. The qualification tool's rest-track bound,
-half an f32 ulp of the rest value, is for unanimated tracks and is too
-tight here.
+extended to the body path. The qualification tool's rest-track bound is
+half an f32 ulp of the rest value. It is meant for unanimated tracks and is
+too tight here.
 
 ## 4. Editor fixtures (owner-run)
 
-All are additions to the existing builder in `tools/fixtures/unity` and run
-with the same button in both Editor versions. F2 and F3 change only the
-recorder, so they need no new assets.
+Each fixture is an addition to the existing builder in `tools/fixtures/unity` and
+runs with the same button in both Editor versions. F2 and F3 change only the
+recorder, so they need no new assets. The recorder also writes
+`HumanTrait.GetBoneDefaultHierarchyMass` for every bone, for E0b.
 
 | # | Fixture | Settles |
 |---|---|---|
-| F1 | Per-segment known vectors on both rigs: each muscle group alone, left and right separately (legs, knees, feet, toes, shoulders, upper arms, forearms, hands, chest, upper chest, neck, head), then combined vectors. | Every placement fraction, including the asymmetric upper-arm pair and the spine chain (E1). |
-| F2 | After each `SetHumanPose`, record `GetHumanPose`'s body position and rotation in the Animator root frame. | Frame versus solve (E2). |
-| F3 | Known vectors with nonidentity body targets: offset position and tilted rotation. | The solve away from the rest body pose. |
-| F4 | Body-motion clips with tilted `RootQ` and XZ/Y motion in each of the eight keep-original combinations, plus height-from-feet, a level offset and an orientation offset each alone, on identity and offset roots. | Root projection (E4). |
-| F5 | Scaled rigs: a uniformly scaled Animator node, a proportionally larger skeleton, and an extra node with its own TRS between the Animator and the hips. | Human-scale and parent-frame conversion. |
-| F6 | A rig missing Neck, Shoulders and Toes, and a third proportion rig (long arms, short legs) kept as a hold-out. | Mass folding and transfer to an unseen rig (E3). |
-
-The recorder also writes `HumanTrait.GetBoneDefaultHierarchyMass` for every
-bone so E0 has an independent Editor value.
+| F1 | Known vectors on both rigs for each probe in the 2.5 table, each muscle group alone and left and right separately, then combined noncommuting vectors | E1 and the terminal (H-pos) checks |
+| F2 | After each `SetHumanPose`, record `GetHumanPose`'s body position and rotation, converted to `A`. | E2 |
+| F3 | Known vectors with nonidentity body targets: an offset position and a tilted rotation | The solve away from the rest body pose |
+| F4 | Body-motion clips with tilted `RootQ` and XZ/Y motion, on identity and offset roots. Each clip records its serialized bake, keep-original, height-from-feet, `m_StartAtOrigin`, level and orientation-offset fields. The cases are the eight keep-original combinations with bake off; the eight bake combinations with keep-original off; and, with all other settings neutral, height-from-feet, a level offset and an orientation offset, each alone. Each sample also records the projected root (`Animator.rootPosition` and `rootRotation`) where the Editor exposes it, and always a `GetHumanPose` read-back of the residual body pose. | E4 |
+| F5 | A uniformly scaled Animator node; a proportionally larger skeleton; and an extra node with a non-unit uniform scale, a translation and a rotation between the Animator and the hips. Each is played with nonzero body translation and a tilted body rotation (F3 targets and an F4 clip). | Scale and parent-frame conversion (2.3) |
+| F6 | One rig per absent optional bone: Chest, UpperChest, Neck, each Shoulder and each Toes. A rig with Eyes and Jaw mapped. A rig whose hip and shoulder child offsets are not coplanar. A third-proportion rig (long arms, short legs) kept as a hold-out. | Folding, branch coefficients, transfer to an unseen rig (E0b, E1, E3) |
 
 ## 5. If the study stays short
 
-If F1 leaves a constant free, if E2 shows an inexact solve without a
-public description, or if the hold-out rig misses its bound, the slice
-stays deferred with the body-bearing refusal. The plan then records which
-recording failed and what would settle it. No constant is shipped from a fit.
+The slice stays deferred with the body-bearing refusal in any of these
+cases:
+
+- a coefficient stays free on a configuration that needs it;
+- E2 shows an inexact solve that has no public description;
+- the hold-out rig misses its bound.
+
+The plan then records which recording failed and what would settle it. No
+coefficient is shipped from a fit.
 
 ## 6. PRs
 
 | # | PR | Contents | ~Non-test lines | Depends on |
 |---|---|---|---|---|
-| B0 | Plan | This document and the `anim.md` 2.6 link | docs | — |
-| B1 | Recorder and fixtures | F1–F6 in the builder, read-back and mass rows in the recorder, contract and `complete` checks, owner workflow notes | 0.6–0.9k | B0 |
-| B2 | Reference and body checker | 2.1–2.4 in the f64 reference with frozen bounds, the analytic cases, and a checker over a completed run for E0–E4 that freezes each constant with the recording that pins it | 0.6–0.9k | B1 recordings |
-| B3 | Rust body model | `m_HumanBoneMass` read and validated, T-pose check, centre of mass, frame and closed-form hips solve, synthetic tests and fuzz targets for the new reads | 0.5–0.7k | B2 |
-| B4 | Root projection and frames | Target body pose per verified setting combination, root-to-hips-parent and scale conversion, narrowed refusals | 0.4–0.6k | B3, F4, F5 |
-| B5 | Integration and L11 | Lift the body-bearing refusal per verified configuration, collector integration, the gated same-bundle replay (E5), PARITY row | 0.4–0.6k | B4 |
+| B0 | Plan | This document, the `anim.md` 2.6 link, and naming the "Humanoid local poses" tier X row as this slice's | docs | — |
+| B1 | Recorder and fixtures | F1–F6 in the builder; read-back, root, mass and setting rows in the recorder; contract and `complete` checks; owner workflow notes. **Adequacy checkpoint:** after the first owner run, a script computes 2.5's rank, conditioning and topology coverage. If any is short, B1 extends the fixtures before B2 starts. | 0.6–0.9k | B0 |
+| B2 | Reference and body checker | 2.1–2.5 in the f64 reference with frozen bounds and the analytic cases. A checker runs E0–E4 over a completed run and freezes each coefficient with the recording that pins it. **Input:** a completed run in both 2022.3 and 6000, read with Unity 6 reader support on main. | 0.6–0.9k | B1 recordings |
+| B3 | Rust body model | Read and validate `m_HumanBoneMass`; E0 checks; the centre of mass, frame and closed-form hips solve; the free-combination refusal; synthetic tests and fuzz targets for the new reads | 0.5–0.7k | B2 and E2 passing |
+| B4 | Root projection and frames | Target body pose per verified 2.4 combination, conversion from the Animator to the hips parent with scale, narrowed refusals | 0.4–0.6k | B3, F4, F5 |
+| B5 | Integration and L11 | Lift the body-bearing refusal behind the release gate below, add collector integration, run the gated same-bundle replay (E5), and promote the PARITY row | 0.4–0.6k | B4 |
 
-**Total estimate.** 2.5–3.7k non-test lines. B1 can start now. B2 waits
-for the owner's runs of B1 in both Editor versions, and B3–B5 for B2's
-frozen constants. The 6000 bundles need the Unity 6 reader on main.
+**B5's release gate.**
+
+- **Predicate.** A runtime configuration predicate decides admission. It
+  checks the Avatar topology, the Animator-to-hips chain (uniform scale,
+  TRS), the clip's serialized settings and 2.4 combination, the
+  body-slot presence, the animated muscle set (no twist or stretch) and
+  the Editor version family. It admits a configuration only if it is in the
+  recorded, passing set, and every other configuration keeps its typed
+  refusal.
+- **L11 matrix.** Every admitted configuration has a complete, passing
+  same-bundle L11 matrix in both versions. A missing, skipped or partial
+  replay blocks, as in P2b's `complete`.
+- **Freeze before the hold-out.** The model choices, coefficients, scope
+  and bounds are committed before anyone inspects the hold-out rig's
+  results. The hold-out evaluation names that commit and cannot refit.
+
+**Total estimate.** 2.5–3.7k non-test lines. B1 can start now. B2 waits for
+the owner's runs of B1 in both Editor versions, and B3–B5 wait for B2's
+frozen constants.
 
 ## 7. Risks and gates
 
 - **Fitted constants passing as verified.** A least-squares fit matches the
-  current recordings and still misses another rig by centimetres. Gate:
-  E1's isolation and E3's hold-out rig, decision 2.
-- **Unpublished solve.** If Unity's hips solve iterates, the closed form can
-  differ from it at second order. Gate: E2 before B3.
+  current recordings and still misses another rig by centimetres. Gates:
+  2.5's probes and conditioning, the hold-out rig, and decision 2.
+- **Unpublished solve.** If Unity's hips solve iterates, the closed form
+  can differ from it at second order. Gate: E2 before B3.
 - **Asymmetry.** A symmetric shortcut breaks the rest body position. Gate:
-  the T-pose check on every Avatar.
-- **Version drift.** The same model must hold in 2022.3 and 6000; each
-  constant is checked per version.
-- **Cost.** One forward-kinematics pass and one weighted sum per sample on
-  the existing metered path; no new allocation per sample.
+  E0c on every Avatar.
+- **Version drift.** The model must hold in both 2022.3 and 6000, so each
+  coefficient and bound is checked per version.
+- **Cost.** One forward-kinematics pass and one weighted sum per sample, on
+  the existing metered path, with no new allocation per sample.
 
 ## 8. What stays refused
 
-Mirror, cycle offset, loop blend, additive reference poses, IK goals,
-translation DOFs, twist redistribution and stretch keep their P2b refusals.
-Root basis and clip-setting combinations without an F4 recording stay
-`unsupported_humanoid_root_basis` or `unsupported_humanoid_clip_settings`.
-Non-uniform scale on the Animator chain and a non-TRS hips parent refuse.
-The root motion trajectory (the accumulated root delta that
-`applyRootMotion` would apply) is not exported; that is a later slice.
-Controller state and blend-tree evaluation stays in its own later slice.
+- **P2b refusals.** Mirror, cycle offset, loop-time blending, additive
+  reference poses, IK goals, translation DOFs, twist redistribution and
+  stretch keep their P2b refusals.
+- **Unrecorded settings.** Root-basis, bake and clip-setting combinations
+  with no passing F4 recording stay `unsupported_humanoid_root_basis` or
+  `unsupported_humanoid_clip_settings`, as does `m_StartAtOrigin` off.
+- **Unsupported rigs.** These refuse: topologies outside F6, an Avatar
+  whose geometry depends on a free coefficient combination, a terminal
+  bone whose probe moved the hips, non-uniform scale, and a non-TRS link
+  between the Animator and the human bones.
+- **Root trajectory.** The accumulated root delta that `applyRootMotion`
+  would apply is not exported. That is a later slice.
+- **Controllers.** Controller state and blend-tree evaluation stays in its
+  own later slice.
