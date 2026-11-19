@@ -49,6 +49,13 @@ class SourceTests(unittest.TestCase):
         (folder / "b.py").write_text(f"T = 'table.json'\nF = '{seal.FREEZE_PATH.name}'\nG = 'missing.json'\n"
                                      "def f():\n    from c import g\n", encoding="utf-8")
         self.assertEqual(seal.sources(folder, ("a.py",)), ["a.py", "b.py", "c.py", "table.json", "unused.py"])
+        # A constant that is no file name (too long for one, or text) is no source, and never an error.
+        (folder / "b.py").write_text(f"T = 'table.json'\nL = '{'x' * 300}'\nM = 'two words\\nmore'\n"
+                                     "def f():\n    from c import g\n", encoding="utf-8")
+        self.assertEqual(seal.sources(folder, ("a.py",)), ["a.py", "b.py", "c.py", "table.json", "unused.py"])
+        self.assertFalse(seal.named_file(folder, "x" * 300))
+        with mock.patch("pathlib.Path.is_file", side_effect=OSError(36, "File name too long")):
+            self.assertFalse(seal.named_file(folder, "table.json"))
 
     def test_the_freeze_sources_hold_validation_cases_and_decoding(self):
         files = seal.sources()

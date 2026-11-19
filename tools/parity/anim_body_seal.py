@@ -102,6 +102,17 @@ def references(path):
     return names, strings
 
 
+def named_file(folder, text):
+    """Whether the string constant `text` names a file of `folder`: a plain file name (no separator or
+    whitespace, at most 255 bytes) that exists; any error stat raises (a name too long, say) is no file."""
+    if not text or "/" in text or any(c.isspace() for c in text) or len(text.encode("utf-8")) > 255:
+        return False
+    try:
+        return (folder / text).is_file()
+    except (OSError, ValueError):
+        return False
+
+
 def sources(folder=HERE, entries=None):
     """The entry points (ENTRY_POINTS by default), every local module they import, transitively, and every
     other file of `folder` they name but the freeze artifact itself, sorted."""
@@ -112,9 +123,9 @@ def sources(folder=HERE, entries=None):
             continue
         found.add(name)
         modules, strings = references(folder / name)
-        pending += [module + ".py" for module in modules if (folder / (module + ".py")).is_file()]
-        data |= {text for text in strings if "/" not in text and not text.endswith(".py")
-                 and text != FREEZE_PATH.name and (folder / text).is_file()}
+        pending += [module + ".py" for module in modules if named_file(folder, module + ".py")]
+        data |= {text for text in strings if not text.endswith(".py") and text != FREEZE_PATH.name
+                 and named_file(folder, text)}
     return sorted(found | data)
 
 
