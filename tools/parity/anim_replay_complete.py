@@ -10,7 +10,7 @@ from uuid import uuid4
 from zlib import crc32
 
 import child
-from anim_fixture_body import BODY_BUNDLES, BODY_CASES, BODY_INFO, LATER_CASES, check_body, primary_probes
+from anim_fixture_body import BAND_CASES, BODY_BUNDLES, BODY_CASES, BODY_INFO, LATER_CASES, check_body, primary_probes
 from anim_fixture_coverage import BASIS_CASES, COVERAGE_CASES, check_coverage, required_coverage
 from anim_fixture_contract import (ASSETS, MOTION, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
                                    check_built_clip, check_built_static, check_discovery, check_evidence,
@@ -612,6 +612,12 @@ def recorded_paths(folder, replay, manifest, run):
                    if statuses.keys() & generation and statuses.get(name, "recorded") != "recorded"]
         if missing:
             errors.append("training rigs not recorded: " + ", ".join(missing))
+    # The band sweeps validate B2's lateral domain: once the run has them, each is required whatever its rig's
+    # own probe case did.
+    missing = [f"{name} ({statuses[name]})" for name in sorted(BAND_CASES)
+               if statuses.keys() & BAND_CASES and statuses.get(name, "recorded") != "recorded"]
+    if missing:
+        errors.append("band sweeps not recorded: " + ", ".join(missing))
     # Coverage confirmed on this Editor version is no longer optional.
     errors.extend(f"{name}: required for Unity {run['editor_version']} but {statuses[name]}"
                   for name in sorted(required_coverage(run["editor_version"]))

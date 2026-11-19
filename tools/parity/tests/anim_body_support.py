@@ -145,7 +145,7 @@ def pose_rotations(vector):
         if value and muscle in AXES:
             bone, axis = AXES[muscle]
             turn = angles.setdefault(bone, [0., 0., 0.])
-            turn[axis] += value * limits(muscle)[value > 0]
+            turn[axis] += value * abs(limits(muscle)[value > 0])
     return {bone: euler(turn, 4) for bone, turn in angles.items()}
 
 

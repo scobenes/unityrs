@@ -118,14 +118,17 @@ static partial class UnityrsFixtureBuilder
     const int RangePoints = 256;
     static readonly string[] RangeBones = { "Spine", "Chest", "UpperChest" };
     // Lateral band sweeps (anim_fixture_body.py BAND_RIGS): the range sweeps' Sobol points with Front-Back over
-    // [-1, 1], Left-Right over +-BandLateral and Twist over +-BandTwist, then the pure side bends, every mapped
-    // spine bone at one BandLevels Left-Right value of either sign under each tilt. The tilts are the range sweeps'.
+    // [-1, 1], Left-Right over +-BandLateral and Twist over +-BandTwist, then the side bends, every mapped spine
+    // bone at one BandBends (Left-Right, Twist) pair times either sign, under each tilt. The tilts are the range
+    // sweeps'.
     static readonly (string name, string rig)[] BandProbes = {
         ("body-probes-band-compact", "compact"), ("body-probes-band-tall", "tall"),
         ("body-probes-band-noncoplanar", "noncoplanar"),
     };
     const double BandLateral = 3.0 / 8, BandTwist = 1.0 / 32;
-    static readonly double[] BandLevels = { 1.0 / 8, 3.0 / 16, 1.0 / 4, 5.0 / 16, 3.0 / 8 };
+    static readonly (double level, double twist)[] BandBends = {
+        (15.0 / 128, BandTwist), (9.0 / 64, -BandTwist), (11.0 / 64, BandTwist), (13.0 / 64, -BandTwist), (3.0 / 8, 0),
+    };
     // (degree s, coefficients a, initial m_1..m_s) of dimensions 2-9.
     static readonly (int degree, int a, int[] m)[] SobolDirections = {
         (1, 0, new[] { 1 }), (2, 1, new[] { 1, 3 }), (3, 1, new[] { 1, 3, 1 }), (3, 2, new[] { 1, 1, 1 }),
@@ -248,11 +251,11 @@ static partial class UnityrsFixtureBuilder
                 () => BuildBodyRig(build, report, ProbeRigs.Single(rig => rig.Name == range.rig), false,
                     (range.name, range.rig, null), sweep: "range"),
                 !builtRigs.Contains(range.rig));
+        // A band sweep is required whatever its rig's own probe case did: Unity refusing it is an error.
         foreach (var band in BandProbes)
             report.Prepare(build, "Prepare " + band.name, new[] { band.name },
                 () => BuildBodyRig(build, report, ProbeRigs.Single(rig => rig.Name == band.rig), false,
-                    (band.name, band.rig, null), sweep: "band"),
-                !builtRigs.Contains(band.rig));
+                    (band.name, band.rig, null), sweep: "band"));
         foreach (var rig in ChainRigs)
             report.Prepare(build, "Prepare body-chain-" + rig.Name, RigCases(rig, true).ToArray(),
                 () => BuildBodyRig(build, report, rig, chain: true), true);
@@ -487,12 +490,16 @@ static partial class UnityrsFixtureBuilder
         for (int k = 0; k < RangePoints; k++) tilts.Add(TwistTilts[k / block]);
         if (band)
         {
-            foreach (var level in BandLevels)
+            foreach (var (level, twist) in BandBends)
                 foreach (var sign in new[] { 1, -1 })
                     foreach (var tilt in TwistTilts)
                     {
                         var bend = new float[3 * groups.Count];
-                        for (int i = 1; i < bend.Length; i += 3) bend[i] = (float)(sign * level);
+                        for (int i = 1; i < bend.Length; i += 3)
+                        {
+                            bend[i] = (float)(sign * level);
+                            bend[i + 1] = (float)(sign * twist);
+                        }
                         points.Add(bend);
                         tilts.Add(tilt);
                     }

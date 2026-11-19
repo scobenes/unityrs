@@ -123,14 +123,18 @@ RANGE_BONES = ("Spine", "Chest", "UpperChest")
 # are the range sweeps' Sobol points with each bone's Front-Back over [-1, 1], Left-Right over +-BAND_LATERAL and
 # Twist over +-BAND_TWIST (each 2 x - 1 scaled by a power of two, so exact in f32), the twists small enough that
 # most poses stay inside the frame's shoulder-hip twist scope while their arm-leg yaw gap reaches a few degrees.
-# The tilts are the range sweeps'. Then the pure side bends: every mapped spine bone at the same Left-Right
-# BAND_LEVELS value of either sign, Front-Back and Twist zero, under each tilt: the oppositely tilted arm and leg
-# laterals at a near-zero yaw gap that no lateral-weighting rule fits. The design comes from the cube alone.
+# The tilts are the range sweeps'. Then the side bends (BAND_BENDS), under each tilt: every mapped spine bone at
+# the same (Left-Right, Twist), at sign +-1 times a bend's pair, Front-Back zero. The twisted ones open a yaw gap of
+# either sign at the band's low levels, from just past the validated domain, which the Sobol points' largest
+# Left-Right reaches only sparsely. The pure one (Twist zero) is the oppositely tilted arm and leg laterals at a
+# near-zero yaw gap that no lateral-weighting rule fits. The design comes from the cube alone.
 BAND_RIGS = {"body-probes-band-compact": "compact", "body-probes-band-tall": "tall",
              "body-probes-band-noncoplanar": "noncoplanar"}
 BAND_LATERAL = 3 / 8
 BAND_TWIST = 1 / 32
-BAND_LEVELS = (1 / 8, 3 / 16, 1 / 4, 5 / 16, 3 / 8)
+# (Left-Right, Twist) of each side bend, taken at either sign.
+BAND_BENDS = ((15 / 128, BAND_TWIST), (9 / 64, -BAND_TWIST), (11 / 64, BAND_TWIST), (13 / 64, -BAND_TWIST),
+              (3 / 8, 0))
 # (degree s, coefficients a, initial m_1..m_s) of dimensions 2-9.
 SOBOL_DIRECTIONS = ((1, 0, (1,)), (2, 1, (1, 3)), (3, 1, (1, 3, 1)), (3, 2, (1, 1, 1)), (4, 1, (1, 1, 3, 3)),
                     (4, 4, (1, 3, 5, 13)), (5, 2, (1, 1, 5, 5, 17)), (5, 4, (1, 1, 5, 5, 5)))
@@ -359,20 +363,21 @@ def range_tilts():
 
 def band_vectors(rig, index):
     """A band sweep's vectors over the rig's mapped spine bones (BAND_RIGS): the scaled Sobol points, then the
-    side bends, each under every tilt."""
+    side bends (BAND_BENDS), each under every tilt."""
     groups = [[index[muscle] for muscle in group] for bone, group in PROBE_GROUPS
               if bone in RANGE_BONES and bone in rig_bones(rig)]
     scales = (1, BAND_LATERAL, BAND_TWIST)
     points = [tuple((2 * x - 1) * scales[d % 3] for d, x in enumerate(point))
               for point in sobol(RANGE_POINTS, 3 * len(groups))]
-    points += [(0, sign * level, 0) * len(groups) for level in BAND_LEVELS for sign in (1, -1) for _ in TWIST_TILTS]
+    points += [(0, sign * level, sign * twist) * len(groups) for level, twist in BAND_BENDS for sign in (1, -1)
+               for _ in TWIST_TILTS]
     return [{muscle: point[3 * g + k] for g, group in enumerate(groups) for k, muscle in enumerate(group)}
             for point in points]
 
 
 def band_tilts():
     """Each band-sweep vector's body tilt, in band_vectors' order."""
-    return range_tilts()[:RANGE_POINTS] + [tilt for _ in BAND_LEVELS for _ in (1, -1) for tilt in TWIST_TILTS]
+    return range_tilts()[:RANGE_POINTS] + [tilt for _ in BAND_BENDS for _ in (1, -1) for tilt in TWIST_TILTS]
 
 
 def probe_schedule(rig, names, targets, extra=None):
