@@ -3,7 +3,14 @@ mod args;
 pub(crate) use args::options;
 mod output;
 mod report;
-use std::{path::PathBuf, process::ExitCode, sync::Arc};
+use std::{
+    path::PathBuf,
+    process::ExitCode,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use unityrs_core::{
     budget::Reservation,
     env::{CabResolver, EnvOptions, Environment, Source, read_path},
@@ -14,15 +21,25 @@ use unityrs_core::{
 use unityrs_scene::Unit;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// The supplied built-in resources, offered only once a unit is selected.
+/// Selection walks the container, whose preload table names the built-ins a
+/// bundle's prefabs use; a file loaded under that walk ends it, as UnityPy's
+/// pass ends when its CABs grow.
 #[derive(Debug)]
-struct BuiltinFile(PathBuf);
+struct BuiltinFile {
+    path: PathBuf,
+    armed: AtomicBool,
+}
 impl CabResolver for BuiltinFile {
     fn resolve(&self, name: &[u8]) -> Option<Source> {
+        if !self.armed.load(Ordering::Acquire) {
+            return None;
+        }
         let name = name.rsplit(|b| matches!(b, b'/' | b'\\')).next()?;
         if name.eq_ignore_ascii_case(b"unity default resources")
             || name.eq_ignore_ascii_case(b"unity_builtin_extra")
         {
-            Some(Source::Path(self.0.clone()))
+            Some(Source::Path(self.path.clone()))
         } else {
             None
         }
@@ -147,9 +164,11 @@ fn select(
         &object.ok_or("no GameObject or SceneAsset with that path id")?,
     )?)
 }
-fn run(raw: &[Vec<u8>]) -> Result<()> {
-    let args = args::Args::parse(raw)?;
-    let peak = Arc::new(report::Peak::default());
+/// The input Environment, and the built-in resources it holds unarmed.
+fn environment(
+    args: &args::Args<'_>,
+    peak: &Arc<report::Peak>,
+) -> Result<(Environment, Option<Arc<BuiltinFile>>)> {
     let mut options = EnvOptions::unitypy();
     let mut context = (*options.context).clone();
     context.limits = args.limits;
@@ -160,10 +179,21 @@ fn run(raw: &[Vec<u8>]) -> Result<()> {
         )]));
     }
     options.context = Arc::new(context);
-    if let Some(path) = args.builtin_file {
-        options.resolver = Some(Arc::new(BuiltinFile(path.to_owned())));
+    let builtin = args.builtin_file.map(|path| {
+        Arc::new(BuiltinFile {
+            path: path.to_owned(),
+            armed: AtomicBool::new(false),
+        })
+    });
+    if let Some(builtin) = &builtin {
+        options.resolver = Some(builtin.clone());
     }
-    let env = Environment::new(options);
+    Ok((Environment::new(options), builtin))
+}
+fn run(raw: &[Vec<u8>]) -> Result<()> {
+    let args = args::Args::parse(raw)?;
+    let peak = Arc::new(report::Peak::default());
+    let (env, builtin) = environment(&args, &peak)?;
     // Read the profile before loading inputs so only explicit selectors
     // retain file occurrences in argument order, including repeated paths.
     let (profile, mut input_roots) = if let Some(path) = args.profile {
@@ -192,6 +222,9 @@ fn run(raw: &[Vec<u8>]) -> Result<()> {
         }
     }
     let unit = select(&env, &args, scene)?;
+    if let Some(builtin) = &builtin {
+        builtin.armed.store(true, Ordering::Release);
+    }
     peak.start_export();
     let meter = unit.meter();
     let profile = profile.unwrap_or_else(|| unityrs_gltf::Profile::new(meter));

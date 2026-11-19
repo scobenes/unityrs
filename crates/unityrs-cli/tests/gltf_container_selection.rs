@@ -99,3 +99,82 @@ fn check(flag: &str, class: &str, targets: &[i64], expected: usize) {
         assert!(!output.exists());
     }
 }
+
+// A bundle's preload table names the built-in meshes its prefabs use, as
+// every Editor-built bundle with a primitive does. The container walk that
+// selects `--prefab` must not load the supplied resource file: a file loaded
+// under the walk ends it, as UnityPy's pass ends when its CABs grow.
+#[test]
+fn prefab_selection_with_a_builtin_file_resolves_after_the_container_walk() {
+    let tmp = Scratch::new("gltf-cli-builtin-preload");
+    let index = e::serialized(
+        &["CAB-roots", "Library/unity default resources"],
+        &[e::Obj::asset_bundle(
+            100,
+            e::Bundle {
+                preload: vec![(2, 10210)],
+                rows: vec![e::row("assets/quad.prefab", (0, 1), (1, 1))],
+                ..e::Bundle::default()
+            },
+        )],
+    );
+    let roots = s::file(
+        s::Layout::Unity2022,
+        &["Library/unity default resources"],
+        &[
+            Object::new(1, 1, s::game_object(b"quad", &[(0, 2), (0, 3), (0, 4)])),
+            Object::new(2, 4, s::transform((0, 1), (0, 0), &[], false)),
+            Object::new(3, 33, s::mesh_filter((0, 1), (1, 10210))),
+            Object::new(4, 23, s::mesh_renderer((0, 1), &[], (0, 0))),
+        ],
+    )
+    .unwrap();
+    let input = tmp.join("bundle");
+    std::fs::write(
+        &input,
+        e::bundle(&[("CAB-index", index), ("CAB-roots", roots)]),
+    )
+    .unwrap();
+    let resource = tmp.join("supplied.resources");
+    let quad = s::mesh::mesh(
+        10210,
+        b"supplied",
+        &[[0., 0., 0.], [2., 0., 0.], [0., 2., 0.]],
+        &[0, 1, 2],
+        s::mesh::MeshVersion::V2022,
+    );
+    std::fs::write(
+        &resource,
+        s::file(s::Layout::Unity2022, &[], &[quad]).unwrap(),
+    )
+    .unwrap();
+    let profile = tmp.join("resolve.json");
+    std::fs::write(&profile, br#"{"profile_version":1,"builtin":"resolve"}"#).unwrap();
+    for resolve in [true, false] {
+        let output = tmp.join("output.glb");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_unityrs"));
+        command
+            .arg("gltf")
+            .arg(&input)
+            .args(["--prefab", "assets/quad.prefab", "--builtin-file"])
+            .arg(&resource)
+            .arg("-o")
+            .arg(&output);
+        if resolve {
+            command.arg("--profile").arg(&profile);
+        }
+        let result = child::output(&mut command).unwrap();
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(result.status.success(), "resolve {resolve}: {stderr}");
+        let bytes = std::fs::read(&output).unwrap();
+        let len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let scene: serde_json::Value = serde_json::from_slice(&bytes[20..20 + len]).unwrap();
+        assert_eq!(scene["nodes"][0]["name"], "quad");
+        if resolve {
+            assert_eq!(scene["accessors"][0]["count"], 3, "{scene}");
+        } else {
+            assert!(scene.get("meshes").is_none(), "{scene}");
+            assert_eq!(scene["nodes"][0]["extras"]["builtin_placeholder"], "1");
+        }
+    }
+}

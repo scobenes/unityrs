@@ -194,6 +194,9 @@ fn base(m: &MaterialInput<'_>, cx: &mut MapCx<'_>) -> Result<Material> {
     let mut out = Material::new(cx.meter);
     out.name = Some(raw_text(cx.meter, m.name.as_bytes())?);
     let urp = m.shader_name == b"Universal Render Pipeline/Lit";
+    // Every URP shader draws `_BaseColor` and `_BaseMap`; `_Color` and
+    // `_MainTex` are aliases its material editor syncs through a round trip.
+    let urp_base = m.shader_name.starts_with(b"Universal Render Pipeline/");
     let texture_only_unlit = matches!(
         m.shader_name,
         b"Unlit/Texture" | b"Unlit/Transparent" | b"Unlit/Transparent Cutout"
@@ -201,7 +204,7 @@ fn base(m: &MaterialInput<'_>, cx: &mut MapCx<'_>) -> Result<Material> {
     let color = if texture_only_unlit {
         saved_extra(&mut out, m, cx, b"_Color")?;
         None
-    } else if urp {
+    } else if urp_base {
         m.color(b"_BaseColor")?.or(m.color(b"_Color")?)
     } else {
         m.color(b"_Color")?.or(m.color(b"_BaseColor")?)
@@ -224,7 +227,7 @@ fn base(m: &MaterialInput<'_>, cx: &mut MapCx<'_>) -> Result<Material> {
         saved_extra(&mut out, m, cx, b"_MainTex")?;
         saved_extra(&mut out, m, cx, b"_BaseMap")?;
         None
-    } else if urp {
+    } else if urp_base {
         map_texture_as(m, cx, &[b"_BaseMap", b"_MainTex"], usage)?
     } else {
         map_texture_as(m, cx, &[b"_MainTex", b"_BaseMap"], usage)?

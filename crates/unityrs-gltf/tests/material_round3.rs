@@ -164,3 +164,41 @@ fn equal_size_packed_maps_report_filter_conflicts_and_keep_metallic_sampler() {
         }
     }
 }
+
+// URP's Unlit, Simple Lit and Baked Lit shaders draw `_BaseColor` and
+// `_BaseMap`; `_Color` and `_MainTex` are aliases the URP material editor
+// keeps in step through an sRGB round trip, which the 6000 Editor fixture
+// saves as 0.24999997 for an authored 0.25.
+#[test]
+fn every_urp_shader_prefers_its_base_properties_over_the_legacy_aliases() {
+    for shader in [
+        b"Universal Render Pipeline/Unlit".as_slice(),
+        b"Universal Render Pipeline/Simple Lit",
+        b"Universal Render Pipeline/Baked Lit",
+    ] {
+        for mapper in [&CorePbr as &dyn MaterialMapper, &UnlitExtras] {
+            let objects = h::objects(
+                shader,
+                &[],
+                &[
+                    ("_Color", [0.9, 0.1, 0.2, 1.]),
+                    ("_BaseColor", [0.25, 0.5, 0.75, 1.]),
+                ],
+                &[
+                    ("_MainTex", s::tex_env((0, 12), [1.; 2], [0.; 2])),
+                    ("_BaseMap", s::tex_env((0, 12), [2., 3.], [0.25, 0.5])),
+                ],
+            );
+            let scene = h::collect(&objects, mapper, h::DEFAULT_PROFILE);
+            let json = h::json(&scene);
+            let pbr = &json["materials"][0]["pbrMetallicRoughness"];
+            h::assert_factor(
+                &pbr["baseColorFactor"],
+                &h::linear_color([0.25, 0.5, 0.75, 1.]),
+            );
+            let tr = &pbr["baseColorTexture"]["extensions"]["KHR_texture_transform"];
+            assert_eq!(tr["scale"], serde_json::json!([2, 3]), "{shader:?}");
+            assert_eq!(tr["offset"], serde_json::json!([0.25, -2.5]), "{shader:?}");
+        }
+    }
+}
