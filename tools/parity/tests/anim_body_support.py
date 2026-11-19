@@ -27,7 +27,19 @@ PARENT = {"Hips": None, "LeftUpperLeg": "Hips", "RightUpperLeg": "Hips", "LeftLo
           "LeftHand": "LeftLowerArm", "RightHand": "RightLowerArm", "LeftToes": "LeftFoot", "RightToes": "RightFoot",
           "LeftEye": "Head", "RightEye": "Head", "Jaw": "Head"}
 BONES = (*BODY, *(f"Finger {i}" for i in range(30)), "UpperChest")
-MASSES = {name: .02 + .01 * (i % 7) for i, name in enumerate(tolerance.NAMES)}
+# Each body slot's own default mass, exact in f32 so its hierarchy sums are too.
+MASSES = {name: (2 + i % 7) / 128 for i, name in enumerate(tolerance.NAMES)}
+
+
+def hierarchy_masses(parents):
+    """HumanTrait.GetBoneDefaultHierarchyMass, as the recorder writes it: own mass plus the descendants'."""
+    total = dict.fromkeys(parents, 0.)
+    for name in parents:
+        bone = name
+        while bone is not None:
+            total[bone] += MASSES.get(name, 0.)
+            bone = parents[bone]
+    return total
 PROBE_MUSCLES = tuple(muscle for _, group in PROBE_GROUPS for muscle in group)
 MUSCLES = (*PROBE_MUSCLES, *(f"Other muscle {i}" for i in range(95 - len(PROBE_MUSCLES))))
 COEFFICIENT = .4
@@ -88,10 +100,13 @@ def transform(t=(0, 0, 0), q=(0, 0, 0, 1), s=1.):
     return dict(translation=[bits(v) for v in t], rotation=[bits(v) for v in q], scale=[bits(s)] * 3)
 
 
+ANIMATOR_SCALE = {"scaled-animator": 1.25}
+
+
 def rig_nodes(rig):
     """Spec nodes and rest transforms, with F5's Animator, armature and hips scales."""
     nodes, rest = [("", "HumanoidFixture"), ("0", "HumanoidRig")], [transform(), transform(
-        s=1.25 if rig == "scaled-animator" else 1.)]
+        s=ANIMATOR_SCALE.get(rig, 1.))]
     top, addresses, counts = "0", {"": "0"}, {}
     if rig == "armature":
         nodes.append(("0/0", "Armature"))
@@ -180,7 +195,8 @@ def body_doc(name, run, *, samples=None):
         schedule = schedule[:samples]
     human_bones = [dict(name=b, node=index.get(b, -1), required=b in ("Hips", "Spine")) for b in BONES]
     parents = {b: PARENT.get(b) for b in BONES}
-    table = [dict(name=b, parent=BONES.index(parents[b]) if parents[b] else -1, mass=bits(MASSES.get(b, 0.)),
+    hierarchy = hierarchy_masses(parents)
+    table = [dict(name=b, parent=BONES.index(parents[b]) if parents[b] else -1, mass=bits(hierarchy[b]),
                   required=row["required"]) for b, row in zip(BONES, human_bones)]
     masses = {b: MASSES[b] for b in tolerance.BODY_SLOTS}
     rows, samples_out, targets = [], [], []
@@ -201,21 +217,26 @@ def body_doc(name, run, *, samples=None):
             if bone in index:
                 pose[index[bone]]["rotation"] = [bits(v) for v in rotation]
 
-        def centre(base, include):
-            frames = tolerance.kinematics(nodes, pose, replay.f32_from_bits, base, include_base=include)
+        def centre():
+            """c in A, the Animator's frame without its scale."""
+            frames = tolerance.kinematics(nodes, pose, replay.f32_from_bits, "0", include_base=False)
             bones = tolerance.bone_frames(human_bones, nodes, frames)
             weights = tolerance.folded_masses(masses, parents, set(bones))
             c = [sum(weights[b] * bones[b].position[k] for b in tolerance.ordered(bones)) for k in range(3)]
             for i, j in tolerance.edges(parents, set(bones)):
                 for k in range(3):
                     c[k] += COEFFICIENT * weights[i] * (bones[j].position[k] - bones[i].position[k])
-            return [bits(v) for v in c]
+            return c
 
-        # The model's body rotation, F(pose) F(T)^-1 (2.2), as Unity's read-back.
+        # The model's body rotation, F(pose) F(T)^-1 (2.2), as Unity's read-back. Unity's world body
+        # position is free of the Animator's scale (the Animator sits at the origin here), and the
+        # recorder's conversion to the Animator divides by that scale again.
         turn = tolerance.matrix_quaternion(tolerance.product(frame(pose), rest_frame, transpose=True))
-        rows.append(dict(readback_position=centre("0", False), readback_rotation=[bits(v) for v in turn],
+        body = centre()
+        rows.append(dict(readback_position=[bits(v / ANIMATOR_SCALE.get(rig, 1.)) for v in body],
+                         readback_rotation=[bits(v) for v in turn],
                          readback_muscles=[bits(v) for v in muscles],
-                         world_position=centre("", True), world_rotation=[bits(0)] * 3 + [bits(1)],
+                         world_position=[bits(v) for v in body], world_rotation=[bits(0)] * 3 + [bits(1)],
                          nodes=world_nodes(nodes, pose, human_bones),
                          **dict.fromkeys(("root_position", "root_rotation",
                                           "motion_position", "motion_rotation", "motion_delta_position",

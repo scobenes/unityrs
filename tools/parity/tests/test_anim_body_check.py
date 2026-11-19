@@ -5,10 +5,15 @@ import json
 import math
 import unittest
 
-from anim_body_model_support import BITS, F32, avatar, recording, write_run
+import anim_body_support as support
+from anim_body_model_support import BITS, F32, avatar, coefficients, recording, write_run
 
-import anim_body_check as check  # noqa: E402  (test_anim_replay puts it on the path)
+import anim_body_adequacy as adequacy  # noqa: E402  (test_anim_replay puts it on the path)
+import anim_body_check as check  # noqa: E402
 import anim_body_freeze as freeze  # noqa: E402
+import anim_body_model as model  # noqa: E402
+import anim_body_runs as runs  # noqa: E402
+import anim_body_tolerance as tolerance  # noqa: E402
 import anim_fixture_body as body  # noqa: E402
 import scratch  # noqa: E402
 from anim_reference import euler, multiply  # noqa: E402
@@ -154,6 +159,44 @@ class Checks(unittest.TestCase):
         rows = [dict(state=dict(target_kind=None))]
         with self.assertRaisesRegex(ValueError, "no sample with a body target"):
             check.e3(rows, None, {})
+
+
+class SmokeCauses(unittest.TestCase):
+    """The two input conventions the first run on owner recordings exposed, on synthetic recordings."""
+
+    def test_the_recorded_masses_are_hierarchy_masses(self):
+        doc = recording("body-probes-no-upper-chest", samples=1)
+        rows = doc["spec"]["evidence"]["editor"]["human_bones"]
+        hips = next(row for row in rows if row["name"] == "Hips")
+        # GetBoneDefaultHierarchyMass: the Hips hold the whole body's default mass.
+        self.assertEqual(F32(hips["mass"]), sum(support.MASSES[name] for name in tolerance.BODY_SLOTS))
+        parents, masses = adequacy.bone_table([doc])
+        self.assertEqual(masses, {name: support.MASSES[name] for name in tolerance.BODY_SLOTS})
+        # The finger bones are not read (Unity 6 returns unspecified values for them).
+        next(row for row in rows if row["name"] == "Finger 0")["mass"] = "7fc00000"
+        self.assertEqual(adequacy.bone_table([doc])[1], masses)
+        # A table whose Hips hold less than their children is not a hierarchy table.
+        hips["mass"] = BITS(support.MASSES["Hips"])
+        with self.assertRaisesRegex(ValueError, "Hips is below its children"):
+            adequacy.bone_table([doc])
+
+    def test_a_scaled_animators_read_back_is_scaled_back(self):
+        doc = recording("body-chain-scaled-animator-targets", samples=4)
+        parents, masses = adequacy.bone_table([doc])
+        rows = list(adequacy.samples("body-chain-scaled-animator-targets", doc, parents, masses))
+        for row in rows:
+            state = row["state"]
+            self.assertEqual(state["root"].scale, 1.25)
+            points = {name: frame.position for name, frame in state["bones"].items()}
+            want = model.centre(points, state["weights"], state["links"], coefficients(state["links"]))
+            recorded = tolerance.decode(state["readback"]["readback_position"], 3, F32)
+            read = tolerance.readback_position(state["readback"], state["root"], F32)
+            self.assertLess(max(abs(state["scale"] * a - b) for a, b in zip(read, want)), 1e-6)
+            self.assertGreater(max(abs(state["scale"] * a - b) for a, b in zip(recorded, want)), .1)
+            # So E1's right-hand side is the model's coefficient columns at the true coefficients.
+            a = coefficients(state["links"])
+            fitted = [sum(a[key] * column[k] for key, column in row["columns"].items()) for k in range(3)]
+            self.assertLess(math.dist(fitted, runs.rhs(row)), 1e-6)
 
 
 class FitCheck(unittest.TestCase):

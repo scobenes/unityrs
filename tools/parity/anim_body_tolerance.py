@@ -49,7 +49,9 @@ stored `w = c / h` and the recorder's `h w` round at the world value; the
 subtraction of the Animator's world position rounds at the difference `d`,
 the inverse rotation at `d`, and the division by the Animator's scale and
 the stored division by `h` at the result. The Animator's tracked errors
-carry through. `epsilon = E_c / s + readback_error`.
+carry through. For a scaled Animator the recorded value is also divided by its
+scale once more than c / h (`readback_position`), which the checks undo, so
+`epsilon = E_c / s + s readback_error`.
 
 **E_unity (`hips_error` at f32).** Unity's own error in the recorded
 hips-local translation of 2.3, in the hips parent's units: the recording's
@@ -472,11 +474,21 @@ def readback_error(human_scale, world, root, unit=U32):
     return error / root.scale + (root.e_scale / root.scale + 2 * unit) * local
 
 
+def readback_position(readback, root, f32):
+    """The read-back body position as c / h in A: the recorder's `readback_position` times the Animator's
+    uniform scale. GetHumanPose's bodyPosition is already free of the Animator's scale (`h w` is the
+    Animator's world position plus its rotation of c in A), and the recorder's InverseTransformPoint
+    divides by that scale again, so it records c / (h s). `root` is the Animator's tracked world state
+    and `f32` decodes the recorded bits."""
+    return tuple(root.scale * v for v in decode(readback["readback_position"], 3, f32))
+
+
 def measurement_tolerance(world_bones, differences, masses, links, human_scale, world, root):
     """epsilon for one fitting sample: a bound on the Euclidean error of c in A (metres), from Unity's
-    world forward kinematics and centre of mass and the recorder's conversion."""
+    world forward kinematics and centre of mass and the recorder's conversion, which
+    `readback_position` scales back by the Animator's scale."""
     error, _ = com_error(world_bones, masses, links, differences)
-    return error / root.scale + readback_error(human_scale, world, root)
+    return error / root.scale + root.scale * readback_error(human_scale, world, root)
 
 
 def readback_turn(world_bones, rest_turn, body_rotation, world_rotation, root, unit=U32):

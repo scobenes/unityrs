@@ -8,10 +8,12 @@ f64 path:
 - **E0** per recorded Avatar. E0a: m_HumanBoneMass and m_HumanBoneIndex hold
   one entry per slot of the 25-slot order (HumanBodyBones 0-8, UpperChest,
   9-23), finite and non-negative, with a node exactly for the mapped slots.
-  E0b: each slot's mass against the E0b fold of the recorder's HumanTrait
-  defaults, an absent slot exactly zero, within gamma(50) of the value at
-  f32 and at f64 (Unity's sums of up to 25 terms, the division and the
-  store). E0c: c(T) from m_SkeletonPose with the Avatar's masses and the
+  E0b: each slot's mass against the E0b fold of HumanTrait's default (own)
+  masses, which the recorder's hierarchy masses give
+  (anim_body_adequacy.default_masses), an absent slot exactly zero, within
+  gamma(50) of the value at f32 and at f64 (Unity's sums of up to 25 terms,
+  the division and the store) plus the own masses' error through the fold.
+  E0c: c(T) from m_SkeletonPose with the Avatar's masses and the
   coefficients against m_RootX.t, and its height against m_Scale, within
   Unity's and the model's centre-of-mass bounds at the skeleton pose, the
   store, the mass fold's own bound and the coefficients' uncertainty, and
@@ -78,6 +80,7 @@ from anim_body_tolerance import (
     gamma,
     norm,
     orientation_rounding,
+    readback_position,
     readback_turn,
     turn_sensitivity,
 )
@@ -99,7 +102,7 @@ def vector(value, axes):
     return tuple(float(value[axis]) for axis in axes)
 
 
-def e0_avatar(label, avatar, doc, parents, masses, design, coefficients):
+def e0_avatar(label, avatar, doc, parents, masses, errors, design, coefficients):
     """E0a, E0b and E0c on one recorded Avatar; `doc` is a recording that plays it."""
     failures = []
     human = human_of(avatar)
@@ -114,9 +117,13 @@ def e0_avatar(label, avatar, doc, parents, masses, design, coefficients):
         failures.append(f"{label}: E0a slot mapping {sorted(present ^ mapped)} differs from the captured bones")
     avatar_masses = dict(zip(SLOTS, weights))
     folded = folded_masses(masses, parents, mapped)
+    # The own masses' errors from the hierarchy masses (anim_body_adequacy.default_masses), through the fold.
+    total, spread = sum(masses.values()), sum(errors.values())
+    moved = {slot: share * spread for slot, share in folded_masses(errors, parents, mapped).items()}
     for slot in SLOTS:
         want = folded.get(slot, 0.)
-        bound = (gamma(FOLD_DEPTH, U32) + gamma(FOLD_DEPTH, U64)) * want
+        bound = ((gamma(FOLD_DEPTH, U32) + gamma(FOLD_DEPTH, U64)) * want
+                 + (moved.get(slot, 0.) + want * spread) / total)
         if not abs(avatar_masses[slot] - want) <= bound:
             failures.append(f"{label}: E0b {slot} mass {avatar_masses[slot]!r} against {want!r} (bound {bound:.3e})")
     if present != mapped:
@@ -161,15 +168,15 @@ def e0(runs, avatar_of, design, coefficients):
     """E0 on every recorded Avatar: one per bundle and Editor version. `avatar_of(run, doc)` reads it."""
     failures, avatars = [], []
     for run in runs:
-        parents, masses = adequacy.bone_table(run.documents.values())
+        parents, masses, errors = adequacy.default_masses(run.documents.values())
         seen = set()
         for case, doc in sorted(run.documents.items()):
             key = (doc["spec"]["bundles"][0]["name"], doc["spec"]["avatar_asset"])
             if case not in BODY_INFO or key in seen:
                 continue
             seen.add(key)
-            found, row = e0_avatar(f"{run.version}/{key[0]}", avatar_of(run, doc), doc, parents, masses, design,
-                                   coefficients)
+            found, row = e0_avatar(f"{run.version}/{key[0]}", avatar_of(run, doc), doc, parents, masses, errors,
+                                   design, coefficients)
             failures += found
             avatars.append(row)
     replay.require(avatars, "no recorded body Avatar")
@@ -353,7 +360,7 @@ def e4(rows, documents):
         replay.require(settings is not None, f"{row['name']}: not completed (no built root settings)")
         combination = combinations.setdefault(info["variant"].removesuffix("-start"), {"status": "pass"})
         state = row["state"]
-        readback = (tuple(state["scale"] * v for v in decode(state["readback"]["readback_position"], 3, F32)),
+        readback = (tuple(state["scale"] * v for v in readback_position(state["readback"], state["root"], F32)),
                     decode(state["readback"]["readback_rotation"], 4, F32))
         readbacks[row["name"], row["local"]] = (readback, row, info)
         try:

@@ -166,8 +166,9 @@ class BoundTests(unittest.TestCase):
         want = (2 * U * math.hypot(2.5, 1.) + U * d + G("rotate") * d) / 2 + 2 * U * d / 2
         self.assertAlmostEqual(tolerance.readback_error(h, world, root), want, delta=1e-22)
         bones = {"Hips": state((2.5, 1., 0.), 1e-6)}
+        # epsilon bounds the read-back after readback_position undoes the recorder's extra division by s.
         self.assertAlmostEqual(tolerance.measurement_tolerance(bones, {}, {"Hips": 1.}, [], h, world, root),
-                               (1e-6 + gamma(0 + 2 + 2) * math.hypot(2.5, 1.)) / 2 + want, delta=1e-22)
+                               (1e-6 + gamma(0 + 2 + 2) * math.hypot(2.5, 1.)) / 2 + 2 * want, delta=1e-22)
 
     def test_the_hips_parent_chain_is_budgeted(self):
         # The same parent exact and with errors: t_p's error, R_p's acting on P_A - t_p, and sigma_p's on

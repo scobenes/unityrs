@@ -63,8 +63,9 @@ import anim_replay as replay  # noqa: E402
 from anim_body_tolerance import (BODY_SLOTS, U32, U64, body_frame, body_states, bone_frames, decode,  # noqa: E402
                                  edges, evaluation_error, folded_masses, frame_error, hips_error, kinematics,
                                  matrix_quaternion, measurement_tolerance, norm, ordered, product, quaternion_matrix,
-                                 readback_turn, recorded_edges, rotate, tracked, uniform)
+                                 readback_position, readback_turn, recorded_edges, rotate, tracked, uniform)
 from anim_body_design import conservative, planned  # noqa: E402
+from anim_reference import gamma  # noqa: E402
 from anim_fixture_body import BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, probe_schedule, rig_bones  # noqa: E402
 
 CONDITION_LIMIT = 1e6
@@ -73,7 +74,22 @@ F32 = replay.f32_from_bits
 
 
 def bone_table(documents):
-    """HumanTrait's parents and default masses, identical in every body recording."""
+    """HumanTrait's parents and default (own) masses, identical in every body recording."""
+    parents, masses, _ = default_masses(documents)
+    return parents, masses
+
+
+def default_masses(documents):
+    """HumanTrait's parents, each body slot's own default mass and a bound on its error.
+
+    The recorder's `mass` is HumanTrait.GetBoneDefaultHierarchyMass: the bone's
+    default mass plus those of all its descendants (Hips holds the whole body).
+    A bone's own mass is its hierarchy mass less its children's. Unity sums the
+    hierarchy masses at f32, over at most the 25 body slots, so each own mass is
+    off by at most gamma_n of the hierarchy masses it subtracts. Only the body
+    slots are read: their hierarchy masses exclude the fingers (each Hand's
+    equals its own), and Unity 6 returns unspecified values for the finger
+    bones."""
     tables = {json.dumps(doc["spec"]["evidence"]["editor"]["human_bones"], sort_keys=True)
               for doc in documents if doc["spec"]["evidence"]["editor"].get("human_bones")}
     if len(tables) != 1:
@@ -81,10 +97,18 @@ def bone_table(documents):
     rows = json.loads(tables.pop())
     names = [row["name"] for row in rows]
     parents = {row["name"]: names[row["parent"]] if row["parent"] >= 0 else None for row in rows}
-    masses = {row["name"]: F32(row["mass"]) for row in rows if row["name"] in BODY_SLOTS}
+    hierarchy = {row["name"]: F32(row["mass"]) for row in rows if row["name"] in BODY_SLOTS}
+    children = {name: [child for child in hierarchy if parents[child] == name] for name in hierarchy}
+    masses, errors = {}, {}
+    for name in hierarchy:
+        own = hierarchy[name] - sum(hierarchy[child] for child in children[name])
+        errors[name] = gamma(len(hierarchy), U32) * (hierarchy[name] + sum(hierarchy[c] for c in children[name]))
+        if not own >= -errors[name]:
+            raise ValueError(f"HumanTrait hierarchy mass of {name} is below its children's")
+        masses[name] = max(own, 0.)
     if masses.keys() != BODY_SLOTS:
         raise ValueError("the bone table lacks a body slot")
-    return parents, masses
+    return parents, masses, errors
 
 
 def samples(name, doc, parents, masses):
@@ -135,7 +159,8 @@ def samples(name, doc, parents, masses):
         elif readback is not None:
             # A clip: the read-back stands in for Unity's target, with Unity's forward centre of mass
             # and frame and the recorder's conversions (epsilon and readback_turn).
-            target, body_rotation = decode(readback["readback_position"], 3, F32), decode(readback["readback_rotation"], 4, F32)
+            target = readback_position(readback, root, F32)
+            body_rotation = decode(readback["readback_rotation"], 4, F32)
             target_error = epsilon
             turn = readback_turn(world_bones, rest_turn, body_rotation,
                                  decode(readback["world_rotation"], 4, F32), root)

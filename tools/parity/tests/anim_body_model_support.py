@@ -96,12 +96,16 @@ def consistent(doc, value=COEFFICIENT):
             pose[hips]["translation"] = [BITS(v) for v in t]
             pose[hips]["rotation"] = [BITS(v) for v in q]
         placed, _ = points(nodes, pose, bones, animator)
-        world, frames = points(nodes, pose, bones, "", True)
-        row = editor["body_samples"][i]
-        row["readback_position"] = [BITS(v / HUMAN_SCALE) for v in model.centre(placed, weights, links, a)]
+        _, frames = points(nodes, pose, bones, "", True)
+        root, row = frames[animator], editor["body_samples"][i]
+        # As Unity's: GetHumanPose's h w is the Animator's position plus its rotation of c in A, free of
+        # its scale, and the recorder's InverseTransformPoint divides by that scale once more.
+        body = model.centre(placed, weights, links, a)
+        row["readback_position"] = [BITS(v / (HUMAN_SCALE * root.scale)) for v in body]
         turn = model.body_rotation(placed, rest_frame)
         row["readback_rotation"] = [BITS(v) for v in turn]
-        row["world_position"] = [BITS(v / HUMAN_SCALE) for v in model.centre(world, weights, links, a)]
+        row["world_position"] = [BITS((p + v) / HUMAN_SCALE) for p, v in zip(root.position,
+                                                                            tolerance.rotate(root.rotation, body))]
         row["world_rotation"] = [BITS(v) for v in tolerance.multiply(frames[animator].rotation, turn)]
     return doc
 

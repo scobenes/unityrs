@@ -32,7 +32,7 @@ import math
 import anim_body_adequacy as adequacy
 import anim_replay as replay
 from anim_body_model import centre
-from anim_body_tolerance import NAMES
+from anim_body_tolerance import NAMES, readback_position
 from anim_fixture_body import BODY_INFO, HOLDOUT
 
 ROLES = ("training", "holdout")
@@ -139,7 +139,7 @@ def observe(runs, table=None, avatar_of=None):
 def rhs(row):
     """b for a fitting row: h readback - sum_i m_i p_i, in A (metres)."""
     state = row["state"]
-    readback = adequacy.decode(state["readback"]["readback_position"], 3, F32)
+    readback = readback_position(state["readback"], state["root"], F32)
     points = {name: frame.position for name, frame in state["bones"].items()}
     base = centre(points, state["weights"], [], {})
     return tuple(state["scale"] * r - c for r, c in zip(readback, base))
