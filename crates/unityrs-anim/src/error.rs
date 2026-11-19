@@ -127,9 +127,9 @@ pub enum BodyAvatarFault {
     MassSum,
     /// A mapped slot's skeleton node has no `m_TOS` path.
     SlotPath(usize),
-    /// A mapped slot names the same skeleton ID as an earlier slot.
+    /// A mapped slot's node resolves to an earlier slot's `m_TOS` path.
     SlotAlias(usize),
-    /// `m_Scale` is not positive.
+    /// `m_Scale` is not finite and positive.
     Scale,
     /// `m_RootX.t.y` is not `m_Scale` within two f32 roundings.
     RootHeight,

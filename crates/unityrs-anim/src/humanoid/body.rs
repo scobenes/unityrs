@@ -8,18 +8,25 @@
 //!   slot of the 25-slot order (`HumanBodyBones` 0-8, `UpperChest`, 9-23).
 //!   The reader already holds each index in range and no two slots on one
 //!   node; here each mapped slot's node must also have an `m_TOS` path
-//!   (`m_Skeleton.m_ID` through `m_TOS`, as the recordings' check compares
-//!   it), and no two mapped slots may name one skeleton ID.
+//!   (`m_Skeleton.m_ID` through `m_TOS`), and no two mapped slots may
+//!   resolve to one path. A swap of two valid slots leaves every path
+//!   distinct, so only a capture of the rig's bones can show it: that part
+//!   of E0a is the reference checker's comparison with the recordings
+//!   (`tools/parity/anim_body_check.py`), a verification of the plan's
+//!   reading of the Avatar, not a runtime gate.
 //! - **E0b**, the normalization: every mass is finite and non-negative, an
 //!   absent slot's is exactly zero, and the masses sum to one within
-//!   `MASS_SUM_BOUND`. Each stored mass is the E0b fold of `HumanTrait`'s
+//!   `mass_sum_bound`. Each stored mass is the E0b fold of `HumanTrait`'s
 //!   default masses over their sum, within `gamma(50)` at f32 of that fold
 //!   (Unity's sums of up to 25 terms, the division and the store; the
-//!   checker's bound in `tools/parity/anim_body_check.py`), and the folds
-//!   sum to one, so the stored masses sum to one within `gamma(50)`; their
-//!   f64 sum here errs by at most `gamma(25)` at f64 of it. The comparison
-//!   with the defaults themselves needs the recorder's `HumanTrait` table,
-//!   which only that checker reads: decision 1 keeps no mass table here.
+//!   checker's bound), and the folds sum to one, so the stored masses sum
+//!   to one within `gamma(50)`; their f64 sum here errs by at most
+//!   `gamma(25)` at f64 of it. The model then takes the masses as
+//!   serialized (decision 1). Each slot's comparison with the fold of the
+//!   Editor's `HumanTrait` defaults is likewise the reference checker's,
+//!   on the recorder's table: it verifies the plan's understanding of the
+//!   field, is no runtime refusal, and keeps Unity's default table out of
+//!   this crate.
 //! - **Scope.** An Avatar with Chest or Neck absent, or exactly one
 //!   Shoulder mapped, refuses, and so does any pattern of absent body slots
 //!   no in-scope training rig recorded (`RECORDED_ABSENT`, the reference's
@@ -213,6 +220,7 @@ pub fn body_avatar<'a>(avatar: &'a Avatar, meter: &Meter) -> Result<BodyAvatar<'
         return Err(AnimError::InvalidAvatarIndex("m_HumanBoneIndex"));
     }
     let mut nodes = [None; BODY_BONES];
+    let mut paths: [Option<&RawStr>; BODY_BONES] = [None; BODY_BONES];
     let ids = human.skeleton.ids.as_slice();
     meter.count_decode(BODY_BONES as u64 * BODY_BONES as u64)?;
     for (slot, &node) in human.bones.as_slice().iter().enumerate() {
@@ -222,19 +230,20 @@ pub fn body_avatar<'a>(avatar: &'a Avatar, meter: &Meter) -> Result<BodyAvatar<'
         let Some(&id) = ids.get(node) else {
             return Err(AnimError::InvalidAvatarIndex("m_HumanBoneIndex"));
         };
-        if avatar.tos_path(id, meter)?.is_none() {
+        let Some(path) = avatar.tos_path(id, meter)? else {
             return fault(BodyAvatarFault::SlotPath(slot));
-        }
-        let aliased = nodes
+        };
+        let aliased = paths
             .iter()
             .take(slot)
             .flatten()
-            .any(|&earlier: &usize| ids.get(earlier) == Some(&id));
+            .any(|earlier: &&RawStr| earlier.as_bytes() == path.as_bytes());
         if aliased {
             return fault(BodyAvatarFault::SlotAlias(slot));
         }
-        if let Some(entry) = nodes.get_mut(slot) {
+        if let (Some(entry), Some(seen)) = (nodes.get_mut(slot), paths.get_mut(slot)) {
             *entry = Some(node);
+            *seen = Some(path);
         }
     }
     // E0b: one finite, non-negative mass per slot, zero where absent,
@@ -260,17 +269,19 @@ pub fn body_avatar<'a>(avatar: &'a Avatar, meter: &Meter) -> Result<BodyAvatar<'
         }
         sum += f64::from(mass);
     }
-    if (sum - 1.).abs() > mass_sum_bound(sum) {
+    let off = (sum - 1.).abs();
+    if !(off.is_finite() && off <= mass_sum_bound(sum)) {
         return fault(BodyAvatarFault::MassSum);
     }
     topology_scope(human, meter)?;
     // E0c without the model: m_Scale against the rest body height. The
-    // reader holds both finite.
+    // reader holds both finite; a caller's edit may not, so NaN refuses.
     let scale = f64::from(human.scale);
-    if scale <= 0. {
+    if !(scale.is_finite() && scale > 0.) {
         return fault(BodyAvatarFault::Scale);
     }
-    if (scale - f64::from(human.root.t[1])).abs() > 2. * U32 * scale {
+    let off = (scale - f64::from(human.root.t[1])).abs();
+    if !(off.is_finite() && off <= 2. * U32 * scale) {
         return fault(BodyAvatarFault::RootHeight);
     }
     Ok(BodyAvatar {

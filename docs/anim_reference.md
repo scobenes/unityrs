@@ -624,7 +624,9 @@ The Rust test `recorded_humanoid_refusals` (`UNITYRS_ANIM_HUMANOID`,
 `UNITYRS_ANIM_BUNDLES`, with `run.json` beside the bundles folder) reads
 the same bundles, checks the run's clip set, the inventory, settings,
 Avatar twist and stretch, the dropped muscles and the neutral twin's
-values, binds each clip to its own completed replay (bundle digests,
+values, runs `humanoid::body_avatar` on each Avatar (its masses, slot paths
+and rest body must pass, or its topology refuse as outside the body model's
+scope), binds each clip to its own completed replay (bundle digests,
 prefab, clip, Animator and Avatar) and the `-offset` clips to a translated
 and rotated Animator rest. Its refusal must be one of the listed causes, a
 refusal probe's carrying the probe's code, or

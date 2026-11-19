@@ -104,6 +104,11 @@ fn masses() -> Vec<f32> {
     out
 }
 
+/// The reads against the testkit's synthetic Avatar schema under both
+/// version headers: the same hand-built type tree and payload, so this
+/// checks no real Editor layout. The real layouts are the gated
+/// `recorded_humanoid_refusals` test's (`unityrs-export`), which runs
+/// `body_avatar` on every Editor-built Avatar of a completed run.
 #[test]
 fn the_body_inputs_round_trip_on_both_layouts() {
     for layout in [Layout::Unity2022, Layout::Unity6000] {
@@ -290,27 +295,22 @@ fn the_slot_table_and_rest_body_refuse_with_their_faults() {
         ..full()
     };
     assert_eq!(verdict(&no_tos), fault(BodyAvatarFault::SlotPath(3)));
-    // Human node 6 (LeftFoot, slot 5) takes node 4's (LeftLowerLeg's)
-    // ID, which keeps its m_TOS path, so only the alias faults.
-    let mut ids: Vec<u32> = (0..26).map(|i| i * 7 + 1).collect();
-    ids[6] = ids[4];
-    let mut avatar = h::avatar(&full());
-    let skeleton = ["m_Avatar", "m_Human", "data", "m_Skeleton", "data"];
-    let id_list = vector(V::UInt(0), ids.iter().map(|&id| V::UInt(id)).collect());
-    edit(&mut avatar.value, &skeleton, "m_ID", Some(id_list));
-    let pairs = ids
-        .iter()
-        .enumerate()
-        .filter(|&(i, _)| i != 6)
-        .map(|(i, &id)| pair(V::UInt(id), V::Str(format!("n{i}").into_bytes())))
-        .collect();
-    let empty = pair(V::UInt(0), V::Str(Vec::new()));
-    edit(&mut avatar.value, &[], "m_TOS", Some(vector(empty, pairs)));
-    let avatar = read(avatar, Layout::Unity2022).unwrap();
+    // Human node 6 is LeftFoot (slot 5) and node 4 LeftLowerLeg (slot 3).
+    let ids: Vec<u32> = (0..26).map(|i| i * 7 + 1).collect();
+    let names: Vec<String> = (0..26).map(|i| format!("n{i}")).collect();
+    assert_eq!(relabelled(&ids, &names), Ok(()));
+    // Node 6 takes node 4's ID, which keeps its m_TOS path.
+    let mut shared = ids.clone();
+    shared[6] = shared[4];
     assert_eq!(
-        body_avatar(&avatar, &Meter::unlimited())
-            .map(drop)
-            .map_err(|e| e.to_string()),
+        relabelled(&shared, &names),
+        fault(BodyAvatarFault::SlotAlias(5))
+    );
+    // Distinct IDs whose m_TOS entries name one path.
+    let mut same = names.clone();
+    same[6] = same[4].clone();
+    assert_eq!(
+        relabelled(&ids, &same),
         fault(BodyAvatarFault::SlotAlias(5))
     );
     for scale in [0., -1.] {
@@ -332,6 +332,58 @@ fn the_slot_table_and_rest_body_refuse_with_their_faults() {
         ..full()
     };
     assert_eq!(verdict(&far), fault(BodyAvatarFault::RootHeight));
+}
+
+/// The verdict on `full`'s Avatar with human node `i` given skeleton ID
+/// `ids[i]` and the `m_TOS` path `paths[i]` (one entry per distinct ID, the
+/// first path written for it).
+fn relabelled(ids: &[u32], paths: &[String]) -> Result<(), String> {
+    let mut avatar = h::avatar(&full());
+    let skeleton = ["m_Avatar", "m_Human", "data", "m_Skeleton", "data"];
+    let id_list = vector(V::UInt(0), ids.iter().map(|&id| V::UInt(id)).collect());
+    edit(&mut avatar.value, &skeleton, "m_ID", Some(id_list));
+    let mut seen = BTreeSet::new();
+    let pairs = ids
+        .iter()
+        .zip(paths)
+        .filter(|&(id, _)| seen.insert(*id))
+        .map(|(&id, path)| pair(V::UInt(id), V::Str(path.clone().into_bytes())))
+        .collect();
+    let empty = pair(V::UInt(0), V::Str(Vec::new()));
+    edit(&mut avatar.value, &[], "m_TOS", Some(vector(empty, pairs)));
+    let avatar = read(avatar, Layout::Unity2022).map_err(|e| e.to_string())?;
+    body_avatar(&avatar, &Meter::unlimited())
+        .map(drop)
+        .map_err(|e| e.to_string())
+}
+
+#[test]
+fn a_caller_edited_non_finite_scale_or_root_height_refuses() {
+    let fault = |fault: BodyAvatarFault| Err(AnimError::InvalidBodyAvatar(fault).to_string());
+    let edited = |edit: fn(&mut Avatar)| {
+        let mut avatar = read(h::avatar(&full()), Layout::Unity2022).unwrap();
+        edit(&mut avatar);
+        body_avatar(&avatar, &Meter::unlimited())
+            .map(drop)
+            .map_err(|e| e.to_string())
+    };
+    assert_eq!(edited(|_| {}), Ok(()));
+    assert_eq!(
+        edited(|a| a.human.scale = f32::NAN),
+        fault(BodyAvatarFault::Scale)
+    );
+    assert_eq!(
+        edited(|a| a.human.scale = f32::INFINITY),
+        fault(BodyAvatarFault::Scale)
+    );
+    assert_eq!(
+        edited(|a| a.human.root.t[1] = f32::NAN),
+        fault(BodyAvatarFault::RootHeight)
+    );
+    assert_eq!(
+        edited(|a| a.human.root.t[1] = f32::INFINITY),
+        fault(BodyAvatarFault::RootHeight)
+    );
 }
 
 /// The reference's `RECORDED_ABSENT` patterns, read from its source.
