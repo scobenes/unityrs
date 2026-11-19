@@ -17,11 +17,13 @@ read from its `.pending.json`. The checkpoint, with B1's own tolerances
    k of the propagated coefficient uncertainty against the recording's own
    noise floor: u_s,k = sum over blocks b of ||(J_s A_w^+)_k,b||_2 <=
    E_unity,s, the derived bound on Unity's own error in the recorded hips
-   translation (anim_body_tolerance.unity_error). J_s is the full
+   translation (anim_body_tolerance.hips_error at f32). J_s is the full
    sensitivity of the hips-local translation to the coefficients, with the
    solved hips orientation H_A of 2.3 and through the hips parent's
-   rotation and scale. The bound holds for any residual within its blocks'
-   epsilon. The report lists each sample's E_unity,s, u_s, E_eval,s (the
+   rotation and scale. The target body pose is the one the recorder passed
+   to SetHumanPose for a known vector, and the read-back for a clip (with
+   Unity's forward errors). The bound holds for any residual within its
+   blocks' epsilon. The report lists each sample's E_unity,s, u_s, E_eval,s (the
    model's own evaluation, anim_body_tolerance.evaluation_error) and E3's
    comparison tolerance T_s = E_unity,s + u_s + E_eval,s, and the
    distribution of the margins E_unity,s / u_s.
@@ -48,10 +50,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import anim_replay as replay  # noqa: E402
-from anim_body_tolerance import (BODY_SLOTS, OPERATIONS, U32, body_frame, bone_frames, decode, edges,  # noqa: E402
-                                 evaluation_error, folded_masses, kinematics, measurement_tolerance, norm, ordered,
-                                 product, quaternion_matrix, readback_error, recorded_edges, rotate, rotation_error,
-                                 unity_error)
+from anim_body_tolerance import (BODY_SLOTS, U32, U64, body_frame, body_states, bone_frames, decode,  # noqa: E402
+                                 edges, evaluation_error, folded_masses, frame_error, hips_error, kinematics,
+                                 matrix_quaternion, measurement_tolerance, norm, ordered, product, quaternion_matrix,
+                                 readback_turn, recorded_edges, rotate, tracked, uniform)
 from anim_fixture_body import BODY_INFO, HOLDOUT, PROBE_RIGS, rig_bones  # noqa: E402
 
 CONDITION_LIMIT = 1e6
@@ -76,49 +78,71 @@ def bone_table(documents):
 def samples(name, doc, parents, masses):
     """One row per sample: its coefficient columns in A, its J_s rows, epsilon, E_unity and E_eval."""
     spec, capture = doc["spec"], doc["capture"]
-    human = capture["humanoid"]
+    human, bones_rows = capture["humanoid"], capture["humanoid"]["bones"]
     editor = spec["evidence"]["editor"]
     readbacks = editor.get("body_samples") or [None] * len(capture["samples"])
+    targets = editor.get("body_targets") or [None] * len(capture["samples"])
     info = BODY_INFO.get(name)
     nodes, animator = spec["nodes"], spec["binding_address"]
     scale = F32(human["human_scale"])
-    rest = bone_frames(human["bones"], nodes, kinematics(nodes, capture["rest"]["transforms"], F32, animator))
+    hips_address = nodes[next(row["node"] for row in bones_rows if row["name"] == "Hips")]["address"]
+    links = recorded_edges(bones_rows, nodes)
+    rest_transforms = capture["rest"]["transforms"]
+    rest = bone_frames(bones_rows, nodes, kinematics(nodes, rest_transforms, F32, animator))
     rest_frame = body_frame({name: frame.position for name, frame in rest.items()})
-    for sample, readback in zip(capture["samples"], readbacks):
+    # Unity's T-pose frame and the model's, from the hips-local rest pose.
+    rest_local = {unit: body_states(nodes, rest_transforms, F32, bones_rows, links, hips_address, unit)[0]
+                  for unit in (U32, U64)}
+    rest_turn = frame_error({n: b.position for n, b in rest_local[U32].items()},
+                            {n: b.e_position for n, b in rest_local[U32].items()})
+    for sample, readback, known in zip(capture["samples"], readbacks, targets):
         transforms = sample["pose"]["transforms"]
         frames = kinematics(nodes, transforms, F32, animator)
-        bones = bone_frames(human["bones"], nodes, frames)
-        links = recorded_edges(human["bones"], nodes)
+        bones = bone_frames(bones_rows, nodes, frames)
         mapped = set(bones)
         expected = edges(parents, mapped)
         weights = folded_masses(masses, parents, mapped)
-        hips_address = nodes[next(row["node"] for row in human["bones"] if row["name"] == "Hips")]["address"]
-        parent = frames[hips_address.rpartition("/")[0]]
         columns = {f"{i}>{j}": tuple(weights[i] * (b - a) for a, b in zip(bones[i].position, bones[j].position))
                    for i, j in links}
-        world, turn, solved = None, 0., None
+        local = {unit: body_states(nodes, transforms, F32, bones_rows, links, hips_address, unit) for unit in (U32, U64)}
+        chain = {unit: tracked(nodes, transforms, F32, animator, unit)[hips_address.rpartition("/")[0]]
+                 for unit in (U32, U64)}
+        hips_row = transforms[next(i for i, node in enumerate(nodes) if node["address"] == hips_address)]
+        hips_scale = uniform(decode(hips_row["scale"], 3, F32))
+        hips_local = decode(hips_row["translation"], 3, F32)
+        epsilon, turn = None, 0.
         if readback is not None:
-            target = decode(readback["readback_position"], 3, F32)
             world = decode(readback["world_position"], 3, F32)
-            root = kinematics(nodes, transforms, F32, "", include_base=True)[animator]
-            target_error = readback_error(scale, world, root.position, root.scale)
-            # The recorder turns the world read-back by Unity's inverse Animator rotation (root.depth links).
-            turn = rotation_error(OPERATIONS["compose"] * root.depth + OPERATIONS["turn"])
-            solved = solved_turn(decode(readback["readback_rotation"], 4, F32), rest_frame, bones)
-        else:
-            # Without a read-back the target body rotation is the model's own (2.2), so H_A is the recorded hips'.
-            target = tuple(sum(weights[b] * bones[b].position[k] for b in ordered(bones)) / scale for k in range(3))
+            world_bones, differences = body_states(nodes, transforms, F32, bones_rows, links, "")
+            root = tracked(nodes, transforms, F32, "")[animator]
+            epsilon = measurement_tolerance(world_bones, differences, weights, links, scale, world, root)
+        if known is not None:
+            # A known vector: the exact f32 body pose the recorder passed to SetHumanPose.
+            target, body_rotation = decode(known["position"], 3, F32), decode(known["rotation"], 4, F32)
             target_error = U32 * scale * norm(target)
-        jacobian = {key: hips_sensitivity(column, parent, solved) for key, column in columns.items()}
-        unity = unity_error(bones, rest, weights, links, scale, target, target_error, turn, parent)
-        evaluation = evaluation_error(bones, rest, weights, links, scale, target, parent)
+        elif readback is not None:
+            # A clip: the read-back stands in for Unity's target, with Unity's forward centre of mass
+            # and frame and the recorder's conversions (epsilon and readback_turn).
+            target, body_rotation = decode(readback["readback_position"], 3, F32), decode(readback["readback_rotation"], 4, F32)
+            target_error = epsilon
+            turn = readback_turn(world_bones, rest_turn, body_rotation,
+                                 decode(readback["world_rotation"], 4, F32), root)
+        else:
+            # Neither: the model's own body position and rotation (2.1, 2.2), so H_A is the recorded hips'.
+            target = tuple(sum(weights[b] * bones[b].position[k] for b in ordered(bones)) / scale for k in range(3))
+            body_rotation = matrix_quaternion(product(body_frame({n: f.position for n, f in bones.items()}),
+                                                      rest_frame, transpose=True))
+            target_error = U32 * scale * norm(target)
+        solved = solved_turn(body_rotation, rest_frame, bones)
+        jacobian = {key: hips_sensitivity(column, chain[U32], solved) for key, column in columns.items()}
+        unity, _ = hips_error(*local[U32], rest_local[U32], weights, links, scale, target, target_error, turn,
+                              body_rotation, rest_frame, chain[U32], hips_scale, hips_local)
+        evaluation = evaluation_error(*local[U64], rest_local[U64], weights, links, scale, target, body_rotation,
+                                      rest_frame, chain[U64], hips_scale)
         row = dict(name=name, local=sample["local"], rig=info["rig"] if info else "p2b", columns=columns,
-                   jacobian=jacobian, unity=unity, evaluation=evaluation, fit=False, epsilon=None,
+                   jacobian=jacobian, unity=unity, evaluation=evaluation, fit=False, epsilon=epsilon,
                    edges=None if links == expected else f"recorded {links} but HumanTrait gives {expected}")
-        if readback is not None:
-            world_bones = bone_frames(human["bones"], nodes, kinematics(nodes, transforms, F32, "", include_base=True))
-            row["epsilon"] = measurement_tolerance(world_bones, weights, links, scale, world, root.position, root.scale)
-            row["fit"] = info is not None and info["rig"] != HOLDOUT
+        row["fit"] = epsilon is not None and info is not None and info["rig"] != HOLDOUT
         yield row
 
 

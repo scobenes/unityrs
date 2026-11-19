@@ -6,7 +6,6 @@ the adequacy checkpoint sees a consistent fit.
 """
 
 import copy
-import math
 
 from test_anim_replay import bits
 
@@ -126,15 +125,6 @@ def muscle_axes():
 AXES = muscle_axes()
 
 
-def matrix_quaternion(m):
-    """The unit quaternion (x, y, z, w) of a rotation matrix, w >= 0."""
-    w = math.sqrt(max(0., 1 + m[0][0] + m[1][1] + m[2][2])) / 2
-    x = math.copysign(math.sqrt(max(0., 1 + m[0][0] - m[1][1] - m[2][2])) / 2, m[2][1] - m[1][2])
-    y = math.copysign(math.sqrt(max(0., 1 - m[0][0] + m[1][1] - m[2][2])) / 2, m[0][2] - m[2][0])
-    z = math.copysign(math.sqrt(max(0., 1 - m[0][0] - m[1][1] + m[2][2])) / 2, m[1][0] - m[0][1])
-    return x, y, z, w
-
-
 def limits(muscle):
     """A muscle's default (min, max) in degrees."""
     name = muscle.removeprefix("Left ").removeprefix("Right ")
@@ -207,7 +197,7 @@ def body_doc(name, run, *, samples=None):
             return [bits(v) for v in c]
 
         # The model's body rotation, F(pose) F(T)^-1 (2.2), as Unity's read-back.
-        turn = matrix_quaternion(tolerance.product(frame(pose), rest_frame, transpose=True))
+        turn = tolerance.matrix_quaternion(tolerance.product(frame(pose), rest_frame, transpose=True))
         rows.append(dict(readback_position=centre("0", False), readback_rotation=[bits(v) for v in turn],
                          world_position=centre("", True), world_rotation=[bits(0)] * 3 + [bits(1)],
                          **dict.fromkeys(("root_position", "root_rotation", "body_position", "body_rotation"),

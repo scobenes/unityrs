@@ -268,10 +268,14 @@ tolerances), so B1 does not depend on B2's freeze.
   through the f64 centre-of-mass equation.
 - **Unity's error `E_unity,s`**, for each predicted sample: the derived
   bound on Unity's own f32 error in the recorded hips-local translation,
-  along the body path. That path is the hips parent's composed transform,
-  forward kinematics at the absolute magnitudes, the weighted sum, the
-  frame and the target body rotation, the solve and the f32 output. It is
-  the recording's noise floor.
+  along the body path, each operation bounded at its actual operands. That
+  path is hips-local forward kinematics from zero, the identity and unit
+  scale at the hips (2.3), the weighted sum, the frame and the target body
+  rotation, the solve, the hips parent's composed transform and the f32
+  output. A known vector's target is the exact body pose the recorder
+  passed to SetHumanPose. A clip's target stands in by its read-back, with
+  Unity's forward centre-of-mass and frame errors, until E4 checks a
+  target independently. It is the recording's noise floor.
 - **Model error `E_eval,s`**: the derived error of evaluating the model at
   `s` with the fitted coefficients. B2's f64 reference runs the same path
   from the recorded f32 inputs, each rounding counted once at `2^-53`,

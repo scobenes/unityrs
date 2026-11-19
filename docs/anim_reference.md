@@ -1106,7 +1106,8 @@ For each recording `complete` checks:
   keeps each of those slots (Animator attributes 0–6, 14–27 and 42 onward)
   where playback reads them: the DOF's `m_IndexArray` entry is present (not
   -1) and names a slot of `m_MuscleClip`'s data bound to that attribute,
-  with the authored value at every key. A surviving `m_EditorCurves` or
+  with the authored value at every key, sampled as playback samples it (a
+  dense slot linearly between its frames). A surviving `m_EditorCurves` or
   `m_FloatCurves` copy does not count. Otherwise the variant does not
   count as covered.
 
@@ -1118,81 +1119,94 @@ claims body rows is refused.
 
 [`anim_body_tolerance.py`](../tools/parity/anim_body_tolerance.py) derives
 section 2.5's bounds, and its docstring holds the derivation. The
-operation model is the one the per-recording tolerances above use:
+operation model is the one the per-recording tolerances above use, applied
+operation by operation at its actual operands:
 
-- A stage of `n` roundings errs by at most
-  `γ32(n) = n·2^-24 / (1 − n·2^-24)` of the magnitudes it combines.
-- Each stage adds `n·2^-126` for flush-to-zero.
-- Recorded f32 values decode exactly. The f64 arithmetic is far below one
-  f32 ulp.
-- Each rounding is counted once, at the stage that makes it. A stage's
-  last rounding is the value it stores.
+- A value computed through `n` dependent roundings errs by at most
+  `γ(n) = n·u / (1 − n·u)` of the absolute values of its operands, with
+  `u = 2^-24` for Unity's f32 and `2^-53` for the model's f64.
+- Each operation adds `2^-126` for flush-to-zero.
+- Recorded f32 values decode exactly. Each rounding is counted once.
 
-Both bounds are on a vector's Euclidean norm.
+All bounds are on a vector's Euclidean norm. The tests check each one by
+hand, and the forward kinematics against chains emulated in f32.
 
-| Stage | Roundings | Applies to |
+| Operation | Depth | Rounds at |
 |---|---|---|
-| `level` | 24 per link | One link of forward kinematics (rotate 18, scale 3, add 3). A bone at depth `d` errs by `γ32(24d)` of its chain's summed link lengths. |
-| centre of mass | `n_max + 2N + 5` | The normalized masses and the sum, over `M = Σ_i m_i((1 + n_i)|p_i| + Σ_j |p_j|)` |
-| `readback` | 30 | The recorder's multiply by `h`, inverse Animator transform and divide, over `h|w| + |t_root|` |
-| `midpoint`, `lateral`, `cross`, `normalize` | 3, 2, 3, 6 | 2.2's up and lateral vectors, the cross product and each normalization |
-| `rotation` | 12 | `H_A = B_A F_T F_h⁻¹` and its conversion |
-| `solve` | 8 | Rotating `c_h`, scaling by `k` and subtracting from `h T_A` |
-| `local` | 7 | Subtracting `t_p`, the inverse rotation and the division by `σ_p` |
-| `compose` | 4 per link | One quaternion product of the hips parent's rotation `R_p` (four products summed per component) |
-| `scale` | 1 per link | One product of the uniform scales giving `σ_p`, and one more for `k = σ_p s_h` |
-| `relative` | 1 | A bone's position less the hips position |
-| `turn` | 5 | The recorder's read-back rotation: Unity's inverse Animator rotation times it, stored |
+| `rotate` | 6 | Unity's `v + w t + u × t`, `t = 2(u × v)`: the absolute values of each cross product's operands |
+| `compose` | 4 | A quaternion product: its sixteen products |
+| `matrix` | 3 | One entry of a 3×3 product or matrix-vector product: its products |
+| `quaternion`, `unquaternion` | 4, 8 | A quaternion's rotation matrix; Unity's matrix-to-quaternion conversion and its f32 store |
+| `midpoint`, `lateral`, `cross`, `normalize` | 2, 2, 2, 6 | 2.2's up and lateral vectors at the four points, each cross product at its operands, and each normalization |
+| scale product, add, subtraction, division | 1 | Their results |
 
-**Centre of mass.** Under `|a_ij| ≤ 1` (B2 refits and checks it), the bone
-errors `E` reach `c` as `Σ_i m_i((1 + n_i) E_i + Σ_j E_j)`. The sums run in
-HumanBodyBones order.
+**Rotations.** An error `|dq|` in a quaternion moves Unity's rotation of `v`
+by at most `κ(q) |dq| |v|`, with `κ = 2 √(|u|² + (|w| + 2|u|)²)`.
 
-**`ε`.** Unity's centre of mass is computed in the world, through the
-prefab root and the Animator node. GetHumanPose's division by `h` adds one
-rounding, of the stored `w`. The recorder's conversion adds its own:
+**Forward kinematics.** One link sets `p' = p + s R t`, `q' = q q_link`
+and `s' = s s_link`. The offset's rotation rounds at `t`, the scale product
+and the add at their results, the rotation product at its products, and
+the scale product once. The parent's errors carry over, its rotation's
+through `κ`. A chain is walked from an exact identity at its base:
 
-`ε = (E_c + 2^-24 h|w| + γ32(30)(h|w| + |t_root|)) / s_root`.
+- the hips, for 2.3's hips-local pose, so where the hips sit in `A` does
+  not enter;
+- the Animator node, for the hips parent `(t_p, R_p, σ_p)`;
+- the world, for Unity's read-back.
 
-**`E_unity`.** Unity's own error in the recorded hips-local translation,
-the recording's noise floor.
+**Centre of mass.** `c = Σ_i m_i (p_i + Σ_j a_ij (p_j − p_i))`. Under
+`|a_ij| ≤ 1` (B2 refits and checks it), input errors reach `c` as
+`Σ_i m_i (|dp_i| + Σ_j |d(p_j − p_i)|)`. An edge difference's error walks
+the links from `i` to `j` again from `i`'s state with no position error, so
+a common translation cancels, plus the subtraction at its result. The sum's
+own rounding is `γ(n_max + 2N + 2)` of `M = Σ_i m_i (|p_i| + Σ_j |p_j − p_i|)`.
+The sums run in HumanBodyBones order.
 
-- **Positions about the hips.** Unity's links add to the running absolute
-  position, so each bone below the hips errs by `γ32(24 d)` of its whole
-  chain length from `A`'s origin (`d` links below the hips), plus one
-  rounding of `|p| + |p_hips|` for the difference. The hips' own error is
-  common to both and cancels.
-- **The frame** runs through both normalized frames. Each normalization
-  multiplies its vector's error by `2 / |v|`, for the up vector and for
-  `lateral × û`, so the bound grows without limit as that cross product
-  vanishes. The target body rotation `B_A` adds `8 γ32(4 d_root + 5)` when
-  it is a read-back: a quaternion whose components err by `γ` turns a unit
-  vector by at most `4 · 2γ`.
-- **The hips parent** at depth `d_p` below the Animator node adds
-  `δt_p = γ32(24 d_p) L_p`, `|δR_p| ≤ 8 γ32(4 d_p)` and
-  `|δσ_p| / σ_p ≤ γ32(d_p)`, each over `S = h|T_A| + M_h + |t_p|`, and `k`
-  errs by `γ32(d_p + 1)` of `M_h`.
+**The frame.** Each normalization multiplies its vector's error by
+`2 / |v|`, for the up vector and for `lateral × û`, so the bound grows
+without limit as that cross product vanishes. `H_A = M(B_A) F(T) F_hᵀ`
+rounds at its operands.
 
-With the target path's error `e_T` (one rounding of `h T_A` for a known
-vector, or the read-back's output error), the centre of mass about the
-hips, the solve and the local conversion:
+**`ε`.** Unity's world centre of mass and the recorder's conversion:
 
-`E_unity = (e_T + E_ch + (|dF_h| + |dF_T| + γ32(12) + |δB_A|) M_h
-+ γ32(d_p + 1) M_h + γ32(8)(h|T_A| + M_h) + γ32(7) S + δt_p
-+ (|δR_p| + |δσ_p|/σ_p) S) / σ_p`.
+- GetHumanPose's stored `w = c / h` and the recorder's `h w` round at the
+  world value;
+- the subtraction of the Animator's world position rounds at the
+  difference `d`, and the inverse rotation at `d`;
+- the division by the Animator's scale, and the stored division by `h`, at
+  the result.
+
+The Animator's own tracked errors carry through, and `ε = E_c / s_root +`
+the conversion's bound.
+
+**`E_unity`.** Unity's own error in the recorded hips-local translation:
+
+- **The target.** A known vector's is the exact f32 body pose the recorder
+  passed to SetHumanPose, so only `h T_A` rounds and `B_A` is exact. A
+  clip's stands in by its read-back. The position carries `ε`. The
+  rotation carries Unity's world frame and T-pose frame, its
+  matrix-to-quaternion conversion and store, and the recorder's product
+  with the inverse Animator rotation.
+- **The hips-local centre of mass** `c_h` (`E_ch`, magnitude `M_h`), and
+  both frames: `|dH| ≤ |dF_h| + |dF_T| + |dB_A|` plus `H_A`'s rounding.
+- **The solve** `P_A = h T_A − k H_A c_h`: `k (E_ch + |dH| M_h)`, the
+  matrix-vector product at `|H_A| M_h`, the product by `k` and the
+  subtraction at its result.
+- **The local conversion** `σ_p⁻¹ R_p⁻¹ (P_A − t_p)`: `t_p`'s error, the
+  subtraction at its result `d` (`σ_p R_p` times the recorded hips
+  translation), `R_p`'s error acting on `d`, the inverse rotation at `d`
+  and the division at its result. `σ_p`'s error cancels in
+  `k / σ_p = s_h` and acts only on `h T_A − t_p`.
 
 **`E_eval`.** The model's own error at a sample, with the fitted
 coefficients. B2's f64 reference runs the same path from the recorded f32
-rotations and target, so each stage keeps its rounding count at
-`u = 2^-53`, with `h T_A` one f64 product and the read-back rotation
-exact. Storing the hips translation as f32 adds `2^-24` of a bound on the
-model's pre-cast translation, `S / σ_p` plus the path's own error. These
+inputs taken exactly, at `u = 2^-53`. Storing the hips translation as f32
+adds `2^-24` of a bound on the model's pre-cast translation,
+`(h|T_A| + k M_h + |t_p|) / σ_p` plus the path's own error. These
 roundings are the model's, not Unity's, so `E_unity` does not count them.
 
 **`T`.** E3's comparison tolerance is `T_s = E_unity,s + u_s + E_eval,s`
 (section 2.5).
-
-The tests check each piece against a hand computation.
 
 These are B1's bounds. B2 freezes its own and reruns the check if they
 differ.
@@ -1227,8 +1241,9 @@ defaults from `human_bones`. The checkpoint reports:
    - `u_s` sums, over the blocks, the 2-norm of each block of `J_s A_w⁺`.
    - `J_s` is the full sensitivity `−σ_p⁻¹ R_p⁻¹ (H_A H_rec⁻¹) m_i
      (p_ij − p_i)` with the solved hips orientation of 2.3:
-     `H_A H_rec⁻¹ = B_A F(T) F(pose)⁻¹`, with `B_A` the read-back body
-     rotation, or the model's own when a sample has no read-back.
+     `H_A H_rec⁻¹ = B_A F(T) F(pose)⁻¹`. `B_A` is the rotation the
+     recorder passed to SetHumanPose for a known vector, the read-back
+     body rotation for a clip, and the model's own otherwise.
    - `A_w⁺ = V Σ⁻² Vᵀ A_wᵀ`, over the kept singular values.
    - There is no per-sample `E_unity` against `ε` veto (section 2.5).
 3. **The coefficient inventory.**

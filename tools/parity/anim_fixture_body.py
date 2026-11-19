@@ -13,7 +13,7 @@ applied body target, and HumanTrait's bone table with the default masses.
 from math import isfinite
 
 from anim_fixture_contract import BODY, MUSCLES, SPINE, Fixture, compiled_curves
-from anim_reference import angle, euler, multiply
+from anim_reference import angle, dense, euler, multiply, streamed
 
 # name: (base rig, omitted bones, mapped extras). F6 rigs are on the compact
 # rig; "noncoplanar" moves the hip and shoulder children off one plane and
@@ -405,12 +405,27 @@ def _matches(group, sample):
 
 
 def _runtime_slots(clip, replay):
-    """m_MuscleClip's slots in storage order (streamed, dense, constant), each with its built binding key;
-    none when two bindings share a key, since the slots could not then be told apart."""
+    """m_MuscleClip's slots in storage order (streamed, dense, constant), each a (built binding key,
+    sampler) pair sampled as playback does; none when two bindings share a key, since the slots
+    could not then be told apart."""
     tracks = compiled_curves(clip, replay)
     if len(tracks) != len(clip.get("m_ClipBindingConstant", {}).get("genericBindings", [])):
         return []
-    return [(key, track) for key, spans in tracks.items() for track in spans]
+    playback = clip.get("m_MuscleClip", {}).get("m_Clip", {})
+    grid = playback.get("data", playback).get("m_DenseClip", {})
+
+    def sampler(is_streamed, entries):
+        if not entries:
+            return None
+        if is_streamed:
+            keys = sorted(entries, key=lambda entry: entry[0])
+            return lambda t: streamed(keys, t)
+        values = [coefficients[3] for _, coefficients in entries]
+        if len(values) == 1:
+            return lambda t: values[0]
+        # Dense frames interpolate linearly between frames, as playback does.
+        return lambda t: dense(values, 1, 0, grid["m_BeginTime"], grid["m_SampleRate"], t)
+    return [(key, sampler(*track)) for key, spans in tracks.items() for track in spans]
 
 
 def _built_track(runtime, index, attribute):
@@ -419,16 +434,4 @@ def _built_track(runtime, index, attribute):
     slot = index[attribute] if 0 <= attribute < len(index) and type(index[attribute]) is int else -1
     if not 0 <= slot < len(runtime) or runtime[slot][0] != (0, 95, attribute, 8, False):
         return None
-    track = runtime[slot][1]
-    if track[1]:
-        entries = sorted(track[1], key=lambda entry: entry[0])
-
-        def compiled(t):
-            prior = [entry for entry in entries if entry[0] <= t + 1e-6]
-            if not prior:
-                return float("nan")
-            start, (c3, c2, c1, c0) = prior[-1]
-            d = t - start
-            return ((c3 * d + c2) * d + c1) * d + c0
-        return compiled
-    return None
+    return runtime[slot][1]

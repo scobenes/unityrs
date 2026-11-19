@@ -154,6 +154,30 @@ class CheckBodyTests(unittest.TestCase):
         self.assert_refused("known-vector targets", name, changed, built)
 
 
+    def test_a_dense_slot_interpolates_between_frames(self):
+        # The last streamed slot (the right knee) moves to a dense clip at 1.5 frames per second, so the key
+        # at .5 lies between frames 0 and 2/3 and only linear interpolation reproduces it.
+        name = "body-clip-height-from-feet-knee"
+        doc = body_doc(name, RUN)
+        built = clip_case(doc, "height-from-feet-knee")
+        stream = built["m_MuscleClip"]["m_Clip"]["data"]["m_StreamedClip"]
+        last = stream["curveCount"] - 1
+        words, kept, cursor = stream["data"], [], 0
+        while cursor < len(words):
+            time, count = words[cursor:cursor + 2]
+            entries = [words[i:i + 5] for i in range(cursor + 2, cursor + 2 + 5 * count, 5) if words[i] != last]
+            kept += [time, len(entries)] + [word for entry in entries for word in entry]
+            cursor += 2 + 5 * count
+        a, b, c = body.KNEE["Right Lower Leg Stretch"]
+        second = a + (b - a) / .75
+        frames = [a, second, 2 * c - second]
+        stream.update(curveCount=last, data=kept)
+        built["m_MuscleClip"]["m_Clip"]["data"]["m_DenseClip"] = dict(m_CurveCount=1, m_SampleArray=frames,
+                                                                      m_BeginTime=0., m_SampleRate=1.5)
+        self.assertTrue(self.check(name, doc, built))
+        frames[1] += .01
+        self.assert_refused("built clip lost its", name, doc, built)
+
     def test_a_variant_counts_only_with_its_built_distinguishing_slots(self):
         self.assertEqual(body.CHAIN_VARIANT, "keep-o1-y1-xz1-motion")
         self.assertTrue(body.CLIP_VARIANTS[body.CHAIN_VARIANT]["motion"])
