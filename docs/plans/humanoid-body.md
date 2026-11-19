@@ -169,9 +169,12 @@ from the middle points of the hips and shoulders. The candidate:
   candidates were all ruled out. So 2.2 holds up to the lateral limit,
   set by the checker from the training runs and recorded in the freeze:
   the largest spine Left-Right value of a training sample the model
-  compared (a sample the twist scope refused validates nothing) below
-  every sample failing E2 or E3a, and at least 1/32 below those. A pose past it
-  refuses (section 8). Without every required band sweep recorded there is
+  compared and passed (a sample the twist scope refused validates nothing)
+  that is at least 1/32 below every sample failing E2 or E3a. It is
+  always an observed passing value, never a clamped untested one, and the
+  freeze records the two observations that bracket it: the passing sample
+  at the limit and the smallest failing one. A pose past it refuses
+  (section 8). Without every required band sweep recorded there is
   no limit, and a limit under 1/16 validates nothing: E2 and E3a then
   fail. F9's band sweeps sample the band past it on the training
   rigs. A clip past the limit gets the named refusal
@@ -488,7 +491,7 @@ coefficient is shipped from a fit.
 |---|---|---|---|---|
 | B0 | Plan | This document, the `anim.md` 2.6 link, and the "Humanoid local poses" tier X row's cells | docs | — |
 | B1 | Recorder and fixtures | F1–F8 in the builder; read-back, root, mass and setting rows in the recorder; contract and `complete` checks; owner workflow notes; 2.5's tolerance derivation. **Adequacy checkpoint:** after the first owner run, a script computes 2.5's rank, conditioning and `u_s ≤ E_unity,s` with B1's own tolerances, and the topology coverage. If any is short, B1 extends the fixtures before B2 starts. The first runs left a few tall-rig samples short of `u_s ≤ E_unity,s`. `body-probes-tall-2` adds the extra tall-rig poses, and `--design-only` predicts their adequacy conservatively from the recorded geometry before the rerun. Under B2's frozen scope (fifteen training rigs, 29 coefficients), the conservative worst margin with the predicted `body-probes-tall-2` stays above 1 in both versions, and the checkpoint is adequate. F8's range sweeps are fitted with the probes: `--design-only` predicts them from each rig's single-muscle probes, and with them (eighteen training rigs, the three UpperChest-and-Toes rigs not yet recorded) the conservative worst margin over every planned and recorded sample stays above 1 in both versions. The checkpoint never reads the hold-out rig; E3b does, after the freeze. | 0.7–1.0k | B0 |
-| B2 | Reference and body checker | 2.1–2.5 in the f64 reference with frozen bounds and the analytic cases. A checker runs E0–E4. **Input:** a completed run in both 2022.3 and 6000, read with Unity 6 reader support on main. **Order:** first E3a on the training rigs, then the freeze commit (model choices, coefficients, scope with the lateral limit E2 and E3a set, bounds), then E3b on the hold-out rig against that commit. | 0.6–0.9k | B1 recordings |
+| B2 | Reference and body checker | 2.1–2.5 in the f64 reference with frozen bounds and the analytic cases. A checker runs E0–E4. **Input:** a completed run in both 2022.3 and 6000, read with Unity 6 reader support on main. **Order:** first E3a on the training rigs, then the freeze commit (model choices, coefficients, scope with the lateral limit E2 and E3a set, bounds, E4's passing configurations), then E3b on the hold-out rig against that commit, once. | 0.6–0.9k | B1 recordings |
 | B3 | Rust body model | Read and validate `m_HumanBoneMass`; E0 checks; the centre of mass, frame and closed-form hips solve; the free-combination refusal; synthetic tests and fuzz targets for the new reads | 0.5–0.7k | B2 (E3b passing) and E2 passing |
 | B4 | Root projection and frames | Target body pose per verified 2.4 combination, conversion from the Animator to the hips parent with scale, narrowed refusals | 0.4–0.6k | B3, F4, F5 |
 | B5 | Integration and L11 | Lift the body-bearing refusal behind the release gate below, add collector integration, run the gated same-bundle replay (E5), and promote the PARITY row | 0.4–0.6k | B4 |
@@ -507,11 +510,29 @@ coefficient is shipped from a fit.
   replay blocks, as in P2b's `complete`.
 - **Freeze before the hold-out.** B2's freeze commit, made before E3b runs,
   fixes the model choices, coefficients, scope and bounds that B3–B5 use.
-  The freeze needs E3a passed on every required case of both versions, full
-  rank and every coefficient within `|a| ≤ 1`. It records the code's git
-  commit and a digest of the model's source files. Until it exists,
-  `complete` seals the hold-out's cases: it opens neither their recordings
-  nor their bundles, and `--unseal` with a valid freeze completes them.
+  The freeze needs E3a passed on every required case of both versions, E4
+  passed, full rank and every coefficient within `|a| ≤ 1`. It records E4
+  per configuration (variant, Editor version, root placement): B4 and B5
+  implement only the passing configurations it names, and a configuration
+  without a read-back is listed as excluded, never passing. It records the
+  code's git commit and a digest of its sources: the checker's entry
+  points and every local module they import, transitively (recording
+  validation, case tables and Avatar decoding among them), all committed
+  and unchanged. E3b refuses unless the code commit is an ancestor of HEAD
+  and of the freeze commit, no source changed since it, and the artifact
+  is byte-identical to the one its single freeze commit added. `complete`
+  seals the hold-out's cases: it opens neither their recordings nor their
+  bundles. Only E3b unseals them, through `complete` itself (run identity,
+  topology, probe schedule and bundle checks), after reproducing the
+  frozen fit and lateral limit from the frozen training runs. Before
+  evaluating, E3b writes a one-shot ledger entry, kept outside the
+  repository, with the hold-out recordings' digests, the freeze's digest
+  and the time, and it refuses a freeze the ledger already holds. Each
+  version is evaluated alone: it needs every hold-out case, at least 30
+  in-scope comparisons (the hold-out schedule's 45 known vectors leave 33
+  inside the lateral and frame scopes by design; 30 allows three more
+  frame refusals for its longer arms), and a pass. Nothing pools across
+  versions.
   The freeze binds one completed run per version, the first with the band
   sweeps, and E3b reads that run's own hold-out recording: until E3b only
   the sealed tools touched it, and nothing opened it. An earlier run's

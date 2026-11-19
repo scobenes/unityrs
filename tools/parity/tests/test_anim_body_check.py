@@ -37,6 +37,11 @@ def clips(run, doc):
     return CLIPS[doc["spec"]["evidence"]["editor"]["fixture_case"]]
 
 
+def config(report, variant, root="identity"):
+    """E4's entry for one configuration of the synthetic run."""
+    return report["configurations"][f"{variant}/{write_run.__defaults__[0]}/{root}"]
+
+
 def checked(mode, folder, docs, avatar_of=avatars, clip_of=clips):
     """run_mode on a run of `docs`, whose training cases are the required ones."""
     write_run(folder, docs)
@@ -65,11 +70,28 @@ class Checks(unittest.TestCase):
                 self.assertEqual(report["failures"], [])
                 self.assertTrue(report["passed"])
         report = self.run_mode("e4")
-        self.assertEqual(report["combinations"]["keep-o0-y0-xz0"], dict(status="pass", start_offset="pass"))
-        self.assertEqual(report["combinations"]["keep-o1-y1-xz1-motion"]["status"], "pass")
-        self.assertEqual(report["combinations"]["keep-o1-y0-xz0"]["status"], "refused")
-        self.assertEqual(report["combinations"]["height-from-feet"]["status"], "undecided")
+        self.assertEqual(config(report, "keep-o0-y0-xz0"), dict(status="pass", samples=12, no_readback=0,
+                                                                start_offset="pass"))
+        self.assertEqual(config(report, "keep-o1-y1-xz1-motion")["status"], "pass")
+        self.assertEqual(config(report, "keep-o1-y0-xz0")["status"], "refused")
+        self.assertEqual(config(report, "height-from-feet")["status"], "undecided")
         self.assertEqual(report["start_pairs"], 6)
+        # Per configuration (variant, Editor version, root placement), naming exactly the passing ones.
+        version = write_run.__defaults__[0]
+        self.assertEqual(report["passing"], [f"{variant}/{version}/{root}" for variant, root in (
+            ("bake-o1-y1-xz1", "offset"), ("keep-o0-y0-xz0", "identity"), ("keep-o1-y1-xz1-motion", "identity"),
+            ("level", "identity"))])
+        self.assertEqual(report["excluded"], [])
+
+    def test_e4_excludes_a_configuration_without_read_back(self):
+        def unread(doc):
+            del doc["spec"]["evidence"]["editor"]["body_samples"]
+        report = self.run_mode("e4", self.edited("body-clip-level", unread))
+        entry = config(report, "level")
+        self.assertEqual((entry["status"], entry["samples"]), ("excluded", 0))
+        self.assertGreater(entry["no_readback"], 0)
+        self.assertEqual(report["excluded"], [f"level/{write_run.__defaults__[0]}/identity"])
+        self.assertNotIn(report["excluded"][0], report["passing"])
 
     def test_e0_refuses_or_fails_a_wrong_avatar(self):
         def edited(change):
@@ -200,11 +222,11 @@ class Checks(unittest.TestCase):
             return edit
 
         report = self.run_mode("e4", self.edited("body-clip-level", shift(2, 1e-3)))
-        self.assertEqual(report["combinations"]["level"]["status"], "fail")
+        self.assertEqual(config(report, "level")["status"], "fail")
         self.assertEqual(len(report["failures"]), 1)
         # The start variant moved alone: its own sample and its twin pair both fail.
         report = self.run_mode("e4", self.edited("body-clip-keep-o0-y0-xz0-start", shift(1, 1e-3)))
-        self.assertEqual(report["combinations"]["keep-o0-y0-xz0"], dict(status="fail", start_offset="fail"))
+        self.assertEqual([config(report, "keep-o0-y0-xz0")[key] for key in ("status", "start_offset")], ["fail", "fail"])
         self.assertTrue(any("start offset changed" in line for line in report["failures"]))
         # An unsupported combination's pair only informs.
         docs = dict(self.docs, **{"body-clip-keep-o1-y0-xz0-start": recording("body-clip-keep-o1-y0-xz0-start", 12)})
@@ -212,7 +234,7 @@ class Checks(unittest.TestCase):
         shift(1, 1e-2)(docs["body-clip-keep-o1-y0-xz0-start"])
         report = self.run_mode("e4", docs)
         self.assertTrue(report["passed"])
-        self.assertEqual(report["combinations"]["keep-o1-y0-xz0"]["start_offset"], "fail")
+        self.assertEqual(config(report, "keep-o1-y0-xz0")["start_offset"], "fail")
 
     def test_e4_refuses_a_built_clip_without_body_slots(self):
         def stripped(run, doc):
@@ -227,12 +249,12 @@ class Checks(unittest.TestCase):
         docs = {name: doc for name, doc in self.docs.items() if name != "body-clip-keep-o0-y0-xz0"}
         report = self.run_mode("e4", docs)
         self.assertTrue(any("no start-offset twin" in line for line in report["failures"]))
-        self.assertEqual(report["combinations"]["keep-o0-y0-xz0"]["start_offset"], "fail")
+        self.assertEqual(config(report, "keep-o0-y0-xz0")["start_offset"], "fail")
 
     def test_e4_refuses_an_unbounded_yaw(self):
         with mock.patch("anim_body_e4.yaw_error", return_value=math.inf):
             report = self.run_mode("e4")
-        self.assertEqual({row["status"] for row in report["combinations"].values()}, {"refused", "undecided"})
+        self.assertEqual({row["status"] for row in report["configurations"].values()}, {"refused", "undecided"})
         self.assertIn("E4: no comparison", report["failures"])
 
     def test_no_comparison_or_a_missing_case_fails(self):
@@ -287,19 +309,32 @@ class Checks(unittest.TestCase):
                     mock.patch.object(check, "e3", return_value=dict(failures=[])):
                 return check.lateral_limit(rows, None, None)
 
-        self.assertEqual(limit(()), (.5, math.inf))
-        # The largest passing value below the smallest failing one, here more than a step below it.
-        self.assertEqual(limit((.3203125, .5)), (.3203125 - check.LATERAL_STEP, .3203125))
-        self.assertEqual(limit((.125, .5)), (.125 - check.LATERAL_STEP, .125))
-        # Or the largest passing value, when it is more than a step below.
-        self.assertEqual(limit((.5,)), (.3203125, .5))
+        def bracket(failing, refused=()):
+            found = limit(failing, refused=refused)
+            return found["limit"], (found["failing"] or {}).get("value"), (found["passing"] or {}).get("sample")
+
+        self.assertEqual(bracket(()), (.5, None, "s6@0"))
+        # The largest compared passing value at least a step below every failing one: an observed value, never
+        # the failing one less a step (.2890625 here, which no sample tested).
+        self.assertEqual(bracket((.3203125, .5)), (.125, .3203125, "s3@0"))
+        self.assertEqual(bracket((.125, .5)), (.046875, .125, "s1@0"))
+        self.assertEqual(bracket((.5,)), (.3203125, .5, "s5@0"))
         # A passing value above a failing one widens nothing.
-        self.assertEqual(limit((.3125,)), (.125, .3125))
+        self.assertEqual(bracket((.3125,)), (.125, .3125, "s3@0"))
+        # Exactly a step below counts.
+        def e2(rows, compared):
+            compared.update(("a@0", "b@0"))
+            return dict(failures=["b@0: off"])
+
+        with mock.patch.object(check, "e2", e2), mock.patch.object(check, "e3", return_value=dict(failures=[])):
+            found = check.lateral_limit([row("a", .125), row("b", .125 + check.LATERAL_STEP)], None, None)
+        self.assertEqual(found, dict(limit=.125, failing=dict(sample="b@0", value=.15625),
+                                     passing=dict(sample="a@0", value=.125)))
         # A sample the scope refused (never compared) validates nothing.
-        self.assertEqual(limit((.3203125, .5), refused=(.3125,)), (.125, .3203125))
+        self.assertEqual(bracket((.3203125, .5), refused=(.125,)), (.109375, .3203125, "s2@0"))
         # A failure at no sample, or at an unbent spine, leaves no domain.
-        self.assertLess(limit((), unnamed=True)[0], check.LATERAL_FLOOR)
-        self.assertLess(limit((0,))[0], check.LATERAL_FLOOR)
+        self.assertEqual(limit((), unnamed=True), dict(limit=0., failing=dict(sample="E3", value=0.), passing=None))
+        self.assertLess(limit((0,))["limit"], check.LATERAL_FLOOR)
         # The model's refusal, named, past the limit, inclusive at it.
         model.lateral_scope({"Chest Left-Right": -.25, "Spine Front-Back": 1}, .25)
         with self.assertRaisesRegex(model.Refused, "^spine_lateral_range: spine Left-Right 0.3 over 0.25"):
@@ -330,7 +365,8 @@ class Checks(unittest.TestCase):
         compared = [row for row in rows if not row.get("refused") and row["state"]["target_kind"] is not None]
         values = sorted({check.lateral_of(row) for row in compared})
         self.assertGreater(len(values), 2)
-        self.assertEqual(check.lateral_limit(rows, design, fit), (values[-1], math.inf))
+        found = check.lateral_limit(rows, design, fit)
+        self.assertEqual((found["limit"], found["failing"], found["passing"]["value"]), (values[-1], None, values[-1]))
         cut = values[len(values) // 2]
         past = sum(check.lateral_of(row) > cut for row in compared)
         self.assertGreater(past, 0)

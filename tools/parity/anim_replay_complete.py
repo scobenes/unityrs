@@ -673,34 +673,39 @@ def complete_folder(folder, unityrs, inspect_dir, replay, unseal=None):
     """Validate every result before writing any completed recordings; returns (count, uncovered, sealed).
 
     The hold-out rig's body cases (by the builder's case table) stay sealed: neither their recordings nor
-    their bundles are opened, and they are listed as sealed, until `unseal` names a freeze artifact that
-    anim_body_freeze.verify_unseal accepts for this run."""
+    their bundles are opened, and they are listed as sealed. Only E3b unseals them (anim_body_seal.Unseal):
+    `unseal.verify` before any hold-out file opens, then each validated hold-out recording to `unseal.accept`
+    once every check has passed, so E3b never reads a hold-out file itself."""
     manifest, run = read_manifest(folder, replay)
     if run.get("variant", "builtin") != "builtin":
         from anim_fixture_variants import complete_variant
 
         return complete_variant(folder, manifest, run, unityrs, inspect_dir, replay)
     bundle_dir = folder / "bundles"
-    results, views, recordings = [], {}, {}
+    results, views, recordings, unsealed = [], {}, {}, []
     paths, recorded_mixed, run, uncovered = recorded_paths(folder, replay, manifest, run)
     holdout = {folder / "replays" / "body" / f"{name}.pending.json": name for name, info in BODY_INFO.items()
                if info["rig"] == HOLDOUT}
     sealed = sorted(holdout[path] for path in paths if path in holdout)
+    replay.require(unseal is None or callable(getattr(unseal, "accept", None)),
+                   "the hold-out unseals only through E3b (anim_body_freeze.py e3b), never by a path")
     if sealed and unseal is not None:
-        from anim_body_freeze import verify_unseal
-
-        verify_unseal(folder, unseal)
+        unseal.verify(folder)
     elif sealed:
         paths = [path for path in paths if path not in holdout]
     check_static(bundle_dir, views, unityrs, inspect_dir, replay, run)
     fixtures = REPLAY_CASES | VECTOR_CASES | COVERAGE_CASES | BODY_CASES
     for path in paths:
         try:
-            document = replay.read_json(path.read_text(encoding="utf-8"))
+            raw = path.read_bytes()
+            document = replay.read_json(raw.decode("utf-8"))
             name = path.name.removesuffix(".pending.json")
             result = complete_recording(name, fixtures[name], document, bundle_dir, views, unityrs, inspect_dir, replay, run)
             recordings[name] = result
             output = path.with_name(name + ".json")
+            if path in holdout:
+                replay.require(pending_pose(name, result), f"{name}: a hold-out case keeps its pending recording")
+                unsealed.append((name, hashlib.sha256(raw).hexdigest(), document))
             if pending_pose(name, result):
                 if output.exists():
                     existing = replay.read_json(output.read_text(encoding="utf-8"))
@@ -738,4 +743,6 @@ def complete_folder(folder, unityrs, inspect_dir, replay, unseal=None):
                                f"{output.name} already exists with different content")
         finally:
             staged.unlink(missing_ok=True)
+    for name, sha256, document in unsealed:
+        unseal.accept(folder, name, sha256, document)
     return len(results), uncovered, [] if unseal is not None else sealed

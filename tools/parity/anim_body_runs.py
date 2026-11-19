@@ -12,7 +12,9 @@ humanoid Avatar is read from the path the table lays out for it, and its
 role comes from the same table: `holdout` for the hold-out rig's cases
 (anim_fixture_body.HOLDOUT), `training` for every other. The role is
 decided before the file is opened, so a training load never reads a
-hold-out byte. A read recording must name its own case and the table's
+hold-out byte, and no load reads a hold-out file at all: a hold-out run is
+made (`Run.sealed`) only from the recordings sealed completion validated
+and handed to E3b (anim_body_seal). A read recording must name its own case and the table's
 bundle, so a hold-out recording under a training case's name refuses.
 Every training body case is required (REQUIRED): `Run.missing` lists those
 run.json does not record, which fails every check and refuses the freeze.
@@ -95,31 +97,50 @@ def recording_paths(folder, role, *, pending=False):
 
 
 class Run:
-    """One run's recordings of one role: documents, the files' digests, and the required cases it lacks."""
+    """One run's recordings of one role: documents, the files' digests, and the required cases it lacks. A
+    training run reads its files; a hold-out run is never read here, only made (`sealed`) from the recordings
+    sealed completion validated and handed over (anim_body_seal)."""
 
     def __init__(self, folder, role, *, pending=False):
+        replay.require(role == "training", "a hold-out recording opens only through sealed completion (E3b)")
         manifest = replay.read_json((folder / "run.json").read_text(encoding="utf-8"))
         self.folder, self.role = folder, role
         self.version = manifest["run"]["editor_version"]
         recorded = {case for case, status in statuses(manifest).items() if status == "recorded"}
-        self.missing = sorted(REQUIRED - recorded) if role == "training" else []
+        self.missing = sorted(REQUIRED - recorded)
         self.documents, self.inputs = {}, []
         for case, path in recording_paths(folder, role, pending=pending).items():
             data = path.read_bytes()
-            doc = replay.read_json(data.decode("utf-8"))
-            spec = doc["spec"]
-            replay.require("humanoid" in doc.get("capture", {}), f"{case}: a humanoid case without a humanoid capture")
-            replay.require(spec["evidence"]["editor"].get("fixture_case") == case,
-                           f"{path.name} records another case than {case}")
-            replay.require([bundle["name"] for bundle in spec["bundles"]] == [CASES[case][0].bundle],
-                           f"{case} plays another bundle than the case table's {CASES[case][0].bundle}")
-            replay.require(doc["capture"].get("editor_version", self.version) == self.version,
-                           f"{case} was recorded by another Editor version")
-            self.documents[case] = doc
-            self.inputs.append(dict(run=self.version, case=case, rig=BODY_INFO.get(case, {}).get("rig", "p2b"),
-                                    sha256=hashlib.sha256(data).hexdigest()))
+            self.add(case, hashlib.sha256(data).hexdigest(), replay.read_json(data.decode("utf-8")), path.name)
+        self.check_rigs()
+
+    @classmethod
+    def sealed(cls, folder, version, recordings):
+        """A hold-out run from completion's validated recordings, {case: (sha256, document)}."""
+        run = cls.__new__(cls)
+        run.folder, run.role, run.version, run.missing = folder, "holdout", version, []
+        run.documents, run.inputs = {}, []
+        for case, (sha256, document) in sorted(recordings.items()):
+            replay.require(case in CASES and role_of(case) == "holdout", f"{case} is not a hold-out case")
+            run.add(case, sha256, document, case)
+        run.check_rigs()
+        return run
+
+    def add(self, case, sha256, doc, label):
+        spec = doc["spec"]
+        replay.require("humanoid" in doc.get("capture", {}), f"{case}: a humanoid case without a humanoid capture")
+        replay.require(spec["evidence"]["editor"].get("fixture_case") == case, f"{label} records another case than {case}")
+        replay.require([bundle["name"] for bundle in spec["bundles"]] == [CASES[case][0].bundle],
+                       f"{case} plays another bundle than the case table's {CASES[case][0].bundle}")
+        replay.require(doc["capture"].get("editor_version", self.version) == self.version,
+                       f"{case} was recorded by another Editor version")
+        self.documents[case] = doc
+        self.inputs.append(dict(run=self.version, case=case, rig=BODY_INFO.get(case, {}).get("rig", "p2b"),
+                                sha256=sha256))
+
+    def check_rigs(self):
         loaded = {row["rig"] == HOLDOUT for row in self.inputs}
-        replay.require(loaded <= {role == "holdout"}, f"a {role} load read the wrong rig")
+        replay.require(loaded <= {self.role == "holdout"}, f"a {self.role} load read the wrong rig")
 
 
 def digest(inputs):

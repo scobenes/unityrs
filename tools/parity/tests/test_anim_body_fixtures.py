@@ -2,6 +2,8 @@
 fail-closed, and a run without them, or with all of them unrecorded, still completes."""
 
 import copy
+import hashlib
+import json
 import math
 import re
 import unittest
@@ -17,6 +19,7 @@ import anim_body_model as model  # noqa: E402  (test_anim_replay puts it on the 
 import anim_fixture_body as body  # noqa: E402
 import anim_fixture_coverage  # noqa: E402
 import anim_replay as replay  # noqa: E402
+import anim_replay_complete as complete  # noqa: E402
 from anim_replay_complete import OPTIONAL_CASES, complete_folder  # noqa: E402
 
 EDITOR = Path(__file__).resolve().parents[2] / "fixtures" / "unity" / "Editor"
@@ -722,14 +725,33 @@ class BodyRunTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"Sealed hold-out case, not opened: {name}", result.stdout)
         self.assertFalse(recording.with_name(f"{name}.json").exists())
-        # --unseal needs a valid freeze before any hold-out file opens; with one, the hold-out is read.
-        artifact = self.folder / "freeze.json"
-        with self.assertRaisesRegex(ValueError, "no freeze artifact"):
-            complete_folder(self.folder, "unityrs", self.inspect, replay, artifact)
-        with mock.patch("anim_body_freeze.verify_unseal") as verify, \
-                self.assertRaisesRegex(ValueError, f"{name}.pending.json: .*Permission denied"):
-            complete_folder(self.folder, "unityrs", self.inspect, replay, artifact)
-        verify.assert_called_once_with(self.folder, artifact)
+        # Only E3b's unseal opens it, never a freeze path: the unseal verifies before any hold-out file opens,
+        # and is handed the hold-out only once every check has passed.
+        with self.assertRaisesRegex(ValueError, "only through E3b"):
+            complete_folder(self.folder, "unityrs", self.inspect, replay, self.folder / "freeze.json")
+        unseal = mock.Mock(spec=["verify", "accept"])
+        unseal.verify.side_effect = ValueError("not frozen")
+        with self.assertRaisesRegex(ValueError, "not frozen"):
+            complete_folder(self.folder, "unityrs", self.inspect, replay, unseal)
+        unseal.verify.side_effect = None
+        with self.assertRaisesRegex(ValueError, f"{name}.pending.json: .*Permission denied"):
+            complete_folder(self.folder, "unityrs", self.inspect, replay, unseal)
+        unseal.verify.assert_called_with(self.folder)
+        unseal.accept.assert_not_called()
+        # Validated, the hold-out recording goes to the unseal with the sha256 of the bytes completion read.
+        recording.chmod(0o600)
+        doc = body_doc(name, RUN)
+        data = json.dumps(doc).encode("utf-8")
+        recording.write_bytes(data)
+        original = complete.complete_recording
+
+        def validated(case, *args):
+            return copy.deepcopy(doc) if case == name else original(case, *args)
+
+        with mock.patch.object(complete, "complete_recording", validated):
+            complete_folder(self.folder, "unityrs", self.inspect, replay, unseal)
+        unseal.accept.assert_called_once_with(self.folder, name, hashlib.sha256(data).hexdigest(), doc)
+        self.assertFalse(recording.with_name(f"{name}.json").exists())
 
     def test_an_ordinary_case_claiming_body_rows_is_refused(self):
         self.coverage = coverage.coverage_archives(self.bundles, self.inspect)

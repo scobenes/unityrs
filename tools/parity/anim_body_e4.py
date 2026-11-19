@@ -22,7 +22,10 @@ pose within:
 Each start-offset variant's read-back must match its twin's within both
 samples' epsilon and Unity's solve; a variant without its twin fails, and so
 does a run with no comparison. A cell 2.4 refuses or leaves undecided is
-listed, not evaluated.
+listed, not evaluated. Results are per configuration (variant, Editor
+version, root placement), never pooled: a sample without a read-back is
+counted as excluded, and a configuration with nothing compared is excluded,
+never passing.
 """
 
 import math
@@ -152,25 +155,39 @@ def clip_sample(row, clip):
     return target, rotation, position, turn_angle(turn) + 2 * ANGLE_FLOOR
 
 
+def configuration(row, info):
+    """A clip row's E4 configuration: its variant (a start-offset variant with its twin), Editor version and
+    root placement."""
+    return f"{info['variant'].removesuffix('-start')}/{row['version']}/{info['root']}"
+
+
 def e4(rows, clips):
-    """`clips` maps a clip row's name to its built clip (the bundle's AnimationClip value)."""
-    failures, combinations, samples, readbacks = [], {}, 0, {}
+    """`clips` maps a clip row's name to its built clip (the bundle's AnimationClip value). Per configuration
+    (`configuration`): its status (pass, fail, or the refused or undecided 2.4 cell), compared samples, start
+    offset and the samples excluded without a read-back. `passing` names the configurations that compared and
+    passed, the only ones B4 and B5 implement; `excluded` those with nothing compared."""
+    failures, configurations, samples, readbacks = [], {}, 0, {}
     for row in rows:
         info = BODY_INFO.get(row["case"])
-        if info is None or info["kind"] != "clip" or row.get("refused") or row["state"]["readback"] is None:
+        if info is None or info["kind"] != "clip" or row.get("refused"):
             continue
-        combination = combinations.setdefault(info["variant"].removesuffix("-start"), {"status": "pass"})
+        entry = configurations.setdefault(configuration(row, info),
+                                          {"status": "pass", "samples": 0, "no_readback": 0})
         state = row["state"]
+        if state["readback"] is None:
+            entry["no_readback"] += 1
+            continue
         readback = (tuple(state["scale"] * v for v in readback_position(state["readback"], state["root"], F32)),
                     decode(state["readback"]["readback_rotation"], 4, F32))
         readbacks[row["name"], row["local"]] = (readback, row, info)
         try:
             target, rotation, position, bound = clip_sample(row, clips[row["name"]])
         except (Refused, Undecided) as exc:
-            if combination["status"] == "pass":
-                combination.update(status="undecided" if isinstance(exc, Undecided) else "refused", reason=str(exc))
+            if entry["status"] == "pass":
+                entry.update(status="undecided" if isinstance(exc, Undecided) else "refused", reason=str(exc))
             continue
         samples += 1
+        entry["samples"] += 1
         where = f"{row['name']}@{row['local']}"
         off, turned = math.dist(target, readback[0]), angle(rotation, readback[1])
         if not off <= position:
@@ -178,7 +195,7 @@ def e4(rows, clips):
         if not turned <= bound:
             failures.append(f"{where}: B_A off the read-back by {math.degrees(turned):.4g} deg")
         if not (off <= position and turned <= bound):
-            combination["status"] = "fail"
+            entry["status"] = "fail"
     # The start-offset variants: the same residual body pose as their twins.
     pairs = 0
     for (name, local), ((position, rotation), row, info) in readbacks.items():
@@ -189,22 +206,28 @@ def e4(rows, clips):
                           and other["root"] == info["root"]
                           and other["rig"] == info["rig"]), None)
         twin = readbacks.get((f"{row['version']}/{twin_case}", local))
-        combination = combinations[info["variant"].removesuffix("-start")]
+        entry = configurations[configuration(row, info)]
         if twin is None:
             failures.append(f"{name}@{local}: no start-offset twin ({twin_case}) at this sample")
-            combination["start_offset"] = "fail"
+            entry["start_offset"] = "fail"
             continue
         pairs += 1
         (other_position, other_rotation), other, _ = twin
         bound = sum(r["epsilon"] + r["state"]["chain"][U32].scale * r["unity"] for r in (row, other))
         turn = turn_angle(sum(r["state"]["turn"] + solve_turn(r["state"], U32) for r in (row, other)))
         kept = math.dist(position, other_position) <= bound and angle(rotation, other_rotation) <= turn + ANGLE_FLOOR
-        if combination.get("start_offset") != "fail":
-            combination["start_offset"] = "pass" if kept else "fail"
-        # A combination 2.4 refuses or leaves undecided is not supported, so its pairs only inform.
-        if not kept and combination["status"] in ("pass", "fail"):
+        if entry.get("start_offset") != "fail":
+            entry["start_offset"] = "pass" if kept else "fail"
+        # A configuration 2.4 refuses or leaves undecided is not supported, so its pairs only inform.
+        if not kept and entry["status"] in ("pass", "fail"):
             failures.append(f"{name}@{local}: the start offset changed the residual body pose")
-            combination["status"] = "fail"
+            entry["status"] = "fail"
     if not samples:
         failures.append("E4: no comparison")
-    return verdict(failures, combinations=dict(sorted(combinations.items())), samples=samples, start_pairs=pairs)
+    for entry in configurations.values():
+        if entry["status"] == "pass" and not entry["samples"]:
+            entry["status"] = "excluded"
+    configurations = dict(sorted(configurations.items()))
+    return verdict(failures, configurations=configurations, samples=samples, start_pairs=pairs,
+                   passing=[key for key, entry in configurations.items() if entry["status"] == "pass"],
+                   excluded=[key for key, entry in configurations.items() if entry["status"] == "excluded"])

@@ -129,19 +129,26 @@ def outside(row, limit):
 
 
 def lateral_limit(rows, design, coefficients):
-    """(limit, smallest failing value): the largest spine Left-Right value of a training sample the model
-    compared (2.2's frame in E2, or the hips in E3) below every sample failing E2 or E3, and at least
-    LATERAL_STEP below them; with no failure, the largest one. A sample the scope refused validates nothing."""
+    """The lateral limit (plan 2.2, section 8): dict(limit, failing, passing). `limit` is the largest spine
+    Left-Right value of a training sample the model compared and passed (2.2's frame in E2, or the hips in E3)
+    that is at least LATERAL_STEP below every sample failing E2 or E3; with no failure, the largest passing one;
+    0 with none. It is always an observed passing value, never clamped. `passing` and `failing` name the
+    bracketing observations: the sample at the limit, and the smallest failing one (a failure at no sample
+    counts as 0). A sample the scope refused validates nothing."""
     compared = set()
     failed = {line.split(": ", 1)[0] for line in e2(rows, compared=compared)["failures"]
               + e3(rows, design, coefficients, compared=compared)["failures"]}
     values = {f"{row['name']}@{row['local']}": lateral_of(row) for row in rows if not row.get("refused")}
-    worst = min((values[key] for key in failed if key in values), default=math.inf)
+    failing = min(((values[key], key) for key in failed if key in values), default=None)
     if failed - values.keys():
-        worst = 0.
-    passing = [value for key, value in values.items() if value < worst and key in compared - failed]
-    limit = min(max(passing, default=0.), worst - LATERAL_STEP)
-    return limit, worst
+        failing = (0., sorted(failed - values.keys())[0])
+    cap = math.inf if failing is None else failing[0] - LATERAL_STEP
+    passing = max(((value, key) for key, value in values.items() if key in compared - failed and value <= cap),
+                  default=None)
+
+    def named(found):
+        return None if found is None else dict(sample=found[1], value=found[0])
+    return dict(limit=passing[0] if passing else 0., failing=named(failing), passing=named(passing))
 
 
 # E0: the Avatar's masses and rest body.
