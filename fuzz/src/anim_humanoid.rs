@@ -148,11 +148,7 @@ fn avatar_digest(
 }
 
 /// The body-model inputs, or their typed refusal.
-fn body_digest(
-    avatar: &Avatar,
-    meter: &Arc<Meter>,
-    digest: &mut Digest,
-) -> Result<(), AnimError> {
+fn body_digest(avatar: &Avatar, meter: &Arc<Meter>, digest: &mut Digest) -> Result<(), AnimError> {
     if let Some(masses) = &avatar.human.bone_mass {
         meter.count_decode(masses.len() as u64)?;
         for mass in masses.as_slice() {
