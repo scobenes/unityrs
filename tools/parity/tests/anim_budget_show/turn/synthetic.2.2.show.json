@@ -1,0 +1,172 @@
+{
+ "format": "unityrs.show",
+ "version": 1,
+ "object": {
+  "input": 0,
+  "file_index": 2,
+  "file": "CAB-synthetic",
+  "path_id": 2,
+  "class_id": 4,
+  "class_name": "Transform",
+  "name": null,
+  "container_path": null,
+  "byte_size": 80
+ },
+ "value": {
+  "t": "dict",
+  "v": [
+   [
+    "m_GameObject",
+    {
+     "t": "dict",
+     "v": [
+      [
+       "m_FileID",
+       0
+      ],
+      [
+       "m_PathID",
+       1
+      ]
+     ]
+    }
+   ],
+   [
+    "m_LocalPosition",
+    {
+     "t": "dict",
+     "v": [
+      [
+       "x",
+       {
+        "t": "f32",
+        "v": "00000000"
+       }
+      ],
+      [
+       "y",
+       {
+        "t": "f32",
+        "v": "00000000"
+       }
+      ],
+      [
+       "z",
+       {
+        "t": "f32",
+        "v": "00000000"
+       }
+      ]
+     ]
+    }
+   ],
+   [
+    "m_LocalRotation",
+    {
+     "t": "dict",
+     "v": [
+      [
+       "x",
+       {
+        "t": "f32",
+        "v": "00000000"
+       }
+      ],
+      [
+       "y",
+       {
+        "t": "f32",
+        "v": "00000000"
+       }
+      ],
+      [
+       "z",
+       {
+        "t": "f32",
+        "v": "00000000"
+       }
+      ],
+      [
+       "w",
+       {
+        "t": "f32",
+        "v": "3f800000"
+       }
+      ]
+     ]
+    }
+   ],
+   [
+    "m_LocalScale",
+    {
+     "t": "dict",
+     "v": [
+      [
+       "x",
+       {
+        "t": "f32",
+        "v": "3f800000"
+       }
+      ],
+      [
+       "y",
+       {
+        "t": "f32",
+        "v": "3f800000"
+       }
+      ],
+      [
+       "z",
+       {
+        "t": "f32",
+        "v": "3f800000"
+       }
+      ]
+     ]
+    }
+   ],
+   [
+    "m_Children",
+    [
+     {
+      "t": "dict",
+      "v": [
+       [
+        "m_FileID",
+        0
+       ],
+       [
+        "m_PathID",
+        5
+       ]
+      ]
+     }
+    ]
+   ],
+   [
+    "m_Father",
+    {
+     "t": "dict",
+     "v": [
+      [
+       "m_FileID",
+       0
+      ],
+      [
+       "m_PathID",
+       0
+      ]
+     ]
+    }
+   ]
+  ]
+ },
+ "truncated": {
+  "cuts": 0,
+  "bytes": 0,
+  "items": 0,
+  "depth": 0,
+  "binary": 0
+ },
+ "bundle_sha256": "1d96828fd4f0f6b7bfbae418b91acb19f07b72889a7f4e2253c79b4423064734"
+}

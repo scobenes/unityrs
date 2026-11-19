@@ -483,11 +483,20 @@ before the jump and the first one at or after it. A jump at the clip
 start needs only the right probe. Use a held component with distinct,
 independently known values on its two sides. The validator compares the
 expected values with the captured pose and predicts the held sides under
-both clock models. When no held probe changes sides between the models,
-`validate` reports `clock not discriminated` for clip playback and
-`derive` sets `clock_discriminated` to false. Promotion requires at least
-one held probe whose independently observed side distinguishes the models
-and a true `clock_discriminated` in the frozen tolerances used as clock evidence.
+both clock models. A recording is clock-independent when both candidate
+clocks give every sample a bit-identical effective source time, as when
+each `start + f32(local)` is exact in f32 (a zero start, for one). Then
+`derive` sets `clock_discriminated` to `"independent"`, and no held probe is
+needed to choose between the models. Otherwise, when no held probe changes
+sides between the models, `validate` reports `clock not discriminated` for
+clip playback and `derive` sets `clock_discriminated` to false. Promotion
+requires a clock-independent recording, or at least one held probe whose
+independently observed side distinguishes the models, and the matching
+`"independent"` or true `clock_discriminated` in the frozen tolerances used
+as clock evidence. The Rust comparison recomputes both clocks per sample
+and refuses a recording whose clocks differ anywhere without a
+discriminating probe. A late-start Mecanim interval still needs its own
+held probe against a zero origin.
 
 Include the cases in [plan section 8](plans/anim.md#8-editor-fixture-project-owner-built).
 All local TRS and renderer weights are eight-digit IEEE 754 f32 bit
@@ -717,8 +726,71 @@ sequence, with each stage appearing once.
 | `euler_constant`, `euler_held`, `euler_streamed`, `euler_dense`, `euler_hermite`, `euler_weighted` | The named input stage, then `joint`, for rotation. |
 | `muscle_constant`, `muscle_streamed`, `muscle_dense` | The named input stage, then `muscle`, then `joint`, for rotation. |
 
-Mixed-stage inputs need a documented track kind and a matching budget
-derivation before promotion.
+A streamed track whose key intervals mix held (zero `c3`, `c2` and `c1`)
+and streamed segments has track kind `streamed`. A held segment is the
+streamed cubic with zero slopes, so the streamed stage bounds it, and its
+value lies in the `c0` range. Other mixed-stage inputs need a documented
+track kind and a matching budget derivation before promotion.
+
+`tools/parity/anim_replay_budgets.py REPLAY --bundle-dir DIR` writes the
+budget rows of a completed generic or legacy replay without them, and
+`--verify` refuses stored rows that differ from the ones it writes. It
+checks each bundle's SHA-256 pin, then reads the bundles through
+`unityrs show --value canonical`, refusing any truncated document or one
+for another file or object, and
+takes the tagged f32 bits of infinite tangents as they are. It reads the
+serialized rest pose, the compiled or explicit curves and the playback
+interval, never the observed poses. It walks each interval between the
+start, the stop and every key strictly inside them, and records every
+coefficient, key-relative time, Hermite control and clamped or rest value
+the path reads. A translation or scale row must also give each component
+its own ranges in `component_ranges`, in the stage's layout, with `[0, 0]`
+for a range the component never reads. The schema, `derive` and the Rust
+audit refuse a translation or scale row without them, and any other row
+with them; no shared envelope ever bounds a vector component. The derivation then bounds each
+component from its own ranges, so a large clamped Y never widens X's
+tolerance, and the Rust audit checks each component against them. The
+author supports rest, constant, held and streamed compiled slots, clamped
+unweighted explicit Hermite curves and Euler input through `joint`, and
+refuses dense, weighted and humanoid paths until they have an author.
+Its choices, provisional until review:
+
+- Every computed enclosure is widened by `2^-40` of the magnitudes of the
+  terms that produced it, never of the result, so cancellation and trig
+  zeros keep their margin. The tool computes in f64, where each rounding
+  errs by at most `2^-53` of its operands' scale. `2^-40` covers about
+  4096 such roundings, yet is `2^-16` of an f32 ulp, so the derived bounds
+  do not grow measurably. Exact f32 inputs are widened by `2^-40` of their
+  own magnitude. A further absolute `2^-1022`, the smallest normal f64,
+  covers the f64 underflow of the tool's own arithmetic, whose absolute
+  error is at most `2^-1075` per operation. It is far below the smallest
+  f32 subnormal, `2^-149`.
+- An Euler box widens each half angle by `2^-40` of its magnitude before
+  the trig. That covers the rounding of the degree conversion and the
+  difference between the f64 constant and π, below `2^-52` of π. Sine
+  and cosine are enclosed over the widened interval, including any
+  extremum inside it, and the axis quaternions are multiplied as
+  intervals. A constant angle whose half falls on a trig zero, such as
+  3060°, still lies inside its box.
+- The rotation `norm_ranges` hold a point box at every walked time, using
+  that time's own segment, so a held jump at a key or at the stop is
+  enclosed. Each interval is halved at its midpoint, as the Rust audit
+  halves its pieces, until every box's guaranteed largest component is at
+  least half its largest possible one. A unit quaternion's largest
+  component is at least one half, so the floor stays at least one
+  quarter. A path that gets this close to the origin, such as a raw
+  quaternion whose W changes sign beside an X of `2^-14`, is refused as
+  `rotation path too close to the origin to bound` after 16 halvings, as
+  is a box holding the origin, a rest pose included.
+- The Rust audit halves its own pieces up to 20 times. It expands each
+  piece's chord by a curvature bound, per component, and for a `joint`
+  output clamps it to `[-1, 1]`, since a normalized quaternion lies there.
+  With at most one turning Euler axis, the other two vector components are
+  exactly zero and get no expansion, so a Z-only turn the author accepts,
+  such as 0° to 3000°, passes the audit (a test runs that case through
+  both). A piece that still fits no box is refused as `rotation path too
+  close to the origin to bound` when its chord's norm is below every box's
+  guaranteed floor, and as `bundle rotation output boxes` otherwise.
 
 | Stage | Recorded ranges in order | Continuous derivative bound |
 |---|---|---|
@@ -783,16 +855,19 @@ component magnitude no greater than `2^60` to keep f32 length
 arithmetic in range. For a `joint` output each box must admit a unit
 quaternion, and the floor is capped at one. Convert propagated raw
 component error with this norm floor. Budget normalization with 32
-operations in unit space. Add half an f32 ulp at the largest captured
-component for final storage. For rotation, convert the normalization and storage
+operations in unit space. Add half an f32 ulp for final storage at the
+largest value the stage ranges admit, never at a captured value: one for
+a normalized quaternion, else the stage's value magnitude times the weight
+gain plus the arithmetic error. For rotation, convert the normalization and storage
 errors with norm one, sum the two angular budgets and include the f64
 angle metric floor. Refuse any rotation tolerance that reaches π.
 
 Run `python3 -I tools/parity/anim_replay.py derive synthetic-replay.json --bundle-dir . > synthetic-tolerances.json`.
 The result contains the manifest SHA-256 (sorted compact UTF-8 JSON),
-`clock_discriminated`, ordered property, target and channel keys, and
-per-sample clocks, held sides and bounds. Freeze it alongside the inputs
-before comparison.
+`clock_discriminated` (true, false or `"independent"`), ordered property, target and channel keys, and
+per-sample clocks, held sides and bounds. A translation or scale row has
+one bound per component, compared component by component; a rotation or
+weight row has one bound. Freeze it alongside the inputs before comparison.
 Investigate discrepancies against the recorded layout, settings and
 equations.
 
@@ -800,6 +875,7 @@ After deriving and freezing the tolerances, run the Rust comparison from
 the repository root:
 
 ```sh
+UNITYRS_ANIM_CLI=target/release/unityrs \
 UNITYRS_ANIM_REPLAY=synthetic-replay.json \
 UNITYRS_ANIM_BUNDLES=. \
 UNITYRS_ANIM_TOLERANCES=synthetic-tolerances.json \
@@ -807,6 +883,8 @@ cargo test -p unityrs-export --features gltf --test anim_replay \
   recorded_generic_or_legacy -- --ignored --nocapture
 ```
 
+The gated test first runs `anim_replay_budgets.py --verify` with that CLI,
+so it refuses budget rows that differ from the ones the bundles give.
 The same-bundle comparator checks the captured rig, clip and renderer
 identities, derives clocks and ranges from serialized playback, and reports
 worst Unity-space errors by rig, node or renderer, property and source time.

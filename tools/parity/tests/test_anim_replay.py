@@ -111,6 +111,14 @@ def declare_budgets(manifest):
     spec = manifest["spec"]
     spec["budgets"] = [row(prop, i) for i in range(len(spec["nodes"])) for prop in ("translation", "rotation", "scale")]
     spec["budgets"] += [row("weight", i, 0) for i in range(len(spec["renderers"]))]
+    return own_ranges(manifest)
+
+
+def own_ranges(manifest):
+    """Give each translation and scale row's components the row's stage ranges."""
+    for budget in manifest["spec"]["budgets"]:
+        if budget["property"] in ("translation", "scale"):
+            budget["component_ranges"] = [copy.deepcopy(budget["stages"][0]["range"]) for _ in range(3)]
     return manifest
 
 
@@ -262,6 +270,20 @@ class TestAnimReplay(unittest.TestCase):
         m["capture"]["samples"][1].update(effective_source=replay.f32_from_bits(bits(2.1)), sides=["left"])
         m["capture"]["samples"][1]["pose"]["weights"][0]["channels"][0] = bits(12.5)
         self.assertTrue(replay.derive(m)["clock_discriminated"])
+
+    def test_a_recording_whose_clocks_agree_at_every_sample_is_clock_independent(self):
+        m = declare_budgets(synthetic())
+        # The other clock moves sample 1, and its probe stays on the left.
+        self.assertIs(replay.derive(m)["clock_discriminated"], False)
+        jump = 2.25
+        m["spec"]["held_boundaries"] = [jump]
+        m["spec"]["evidence"]["clock"] = clock_evidence(jump)
+        m["spec"]["schedule"][1]["local"] = .125
+        m["capture"]["samples"][1].update(local=.125, local_f32=bits(.125), source=2.125, effective_source=2.125)
+        # 2 + 0.125 is exact in f32, so neither clock moves a sample.
+        self.assertEqual(replay.derive(m)["clock_discriminated"], "independent")
+        m["spec"]["source_clock"] = "f32_add"
+        self.assertEqual(replay.derive(m)["clock_discriminated"], "independent")
 
     def test_late_start_clip_reports_its_stop_as_length_but_plays_its_interval(self):
         m = synthetic()
@@ -511,9 +533,9 @@ class TestAnimReplay(unittest.TestCase):
                 m = declare_budgets(synthetic())
                 m["spec"]["budgets"][0]["track_kind"] = stage
                 m["spec"]["budgets"][0]["stages"] = [dict(stage=stage, range=ranges)]
-                first, off_key, *_ = replay.derive(m)["samples"]
+                first, off_key, *_ = replay.derive(own_ranges(m))["samples"]
                 dt = abs(off_key["source"] - off_key["effective_source"])
-                self.assertAlmostEqual(off_key["bounds"][0] - first["bounds"][0], rate * dt, delta=1e-17)
+                self.assertAlmostEqual(off_key["bounds"][0][0] - first["bounds"][0][0], rate * dt, delta=1e-17)
 
     def test_weighted_budget_encloses_flat_time_inverse(self):
         m = declare_budgets(synthetic())
@@ -521,9 +543,9 @@ class TestAnimReplay(unittest.TestCase):
         m["spec"]["budgets"][0]["track_kind"] = "weighted"
         stages[:] = [dict(stage="weighted", range=[[0, 0], [1, 1], [0, 0], [0, 0],
                                                      [1, 1], [1, 1], [1, 1]])]
-        flat = replay.derive(m)["samples"][1]["bounds"][0]
+        flat = replay.derive(own_ranges(m))["samples"][1]["bounds"][0][0]
         stages[0]["range"][-2:] = [[.25, .25], [.25, .25]]
-        regular = replay.derive(m)["samples"][1]["bounds"][0]
+        regular = replay.derive(own_ranges(m))["samples"][1]["bounds"][0][0]
         self.assertGreater(flat, .01)
         self.assertLess(regular, .001)
 
@@ -586,6 +608,7 @@ class TestAnimReplay(unittest.TestCase):
                 with self.subTest(stage=stage, duration=duration):
                     budget.update(track_kind=stage, stages=[dict(
                         stage=stage, range=[[0, 0]] * 4 + [[duration, 1]] + weights)])
+                    own_ranges(m)
                     if duration < 2**-126:
                         with self.assertRaisesRegex(ValueError, "normal f32 duration"):
                             replay.derive(m)
@@ -629,12 +652,38 @@ class TestAnimReplay(unittest.TestCase):
         m = declare_budgets(synthetic())
         result = replay.derive(m)
         frame = result["samples"][1]
-        trans, rot, _, small_weight, larger_ulp_weight = frame["bounds"]
-        expected = 8 / (2**20 - 1) + 2 * abs(frame["effective_source"] - frame["source"])
-        self.assertAlmostEqual(trans, expected, delta=1e-18)
+        trans, rot, _, weight, _ = frame["bounds"]
+        # The ranges reach 8, where half an f32 ulp is 2^-21.
+        expected = 8 / (2**20 - 1) + 2 * abs(frame["effective_source"] - frame["source"]) + 2**-21
+        self.assertEqual(len(trans), 3)
+        self.assertAlmostEqual(trans[0], expected, delta=1e-18)
         self.assertGreater(rot, 0)
-        self.assertGreater(small_weight, larger_ulp_weight)
         self.assertEqual(replay.derive(m), result)
+        # A wider value range reaches a coarser f32 ulp.
+        m["spec"]["budgets"][4]["stages"][0]["range"][3] = [6, 60]
+        self.assertGreater(replay.derive(m)["samples"][1]["bounds"][4], weight)
+
+    def test_vector_rows_and_only_they_need_component_ranges(self):
+        m = declare_budgets(synthetic())
+        del m["spec"]["budgets"][2]["component_ranges"]
+        with self.assertRaisesRegex(ValueError, "no schema alternative"):
+            replay.derive(m)
+        m = declare_budgets(synthetic())
+        m["spec"]["budgets"][3]["component_ranges"] = [m["spec"]["budgets"][3]["stages"][0]["range"]] * 3
+        with self.assertRaisesRegex(ValueError, "no schema alternative"):
+            replay.derive(m)
+        m = declare_budgets(synthetic())
+        m["spec"]["budgets"][0]["component_ranges"][1] = [[0, 0]]
+        with self.assertRaisesRegex(ValueError, "wrong component range width"):
+            replay.derive(m)
+
+    def test_bounds_ignore_the_captured_pose(self):
+        m = declare_budgets(synthetic())
+        result = replay.derive(m)
+        for sample in m["capture"]["samples"]:
+            sample["pose"]["transforms"][0]["translation"][0] = bits(3e6)
+            sample["pose"]["weights"][1]["channels"][0] = bits(1e9)
+        self.assertEqual(replay.derive(m)["samples"], result["samples"])
 
     def test_derivation_requires_explicit_complete_property_budgets(self):
         with self.assertRaisesRegex(ValueError, "budgets"):
@@ -649,7 +698,8 @@ class TestAnimReplay(unittest.TestCase):
         result = replay.derive(m)["samples"][0]["bounds"][3]
         m["spec"]["budgets"][3]["weight_units"] = "fraction_of_100"
         bound = replay.derive(m)["samples"][0]["bounds"][3]
-        self.assertAlmostEqual(bound - result, 99 * 8 / (2**20 - 1), delta=1e-16)
+        # The output ulp moves from 8 to 800 with the units.
+        self.assertAlmostEqual(bound - result, 99 * 8 / (2**20 - 1) + 2**-15 - 2**-21, delta=1e-16)
 
         # The percent conversion can flush a subnormal result to zero.
         m["spec"]["budgets"][4].update(weight_units="fraction_of_100",
