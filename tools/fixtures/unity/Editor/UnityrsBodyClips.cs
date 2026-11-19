@@ -32,8 +32,9 @@ static partial class UnityrsFixtureBuilder
     }
 
     static readonly BodyClipVariant[] ClipVariants = ClipVariantTable();
-    // F5's clip: no bake, no original basis, every other setting neutral.
-    static BodyClipVariant ChainVariant => ClipVariants[0];
+    // F5's clip: the original basis on every axis, so the residual body
+    // translation and tilt change through each scaled chain.
+    static BodyClipVariant ChainVariant => ClipVariants.Single(row => row.Name == "keep-o1-y1-xz1");
 
     static string FlagName(int flags) => "-o" + (flags >> 2 & 1) + "-y" + (flags >> 1 & 1) + "-xz" + (flags & 1);
 
@@ -69,9 +70,10 @@ static partial class UnityrsFixtureBuilder
     static readonly Vector3 StartOffset = new Vector3(.6f, 0, -.4f);
     const float StartYaw = 50;
     // Original root motion apart from the body: MotionT, and MotionQ's yaw.
+    // Its Y starts above zero and changes, unlike a zero or start-height rule.
     static readonly Vector3[] RootMotionPath = {
-        new Vector3(0, 0, 0), new Vector3(.1f, 0, .05f), new Vector3(.15f, 0, .2f), new Vector3(.3f, 0, .2f),
-        new Vector3(.4f, 0, .35f)
+        new Vector3(0, .04f, 0), new Vector3(.1f, .07f, .05f), new Vector3(.15f, .02f, .2f), new Vector3(.3f, .09f, .2f),
+        new Vector3(.4f, .05f, .35f)
     };
     static readonly float[] MotionYaw = { 0, 10, 5, 20, 12 };
     // At 0, .5 and 1: each knee bends in turn, so the lower foot changes.

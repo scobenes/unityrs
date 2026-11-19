@@ -125,13 +125,28 @@ static partial class UnityrsFixtureBuilder
         catch (UnauthorizedAccessException error) { Debug.LogException(error); }
         if (!built) return null;
         // A failed check leaves its case failed and unrecorded; a body clip whose
-        // built settings Unity changed is not covered.
-        build.Replays.RemoveAll(replay => replay.Optional && member(replay) && !report.Try("Check built " + replay.OutputName,
-            new[] { replay.OutputName }, () => {
-                string path = Path.Combine(bundles, replay.Bundle);
-                if (replay.Body != null) CheckBuiltBody(replay, path);
-                else CheckBuiltCoverage(replay, path);
-            }, optional: replay.Body != null));
+        // built settings Unity changed is not covered. Cases sharing a bundle,
+        // Avatar and clip (an identity and an offset root) share one check
+        // and its outcome, and each keeps its own capture.
+        var outcomes = new Dictionary<string, Exception>(StringComparer.Ordinal);
+        build.Replays.RemoveAll(replay => {
+            if (!replay.Optional || !member(replay)) return false;
+            string key = replay.Bundle + "\n" + replay.Avatar + "\n" + replay.Clip;
+            if (!outcomes.TryGetValue(key, out var failure))
+            {
+                try
+                {
+                    string path = Path.Combine(bundles, replay.Bundle);
+                    if (replay.Body != null) CheckBuiltBody(replay, path);
+                    else CheckBuiltCoverage(replay, path);
+                }
+                catch (Exception error) { failure = error; }
+                outcomes.Add(key, failure);
+            }
+            return !report.Try("Check built " + replay.OutputName, new[] { replay.OutputName }, () => {
+                if (failure != null) throw failure;
+            }, optional: replay.Body != null);
+        });
         return contents;
     }
 

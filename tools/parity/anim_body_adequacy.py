@@ -7,21 +7,31 @@ run.json), after the owner's run of the body fixtures. Every recording is
 read from its `.pending.json`. The checkpoint, with B1's own tolerances
 (anim_body_tolerance.py):
 
-1. For each fitting sample, whether its hips tolerance is at least twice
-   its measurement tolerance, the necessary condition 2.5 reports first.
-2. The weighted design matrix A_w = diag(1/epsilon) A over the edge
-   coefficients: its column rank and 2-norm condition number (at most 1e6).
-   Fitting rows are the read-back body positions of every body sample of
-   the training rigs (all but the hold-out rig), three per sample.
-3. For every body sample, hold-out and P2b humanoid sample, the propagated
-   coefficient uncertainty u_s = ||J_s A_w^+||_inf <= tau_s / 2, where J_s is
-   the sensitivity of its hips-local translation to the coefficients.
-4. The topology coverage: every F1 and F6 rig recorded.
+1. The weighted design matrix A_w over the edge coefficients: its column
+   rank and 2-norm condition number (at most 1e6). Fitting rows are the
+   read-back body positions of every body sample of the training rigs (all
+   but the hold-out rig). Each sample's three scalar equations form one
+   block weighted by 1/epsilon, since epsilon bounds the Euclidean norm of
+   that sample's residual.
+2. For every body sample, hold-out and P2b humanoid sample, each component
+   k of the propagated coefficient uncertainty against half the hips
+   budget (2.5's split, the other half for the model's own evaluation):
+   u_s,k = sum over blocks b of ||(J_s A_w^+)_k,b||_2 <= tau_s / 2, where J_s
+   is the full sensitivity of the hips-local translation to the
+   coefficients, through the hips parent's rotation and scale. The bound
+   holds for any residual within its blocks' epsilon.
+3. The coefficient inventory: each sample's edges, from the recorded
+   hierarchy, must be those HumanTrait's parents give its mapped bones, and
+   every edge of the F1 and F6 training rigs must have fitting rows.
+4. The topology coverage: every F1 and F6 rig recorded by its own probe
+   case, with read-back rows and the rig's mapped bones.
 
-Rank, u_s and the first condition do not depend on the column scale, so
-the masses (E0b-folded defaults) matter only to the condition number. The
-right-hand side is not needed. Exit 0 when adequate, 1 when short (B1
-then extends the fixtures before B2), 2 when the input is unreadable.
+There is no per-sample veto from tau against epsilon: ||A_w A_w^+||_inf >= 1
+holds for the projector as a whole, not for each of its rows. Rank and
+u_s do not depend on the column scale, so the masses (E0b-folded defaults)
+matter only to the condition number. The right-hand side is not needed.
+Exit 0 when adequate, 1 when short (B1 then extends the fixtures before
+B2), 2 when the input is unreadable.
 """
 
 import argparse
@@ -33,10 +43,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import anim_replay as replay  # noqa: E402
-from anim_body_tolerance import (BODY_SLOTS, bone_frames, decode, edges, folded_masses, hips_tolerance, kinematics,  # noqa: E402
-                                 measurement_tolerance, rotate, uniform)
-from anim_fixture_body import BODY_INFO, HOLDOUT, PROBE_RIGS  # noqa: E402
-from anim_reference import multiply  # noqa: E402
+from anim_body_tolerance import (BODY_SLOTS, U32, bone_frames, decode, edges, folded_masses,  # noqa: E402
+                                 hips_tolerance, kinematics, measurement_tolerance, norm, ordered, readback_error,
+                                 recorded_edges, rotate)
+from anim_fixture_body import BODY_INFO, HOLDOUT, PROBE_RIGS, rig_bones  # noqa: E402
 
 CONDITION_LIMIT = 1e6
 F32 = replay.f32_from_bits
@@ -57,16 +67,6 @@ def bone_table(documents):
     return parents, masses
 
 
-def compose(parent, child):
-    """(translation, rotation, scale) of child in parent's parent."""
-    t, q, s = parent
-    return (tuple(a + s * b for a, b in zip(t, rotate(q, child[0]))), multiply(q, child[1]), s * child[2])
-
-
-def local(row):
-    return (decode(row["translation"], 3, F32), decode(row["rotation"], 4, F32), uniform(decode(row["scale"], 3, F32)))
-
-
 def samples(name, doc, parents, masses):
     """One row per sample: its coefficient columns in A, its J_s rows, epsilon and tau."""
     spec, capture = doc["spec"], doc["capture"]
@@ -77,34 +77,49 @@ def samples(name, doc, parents, masses):
     nodes, animator = spec["nodes"], spec["binding_address"]
     index = {node["address"]: i for i, node in enumerate(nodes)}
     scale = F32(human["human_scale"])
+    rest = bone_frames(human["bones"], nodes, kinematics(nodes, capture["rest"]["transforms"], F32, animator))
     for sample, readback in zip(capture["samples"], readbacks):
         transforms = sample["pose"]["transforms"]
         frames = kinematics(nodes, transforms, F32, animator)
         bones = bone_frames(human["bones"], nodes, frames)
-        links = edges(parents, set(bones))
-        weights = folded_masses(masses, parents, set(bones))
+        links = recorded_edges(human["bones"], nodes)
+        mapped = set(bones)
+        expected = edges(parents, mapped)
+        weights = folded_masses(masses, parents, mapped)
         hips_address = nodes[next(row["node"] for row in human["bones"] if row["name"] == "Hips")]["address"]
         parent = frames[hips_address.rpartition("/")[0]]
         columns = {f"{i}>{j}": tuple(weights[i] * (b - a) for a, b in zip(bones[i].position, bones[j].position))
                    for i, j in links}
-        inverse = (*(-v for v in parent.rotation[:3]), parent.rotation[3])
-        jacobian = {key: tuple(-v / parent.scale for v in rotate(inverse, column)) for key, column in columns.items()}
+        jacobian = {key: hips_sensitivity(column, parent) for key, column in columns.items()}
+        world = None
         if readback is not None:
             target = decode(readback["readback_position"], 3, F32)
-        else:
-            target = tuple(sum(weights[b] * bones[b].position[k] for b in bones) / scale for k in range(3))
-        hips_local = decode(transforms[index[hips_address]]["translation"], 3, F32)
-        tau = hips_tolerance(bones, weights, links, scale, target, parent, hips_local)
-        row = dict(name=name, local=sample["local"], rig=info["rig"] if info else "p2b", columns=columns,
-                   jacobian=jacobian, tau=tau, fit=False, epsilon=None, parent_scale=parent.scale)
-        if readback is not None:
-            root = ((0., 0., 0.), (0., 0., 0., 1.), 1.)
-            for address in ("", animator):
-                root = compose(root, local(transforms[index[address]]))
             world = decode(readback["world_position"], 3, F32)
-            row["epsilon"] = measurement_tolerance(bones, weights, links, scale, target, world, (root[0], root[2]))
-            row["fit"] = info["rig"] != HOLDOUT
+            root = kinematics(nodes, transforms, F32, "", include_base=True)[animator]
+            target_error = readback_error(scale, world, root.position, root.scale)
+        else:
+            target = tuple(sum(weights[b] * bones[b].position[k] for b in ordered(bones)) / scale for k in range(3))
+            target_error = U32 * scale * norm(target)
+        tau = hips_tolerance(bones, rest, weights, links, scale, target, target_error, parent)
+        row = dict(name=name, local=sample["local"], rig=info["rig"] if info else "p2b", columns=columns,
+                   jacobian=jacobian, tau=tau, fit=False, epsilon=None,
+                   edges=None if links == expected else f"recorded {links} but HumanTrait gives {expected}")
+        if readback is not None:
+            world_bones = bone_frames(human["bones"], nodes, kinematics(nodes, transforms, F32, "", include_base=True))
+            row["epsilon"] = measurement_tolerance(world_bones, weights, links, scale, world, root.position, root.scale)
+            row["fit"] = info is not None and info["rig"] != HOLDOUT
         yield row
+
+
+def hips_sensitivity(column, parent):
+    """d(hips-local translation)/d(a_ij): P_A = h T_A - (c_A - p_hips), then sigma_p^-1 R_p^-1 (P_A - t_p)."""
+    inverse = (*(-v for v in parent.rotation[:3]), parent.rotation[3])
+    return tuple(-v / parent.scale for v in rotate(inverse, column))
+
+
+def expected_inventory(parents):
+    """Every edge of the F1 and F6 training rigs, by HumanTrait's parents."""
+    return sorted({f"{i}>{j}" for rig in PROBE_RIGS if rig != HOLDOUT for i, j in edges(parents, rig_bones(rig))})
 
 
 def householder_r(rows, width):
@@ -151,16 +166,17 @@ def jacobi_svd(matrix, width, sweeps=60):
     return [math.sqrt(sum(x * x for x in col)) for col in b], v
 
 
-def adequacy(rows, coverage):
+def adequacy(rows, coverage, inventory=()):
     report = {"coverage": coverage, "coefficients": [], "rank": 0, "condition": None, "free": [],
-              "uncertainty_failures": [], "untrained": [], "worst_ratio": None}
+              "uncertainty_failures": [], "untrained": [], "worst_ratio": None,
+              "edge_mismatches": sorted({f"{row['name']}: {row['edges']}" for row in rows if row.get("edges")})}
     fitting = [row for row in rows if row["fit"]]
-    report["necessary"] = [f"{row['name']}@{row['local']}" for row in fitting
-                           if row["tau"] < 2 * row["epsilon"] / row["parent_scale"]]
     keys = sorted({key for row in fitting for key in row["columns"]})
+    report["missing_coefficients"] = sorted(set(inventory) - set(keys))
     if not keys:
         report["errors"] = ["no fitting rows"]
         return report
+    # Each fitting sample is a block of three equations, weighted by its epsilon.
     design = [[row["columns"].get(key, (0., 0., 0.))[k] / row["epsilon"] for key in keys]
               for row in fitting for k in range(3)]
     width = len(keys)
@@ -173,7 +189,7 @@ def adequacy(rows, coverage):
     report["condition"] = top / min(sigma) if len(kept) == width else None
     report["free"] = [{key: round(vectors[k][i], 6) for i, key in enumerate(keys) if abs(vectors[k][i]) > .1}
                       for k in range(width) if k not in kept]
-    # (A_w^T A_w)^+ = V diag(1/sigma^2) V^T over the kept singular values.
+    # A_w^+ = (A_w^T A_w)^+ A_w^T, with (A_w^T A_w)^+ = V diag(1/sigma^2) V^T over the kept singular values.
     gram = [[sum(vectors[k][i] * vectors[k][j] / sigma[k] ** 2 for k in kept) for j in range(width)]
             for i in range(width)]
     failures, untrained, worst = [], [], 0.
@@ -181,22 +197,41 @@ def adequacy(rows, coverage):
         if not row["jacobian"].keys() <= set(keys):
             untrained.append(f"{row['name']}@{row['local']}: {sorted(row['jacobian'].keys() - set(keys))}")
             continue
-        u = 0.
-        for k in range(3):
-            g = [row["jacobian"].get(key, (0., 0., 0.))[k] for key in keys]
-            h = [sum(a * b for a, b in zip(g, column)) for column in gram]
-            u = max(u, sum(abs(sum(a * b for a, b in zip(h, line))) for line in design))
-        worst = max(worst, u / row["tau"])
+        u = max(uncertainty([row["jacobian"].get(key, (0., 0., 0.))[k] for key in keys], gram, design)
+                for k in range(3))
+        worst = max(worst, u / (row["tau"] / 2))
         if u > row["tau"] / 2:
-            failures.append(f"{row['name']}@{row['local']}: u={u:.3e} tau={row['tau']:.3e}")
+            failures.append(f"{row['name']}@{row['local']}: u={u:.3e} tau/2={row['tau'] / 2:.3e}")
     report.update(uncertainty_failures=failures, untrained=untrained, worst_ratio=worst)
     return report
 
 
+def uncertainty(gradient, gram, design):
+    """One output component's bound: the 2-norm of each block of g A_w^+, summed over blocks."""
+    h = [sum(a * b for a, b in zip(gradient, column)) for column in gram]
+    entries = [sum(a * b for a, b in zip(h, line)) for line in design]
+    return sum(math.sqrt(sum(v * v for v in entries[b:b + 3])) for b in range(0, len(entries), 3))
+
+
 def adequate(report):
-    return (not report.get("errors") and not report["necessary"] and report["rank"] == len(report["coefficients"])
-            and report["condition"] is not None and report["condition"] <= CONDITION_LIMIT and not report["uncertainty_failures"]
-            and not report["untrained"] and not report["coverage"]["missing"])
+    return (not report.get("errors") and report["rank"] == len(report["coefficients"])
+            and report["condition"] is not None and report["condition"] <= CONDITION_LIMIT
+            and not report["uncertainty_failures"] and not report["untrained"] and not report["edge_mismatches"]
+            and not report["missing_coefficients"] and not report["coverage"]["missing"])
+
+
+def coverage_of(documents):
+    """F1 and F6 rigs credited only by their own probe case with read-back rows and the rig's topology."""
+    recorded = set()
+    for rig in PROBE_RIGS:
+        doc = documents.get("body-probes-" + rig)
+        if doc is None or not doc["spec"]["evidence"]["editor"].get("body_samples"):
+            continue
+        mapped = {row["name"] for row in doc["capture"]["humanoid"]["bones"]
+                  if row["name"] in BODY_SLOTS and row["node"] >= 0}
+        if mapped == rig_bones(rig):
+            recorded.add(rig)
+    return {"recorded": sorted(recorded), "missing": sorted(PROBE_RIGS.keys() - recorded)}
 
 
 def load(folder):
@@ -217,9 +252,7 @@ def main(argv=None):
         documents = load(args.folder)
         parents, masses = bone_table(documents.values())
         rows = [row for name, doc in documents.items() for row in samples(name, doc, parents, masses)]
-        recorded = {BODY_INFO[name]["rig"] for name in documents if name in BODY_INFO}
-        coverage = {"recorded": sorted(recorded & PROBE_RIGS.keys()), "missing": sorted(PROBE_RIGS.keys() - recorded)}
-        report = adequacy(rows, coverage)
+        report = adequacy(rows, coverage_of(documents), expected_inventory(parents))
     except (KeyError, TypeError, IndexError, ValueError, OSError, StopIteration) as exc:
         print(f"anim_body_adequacy: {exc}", file=sys.stderr)
         return 2
@@ -228,8 +261,8 @@ def main(argv=None):
     if args.json:
         args.json.write_text(text, encoding="utf-8")
     print(f"rank {report.get('rank')}/{len(report.get('coefficients', []))}, condition {report.get('condition')}, "
-          f"{len(report.get('uncertainty_failures', []))} u_s failures, {len(report['necessary'])} rows with "
-          f"tau < 2 epsilon, missing rigs {report['coverage']['missing']}: "
+          f"{len(report.get('uncertainty_failures', []))} u_s failures, worst u_s/(tau_s/2) {report.get('worst_ratio')}, "
+          f"missing rigs {report['coverage']['missing']}, missing edges {report['missing_coefficients']}: "
           + ("adequate" if report["adequate"] else "short"))
     return 0 if report["adequate"] else 1
 

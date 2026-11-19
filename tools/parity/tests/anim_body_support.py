@@ -11,8 +11,8 @@ import random
 from test_anim_replay import bits
 
 import anim_body_tolerance as tolerance  # noqa: E402  (test_anim_replay puts it on the path)
-from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CLIP_VARIANTS, GOAL_CURVES, KNEE,  # noqa: E402
-                               MOTION_CURVES, PROBE_GROUPS, PROBE_RIGS, START_OFFSET, START_YAW, TARGETS,
+from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CLIP_VARIANTS,  # noqa: E402
+                               distinguishing_curves, PROBE_GROUPS, PROBE_RIGS, START_OFFSET, START_YAW, TARGETS,
                                expected_case_row,
                                probe_schedule)
 from anim_reference import euler, multiply  # noqa: E402
@@ -186,11 +186,8 @@ def clip_case(doc, variant_name):
         rotations.append(multiply(turn, euler(angles, 4)))
     bindings = [animator(f"RootT.{a}", keys(BODY_TIMES, [p[i] for p in path])) for i, a in enumerate("xyz")]
     bindings += [animator(f"RootQ.{a}", keys(BODY_TIMES, [q[i] for q in rotations])) for i, a in enumerate("xyzw")]
-    if variant["knee"]:
-        bindings += [animator(muscle, keys((0, .5, 1), values)) for muscle, values in KNEE.items()]
-    for curves, flag in ((MOTION_CURVES, "motion"), (GOAL_CURVES, "goals")):
-        if variant[flag]:
-            bindings += [animator(curve, keys((0, 1), (0, 0))) for curve in curves]
+    extras = distinguishing_curves(variant, list(MUSCLES))
+    bindings += [animator(prop, keys(times, values)) for group in extras for prop, _, times, values in group]
     doc["spec"]["evidence"]["editor"]["bindings"] = bindings
     flags = dict(zip(("loopBlendOrientation", "loopBlendPositionY", "loopBlendPositionXZ"), variant["bake"]))
     flags |= dict(zip(("keepOriginalOrientation", "keepOriginalPositionY", "keepOriginalPositionXZ"), variant["keep"]))
@@ -201,7 +198,31 @@ def clip_case(doc, variant_name):
     built = dict(zip(("m_LoopBlendOrientation", "m_LoopBlendPositionY", "m_LoopBlendPositionXZ"), variant["bake"]))
     built |= dict(zip(("m_KeepOriginalOrientation", "m_KeepOriginalPositionY", "m_KeepOriginalPositionXZ"),
                       map(int, variant["keep"])))
+    stream = compiled(extras)
     return {"m_MuscleClip": built | dict(m_HeightFromFeet=variant["height_from_feet"], m_Level=variant["level"],
-                                         m_OrientationOffsetY=variant["orientation"], m_StartAtOrigin=True),
-            "m_ClipBindingConstant": {"genericBindings": [
-                dict(path=0, typeID=95, attribute=a, customType=8) for a in range(7, 14)]}}
+                                         m_OrientationOffsetY=variant["orientation"], m_StartAtOrigin=True,
+                                         m_Clip=stream["m_Clip"]),
+            "m_ClipBindingConstant": stream["m_ClipBindingConstant"]}
+
+def word(value):
+    return int(bits(value), 16)
+
+
+def compiled(extras):
+    """The built clip's streamed slots: the body's seven held at zero, then each distinguishing curve."""
+    slots = [(a, (0, 1), (0, 0)) for a in range(7, 14)]
+    slots += [(attribute, times, values) for group in extras for _, attribute, times, values in group]
+    frames = {}
+    for slot, (_, times, values) in enumerate(slots):
+        for t, v in zip(times, values):
+            frames.setdefault(t, []).append((slot, 0, 0, 0, word(v)))
+    data = []
+    for t in sorted(frames):
+        data += [word(t), len(frames[t])]
+        for entry in frames[t]:
+            data += list(entry)
+    return {"m_ClipBindingConstant": {"genericBindings": [
+        dict(path=0, typeID=95, attribute=attribute, customType=8, isPPtrCurve=0, isIntCurve=0)
+        for attribute, _, _ in slots]}, "m_Clip": {"data": {
+            "m_StreamedClip": {"curveCount": len(slots), "data": data + [0x7f800000, 0]},
+            "m_DenseClip": {"m_CurveCount": 0}, "m_ConstantClip": {"data": []}}}}

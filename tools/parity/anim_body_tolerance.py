@@ -1,39 +1,73 @@
 """B1's tolerances for the humanoid body model (docs/plans/humanoid-body.md 2.5).
 
-Two bounds, each from an explicit f32 operation model in the manner of the
-per-recording f32 tolerances of docs/anim_reference.md: an operation of a
-stage with n roundings errs by at most gamma32(n) = n*u/(1-n*u), u = 2^-24,
-of the magnitudes it combines, plus n*2^-126 for flush-to-zero.
+Both bounds come from an explicit f32 operation model, in the manner of the
+per-recording f32 tolerances of docs/anim_reference.md. A stage of n
+roundings errs by at most gamma32(n) = n*u/(1-n*u), u = 2^-24, of the
+magnitudes it combines, plus n*2^-126 for flush-to-zero. Recorded f32 values
+decode exactly into f64, and this module's own f64 arithmetic errs by far
+less than one f32 ulp. Every rounding is counted once, at the stage that
+makes it; a stage's last rounding is the f32 value it stores.
 
-- `measurement_tolerance` (epsilon_r) bounds one fitting row: the Editor's
-  f32 forward kinematics and centre-of-mass sum for the recorded pose, the
-  f32 GetHumanPose output and the recorder's conversion to the Animator
-  frame, as an absolute error in metres per component of `c` in A.
-- `hips_tolerance` (tau_s) bounds one predicted sample's hips-local
-  translation along the body path of 2.3: forward kinematics below the
-  hips, the weighted sum, the frame, the solve and the f32 output.
+Each bound is on a vector's Euclidean norm, so a fitting row's three scalar
+equations form one block (anim_body_adequacy.py propagates it as such).
 
-The model's unknown coefficients enter through the assumption
-|a_ij| <= 1 for each edge (B2 refits and checks it). Every input is the
-recorded f32 data, read exactly into f64; the f64 arithmetic of this
-module errs by far less than one f32 ulp, as in anim_reference.md.
+**Forward kinematics.** One link adds `parent + R_parent (s_parent t)`:
+a quaternion-vector rotation, a scale and an add, `level` roundings, each
+relative to the link's own offset or to the running position, both at most
+the chain's summed link lengths `L`. The accumulated parent rotation's own
+error turns each later offset by at most its rounding. A bone at depth `d`
+from the frame's origin therefore errs by `E = gamma32(level d) L`.
+
+**Centre of mass.** `c = sum_i m_i ((1 - sum_j a_ij) p_i + sum_j a_ij p_j)`
+over the mapped bones `i` and their `n_i` edges. With `|a_ij| <= 1` (B2
+refits and checks it), input errors reach `c` as
+`sum_i m_i ((1 + n_i) E_i + sum_j E_j)`. Its own evaluation (normalized
+masses, `N + 1` roundings; differences, products and the inner and outer
+sums, `n_max + N + 4`) errs by `gamma32(n_max + 2N + 5)` of
+`M = sum_i m_i ((1 + n_i) |p_i| + sum_j |p_j|)`.
+
+**epsilon (`measurement_tolerance`).** Unity's centre of mass in the world
+frame, from forward kinematics through the prefab root and Animator node.
+GetHumanPose divides it by the human scale `h` (one rounding of the stored
+world read-back `w`). The recorder multiplies by `h`, applies the inverse
+Animator transform and divides by `h` (`readback` roundings, the last its
+stored value), relative to `h |w| + |t_root|`. Into the Animator frame A
+every world error divides by the root scale `s`:
+`epsilon = (E_c + u h |w| + gamma32(readback) (h |w| + |t_root|)) / s`.
+
+**tau (`hips_tolerance`).** The hips-local translation of 2.3 in the hips
+parent's units:
+
+- forward kinematics below the hips (depth and length from the hips) and
+  the centre of mass `c_h` about the hips, as above (`E_ch`, magnitude `M_h`);
+- the frame of 2.2, propagated through both normalized frames (`frame_error`):
+  for the pose and for the T-pose, so `|dH| <= |dF_h| + |dF_T| + gamma32(rotation)`;
+- the target path: `target_error`, the caller's bound on `h T_A`;
+- the solve `P_A = h T_A - k H c_h` (`solve` roundings over `h |T_A| + M_h`);
+- the local conversion `sigma_p^-1 R_p^-1 (P_A - t_p)` (`local` roundings,
+  the last the stored hips translation, over `h |T_A| + M_h + |t_p|`).
+
+`tau = (target_error + E_ch + |dH| M_h + gamma32(solve)(h|T_A| + M_h)
++ gamma32(local)(h|T_A| + M_h + |t_p|)) / sigma_p`.
 """
 
 import math
 
-from anim_reference import gamma, multiply, ulp32
+from anim_reference import gamma, multiply
 
 U32 = 2. ** -24
 FLUSH = 2. ** -126
-# Roundings per stage of the operation model, each counted once per use.
+# Roundings per stage of the operation model, each counted once.
 OPERATIONS = {
-    "level": 24,      # one link: rotate (quaternion-vector, 18), scale (3), add (3)
-    "sum": 2,         # one weighted term of the centre of mass: multiply, add
-    "readback": 24,   # recorder: times human scale, inverse Animator transform, divide
-    "output": 1,      # division by human scale in GetHumanPose
-    "frame": 40,      # two midpoints, two differences, cross products, normalization
-    "solve": 30,      # H_A from three quaternions, rotate c_h, scale by k, subtract
-    "local": 24,      # inverse parent rotation and scale, translation
+    "level": 24,      # one link: quaternion-vector rotate (18), scale (3), add (3)
+    "readback": 30,   # times human scale, the inverse Animator matrix and point, divide (stored)
+    "midpoint": 3,    # two adds and a subtraction per component of the up vector
+    "lateral": 2,     # two subtractions per component, then their sum is the third
+    "cross": 3,       # two products and a subtraction per component
+    "normalize": 6,   # three squares, two adds, square root and divide
+    "rotation": 12,   # H_A = B_A F_T F_h^-1: two rotation products and the conversion
+    "solve": 8,       # rotate c_h (5), scale by k, subtract from h T_A
+    "local": 7,       # subtract t_p, inverse rotate (5), divide by sigma_p (stored)
 }
 NAMES = ("Hips", "LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg", "LeftFoot", "RightFoot",
          "Spine", "Chest", "Neck", "Head", "LeftShoulder", "RightShoulder", "LeftUpperArm", "RightUpperArm",
@@ -41,11 +75,16 @@ NAMES = ("Hips", "LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg
          "RightEye", "Jaw", "UpperChest")
 # The 25 body slots of m_HumanBoneIndex: HumanBodyBones 0-23 and UpperChest (54).
 BODY_SLOTS = frozenset(NAMES)
+FRAME_BONES = ("LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg")
 
 
 def g(stage, times=1):
-    n = OPERATIONS[stage] * times
-    return gamma(n, U32)
+    return gamma(OPERATIONS[stage] * times, U32)
+
+
+def ordered(names):
+    """Body slots in HumanBodyBones order, so every sum runs in one fixed order."""
+    return sorted(names, key=NAMES.index)
 
 
 def rotate(q, v):
@@ -58,6 +97,10 @@ def norm(v):
     return math.sqrt(sum(c * c for c in v))
 
 
+def sub(a, b):
+    return tuple(x - y for x, y in zip(a, b))
+
+
 def decode(bits, width, f32):
     values = tuple(map(f32, bits))
     if len(values) != width or not all(map(math.isfinite, values)):
@@ -66,8 +109,8 @@ def decode(bits, width, f32):
 
 
 class Frame:
-    """One node in the Animator frame A: position, rotation, uniform scale,
-    the chain's summed link lengths and its depth below A."""
+    """One node: position, rotation and uniform scale in the base frame, the
+    chain's summed link lengths and its depth below that frame."""
 
     def __init__(self, position, rotation, scale, length, depth):
         self.position, self.rotation, self.scale, self.length, self.depth = position, rotation, scale, length, depth
@@ -79,14 +122,19 @@ def uniform(scale):
     return scale[0]
 
 
-def kinematics(nodes, transforms, f32, animator="0"):
-    """Forward kinematics in f64 of every node at or under the Animator node."""
+def kinematics(nodes, transforms, f32, base="0", *, include_base=False):
+    """f64 forward kinematics of every node at or under `base`: in base's own frame
+    (A for the Animator node), or with base's transform applied (the world, for "")."""
     index = {node["address"]: i for i, node in enumerate(nodes)}
-    frames = {animator: Frame((0., 0., 0.), (0., 0., 0., 1.), 1., 0., 0)}
-    for address in sorted(index, key=lambda key: key.count("/")):
-        if not address.startswith(animator + "/"):
+    frames = {}
+    root = Frame((0., 0., 0.), (0., 0., 0., 1.), 1., 0., 0)
+    for address in sorted(index, key=lambda key: (key.count("/") if key else -1, key)):
+        if address != base and not address.startswith(base + "/" if base else ""):
             continue
-        parent = frames[address.rpartition("/")[0]]
+        if address == base and not include_base:
+            frames[address] = root
+            continue
+        parent = root if address == base else frames[address.rpartition("/")[0]]
         row = transforms[index[address]]
         t = decode(row["translation"], 3, f32)
         q = decode(row["rotation"], 4, f32)
@@ -109,9 +157,9 @@ def bone_frames(human_bones, nodes, frames):
 
 
 def edges(parents, mapped):
-    """(i, j): j's nearest mapped body-slot ancestor is i. `parents` maps a name to its HumanTrait parent name."""
+    """(i, j): j's nearest mapped body-slot ancestor under HumanTrait's parents is i."""
     found = []
-    for j in sorted(mapped):
+    for j in ordered(mapped):
         i = parents.get(j)
         while i is not None and i not in mapped:
             i = parents.get(i)
@@ -120,13 +168,28 @@ def edges(parents, mapped):
     return found
 
 
+def recorded_edges(human_bones, nodes):
+    """(i, j): i is the nearest mapped body-slot ancestor of j in the recorded hierarchy."""
+    by_address = {nodes[row["node"]]["address"]: row["name"] for row in human_bones
+                  if row["name"] in BODY_SLOTS and row["node"] >= 0}
+    found = []
+    for address, j in by_address.items():
+        parent = address
+        while parent:
+            parent = parent.rpartition("/")[0]
+            if parent in by_address:
+                found.append((by_address[parent], j))
+                break
+    return sorted(found, key=lambda edge: NAMES.index(edge[1]))
+
+
 def folded_masses(masses, parents, mapped):
     """E0b: each mapped body slot's default mass plus those of the absent slots it
     is the nearest mapped ancestor of, over the total of the body slots."""
-    folded = dict.fromkeys(mapped, 0.)
-    for name in BODY_SLOTS:
+    folded = dict.fromkeys(ordered(mapped), 0.)
+    for name in NAMES:
         owner = name
-        while owner is not None and owner not in mapped:
+        while owner is not None and owner not in folded:
             owner = parents.get(owner)
         if owner is None:
             raise ValueError(f"absent body slot {name} has no mapped ancestor")
@@ -137,66 +200,91 @@ def folded_masses(masses, parents, mapped):
     return {name: mass / total for name, mass in folded.items()}
 
 
+def fk_error(depth, length):
+    """Unity's f32 forward kinematics of one bone `depth` links and `length` from its origin."""
+    return g("level", depth) * length + OPERATIONS["level"] * depth * FLUSH
+
+
 def position_error(frame):
-    """Unity's f32 forward kinematics of one bone, against f64."""
-    return g("level", frame.depth) * frame.length + OPERATIONS["level"] * frame.depth * FLUSH
+    return fk_error(frame.depth, frame.length)
 
 
-def com_error(bones, masses, links, error):
-    """Propagate per-bone errors and the sum's own rounding through c, with |a_ij| <= 1."""
-    children = {}
+def com_error(positions, masses, links, errors):
+    """The centre of mass's error bound and magnitude M, given each bone's position and error.
+
+    `positions` and `errors` are by bone name, about the frame the sum runs in."""
+    children = {i: [] for i in masses}
     for i, j in links:
-        children.setdefault(i, []).append(j)
-    total, magnitude = 0., 0.
-    for i, mass in masses.items():
-        reach = max((error(bones[j]) for j in children.get(i, ())), default=0.)
-        span = max((norm(bones[j].position) for j in children.get(i, ())), default=0.)
-        total += mass * (error(bones[i]) + 2 * reach)
-        magnitude += mass * (norm(bones[i].position) + 2 * span)
-    return total + g("sum", 2 * len(masses) + len(links)) * magnitude
+        children[i].append(j)
+    total = magnitude = 0.
+    for i in ordered(masses):
+        mass, kids = masses[i], children[i]
+        total += mass * ((1 + len(kids)) * errors[i] + sum(errors[j] for j in kids))
+        magnitude += mass * ((1 + len(kids)) * norm(positions[i]) + sum(norm(positions[j]) for j in kids))
+    widest = max(map(len, children.values()), default=0)
+    return total + gamma(widest + 2 * len(masses) + 5, U32) * magnitude, magnitude
 
 
-def measurement_tolerance(bones, masses, links, human_scale, readback, world, root):
-    """epsilon_r, per component of c in A (metres), for one fitting sample.
+def measurement_tolerance(world_bones, masses, links, human_scale, world, root_translation, root_scale):
+    """epsilon for one fitting sample: a bound on the Euclidean error of c in A (metres).
 
-    `readback` is the recorded body position in A (normalized), `world` the
-    raw world read-back (normalized) and `root` the Animator node's world
-    translation and uniform scale."""
-    c = com_error(bones, masses, links, position_error)
-    output = human_scale * (max(ulp32(abs(v)) for v in readback) / 2 + g("output") * norm(world))
-    root_translation, root_scale = root
-    conversion = g("readback") * (human_scale * norm(world) + norm(root_translation)) / root_scale
-    return c * (1 + g("output")) + output + conversion
+    `world_bones` are the bones' Frames in the world (prefab root and Animator
+    node included), `world` the raw world read-back (normalized)."""
+    positions = {name: frame.position for name, frame in world_bones.items()}
+    errors = {name: position_error(frame) for name, frame in world_bones.items()}
+    error, _ = com_error(positions, masses, links, errors)
+    stored = U32 * human_scale * norm(world)
+    conversion = g("readback") * (human_scale * norm(world) + norm(root_translation))
+    return (error + stored + conversion) / root_scale
 
 
-def hips_tolerance(bones, masses, links, human_scale, target, hips_parent, hips_local):
-    """tau_s for one sample's hips-local translation (in the hips parent's units).
+def readback_error(human_scale, world, root_translation, root_scale):
+    """The output part of epsilon alone: a target body position read back from Unity."""
+    return (U32 * human_scale * norm(world)
+            + g("readback") * (human_scale * norm(world) + norm(root_translation))) / root_scale
 
-    `target` is the body position in A (normalized), `hips_parent` the hips
-    parent's Frame in A and `hips_local` the recorded hips translation."""
+
+def frame_error(points, errors):
+    """A bound on the Frobenius change of 2.2's frame F = (right, up, forward) from
+    position errors of the upper arms and legs, through both normalizations."""
+    ul, ur, ll, lr = (points[name] for name in FRAME_BONES)
+    e = sum(errors[name] for name in FRAME_BONES)
+    size = sum(norm(points[name]) for name in FRAME_BONES)
+    up = tuple((a + b - c - d) / 2 for a, b, c, d in zip(ul, ur, ll, lr))
+    lateral = tuple((b - a) + (d - c) for a, b, c, d in zip(ul, ur, ll, lr))
+    if not norm(up) > 0:
+        raise ValueError("degenerate body frame: no up vector")
+    d_up = 2 * (e / 2 + g("midpoint") * size / 2) / norm(up) + g("normalize")
+    hat = tuple(v / norm(up) for v in up)
+    cross = (lateral[1] * hat[2] - lateral[2] * hat[1], lateral[2] * hat[0] - lateral[0] * hat[2],
+             lateral[0] * hat[1] - lateral[1] * hat[0])
+    if not norm(cross) > 0:
+        raise ValueError("degenerate body frame: lateral along up")
+    d_cross = e + g("lateral") * size + norm(lateral) * d_up + 2 * g("cross") * norm(lateral)
+    d_forward = 2 * d_cross / norm(cross) + g("normalize")
+    d_right = d_up + d_forward + 2 * g("cross")
+    return math.sqrt(d_right ** 2 + d_up ** 2 + d_forward ** 2)
+
+
+def about_hips(bones):
+    """Positions about the hips and Unity's error bounds below the hips, by bone name."""
     hips = bones["Hips"]
+    positions = {name: sub(frame.position, hips.position) for name, frame in bones.items()}
+    errors = {name: fk_error(frame.depth - hips.depth, max(frame.length - hips.length, 0.))
+              for name, frame in bones.items()}
+    return positions, errors
 
-    def below(frame):
-        depth = frame.depth - hips.depth
-        length = max(frame.length - hips.length, 0.)
-        return g("level", depth) * length + OPERATIONS["level"] * depth * FLUSH
 
-    c_h = com_error(bones, masses, links, below)
-    lever = max(norm(tuple(a - b for a, b in zip(bone.position, hips.position))) for bone in bones.values())
-    sides = [bones.get(side + part) for side in ("Left", "Right") for part in ("UpperArm", "UpperLeg")]
-    if any(side is None for side in sides):
-        raise ValueError("the body frame needs both upper arms and upper legs")
-    ul, ur, ll, lr = (side.position for side in sides)
-    up = norm(tuple((a + b - c - d) / 2 for a, b, c, d in zip(ul, ur, ll, lr)))
-    lateral = norm(tuple((b - a) + (d - c) for a, b, c, d in zip(ul, ur, ll, lr)))
-    if not min(up, lateral) > 0:
-        raise ValueError("degenerate body frame")
-    point = max(below(side) for side in sides)
-    turn = 4 * point / min(up, lateral) + g("frame")
+def hips_tolerance(bones, rest_bones, masses, links, human_scale, target, target_error, hips_parent):
+    """tau for one sample's hips-local translation (in the hips parent's units).
+
+    `bones` and `rest_bones` are the sample's and the T-pose's Frames in A,
+    `target` the body position in A (normalized) with `target_error` bounding
+    `h T_A`, and `hips_parent` the hips parent's Frame in A."""
+    positions, errors = about_hips(bones)
+    error, magnitude = com_error(positions, masses, links, errors)
+    turn = frame_error(positions, errors) + frame_error(*about_hips(rest_bones)) + g("rotation")
     body = human_scale * norm(target)
-    solve = g("solve") * (body + lever) + turn * lever + c_h
-    target_error = human_scale * max(ulp32(abs(v)) for v in target) / 2
-    position = (solve + target_error) / hips_parent.scale
-    local = g("local") * (body + lever + norm(hips_parent.position)) / hips_parent.scale
-    output = max(ulp32(abs(v)) for v in hips_local) / 2
-    return position + local + output
+    total = (target_error + error + turn * magnitude + g("solve") * (body + magnitude)
+             + g("local") * (body + magnitude + norm(hips_parent.position)))
+    return total / hips_parent.scale

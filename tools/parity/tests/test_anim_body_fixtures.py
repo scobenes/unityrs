@@ -90,7 +90,7 @@ class CheckBodyTests(unittest.TestCase):
                 doc = body_doc(name, RUN)
                 built = clip_case(doc, body.BODY_INFO[name]["variant"])
                 settings = self.check(name, doc, built)
-                self.assertEqual(settings["animator_attributes"], list(range(7, 14)))
+                self.assertLessEqual(set(range(7, 14)), set(settings["animator_attributes"]))
                 self.assertEqual(settings["serialized"]["m_StartAtOrigin"], True)
 
     def test_refuses_a_wrong_case_row_or_topology(self):
@@ -152,6 +152,41 @@ class CheckBodyTests(unittest.TestCase):
         changed = copy.deepcopy(doc)
         changed["spec"]["evidence"]["editor"]["body_targets"] = [{}]
         self.assert_refused("known-vector targets", name, changed, built)
+
+
+    def test_a_variant_counts_only_with_its_built_distinguishing_slots(self):
+        self.assertEqual(body.CHAIN_VARIANT, "keep-o1-y1-xz1")
+        self.assertEqual(len({y for _, y, _ in body.MOTION_PATH}), len(body.MOTION_PATH))
+        self.assertTrue(all(y for _, y, _ in body.MOTION_PATH))
+        for name, attribute in (("body-clip-keep-o1-y1-xz1-motion", 1), ("body-clip-height-from-feet-knee-goals", 15),
+                                ("body-clip-height-from-feet-knee", None)):
+            doc = body_doc(name, RUN)
+            built = clip_case(doc, body.BODY_INFO[name]["variant"])
+            bindings = built["m_ClipBindingConstant"]["genericBindings"]
+            if attribute is None:
+                # Drop the left knee's stretch slot: the slot count no longer matches the bindings.
+                attribute = 42 + list(MUSCLES).index("Left Lower Leg Stretch")
+            lost = copy.deepcopy(built)
+            lost["m_ClipBindingConstant"]["genericBindings"] = [row for row in bindings if row["attribute"] != attribute]
+            self.assert_refused("built clip lost its", name, doc, lost)
+            # The same slot with another value at its middle key.
+            slot = [row["attribute"] for row in bindings].index(attribute)
+            changed = copy.deepcopy(built)
+            data = changed["m_MuscleClip"]["m_Clip"]["data"]["m_StreamedClip"]["data"]
+            cursor, frame = 0, 0
+            while data[cursor] != 0x7f800000:
+                count = data[cursor + 1]
+                for i in range(cursor + 2, cursor + 2 + 5 * count, 5):
+                    if data[i] == slot and frame == 1:
+                        data[i + 4] = int(replay.f32_bits(.75), 16)
+                cursor, frame = cursor + 2 + 5 * count, frame + 1
+            self.assert_refused("built clip lost its", name, doc, changed)
+        name = "body-clip-keep-o1-y1-xz1-motion"
+        doc = body_doc(name, RUN)
+        built = clip_case(doc, body.BODY_INFO[name]["variant"])
+        motion = next(row for row in doc["spec"]["evidence"]["editor"]["bindings"] if row["property"] == "MotionT.y")
+        motion["keys"][2]["value_f32"] = replay.f32_bits(0)
+        self.assert_refused("authored MotionT.x curve mismatch", name, doc, built)
 
 
 class BodyRunTests(unittest.TestCase):

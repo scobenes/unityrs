@@ -12,7 +12,7 @@ applied body target, and HumanTrait's bone table with the default masses.
 
 from math import isfinite
 
-from anim_fixture_contract import BODY, MUSCLES, SPINE, Fixture
+from anim_fixture_contract import BODY, MUSCLES, SPINE, Fixture, built_float_curves, compiled_curves
 from anim_reference import angle, euler, multiply
 
 # name: (base rig, omitted bones, mapped extras). F6 rigs are on the compact
@@ -89,13 +89,24 @@ def _clip_variants():
 
 
 CLIP_VARIANTS = _clip_variants()
-CHAIN_VARIANT = "keep-o0-y0-xz0"
+# F5 plays the all-original clip, so the residual body translation and tilt change through each chain.
+CHAIN_VARIANT = "keep-o1-y1-xz1"
+NEUTRAL_CLIP = CLIP_VARIANTS["keep-o0-y0-xz0"]
 BODY_TIMES = (0, .25, .5, .75, 1)
 BODY_PATH = ((0, 1, 0), (.08, .97, .1), (.2, 1.02, .12), (.26, .95, .25), (.3, 1, .3))
 BODY_TURN = ((0, 0, 0), (8, 25, -4), (12, 40, -6), (6, 15, 3), (10, 30, -5))
 START_OFFSET, START_YAW = (.6, 0, -.4), 50
 KNEE = {"Left Upper Leg Front-Back": (0, .5, .1), "Left Lower Leg Stretch": (0, -.7, -.1),
         "Right Upper Leg Front-Back": (0, .1, .5), "Right Lower Leg Stretch": (0, -.1, -.7)}
+MOTION_PATH = ((0, .04, 0), (.1, .07, .05), (.15, .02, .2), (.3, .09, .2), (.4, .05, .35))
+MOTION_YAW = (0, 10, 5, 20, 12)
+KNEE_TIMES = (0, .5, 1)
+FOOT_GOALS = {"LeftFoot": ((-.1, .05, 0), (-.1, .2, .05), (-.1, .08, .1)),
+              "RightFoot": ((.1, .05, 0), (.1, .1, .1), (.1, .25, .05))}
+# Built Animator attributes: MotionT/Q 0-6, RootT/Q 7-13, LeftFootT/Q 14-20, RightFootT/Q 21-27, muscles from 42.
+MOTION_ATTRIBUTES = dict(T=0, Q=3)
+GOAL_ATTRIBUTES = {"LeftFoot": 14, "RightFoot": 21}
+MUSCLE_ATTRIBUTE = 42
 MOTION_CURVES = tuple(f"MotionT.{a}" for a in "xyz") + tuple(f"MotionQ.{a}" for a in "xyzw")
 GOAL_CURVES = tuple(f"{foot}{kind}.{a}" for foot in ("LeftFoot", "RightFoot")
                     for kind, axes in (("T", "xyz"), ("Q", "xyzw")) for a in axes)
@@ -190,7 +201,7 @@ def _unit(q):
 def expected_case_row(name, replay):
     info = BODY_INFO[name]
     clip = CLIP_VARIANTS.get(info["variant"]) if info["kind"] == "clip" else None
-    clip = clip or CLIP_VARIANTS[CHAIN_VARIANT] | dict(keep=(False,) * 3)
+    clip = clip or NEUTRAL_CLIP
     return dict(kind=info["kind"], rig=info["rig"], variant=info["variant"], root=info["root"],
                 level=replay.f32_bits(clip["level"]), orientation_offset=replay.f32_bits(clip["orientation"]),
                 bake=list(clip["bake"]), keep=list(clip["keep"]), height_from_feet=clip["height_from_feet"],
@@ -319,13 +330,15 @@ def check_clip(name, info, editor, capture, clip, replay):
                 and angle(keyed, multiply(turn, euler(BODY_TURN[i], 4))) <= 1e-5
                 and all(value(f"Root{k}.x", i, "time_f32") == t for k in "TQ"),
                 f"authored body curve mismatch for {name}")
-    for muscle, values in KNEE.items():
-        keys = authored.get(muscle, {}).get("keys", [])
-        want = [replay.f32_bits(v) for v in values] if variant["knee"] else []
-        require([key["value_f32"] for key in keys] == want, f"authored knee bend mismatch for {name}")
-    for curves, flag in ((MOTION_CURVES, "motion"), (GOAL_CURVES, "goals")):
+    extras = distinguishing_curves(variant, [row["name"] for row in capture["humanoid"]["muscles"]])
+    for flag, curves in (("knee", KNEE), ("motion", MOTION_CURVES), ("goals", GOAL_CURVES)):
         require(all(bool(authored.get(curve, {}).get("keys")) == variant[flag] for curve in curves),
                 f"authored {flag} curves mismatch for {name}")
+    for group in extras:
+        require(all([replay.f32_from_bits(key["time_f32"]) for key in authored[prop]["keys"]] == list(times)
+                    for prop, _, times, _ in group)
+                and _matches(group, lambda prop, i, t: value(prop, i)),
+                f"authored {group[0][0]} curve mismatch for {name}")
     settings = capture["clip_settings"]
     flags = dict(zip(("loopBlendOrientation", "loopBlendPositionY", "loopBlendPositionXZ"), variant["bake"]))
     flags |= dict(zip(("keepOriginalOrientation", "keepOriginalPositionY", "keepOriginalPositionXZ"), variant["keep"]))
@@ -345,4 +358,67 @@ def check_clip(name, info, editor, capture, clip, replay):
     attributes = sorted({row.get("attribute") for row in bindings
                          if row.get("path") == 0 and row.get("customType") == 8
                          and row.get("typeID", row.get("classID")) == 95})
+    # A variant counts as covered only when the built clip keeps its distinguishing slots and values.
+    tracks = compiled_curves(clip, replay)
+    floats = built_float_curves(clip, "m_FloatCurves") | built_float_curves(clip, "m_EditorCurves")
+    for group in extras:
+        sampled = {prop: _built_track(tracks, floats, prop, attribute) for prop, attribute, _, _ in group}
+        require(all(sampled.values()) and _matches(group, lambda prop, i, t: sampled[prop](t)),
+                f"built clip lost its {group[0][0]} slot or values in {name}")
     return dict(serialized={key: muscle.get(key) for key in SERIALIZED_ROOT}, animator_attributes=attributes)
+
+
+def distinguishing_curves(variant, muscles):
+    """Groups of (property, built attribute, key times, values) a variant authors beyond the body:
+    each knee muscle, MotionT, MotionQ, and each foot goal's T and Q. A Q group compares by angle."""
+    groups = []
+    if variant["knee"]:
+        groups += [[(muscle, MUSCLE_ATTRIBUTE + muscles.index(muscle), KNEE_TIMES, values)]
+                   for muscle, values in KNEE.items()]
+
+    def vector(prefix, attribute, times, rows):
+        return [(f"{prefix}.{axis}", attribute + i, times, tuple(row[i] for row in rows)) for i, axis in enumerate("xyz")]
+
+    def rotation(prefix, attribute, times, rows):
+        return [(f"{prefix}.{axis}", attribute + i, times, tuple(row[i] for row in rows))
+                for i, axis in enumerate("xyzw")]
+
+    if variant["motion"]:
+        groups += [vector("MotionT", 0, BODY_TIMES, MOTION_PATH),
+                   rotation("MotionQ", 3, BODY_TIMES, [euler((0, yaw, 0), 4) for yaw in MOTION_YAW])]
+    if variant["goals"]:
+        for goal, path in FOOT_GOALS.items():
+            groups += [vector(goal + "T", GOAL_ATTRIBUTES[goal], KNEE_TIMES, path),
+                       rotation(goal + "Q", GOAL_ATTRIBUTES[goal] + 3, KNEE_TIMES, [(0, 0, 0, 1)] * len(KNEE_TIMES))]
+    return groups
+
+
+def _matches(group, sample):
+    """Every key of a group within 1e-5, a quaternion group by angle (either sign)."""
+    times = group[0][2]
+    if len(group) == 4:
+        return all(angle([sample(prop, i, t) for prop, _, _, _ in group], [values[i] for _, _, _, values in group])
+                   <= 1e-4 for i, t in enumerate(times))
+    return all(abs(sample(prop, i, t) - values[i]) <= 1e-5 for prop, _, _, values in group for i, t in enumerate(times))
+
+
+def _built_track(tracks, floats, prop, attribute):
+    """A function of time over a built Animator slot, compiled or explicit, or None if the clip lost it."""
+    track = tracks.get((0, 95, attribute, 8, False))
+    if track and track[0][1]:
+        entries = sorted(track[0][1], key=lambda entry: entry[0])
+
+        def compiled(t):
+            prior = [entry for entry in entries if entry[0] <= t + 1e-6]
+            if not prior:
+                return float("nan")
+            start, (c3, c2, c1, c0) = prior[-1]
+            d = t - start
+            return ((c3 * d + c2) * d + c1) * d + c0
+        return compiled
+    keys = floats.get(("", "Animator", prop), ([], None))[0]
+    if keys:
+        def explicit(t):
+            return next((key["value"] for key in keys if abs(key["time"] - t) <= 1e-6), float("nan"))
+        return explicit
+    return None

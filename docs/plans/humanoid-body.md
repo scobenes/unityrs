@@ -283,10 +283,12 @@ B2 reruns the check with its frozen bounds if they differ.
    `u_s ≤ τ_s / 2`. The other half of `τ_s` covers the model's own f32
    evaluation.
 
-On a fitted sample `u_s` is at least of the order of that sample's
-measurement tolerance, since `‖A_w A_w⁺‖_∞ ≥ 1`. The criterion can therefore
-pass only where `τ_s` exceeds twice that. B1's checkpoint reports this
-inequality first.
+`‖A_w A_w⁺‖_∞ ≥ 1` bounds the projector as a whole, not each of its rows,
+so a sample's own `τ_s` against its `ε` is no veto. The check compares
+`u_s` directly, per component of the hips translation, against half of
+`τ_s` (the split above). Each `ε` bounds the Euclidean norm of one sample's
+residual, so its three equations form one block, and `u_s` sums the
+2-norms of `J_s A_w⁺`'s blocks.
 
 **Free combinations.** A coefficient combination that fails the criterion
 stays free. B3 computes, for the target Avatar, whether the Avatar's geometry
