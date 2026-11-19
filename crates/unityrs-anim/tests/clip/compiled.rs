@@ -63,12 +63,8 @@ fn compiled_pointer_seed_and_integer_float_bits_are_distinct() {
             begin: 3.,
             bits: &[integer_bits, u32::MAX],
         },
-        constants: &[
-            12_f32.to_bits(),
-            4_f32.to_bits(),
-            5_f32.to_bits(),
-            6_f32.to_bits(),
-        ],
+        constants: &[12, 4, 5, 6].map(|x: u16| f32::from(x).to_bits()),
+        discrete_count: None,
     };
     let (clip, graph) = load(
         object(&[pointer, integer, material, transform(1)], storage),

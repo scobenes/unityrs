@@ -55,6 +55,7 @@ pub(crate) fn is_glb_skip(reason: &str) -> bool {
             | "no_playable_channels"
             | "invalid_streamed_frame"
             | "missing_streamed_key"
+            | "unverified_pre_first_key_seed"
             | "invalid_dense_grid"
             | "invalid_pptr_index"
             | "unsupported_controller_evaluation"

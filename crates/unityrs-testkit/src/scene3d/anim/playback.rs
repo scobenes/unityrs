@@ -141,6 +141,8 @@ pub struct Storage<'a> {
     pub words: &'a [u32],
     pub dense: Dense<'a>,
     pub constants: &'a [u32],
+    /// The 2022.3 split count of discrete streamed slots, omitted when `None`.
+    pub discrete_count: Option<u32>,
 }
 
 fn uints(items: &[u32]) -> V {
@@ -191,10 +193,17 @@ pub fn add_compiled(
                 "m_StreamedClip",
                 st(
                     "StreamedClip",
-                    vec![
+                    [
                         ("data", uints(storage.words)),
                         ("curveCount", V::UInt(storage.streamed_count)),
-                    ],
+                    ]
+                    .into_iter()
+                    .chain(
+                        storage
+                            .discrete_count
+                            .map(|count| ("discreteCurveCount", V::UInt(count))),
+                    )
+                    .collect(),
                 ),
             ),
             (
@@ -404,7 +413,7 @@ pub fn dense_replay() -> Object {
             Binding {
                 class: 137,
                 custom: 20,
-                attribute: 948_163_883,
+                attribute: 3_545_215_282,
                 ..Binding::default()
             },
         ],

@@ -17,8 +17,9 @@ use crate::{
 const PREFAB: &str = "assets/synthetic.prefab";
 const CLIP: &str = "assets/synthetic.anim";
 const CAB: &str = "CAB-synthetic";
-/// The IEEE CRC32 of `blendShape.bend`, as a generic morph binding stores it.
-const BEND_ATTRIBUTE: u32 = 2_753_195_566;
+/// The IEEE CRC32 of the bare channel name `bend`, as a built generic morph
+/// binding stores it.
+const BEND_ATTRIBUTE: u32 = 1_339_427_383;
 
 /// `anim_clip` cases: every animated scene, alone and in a bundle, as a
 /// scene (flags 0) and as a prefab sampled on the clip's own schedule with
@@ -272,6 +273,7 @@ fn clips() -> Vec<(&'static str, Object)> {
                 bits: &[0; 5],
             },
             constants: &[0; 3],
+            discrete_count: None,
         },
     );
     let mut out = vec![

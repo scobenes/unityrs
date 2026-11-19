@@ -11,8 +11,10 @@ use unityrs_testkit::ngui::Object;
 use unityrs_testkit::scene3d::{self as s, Layout, anim as a};
 
 // IEEE CRC32 from zlib over the literal UTF-8 names.
+// Built 2022.3 clips hash the bare name; AssetStudio hashes the property.
 const SMILE_NAME_HASH: u32 = 0xc34b_2c0b; // Smile
-const SMILE_ATTRIBUTE_HASH: u32 = 0xa7cb_48af; // blendShape.Smile
+const SMILE_PREFIXED_HASH: u32 = 0xa7cb_48af; // blendShape.Smile
+const FROWN_NAME_HASH: u32 = 0x5958_1d90; // Frown, which no channel here has
 
 fn fixture(meter: &std::sync::Arc<Meter>) -> (Graph, std::sync::Arc<SerializedFile>) {
     let env = Environment::new(EnvOptions::unitypy());
@@ -45,7 +47,7 @@ fn fixture(meter: &std::sync::Arc<Meter>) -> (Graph, std::sync::Arc<SerializedFi
                     class: 137,
                     custom: 20,
                     path: 3_583_462_788,
-                    attribute: SMILE_ATTRIBUTE_HASH,
+                    attribute: SMILE_NAME_HASH,
                     ..Default::default()
                 },
                 a::Binding {
@@ -192,7 +194,8 @@ fn morph_channels_are_bound_to_the_renderer_instance() {
     let path = PathQuery::Name("骨".as_bytes());
     for property in [
         MorphProperty::Attribute(b"blendShape.Smile"),
-        MorphProperty::Hash(SMILE_ATTRIBUTE_HASH),
+        MorphProperty::Hash(SMILE_NAME_HASH),
+        MorphProperty::Hash(SMILE_PREFIXED_HASH),
     ] {
         let target = paths
             .bind_morph(path, property, &[], &tables, &meter)
@@ -204,8 +207,18 @@ fn morph_channels_are_bound_to_the_renderer_instance() {
     }
     assert!(matches!(
         paths.bind_morph(
+            path,
+            MorphProperty::Hash(FROWN_NAME_HASH),
+            &[],
+            &tables,
+            &meter
+        ),
+        Err(AnimError::MissingChannel(4))
+    ));
+    assert!(matches!(
+        paths.bind_morph(
             PathQuery::Name(b"other"),
-            MorphProperty::Hash(SMILE_ATTRIBUTE_HASH),
+            MorphProperty::Hash(SMILE_NAME_HASH),
             &[],
             &tables,
             &meter
@@ -213,19 +226,13 @@ fn morph_channels_are_bound_to_the_renderer_instance() {
         Err(AnimError::FilteredTarget(5))
     ));
     assert!(matches!(
-        paths.bind_morph(
-            path,
-            MorphProperty::Hash(SMILE_ATTRIBUTE_HASH),
-            &[],
-            &[],
-            &meter
-        ),
+        paths.bind_morph(path, MorphProperty::Hash(SMILE_NAME_HASH), &[], &[], &meter),
         Err(AnimError::MissingAttachment(4))
     ));
     assert!(matches!(
         paths.bind_morph(
             PathQuery::Name(b"two"),
-            MorphProperty::Hash(SMILE_ATTRIBUTE_HASH),
+            MorphProperty::Hash(SMILE_NAME_HASH),
             &[],
             &tables,
             &meter
@@ -246,7 +253,7 @@ fn morph_channels_are_bound_to_the_renderer_instance() {
     assert!(matches!(
         paths.bind_morph(
             path,
-            MorphProperty::Hash(SMILE_ATTRIBUTE_HASH),
+            MorphProperty::Hash(SMILE_NAME_HASH),
             &[],
             &tables,
             &meter
@@ -256,6 +263,50 @@ fn morph_channels_are_bound_to_the_renderer_instance() {
     assert!(matches!(
         paths.bind_transform(path, TransformProperty::Euler, &[4], &meter),
         Err(AnimError::FilteredTarget(4))
+    ));
+}
+
+#[test]
+fn compiled_morph_hashes_accept_both_conventions_unless_ambiguous() {
+    let meter = Meter::unlimited();
+    let (graph, file) = fixture(&meter);
+    let paths = RigPaths::new(&graph, 0, &meter).unwrap();
+    let renderer = file.object(43).unwrap();
+    let channel = RendererChannel {
+        name: b"Smile",
+        hash: SMILE_NAME_HASH,
+        target_slot: 3,
+        frame: 7,
+        full_weight: 80.0,
+    };
+    let path = PathQuery::Name("骨".as_bytes());
+    // `blendShape.Smile` hashes, bare, to the prefixed hash of `Smile`.
+    let conventions = [
+        channel,
+        RendererChannel {
+            name: b"blendShape.Smile",
+            hash: SMILE_PREFIXED_HASH,
+            target_slot: 4,
+            ..channel
+        },
+    ];
+    let tables = [RendererChannels {
+        renderer: &renderer,
+        attachment: Attachment::Present(&conventions),
+    }];
+    assert!(matches!(
+        paths.bind_morph(
+            path,
+            MorphProperty::Hash(SMILE_PREFIXED_HASH),
+            &[],
+            &tables,
+            &meter
+        ),
+        Err(AnimError::AmbiguousChannel(4))
+    ));
+    assert!(matches!(
+        paths.bind_morph(path, MorphProperty::Hash(SMILE_NAME_HASH), &[], &tables, &meter),
+        Ok(BindingTarget::Morph { channel, .. }) if channel.target_slot == 3
     ));
 }
 
@@ -299,7 +350,7 @@ fn compiled_slots_bind_playable_targets_and_retain_metadata() {
     assert!(matches!(
         paths.bind_morph(
             path,
-            MorphProperty::Hash(SMILE_NAME_HASH),
+            MorphProperty::Hash(FROWN_NAME_HASH),
             &[],
             &table,
             &meter
