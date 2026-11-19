@@ -21,7 +21,7 @@ from anim_replay_complete import OPTIONAL_CASES, complete_folder  # noqa: E402
 
 EDITOR = Path(__file__).resolve().parents[2] / "fixtures" / "unity" / "Editor"
 # A run's body cases from before the range sweeps and their topology rigs.
-EARLIER = [name for name in body.BODY_CASES if name not in body.LATER_CASES[-1]]
+EARLIER = [name for name in body.BODY_CASES if name not in set().union(*body.LATER_CASES[2:])]
 
 
 class View:
@@ -38,13 +38,16 @@ def source(name):
 
 class BodyInventoryTests(unittest.TestCase):
     def test_cases_mirror_the_builder(self):
-        self.assertEqual(len(body.BODY_CASES), 115)
+        self.assertEqual(len(body.BODY_CASES), 118)
         kinds = [info["kind"] for info in body.BODY_INFO.values()]
-        self.assertEqual((kinds.count("probes"), kinds.count("targets"), kinds.count("clip")), (25, 8, 82))
+        self.assertEqual((kinds.count("probes"), kinds.count("targets"), kinds.count("clip")), (28, 8, 82))
         self.assertEqual(body.EXTRA_CASES, {"body-probes-tall-2"})
         self.assertEqual(body.TWIST_CASES, {"body-probes-twist-compact", "body-probes-twist-tall"})
         self.assertEqual(body.RANGE_CASES, {"body-probes-range-compact", "body-probes-range-tall",
                                             "body-probes-range-noncoplanar"})
+        self.assertEqual(body.BAND_CASES, {"body-probes-band-compact", "body-probes-band-tall",
+                                           "body-probes-band-noncoplanar"})
+        self.assertEqual(body.LATER_CASES[-1], body.BAND_CASES)
         self.assertLessEqual(set(body.LATER_RIGS), set(body.PROBE_RIGS))
         self.assertEqual(len(body.CLIP_VARIANTS), 39)
         self.assertLessEqual(body.BODY_CASES.keys(), OPTIONAL_CASES)
@@ -86,7 +89,17 @@ class BodyInventoryTests(unittest.TestCase):
         self.assertIn(f"const int RangePoints = {body.RANGE_POINTS};", builder)
         self.assertIn(f"const int SobolBits = {body.SOBOL_BITS};", builder)
         self.assertIn("int block = RangePoints / TwistTilts.Length;", builder)
-        self.assertIn("TwistTilts[k < RangePoints ? k / block : (k - RangePoints) % TwistTilts.Length]", builder)
+        self.assertIn("for (int k = 0; k < RangePoints; k++) tilts.Add(TwistTilts[k / block]);", builder)
+        self.assertIn("tilts.Add(TwistTilts[(k - 1) % TwistTilts.Length]);", builder)
+        # The band sweeps: their cases, scales and levels, the side bends under each tilt.
+        self.assertEqual(dict(re.findall(r'\("(body-probes-band-[a-z]+)", "([a-z]+)"\)', builder)), body.BAND_RIGS)
+        self.assertIn("const double BandLateral = 3.0 / 8, BandTwist = 1.0 / 32;", builder)
+        self.assertEqual((body.BAND_LATERAL, body.BAND_TWIST), (3 / 8, 1 / 32))
+        levels = re.search(r"BandLevels = \{ ([^}]*) \}", builder).group(1)
+        self.assertEqual(tuple(float(a) / float(b) for a, b in re.findall(r"([0-9.]+) / ([0-9.]+)", levels)), body.BAND_LEVELS)
+        self.assertIn("var scales = band ? new[] { 1, BandLateral, BandTwist } : new[] { 1.0, 1, 1 };", builder)
+        self.assertIn("for (int i = 1; i < bend.Length; i += 3) bend[i] = (float)(sign * level);", builder)
+        self.assertIn('sweep == "band" ? RangeSchedule(mapped, band: true)', builder)
         later = re.search(r"LaterRigs = \{ ([^}]*) \}", builder).group(1)
         self.assertEqual(tuple(re.findall(r'"([^"]+)"', later)), body.LATER_RIGS)
         self.assertIn("() => BuildBodyRig(build, report, rig, chain: false), !LaterRigs.Contains(rig.Name)))", builder)
@@ -237,6 +250,51 @@ class CheckBodyTests(unittest.TestCase):
     def assert_refused(self, message, name, doc, clip=None):
         with self.assertRaisesRegex(ValueError, message):
             self.check(name, doc, clip)
+
+    def test_band_sweeps_cross_the_lateral_band_with_tilts_and_yaw_gaps(self):
+        names = list(MUSCLES)
+        spine = [names.index(muscle) for muscle in body.SPINE]
+        self.assertEqual(set(body.BAND_RIGS.values()), set(body.RANGE_RIGS.values()))
+        for name, rig in body.BAND_RIGS.items():
+            info = body.BODY_INFO[name]
+            self.assertEqual((info["kind"], info["variant"], body.BODY_CASES[name].bundle),
+                             ("probes", "band", name.replace("probes-", "")))
+            groups = [[names.index(muscle) for muscle in group] for bone, group in body.PROBE_GROUPS
+                      if bone in body.RANGE_BONES and bone in body.rig_bones(rig)]
+            points = body.probe_schedule(rig, names, False, body.schedule_name(name))
+            self.assertEqual(len(points), body.RANGE_POINTS + 40 + 3)
+            self.assertLessEqual(len(points), 300)
+            times = [t for t, _ in points]
+            self.assertEqual(times, sorted(set(times)))
+            self.assertEqual({t: [vector[i] for i in spine] for t, vector in points if t in (0, .5, 1)},
+                             {t: list(v) for t, v in body.ANCHORS.items()})
+            requests = body.body_requests(name, len(points))
+            self.assertEqual([tilt for (t, _), (_, tilt) in zip(points, requests) if t in (0, .5, 1)], [(0, 0, 0)] * 3)
+            pairs = [(vector, tilt) for (t, vector), (_, tilt) in zip(points, requests) if t not in (0, .5, 1)]
+            moved = {i for group in groups for i in group}
+            for vector, _ in pairs:
+                self.assertTrue(all(v == 0 for i, v in enumerate(vector) if i not in moved))
+                for group in groups:
+                    for k, limit in enumerate((1, body.BAND_LATERAL, body.BAND_TWIST)):
+                        value = vector[group[k]]
+                        self.assertTrue(abs(value) <= limit and replay.f32_from_bits(replay.f32_bits(value)) == value)
+            sobol, bends = pairs[:body.RANGE_POINTS], pairs[body.RANGE_POINTS:]
+            self.assertEqual([tilt for _, tilt in sobol], body.range_tilts()[:body.RANGE_POINTS])
+            # Every 1/32 of the band past the validated domain holds a sample's largest Left-Right, under every tilt.
+            for tilt in body.TWIST_TILTS:
+                lateral = {int(max(abs(vector[group[1]]) for group in groups) * 32) for vector, t in sobol if t == tilt}
+                self.assertLessEqual(set(range(4, 12)), lateral, (name, tilt))
+            # The yaw gaps: every bone's twist reaches both signs past half its range.
+            for group in groups:
+                self.assertTrue(min(v[group[2]] for v, _ in sobol) < -body.BAND_TWIST / 2 < 0
+                                < body.BAND_TWIST / 2 < max(v[group[2]] for v, _ in sobol))
+            # The side bends: every level of either sign, all bones alike, nothing else, under each tilt.
+            self.assertEqual(sorted((vector[groups[0][1]], tilt) for vector, tilt in bends),
+                             sorted((sign * level, tilt) for level in body.BAND_LEVELS for sign in (1, -1)
+                                    for tilt in body.TWIST_TILTS))
+            for vector, _ in bends:
+                self.assertEqual({vector[group[1]] for group in groups}, {vector[groups[0][1]]})
+                self.assertTrue(all(vector[group[k]] == 0 for group in groups for k in (0, 2)))
 
     def test_accepts_each_kind(self):
         for name in ("body-probes-compact", "body-probes-no-chest", "body-targets-tall-offset",
@@ -535,16 +593,25 @@ class BodyRunTests(unittest.TestCase):
 
     def test_a_run_before_the_range_sweeps_completes(self):
         # A run with the twist sweeps and none of the range sweeps or their topology rigs is from between them.
-        later = body.LATER_CASES[-1]
+        later = body.LATER_CASES[2]
         self.assertEqual(later, body.RANGE_CASES | {"body-probes-" + rig for rig in body.LATER_RIGS})
-        result = self.run_with([name for name in body.BODY_CASES if name not in later])
+        result = self.run_with([name for name in EARLIER if name not in later])
         self.assertEqual(result.returncode, 0, result.stderr)
-        result = self.run_with([name for name in body.BODY_CASES if name != "body-probes-no-upper-chest-toes"])
+        result = self.run_with([name for name in EARLIER + sorted(later) if name != "body-probes-no-upper-chest-toes"])
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("missing run.json case: body-probes-no-upper-chest-toes", result.stderr)
 
+    def test_a_run_before_the_band_sweeps_lists_none_of_them(self):
+        # The band sweeps are a generation of their own: a run without them is from before them, and one holding
+        # a single band sweep lacks the others.
+        result = self.run_with([name for name in body.BODY_CASES if name not in body.BAND_CASES])
+        self.assertNotIn("body-probes-band", result.stderr)
+        result = self.run_with([name for name in body.BODY_CASES if name != "body-probes-band-tall"])
+        self.assertIn("missing run.json case: body-probes-band-tall", result.stderr)
+
     def test_an_extra_probe_case_is_required_once_its_rig_records(self):
-        for name in (sorted(body.EXTRA_CASES)[0], "body-probes-twist-compact", "body-probes-range-noncoplanar"):
+        for name in (sorted(body.EXTRA_CASES)[0], "body-probes-twist-compact", "body-probes-range-noncoplanar",
+                     "body-probes-band-tall"):
             primary = body.primary_probes(body.BODY_INFO[name]["rig"])
             result = self.run_with(body.BODY_CASES, {primary: "recorded"})
             self.assertEqual(result.returncode, 1, result.stdout)

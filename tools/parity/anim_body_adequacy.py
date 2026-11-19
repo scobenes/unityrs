@@ -35,14 +35,17 @@ read from its `.pending.json`. The checkpoint, with B1's own tolerances
 4. The topology coverage: every F1 and F6 training rig recorded by its own
    probe case, with read-back rows and the rig's mapped bones.
 5. The extra probe plan: every scheduled sample of every extra probe case
-   (anim_fixture_body.EXTRA_PROBES) and range sweep (RANGE_RIGS) recorded
-   with read-back, or the missing ones named. The range sweeps are fitted.
+   (anim_fixture_body.EXTRA_PROBES), range sweep (RANGE_RIGS) and band
+   sweep (BAND_RIGS) recorded with read-back, or the missing ones named.
+   The range sweeps are fitted. The band sweeps are evaluated and never
+   fitted: they validate the frame's lateral domain for B2 (E2, E3a), and
+   their samples' margins count.
 
 The twist sweeps (anim_fixture_body.TWIST_RIGS) take no part: they measure
 2.2's frame against the shoulder-hip twist for B2, not the centre of mass.
 A run with or without them gives the same checkpoint.
 
-With --design-only, each extra probe case or range sweep the run lacks is
+With --design-only, each extra probe case, range or band sweep the run lacks is
 predicted from its rig's recorded geometry (anim_body_design.py), with conservative
 epsilon and E_unity,s over an envelope of the rig's recorded hips, and the
 same checkpoint runs.
@@ -71,8 +74,8 @@ from anim_body_tolerance import (BODY_SLOTS, U32, U64, body_frame, body_states, 
 from anim_body_design import conservative, planned  # noqa: E402
 from anim_body_model import Refused, topology_scope  # noqa: E402
 from anim_reference import gamma  # noqa: E402
-from anim_fixture_body import (BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, RANGE_CASES, TWIST_CASES,  # noqa: E402
-                               probe_schedule, rig_bones)
+from anim_fixture_body import (BAND_CASES, BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, RANGE_CASES,  # noqa: E402
+                               TWIST_CASES, probe_schedule, rig_bones)
 
 CONDITION_LIMIT = 1e6
 
@@ -235,9 +238,10 @@ def samples(name, doc, parents, masses, skeleton=None, translations=None):
                    jacobian=jacobian, unity=unity, evaluation=evaluation, fit=False, epsilon=epsilon,
                    edges=None if links == expected else f"recorded {links} but HumanTrait gives {expected}")
         row["refused"] = scope_refusal(mapped & BODY_SLOTS, masses)
-        # A twist sweep measures the frame (E2) and is evaluated (E3), never fitted.
+        # A twist sweep measures the frame (E2), and a band sweep validates its lateral domain (E2, E3): both
+        # are evaluated, never fitted.
         row["fit"] = (epsilon is not None and info is not None and info["rig"] != HOLDOUT
-                      and info["variant"] != "twist" and row["refused"] is None)
+                      and info["variant"] not in ("twist", "band") and row["refused"] is None)
         # What B2's checks (anim_body_check.py) evaluate the model and its bounds from.
         row["state"] = dict(bones=bones, local=local, rest_local=rest_local, chain=chain, weights=weights,
                             links=links, scale=scale, target=target, body_rotation=body_rotation,
@@ -403,10 +407,10 @@ def coverage_of(documents):
 
 
 def missing_planned(documents):
-    """Every scheduled sample of the extra probe plan and the range sweeps that has no recording with
+    """Every scheduled sample of the extra probe plan and the range and band sweeps that has no recording with
     read-back, by name."""
     missing = []
-    for name in sorted(EXTRA_CASES | RANGE_CASES):
+    for name in sorted(EXTRA_CASES | RANGE_CASES | BAND_CASES):
         doc = documents.get(name)
         if doc is None:
             missing.append(f"{name}: not recorded")

@@ -377,20 +377,22 @@ class SmokeCauses(unittest.TestCase):
 
 class FitCheck(unittest.TestCase):
     """E1 on a design that reaches every training rig's edges. The synthetic poses are a stand-in for Unity's
-    muscle map, so the range sweeps, whose adequacy design-only predicts from the recorded probes, are left out
-    of this design and of its plan."""
+    muscle map, so the range and band sweeps, whose adequacy design-only predicts from the recorded probes, are
+    left out of this design and of its plan."""
 
     @classmethod
     def setUpClass(cls):
         names = [name for name, info in body.BODY_INFO.items()
-                 if info["kind"] == "probes" and info["rig"] != body.HOLDOUT and name not in body.RANGE_CASES]
+                 if info["kind"] == "probes" and info["rig"] != body.HOLDOUT
+                 and name not in body.RANGE_CASES | body.BAND_CASES]
         full = {"body-probes-compact", *body.EXTRA_CASES}
         cls.docs = {name: recording(name, samples=None if name in full else 10) for name in names}
         cls.docs["body-targets-tall-offset"] = recording("body-targets-tall-offset")
         cls.docs["body-chain-armature-clip"] = recording("body-chain-armature-clip")
 
     def e1(self, docs):
-        with mock.patch.object(adequacy, "RANGE_CASES", frozenset()):
+        with mock.patch.object(adequacy, "RANGE_CASES", frozenset()), \
+                mock.patch.object(adequacy, "BAND_CASES", frozenset()):
             return checked("e1", scratch.for_case(self), docs)
 
     def test_e1_passes_and_recovers_the_coefficients(self):

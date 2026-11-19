@@ -117,6 +117,15 @@ static partial class UnityrsFixtureBuilder
     };
     const int RangePoints = 256;
     static readonly string[] RangeBones = { "Spine", "Chest", "UpperChest" };
+    // Lateral band sweeps (anim_fixture_body.py BAND_RIGS): the range sweeps' Sobol points with Front-Back over
+    // [-1, 1], Left-Right over +-BandLateral and Twist over +-BandTwist, then the pure side bends, every mapped
+    // spine bone at one BandLevels Left-Right value of either sign under each tilt. The tilts are the range sweeps'.
+    static readonly (string name, string rig)[] BandProbes = {
+        ("body-probes-band-compact", "compact"), ("body-probes-band-tall", "tall"),
+        ("body-probes-band-noncoplanar", "noncoplanar"),
+    };
+    const double BandLateral = 3.0 / 8, BandTwist = 1.0 / 32;
+    static readonly double[] BandLevels = { 1.0 / 8, 3.0 / 16, 1.0 / 4, 5.0 / 16, 3.0 / 8 };
     // (degree s, coefficients a, initial m_1..m_s) of dimensions 2-9.
     static readonly (int degree, int a, int[] m)[] SobolDirections = {
         (1, 0, new[] { 1 }), (2, 1, new[] { 1, 3 }), (3, 1, new[] { 1, 3, 1 }), (3, 2, new[] { 1, 1, 1 }),
@@ -210,7 +219,7 @@ static partial class UnityrsFixtureBuilder
 
     static IEnumerable<string> BodyCases() => ProbeRigs.SelectMany(rig => RigCases(rig, false))
         .Concat(ExtraProbes.Select(extra => extra.name)).Concat(TwistProbes.Select(twist => twist.name))
-        .Concat(RangeProbes.Select(range => range.name))
+        .Concat(RangeProbes.Select(range => range.name)).Concat(BandProbes.Select(band => band.name))
         .Concat(ClipCases()).Concat(ChainRigs.SelectMany(rig => RigCases(rig, true)));
 
     // Each body case fails until a step prepares it, so none can vanish unseen.
@@ -239,6 +248,11 @@ static partial class UnityrsFixtureBuilder
                 () => BuildBodyRig(build, report, ProbeRigs.Single(rig => rig.Name == range.rig), false,
                     (range.name, range.rig, null), sweep: "range"),
                 !builtRigs.Contains(range.rig));
+        foreach (var band in BandProbes)
+            report.Prepare(build, "Prepare " + band.name, new[] { band.name },
+                () => BuildBodyRig(build, report, ProbeRigs.Single(rig => rig.Name == band.rig), false,
+                    (band.name, band.rig, null), sweep: "band"),
+                !builtRigs.Contains(band.rig));
         foreach (var rig in ChainRigs)
             report.Prepare(build, "Prepare body-chain-" + rig.Name, RigCases(rig, true).ToArray(),
                 () => BuildBodyRig(build, report, rig, chain: true), true);
@@ -458,19 +472,40 @@ static partial class UnityrsFixtureBuilder
     }
 
     // A range sweep: the Sobol points over the rig's mapped spine bones, then the joint corners but the first.
-    static BodyProbe[] RangeSchedule(IEnumerable<string> mapped)
+    // A band sweep: the scaled Sobol points, then the side bends under each tilt.
+    static BodyProbe[] RangeSchedule(IEnumerable<string> mapped, bool band = false)
     {
         var names = HumanTrait.MuscleName;
         var present = new HashSet<string>(mapped, StringComparer.Ordinal);
         var groups = ProbeGroups.Where(group => RangeBones.Contains(group[0]) && present.Contains(group[0]))
             .Select(group => group.Skip(1).Select(muscle => MuscleIndex(names, muscle)).ToArray()).ToList();
+        var scales = band ? new[] { 1, BandLateral, BandTwist } : new[] { 1.0, 1, 1 };
         var points = Sobol(RangePoints, 3 * groups.Count)
-            .Select(point => point.Select(x => (float)(2 * x - 1)).ToArray()).ToList();
-        for (int k = 1; k < 8; k++)
+            .Select(point => point.Select((x, d) => (float)((2 * x - 1) * scales[d % 3])).ToArray()).ToList();
+        var tilts = new List<Vector3>();
+        int block = RangePoints / TwistTilts.Length;
+        for (int k = 0; k < RangePoints; k++) tilts.Add(TwistTilts[k / block]);
+        if (band)
         {
-            var corner = new float[3 * groups.Count];
-            for (int i = 0; i < corner.Length; i++) corner[i] = ((k >> (2 - i % 3)) & 1) != 0 ? 1f : -1f;
-            points.Add(corner);
+            foreach (var level in BandLevels)
+                foreach (var sign in new[] { 1, -1 })
+                    foreach (var tilt in TwistTilts)
+                    {
+                        var bend = new float[3 * groups.Count];
+                        for (int i = 1; i < bend.Length; i += 3) bend[i] = (float)(sign * level);
+                        points.Add(bend);
+                        tilts.Add(tilt);
+                    }
+        }
+        else
+        {
+            for (int k = 1; k < 8; k++)
+            {
+                var corner = new float[3 * groups.Count];
+                for (int i = 0; i < corner.Length; i++) corner[i] = ((k >> (2 - i % 3)) & 1) != 0 ? 1f : -1f;
+                points.Add(corner);
+                tilts.Add(TwistTilts[(k - 1) % TwistTilts.Length]);
+            }
         }
         var vectors = points.Select(point => {
             var vector = new float[names.Length];
@@ -478,14 +513,12 @@ static partial class UnityrsFixtureBuilder
                 for (int k = 0; k < 3; k++) vector[groups[g][k]] = point[3 * g + k];
             return vector;
         }).ToList();
-        int block = RangePoints / TwistTilts.Length;
         var probes = Scheduled(vectors, false);
         foreach (var probe in probes)
         {
             int k = vectors.IndexOf(probe.Muscles);
             probe.Targeted = true;
-            probe.Tilt = k < 0 ? Vector3.zero
-                : TwistTilts[k < RangePoints ? k / block : (k - RangePoints) % TwistTilts.Length];
+            probe.Tilt = k < 0 ? Vector3.zero : tilts[k];
         }
         return probes;
     }
@@ -605,11 +638,12 @@ static partial class UnityrsFixtureBuilder
             }
             if (extra.name != null)
             {
-                // A null plan is a twist or range sweep.
+                // A null plan is a twist, range or band sweep.
                 var extraReplay = Replay(extra.name, prefab, clipPaths[0], "probes", "identity");
                 extraReplay.Body.Variant = extra.plan == null ? sweep : "extra";
                 AddProbeReplay(build, extraReplay, extra.plan != null ? ExtraSchedule(mapped, extra.plan)
-                    : sweep == "range" ? RangeSchedule(mapped) : TwistSchedule());
+                    : sweep == "range" ? RangeSchedule(mapped) : sweep == "band" ? RangeSchedule(mapped, band: true)
+                    : TwistSchedule());
                 return;
             }
             AddProbeReplay(build, Replay("body-probes-" + rig.Name, prefab, clipPaths[0], "probes", "identity"),

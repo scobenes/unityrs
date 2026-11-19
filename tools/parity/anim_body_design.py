@@ -1,4 +1,4 @@
-"""B1's predictive adequacy: planned extra probe cases and range sweeps from a rig's recorded geometry.
+"""B1's predictive adequacy: planned extra probe cases and range and band sweeps from a rig's recorded geometry.
 
 An extra probe vector (anim_fixture_body.EXTRA_PROBES) gives each bone the
 muscles of one of the rig's own recorded probe vectors and zero elsewhere.
@@ -20,7 +20,7 @@ less, so it can only raise u_s elsewhere; a smaller E_unity,s lowers the
 pose's own bound. The margin is then a conservative prediction. A
 recorded run of the planned case stays the checkpoint of record.
 
-A range sweep (anim_fixture_body.RANGE_RIGS) sets each mapped spine bone's
+A range or band sweep (anim_fixture_body.RANGE_RIGS, BAND_RIGS) sets each mapped spine bone's
 three muscles to values its probe case never recorded, so its spine bones'
 local rotations come from Unity's muscle map instead, rebuilt from the probe
 case alone: a bone's local rotation is q_0 S(t_y, t_z) T(t_x), q_0 its
@@ -165,7 +165,7 @@ def predict(name, source, hips=None):
     hips_transform, readback = hips or (neutral["pose"]["transforms"][bones["Hips"]], editor["body_samples"][at])
     probed = {i for muscles in groups.values() for i in muscles}
     plan = probe_schedule(info["rig"], names, False, name)
-    spine = muscle_map(capture, bones) if info["variant"] == "range" else {}
+    spine = muscle_map(capture, bones) if info["variant"] in ("range", "band") else {}
     scale = replay.f32_from_bits(capture["humanoid"]["human_scale"])
     turned = [tilted(tilt, hips_transform, readback, editor["body_targets"][at], scale)
               for _, tilt in body_requests(name, len(plan))]
@@ -199,12 +199,12 @@ def predict(name, source, hips=None):
 
 
 def planned(documents):
-    """Every extra probe case or range sweep not recorded in `documents` whose rig's probe case is, every
+    """Every extra probe case or range or band sweep not recorded in `documents` whose rig's probe case is, every
     scheduled sample with read-back: one predicted recording per envelope pair. Any other stays unrecorded,
     and the checkpoint names it missing."""
     out = {}
     for name, info in BODY_INFO.items():
-        if info["variant"] in ("extra", "range") and name not in documents:
+        if info["variant"] in ("extra", "range", "band") and name not in documents:
             source = documents.get(primary_probes(info["rig"]))
             if source is None or not whole(source, info["rig"]):
                 continue
