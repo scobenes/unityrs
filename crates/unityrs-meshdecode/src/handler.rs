@@ -63,8 +63,8 @@ use crate::vertex::{Attributes, Streams, VertexData, field, get_streams, read_ve
 use crate::{ProcessedOwned, Version};
 use unityrs_core::Value;
 use unityrs_core::objmode::{
-    BONE_WEIGHTS, CHANNEL_INFO, Ints, List, MESH, Obj, SPRITE, SPRITE_RENDER_DATA, STREAM_INFO,
-    STREAMING_INFO, VERTEX_DATA,
+    BONE_WEIGHTS, CHANNEL_INFO, Ints, List, MESH, MESH_6000, Obj, SPRITE, SPRITE_RENDER_DATA,
+    STREAM_INFO, STREAMING_INFO, VERTEX_DATA,
 };
 
 /// Where a Mesh's `m_StreamData` bytes come from: UnityPy's
@@ -140,7 +140,8 @@ impl<'a> Source<'a> {
         }
     }
 
-    /// The object the handler reads, its reads counted on `meter`.
+    /// The object the handler reads, its reads counted on `meter`, as
+    /// UnityPy 1.25.2's object mode builds it.
     fn root<'m>(&self, meter: &'m Meter) -> Result<Obj<'m>, MeshError>
     where
         'a: 'm,
@@ -151,6 +152,26 @@ impl<'a> Source<'a> {
                 .class("m_RD", &SPRITE_RENDER_DATA)?
                 .ok_or(MeshError::NoAttribute("m_RD")),
         }
+    }
+
+    /// `root`, except that from Unity 6000 a Mesh 1.25.2 builds as an
+    /// `UnknownObject` is built again as UnityPy git 417d595 builds it,
+    /// without a required `m_MeshUsageFlags` ([`MESH_6000`], Tier C). Called
+    /// after `m_VertexData`'s assertion, so the version is compared where
+    /// `process` first compares it.
+    fn upgrade<'m>(
+        &self,
+        obj: Obj<'m>,
+        version: Version,
+        meter: &'m Meter,
+    ) -> Result<Obj<'m>, MeshError>
+    where
+        'a: 'm,
+    {
+        if self.kind == Kind::Mesh && !obj.built() && version.at_least(&[6000])? {
+            return Ok(Obj::root(self.parsed, &MESH_6000, meter)?);
+        }
+        Ok(obj)
     }
 
     /// `isinstance(mesh, Mesh)` (`helpers/MeshHelper.py:143`, `:158`).
@@ -211,6 +232,7 @@ impl<'a> MeshHandler<'a> {
         let vd = mesh
             .class("m_VertexData", &VERTEX_DATA)?
             .ok_or(MeshError::Assertion(""))?;
+        let mesh = self.src.upgrade(mesh, version, meter)?;
         let (channels, streams) = channels_and_streams(version, &vd, meter)?;
 
         // UnityPy MeshHelper.py:142-155
@@ -648,7 +670,9 @@ impl Processed<'_> {
     /// its first wrote into a strip's `SubMesh`.
     pub fn get_triangles(&self, meter: &Arc<Meter>) -> Result<Triangles, MeshError> {
         get_triangles(
-            &self.src.root(meter)?,
+            &self
+                .src
+                .upgrade(self.src.root(meter)?, self.version, meter)?,
             self.version,
             self.use_16bit,
             self.index_buffer.as_ref().map(IndexBuffer::as_slice),
