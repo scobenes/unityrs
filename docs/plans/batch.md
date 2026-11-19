@@ -95,20 +95,19 @@ the directory and every partial claim remain the caller's to clean up. Successfu
 `ms` is sampled at the final seal boundary and preserved in the summary/end;
 failed/stopped attempts sample after unwinding and audit. No call commits.
 
-**Preparation and peeks (provisional until B7).** `phase1::prepare`
+**Preparation and peeks.** `phase1::prepare`
 constructs compiled templates, index tables, atomic peek words, received-fact
 slots, clear uncommitted bits, queue capacities and controller walk/active
 scratch inside `alloc::measured`, including for `--check`. It retains no input's
-whole view and duplicates no bundle-id/path table. All retained structures are
-measured; 5.3's additional 256 bytes per bundle remain conservative until B12.
+whole view and duplicates no bundle-id/path table. Phase 1 measures all retained structures (5.3).
 `peek::run_peek` uses an explicit Input-only budget (other reservations,
 zero-byte requests included, are refused), writes an individually owned peek
 file only for marked rows, drops charged locals and audits before publishing
 its word. Run words encode pending, all-clear N, disk N or a fixed failure code
 explicitly; received figures remain separate. Both the run-word `PeekBits` and
-B4's `PeekTable` use one checked disk loader. The provisional `m_end` is 8 KiB,
-with a structural lower bound for the actual end union plus 256 bytes of
-channel overhead; B12 owns its measurement.
+B4's `PeekTable` use one checked disk loader. Calibration measures `m_end` with
+full channels at multiple capacities and applies a structural floor of the
+actual end union plus 256 bytes of channel overhead.
 
 **Cost.** This is what sealing pays for D.
 - **Memory.** Each slot is reserved whole for the attempt's life, used or not. Parallelism is the largest number of slots that fit `I`, at most `threads`. For the corpus example (5.6), 8 slots of `M` = `D` = 256 MiB need `I` = 4 GiB.
@@ -921,8 +920,9 @@ unless a build with `test-hooks` explicitly sets `UNITYRS_TEST_STORE=1`.
 tags, LIST degradation, verification mismatches, stops and head supersession.
 Its scale scene kills loose and archive multipart uploads, then resumes local
 and URL sources, with URL cases also using the process host's two runtimes
-under `test-hooks`. B12c still owns the final combined memory calibration;
-owner-store consistency and publish timing remain outside these fake scenes.
+under `test-hooks`. The [memory calibration](../memory/README.md) includes
+store and stop scenes. Owner-store consistency and publish timing remain
+outside these fake scenes.
 
 ### 2.10 Why D holds
 
@@ -1931,18 +1931,22 @@ to the sink, so the disk ledger stays `6S + 2A`, including outcomes.
 
 ### 5.3 The constant terms
 
-The constants compiled in (`c_base`, `m_thread`, `m_pool`, `m_dispatch`, `m_end`, `c_env`) are **provisional** estimates until `extract.md` X12 measures them, and the bound built from them with them (`BATCH_SPEC.md` section 10's `memory_bound`). The calibration is certified for 4 KiB pages only (`heap_cost` rounds a mapped chunk to a 4 KiB page): on another page size `--check` and a run label the bound uncertified on stderr and go on (`BATCH_SPEC.md` section 10).
+The compiled constants (`c_base`, `m_thread`, `m_pool`, `m_dispatch`, `m_end`, `c_env`) come
+from [native calibration](../memory/README.md). Bootstrap builds use provisional
+estimates. Calibration is certified for 4 KiB pages, the unit `heap_cost` uses
+to round a mapped chunk. On another or unknown page size, `--check` and normal
+runs label the bound uncertified on stderr (`BATCH_SPEC.md` section 10).
 
-Integrated directory/HTTP/store resource inventory, within the existing floors (no
-term raised); [the ownership ledger](../memory/resources.md) records the owning
-modules, retained/frozen owners and named slopes:
+The integrated directory/HTTP/store resource inventory covers retained and
+frozen owners and the terms that grow with the spec.
+See the [ownership ledger](../memory/resources.md).
 
 | resource | lifetime inventory and allowance |
 |---|---|
 | descriptors | self-pipe 2; BOOTTIME timerfd 1; controller/finisher/end wakes 6 (each current `Wake` owns a duplicate writer fd); two Tokio reactors at 2 each on Linux; total 13, within the fixed `RLIMIT_NOFILE` allowance of 72. Readiness registrations add no fd. The 514 reset entries add no reserved or duplicated socket fd. Connections and resolver files stay within `16 × download_concurrency`, workers within `4 × threads` |
 | threads | main, controller, lifecycle, progress, finisher plus `threads` workers and `2 × (download_concurrency + 1)` pool threads: `threads + 7 + 2 × download_concurrency`, the existing host floor. Under `stop_on_stdin_eof` the stdin watch is one thread more (the round-1 ruling moved its read off the lifecycle thread); the `RLIMIT_NPROC` floor counts it (`start::host::Requirements`). The early writer precedes these spawns. Both new pools use explicit 2 MiB stacks and one shared one-second startup count |
 | fixed memory | 514 atomic socket entries (4,112 bytes plus flags/counters), stop/timing atomics, the stdin watch's 4 KiB read and `PIPE_BUF` line buffers, and startup registration/count bookkeeping belong to `C_base`; each const-TLS panic slot fits the existing 2 KiB allowance. Secret references belong to measured `C_spec`/`C_hdr`. No table grows per request or per output |
-| runtime/finisher | controller runtime bookkeeping remains `C_base`; the finisher runtime and working set remain `C_fin = 24 MiB`. Prewarm tasks and channels are prepared before mutation. B12 still measures the complete integrated constants; B9a does not claim a final squeeze measurement |
+| runtime/finisher | controller runtime bookkeeping remains `C_base`; the finisher runtime and working set remain `C_fin = 24 MiB`. Prewarm tasks and channels are prepared before mutation. Integrated calibration includes the initialized runtimes and both pools |
 
 The testkit's scene processes, FIFO readers and pipe drains are test-only and
 outside the engine's resource inventory. A scene owns fresh scratch, continuous
@@ -1972,9 +1976,9 @@ through finishing, every decoded texture format, the whole-process golden
 export matrix and independent count-growth checks with multiple sort generations.
 `tools/memory/regenerate.py` validates aggregate-only records and deterministically
 selects measured coefficients; its `--check` compares without writing. See
-[the schema and procedure](../memory/README.md). None of these gates freezes
-the provisional constants: the full native calibration matrix, matching
-whole-run aggregate and independent candidate verification remain pending.
+[the schema and procedure](../memory/README.md). The integrated gates check
+the compiled selection, and the collector records designated raw observations
+for the native calibration matrix.
 
 `tests/store_memory_gate.rs` completes the store process scenes (spec 1.6,
 6.1, 7.2 and 7.4): signed maximum-length credentials, paginated LIST,
@@ -1995,8 +1999,9 @@ eight synthetic axes and a matching native whole-run profile/sink matrix on
 at least one architecture;
 emulation, modified source, incomplete coverage, mismatched provenance and
 overflow are refused. `bound/measured.rs` is generated explicitly and supplies
-one `SELECTED` value to execution, `--check` and independent gates. Its current
-bootstrap selects the estimates; no generation occurs during a build.
+one `SELECTED` value to execution, `--check` and independent gates. The checked-in
+selection uses measured constants, and bootstrap generation can select the
+estimates. Builds use the generated file as checked in.
 
 Normal-run preflight counts Linux's initial argument/environment strings and
 their pointer slots by streaming procfs through fixed stack storage. Unavailable
@@ -2012,7 +2017,7 @@ that cap and reads neither environment values nor procfs for this term.
 | `C_parse` | `max(0, p - C_spec - I - C_fin)` | `p`, phase 1's peak live bytes on the main thread above their count at step 2's start (the main thread resets its peak to its live count at step 2's start; `p` is that peak less that count, 2.7), which 2.7's count records from `JOB.json`'s read to validation's end: the raw bytes, the parser's scratch and its structures' growth among them, measured. Phase 1 runs before any attempt, any phase-budget charge and the finisher, so of `p` above what it leaves (`C_spec`) only what passes `I + C_fin` adds |
 | `C_hdr` | `heap_cost`, summed, of the distinct header values, the name-to-value table, the masker's entries, `4 x download_concurrency` copies of the largest bundle's header block, and, with an object store sink, 6 of the credentials at their caps (16.25 KiB; a directory sink reads none), and, with a version 2 spec's `unitycn_key`, its variable's value at the same 16 KiB cap | each `{"env": NAME}` header variable is read once into one shared `Bytes`-backed value, at most 16 KiB (`BATCH_SPEC.md` 1.2), however many bundles name it, the masker sharing it (2.11 step 2), and step 6's table maps each variable's name to it; each stage in flight serializes its bundle's headers, names and resolved values, into its request's `HeaderMap` and hyper's encoded head, whose growth peaks at 3 copies (2.7's `realloc` rule); and an object store sink's credentials, at their caps (`BATCH_SPEC.md` 1.6), once for each of their six holders: the engine's read, the controller's three store clients, the finisher's, and the masker. The values, the table, the masker's entries and the blocks are known at the main thread's step 6 (2.11), before the bound is checked |
 | `C_fin` | 24 MiB | the finisher's 16 MiB chunk buffer, its 1 MiB read buffer and its outcomes buffer, the final write's head read-back (a buffer of 1 MiB + 1 byte, 2.9, `BATCH_SPEC.md` 7.2, parsed into a typed struct that ignores other fields), its journal read buffer and the ids of its aborts in flight, at most `download_concurrency` (2.11's step 1), its runtime and its panic and progress slots (2.11) |
-| `C_base` | `c_base + threads x m_thread + 2 x (download_concurrency + 1) x m_pool + download_concurrency x 2,080 B + threads x m_dispatch + threads x m_end + 16 KiB + archives x 160 B` | `c_base`, `m_thread` and `m_pool` are constants compiled into the binary, which X12 measures (`extract.md`): `c_base` as the most, over the run's samples, of the heap less only what the sample measures (the budgets' held charges, never a reservation's unused part, the finisher thread's own count, `C_spec` and `C_parse`, and the header and credential bytes the scene holds, at their live sizes) and the `m_*` terms at the scene's sizes, no term at its cap, on a scene with a failed input, an archive, an old journal, a resume run, verification's LIST and a lookup held outstanding through the `resolve` hook's delay, at `threads` and `download_concurrency` 1, run with each sink and the larger pinned; `m_thread` and `m_pool` are the heap one more worker, and one more blocking-pool thread of each runtime, adds, a lookup's task cell among it: each pool has a thread for every task it can have outstanding (2.11), so the threads bound the cells, and B needs no new term, as it needs none for the static socket table (2.11). It holds the binary, both runtimes, the rustls `ClientConfig` (2.11 step 4), the progress thread's slots, the controller's 64 KiB zero buffer (2.9) and its journal read buffer at the spool's start (`BATCH_SPEC.md` 6.2 step 4). The rest grows with the spec: the start's abort ids in flight, a key and an upload id each (`BATCH_SPEC.md` 2.3, 2.9); the controller's queues (2.4) at their capacities, each message at the largest size, its heap included, of a dispatch (`m_dispatch`) or an end message (`m_end`, one end-channel slot's size: the actual end union, its bounded repaired entry detail included, plus channel-slot overhead, so `threads x m_end` covers std's array slots, X12 measuring it with the channel at capacity, 2.4), compiled in too; a journal removal's one held line, at most 16 KiB (`BATCH_SPEC.md` 6.1); and resume's merge's kept `ETag` (at most 100 bytes, 2.9) and size per spec archive, 160 B with its entry |
+| `C_base` | `c_base + threads x m_thread + 2 x (download_concurrency + 1) x m_pool + download_concurrency x 2,080 B + threads x m_dispatch + threads x m_end + 16 KiB + archives x 160 B` | `c_base` uses the maximum zero-deduction Rust heap observation from the eligible synthetic and whole-run scenes, with the calibration margin and rounding. Startup, both runtimes, shared TLS state and progress storage are among its owners. The observation also keeps overlap with other bound terms, including charged buffers, spec and network state, and finishing. The measured increments `m_thread` and `m_pool` cover workers and initialized blocking pools, including lookup task cells and request tables. The measured `m_dispatch` and `m_end` cover the controller’s full queues, including end-channel bookkeeping and bounded detail (2.4). The explicit allowances cover startup abort ids, a journal removal’s held line and resume metadata per archive. See [the calibration procedure](../memory/README.md). |
 
 There is no provider term: version 1 configures no typetree provider (A8), so the provider cache (`ProviderChain::DEFAULT_CACHE_BYTES`, 64 MiB, one per `ProviderChain` shared by every cloned context; core 3.15, as CR5 corrected it) holds nothing.
 
@@ -2021,9 +2026,9 @@ Startup's fixed scratch belongs to `C_base`: one reusable head-read buffer of
 and transient fallibly allocated paths. Host inventories stream through that
 line buffer; a line exceeding it is refused as the corresponding unreadable
 procfs/cgroup file. Rooted destination components and temp names use fixed
-256-byte storage, with no allocation per output inventory. These are separate
-from phase 7's buffer charges and the finisher's `C_fin`; B12 still measures
-`C_base` and the other provisional constants.
+256-byte storage, with no allocation per output inventory. Startup ownership
+is included in the zero-deduction base observation alongside any overlap
+with separately budgeted terms.
 
 The transport reserves a conservative 3.5 MiB envelope per active connection for the third-party state and full backing capacities, plus `heap_cost` of each fallibly allocated copied DATA piece (at most 64 KiB). A slice's length never substitutes for its backing allocation. Moved buffers keep their charge and permit until released. A lookup, local copy or moved write owns the permit's sole blocking-operation token until its closure returns, even after timeout; the existing pool capacity bounds all outstanding operations. The shared TLS configuration and runtime bookkeeping stay in `C_base`, header references in measured phase 1 and values in `C_hdr`.
 
@@ -2074,8 +2079,20 @@ Each rule is a recommendation the manifest reports against, not a validation.
 | a directory sink's final `syncfs` stays short | the spool on another filesystem than the output root, so its writes are not that `syncfs`'s (2.11). That does not shorten dirty-page throttling, whose limits are the host's global one and the memory cgroup's, each across filesystems (A11) |
 
 **Example for the corpus:** `threads` 8, `download_concurrency` 8, `M` = `D` = 256 MiB, `I` = 4 GiB.
-- The constants come to about 235 MiB: 75 MiB of thread stacks (39 MiB for workers and the five named threads, the environment block aside, 36 MiB for the two blocking pools), 9 MiB of private Environments at `max_view_bundles` 1,024, 85 MiB for `C_net`'s 17 connections, 8 part lists and 17 response bodies, about 21 MiB of spec and controller state for a full build's 12,000 bundles (a spec of about 4.8 MB), 24 MiB for the finisher, about 20 MiB of base, and `C_hdr`, about 1 MiB with header blocks under 32 KiB; `C_parse` is 0, the parse's peak being far below `I`.
-- So the bound is about 4.23 GiB in the charge unit, about 6.34 GiB (1.5 times it) under glibc's worst-case slack, and a memory cgroup about 8.2 GiB at Linux's default `vm.dirty_ratio` of 20.
+- For a full build of 12,000 bundles, use phase 1's retained heap for `C_spec`,
+  about 21 MiB in this example. Header blocks under 32 KiB give about 1 MiB
+  of `C_hdr`. The parse peak is below `I`, so `C_parse = 0`. Use the 6 MiB
+  environment block cap for the `--check` value of `C_thr`.
+- Use the `selected` coefficients and the fixed connection envelope from
+  [constants-v1.json](../memory/constants-v1.json) in the §5.3 formulas.
+  Here `C_env = 8 × (c_env + 1 MiB)`,
+  `C_net = 17 × c_net + 16 MiB + 17 × 64 KiB`, and
+  `C_base = c_base + 8 × (m_thread + m_dispatch + m_end) + 18 × m_pool + 8 × 2,080 B + 16 KiB`
+  for the archive-free job. The bound `B` is
+  `4 GiB + C_thr + C_env + C_net + C_spec + C_hdr + 24 MiB + C_base`.
+  Use `1.5 × B` for the allocator-slack term. With `vm.dirty_ratio = 20` and
+  no `vm.dirty_bytes` override, the cgroup rule above gives
+  `(1.5 × B + 197 MiB) / 0.8`.
 - The corpus's largest input peaks at 145.2 MB, in its decode (5.5), inside `M`. Its texture export holds 124.6 MiB at its largest texture's, its own 74 MiB beside the corpus's largest export peak of 50.5 MiB, and no other input passes 54 MiB (section 8). So the corpus needs an `M` of about 140 MiB, and 256 MiB stays the example: about 1.8 times that, with room for the sprite path's sheet groups, which 5.5's estimate puts near 183 MiB beside that input's 74 MiB. Every slot reserves 512 MiB, so the 8 slots reserve 4 GiB.
 - The spool, at `max_export_work`'s default of 2 x `M` (512 MiB, so `threads x W` = 4 GiB at `k_blk` 1), with no archive and no nested container, so no peek file: the staged bundles (1.79 GB claimed on build A, 1.34 GB on build B, 0.92 GB on the preview diff) `+ S + 4 GiB + 6 x S`, with `S` about 1.91 GB a full build and 0.35 GB on the diff (A5), asks about 18 GiB a full build and 7 GiB on the diff. The final default is `max_export_work = 2 × M`. Full export-path measurements
 including records and member work found the largest export work at about
@@ -2084,7 +2101,7 @@ including records and member work found the largest export work at about
 about 3.7 times the measured maximum; at the measured minimum `M` near
 140 MiB it is about twice the maximum. Proportional sizing also accommodates
 larger-`M` runs. This default is final; it is a bounded-work policy and explicit
-overrides remain supported. B12's memory-bound constants remain provisional.
+overrides remain supported.
 
 Archives add only the largest-active-central-directories term from 2.9 to spool claims. Complete ZIP bytes go directly to sink temps. Sink provisioning must cover existing outputs plus replacement temps while they coexist, including when spool and sink share a filesystem; those bytes remain outside `spool.size_bytes`.
 
@@ -2433,7 +2450,7 @@ At `M = 256 MiB` the default has about 3.7 times the measured headroom;
 at the measured minimum `M` near 140 MiB, about twice. Keeping the default
 proportional to `M` also fits larger inputs that larger-`M` runs admit.
 The default is a bounded-work policy with explicit overrides, independently
-of B12's provisional memory constants. Synthetic v1 goldens may be recorded.
+of the memory-bound calibration. Synthetic v1 goldens may be recorded.
 
 1. **Sealing.** Its cost is measured with registration's peek, which design round 22 computes once per run (2.2, 2.6 step 4, A5). Beside the staged files (2.5), the peek table is the one state an attempt reads that another thread writes, and both are written before the first attempt is dispatched (2.10). A review should look for any other state an attempt reads that another attempt can write.
 2. **Staging** copies every local bundle into the spool (2.5). Design round 4's review found that nothing reads a source after its copy.
