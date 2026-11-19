@@ -1,0 +1,207 @@
+"""Synthetic body-fixture recordings: the builder's rigs, their bone table and read-back rows.
+
+Every value is synthetic. The read-back follows the centre-of-mass hypothesis
+of docs/plans/humanoid-body.md 2.1 with one chosen coefficient per edge, so
+the adequacy checkpoint sees a consistent fit.
+"""
+
+import copy
+import random
+
+from test_anim_replay import bits
+
+import anim_body_tolerance as tolerance  # noqa: E402  (test_anim_replay puts it on the path)
+from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CLIP_VARIANTS, GOAL_CURVES, KNEE,  # noqa: E402
+                               MOTION_CURVES, PROBE_GROUPS, PROBE_RIGS, START_OFFSET, START_YAW, TARGETS,
+                               expected_case_row,
+                               probe_schedule)
+from anim_reference import euler, multiply  # noqa: E402
+import anim_replay as replay  # noqa: E402
+
+# HumanBodyBones 0-23, 30 finger slots, then UpperChest, with HumanTrait's parents.
+BODY = tolerance.NAMES[:24]
+PARENT = {"Hips": None, "LeftUpperLeg": "Hips", "RightUpperLeg": "Hips", "LeftLowerLeg": "LeftUpperLeg",
+          "RightLowerLeg": "RightUpperLeg", "LeftFoot": "LeftLowerLeg", "RightFoot": "RightLowerLeg",
+          "Spine": "Hips", "Chest": "Spine", "UpperChest": "Chest", "Neck": "UpperChest", "Head": "Neck",
+          "LeftShoulder": "UpperChest", "RightShoulder": "UpperChest", "LeftUpperArm": "LeftShoulder",
+          "RightUpperArm": "RightShoulder", "LeftLowerArm": "LeftUpperArm", "RightLowerArm": "RightUpperArm",
+          "LeftHand": "LeftLowerArm", "RightHand": "RightLowerArm", "LeftToes": "LeftFoot", "RightToes": "RightFoot",
+          "LeftEye": "Head", "RightEye": "Head", "Jaw": "Head"}
+BONES = (*BODY, *(f"Finger {i}" for i in range(30)), "UpperChest")
+MASSES = {name: .02 + .01 * (i % 7) for i, name in enumerate(tolerance.NAMES)}
+PROBE_MUSCLES = tuple(muscle for _, group in PROBE_GROUPS for muscle in group)
+MUSCLES = (*PROBE_MUSCLES, *(f"Other muscle {i}" for i in range(95 - len(PROBE_MUSCLES))))
+COEFFICIENT = .4
+# The rigs whose hip and shoulder children leave the plane, as the builder's.
+NONCOPLANAR = {"noncoplanar", "no-chest"}
+
+
+def layout(rig):
+    """The builder's T-pose (UnityrsBodyFixtures.cs BodyLayout) as (name, parent, offset)."""
+    base, omit, extras = PROBE_RIGS.get(rig, ("compact", (), ()))
+    tall = base == "tall"
+    size = 1.5 if rig == "large" else 1
+    arms, legs = (1.3, .8) if rig == "holdout" else (1, 1)
+    hip_z, shoulder_z = (.03, -.025) if rig in NONCOPLANAR else (0, 0)
+    rows = [("Hips", "", (0, (1.18 if tall else .88) - (1 - legs) * (1.06 if tall else .73), 0)),
+            ("Spine", "Hips", (0, .21 if tall else .16, 0)), ("Chest", "Spine", (0, .27 if tall else .13, 0))]
+    torso = "Chest" if tall else "UpperChest"
+    if not tall:
+        rows.append(("UpperChest", "Chest", (0, .08, 0)))
+    rows += [("Neck", torso, (0, .14, 0)), ("Head", "Neck", (0, .12, 0))]
+    rows += [row for row in (("LeftEye", "Head", (-.03, .06, .08)), ("RightEye", "Head", (.03, .06, .08)),
+                             ("Jaw", "Head", (0, -.03, .05))) if row[0] in extras]
+    for side, sign in (("Left", -1), ("Right", 1)):
+        rows += [(side + "UpperLeg", "Hips", (sign * (.10 if tall else .13), -.05, hip_z)),
+                 (side + "LowerLeg", side + "UpperLeg", (0, (-.58 if tall else -.36) * legs, .04)),
+                 (side + "Foot", side + "LowerLeg", (0, (-.48 if tall else -.37) * legs, -.04)),
+                 (side + "Toes", side + "Foot", (0, -.04, .14)),
+                 (side + "Shoulder", torso, (sign * .08, .08, shoulder_z)),
+                 (side + "UpperArm", side + "Shoulder", (sign * (.10 if tall else .14), 0, 0)),
+                 (side + "LowerArm", side + "UpperArm", (sign * (.34 if tall else .26) * arms, 0, 0)),
+                 (side + "Hand", side + "LowerArm", (sign * (.26 if tall else .23) * arms, 0, 0))]
+    offsets = {name: (parent, tuple(size * v for v in offset)) for name, parent, offset in rows}
+    result = []
+    for name, (parent, offset) in offsets.items():
+        if name in omit:
+            continue
+        while parent in omit:
+            offset = tuple(a + b for a, b in zip(offset, offsets[parent][1]))
+            parent = offsets[parent][0]
+        result.append((name, parent, offset))
+    return result
+
+
+def transform(t=(0, 0, 0), q=(0, 0, 0, 1), s=1.):
+    return dict(translation=[bits(v) for v in t], rotation=[bits(v) for v in q], scale=[bits(s)] * 3)
+
+
+def rig_nodes(rig):
+    """Spec nodes and rest transforms, with F5's Animator, armature and hips scales."""
+    nodes, rest = [("", "HumanoidFixture"), ("0", "HumanoidRig")], [transform(), transform(
+        s=1.25 if rig == "scaled-animator" else 1.)]
+    top, addresses, counts = "0", {"": "0"}, {}
+    if rig == "armature":
+        nodes.append(("0/0", "Armature"))
+        rest.append(transform((0, .05, .1), euler((-90, 0, 0), 4), .8))
+        top = addresses[""] = "0/0"
+    for name, parent, offset in layout(rig):
+        base = addresses[parent]
+        address = f"{base}/{counts.setdefault(base, 0)}"
+        counts[base] += 1
+        addresses[name] = address
+        nodes.append((address, name))
+        if name == "Hips" and rig == "armature":
+            rest.append(transform((0, .125, .8375), euler((90, 0, 0), 4)))
+        elif name == "Hips" and rig == "hips-scale":
+            rest.append(transform(tuple(1.2 * v for v in offset), s=1.2))
+        else:
+            rest.append(transform(offset))
+    return [dict(address=a, name=n) for a, n in nodes], rest, top
+
+
+def body_doc(name, run, *, seed=1, samples=None):
+    """A pending body recording with consistent read-back rows; `samples` limits the count."""
+    info = BODY_INFO[name]
+    rig, kind = info["rig"], info["kind"]
+    nodes, rest, _ = rig_nodes(rig)
+    index = {node["name"]: i for i, node in enumerate(nodes)}
+    if kind == "clip":
+        schedule = [(t, None) for t in (0, .25 * 391 / 1024, .25, .5, .75, 1)]
+    else:
+        schedule = probe_schedule(rig, MUSCLES, kind == "targets")
+    if samples:
+        schedule = schedule[:samples]
+    rng = random.Random(seed)
+    human_bones = [dict(name=b, node=index.get(b, -1), required=b in ("Hips", "Spine")) for b in BONES]
+    parents = {b: PARENT.get(b) for b in BONES}
+    table = [dict(name=b, parent=BONES.index(parents[b]) if parents[b] else -1, mass=bits(MASSES.get(b, 0.)),
+                  required=row["required"]) for b, row in zip(BONES, human_bones)]
+    masses = {b: MASSES[b] for b in tolerance.BODY_SLOTS}
+    rows, samples_out, targets = [], [], []
+    for t, vector in schedule:
+        pose = copy.deepcopy(rest)
+        for bone, i in index.items():
+            if bone in PARENT and bone != "Hips":
+                angles = tuple(rng.uniform(-25, 25) for _ in range(3))
+                pose[i]["rotation"] = [bits(v) for v in euler(angles, 4)]
+        frames = tolerance.kinematics(nodes, pose, replay.f32_from_bits)
+        bones = tolerance.bone_frames(human_bones, nodes, frames)
+        links = tolerance.edges(parents, set(bones))
+        weights = tolerance.folded_masses(masses, parents, set(bones))
+        c = [sum(weights[b] * bones[b].position[k] for b in bones) for k in range(3)]
+        for i, j in links:
+            for k in range(3):
+                c[k] += COEFFICIENT * weights[i] * (bones[j].position[k] - bones[i].position[k])
+        readback = [bits(v) for v in c]
+        rows.append(dict(readback_position=readback, readback_rotation=[bits(0)] * 3 + [bits(1)],
+                         world_position=readback, world_rotation=[bits(0)] * 3 + [bits(1)],
+                         **dict.fromkeys(("root_position", "root_rotation", "body_position", "body_rotation"),
+                                         [bits(0)] * 3 if kind == "clip" else [])))
+        if kind == "clip":
+            for field, width in (("root_rotation", 4), ("body_rotation", 4)):
+                rows[-1][field] = [bits(0)] * (width - 1) + [bits(1)]
+        else:
+            offset, tilt = TARGETS[len(targets) % 2] if kind == "targets" else ((0, 0, 0), (0, 0, 0))
+            targets.append(dict(offset=[bits(v) for v in offset], tilt=[bits(v) for v in tilt],
+                                position=[bits(v + (k == 1)) for k, v in enumerate(offset)],
+                                rotation=[bits(v) for v in euler(tilt, 4)]))
+        samples_out.append(dict(local=t, local_f32=bits(t), source=t, effective_source=t, sides=[],
+                                muscles_f32=[bits(v) for v in vector] if vector else [],
+                                pose=dict(transforms=pose, weights=[])))
+    human = dict(bones=human_bones, muscles=[dict(name=m, bone=0, axis=0, min=bits(-40), max=bits(40))
+                                             for m in MUSCLES],
+                 human_scale=bits(1), rest_body_position=[bits(0), bits(1), bits(0)],
+                 rest_body_rotation=[bits(0)] * 3 + [bits(1)])
+    editor = dict(fixture_case=name, run_id=run["run_id"], body_case=[expected_case_row(name, replay)],
+                  body_samples=rows, body_targets=targets, human_bones=table, bindings=[])
+    spec = dict(nodes=nodes, binding_address="0", mode="animator" if kind == "clip" else "human_pose",
+                schedule=[dict(local=t, **({"muscles": list(v)} if v else {})) for t, v in schedule],
+                evidence=dict(editor=editor))
+    capture = dict(humanoid=human, rest=dict(transforms=rest, weights=[]), samples=samples_out,
+                   clip_settings={})
+    return dict(format="unityrs.anim_replay_pending", version=1, spec=spec, capture=capture)
+
+
+def keys(times, values):
+    return [dict(time_f32=bits(t), value_f32=bits(v), in_tangent_f32=bits(0), out_tangent_f32=bits(0),
+                 in_weight_f32=bits(0), out_weight_f32=bits(0), weighted_mode="None") for t, v in zip(times, values)]
+
+
+def animator(prop, rows):
+    return dict(path="", property=prop, type="UnityEngine.Animator", discrete=False, object_reference=False,
+                object_keys=[], keys=rows)
+
+
+def clip_case(doc, variant_name):
+    """Give a clip case the authored curves, captured settings and built clip of its variant."""
+    variant = CLIP_VARIANTS[variant_name]
+    turn = euler((0, START_YAW if variant["start"] else 0, 0), 4)
+    path, rotations = [], []
+    for point, angles in zip(BODY_PATH, BODY_TURN):
+        x, y, z = point
+        c, s = turn[3] ** 2 - turn[1] ** 2, 2 * turn[1] * turn[3]
+        moved = (c * x + s * z, y, -s * x + c * z)
+        path.append(tuple(a + b for a, b in zip(moved, START_OFFSET)) if variant["start"] else moved)
+        rotations.append(multiply(turn, euler(angles, 4)))
+    bindings = [animator(f"RootT.{a}", keys(BODY_TIMES, [p[i] for p in path])) for i, a in enumerate("xyz")]
+    bindings += [animator(f"RootQ.{a}", keys(BODY_TIMES, [q[i] for q in rotations])) for i, a in enumerate("xyzw")]
+    if variant["knee"]:
+        bindings += [animator(muscle, keys((0, .5, 1), values)) for muscle, values in KNEE.items()]
+    for curves, flag in ((MOTION_CURVES, "motion"), (GOAL_CURVES, "goals")):
+        if variant[flag]:
+            bindings += [animator(curve, keys((0, 1), (0, 0))) for curve in curves]
+    doc["spec"]["evidence"]["editor"]["bindings"] = bindings
+    flags = dict(zip(("loopBlendOrientation", "loopBlendPositionY", "loopBlendPositionXZ"), variant["bake"]))
+    flags |= dict(zip(("keepOriginalOrientation", "keepOriginalPositionY", "keepOriginalPositionXZ"), variant["keep"]))
+    doc["capture"]["clip_settings"] = flags | dict(
+        heightFromFeet=variant["height_from_feet"], loopTime=False, loopBlend=False, mirror=False,
+        level=bits(variant["level"]), orientationOffsetY=bits(variant["orientation"]), cycleOffset=bits(0),
+        startTime=bits(0), stopTime=bits(1))
+    built = dict(zip(("m_LoopBlendOrientation", "m_LoopBlendPositionY", "m_LoopBlendPositionXZ"), variant["bake"]))
+    built |= dict(zip(("m_KeepOriginalOrientation", "m_KeepOriginalPositionY", "m_KeepOriginalPositionXZ"),
+                      map(int, variant["keep"])))
+    return {"m_MuscleClip": built | dict(m_HeightFromFeet=variant["height_from_feet"], m_Level=variant["level"],
+                                         m_OrientationOffsetY=variant["orientation"], m_StartAtOrigin=True),
+            "m_ClipBindingConstant": {"genericBindings": [
+                dict(path=0, typeID=95, attribute=a, customType=8) for a in range(7, 14)]}}

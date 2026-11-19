@@ -10,6 +10,7 @@ from uuid import uuid4
 from zlib import crc32
 
 import child
+from anim_fixture_body import BODY_BUNDLES, BODY_CASES, BODY_INFO, check_body
 from anim_fixture_coverage import BASIS_CASES, COVERAGE_CASES, check_coverage, required_coverage
 from anim_fixture_contract import (ASSETS, MOTION, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
                                    check_built_clip, check_built_static, check_discovery, check_evidence,
@@ -19,8 +20,14 @@ PENDING_FORMAT = "unityrs.anim_replay_pending"
 OPTIONAL_CASES = {
     "urp-materials", "packed-rotation-slopes", "authored-runtime-precedence", "mixed-transform-storage",
     "humanoid-twist-refusal", "humanoid-non-neutral-setting-refusal", "humanoid-slot-axis-inventory",
-    "humanoid-root-hips-comparison", "integer-discrete-binding", *BASIS_CASES,
+    "humanoid-root-hips-comparison", "integer-discrete-binding", *BASIS_CASES, *BODY_CASES,
 }
+
+
+def pending_pose(name, doc):
+    """A known-vector capture keeps the pending human_pose schema until its slot inventory is added."""
+    pose = name in VECTOR_CASES or name in BODY_CASES and BODY_INFO[name]["kind"] != "clip"
+    return pose and "humanoid" not in doc["spec"]["evidence"]
 
 
 def wire_value(value, replay):
@@ -483,13 +490,19 @@ def complete_recording(name, fixture, doc, bundle_dir, views, unityrs, inspect_d
     check_discovery(fixture, view, discovery, clip)
     spec["evidence"]["discovery"] = discovery
     doc["format"] = "unityrs.anim_replay"
-    if name in VECTOR_CASES and "humanoid" not in spec["evidence"]:
+    if pending_pose(name, doc):
         replay._shape(replay.SCHEMA["$defs"]["capture"], capture, "/capture")
         replay._validate_recording(spec, capture, pending_humanoid=True)
     else:
         replay.validate(doc)
     check_evidence(fixture, doc, view, replay)
     check_coverage(name, fixture, doc, view, clip, avatar, replay)
+    if name in BODY_CASES:
+        settings = check_body(name, fixture, doc, view, clip, replay)
+        if settings is not None:
+            spec["evidence"]["body_settings"] = settings
+    elif spec["evidence"]["editor"].get("body_case"):
+        replay.require(False, f"{name} claims body fixture evidence")
     return doc
 
 
@@ -545,7 +558,11 @@ def recorded_paths(folder, replay, manifest, run):
             path = paths[name] if name in paths else folder / "bundles" / STATIC_CASES[name][0]
             if not path.is_file() or path.stat().st_size == 0:
                 errors.append(f"{name}: missing {path.relative_to(folder)}")
-        if name in COVERAGE_CASES and status == "recorded":
+        if name in BODY_CASES and status == "recorded":
+            paths[name] = replay_dir / "body" / f"{name}.pending.json"
+            if not paths[name].is_file() or paths[name].stat().st_size == 0:
+                errors.append(f"{name}: missing {paths[name].relative_to(folder)}")
+        elif name in COVERAGE_CASES and status == "recorded":
             # A recorded coverage case is checked like a required one. Any
             # other status, as in a run that predates it, needs no recording.
             paths[name] = replay_dir / f"{name}.pending.json"
@@ -553,8 +570,10 @@ def recorded_paths(folder, replay, manifest, run):
                 errors.append(f"{name}: missing {paths[name].relative_to(folder)}")
         elif name in OPTIONAL_CASES and status == "recorded" and name != "mixed-transform-storage":
             errors.append(f"{name}: no recording defined for this optional case")
-    # A run older than the basis matrix has no rows for it.
-    errors.extend(f"missing run.json case: {name}" for name in sorted(expected - statuses.keys() - BASIS_CASES.keys()))
+    # A run older than the basis matrix has no rows for it; one older than the
+    # body fixtures has none of theirs, and a newer one has them all.
+    older = BASIS_CASES.keys() | (set() if statuses.keys() & BODY_CASES.keys() else BODY_CASES.keys())
+    errors.extend(f"missing run.json case: {name}" for name in sorted(expected - statuses.keys() - older))
     # Coverage confirmed on this Editor version is no longer optional.
     errors.extend(f"{name}: required for Unity {run['editor_version']} but {statuses[name]}"
                   for name in sorted(required_coverage(run["editor_version"]))
@@ -564,8 +583,8 @@ def recorded_paths(folder, replay, manifest, run):
     replay.require(not errors, "incomplete fixture run:\n" + "\n".join(errors))
     expected_bundles = {fixture.bundle for fixture in REPLAY_CASES.values()} | {name for name, _ in STATIC_CASES.values()}
     # Unity builds a coverage bundle before its recording can still be refused.
-    recorded = {COVERAGE_CASES[name].bundle for name in COVERAGE_CASES if name in paths}
-    optional = {fixture.bundle for fixture in COVERAGE_CASES.values()}
+    recorded = {fixture.bundle for name, fixture in (COVERAGE_CASES | BODY_CASES).items() if name in paths}
+    optional = {fixture.bundle for fixture in COVERAGE_CASES.values()} | BODY_BUNDLES
     built = {path.name for path in (folder / "bundles").iterdir()}
     replay.require(expected_bundles | recorded <= built <= expected_bundles | optional,
                    "unexpected fixture bundle inventory")
@@ -616,7 +635,7 @@ def complete_folder(folder, unityrs, inspect_dir, replay):
     results, views, recordings = [], {}, {}
     paths, recorded_mixed, run, uncovered = recorded_paths(folder, replay, manifest, run)
     check_static(bundle_dir, views, unityrs, inspect_dir, replay, run)
-    fixtures = REPLAY_CASES | VECTOR_CASES | COVERAGE_CASES
+    fixtures = REPLAY_CASES | VECTOR_CASES | COVERAGE_CASES | BODY_CASES
     for path in paths:
         try:
             document = replay.read_json(path.read_text(encoding="utf-8"))
@@ -624,7 +643,7 @@ def complete_folder(folder, unityrs, inspect_dir, replay):
             result = complete_recording(name, fixtures[name], document, bundle_dir, views, unityrs, inspect_dir, replay, run)
             recordings[name] = result
             output = path.with_name(name + ".json")
-            if name in VECTOR_CASES and "humanoid" not in result["spec"]["evidence"]:
+            if pending_pose(name, result):
                 if output.exists():
                     existing = replay.read_json(output.read_text(encoding="utf-8"))
                     replay.require(existing.get("format") == "unityrs.anim_replay"

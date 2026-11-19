@@ -147,7 +147,8 @@ public static partial class AnimReplayRecorder
     }
 
     static Capture RecordCapture(Spec spec, string bundleDir, bool pending,
-        Action<AnimationClip, AssetBundle> inspectClip = null, Action<Transform, float> inspectPose = null)
+        Action<AnimationClip, AssetBundle> inspectClip = null, Action<Transform, float> inspectPose = null,
+        BodyHooks body = null)
     {
         Need(spec != null && spec.bundles != null && spec.bundles.Length > 0, "Expected a replay specification with bundles.");
         Need(pending || (spec.prefab != null && spec.clip != null
@@ -278,14 +279,18 @@ public static partial class AnimReplayRecorder
                         }
                         else if (knownPose)
                         {
-                            SampleMuscles(target, point.muscles);
+                            if (body != null) body.Apply(i, target, point.muscles);
+                            else SampleMuscles(target, point.muscles);
                             sample.muscles_f32 = point.muscles.Select(Bits).ToArray();
                             sample.pose = ReadPose(nodes, renderers, spec.renderers, pending);
+                            body?.Read(target, playback: false);
                         }
                         else
                         {
                             sample.pose = SampleAnimator(target, clip, time, () => {
                                 if (inspectPose != null) inspectPose(root, time);
+                                // Read back while the graph still owns the pose.
+                                body?.Read(target, playback: true);
                                 return ReadPose(nodes, renderers, spec.renderers, pending);
                             });
                         }
@@ -432,7 +437,9 @@ public static partial class AnimReplayRecorder
         animation.Sample();
     }
 
-    static void SampleMuscles(Animator animator, float[] values)
+    // A tilt moves the rest body by the offset and turns it by the tilt; the
+    // applied pose is returned.
+    static HumanPose SampleMuscles(Animator animator, float[] values, Vector3 offset = default, Quaternion? tilt = null)
     {
         Need(values != null && values.Length == HumanTrait.MuscleCount
             && values.All(v => -1 <= v && v <= 1), "Invalid known muscle vector.");
@@ -440,25 +447,21 @@ public static partial class AnimReplayRecorder
         {
             var pose = ReadRestBody(animator, handler);
             pose.muscles = (float[])values.Clone();
+            if (tilt.HasValue)
+            {
+                pose.bodyPosition += offset;
+                pose.bodyRotation = tilt.Value * pose.bodyRotation;
+            }
             handler.SetHumanPose(ref pose);
+            return pose;
         }
     }
 
     static HumanPose ReadRestBody(Animator animator, HumanPoseHandler handler)
     {
-        // GetHumanPose returns a world pose, with position divided by human scale.
-        // SetHumanPose takes the corresponding normalized pose in Animator root space.
         var pose = new HumanPose();
         handler.GetHumanPose(ref pose);
-        var root = animator.transform;
-        float scale = animator.humanScale;
-        float determinant = root.localToWorldMatrix.determinant;
-        Need(scale > 0 && !float.IsInfinity(scale) && determinant != 0
-            && !float.IsNaN(determinant) && !float.IsInfinity(determinant),
-            "Cannot express the body pose in the Animator root.");
-        pose.bodyPosition = root.InverseTransformPoint(pose.bodyPosition * scale) / scale;
-        pose.bodyRotation = Quaternion.Inverse(root.rotation) * pose.bodyRotation;
-        return pose;
+        return InAnimatorSpace(animator, pose);
     }
 
     static Pose ReadPose(Transform[] nodes, SkinnedMeshRenderer[] renderers, RendererSpec[] specs, bool pending)

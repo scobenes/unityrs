@@ -998,3 +998,190 @@ identities, derives clocks and ranges from serialized playback, and reports
 worst Unity-space errors by rig, node or renderer, property and source time.
 The ungated synthetic tests exercise both clip modes with testkit bundles.
 L11 status requires the owner-built Editor recordings.
+
+## Humanoid body fixtures and B1 tolerances
+
+B1 of the [humanoid body motion plan](plans/humanoid-body.md) adds its
+Editor fixtures, recorder rows and tolerances. All of it is evidence for
+the plan's hypotheses. None of it is a playback claim.
+
+### Body fixtures
+
+The main menu item builds 106 optional `body-…` cases, each kind in its own
+bundle build after the main and coverage builds. Their tables are in
+`UnityrsBodyFixtures.cs` and `UnityrsBodyClips.cs`, mirrored by
+[`anim_fixture_body.py`](../tools/parity/anim_fixture_body.py).
+
+| Cases | Plan | Contents |
+|---|---|---|
+| `body-probes-<rig>` (16) | F1, F6 | Known-vector `SetHumanPose` on each rig. The rigs are the two P2b rigs, each F6 topology, a noncoplanar rig and the hold-out rig. The vectors are one per probe muscle of each mapped bone, then three combined vectors over every probe muscle. Twist and stretch stay out. |
+| `body-targets-{compact,tall}[-offset]` (4) | F3 | The three combined vectors with nonidentity body targets on identity and offset roots |
+| `body-clip-<variant>[-offset]` (78) | F4 | 39 body-motion clips on the compact rig, each on an identity and an offset root |
+| `body-chain-<f5>-{targets,clip}` (8) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale. Each plays F3's targets and the all-off F4 clip. |
+
+**Rig geometry.** One parameterized layout gives every rig. Unchanged, it
+repeats the P2b offsets in the same sibling order. An omitted bone's
+children keep their place: its offset is added to theirs. The noncoplanar
+rig moves the upper legs to `z = .03` and the shoulders to `z = -.025`.
+The no-Chest rig does the same, because Spine's three children are its
+own edges only there, and only off one plane can each be separated. The
+hold-out rig scales the arms by 1.3 and the legs by 0.8, and lowers the
+hips to keep the feet on the ground.
+
+**Schedules.** Each known-vector case keeps the P2b anchors at 0, .5 and 1
+(neutral, single-axis, noncommuting), so the Spine endpoint checks still
+hold. The probes fill each half at `.5 (k + 391/1024) / n`, rounded to a
+`2^-16` grid, so each time is exact in JSON and as an f32. A probe sets one
+muscle to .6, -.5 or .4 by its place in its group. The combined vectors
+cycle five values per probe muscle.
+
+**F3 targets.** The targets alternate two requests. One moves the rest
+body by `(.05, -.03, .04)` and tilts it by `Euler(12, -20, 7)`. The other
+moves it by `(-.04, .02, -.06)` and tilts it by `Euler(-9, 35, -11)`. The
+anchors carry them too.
+
+**F4 clips.** Every F4 clip has `RootT` with XZ and Y motion, and a `RootQ`
+whose yaw turns back and forth. Both are on linear segments, with keys at
+0, .25, .5, .75 and 1. The variants are:
+
+- the eight keep-original combinations with bake off;
+- the seven other bake combinations with keep-original off;
+- height from feet, `level = .125` and `orientationOffsetY = 30`, each alone;
+- each of those 18 again from a nonzero start, its whole path turned 50°
+  about +Y and moved by `(.6, 0, -.4)`;
+- separate `MotionT`/`MotionQ` curves on the all-original combination;
+- height from feet with alternating knee bends, with and without foot
+  goal curves.
+
+The builder confirms each variant's settings after authoring and after the
+build. If Unity changes a setting, or drops the motion or goal curves, that
+variant is not covered and the rest still record.
+
+### Recorder rows
+
+A body case's editor evidence holds:
+
+- `body_case`: the kind, rig, variant, root and clip settings;
+- `body_samples`, one row per sample:
+  - F2's `GetHumanPose` read-back, converted to `A` as the rest body is (an
+    inverse Animator transform of `bodyPosition · humanScale`, divided by
+    `humanScale`);
+  - the raw world read-back;
+  - during clip playback, `Animator.rootPosition`, `rootRotation`,
+    `bodyPosition` and `bodyRotation`, as raw bits;
+- `body_targets`: each known vector's requested offset and tilt, and the
+  body pose `SetHumanPose` received;
+- `human_bones`: HumanTrait's 55 bones with `GetParentBone`, `RequiredBone`
+  and `GetBoneDefaultHierarchyMass`, for E0b.
+
+Known-vector body cases keep the pending human_pose schema, as the P2b known
+vectors do.
+
+### Completion
+
+`complete` treats the body cases as one optional group:
+
+- A run with no `body-…` row completes as before.
+- A run with any body row must list every body case.
+- A recorded case needs `replays/body/<case>.pending.json` and its bundle.
+- A failed case fails the run.
+
+For each recording `complete` checks:
+
+- the case row, against the builder's tables;
+- the bone and mass table;
+- that the captured mapped bones are the rig's topology;
+- read-back rows for every sample, with unit rotations and root rows
+  exactly in clip playback;
+- the schedule's times and muscles, exactly;
+- each body target, as requested (zero for probes) and as applied, within
+  `1e-5`;
+- the F5 chain in the rest pose;
+- for a clip, the authored body, knee, motion and goal curves, and the
+  captured and built root settings.
+
+It copies the built `m_MuscleClip` root fields and the compiled Animator
+attributes into `evidence.body_settings` for B2. Any other case that
+claims body rows is refused.
+
+### B1 tolerances
+
+[`anim_body_tolerance.py`](../tools/parity/anim_body_tolerance.py) derives
+section 2.5's two tolerances. It uses an explicit f32 operation model, as
+the per-recording tolerances above do:
+
+- A stage of `n` roundings errs by at most
+  `γ32(n) = n·2^-24 / (1 − n·2^-24)` of the magnitudes it combines.
+- Each stage adds `n·2^-126` for flush-to-zero.
+- Recorded f32 values are read exactly.
+- The f64 arithmetic is far below one f32 ulp.
+
+| Stage | Roundings | Applies to |
+|---|---|---|
+| `level` | 24 per link | One link of forward kinematics: quaternion-vector rotate (18), scale (3) and add (3), against the chain's summed link lengths |
+| `sum` | 2 per term | The centre-of-mass sum, over `m_i(|p_i| + 2 max_j |p_ij|)` |
+| `output` | 1 | GetHumanPose's division by human scale |
+| `readback` | 24 | The recorder's conversion to `A` |
+| `frame` | 40 | Midpoints, differences, cross products and normalization of 2.2's frame |
+| `solve` | 30 | `H_A` from three quaternions, rotating `c_h`, scaling by `k` and subtracting |
+| `local` | 24 | The inverse parent rotation, scale and translation of 2.3 step 4 |
+
+- **`ε_r`**, per fitting sample, in metres per component of `c` in `A`:
+  - each mapped bone's forward-kinematics error from the Animator node,
+    propagated through the centre of mass with `|a_ij| ≤ 1` (B2 refits and
+    checks this);
+  - the sum's own rounding;
+  - half an f32 ulp of the recorded read-back, times human scale;
+  - the read-back conversion.
+- **`τ_s`**, per sample, in the hips parent's units:
+  - the same propagation below the hips only;
+  - the frame's angular error times the largest lever from the hips. The
+    angular error is four times the upper arms' and legs' position error
+    over the shorter of the up and lateral spans, plus `γ32(40)`;
+  - the solve over the target body position and that lever;
+  - half an ulp of the target;
+  - the local conversion;
+  - half an ulp of the recorded hips translation.
+
+These are B1's bounds. B2 freezes its own and reruns the check if they
+differ.
+
+### Adequacy checkpoint
+
+After the owner's first run of these fixtures, run the checkpoint on each
+version's folder:
+
+```sh
+python3 -I tools/parity/anim_body_adequacy.py <folder> --json report.json
+```
+
+[`anim_body_adequacy.py`](../tools/parity/anim_body_adequacy.py) builds a
+row set from every body read-back sample of the training rigs (every rig
+but the hold-out). Each sample gives three rows. Each coefficient `a_ij`,
+keyed by edge, has the column `m_i (p_ij − p_i)` in `A`. Edges are a mapped
+body-slot bone and its nearest mapped human descendants under HumanTrait's
+parents. Masses are the E0b-folded defaults from `human_bones`. The
+checkpoint reports:
+
+1. **The necessary inequality, first.** Each fitting sample whose `τ_s` is
+   below twice its `ε_r` (in the hips parent's units).
+2. **Rank and condition** of `A_w = diag(1/ε) A`. A Householder QR is
+   followed by a one-sided Jacobi SVD of its triangle. The numerical rank
+   uses `σ_max · max(R, N) · 2^-52`, and the condition limit is `1e6`.
+   Each null direction is listed as a free combination.
+3. **`u_s = ‖J_s A_w⁺‖_∞ ≤ τ_s / 2`** on every body sample, including the
+   hold-out, and on every P2b humanoid recording.
+   - `J_s` is the hips-local translation's sensitivity
+     `−σ_p⁻¹ R_p⁻¹ m_i (p_ij − p_i)`.
+   - `A_w⁺ = V Σ⁺² Vᵀ A_wᵀ`, over the kept singular values.
+   - A sample whose edges no fitting row trains is listed apart.
+4. **Topology coverage**: every F1 and F6 rig recorded.
+
+Rank, `u_s` and the inequality do not depend on column scale, so the
+masses matter only to the condition number. The right-hand side is never
+needed. The script exits 0 when every item passes, 1 when any is short (B1
+then extends the fixtures before B2 starts) and 2 for unreadable input.
+
+On the synthetic rigs of its tests, `τ_s` is close to `ε_r`, so the
+inequality fails on most fitting samples there. Both bounds take the same
+forward kinematics, so the first owner run may well report this item short.

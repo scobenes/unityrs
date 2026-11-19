@@ -1,0 +1,348 @@
+"""Optional body-motion fixtures for the humanoid body plan (docs/plans/humanoid-body.md section 4).
+
+The tables mirror UnityrsBodyFixtures.cs and UnityrsBodyClips.cs. Every case
+is optional: a run older than them has no rows for them and completes as
+before. A run that has any body row must list every one, and each recorded
+case must have its pending recording under replays/body/, which completion
+checks here fail-closed. The recorder's body rows sit in the editor evidence:
+the case row, F2's GetHumanPose read-back (with the Animator's root and body
+rows during clip playback) per sample, each known vector's requested and
+applied body target, and HumanTrait's bone table with the default masses.
+"""
+
+from math import isfinite
+
+from anim_fixture_contract import BODY, MUSCLES, SPINE, Fixture
+from anim_reference import angle, euler, multiply
+
+# name: (base rig, omitted bones, mapped extras). F6 rigs are on the compact
+# rig; "noncoplanar" moves the hip and shoulder children off one plane and
+# "holdout" (long arms, short legs) is never fitted.
+PROBE_RIGS = {
+    "compact": ("compact", (), ()), "tall": ("tall", (), ()),
+    "no-chest": ("compact", ("Chest", "UpperChest"), ()), "no-upper-chest": ("compact", ("UpperChest",), ()),
+    "no-neck": ("compact", ("Neck",), ()), "no-left-shoulder": ("compact", ("LeftShoulder",), ()),
+    "no-right-shoulder": ("compact", ("RightShoulder",), ()),
+    "no-shoulders": ("compact", ("LeftShoulder", "RightShoulder"), ()),
+    "no-left-toes": ("compact", ("LeftToes",), ()), "no-right-toes": ("compact", ("RightToes",), ()),
+    "no-toes": ("compact", ("LeftToes", "RightToes"), ()),
+    "eyes": ("compact", (), ("LeftEye", "RightEye")), "jaw": ("compact", (), ("Jaw",)),
+    "eyes-jaw": ("compact", (), ("LeftEye", "RightEye", "Jaw")),
+    "noncoplanar": ("compact", (), ()), "holdout": ("compact", (), ()),
+}
+HOLDOUT = "holdout"
+# F5: the chain from the Animator to the hips, each on the compact rig.
+CHAIN_RIGS = ("scaled-animator", "large", "armature", "hips-scale")
+TARGET_RIGS = ("compact", "tall")
+SIDES = ("Left", "Right")
+LIMBS = ("UpperLeg", "LowerLeg", "Foot", "Toes", "Shoulder", "UpperArm", "LowerArm", "Hand")
+TORSO = {"compact": ("Hips", "Spine", "Chest", "UpperChest", "Neck", "Head"),
+         "tall": ("Hips", "Spine", "Chest", "Neck", "Head")}
+
+PROBE_GROUPS = (
+    ("Spine", SPINE), ("Chest", ("Chest Front-Back", "Chest Left-Right", "Chest Twist Left-Right")),
+    ("UpperChest", ("UpperChest Front-Back", "UpperChest Left-Right", "UpperChest Twist Left-Right")),
+    ("Neck", ("Neck Nod Down-Up", "Neck Tilt Left-Right", "Neck Turn Left-Right")),
+    ("Head", ("Head Nod Down-Up", "Head Tilt Left-Right", "Head Turn Left-Right")),
+    *((side + "UpperLeg", (f"{side} Upper Leg Front-Back", f"{side} Upper Leg In-Out")) for side in SIDES),
+    *((side + "LowerLeg", (f"{side} Lower Leg Stretch",)) for side in SIDES),
+    *((side + "Foot", (f"{side} Foot Up-Down",)) for side in SIDES),
+    *((side + "Toes", (f"{side} Toes Up-Down",)) for side in SIDES),
+    *((side + "Shoulder", (f"{side} Shoulder Down-Up", f"{side} Shoulder Front-Back")) for side in SIDES),
+    *((side + "UpperArm", (f"{side} Arm Down-Up", f"{side} Arm Front-Back")) for side in SIDES),
+    *((side + "LowerArm", (f"{side} Forearm Stretch",)) for side in SIDES),
+    *((side + "Hand", (f"{side} Hand Down-Up", f"{side} Hand In-Out")) for side in SIDES),
+    *((side + "Eye", (f"{side} Eye Down-Up", f"{side} Eye In-Out")) for side in SIDES),
+    ("Jaw", ("Jaw Close", "Jaw Left-Right")),
+)
+PROBE_VALUES = (.6, -.5, .4)
+COMBINED_VALUES = ((.3, -.2, .25, -.35, .15), (-.25, .4, -.15, .2, -.3), (.2, .2, -.3, -.1, .35))
+TARGETS = (((.05, -.03, .04), (12, -20, 7)), ((-.04, .02, -.06), (-9, 35, -11)))
+# The P2b known vectors at 0, .5 and 1: neutral, single-axis, noncommuting.
+ANCHORS = {0: (0, 0, 0), .5: (.5, 0, 0), 1: (-.25, .375, -.5)}
+
+
+def _flags(bits):
+    return f"-o{bits >> 2 & 1}-y{bits >> 1 & 1}-xz{bits & 1}"
+
+
+def _basis(bits):
+    return (bool(bits & 4), bool(bits & 2), bool(bits & 1))
+
+
+def _clip_variants():
+    rows = {}
+    neutral = dict(bake=(False,) * 3, keep=(False,) * 3, height_from_feet=False, level=0., orientation=0.,
+                   start=False, motion=False, knee=False, goals=False)
+    for bits in range(8):
+        rows["keep" + _flags(bits)] = neutral | dict(keep=_basis(bits))
+    for bits in range(1, 8):
+        rows["bake" + _flags(bits)] = neutral | dict(bake=_basis(bits))
+    rows["height-from-feet"] = neutral | dict(height_from_feet=True)
+    rows["level"] = neutral | dict(level=.125)
+    rows["orientation-offset"] = neutral | dict(orientation=30.)
+    rows |= {name + "-start": row | dict(start=True) for name, row in list(rows.items())}
+    rows["keep-o1-y1-xz1-motion"] = neutral | dict(keep=(True,) * 3, motion=True)
+    rows["height-from-feet-knee"] = neutral | dict(height_from_feet=True, knee=True)
+    rows["height-from-feet-knee-goals"] = neutral | dict(height_from_feet=True, knee=True, goals=True)
+    return rows
+
+
+CLIP_VARIANTS = _clip_variants()
+CHAIN_VARIANT = "keep-o0-y0-xz0"
+BODY_TIMES = (0, .25, .5, .75, 1)
+BODY_PATH = ((0, 1, 0), (.08, .97, .1), (.2, 1.02, .12), (.26, .95, .25), (.3, 1, .3))
+BODY_TURN = ((0, 0, 0), (8, 25, -4), (12, 40, -6), (6, 15, 3), (10, 30, -5))
+START_OFFSET, START_YAW = (.6, 0, -.4), 50
+KNEE = {"Left Upper Leg Front-Back": (0, .5, .1), "Left Lower Leg Stretch": (0, -.7, -.1),
+        "Right Upper Leg Front-Back": (0, .1, .5), "Right Lower Leg Stretch": (0, -.1, -.7)}
+MOTION_CURVES = tuple(f"MotionT.{a}" for a in "xyz") + tuple(f"MotionQ.{a}" for a in "xyzw")
+GOAL_CURVES = tuple(f"{foot}{kind}.{a}" for foot in ("LeftFoot", "RightFoot")
+                    for kind, axes in (("T", "xyz"), ("Q", "xyzw")) for a in axes)
+# The built m_MuscleClip fields completion copies into the evidence for B2.
+SERIALIZED_ROOT = ("m_StartAtOrigin", "m_LoopBlendOrientation", "m_LoopBlendPositionY", "m_LoopBlendPositionXZ",
+                   "m_KeepOriginalOrientation", "m_KeepOriginalPositionY", "m_KeepOriginalPositionXZ",
+                   "m_HeightFromFeet", "m_Level", "m_OrientationOffsetY", "m_StartX", "m_StopX",
+                   "m_MotionStartX", "m_MotionStopX", "m_LeftFootStartX", "m_RightFootStartX")
+SPINE_PROBE = "HumanoidRig/Hips/Spine"
+
+
+def _fixture(bundle, prefab, clip, kind, probe=SPINE_PROBE):
+    pose = kind != "clip"
+    return Fixture(bundle, bundle, prefab, clip, "human_pose" if pose else "animator", (probe, "rotation", None, None),
+                   MUSCLES if pose else MUSCLES + BODY, ("spine", "muscle_only") if pose else ("spine",))
+
+
+def _cases():
+    cases, info = {}, {}
+
+    def add(name, fixture, kind, rig, variant="", root="identity"):
+        cases[name], info[name] = fixture, dict(kind=kind, rig=rig, variant=variant, root=root)
+
+    for rig in PROBE_RIGS:
+        bundle = "body-" + rig
+        add("body-probes-" + rig, _fixture(bundle, "identity", bundle + "-muscles", "probes"), "probes", rig)
+        if rig in TARGET_RIGS:
+            for prefab, suffix in (("identity", ""), ("offset", "-offset")):
+                add(f"body-targets-{rig}{suffix}", _fixture(bundle, prefab, bundle + "-muscles", "targets"),
+                    "targets", rig, root=prefab)
+    for variant in CLIP_VARIANTS:
+        for prefab, suffix in (("identity", ""), ("offset", "-offset")):
+            add(f"body-clip-{variant}{suffix}", _fixture("body-clips", prefab, "body-clip-" + variant, "clip"),
+                "clip", "compact", variant, prefab)
+    for rig in CHAIN_RIGS:
+        bundle = "body-chain-" + rig
+        probe = "HumanoidRig/Armature/Hips/Spine" if rig == "armature" else SPINE_PROBE
+        add(bundle + "-targets", _fixture(bundle, "identity", bundle + "-muscles", "targets", probe), "targets", rig)
+        add(bundle + "-clip", _fixture(bundle, "identity", bundle + "-clip", "clip", probe), "clip", rig, CHAIN_VARIANT)
+    return cases, info
+
+
+BODY_CASES, BODY_INFO = _cases()
+BODY_BUNDLES = {fixture.bundle for fixture in BODY_CASES.values()}
+
+
+def rig_bones(rig):
+    """The rig's mapped human bones, by name."""
+    base, omit, extras = PROBE_RIGS.get(rig, ("compact", (), ()))
+    bones = [*TORSO[base], *(side + limb for side in SIDES for limb in LIMBS), *extras]
+    return {bone for bone in bones if bone not in omit}
+
+
+def probe_schedule(rig, names, targets):
+    """[(time, vector)] in schedule order, vectors over the captured HumanTrait muscle names."""
+    mapped = rig_bones(rig)
+    index = {name: i for i, name in enumerate(names)}
+    muscles, vectors = [], []
+    for bone, group in PROBE_GROUPS:
+        if bone in mapped:
+            for value, muscle in zip(PROBE_VALUES, group):
+                muscles.append(index[muscle])
+                vectors.append({index[muscle]: value})
+    combined = [{muscle: values[g % len(values)] for g, muscle in enumerate(muscles)} for values in COMBINED_VALUES]
+    vectors = combined if targets else vectors + combined
+    first = (len(vectors) + 1) // 2
+    second = len(vectors) - first
+    times = [.5 * (k + 391 / 1024) / first for k in range(first)]
+    times += [.5 + .5 * (k + 391 / 1024) / second for k in range(second)]
+    # On a 2^-16 grid, as the builder rounds them (C# rounds half to even, as Python).
+    times = [round(t * 65536) / 65536 for t in times]
+    spine = [index[muscle] for muscle in SPINE]
+
+    def anchor(t):
+        return dict(zip(spine, ANCHORS[t]))
+
+    points = [(0, anchor(0)), *zip(times[:first], vectors[:first]), (.5, anchor(.5)),
+              *zip(times[first:], vectors[first:]), (1, anchor(1))]
+    return [(t, [vector.get(i, 0) for i in range(len(names))]) for t, vector in points]
+
+
+def _f32s(values, replay, width):
+    replay.require(isinstance(values, list) and len(values) == width and all(isinstance(v, str) for v in values),
+                   "malformed body row")
+    return tuple(map(replay.f32_from_bits, values))
+
+
+def _unit(q):
+    return abs(sum(v * v for v in q) - 1) <= 1e-4
+
+
+def expected_case_row(name, replay):
+    info = BODY_INFO[name]
+    clip = CLIP_VARIANTS.get(info["variant"]) if info["kind"] == "clip" else None
+    clip = clip or CLIP_VARIANTS[CHAIN_VARIANT] | dict(keep=(False,) * 3)
+    return dict(kind=info["kind"], rig=info["rig"], variant=info["variant"], root=info["root"],
+                level=replay.f32_bits(clip["level"]), orientation_offset=replay.f32_bits(clip["orientation"]),
+                bake=list(clip["bake"]), keep=list(clip["keep"]), height_from_feet=clip["height_from_feet"],
+                start_offset=clip["start"], motion_curves=clip["motion"], knee_bend=clip["knee"],
+                foot_goals=clip["goals"])
+
+
+def check_body(name, fixture, doc, view, clip_key, replay):
+    """Check a body case's own rows; returns the serialized root rows for a clip case."""
+    require = replay.require
+    spec, capture = doc["spec"], doc["capture"]
+    editor = spec["evidence"]["editor"]
+    info = BODY_INFO[name]
+    require(editor.get("body_case") == [expected_case_row(name, replay)], f"body case row mismatch for {name}")
+    human = capture["humanoid"]
+    bones = editor.get("human_bones")
+    require(isinstance(bones, list) and [row.get("name") for row in bones] == [row["name"] for row in human["bones"]]
+            and all(type(row.get("parent")) is int and -1 <= row["parent"] < len(bones)
+                    and type(row.get("required")) is bool for row in bones)
+            and all(isfinite(mass) and mass >= 0 for mass in (replay.f32_from_bits(row["mass"]) for row in bones)),
+            f"body bone and mass rows mismatch for {name}")
+    mapped = {row["name"] for row in human["bones"] if row["node"] >= 0}
+    require(mapped == rig_bones(info["rig"]), f"captured Avatar topology differs from the {info['rig']} rig")
+    samples = capture["samples"]
+    rows = editor.get("body_samples")
+    playback = info["kind"] == "clip"
+    require(isinstance(rows, list) and len(rows) == len(samples), f"body read-back rows mismatch for {name}")
+    for row in rows:
+        _f32s(row["readback_position"], replay, 3), _f32s(row["world_position"], replay, 3)
+        require(all(_unit(_f32s(row[field], replay, 4)) for field in ("readback_rotation", "world_rotation")),
+                f"body read-back rotation is not a unit quaternion in {name}")
+        for field, width in (("root_position", 3), ("root_rotation", 4), ("body_position", 3), ("body_rotation", 4)):
+            value = row[field]
+            require(isinstance(value, list) and all(isinstance(v, str) and len(v) == 8 and int(v, 16) >= 0
+                                                    for v in value) and len(value) == (width if playback else 0),
+                    f"body root rows mismatch for {name}")
+    check_chain(info["rig"], spec, capture, replay)
+    if playback:
+        require(not editor.get("body_targets"), f"clip playback has known-vector targets in {name}")
+        return check_clip(name, info, editor, capture, view.value(clip_key), replay)
+    check_targets(name, info, spec, capture, editor, replay)
+    return None
+
+
+def check_targets(name, info, spec, capture, editor, replay):
+    require = replay.require
+    names = [row["name"] for row in capture["humanoid"]["muscles"]]
+    expected = probe_schedule(info["rig"], names, info["kind"] == "targets")
+    require([point["local"] for point in spec["schedule"]] == [t for t, _ in expected]
+            and all([replay.f32_bits(v) for v in point["muscles"]] == [replay.f32_bits(v) for v in vector]
+                    for point, (_, vector) in zip(spec["schedule"], expected)),
+            f"body known-vector schedule mismatch for {name}")
+    rows = editor.get("body_targets")
+    require(isinstance(rows, list) and len(rows) == len(expected), f"body target rows mismatch for {name}")
+    human = capture["humanoid"]
+    rest_position = _f32s(human["rest_body_position"], replay, 3)
+    rest_rotation = _f32s(human["rest_body_rotation"], replay, 4)
+    zero = [replay.f32_bits(0)] * 3
+    for i, row in enumerate(rows):
+        position, rotation = _f32s(row["position"], replay, 3), _f32s(row["rotation"], replay, 4)
+        offset, tilt = TARGETS[i % 2] if info["kind"] == "targets" else ((0, 0, 0), (0, 0, 0))
+        require(row["offset"] == ([replay.f32_bits(v) for v in offset] if any(offset) else zero)
+                and row["tilt"] == ([replay.f32_bits(v) for v in tilt] if any(tilt) else zero),
+                f"body target request mismatch for {name}")
+        want = multiply(euler(tilt, 4), rest_rotation)
+        require(all(abs(a - (b + c)) <= 1e-5 for a, b, c in zip(position, rest_position, offset))
+                and angle(rotation, want) <= 1e-5, f"applied body target differs from its request in {name}")
+
+
+def check_chain(rig, spec, capture, replay):
+    """The F5 chain each rig claims, in the recorded rest pose."""
+    nodes = {node["address"]: (i, node["name"]) for i, node in enumerate(spec["nodes"])}
+    rest = capture["rest"]["transforms"]
+
+    def scale(address):
+        return _f32s(rest[nodes[address][0]]["scale"], replay, 3)
+
+    def near(values, want):
+        return all(abs(v - want) <= 1e-6 for v in values)
+
+    hips = [address for address, (_, label) in nodes.items() if label == "Hips"]
+    replay.require(len(hips) == 1, "body rig has no single Hips node")
+    hips = hips[0]
+    armature = rig == "armature"
+    checks = {
+        "scaled-animator": near(scale("0"), 1.25),
+        "armature": nodes.get("0/0", (0, ""))[1] == "Armature" and near(scale("0/0"), .8) and hips == "0/0/0",
+        "hips-scale": near(scale(hips), 1.2),
+        "large": abs(_f32s(rest[nodes[hips][0]]["translation"], replay, 3)[1] - 1.32) <= 1e-5,
+    }
+    replay.require(checks.get(rig, True) and (armature or hips == "0/0")
+                   and (rig == "scaled-animator" or near(scale("0"), 1))
+                   and (rig == "hips-scale" or near(scale(hips), 1)), f"body rig chain differs from the {rig} rig")
+
+
+def _authored(editor, replay):
+    return {row["property"]: row for row in editor["bindings"]
+            if (row["path"], row["type"]) == ("", "UnityEngine.Animator")}
+
+
+def _built(value, want, replay):
+    if type(want) is bool:
+        return value is want or (type(value) is int and not isinstance(value, bool) and value == int(want))
+    return type(value) in (int, float) and replay.f32_bits(value) == replay.f32_bits(want)
+
+
+def check_clip(name, info, editor, capture, clip, replay):
+    require = replay.require
+    variant = CLIP_VARIANTS[info["variant"]]
+    authored = _authored(editor, replay)
+    turn = euler((0, START_YAW if variant["start"] else 0, 0), 4)
+    c, s = turn[3] ** 2 - turn[1] ** 2, 2 * turn[1] * turn[3]
+
+    def value(prop, i, field="value_f32"):
+        return replay.f32_from_bits(authored[prop]["keys"][i][field])
+
+    require(all(len(authored.get(f"Root{k}.{a}", {}).get("keys", ())) == len(BODY_TIMES)
+                for k, axes in (("T", "xyz"), ("Q", "xyzw")) for a in axes), f"authored body curves missing in {name}")
+    for i, t in enumerate(BODY_TIMES):
+        x, y, z = BODY_PATH[i]
+        point = (c * x + s * z, y, -s * x + c * z)
+        if variant["start"]:
+            point = tuple(a + b for a, b in zip(point, START_OFFSET))
+        keyed = [value(f"RootQ.{a}", i) for a in "xyzw"]
+        require(all(abs(value(f"RootT.{a}", i) - b) <= 1e-5 for a, b in zip("xyz", point))
+                and angle(keyed, multiply(turn, euler(BODY_TURN[i], 4))) <= 1e-5
+                and all(value(f"Root{k}.x", i, "time_f32") == t for k in "TQ"),
+                f"authored body curve mismatch for {name}")
+    for muscle, values in KNEE.items():
+        keys = authored.get(muscle, {}).get("keys", [])
+        want = [replay.f32_bits(v) for v in values] if variant["knee"] else []
+        require([key["value_f32"] for key in keys] == want, f"authored knee bend mismatch for {name}")
+    for curves, flag in ((MOTION_CURVES, "motion"), (GOAL_CURVES, "goals")):
+        require(all(bool(authored.get(curve, {}).get("keys")) == variant[flag] for curve in curves),
+                f"authored {flag} curves mismatch for {name}")
+    settings = capture["clip_settings"]
+    flags = dict(zip(("loopBlendOrientation", "loopBlendPositionY", "loopBlendPositionXZ"), variant["bake"]))
+    flags |= dict(zip(("keepOriginalOrientation", "keepOriginalPositionY", "keepOriginalPositionXZ"), variant["keep"]))
+    flags |= dict(heightFromFeet=variant["height_from_feet"], loopTime=False, loopBlend=False, mirror=False)
+    numbers = dict(level=variant["level"], orientationOffsetY=variant["orientation"], cycleOffset=0., startTime=0.,
+                   stopTime=1.)
+    require(all(settings[key] is value for key, value in flags.items())
+            and all(settings[key] == replay.f32_bits(value) for key, value in numbers.items()),
+            f"captured clip settings differ from the {info['variant']} variant")
+    muscle = clip.get("m_MuscleClip", {})
+    built = dict(zip(SERIALIZED_ROOT[1:8], (*variant["bake"], *variant["keep"], variant["height_from_feet"])))
+    built |= {"m_Level": variant["level"], "m_OrientationOffsetY": variant["orientation"]}
+    require(all(_built(muscle.get(key), want, replay) for key, want in built.items()),
+            f"built clip root settings differ from the {info['variant']} variant")
+    # The compiled body slots, Animator attributes 7 to 13, as the P2b body clip.
+    bindings = clip.get("m_ClipBindingConstant", {}).get("genericBindings", [])
+    attributes = sorted({row.get("attribute") for row in bindings
+                         if row.get("path") == 0 and row.get("customType") == 8
+                         and row.get("typeID", row.get("classID")) == 95})
+    return dict(serialized={key: muscle.get(key) for key in SERIALIZED_ROOT}, animator_attributes=attributes)

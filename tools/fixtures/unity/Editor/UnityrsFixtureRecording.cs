@@ -55,6 +55,11 @@ public static partial class AnimReplayRecorder
         public float spine_endpoint_tolerance_degrees;
         public string expected_refusal;
         public TwistEffect[] twist_effects;
+        // Body fixture rows (UnityrsBodyRecording.cs), empty for every other case.
+        public BodyCaseRow[] body_case;
+        public BodySampleRow[] body_samples;
+        public BodyTargetRow[] body_targets;
+        public HumanBoneRow[] human_bones;
     }
     [Serializable] sealed class PendingEvidence
     {
@@ -97,7 +102,7 @@ public static partial class AnimReplayRecorder
         var bindings = ReadBindings(clip, out double[] authoredTimes);
         var keys = authoredTimes.Where(time => start <= time && time <= stop).Concat(new[] { start, stop })
             .Distinct().OrderBy(time => time).ToArray();
-        var points = Schedule(keys, fixture.HeldTime);
+        var points = fixture.BodyProbes != null ? BodyPoints(fixture, keys) : Schedule(keys, fixture.HeldTime);
         string probeAddress = Address(prefab.transform, prefab.transform.Find(fixture.ProbePath));
         var nodes = prefab.GetComponentsInChildren<Transform>(true)
             .Select(node => new Node { name = node.name, address = Address(prefab.transform, node) }).ToArray();
@@ -181,7 +186,9 @@ public static partial class AnimReplayRecorder
         bool mixed = false;
 
         var spec = JsonUtility.FromJson<Spec>(JsonUtility.ToJson(pending));
-        var capture = RecordCapture(spec, bundles, pending: true, inspectClip: (builtClip, bundle) => {
+        var body = fixture.Body == null ? null : new BodyHooks { Probes = fixture.BodyProbes };
+        Need(body == null || knownPose == (fixture.BodyProbes != null), "Body known vectors need their probe schedule.");
+        var capture = RecordCapture(spec, bundles, pending: true, body: body, inspectClip: (builtClip, bundle) => {
             if (fixture.ProbeMixedStorage)
             {
                 mixed = HasMixedTransformStorage(builtClip, out string reason);
@@ -211,12 +218,15 @@ public static partial class AnimReplayRecorder
             "Built playback missed the authored endpoint probes for " + clip.name + ".");
         if (fixture.HeldTime.HasValue)
             SetHeldEvidence(pending, spec, capture, fixture, target);
+        if (body != null)
+            SetBodyEvidence(editor, fixture, body, capture, knownPose);
 
         // The final human_pose schema needs an inspected runtime slot
         // inventory. Keep these captures until the maintainer adds it.
-        if (knownPose)
+        // Body fixtures keep their own folder.
+        if (body != null || knownPose)
         {
-            output = Path.Combine(output, "known-vectors");
+            output = Path.Combine(output, body != null ? "body" : "known-vectors");
             Directory.CreateDirectory(output);
         }
         string path = Path.Combine(output, fixture.OutputName + ".pending.json");

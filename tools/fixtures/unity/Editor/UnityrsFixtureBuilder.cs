@@ -109,6 +109,12 @@ static partial class UnityrsFixtureBuilder
             name = name, status = "not_covered", reason = reason
         });
 
+        // Optional cases that fail, as never produced, unless a step reaches them.
+        public void AddPending(IEnumerable<string> names)
+        {
+            foreach (string name in names) cases.Add(name, new RunCase { name = name });
+        }
+
         // Fail, with an error line, each case no step has reached yet.
         public void FailUnreached(IEnumerable<string> names, string reason)
         {
@@ -147,10 +153,12 @@ static partial class UnityrsFixtureBuilder
 
         public void Prepare(Build build, string step, string[] names, Action action, bool optional = false)
         {
-            int bundles = build.Bundles.Count, coverage = build.CoverageBundles.Count, replays = build.Replays.Count;
+            int bundles = build.Bundles.Count, coverage = build.CoverageBundles.Count, body = build.BodyBundles.Count;
+            int replays = build.Replays.Count;
             if (Try(step, names, action, optional)) return;
             build.Bundles.RemoveRange(bundles, build.Bundles.Count - bundles);
             build.CoverageBundles.RemoveRange(coverage, build.CoverageBundles.Count - coverage);
+            build.BodyBundles.RemoveRange(body, build.BodyBundles.Count - body);
             build.Replays.RemoveRange(replays, build.Replays.Count - replays);
         }
 
@@ -299,6 +307,7 @@ static partial class UnityrsFixtureBuilder
         report.AddDeferred("humanoid-slot-axis-inventory", "The serialized body and muscle slots and runtime axis fields need an inspected crosswalk.");
         report.AddDeferred("humanoid-root-hips-comparison", "Qualification needs a comparison against the completed known-vector baselines.");
         AddCoverageCases(report);
+        AddBodyCases(report);
     }
 
     static Build PrepareInFixtureScene(RunReport report, string stamp, Func<RunReport, Scene, string, Build> prepare,
@@ -380,6 +389,8 @@ static partial class UnityrsFixtureBuilder
             "No preparation step produced this fixture.");
         Progress("Preparing coverage fixtures", .45f);
         BuildCoverage(build, report);
+        Progress("Preparing body motion fixtures", .47f);
+        BuildBody(build, report);
         return build;
     }
 
@@ -402,6 +413,7 @@ static partial class UnityrsFixtureBuilder
         Progress("Building asset bundles", .5f);
         StampBundleAssets(build.Bundles, run.Stamp);
         StampBundleAssets(build.CoverageBundles, run.Stamp);
+        StampBundleAssets(build.BodyBundles, run.Stamp);
         AssetDatabase.SaveAssets();
         Directory.CreateDirectory(bundles);
         var manifest = BuildPipeline.BuildAssetBundles(bundles, build.Bundles.ToArray(),
@@ -418,13 +430,17 @@ static partial class UnityrsFixtureBuilder
             if (built.Contains(entry.Value) && File.Exists(Path.Combine(bundles, entry.Value))) report.Set(entry.Key, "recorded");
             else report.Set(entry.Key, "failed", "Unity did not emit " + entry.Value + ".");
         }
-        // Coverage bundles build apart, so their errors fail only those cases.
-        var coverage = BuildCoverageBundles(build, report, staging, bundles, target);
+        // Coverage and body bundles build apart, so their errors fail only those
+        // cases. Each build's manifest is copied into plain data at once.
+        var coverage = BuildOptionalBundles(build, report, staging, bundles, target, "coverage", build.CoverageBundles,
+            replay => replay.Body == null);
+        var body = BuildOptionalBundles(build, report, staging, bundles, target, "body", build.BodyBundles,
+            replay => replay.Body != null);
         for (int i = 0; i < build.Replays.Count; i++)
         {
             var fixture = build.Replays[i];
             string name = fixture.OutputName;
-            var source = fixture.Optional ? coverage : main;
+            var source = !fixture.Optional ? main : fixture.Body != null ? body : coverage;
             // A coverage build that failed has already set its cases.
             if (source == null) continue;
             // Build-only runs check the built bundle too, so a missing one is an error.
