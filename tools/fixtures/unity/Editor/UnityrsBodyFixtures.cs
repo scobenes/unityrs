@@ -534,7 +534,9 @@ static partial class UnityrsFixtureBuilder
     {
         int first = (vectors.Count + 1) / 2, second = vectors.Count - first;
         // Times on a 2^-16 grid, so every one is exact in the JSON and as an f32.
-        BodyProbe Point(double time, float[] vector) => new BodyProbe { Time = Math.Round(time * 65536) / 65536, Muscles = vector };
+        // Every zero +0 (AnimReplayRecorder.Canonical, in place: the schedules find a probe's vector by reference).
+        BodyProbe Point(double time, float[] vector) => new BodyProbe {
+            Time = Math.Round(time * 65536) / 65536, Muscles = AnimReplayRecorder.Canonical(vector) };
         var probes = new List<BodyProbe> { Point(0, KnownHumanoidMuscles(0)) };
         for (int k = 0; k < first; k++) probes.Add(Point(.5 * (k + 391.0 / 1024) / first, vectors[k]));
         probes.Add(Point(.5, KnownHumanoidMuscles(.5f)));

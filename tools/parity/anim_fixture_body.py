@@ -293,7 +293,13 @@ def _scheduled(vectors, index, length):
 
     points = [(0, anchor(0)), *zip(times[:first], vectors[:first]), (.5, anchor(.5)),
               *zip(times[first:], vectors[first:]), (1, anchor(1))]
-    return [(t, [vector.get(i, 0) for i in range(length)]) for t, vector in points]
+    # Every zero is +0, as the builder writes it (canonical): the recordings compare f32 bits.
+    return [(t, [canonical(vector.get(i, 0)) for i in range(length)]) for t, vector in points]
+
+
+def canonical(value):
+    """An authored muscle value with a signed zero as +0 (the builder's AnimReplayRecorder.Canonical)."""
+    return 0. if value == 0 else value
 
 
 def compose(rig, names, sources):
