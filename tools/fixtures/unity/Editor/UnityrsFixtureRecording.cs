@@ -53,6 +53,8 @@ public static partial class AnimReplayRecorder
         public ObjectKey[] object_reference_samples;
         public string[] spine_start_f32, spine_stop_f32;
         public float spine_endpoint_tolerance_degrees;
+        public string expected_refusal;
+        public TwistEffect[] twist_effects;
     }
     [Serializable] sealed class PendingEvidence
     {
@@ -167,7 +169,8 @@ public static partial class AnimReplayRecorder
             animation_source = human ? "procedural_humanoid" : "procedural_clip",
             expected_discovery = fixture.ExpectedDiscovery,
             bindings = bindings, clip_settings = ReadSettings(clip), length_f32 = Bits(clip.length),
-            frame_rate_f32 = Bits(clip.frameRate), model_import_settings = Array.Empty<string>()
+            frame_rate_f32 = Bits(clip.frameRate), model_import_settings = Array.Empty<string>(),
+            expected_refusal = fixture.ExpectedRefusal
         };
         pending.evidence = new PendingEvidence { clock = clock, editor = editor };
 
@@ -202,6 +205,8 @@ public static partial class AnimReplayRecorder
         pending.avatar_asset = spec.avatar_asset;
         if (human)
             CheckHumanoidPlayback(capture as HumanCapture, fixture, prefab, clock, editor);
+        if (fixture.TwistMuscles != null)
+            CheckTwistEffects(capture as HumanCapture, fixture, prefab, editor);
         Need(ProbeMatches(clock.start.probe, capture.samples) && ProbeMatches(clock.stop.probe, capture.samples),
             "Built playback missed the authored endpoint probes for " + clip.name + ".");
         if (fixture.HeldTime.HasValue)

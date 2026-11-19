@@ -233,7 +233,7 @@ def skin_renderer(mesh, bones):
     return {"m_Mesh": pointer(mesh), "m_Bones": [pointer(bone) for bone in bones], "m_RootBone": pointer(bones[0])}
 
 
-def static_bundles(bundles, inspect):
+def static_bundles(bundles, inspect, run=RUN):
     assets = {ASSETS + "static/" + name: i for i, name in enumerate((
         "primitives.prefab", "materials.prefab", "metallic.mat", "unlit.mat", "checker.asset", "lod.prefab",
         "four-influence.asset", "skin.prefab"), 1)}
@@ -272,7 +272,7 @@ def static_bundles(bundles, inspect):
         game_object(rows, transform - 1, transform, name, parent=8000, components=components)
         if components:
             rows.append((components[0], 137, None, skin_renderer(7, (8006, 8008, 8010, 8012))))
-    archive(bundles, inspect, "static-objects", assets, rows)
+    archive(bundles, inspect, "static-objects", assets, rows, run)
 
     scene = []
     for i, name in enumerate(("Alpha", "Zulu")):
@@ -281,7 +281,7 @@ def static_bundles(bundles, inspect):
                    m_StaticBatchInfo={"firstSubMesh": i, "subMeshCount": 1})
     shared = [(43, 43, "CombinedBatchPanels", {"m_SubMeshes": [{"indexCount": 6}] * 2}),
               (21, 21, "BatchMaterial", {})]
-    archive(bundles, inspect, "static-batch-scene", {ASSETS + "static/batch.unity": 0}, scene, shared=shared)
+    archive(bundles, inspect, "static-batch-scene", {ASSETS + "static/batch.unity": 0}, scene, run, shared=shared)
 
 
 def binding(path, prop, kind, times, first=0, last=1, *, stepped=False, weighted=False):

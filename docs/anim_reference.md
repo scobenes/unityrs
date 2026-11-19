@@ -576,6 +576,22 @@ version-and-target folder to the maintainer's fixture inbox. If the run
 stops with **unityrs fixture build failed**, send the log from the separate
 `-failed-<id>` folder shown in the dialog.
 
+Two more menu items build variant runs with no replays. **Build URP
+material fixtures** runs only in a Universal 3D project and writes
+`<version>/URP-<target>/` with the `urp-materials` bundle: URP Lit and
+Unlit materials with textures, keywords and properties. **Build Android
+fixtures** needs Android Build Support and writes `<version>/Android-variant/` with
+the static bundles and an `android-textures` bundle whose textures carry
+explicit ASTC and ETC/ETC2 Android overrides. Their `run.json` names the
+variant (`urp` or `android`), and `complete` checks it against
+[`anim_fixture_variants.py`](../tools/parity/anim_fixture_variants.py):
+shader names, keywords and properties for URP, and each override's texture
+format, data size and `.resS` stream for Android, with each texture decoded by
+`unityrs extract` at its declared size. The Android folder is
+separate from `<version>/Android/`, where a Built-in run publishes when
+Android is the active target. A Built-in run keeps `urp-materials` as
+`not_covered`.
+
 The button generates both humanoid rigs and their clips. Each rig has
 skinned boxes in a T-pose and a procedurally built Avatar. The taller rig
 has asymmetric Spine limits and omits UpperChest. Each rig has an
@@ -619,7 +635,20 @@ a reason. These sections are URP materials, packed rotation slopes,
 authored/runtime precedence, verified mixed Transform storage, integer discrete
 bindings, humanoid twist and non-neutral setting refusals, humanoid slot/axis
 inventory and the root/hips comparison. `build.log` and `run.json` give the
-reason for uncovered sections and fixture errors. The `*.pending.json` files use
+reason for uncovered sections and fixture errors. The button generates two of them in a separate bundle build: a
+humanoid rig with non-neutral Avatar twist that ramps the twist muscles, and a muscle clip whose one non-neutral
+setting is a height offset. Integer discrete bindings stay not covered on Built-in. Unity keeps an integer as a
+discrete curve only on a script field: `EditorCurveBinding.DiscreteCurve` accepts only an enum or an int with
+`[DiscreteEvaluation]`, and `DiscreteEvaluationAttribute` targets fields
+([UnityCsReference](https://github.com/Unity-Technologies/UnityCsReference/blob/2022.3/Editor/Mono/Animation/EditorCurveBinding.bindings.cs)).
+Built-in components bind their integers as float curves, and the fixture prefabs carry no scripts. The run's reason
+lists the discrete candidates that `GetAnimatableBindings` reported on the probe's built-in components. A case is not covered only when an explicit check
+shows Unity cannot produce it, with the reason; any other error fails it. A case recorded in `run.json` needs its
+pending recording, which completion checks against the [coverage contract](../tools/parity/anim_fixture_coverage.py);
+any other status must leave none. Completion lists the optional cases not recorded. Its `REQUIRED_COVERAGE` table
+names, per Editor version, the cases a run must record; add a case there once a real run of that version has
+recorded it and completion has accepted it. Real 2022.3 and 6000 runs recorded both humanoid refusal probes, so
+both versions now require them, and a run of either version without them is refused. The `*.pending.json` files use
 the separate `unityrs.anim_replay_pending` format, version 1, and stay
 beside the completed files. Each pending spec has one bundle basename
 without a digest, uses integer mesh groups where renderers share a mesh,
