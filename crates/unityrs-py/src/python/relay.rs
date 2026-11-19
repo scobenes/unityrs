@@ -105,6 +105,8 @@ struct State {
     request: Option<Request>,
     response: Option<PyResult<Response>>,
     error: Option<PyErr>,
+    /// A callback panicked; it was answered with an error instead.
+    panicked: bool,
     done: bool,
 }
 
@@ -168,13 +170,39 @@ impl Relay {
                 return;
             };
             drop(state);
-            let answer = emit(request);
+            // A panicking callback still answers, or the worker would wait
+            // for its response while this caller waits for the worker.
+            let answer = self.answer(request);
             self.state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .response = Some(answer);
             self.changed.notify_all();
         }
+    }
+
+    /// Emit `request`; a panic becomes an error answer, and the call's
+    /// failure once its work ends (see [`Self::panicked`]).
+    fn answer(&self, request: Request) -> PyResult<Response> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| emit(request))).unwrap_or_else(
+            |_| {
+                self.state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .panicked = true;
+                Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "core worker failed",
+                ))
+            },
+        )
+    }
+
+    /// Whether a callback panicked during the work, inline or relayed.
+    pub(crate) fn panicked(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .panicked
     }
 
     pub(crate) fn take_error(&self) -> Option<PyErr> {
@@ -259,8 +287,12 @@ fn emit(request: Request) -> PyResult<Response> {
 pub(crate) fn request(request: Request) -> PyResult<Response> {
     CURRENT.with(|slot| {
         let pointer = slot.get();
-        if !relayed() {
+        if pointer.is_null() {
             return emit(request);
+        }
+        if !relayed() {
+            // SAFETY: as below; the caller's own work, run inline.
+            return unsafe { &*pointer }.answer(request);
         }
         // SAFETY: enter installs only its borrowed, stack-owned Relay. Its
         // guard restores the prior pointer before that borrow ends, also on

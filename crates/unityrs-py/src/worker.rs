@@ -2,7 +2,8 @@
 //! stack allowance: inline on the caller when its own stack is known to cover
 //! the allowance, else on a pooled worker that parks between calls (a thread
 //! per call mapped and tore down its stack every time). Either way the caller
-//! is detached while the work runs, and a panic is the call's error.
+//! is detached while the work runs, and a panic is the call's error, also a
+//! callback's (which is answered with an error, so neither side waits on).
 use pyo3::{
     PyResult,
     exceptions::{PyOSError, PyRuntimeError},
@@ -133,6 +134,9 @@ pub(crate) fn run<T: Send>(stack: usize, f: impl FnOnce() -> T + Send) -> PyResu
         let relay = crate::python::relay::Relay::inline();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| relay.enter(f)))
             .map_err(|_| PyRuntimeError::new_err("core worker failed"))?;
+        if relay.panicked() {
+            return Err(PyRuntimeError::new_err("core worker failed"));
+        }
         return match relay.take_error() {
             Some(error) => Err(error),
             None => Ok(result),
@@ -167,6 +171,9 @@ pub(crate) fn run<T: Send>(stack: usize, f: impl FnOnce() -> T + Send) -> PyResu
         // A panicked worker retires: each panic leaves a fresh thread.
         Some(Err(_)) | None => return Err(PyRuntimeError::new_err("core worker failed")),
     };
+    if relay.panicked() {
+        return Err(PyRuntimeError::new_err("core worker failed"));
+    }
     match relay.take_error() {
         Some(error) => Err(error),
         None => Ok(result),
@@ -197,4 +204,4 @@ pub(crate) fn python_warning(
 
 #[cfg(test)]
 #[path = "worker_tests.rs"]
-mod tests;
+pub(crate) mod tests;

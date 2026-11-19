@@ -92,7 +92,7 @@ impl NativeFile {
             p::held::bytes(py, bytes)?,
             p::wide_int(next)?.into_bound(py),
         ];
-        Ok(pyo3::types::PyTuple::new(py, items)?.into_any().unbind())
+        p::held::tuple_of(py, &items).map(Bound::unbind)
     }
     fn save_serialized_snapshot(
         &self,

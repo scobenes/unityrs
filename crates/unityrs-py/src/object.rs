@@ -177,25 +177,21 @@ impl NativeObject {
                     .inner
                     .read_typetree(tree.as_ref(), check_read)
                     .map_err(|error| Failure::parse(error, self.inner.info().byte_size > 0))?;
-                // One attachment builds the whole value; the parsed tree is
-                // still dropped here, on the advertised stack.
-                Ok::<_, Failure>(crate::python::relay::attach(|py| {
+                // The parsed tree is dropped here, on the advertised stack.
+                Ok::<_, Failure>((|| {
                     let _staging = meter.charge(256).map_err(errors::charge)?;
                     let mut charge = unityrs_core::limits::Charge::zero(meter);
-                    let value =
-                        crate::value_render::render(py, &parsed, meter, &mut charge, false)?;
-                    let count = p::held::int(py, parsed.bytes_read)?;
-                    Ok::<_, PyErr>(
-                        pyo3::types::PyTuple::new(py, [value, count])?
-                            .into_any()
-                            .unbind(),
-                    )
-                }))
+                    let value = crate::value_render::convert(&parsed, meter, &mut charge, false)?;
+                    Ok::<_, PyErr>((value, parsed.bytes_read))
+                })())
             })
         })?;
-        crate::worker_error::finish(native)?
+        let (value, count) = crate::worker_error::finish(native)??;
+        p::held::tuple_of(py, &[value.into_bound(py), p::held::int(py, count)?]).map(Bound::unbind)
     }
     fn metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        use p::held as h;
+        static KEYS: pyo3::sync::PyOnceLock<Vec<Py<PyAny>>> = pyo3::sync::PyOnceLock::new();
         let (embedded, i) = py.detach(|| {
             (
                 self.inner
@@ -204,18 +200,40 @@ impl NativeObject {
                 self.inner.info().clone(),
             )
         });
-        // Built attached, with interned keys: callers read it on every parse.
-        let d = pyo3::types::PyDict::new(py);
-        d.set_item(pyo3::intern!(py, "_has_embedded_nodes"), embedded)?;
-        d.set_item(pyo3::intern!(py, "path_id"), i.path_id)?;
-        d.set_item(pyo3::intern!(py, "class_id"), i.class_id)?;
-        d.set_item(pyo3::intern!(py, "type_id"), i.type_id)?;
-        d.set_item(pyo3::intern!(py, "byte_size"), i.byte_size)?;
-        // byte_start can exceed i64: add the signed header offset in Python.
-        d.set_item(pyo3::intern!(py, "byte_start"), p::wide_int(i.byte_start)?)?;
-        d.set_item(pyo3::intern!(py, "is_destroyed"), i.is_destroyed)?;
-        d.set_item(pyo3::intern!(py, "is_stripped"), i.is_stripped)?;
-        Ok(d.into_any().unbind())
+        // Built attached, with keys made once: callers read it on every parse.
+        let keys = KEYS.get_or_try_init(py, || {
+            [
+                "_has_embedded_nodes",
+                "path_id",
+                "class_id",
+                "type_id",
+                "byte_size",
+                "byte_start",
+                "is_destroyed",
+                "is_stripped",
+            ]
+            .into_iter()
+            .map(|key| h::string(py, key.as_bytes()).map(Bound::unbind))
+            .collect::<PyResult<Vec<_>>>()
+        })?;
+        let optional =
+            |value: Option<i64>| value.map_or_else(|| Ok(h::none(py)), |n| h::int(py, n));
+        let values = [
+            h::boolean(py, embedded)?,
+            h::int(py, i.path_id)?,
+            h::int(py, i.class_id.into())?,
+            h::int(py, i.type_id.into())?,
+            h::int(py, i.byte_size.into())?,
+            // byte_start can exceed i64: add the signed header offset in Python.
+            p::wide_int(i.byte_start)?.into_bound(py),
+            optional(i.is_destroyed.map(i64::from))?,
+            optional(i.is_stripped.map(i64::from))?,
+        ];
+        let d = h::dict(py)?;
+        for (key, value) in keys.iter().zip(&values) {
+            h::set(&d, key.bind(py), value)?;
+        }
+        Ok(d.unbind())
     }
     fn raw_data(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         py.detach(|| {
@@ -240,14 +258,11 @@ impl NativeObject {
                     .inner
                     .read_object_fields_with_nodes(tree.as_ref())
                     .map_err(|error| Failure::parse(error, self.inner.info().byte_size > 0))?;
-                // One attachment builds the whole result; the parsed tree is
-                // still dropped here, on the advertised stack.
-                Ok::<_, Failure>(crate::python::relay::attach(|py| {
-                    object_output(py, &self.inner, &parsed, progress)
-                }))
+                Ok::<_, Failure>(object_fields(&self.inner, parsed, progress))
             })
         })?;
-        crate::worker_error::finish(native)?
+        let fields = crate::worker_error::finish(native)??;
+        py.detach(|| object_output(&self.inner, fields))
     }
     fn parse(&self, py: Python<'_>, check_read: bool) -> PyResult<Py<PyAny>> {
         self.parse_with_position(py, check_read, None)
@@ -255,30 +270,55 @@ impl NativeObject {
     }
 }
 
-/// `object_data`'s result, built on an attached caller.
-fn object_output(
-    py: Python<'_>,
-    inner: &ObjectRef,
-    parsed: &unityrs_core::Parsed,
+/// `object_data`'s value, with what its metadata needs from the parse.
+struct Fields {
+    value: Py<PyAny>,
+    lists: unityrs_core::limits::MeteredVec<unityrs_core::typetree::SharedNodes>,
+    bytes_read: i64,
     progress: unityrs_core::walk::FieldProgress,
-) -> PyResult<Py<PyAny>> {
+    charge: unityrs_core::limits::Charge,
+}
+
+/// Render the value, then drop the parsed tree (on the worker's stack)
+/// before the node metadata adds its staging, keeping only the node lists.
+fn object_fields(
+    inner: &ObjectRef,
+    parsed: unityrs_core::Parsed,
+    progress: unityrs_core::walk::FieldProgress,
+) -> PyResult<Fields> {
     let meter = inner.file().meter();
     let mut charge = unityrs_core::limits::Charge::zero(meter);
     charge.grow(128).map_err(errors::charge)?;
-    let fields = crate::value_render::render(py, parsed, meter, &mut charge, true)?.unbind();
+    let value = crate::value_render::convert(&parsed, meter, &mut charge, true)?;
+    let mut lists = unityrs_core::limits::MeteredVec::with_capacity(meter, parsed.lists().len())
+        .map_err(errors::charge)?;
+    for list in parsed.lists() {
+        lists.push(list.clone()).map_err(errors::charge)?;
+    }
     let bytes_read = parsed.bytes_read;
-    let result = p::list()?;
-    p::push(&result, &fields)?;
-    p::push(
-        &result,
-        &crate::object_nodes::convert(parsed.lists(), &mut charge)?,
-    )?;
-    p::push(
-        &result,
-        &crate::object_nodes::references(parsed.lists(), inner.file().ref_types(), &mut charge)?,
-    )?;
-    p::push(&result, &p::int(bytes_read)?)?;
-    p::push(&result, &p::uint(progress.completed as u64)?)?;
+    drop(parsed);
+    Ok(Fields {
+        value,
+        lists,
+        bytes_read,
+        progress,
+        charge,
+    })
+}
+
+/// `object_data`'s result, from a detached caller.
+fn object_output(inner: &ObjectRef, fields: Fields) -> PyResult<Py<PyAny>> {
+    use p::held as h;
+    let Fields {
+        value,
+        lists,
+        bytes_read,
+        progress,
+        mut charge,
+    } = fields;
+    let nodes = crate::object_nodes::convert(lists.as_slice(), &mut charge)?;
+    let references =
+        crate::object_nodes::references(lists.as_slice(), inner.file().ref_types(), &mut charge)?;
     let error = if let Some(error) = progress.error {
         let error = if let Some(names) = progress.reference_names {
             charge
@@ -307,14 +347,25 @@ fn object_output(
                 inner.info().byte_size > 0,
             )
         };
-        crate::python::relay::attach(|py| error.value(py).clone().into_any().unbind())
+        Some(error)
     } else {
-        p::none()
+        None
     };
-    p::push(&result, &error)?;
-    let construction = crate::python::relay::attach(|py| {
-        Py::new(py, crate::construction::Construction { charge }).map(Py::into_any)
-    })?;
-    p::push(&result, &construction)?;
-    Ok(result)
+    crate::python::relay::attach(move |py| {
+        let error = error.map_or_else(|| h::none(py), |error| error.value(py).clone().into_any());
+        let construction = Bound::new(py, crate::construction::Construction { charge })?;
+        let result = h::list(py)?;
+        for item in [
+            value.into_bound(py),
+            nodes.into_bound(py),
+            references.into_bound(py),
+            h::int(py, bytes_read)?,
+            h::uint(py, progress.completed as u64)?,
+            error,
+            construction.into_any(),
+        ] {
+            h::push(&result, &item)?;
+        }
+        Ok(result.unbind())
+    })
 }
