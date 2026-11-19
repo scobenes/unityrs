@@ -198,6 +198,38 @@ class ReaderTests(unittest.TestCase):
             seal.executable(str(folder / "absent"))
 
 
+class ReaderEntryTests(unittest.TestCase):
+    """Every single-file reader refuses a pending or hold-out file by its name, before opening it."""
+
+    def test_validate_and_budgets_never_open_a_sealed_or_pending_file(self):
+        import anim_replay as replay
+        import anim_replay_budgets as budgets
+
+        folder = scratch.for_case(self)
+        case = seal.HOLDOUT_CASES[0]
+        names = {f"{case}.pending.json": "sealed hold-out", f"{case}.json": "sealed hold-out",
+                 body.BODY_CASES[case].bundle: "sealed hold-out", "body-probes-compact.pending.json": "pending replay"}
+        (folder / "link.json").symlink_to(folder / f"{case}.pending.json")
+        names["link.json"] = "sealed hold-out"
+        for name, message in names.items():
+            path = folder / name
+            if not path.is_symlink():
+                path.write_text("{}", encoding="utf-8")
+            argvs = [["anim_replay.py", mode, str(path)] for mode in ("validate", "validate-spec", "derive",
+                                                                       "capture-id")]
+            argvs.append(["anim_replay_budgets.py", str(path), "--show-dir", str(folder)])
+            for argv in argvs:
+                with self.subTest(name=name, argv=argv[:2]), mock.patch.object(sys, "argv", argv), \
+                        mock.patch("pathlib.Path.read_text", side_effect=AssertionError("opened")), \
+                        mock.patch("pathlib.Path.read_bytes", side_effect=AssertionError("opened")), \
+                        mock.patch("builtins.open", side_effect=AssertionError("opened")), \
+                        mock.patch("sys.stderr") as stderr:
+                    with self.assertRaises(SystemExit) as exit:
+                        (replay if argv[0] == "anim_replay.py" else budgets).main()
+                    self.assertEqual(exit.exception.code, 1)
+                    self.assertIn(message, "".join(call.args[0] for call in stderr.write.call_args_list))
+
+
 class MinimumTests(unittest.TestCase):
     def test_the_minimum_comes_from_the_hold_out_design(self):
         self.assertEqual(seal.HOLDOUT_CASES, ("body-probes-holdout",))

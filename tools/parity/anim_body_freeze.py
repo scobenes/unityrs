@@ -86,14 +86,13 @@ import anim_body_e4 as e4_check  # noqa: E402
 import anim_body_seal as seal  # noqa: E402
 import anim_replay as replay  # noqa: E402
 from anim_body_model import ANGLE_FLOOR, HYPOTHESES, TWIST_LIMIT  # noqa: E402
-from anim_body_runs import Design, digest, load, observe, role_of, solve  # noqa: E402
+from anim_body_runs import EDITORS, Design, digest, load, observe, role_of, solve  # noqa: E402
 from anim_body_tolerance import OPERATIONS, U32, U64  # noqa: E402
 from anim_fixture_body import BAND_CASES, BODY_INFO, HOLDOUT, rig_bones  # noqa: E402
 
 FORMAT = "unityrs.anim_body_freeze"
-VERSION = 6
+VERSION = 7
 MODES = ("e0", "e1", "e2", "e3a", "e4", "freeze", "e3b")
-EDITORS = ("2022", "6000")
 
 
 def bounds(design=None):
@@ -202,6 +201,9 @@ def freeze(folders, path, avatar_of, clip_of, evidence=(), unityrs=None):
     replay.require(path is not None and not path.exists(), "freeze writes a new artifact: give a new --freeze path")
     report, runs, rows, design = e3a(folders, avatar_of, clip_of)
     replay.require(report["passed"], "E3a must pass before the freeze")
+    versions = sorted({run.version for run in runs})
+    replay.require(sorted(v.split(".")[0] for v in versions) == list(EDITORS),
+                   f"the freeze needs one run of each Editor version {EDITORS}, not {versions}")
     root = e4(runs, rows, clip_of)
     replay.require(root["passed"] and root["passing"], "E4 must pass, with a passing configuration, before the freeze")
     replay.require(not {str(f.resolve()) for f in folders} & {str(f.resolve()) for f in evidence},
@@ -209,9 +211,6 @@ def freeze(folders, path, avatar_of, clip_of, evidence=(), unityrs=None):
     support = supporting(evidence, design, report["coefficients"], report["lateral_limit"], avatar_of, clip_of)
     replay.require(all(entry["e2"]["passed"] and entry["e3"]["passed"] for entry in support),
                    "the supporting runs fail within the lateral limit")
-    versions = sorted({run.version for run in runs})
-    replay.require(sorted(v.split(".")[0] for v in versions) == list(EDITORS),
-                   f"the freeze needs one run of each Editor version {EDITORS}, not {versions}")
     replay.require(design.rank == len(design.keys), "the freeze needs a design of full rank")
     coefficients = report["coefficients"]
     replay.require(all(abs(a) <= check.COEFFICIENT_LIMIT for a in coefficients.values()),

@@ -72,7 +72,7 @@ from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT
 HERE = Path(__file__).resolve().parent
 ENTRY_POINTS = ("anim_body_freeze.py", "anim_body_check.py", "anim_body_seal.py")
 # The one artifact E3b reads (bound separately, so never a source), and E3b's fixed ledger directory.
-FREEZE_PATH = HERE / "anim_body_freeze_v6.json"
+FREEZE_PATH = HERE / "anim_body_freeze_v7.json"
 # The account's own home (its passwd entry, never $HOME).
 LEDGER_DIR = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local" / "state" / "unityrs" / "e3b"
 HOLDOUT_CASES = tuple(sorted(name for name, info in BODY_INFO.items() if info["rig"] == HOLDOUT))

@@ -518,7 +518,8 @@ coefficient is shipped from a fit.
   chain its own): B4 and B5 implement only the passing configurations it
   names, a configuration with no comparison is listed as excluded (or as
   refused, when the topology scope refused all its samples), never
-  passing, and each Editor version needs a comparison of its own. It records the code's git commit and a digest of its
+  passing, and each Editor family the code requires (the same constant
+  E3b uses) needs a comparison of its own, whatever runs are given. It records the code's git commit and a digest of its
   sources: the checker's entry points, every local module they import,
   transitively (recording validation, case tables and Avatar decoding
   among them), and the data files they name (the recording schema, the
@@ -533,7 +534,8 @@ coefficient is shipped from a fit.
   commit that added that path holds, the CLI is the frozen one, and the
   Editor versions, hold-out cases and minimum it records are the code's
   constants. `complete` seals the hold-out's cases: it opens neither their
-  recordings nor their bundles. Only E3b unseals them, through `complete`
+  recordings nor their bundles, and every single-file reader refuses a
+  hold-out or pending file by name before opening it. Only E3b unseals them, through `complete`
   itself (run identity, topology, probe schedule and bundle checks), after
   reproducing the frozen fit and lateral limit from the frozen training
   runs and checking, by file names alone, that each version recorded every

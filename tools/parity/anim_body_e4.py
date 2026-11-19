@@ -26,7 +26,8 @@ listed, not evaluated. Results are per configuration (variant, rig, Editor
 version, root placement), never pooled: a sample without a read-back is
 counted as excluded, and a configuration with nothing compared is excluded
 (or refused, when the topology scope refused every sample), never passing.
-Each Editor version needs a comparison of its own.
+Each Editor family the code requires (anim_body_runs.EDITORS, as E3b) needs
+a comparison of its own, whichever versions the rows hold.
 """
 
 import math
@@ -46,7 +47,7 @@ from anim_body_model import (
     turn_angle,
     yaw_error,
 )
-from anim_body_runs import F32
+from anim_body_runs import EDITORS, F32
 from anim_body_tolerance import U32, U64, decode, gamma, hips_error, norm, readback_position, turn_sensitivity
 from anim_fixture_body import BODY_INFO, MUSCLE_ATTRIBUTE, SERIALIZED_ROOT
 from anim_fixture_contract import compiled_curves
@@ -246,8 +247,13 @@ def e4(rows, clips):
             entry["status"] = "fail"
     if not samples:
         failures.append("E4: no comparison")
-    failures += [f"E4: no comparison in {version}" for version, count in sorted(versions.items())
+    # Every Editor family the code requires (EDITORS, E3b's too), not only those the rows hold, compares.
+    families = {family: sum(count for version, count in versions.items() if version.split(".")[0] == family)
+                for family in EDITORS}
+    failures += [f"E4: no comparison in Editor {family}" for family, count in families.items()
                  if not count and samples]
+    failures += [f"E4: Editor version {version} is not one of {EDITORS}" for version in sorted(versions)
+                 if version.split(".")[0] not in EDITORS]
     for entry in configurations.values():
         if entry["status"] == "pass" and not entry["samples"]:
             # Nothing compared: every sample refused on topology is a refusal, any other an exclusion.

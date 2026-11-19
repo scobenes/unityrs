@@ -53,6 +53,9 @@ from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT
 from anim_fixture_contract import REPLAY_CASES, VECTOR_CASES
 from anim_fixture_coverage import COVERAGE_CASES
 
+# The Editor families every freeze, E4 and E3b needs (a version's leading number).
+EDITORS = ("2022", "6000")
+
 ROLES = ("training", "holdout")
 # The 25 slots of m_HumanBoneIndex and m_HumanBoneMass: HumanBodyBones 0-8, UpperChest, 9-23.
 SLOTS = (*NAMES[:9], "UpperChest", *NAMES[9:24])

@@ -57,6 +57,12 @@ class Checks(unittest.TestCase):
     def setUpClass(cls):
         cls.docs = {name: recording(name, samples=12) for name in CASES}
 
+    def setUp(self):
+        # One Editor family per run here; test_e4_needs_a_comparison_in_each_version... checks the code's two.
+        family = mock.patch.object(e4, "EDITORS", (write_run.__defaults__[0].split(".")[0],))
+        family.start()
+        self.addCleanup(family.stop)
+
     def run_mode(self, mode, docs=None, avatar_of=avatars, clip_of=clips):
         return checked(mode, scratch.for_case(self), docs if docs is not None else self.docs, avatar_of, clip_of)
 
@@ -253,9 +259,13 @@ class Checks(unittest.TestCase):
             if body.BODY_INFO[name]["kind"] == "clip":
                 unread(quiet[name])
         folders = [write_run(root / "a", self.docs), write_run(root / "b", quiet, "6000.6.9f1")]
-        with mock.patch.object(runs, "REQUIRED", frozenset()):
+        with mock.patch.object(runs, "REQUIRED", frozenset()), mock.patch.object(e4, "EDITORS", runs.EDITORS):
             report = freeze.run_mode("e4", folders, avatar_of=avatars, clip_of=clips)
-        self.assertEqual(report["failures"], ["E4: no comparison in 6000.6.9f1"])
+            self.assertEqual(report["failures"], ["E4: no comparison in Editor 6000"])
+            # The families come from the code (E3b's), not the rows: one version alone fails too.
+            report = freeze.run_mode("e4", folders[:1], avatar_of=avatars, clip_of=clips)
+            self.assertEqual(report["failures"], ["E4: no comparison in Editor 6000"])
+        self.assertIs(runs.EDITORS, freeze.EDITORS)
         # A configuration whose every sample the topology scope refused is a named refusal, never omitted.
         with mock.patch.object(runs, "REQUIRED", frozenset()):
             loaded = runs.load(folders[:1], "training")
