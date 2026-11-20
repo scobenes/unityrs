@@ -88,7 +88,10 @@ class ParseTests(unittest.TestCase):
         for text, why in ((SMALL.replace("totals: 7 2500\n", ""), "totals"),
                           (SMALL.replace("cfn=(3) malloc", "cfn=(9)"), "before its name"),
                           (SMALL.replace("events: Dr Ir", "events: Dr"), "no Ir"),
-                          (SMALL.replace("calls=4 0", "jump=4 0"), "jump")):
+                          (SMALL.replace("calls=4 0", "jump=4 0"), "jump"),
+                          (SMALL.replace("+2 1 100", "+2 1"), "no Ir field"),
+                          (SMALL.replace("totals: 7 2500", "totals: 7 2600"), "sum to 2,500, not the file's total"),
+                          (SMALL.replace("0 3 1100\n\ntotals", "0 3 1000\n\ntotals"), "sum to 2,400")):
             with self.assertRaisesRegex(callgrind.ParseError, why):
                 callgrind.parse(text)
 
@@ -136,6 +139,7 @@ class CountTests(unittest.TestCase):
         got = callgrind.counts(callgrind.parse(SMALL), "load-objects-lz4")
         self.assertEqual(got["allocs"], {"malloc": 4, "calloc": 0, "realloc": 0, "free": 0})
         inner = SMALL.replace("ob=(2)\nfn=(3)\n0 2 900", "ob=(2)\nfn=(3)\n0 1 400\ncfn=(3)\ncalls=5 0\n0 1 500")
+        inner = inner.replace("totals: 7 2500", "totals: 7 2000")
         self.assertEqual(callgrind.counts(callgrind.parse(inner), "load-objects-lz4")["allocs"]["malloc"], 4)
 
     def test_libc_is_known_by_its_file_name(self):
@@ -156,18 +160,39 @@ done
 [ "$toggle" = "*unityrs_bench::work::run_texture_rgba32*" ] || exit 3
 [ -z "${HOME:-}" ] && [ -n "$VALGRIND_LIB" ] || exit 4
 cp "$(dirname "$0")/recorded.out" "$out"
-echo '{"workload":"texture-RGBA32","status":"ok","scope_s":0.1,"counts":{},"digest":"%s","alloc_bytes":135656,"cpu":"sse4.2"}'
+echo '{"workload":"texture-RGBA32","status":"ok","scope_s":0.1,"counts":{},"digest":"%s","alloc_bytes":135656,"scopes":%d,"cpu":"sse4.2"}'
 """
+
+# A scope whose every instruction is libc's: its inclusive cost passes, its own object's count is 0.
+ZERO = """version: 1
+positions: line
+events: Ir
+ob=(1) /bench/unityrs-bench
+fn=(1) unityrs_bench::main
+cfn=(2) unityrs_bench::work::run_texture_rgba32
+calls=1 0
+0 20000
+fn=(2)
+cob=(2) /usr/lib/x86_64-linux-gnu/libc.so.6
+cfn=(3) memcpy
+calls=1 0
+0 20000
+ob=(2)
+fn=(3)
+0 20000
+totals: 20000
+"""
+TOOLS = {"gcc": "gcc-12 12.2.0-14+deb12u1", "ld": "binutils 2.40-2", "libc": "libc6 2.36-9+deb12u14"}
 
 
 class RunTests(unittest.TestCase):
-    def prefix(self, recorded: str) -> Path:
+    def prefix(self, recorded: str, scopes: int = 1) -> Path:
         root = scratch.for_case(self, "unityrs-bench-")
         bin_dir = root / "usr" / "bin"
         bin_dir.mkdir(parents=True)
         (bin_dir / "recorded.out").write_text(recorded, encoding="utf-8")
         script = bin_dir / "valgrind"
-        script.write_text(FAKE % ("ab" * 32), encoding="utf-8")
+        script.write_text(FAKE % ("ab" * 32, scopes), encoding="utf-8")
         os.chmod(script, 0o755)
         (root / ".deb-sha256").write_text("cd" * 32 + "\n", encoding="utf-8")
         return root
@@ -179,10 +204,10 @@ class RunTests(unittest.TestCase):
         self.assertEqual((got["ir_own"], got["alloc_bytes"], got["digest"]), (109_942, 135_656, "ab" * 32))
         doc, problems = callgrind.measure(Path("/bench/unityrs-bench"), prefix, Path("/bench/gate"),
                                           [{"name": NAME, "fixture": "f"}], {}, "image@sha256:00", prefix,
-                                          "rustc 1.99.1\nhost: x86_64-unknown-linux-gnu", say=lambda *_: None)
+                                          "rustc 1.99.1\nhost: x86_64-unknown-linux-gnu", TOOLS, say=lambda *_: None)
         self.assertEqual(problems, {})
         self.assertEqual(doc["fingerprint"], {"valgrind_deb_sha256": "cd" * 32, "container": "image@sha256:00",
-                                              "rustc": "rustc 1.99.1\nhost: x86_64-unknown-linux-gnu",
+                                              "rustc": "rustc 1.99.1\nhost: x86_64-unknown-linux-gnu", **TOOLS,
                                               "target": "x86_64-unknown-linux-gnu", "guest_cpu": "sse4.2"})
         self.assertEqual(doc["workloads"][NAME]["mode"], "calibrating")
         self.assertEqual(callgrind.gate_problems(json.loads(json.dumps(doc))), [])
@@ -192,6 +217,20 @@ class RunTests(unittest.TestCase):
         got = callgrind.run_once(Path("/bench/unityrs-bench"), prefix, NAME, Path("/bench/gate/f"), prefix)
         self.assertTrue(got["problems"][0].startswith("collection was on outside the scope"))
         self.assertNotIn("ir_own", got)
+
+    def test_another_scope_entered_outside_collection_is_refused(self):
+        """A setup-time call of another scope leaves no trace in the profile (collection is off there); the bench
+        binary's process-wide count of scope entries does."""
+        prefix = self.prefix(SCOPE, scopes=2)
+        got = callgrind.run_once(Path("/bench/unityrs-bench"), prefix, NAME, Path("/bench/gate/f"), prefix)
+        self.assertEqual(got["problems"], ["the process entered 2 scopes, not 1 (setup and digest included)"])
+        self.assertNotIn("ir_own", got)
+
+    def test_a_zero_own_count_is_refused_even_calibrating(self):
+        self.assertEqual(callgrind.scope_problems(callgrind.parse(ZERO), NAME), [])
+        prefix = self.prefix(ZERO)
+        got = callgrind.run_once(Path("/bench/unityrs-bench"), prefix, NAME, Path("/bench/gate/f"), prefix)
+        self.assertEqual(got["problems"], ["ir_own is 0: no instruction of the bench binary's own was counted"])
 
     def test_a_failing_valgrind_is_a_problem(self):
         prefix = self.prefix(SCOPE)

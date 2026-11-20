@@ -46,7 +46,7 @@ SCHEMA_VERSION = 1
 TOLERANCE_PCT = 1.0
 MODES = ("calibrating", "enforcing")
 ALLOCS = ("malloc", "calloc", "realloc", "free")
-FINGERPRINT = ("valgrind_deb_sha256", "container", "rustc", "target", "guest_cpu")
+FINGERPRINT = ("valgrind_deb_sha256", "container", "rustc", "gcc", "ld", "libc", "target", "guest_cpu")
 ENTRY = ("mode", "ir_own", "ir_libc", "allocs", "alloc_bytes", "digest", "calls")
 MIN_IR = 10_000
 SCOPE_PREFIX = "unityrs_bench::work::run_"
@@ -108,7 +108,8 @@ class ParseError(ValueError):
 def parse(text: str) -> Profile:
     """A callgrind output file (format version 1, as callgrind 3.19 writes it): name compression (`(id) name`
     defines, `(id)` refers), `ob`/`fn` and their call forms, `calls=` lines whose next cost line is the call's
-    inclusive cost, relative positions, and `Ir` wherever `events:` puts it."""
+    inclusive cost, relative positions, and `Ir` wherever `events:` puts it. A cost line without its `Ir` field, or
+own costs that do not sum to `totals:`, refuse the file: a count is never read as zero."""
     prof = Profile()
     tables: dict[str, dict[str, str]] = {"ob": {}, "fl": {}, "fn": {}}
     kind = {"ob": "ob", "cob": "ob", "fl": "fl", "fi": "fl", "fe": "fl", "cfi": "fl", "cfl": "fl",
@@ -124,7 +125,9 @@ def parse(text: str) -> Profile:
         if head.isdigit() or head in "+-*":
             fields = line.split()
             costs = fields[1:]
-            ir = int(costs[ir_at]) if len(costs) > ir_at else 0
+            if len(costs) <= ir_at:
+                raise ParseError(f"line {lineno}: a cost line with no Ir field")
+            ir = int(costs[ir_at])
             if fn is None:
                 raise ParseError(f"line {lineno}: a cost before any fn=")
             if pending is not None:
@@ -172,6 +175,9 @@ def parse(text: str) -> Profile:
             prof.totals = int(value.split()[ir_at])
     if prof.totals is None:
         raise ParseError("no totals: line (an unfinished file)")
+    own = sum(prof.own.values())
+    if own != prof.totals:
+        raise ParseError(f"the functions' own costs sum to {own:,}, not the file's total {prof.totals:,}")
     return prof
 
 
@@ -248,10 +254,14 @@ def run_once(binary: Path, prefix: Path, workload: str, fixture: Path, folder: P
     bad = scope_problems(prof, workload)
     if line.get("status") != "ok":
         bad.append(f"status {line.get('status')!r}")
+    if line.get("scopes") != 1:
+        bad.append(f"the process entered {line.get('scopes')!r} scopes, not 1 (setup and digest included)")
     got = {"problems": bad, "digest": line.get("digest"), "alloc_bytes": line.get("alloc_bytes"),
            "guest_cpu": line.get("cpu")}
     if not bad:
         got.update(counts(prof, workload))
+        if got["ir_own"] == 0:
+            got["problems"] = ["ir_own is 0: no instruction of the bench binary's own was counted"]
     return got
 
 
@@ -267,18 +277,44 @@ def rustc_vv() -> str:
                      check=True).stdout.strip()
 
 
-def fingerprint(prefix: Path, container: str, guest_cpu: str | None, rustc: str) -> dict:
+def first_line(cmd: list[str]) -> str | None:
+    """The first line `cmd` prints, or None when it cannot run."""
+    try:
+        proc = child.run(cmd, capture_output=True, text=True)
+    except OSError:
+        return None
+    lines = (proc.stdout or "").strip().splitlines()
+    return lines[0].strip() if proc.returncode == 0 and lines else None
+
+
+def toolchain() -> dict:
+    """The C toolchain and libc the bench binary is built and run with, exactly: gcc, which compiles the C the
+    binary links (liblz4, liblzma) and links it; the linker; libc. Each from its Debian package's version where
+    dpkg knows it, else the tool's own banner."""
+    def pkg(name: str) -> str | None:
+        return first_line(["dpkg-query", "-W", "-f=${Version}\n", name])
+
+    gcc, ld, libc = pkg("gcc-12"), pkg("binutils"), pkg("libc6")
+    return {
+        "gcc": f"gcc-12 {gcc}" if gcc else first_line(["cc", "--version"]),
+        "ld": f"binutils {ld}" if ld else first_line(["ld", "--version"]),
+        "libc": f"libc6 {libc}" if libc else first_line(["ldd", "--version"]),
+    }
+
+
+def fingerprint(prefix: Path, container: str, guest_cpu: str | None, rustc: str, tools: dict) -> dict:
     """What the counts depend on beside the code (plan section 4.5): the valgrind deb (`install_valgrind.sh`
-    records its sha256 in PREFIX), the container, the toolchain and its target, and the CPU class the guest sees
-    (valgrind presents its own CPUID, by the host's capabilities)."""
+    records its sha256 in PREFIX), the container, the toolchains (`rustc -vV` and `toolchain`) and the target,
+    and the CPU class the guest sees (valgrind presents its own CPUID, by the host's capabilities)."""
     target = next((ln.split(":", 1)[1].strip() for ln in rustc.splitlines() if ln.startswith("host:")), None)
     deb = prefix / ".deb-sha256"
     return {"valgrind_deb_sha256": deb.read_text(encoding="utf-8").strip() if deb.exists() else None,
-            "container": container, "rustc": rustc, "target": target, "guest_cpu": guest_cpu}
+            "container": container, "rustc": rustc, "gcc": tools.get("gcc"), "ld": tools.get("ld"),
+            "libc": tools.get("libc"), "target": target, "guest_cpu": guest_cpu}
 
 
 def measure(binary: Path, prefix: Path, fixtures: Path, specs: list, modes: dict, container: str,
-            folder: Path, rustc: str, say=print) -> tuple[dict, dict]:
+            folder: Path, rustc: str, tools: dict, say=print) -> tuple[dict, dict]:
     """Every workload of `specs` once: (measured gate.json, problems by workload). A run's mode is `modes`'s
     (the PR's own gate.json's), else calibrating."""
     workloads, problems, cpu = {}, {}, set()
@@ -295,7 +331,8 @@ def measure(binary: Path, prefix: Path, fixtures: Path, specs: list, modes: dict
     if len(cpu) > 1:
         problems["(fingerprint)"] = [f"the guest CPU differed between runs: {sorted(map(str, cpu))}"]
     doc = {"schema_version": SCHEMA_VERSION, "tolerance_pct": TOLERANCE_PCT,
-           "fingerprint": fingerprint(prefix, container, next(iter(cpu)) if len(cpu) == 1 else None, rustc),
+           "fingerprint": fingerprint(prefix, container, next(iter(cpu)) if len(cpu) == 1 else None, rustc,
+                                  tools),
            "workloads": dict(sorted(workloads.items()))}
     return doc, problems
 
@@ -352,6 +389,8 @@ def gate_problems(doc) -> list[str]:
             ints += list(allocs.values())
         if not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in ints):
             out.append(f"{name}: a count is not a non-negative int")
+        elif e["ir_own"] == 0:
+            out.append(f"{name}: ir_own is 0")
         if not (isinstance(e["digest"], str) and re.fullmatch(r"[0-9a-f]{64}", e["digest"])):
             out.append(f"{name}: digest is not 64 hex digits")
     return out
@@ -379,11 +418,15 @@ def delta(recorded: int | None, measured: int | None) -> str:
 
 def compare(base: dict | None, pr: dict, measured: dict, run_problems: dict, names: list[str]) -> tuple[list, list]:
     """(rows, failures): every workload's verdict under the base branch's policy (module docs). `names` is the
-    workload table's order; `run_problems` maps a workload (or "(fingerprint)") to why its run was rejected."""
+    workload table's order; `run_problems` maps a workload (or "(fingerprint)") to why its run was rejected. The
+    verdict covers the base's enforcing workloads too: one the PR drops from its table or its gate.json fails, and
+    so does an expected workload with no measured row."""
     base_w = (base or {}).get("workloads", {})
     tol = (base or {}).get("tolerance_pct", TOLERANCE_PCT)
     rows, fails = [], []
     modes = {n: base_w.get(n, {}).get("mode", "calibrating") for n in names}
+    fails += [f"{n}: enforcing in the base's gate.json but not a workload" for n, e in base_w.items()
+              if e.get("mode") == "enforcing" and n not in names]
     fails += [f"{n}: in the PR's gate.json but not a workload" for n in pr["workloads"] if n not in names]
     fails += [f"(fingerprint): {p}" for p in run_problems.get("(fingerprint)", [])]
     if pr["fingerprint"] != measured["fingerprint"]:
@@ -401,6 +444,9 @@ def compare(base: dict | None, pr: dict, measured: dict, run_problems: dict, nam
             fails += [f"{n}: {p}" for p in run_problems[n]]
             rows.append((n, mode, "run", "", "", "", "", "", "rejected: " + "; ".join(run_problems[n])))
             continue
+        if got is None:
+            fails.append(f"{n}: not measured")
+            rows.append((n, mode, "run", "", "", "", "", "", "not measured"))
         if want is None or got is None:
             continue
         old = metrics(base_w.get(n))
@@ -424,11 +470,16 @@ def fmt(v: int | None) -> str:
     return "—" if v is None else f"{v:,}"
 
 
-def summary(rows: list, fails: list, tol: float, base_found: bool) -> str:
-    head = ["## Instruction-count gate", "",
-            f"Policy from the base branch's gate.json{'' if base_found else ' (none there: every workload calibrating)'}"
-            f"; tolerance ±{tol}%. Counts compared against the PR's own gate.json; the measured file is this run's "
-            "artifact.", ""]
+def summary(rows: list, fails: list, tol: float, base_found: bool, warnings: list | None = None) -> str:
+    head = ["## Instruction-count gate", ""]
+    if warnings:
+        head += ["> [!WARNING]",
+                 "> **This change edits the gate's own checker or policy.** The job runs the PR's code, so the base",
+                 "> branch's policy is applied by a checker the PR controls: review these edits as the gate itself.",
+                 *[f"> - {w}" for w in warnings], ""]
+    head += [f"Policy from the base branch's gate.json{'' if base_found else ' (none there: every workload calibrating)'}"
+             f"; tolerance ±{tol}%. Counts compared against the PR's own gate.json; the measured file is this run's "
+             "artifact.", ""]
     head += ["**Failed:**", "", *[f"- {f}" for f in fails], ""] if fails else ["**Passed.**", ""]
     table = ["| workload | mode | count | base | PR | measured | Δ vs PR | Δ vs base | verdict |",
              "|---|---|---|---|---|---|---|---|---|"]

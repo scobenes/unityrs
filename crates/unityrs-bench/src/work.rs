@@ -18,9 +18,15 @@
 //! Every scope calls its operation with its own name, so no two have the
 //! same body: identical functions may be merged into one symbol, and the
 //! toggle would then name a scope that is never entered.
+//!
+//! Every scope entry is counted process-wide ([`scopes_entered`]): a run
+//! is one workload in one process, and `unityrs-bench run` refuses a run
+//! that entered any scope but its own once, setup and digest included,
+//! where callgrind's collection is off and a profile could not show it.
 
 use std::hint::black_box;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Map, Value as Json, json};
 use sha2::{Digest, Sha256};
@@ -175,9 +181,19 @@ pub fn setup(op: Op, data: Bytes) -> Result<Input, Failure> {
     Ok(Input::Objects(env, objs))
 }
 
+/// Scope entries in this process, of any scope.
+static ENTERED: AtomicU64 = AtomicU64::new(0);
+
+/// How many times any scope has been entered in this process.
+#[must_use]
+pub fn scopes_entered() -> u64 {
+    ENTERED.load(Ordering::SeqCst)
+}
+
 /// Runs `op` on `input`; `name` is the calling scope's, which keeps each
 /// scope's body its own.
 fn operate(name: &str, op: Op, input: &Input) -> Result<Output, Failure> {
+    ENTERED.fetch_add(1, Ordering::SeqCst);
     black_box(name);
     match (op, input) {
         (Op::Load, Input::Bytes(data)) => {

@@ -100,6 +100,22 @@ class CompareTests(unittest.TestCase):
         _, fails = verdict(None, pr, doc())
         self.assertEqual(fails, ["texture-XYZ: in the PR's gate.json but not a workload"])
 
+    def test_a_base_enforcing_workload_the_pr_drops_fails(self):
+        """Dropped from both the PR's table and its gate.json: the base's enforcing entry still holds."""
+        base = doc()
+        base["workloads"]["texture-OLD"] = {**base["workloads"][N], "mode": "enforcing"}
+        _, fails = verdict(base, doc(), doc())
+        self.assertEqual(fails, ["texture-OLD: enforcing in the base's gate.json but not a workload"])
+        base["workloads"]["texture-OLD"]["mode"] = "calibrating"
+        self.assertEqual(verdict(base, doc(), doc())[1], [])
+
+    def test_an_expected_workload_with_no_measured_row_fails(self):
+        measured = doc()
+        del measured["workloads"][N]
+        rows, fails = verdict(None, doc(), measured)
+        self.assertEqual(fails, [f"{N}: not measured"])
+        self.assertIn((N, "calibrating", "run", "", "", "", "", "", "not measured"), rows)
+
     def test_a_rejected_run_fails_in_any_mode(self):
         measured = doc()
         del measured["workloads"][N]
@@ -126,14 +142,19 @@ class CompareTests(unittest.TestCase):
         for n in NAMES:
             self.assertIn(f"| {n} | ", text)
         self.assertIn("**Passed.**", callgrind.summary(*verdict(None, doc(), doc()), 1.0, False))
+        warned = callgrind.summary([], [], 1.0, True, ["tools/bench/callgrind.py changed"])
+        self.assertIn("> [!WARNING]", warned)
+        self.assertIn("> - tools/bench/callgrind.py changed", warned)
+        self.assertNotIn("WARNING", text)
 
 
 class SchemaTests(unittest.TestCase):
-    def test_the_committed_gate_json_is_every_workload_calibrating(self):
+    def test_the_committed_gate_json_is_valid_for_every_workload(self):
+        """Its schema and legal modes and tolerance, whatever they are: a modes-only promotion changes no test."""
         self.assertEqual(callgrind.gate_problems(GATE), [])
         self.assertEqual(sorted(GATE["workloads"]), sorted(NAMES))
-        self.assertEqual({e["mode"] for e in GATE["workloads"].values()}, {"calibrating"})
-        self.assertEqual(GATE["tolerance_pct"], 1.0)
+        self.assertLessEqual({e["mode"] for e in GATE["workloads"].values()}, set(callgrind.MODES))
+        self.assertTrue(0 <= GATE["tolerance_pct"] <= 100)
         self.assertEqual({e["calls"] for e in GATE["workloads"].values()}, {1})
         self.assertTrue(all(e["ir_own"] >= callgrind.MIN_IR for e in GATE["workloads"].values()))
 
@@ -145,6 +166,8 @@ class SchemaTests(unittest.TestCase):
             f"{N}: allocs is not exactly": lambda g: g["workloads"][N]["allocs"].pop("calloc"),
             f"{N}: a count is not": lambda g: g["workloads"][N].update(ir_own=-1),
             f"{N}: digest is not": lambda g: g["workloads"][N].update(digest=None),
+            f"{N}: ir_own is 0": lambda g: g["workloads"][N].update(ir_own=0),
+            "tolerance_pct is not": lambda g: g.update(tolerance_pct=-1),
             "schema_version 2": lambda g: g.update(schema_version=2),
         }
         for want, edit in cases.items():
@@ -155,10 +178,12 @@ class SchemaTests(unittest.TestCase):
 
 
 class BaseTests(unittest.TestCase):
-    def fake_git(self, commit=True, text=None):
+    def fake_git(self, commit=True, listed="benchmarks/gate.json\n", text=None, tree_rc=0):
         def git(*args):
             if args[0] == "cat-file":
                 return (0 if commit else 128), ""
+            if args[0] == "ls-tree":
+                return tree_rc, (listed if tree_rc == 0 else "")
             return (0, text) if text is not None else (128, "")
         return git
 
@@ -169,12 +194,68 @@ class BaseTests(unittest.TestCase):
         self.assertIsNone(got)
         self.assertTrue(bad[0].startswith("the base's gate.json"))
 
-    def test_a_base_without_the_file_is_none_and_an_unknown_base_fails_closed(self):
-        self.assertEqual(bench.base_gate("abc", git=self.fake_git()), (None, []))
+    def test_a_base_without_the_file_is_none(self):
+        self.assertEqual(bench.base_gate("abc", git=self.fake_git(listed="")), (None, []))
         self.assertEqual(bench.base_gate(None, git=self.fake_git()), (None, []))
-        got, bad = bench.base_gate("abc", git=self.fake_git(commit=False))
-        self.assertIsNone(got)
-        self.assertIn("not in the checkout", bad[0])
+
+    def test_an_unknown_or_unreadable_base_fails_closed(self):
+        for git, why in ((self.fake_git(commit=False), "not in the checkout"),
+                         (self.fake_git(tree_rc=128), "tree cannot be read"),
+                         (self.fake_git(text=None), "gate.json cannot be read")):
+            got, bad = bench.base_gate("abc", git=git)
+            self.assertIsNone(got)
+            self.assertIn(why, bad[0])
+
+
+class ChangeTests(unittest.TestCase):
+    """The warning when a change edits the gate's own checker or policy (decision 7)."""
+
+    def files(self):
+        from support import ROOT
+
+        return {p: (ROOT / p).read_text(encoding="utf-8") for p in
+                ("tools/bench/callgrind.py", "tools/bench/install_valgrind.sh", "tools/bench/bench.py", bench.CI)}
+
+    def changes(self, head: dict, base_doc=GATE, pr_doc=GATE) -> list:
+        base = self.files()
+
+        def git(cmd, spec):
+            ref, path = spec.split(":", 1)
+            tree = base if ref == "BASE" else head
+            return (0, tree[path]) if path in tree else (128, "")
+        return bench.gate_changes("BASE", base_doc, pr_doc, git=git)
+
+    def test_an_unchanged_gate_raises_nothing(self):
+        self.assertEqual(self.changes(self.files()), [])
+
+    def test_each_edit_of_the_checker_or_policy_is_named(self):
+        head = self.files()
+        head["tools/bench/callgrind.py"] += "\n# edited\n"
+        head["tools/bench/bench.py"] = head["tools/bench/bench.py"].replace(
+            "def cmd_gate(args) -> int:\n", "def cmd_gate(args) -> int:\n    pass\n")
+        head[bench.CI] = head[bench.CI].replace("timeout-minutes: 40", "timeout-minutes: 41")
+        pr = copy.deepcopy(GATE)
+        pr["tolerance_pct"] = 5.0
+        pr["workloads"][N]["mode"] = "enforcing"
+        self.assertEqual(self.changes(head, pr_doc=pr), [
+            "tools/bench/callgrind.py changed",
+            "tools/bench/bench.py's gate functions changed: cmd_gate",
+            f"{bench.CI}'s bench-gate job changed",
+            "gate.json's tolerance_pct changed: 1.0 to 5.0",
+            f"gate.json's modes changed: {N}",
+        ])
+
+    def test_edits_outside_the_gate_raise_nothing(self):
+        head = self.files()
+        head["tools/bench/bench.py"] = head["tools/bench/bench.py"].replace(
+            "def cmd_render(args) -> int:\n", "def cmd_render(args) -> int:\n    pass\n")
+        head[bench.CI] = head[bench.CI].replace("timeout-minutes: 10", "timeout-minutes: 11", 1)
+        self.assertEqual(self.changes(head), [])
+
+    def test_the_job_s_text_runs_to_the_next_job(self):
+        text = "jobs:\n  a:\n    x: 1\n  bench-gate:\n    y: 2\n\n  c:\n    z: 3\n"
+        self.assertEqual(bench.job_text(text), "  bench-gate:\n    y: 2")
+        self.assertIsNone(bench.job_text("jobs:\n  a:\n"))
 
 
 if __name__ == "__main__":

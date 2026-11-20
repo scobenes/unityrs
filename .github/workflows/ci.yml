@@ -395,7 +395,7 @@ jobs:
       # The benchmark harness's own tests (docs/plans/bench.md section 5.3):
       # standard library only, so they need no oracle; an exact minimum.
       - name: Self-tests (benchmark harness)
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/bench/tests=84'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/bench/tests=93'
 
   # A PR that changes benchmarks/wall.json publishes a run: the file must be
   # the artifact of the bench-wall.yml run it names, dispatched, successful,
@@ -427,8 +427,12 @@ jobs:
   # own instructions, allocation calls and bytes held to the PR's
   # benchmarks/gate.json within the base branch's tolerance, in the base
   # branch's mode per workload (a calibrating workload only reports). No path
-  # filter: it always reports. The measured gate.json is the artifact a
-  # refresh commits. The ASLR probe records whether libc's count repeats with
+  # filter: it always reports, and it runs on every push to main too, where
+  # the code is main's own and drift between merges shows. On a pull request
+  # the job runs the PR's checker (pull_request_target would run untrusted
+  # code with the base's rights), so a PR that edits the gate's files, this
+  # job or gate.json's policy gets a warning in the summary and the log, for
+  # review. The measured gate.json is the artifact a refresh commits. The ASLR probe records whether libc's count repeats with
   # ASLR off (`setarch -R`, which needs the unconfined seccomp profile); it
   # never fails the job. Timeout: provisional, the gate step measured 47 s
   # under emulation for all 22 workloads; the cold build dominates.
@@ -443,11 +447,17 @@ jobs:
       RUSTUP_HOME: /opt/rustup
       BENCH_IMAGE: debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
     steps:
+      # The C toolchain exactly, as bookworm ships it (it compiles and links
+      # the C the bench binary holds). libc6-dev follows the security
+      # updates to the image's libc, so it cannot be pinned for long; the
+      # fingerprint records gcc's, binutils' and libc's exact versions.
       - name: Install Debian build dependencies
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            gcc g++ make libc6-dev git curl ca-certificates python3
+            gcc=4:12.2.0-3 g++=4:12.2.0-3 gcc-12=12.2.0-14+deb12u1 g++-12=12.2.0-14+deb12u1 \
+            cpp-12=12.2.0-14+deb12u1 binutils=2.40-2 make=4.3-4.1 \
+            libc6-dev git curl ca-certificates python3
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false

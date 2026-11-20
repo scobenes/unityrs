@@ -43,6 +43,7 @@ import json
 import os
 import platform
 import posixpath
+import re
 import resource
 import sys
 import tarfile
@@ -397,23 +398,89 @@ def cmd_run(args) -> int:
 
 
 def base_gate(base: str | None, git=None) -> tuple[dict | None, list[str]]:
-    """The base commit's benchmarks/gate.json (None when it has none), or why it cannot be read: an unknown
-    commit fails closed, as a policy read from nowhere would let a PR set its own."""
+    """The base commit's benchmarks/gate.json (None when its tree has none), or why it cannot be read: an unknown
+    commit, a tree or file git cannot read, or a malformed file fails closed, as a policy read from nowhere would
+    let a PR set its own."""
     git = git or globals()["git"]
     if not base:
         return None, []
     rc, _ = git("cat-file", "-e", f"{base}^{{commit}}")
     if rc != 0:
         return None, [f"the base commit {base} is not in the checkout (fetch it)"]
-    rc, text = git("show", f"{base}:{GATE.relative_to(ROOT).as_posix()}")
+    path = GATE.relative_to(ROOT).as_posix()
+    rc, listed = git("ls-tree", "--name-only", base, "--", path)
     if rc != 0:
+        return None, [f"the base's tree cannot be read (git ls-tree exited {rc})"]
+    if not listed.strip():
         return None, []
+    rc, text = git("show", f"{base}:{path}")
+    if rc != 0:
+        return None, [f"the base's gate.json cannot be read (git show exited {rc})"]
     try:
         doc = json.loads(text)
     except ValueError as e:
         return None, [f"the base's gate.json: {e}"]
     bad = callgrind.gate_problems(doc)
     return (None, [f"the base's gate.json: {b}" for b in bad]) if bad else (doc, [])
+
+
+# The gate's own checker (decision 7): a pull_request run executes the PR's code, so a change to these is the
+# reviewers' to judge, and the job says so loudly. Whole files, bench.py's functions the gate runs, and CI's job.
+GATE_FILES = ("tools/bench/callgrind.py", "tools/bench/install_valgrind.sh")
+GATE_FUNCS = ("base_gate", "gate_changes", "job_text", "cmd_gate", "repeat_lines", "gate_file_problems",
+              "fixtures_at", "manifest_problems", "generate", "bench_binary", "main")
+CI = ".github/workflows/ci.yml"
+
+
+def job_text(text: str, job: str = "bench-gate") -> str | None:
+    """The lines of `job` in a workflow's text, up to the next job (None when it has none)."""
+    lines = text.splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln == f"  {job}:"), None)
+    if start is None:
+        return None
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"  [A-Za-z0-9_-]+:\s*$", lines[i])
+                or re.match(r"\S", lines[i])), len(lines))
+    return "\n".join(lines[start:end]).rstrip()
+
+
+def functions(source: str | None, names) -> dict:
+    """The source of each top-level function of `names` in `source`."""
+    if source is None:
+        return {}
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {"(unparsable)": source}
+    return {n.name: ast.get_source_segment(source, n) for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name in names}
+
+
+def gate_changes(base: str, base_doc: dict | None, pr_doc: dict | None, git=None) -> list[str]:
+    """What this change (`base`..HEAD) edits of the gate's own checker or policy (decision 7), one line each:
+    the gate's files, its functions in bench.py, CI's bench-gate job, and gate.json's tolerance or modes."""
+    git = git or globals()["git"]
+
+    def at(ref: str, path: str) -> str | None:
+        rc, text = git("show", f"{ref}:{path}")
+        return text if rc == 0 else None
+
+    out = [f"{f} changed" for f in GATE_FILES if at(base, f) != at("HEAD", f)]
+    old, new = functions(at(base, "tools/bench/bench.py"), GATE_FUNCS), functions(
+        at("HEAD", "tools/bench/bench.py"), GATE_FUNCS)
+    changed = sorted(n for n in set(old) | set(new) if old.get(n) != new.get(n))
+    if changed:
+        out.append(f"tools/bench/bench.py's gate functions changed: {', '.join(changed)}")
+    if job_text(at(base, CI) or "") != job_text(at("HEAD", CI) or ""):
+        out.append(f"{CI}'s bench-gate job changed")
+    if base_doc is not None and pr_doc is not None:
+        if base_doc.get("tolerance_pct") != pr_doc.get("tolerance_pct"):
+            out.append(f"gate.json's tolerance_pct changed: {base_doc.get('tolerance_pct')} to "
+                       f"{pr_doc.get('tolerance_pct')}")
+        modes = sorted(n for n in set(base_doc["workloads"]) | set(pr_doc["workloads"])
+                       if base_doc["workloads"].get(n, {}).get("mode") != pr_doc["workloads"].get(n, {}).get("mode"))
+        if modes:
+            out.append(f"gate.json's modes changed: {', '.join(modes)}")
+    return out
 
 
 def cmd_gate(args) -> int:
@@ -427,14 +494,17 @@ def cmd_gate(args) -> int:
         "benchmarks/gate.json is missing"]
     base, bad = base_gate(args.base)
     fails += bad
+    warnings = gate_changes(args.base, base, pr) if args.base and not bad else []
+    for w in warnings:
+        print(f"::warning title=bench-gate checks its own change::{w}", file=sys.stderr)
     folder = fixtures_at("gate", args.out)
     binary = bench_binary()
     modes = {n: e["mode"] for n, e in (pr or {}).get("workloads", {}).items() if isinstance(e, dict)}
-    runs, rustc = [], callgrind.rustc_vv()
+    runs, rustc, tools = [], callgrind.rustc_vv(), callgrind.toolchain()
     with scratch.folder("unityrs-gate-") as tmp:
         for _ in range(args.repeat):
             runs.append(callgrind.measure(binary, args.valgrind, folder, specs, modes, args.container, Path(tmp),
-                                          rustc))
+                                          rustc, tools))
         lines = []
         if args.aslr_probe:
             spec = next((w for w in table["workloads"] if w["name"] == args.aslr_probe), None)
@@ -448,12 +518,14 @@ def cmd_gate(args) -> int:
     if pr is not None and not callgrind.gate_problems(pr):
         if args.workload:
             pr = {**pr, "workloads": {n: e for n, e in pr["workloads"].items() if n in names}}
+            if base is not None:
+                base = {**base, "workloads": {n: e for n, e in base["workloads"].items() if n in names}}
         rows, more = callgrind.compare(base, pr, measured, problems, names)
         fails += more
     else:
         rows = []
     tol = (base or {}).get("tolerance_pct", callgrind.TOLERANCE_PCT)
-    text = callgrind.summary(rows, fails, tol, base is not None) + ("\n" + "\n".join(lines) if lines else "")
+    text = callgrind.summary(rows, fails, tol, base is not None, warnings) + ("\n" + "\n".join(lines) if lines else "")
     target = Path(os.environ["GITHUB_STEP_SUMMARY"]) if os.environ.get("GITHUB_STEP_SUMMARY") else \
         args.out / "summary.md"
     with open(target, "a", encoding="utf-8") as f:

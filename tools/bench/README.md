@@ -37,7 +37,8 @@ by digest, with valgrind from `install_valgrind.sh`, `bench.py gate` runs each w
 compares the bench binary's own instruction count (`ir_own`), its allocation calls and the bytes it allocates with
 `benchmarks/gate.json`, within ±1% both ways (`callgrind.py`). libc's count is recorded, not gated. Each workload's
 mode (`calibrating` reports, `enforcing` fails) and the tolerance come from the base branch's gate.json; the counts
-from the PR's. A change that moves a count commits the job's uploaded `gate.json` in the same PR.
+from the PR's. A pull request's job runs the PR's own checker, so the job warns when a change edits it (decision 7).
+A change that moves a count commits the job's uploaded `gate.json` in the same PR.
 
 ```sh
 # Locally, x86-64 only (counts from an emulated host are for comparison, not baselines):
@@ -67,7 +68,7 @@ in `DIR/logs` only, never in the console output or `wall.json`.
 | `test_callgrind.py` | parsing callgrind output, the scope checks, own/libc sums and allocation calls; a run through a stand-in valgrind | standard library |
 | `test_bench.py` | `check --wall-run`'s verdicts on a fake run, artifact and history; the fixtures' manifest check | standard library |
 | `test_docs.py` | `render --check` on the repository; the "Results pending" form; rendering a synthetic run; schema and publishing refusals; gate.json required and checked | standard library |
-| `test_gate.py` | the gate's verdict: the two-sided band, the base branch's modes and tolerance, what fails and what reports; gate.json's schema; the base's file | standard library |
+| `test_gate.py` | the gate's verdict: the two-sided band, the base branch's modes and tolerance and its enforcing workloads, what fails and what reports; gate.json's schema; the base's file; the warning on an edit of the gate's own checker | standard library |
 | `test_readme.py` | this README's tables list every file here and in `tests/`, and no other | standard library |
 | `test_results.py` | pairing, the aggregation of rounds and categories, and the speedup's range | standard library |
 | `test_workloads.py` | `workloads.json` against the fixtures' manifest, PARITY.md's tiers and `py_workloads.py`'s operations, with a fake implementation | standard library |

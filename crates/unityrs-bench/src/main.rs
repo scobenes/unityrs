@@ -5,8 +5,10 @@
 //! ([`unityrs_bench::work`]), which prints one JSON line: `workload`,
 //! `status` (`ok` or `failed`, the reason on stderr), `scope_s`, `counts`,
 //! `digest`, `alloc_bytes` (the bytes the scope asked the allocator for,
-//! a `realloc`'s new size included, on the scope's thread) and `cpu` (the
-//! x86-64 features the process detected: under valgrind, its guest's).
+//! a `realloc`'s new size included, on the scope's thread), `scopes` (the
+//! scope entries of the whole process, which must be 1: the run fails
+//! otherwise) and `cpu` (the x86-64 features the process detected: under
+//! valgrind, its guest's).
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -90,7 +92,14 @@ fn run(name: &str, fixture: &Path) -> Result<Value, String> {
     let scope_s = t0.elapsed().as_secs_f64();
     counted::stop_counting_this_thread();
     let alloc_bytes = ALLOC.0.0.load(Ordering::Relaxed);
-    let (status, digest, mut counts) = match out.and_then(|o| work::digest(&o)) {
+    let digested = out.and_then(|o| work::digest(&o));
+    let entered = work::scopes_entered();
+    let digested = if entered == 1 {
+        digested
+    } else {
+        Err(format!("{entered} scope entries in the process, not 1"))
+    };
+    let (status, digest, mut counts) = match digested {
         Ok((digest, counts)) => ("ok", Value::String(digest), counts),
         Err(why) => {
             eprintln!("unityrs-bench run {name}: {why}");
@@ -105,6 +114,7 @@ fn run(name: &str, fixture: &Path) -> Result<Value, String> {
         "counts": counts,
         "digest": digest,
         "alloc_bytes": alloc_bytes,
+        "scopes": entered,
         "cpu": features.join(" "),
     }))
 }
