@@ -602,6 +602,13 @@ coefficient is shipped from a fit.
   - a new hold-out rig, `holdout-2` (arms 0.8, legs 1.2), with 45 fresh
     pose draws from a new Sobol seed, is recorded in the next run. Both
     earlier hold-out rigs stay sealed and are never fitted.
+- **E3b on freeze v8: PASS.** E3b ran once, on round 10's `holdout-2`,
+  and passed in both Editor versions. Each had 46 in-scope comparisons
+  (minimum 44) and 2 refused; the worst residual was 0.0213 of its
+  `T_s`, and E0 passed. The worst actual `E_unity,s / u_s` was 1.1430,
+  against 1.1434 predicted at the freeze, at the same sample; the
+  prediction was within 0.168% at every in-scope sample. Round 10's
+  hold-out is consumed. Freeze v8 is validated, and B3 is unblocked.
 
 **Total estimate.** 2.6–3.8k non-test lines. B1 can start now. B2 waits for
 the owner's runs of B1 in both Editor versions, and B3–B5 wait for B2's
