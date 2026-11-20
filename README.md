@@ -28,6 +28,14 @@ Agents and scripts: see [the agent interface guide](docs/AGENTS.md) for `describ
   and hooks for encryption, altered headers and custom compression.
 - **3D export.** Prefabs, skins, Mecanim animation and scenes to glTF/GLB.
 
+## Performance
+
+<!-- bench:begin -->
+Results pending. The harness in [tools/bench](tools/bench/README.md) times unityrs against UnityPy 1.25.2 with
+UnityPyBoost, the same Python script on both, on public synthetic fixtures; the first run published from
+GitHub's ubuntu-24.04 runner will be summarised here, with the full breakdown in BENCHMARKS.md.
+<!-- bench:end -->
+
 ## Static 3D export
 
 `unityrs gltf` writes one scene or prefab unit as a GLB. Load dependencies,

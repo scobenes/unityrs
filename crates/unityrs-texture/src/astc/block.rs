@@ -72,6 +72,13 @@ pub(super) fn decode(
     }
 }
 
+/// Whether astcenc reads `block` as an error block, the status
+/// [`decode`] writes the error colour for.
+pub(super) fn is_error(tables: &mut Tables, block: &[u8; 16]) -> bool {
+    let mut out = [0; 4 * MAX_TEXELS];
+    symbolic(tables, block, &mut out).is_none()
+}
+
 /// The block's texels, or `None` for an error block.
 fn symbolic(tables: &mut Tables, block: &[u8; 16], out: &mut [u8; 4 * MAX_TEXELS]) -> Option<()> {
     let texels = tables.footprint().texels();
