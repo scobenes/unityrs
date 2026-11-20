@@ -76,9 +76,9 @@ pub struct Human {
     pub pose: MeteredVec<Xform>,
     /// `m_HumanBoneIndex`: human skeleton node per internal body bone, -1 absent.
     pub bones: MeteredVec<i32>,
-    /// `m_HumanBoneMass` as stored, one entry per body bone, or `None` when
-    /// the Avatar serializes none. `body::body_avatar` validates it.
-    pub bone_mass: Option<MeteredVec<f32>>,
+    /// `m_HumanBoneMass` as stored, or `None` when the Avatar serializes
+    /// none. `body::body_avatar` validates it.
+    pub bone_mass: Option<BoneMass>,
     pub left_hand: MeteredVec<i32>,
     pub right_hand: MeteredVec<i32>,
     pub scale: f32,
@@ -335,6 +335,14 @@ fn validate(avatar: &Avatar, meter: &Arc<Meter>) -> Result<(), AnimError> {
     Ok(())
 }
 
+/// `m_HumanBoneMass`: one mass per body slot, or the length of an array
+/// with any other count, read without copying it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BoneMass {
+    Slots([f32; BODY_BONES]),
+    Length(usize),
+}
+
 /// Built body bones in Mecanim order: `HumanBodyBones` 0-8, `UpperChest`,
 /// then 9-23. A hand table lists 15 finger bones in `HumanBodyBones` order.
 pub const BODY_BONES: usize = 25;
@@ -434,12 +442,13 @@ fn human(dict: &Dict<'_, '_>, value: &Value) -> Result<Human, AnimError> {
         bones: i32s(dict, value, "m_HumanBoneIndex")?,
         bone_mass: match dict.field(value, "m_HumanBoneMass")? {
             Some(_) => {
+                // The count first: an array of any other length is never
+                // copied.
                 let words = dict.words(value, "m_HumanBoneMass", true)?;
-                let mut masses = MeteredVec::with_capacity(dict.meter, words.len())?;
-                for &bits in words {
-                    masses.push(f32::from_bits(bits))?;
-                }
-                Some(masses)
+                Some(match <&[u32; BODY_BONES]>::try_from(words) {
+                    Ok(words) => BoneMass::Slots(words.map(f32::from_bits)),
+                    Err(_) => BoneMass::Length(words.len()),
+                })
             }
             None => None,
         },
@@ -522,5 +531,6 @@ const _: () = crate::send_sync::<Human>();
 const _: () = crate::send_sync::<Skeleton>();
 const _: () = crate::send_sync::<SkeletonNode>();
 const _: () = crate::send_sync::<Axes>();
+const _: () = crate::send_sync::<BoneMass>();
 const _: () = crate::send_sync::<Twist>();
 const _: () = crate::send_sync::<Xform>();

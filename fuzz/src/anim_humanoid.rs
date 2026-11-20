@@ -6,8 +6,8 @@ use std::{mem::discriminant, sync::Arc};
 use unityrs_anim::{
     AnimError, Clip, RigPaths, discover,
     humanoid::{
-        Avatar, BODY_SLOTS, DofKind, HumanoidClip, RigAvatar, SettingValue, Xform, body_avatar,
-        dropped_muscles, humanoid_refusal, read_avatar, rig_avatar,
+        Avatar, BODY_SLOTS, BoneMass, DofKind, HumanoidClip, RigAvatar, SettingValue, Xform,
+        body_avatar, dropped_muscles, humanoid_refusal, read_avatar, rig_avatar,
     },
     read_clip,
 };
@@ -149,11 +149,15 @@ fn avatar_digest(
 
 /// The body-model inputs, or their typed refusal.
 fn body_digest(avatar: &Avatar, meter: &Arc<Meter>, digest: &mut Digest) -> Result<(), AnimError> {
-    if let Some(masses) = &avatar.human.bone_mass {
-        meter.count_decode(masses.len() as u64)?;
-        for mass in masses.as_slice() {
-            digest.tag(mass.to_bits());
+    match avatar.human.bone_mass {
+        Some(BoneMass::Slots(masses)) => {
+            meter.count_decode(masses.len() as u64)?;
+            for mass in masses {
+                digest.tag(mass.to_bits());
+            }
         }
+        Some(BoneMass::Length(n)) => digest.tag(n),
+        None => {}
     }
     let body = match body_avatar(avatar, meter) {
         Ok(body) => body,

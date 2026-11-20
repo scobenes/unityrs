@@ -125,6 +125,9 @@ pub enum BodyAvatarFault {
     MassAbsentSlot(usize),
     /// The masses do not sum to one within the derived bound.
     MassSum,
+    /// An `m_TOS` ID appears again with another path: the reference takes
+    /// the last, a first-match lookup the first, so neither is trusted.
+    TosConflict(u32),
     /// A mapped slot's skeleton node has no `m_TOS` path.
     SlotPath(usize),
     /// A mapped slot's node resolves to an earlier slot's `m_TOS` path.
@@ -144,6 +147,7 @@ impl fmt::Display for BodyAvatarFault {
             Self::MassNegative(slot) => write!(f, "mass_negative({slot})"),
             Self::MassAbsentSlot(slot) => write!(f, "mass_absent_slot({slot})"),
             Self::MassSum => f.write_str("mass_sum"),
+            Self::TosConflict(id) => write!(f, "tos_conflict({id})"),
             Self::SlotPath(slot) => write!(f, "slot_path({slot})"),
             Self::SlotAlias(slot) => write!(f, "slot_alias({slot})"),
             Self::Scale => f.write_str("scale"),

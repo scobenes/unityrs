@@ -20,7 +20,8 @@ mod body;
 mod clip;
 
 pub use avatar::{
-    Avatar, Axes, BODY_BONES, HAND_BONES, Human, Skeleton, SkeletonNode, Twist, Xform, read_avatar,
+    Avatar, Axes, BODY_BONES, BoneMass, HAND_BONES, Human, Skeleton, SkeletonNode, Twist, Xform,
+    read_avatar,
 };
 pub use body::{
     BODY_SLOTS, BodyAvatar, LEAVES, RECORDED_ABSENT, body_avatar, mass_sum_bound, slot_bone,

@@ -344,6 +344,22 @@ fn the_slot_table_and_rest_body_refuse_with_their_faults() {
         relabelled(&ids, &same),
         fault(BodyAvatarFault::SlotAlias(5))
     );
+    // A later m_TOS row giving node 6's ID node 4's path: the reference
+    // keeps the last row, so node 6 would alias node 4's slot. It refuses
+    // whichever row a lookup keeps; an exact repeat is harmless.
+    let rows: Vec<_> = ids.iter().copied().zip(names.iter().cloned()).collect();
+    let conflict = [rows.clone(), vec![(ids[6], names[4].clone())]].concat();
+    assert_eq!(
+        with_tos(&ids, &conflict),
+        fault(BodyAvatarFault::TosConflict(ids[6]))
+    );
+    let conflict = [vec![(ids[6], names[4].clone())], rows.clone()].concat();
+    assert_eq!(
+        with_tos(&ids, &conflict),
+        fault(BodyAvatarFault::TosConflict(ids[6]))
+    );
+    let repeat = [rows, vec![(ids[6], names[6].clone())]].concat();
+    assert_eq!(with_tos(&ids, &repeat), Ok(()));
     for scale in [0., -1.] {
         let rig = Rig {
             scale,
@@ -369,16 +385,26 @@ fn the_slot_table_and_rest_body_refuse_with_their_faults() {
 /// `ids[i]` and the `m_TOS` path `paths[i]` (one entry per distinct ID, the
 /// first path written for it).
 fn relabelled(ids: &[u32], paths: &[String]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    let entries: Vec<_> = ids
+        .iter()
+        .zip(paths)
+        .filter(|&(id, _)| seen.insert(*id))
+        .map(|(&id, path)| (id, path.clone()))
+        .collect();
+    with_tos(ids, &entries)
+}
+
+/// The verdict on `full`'s Avatar with skeleton IDs `ids` and the `m_TOS`
+/// rows `entries`, in order.
+fn with_tos(ids: &[u32], entries: &[(u32, String)]) -> Result<(), String> {
     let mut avatar = h::avatar(&full());
     let skeleton = ["m_Avatar", "m_Human", "data", "m_Skeleton", "data"];
     let id_list = vector(V::UInt(0), ids.iter().map(|&id| V::UInt(id)).collect());
     edit(&mut avatar.value, &skeleton, "m_ID", Some(id_list));
-    let mut seen = BTreeSet::new();
-    let pairs = ids
+    let pairs = entries
         .iter()
-        .zip(paths)
-        .filter(|&(id, _)| seen.insert(*id))
-        .map(|(&id, path)| pair(V::UInt(id), V::Str(path.clone().into_bytes())))
+        .map(|(id, path)| pair(V::UInt(*id), V::Str(path.clone().into_bytes())))
         .collect();
     let empty = pair(V::UInt(0), V::Str(Vec::new()));
     edit(&mut avatar.value, &[], "m_TOS", Some(vector(empty, pairs)));
@@ -455,13 +481,28 @@ fn the_recorded_patterns_are_the_references() {
 }
 
 /// Freeze v8's topology scope: each in-scope training rig's absent body
-/// slots but the leaves, from its mapped bones.
+/// slots but the leaves freeze v8 names, from its mapped bones, and
+/// `LEAVES` as those leaves.
 #[test]
 fn the_recorded_patterns_are_freeze_v8s() {
     let frozen: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../tools/parity/anim_body_freeze_v8.json"
     ))
     .unwrap();
+    // The leaves as freeze v8's topology rule names them ("the zero-mass
+    // leaves (Eyes, Jaw)"), not this crate's LEAVES.
+    let rule = frozen["model"]["topology_scope"].as_str().unwrap();
+    let named = &rule[rule.find("zero-mass leaves (").unwrap() + 18..];
+    let leaves: Vec<usize> = named[..named.find(')').unwrap()]
+        .split(", ")
+        .flat_map(|name| match name {
+            "Eyes" => vec!["LeftEye", "RightEye"],
+            name => vec![name],
+        })
+        .map(slot_named)
+        .collect();
+    let mask = |slots: &mut dyn Iterator<Item = usize>| slots.fold(0, |m, s| m | 1 << s);
+    assert_eq!(LEAVES, mask(&mut leaves.iter().copied()));
     let topologies = frozen["scope"]["topologies"].as_object().unwrap();
     let frozen: BTreeSet<u32> = topologies
         .values()
@@ -472,9 +513,10 @@ fn the_recorded_patterns_are_freeze_v8s() {
                 .iter()
                 .map(|bone| bone.as_str().unwrap())
                 .collect();
-            (0..25)
-                .filter(|&slot| LEAVES & (1 << slot) == 0 && !mapped.contains(BODY_SLOTS[slot]))
-                .fold(0, |mask, slot| mask | 1 << slot)
+            mask(
+                &mut (0..25)
+                    .filter(|slot| !leaves.contains(slot) && !mapped.contains(BODY_SLOTS[*slot])),
+            )
         })
         .collect();
     let ours: BTreeSet<u32> = RECORDED_ABSENT.into_iter().collect();

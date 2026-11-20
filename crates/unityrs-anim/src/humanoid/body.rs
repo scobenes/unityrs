@@ -9,11 +9,13 @@
 //!   The reader already holds each index in range and no two slots on one
 //!   node; here each mapped slot's node must also have an `m_TOS` path
 //!   (`m_Skeleton.m_ID` through `m_TOS`), and no two mapped slots may
-//!   resolve to one path. A swap of two valid slots leaves every path
-//!   distinct, so only a capture of the rig's bones can show it: that part
-//!   of E0a is the reference checker's comparison with the recordings
-//!   (`tools/parity/anim_body_check.py`), a verification of the plan's
-//!   reading of the Avatar, not a runtime gate.
+//!   resolve to one path. An `m_TOS` ID that appears again with another
+//!   path refuses (`TosConflict`): the reference keeps an ID's last entry
+//!   and `Avatar::tos_path` its first. A swap of two valid slots leaves
+//!   every path distinct, so only a capture of the rig's bones can show
+//!   it: that part of E0a is the reference checker's comparison with the
+//!   recordings (`tools/parity/anim_body_check.py`), a verification of the
+//!   plan's reading of the Avatar, not a runtime gate.
 //! - **E0b**, the normalization: every mass is finite and non-negative, an
 //!   absent slot's is exactly zero, and the masses sum to one within
 //!   `mass_sum_bound`. Each stored mass is the E0b fold of `HumanTrait`'s
@@ -33,10 +35,13 @@
 //!   but the leaves that no in-scope training rig recorded
 //!   (`RECORDED_ABSENT`, the reference's `anim_body_model.RECORDED_ABSENT`
 //!   and freeze v8's topology scope). Every recorded Avatar gives the
-//!   leaves zero mass, so absent they fold nothing into the Head and mapped
-//!   their edges' fitted fractions vanish (plan 2.5): they take no part in
-//!   the pattern only at zero mass. The check reads `m_HumanBoneIndex` and
-//!   the leaves' masses, before any forward kinematics.
+//!   leaves zero mass, so a leaf's own mass point weighs nothing; mapped,
+//!   it still moves the Head's mass point through its Head edge, whose
+//!   frozen fraction (`Head>Jaw`, `Head>LeftEye`, `Head>RightEye` in freeze
+//!   v8) is small but nonzero, so B3b keeps those terms. The leaves take no
+//!   part in the pattern, at zero mass only. The check reads
+//!   `m_HumanBoneIndex` and the leaves' masses, before any forward
+//!   kinematics.
 //! - **E0c**, its model-free part: `m_Scale` is positive and is
 //!   `m_RootX.t.y` within two f32 roundings.
 //!
@@ -44,9 +49,13 @@
 //! the free-combination and shoulder-hip twist refusals, come in PR B3b on
 //! these inputs, with the coefficients, limits and scope of freeze v8
 //! (`tools/parity/anim_body_freeze_v8.json`), which E3b validated.
-use super::avatar::{Avatar, BODY_BONES, Human, Xform};
+use super::avatar::{Avatar, BODY_BONES, BoneMass, Human, Xform};
 use crate::{AnimError, BodyAvatarFault, BodyModel};
-use unityrs_core::{RawStr, limits::Meter};
+use std::sync::Arc;
+use unityrs_core::{
+    RawStr,
+    limits::{Meter, MeteredVec},
+};
 
 /// The 25 body slots of `m_HumanBoneIndex` and `m_HumanBoneMass`, in order.
 pub const BODY_SLOTS: [&str; BODY_BONES] = [
@@ -229,15 +238,46 @@ impl BodyAvatar<'_> {
     }
 }
 
+/// The first `m_TOS` ID that appears again with another path, if any: the
+/// reference keeps the last entry of an ID and `Avatar::tos_path` the
+/// first, so such a table refuses. An exact repeat is harmless.
+fn tos_conflict(avatar: &Avatar, meter: &Arc<Meter>) -> Result<Option<u32>, AnimError> {
+    let tos = avatar.tos.as_slice();
+    let n = tos.len();
+    meter.count_decode(n as u64 * u64::from(n.bit_width()))?;
+    let mut sorted = MeteredVec::with_capacity(meter, n)?;
+    for entry in tos {
+        sorted.push(entry)?;
+    }
+    sorted.as_mut_slice().sort_unstable_by_key(|(id, _)| *id);
+    for pair in sorted.as_slice().windows(2) {
+        if let [(a, first), (b, second)] = pair
+            && a == b
+        {
+            meter.count_decode(first.as_bytes().len() as u64)?;
+            if first.as_bytes() != second.as_bytes() {
+                return Ok(Some(*a));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Validate an Avatar's body-model inputs in the module's order: E0a, the
 /// masses (E0b), the topology scope, then `m_Scale` (E0c). Each failure is
 /// a typed refusal; nothing here panics on malformed tables.
-pub fn body_avatar<'a>(avatar: &'a Avatar, meter: &Meter) -> Result<BodyAvatar<'a>, AnimError> {
+pub fn body_avatar<'a>(
+    avatar: &'a Avatar,
+    meter: &Arc<Meter>,
+) -> Result<BodyAvatar<'a>, AnimError> {
     let human = &avatar.human;
     let fault = |fault| Err(AnimError::InvalidBodyAvatar(fault));
     // E0a: the slot table, its nodes' paths and their skeleton IDs.
     if human.bones.len() != BODY_BONES {
         return Err(AnimError::InvalidAvatarIndex("m_HumanBoneIndex"));
+    }
+    if let Some(id) = tos_conflict(avatar, meter)? {
+        return fault(BodyAvatarFault::TosConflict(id));
     }
     let mut nodes = [None; BODY_BONES];
     let mut paths: [Option<&RawStr>; BODY_BONES] = [None; BODY_BONES];
@@ -268,14 +308,12 @@ pub fn body_avatar<'a>(avatar: &'a Avatar, meter: &Meter) -> Result<BodyAvatar<'
     }
     // E0b: one finite, non-negative mass per slot, zero where absent,
     // summing to one.
-    let Some(stored) = &human.bone_mass else {
-        return fault(BodyAvatarFault::MassMissing);
+    let masses = match human.bone_mass {
+        None => return fault(BodyAvatarFault::MassMissing),
+        Some(BoneMass::Length(n)) => return fault(BodyAvatarFault::MassLength(n)),
+        Some(BoneMass::Slots(masses)) => masses,
     };
-    let stored = stored.as_slice();
-    meter.count_decode(stored.len() as u64)?;
-    let Ok(masses) = <[f32; BODY_BONES]>::try_from(stored) else {
-        return fault(BodyAvatarFault::MassLength(stored.len()));
-    };
+    meter.count_decode(BODY_BONES as u64)?;
     let mut sum = 0_f64;
     for (slot, (&mass, node)) in masses.iter().zip(&nodes).enumerate() {
         if !mass.is_finite() {
