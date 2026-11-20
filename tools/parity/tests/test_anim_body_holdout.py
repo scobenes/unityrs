@@ -21,6 +21,7 @@ from anim_body_support import body_doc
 from anim_fixture_support import RUN
 
 import anim_body_adequacy as adequacy  # noqa: E402  (test_anim_replay puts it on the path)
+import anim_body_check as check  # noqa: E402
 import anim_body_holdout as holdout  # noqa: E402
 import anim_replay as replay  # noqa: E402
 from anim_body_runs import Design  # noqa: E402
@@ -87,6 +88,21 @@ class PredictionTests(unittest.TestCase):
         self.assertEqual([len(lines) for lines in flagged], [1, 1])
         self.assertTrue(all(lines[0].startswith(f"{NAME}@{worst['local']}:") for lines in flagged))
 
+    def test_only_what_e3b_would_compare_counts_toward_its_minimum(self):
+        coefficients = support.coefficients(support.layout(self.source)[5])
+        planned = holdout.planned(NAME, self.source, coefficients, rows_of(NAME))
+        framed = [row for row in planned if row["in_frame"]]
+        planned[1]["refused"] = "topology"
+        late = framed[-1]["local"]
+        with mock.patch.object(check, "outside", lambda row, limit: limit is not None and row["local"] == late):
+            found = holdout.margins(planned, lambda row: row["unity"] / 2, NAME, limit=.1, minimum=len(framed))
+        self.assertEqual(found["in_frame"], len(framed) - 1 - (planned[1]["in_frame"]))
+        self.assertNotIn(late, [entry["local"] for entry in found["samples"]])
+        self.assertEqual(found["failures"], [f"{NAME}: {found['in_frame']} predicted in-scope comparison(s), under "
+                                             f"the minimum {len(framed)}"])
+        self.assertEqual(holdout.margins(planned, lambda row: row["unity"] / 2, NAME)["in_frame"],
+                         len(framed) - planned[1]["in_frame"])
+
     def test_a_target_that_moves_or_a_rig_of_its_own_topology_is_refused(self):
         moved = copy.deepcopy(self.source)
         with mock.patch.object(holdout, "standin", lambda *args: (self.moved(), None)):
@@ -113,7 +129,7 @@ class Round9Tests(unittest.TestCase):
         import anim_body_seal as seal
 
         folders = [pathlib.Path(path) for path in os.environ["UNITYRS_E3B_ROUND9"].split(os.pathsep)]
-        artifact = json.loads(seal.FREEZE_PATH.read_text(encoding="utf-8"))
+        artifact = json.loads((seal.HERE / "anim_body_freeze_v7.json").read_text(encoding="utf-8"))
         avatar_of, clip_of = freeze.readers(os.environ["UNITYRS_E3B_READER"])
         runs, _, design = freeze.frozen_training(folders, artifact, avatar_of, clip_of)
         found = holdout.predicted(runs, design, artifact["coefficients"], avatar_of, rig=HOLDOUT_RIGS[0])

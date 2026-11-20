@@ -583,8 +583,16 @@ coefficient is shipped from a fit.
     hold-out sample, predicted from the fixture spec alone: the base
     rig's recorded rotations on the hold-out rig's layout, the hips
     placed by the model, and `E_unity,s / u_s` of at least 1.05 in each
-    Editor version, checked again before E3b claims its shot. On round
-    9's training runs this prediction flags the failing sample;
+    Editor version, checked again before E3b claims its shot. It counts
+    only what E3b would compare (frame and topology scope, the frozen
+    lateral limit) and needs E3b's minimum of in-scope comparisons. On
+    round 9's training runs this prediction flags the failing sample.
+    Against round 9's consumed hold-out, recomputed at all its samples,
+    it predicts the same 33 in-scope comparisons per version (the 4 more
+    samples it puts out of frame E3b refuses by the lateral limit), and
+    `E_unity,s / u_s` within 0.26% at every one (worst 0.253%, `u_s`
+    overpredicted; `E_unity,s` within 0.021%), the same in both
+    versions. The 1.05 margin is about twenty times that error;
   - five extra probe cases tighten the coefficient combinations that
     drive it (the shoulder links' sum and difference, and the lower
     legs'). The criterion is block-l1, so repeating rows of a given

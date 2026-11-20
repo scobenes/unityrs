@@ -17,14 +17,16 @@ target the rest body position (as Unity defines both), and each sample's
 hips are where the model places them (2.3, with the given coefficients).
 The rows are then the checkpoint's (anim_body_adequacy.samples): J_s is
 exact, and E_unity,s is the hold-out's own up to the model's hips error.
-A sample whose hips the frame scope refuses is no comparison and is
-listed apart.
+A sample E3b would not compare is no comparison here either: one whose
+hips the frame scope refuses, one past the lateral limit (E3's `outside`)
+or out of topology scope. Each version needs at least E3b's minimum of
+in-scope comparisons among the rest.
 
 The freeze requires E_unity,s / u_s >= HOLDOUT_MARGIN at every planned
 in-frame sample of every Editor version, so a prediction off by a few
-percent still cannot let E3b fail on the criterion. On round 9's training
-runs the prediction gave the failing sample's u_s and E_unity,s to four
-digits. The margin is not larger because the criterion is block-l1: a
+percent still cannot let E3b fail on the criterion. Against round 9's
+consumed hold-out, recomputed at every sample, the predicted ratio was
+within 0.26% (docs/plans/humanoid-body.md, E3b on freeze v7). The margin is not larger because the criterion is block-l1: a
 training row of a given leverage cannot lower u_s below what that leverage
 allows, however often it repeats, so added training poses lift the worst
 planned sample only a little past it.
@@ -112,12 +114,15 @@ def planned(name, source, coefficients, rows_of, avatar=None):
     return rows
 
 
-def margins(rows, uncertainty, label, margin=HOLDOUT_MARGIN):
-    """The predicted criterion over the in-frame rows: E_unity,s / u_s at each, the worst, and a failure for
-    each under `margin`."""
+def margins(rows, uncertainty, label, margin=HOLDOUT_MARGIN, limit=None, minimum=0):
+    """The predicted criterion over the rows E3b would compare (in frame, in topology scope, within the lateral
+    `limit`): E_unity,s / u_s at each, the worst, and a failure for each under `margin` and for fewer than
+    `minimum` of them."""
+    from anim_body_check import outside
+
     table, failures = [], []
     for row in rows:
-        if not row["in_frame"]:
+        if not row["in_frame"] or row.get("refused") or outside(row, limit):
             continue
         u = uncertainty(row)
         ratio = row["unity"] / u if u > 0 else float("inf")
@@ -125,14 +130,17 @@ def margins(rows, uncertainty, label, margin=HOLDOUT_MARGIN):
         if not ratio >= margin:
             failures.append(f"{label}@{row['local']}: predicted u_s {u:.4e} against E_unity,s {row['unity']:.4e}, "
                             f"margin {ratio:.4f} under {margin}")
+    if len(table) < minimum:
+        failures.append(f"{label}: {len(table)} predicted in-scope comparison(s), under the minimum {minimum}")
     worst = min((entry["margin"] for entry in table), default=None)
     return dict(worst_margin=worst, in_frame=len(table), refused=len(rows) - len(table), failures=failures,
                 samples=table)
 
 
-def predicted(runs, design, coefficients, avatar_of=None, rig=HOLDOUT):
+def predicted(runs, design, coefficients, avatar_of=None, rig=HOLDOUT, limit=None, minimum=0):
     """Each run's predicted hold-out margins under `design` (anim_body_runs.Design) and the coefficients, with
-    the run's Avatars when `avatar_of` reads them: {version: margins(...)}, never reading a hold-out file."""
+    the run's Avatars when `avatar_of` reads them, the lateral `limit` and the `minimum` in-scope count E3b
+    applies: {version: margins(...)}, never reading a hold-out file."""
     from anim_body_runs import avatar_masses, avatar_scope, rest_translations
 
     name, source = primary_probes(rig), primary_probes(source_rig(rig))
@@ -151,5 +159,6 @@ def predicted(runs, design, coefficients, avatar_of=None, rig=HOLDOUT):
                                          rest_translations(avatar, recording)))
 
         rows = planned(name, doc, coefficients, rows_of, avatar_of(run, doc) if avatar_of else None)
-        out[run.version] = margins(rows, design.hips_uncertainty, f"{run.version}/{name}")
+        out[run.version] = margins(rows, design.hips_uncertainty, f"{run.version}/{name}", limit=limit,
+                                   minimum=minimum)
     return out

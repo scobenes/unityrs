@@ -446,7 +446,9 @@ def holdout_plan(documents, rows, parents, masses):
         return dict(worst_margin=None, failures=[f"{name}: its base rig's probe case is not recorded"])
     try:
         plan = planned(name, source, solve(design), lambda doc, _: list(samples(name, doc, parents, masses)))
-        return margins(plan, design.hips_uncertainty, name)
+        from anim_body_seal import MIN_COMPARISONS
+
+        return margins(plan, design.hips_uncertainty, name, minimum=MIN_COMPARISONS)
     except ValueError as error:
         return dict(worst_margin=None, failures=[f"{name}: not predicted: {error}"])
 

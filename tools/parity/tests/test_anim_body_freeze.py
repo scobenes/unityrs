@@ -89,6 +89,7 @@ class FreezeTests(unittest.TestCase):
         self.ledger = self.ledger_dir / "ledger.jsonl"
         # The canonical artifact is the scratch repository's here; the checkout's own one, if committed, is then
         # just another file the sources name.
+        self.real_path = seal.FREEZE_PATH
         canonical = mock.patch.object(seal, "FREEZE_PATH", self.artifact)
         canonical.start()
         self.addCleanup(canonical.stop)
@@ -160,7 +161,16 @@ class FreezeTests(unittest.TestCase):
             self.assertIn(short, text)
             self.assertEqual(self.main("freeze", "--freeze", str(self.artifact))[0], 2)
         self.assertFalse(self.artifact.exists())
-        artifact = self.frozen()
+        calls = []
+        passing = planned_margins()
+
+        def spy(runs, *args, **kwargs):
+            calls.append(kwargs)
+            return passing(runs)
+        with mock.patch.object(holdout, "predicted", spy):
+            artifact = self.frozen()
+        # With E3b's filters: the lateral limit E3a sets, and E3b's minimum of in-scope comparisons.
+        self.assertEqual(calls, [dict(limit=artifact["scope"]["lateral_limit"], minimum=seal.MIN_COMPARISONS)])
         self.assertEqual(artifact["e3a"]["holdout_plan"], {version: dict(worst_margin=2., in_frame=1, refused=0,
                                                                          minimum=holdout.HOLDOUT_MARGIN)
                                                            for version in VERSIONS})
@@ -172,6 +182,23 @@ class FreezeTests(unittest.TestCase):
         # An artifact that records no margin of at least the code's is refused.
         self.rewrite(dict(artifact, e3a=dict(artifact["e3a"], holdout_plan={})))
         self.e3b("no predicted hold-out margin")
+        self.assertFalse(self.claimed())
+
+    def test_the_next_freeze_writes_the_canonical_path_and_v7_is_spent(self):
+        # The checkout's canonical path is the next version's, absent until that freeze writes it; the spent v7
+        # stays tracked beside it.
+        self.assertEqual(self.real_path.name, "anim_body_freeze_v8.json")
+        self.assertTrue((seal.HERE / "anim_body_freeze_v7.json").is_file())
+        self.assertFalse(self.artifact.exists())
+        self.assertEqual(self.main("freeze", "--freeze", str(self.artifact))[0], 0)
+        self.assertTrue(self.artifact.is_file())
+        self.assertEqual(self.main("freeze", "--freeze", str(self.artifact))[0], 2)
+        # E3b refuses v7, before any claim: it is not the canonical artifact.
+        with mock.patch.object(seal, "FREEZE_PATH", self.real_path):
+            self.e3b("E3b reads only the canonical freeze artifact anim_body_freeze_v8.json", 2)
+            code, text = self.main("e3b", "--freeze", str(seal.HERE / "anim_body_freeze_v7.json"))
+        self.assertEqual(code, 2)
+        self.assertIn("E3b reads only the canonical freeze artifact anim_body_freeze_v8.json", text)
         self.assertFalse(self.claimed())
 
     def test_e3b_refuses_without_the_canonical_artifact(self):

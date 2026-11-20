@@ -72,7 +72,9 @@ from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT
 HERE = Path(__file__).resolve().parent
 ENTRY_POINTS = ("anim_body_freeze.py", "anim_body_check.py", "anim_body_seal.py")
 # The one artifact E3b reads (bound separately, so never a source), and E3b's fixed ledger directory.
-FREEZE_PATH = HERE / "anim_body_freeze_v7.json"
+# v7 (anim_body_freeze_v7.json) is spent: E3b failed on it once; it stays tracked as the record, and the next
+# freeze writes this path.
+FREEZE_PATH = HERE / "anim_body_freeze_v8.json"
 # The account's own home (its passwd entry, never $HOME).
 LEDGER_DIR = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local" / "state" / "unityrs" / "e3b"
 HOLDOUT_CASES = tuple(sorted(name for name, info in BODY_INFO.items() if info["rig"] == HOLDOUT))
@@ -297,7 +299,8 @@ def e3b(folders, path, unityrs, readers, complete_folder):
     avatar_of, clip_of = readers(unityrs)
     runs, _, design = freeze.frozen_training(folders, artifact, avatar_of, clip_of)
     # Section 7's criterion predicted again at every planned hold-out sample, before anything opens.
-    planned = freeze.holdout.predicted(runs, design, artifact["coefficients"], avatar_of)
+    planned = freeze.holdout.predicted(runs, design, artifact["coefficients"], avatar_of,
+                                       limit=artifact["scope"]["lateral_limit"], minimum=MIN_COMPARISONS)
     short = [line for entry in planned.values() for line in entry["failures"]]
     replay.require(not short, f"the hold-out is predicted short of its margin: {short[:3]}")
     preflight(runs)

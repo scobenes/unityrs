@@ -165,7 +165,8 @@ def e3a(folders, avatar_of, clip_of):
     found, failures = lateral(runs, rows, design, coefficients)
     report = check.e3(rows, design, coefficients, found["limit"])
     # Section 7's criterion at every planned hold-out sample, with margin, from the spec alone.
-    plan = holdout.predicted(runs, design, coefficients, avatar_of)
+    plan = holdout.predicted(runs, design, coefficients, avatar_of, limit=found["limit"],
+                             minimum=seal.MIN_COMPARISONS)
     report["failures"] += failures + missing(runs) + [line for entry in plan.values() for line in entry["failures"]]
     report["holdout_plan"] = {version: {key: entry[key] for key in ("worst_margin", "in_frame", "refused")}
                               | dict(minimum=holdout.HOLDOUT_MARGIN) for version, entry in plan.items()}
