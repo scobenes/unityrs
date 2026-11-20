@@ -10,9 +10,11 @@ names: each case it lists as recorded that the builder's case tables
 (anim_fixture_body, anim_fixture_contract, anim_fixture_coverage) give a
 humanoid Avatar is read from the path the table lays out for it, and its
 role comes from the same table: `holdout` for the hold-out rig's cases
-(anim_fixture_body.HOLDOUT), `training` for every other. The role is
+(anim_fixture_body.HOLDOUT_RIGS), `training` for every other. The role is
 decided before the file is opened, so a training load never reads a
-hold-out byte. A read recording must name its own case and the table's
+hold-out byte, and no load reads a hold-out file at all: a hold-out run is
+made (`Run.sealed`) only from the recordings sealed completion validated
+and handed to E3b (anim_body_seal). A read recording must name its own case and the table's
 bundle, so a hold-out recording under a training case's name refuses.
 Every training body case is required (REQUIRED): `Run.missing` lists those
 run.json does not record, which fails every check and refuses the freeze.
@@ -47,9 +49,12 @@ import anim_body_adequacy as adequacy
 import anim_replay as replay
 from anim_body_model import centre
 from anim_body_tolerance import NAMES, U64, body_states, edges, readback_position
-from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT
+from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT_RIGS
 from anim_fixture_contract import REPLAY_CASES, VECTOR_CASES
 from anim_fixture_coverage import COVERAGE_CASES
+
+# The Editor families every freeze, E4 and E3b needs (a version's leading number).
+EDITORS = ("2022", "6000")
 
 ROLES = ("training", "holdout")
 # The 25 slots of m_HumanBoneIndex and m_HumanBoneMass: HumanBodyBones 0-8, UpperChest, 9-23.
@@ -62,7 +67,7 @@ CASES = {**{name: (fixture, "") for name, fixture in (REPLAY_CASES | COVERAGE_CA
 
 
 def role_of(case):
-    return "holdout" if BODY_INFO.get(case, {}).get("rig") == HOLDOUT else "training"
+    return "holdout" if BODY_INFO.get(case, {}).get("rig") in HOLDOUT_RIGS else "training"
 
 
 REQUIRED = frozenset(name for name in BODY_CASES if role_of(name) == "training")
@@ -95,31 +100,50 @@ def recording_paths(folder, role, *, pending=False):
 
 
 class Run:
-    """One run's recordings of one role: documents, the files' digests, and the required cases it lacks."""
+    """One run's recordings of one role: documents, the files' digests, and the required cases it lacks. A
+    training run reads its files; a hold-out run is never read here, only made (`sealed`) from the recordings
+    sealed completion validated and handed over (anim_body_seal)."""
 
     def __init__(self, folder, role, *, pending=False):
+        replay.require(role == "training", "a hold-out recording opens only through sealed completion (E3b)")
         manifest = replay.read_json((folder / "run.json").read_text(encoding="utf-8"))
         self.folder, self.role = folder, role
         self.version = manifest["run"]["editor_version"]
         recorded = {case for case, status in statuses(manifest).items() if status == "recorded"}
-        self.missing = sorted(REQUIRED - recorded) if role == "training" else []
+        self.missing = sorted(REQUIRED - recorded)
         self.documents, self.inputs = {}, []
         for case, path in recording_paths(folder, role, pending=pending).items():
             data = path.read_bytes()
-            doc = replay.read_json(data.decode("utf-8"))
-            spec = doc["spec"]
-            replay.require("humanoid" in doc.get("capture", {}), f"{case}: a humanoid case without a humanoid capture")
-            replay.require(spec["evidence"]["editor"].get("fixture_case") == case,
-                           f"{path.name} records another case than {case}")
-            replay.require([bundle["name"] for bundle in spec["bundles"]] == [CASES[case][0].bundle],
-                           f"{case} plays another bundle than the case table's {CASES[case][0].bundle}")
-            replay.require(doc["capture"].get("editor_version", self.version) == self.version,
-                           f"{case} was recorded by another Editor version")
-            self.documents[case] = doc
-            self.inputs.append(dict(run=self.version, case=case, rig=BODY_INFO.get(case, {}).get("rig", "p2b"),
-                                    sha256=hashlib.sha256(data).hexdigest()))
-        loaded = {row["rig"] == HOLDOUT for row in self.inputs}
-        replay.require(loaded <= {role == "holdout"}, f"a {role} load read the wrong rig")
+            self.add(case, hashlib.sha256(data).hexdigest(), replay.read_json(data.decode("utf-8")), path.name)
+        self.check_rigs()
+
+    @classmethod
+    def sealed(cls, folder, version, recordings):
+        """A hold-out run from completion's validated recordings, {case: (sha256, document)}."""
+        run = cls.__new__(cls)
+        run.folder, run.role, run.version, run.missing = folder, "holdout", version, []
+        run.documents, run.inputs = {}, []
+        for case, (sha256, document) in sorted(recordings.items()):
+            replay.require(case in CASES and role_of(case) == "holdout", f"{case} is not a hold-out case")
+            run.add(case, sha256, document, case)
+        run.check_rigs()
+        return run
+
+    def add(self, case, sha256, doc, label):
+        spec = doc["spec"]
+        replay.require("humanoid" in doc.get("capture", {}), f"{case}: a humanoid case without a humanoid capture")
+        replay.require(spec["evidence"]["editor"].get("fixture_case") == case, f"{label} records another case than {case}")
+        replay.require([bundle["name"] for bundle in spec["bundles"]] == [CASES[case][0].bundle],
+                       f"{case} plays another bundle than the case table's {CASES[case][0].bundle}")
+        replay.require(doc["capture"].get("editor_version", self.version) == self.version,
+                       f"{case} was recorded by another Editor version")
+        self.documents[case] = doc
+        self.inputs.append(dict(run=self.version, case=case, rig=BODY_INFO.get(case, {}).get("rig", "p2b"),
+                                sha256=sha256))
+
+    def check_rigs(self):
+        loaded = {row["rig"] in HOLDOUT_RIGS for row in self.inputs}
+        replay.require(loaded <= {self.role == "holdout"}, f"a {self.role} load read the wrong rig")
 
 
 def digest(inputs):
@@ -198,6 +222,40 @@ def skeleton_points(human, parents, unit=U64):
         {name: state.e_position for name, state in states.items()}
 
 
+def node_paths(doc):
+    """{capture node index: its path under the Animator node} for every node below the Animator."""
+    spec = doc["spec"]
+    names = {node["address"]: node["name"] for node in spec["nodes"]}
+    base = spec["binding_address"]
+    out = {}
+    for i, node in enumerate(spec["nodes"]):
+        if node["address"].startswith(base + "/"):
+            parts = node["address"][len(base) + 1:].split("/")
+            out[i] = "/".join(names[base + "/" + "/".join(parts[:k + 1])] for k in range(len(parts)))
+    return out
+
+
+def rest_translations(avatar, doc):
+    """{capture node index: its m_SkeletonPose local translation bits} for every node below the hips, through
+    m_Skeleton.m_ID and m_TOS: the translations Unity's humanoid playback writes (E3a), against which the prefab's
+    differ by f32 rounding. A node below the hips the Avatar's skeleton lacks refuses."""
+    human = human_of(avatar)
+    skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
+    pose = human["m_SkeletonPose"].get("data", human["m_SkeletonPose"])["m_X"]
+    tos = dict(map(tuple, avatar.get("m_TOS") or []))
+    by_path = {tos.get(node_id): k for k, node_id in enumerate(skeleton.get("m_ID") or []) if k < len(pose)}
+    spec = doc["spec"]
+    hips = spec["nodes"][next(row["node"] for row in doc["capture"]["humanoid"]["bones"] if row["name"] == "Hips")]
+    out = {}
+    for i, path in node_paths(doc).items():
+        if not spec["nodes"][i]["address"].startswith(hips["address"] + "/"):
+            continue
+        k = by_path.get(path)
+        replay.require(k is not None, f"{path}: below the hips but not in the Avatar's skeleton")
+        out[i] = [replay.f32_bits(float(pose[k]["t"][axis])) for axis in "xyz"]
+    return out
+
+
 def captured_paths(doc):
     """{slot: the bone's path under the Animator node} from the capture's bone rows and nodes."""
     spec = doc["spec"]
@@ -230,7 +288,7 @@ def avatar_scope(avatar, doc, parents):
         moved = sorted(slot for slot in paths.keys() | captured.keys() if paths.get(slot) != captured.get(slot))
         return None, f"the Avatar maps {moved} unlike the capture"
     mapped = set(paths)
-    refused = adequacy.scope_refusal(mapped)
+    refused = adequacy.scope_refusal(mapped, avatar_masses(avatar))
     return (None, refused) if refused else (skeleton_points(human, parents)[0], None)
 
 
@@ -238,24 +296,26 @@ def observe(runs, table=None, avatar_of=None):
     """Every sample row of the runs (anim_body_adequacy.samples), named `version/case`. `table` is the
     HumanTrait table (parents, masses) to use; by default each run's own. With `avatar_of(run, doc)`, each
     recording's masses are its Avatar's m_HumanBoneMass (decision 1), the checkpoint's fold then keeping
-    them renormalized over the mapped slots, and its scope and F(T) are the Avatar's (avatar_scope)."""
+    them renormalized over the mapped slots, its scope and F(T) are the Avatar's (avatar_scope), and the
+    translations below its hips are its m_SkeletonPose's (rest_translations)."""
     rows = []
     for run in runs:
         if not run.documents:
             continue
         parents, masses = table or adequacy.bone_table(run.documents.values())
         for case, doc in run.documents.items():
-            skeleton, refused, weights = None, None, masses
+            skeleton, refused, weights, translations = None, None, masses, None
             if avatar_of:
                 avatar = avatar_of(run, doc)
                 weights = avatar_masses(avatar)
                 skeleton, refused = avatar_scope(avatar, doc, parents)
+                translations = None if refused else rest_translations(avatar, doc)
             if refused:
                 # Out of scope: no forward kinematics, no bound; every sample is refused.
                 case_rows = [dict(local=sample["local"], refused=refused, fit=False, state=None, edges=None,
                                   columns={}, jacobian={}) for sample in doc["capture"]["samples"]]
             else:
-                case_rows = adequacy.samples(case, doc, parents, weights, skeleton)
+                case_rows = adequacy.samples(case, doc, parents, weights, skeleton, translations)
             for row in case_rows:
                 row.update(name=f"{run.version}/{case}", case=case, version=run.version,
                            rig=BODY_INFO.get(case, {}).get("rig", "p2b"))
@@ -276,7 +336,7 @@ class Design:
     """The weighted design matrix of the fitting rows and its pseudo-inverse's pieces."""
 
     def __init__(self, rows):
-        replay.require(all(row["rig"] != HOLDOUT for row in rows), "the fit refuses hold-out rows")
+        replay.require(all(row["rig"] not in HOLDOUT_RIGS for row in rows), "the fit refuses hold-out rows")
         self.fitting = [row for row in rows if row["fit"]]
         self.keys = sorted({key for row in self.fitting for key in row["columns"]})
         replay.require(self.keys, "no fitting rows")

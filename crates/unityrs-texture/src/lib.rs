@@ -185,6 +185,21 @@ pub use platform::{PlatformError, decode_in, decode_in_as, plan_in, plan_in_as};
 pub fn decode_bc6h_block(data: &[u8; 16], signed: bool) -> Result<[[u16; 3]; 16], HdrError> {
     bc6h::block(data, signed).ok_or(HdrError::ReservedMode)
 }
+/// Whether astcenc's LDR decoder, as UnityPy calls it, reads each whole
+/// 16-byte block of `data` as an error block at the footprint `width` x
+/// `height`: one verdict a block, in order. `None` for a footprint astcenc
+/// does not take, or when the decode tables cannot be charged. This is the
+/// decoder's error status, not its colour, which differs by astcenc build
+/// (`PARITY.md` section 19.3), so a block's legality reads the same on
+/// every host.
+#[must_use]
+pub fn astc_ldr_error_blocks(width: u8, height: u8, data: &[u8]) -> Option<Vec<bool>> {
+    let fp = astc::Footprint::new(width, height)?;
+    let meter = unityrs_core::limits::Meter::unlimited();
+    let mut tables = astc::Tables::new(fp, &meter).ok()?;
+    Some(astc::error_blocks(&mut tables, data))
+}
+
 pub use select::{
     SWITCH, Selection, Skip, SkippedPlatform, TextureFields, XBOX_SWAP_FORMATS, XBOX360,
     is_switch_swizzled, select, select_crunch, select_in,
@@ -193,6 +208,8 @@ pub use select::{
 /// Asserts at compile time that `T` is `Send + Sync` (plan section 3.16).
 pub(crate) const fn send_sync<T: Send + Sync + ?Sized>() {}
 
+#[cfg(test)]
+mod golden_tests;
 #[cfg(test)]
 mod tests {
     use std::path::Path;

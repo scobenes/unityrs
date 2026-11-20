@@ -1009,16 +1009,18 @@ the plan's hypotheses. None of it is a playback claim.
 
 ### Body fixtures
 
-The main menu item builds 109 optional `body-…` cases, each kind in its own
+The main menu item builds 118 optional `body-…` cases, each kind in its own
 bundle build after the main and coverage builds. Their tables are in
 `UnityrsBodyFixtures.cs` and `UnityrsBodyClips.cs`, mirrored by
 [`anim_fixture_body.py`](../tools/parity/anim_fixture_body.py).
 
 | Cases | Plan | Contents |
 |---|---|---|
-| `body-probes-<rig>` (16) | F1, F6 | Known-vector `SetHumanPose` on each rig. The rigs are the two P2b rigs, each F6 topology, a noncoplanar rig and the hold-out rig. The vectors are one per probe muscle of each mapped bone, then three combined vectors over every probe muscle. Twist and stretch stay out. |
+| `body-probes-<rig>` (19) | F1, F6 | Known-vector `SetHumanPose` on each rig. The rigs are the two P2b rigs, each F6 topology, a noncoplanar rig and the hold-out rig. The vectors are one per probe muscle of each mapped bone, then three combined vectors over every probe muscle. Twist and stretch stay out. |
 | `body-probes-tall-2` (1) | F1 | 26 extra known vectors on the tall rig, in a bundle of their own. Each moves two of the trunk, shoulder, upper-arm and upper-leg bones, the poses the adequacy checkpoint predicts it needs (below). |
 | `body-probes-twist-{compact,tall}` (2) | F2 | Twist sweeps on the two P2b rigs, each in a bundle of its own: 84 known vectors, the shoulder-hip twist swept by the Spine and Chest twist muscles under an upright and three tilted body targets (below) |
+| `body-probes-range-{compact,tall,noncoplanar}` (3) | F8 | Range sweeps on three training rigs, each in a bundle of its own: 263 known vectors filling every mapped spine bone's muscle cube jointly under the twist sweeps' tilts (below) |
+| `body-probes-band-{compact,tall,noncoplanar}` (3) | F9 | Lateral band sweeps on the same three rigs, each in a bundle of its own: 296 known vectors crossing combined spine Left-Right values up to ±3/8 with tilts and small arm-leg yaw gaps, and the side bends (below), all required once the run has them |
 | `body-targets-{compact,tall}[-offset]` (4) | F3 | The three combined vectors with nonidentity body targets on identity and offset roots |
 | `body-clip-<variant>[-offset]` (78) | F4 | 39 body-motion clips on the compact rig, each on an identity and an offset root |
 | `body-chain-<f5>-{targets,clip}` (8) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale. Each plays F3's targets and the all-original F4 clip with changing `MotionT` and `MotionQ` curves, whose residual body translation and tilt change through the chain and whose motion the original-root rule keeps. Completion requires its built motion slots; if Unity drops them, that clip case is not covered. |
@@ -1064,6 +1066,51 @@ be measured against the twist and the tilt (2.2). The sweeps are a later
 generation than the extra probes, required the same way once their rig's
 probe case records, and only on training rigs. The adequacy checkpoint
 does not read them.
+
+**Range sweeps.** A range sweep (`RangeProbes`, mirrored by `RANGE_RIGS`)
+moves every mapped spine bone's three muscles (Front-Back, Left-Right and
+Twist of Spine, Chest and UpperChest) over the whole cube `[-1, 1]^3`
+together. The vectors are the first 256 points of the unscrambled 9-d Sobol
+sequence with Joe and Kuo's direction numbers, each coordinate `x` as
+`2 x - 1`, so every value is exact in f32. A rig without UpperChest takes
+the first six coordinates. Then come the seven joint corners the sequence
+lacks, every mapped spine bone at the same corner; `(-1, -1, -1)` is the
+sequence's first point. Every other muscle is zero. The body target takes
+the twist sweeps' four tilts, each over an aligned block of 64 consecutive
+Sobol points. Such a block is itself a net that fills the whole cube, where
+every fourth point would keep Spine Front-Back and Left-Right in one
+quadrant. The corners cycle through the tilts, and the anchors stay
+upright. The design comes from the cube alone, never from recorded or real
+animation. With the anchors that is 266 samples per case, on the compact,
+tall and noncoplanar rigs. The sweeps are fitted with the probes, and each
+is required once its rig records. The three rigs with UpperChest absent and
+both, the left or the right Toes absent came with them, in the same later
+generation. Those rigs are required whenever a run has that generation: an
+Avatar Unity refuses fails the run instead of going uncovered.
+
+**Lateral band sweeps.** A band sweep (`BandProbes`, mirrored by
+`BAND_RIGS`) validates the frame past its lateral domain. B2's checker
+refuses a spine Left-Right value beyond the largest one at which every
+training sample passes E2 and E3a. Past it, 2.2's frame leaves Unity's
+read-back by an unexplained second-order yaw of up to 0.08°. The vectors are
+the range sweeps' 256 Sobol points, rescaled per bone: Front-Back over
+`[-1, 1]`, Left-Right over `±3/8` and Twist over `±1/32`. Each is `2 x - 1`
+times a power of two, so exact in f32. The twists stay small, so most poses
+stay inside the frame's shoulder-hip twist scope, and they open an arm-leg
+yaw gap of a few degrees. The tilts are the range sweeps'. Then come 40
+side bends (`BandBends`), every mapped spine bone alike with Front-Back
+zero, under each tilt. Four are twisted: Left-Right and Twist at
+`±(15/128, 1/32)`, `±(9/64, -1/32)`, `±(11/64, 1/32)` and
+`±(13/64, -1/32)`. They open yaw gaps of either sign in the band's low
+bins, from just past the validated domain, which the Sobol points' largest
+Left-Right reaches only sparsely. The fifth is pure, Left-Right `±3/8`
+with Twist zero: the oppositely tilted arm and leg laterals at a near-zero
+yaw gap, the shape no lateral-weighting rule fits. With the anchors that
+is 299 samples per case. A run that has the band sweeps requires all
+three, whatever their rigs' own probe cases did: Unity refusing one is an
+Editor error. They are a later generation of their own. They are evaluated (E2, E3a, and their
+margins in the adequacy checkpoint) but never fitted, so they validate
+the fit without moving it. The design comes from the cube alone.
 
 **F3 targets.** The targets alternate two requests. One moves the rest
 body by `(.05, -.03, .04)` and tilts it by `Euler(12, -20, 7)`. The other

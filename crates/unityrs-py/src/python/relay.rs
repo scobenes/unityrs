@@ -1,6 +1,7 @@
 //! Synchronous configuration callbacks run on the original Python caller thread.
-//! The relay is stack-owned by a scoped worker; it allocates no channel,
-//! closure or request buffer. No relay lock is held across Python code.
+//! The relay is stack-owned by the call running the work, on a worker or
+//! inline on the caller; it allocates no channel, closure or request buffer.
+//! No relay lock is held across Python code.
 use pyo3::{prelude::*, pybacked::PyBackedBytes, types::PyBytes};
 use std::{
     cell::Cell,
@@ -83,11 +84,20 @@ pub(crate) fn attach<T: Send>(operation: impl for<'py> FnOnce(Python<'py>) -> T 
             Err(panic) => std::panic::resume_unwind(panic),
         }
     }
-    if CURRENT.get().is_null() {
-        Python::attach(operation)
-    } else {
+    if relayed() {
         run(operation)
+    } else {
+        Python::attach(operation)
     }
+}
+
+/// Whether this thread is a worker whose caller answers its requests. Off a
+/// worker, and on a caller running its own work inline, requests are emitted
+/// on this thread.
+pub(crate) fn relayed() -> bool {
+    let pointer = CURRENT.get();
+    // SAFETY: the same scoped lifetime as request() below.
+    !pointer.is_null() && !unsafe { &*pointer }.inline
 }
 
 #[derive(Default)]
@@ -95,6 +105,8 @@ struct State {
     request: Option<Request>,
     response: Option<PyResult<Response>>,
     error: Option<PyErr>,
+    /// A callback panicked; it was answered with an error instead.
+    panicked: bool,
     done: bool,
 }
 
@@ -102,6 +114,9 @@ struct State {
 pub(crate) struct Relay {
     state: Mutex<State>,
     changed: Condvar,
+    /// Work runs on the caller itself: requests are emitted in place, and
+    /// only a callback's failure is kept for the caller.
+    inline: bool,
 }
 
 thread_local! {
@@ -109,6 +124,13 @@ thread_local! {
 }
 
 impl Relay {
+    pub(crate) fn inline() -> Self {
+        Self {
+            inline: true,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn enter<T>(&self, operation: impl FnOnce() -> T) -> T {
         struct Guard<'a> {
             relay: &'a Relay,
@@ -148,13 +170,39 @@ impl Relay {
                 return;
             };
             drop(state);
-            let answer = emit(request);
+            // A panicking callback still answers, or the worker would wait
+            // for its response while this caller waits for the worker.
+            let answer = self.answer(request);
             self.state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .response = Some(answer);
             self.changed.notify_all();
         }
+    }
+
+    /// Emit `request`; a panic becomes an error answer, and the call's
+    /// failure once its work ends (see [`Self::panicked`]).
+    fn answer(&self, request: Request) -> PyResult<Response> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| emit(request))).unwrap_or_else(
+            |_| {
+                self.state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .panicked = true;
+                Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "core worker failed",
+                ))
+            },
+        )
+    }
+
+    /// Whether a callback panicked during the work, inline or relayed.
+    pub(crate) fn panicked(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .panicked
     }
 
     pub(crate) fn take_error(&self) -> Option<PyErr> {
@@ -241,6 +289,10 @@ pub(crate) fn request(request: Request) -> PyResult<Response> {
         let pointer = slot.get();
         if pointer.is_null() {
             return emit(request);
+        }
+        if !relayed() {
+            // SAFETY: as below; the caller's own work, run inline.
+            return unsafe { &*pointer }.answer(request);
         }
         // SAFETY: enter installs only its borrowed, stack-owned Relay. Its
         // guard restores the prior pointer before that borrow ends, also on

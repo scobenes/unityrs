@@ -22,7 +22,12 @@ pose within:
 Each start-offset variant's read-back must match its twin's within both
 samples' epsilon and Unity's solve; a variant without its twin fails, and so
 does a run with no comparison. A cell 2.4 refuses or leaves undecided is
-listed, not evaluated.
+listed, not evaluated. Results are per configuration (variant, rig, Editor
+version, root placement), never pooled: a sample without a read-back is
+counted as excluded, and a configuration with nothing compared is excluded
+(or refused, when the topology scope refused every sample), never passing.
+Each Editor family the code requires (anim_body_runs.EDITORS, as E3b) needs
+a comparison of its own, whichever versions the rows hold.
 """
 
 import math
@@ -32,6 +37,7 @@ import anim_replay as replay
 from anim_body_check import solve_turn, verdict
 from anim_body_model import (
     ANGLE_FLOOR,
+    LATERAL_MUSCLES,
     Refused,
     Undecided,
     animator_body,
@@ -41,25 +47,29 @@ from anim_body_model import (
     turn_angle,
     yaw_error,
 )
-from anim_body_runs import F32
+from anim_body_runs import EDITORS, F32
 from anim_body_tolerance import U32, U64, decode, gamma, hips_error, norm, readback_position, turn_sensitivity
-from anim_fixture_body import BODY_INFO, SERIALIZED_ROOT
+from anim_fixture_body import BODY_INFO, MUSCLE_ATTRIBUTE, SERIALIZED_ROOT
 from anim_fixture_contract import compiled_curves
 from anim_reference import angle, dense, normalize, streamed
 
 BODY_T, BODY_Q, MOTION_T, MOTION_Q = (7, 8, 9), (10, 11, 12, 13), (0, 1, 2), (3, 4, 5, 6)
 
 
-def runtime(clip):
-    """{DOF: (is_streamed, keys)} of the built clip's Animator slots, in storage order through m_IndexArray."""
+def runtime(clip, dofs=(*MOTION_T, *MOTION_Q, *BODY_T, *BODY_Q), strict=False):
+    """{DOF: (is_streamed, keys)} of the built clip's Animator slots `dofs`, in storage order through
+    m_IndexArray. A DOF m_IndexArray marks -1 is unbound; `strict` refuses any other index naming no slot."""
     tracks = compiled_curves(clip, replay)
     bindings = clip.get("m_ClipBindingConstant", {}).get("genericBindings", [])
     replay.require(tracks and len(tracks) == len(bindings), "unreadable built clip slots")
     slots = [(key, track) for key, spans in tracks.items() for track in spans]
     index = clip["m_MuscleClip"].get("m_IndexArray") or []
     result = {}
-    for dof in (*MOTION_T, *MOTION_Q, *BODY_T, *BODY_Q):
-        slot = index[dof] if dof < len(index) and type(index[dof]) is int else -1
+    for dof in dofs:
+        slot = index[dof] if dof < len(index) and type(index[dof]) is int else None
+        replay.require(not strict or slot == -1 or slot is not None and 0 <= slot < len(slots),
+                       f"built clip DOF {dof} has an invalid slot index")
+        slot = -1 if slot is None else slot
         if 0 <= slot < len(slots):
             replay.require(slots[slot][0] == (0, 95, dof, 8, False), f"built slot {slot} is not DOF {dof}")
             result[dof] = slots[slot][1]
@@ -89,6 +99,17 @@ def sample(track, grid, time):
     slope = abs((3 * c3 * dt + 2 * c2) * dt + c1)
     # Horner's rounding at its operands, and the clock's: dt = time - start rounds at their magnitude.
     return value, gamma(6, U32) * magnitude + slope * U32 * (abs(time) + abs(start))
+
+
+def clip_muscles(clip, names, time):
+    """The spine Left-Right muscles (anim_body_model.LATERAL_MUSCLES) of a built humanoid clip at `time`, as
+    playback samples them (a muscle m_IndexArray marks unbound is 0; an invalid index refuses); `names` are
+    HumanTrait's muscle names in order."""
+    dofs = {muscle: MUSCLE_ATTRIBUTE + names.index(muscle) for muscle in LATERAL_MUSCLES}
+    tracks = runtime(clip, tuple(dofs.values()), strict=True)
+    playback = clip["m_MuscleClip"]["m_Clip"]
+    grid = playback.get("data", playback).get("m_DenseClip", {})
+    return {muscle: sample(tracks[dof], grid, time)[0] if dof in tracks else 0. for muscle, dof in dofs.items()}
 
 
 def pose_at(tracks, grid, dofs, time):
@@ -152,25 +173,44 @@ def clip_sample(row, clip):
     return target, rotation, position, turn_angle(turn) + 2 * ANGLE_FLOOR
 
 
+def configuration(row, info):
+    """A clip row's E4 configuration: its variant (a start-offset variant with its twin), rig (each F5 chain
+    its own), Editor version and root placement."""
+    return f"{info['variant'].removesuffix('-start')}/{info['rig']}/{row['version']}/{info['root']}"
+
+
 def e4(rows, clips):
-    """`clips` maps a clip row's name to its built clip (the bundle's AnimationClip value)."""
-    failures, combinations, samples, readbacks = [], {}, 0, {}
+    """`clips` maps a clip row's name to its built clip (the bundle's AnimationClip value). Per configuration
+    (`configuration`): its status (pass, fail, or the refused or undecided 2.4 cell), compared samples, start
+    offset and the samples excluded without a read-back. `passing` names the configurations that compared and
+    passed, the only ones B4 and B5 implement; `excluded` those with nothing compared."""
+    failures, configurations, samples, readbacks, versions = [], {}, 0, {}, {}
     for row in rows:
         info = BODY_INFO.get(row["case"])
-        if info is None or info["kind"] != "clip" or row.get("refused") or row["state"]["readback"] is None:
+        if info is None or info["kind"] != "clip":
             continue
-        combination = combinations.setdefault(info["variant"].removesuffix("-start"), {"status": "pass"})
+        entry = configurations.setdefault(configuration(row, info),
+                                          {"status": "pass", "samples": 0, "no_readback": 0, "topology": 0})
+        versions.setdefault(row["version"], 0)
+        if row.get("refused"):
+            entry["topology"] += 1
+            continue
         state = row["state"]
+        if state["readback"] is None:
+            entry["no_readback"] += 1
+            continue
         readback = (tuple(state["scale"] * v for v in readback_position(state["readback"], state["root"], F32)),
                     decode(state["readback"]["readback_rotation"], 4, F32))
         readbacks[row["name"], row["local"]] = (readback, row, info)
         try:
             target, rotation, position, bound = clip_sample(row, clips[row["name"]])
         except (Refused, Undecided) as exc:
-            if combination["status"] == "pass":
-                combination.update(status="undecided" if isinstance(exc, Undecided) else "refused", reason=str(exc))
+            if entry["status"] == "pass":
+                entry.update(status="undecided" if isinstance(exc, Undecided) else "refused", reason=str(exc))
             continue
         samples += 1
+        entry["samples"] += 1
+        versions[row["version"]] += 1
         where = f"{row['name']}@{row['local']}"
         off, turned = math.dist(target, readback[0]), angle(rotation, readback[1])
         if not off <= position:
@@ -178,7 +218,7 @@ def e4(rows, clips):
         if not turned <= bound:
             failures.append(f"{where}: B_A off the read-back by {math.degrees(turned):.4g} deg")
         if not (off <= position and turned <= bound):
-            combination["status"] = "fail"
+            entry["status"] = "fail"
     # The start-offset variants: the same residual body pose as their twins.
     pairs = 0
     for (name, local), ((position, rotation), row, info) in readbacks.items():
@@ -189,22 +229,39 @@ def e4(rows, clips):
                           and other["root"] == info["root"]
                           and other["rig"] == info["rig"]), None)
         twin = readbacks.get((f"{row['version']}/{twin_case}", local))
-        combination = combinations[info["variant"].removesuffix("-start")]
+        entry = configurations[configuration(row, info)]
         if twin is None:
             failures.append(f"{name}@{local}: no start-offset twin ({twin_case}) at this sample")
-            combination["start_offset"] = "fail"
+            entry["start_offset"] = "fail"
             continue
         pairs += 1
         (other_position, other_rotation), other, _ = twin
         bound = sum(r["epsilon"] + r["state"]["chain"][U32].scale * r["unity"] for r in (row, other))
         turn = turn_angle(sum(r["state"]["turn"] + solve_turn(r["state"], U32) for r in (row, other)))
         kept = math.dist(position, other_position) <= bound and angle(rotation, other_rotation) <= turn + ANGLE_FLOOR
-        if combination.get("start_offset") != "fail":
-            combination["start_offset"] = "pass" if kept else "fail"
-        # A combination 2.4 refuses or leaves undecided is not supported, so its pairs only inform.
-        if not kept and combination["status"] in ("pass", "fail"):
+        if entry.get("start_offset") != "fail":
+            entry["start_offset"] = "pass" if kept else "fail"
+        # A configuration 2.4 refuses or leaves undecided is not supported, so its pairs only inform.
+        if not kept and entry["status"] in ("pass", "fail"):
             failures.append(f"{name}@{local}: the start offset changed the residual body pose")
-            combination["status"] = "fail"
+            entry["status"] = "fail"
     if not samples:
         failures.append("E4: no comparison")
-    return verdict(failures, combinations=dict(sorted(combinations.items())), samples=samples, start_pairs=pairs)
+    # Every Editor family the code requires (EDITORS, E3b's too), not only those the rows hold, compares.
+    families = {family: sum(count for version, count in versions.items() if version.split(".")[0] == family)
+                for family in EDITORS}
+    failures += [f"E4: no comparison in Editor {family}" for family, count in families.items()
+                 if not count and samples]
+    failures += [f"E4: Editor version {version} is not one of {EDITORS}" for version in sorted(versions)
+                 if version.split(".")[0] not in EDITORS]
+    for entry in configurations.values():
+        if entry["status"] == "pass" and not entry["samples"]:
+            # Nothing compared: every sample refused on topology is a refusal, any other an exclusion.
+            if entry["topology"] and not entry["no_readback"]:
+                entry.update(status="refused", reason="topology: every sample refused")
+            else:
+                entry["status"] = "excluded"
+    configurations = dict(sorted(configurations.items()))
+    return verdict(failures, configurations=configurations, samples=samples, start_pairs=pairs,
+                   passing=[key for key, entry in configurations.items() if entry["status"] == "pass"],
+                   excluded=[key for key, entry in configurations.items() if entry["status"] == "excluded"])

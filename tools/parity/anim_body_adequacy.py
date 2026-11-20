@@ -35,15 +35,18 @@ read from its `.pending.json`. The checkpoint, with B1's own tolerances
 4. The topology coverage: every F1 and F6 training rig recorded by its own
    probe case, with read-back rows and the rig's mapped bones.
 5. The extra probe plan: every scheduled sample of every extra probe case
-   (anim_fixture_body.EXTRA_PROBES) recorded with read-back, or the missing
-   ones named.
+   (anim_fixture_body.EXTRA_PROBES), range sweep (RANGE_RIGS) and band
+   sweep (BAND_RIGS) recorded with read-back, or the missing ones named.
+   The range sweeps are fitted. The band sweeps are evaluated and never
+   fitted: they validate the frame's lateral domain for B2 (E2, E3a), and
+   their samples' margins count.
 
 The twist sweeps (anim_fixture_body.TWIST_RIGS) take no part: they measure
 2.2's frame against the shoulder-hip twist for B2, not the centre of mass.
 A run with or without them gives the same checkpoint.
 
-With --design-only, each extra probe case the run lacks is predicted from
-its rig's recorded geometry (anim_body_design.py), with conservative
+With --design-only, each extra probe case, range or band sweep the run lacks is
+predicted from its rig's recorded geometry (anim_body_design.py), with conservative
 epsilon and E_unity,s over an envelope of the rig's recorded hips, and the
 same checkpoint runs.
 
@@ -71,23 +74,24 @@ from anim_body_tolerance import (BODY_SLOTS, U32, U64, body_frame, body_states, 
 from anim_body_design import conservative, planned  # noqa: E402
 from anim_body_model import Refused, topology_scope  # noqa: E402
 from anim_reference import gamma  # noqa: E402
-from anim_fixture_body import (BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, TWIST_CASES, probe_schedule,  # noqa: E402
-                               rig_bones)
+from anim_fixture_body import (BAND_CASES, BODY_INFO, EXTRA_CASES, HOLDOUT_RIGS, PROBE_RIGS, RANGE_CASES,  # noqa: E402
+                               TWIST_CASES, probe_schedule, rig_bones)
 
 CONDITION_LIMIT = 1e6
 
 
-def scope_refusal(mapped):
-    """The model's topology refusal for these mapped body slots (anim_body_model.topology_scope), or None."""
+def scope_refusal(mapped, masses=None):
+    """The model's topology refusal for these mapped body slots and, when given, the masses by slot
+    (anim_body_model.topology_scope), or None."""
     try:
-        topology_scope(mapped)
+        topology_scope(mapped, masses)
     except Refused as exc:
         return str(exc)
     return None
 
 
 # The training rigs inside the frozen topology scope; the others' samples are refused, never fitted.
-TRAINING_RIGS = {rig for rig in PROBE_RIGS.keys() - {HOLDOUT} if scope_refusal(rig_bones(rig)) is None}
+TRAINING_RIGS = {rig for rig in PROBE_RIGS.keys() - set(HOLDOUT_RIGS) if scope_refusal(rig_bones(rig)) is None}
 F32 = replay.f32_from_bits
 
 
@@ -139,13 +143,15 @@ def body_rows(table):
     return sorted(rows)
 
 
-def samples(name, doc, parents, masses, skeleton=None):
+def samples(name, doc, parents, masses, skeleton=None, translations=None):
     """One row per sample: its coefficient columns in A, its J_s rows, epsilon, E_unity and E_eval.
 
     `skeleton` is the Avatar's m_SkeletonPose as body-slot positions in A (2.2's F(T) comes from it); the
-    recorded rest pose stands in without it. The hips solve's bones take the rest translations and scales
-    under their sampled rotations, and the hips the rest scale; `drift` names each node whose sampled
-    translation or scale is not the rest's, for E3 to compare."""
+    recorded rest pose stands in without it. `translations` (capture node: f32 bits) are the Avatar's own
+    translations below the hips (anim_body_runs.rest_translations), the ones Unity's playback writes; the
+    recorded rest pose's stand in without them. The hips solve's bones take those translations and the rest
+    scales under their sampled rotations, and the hips the rest scale; `drift` names each node whose sampled
+    translation or scale is not those, for E3 to compare."""
     spec, capture = doc["spec"], doc["capture"]
     human, bones_rows = capture["humanoid"], capture["humanoid"]["bones"]
     editor = spec["evidence"]["editor"]
@@ -158,6 +164,9 @@ def samples(name, doc, parents, masses, skeleton=None):
     hips_address = nodes[next(row["node"] for row in bones_rows if row["name"] == "Hips")]["address"]
     links = recorded_edges(bones_rows, nodes)
     rest_transforms = capture["rest"]["transforms"]
+    if translations is not None:
+        rest_transforms = [dict(row, translation=translations[i]) if i in translations else row
+                           for i, row in enumerate(rest_transforms)]
     rest = bone_frames(bones_rows, nodes, kinematics(nodes, rest_transforms, F32, animator))
     rest_frame = body_frame(skeleton or {name: frame.position for name, frame in rest.items()})
     hips_node = next(i for i, node in enumerate(nodes) if node["address"] == hips_address)
@@ -228,10 +237,11 @@ def samples(name, doc, parents, masses, skeleton=None):
         row = dict(name=name, local=sample["local"], rig=info["rig"] if info else "p2b", columns=columns,
                    jacobian=jacobian, unity=unity, evaluation=evaluation, fit=False, epsilon=epsilon,
                    edges=None if links == expected else f"recorded {links} but HumanTrait gives {expected}")
-        row["refused"] = scope_refusal(mapped & BODY_SLOTS)
-        # A twist sweep measures the frame (E2) and is evaluated (E3), never fitted.
-        row["fit"] = (epsilon is not None and info is not None and info["rig"] != HOLDOUT
-                      and info["variant"] != "twist" and row["refused"] is None)
+        row["refused"] = scope_refusal(mapped & BODY_SLOTS, masses)
+        # A twist sweep measures the frame (E2), and a band sweep validates its lateral domain (E2, E3): both
+        # are evaluated, never fitted.
+        row["fit"] = (epsilon is not None and info is not None and info["rig"] not in HOLDOUT_RIGS
+                      and info["variant"] not in ("twist", "band") and row["refused"] is None)
         # What B2's checks (anim_body_check.py) evaluate the model and its bounds from.
         row["state"] = dict(bones=bones, local=local, rest_local=rest_local, chain=chain, weights=weights,
                             links=links, scale=scale, target=target, body_rotation=body_rotation,
@@ -378,7 +388,7 @@ def adequate(report):
             and report["condition"] is not None and report["condition"] <= CONDITION_LIMIT
             and not report["uncertainty_failures"] and not report["untrained"] and not report["edge_mismatches"]
             and not report["missing_coefficients"] and not report["coverage"]["missing"]
-            and not report.get("missing_planned"))
+            and not report.get("missing_planned") and not (report.get("holdout_plan") or {}).get("failures"))
 
 
 def coverage_of(documents):
@@ -397,9 +407,10 @@ def coverage_of(documents):
 
 
 def missing_planned(documents):
-    """Every scheduled sample of the extra probe plan that has no recording with read-back, by name."""
+    """Every scheduled sample of the extra probe plan and the range and band sweeps that has no recording with
+    read-back, by name."""
     missing = []
-    for name in sorted(EXTRA_CASES):
+    for name in sorted(EXTRA_CASES | RANGE_CASES | BAND_CASES):
         doc = documents.get(name)
         if doc is None:
             missing.append(f"{name}: not recorded")
@@ -421,6 +432,27 @@ def load(folder):
     return {name: doc for name, doc in documents.items() if name not in TWIST_CASES}
 
 
+def holdout_plan(documents, rows, parents, masses):
+    """The hold-out rig's predicted margins (anim_body_holdout) under this checkpoint's design, fitted for the
+    hips placement alone; the hold-out's files are never read."""
+    from anim_body_holdout import margins, planned, source_rig
+    from anim_body_runs import Design, solve
+
+    design = Design([row for row in rows if row["rig"] not in HOLDOUT_RIGS])
+    name = next(case for case, info in BODY_INFO.items() if info["rig"] == HOLDOUT_RIGS[-1] and not info["variant"])
+    source = documents.get(next(case for case, info in BODY_INFO.items() if info["kind"] == "probes"
+                                and info["rig"] == source_rig(HOLDOUT_RIGS[-1]) and not info["variant"]))
+    if source is None:
+        return dict(worst_margin=None, failures=[f"{name}: its base rig's probe case is not recorded"])
+    try:
+        plan = planned(name, source, solve(design), lambda doc, _: list(samples(name, doc, parents, masses)))
+        from anim_body_seal import MIN_COMPARISONS
+
+        return margins(plan, design.hips_uncertainty, name, minimum=MIN_COMPARISONS)
+    except ValueError as error:
+        return dict(worst_margin=None, failures=[f"{name}: not predicted: {error}"])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("folder", type=Path)
@@ -439,6 +471,8 @@ def main(argv=None):
             rows += conservative([list(samples(name, doc, parents, masses)) for doc in variants])
         report = adequacy(rows, coverage_of(documents), expected_inventory(parents))
         report["missing_planned"] = missing_planned(documents | {name: variants[0] for name, variants in extra.items()})
+        if args.design_only:
+            report["holdout_plan"] = holdout_plan(documents, rows, parents, masses)
     except (KeyError, TypeError, IndexError, ValueError, OSError, StopIteration) as exc:
         print(f"anim_body_adequacy: {exc}", file=sys.stderr)
         return 2
@@ -451,7 +485,8 @@ def main(argv=None):
           f"{len(report.get('uncertainty_failures', []))} u_s failures, worst margin E_unity,s/u_s "
           f"{report.get('worst_margin')}, margins {report.get('margins')}, "
           f"missing rigs {report['coverage']['missing']}, missing edges {report['missing_coefficients']}, "
-          f"missing planned samples {report['missing_planned']}: "
+          f"missing planned samples {report['missing_planned']}, "
+          f"predicted hold-out margin {(report.get('holdout_plan') or {}).get('worst_margin')}: "
           + ("adequate" if report["adequate"] else "short")
           + (f" (predicted with {', '.join(predicted)})" if predicted else ""))
     return 0 if report["adequate"] else 1

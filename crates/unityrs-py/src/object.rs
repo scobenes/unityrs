@@ -177,59 +177,63 @@ impl NativeObject {
                     .inner
                     .read_typetree(tree.as_ref(), check_read)
                     .map_err(|error| Failure::parse(error, self.inner.info().byte_size > 0))?;
-                let mut plan = p::plan::Plan::new(meter);
-                plan.root = crate::value_plan::convert(&parsed, meter, &mut plan, false)?;
-                Ok::<_, Failure>((plan, parsed.bytes_read))
+                // The parsed tree is dropped here, on the advertised stack.
+                Ok::<_, Failure>((|| {
+                    let _staging = meter.charge(256).map_err(errors::charge)?;
+                    let mut charge = unityrs_core::limits::Charge::zero(meter);
+                    let value = crate::value_render::convert(&parsed, meter, &mut charge, false)?;
+                    Ok::<_, PyErr>((value, parsed.bytes_read))
+                })())
             })
         })?;
-        let (plan, bytes_read) = crate::worker_error::finish(native)?;
-        py.detach(move || {
-            let _staging = meter.charge(256).map_err(errors::charge)?;
-            let result = p::list()?;
-            p::push(&result, &plan.render()?)?;
-            p::push(&result, &p::int(bytes_read)?)?;
-            p::tuple(&result)
-        })
+        let (value, count) = crate::worker_error::finish(native)??;
+        p::held::tuple_of(py, &[value.into_bound(py), p::held::int(py, count)?]).map(Bound::unbind)
     }
     fn metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        py.detach(|| {
-            let d = p::dict()?;
-            let i = self.inner.info();
-            p::field(
-                &d,
+        use p::held as h;
+        static KEYS: pyo3::sync::PyOnceLock<Vec<Py<PyAny>>> = pyo3::sync::PyOnceLock::new();
+        let (embedded, i) = py.detach(|| {
+            (
+                self.inner
+                    .serialized_type()
+                    .is_some_and(|ty| ty.nodes.is_some()),
+                self.inner.info().clone(),
+            )
+        });
+        // Built attached, with keys made once: callers read it on every parse.
+        let keys = KEYS.get_or_try_init(py, || {
+            [
                 "_has_embedded_nodes",
-                &p::boolean(
-                    self.inner
-                        .serialized_type()
-                        .is_some_and(|ty| ty.nodes.is_some()),
-                )?,
-            )?;
-            for (key, val) in [
-                ("path_id", i.path_id),
-                ("class_id", i.class_id.into()),
-                ("type_id", i.type_id.into()),
-                ("byte_size", i.byte_size.into()),
-            ] {
-                p::field(&d, key, &p::int(val)?)?;
-            }
+                "path_id",
+                "class_id",
+                "type_id",
+                "byte_size",
+                "byte_start",
+                "is_destroyed",
+                "is_stripped",
+            ]
+            .into_iter()
+            .map(|key| h::string(py, key.as_bytes()).map(Bound::unbind))
+            .collect::<PyResult<Vec<_>>>()
+        })?;
+        let optional =
+            |value: Option<i64>| value.map_or_else(|| Ok(h::none(py)), |n| h::int(py, n));
+        let values = [
+            h::boolean(py, embedded)?,
+            h::int(py, i.path_id)?,
+            h::int(py, i.class_id.into())?,
+            h::int(py, i.type_id.into())?,
+            h::int(py, i.byte_size.into())?,
             // byte_start can exceed i64: add the signed header offset in Python.
-            let start = p::wide_int(i.byte_start)?;
-            p::field(&d, "byte_start", &start)?;
-            for (key, val) in [
-                ("is_destroyed", i.is_destroyed.map(i64::from)),
-                ("is_stripped", i.is_stripped.map(i64::from)),
-            ] {
-                p::field(
-                    &d,
-                    key,
-                    &match val {
-                        Some(n) => p::int(n)?,
-                        None => p::none(),
-                    },
-                )?;
-            }
-            Ok(d)
-        })
+            p::wide_int(i.byte_start)?.into_bound(py),
+            optional(i.is_destroyed.map(i64::from))?,
+            optional(i.is_stripped.map(i64::from))?,
+        ];
+        let d = h::dict(py)?;
+        for (key, value) in keys.iter().zip(&values) {
+            h::set(&d, key.bind(py), value)?;
+        }
+        Ok(d.unbind())
     }
     fn raw_data(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         py.detach(|| {
@@ -248,88 +252,94 @@ impl NativeObject {
         let tree = rows
             .map(|rows| crate::tree::compile_rows(&self.inner, rows.as_unbound()))
             .transpose()?;
-        py.detach(move || {
-            let meter = self.inner.file().meter();
-            let native =
-                crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
-                    let (parsed, progress) = self
-                        .inner
-                        .read_object_fields_with_nodes(tree.as_ref())
-                        .map_err(|error| Failure::parse(error, self.inner.info().byte_size > 0))?;
-                    let mut plan = p::plan::Plan::new(meter);
-                    plan.charge.grow(128).map_err(Failure::charge)?;
-                    plan.root = crate::value_plan::convert(&parsed, meter, &mut plan, true)?;
-                    let mut lists = unityrs_core::limits::MeteredVec::with_capacity(
-                        meter,
-                        parsed.lists().len(),
-                    )
-                    .map_err(Failure::charge)?;
-                    for list in parsed.lists() {
-                        lists.push(list.clone()).map_err(Failure::charge)?;
-                    }
-                    Ok::<_, Failure>((plan, lists, parsed.bytes_read, progress))
-                })?;
-            let (plan, lists, bytes_read, progress) = crate::worker_error::finish(native)?;
-            let (fields, mut charge) = plan.handoff()?;
-            let result = p::list()?;
-            p::push(&result, &fields)?;
-            p::push(
-                &result,
-                &crate::object_nodes::convert(lists.as_slice(), &mut charge)?,
-            )?;
-            p::push(
-                &result,
-                &crate::object_nodes::references(
-                    lists.as_slice(),
-                    self.inner.file().ref_types(),
-                    &mut charge,
-                )?,
-            )?;
-            p::push(&result, &p::int(bytes_read)?)?;
-            p::push(&result, &p::uint(progress.completed as u64)?)?;
-            let error = if let Some(error) = progress.error {
-                let error = if let Some(names) = progress.reference_names {
-                    charge
-                        .grow(
-                            256 + names
-                                .iter()
-                                .map(|s| s.as_bytes().len() as u64)
-                                .sum::<u64>()
-                                .saturating_mul(8),
-                        )
-                        .map_err(errors::charge)?;
-                    let [class, namespace, assembly] = names;
-                    let args = (
-                        p::string(class.as_bytes())?,
-                        p::string(namespace.as_bytes())?,
-                        p::string(assembly.as_bytes())?,
-                    );
-                    crate::python::relay::attach(|py| -> PyResult<PyErr> {
-                        let message =
-                            pyo3::types::PyString::new(py, "Referenced type not found: {} {} {}")
-                                .call_method1("format", args)?;
-                        Ok(pyo3::exceptions::PyValueError::new_err(message.unbind()))
-                    })?
-                } else {
-                    errors::parse_reader(
-                        &unityrs_core::walk::ParseError::Read(error),
-                        self.inner.info().byte_size > 0,
-                    )
-                };
-                crate::python::relay::attach(|py| error.value(py).clone().into_any().unbind())
-            } else {
-                p::none()
-            };
-            p::push(&result, &error)?;
-            let construction = crate::python::relay::attach(|py| {
-                Py::new(py, crate::construction::Construction { charge }).map(Py::into_any)
-            })?;
-            p::push(&result, &construction)?;
-            Ok(result)
-        })
+        let native = py.detach(|| {
+            crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
+                let (parsed, progress) = self
+                    .inner
+                    .read_object_fields_with_nodes(tree.as_ref())
+                    .map_err(|error| Failure::parse(error, self.inner.info().byte_size > 0))?;
+                Ok::<_, Failure>(object_result(&self.inner, parsed, progress))
+            })
+        })?;
+        crate::worker_error::finish(native)?
     }
     fn parse(&self, py: Python<'_>, check_read: bool) -> PyResult<Py<PyAny>> {
         self.parse_with_position(py, check_read, None)
             .and_then(|result| result.bind(py).get_item(0).map(Bound::unbind))
     }
+}
+
+/// `object_data`'s result, on the worker. The value is rendered, then the
+/// parsed tree dropped (on the worker's stack) before the node metadata
+/// adds its staging; only the node lists stay.
+fn object_result(
+    inner: &ObjectRef,
+    parsed: unityrs_core::Parsed,
+    progress: unityrs_core::walk::FieldProgress,
+) -> PyResult<Py<PyAny>> {
+    use p::held as h;
+    let meter = inner.file().meter();
+    let mut charge = unityrs_core::limits::Charge::zero(meter);
+    charge.grow(128).map_err(errors::charge)?;
+    let value = crate::value_render::convert(&parsed, meter, &mut charge, true)?;
+    let mut lists = unityrs_core::limits::MeteredVec::with_capacity(meter, parsed.lists().len())
+        .map_err(errors::charge)?;
+    for list in parsed.lists() {
+        lists.push(list.clone()).map_err(errors::charge)?;
+    }
+    let bytes_read = parsed.bytes_read;
+    drop(parsed);
+    let nodes = crate::object_nodes::convert(lists.as_slice(), &mut charge)?;
+    let references =
+        crate::object_nodes::references(lists.as_slice(), inner.file().ref_types(), &mut charge)?;
+    let error = if let Some(error) = progress.error {
+        let error = if let Some(names) = progress.reference_names {
+            charge
+                .grow(
+                    256 + names
+                        .iter()
+                        .map(|s| s.as_bytes().len() as u64)
+                        .sum::<u64>()
+                        .saturating_mul(8),
+                )
+                .map_err(errors::charge)?;
+            crate::python::relay::attach(|py| -> PyResult<PyErr> {
+                let mut args = Vec::new();
+                args.try_reserve_exact(names.len())
+                    .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("diagnostic"))?;
+                for name in &names {
+                    args.push(h::string(py, name.as_bytes())?);
+                }
+                let message = h::string(py, b"Referenced type not found: {} {} {}")?
+                    .getattr(h::string(py, b"format")?.cast_into::<pyo3::types::PyString>()?)?
+                    .call1(h::tuple_of(py, &args)?.cast_into::<pyo3::types::PyTuple>()?)?;
+                Ok(pyo3::exceptions::PyValueError::new_err(message.unbind()))
+            })?
+        } else {
+            errors::parse_reader(
+                &unityrs_core::walk::ParseError::Read(error),
+                inner.info().byte_size > 0,
+            )
+        };
+        Some(error)
+    } else {
+        None
+    };
+    crate::python::relay::attach(move |py| {
+        let error = error.map_or_else(|| h::none(py), |error| error.value(py).clone().into_any());
+        let construction = Bound::new(py, crate::construction::Construction { charge })?;
+        let result = h::list(py)?;
+        for item in [
+            value.into_bound(py),
+            nodes.into_bound(py),
+            references.into_bound(py),
+            h::int(py, bytes_read)?,
+            h::uint(py, progress.completed as u64)?,
+            error,
+            construction.into_any(),
+        ] {
+            h::push(&result, &item)?;
+        }
+        Ok(result.unbind())
+    })
 }

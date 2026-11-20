@@ -1,7 +1,7 @@
 // Ported from UnityPy 1.25.2 (MIT): helpers/TypeTreeHelper.py:123-158. See THIRD_PARTY_LICENSES.
 //! Explicit helper reads share the bounded parser and Python construction policy.
 use crate::{
-    errors, python as p,
+    errors,
     settings::{Budget, Limits},
 };
 use pyo3::prelude::*;
@@ -174,42 +174,52 @@ fn parse(
             _ => None,
         }
     };
-    convert(&parsed, progress, refs, as_dict, meter)
+    convert(parsed, progress, refs, as_dict, meter)
 }
 
+/// The result, staged detached; each part is built with one attachment. The
+/// parsed tree is dropped (on the worker's stack) once the value is built,
+/// before the node metadata adds its staging; only its node lists stay.
 fn convert(
-    parsed: &unityrs_core::Parsed,
+    parsed: unityrs_core::Parsed,
     progress: unityrs_core::walk::FieldProgress,
     refs: Option<&[unityrs_core::files::SerializedType]>,
     as_dict: bool,
     meter: &Arc<Meter>,
 ) -> PyResult<Py<PyAny>> {
-    let mut plan = p::plan::Plan::new(meter);
-    plan.charge.grow(512).map_err(errors::charge)?;
-    plan.root = crate::value_plan::convert(parsed, meter, &mut plan, !as_dict)?;
-    let (value, mut charge) = plan.handoff()?;
-    let result = p::list()?;
-    p::push(&result, &value)?;
-    p::push(
-        &result,
-        &crate::object_nodes::convert(parsed.lists(), &mut charge)?,
-    )?;
-    p::push(
-        &result,
-        &crate::object_nodes::references(parsed.lists(), refs, &mut charge)?,
-    )?;
-    p::push(&result, &p::int(parsed.bytes_read)?)?;
-    p::push(&result, &p::uint(progress.completed as u64)?)?;
-    let error = progress.error.map_or_else(p::none, |error| {
-        let error = errors::parse_reader(&error.into(), true);
-        crate::python::relay::attach(|py| error.value(py).clone().into_any().unbind())
-    });
-    p::push(&result, &error)?;
-    let construction = crate::python::relay::attach(|py| {
-        Py::new(py, crate::construction::Construction { charge }).map(Py::into_any)
-    })?;
-    p::push(&result, &construction)?;
-    p::tuple(&result)
+    use crate::python::held as h;
+    let mut charge = unityrs_core::limits::Charge::zero(meter);
+    charge.grow(512).map_err(errors::charge)?;
+    let value = crate::value_render::convert(&parsed, meter, &mut charge, !as_dict)?;
+    let mut lists =
+        MeteredVec::with_capacity(meter, parsed.lists().len()).map_err(errors::charge)?;
+    for list in parsed.lists() {
+        lists.push(list.clone()).map_err(errors::charge)?;
+    }
+    let bytes_read = parsed.bytes_read;
+    drop(parsed);
+    let nodes = crate::object_nodes::convert(lists.as_slice(), &mut charge)?;
+    let references = crate::object_nodes::references(lists.as_slice(), refs, &mut charge)?;
+    let error = progress
+        .error
+        .map(|error| errors::parse_reader(&error.into(), true));
+    crate::python::relay::attach(move |py| {
+        let error = error.map_or_else(|| h::none(py), |error| error.value(py).clone().into_any());
+        let construction = Bound::new(py, crate::construction::Construction { charge })?;
+        h::tuple_of(
+            py,
+            &[
+                value.into_bound(py),
+                nodes.into_bound(py),
+                references.into_bound(py),
+                h::int(py, bytes_read)?,
+                h::uint(py, progress.completed as u64)?,
+                error,
+                construction.into_any(),
+            ],
+        )
+        .map(Bound::unbind)
+    })
 }
 
 #[cfg(test)]

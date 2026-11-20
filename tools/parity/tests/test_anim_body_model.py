@@ -85,12 +85,28 @@ class ScopeTests(unittest.TestCase):
                          {"no-chest": "topology: Chest absent", "no-neck": "topology: Neck absent",
                           "no-left-shoulder": "topology: exactly one Shoulder",
                           "no-right-shoulder": "topology: exactly one Shoulder"})
-        # The admitted patterns are exactly the in-scope training rigs'; any other refuses, such as one eye.
-        self.assertEqual(model.RECORDED_ABSENT, {tolerance.BODY_SLOTS - body.rig_bones(rig)
+        # The admitted patterns are exactly the in-scope training rigs' over the slots but the zero-mass leaves;
+        # any other refuses.
+        self.assertEqual(model.LEAVES, {"LeftEye", "RightEye", "Jaw"})
+        self.assertEqual(model.RECORDED_ABSENT, {tolerance.BODY_SLOTS - model.LEAVES - body.rig_bones(rig)
                                                  for rig in body.PROBE_RIGS.keys() - {body.HOLDOUT}
                                                  if not refusals[rig]})
-        with self.assertRaisesRegex(model.Refused, r"unrecorded pattern \(absent \['Jaw', 'RightEye'\]\)"):
-            model.topology_scope(body.rig_bones("compact") | {"LeftEye"})
+        with self.assertRaisesRegex(model.Refused, r"unrecorded pattern \(absent \['LeftShoulder', 'LeftToes', "
+                                                   r"'RightShoulder'\]\)"):
+            model.topology_scope(body.rig_bones("no-shoulders") - {"LeftToes"})
+        # The leaves take no part: one eye, the Jaw alone or every leaf with a recorded pattern is admitted.
+        for leaves in ({"LeftEye"}, {"Jaw"}, model.LEAVES):
+            for rig in ("compact", "no-upper-chest-toes", "no-shoulders"):
+                model.topology_scope(body.rig_bones(rig) | leaves)
+                model.topology_scope(body.rig_bones(rig) - leaves)
+        # Only while they weigh nothing: a leaf's mass, mapped or not, must be exactly zero.
+        masses = dict.fromkeys(tolerance.BODY_SLOTS, .05) | dict.fromkeys(model.LEAVES, 0.)
+        model.topology_scope(body.rig_bones("compact"), masses)
+        for value in (1e-9, math.nan):
+            with self.assertRaisesRegex(model.Refused, r"nonzero mass on a zero-mass leaf \(\['Jaw'\]\)"):
+                model.topology_scope(body.rig_bones("compact"), masses | {"Jaw": value})
+        with self.assertRaisesRegex(model.Refused, r"leaf \(\['LeftEye', 'RightEye'\]\)"):
+            model.topology_scope(body.rig_bones("eyes"), masses | {"LeftEye": .01, "RightEye": .01})
 
     def test_the_twist_scope(self):
         def twisted(degrees):

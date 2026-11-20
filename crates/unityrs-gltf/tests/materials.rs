@@ -546,39 +546,30 @@ fn urp_property_aliases_map_base_normal_and_smoothness() {
     assert!(mat.normal_texture.is_some());
 }
 
+// Standard's null `_MainTex` falls through to a populated `_BaseMap`. A URP
+// base shader's null `_BaseMap` is no texture: `material_round3.rs`
+// a_null_urp_base_map_is_no_texture_even_with_a_main_tex.
 #[test]
 fn null_preferred_texture_falls_through_to_populated_alias() {
-    for shader in [b"Standard".as_slice(), b"Universal Render Pipeline/Lit"] {
-        let preferred = if shader == b"Standard" {
-            "_MainTex"
-        } else {
-            "_BaseMap"
-        };
-        let alias = if shader == b"Standard" {
-            "_BaseMap"
-        } else {
-            "_MainTex"
-        };
-        let objects = h::objects(
-            shader,
-            &[],
-            &[],
-            &[
-                (preferred, s::tex_env((0, 0), [1.; 2], [0.; 2])),
-                (alias, s::tex_env((0, 12), [1.; 2], [0.; 2])),
-            ],
-        );
-        let scene = h::collect(&objects, &CorePbr, h::DEFAULT_PROFILE);
-        assert_eq!(
-            scene.materials.as_slice()[0]
-                .base_color_texture
-                .as_ref()
-                .unwrap()
-                .texture,
-            0
-        );
-        assert_eq!(scene.images.len(), 1);
-    }
+    let objects = h::objects(
+        b"Standard",
+        &[],
+        &[],
+        &[
+            ("_MainTex", s::tex_env((0, 0), [1.; 2], [0.; 2])),
+            ("_BaseMap", s::tex_env((0, 12), [1.; 2], [0.; 2])),
+        ],
+    );
+    let scene = h::collect(&objects, &CorePbr, h::DEFAULT_PROFILE);
+    assert_eq!(
+        scene.materials.as_slice()[0]
+            .base_color_texture
+            .as_ref()
+            .unwrap()
+            .texture,
+        0
+    );
+    assert_eq!(scene.images.len(), 1);
 }
 
 #[test]

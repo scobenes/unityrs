@@ -11,6 +11,16 @@ using UnityEngine.SceneManagement;
 
 public static partial class AnimReplayRecorder
 {
+    // An authored muscle vector with every signed zero as +0, in place: a negative factor times zero is -0,
+    // whose f32 bits differ from the +0 the parity tools expect. Every known vector's schedule, pose and bits
+    // come through it.
+    internal static float[] Canonical(float[] values)
+    {
+        for (int i = 0; i < values.Length; i++)
+            if (values[i] == 0f) values[i] = 0f;
+        return values;
+    }
+
     // The pending DTO carries only Editor-visible identity. JsonUtility
     // serializes nested objects inline, so the handoff uses explicit types
     // without the built-ID fields instead of serializing empty IDs.
@@ -147,7 +157,7 @@ public static partial class AnimReplayRecorder
             Need(human && !clip.legacy && !fixture.HeldTime.HasValue,
                 "Known-vector baselines require an unheld Humanoid clip schedule.");
             pending = new PendingPoseSpec { schedule = points.Select(point => new Point {
-                local = point.local, muscles = fixture.KnownMuscles((float)point.local)
+                local = point.local, muscles = Canonical(fixture.KnownMuscles((float)point.local))
             }).ToArray() };
         }
         else

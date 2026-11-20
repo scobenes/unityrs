@@ -40,8 +40,10 @@ f64 path:
   pose (a known vector's request, a clip's read-back), against the recorded
   hips: u_s within E_unity,s, each translation component within
   T_s = E_unity,s + u_s + E_eval,s, the rotation within Unity's and the
-  model's solve turns, and the translations and scales below the hips and
-  the hips' scale exactly the rest's. A body case's sample without a target
+  model's solve turns, the translations below the hips exactly the Avatar's
+  m_SkeletonPose (the source Unity's playback writes; the prefab's differ by
+  f32 rounding), and the scales below the hips and the hips' scale exactly
+  the rest's. A body case's sample without a target
   fails; a P2b case's is excluded by its role and listed.
 - **E4** is anim_body_e4's.
 
@@ -60,7 +62,9 @@ from anim_body_model import (
     body_rotation,
     centre,
     columns,
+    lateral_scope,
     quaternion,
+    spine_lateral,
     solve_hips,
     turn_angle,
 )
@@ -95,6 +99,62 @@ MUSCLE_BONES = {muscle: bone for bone, group in PROBE_GROUPS for muscle in group
 
 def verdict(failures, **fields):
     return dict(passed=not failures, failures=failures, **fields)
+
+
+# The lateral domain (section 8): the step kept below the smallest failing spine Left-Right value, and the
+# smallest limit that still validates anything (below it the checks fail, never pass on nothing).
+LATERAL_STEP = 1 / 32
+LATERAL_FLOOR = 1 / 16
+
+
+def muscles_of(row):
+    """The sample's muscles: a known vector's applied ones, or a clip sample's spine Left-Right muscles from its
+    built clip (`clip_muscles`, anim_body_freeze.with_clip_muscles), refused when unread."""
+    state = row["state"]
+    if "clip_muscles" in state:
+        return state["clip_muscles"]
+    bits = state["sample"].get("muscles_f32") or []
+    replay.require(bits, f"{row['name']}@{row['local']}: a clip sample's muscles are unread (give its built clip)")
+    return {name: F32(value) for name, value in zip(state["muscle_names"], bits)}
+
+
+def lateral_of(row):
+    """The row's largest spine Left-Right muscle value."""
+    return spine_lateral(muscles_of(row))
+
+
+def outside(row, limit):
+    """Whether `limit` (None for none) refuses the row's pose (anim_body_model.lateral_scope)."""
+    if limit is None:
+        return False
+    try:
+        lateral_scope(muscles_of(row), limit)
+    except Refused:
+        return True
+    return False
+
+
+def lateral_limit(rows, design, coefficients):
+    """The lateral limit (plan 2.2, section 8): dict(limit, failing, passing). `limit` is the largest spine
+    Left-Right value of a training sample the model compared and passed (2.2's frame in E2, or the hips in E3)
+    that is at least LATERAL_STEP below every sample failing E2 or E3; with no failure, the largest passing one;
+    0 with none. It is always an observed passing value, never clamped. `passing` and `failing` name the
+    bracketing observations: the sample at the limit, and the smallest failing one (a failure at no sample
+    counts as 0). A sample the scope refused validates nothing."""
+    compared = set()
+    failed = {line.split(": ", 1)[0] for line in e2(rows, compared=compared)["failures"]
+              + e3(rows, design, coefficients, compared=compared)["failures"]}
+    values = {f"{row['name']}@{row['local']}": lateral_of(row) for row in rows if not row.get("refused")}
+    failing = min(((values[key], key) for key in failed if key in values), default=None)
+    if failed - values.keys():
+        failing = (0., sorted(failed - values.keys())[0])
+    cap = math.inf if failing is None else failing[0] - LATERAL_STEP
+    passing = max(((value, key) for key, value in values.items() if key in compared - failed and value <= cap),
+                  default=None)
+
+    def named(found):
+        return None if found is None else dict(sample=found[1], value=found[0])
+    return dict(limit=passing[0] if passing else 0., failing=named(failing), passing=named(passing))
 
 
 # E0: the Avatar's masses and rest body.
@@ -135,7 +195,7 @@ def e0_avatar(label, avatar, doc, parents, masses, errors, design, coefficients)
     row = dict(avatar=label, rest_distance=None, rest_bound=None)
     if not assigned:
         return failures, row
-    refused = adequacy.scope_refusal(present)
+    refused = adequacy.scope_refusal(present, avatar_masses)
     if refused:
         # Outside the frozen topology scope the model refuses the Avatar: E0a and E0b only.
         return failures, row | dict(refused=refused)
@@ -273,11 +333,12 @@ def readback_rotation(state):
                                    decode(readback["world_rotation"], 4, F32), state["root"])
 
 
-def e2(rows):
+def e2(rows, limit=None, compared=None):
+    """E2 within `limit` (lateral_scope); `compared` (a set) collects each sample whose frame was compared."""
     failures, checked, worst, refused = [], 0, 0., 0
     for row in rows:
         state = row["state"]
-        if row.get("refused"):
+        if row.get("refused") or outside(row, limit):
             refused += 1
             continue
         if state["readback"] is None:
@@ -288,6 +349,8 @@ def e2(rows):
         try:
             pairs.append(("model", body_rotation(points, state["rest_frame"]),
                           turn_angle(turn + solve_turn(state, U64)) + 2 * ANGLE_FLOOR))
+            if compared is not None:
+                compared.add(f"{row['name']}@{row['local']}")
         except Refused:
             refused += 1
         if state["target_kind"] == "known":
@@ -323,19 +386,20 @@ def hips(row, design, coefficients):
         failures.append(f"{where}: hips translation off by {delta:.3e} > T_s {tolerance:.3e}")
     if not residual <= bound:
         failures.append(f"{where}: hips rotation off by {math.degrees(residual):.4g} deg")
-    # 2.3 keeps the rest translations and scales below the hips and the hips' rest scale, exactly.
+    # 2.3 keeps the Avatar's translations and the rest scales below the hips and the hips' rest scale, exactly.
     if state["drift"]:
         failures.append(f"{where}: translation or scale off the rest at {state['drift']}")
     ratio = delta / tolerance if 0 < tolerance < math.inf else math.inf
     return failures, ratio
 
 
-def e3(rows, design, coefficients):
+def e3(rows, design, coefficients, limit=None, compared=None):
     """E3 on every row with a body target. A P2b case's row without one (no known vector, no read-back) is
-    excluded by its role and listed; a body case's row without one fails."""
+    excluded by its role and listed; a body case's row without one fails. `limit` refuses a pose past it
+    (lateral_scope); `compared` (a set) collects each sample compared."""
     failures, checked, worst, refused, excluded = [], 0, 0., 0, set()
     for row in rows:
-        if row.get("refused"):
+        if row.get("refused") or row["state"]["target_kind"] is not None and outside(row, limit):
             refused += 1
             continue
         if row["state"]["target_kind"] is None:
@@ -352,6 +416,8 @@ def e3(rows, design, coefficients):
         checked += 1
         failures += found
         worst = max(worst, ratio)
+        if compared is not None:
+            compared.add(f"{row['name']}@{row['local']}")
     if not checked:
         failures.append("E3: no comparison")
     return verdict(failures, samples=checked, worst_ratio=worst, refused=refused, excluded=sorted(excluded))

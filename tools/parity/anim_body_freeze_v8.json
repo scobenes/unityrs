@@ -1,0 +1,3119 @@
+{
+  "format": "unityrs.anim_body_freeze",
+  "version": 7,
+  "model": {
+    "masses": "decision 1: each mapped body slot's Avatar m_HumanBoneMass entry, renormalized over the mapped slots; E0b compares it with the fold of HumanTrait's own default masses (the recorder's hierarchy masses less their children's)",
+    "mass_points": "2.1 H-pos: a mass point is p_i + sum_j a_ij (p_j - p_i) over the edges to the nearest mapped human descendants, one coefficient per edge, left and right separate",
+    "body_position": "2.1: bodyPosition = c / m_Scale",
+    "frame": "2.2: up = mid(upper arms) - mid(upper legs), lateral = (R - L UpperArm) + (R - L UpperLeg), forward = lateral x up, right = up x forward; bodyRotation = F(pose) F(T)^-1",
+    "lateral": "section 8: 2.2 and 2.3 hold up to the lateral limit, the largest spine Left-Right value of a training sample below every failing sample's in E2 and E3a, and at least one step below those",
+    "solve": "2.3: closed form, H_A = B_A F(T) F_h^-1, P_A = h T_A - k H_A c_h, k = sigma_p s_h",
+    "root": "2.4: X_A = X_r^-1 o X_b, the m_StartAtOrigin rebase shared by root and body",
+    "yaw": "2.4: a yaw is the twist about up, 2 atan2(q_y, q_w)",
+    "height_from_feet": "2.4: undecided between candidates A and B; refused",
+    "topology_scope": "section 8: refused when Chest or Neck is absent, exactly one Shoulder is mapped, an Eye or the Jaw has a nonzero mass, or the absent body slots other than the zero-mass leaves (Eyes, Jaw) are not a recorded training pattern",
+    "frame_scope": "section 8: refused when the shoulder-hip twist about up exceeds 4.25 degrees or is undefined"
+  },
+  "coefficients": {
+    "Chest>LeftShoulder": 0.2499960304099545,
+    "Chest>Neck": 0.25000641568003523,
+    "Chest>RightShoulder": 0.2499961743207566,
+    "Chest>UpperChest": 0.5000011989858576,
+    "Head>Jaw": -9.62427800769327e-06,
+    "Head>LeftEye": 1.8527665225685173e-06,
+    "Head>RightEye": 3.878443976525228e-06,
+    "Hips>LeftUpperLeg": 0.3333318775263505,
+    "Hips>RightUpperLeg": 0.33333139539940737,
+    "Hips>Spine": 0.33333663431945154,
+    "LeftFoot>LeftToes": 1.7133203945231105e-05,
+    "LeftLowerArm>LeftHand": 0.4999958960503324,
+    "LeftLowerLeg>LeftFoot": 0.49999975542770464,
+    "LeftShoulder>LeftUpperArm": 0.500006991831585,
+    "LeftUpperArm>LeftLowerArm": 0.12500288535174703,
+    "LeftUpperLeg>LeftLowerLeg": 0.4999996633923184,
+    "Neck>Head": 0.4999839367400359,
+    "RightFoot>RightToes": 2.3133957541958807e-05,
+    "RightLowerArm>RightHand": 0.49999592961078526,
+    "RightLowerLeg>RightFoot": 0.49999921915890544,
+    "RightShoulder>RightUpperArm": 0.5000070758834383,
+    "RightUpperArm>RightLowerArm": 0.5000041007057056,
+    "RightUpperLeg>RightLowerLeg": 0.4999996332453748,
+    "Spine>Chest": 0.5000014870086255,
+    "UpperChest>LeftShoulder": 0.2499978354750374,
+    "UpperChest>LeftUpperArm": 0.11458183184076098,
+    "UpperChest>Neck": 0.25000366967295573,
+    "UpperChest>RightShoulder": 0.2499981526754456,
+    "UpperChest>RightUpperArm": 0.11458203760427024
+  },
+  "scope": {
+    "editor_versions": [
+      "2022.3.62f3",
+      "6000.6.9f1"
+    ],
+    "training_rigs": [
+      "armature",
+      "compact",
+      "eyes",
+      "eyes-jaw",
+      "hips-scale",
+      "jaw",
+      "large",
+      "no-chest",
+      "no-left-shoulder",
+      "no-left-toes",
+      "no-neck",
+      "no-right-shoulder",
+      "no-right-toes",
+      "no-shoulders",
+      "no-toes",
+      "no-upper-chest",
+      "no-upper-chest-left-toes",
+      "no-upper-chest-right-toes",
+      "no-upper-chest-toes",
+      "noncoplanar",
+      "scaled-animator",
+      "tall"
+    ],
+    "lateral_limit": 0.193359375,
+    "lateral": {
+      "limit": 0.193359375,
+      "failing": {
+        "sample": "2022.3.62f3/body-probes-band-tall@0.2952117919921875",
+        "value": 0.228515625
+      },
+      "passing": {
+        "sample": "6000.6.9f1/body-probes-band-tall@0.342498779296875",
+        "value": 0.193359375
+      }
+    },
+    "refusals": {
+      "topology": "an Avatar outside the training rigs' recorded topologies (scope.topologies)",
+      "frame": "a shoulder-hip twist over bounds.twist_limit, or an undefined one",
+      "spine_lateral_range": "a spine Left-Right muscle over scope.lateral_limit"
+    },
+    "topologies": {
+      "compact": [
+        "Chest",
+        "Head",
+        "Hips",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftToes",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightToes",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine",
+        "UpperChest"
+      ],
+      "eyes": [
+        "Chest",
+        "Head",
+        "Hips",
+        "LeftEye",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftToes",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightEye",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightToes",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine",
+        "UpperChest"
+      ],
+      "eyes-jaw": [
+        "Chest",
+        "Head",
+        "Hips",
+        "Jaw",
+        "LeftEye",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftToes",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightEye",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightToes",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine",
+        "UpperChest"
+      ],
+      "jaw": [
+        "Chest",
+        "Head",
+        "Hips",
+        "Jaw",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftToes",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightToes",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine",
+        "UpperChest"
+      ],
+      "no-left-toes": [
+        "Chest",
+        "Head",
+        "Hips",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightToes",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine",
+        "UpperChest"
+      ],
+      "no-right-toes": [
+        "Chest",
+        "Head",
+        "Hips",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftToes",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine",
+        "UpperChest"
+      ],
+      "no-shoulders": [
+        "Chest",
+        "Head",
+        "Hips",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftToes",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightToes",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine",
+        "UpperChest"
+      ],
+      "no-toes": [
+        "Chest",
+        "Head",
+        "Hips",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine",
+        "UpperChest"
+      ],
+      "no-upper-chest": [
+        "Chest",
+        "Head",
+        "Hips",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftToes",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightToes",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine"
+      ],
+      "no-upper-chest-left-toes": [
+        "Chest",
+        "Head",
+        "Hips",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightToes",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine"
+      ],
+      "no-upper-chest-right-toes": [
+        "Chest",
+        "Head",
+        "Hips",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftToes",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine"
+      ],
+      "no-upper-chest-toes": [
+        "Chest",
+        "Head",
+        "Hips",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine"
+      ],
+      "noncoplanar": [
+        "Chest",
+        "Head",
+        "Hips",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftToes",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightToes",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine",
+        "UpperChest"
+      ],
+      "tall": [
+        "Chest",
+        "Head",
+        "Hips",
+        "LeftFoot",
+        "LeftHand",
+        "LeftLowerArm",
+        "LeftLowerLeg",
+        "LeftShoulder",
+        "LeftToes",
+        "LeftUpperArm",
+        "LeftUpperLeg",
+        "Neck",
+        "RightFoot",
+        "RightHand",
+        "RightLowerArm",
+        "RightLowerLeg",
+        "RightShoulder",
+        "RightToes",
+        "RightUpperArm",
+        "RightUpperLeg",
+        "Spine"
+      ]
+    },
+    "cases": [
+      "body-chain-armature-clip",
+      "body-chain-armature-targets",
+      "body-chain-hips-scale-clip",
+      "body-chain-hips-scale-targets",
+      "body-chain-large-clip",
+      "body-chain-large-targets",
+      "body-chain-scaled-animator-clip",
+      "body-chain-scaled-animator-targets",
+      "body-clip-bake-o0-y0-xz1",
+      "body-clip-bake-o0-y0-xz1-offset",
+      "body-clip-bake-o0-y0-xz1-start",
+      "body-clip-bake-o0-y0-xz1-start-offset",
+      "body-clip-bake-o0-y1-xz0",
+      "body-clip-bake-o0-y1-xz0-offset",
+      "body-clip-bake-o0-y1-xz0-start",
+      "body-clip-bake-o0-y1-xz0-start-offset",
+      "body-clip-bake-o0-y1-xz1",
+      "body-clip-bake-o0-y1-xz1-offset",
+      "body-clip-bake-o0-y1-xz1-start",
+      "body-clip-bake-o0-y1-xz1-start-offset",
+      "body-clip-bake-o1-y0-xz0",
+      "body-clip-bake-o1-y0-xz0-offset",
+      "body-clip-bake-o1-y0-xz0-start",
+      "body-clip-bake-o1-y0-xz0-start-offset",
+      "body-clip-bake-o1-y0-xz1",
+      "body-clip-bake-o1-y0-xz1-offset",
+      "body-clip-bake-o1-y0-xz1-start",
+      "body-clip-bake-o1-y0-xz1-start-offset",
+      "body-clip-bake-o1-y1-xz0",
+      "body-clip-bake-o1-y1-xz0-offset",
+      "body-clip-bake-o1-y1-xz0-start",
+      "body-clip-bake-o1-y1-xz0-start-offset",
+      "body-clip-bake-o1-y1-xz1",
+      "body-clip-bake-o1-y1-xz1-offset",
+      "body-clip-bake-o1-y1-xz1-start",
+      "body-clip-bake-o1-y1-xz1-start-offset",
+      "body-clip-height-from-feet",
+      "body-clip-height-from-feet-knee",
+      "body-clip-height-from-feet-knee-goals",
+      "body-clip-height-from-feet-knee-goals-offset",
+      "body-clip-height-from-feet-knee-offset",
+      "body-clip-height-from-feet-offset",
+      "body-clip-height-from-feet-start",
+      "body-clip-height-from-feet-start-offset",
+      "body-clip-keep-o0-y0-xz0",
+      "body-clip-keep-o0-y0-xz0-offset",
+      "body-clip-keep-o0-y0-xz0-start",
+      "body-clip-keep-o0-y0-xz0-start-offset",
+      "body-clip-keep-o0-y0-xz1",
+      "body-clip-keep-o0-y0-xz1-offset",
+      "body-clip-keep-o0-y0-xz1-start",
+      "body-clip-keep-o0-y0-xz1-start-offset",
+      "body-clip-keep-o0-y1-xz0",
+      "body-clip-keep-o0-y1-xz0-offset",
+      "body-clip-keep-o0-y1-xz0-start",
+      "body-clip-keep-o0-y1-xz0-start-offset",
+      "body-clip-keep-o0-y1-xz1",
+      "body-clip-keep-o0-y1-xz1-offset",
+      "body-clip-keep-o0-y1-xz1-start",
+      "body-clip-keep-o0-y1-xz1-start-offset",
+      "body-clip-keep-o1-y0-xz0",
+      "body-clip-keep-o1-y0-xz0-offset",
+      "body-clip-keep-o1-y0-xz0-start",
+      "body-clip-keep-o1-y0-xz0-start-offset",
+      "body-clip-keep-o1-y0-xz1",
+      "body-clip-keep-o1-y0-xz1-offset",
+      "body-clip-keep-o1-y0-xz1-start",
+      "body-clip-keep-o1-y0-xz1-start-offset",
+      "body-clip-keep-o1-y1-xz0",
+      "body-clip-keep-o1-y1-xz0-offset",
+      "body-clip-keep-o1-y1-xz0-start",
+      "body-clip-keep-o1-y1-xz0-start-offset",
+      "body-clip-keep-o1-y1-xz1",
+      "body-clip-keep-o1-y1-xz1-motion",
+      "body-clip-keep-o1-y1-xz1-motion-offset",
+      "body-clip-keep-o1-y1-xz1-offset",
+      "body-clip-keep-o1-y1-xz1-start",
+      "body-clip-keep-o1-y1-xz1-start-offset",
+      "body-clip-level",
+      "body-clip-level-offset",
+      "body-clip-level-start",
+      "body-clip-level-start-offset",
+      "body-clip-orientation-offset",
+      "body-clip-orientation-offset-offset",
+      "body-clip-orientation-offset-start",
+      "body-clip-orientation-offset-start-offset",
+      "body-probes-band-compact",
+      "body-probes-band-noncoplanar",
+      "body-probes-band-tall",
+      "body-probes-compact",
+      "body-probes-compact-2",
+      "body-probes-compact-3",
+      "body-probes-compact-4",
+      "body-probes-compact-5",
+      "body-probes-eyes",
+      "body-probes-eyes-jaw",
+      "body-probes-jaw",
+      "body-probes-no-chest",
+      "body-probes-no-left-shoulder",
+      "body-probes-no-left-toes",
+      "body-probes-no-neck",
+      "body-probes-no-right-shoulder",
+      "body-probes-no-right-toes",
+      "body-probes-no-shoulders",
+      "body-probes-no-toes",
+      "body-probes-no-upper-chest",
+      "body-probes-no-upper-chest-left-toes",
+      "body-probes-no-upper-chest-right-toes",
+      "body-probes-no-upper-chest-toes",
+      "body-probes-noncoplanar",
+      "body-probes-range-compact",
+      "body-probes-range-noncoplanar",
+      "body-probes-range-tall",
+      "body-probes-tall",
+      "body-probes-tall-2",
+      "body-probes-tall-3",
+      "body-probes-twist-compact",
+      "body-probes-twist-tall",
+      "body-targets-compact",
+      "body-targets-compact-offset",
+      "body-targets-tall",
+      "body-targets-tall-offset",
+      "humanoid-compact-body-motion",
+      "humanoid-compact-muscles",
+      "humanoid-compact-muscles-known-vectors",
+      "humanoid-compact-muscles-offset",
+      "humanoid-compact-muscles-offset-known-vectors",
+      "humanoid-non-neutral-setting-refusal",
+      "humanoid-root-basis-o0-y0-xz0",
+      "humanoid-root-basis-o0-y0-xz1",
+      "humanoid-root-basis-o0-y1-xz0",
+      "humanoid-root-basis-o0-y1-xz1",
+      "humanoid-root-basis-o1-y0-xz0",
+      "humanoid-root-basis-o1-y0-xz1",
+      "humanoid-root-basis-o1-y1-xz0",
+      "humanoid-root-basis-o1-y1-xz1",
+      "humanoid-tall-muscles",
+      "humanoid-tall-muscles-known-vectors",
+      "humanoid-tall-muscles-offset",
+      "humanoid-tall-muscles-offset-known-vectors",
+      "humanoid-twist-refusal"
+    ],
+    "free": [],
+    "holdout": "holdout-2",
+    "holdout_cases": [
+      "body-probes-holdout-2"
+    ],
+    "holdout_minimum": 44
+  },
+  "bounds": {
+    "condition_limit": 1000000.0,
+    "coefficient_limit": 1.0,
+    "unit_roundoff_f32": 5.960464477539063e-08,
+    "unit_roundoff_f64": 1.1102230246251565e-16,
+    "operations": {
+      "rotate": 6,
+      "compose": 4,
+      "matrix": 3,
+      "quaternion": 4,
+      "unquaternion": 8,
+      "midpoint": 2,
+      "lateral": 2,
+      "cross": 2,
+      "normalize": 6
+    },
+    "fold_depth": 50,
+    "angle_floor": 1.7763568394002536e-15,
+    "twist_limit": 0.07417649320975901,
+    "lateral_step": 0.03125,
+    "lateral_floor": 0.0625,
+    "comparison": "each hips translation component within T_s = E_unity,s + u_s + E_eval,s, with u_s <= E_unity,s",
+    "condition": 1333.4645616585512,
+    "rank": 29
+  },
+  "training": {
+    "digest": "d99e541ac7db99c4b71c4ca2ef4c5cdc9f602abb2fa4ef9b4a26bf5207d0b7e2",
+    "inputs": [
+      {
+        "run": "2022.3.62f3",
+        "case": "body-chain-armature-clip",
+        "rig": "armature",
+        "sha256": "1e8d01d111c3760ce250ea93ebdc2de417910f4c4309ca6e394b58dbf4c02204"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-chain-armature-targets",
+        "rig": "armature",
+        "sha256": "ae5112f5eaf42d1278b04c84dfca07a47c9c17f1b9589db41135252cefd02820"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-chain-hips-scale-clip",
+        "rig": "hips-scale",
+        "sha256": "c6be6d135683b030a5bdd02d16ee03f4d69442617ebe96578b5baecbb80dc588"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-chain-hips-scale-targets",
+        "rig": "hips-scale",
+        "sha256": "3e27ff31c192fac695a3292e46eb7d00641e489f219d8303f7cdd89fa69ef723"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-chain-large-clip",
+        "rig": "large",
+        "sha256": "956bb9ba0647da68710023ca9245dfde0a83675a1d26f8dcb5953f9e098a9c54"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-chain-large-targets",
+        "rig": "large",
+        "sha256": "ed14cfbb43d9dcb3e822e91043b1793edf7648ad4827d7bbd36d427a42a2c884"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-chain-scaled-animator-clip",
+        "rig": "scaled-animator",
+        "sha256": "26a7c8a3ad284bc94681c1dbe36fcf8e3ce65e0afb0b69e103cdfa8734bb2ce1"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-chain-scaled-animator-targets",
+        "rig": "scaled-animator",
+        "sha256": "392f476eb9d81efc8db725ec0f2a1eb6efa0bb6e414f83bceba5dbd67c500fea"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o0-y0-xz1",
+        "rig": "compact",
+        "sha256": "35081ce89d59d538bf1f95b4ea7cbb58125f8e03f6029fa25b9c4338a6249808"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o0-y0-xz1-offset",
+        "rig": "compact",
+        "sha256": "1df654df184b06fd1434d1ab3a735db004dd36fa70770056d01a3e4f671bd2cf"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o0-y0-xz1-start",
+        "rig": "compact",
+        "sha256": "bba0ee977d80ac086bdafa7ad654ccbb1a11a5c0dc2f654b6f54095bf85b516a"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o0-y0-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "b2e4a42acac4b00989fed3a3e21a5ff50afe0b92dc4bec18b281be51c45c829b"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o0-y1-xz0",
+        "rig": "compact",
+        "sha256": "5dc5a3986c1f9d431e953436b1f0acb9ab3c31d34b0d0cf45c61355c46fecdab"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o0-y1-xz0-offset",
+        "rig": "compact",
+        "sha256": "d0780930a25df23605f74f3c7e128fce8135af5bc0d911f4d2684dc1dcca3dac"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o0-y1-xz0-start",
+        "rig": "compact",
+        "sha256": "2869cde35514cbee88ea20ffcff3db9ba0d4ce481891308a83b219c3667b4c4a"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o0-y1-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "e5d82cdc3c83e7ca848a6585ed207fa636e2aef53de59628ee81fc304c2c1887"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o0-y1-xz1",
+        "rig": "compact",
+        "sha256": "82a124fe545caed298e744c6cc33cf012abbaca6b20f649d10a3dcf98a301ee5"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o0-y1-xz1-offset",
+        "rig": "compact",
+        "sha256": "759056a2493a6ec24627125a6d83a7d78f4a4a66ae2f603f7c2d7358ebe66af8"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o0-y1-xz1-start",
+        "rig": "compact",
+        "sha256": "1bf3d3cccb3165e39d705a68c942307950bcc5829c6b0a91b20481454e2e24b6"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o0-y1-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "5f6b6be99f61827a81ee6d6378c6593047cbefd30e20b49ff32d7f65733b79e2"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y0-xz0",
+        "rig": "compact",
+        "sha256": "72030cc9c0fd6a56b96a3a08b704845594fddb893ccf0eb1603add0f3a8ce9ee"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y0-xz0-offset",
+        "rig": "compact",
+        "sha256": "e90dfa2c1d81977a62ab9d9893b6c2bfce190258c6fb87dcba724b597bfb3295"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y0-xz0-start",
+        "rig": "compact",
+        "sha256": "ed9ffb00d7f01ac297c30ffbdfffbf0cff10cb851c6c908aff31366b75113f1a"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y0-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "180d55dc27f4755fc71dbd5dc4e53a8fcfea256905eed2a088cf4e343a81337d"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y0-xz1",
+        "rig": "compact",
+        "sha256": "a5024da57f1dda7ee740015b968938b7a948e41a2c3fca1841576f6487f5c351"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y0-xz1-offset",
+        "rig": "compact",
+        "sha256": "4c719ea46b85178ca94a62f59dfcefa2a7a6c95bb2327d3428135c31918ae5fb"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y0-xz1-start",
+        "rig": "compact",
+        "sha256": "a7bf01d2d180f8379b32e5dbd0cde44a73f410030f0bac984adb2c237873eb4e"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y0-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "9be89dccead60f41aefe1b027b6c5f28d80d8a0f43644207839350ff96816943"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y1-xz0",
+        "rig": "compact",
+        "sha256": "3fe61739a5866b2c9e0672819b1293ed835615f3211f39a99239cd279197e13e"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y1-xz0-offset",
+        "rig": "compact",
+        "sha256": "8d944842d4631ca91a04d43c5fbc1945e5d8a7846b2b7702d4ecaef9f379040a"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y1-xz0-start",
+        "rig": "compact",
+        "sha256": "4e55a3ff5e32577df1c0ac7370ea80a4059e126ed3c32ce8251eabb21b208d00"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y1-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "34811493494c340114311453eb11b06b2502a7fbbd1bc9332cc335163de6e968"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y1-xz1",
+        "rig": "compact",
+        "sha256": "a379cddcbd897233e5194f37c68f564099ecfd7c712fefaebbd5a51360583076"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y1-xz1-offset",
+        "rig": "compact",
+        "sha256": "be7b6773f0ba1c2ce20ed690a8b8b9573b9bd9e3d98187c2e40a042bca0d0b86"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y1-xz1-start",
+        "rig": "compact",
+        "sha256": "31a4194fe0dd9d45890d4b99aa23fc586eb9316df97ebea721e83d279ea0cd51"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-bake-o1-y1-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "affb7b4a48d41afab7819e8628efb6cae9af2663ee006a260f92353806bc9064"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-height-from-feet",
+        "rig": "compact",
+        "sha256": "25edb1f26f577f1b2d8ecc179a97bcfe860e3de300b0b3ffa45dd1ffee895889"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-height-from-feet-knee",
+        "rig": "compact",
+        "sha256": "f7ec61a200437bbedabe35ffe290c02f59a134db02f9c772c151d72b83150e4a"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-height-from-feet-knee-goals",
+        "rig": "compact",
+        "sha256": "1e28e06238883ade3fc1d368fcada5a4e1bd9808b2d2285f52e348560c4551fd"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-height-from-feet-knee-goals-offset",
+        "rig": "compact",
+        "sha256": "750ef1f9e8446825e364eb98c7ab88e3d965f13d88716a1002a827440b606d28"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-height-from-feet-knee-offset",
+        "rig": "compact",
+        "sha256": "45d7dcd1f6f54abd3fe92dfc194081e08f98600b6b330778ddd7fef20b47380e"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-height-from-feet-offset",
+        "rig": "compact",
+        "sha256": "10e812a6744e887ad37a5ac4888b2c5e5e4061e0cb5bdab59a11c271de704c62"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-height-from-feet-start",
+        "rig": "compact",
+        "sha256": "30affea090f4cb34cfc6eebee7ab0c9937ef2945ca09d198e815bc86dfc02bff"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-height-from-feet-start-offset",
+        "rig": "compact",
+        "sha256": "0fe8264baa43b9f3f733b17ea8962ce6aa30cf6b5020b5ddead2e28b2538f4f6"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y0-xz0",
+        "rig": "compact",
+        "sha256": "d934503dbf70b00eb919ad4bd3ffbf57208e18f75505570d8d6bf31c8ebffb5d"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y0-xz0-offset",
+        "rig": "compact",
+        "sha256": "dbf28db92415e442c9bd9d9488fe01a3d4b145d5c6df15296d8ff93a398ac8e5"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y0-xz0-start",
+        "rig": "compact",
+        "sha256": "0adabbb572cbb572b33e4023b51417510b3ab2d02dd63ee3954fa0201b2aaf52"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y0-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "3374839f3efa15e7fa4f752c00767de8bd19724325cc6b9bf529a0c4ebce1d8c"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y0-xz1",
+        "rig": "compact",
+        "sha256": "4324e41590b6e5fe7c8bc6be23ef622f03cf3b68a74844cbc1072e2412907c60"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y0-xz1-offset",
+        "rig": "compact",
+        "sha256": "b93f26e3db09c7c1dc4dec4e04cc49398ba41240aa7ff392fde3b541b3ddd955"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y0-xz1-start",
+        "rig": "compact",
+        "sha256": "68cd2c495f72018a6cd8e7b99c4c27d9f2e3c47f33f7d226e10dfa5fa2d89dc4"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y0-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "9e43516e21e5934c89f5a0e78a652338d50306875a71053161f9af371358c77e"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y1-xz0",
+        "rig": "compact",
+        "sha256": "a4804851b7f3a26354eb41642678c8f51cb75ad254956aef7abb2b3d91f1c96c"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y1-xz0-offset",
+        "rig": "compact",
+        "sha256": "67bf582df2833e21efacdfce246907ea3315c814a3730659bbe1161e9253ef57"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y1-xz0-start",
+        "rig": "compact",
+        "sha256": "5bcc91daef1e75485dd052f63d25b93965148bef08db3d890a5e35acc4fa5954"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y1-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "7882eaa83f163ef4a5b7c6adedc980536be938037f7a2c2f49c2c8d5d84b8651"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y1-xz1",
+        "rig": "compact",
+        "sha256": "488ba4142af6cf8cc8ec8d9719af3348f7d101a78d08efa390a31db56b2e0d60"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y1-xz1-offset",
+        "rig": "compact",
+        "sha256": "89b9c69ec45c6a353e863e59b89e4469fe6583bae1ae8f1cb37c80ffcfd7455e"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y1-xz1-start",
+        "rig": "compact",
+        "sha256": "ba204a9630d0ba09f041aec8cf9f25e219069cbb427ab6215de2149144e1220b"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o0-y1-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "90cf093a917913ba3dd6bd3236cb7aea0e4c546dd2db6f713a84ba542e05aaab"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y0-xz0",
+        "rig": "compact",
+        "sha256": "5edcd3c2f668b8d202a4b1a04eae56fad2d98f40bb588b12b8ef3986aecb1afe"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y0-xz0-offset",
+        "rig": "compact",
+        "sha256": "6a86d331f00c0ab776d6569625171aa26229cc209afc761e4ab200d82462a701"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y0-xz0-start",
+        "rig": "compact",
+        "sha256": "c73de9c7ee077cc39e1e53cdac8e83fe2703639333103665aeaea981dbcbcd6e"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y0-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "6bbdb7d40c943e1a41a72305f9a0a6a7727210128ae61e5e35e5ec67057d8e74"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y0-xz1",
+        "rig": "compact",
+        "sha256": "d68986167cdb85684f12f40f472d4cb9431d23a4e5eb25a93c0b1ef0e8f8f247"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y0-xz1-offset",
+        "rig": "compact",
+        "sha256": "876f15df176fa26b2a1771f05671e8d965ff01e2a2043143ca064a6d133ae33b"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y0-xz1-start",
+        "rig": "compact",
+        "sha256": "ba7074fb5f2f81fe761ff1702ab478aff2e428ae183ace67cb71a52fc013e6f7"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y0-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "835f0406d89f17dec9cf3b6970a28b13947411825bdf9a825cfa3a2a3d5460d4"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y1-xz0",
+        "rig": "compact",
+        "sha256": "6aa15729ebf2a51d41b7b982e228399fa4cbdfa2090d002e09e2afc5bcc41533"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y1-xz0-offset",
+        "rig": "compact",
+        "sha256": "c503934a346c2074f928231d6cb45e8e2279d6993ee37aa78c451d25dccb1616"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y1-xz0-start",
+        "rig": "compact",
+        "sha256": "65e808a232e7c32aad72fd76287a3086a1f6d5673dd5ddaeb13d8f0a319e01be"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y1-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "81960b7c507bd16fbf865d7ad40cd40dbfce51ec3457587f9c4480a1c2dba5fc"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y1-xz1",
+        "rig": "compact",
+        "sha256": "1df9c11661f9c7ff173839462e6ae89e99c28c9ba16e3636250212f1f4c6895f"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y1-xz1-motion",
+        "rig": "compact",
+        "sha256": "6eb8ba9784153442d7d0b56fba1c8ad03f436ba999b324089710621cb995f423"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y1-xz1-motion-offset",
+        "rig": "compact",
+        "sha256": "51fc7fffd24875aa31ad709986cc666b8f6193da7cfb83fca2bc3d6e7cc562f3"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y1-xz1-offset",
+        "rig": "compact",
+        "sha256": "f2253c77371fb295edee9ac54e1098d2ab8e8f599be771ef4aa2e68fd8ede957"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y1-xz1-start",
+        "rig": "compact",
+        "sha256": "1baf4f4ffe43b307c8fe14aef7a7357d41ebec2452ced7a9ef73c1267fe888c3"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-keep-o1-y1-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "a4531ace54176b5cf49171ed37fb7aa32482346a5dd890d77ce1b8ba11744315"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-level",
+        "rig": "compact",
+        "sha256": "3c4928f0dd3e3007e84412bd3e6f755ba2f5e7373b2fe09e44a834fe3c0960f3"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-level-offset",
+        "rig": "compact",
+        "sha256": "6d2eb73021e0768fab3731ece98eaca5d12ba83ac27e2a7fc7dfef42282b4d7d"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-level-start",
+        "rig": "compact",
+        "sha256": "125a2abf7653124530b013d47067129556adbe0295baeb60e84151ac4d785330"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-level-start-offset",
+        "rig": "compact",
+        "sha256": "1bc4ce68e1925a5e9dabdd8498fb2f8e5e6aa231e8eef4fddc5597acd8868225"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-orientation-offset",
+        "rig": "compact",
+        "sha256": "3f17b9bc8fae837e2a0e147716875c738c0f61cbd50a61deb8e47553c7e254d2"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-orientation-offset-offset",
+        "rig": "compact",
+        "sha256": "fa179b751069ad6522910e67ebfc227177fc544ba12479d8c0558a21d718b158"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-orientation-offset-start",
+        "rig": "compact",
+        "sha256": "320f736bae93633f764b1744c8dd35f3255f2822b64811309a546c103b162128"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-clip-orientation-offset-start-offset",
+        "rig": "compact",
+        "sha256": "43ad05e72195bb065f3e677a1511cba83e2b3e8d9f5c63138309e99dcf4e9b9c"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-band-compact",
+        "rig": "compact",
+        "sha256": "e01522a8526d6851e600b7f88bb94e0825230fad7a09bd2fb8be668fefefdab7"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-band-noncoplanar",
+        "rig": "noncoplanar",
+        "sha256": "4c5087c274670fb0608574d2415e3294c86eb84a563002283f039eab641a8944"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-band-tall",
+        "rig": "tall",
+        "sha256": "29ad9efc89b3f429a9019da75d237760637267c04a034b7d9af0946b8e7d8957"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-compact",
+        "rig": "compact",
+        "sha256": "df8a6f1bb13d27e6fe55f3a05700e5cd614fce95c83678020504dd1b0bb76b32"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-compact-2",
+        "rig": "compact",
+        "sha256": "2b1805cf3f550a73101691f616209ab2584e4f4bd251ba649aa16973b6866d5a"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-compact-3",
+        "rig": "compact",
+        "sha256": "362635bb50d6f452aedd473ee2c2458cf2b2cf4768d28b1f4066c8906e4529ff"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-compact-4",
+        "rig": "compact",
+        "sha256": "d718a508cc67af6ca50aeb88d3a9aed28001ad6971e4478224a1fc372057cde8"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-compact-5",
+        "rig": "compact",
+        "sha256": "79b8daca2da2cbf800d361f13ad4bf3824a269a595e30e37374800e0a4e8e65e"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-eyes",
+        "rig": "eyes",
+        "sha256": "8a25ec9c47635a15fcfd0da925b7dd14e2fd9d366bc1334541e5884b78013ef7"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-eyes-jaw",
+        "rig": "eyes-jaw",
+        "sha256": "e759fdc49a883636f691314194d6209e4d4527cb79c4ed3e1435ba08ff6c8194"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-jaw",
+        "rig": "jaw",
+        "sha256": "95b602ecc64b22cf5d7a72117d5b7dff46d1a0fd9a4840364265a203df1f455c"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-no-chest",
+        "rig": "no-chest",
+        "sha256": "f8f353fd9176a1fd74f08293a01673462fa3ff6fd8b03110737b591de7daf2bd"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-no-left-shoulder",
+        "rig": "no-left-shoulder",
+        "sha256": "8fbba3bdef91e53d7cd3374529a4051023daf69525929526bad6c0c3dd8a1f69"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-no-left-toes",
+        "rig": "no-left-toes",
+        "sha256": "f2c741a9f42008eb5c6639e7e53e02ba963540a54b2c19a42f76b03500eddc50"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-no-neck",
+        "rig": "no-neck",
+        "sha256": "642f83a9b29c2d4b6cddd62e26659e3a2e2ee66827c57bbe8264ea7c06ce1e2e"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-no-right-shoulder",
+        "rig": "no-right-shoulder",
+        "sha256": "23c8544f46a8323c6101c21b32b67031812681f8b0159adafcf8636fb5ff3a16"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-no-right-toes",
+        "rig": "no-right-toes",
+        "sha256": "719484039fd751f5dabbf5fbba669b2eb0dda7d56130cc03cb30422a503e3ed6"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-no-shoulders",
+        "rig": "no-shoulders",
+        "sha256": "7c7ced95186aa193b3b5352adc19260b56afbfdbea957c5a1d6e1b252aa2512f"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-no-toes",
+        "rig": "no-toes",
+        "sha256": "6438d0281a5ebaa8be23178382a855d392551afcfde81c53d85a495a203e5ba8"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-no-upper-chest",
+        "rig": "no-upper-chest",
+        "sha256": "b1c4cc61832fca1264f82d9dbcb2f15bbba475447084383564481f003621f0dd"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-no-upper-chest-left-toes",
+        "rig": "no-upper-chest-left-toes",
+        "sha256": "bb45167138f5075854fdd6970b6880f8a6245b0f0bf26ff1d8011fb1bbaed5e4"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-no-upper-chest-right-toes",
+        "rig": "no-upper-chest-right-toes",
+        "sha256": "c49704f622c04907574454bacadfb4a20b6630b603e7fe45b3d815ca60d9eae3"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-no-upper-chest-toes",
+        "rig": "no-upper-chest-toes",
+        "sha256": "16f53a93e44f658fc5b1f1a029f31d751922027fb8c013cc173a67abd3f19542"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-noncoplanar",
+        "rig": "noncoplanar",
+        "sha256": "62339499ae5cfcf5b21e3071da24cbc69c8009e10f96515c80803f9b497dcd2b"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-range-compact",
+        "rig": "compact",
+        "sha256": "c51c1964d7d6f243417233610b7b1c82d4db6ef04e2a89224765b58a3d8f5e84"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-range-noncoplanar",
+        "rig": "noncoplanar",
+        "sha256": "f1aff3d93fd8a8897068ef552f14303f344e30657e885c648fd3d8917f10c47f"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-range-tall",
+        "rig": "tall",
+        "sha256": "3e6df673042163e8d6c0d96563bb1b3db1b8ea8e013d8f7d26e26602b6eda9f4"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-tall",
+        "rig": "tall",
+        "sha256": "84c5badc89ce9d879059cd5f119925d2836afdeaebebd46c0ba940017efab12e"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-tall-2",
+        "rig": "tall",
+        "sha256": "50b4436b4108596b73dcaea662992f8bd57a86564f27abf37b940e2c8559191c"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-tall-3",
+        "rig": "tall",
+        "sha256": "6de00d5d0e2c8bfc5aecb01c824211d6375b2dbb30cf74da93bfb498e2f8d852"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-twist-compact",
+        "rig": "compact",
+        "sha256": "47ede4e47b4b62b70d175e8a8f53af5b14fee2a1aefc9f616157a9bab50f4786"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-probes-twist-tall",
+        "rig": "tall",
+        "sha256": "876544c8b91b89bc45c02e2c762fceb0d02ac0a861bd71a8205d455790ce77fd"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-targets-compact",
+        "rig": "compact",
+        "sha256": "da15396c2b0ffc6e442e642093b245a440d63a411dc1cfdf7fc16fafde608808"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-targets-compact-offset",
+        "rig": "compact",
+        "sha256": "66432275cc2ccf50afd47054a3e6d30ef914b8f4d2c11b085f901a11a5283adf"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-targets-tall",
+        "rig": "tall",
+        "sha256": "a473b1ff0dda4c85ff569e412cb2462387a16b2dab9cfc55b021c0edea35c992"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "body-targets-tall-offset",
+        "rig": "tall",
+        "sha256": "856c5832176089faa4695c0139a8d4f908812e43356ee296a8abadc7d65c770d"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-compact-body-motion",
+        "rig": "p2b",
+        "sha256": "74869f2caec2e85e136430061aed39c0bd0d8d67afbcad3d8b5daef2b2cc5337"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-compact-muscles",
+        "rig": "p2b",
+        "sha256": "5a266d345a9397a1c9b338e759496468c84cf9c89048cd02e8e638f8b4dd1ddb"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-compact-muscles-known-vectors",
+        "rig": "p2b",
+        "sha256": "36f2468d67a988edcca904b7bffc2363b4ced78c4775ef3612ebed3e08849bd2"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-compact-muscles-offset",
+        "rig": "p2b",
+        "sha256": "a400d354451e58e33243ec3284815294a1235b78f5a6e8a46effc2eb5bfa6743"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-compact-muscles-offset-known-vectors",
+        "rig": "p2b",
+        "sha256": "7ca8595d0c761a301ff3c66444cb111ca3cdc4e9973f9d4ab428bcc6bfa7ea54"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-non-neutral-setting-refusal",
+        "rig": "p2b",
+        "sha256": "efd2dc992ea59222bcff216b486e5bc0b2bfbc71dca0f0fcee0f6a29f710c000"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-root-basis-o0-y0-xz0",
+        "rig": "p2b",
+        "sha256": "db6250f13096ced2eedc4e0ae73ca450ef492b8214fe9c9a8b4d864ff4241408"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-root-basis-o0-y0-xz1",
+        "rig": "p2b",
+        "sha256": "16b4a30841d698d52d4e08196cc8198121f27f60a2173c332fc3827078b996c4"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-root-basis-o0-y1-xz0",
+        "rig": "p2b",
+        "sha256": "3f9d801eb9db32503722bfcaa7bf34413d861515373fd2704aa331a69820c61b"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-root-basis-o0-y1-xz1",
+        "rig": "p2b",
+        "sha256": "58c174f3c6cf9e346b07212514945c25db6fc5962c1571600b45a1497abb649c"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-root-basis-o1-y0-xz0",
+        "rig": "p2b",
+        "sha256": "0eb7046407f66ef7c8c76034d1920d109887a9bffe38c678ed9cfb605c5e49ac"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-root-basis-o1-y0-xz1",
+        "rig": "p2b",
+        "sha256": "341f470167706940faaba76457598b58c28df4fe99bffdedd3e0e53028e0d804"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-root-basis-o1-y1-xz0",
+        "rig": "p2b",
+        "sha256": "0efbc6fc2db7f258121e4b7718cd2d368551a8026440fdca257c52507c9ff311"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-root-basis-o1-y1-xz1",
+        "rig": "p2b",
+        "sha256": "01685cdc9fa1a46a34821a87957ba7886314ecaa7bc4353500c502e862738a13"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-tall-muscles",
+        "rig": "p2b",
+        "sha256": "ab6fb9e76362c09fc556eba39498184613ced971f1350c8b44abc779eb48f5f2"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-tall-muscles-known-vectors",
+        "rig": "p2b",
+        "sha256": "85f9c15972a77968d8ab98b396f0a980f816785dc0ffdcd766d18a868ec0abbe"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-tall-muscles-offset",
+        "rig": "p2b",
+        "sha256": "e3090792223c7a6143c21843d06befa0f7dee927a1d39ecaae5938df4c9253db"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-tall-muscles-offset-known-vectors",
+        "rig": "p2b",
+        "sha256": "57d4c97c9f5751510e0d18da877e39a5db55a0afedcab80fb21b092339fc38f1"
+      },
+      {
+        "run": "2022.3.62f3",
+        "case": "humanoid-twist-refusal",
+        "rig": "p2b",
+        "sha256": "0916161338f414655bb14389ca01322d07ab5d6d30572da1b2ba0f9db2bdfa4b"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-chain-armature-clip",
+        "rig": "armature",
+        "sha256": "d36b29b429b2d8033577cd9cb1a21693cca6485c92ae380a8885c95adf25b22e"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-chain-armature-targets",
+        "rig": "armature",
+        "sha256": "5fe5ef6773f79c978629b973832213987ab96351dc36ae120d17272d7d23151d"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-chain-hips-scale-clip",
+        "rig": "hips-scale",
+        "sha256": "25b10612047d2869ca6c85da64cb451ba5e75e6d34e9dbb49f7d93833fbe82c9"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-chain-hips-scale-targets",
+        "rig": "hips-scale",
+        "sha256": "795339786b7d54e278908c6fd566278e867c8ae109684fe301aa206b5eab8fff"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-chain-large-clip",
+        "rig": "large",
+        "sha256": "246ad30910f96d9f416a31e2bd94f233ab7573eade56216c6f607568e75490f9"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-chain-large-targets",
+        "rig": "large",
+        "sha256": "e41b808f6247ba0ab297bbf725119a16ed555263da00c06a5834271cab9e094e"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-chain-scaled-animator-clip",
+        "rig": "scaled-animator",
+        "sha256": "e18503598fe4c6e2d27d8e61542a4a148c8769d3e47dc1e80fbd9bfe44353f81"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-chain-scaled-animator-targets",
+        "rig": "scaled-animator",
+        "sha256": "6c4e9e5b594770725854fb882c5f1917f74ed11969b430bb996705c53249970c"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o0-y0-xz1",
+        "rig": "compact",
+        "sha256": "9a0b433203e3daf758019141d533515dc0d02a68f90a70778a46c2333d41b645"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o0-y0-xz1-offset",
+        "rig": "compact",
+        "sha256": "f3ea3512e3dfb9b1d7b6a7e5bb0c429e696327008f69de1a3e2af9ce3b298e44"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o0-y0-xz1-start",
+        "rig": "compact",
+        "sha256": "5c8dbe6cf077ac2296e2ff4fbf369a64bb02a7688b51d8186686812aa9df49ee"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o0-y0-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "32d237cec5930e0b9230d734101ccb56587ba58223a4246f7cc5a97604317bb9"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o0-y1-xz0",
+        "rig": "compact",
+        "sha256": "a9db7a09b7346ac2738276c7a09e2ff8678d90f4649bbcdfd9a16e3d134a2b73"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o0-y1-xz0-offset",
+        "rig": "compact",
+        "sha256": "b9b060803dda83a544b90de7f585e32e9ab7d526174804df3e7305611e24947e"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o0-y1-xz0-start",
+        "rig": "compact",
+        "sha256": "25842af31cc89531067e571c3af3e2a21a92828621e62d63068b0e435eb07f3d"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o0-y1-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "4e5e1529669a65e405d4c73455f389954e1aea30c149220ca48b2d28cd39a348"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o0-y1-xz1",
+        "rig": "compact",
+        "sha256": "281b2e1fd39ef54e8a52b981adfeccc738405841ec9213058e99d5d9800da077"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o0-y1-xz1-offset",
+        "rig": "compact",
+        "sha256": "36bd96bdebd645dc63f88f3c443e9ba28a3a8cadb0eacaf236148393facb5865"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o0-y1-xz1-start",
+        "rig": "compact",
+        "sha256": "ab9d2865d87d0bf8fea0df552f85b9a63a47d85291cb37da3693e86202ef81a1"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o0-y1-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "82a6bc3fc6d42fccb696a303c168f9b184157f3ef81ab64a88ea210b16b68e3c"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y0-xz0",
+        "rig": "compact",
+        "sha256": "5c65b87d0f880a2032822607173321a08d3fabb4a931f47f786dba3d069be4c8"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y0-xz0-offset",
+        "rig": "compact",
+        "sha256": "977aa770f57b840c15828c4930963ed738b4ecb4feb33f93975a4503ffda2749"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y0-xz0-start",
+        "rig": "compact",
+        "sha256": "259a63d029a9686c828342d291f6e7255fdb75dbe3d21d2a66d86a7db5904c7b"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y0-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "606cf7eebc61d36302b177b8c2f76f4d6e0164e1a5573e374153c7eb243d93a9"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y0-xz1",
+        "rig": "compact",
+        "sha256": "725e38666ec47cbb0794713618b3987f2070e6a7239d69cf17467b9cb76384fb"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y0-xz1-offset",
+        "rig": "compact",
+        "sha256": "1868ddd31b2e19173ece9437fbc62e638d20ca03719a4411bdc011b92c5b1915"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y0-xz1-start",
+        "rig": "compact",
+        "sha256": "3be4a1fe56ffb28e05c0de33a47e4b876736a121a2d404095dbea61ac52e50f8"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y0-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "375046be7768d5adb3057f9143bade04adf4c70560ed8e359d7c8294fa9b16d8"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y1-xz0",
+        "rig": "compact",
+        "sha256": "b7dd8fd7563f34d2141e879abfae21e2a76ac6872a775cedb5c69d8a4f788083"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y1-xz0-offset",
+        "rig": "compact",
+        "sha256": "8cb0d8565363c79de9c49ea0cd2cdebf12d9b252d848b2f131709f35af722f1d"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y1-xz0-start",
+        "rig": "compact",
+        "sha256": "145019e625a19e05dbddf7f59bfb26626b5f3b0001539e389ee83fdabefa0174"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y1-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "dd39cc4a6a27f8d3c84eac65c2393d221eae369d5c1bddc4c07663ed25750eee"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y1-xz1",
+        "rig": "compact",
+        "sha256": "1e9badd25e7cb8067741ab10beecfb6c0c01c71194e28ff7a9c17835910d62f9"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y1-xz1-offset",
+        "rig": "compact",
+        "sha256": "4e9351daa329a5f8b8b15556718de87b7a74315c304d253c94d231a6f39de047"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y1-xz1-start",
+        "rig": "compact",
+        "sha256": "f6e9ebaf165924b46c13b7032f0cc67d30b464abcbaf4367d9cda3e6af8dcadd"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-bake-o1-y1-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "61a4bd7eb8f8fc678c37bdc4b5b38799ef1aab26a7bb3e7ce57c02d5fdbb0b09"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-height-from-feet",
+        "rig": "compact",
+        "sha256": "3d454d4c2340a90dfbf2a07e0456169d6e950aef06767452e228558f741dfa49"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-height-from-feet-knee",
+        "rig": "compact",
+        "sha256": "619953d28a20fe28ffaed80b5fc4fbf31276d34df795761d39c6e15080803f89"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-height-from-feet-knee-goals",
+        "rig": "compact",
+        "sha256": "03fd0018dff7a1272f0f30876f5211f5929ac1a0599469147811882de7c34b11"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-height-from-feet-knee-goals-offset",
+        "rig": "compact",
+        "sha256": "1f8ec0c89b5754a00fc90ab0602d1d2eb702251835400f3c6dcb0826438a4c27"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-height-from-feet-knee-offset",
+        "rig": "compact",
+        "sha256": "99e69b4f1e04a0da5662ea9fd975cc045d1d45f7266a18bb92f698aab2d9de00"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-height-from-feet-offset",
+        "rig": "compact",
+        "sha256": "adcfb5cc93a63d0a4f2ba3482629fab5a7fc907b8a43024d74e704103cdcad4f"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-height-from-feet-start",
+        "rig": "compact",
+        "sha256": "0fc3c555ff3282f75e92c2d4ff3553d589d2c746e4c844ae9e8e02e3222145f7"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-height-from-feet-start-offset",
+        "rig": "compact",
+        "sha256": "d2f506aa8154967ad84fcce9fe706438fbd549db2e9ab1c30b71a1ca4193b7bc"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y0-xz0",
+        "rig": "compact",
+        "sha256": "8feaaa0ec2509f79c90cbf500981b0909153d1385582f41280319ede0746694a"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y0-xz0-offset",
+        "rig": "compact",
+        "sha256": "62bc70fa1f29adefda2537e2e21d3d15c313c8b8027e8ca2473269c4758414fb"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y0-xz0-start",
+        "rig": "compact",
+        "sha256": "1986d51c84507672c50ef4b68d4b98b910e32949870f4a321a1da5f3082090dd"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y0-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "9499f430c7c0d623b093ce707af16d9f63efe0bb10d7f5004ac553877341898c"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y0-xz1",
+        "rig": "compact",
+        "sha256": "e0e6acaa654a8ce6597a260551f691af85bbd67f5a8bffa8efde819b4c55e473"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y0-xz1-offset",
+        "rig": "compact",
+        "sha256": "521806e9452305a561950e18b19ec24c2f3fec12d9fc48159608944325e9d825"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y0-xz1-start",
+        "rig": "compact",
+        "sha256": "46cc3ff9f23802ebab4413b19266ae359cf06a47ba5374e88fcb5956a405d611"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y0-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "c3082c4a7c51cd7028765b446703401531fa6c25c62af5f0d04dc9bccc551530"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y1-xz0",
+        "rig": "compact",
+        "sha256": "5ce9ae00d476f009170c516d41c3ae10f1b067ebd152eca7973b7663bb01ec5e"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y1-xz0-offset",
+        "rig": "compact",
+        "sha256": "0c778ace0de08333d88372c99779b27e6599819064c85a57d3a36b971a9f33be"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y1-xz0-start",
+        "rig": "compact",
+        "sha256": "66da9d5ce6a8b3da4011d5b9a127c9bf50aedddef94b11a2f1133fec1eb77b79"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y1-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "848b4af74044503bd120e692432583367e0236557d0cb79c21325af4650cb5c6"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y1-xz1",
+        "rig": "compact",
+        "sha256": "d56636760401de03537ce19cf1a81f47ec0da55ed78c250c2534ec7f591b911e"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y1-xz1-offset",
+        "rig": "compact",
+        "sha256": "b3d2182a503dddfc73aab32649630313eb59d1da104ad5d8bf27e7b3c9d957ea"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y1-xz1-start",
+        "rig": "compact",
+        "sha256": "8a02182b22afbf295dc5b714896ed817b850036db029581ddca953c7861d54c3"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o0-y1-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "d7ecf6538674a9c916c8164906b23109e37ce5e1036b5a83fbb1d22127396625"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y0-xz0",
+        "rig": "compact",
+        "sha256": "1c21a0243757438d97b96e8ce780d507d817b790f5b320093312beea1cb9e671"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y0-xz0-offset",
+        "rig": "compact",
+        "sha256": "18f09a0e8af8a14503d9a2fafbc1f6fbb8845c10e4c029616dd2f9e2f18464fb"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y0-xz0-start",
+        "rig": "compact",
+        "sha256": "78a9bacada3e4f2c5c02192d91d360c98062bf7be9f00d9ac80b3e06fc92e8a2"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y0-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "f5fae573eea767c03a9cc3242240a7e1027298b3ed93e4154ecfb587cd1c63f6"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y0-xz1",
+        "rig": "compact",
+        "sha256": "64e02412fccd64e32cadd69b39cc1611a854bde99da430e37e5df1fc2e224208"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y0-xz1-offset",
+        "rig": "compact",
+        "sha256": "c9ab5e1ec5f9a68ec39b2917e37ff7eab6bb66a8c503788e9caa1dc713347da1"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y0-xz1-start",
+        "rig": "compact",
+        "sha256": "64d9bc9ad8ae5a0440867b7c645d5e58a1125f0dc7aa46a98ffa21e1e6970c9b"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y0-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "59d570c592f8d6eca6ac1f88c3e6d5e32e00e9608962121197837239eb84c4a7"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y1-xz0",
+        "rig": "compact",
+        "sha256": "7131dde33dc369a79fe1d968cb3a6601e3fa295e1d664f0c54956b3d5fa78473"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y1-xz0-offset",
+        "rig": "compact",
+        "sha256": "1a654cdcba5091709bc4d4f6c10e1a81d350352b492f431bd84c0dd79f8af00f"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y1-xz0-start",
+        "rig": "compact",
+        "sha256": "6ed3abc0125f26674e48b09889c011bd0378c9f7bca8e44af9f30dcbc74bde1b"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y1-xz0-start-offset",
+        "rig": "compact",
+        "sha256": "b397152505cf528d9bb6d8c8e3eec7cd9d78cc191d2a9a099ced296ad4fca2eb"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y1-xz1",
+        "rig": "compact",
+        "sha256": "0a389dd3db4dde30e74d3f3f72c9f42ff5436cf4cfa29b7b51e78ee3655877c1"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y1-xz1-motion",
+        "rig": "compact",
+        "sha256": "85e0386360c6d607265a8d067c6572cf95fdf7155be1819451218d6b2ea4a471"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y1-xz1-motion-offset",
+        "rig": "compact",
+        "sha256": "db530d65702e0d23c462aa07fdcbf37c8bd9b252dead5a0b813e8ba9bdefd858"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y1-xz1-offset",
+        "rig": "compact",
+        "sha256": "f1a04fea0f1f7f783d284b60323980933034d2696cf9e90f810d3a562eeeeb9d"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y1-xz1-start",
+        "rig": "compact",
+        "sha256": "62289236299be14942e0bd536b808c3e4371864618bc730a865700e9ab0655f6"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-keep-o1-y1-xz1-start-offset",
+        "rig": "compact",
+        "sha256": "e939a6919c61c591ef548be6d17dfe3946553a22bd4299d2a105c1b40a3bf78c"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-level",
+        "rig": "compact",
+        "sha256": "dabbb1a022ca90ad5d68763112abcf3ed2b829c92e672df354af40f2663a7c61"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-level-offset",
+        "rig": "compact",
+        "sha256": "49cd01ec9c6be06073d88952c02a84cc7b8a0a4f2df0f2b7c9324249f00fa1ba"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-level-start",
+        "rig": "compact",
+        "sha256": "d3c45b2181343f1fa85a15f7c3323d183e023327778a12fa805eaac509cad861"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-level-start-offset",
+        "rig": "compact",
+        "sha256": "1af7263a699587e69f21d1d9a6f4e9acb0a62f364fccf3f6e5705035c932d26a"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-orientation-offset",
+        "rig": "compact",
+        "sha256": "a079184a428b1ad60c9d72827b98a2a951f762c987f44a1fb8dbfc0408d2f28f"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-orientation-offset-offset",
+        "rig": "compact",
+        "sha256": "55a3eb88b36bbe971cb5855b5216136884ef3cef65c4fb1f49049b53f734b352"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-orientation-offset-start",
+        "rig": "compact",
+        "sha256": "7b9e83dba431065cc5aac878fe7209ad6c88c9aa87f25d2507db36b5dd10ef87"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-clip-orientation-offset-start-offset",
+        "rig": "compact",
+        "sha256": "6b4f6f625d4fc4e4144b6d8d831155fbebe610903cd5e0a93d196633c3efc5d0"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-band-compact",
+        "rig": "compact",
+        "sha256": "141dcebb1db592e18f814c58d4db17cffd2b29ec90dcbf24e32d993ae92e664c"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-band-noncoplanar",
+        "rig": "noncoplanar",
+        "sha256": "00e6b4996813e75d276693720643c1f738e29a5ed9b228188b979cfa33e42ffe"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-band-tall",
+        "rig": "tall",
+        "sha256": "80d82ab94230a24c98e615da288f440dc000d3260d04a135817a67c4ddf6c885"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-compact",
+        "rig": "compact",
+        "sha256": "0d821a7c0b8f2465ea849e525bfd4f45891e847ea26fd16dba24d99921c6b55a"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-compact-2",
+        "rig": "compact",
+        "sha256": "693707b3945b9feea2ab3c3c798e2edecbd6f2dd766f4516760e56eb2c3507f9"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-compact-3",
+        "rig": "compact",
+        "sha256": "3da123e49856f5121f39e61cf257305e1c8612893f3db3fb7e9021f6a9eee6e5"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-compact-4",
+        "rig": "compact",
+        "sha256": "e273e01a48482d9eb692c30ca4267db6b37538b716d3551729631c15dfe6c0eb"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-compact-5",
+        "rig": "compact",
+        "sha256": "2249561042f117b1d44ea8093b96c03c0d2efb1ea6837387fe421e4bbd4f92f7"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-eyes",
+        "rig": "eyes",
+        "sha256": "ab4ad9fea1522b823171aec8efb21c81e58f05bc1e03b2d9ac8191c6459b14b9"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-eyes-jaw",
+        "rig": "eyes-jaw",
+        "sha256": "a66af72d3759c6a958d77ca4a6d1fa9fde8c4085ca4a242a010dc227847eb982"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-jaw",
+        "rig": "jaw",
+        "sha256": "83f9f3e93cdd4641b7feaeb6523a35bb2fd09666e17db179aa2669c8e557ad8c"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-no-chest",
+        "rig": "no-chest",
+        "sha256": "fa43e3d07d9cc4c239c4f7754cafd2f18d2fdb1bcb7996ebb9e5464261d19e2e"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-no-left-shoulder",
+        "rig": "no-left-shoulder",
+        "sha256": "363cddcfb77c22a9dfc2cebd772b95baa30815febbfa96443b291fc7f76d1b5a"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-no-left-toes",
+        "rig": "no-left-toes",
+        "sha256": "fc0404a5b80a2f13595d8cdcf2365102c4267e9a168373449a2651d934ce70a2"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-no-neck",
+        "rig": "no-neck",
+        "sha256": "58bd83b92c8cbf0e1cc5bc74d64e8d8548ecf13ee6af9a3a48fe79ff86b41032"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-no-right-shoulder",
+        "rig": "no-right-shoulder",
+        "sha256": "fe4f5b12b6f5d92259ffa792bc673c8736d5f68a8c2c4de2ba54e3b1eee81f0d"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-no-right-toes",
+        "rig": "no-right-toes",
+        "sha256": "c52a3ec43bbf99f10a745534f94c83b7774445555f36728c172e192cedfcbed4"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-no-shoulders",
+        "rig": "no-shoulders",
+        "sha256": "cbc36c2a80e2d1fcfeff4f0d43369d69454875e959ece3041c54f26f5a5b2df7"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-no-toes",
+        "rig": "no-toes",
+        "sha256": "c5c29f1b26c1d64439ed4df1e002ae6cf20d545fdde885fb5baf212892f34484"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-no-upper-chest",
+        "rig": "no-upper-chest",
+        "sha256": "79304116ddb971dee114eeef1e946477a6083732d69826fcb9d73ee5ebe93247"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-no-upper-chest-left-toes",
+        "rig": "no-upper-chest-left-toes",
+        "sha256": "bdad5f43a5a1d8397bee385d1df8ce33458ad1c2bc7273c11f4575637a675e54"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-no-upper-chest-right-toes",
+        "rig": "no-upper-chest-right-toes",
+        "sha256": "881543dec63e6c062ff5c57421c0082d8eae6feb7ec1ab4c37f53f72a89c93de"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-no-upper-chest-toes",
+        "rig": "no-upper-chest-toes",
+        "sha256": "ea2bea50862ab678dd5fcadb93ef42a3142e7949cf9ce9944ff432f3fd448103"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-noncoplanar",
+        "rig": "noncoplanar",
+        "sha256": "10adad677bd9d7652debe5942bf91fddb39ba0cc10c5b7d580ce54adc2daf751"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-range-compact",
+        "rig": "compact",
+        "sha256": "2ac17c18d874251d18164d939c0692893048f9fcfa93421e9e1fee4a4266f171"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-range-noncoplanar",
+        "rig": "noncoplanar",
+        "sha256": "5b045114d010364b9887d47827a783e3d8c4e9729605b0797524c01f750336b3"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-range-tall",
+        "rig": "tall",
+        "sha256": "8953874775061b356fb63999a356f4c8a4338eb3f7112d01ae2bb2980bae9a98"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-tall",
+        "rig": "tall",
+        "sha256": "b4747d0fd036fcc6c3557322db0ad2af8c536a43d773a0e459492ab6ed726da8"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-tall-2",
+        "rig": "tall",
+        "sha256": "fc1d439858c4b13c98606bfd489ad9ef062d3f14a54062d4e405b28031181725"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-tall-3",
+        "rig": "tall",
+        "sha256": "d51036d82c26bbc096648f1cb4909f4dab0fdb37185247dcb7ce720cca757f93"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-twist-compact",
+        "rig": "compact",
+        "sha256": "7b15c0f035f531c314cd3e7f5c965efea5aa93c96a1f1a48690e1c52bbc7e386"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-probes-twist-tall",
+        "rig": "tall",
+        "sha256": "219cc90e5c2c973ef2230cd20dcf55dd2e9db7a96ef1a788587ca6ba760cf772"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-targets-compact",
+        "rig": "compact",
+        "sha256": "16f27a8ef207f2282f5d438b86fa03bcd1c74cd352c87a1873419beb7390ccfe"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-targets-compact-offset",
+        "rig": "compact",
+        "sha256": "aba068c3614b2e4820d293493dfee53c8ac81ed664f9f7b8ac48b99abbefd8f4"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-targets-tall",
+        "rig": "tall",
+        "sha256": "8934ea52fc9c9d7c26a3bcf32500172bf1ff67ac28d63e46780515b5c3b306d1"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "body-targets-tall-offset",
+        "rig": "tall",
+        "sha256": "20d645f922607e6594b0b35b5079b5da0705bc2cd4a63dae2e8b1e43951275f4"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-compact-body-motion",
+        "rig": "p2b",
+        "sha256": "2c026c8fa3ee1ba6ed0979ad4d0fbf233b9855a5ac828f7aaa9165cf73d86cb8"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-compact-muscles",
+        "rig": "p2b",
+        "sha256": "099883baab7421db2d39b445cb9d8444cd0692e81157456ca6b29d955f0f8c7c"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-compact-muscles-known-vectors",
+        "rig": "p2b",
+        "sha256": "c4912e5b0f5100f3f9f5796c957eeab6a66b4b0de44f872a687c7675cdbb086e"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-compact-muscles-offset",
+        "rig": "p2b",
+        "sha256": "3fde281f511861c4fa76e6607d9ac84016f811f3e8e1628e0b515014967014c1"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-compact-muscles-offset-known-vectors",
+        "rig": "p2b",
+        "sha256": "06e61ddee6e6a3df0ec7038f72fbef4635451f1ae0d02127c55c1823e9cabcc2"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-non-neutral-setting-refusal",
+        "rig": "p2b",
+        "sha256": "8058ba10c83afdb0402433ffdc56e7a80e6c88898a520f4497dc13b3134aee5a"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-root-basis-o0-y0-xz0",
+        "rig": "p2b",
+        "sha256": "1662416f82499fe3abf4bf926c78b822ad97db02d908300ea8a715b39ee4e7b8"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-root-basis-o0-y0-xz1",
+        "rig": "p2b",
+        "sha256": "84349abff9451c7cf5219a94979c53fc4e8d35f983b4ee4ff79e71de116cb0c7"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-root-basis-o0-y1-xz0",
+        "rig": "p2b",
+        "sha256": "ee909a6befba72f342d533c63d596a886be96acf8499405caa2c6f60c67a3a39"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-root-basis-o0-y1-xz1",
+        "rig": "p2b",
+        "sha256": "87a80585a7fbb8fcbf9630e4acf3683ca8d678477a58dc587569abb31e7ba8a0"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-root-basis-o1-y0-xz0",
+        "rig": "p2b",
+        "sha256": "62d79d7977341b411403ffeb65c570a237059e6830267f5cef590e981bd793f1"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-root-basis-o1-y0-xz1",
+        "rig": "p2b",
+        "sha256": "703754ff152fdb5ec78ec2b61e4a03d87ce0aec4997139f3b74405ae390edfda"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-root-basis-o1-y1-xz0",
+        "rig": "p2b",
+        "sha256": "ce63e8a888485a502489c7e78c352f547354aba0139616b6f83e473afadde147"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-root-basis-o1-y1-xz1",
+        "rig": "p2b",
+        "sha256": "a4cd27d1537e5dfc53fb9fe80045c08b7497ee3126723b283cae57c43e65cec7"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-tall-muscles",
+        "rig": "p2b",
+        "sha256": "4a6f01b4edce827c2b3b0ab16bd992379b91f74b47165c4ee327e839dbaf83ba"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-tall-muscles-known-vectors",
+        "rig": "p2b",
+        "sha256": "808a36156aeb51bffca4b1df55c19e331c0e12ff9326fc4855c4c7571a84aaf2"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-tall-muscles-offset",
+        "rig": "p2b",
+        "sha256": "aaebd198ce8031d9ac05bba2f1479b87ade7ce997c85d7947e48fd8dd8497c19"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-tall-muscles-offset-known-vectors",
+        "rig": "p2b",
+        "sha256": "af1d7baec482042d470b4507849a0fa64151802549e09588e8e6fe0165fa4530"
+      },
+      {
+        "run": "6000.6.9f1",
+        "case": "humanoid-twist-refusal",
+        "rig": "p2b",
+        "sha256": "31a7c3dc5176e74be1a80ef86bf796ced93b384176e65cea4a23a0dd16d00908"
+      }
+    ],
+    "holdout_rows": 0
+  },
+  "e3a": {
+    "passed": true,
+    "samples": 2624,
+    "worst_ratio": 0.04186844565111735,
+    "refused": 4458,
+    "holdout_plan": {
+      "2022.3.62f3": {
+        "worst_margin": 1.1434418788418121,
+        "in_frame": 46,
+        "refused": 2,
+        "minimum": 1.05
+      },
+      "6000.6.9f1": {
+        "worst_margin": 1.1434419688852322,
+        "in_frame": 46,
+        "refused": 2,
+        "minimum": 1.05
+      }
+    }
+  },
+  "e4": {
+    "passed": true,
+    "note": "per configuration (variant/rig/Editor version/root placement): B4 and B5 implement the passing ones alone; excluded ones compared nothing",
+    "samples": 828,
+    "start_pairs": 648,
+    "passing": [
+      "bake-o0-y0-xz1/compact/2022.3.62f3/identity",
+      "bake-o0-y0-xz1/compact/2022.3.62f3/offset",
+      "bake-o0-y0-xz1/compact/6000.6.9f1/identity",
+      "bake-o0-y0-xz1/compact/6000.6.9f1/offset",
+      "bake-o0-y1-xz0/compact/2022.3.62f3/identity",
+      "bake-o0-y1-xz0/compact/2022.3.62f3/offset",
+      "bake-o0-y1-xz0/compact/6000.6.9f1/identity",
+      "bake-o0-y1-xz0/compact/6000.6.9f1/offset",
+      "bake-o0-y1-xz1/compact/2022.3.62f3/identity",
+      "bake-o0-y1-xz1/compact/2022.3.62f3/offset",
+      "bake-o0-y1-xz1/compact/6000.6.9f1/identity",
+      "bake-o0-y1-xz1/compact/6000.6.9f1/offset",
+      "bake-o1-y0-xz0/compact/2022.3.62f3/identity",
+      "bake-o1-y0-xz0/compact/2022.3.62f3/offset",
+      "bake-o1-y0-xz0/compact/6000.6.9f1/identity",
+      "bake-o1-y0-xz0/compact/6000.6.9f1/offset",
+      "bake-o1-y0-xz1/compact/2022.3.62f3/identity",
+      "bake-o1-y0-xz1/compact/2022.3.62f3/offset",
+      "bake-o1-y0-xz1/compact/6000.6.9f1/identity",
+      "bake-o1-y0-xz1/compact/6000.6.9f1/offset",
+      "bake-o1-y1-xz0/compact/2022.3.62f3/identity",
+      "bake-o1-y1-xz0/compact/2022.3.62f3/offset",
+      "bake-o1-y1-xz0/compact/6000.6.9f1/identity",
+      "bake-o1-y1-xz0/compact/6000.6.9f1/offset",
+      "bake-o1-y1-xz1/compact/2022.3.62f3/identity",
+      "bake-o1-y1-xz1/compact/2022.3.62f3/offset",
+      "bake-o1-y1-xz1/compact/6000.6.9f1/identity",
+      "bake-o1-y1-xz1/compact/6000.6.9f1/offset",
+      "keep-o0-y0-xz0/compact/2022.3.62f3/identity",
+      "keep-o0-y0-xz0/compact/2022.3.62f3/offset",
+      "keep-o0-y0-xz0/compact/6000.6.9f1/identity",
+      "keep-o0-y0-xz0/compact/6000.6.9f1/offset",
+      "keep-o1-y1-xz1-motion/armature/2022.3.62f3/identity",
+      "keep-o1-y1-xz1-motion/armature/6000.6.9f1/identity",
+      "keep-o1-y1-xz1-motion/compact/2022.3.62f3/identity",
+      "keep-o1-y1-xz1-motion/compact/2022.3.62f3/offset",
+      "keep-o1-y1-xz1-motion/compact/6000.6.9f1/identity",
+      "keep-o1-y1-xz1-motion/compact/6000.6.9f1/offset",
+      "keep-o1-y1-xz1-motion/hips-scale/2022.3.62f3/identity",
+      "keep-o1-y1-xz1-motion/hips-scale/6000.6.9f1/identity",
+      "keep-o1-y1-xz1-motion/large/2022.3.62f3/identity",
+      "keep-o1-y1-xz1-motion/large/6000.6.9f1/identity",
+      "keep-o1-y1-xz1-motion/scaled-animator/2022.3.62f3/identity",
+      "keep-o1-y1-xz1-motion/scaled-animator/6000.6.9f1/identity",
+      "level/compact/2022.3.62f3/identity",
+      "level/compact/2022.3.62f3/offset",
+      "level/compact/6000.6.9f1/identity",
+      "level/compact/6000.6.9f1/offset",
+      "orientation-offset/compact/2022.3.62f3/identity",
+      "orientation-offset/compact/2022.3.62f3/offset",
+      "orientation-offset/compact/6000.6.9f1/identity",
+      "orientation-offset/compact/6000.6.9f1/offset"
+    ],
+    "excluded": [],
+    "configurations": {
+      "bake-o0-y0-xz1/compact/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o0-y0-xz1/compact/2022.3.62f3/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o0-y0-xz1/compact/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o0-y0-xz1/compact/6000.6.9f1/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o0-y1-xz0/compact/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o0-y1-xz0/compact/2022.3.62f3/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o0-y1-xz0/compact/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o0-y1-xz0/compact/6000.6.9f1/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o0-y1-xz1/compact/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o0-y1-xz1/compact/2022.3.62f3/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o0-y1-xz1/compact/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o0-y1-xz1/compact/6000.6.9f1/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y0-xz0/compact/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y0-xz0/compact/2022.3.62f3/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y0-xz0/compact/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y0-xz0/compact/6000.6.9f1/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y0-xz1/compact/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y0-xz1/compact/2022.3.62f3/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y0-xz1/compact/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y0-xz1/compact/6000.6.9f1/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y1-xz0/compact/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y1-xz0/compact/2022.3.62f3/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y1-xz0/compact/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y1-xz0/compact/6000.6.9f1/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y1-xz1/compact/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y1-xz1/compact/2022.3.62f3/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y1-xz1/compact/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "bake-o1-y1-xz1/compact/6000.6.9f1/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "height-from-feet-knee-goals/compact/2022.3.62f3/identity": {
+        "status": "undecided",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "height from feet: lowest-foot candidates A and B are not yet told apart"
+      },
+      "height-from-feet-knee-goals/compact/2022.3.62f3/offset": {
+        "status": "undecided",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "height from feet: lowest-foot candidates A and B are not yet told apart"
+      },
+      "height-from-feet-knee-goals/compact/6000.6.9f1/identity": {
+        "status": "undecided",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "height from feet: lowest-foot candidates A and B are not yet told apart"
+      },
+      "height-from-feet-knee-goals/compact/6000.6.9f1/offset": {
+        "status": "undecided",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "height from feet: lowest-foot candidates A and B are not yet told apart"
+      },
+      "height-from-feet-knee/compact/2022.3.62f3/identity": {
+        "status": "undecided",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "height from feet: lowest-foot candidates A and B are not yet told apart"
+      },
+      "height-from-feet-knee/compact/2022.3.62f3/offset": {
+        "status": "undecided",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "height from feet: lowest-foot candidates A and B are not yet told apart"
+      },
+      "height-from-feet-knee/compact/6000.6.9f1/identity": {
+        "status": "undecided",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "height from feet: lowest-foot candidates A and B are not yet told apart"
+      },
+      "height-from-feet-knee/compact/6000.6.9f1/offset": {
+        "status": "undecided",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "height from feet: lowest-foot candidates A and B are not yet told apart"
+      },
+      "height-from-feet/compact/2022.3.62f3/identity": {
+        "status": "undecided",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "height from feet: lowest-foot candidates A and B are not yet told apart",
+        "start_offset": "pass"
+      },
+      "height-from-feet/compact/2022.3.62f3/offset": {
+        "status": "undecided",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "height from feet: lowest-foot candidates A and B are not yet told apart",
+        "start_offset": "pass"
+      },
+      "height-from-feet/compact/6000.6.9f1/identity": {
+        "status": "undecided",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "height from feet: lowest-foot candidates A and B are not yet told apart",
+        "start_offset": "pass"
+      },
+      "height-from-feet/compact/6000.6.9f1/offset": {
+        "status": "undecided",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "height from feet: lowest-foot candidates A and B are not yet told apart",
+        "start_offset": "pass"
+      },
+      "keep-o0-y0-xz0/compact/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "keep-o0-y0-xz0/compact/2022.3.62f3/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "keep-o0-y0-xz0/compact/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "keep-o0-y0-xz0/compact/6000.6.9f1/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "keep-o0-y0-xz1/compact/2022.3.62f3/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o0-y0-xz1/compact/2022.3.62f3/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o0-y0-xz1/compact/6000.6.9f1/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o0-y0-xz1/compact/6000.6.9f1/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o0-y1-xz0/compact/2022.3.62f3/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "pass"
+      },
+      "keep-o0-y1-xz0/compact/2022.3.62f3/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "pass"
+      },
+      "keep-o0-y1-xz0/compact/6000.6.9f1/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "pass"
+      },
+      "keep-o0-y1-xz0/compact/6000.6.9f1/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "pass"
+      },
+      "keep-o0-y1-xz1/compact/2022.3.62f3/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o0-y1-xz1/compact/2022.3.62f3/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o0-y1-xz1/compact/6000.6.9f1/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o0-y1-xz1/compact/6000.6.9f1/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y0-xz0/compact/2022.3.62f3/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y0-xz0/compact/2022.3.62f3/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y0-xz0/compact/6000.6.9f1/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y0-xz0/compact/6000.6.9f1/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y0-xz1/compact/2022.3.62f3/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y0-xz1/compact/2022.3.62f3/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y0-xz1/compact/6000.6.9f1/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y0-xz1/compact/6000.6.9f1/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y1-xz0/compact/2022.3.62f3/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y1-xz0/compact/2022.3.62f3/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y1-xz0/compact/6000.6.9f1/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y1-xz0/compact/6000.6.9f1/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y1-xz1-motion/armature/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 9,
+        "no_readback": 0,
+        "topology": 0
+      },
+      "keep-o1-y1-xz1-motion/armature/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 9,
+        "no_readback": 0,
+        "topology": 0
+      },
+      "keep-o1-y1-xz1-motion/compact/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 9,
+        "no_readback": 0,
+        "topology": 0
+      },
+      "keep-o1-y1-xz1-motion/compact/2022.3.62f3/offset": {
+        "status": "pass",
+        "samples": 9,
+        "no_readback": 0,
+        "topology": 0
+      },
+      "keep-o1-y1-xz1-motion/compact/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 9,
+        "no_readback": 0,
+        "topology": 0
+      },
+      "keep-o1-y1-xz1-motion/compact/6000.6.9f1/offset": {
+        "status": "pass",
+        "samples": 9,
+        "no_readback": 0,
+        "topology": 0
+      },
+      "keep-o1-y1-xz1-motion/hips-scale/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 9,
+        "no_readback": 0,
+        "topology": 0
+      },
+      "keep-o1-y1-xz1-motion/hips-scale/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 9,
+        "no_readback": 0,
+        "topology": 0
+      },
+      "keep-o1-y1-xz1-motion/large/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 9,
+        "no_readback": 0,
+        "topology": 0
+      },
+      "keep-o1-y1-xz1-motion/large/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 9,
+        "no_readback": 0,
+        "topology": 0
+      },
+      "keep-o1-y1-xz1-motion/scaled-animator/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 9,
+        "no_readback": 0,
+        "topology": 0
+      },
+      "keep-o1-y1-xz1-motion/scaled-animator/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 9,
+        "no_readback": 0,
+        "topology": 0
+      },
+      "keep-o1-y1-xz1/compact/2022.3.62f3/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y1-xz1/compact/2022.3.62f3/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y1-xz1/compact/6000.6.9f1/identity": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "keep-o1-y1-xz1/compact/6000.6.9f1/offset": {
+        "status": "refused",
+        "samples": 0,
+        "no_readback": 0,
+        "topology": 0,
+        "reason": "an original-root cell needs the clip's MotionT and MotionQ slots",
+        "start_offset": "fail"
+      },
+      "level/compact/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "level/compact/2022.3.62f3/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "level/compact/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "level/compact/6000.6.9f1/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "orientation-offset/compact/2022.3.62f3/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "orientation-offset/compact/2022.3.62f3/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "orientation-offset/compact/6000.6.9f1/identity": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      },
+      "orientation-offset/compact/6000.6.9f1/offset": {
+        "status": "pass",
+        "samples": 18,
+        "no_readback": 0,
+        "topology": 0,
+        "start_offset": "pass"
+      }
+    }
+  },
+  "code": {
+    "commit": "6bd46d43474f09af38d9a7b59c5e8e98fc9fb236",
+    "digest": "239e0c8a4b6033eab8f73d5855af91c995ef8122f225c8b3889b81e435f810fa",
+    "files": [
+      "anim_body_adequacy.py",
+      "anim_body_check.py",
+      "anim_body_design.py",
+      "anim_body_e4.py",
+      "anim_body_freeze.py",
+      "anim_body_holdout.py",
+      "anim_body_model.py",
+      "anim_body_runs.py",
+      "anim_body_seal.py",
+      "anim_body_tolerance.py",
+      "anim_bounds.json",
+      "anim_fixture_body.py",
+      "anim_fixture_contract.py",
+      "anim_fixture_coverage.py",
+      "anim_fixture_extras.py",
+      "anim_fixture_rigs.py",
+      "anim_fixture_variants.py",
+      "anim_reference.py",
+      "anim_replay.py",
+      "anim_replay.schema.json",
+      "anim_replay_bounds.py",
+      "anim_replay_complete.py",
+      "child.py",
+      "fixture_textures.py",
+      "scratch.py"
+    ]
+  },
+  "reader": {
+    "note": "the unityrs CLI that read every Avatar and built clip; E3b needs the same",
+    "sha256": "45281b44ec073d68cd0c742a07d16365408454ab9e9d62a037409aa34d928b68"
+  },
+  "evidence": {
+    "note": "supporting runs, never inputs: E2 and E3 within the lateral limit with the frozen design and coefficients",
+    "runs": [
+      {
+        "run": "2022.3.62f3",
+        "digest": "f826b17faa2024e8ad14491404799cb876dbf7d84aa17b30ef83d4488a2b0041",
+        "cases": 136,
+        "e2": {
+          "passed": true,
+          "residuals": 2211,
+          "refused": 2243,
+          "worst_ratio": 0.33070455603647686
+        },
+        "e3": {
+          "passed": true,
+          "samples": 1242,
+          "refused": 2224,
+          "worst_ratio": 0.041825700668919316
+        },
+        "failures": []
+      },
+      {
+        "run": "6000.6.9f1",
+        "digest": "830a09d17e92e53b3955ed4a209dbff2a063bba6357395d560028f0ebba4ab3d",
+        "cases": 136,
+        "e2": {
+          "passed": true,
+          "residuals": 2211,
+          "refused": 2243,
+          "worst_ratio": 0.33075259397771267
+        },
+        "e3": {
+          "passed": true,
+          "samples": 1242,
+          "refused": 2224,
+          "worst_ratio": 0.04186844565111735
+        },
+        "failures": []
+      }
+    ]
+  }
+}

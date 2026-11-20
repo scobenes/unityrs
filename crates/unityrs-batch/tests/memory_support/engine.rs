@@ -80,9 +80,9 @@ fn memory_child() {
         &prepared.spec,
         measured,
         bound::CHECK_ENV_BLOCK,
-        &PROVISIONAL,
+        &SELECTED,
     );
-    memory_support::selected(bound, prepared.spec.threads, measured.peak);
+    memory_support::selected(bound, &prepared.spec, measured);
     process::run(startup, clock, prepared, bound.total(), None)
 }
 

@@ -1,8 +1,10 @@
+use super::super::read_bits;
 use super::super::{
     ise::{self, Quant},
     tables,
 };
 use super::put;
+use unityrs_testkit::Rng;
 
 /// A test-only spec encoder: choose the packed trit/quint code with the
 /// desired digit prefix, using zero for the absent high code bits. This
@@ -163,4 +165,48 @@ fn weight_unquantization_covers_every_weight_range() {
     assert_eq!(Quant::new(4).unwrap().unquant_weight(1), Some(64));
     assert_eq!(Quant::new(11).unwrap().unquant_weight(16), Some(34));
     assert_eq!(Quant::new(12).unwrap().unquant_weight(0), None);
+}
+
+#[test]
+fn the_precision_table_is_the_search() {
+    // Every count and available bit count `decode_layout` can ask for, and
+    // past both, where the search answers.
+    for count in 0..=20 {
+        for available in 0..=130 {
+            assert_eq!(
+                ise::highest_fitting(count, available),
+                (4..=20)
+                    .rev()
+                    .filter_map(Quant::new)
+                    .find(|q| q.bit_count(count).is_some_and(|n| n <= available)),
+                "{count} values in {available} bits"
+            );
+        }
+    }
+}
+
+/// A block's sequences, read as one integer, are the bit reader's: every
+/// precision, count and offset that fits, on seeded data of every length
+/// to 16 bytes, those that fail too.
+#[test]
+fn the_word_reader_is_the_bit_reader() {
+    let mut rng = Rng::new(0x15e_0001);
+    for _ in 0..20_000 {
+        let mut data = [0; 16];
+        rng.flip_bits(&mut data, 64);
+        let data = &data[..rng.below(17)];
+        let q = Quant::new(u8::try_from(rng.below(21)).unwrap()).unwrap();
+        let (count, offset) = (rng.below(65), rng.below(129));
+        let (mut got, mut want) = ([0; 64], [0; 64]);
+        let ok = ise::decode(q, data, offset, &mut got[..count]);
+        let fits = offset + q.bit_count(count).unwrap() <= data.len() * 8;
+        let reference = ise::decode_with(q, offset, &mut want[..count], |pos, n| {
+            read_bits(data, pos, n)
+        });
+        assert_eq!(ok, fits.then_some(()), "{q:?} {count} {offset}");
+        if fits {
+            assert_eq!(reference, Some(()));
+            assert_eq!(got, want, "{q:?} {count} {offset} {data:?}");
+        }
+    }
 }

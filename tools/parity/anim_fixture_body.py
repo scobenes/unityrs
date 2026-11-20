@@ -15,11 +15,12 @@ from math import isfinite
 
 from anim_body_tolerance import BODY_SLOTS
 from anim_fixture_contract import BODY, MUSCLES, SPINE, Fixture, compiled_curves
+from anim_fixture_extras import ADDED_PROBES, ADDED_RIGS
 from anim_reference import angle, dense, euler, multiply, streamed
 
 # name: (base rig, omitted bones, mapped extras). F6 rigs are on the compact
-# rig; "noncoplanar" moves the hip and shoulder children off one plane and
-# "holdout" (long arms, short legs) is never fitted.
+# rig; "noncoplanar" moves the hip and shoulder children off one plane, and
+# the hold-out rigs (HOLDOUT_RIGS, other proportions) are never fitted.
 PROBE_RIGS = {
     "compact": ("compact", (), ()), "tall": ("tall", (), ()),
     "no-chest": ("compact", ("Chest", "UpperChest"), ()), "no-upper-chest": ("compact", ("UpperChest",), ()),
@@ -28,11 +29,17 @@ PROBE_RIGS = {
     "no-shoulders": ("compact", ("LeftShoulder", "RightShoulder"), ()),
     "no-left-toes": ("compact", ("LeftToes",), ()), "no-right-toes": ("compact", ("RightToes",), ()),
     "no-toes": ("compact", ("LeftToes", "RightToes"), ()),
+    "no-upper-chest-toes": ("compact", ("UpperChest", "LeftToes", "RightToes"), ()),
+    "no-upper-chest-left-toes": ("compact", ("UpperChest", "LeftToes"), ()),
+    "no-upper-chest-right-toes": ("compact", ("UpperChest", "RightToes"), ()),
     "eyes": ("compact", (), ("LeftEye", "RightEye")), "jaw": ("compact", (), ("Jaw",)),
     "eyes-jaw": ("compact", (), ("LeftEye", "RightEye", "Jaw")),
-    "noncoplanar": ("compact", (), ()), "holdout": ("compact", (), ()),
+    "noncoplanar": ("compact", (), ()), "holdout": ("compact", (), ()), "holdout-2": ("compact", (), ()),
 }
-HOLDOUT = "holdout"
+# Every hold-out rig, sealed and never fitted: "holdout" (long arms, short legs), spent by E3b on freeze v7,
+# and "holdout-2" (short arms, long legs, its own pose draws), the one E3b reads next (HOLDOUT).
+HOLDOUT_RIGS = ("holdout", "holdout-2")
+HOLDOUT = HOLDOUT_RIGS[-1]
 # F5: the chain from the Animator to the hips, each on the compact rig.
 CHAIN_RIGS = ("scaled-animator", "large", "armature", "hips-scale")
 TARGET_RIGS = ("compact", "tall")
@@ -89,8 +96,8 @@ EXTRA_PROBES = {
         (("LeftUpperLeg", -3), ("RightUpperLeg", -2)),
         (("LeftUpperLeg", -3), ("RightUpperArm", -3)),
     ),
-}
-EXTRA_RIGS = {"body-probes-tall-2": "tall"}
+} | ADDED_PROBES
+EXTRA_RIGS = {"body-probes-tall-2": "tall"} | ADDED_RIGS
 # Twist sweeps, each on its own bundle of a training rig (never the hold-out): the shoulder-hip twist swept by
 # the Spine and Chest twist muscles together (HumanTrait's default limits, +-40 degrees each, so a value of
 # degrees / 80 for both), crossed with an upright body and three pitch and roll tilts of the body target taken
@@ -100,6 +107,42 @@ TWIST_DEGREES = (0, *(sign * d for d in (2, 4, 6, 8, 10, 15, 20, 30, 45, 60) for
 TWIST_RANGE = 80
 TWIST_MUSCLES = ("Spine Twist Left-Right", "Chest Twist Left-Right")
 TWIST_TILTS = ((0, 0, 0), (12, 0, 7), (-9, 0, -11), (12, 0, -11))
+# Full-range spine sweeps, each on its own bundle of a training rig (never the hold-out): every mapped spine
+# bone's three muscles over the whole muscle cube [-1, 1]^3, jointly. The vectors are the first RANGE_POINTS
+# points of a 9-d Sobol sequence (Joe and Kuo's direction numbers for dimensions 2-9, unscrambled, 16 bits),
+# each coordinate x as 2 x - 1 (exact in f32): Spine Front-Back, Left-Right and Twist, then Chest's, then
+# UpperChest's, a rig without UpperChest taking the first six. Then the joint corners: every mapped spine bone at
+# the same corner of its cube, all but (-1, -1, -1), which is the sequence's first point. Every other muscle is
+# zero. The body target takes the twist sweeps' tilts (TWIST_TILTS), each over a quarter of the Sobol points: an
+# aligned block of RANGE_POINTS / 4 consecutive points, itself a net filling the whole cube (every fourth point
+# would not be: its Spine Front-Back and Left-Right stay in one quadrant), and the corners cycle through the
+# tilts. The spine anchors stay upright. The design comes from the cube alone, never from recorded or corpus
+# poses.
+RANGE_RIGS = {"body-probes-range-compact": "compact", "body-probes-range-tall": "tall",
+              "body-probes-range-noncoplanar": "noncoplanar"}
+RANGE_POINTS = 256
+RANGE_BONES = ("Spine", "Chest", "UpperChest")
+# Lateral band sweeps, each on its own bundle of a training rig (never the hold-out): the band of combined spine
+# Left-Right values past the frame's validated lateral domain (anim_body_check), up to BAND_LATERAL. The vectors
+# are the range sweeps' Sobol points with each bone's Front-Back over [-1, 1], Left-Right over +-BAND_LATERAL and
+# Twist over +-BAND_TWIST (each 2 x - 1 scaled by a power of two, so exact in f32), the twists small enough that
+# most poses stay inside the frame's shoulder-hip twist scope while their arm-leg yaw gap reaches a few degrees.
+# The tilts are the range sweeps'. Then the side bends (BAND_BENDS), under each tilt: every mapped spine bone at
+# the same (Left-Right, Twist), at sign +-1 times a bend's pair, Front-Back zero. The twisted ones open a yaw gap of
+# either sign at the band's low levels, from just past the validated domain, which the Sobol points' largest
+# Left-Right reaches only sparsely. The pure one (Twist zero) is the oppositely tilted arm and leg laterals at a
+# near-zero yaw gap that no lateral-weighting rule fits. The design comes from the cube alone.
+BAND_RIGS = {"body-probes-band-compact": "compact", "body-probes-band-tall": "tall",
+             "body-probes-band-noncoplanar": "noncoplanar"}
+BAND_LATERAL = 3 / 8
+BAND_TWIST = 1 / 32
+# (Left-Right, Twist) of each side bend, taken at either sign.
+BAND_BENDS = ((15 / 128, BAND_TWIST), (9 / 64, -BAND_TWIST), (11 / 64, BAND_TWIST), (13 / 64, -BAND_TWIST),
+              (3 / 8, 0))
+# (degree s, coefficients a, initial m_1..m_s) of dimensions 2-9.
+SOBOL_DIRECTIONS = ((1, 0, (1,)), (2, 1, (1, 3)), (3, 1, (1, 3, 1)), (3, 2, (1, 1, 1)), (4, 1, (1, 1, 3, 3)),
+                    (4, 4, (1, 3, 5, 13)), (5, 2, (1, 1, 5, 5, 17)), (5, 4, (1, 1, 5, 5, 5)))
+SOBOL_BITS = 16
 PROBE_VALUES = (1, -.9, .8)
 COMBINED_VALUES = ((.3, -.2, .25, -.35, .15), (-.25, .4, -.15, .2, -.3), (.2, .2, -.3, -.1, .35))
 TARGETS = (((.05, -.03, .04), (12, -20, 7)), ((-.04, .02, -.06), (-9, 35, -11)))
@@ -183,7 +226,7 @@ def _cases():
             for prefab, suffix in (("identity", ""), ("offset", "-offset")):
                 add(f"body-targets-{rig}{suffix}", _fixture(bundle, prefab, bundle + "-muscles", "targets"),
                     "targets", rig, root=prefab)
-    for variant, rigs in (("extra", EXTRA_RIGS), ("twist", TWIST_RIGS)):
+    for variant, rigs in (("extra", EXTRA_RIGS), ("twist", TWIST_RIGS), ("range", RANGE_RIGS), ("band", BAND_RIGS)):
         for name, rig in rigs.items():
             bundle = name.replace("probes-", "")
             add(name, _fixture(bundle, "identity", bundle + "-muscles", "probes"), "probes", rig, variant)
@@ -202,9 +245,15 @@ def _cases():
 BODY_CASES, BODY_INFO = _cases()
 EXTRA_CASES = frozenset(name for name, info in BODY_INFO.items() if info["variant"] == "extra")
 TWIST_CASES = frozenset(TWIST_RIGS)
+RANGE_CASES = frozenset(RANGE_RIGS)
+BAND_CASES = frozenset(BAND_RIGS)
+# The rigs added with the range sweeps: UpperChest absent with both, the left or the right Toes.
+LATER_RIGS = ("no-upper-chest-toes", "no-upper-chest-left-toes", "no-upper-chest-right-toes")
 # The body cases added after the first body run, each generation absent from older runs and required once its
 # rig's own probe case records.
-LATER_CASES = (EXTRA_CASES, TWIST_CASES)
+# The fifth: the extra probe cases and the hold-out rig added after E3b on freeze v7 (anim_fixture_extras).
+LATER_CASES = (EXTRA_CASES - ADDED_RIGS.keys(), TWIST_CASES, RANGE_CASES | {"body-probes-" + rig for rig in LATER_RIGS},
+               BAND_CASES, frozenset(ADDED_RIGS) | {"body-probes-" + HOLDOUT})
 
 
 def primary_probes(rig):
@@ -250,7 +299,13 @@ def _scheduled(vectors, index, length):
 
     points = [(0, anchor(0)), *zip(times[:first], vectors[:first]), (.5, anchor(.5)),
               *zip(times[first:], vectors[first:]), (1, anchor(1))]
-    return [(t, [vector.get(i, 0) for i in range(length)]) for t, vector in points]
+    # Every zero is +0, as the builder writes it (canonical): the recordings compare f32 bits.
+    return [(t, [canonical(vector.get(i, 0)) for i in range(length)]) for t, vector in points]
+
+
+def canonical(value):
+    """An authored muscle value with a signed zero as +0 (the builder's AnimReplayRecorder.Canonical)."""
+    return 0. if value == 0 else value
 
 
 def compose(rig, names, sources):
@@ -276,15 +331,85 @@ def twist_plan():
     return [(degrees / TWIST_RANGE, tilt) for tilt in TWIST_TILTS for degrees in TWIST_DEGREES]
 
 
+def sobol(count, dims):
+    """The first `count` points of the unscrambled Sobol sequence in `dims` (at most 9) dimensions, in [0, 1):
+    dimension 1 is the van der Corput sequence in base 2, the others SOBOL_DIRECTIONS', by Gray code."""
+    directions = [[1 << (31 - k) for k in range(SOBOL_BITS)]]
+    for degree, a, m in SOBOL_DIRECTIONS[:dims - 1]:
+        v = [m[k] << (31 - k) for k in range(degree)]
+        for k in range(degree, SOBOL_BITS):
+            x = v[k - degree] ^ (v[k - degree] >> degree)
+            for j in range(1, degree):
+                x ^= (a >> (degree - 1 - j) & 1) * v[k - j]
+            v.append(x)
+        directions.append(v)
+    if count > 1 << SOBOL_BITS:
+        raise ValueError("more Sobol points than the direction numbers' bits")
+    x, points = [0] * dims, []
+    for i in range(count):
+        points.append(tuple(v / 2 ** 32 for v in x))
+        low = (~i & (i + 1)).bit_length() - 1
+        x = [v ^ directions[d][low] for d, v in enumerate(x)] if i + 1 < count else x
+    return points
+
+
+def range_vectors(rig, index):
+    """A range sweep's vectors over the rig's mapped spine bones (RANGE_RIGS): the Sobol points, then the
+    joint corners but the first."""
+    groups = [[index[muscle] for muscle in group] for bone, group in PROBE_GROUPS
+              if bone in RANGE_BONES and bone in rig_bones(rig)]
+    corners = [tuple(1 if k >> (2 - j) & 1 else -1 for j in range(3)) for k in range(1, 8)]
+    points = [tuple(2 * x - 1 for x in point) for point in sobol(RANGE_POINTS, 3 * len(groups))]
+    points += [corner * len(groups) for corner in corners]
+    return [{muscle: point[3 * g + k] for g, group in enumerate(groups) for k, muscle in enumerate(group)}
+            for point in points]
+
+
+def range_tilts():
+    """Each range-sweep vector's body tilt, in range_vectors' order: a block of the Sobol points per tilt, then
+    the corners cycling through them."""
+    block = RANGE_POINTS // len(TWIST_TILTS)
+    return [TWIST_TILTS[k // block] for k in range(RANGE_POINTS)] + [TWIST_TILTS[k % len(TWIST_TILTS)]
+                                                                      for k in range(7)]
+
+
+def band_vectors(rig, index):
+    """A band sweep's vectors over the rig's mapped spine bones (BAND_RIGS): the scaled Sobol points, then the
+    side bends (BAND_BENDS), each under every tilt."""
+    groups = [[index[muscle] for muscle in group] for bone, group in PROBE_GROUPS
+              if bone in RANGE_BONES and bone in rig_bones(rig)]
+    scales = (1, BAND_LATERAL, BAND_TWIST)
+    points = [tuple((2 * x - 1) * scales[d % 3] for d, x in enumerate(point))
+              for point in sobol(RANGE_POINTS, 3 * len(groups))]
+    points += [(0, sign * level, sign * twist) * len(groups) for level, twist in BAND_BENDS for sign in (1, -1)
+               for _ in TWIST_TILTS]
+    return [{muscle: point[3 * g + k] for g, group in enumerate(groups) for k, muscle in enumerate(group)}
+            for point in points]
+
+
+def band_tilts():
+    """Each band-sweep vector's body tilt, in band_vectors' order."""
+    return range_tilts()[:RANGE_POINTS] + [tilt for _ in BAND_BENDS for _ in (1, -1) for tilt in TWIST_TILTS]
+
+
 def probe_schedule(rig, names, targets, extra=None):
     """[(time, vector)] in schedule order, vectors over the captured HumanTrait muscle names; `extra`
-    names an extra probe case (EXTRA_PROBES) or a twist sweep (TWIST_RIGS) of the rig."""
+    names an extra probe case (EXTRA_PROBES), a twist sweep (TWIST_RIGS), a range sweep (RANGE_RIGS) or a
+    band sweep (BAND_RIGS) of the rig."""
     index = {name: i for i, name in enumerate(names)}
     _, singles, combined = _probe_vectors(rig, index)
     if extra in TWIST_RIGS:
         vectors = [{index[muscle]: value for muscle in TWIST_MUSCLES} for value, _ in twist_plan()]
+    elif extra in RANGE_RIGS:
+        vectors = range_vectors(rig, index)
+    elif extra in BAND_RIGS:
+        vectors = band_vectors(rig, index)
     elif extra is not None:
         vectors = [compose(rig, names, sources) for sources in EXTRA_PROBES[extra]]
+    elif rig == HOLDOUT and not targets:
+        from anim_fixture_rigs import holdout_plan
+
+        vectors = [compose(rig, names, sources) for sources in holdout_plan(rig)]
     else:
         vectors = combined if targets else singles + combined
     return _scheduled(vectors, index, len(names))
@@ -292,18 +417,18 @@ def probe_schedule(rig, names, targets, extra=None):
 
 def schedule_name(name):
     """The `extra` argument of probe_schedule for the body case `name`."""
-    return name if BODY_INFO[name]["variant"] in ("extra", "twist") else None
+    return name if BODY_INFO[name]["variant"] in ("extra", "twist", "range", "band") else None
 
 
 def body_requests(name, count):
     """The (offset, tilt) the recorder adds to the rest body at each of the case's `count` known vectors: F3's
-    alternating targets, a twist sweep's tilts (its spine anchors upright), or none."""
+    alternating targets, a twist, range or band sweep's tilts (its spine anchors upright), or none."""
     info = BODY_INFO[name]
     if info["kind"] == "targets":
         return [TARGETS[i % 2] for i in range(count)]
-    if info["variant"] != "twist":
+    if info["variant"] not in ("twist", "range", "band"):
         return [((0, 0, 0), (0, 0, 0))] * count
-    tilts = [tilt for _, tilt in twist_plan()]
+    tilts = {"twist": lambda: [tilt for _, tilt in twist_plan()], "range": range_tilts, "band": band_tilts}[info["variant"]]()
     first = (len(tilts) + 1) // 2
     upright = (0, 0, 0)
     return [((0, 0, 0), tilt) for tilt in (upright, *tilts[:first], upright, *tilts[first:], upright)]

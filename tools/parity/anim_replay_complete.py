@@ -10,8 +10,8 @@ from uuid import uuid4
 from zlib import crc32
 
 import child
-from anim_fixture_body import (BODY_BUNDLES, BODY_CASES, BODY_INFO, HOLDOUT, LATER_CASES, check_body,
-                               primary_probes)
+from anim_fixture_body import (BAND_CASES, BODY_BUNDLES, BODY_CASES, BODY_INFO, HOLDOUT, HOLDOUT_RIGS, LATER_CASES,
+                               check_body, primary_probes)
 from anim_fixture_coverage import BASIS_CASES, COVERAGE_CASES, check_coverage, required_coverage
 from anim_fixture_contract import (ASSETS, MOTION, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
                                    check_built_clip, check_built_static, check_discovery, check_evidence,
@@ -600,11 +600,25 @@ def recorded_paths(folder, replay, manifest, run):
     for generation in LATER_CASES:
         older |= set() if statuses.keys() & generation else generation
     errors.extend(f"missing run.json case: {name}" for name in sorted(expected - statuses.keys() - older))
-    # A later case is required once its rig's own probe case records.
+    # A later case is required once its rig's own probe case records; a later rig's own probe case is required
+    # whenever the run has its generation, so an Avatar Unity refuses is an error, not lost coverage.
     errors.extend(f"{name}: required once {primary} records, but {statuses[name]}"
                   for name in sorted(set().union(*LATER_CASES))
                   for primary in [primary_probes(BODY_INFO[name]["rig"])]
-                  if statuses.get(primary) == "recorded" and statuses.get(name, "recorded") != "recorded")
+                  if primary != name and statuses.get(primary) == "recorded"
+                  and statuses.get(name, "recorded") != "recorded")
+    for generation in LATER_CASES:
+        rigs = sorted(name for name in generation if name == primary_probes(BODY_INFO[name]["rig"]))
+        missing = [f"{name} ({statuses[name]})" for name in rigs
+                   if statuses.keys() & generation and statuses.get(name, "recorded") != "recorded"]
+        if missing:
+            errors.append("training rigs not recorded: " + ", ".join(missing))
+    # The band sweeps validate B2's lateral domain: once the run has them, each is required whatever its rig's
+    # own probe case did.
+    missing = [f"{name} ({statuses[name]})" for name in sorted(BAND_CASES)
+               if statuses.keys() & BAND_CASES and statuses.get(name, "recorded") != "recorded"]
+    if missing:
+        errors.append("band sweeps not recorded: " + ", ".join(missing))
     # Coverage confirmed on this Editor version is no longer optional.
     errors.extend(f"{name}: required for Unity {run['editor_version']} but {statuses[name]}"
                   for name in sorted(required_coverage(run["editor_version"]))
@@ -656,37 +670,47 @@ def check_static(bundle_dir, views, unityrs, inspect_dir, replay, run):
 
 
 def complete_folder(folder, unityrs, inspect_dir, replay, unseal=None):
-    """Validate every result before writing any completed recordings; returns (count, uncovered, sealed).
+    """Validate every result before writing any completed recordings; returns (count, uncovered, sealed), or
+    with `unseal` (count, uncovered, [(hold-out case, sha256 of the bytes read, its validated document)]).
 
     The hold-out rig's body cases (by the builder's case table) stay sealed: neither their recordings nor
-    their bundles are opened, and they are listed as sealed, until `unseal` names a freeze artifact that
-    anim_body_freeze.verify_unseal accepts for this run."""
+    their bundles are opened, and they are listed as sealed. Only E3b unseals them: `unseal` is its freeze's
+    sha256, and before any hold-out file opens anim_body_seal.require_claim refuses unless E3b claimed that
+    freeze's one shot; the validated hold-out recordings are returned once every check has passed."""
     manifest, run = read_manifest(folder, replay)
     if run.get("variant", "builtin") != "builtin":
         from anim_fixture_variants import complete_variant
 
         return complete_variant(folder, manifest, run, unityrs, inspect_dir, replay)
     bundle_dir = folder / "bundles"
-    results, views, recordings = [], {}, {}
+    results, views, recordings, unsealed = [], {}, {}, []
     paths, recorded_mixed, run, uncovered = recorded_paths(folder, replay, manifest, run)
     holdout = {folder / "replays" / "body" / f"{name}.pending.json": name for name, info in BODY_INFO.items()
-               if info["rig"] == HOLDOUT}
+               if info["rig"] in HOLDOUT_RIGS}
     sealed = sorted(holdout[path] for path in paths if path in holdout)
+    replay.require(unseal is None or isinstance(unseal, str),
+                   "the hold-out unseals only through E3b's claim (anim_body_freeze.py e3b)")
     if sealed and unseal is not None:
-        from anim_body_freeze import verify_unseal
+        from anim_body_seal import require_claim
 
-        verify_unseal(folder, unseal)
+        require_claim(unseal)
+        # Only the current hold-out rig's cases open; a spent one's stay sealed for good.
+        paths = [path for path in paths if path not in holdout or BODY_INFO[holdout[path]]["rig"] == HOLDOUT]
     elif sealed:
         paths = [path for path in paths if path not in holdout]
     check_static(bundle_dir, views, unityrs, inspect_dir, replay, run)
     fixtures = REPLAY_CASES | VECTOR_CASES | COVERAGE_CASES | BODY_CASES
     for path in paths:
         try:
-            document = replay.read_json(path.read_text(encoding="utf-8"))
+            raw = path.read_bytes()
+            document = replay.read_json(raw.decode("utf-8"))
             name = path.name.removesuffix(".pending.json")
             result = complete_recording(name, fixtures[name], document, bundle_dir, views, unityrs, inspect_dir, replay, run)
             recordings[name] = result
             output = path.with_name(name + ".json")
+            if path in holdout:
+                replay.require(pending_pose(name, result), f"{name}: a hold-out case keeps its pending recording")
+                unsealed.append((name, hashlib.sha256(raw).hexdigest(), document))
             if pending_pose(name, result):
                 if output.exists():
                     existing = replay.read_json(output.read_text(encoding="utf-8"))
@@ -724,4 +748,4 @@ def complete_folder(folder, unityrs, inspect_dir, replay, unseal=None):
                                f"{output.name} already exists with different content")
         finally:
             staged.unlink(missing_ok=True)
-    return len(results), uncovered, [] if unseal is not None else sealed
+    return len(results), uncovered, unsealed if unseal is not None else sealed
