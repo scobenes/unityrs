@@ -148,6 +148,9 @@ fn the_slot_table_classifies_every_dof_and_refuses_generic_playback() {
 #[path = "humanoid/refusals.rs"]
 mod refusals;
 
+#[path = "humanoid/body.rs"]
+mod body;
+
 fn muscle_field(clip: &mut Object, name: &str, value: V) {
     let V::Struct(_, root) = &mut clip.value else {
         panic!("clip")

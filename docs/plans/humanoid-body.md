@@ -430,6 +430,18 @@ bone, a noncommuting pose, and each projection cell of 2.4.
 | E4 | Root projection (2.4) from the built clip's runtime body and motion slots and serialized `m_StartX`, against the root or residual body pose that F4 records, independently of the hips solve | Within bound, with each slot's f32 sampling error, ε once, and an unbounded yaw refused, per combination supported. A start variant without its twin fails. |
 | E5 | Rust same-bundle L11: Rust reads the bundle, samples the clip and writes the full pose, compared with the same replays. | B5's release gate |
 
+**E0 at runtime.** B3's Rust reader checks the parts of E0 that need no
+recording, and refuses an Avatar that fails them: mapped slots resolving
+to distinct `m_TOS` paths, one finite, non-negative mass per slot, zero on
+an absent slot, the masses summing to one within E0b's bound, the topology
+scope of 2.1, and `m_RootX.t.y` against `m_Scale` (E0c). A swap of two
+valid slots (E0a) and each slot's mass against the fold of the Editor's
+defaults (E0b) need the recorder's capture and `HumanTrait` table. They
+stay B2's checker's verification of this plan's reading of the Avatar on
+the recordings, not runtime refusals: the model takes the serialized
+masses as they are (decision 1), and the crate holds no default mass
+table.
+
 The qualification tool's rest-track bound is half an f32 ulp of the rest
 value. It is meant for unanimated tracks and is too tight here. The derived
 tolerances of 2.5 replace it on the body path.
@@ -494,7 +506,7 @@ coefficient is shipped from a fit.
 | B0 | Plan | This document, the `anim.md` 2.6 link, and the "Humanoid local poses" tier X row's cells | docs | — |
 | B1 | Recorder and fixtures | F1–F8 in the builder; read-back, root, mass and setting rows in the recorder; contract and `complete` checks; owner workflow notes; 2.5's tolerance derivation. **Adequacy checkpoint:** after the first owner run, a script computes 2.5's rank, conditioning and `u_s ≤ E_unity,s` with B1's own tolerances, and the topology coverage. If any is short, B1 extends the fixtures before B2 starts. The first runs left a few tall-rig samples short of `u_s ≤ E_unity,s`. `body-probes-tall-2` adds the extra tall-rig poses, and `--design-only` predicts their adequacy conservatively from the recorded geometry before the rerun. Under B2's frozen scope (fifteen training rigs, 29 coefficients), the conservative worst margin with the predicted `body-probes-tall-2` stays above 1 in both versions, and the checkpoint is adequate. F8's range sweeps are fitted with the probes: `--design-only` predicts them from each rig's single-muscle probes, and with them (eighteen training rigs, the three UpperChest-and-Toes rigs not yet recorded) the conservative worst margin over every planned and recorded sample stays above 1 in both versions. The checkpoint never reads the hold-out rig; E3b does, after the freeze. | 0.7–1.0k | B0 |
 | B2 | Reference and body checker | 2.1–2.5 in the f64 reference with frozen bounds and the analytic cases. A checker runs E0–E4. **Input:** a completed run in both 2022.3 and 6000, read with Unity 6 reader support on main. **Order:** first E3a on the training rigs, then the freeze commit (model choices, coefficients, scope with the lateral limit E2 and E3a set, bounds, E4's passing configurations), then E3b on the hold-out rig against that commit, once. | 0.6–0.9k | B1 recordings |
-| B3 | Rust body model | Read and validate `m_HumanBoneMass`; E0 checks; the centre of mass, frame and closed-form hips solve; the free-combination refusal; synthetic tests and fuzz targets for the new reads | 0.5–0.7k | B2 (E3b passing) and E2 passing |
+| B3 | Rust body model | Read and validate `m_HumanBoneMass`; E0's runtime checks (3.2, E0 at runtime); the centre of mass, frame and closed-form hips solve; the free-combination refusal; synthetic tests and fuzz targets for the new reads | 0.5–0.7k | B2 (E3b passing) and E2 passing |
 | B4 | Root projection and frames | Target body pose per verified 2.4 combination, conversion from the Animator to the hips parent with scale, narrowed refusals | 0.4–0.6k | B3, F4, F5 |
 | B5 | Integration and L11 | Lift the body-bearing refusal behind the release gate below, add collector integration, run the gated same-bundle replay (E5), and promote the PARITY row | 0.4–0.6k | B4 |
 
