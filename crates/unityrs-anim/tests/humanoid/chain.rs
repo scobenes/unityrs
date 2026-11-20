@@ -98,11 +98,11 @@ fn local_trs(objects: &mut [Object], transform: i64, field: &str, value: &[f32])
     set(&mut node.value, field, xyz(kind, value));
 }
 
-fn scale(objects: &mut [Object], transform: i64, value: [f32; 3]) {
+pub(super) fn scale(objects: &mut [Object], transform: i64, value: [f32; 3]) {
     local_trs(objects, transform, "m_LocalScale", &value);
 }
 
-fn offset(objects: &mut [Object]) {
+pub(super) fn offset(objects: &mut [Object]) {
     local_trs(objects, 101, "m_LocalPosition", &OFFSET_PLACEMENT.0);
     local_trs(objects, 101, "m_LocalRotation", &OFFSET_PLACEMENT.1);
 }
@@ -116,7 +116,7 @@ pub(super) fn rig(armature: Vec<([f32; 3], [f32; 4], f32)>) -> Rig {
 }
 
 /// The testkit rig with F5's `feature` at its fixture value.
-fn featured(
+pub(super) fn featured(
     feature: ChainFeature,
     edit: impl FnOnce(&mut Vec<Object>),
 ) -> Result<AnimatorChain, AnimError> {

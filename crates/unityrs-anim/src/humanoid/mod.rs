@@ -24,6 +24,7 @@ pub mod body_model;
 pub mod body_solve;
 pub mod chain;
 mod clip;
+pub mod gate;
 pub mod root;
 mod root_sample;
 

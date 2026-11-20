@@ -158,6 +158,8 @@ mod body_solve;
 mod chain;
 #[path = "humanoid/chain_graph.rs"]
 mod chain_graph;
+#[path = "humanoid/gate.rs"]
+mod gate;
 #[path = "humanoid/root.rs"]
 mod root;
 #[path = "humanoid/root_drift.rs"]

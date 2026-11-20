@@ -27,8 +27,13 @@ Python implementation, and L11 must pass before any tuning.
 
 **PARITY row.** This slice owns the tier X, L11 row "Humanoid local poses"
 in `PARITY.md` section 24.1, with status `planned (Humanoid body motion)`.
-B0 names it. B5 promotes it to verified for the configurations its predicate
-admits, and nothing else.
+B0 names it. B5b promotes it to verified for the configurations its
+predicate admits, and nothing else. The row B5b writes, drafted here and
+not yet in `PARITY.md` (the status stays planned until E5 passes):
+
+| Area | Behaviour | Tier | Level | Evidence | Test | Status |
+|---|---|---|---|---|---|---|
+| Humanoid local poses | Humanoid playback at L11 with the hips placed from the body pose: the muscle pose of every bone (B5a), the centre of mass from the Avatar's `m_HumanBoneMass`, the body frame, the closed-form hips solve and root projection, for muscle-only clips and clips with `RootT`/`RootQ` body curves, in exactly the configuration classes of the release gate's verified table (`humanoid/gate.rs`), each recorded by E5 and passing in both Editor versions. Every other configuration keeps its typed refusal; the humanoid typed refusals row above holds what P2b verified | X | L11 | Same-built-bundle Editor playback (E5, round 11's clip and chain rigs) and known-vector `SetHumanPose` recordings (B5a's muscle pose, all 95 muscles) on the plan's code-built rigs, with derived f32 tolerances | E5's same-bundle replay over the owner's round 11 runs, and B5a's muscle-pose comparison | verified (Humanoid body motion), for the verified table's classes |
 
 ## 0. Decisions
 
@@ -508,7 +513,8 @@ coefficient is shipped from a fit.
 | B2 | Reference and body checker | 2.1–2.5 in the f64 reference with frozen bounds and the analytic cases. A checker runs E0–E4. **Input:** a completed run in both 2022.3 and 6000, read with Unity 6 reader support on main. **Order:** first E3a on the training rigs, then the freeze commit (model choices, coefficients, scope with the lateral limit E2 and E3a set, bounds, E4's passing configurations), then E3b on the hold-out rig against that commit, once. | 0.6–0.9k | B1 recordings |
 | B3 | Rust body model | Read and validate `m_HumanBoneMass`; E0's runtime checks (3.2, E0 at runtime); the centre of mass, frame and closed-form hips solve; the free-combination refusal; synthetic tests and fuzz targets for the new reads | 0.5–0.7k | B2 (E3b passing) and E2 passing |
 | B4 | Root projection and frames | Target body pose per verified 2.4 combination, conversion from the Animator to the hips parent with scale, narrowed refusals | 0.4–0.6k | B3, F4, F5 |
-| B5 | Integration and L11 | Lift the body-bearing refusal behind the release gate below, add collector integration, run the gated same-bundle replay (E5), and promote the PARITY row. **Checklist:** before the refusal lifts, E5 covers every class in "B4's admitted scope" (b), exactly as (b) defines it | 0.4–0.6k | B4 |
+| B5a | Muscle pose in Rust | Port `anim_humanoid_qualify.muscle_rotation` to Rust: each animated muscle's angle from its value and its limits, then the bone's local rotation from its pre- and post-rotations and rest pose, for every muscle a clip animates. **(a) Verified today:** only the Spine, against P2b's known vectors on the compact and tall rigs in both Editor versions (residual at most about 1.6e-5 degrees). Every other bone's equation is a hypothesis: E3a validated the body model from the recorded node transforms, never through this equation, and Rust plays no muscle (every humanoid clip ends in `unsupported_humanoid_playback`). **(b) Acceptance:** bit-exact agreement with the Python reference on known vectors (the same f32 inputs, the same f32 rotation), and agreement with Unity's recorded local rotations within bounds derived as section 2.5 derives E3a's (Unity's own f32 error, measured, plus the evaluation error), on the training recordings in both versions: rounds 5 to 10's probes, extra probes and sweeps, and round 11's muscle sweeps. The hold-out stays sealed. A muscle without a passing recording keeps its refusal. **(c) Recordings:** the body probes cover 45 of HumanTrait's 95 muscles. Round 11 adds known-vector sweeps of the other 50: the ten limb twist muscles on the compact and tall rigs, and the forty finger muscles on a compact rig with mapped fingers, each alone at both signs out to its limits, then jointly | 0.3–0.5k | B4, round 11 recordings |
+| B5b | Integration and L11 | Collector integration, the gated same-bundle replay (E5), the release gate's verified table (`humanoid/gate.rs`, empty until E5) filled from E5, the body-bearing refusal lifted for the table's classes alone, and the PARITY row promoted. **Checklist:** before the refusal lifts, E5 covers every class in "B4's admitted scope" (b), exactly as (b) defines it. The table admits only recorded classes: a combination B4's predicate admits but E5 did not record (a scaled Animator on `no-toes`, say) keeps its refusal | 0.3–0.5k | B5a |
 
 **B4's admitted scope.** B4 admits only what freeze v8's evidence
 validated, as checkable settings, ranges and structure, never a rig's
@@ -536,17 +542,29 @@ What a recording verified and what B4 admits by argument:
   identity and at the offset placement; and F5's four rigs
   (`scaled-animator`, `armature`, `hips-scale`, `large`), each with the
   all-Original motion variant at the identity.
-- **(b) Admitted by argument:** the plain chain at any human scale in the
-  range but the compact rig's, with any variant at either placement (the
-  `large` rig's one cell in (a) aside), and each F5 feature at a human
-  scale in the range other than its rig's. The argument is h-linearity: for fixed
+- **(b) Admitted by argument:** any admitted rig other than the compact
+  rig: every training topology B3's topology scope admits, each as the
+  plain chain, and the plain chain at any human scale in the range,
+  each with any variant at either placement (the `large` rig's one cell
+  in (a) aside); and each F5 feature at a human scale in the range other
+  than its rig's. The eyes, jaw, eyes-jaw and noncoplanar rigs share the
+  compact rig's human scale but are other rigs, so they are in (b). The
+  argument is h-linearity and E3a's per-topology solve: for fixed
   serialized inputs, `m_Scale` only multiplies the residual translation
-  after projection, the cell choice and the rotation do not depend on it,
-  and the projection's position error scales with it.
+  after projection, the cell choice and the rotation do not depend on
+  it, and the projection's position error scales with it; E3a validated
+  the solve on every training topology.
 
-Unity's read-back for (b) is not verified. B5's E5 same-bundle replay
-must cover every class in (b) before the global refusal lifts; B5's
-predicate and E5 are the release gate.
+Unity's read-back for (b) is not verified. B5b's E5 same-bundle replay
+must cover every class in (b) before the global refusal lifts; B5b's
+predicate and E5 are the release gate. Round 11 records (b)'s classes:
+the eleven variants at both placements on the large, tall and `small`
+(0.82) rigs and on every topology B3 admits but the compact one, and each
+F5 feature at a second human scale. The verified table admits only the
+classes E5 recorded and passed, each a topology, a chain feature, a
+human-scale interval its recordings span, a variant and a placement, so
+the predicate's wider runtime scope (a scaled Animator on `no-toes`, say)
+stays refused.
 
 **B5's release gate.**
 
