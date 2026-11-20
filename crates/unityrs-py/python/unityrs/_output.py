@@ -117,3 +117,14 @@ class OutputDirectory:
         finally:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(temporary, dir_fd=self.fd)
+
+
+def save_text(value, guard):
+    """A name or path as a save writes it: UTF-8, its size charged first."""
+    if value is None:
+        return None
+    if isinstance(value, (str, os.PathLike)):
+        value = exact_string(value)
+    size = str.__len__(value) if isinstance(value, str) else len(value)
+    guard.step(0, size * 4 + 64, 0)
+    return value.encode("utf-8", "surrogateescape")

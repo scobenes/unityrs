@@ -377,7 +377,11 @@ impl Cur<'_> {
         usize::try_from(n).ok()
     }
 
-    #[inline]
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "once per primitive value: outlined, it costs a call per value (callgrind)"
+    )]
     fn prim(&mut self, kind: Kind) -> Option<Scalar> {
         let big = self.big;
         let int = Scalar::Int;
