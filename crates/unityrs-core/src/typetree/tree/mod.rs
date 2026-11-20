@@ -31,7 +31,7 @@
 use std::sync::Arc;
 
 use crate::error::{LimitError, LimitKind};
-use crate::limits::{Charge, ChargeError, Limits, MeteredVec, heap_cost};
+use crate::limits::{Charge, ChargeError, Limits, Meter, MeteredVec, heap_cost};
 use crate::typetree::{NodeId, NodeList, TreeError};
 
 pub use names::NameTable;
@@ -568,21 +568,32 @@ fn min_size_of(list: &NodeList, info: &MeteredVec<NodeInfo>, node: NodeId) -> u3
 
 #[cfg(test)]
 std::thread_local! {
-    /// Children [`leaves_of`] looked at on this thread (the tests: a tree's
-    /// children are scanned once, at its compile, whatever reads it).
+    /// Children [`leaves`] looked at on this thread (the tests: a tree's
+    /// children are looked at once, by the compile that keeps them).
     pub(crate) static LEAF_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Node facts read through [`Tree::info`] on this thread.
+    pub(crate) static INFO_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// [`NodeInfo::leaves`]: every child read whole, the shapes known.
-fn leaves_of(list: &NodeList, info: &MeteredVec<NodeInfo>, node: NodeId) -> bool {
-    list.children(node).iter().all(|c| {
-        #[cfg(test)]
-        LEAF_SCANS.with(|s| s.set(s.get().saturating_add(1)));
-        matches!(
-            info_at(info, *c).shape,
-            Shape::Prim | Shape::Str | Shape::Bytes
-        )
-    })
+/// [`NodeInfo::leaves`] for every node, the shapes known: each edge looked
+/// at once, its child's shape, all of them counted as the list's work
+/// before any is ([`TreeError::Limit`]).
+fn leaves(list: &NodeList, info: &mut [NodeInfo], meter: &Meter) -> Result<(), TreeError> {
+    meter
+        .count_work(as_u64(list.len().saturating_sub(1)))
+        .map_err(TreeError::Limit)?;
+    for p in 0..info.len() {
+        let all = list.children(id(p)).iter().all(|c| {
+            #[cfg(test)]
+            LEAF_SCANS.with(|s| s.set(s.get().saturating_add(1)));
+            info.get(c.index())
+                .is_some_and(|ci| matches!(ci.shape, Shape::Prim | Shape::Str | Shape::Bytes))
+        });
+        if let Some(pi) = info.get_mut(p) {
+            pi.leaves = all;
+        }
+    }
+    Ok(())
 }
 
 impl Tree {
@@ -685,20 +696,20 @@ impl Tree {
             }
         }
 
-        // Minimum sizes, children first (reverse pre-order), and whether
-        // a node's children are all read whole.
+        // Minimum sizes, children first (reverse pre-order).
         for p in (0..n).rev() {
             let min = min_size_of(&list, &info, id(p));
-            let leaves = leaves_of(&list, &info, id(p));
             if let Some(pi) = info.as_mut_slice().get_mut(p) {
                 pi.min_size = min;
-                pi.leaves = leaves;
             }
         }
 
         let py = py_kinds(&list, nul_types, &mut charge)?;
-        let (info, c) = info.into_boxed_slice()?;
+        let (mut info, c) = info.into_boxed_slice()?;
         charge.absorb(c);
+        // Last, as nothing after it can fail: a compile that looks at the
+        // children keeps what it found, and one refused has looked at none.
+        leaves(&list, &mut info, &meter)?;
         Ok(Arc::new(Self {
             list,
             info,
@@ -739,6 +750,8 @@ impl Tree {
     /// A node's precomputed facts.
     #[must_use]
     pub fn info(&self, id: NodeId) -> Option<&NodeInfo> {
+        #[cfg(test)]
+        INFO_READS.with(|s| s.set(s.get().saturating_add(1)));
         self.info.get(id.index())
     }
 

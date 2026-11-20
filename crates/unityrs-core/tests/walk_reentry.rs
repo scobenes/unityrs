@@ -208,14 +208,75 @@ fn gives(r: &Result<Parsed, ReadError>, want: &Json) -> Result<(), String> {
     }
 }
 
+/// Levels of `R` a ref case's follow-up re-enters ([`deep`]).
+const DEEP: usize = 8;
+
+/// An aligned string: its length, its bytes, zeros to a multiple of 4.
+fn string(out: &mut Vec<u8>, s: &str) {
+    out.extend(i32::try_from(s.len()).unwrap().to_le_bytes());
+    out.extend(s.as_bytes());
+    out.resize(out.len().next_multiple_of(4), 0);
+}
+
+/// Bytes `c`'s tree reads whole, as deep as its own read went: for a ref
+/// case [`DEEP`] references to `R`, an empty class's (its data skipped),
+/// then each level's `int`s from the innermost out (`walk_reentry.py`'s
+/// `ok_case`); for a nested case a count of 1 at each level but the
+/// innermost, which holds three `int`s.
+fn deep(c: &Json) -> Bytes {
+    let mut out = Vec::new();
+    if c["recipe"] == "ref" {
+        for rid in 1..=DEEP + 1 {
+            out.extend(i64::try_from(rid).unwrap().to_le_bytes());
+            string(&mut out, if rid > DEEP { "" } else { "R" });
+            string(&mut out, "N");
+            string(&mut out, "A");
+        }
+        for level in (0..DEEP).rev() {
+            for i in 0..n(c, "ints") {
+                out.extend(i32::try_from(1000 * level + i).unwrap().to_le_bytes());
+            }
+        }
+    } else {
+        for _ in 1..n(c, "levels") {
+            out.extend(1_i32.to_le_bytes());
+        }
+        for v in [3_i32, 7, 8, 9] {
+            out.extend(v.to_le_bytes());
+        }
+    }
+    Bytes::from(out)
+}
+
+/// A read of `data` through `case` on `meter` after its refused read
+/// succeeds with the value, the bytes and the charge a read of `fresh` (a
+/// case built anew: its own tree and ref types) has on a fresh meter, and
+/// returns the charge when the value drops. The value is charged.
+fn again(case: &Case, fresh: &Case, data: &Bytes, reader: &str, meter: &Arc<Meter>, what: &str) {
+    let base = Meter::unlimited();
+    let want = read_data(fresh, data, reader, &base).unwrap_or_else(|e| panic!("{what}: {e}"));
+    let before = meter.used();
+    let got = read_data(case, data, reader, meter)
+        .unwrap_or_else(|e| panic!("{what}, after the error: {e}"));
+    assert_eq!(got.value(), want.value(), "{what}");
+    assert_eq!(got.bytes_read, want.bytes_read, "{what}");
+    assert_eq!(meter.used() - before, base.used(), "{what}: the charge");
+    assert!(base.used() > 0, "{what}: the value is charged");
+    drop(got);
+    assert_eq!(meter.used(), before, "{what}: the charge is returned");
+}
+
 /// Each read of `recipe`'s cases gives UnityPy's outcome on an unlimited
-/// meter and on one of `ceiling(case)` bytes, and returns every charge;
-/// then a read of zeros through the same tree on the same meter (every
-/// count and length 0) succeeds with the value and the charge it has on a
-/// fresh meter, and returns its charge when dropped.
+/// meter and on one of `ceiling(case)` bytes, and returns every charge.
+/// Then, through the same tree and ref types, reads that succeed give
+/// what a case built anew gives on a fresh meter ([`again`]): zeros (every
+/// count and length 0) on the same meter, and [`deep`]'s bytes, as deep as
+/// the refused read went, on the same meter for a nested case (a ref
+/// case's `int`s are far past its ceiling, so on a meter of its own).
 fn under(recipe: &str, ceiling: impl Fn(&Json) -> u64) {
     for c in &cases(recipe) {
         let case = case(c);
+        let fresh = self::case(c);
         let limit = ceiling(c);
         for (reader, want) in &case.want {
             let what = format!("{} [{reader}]", case.name);
@@ -227,17 +288,27 @@ fn under(recipe: &str, ceiling: impl Fn(&Json) -> u64) {
                 .unwrap_or_else(|e| panic!("{what} under {limit} bytes: {e}, UnityPy gave {want}"));
             assert_eq!(meter.used(), 0, "{what}: the charges are returned");
             let zeros = Bytes::from(vec![0u8; 1 << 12]);
-            let fresh = Meter::unlimited();
-            let want = read_data(&case, &zeros, reader, &fresh)
-                .unwrap_or_else(|e| panic!("{what}, zeros: {e}"));
-            let got = read_data(&case, &zeros, reader, &meter)
-                .unwrap_or_else(|e| panic!("{what}, zeros after the error: {e}"));
-            assert_eq!(got.value(), want.value(), "{what}, zeros");
-            assert_eq!(got.bytes_read, want.bytes_read, "{what}, zeros");
-            assert_eq!(meter.used(), fresh.used(), "{what}, zeros: the charge");
-            assert!(meter.used() > 0, "{what}, zeros: the value is charged");
-            drop(got);
-            assert_eq!(meter.used(), 0, "{what}, zeros: the charge is returned");
+            again(
+                &case,
+                &fresh,
+                &zeros,
+                reader,
+                &meter,
+                &format!("{what}, zeros"),
+            );
+            let on = if recipe == "ref" {
+                Meter::unlimited()
+            } else {
+                meter.clone()
+            };
+            again(
+                &case,
+                &fresh,
+                &deep(c),
+                reader,
+                &on,
+                &format!("{what}, deep"),
+            );
         }
     }
 }
