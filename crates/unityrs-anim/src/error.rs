@@ -189,6 +189,12 @@ pub enum BodyModel {
     DetachedBone,
     /// Two `m_Skeleton` nodes resolve to one rig Transform.
     SharedTransform,
+    /// A root rotation E4 cannot normalize: its norm is not above four
+    /// times its sample's error.
+    DegenerateRootRotation,
+    /// A root yaw whose error E4 leaves unbounded: a half turn about a
+    /// horizontal axis.
+    UndefinedYaw,
     /// A rig Transform's parent is not its `m_Skeleton` parent's.
     MisparentedTransform,
     /// A body position, scale, weight, frame or result is not finite.
@@ -217,6 +223,8 @@ impl BodyModel {
             Self::MissingRestScale => "missing_rest_scale",
             Self::DetachedBone => "detached_bone",
             Self::SharedTransform => "shared_transform",
+            Self::DegenerateRootRotation => "degenerate_root_rotation",
+            Self::UndefinedYaw => "undefined_yaw",
             Self::MisparentedTransform => "misparented_transform",
             Self::NonFiniteBody => "non_finite_body",
             Self::DegenerateFrame => "degenerate_frame",
