@@ -27,17 +27,23 @@
 //!   on the recorder's table: it verifies the plan's understanding of the
 //!   field, is no runtime refusal, and keeps Unity's default table out of
 //!   this crate.
-//! - **Scope.** An Avatar with Chest or Neck absent, or exactly one
-//!   Shoulder mapped, refuses, and so does any pattern of absent body slots
-//!   no in-scope training rig recorded (`RECORDED_ABSENT`, the reference's
-//!   `anim_body_model.RECORDED_ABSENT`). The check reads `m_HumanBoneIndex`
-//!   alone, before any forward kinematics.
+//! - **Scope.** An Avatar giving a zero-mass leaf (`LEAVES`: the Eyes and
+//!   the Jaw) any mass refuses, and so does one with Chest or Neck absent,
+//!   or exactly one Shoulder mapped, or any pattern of absent body slots
+//!   but the leaves that no in-scope training rig recorded
+//!   (`RECORDED_ABSENT`, the reference's `anim_body_model.RECORDED_ABSENT`
+//!   and freeze v8's topology scope). Every recorded Avatar gives the
+//!   leaves zero mass, so absent they fold nothing into the Head and mapped
+//!   their edges' fitted fractions vanish (plan 2.5): they take no part in
+//!   the pattern only at zero mass. The check reads `m_HumanBoneIndex` and
+//!   the leaves' masses, before any forward kinematics.
 //! - **E0c**, its model-free part: `m_Scale` is positive and is
 //!   `m_RootX.t.y` within two f32 roundings.
 //!
 //! The centre of mass, the body frame and the closed-form hips solve, with
 //! the free-combination and shoulder-hip twist refusals, come in PR B3b on
-//! these inputs, once the model's lateral rule and scope are frozen.
+//! these inputs, with the coefficients, limits and scope of freeze v8
+//! (`tools/parity/anim_body_freeze_v8.json`), which E3b validated.
 use super::avatar::{Avatar, BODY_BONES, Human, Xform};
 use crate::{AnimError, BodyAvatarFault, BodyModel};
 use unityrs_core::{RawStr, limits::Meter};
@@ -101,18 +107,21 @@ const fn mask(mut slots: &[usize]) -> u32 {
     out
 }
 
-/// The absent body slots of each in-scope training rig, as slot bit masks:
-/// the only admitted patterns.
+/// The zero-mass leaves, as a slot bit mask: the Eyes and the Jaw.
+pub const LEAVES: u32 = mask(&[LEFT_EYE, RIGHT_EYE, JAW]);
+
+/// The absent body slots but the leaves of each in-scope training rig, as
+/// slot bit masks: the only admitted patterns.
 pub const RECORDED_ABSENT: [u32; 9] = [
     mask(&[]),
-    mask(&[JAW]),
-    mask(&[LEFT_EYE, RIGHT_EYE]),
-    mask(&[JAW, LEFT_EYE, RIGHT_EYE]),
-    mask(&[JAW, LEFT_EYE, RIGHT_EYE, UPPER_CHEST]),
-    mask(&[JAW, LEFT_EYE, RIGHT_EYE, LEFT_TOES]),
-    mask(&[JAW, LEFT_EYE, RIGHT_EYE, RIGHT_TOES]),
-    mask(&[JAW, LEFT_EYE, RIGHT_EYE, LEFT_TOES, RIGHT_TOES]),
-    mask(&[JAW, LEFT_EYE, RIGHT_EYE, LEFT_SHOULDER, RIGHT_SHOULDER]),
+    mask(&[UPPER_CHEST]),
+    mask(&[LEFT_TOES]),
+    mask(&[RIGHT_TOES]),
+    mask(&[LEFT_TOES, RIGHT_TOES]),
+    mask(&[LEFT_SHOULDER, RIGHT_SHOULDER]),
+    mask(&[UPPER_CHEST, LEFT_TOES, RIGHT_TOES]),
+    mask(&[UPPER_CHEST, LEFT_TOES]),
+    mask(&[UPPER_CHEST, RIGHT_TOES]),
 ];
 
 const U32: f64 = 1. / 16_777_216.;
@@ -131,9 +140,14 @@ pub fn mass_sum_bound(sum: f64) -> f64 {
 }
 
 /// The topology refusal for an Avatar's mapped body slots, from
-/// `m_HumanBoneIndex` alone: Chest, then Neck, then one Shoulder, then the
-/// recorded patterns, as the reference's `topology_scope` orders them.
-pub fn topology_scope(human: &Human, meter: &Meter) -> Result<(), AnimError> {
+/// `m_HumanBoneIndex` and the masses: a leaf's mass, then Chest, then Neck,
+/// then one Shoulder, then the recorded patterns, as the reference's
+/// `topology_scope` orders them.
+pub fn topology_scope(
+    human: &Human,
+    masses: &[f32; BODY_BONES],
+    meter: &Meter,
+) -> Result<(), AnimError> {
     meter.count_decode(BODY_BONES as u64)?;
     let mut absent = 0_u32;
     for slot in 0..BODY_BONES {
@@ -147,13 +161,19 @@ pub fn topology_scope(human: &Human, meter: &Meter) -> Result<(), AnimError> {
         }
     }
     let has = |slot: usize| absent & (1 << slot) == 0;
-    let cause = if !has(CHEST) {
+    let heavy = masses
+        .iter()
+        .enumerate()
+        .any(|(slot, &mass)| LEAVES & (1 << slot) != 0 && mass != 0.);
+    let cause = if heavy {
+        BodyModel::LeafMass
+    } else if !has(CHEST) {
         BodyModel::ChestAbsent
     } else if !has(NECK) {
         BodyModel::NeckAbsent
     } else if has(LEFT_SHOULDER) != has(RIGHT_SHOULDER) {
         BodyModel::OneShoulder
-    } else if !RECORDED_ABSENT.contains(&absent) {
+    } else if !RECORDED_ABSENT.contains(&(absent & !LEAVES)) {
         BodyModel::UnrecordedTopology
     } else {
         return Ok(());
@@ -273,7 +293,7 @@ pub fn body_avatar<'a>(avatar: &'a Avatar, meter: &Meter) -> Result<BodyAvatar<'
     if !(off.is_finite() && off <= mass_sum_bound(sum)) {
         return fault(BodyAvatarFault::MassSum);
     }
-    topology_scope(human, meter)?;
+    topology_scope(human, &masses, meter)?;
     // E0c without the model: m_Scale against the rest body height. The
     // reader holds both finite; a caller's edit may not, so NaN refuses.
     let scale = f64::from(human.scale);

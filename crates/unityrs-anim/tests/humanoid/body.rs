@@ -1,12 +1,13 @@
 //! The body model's Avatar inputs on synthetic rigs: the reads round-trip,
 //! each E0 fault and scope refusal fires alone, and the recorded topology
-//! patterns agree with the f64 reference's.
+//! patterns agree with the f64 reference's and with freeze v8's scope.
 use super::file;
 use std::collections::BTreeSet;
 use unityrs_anim::{
     AnimError, BodyAvatarFault, BodyModel,
     humanoid::{
-        Avatar, BODY_SLOTS, RECORDED_ABSENT, body_avatar, mass_sum_bound, read_avatar, slot_bone,
+        Avatar, BODY_SLOTS, LEAVES, RECORDED_ABSENT, body_avatar, mass_sum_bound, read_avatar,
+        slot_bone,
     },
 };
 use unityrs_core::limits::Meter;
@@ -90,12 +91,14 @@ fn verdict(rig: &Rig) -> Result<(), String> {
     verdict_with(rig, &[])
 }
 
-/// Dyadic masses summing to one exactly: 1/64 per slot but Hips, 3/128 on
-/// the left side's, and the rest (71/128) on Hips.
+/// Dyadic masses summing to one exactly: 1/64 per slot but Hips and the
+/// zero-mass leaves, 3/128 on the left side's, and the rest (77/128) on
+/// Hips.
 fn masses() -> Vec<f32> {
     let mut out: Vec<f32> = (0..25)
         .map(|slot| match slot {
             0 => 0.,
+            s if LEAVES & (1 << s) != 0 => 0.,
             s if BODY_SLOTS[s].starts_with("Left") => 3. / 128.,
             _ => 1. / 64.,
         })
@@ -140,9 +143,12 @@ fn the_body_inputs_round_trip_on_both_layouts() {
     }
 }
 
+/// Each recorded pattern, with the leaves mapped, all absent or one Eye
+/// absent: the leaves take no part in it.
 #[test]
 fn every_recorded_topology_is_in_scope() {
-    for pattern in RECORDED_ABSENT {
+    let leaves = [0, LEAVES, 1 << slot_named("LeftEye")];
+    for pattern in RECORDED_ABSENT.iter().flat_map(|p| leaves.map(|l| p | l)) {
         let names: Vec<_> = (0..25)
             .filter(|slot| pattern & (1 << slot) != 0)
             .map(|slot| BODY_SLOTS[slot])
@@ -173,16 +179,41 @@ fn the_frozen_scope_refuses_its_topologies_in_order() {
         ),
         (&["LeftShoulder"], BodyModel::OneShoulder),
         (&["RightShoulder", "Jaw"], BodyModel::OneShoulder),
-        // One mapped eye, and both toes with the head's extras mapped.
-        (&["LeftEye"], BodyModel::UnrecordedTopology),
-        (&["LeftToes", "RightToes"], BodyModel::UnrecordedTopology),
+        // No Shoulders with no UpperChest or a Toe; absent leaves don't
+        // make a pattern recorded.
         (
-            &["Jaw", "LeftEye", "RightEye", "UpperChest", "LeftToes"],
+            &["LeftShoulder", "RightShoulder", "UpperChest"],
+            BodyModel::UnrecordedTopology,
+        ),
+        (
+            &["LeftShoulder", "RightShoulder", "LeftToes"],
+            BodyModel::UnrecordedTopology,
+        ),
+        (
+            &[
+                "LeftShoulder",
+                "RightShoulder",
+                "Jaw",
+                "LeftEye",
+                "RightToes",
+            ],
             BodyModel::UnrecordedTopology,
         ),
     ];
     for (names, cause) in cases {
         assert_eq!(verdict(&without(names)), refused(cause), "absent {names:?}");
+    }
+    // A mapped leaf's mass refuses first, even with Chest absent.
+    for leaf in ["LeftEye", "RightEye", "Jaw"] {
+        // The absent Chest's share moves to the leaf.
+        let mut heavy = masses();
+        heavy[slot_named(leaf)] = heavy[slot_named("Chest")];
+        heavy[slot_named("Chest")] = 0.;
+        let rig = Rig {
+            bone_mass: Some(heavy),
+            ..without(&["Chest"])
+        };
+        assert_eq!(verdict(&rig), refused(BodyModel::LeafMass), "{leaf}");
     }
     assert_eq!(
         refused(BodyModel::NeckAbsent),
@@ -226,12 +257,12 @@ fn malformed_masses_refuse_with_their_faults() {
         (with(infinite), BodyAvatarFault::MassNonFinite(3)),
         (with(negative), BodyAvatarFault::MassNegative(11)),
         (
-            // masses() gives Jaw a share.
+            // masses() gives LeftToes a share.
             Rig {
                 bone_mass: Some(masses()),
-                ..without(&["Jaw"])
+                ..without(&["LeftToes"])
             },
-            BodyAvatarFault::MassAbsentSlot(24),
+            BodyAvatarFault::MassAbsentSlot(20),
         ),
         (with(heavy), BodyAvatarFault::MassSum),
         (with(vec![0.; 25]), BodyAvatarFault::MassSum),
@@ -421,4 +452,32 @@ fn the_recorded_patterns_are_the_references() {
         .collect();
     assert_eq!(ours.len(), RECORDED_ABSENT.len());
     assert_eq!(ours, reference_patterns());
+}
+
+/// Freeze v8's topology scope: each in-scope training rig's absent body
+/// slots but the leaves, from its mapped bones.
+#[test]
+fn the_recorded_patterns_are_freeze_v8s() {
+    let frozen: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../tools/parity/anim_body_freeze_v8.json"
+    ))
+    .unwrap();
+    let topologies = frozen["scope"]["topologies"].as_object().unwrap();
+    let frozen: BTreeSet<u32> = topologies
+        .values()
+        .map(|mapped| {
+            let mapped: BTreeSet<&str> = mapped
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|bone| bone.as_str().unwrap())
+                .collect();
+            (0..25)
+                .filter(|&slot| LEAVES & (1 << slot) == 0 && !mapped.contains(BODY_SLOTS[slot]))
+                .fold(0, |mask, slot| mask | 1 << slot)
+        })
+        .collect();
+    let ours: BTreeSet<u32> = RECORDED_ABSENT.into_iter().collect();
+    assert_eq!(ours.len(), RECORDED_ABSENT.len());
+    assert_eq!(ours, frozen);
 }

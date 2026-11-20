@@ -23,7 +23,8 @@ pub use avatar::{
     Avatar, Axes, BODY_BONES, HAND_BONES, Human, Skeleton, SkeletonNode, Twist, Xform, read_avatar,
 };
 pub use body::{
-    BODY_SLOTS, BodyAvatar, RECORDED_ABSENT, body_avatar, mass_sum_bound, slot_bone, topology_scope,
+    BODY_SLOTS, BodyAvatar, LEAVES, RECORDED_ABSENT, body_avatar, mass_sum_bound, slot_bone,
+    topology_scope,
 };
 pub use clip::{
     ABSENT_SLOT, ClipSetting, DOF_COUNT, DofKind, HumanoidClip, HumanoidSlot, MUSCLE_COUNT,

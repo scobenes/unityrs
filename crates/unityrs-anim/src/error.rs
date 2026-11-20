@@ -156,11 +156,14 @@ impl fmt::Display for BodyAvatarFault {
 /// section 8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BodyModel {
+    /// A zero-mass leaf (an Eye or the Jaw) has a nonzero mass.
+    LeafMass,
     ChestAbsent,
     NeckAbsent,
     /// Exactly one of the two Shoulders is mapped.
     OneShoulder,
-    /// The absent body slots are no recorded training rig's pattern.
+    /// The absent body slots but the leaves are no recorded training rig's
+    /// pattern.
     UnrecordedTopology,
 }
 
@@ -168,6 +171,7 @@ impl BodyModel {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::LeafMass => "leaf_mass",
             Self::ChestAbsent => "chest_absent",
             Self::NeckAbsent => "neck_absent",
             Self::OneShoulder => "one_shoulder",

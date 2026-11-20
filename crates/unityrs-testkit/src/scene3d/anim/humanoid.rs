@@ -254,15 +254,19 @@ fn human_bones(rig: &Rig) -> [i32; 25] {
     index
 }
 
-/// `m_HumanBoneMass`: the rig's, or an equal share per mapped slot.
+/// `m_HumanBoneMass`: the rig's, or an equal share per mapped slot but the
+/// zero-mass leaves (slots 22-24: the Eyes and the Jaw), as Unity gives
+/// them none.
 fn bone_mass(rig: &Rig, index: &[i32; 25]) -> V {
     let masses = rig.bone_mass.clone().unwrap_or_else(|| {
-        let mapped = index.iter().filter(|&&node| node >= 0).count();
+        let heavy = |(slot, &node): (usize, &i32)| node >= 0 && slot < 22;
+        let mapped = index.iter().enumerate().filter(|&e| heavy(e)).count();
         #[allow(clippy::cast_precision_loss, reason = "at most 25 slots")]
         let share = 1. / mapped.max(1) as f32;
         index
             .iter()
-            .map(|&node| if node >= 0 { share } else { 0. })
+            .enumerate()
+            .map(|e| if heavy(e) { share } else { 0. })
             .collect()
     });
     vector(V::Float(0.), masses.into_iter().map(V::Float).collect())

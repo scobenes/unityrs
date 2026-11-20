@@ -139,8 +139,8 @@ The `anim_humanoid` seeds are `unityrs_testkit::fuzz`'s humanoid rigs (the
 at a time (missing Avatar, optimized hierarchy, missing or renamed TOS
 paths, unmapped bones, an offset Animator root, root motion, translation
 DOFs, missing axes, twist and stretch), body rigs with the optional
-bones (in and out of the topology scope, with malformed, absent-slot or
-unnormalized masses, a mass array of integers, a zero scale and an off rest
+bones (in and out of the topology scope, with malformed, absent-slot,
+leaf or unnormalized masses, a mass array of integers, a zero scale and an off rest
 height), clip slot tables with writers,
 locomotion, IK, body, translation and dropped muscles, non-neutral and
 missing settings, dense, constant and streamed storage with non-finite

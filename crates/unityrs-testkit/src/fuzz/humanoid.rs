@@ -159,6 +159,7 @@ fn rigs() -> Vec<(&'static str, Rig)> {
         ("body-no-neck", body(&[9])),
         ("body-one-shoulder", body(&[11])),
         ("body-one-eye", body(&[21])),
+        ("body-leaf-mass", body_mass(|_| {})),
         ("body-mass-nan", body_mass(|m| m[7] = f32::NAN)),
         ("body-mass-negative", body_mass(|m| m[3] = -m[3])),
         ("body-mass-short", body_mass(|m| m.truncate(24))),
@@ -201,7 +202,7 @@ fn body(absent: &[usize]) -> Rig {
 }
 
 /// `body(&[])` with dyadic masses summing to one (1/32 per slot but Hips,
-/// which holds the rest), edited by `edit`.
+/// which holds the rest, so the leaves have mass too), edited by `edit`.
 fn body_mass(edit: impl FnOnce(&mut Vec<f32>)) -> Rig {
     let mut masses = vec![1. / 32.; 25];
     masses[0] = 1. - 24. / 32.;
