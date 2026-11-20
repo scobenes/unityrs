@@ -8,7 +8,7 @@ use unityrs_anim::{
     humanoid::{
         Avatar, BODY_SLOTS, BodyAvatar, BoneMass, DofKind, HumanoidClip, RigAvatar, SettingValue,
         Xform, body_avatar, body_model, body_solve, dropped_muscles, humanoid_refusal, read_avatar,
-        rig_avatar,
+        rig_avatar, root,
     },
     read_clip,
 };
@@ -77,6 +77,7 @@ fn sweep(
                         continue;
                     };
                     slots_digest(slots, meter, digest)?;
+                    root_digest(&clip, meter, digest)?;
                     if flags & 2 != 0 && kept.len() < CROSS {
                         kept.push(clip)?;
                     }
@@ -87,6 +88,50 @@ fn sweep(
         }
     }
     Ok(kept)
+}
+
+/// Freeze v8's root projection of a humanoid clip: its admitted settings,
+/// then the target body pose at the interval's start, middle and stop
+/// under a unit and a scaled human, each held to a finite translation and
+/// a unit quaternion. The number of poses projected.
+pub(crate) fn root_digest(
+    clip: &Clip,
+    meter: &Arc<Meter>,
+    digest: &mut Digest,
+) -> Result<usize, AnimError> {
+    let settings = match root::root_settings(clip, meter) {
+        Ok(settings) => settings,
+        Err(e) => return soft(e, digest).map(|()| 0),
+    };
+    digest.tag((
+        discriminant(&settings.rules.yaw),
+        discriminant(&settings.rules.height),
+        discriminant(&settings.rules.xz),
+        settings.level.to_bits(),
+        settings.offset_degrees.to_bits(),
+    ));
+    let timing = match root::root_timing(clip, meter) {
+        Ok(timing) => timing,
+        Err(e) => return soft(e, digest).map(|()| 0),
+    };
+    let (start, stop) = (timing.start(), timing.stop());
+    let mut projected = 0;
+    for time in [start, start + (stop - start) / 2., stop] {
+        for scale in [1., 1.75] {
+            meter.count_decode(1)?;
+            match root::target_body_pose(clip, &settings, time, scale, meter) {
+                Ok((t, q)) => {
+                    assert!(t.iter().all(|v| v.is_finite()), "finite T_A");
+                    let length = q.iter().map(|v| v * v).sum::<f64>().sqrt();
+                    assert!((length - 1.).abs() <= 1e-12, "unit B_A");
+                    digest.tag((t.map(f64::to_bits), q.map(f64::to_bits)));
+                    projected += 1;
+                }
+                Err(e) => soft(e, digest)?,
+            }
+        }
+    }
+    Ok(projected)
 }
 
 fn xform_digest(x: &Xform, digest: &mut Digest) {

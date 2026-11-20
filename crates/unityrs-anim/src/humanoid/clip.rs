@@ -143,6 +143,12 @@ pub struct HumanoidClip {
 }
 
 impl HumanoidClip {
+    /// The serialized `m_IndexArray`, one runtime slot (or `ABSENT_SLOT`)
+    /// per DOF.
+    pub(crate) fn index(&self) -> &[i32] {
+        self.index.as_slice()
+    }
+
     /// Serialized storage counts in streamed, dense, constant order.
     #[must_use]
     pub const fn counts(&self) -> SlotCounts {
@@ -234,6 +240,31 @@ impl HumanoidClip {
             None
         }
     }
+}
+
+/// How each streamed slot of a humanoid clip's storage decodes: the
+/// binding rows' kinds, as `read` takes them.
+pub(crate) fn stream_kinds(
+    dict: &Dict<'_, '_>,
+    index: &[i32],
+    counts: SlotCounts,
+) -> Result<MeteredVec<BindingKind>, AnimError> {
+    let total = counts
+        .streamed
+        .checked_add(counts.dense)
+        .and_then(|n| n.checked_add(counts.constant))
+        .ok_or(AnimError::SlotOverflow)?;
+    let rows = check_bindings(dict, index, total)?;
+    let mut kinds = MeteredVec::with_capacity(dict.meter, counts.streamed)?;
+    for row in rows.as_slice() {
+        dict.meter.count_decode(row.width as u64)?;
+        for _ in 0..row.width {
+            if kinds.len() < counts.streamed {
+                kinds.push(row.kind)?;
+            }
+        }
+    }
+    Ok(kinds)
 }
 
 /// Whether the serialized `m_IndexArray` maps any DOF. Absent or

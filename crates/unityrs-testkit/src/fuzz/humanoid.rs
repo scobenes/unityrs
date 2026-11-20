@@ -75,7 +75,7 @@ fn variants() -> Vec<(String, Layout, Vec<Object>)> {
             rig_with(&rig, muscles()),
         ));
     }
-    for (name, clip) in clips() {
+    for (name, clip) in clips().into_iter().chain(root_clips()) {
         out.push((
             format!("clip-{name}"),
             Layout::Unity2022,
@@ -274,6 +274,78 @@ fn dense(rate: f32, bits: &[u32]) -> Object {
                 bits,
             },
             ..Storage::default()
+        },
+    )
+}
+
+/// Root-projection clips: all body, baked, levelled, all Original and
+/// streamed.
+fn root_clips() -> Vec<(&'static str, Object)> {
+    vec![
+        ("root-body", root_clip(&[], 0)),
+        (
+            "root-bake",
+            root_clip(
+                &[
+                    flag("m_LoopBlendOrientation", true),
+                    flag("m_LoopBlendPositionXZ", true),
+                ],
+                0,
+            ),
+        ),
+        ("root-level", root_clip(&[("m_Level", V::Float(0.125))], 0)),
+        (
+            "root-original",
+            root_clip(
+                &[
+                    flag("m_KeepOriginalOrientation", true),
+                    flag("m_KeepOriginalPositionY", true),
+                    flag("m_KeepOriginalPositionXZ", true),
+                ],
+                0,
+            ),
+        ),
+        ("root-streamed", root_clip(&[], 14)),
+    ]
+}
+
+/// A clip binding the motion and body DOFs 0-13 to a turned, lifted root,
+/// the first `streamed` slots streamed with a slope over the interval and
+/// the rest constants.
+fn root_clip(settings: &[(&str, V)], streamed: u32) -> Object {
+    let pose: [f32; 14] = [
+        1., 0.5, 2., 0., 0.6, 0., 0.8, 0.25, 1., -0.5, 0.1, 0.3, -0.05, 0.9,
+    ];
+    let dofs: Vec<u32> = (0..14).collect();
+    let bits = |v: f32| v.to_bits();
+    let mut words = Vec::new();
+    let keys = |slope: f32| -> Vec<(u32, [u32; 4])> {
+        (0..streamed)
+            .zip(pose)
+            .map(|(slot, v)| (slot, [0, 0, bits(slope), bits(v)]))
+            .collect()
+    };
+    if streamed > 0 {
+        p::frame(&mut words, 0., &keys(0.25));
+        p::frame(&mut words, 1., &keys(0.));
+        p::frame(&mut words, f32::INFINITY, &[]);
+    }
+    let constants: Vec<u32> = pose
+        .iter()
+        .skip(streamed as usize)
+        .copied()
+        .map(bits)
+        .collect();
+    h::clip_stored(
+        &dofs,
+        &[],
+        settings,
+        p::Storage {
+            interval: [0., 1.],
+            streamed_count: streamed,
+            words: &words,
+            constants: &constants,
+            ..p::Storage::default()
         },
     )
 }
