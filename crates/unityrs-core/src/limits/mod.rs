@@ -213,8 +213,8 @@ impl Limits {
     /// At the defaults: 1.75 MiB in a release build, 9 MiB in a debug one.
     /// `tests/walk_stack.rs` reads, writes and drops the deepest object of
     /// every shape on a thread this size, and its `stack_measured` prints
-    /// the least each needs: at most 974,848 bytes (0.93 MiB) in release
-    /// and 6,922,240 (6.6 MiB) in debug, with toolchain 1.99.1 (`cargo test
+    /// the least each needs: at most 1,261,568 bytes (1.2 MiB) in release
+    /// and 7,979,008 (7.6 MiB) in debug, with toolchain 1.99.1 (`cargo test
     /// -p unityrs-core --test walk_stack [--release] -- --ignored
     /// --nocapture`; review round 11: this said 0.90 MiB, measured before
     /// fix pass 10; `docs/plans/core.md` section 6 records each integrated

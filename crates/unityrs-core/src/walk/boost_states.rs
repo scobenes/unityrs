@@ -1,0 +1,401 @@
+// Ported from UnityPy 1.25.2 (MIT): UnityPyBoost/TypeTreeHelper.cpp. See THIRD_PARTY_LICENSES.
+
+//! The open values of UnityPyBoost's reader ([`super::steps`]): each value
+//! with children keeps here what its recursive form kept in its frame, and
+//! a step does what that form did between two of its children's reads, in
+//! the same order.
+
+use std::sync::Arc;
+
+use super::super::dict::{Dict, RefNode, visit};
+use super::super::{Out, ReadDetail, ReadError, ReadErrorKind, charge_error, grow_step};
+use super::Reader;
+use crate::limits::MeteredVec;
+use crate::typetree::{Kind, NodeId, Tree};
+use crate::value::{ListIx, Value};
+
+pub(super) enum State {
+    /// R8: its two children, then the tuple.
+    Pair {
+        a: NodeId,
+        b: NodeId,
+        first: Option<Out>,
+    },
+    /// R11: elements read and aligned one by one.
+    List(Elements),
+    /// R10: a `pair` run.
+    Pairs {
+        a: NodeId,
+        b: NodeId,
+        elements: Elements,
+        first: Option<Out>,
+    },
+    /// R12, R13.
+    Class(Fields),
+    /// R14.
+    Ref(Fields, RefFields),
+}
+
+/// A list's elements so far.
+pub(super) struct Elements {
+    pub(super) elem: NodeId,
+    pub(super) count: usize,
+    /// Its first reservation ([`super::super::Work::first_room`]).
+    pub(super) first: usize,
+    pub(super) items: MeteredVec<Value>,
+    pub(super) i: usize,
+    /// Where the element being read began, and the discards then.
+    pub(super) before: usize,
+    pub(super) mark: u64,
+}
+
+impl Elements {
+    pub(super) fn new(elem: NodeId, count: usize, first: usize, items: MeteredVec<Value>) -> Self {
+        Self {
+            elem,
+            count,
+            first,
+            items,
+            i: 0,
+            before: 0,
+            mark: 0,
+        }
+    }
+}
+
+/// A dict's children so far.
+pub(super) struct Fields {
+    pub(super) node: NodeId,
+    pub(super) dict: Option<Dict>,
+    pub(super) next: usize,
+    /// R13: this class set the registry in scope.
+    pub(super) changed: bool,
+    /// The child being read.
+    pub(super) pending: NodeId,
+}
+
+impl Fields {
+    pub(super) fn new(node: NodeId, dict: Dict) -> Self {
+        Self {
+            node,
+            dict: Some(dict),
+            next: 0,
+            changed: false,
+            pending: node,
+        }
+    }
+}
+
+/// A `ReferencedObject`'s `type`.
+pub(super) struct RefFields {
+    /// The slot of the children named `type`, once one is visited: a data
+    /// child before it finds no `type`, as UnityPyBoost's lookup in the dict
+    /// read so far finds none.
+    pub(super) type_slot: Option<u32>,
+    pub(super) object_type: bool,
+    /// The current `type`'s resolution, made at the first data child that
+    /// asks and kept until a child sets `type` again: a node of many data
+    /// children resolves each `type` value once (claude X, review round 2).
+    pub(super) resolved: Resolved,
+}
+
+pub(super) enum Resolved {
+    Not,
+    To(Option<RefNode>),
+}
+
+/// What an open value asks next.
+pub(super) enum Step {
+    /// A child's value: `node` of the open's own tree, or of `tree`.
+    Child {
+        tree: Option<Arc<Tree>>,
+        lx: ListIx,
+        node: NodeId,
+        repeated: bool,
+    },
+    /// Its own read is over: `read_typetree_value`'s result before its
+    /// alignment.
+    Done(Result<Out, ReadError>),
+}
+
+/// `?` for a step: an error ends the open value's read.
+macro_rules! tri {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => return Step::Done(Err(e)),
+        }
+    };
+}
+
+fn child(tree: Option<Arc<Tree>>, lx: ListIx, node: NodeId, repeated: bool) -> Step {
+    Step::Child {
+        tree,
+        lx,
+        node,
+        repeated,
+    }
+}
+
+impl Reader<'_, '_, '_, '_, '_> {
+    fn stopped(&self) -> bool {
+        self.progress.as_ref().is_some_and(|p| p.error.is_some())
+    }
+
+    /// One step of an open value: `input` is the child it asked for last.
+    pub(super) fn step(
+        &mut self,
+        tree: &Arc<Tree>,
+        lx: ListIx,
+        state: &mut State,
+        input: Option<Result<Out, ReadError>>,
+    ) -> Step {
+        match state {
+            State::Pair { a, b, first } => {
+                let Some(out) = input else {
+                    return child(None, lx, *a, false);
+                };
+                let v = tri!(out);
+                match first.take() {
+                    None => {
+                        *first = Some(v);
+                        child(None, lx, *b, false)
+                    }
+                    Some(f) => Step::Done(self.tuple2(f, v)),
+                }
+            }
+            State::List(e) => self.elements(e, lx, input),
+            State::Pairs {
+                a,
+                b,
+                elements,
+                first,
+            } => self.pairs_step((*a, *b), elements, first, lx, input),
+            State::Class(f) => self.class(f, tree, lx, input),
+            State::Ref(f, r) => self.reference(f, r, tree, lx, input),
+        }
+    }
+
+    /// R11 (UnityPy TypeTreeHelper.cpp:846-855).
+    fn elements(
+        &mut self,
+        e: &mut Elements,
+        lx: ListIx,
+        input: Option<Result<Out, ReadError>>,
+    ) -> Step {
+        if let Some(out) = input {
+            let v = tri!(out);
+            if self.pos <= e.before {
+                tri!(self.work.zero_size(e.mark, self.at()));
+            }
+            tri!(
+                v.push_to(&mut e.items)
+                    .map_err(|err| charge_error(self.at(), err))
+            );
+            if self.stopped() {
+                return self.list(&mut e.items);
+            }
+            self.work.filled(e.i, e.first);
+            e.i += 1;
+        }
+        if e.i < e.count {
+            tri!(grow_step(&mut e.items, e.count).map_err(|err| charge_error(self.at(), err)));
+            (e.before, e.mark) = (self.pos, self.work.discards());
+            return child(None, lx, e.elem, false);
+        }
+        self.list(&mut e.items)
+    }
+
+    /// `read_pair_array` (UnityPy TypeTreeHelper.cpp:353-392).
+    fn pairs_step(
+        &mut self,
+        pair: (NodeId, NodeId),
+        e: &mut Elements,
+        first: &mut Option<Out>,
+        lx: ListIx,
+        input: Option<Result<Out, ReadError>>,
+    ) -> Step {
+        if let Some(out) = input {
+            let v = tri!(out);
+            let Some(f) = first.take() else {
+                *first = Some(v);
+                return child(None, lx, pair.1, false);
+            };
+            if self.pos <= e.before {
+                tri!(self.work.zero_size(e.mark, self.at()));
+            }
+            let pair = tri!(self.tuple2(f, v));
+            tri!(
+                pair.push_to(&mut e.items)
+                    .map_err(|err| charge_error(self.at(), err))
+            );
+            if self.stopped() {
+                return self.list(&mut e.items);
+            }
+            self.work.filled(e.i, e.first);
+            e.i += 1;
+        }
+        if e.i < e.count {
+            tri!(grow_step(&mut e.items, e.count).map_err(|err| charge_error(self.at(), err)));
+            tri!(self.work.kept(self.at()));
+            (e.before, e.mark) = (self.pos, self.work.discards());
+            return child(None, lx, pair.0, false);
+        }
+        self.list(&mut e.items)
+    }
+
+    /// Sets the child just read in the dict: false once the fields'
+    /// progress has stopped.
+    fn set(&mut self, f: &mut Fields, tree: &Tree, v: Out) -> Result<bool, ReadError> {
+        let Some(d) = f.dict.as_mut() else {
+            return Err(self.twice());
+        };
+        let c = f.pending;
+        let ci = tree.info(c).or_else(|| tree.info(f.node)).copied();
+        let ci = ci.ok_or_else(|| self.twice())?;
+        let at = self.at();
+        let key = if self.progress.is_some() { c } else { ci.key };
+        d.set(&mut self.work, key, ci.slot, v, at)?;
+        Ok(!self.stopped())
+    }
+
+    fn twice(&self) -> ReadError {
+        self.fail(ReadErrorKind::Other, ReadDetail::Python("class read twice"))
+    }
+
+    /// R12, R13: `read_class` (UnityPy TypeTreeHelper.cpp:394-445).
+    fn class(
+        &mut self,
+        f: &mut Fields,
+        tree: &Tree,
+        lx: ListIx,
+        input: Option<Result<Out, ReadError>>,
+    ) -> Step {
+        let more = match input {
+            Some(out) => {
+                let v = tri!(out);
+                tri!(self.set(f, tree, v))
+            }
+            None => true,
+        };
+        let Some(&me) = tree.info(f.node) else {
+            return Step::Done(Err(self.twice()));
+        };
+        let kids = tree.list().children(f.node);
+        while let Some(&c) = kids.get(f.next).filter(|_| more) {
+            f.next += 1;
+            visit();
+            let ci = tree.info(c).copied().unwrap_or(me);
+            if ci.kind == Kind::ManagedReferencesRegistry {
+                if self.has_registry {
+                    // A skipped child counts as a value (plan 3.10, "Bounds").
+                    tri!(self.work.skipped(self.at()));
+                    continue;
+                }
+                f.changed = true;
+                self.has_registry = true;
+            }
+            f.pending = c;
+            return child(None, lx, c, ci.repeated);
+        }
+        if f.changed {
+            self.has_registry = false;
+        }
+        self.finish(&mut f.dict, lx)
+    }
+
+    /// R14: a `ReferencedObject` (UnityPy TypeTreeHelper.cpp:751-811).
+    fn reference(
+        &mut self,
+        f: &mut Fields,
+        r: &mut RefFields,
+        tree: &Tree,
+        lx: ListIx,
+        input: Option<Result<Out, ReadError>>,
+    ) -> Step {
+        let mut more = true;
+        if let Some(out) = input {
+            let v = tri!(out);
+            more = tri!(self.set(f, tree, v));
+            let slot = tree.info(f.pending).map(|ci| ci.slot);
+            if more && slot.is_some() && slot == r.type_slot {
+                r.resolved = Resolved::Not;
+            }
+        }
+        let kids = tree.list().children(f.node);
+        while let Some(&c) = kids.get(f.next).filter(|_| more) {
+            f.next += 1;
+            visit();
+            let Some(ci) = tree.info(c).copied() else {
+                continue;
+            };
+            let named_type = tree.list().name(c) == b"type";
+            if r.type_slot.is_none() && named_type {
+                r.type_slot = Some(ci.slot);
+            }
+            if named_type {
+                r.object_type = self.progress.is_some() && ci.kind != Kind::ReferencedObject;
+            }
+            if ci.kind != Kind::ReferencedObjectData {
+                f.pending = c;
+                return child(None, lx, c, ci.repeated);
+            }
+            let found = if let Resolved::To(found) = &r.resolved {
+                found.clone()
+            } else {
+                let Some(d) = f.dict.as_ref() else {
+                    return Step::Done(Err(self.twice()));
+                };
+                let ty = r
+                    .type_slot
+                    .and_then(|s| d.position(s))
+                    .and_then(|p| d.entries.as_slice().get(p))
+                    .map(|(_, v)| v);
+                match self.ref_node(ty, r.object_type) {
+                    Ok(found) => {
+                        r.resolved = Resolved::To(found.clone());
+                        found
+                    }
+                    Err(error) => {
+                        if let Some(progress) = &mut self.progress {
+                            tri!(progress.recover(error));
+                            break;
+                        }
+                        return Step::Done(Err(error));
+                    }
+                }
+            };
+            match found {
+                None | Some(RefNode::NoTree) => {
+                    // A skipped child counts as a value (plan 3.10, "Bounds").
+                    tri!(self.work.skipped(self.at()));
+                }
+                Some(RefNode::Tree(rt)) => {
+                    let at = self.at();
+                    let rlx = tri!(self.trees.index(&mut self.builder, &rt, at));
+                    f.pending = c;
+                    let root = rt.root();
+                    return child(Some(rt), rlx, root, ci.repeated);
+                }
+            }
+        }
+        self.finish(&mut f.dict, lx)
+    }
+
+    fn list(&self, items: &mut MeteredVec<Value>) -> Step {
+        let items = std::mem::replace(items, self.builder.vec());
+        Step::Done(Ok(Out::Built(self.builder.list(items))))
+    }
+
+    /// A class's or a `ReferencedObject`'s end.
+    fn finish(&mut self, dict: &mut Option<Dict>, lx: ListIx) -> Step {
+        let Some(dict) = dict.take() else {
+            return Step::Done(Err(self.twice()));
+        };
+        let result = tri!(dict.finish(&self.builder, lx, self.at()));
+        if let Some(progress) = &mut self.progress {
+            progress.finish_class();
+        }
+        Step::Done(Ok(result))
+    }
+}

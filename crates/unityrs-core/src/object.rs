@@ -321,6 +321,81 @@ impl ObjectRef {
         read
     }
 
+    /// The type record's own tree once it is compiled (the tree
+    /// [`Self::tree`] resolves with no `nodes` for an object whose record
+    /// stores one), without compiling or waiting: `None` until a read has
+    /// compiled it, or when the record has none.
+    #[must_use]
+    pub fn compiled_tree(&self) -> Option<&Arc<Tree>> {
+        self.serialized_type()?.compiled_tree()
+    }
+
+    /// [`Self::read_typetree`] with `tree` as `nodes`, its values handed to
+    /// `sink` as they are read ([`crate::walk::emit`]), and the bytes read;
+    /// or `None` where the direct read gives up, and the full read is to be
+    /// made instead. Only an object of `byte_size > 0` (UnityPyBoost's
+    /// reader) is read; a `check_read` mismatch gives up too. The read's
+    /// work, and `extra_work` of the caller's, are counted on the file's
+    /// meter in one check-and-add once the values are made; work the
+    /// allowance cannot hold gives up, counting nothing, and the read stops
+    /// as soon as its own work passes what the allowance holds. Copies none
+    /// of the file's bytes out ([`crate::pin`]): the sink's values are its
+    /// own.
+    pub fn emit_typetree<S: crate::walk::emit::Sink>(
+        &self,
+        tree: &Tree,
+        check_read: bool,
+        sink: &mut S,
+        extra_work: impl FnOnce(&S) -> u64,
+    ) -> Option<(S::Obj, i64)> {
+        let meter = self.file.meter();
+        let (value, bytes_read, work) = self
+            .emit_typetree_uncounted(tree, check_read, sink, meter.work_left())
+            .ok()?;
+        let work = work.checked_add(extra_work(sink))?;
+        meter.try_count_work(work).then_some((value, bytes_read))
+    }
+
+    /// [`Self::emit_typetree`]'s read, its work (at most `max_work`, or it
+    /// gives up) returned, not counted: the caller counts it. A read that
+    /// gives up returns the work it did (`Err`), for the caller to count.
+    pub fn emit_typetree_uncounted<S: crate::walk::emit::Sink>(
+        &self,
+        tree: &Tree,
+        check_read: bool,
+        sink: &mut S,
+        max_work: u64,
+    ) -> Result<(S::Obj, i64, u64), u64> {
+        let info = self.info();
+        let file = &self.file;
+        if info.byte_size == 0 || file.meter().work_used_up().is_some() {
+            return Err(0);
+        }
+        let options = file.context().read_options();
+        // UnityPy TypeTreeHelper.py:146-153: the memory reader's slice of
+        // `byte_size` bytes from `byte_start`, as `read_with_fields` takes it.
+        let kind = file.reader_kind();
+        let start = kind.seek(info.byte_start).map_err(|_| 0_u64)?;
+        let (range, _) = kind
+            .read(file.data().len(), start, i64::from(info.byte_size))
+            .map_err(|_| 0_u64)?;
+        let data = file.data().get(range).ok_or(0_u64)?;
+        let read = crate::walk::emit::emit(
+            data,
+            tree,
+            file.header().endian == crate::stream::Endian::Big,
+            options.floats,
+            options.limits.max_value_depth,
+            max_work,
+            sink,
+        )?;
+        let bytes_read = i64::try_from(read.bytes_read).map_err(|_| read.work)?;
+        if check_read && bytes_read != i64::from(info.byte_size) {
+            return Err(read.work);
+        }
+        Ok((read.value, bytes_read, read.work))
+    }
+
     /// `parse_as_dict(check_read=check_read)`: [`Self::read_typetree`] with
     /// the resolved tree.
     pub fn parse_as_dict(&self, check_read: bool) -> Result<Parsed, ParseError> {

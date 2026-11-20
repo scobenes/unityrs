@@ -16,6 +16,9 @@ mod codec_bridge;
 mod codecs;
 mod construction;
 mod crypto_shader;
+mod direct;
+mod direct_keys;
+mod direct_object;
 mod environment;
 mod errors;
 mod exports;
@@ -48,7 +51,7 @@ mod value_render;
 mod worker;
 mod worker_error;
 
-#[pymodule(name = "_native")]
+#[pymodule(name = "_native", gil_used = true)]
 fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     exports::register(m)?;
     images::register(m)?;

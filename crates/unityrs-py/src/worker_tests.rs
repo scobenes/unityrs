@@ -76,3 +76,21 @@ fn errors_and_panics_answer_alike_inline_and_pooled() {
         });
     }
 }
+
+#[test]
+fn flat_work_runs_inline_on_any_stack() -> PyResult<()> {
+    let _serial = crate::tests::serial();
+    for stack in [256 << 20, 64 << 10] {
+        let (caller, work, callback) = on_thread(stack, |py| {
+            let caller = std::thread::current().id();
+            let work = py.detach(|| super::flat(|| std::thread::current().id()))?;
+            let callback = py.detach(|| {
+                super::flat(|| crate::python::relay::attach(|_| std::thread::current().id()))
+            })?;
+            Ok::<_, PyErr>((caller, work, callback))
+        })?;
+        assert_eq!(work, caller);
+        assert_eq!(callback, caller);
+    }
+    Ok(())
+}

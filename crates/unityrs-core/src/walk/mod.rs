@@ -71,6 +71,7 @@
 
 pub mod boost;
 mod dict;
+pub mod emit;
 mod fields;
 pub mod python;
 mod read;
