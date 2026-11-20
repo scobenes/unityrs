@@ -84,6 +84,16 @@ def fixture():
     return S.serialized_file(types, objs)
 
 
+def large_fixture(count=10000):
+    """A small object, then one of more values than a direct read takes."""
+    small = node('TextAsset', 'Base', [string('m_Name'), string('m_Script')])
+    large = node('Y7Large', 'Base', [vector('items', node('int', 'data'))])
+    types = [S.Type(49, small), S.Type(52, large)]
+    objs = [S.Obj(1, 0, text('a') + text('b')),
+            S.Obj(2, 1, struct.pack(f'<i{count}i', count, *range(count)))]
+    return S.serialized_file(types, objs)
+
+
 def read(data, index, full, limits=None, budget=None):
     env = unityrs.Environment(limits=limits, budget=budget)
     env.load_file(data, name='f')
@@ -233,6 +243,26 @@ class DirectObject(unittest.TestCase):
                 self.assertEqual(made, want)
                 self.assertIs(type(obj), root)
                 self.assertEqual(obj.m_LocalPosition.y, -2.0)
+
+    def test_a_large_object_last_fits_the_work_left(self):
+        data = large_fixture()
+
+        def whole(full, work):
+            env = unityrs.Environment(limits=unityrs.Limits(max_decode_work=work))
+            env.load_file(data, name='f')
+            objs = sorted(env.objects, key=lambda o: o.path_id)
+            # The large one last, and again: its declined direct reads
+            # count nothing the full path counts again.
+            for obj in objs + objs[-1:]:
+                if full:
+                    obj._native = FullPath(obj._native)
+                obj.parse_as_dict()
+        work = [least(lambda m: succeeds(lambda: whole(full, m))) for full in (False, True)]
+        self.assertEqual(work[0], work[1])
+        env = unityrs.Environment()
+        env.load_file(data, name='f')
+        large = sorted(env.objects, key=lambda o: o.path_id)[1]
+        self.assertEqual(len(large.parse_as_dict()['items']), 10000)
 
 
 if __name__ == '__main__':

@@ -81,38 +81,53 @@ impl Pile {
     }
 }
 
-/// Dropped without recursion and without allocating, in time linear in
-/// the values held: a value whose items hold values of their own is taken
-/// apart one value at a time, each value looked at once. The items being
-/// dropped are a value's own vector; on reaching a value with items,
-/// the rest of that vector goes into the emptied value, which goes where
-/// one of its items was taken from, and its items are dropped next. A value
-/// of any depth takes the same stack, so a read (and a failed read's
-/// partial values) may drop on a thread of any stack size, and the heap
-/// never goes above what the values held.
+/// Dropped without recursion and without allocating, each value looked at
+/// once, so in time linear in the values held at any depth. The values
+/// waiting are a stack of piles, each a value's own vector of items: the
+/// innermost is taken from the end one value at a time, and a value with
+/// items of its own has them taken out (its vector moves) to become the
+/// innermost pile, the rest of the one it came from saved in a value of
+/// its own, along with the pile above that (pushed into the slot the value
+/// left free). A pile done, the one saved above it resumes. A value of any
+/// depth takes the same stack, so a read (and a failed read's partial
+/// values) may drop on a thread of any stack size, and the heap never goes
+/// above what the values held.
 impl Drop for Value {
     fn drop(&mut self) {
         if !self.deep() {
             return;
         }
         let mut pile = self.take_items();
-        let mut hand: Option<Value> = None;
-        while let Some(mut value) = hand.take().or_else(|| pile.pop()) {
+        // The pile the current one came from, saved in a value; below the
+        // first, each saved pile's last item is the one saved above it.
+        let mut up: Option<Value> = None;
+        let mut saved = 0_usize;
+        loop {
+            let Some(mut value) = pile.pop() else {
+                let Some(mut link) = up.take() else {
+                    break;
+                };
+                pile = link.take_items();
+                saved -= 1;
+                if saved > 0 {
+                    up = pile.pop();
+                }
+                continue;
+            };
             if !value.nests() {
                 // A scalar or an empty container: nothing below it.
-                drop(value);
                 continue;
             }
-            let mut items = value.take_items();
+            let items = value.take_items();
             drop(value);
-            if pile.is_empty() {
-                pile = items;
-                continue;
+            if !pile.is_empty() {
+                // The slot `value` left takes the pile saved above.
+                if let Some(link) = up.take() {
+                    pile.put_back(link);
+                }
+                up = Some(std::mem::replace(&mut pile, Pile::Values(Vec::new())).into_value());
+                saved += 1;
             }
-            // `items` holds a value (the value was deep): taking it frees
-            // the slot the rest of `pile` goes into.
-            hand = items.pop();
-            items.put_back(std::mem::replace(&mut pile, Pile::Values(Vec::new())).into_value());
             pile = items;
         }
     }
@@ -183,11 +198,29 @@ mod tests {
                 entries: vec![(NodeId(0), Value::Int(1))],
             })])
         }));
-        let value = Value::List(outer);
+        timed(Value::List(outer));
+    }
+
+    /// A comb 512 levels deep, each level `k` lists of one value beside the
+    /// next level: each value is taken apart once, where a drop that walked
+    /// back over the levels saved took `k * 512 * 512` steps.
+    #[test]
+    fn a_deep_comb_drops_in_linear_time() {
+        let k = 2_000;
+        let mut value = Value::Int(0);
+        for _ in 0..512 {
+            let mut level: Vec<Value> = (0..k).map(|i| Value::List(vec![Value::Int(i)])).collect();
+            level.insert(level.len() / 2, value);
+            value = Value::List(level);
+        }
+        timed(value);
+    }
+
+    fn timed(value: Value) {
         let start = std::time::Instant::now();
         drop(value);
         let took = start.elapsed();
-        // Linear: milliseconds even unoptimized; quadratic: hours.
+        // Linear: well under a second even unoptimized; worse: minutes.
         assert!(
             took < std::time::Duration::from_secs(5),
             "dropped in {took:?}"

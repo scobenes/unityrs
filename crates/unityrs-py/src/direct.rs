@@ -21,8 +21,9 @@
 //! no room for gives up. The charge is returned when the call ends.
 //!
 //! Work: the read stops as soon as its work passes what the open's
-//! allowance still holds; a read that gives up counts the work it did (as
-//! much as the allowance holds), which the full path then does again.
+//! allowance still holds, and counts its work only once accepted: work a
+//! read that gives up did, the full path does again and counts. An object
+//! whose read gave up on its values' count (`CHUNK`) is not tried again.
 //!
 //! Lists and tuples are made at their final length from items already
 //! built, and a primitive run's list is filled out of the collector's
@@ -583,8 +584,17 @@ fn direct<'py>(
     } else {
         0
     };
+    let wrap = assets.is_some();
+    let start = object.info().byte_start;
+    if keys.too_large(start, wrap) {
+        return None;
+    }
     let TreeKeys {
-        names, obj, size, ..
+        names,
+        obj,
+        size,
+        declined,
+        ..
     } = keys;
     let mut sink = PySink {
         py,
@@ -608,10 +618,12 @@ fn direct<'py>(
     }
     sink.need = held;
     let mut fixed = 0;
+    let mut built = false;
     if let Some(assets) = assets {
         let made = if let Some(made) = obj {
             made.clone()
         } else {
+            built = true;
             // Made within the reservation, as values are, and only where
             // the work the full path counts for them fits.
             if !sink.pace(usize::try_from(rows).unwrap_or(usize::MAX))
@@ -632,15 +644,20 @@ fn direct<'py>(
         fixed = objects.fixed(refs.len());
         sink.obj = Some(objects);
     }
-    match object.emit_typetree_uncounted(tree, check_read, &mut sink, meter.work_left()) {
-        Err(work) => {
-            meter.count_work_up_to(work.saturating_add(sink.work));
-            None
+    let read = object.emit_typetree_uncounted(tree, check_read, &mut sink, meter.work_left());
+    if read.is_err() && sink.paced >= crate::value_render::CHUNK && !built {
+        // Its values' count, which no later read of it changes (the keys'
+        // rows, counted only as they are made, not among them).
+        if let Some(seen) = declined.get_mut(usize::from(wrap)) {
+            crate::direct_keys::remember(seen, start);
         }
+    }
+    match read {
+        // Its work, the full path's to do and count.
+        Err(_) => None,
         Ok((value, _, work)) => {
             let read = work.saturating_add(sink.work);
             if !meter.try_count_work(read.saturating_add(fixed)) {
-                meter.count_work_up_to(read);
                 return None;
             }
             Some(Done {

@@ -314,19 +314,6 @@ impl Meter {
         LimitError::refused(LimitKind::DecodeWork, attempted, self.work_limit)
     }
 
-    /// Counts `bytes` of work done, or as much of it as the bound still
-    /// holds: work a direct read did before it gave up, which the full
-    /// read then does again. It never passes the bound and records no
-    /// refusal; the full read meets the bound itself.
-    pub fn count_work_up_to(&self, bytes: u64) {
-        let limit = self.work_limit;
-        let _ = self
-            .work
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |done| {
-                (done < limit).then(|| done.saturating_add(bytes).min(limit))
-            });
-    }
-
     /// The work this open's allowance still holds.
     #[must_use]
     pub fn work_left(&self) -> u64 {

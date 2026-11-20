@@ -331,6 +331,29 @@ pub(crate) struct TreeKeys {
     pub(crate) obj: Option<Arc<ObjKeys>>,
     /// What `names` holds beside the shared strings.
     pub(crate) size: u64,
+    /// Objects of the tree whose direct read gave up on its values'
+    /// count, in each mode (`[dict, object]`), by `byte_start`: read again
+    /// it gives up again, so it is not tried (at most [`DECLINED`] each).
+    pub(crate) declined: [Vec<i128>; 2],
+}
+
+/// Objects remembered as too large to read directly, per tree and mode.
+const DECLINED: usize = 1 << 10;
+
+impl TreeKeys {
+    /// Whether the object at `start` gave up on its count in this mode.
+    pub(crate) fn too_large(&self, start: i128, wrap: bool) -> bool {
+        self.declined
+            .get(usize::from(wrap))
+            .is_some_and(|seen| seen.contains(&start))
+    }
+}
+
+/// Remembers the object at `start` (within [`DECLINED`]).
+pub(crate) fn remember(seen: &mut Vec<i128>, start: i128) {
+    if seen.len() < DECLINED && !seen.contains(&start) {
+        seen.push(start);
+    }
 }
 
 impl TreeKeys {
@@ -338,6 +361,7 @@ impl TreeKeys {
         let obj = self.obj.as_ref().map_or(0, |o| o.size());
         self.size
             .saturating_add((self.names.capacity() as u64).saturating_mul(16))
+            .saturating_add(2 * DECLINED as u64 * 16)
             .saturating_add(obj)
     }
 }
@@ -378,6 +402,7 @@ pub(crate) fn keys_of(tree: &Arc<Tree>) -> TreeKeys {
         names: Vec::new(),
         obj: None,
         size: 0,
+        declined: [Vec::new(), Vec::new()],
     })
 }
 
