@@ -12,7 +12,7 @@ use unityrs_anim::{
     humanoid::{
         body_avatar,
         body_model::{self as m, COEFFICIENTS, Edges, Matrix, Point, Points, Quaternion},
-        body_solve::{self as s, FREE_COMBINATIONS, HipsParent},
+        body_solve::{self as s, AnimatorBodyPose, FREE_COMBINATIONS, HipsParent},
         read_avatar, rig_avatar, slot_bone,
     },
 };
@@ -98,10 +98,13 @@ fn the_reference_vectors() {
             rotation: floats(&case["parent"]["rotation"]),
             scale: float(&case["parent"]["scale"]),
         };
+        // The reference's `h T_A`, as root projection makes it.
+        let human_scale = float(&case["human_scale"]);
         let found = s::solve_hips(
-            floats(&case["target"]),
-            floats(&case["rotation"]),
-            float(&case["human_scale"]),
+            AnimatorBodyPose {
+                translation: floats::<3>(&case["target"]).map(|t| human_scale * t),
+                rotation: floats(&case["rotation"]),
+            },
             &pose,
             &weights,
             &edges,
@@ -150,11 +153,13 @@ fn solve(
             }
         }
     }
+    // `h T_A` with `h = 2`.
     s::solve_hips_with(
         &table,
-        [0.1, 0.62, -0.05],
-        rotation,
-        2.,
+        AnimatorBodyPose {
+            translation: [0.2, 1.24, -0.1],
+            rotation,
+        },
         pose,
         &weights,
         &edges,
@@ -327,9 +332,10 @@ fn the_hips_frame_of_a_hierarchy() {
         let rest_frame = m::body_frame(&rest).unwrap();
         let (target, request) = ([0.25, 1., -0.5], about([0.1, 1., 0.2], 70.));
         let (t, q) = s::solve_hips(
-            target,
-            request,
-            1.,
+            AnimatorBodyPose {
+                translation: target,
+                rotation: request,
+            },
             &local,
             &weights,
             &edges,

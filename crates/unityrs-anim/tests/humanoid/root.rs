@@ -86,6 +86,7 @@ fn read(clip: Object) -> Clip {
 
 fn pose(clip: &Clip, time: f64) -> Result<([f64; 3], [f64; 4]), AnimError> {
     root::target_body_pose(clip, time, SCALE, &Meter::unlimited())
+        .map(|pose| (pose.translation, pose.rotation))
 }
 
 fn assert_close(got: ([f64; 3], [f64; 4]), want: [u64; 7]) {
@@ -113,7 +114,7 @@ fn fixture_number(key: &str) -> f32 {
 /// A variant's settings, from its name as E4's fixture spells it
 /// (`_flags`: `-o<bit>-y<bit>-xz<bit>`) and the fixture's level and
 /// orientation offset.
-fn variant_settings(name: &str) -> Vec<(&'static str, V)> {
+pub(super) fn variant_settings(name: &str) -> Vec<(&'static str, V)> {
     let mut extra = Vec::new();
     let mut flags = Vec::new();
     for (prefix, fields) in [
@@ -141,7 +142,7 @@ fn variant_settings(name: &str) -> Vec<(&'static str, V)> {
 }
 
 /// A clip with the body and motion slots at `POSE` and `MOTION_POSE`.
-fn full_clip(settings: &[(&'static str, V)]) -> Clip {
+pub(super) fn full_clip(settings: &[(&'static str, V)]) -> Clip {
     let mut dofs = BODY.to_vec();
     dofs.extend(MOTION);
     let mut values = POSE.to_vec();

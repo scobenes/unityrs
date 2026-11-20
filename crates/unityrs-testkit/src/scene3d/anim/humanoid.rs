@@ -85,6 +85,9 @@ pub struct Rig {
     /// translation, rotation and uniform scale: `GameObject`s `90 + k`
     /// named `Armature<k>`, prefixing every rig path.
     pub armature: Vec<([f32; 3], [f32; 4], f32)>,
+    /// With `hierarchy`, T-pose positions in the Animator frame that
+    /// replace `t_pose`'s, per `HumanBodyBones` bone.
+    pub positions: Vec<(usize, [f32; 3])>,
 }
 
 impl Default for Rig {
@@ -107,6 +110,7 @@ impl Default for Rig {
             scale: 1.,
             hierarchy: false,
             armature: Vec::new(),
+            positions: Vec::new(),
         }
     }
 }
@@ -529,10 +533,16 @@ fn arrange(rig: &Rig, avatar: &mut V) {
             *item = old[k].clone();
         }
     };
+    let place = |bone: usize| {
+        rig.positions
+            .iter()
+            .find(|&&(b, _)| b == bone)
+            .map_or_else(|| t_pose(bone), |&(_, at)| at)
+    };
     let pose = rows(avatar, &at(&["m_SkeletonPose", "data", "m_X"]));
     for (k, &bone) in bones.iter().enumerate() {
-        let from = parent(bone).map_or([0.; 3], t_pose);
-        let to = t_pose(bone);
+        let from = parent(bone).map_or([0.; 3], place);
+        let to = place(bone);
         if let Some(x) = pose.get_mut(k + 1) {
             set(x, "t", xyz("float3", &[0, 1, 2].map(|c| to[c] - from[c])));
         }

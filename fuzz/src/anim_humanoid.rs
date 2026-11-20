@@ -122,7 +122,8 @@ pub(crate) fn root_digest(
         for scale in [1., 1.75] {
             meter.count_decode(1)?;
             match root::target_body_pose(clip, time, scale, meter) {
-                Ok((t, q)) => {
+                Ok(pose) => {
+                    let (t, q) = (pose.translation, pose.rotation);
                     assert!(t.iter().all(|v| v.is_finite()), "finite T_A");
                     let length = q.iter().map(|v| v * v).sum::<f64>().sqrt();
                     assert!((length - 1.).abs() <= 1e-12, "unit B_A");
@@ -330,10 +331,14 @@ fn solve_digest(
             rotation,
             scale,
         };
+        // `m_Scale` applied once, as root projection applies it.
+        let human_scale = f64::from(body.scale());
+        let pose = body_solve::AnimatorBodyPose {
+            translation: target.map(|t| human_scale * t),
+            rotation: request,
+        };
         let found = body_solve::solve_hips(
-            target,
-            request,
-            f64::from(body.scale()),
+            pose,
             &local,
             &weights,
             &edges,
@@ -461,8 +466,9 @@ pub(crate) fn rigs(
 }
 
 /// The rig's Animator chain (`humanoid::chain`), held to a finite parent
-/// with a positive scale (the identity when plain), then its admission
-/// with each kept clip's admitted root settings.
+/// with a positive scale (the identity for a recorded rig with no node
+/// between), the recorded rig it names, then its admission with each kept
+/// clip's admitted root settings.
 fn chain_digest(
     body: &BodyAvatar<'_>,
     paths: &RigPaths<'_>,
@@ -474,7 +480,7 @@ fn chain_digest(
         Ok(found) => found,
         Err(e) => return soft(e, digest),
     };
-    let parent = found.parent;
+    let parent = found.parent();
     assert!(
         parent
             .position
@@ -482,23 +488,27 @@ fn chain_digest(
             .chain(&parent.rotation)
             .all(|v| v.is_finite())
             && parent.scale > 0.
-            && found.hips_scale > 0.,
+            && found.hips_scale() > 0.,
         "a finite chain"
     );
-    if found.feature == chain::ChainFeature::Plain {
-        assert_eq!(parent, body_solve::HipsParent::IDENTITY, "the plain chain");
+    let recorded = found.recorded();
+    if recorded.is_some_and(|(rig, _)| rig.between.is_none()) {
+        assert_eq!(parent, body_solve::HipsParent::IDENTITY, "a plain chain");
     }
     digest.tag((
-        discriminant(&found.feature),
+        recorded.map(|(rig, offset)| (rig.rig, offset)),
         parent.position.map(f64::to_bits),
         parent.rotation.map(f64::to_bits),
         parent.scale.to_bits(),
-        found.hips_scale.to_bits(),
+        found.hips_scale().to_bits(),
     ));
     for clip in kept {
         meter.count_decode(1)?;
-        if let Ok(settings) = root::root_settings(clip, meter) {
-            digest.tag(chain::admit_chain(&found, &settings).map_err(|e| e.to_string()));
+        match root::root_settings(clip, meter) {
+            Ok(settings) => {
+                digest.tag(chain::admit_chain(&found, &settings).map_err(|e| e.to_string()));
+            }
+            Err(e) => soft(e, digest)?,
         }
     }
     Ok(())

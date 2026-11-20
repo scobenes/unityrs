@@ -18,7 +18,8 @@
 //!   (`shared_transform`), as does a Transform below the hips whose parent
 //!   is not its skeleton parent's (`misparented_transform`).
 //! - **The solve.** `H_A = B_A F(T) F_h^-1`, `P_A = h T_A - k H_A c_h` with
-//!   `k = sigma_p s_h`, and the local hips `t = sigma_p^-1 R_p^-1 (P_A -
+//!   `k = sigma_p s_h` (`h T_A` the `AnimatorBodyPose`'s metres, which
+//!   root projection makes), and the local hips `t = sigma_p^-1 R_p^-1 (P_A -
 //!   t_p)`, `q = R_p^-1 H_A`, after the twist scope of `body_model`.
 //! - **Free combinations.** Freeze v8's design has full rank (29 of 29), so
 //!   `FREE_COMBINATIONS` is empty and no Avatar projects onto one; an edge
@@ -295,17 +296,25 @@ fn turn(m: &Matrix, v: Point) -> Point {
     m.map(|row| super::body_model::dot(row, v))
 }
 
+/// The body's pose in the Animator node's frame `A`: `T_A` in metres
+/// (`m_Scale` applied once, by root projection's `animator_body`) and
+/// `B_A`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimatorBodyPose {
+    pub translation: Point,
+    pub rotation: Quaternion,
+}
+
 /// 2.3: the hips' local translation and rotation placing the body at
-/// `(T_A, B_A) = (target, rotation)`, with `local` the body in the hips
-/// frame (`BodyAvatar::hips_points`), `rest_frame` the Avatar's `F(T)`
-/// (`body_frame` of `BodyAvatar::rest_points`), `human_scale` `m_Scale`
-/// and `hips_scale` the hips' own uniform rest scale. Freeze v8's
-/// coefficients; `solve_hips_with` takes others.
-#[allow(clippy::too_many_arguments, reason = "the reference's signature")]
+/// `pose`, with `local` the body in the hips frame
+/// (`BodyAvatar::hips_points`), `rest_frame` the Avatar's `F(T)`
+/// (`body_frame` of `BodyAvatar::rest_points`) and `hips_scale` the hips'
+/// own uniform rest scale. `pose.translation` is in metres, so `P_A =
+/// T_A - k H_A c_h` is the reference's `h T_A - k H_A c_h` with `h`
+/// applied by the projection. Freeze v8's coefficients; `solve_hips_with`
+/// takes others.
 pub fn solve_hips(
-    target: Point,
-    rotation: Quaternion,
-    human_scale: f64,
+    pose: AnimatorBodyPose,
     local: &Points,
     weights: &[f64; BODY_BONES],
     edges: &Edges,
@@ -315,9 +324,7 @@ pub fn solve_hips(
 ) -> Result<(Point, Quaternion), AnimError> {
     solve_hips_with(
         &COEFFICIENTS,
-        target,
-        rotation,
-        human_scale,
+        pose,
         local,
         weights,
         edges,
@@ -332,9 +339,7 @@ pub fn solve_hips(
 #[allow(clippy::too_many_arguments, reason = "the reference's signature")]
 pub fn solve_hips_with(
     table: &[(usize, usize, f64)],
-    target: Point,
-    rotation: Quaternion,
-    human_scale: f64,
+    pose: AnimatorBodyPose,
     local: &Points,
     weights: &[f64; BODY_BONES],
     edges: &Edges,
@@ -346,11 +351,14 @@ pub fn solve_hips_with(
     if !(positive(parent.scale) && positive(hips_scale)) {
         return Err(AnimError::UnsupportedAnimatorRoot);
     }
+    let AnimatorBodyPose {
+        translation: target,
+        rotation,
+    } = pose;
     finite(&target)?;
     finite(&rotation)?;
     finite(&parent.position)?;
     finite(&parent.rotation)?;
-    finite(&[human_scale])?;
     free_scope(edges)?;
     rest_frame_scope(rest_frame)?;
     frame_scope(local)?;
@@ -361,7 +369,7 @@ pub fn solve_hips_with(
     );
     let k = parent.scale * hips_scale;
     let turned = turn(&solved, c_h);
-    let p_a = super::body_model::zip3(target, turned, |t, h| human_scale * t - k * h);
+    let p_a = super::body_model::zip3(target, turned, |t, h| t - k * h);
     let inverse = conjugate(parent.rotation);
     let t = rotate(inverse, sub(p_a, parent.position)).map(|v| v / parent.scale);
     let Some(rotation) = quaternion(&solved) else {
@@ -382,3 +390,4 @@ pub fn solve_hips_with(
 }
 
 const _: () = crate::send_sync::<HipsParent>();
+const _: () = crate::send_sync::<AnimatorBodyPose>();
