@@ -150,6 +150,11 @@ jobs:
         run: cargo clippy --locked -p unityrs-texture --all-targets --features encode -- -D warnings
       - name: Test native encoders
         run: cargo test --locked -p unityrs-texture --features encode
+      # The benchmark fixtures, both scales, made on each architecture and OS
+      # and held to the one committed manifest (benchmarks/fixtures.json):
+      # their bytes are the same everywhere.
+      - name: Benchmark fixtures match the manifest
+        run: cargo test --locked --release -p unityrs-bench --test manifest -- --include-ignored
 
   # The batch engine's scale cases (production-sized and million-record
   # phase-6 runs, plus archive count, memory and digest boundaries, and
@@ -387,6 +392,34 @@ jobs:
         run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites scripts/tests=141'
       - name: Aggregate memory regeneration tooling
         run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/memory/tests=81'
+      # The benchmark harness's own tests (docs/plans/bench.md section 5.3):
+      # standard library only, so they need no oracle; an exact minimum.
+      - name: Self-tests (benchmark harness)
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/bench/tests=51'
+
+  # A PR that changes benchmarks/wall.json publishes a run: the file must be
+  # the artifact of the bench-wall.yml run it names, dispatched, successful,
+  # and measuring this code (docs/plans/bench.md section 5.2). A change that
+  # leaves wall.json alone has nothing to verify and passes.
+  bench-wall-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      - name: A committed wall.json is the named bench-wall.yml run's artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python tools/bench/bench.py check --wall-run --base "$BASE_SHA" --repo "$GITHUB_REPOSITORY"
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
   # section 3) and with UnityPy's samples, so the tests that need them run;
@@ -677,7 +710,7 @@ jobs:
           echo "64ac4614db292ae8c5aa26de0295bf1623dbb3985054cb656c55e67431def17c  $archive" | sha256sum -c -
           python scripts/webp_vendor.py verify "$archive"
       - name: Self-tests (parity tools, the perf tools and the LZMA spike's scripts)
-        run: python scripts/unittest-suites tools/parity/tests=848 tools/perf/tests=10 crates/unityrs-bench-lzma=8
+        run: python scripts/unittest-suites tools/parity/tests=849 tools/perf/tests=10 crates/unityrs-bench-lzma=8
       # The gate's rows that need no corpus (docs/plans/core.md sections 6
       # and 10), each a unityrs dump compared with the oracle's: compare.py
       # and value_cases.py exit non-zero on any difference, and compare.py's
