@@ -28,23 +28,62 @@ const OB_SIZE: usize = 2;
 /// is not here, nor the size and items in the two words after it.
 const OB_TYPE: usize = 1;
 
-/// Whether this interpreter's lists are laid out as [`OB_ITEM`] says,
-/// checked once (at import, `crate::native`): a `CPython` from 3.10 to 3.14
-/// on which a probe list's type, size and item array are found where a GIL
-/// build has them. A free-threaded build (`Py_GIL_DISABLED`; this abi3
-/// module declares `gil_used`, but such a build keeps its own object
-/// header even with the GIL on) has its type elsewhere ([`OB_TYPE`]), and
-/// fails the check. Any doubt, or a failure, answers `false`.
-pub(crate) fn slots(py: Python<'_>) -> bool {
+/// Proof that this interpreter's lists are laid out as [`OB_ITEM`] says:
+/// only [`slots`] makes one, and only where every check holds. Its field is
+/// private, so no other code can make one.
+#[derive(Clone, Copy)]
+pub(crate) struct Slots(());
+
+/// [`Slots`] where this interpreter is checked, once (at import,
+/// `crate::native`), to be all of: `CPython` (`sys.implementation.name`);
+/// a version from 3.10 to 3.14 (a later one is not taken on
+/// trust); a GIL build with the GIL on (`Py_GIL_DISABLED` unset or false,
+/// and `sys._is_gil_enabled()` true where it exists); and one where a probe
+/// list's type, size and item array are found where a GIL build has them.
+/// A free-threaded build (this abi3 module declares `gil_used`, but such a
+/// build keeps its own object header even with the GIL on) fails the build
+/// check, and would fail the probe too: its type is not at [`OB_TYPE`].
+/// Any doubt, or a failure, answers `None`.
+pub(crate) fn slots(py: Python<'_>) -> Option<Slots> {
     static OK: OnceLock<bool> = OnceLock::new();
-    *OK.get_or_init(|| probe(py).unwrap_or(false))
+    OK.get_or_init(|| interpreter(py).unwrap_or(false) && probe(py).unwrap_or(false))
+        .then_some(Slots(()))
 }
 
-fn probe(py: Python<'_>) -> Option<bool> {
+/// The interpreter checks of [`slots`], before the probe.
+fn interpreter(py: Python<'_>) -> Option<bool> {
+    let sys = py.import("sys").ok()?;
+    let name: String = sys
+        .getattr("implementation")
+        .ok()?
+        .getattr("name")
+        .ok()?
+        .extract()
+        .ok()?;
     let version = py.version_info();
-    if version.major != 3 || !(10..=14).contains(&version.minor) {
+    let listed = matches!((version.major, version.minor), (3, 10..=14));
+    if name != "cpython" || !listed {
         return Some(false);
     }
+    let disabled = py
+        .import("sysconfig")
+        .ok()?
+        .call_method1("get_config_var", ("Py_GIL_DISABLED",))
+        .ok()?
+        .is_truthy()
+        .ok()?;
+    if disabled {
+        return Some(false);
+    }
+    match sys.getattr("_is_gil_enabled") {
+        Ok(enabled) => enabled.call0().ok()?.is_truthy().ok(),
+        Err(_) => Some(true),
+    }
+}
+
+/// Whether a probe list's type, size and item array are where a GIL
+/// build of `CPython` 3.10 to 3.14 has them.
+fn probe(py: Python<'_>) -> Option<bool> {
     let (a, b) = (
         crate::direct_keys::name!(py, c"unityrs.direct_list.a").ok()?,
         crate::direct_keys::name!(py, c"unityrs.direct_list.b").ok()?,
@@ -80,15 +119,17 @@ pub(crate) struct NewList<'py> {
 }
 
 impl<'py> NewList<'py> {
-    /// `PyList_New(len)`.
+    /// `PyList_New(len)`, its slots stored directly where `slots` is
+    /// [`slots`]'s proof.
     #[inline]
-    pub(crate) fn new(py: Python<'py>, len: usize, fast: bool) -> Option<Self> {
+    pub(crate) fn new(py: Python<'py>, len: usize, slots: Option<Slots>) -> Option<Self> {
         let len = isize::try_from(len).ok()?;
         // SAFETY: a new list of `len` empty slots or null.
         let list = own(py, unsafe { ffi::PyList_New(len) })?;
-        let items = if fast && len > 0 {
-            // SAFETY: `fast` is `slots()`: the list's item array, of `len`
-            // slots, is this word.
+        let items = if slots.is_some() && len > 0 {
+            // SAFETY: a `Slots` exists only where [`slots`] found this
+            // interpreter's lists laid out so: the list's item array, of
+            // `len` slots, is this word.
             unsafe { *list.as_ptr().cast::<*mut *mut ffi::PyObject>().add(OB_ITEM) }
         } else {
             std::ptr::null_mut()

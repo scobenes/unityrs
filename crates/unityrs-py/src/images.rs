@@ -17,7 +17,6 @@ use unityrs_texture::{DecodeError, Format, Image, Mode, TextureFields};
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_image_decode, m)?)?;
-    m.add_function(wrap_pyfunction!(_image_frombytes, m)?)?;
     m.add_function(wrap_pyfunction!(_image_encode, m)?)?;
     m.add_function(wrap_pyfunction!(_sprite_render, m)?)?;
     m.add_function(wrap_pyfunction!(_image_resource, m)?)?;
@@ -191,21 +190,6 @@ fn _image_decode(
     reader: Option<&NativeObject>,
 ) -> PyResult<Py<PyAny>> {
     let meter = meter(reader);
-    let fields = (width, height, texture_format, platform);
-    let native = decode(py, data, fields, version, blob, &meter)?;
-    output(&native, &meter)
-}
-
-/// `_image_decode`'s image, as `(width, height, texture_format, platform)`.
-fn decode(
-    py: Python<'_>,
-    data: &Bound<'_, PyAny>,
-    (width, height, texture_format, platform): (i32, i32, i32, i32),
-    version: (u16, u16),
-    blob: Option<&Bound<'_, PyAny>>,
-    meter: &Arc<Meter>,
-) -> PyResult<Image> {
-    let meter = meter.clone();
     let data = crate::buffer_snapshot::BufferSnapshot::new(data, &meter)?;
     let blob = blob
         .map(|v| crate::buffer_snapshot::BufferSnapshot::new(v, &meter))
@@ -233,59 +217,8 @@ fn decode(
             Ok::<_, Failure>(image)
         })
     })?;
-    crate::worker_error::finish(native)
-}
-
-/// `_image_decode`, the step its caller then takes on `guard` for the
-/// pixels (`guard.step(0, len + 1024, len)`), and `frombytes(mode, (w, h),
-/// pixels)`, its Pillow image, with the same charges and refusals in the
-/// same order: Pillow copies the pixels from a read-only view of the
-/// decoded image's own storage, where `_image_decode` copies them into a
-/// `bytes` first (fresh memory per texture, which a VM pays for in page
-/// faults).
-#[pyfunction]
-#[pyo3(signature = (data, width, height, texture_format, version, platform, blob, reader, guard, frombytes))]
-#[allow(
-    clippy::too_many_arguments,
-    reason = "_image_decode's arguments, and the caller's guard and Pillow"
-)]
-fn _image_frombytes(
-    py: Python<'_>,
-    data: &Bound<'_, PyAny>,
-    width: i32,
-    height: i32,
-    texture_format: i32,
-    version: (u16, u16),
-    platform: i32,
-    blob: Option<&Bound<'_, PyAny>>,
-    reader: Option<&NativeObject>,
-    guard: &Bound<'_, PyAny>,
-    frombytes: &Bound<'_, PyAny>,
-) -> PyResult<Py<PyAny>> {
-    let meter = meter(reader);
-    let fields = (width, height, texture_format, platform);
-    let native = decode(py, data, fields, version, blob, &meter)?;
-    let len = native.pixels().len() as u64;
-    // `output`'s charge for its copy, refused or released before the step
-    // as there.
-    drop(
-        meter
-            .charge(len.saturating_add(1024))
-            .map_err(errors::charge)?,
-    );
-    guard.call_method1("step", (0, len.saturating_add(1024), len))?;
-    let size = (native.width(), native.height());
-    let view = crate::image_view::View::new(py, native.pixels())?;
-    let made = frombytes.call1((native.mode().name(), size, view.as_any()));
-    if !view.release() {
-        // Something still holds a buffer of the view: its pixels stay for
-        // as long as the process, uncharged, as a `bytes` of them held
-        // past `_image_decode` would.
-        let (pixels, charge) = native.into_parts();
-        std::mem::forget(pixels);
-        drop(charge);
-    }
-    made.map(Bound::unbind)
+    let native = crate::worker_error::finish(native)?;
+    output(&native, &meter)
 }
 
 #[pyfunction]

@@ -31,9 +31,10 @@
 //! at each step. Every Python object is made by a call checked for
 //! failure: a failed allocation gives up, and the full path meets it and
 //! raises; once the read is accepted, it raises.
+use crate::direct_classes::{classes, file_reader};
 use crate::direct_keys::{TreeKeys, name};
 use crate::direct_object::ObjMode;
-use pyo3::{ffi, prelude::*, sync::PyOnceLock, types::PyDict};
+use pyo3::{ffi, prelude::*, types::PyDict};
 use std::sync::Arc;
 use unityrs_core::{
     ObjectRef,
@@ -135,9 +136,9 @@ struct PySink<'a, 'py> {
     obj: Option<ObjMode<'py>>,
     /// Values built so far ([`Self::pace`]).
     paced: u32,
-    /// Whether new lists' slots are stored directly
+    /// Where new lists' slots are stored directly
     /// ([`crate::direct_list::slots`]).
-    slots: bool,
+    slots: Option<crate::direct_list::Slots>,
 }
 
 impl PySink<'_, '_> {
@@ -400,13 +401,16 @@ impl<'py> Sink for PySink<'_, 'py> {
 /// An attribute in an instance's `__dict__`, read with no code of the
 /// caller's run (the `__dict__` of an instance of a class of ours, a `str`
 /// key), as a strong reference taken in the lookup.
-fn field<'py>(d: &Bound<'py, PyDict>, name: &Bound<'py, PyAny>) -> Option<Bound<'py, PyAny>> {
+pub(crate) fn field<'py>(
+    d: &Bound<'py, PyDict>,
+    name: &Bound<'py, PyAny>,
+) -> Option<Bound<'py, PyAny>> {
     d.get_item(name).ok().flatten()
 }
 
 /// An instance's `__dict__`, as `object.__dict__` gives it (the attribute of
 /// every class here, none of which defines its own).
-fn instance_dict<'py>(obj: &Bound<'py, PyAny>) -> Option<Bound<'py, PyDict>> {
+pub(crate) fn instance_dict<'py>(obj: &Bound<'py, PyAny>) -> Option<Bound<'py, PyDict>> {
     // SAFETY: a live object; a new reference or null with an exception set.
     own(obj.py(), unsafe {
         ffi::PyObject_GenericGetDict(obj.as_ptr(), std::ptr::null_mut())
@@ -424,55 +428,6 @@ fn exact_int(v: &Bound<'_, PyAny>) -> Option<i128> {
         Ok(small) => Some(i128::from(small)),
         Err(_) => v.extract().ok(),
     }
-}
-
-/// The classes whose exact instances a direct read takes.
-struct Classes {
-    object: Py<PyAny>,
-    reader: Py<PyAny>,
-    file: Py<PyAny>,
-}
-
-static CLASSES: PyOnceLock<Classes> = PyOnceLock::new();
-
-/// `ObjectReader`, `ObjectFileReader` and `SerializedFile`.
-fn classes(py: Python<'_>) -> Option<&Classes> {
-    use crate::direct_keys::import_attr;
-    CLASSES
-        .get_or_try_init(py, || {
-            let files = name!(py, c"unityrs.files")?;
-            Ok::<_, PyErr>(Classes {
-                object: import_attr(py, files, name!(py, c"ObjectReader")?)?.unbind(),
-                reader: import_attr(
-                    py,
-                    name!(py, c"unityrs._object_reader")?,
-                    name!(py, c"ObjectFileReader")?,
-                )?
-                .unbind(),
-                file: import_attr(py, files, name!(py, c"SerializedFile")?)?.unbind(),
-            })
-        })
-        .ok()
-}
-
-/// The file's reader, where `ObjectReader.reader`'s first use on `me` (an
-/// object's `__dict__`) would only copy it to the object's `_reader`, as
-/// [`ready`] does: the object's file an exact `SerializedFile`, whose
-/// `reader` property returns the `ObjectFileReader` it holds.
-fn file_reader<'py>(
-    py: Python<'py>,
-    me: &Bound<'py, PyDict>,
-    classes: &Classes,
-) -> Option<Bound<'py, PyAny>> {
-    let assets = field(me, name!(py, c"assets_file").ok()?.as_any())?;
-    if !assets.get_type().is(&classes.file) {
-        return None;
-    }
-    let shared = field(
-        &instance_dict(&assets)?,
-        name!(py, c"_reader").ok()?.as_any(),
-    )?;
-    shared.get_type().is(&classes.reader).then_some(shared)
 }
 
 /// `reader.read_typetree()`'s dict, or with `wrap` its object

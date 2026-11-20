@@ -164,6 +164,37 @@ class DirectObject(unittest.TestCase):
         taken = [o._native.parse_direct(o, True, True) is not None for o in objs]
         self.assertEqual(taken, [True, True, False, False])
 
+    def test_a_replaced_reader_property_runs(self):
+        """Where the file has made its reader, a direct read copies it to
+        the object as the `reader` property would, unless either class's
+        property has been replaced: then the replacement runs."""
+        from unityrs.files import ObjectReader, SerializedFile
+
+        def first():
+            env = unityrs.Environment()
+            env.load_file(fixture(), name='f')
+            obj = sorted(env.objects, key=lambda o: o.path_id)[1]
+            obj.assets_file.reader
+            return obj
+
+        expected = first().read_typetree()
+        for cls in (ObjectReader, SerializedFile):
+            original = cls.__dict__['reader']
+            calls = []
+
+            def get(self, original=original):
+                calls.append(type(self).__name__)
+                return original.fget(self)
+
+            obj = first()
+            cls.reader = property(get, original.fset)
+            try:
+                with self.subTest(cls=cls.__name__):
+                    self.assertEqual(obj.read_typetree(), expected)
+                    self.assertEqual(calls, [cls.__name__])
+            finally:
+                cls.reader = original
+
     def test_work_and_memory_bounds_are_the_full_paths(self):
         data = fixture()
         for index in range(3):
