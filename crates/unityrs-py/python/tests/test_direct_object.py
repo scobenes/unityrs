@@ -327,6 +327,35 @@ class DirectObject(unittest.TestCase):
                 _testcapi.remove_mem_hooks()
             self.assertEqual(len(returns), 2)
 
+    def test_a_failed_list_allocation_raises_memory_error(self):
+        """A list of classes' objects whose allocation fails (after the
+        root's last child is made) raises `MemoryError`, never a
+        `PanicException` (PyO3's constructors panic on a null)."""
+        try:
+            import _testcapi
+        except ImportError:
+            self.skipTest('no _testcapi')
+        code = unityrs.classes.PPtr.__init__.__code__
+        env = unityrs.Environment()
+        env.load_file(fixture(), name='f')
+        obj = sorted(env.objects, key=lambda o: o.path_id)[0]
+        returns = []
+
+        def profile(frame, event, arg):
+            # The pointers: the game object's, then the two children's.
+            if event == 'return' and frame.f_code is code:
+                returns.append(1)
+                if len(returns) == 3:
+                    _testcapi.set_nomemory(0, 1)
+        sys.setprofile(profile)
+        try:
+            with self.assertRaises(MemoryError):
+                obj._native.parse_direct(obj, True, True)
+        finally:
+            sys.setprofile(None)
+            _testcapi.remove_mem_hooks()
+        self.assertEqual(len(returns), 3)
+
     def test_work_and_memory_bounds_are_the_full_paths(self):
         data = fixture()
         for index in range(3):

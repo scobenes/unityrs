@@ -457,7 +457,7 @@ impl<'py> ObjMode<'py> {
                         .iter()
                         .map(|v| part(&made, v))
                         .collect::<PyResult<Vec<_>>>()?;
-                    pyo3::types::PyList::new(py, items)?.into_any()
+                    list_raised(py, items)?
                 }
                 Make::Pair([first, second]) => {
                     let (first, second) = (part(&made, first)?, part(&made, second)?);
@@ -470,14 +470,35 @@ impl<'py> ObjMode<'py> {
     }
 }
 
+/// A new list of `items`, a failed allocation raised (`PyList::new`
+/// panics on one).
+fn list_raised<'py>(py: Python<'py>, items: Vec<Bound<'py, PyAny>>) -> PyResult<Bound<'py, PyAny>> {
+    let len = isize::try_from(items.len())
+        .map_err(|_| pyo3::exceptions::PyOverflowError::new_err("a list too long"))?;
+    // SAFETY: a new list of `len` empty slots, or null with an exception
+    // set.
+    let list = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyList_New(len)) }?;
+    for (at, item) in (0..len).zip(items) {
+        // SAFETY: `at` runs over the new list's slots once each; the call
+        // takes the item's reference. Nothing runs between the list's
+        // making and its filling.
+        unsafe { ffi::PyList_SetItem(list.as_ptr(), at, item.into_ptr()) };
+    }
+    Ok(list)
+}
+
 /// `key` set to `value` among a dict's `items`, as `PyDict_SetItem` sets
-/// it (the keys are the tree's interned `str`s, alike only when the same).
+/// it: the keys are exact `str`s (`direct_keys::named`), alike when equal
+/// in value (the `assetsfile` added to a pointer and a field of that name
+/// being one key).
 fn put_field<'py>(
     items: &mut Vec<(Bound<'py, PyAny>, Bound<'py, PyAny>)>,
     key: Bound<'py, PyAny>,
     value: Bound<'py, PyAny>,
 ) {
-    match items.iter_mut().find(|(k, _)| k.is(&key)) {
+    // Exact `str`s: comparing them runs no Python code.
+    let same = |k: &Bound<'py, PyAny>| k.is(&key) || k.eq(&key).unwrap_or(false);
+    match items.iter_mut().find(|(k, _)| same(k)) {
         Some(item) => item.1 = value,
         None => items.push((key, value)),
     }

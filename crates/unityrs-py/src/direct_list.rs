@@ -52,11 +52,13 @@ pub(crate) fn slots(py: Python<'_>) -> Option<Slots> {
 
 /// The interpreter checks of [`slots`], before the probe.
 fn interpreter(py: Python<'_>) -> Option<bool> {
-    let sys = py.import("sys").ok()?;
-    let name: String = sys
-        .getattr("implementation")
+    // Every name interned (`name!`), and every call fallible, so a failed
+    // allocation answers `None`, never a panic.
+    use crate::direct_keys::{import_attr, name};
+    let sys = name!(py, c"sys").ok()?;
+    let name: String = import_attr(py, sys, name!(py, c"implementation").ok()?)
         .ok()?
-        .getattr("name")
+        .getattr(name!(py, c"name").ok()?)
         .ok()?
         .extract()
         .ok()?;
@@ -65,11 +67,13 @@ fn interpreter(py: Python<'_>) -> Option<bool> {
     if name != "cpython" || !listed {
         return Some(false);
     }
-    let disabled = py
-        .import("sysconfig")
-        .ok()?
-        .call_method1("get_config_var", ("Py_GIL_DISABLED",))
-        .ok()?
+    let get = import_attr(
+        py,
+        name!(py, c"sysconfig").ok()?,
+        name!(py, c"get_config_var").ok()?,
+    )
+    .ok()?;
+    let disabled = crate::direct::call1(py, &get, name!(py, c"Py_GIL_DISABLED").ok()?)?
         .is_truthy()
         .ok()?;
     if disabled {
@@ -80,7 +84,7 @@ fn interpreter(py: Python<'_>) -> Option<bool> {
     if version.minor < 13 {
         return Some(true);
     }
-    sys.getattr("_is_gil_enabled")
+    import_attr(py, sys, name!(py, c"_is_gil_enabled").ok()?)
         .ok()?
         .call0()
         .ok()?

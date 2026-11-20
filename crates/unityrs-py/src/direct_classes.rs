@@ -16,7 +16,11 @@ pub(crate) struct Classes {
 
 static CLASSES: PyOnceLock<Classes> = PyOnceLock::new();
 
-/// `ObjectReader`'s own dict's entries for [`LOOKUP`] as `unityrs`'s
+/// `ObjectReader`'s own dict's entries for `reader`, `__getattribute__`
+/// and `__getattr__` (what decides how `obj.reader` is found: the
+/// property, and the class's own attribute hooks; with only `object`
+/// after it in the MRO, whose own cannot change, these are the ones that
+/// can) as `unityrs`'s
 /// import made them (`None` for one it lacked), and its `reader`
 /// property's getter's code ([`_direct_originals`]).
 static ORIGINAL: PyOnceLock<Original> = PyOnceLock::new();
@@ -24,27 +28,29 @@ static ORIGINAL: PyOnceLock<Original> = PyOnceLock::new();
 /// [`ORIGINAL`]'s entries, and the getter's code.
 type Original = ([Option<Py<PyAny>>; 3], Py<PyAny>);
 
-/// What decides how `obj.reader` is found: the `reader` property, and the
-/// class's own attribute hooks (with only `object` after it in the MRO,
-/// whose own cannot change, these are the ones that can).
-const LOOKUP: [&str; 3] = ["reader", "__getattribute__", "__getattr__"];
-
 /// Called once by `unityrs/__init__.py`, as it imports `files`, with
-/// `ObjectReader`: its [`LOOKUP`] entries and its `reader` getter's code
+/// `ObjectReader`: those entries and its `reader` getter's code
 /// kept as the originals. A later call changes nothing.
 #[pyfunction]
 pub(crate) fn _direct_originals(object: &Bound<'_, PyAny>) -> PyResult<()> {
     let py = object.py();
-    let dict = object.getattr("__dict__")?;
+    let dict = object.getattr(name!(py, c"__dict__")?)?;
+    let keys = [
+        name!(py, c"reader")?,
+        name!(py, c"__getattribute__")?,
+        name!(py, c"__getattr__")?,
+    ];
     let mut kept: [Option<Py<PyAny>>; 3] = Default::default();
-    for (slot, key) in kept.iter_mut().zip(LOOKUP) {
-        let key = pyo3::types::PyString::new(py, key);
-        *slot = dict.get_item(&key).ok().map(Bound::unbind);
+    for (slot, key) in kept.iter_mut().zip(keys) {
+        *slot = dict.get_item(key).ok().map(Bound::unbind);
     }
     let reader = kept[0]
         .as_ref()
         .ok_or_else(|| pyo3::exceptions::PyTypeError::new_err("no reader property"))?;
-    let code = reader.bind(py).getattr("fget")?.getattr("__code__")?;
+    let code = reader
+        .bind(py)
+        .getattr(name!(py, c"fget")?)?
+        .getattr(name!(py, c"__code__")?)?;
     let _ = ORIGINAL.set(py, (kept, code.unbind()));
     Ok(())
 }
@@ -83,7 +89,7 @@ pub(crate) fn classes(py: Python<'_>) -> Option<&Classes> {
 /// made, so `obj.reader` runs the code it ran then: checked before the
 /// property is used, on every read. Its MRO is still `(ObjectReader,
 /// object)` as then (the same tuple; `object` takes no attributes), its
-/// own dict's [`LOOKUP`] entries the very objects kept (or still absent),
+/// own dict's three entries the very objects kept (or still absent),
 /// read from the dict without running any descriptor, the `reader`
 /// getter's `__code__` the very code kept, and the class has no `_reader`
 /// (no descriptor stands between the getter and the instance's `_reader`).

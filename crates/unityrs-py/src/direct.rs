@@ -80,6 +80,20 @@ fn scalar(py: Python<'_>, v: Scalar) -> Option<Bound<'_, PyAny>> {
 
 pub(crate) use crate::direct_list::list_of;
 
+/// `f(arg)`; `None` on a failure (taken).
+pub(crate) fn call1<'py>(
+    py: Python<'py>,
+    f: &Bound<'py, PyAny>,
+    arg: &Bound<'py, PyAny>,
+) -> Option<Bound<'py, PyAny>> {
+    // SAFETY: one live item; a new tuple or null.
+    let args = own(py, unsafe { ffi::PyTuple_Pack(1, arg.as_ptr()) })?;
+    // SAFETY: live objects; a new reference or null with an exception set.
+    own(py, unsafe {
+        ffi::PyObject_Call(f.as_ptr(), args.as_ptr(), std::ptr::null_mut())
+    })
+}
+
 /// A `pair`'s tuple of two items made, a failure raised.
 pub(crate) fn pair_raised<'py>(
     py: Python<'py>,
