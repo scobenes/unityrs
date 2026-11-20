@@ -18,7 +18,7 @@ use unityrs_core::{
 const VALUE: u64 = 256;
 
 /// Objects built between releases of the GIL while rendering.
-const CHUNK: u32 = 8192;
+pub(crate) const CHUNK: u32 = 8192;
 
 /// Counts built objects; every [`CHUNK`], detaches briefly so a large
 /// render does not keep other Python threads waiting for its whole length.

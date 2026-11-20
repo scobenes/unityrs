@@ -616,6 +616,8 @@ class ObjectReader:
         if as_dict is not None:
             wrap = not as_dict
         with self.assets_file._sync_owner._lock:
+            if nodes is None and (value := self._native.parse_direct(self, check_read, bool(wrap))) is not None:
+                return value  # The full path below, read directly where nothing of it differs.
             from ._reader_snapshot import uses_original, read_replacement
             if not uses_original(self) or not self.byte_size:
                 return read_replacement(self, nodes, wrap, check_read)
