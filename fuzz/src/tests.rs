@@ -620,7 +620,7 @@ fn humanoid_root_seeds_project() {
         assert!(projected >= 6 && projected % 6 == 0, "{name}: {projected}");
         seeds += 1;
     }
-    assert!(seeds >= 10, "the root seeds: {seeds}");
+    assert!(seeds >= 48, "the root seeds: {seeds}");
 }
 
 #[test]

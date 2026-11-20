@@ -267,6 +267,34 @@ pub(crate) fn stream_kinds(
     Ok(kinds)
 }
 
+/// Whether each of the DOFs `dofs` that `m_IndexArray` maps has E4's
+/// exact binding key (path 0, class 95, its DOF as `attribute`,
+/// `customType` 8, not a discrete curve); an unmapped DOF is `true`.
+pub(crate) fn exact_bindings<const N: usize>(
+    dict: &Dict<'_, '_>,
+    index: &[i32],
+    counts: SlotCounts,
+    dofs: [usize; N],
+) -> Result<[bool; N], AnimError> {
+    let total = counts
+        .streamed
+        .checked_add(counts.dense)
+        .and_then(|n| n.checked_add(counts.constant))
+        .ok_or(AnimError::SlotOverflow)?;
+    let rows = check_bindings(dict, index, total)?;
+    let rows = rows.as_slice();
+    dict.meter
+        .count_decode((rows.len() as u64).saturating_mul(N as u64))?;
+    Ok(dofs.map(|dof| {
+        let Some(slot) = index.get(dof).and_then(|&slot| usize::try_from(slot).ok()) else {
+            return true;
+        };
+        rows.iter().any(|row| {
+            row.first == slot && row.exact && matches!(row.role, Role::Human(d) if d == dof)
+        })
+    }))
+}
+
 /// Whether the serialized `m_IndexArray` maps any DOF. Absent or
 /// non-integer arrays are left to the compiled reader's layout check.
 pub(crate) fn is_humanoid(dict: &Dict<'_, '_>, muscle: &Value) -> Result<bool, AnimError> {
@@ -482,6 +510,9 @@ struct Row {
     role: Role,
     /// How a streamed key of this row decodes; discrete rows keep raw bits.
     kind: BindingKind,
+    /// A humanoid DOF binding with E4's exact key: path 0, class 95,
+    /// `customType` 8, its DOF as `attribute`, and not a discrete curve.
+    exact: bool,
 }
 
 /// Read the binding rows by field name, so the 6000 `metaData` field does
@@ -519,6 +550,7 @@ fn check_bindings(
         let discrete =
             flag("isPPtrCurve")? || flag("isIntCurve")? || flag("isSerializeReferenceCurve")?;
         let transform = class == 4 || (class == 224 && (1..=4).contains(&attribute));
+        let mut exact = false;
         let (role, width, kind) = if class == 95 && custom == 8 {
             if attribute >= DOF_COUNT {
                 return Err(AnimError::UnknownHumanDof(attribute));
@@ -530,6 +562,8 @@ fn check_bindings(
             {
                 return Err(AnimError::ConflictingHumanMapping(attribute));
             }
+            // E4's key: path 0 and a float curve.
+            exact = dict.count(record, "path")? == 0 && !discrete;
             (Role::Human(attribute), 1, BindingKind::UnsupportedScalar)
         } else if transform {
             let width = match (custom, attribute) {
@@ -558,6 +592,7 @@ fn check_bindings(
             width,
             role,
             kind,
+            exact,
         })?;
         first = first.checked_add(width).ok_or(AnimError::SlotOverflow)?;
     }
