@@ -153,6 +153,26 @@ impl Dict {
         value: Out,
         at: u64,
     ) -> Result<(), ReadError> {
+        self.set_inline(work, key, slot, value, at)
+    }
+
+    /// [`Self::set`] inlined where it is called: UnityPyBoost's reader sets
+    /// each child where it reads it, its value moved into the entries
+    /// without a copy in between. The recursive reader calls [`Self::set`],
+    /// so its frames stay the size they were.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: a per-value call of the reader"
+    )]
+    #[inline(always)]
+    pub(crate) fn set_inline(
+        &mut self,
+        work: &mut Work<'_>,
+        key: NodeId,
+        slot: u32,
+        value: Out,
+        at: u64,
+    ) -> Result<(), ReadError> {
         steps(1);
         if let Some(pos) = self.position(slot).filter(|_| !self.preserve_fields) {
             // The value it replaces was built and is not kept.

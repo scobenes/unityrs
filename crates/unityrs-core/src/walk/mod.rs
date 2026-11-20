@@ -597,6 +597,7 @@ pub(crate) enum Out {
 
 impl Out {
     /// Appends to a list's or a tuple's items, the charge going along.
+    #[inline]
     pub(crate) fn push_to(self, items: &mut MeteredVec<Value>) -> Result<(), ChargeError> {
         match self {
             Self::Plain(v) => items.push(v),
@@ -605,6 +606,7 @@ impl Out {
     }
 
     /// Appends a dict entry, the charge going along.
+    #[inline]
     pub(crate) fn push_entry(
         self,
         entries: &mut MeteredVec<(NodeId, Value)>,
