@@ -770,10 +770,11 @@ Copyright (c) 2014 by Alastair Houghton.
 Copyright (c) 2020 by Pan Jing.
 
 crates/unityrs-texture/src/bcn.rs translates Pillow 9.5.0's BC1, BC2, BC3,
-BC4, BC5 and BC7 block decoders to Rust (src/libImaging/BcnDecode.c:
+BC4 and BC5 block decoders to Rust (src/libImaging/BcnDecode.c:
 decode_565, decode_bc1_color, decode_bc3_alpha, decode_bc2_block,
-decode_bc4_block, decode_bc5_block, decode_bc7_block with the tables it
-reads, and the block order of put_block and decode_bcn), so that a DXT1,
+decode_bc4_block, decode_bc5_block, and the block order of put_block and
+decode_bcn), and crates/unityrs-texture/src/bcn/bc7.rs its BC7 block
+decoder (decode_bc7_block with the tables it reads), so that a DXT1,
 DXT3, DXT5, BC4, BC5 or BC7 texture decodes to the pixels UnityPy 1.25.2
 gets from Pillow 9.5.0. BcnDecode.c's own header dedicates that file to the
 public domain (CC0); the port keeps the notice of the release it comes from
