@@ -154,6 +154,10 @@ mod body;
 mod body_model;
 #[path = "humanoid/body_solve.rs"]
 mod body_solve;
+#[path = "humanoid/root.rs"]
+mod root;
+#[path = "humanoid/root_drift.rs"]
+mod root_drift;
 
 fn muscle_field(clip: &mut Object, name: &str, value: V) {
     let V::Struct(_, root) = &mut clip.value else {

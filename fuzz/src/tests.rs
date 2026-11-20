@@ -583,6 +583,46 @@ fn humanoid_hierarchy_seeds_solve() {
     assert!(seeds >= 2, "the hierarchy seeds: {seeds}");
 }
 
+/// Each admitted root seed projects all six of its poses (three times, two
+/// human scales), each a finite translation and a unit quaternion (the
+/// target asserts those).
+#[test]
+fn humanoid_root_seeds_project() {
+    let mut seeds = 0;
+    for (name, case) in unityrs_testkit::fuzz::anim_humanoid_cases() {
+        if !name.contains("clip-root-") || case.meter != 0 {
+            continue;
+        }
+        let projected = std::sync::atomic::AtomicUsize::new(0);
+        crate::scene::check(&case.encode(), |case, limit| {
+            crate::scene::run_root(case, limit, |_, _, file, meter| {
+                let mut digest = crate::scene::Digest::default();
+                for object in file.objects() {
+                    if object.class_id() != 74 {
+                        continue;
+                    }
+                    let clip = match unityrs_anim::read_clip(&object, meter) {
+                        Ok(clip) => clip,
+                        Err(e) => return crate::scene::Outcome::anim_error(e),
+                    };
+                    match crate::anim_humanoid::root_digest(&clip, meter, &mut digest) {
+                        Ok(n) => {
+                            projected.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Err(e) => return crate::scene::Outcome::anim_error(e),
+                    }
+                }
+                crate::scene::Outcome::Done(digest.finish())
+            })
+        });
+        let projected = projected.into_inner();
+        // The check runs the case more than once; each run projects six.
+        assert!(projected >= 6 && projected % 6 == 0, "{name}: {projected}");
+        seeds += 1;
+    }
+    assert!(seeds >= 52, "the root seeds: {seeds}");
+}
+
 #[test]
 fn humanoid_check_runs_every_synthetic_seed_and_truncations() {
     let mut done = 0;

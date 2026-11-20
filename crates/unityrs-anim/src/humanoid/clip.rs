@@ -143,6 +143,12 @@ pub struct HumanoidClip {
 }
 
 impl HumanoidClip {
+    /// The serialized `m_IndexArray`, one runtime slot (or `ABSENT_SLOT`)
+    /// per DOF.
+    pub(crate) fn index(&self) -> &[i32] {
+        self.index.as_slice()
+    }
+
     /// Serialized storage counts in streamed, dense, constant order.
     #[must_use]
     pub const fn counts(&self) -> SlotCounts {
@@ -234,6 +240,59 @@ impl HumanoidClip {
             None
         }
     }
+}
+
+/// How each streamed slot of a humanoid clip's storage decodes: the
+/// binding rows' kinds, as `read` takes them.
+pub(crate) fn stream_kinds(
+    dict: &Dict<'_, '_>,
+    index: &[i32],
+    counts: SlotCounts,
+) -> Result<MeteredVec<BindingKind>, AnimError> {
+    let total = counts
+        .streamed
+        .checked_add(counts.dense)
+        .and_then(|n| n.checked_add(counts.constant))
+        .ok_or(AnimError::SlotOverflow)?;
+    let rows = check_bindings(dict, index, total)?;
+    let mut kinds = MeteredVec::with_capacity(dict.meter, counts.streamed)?;
+    for row in rows.as_slice() {
+        dict.meter.count_decode(row.width as u64)?;
+        for _ in 0..row.width {
+            if kinds.len() < counts.streamed {
+                kinds.push(row.kind)?;
+            }
+        }
+    }
+    Ok(kinds)
+}
+
+/// Whether each of the DOFs `dofs` that `m_IndexArray` maps has E4's
+/// exact binding key (path 0, class 95, its DOF as `attribute`,
+/// `customType` 8, not a discrete curve); an unmapped DOF is `true`.
+pub(crate) fn exact_bindings<const N: usize>(
+    dict: &Dict<'_, '_>,
+    index: &[i32],
+    counts: SlotCounts,
+    dofs: [usize; N],
+) -> Result<[bool; N], AnimError> {
+    let total = counts
+        .streamed
+        .checked_add(counts.dense)
+        .and_then(|n| n.checked_add(counts.constant))
+        .ok_or(AnimError::SlotOverflow)?;
+    let rows = check_bindings(dict, index, total)?;
+    let rows = rows.as_slice();
+    dict.meter
+        .count_decode((rows.len() as u64).saturating_mul(N as u64))?;
+    Ok(dofs.map(|dof| {
+        let Some(slot) = index.get(dof).and_then(|&slot| usize::try_from(slot).ok()) else {
+            return true;
+        };
+        rows.iter().any(|row| {
+            row.first == slot && row.exact && matches!(row.role, Role::Human(d) if d == dof)
+        })
+    }))
 }
 
 /// Whether the serialized `m_IndexArray` maps any DOF. Absent or
@@ -451,6 +510,9 @@ struct Row {
     role: Role,
     /// How a streamed key of this row decodes; discrete rows keep raw bits.
     kind: BindingKind,
+    /// A humanoid DOF binding with E4's exact key: path 0, class 95,
+    /// `customType` 8, its DOF as `attribute`, and not a discrete curve.
+    exact: bool,
 }
 
 /// Read the binding rows by field name, so the 6000 `metaData` field does
@@ -479,15 +541,26 @@ fn check_bindings(
         let class = class.as_i64().ok_or(AnimError::Malformed("typeID"))?;
         let custom = dict.int(record, "customType")?;
         let attribute = dict.count(record, "attribute")?;
-        let flag = |name| -> Result<bool, AnimError> {
-            Ok(dict
-                .field(record, name)?
-                .and_then(Value::as_u64)
-                .is_some_and(|value| value != 0))
+        // A discrete-curve flag as E4 reads it, Python's truth of the
+        // value: a boolean, or an integer of either sign, nonzero when
+        // set. Absent is `None`; any other value is malformed.
+        let flag = |name| -> Result<Option<bool>, AnimError> {
+            Ok(match dict.field(record, name)? {
+                None => None,
+                Some(Value::Bool(value)) => Some(*value),
+                Some(value) => match (value.as_i64(), value.as_u64()) {
+                    (Some(value), _) => Some(value != 0),
+                    (None, Some(_)) => Some(true),
+                    (None, None) => return Err(AnimError::Malformed(name)),
+                },
+            })
         };
-        let discrete =
-            flag("isPPtrCurve")? || flag("isIntCurve")? || flag("isSerializeReferenceCurve")?;
+        let pptr = flag("isPPtrCurve")?;
+        let discrete = pptr.unwrap_or(false)
+            || flag("isIntCurve")?.unwrap_or(false)
+            || flag("isSerializeReferenceCurve")?.unwrap_or(false);
         let transform = class == 4 || (class == 224 && (1..=4).contains(&attribute));
+        let mut exact = false;
         let (role, width, kind) = if class == 95 && custom == 8 {
             if attribute >= DOF_COUNT {
                 return Err(AnimError::UnknownHumanDof(attribute));
@@ -499,6 +572,9 @@ fn check_bindings(
             {
                 return Err(AnimError::ConflictingHumanMapping(attribute));
             }
+            // E4's key: path 0, `isPPtrCurve` present and clear, and no
+            // other discrete flag set.
+            exact = dict.count(record, "path")? == 0 && pptr == Some(false) && !discrete;
             (Role::Human(attribute), 1, BindingKind::UnsupportedScalar)
         } else if transform {
             let width = match (custom, attribute) {
@@ -527,6 +603,7 @@ fn check_bindings(
             width,
             role,
             kind,
+            exact,
         })?;
         first = first.checked_add(width).ok_or(AnimError::SlotOverflow)?;
     }
