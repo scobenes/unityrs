@@ -201,6 +201,39 @@ class DirectObject(unittest.TestCase):
         self.assertEqual(type(direct.m_LocalPosition).__name__, 'UnknownObject')
         self.assertEqual(shape(direct), shape(full))
 
+    def test_each_constructor_runs_once_after_the_read(self):
+        data = fixture()
+        classes = unityrs.classes
+        vector, transform = classes.Vector3f, classes.Transform
+        code = vector.__init__.__code__
+        calls, made = [], []
+
+        def profile(frame, event, arg):
+            if event == 'call' and frame.f_code is code:
+                calls.append(frame)
+
+        class Stateful(transform):
+            def __init__(self, **kwargs):
+                made.append(len(calls))
+                super().__init__(**kwargs)
+        # Read directly, then declined at the root once its fields' dicts
+        # are made: the full path calls each class, once.
+        for root, want in ((transform, []), (Stateful, [2])):
+            with self.subTest(root=root.__name__):
+                calls.clear()
+                made.clear()
+                classes.Transform = root
+                sys.setprofile(profile)
+                try:
+                    obj = read(data, 0, False)
+                finally:
+                    sys.setprofile(None)
+                    classes.Transform = transform
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(made, want)
+                self.assertIs(type(obj), root)
+                self.assertEqual(obj.m_LocalPosition.y, -2.0)
+
 
 if __name__ == '__main__':
     unittest.main()

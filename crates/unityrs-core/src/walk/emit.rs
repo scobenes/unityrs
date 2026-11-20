@@ -7,7 +7,7 @@
 //! objects as it reads, `TypeTreeHelper.cpp:702-883`).
 //!
 //! It reads only what it can read exactly as [`super::boost`] does and
-//! gives up (`None`) on anything else, before or during the read: a tree
+//! gives up (`Err`) on anything else, before or during the read: a tree
 //! with a `ReferencedObject`, a `ManagedReferencesRegistry` or a class
 //! whose children repeat a name ([`supported`]); a malformed `pair` or
 //! `Array` met; a read past the end, a negative length, a depth past
@@ -173,15 +173,19 @@ pub struct Emitted<O> {
 /// `sink`, or gives up (`None`): the module docs. It does not recurse: the
 /// values being read are a list of frames on the heap, at most
 /// `max_value_depth` of them, so a read takes the same stack at any depth.
+/// It does at most `max_work` work: it gives up on passing it. A read that
+/// gives up returns the work it did until then.
 pub fn emit<S: Sink>(
     data: &[u8],
     tree: &Tree,
     big: bool,
     floats: FloatMode,
     max_depth: u32,
+    max_work: u64,
     sink: &mut S,
-) -> Option<Emitted<S::Obj>> {
+) -> Result<Emitted<S::Obj>, u64> {
     let mut r = Emit {
+        max_work,
         bytes: data,
         pos: 0,
         big,
@@ -193,8 +197,10 @@ pub fn emit<S: Sink>(
         stack: Vec::with_capacity(64),
         sink,
     };
-    let value = r.read(tree.root())?;
-    Some(Emitted {
+    let Some(value) = r.read(tree.root()) else {
+        return Err(r.work);
+    };
+    Ok(Emitted {
         value,
         bytes_read: r.pos,
         work: r.work,
@@ -261,6 +267,8 @@ struct Emit<'a, S: Sink> {
     floats: FloatMode,
     tree: &'a Tree,
     work: u64,
+    /// The work it may do: past it, it gives up as soon as it passes it.
+    max_work: u64,
     max_depth: usize,
     /// The values being read, outermost first: the read's depth.
     frames: Vec<Frame<S::Obj>>,
@@ -351,6 +359,9 @@ impl<S: Sink> Emit<'_, S> {
         }
         let me = *self.tree.info(node)?;
         self.work = self.work.saturating_add(VALUE_WORK);
+        if self.work > self.max_work {
+            return None;
+        }
         // R15: a flagged node aligns after its value.
         let mut align = me.align;
         let out = match me.shape {
@@ -432,7 +443,12 @@ impl<S: Sink> Emit<'_, S> {
     fn run(&mut self, kind: Kind, width: u32, count: usize) -> Option<S::Obj> {
         let total = count.checked_mul(width as usize)?;
         let end = self.bound(total)?;
-        self.work = self.work.saturating_add(total as u64);
+        // Counted once the sink takes the run: a run it refuses is no
+        // work done.
+        let work = self.work.saturating_add(total as u64);
+        if work > self.max_work {
+            return None;
+        }
         let run = Run {
             kind,
             bytes: self.bytes.get(self.pos..end)?,
@@ -441,7 +457,9 @@ impl<S: Sink> Emit<'_, S> {
             floats: self.floats,
         };
         self.pos = end;
-        self.sink.run(run)
+        let out = self.sink.run(run)?;
+        self.work = work;
+        Some(out)
     }
 
     /// Opens the frame of an array read element by element: a `pair` run
@@ -535,6 +553,9 @@ impl<S: Sink> Emit<'_, S> {
                 None if *left > 0 => {
                     // The element's own value, as UnityPyBoost's reader counts it.
                     self.work = self.work.saturating_add(VALUE_WORK);
+                    if self.work > self.max_work {
+                        return None;
+                    }
                     Some(*a)
                 }
                 None => None,

@@ -13,24 +13,32 @@
 //! larger one is the full path's, which reads detached. Anywhere it gives
 //! up, `None` sends the caller to the full path, which then sets the
 //! position and reads (or fails) as it always has; what the direct read did
-//! leaves no trace but the Python objects it drops.
+//! leaves no trace but the Python objects it drops and the work it counts.
 //!
 //! Memory: the values are charged to the file's meter as they are made, at
 //! no less than the full path holds at its peak (its value tree and its
 //! conversion's staging, [`crate::value_render`]); a charge the meter has
 //! no room for gives up. The charge is returned when the call ends.
 //!
-//! Lists are made at their final length from items already built, so no
-//! list with an empty slot is ever visible to a collection; a dict is
-//! complete at each step.
-use crate::direct_object::{ObjKeys, ObjMode, keys_of};
+//! Work: the read stops as soon as its work passes what the open's
+//! allowance still holds; a read that gives up counts the work it did (as
+//! much as the allowance holds), which the full path then does again.
+//!
+//! Lists and tuples are made at their final length from items already
+//! built, and a primitive run's list is filled out of the collector's
+//! sight, so none with an empty slot is ever visible; a dict is complete
+//! at each step. Every Python object is made by a call checked for
+//! failure: a failed allocation gives up, and the full path meets it and
+//! raises; once the read is accepted, it raises.
+use crate::direct_keys::{TreeKeys, name};
+use crate::direct_object::ObjMode;
 use pyo3::{ffi, prelude::*, sync::PyOnceLock, types::PyDict};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::Arc;
 use unityrs_core::{
     ObjectRef,
     limits::{Charge, Meter},
     typetree::{NodeId, Tree},
-    walk::emit::{self, Run, Scalar, Sink},
+    walk::emit::{Run, Scalar, Sink},
 };
 
 /// A dict entry's, a list item's or a tuple item's charge: above the value
@@ -43,49 +51,6 @@ const ELEMENT: u64 = 128;
 const CONTAINER: u64 = 512;
 /// The call's own: the conversion's work list, key tables and staging.
 const BASE: u64 = 64 << 10;
-/// A tree of more rows than this is left to the full path (its names would
-/// be kept here).
-const MOST_ROWS: usize = 1 << 16;
-/// Trees whose names are kept between calls.
-const KEPT: usize = 64;
-
-/// A tree's key strings, made once and kept while the tree lives.
-struct TreeKeys {
-    tree: Weak<Tree>,
-    ok: bool,
-    names: Vec<Option<(Py<PyAny>, u64)>>,
-    /// Object mode's, made at its first read of the tree.
-    obj: Option<Arc<ObjKeys>>,
-}
-
-static NAMES: Mutex<Vec<TreeKeys>> = Mutex::new(Vec::new());
-
-fn names_of(tree: &Arc<Tree>) -> TreeKeys {
-    let mut kept = NAMES.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(at) = kept
-        .iter()
-        .position(|n| std::ptr::eq(n.tree.as_ptr(), Arc::as_ptr(tree)))
-    {
-        return kept.swap_remove(at);
-    }
-    kept.retain(|n| n.tree.strong_count() > 0);
-    drop(kept);
-    TreeKeys {
-        tree: Arc::downgrade(tree),
-        ok: tree.list().rows().len() <= MOST_ROWS && emit::supported(tree),
-        names: Vec::new(),
-        obj: None,
-    }
-}
-
-fn keep(names: TreeKeys) {
-    let mut kept = NAMES.lock().unwrap_or_else(PoisonError::into_inner);
-    if kept.len() >= KEPT {
-        kept.remove(0);
-    }
-    kept.push(names);
-}
-
 /// Owns a new reference, or takes the exception of a null one: the full
 /// path meets the same failure, and raises it.
 pub(crate) fn own(py: Python<'_>, ptr: *mut ffi::PyObject) -> Option<Bound<'_, PyAny>> {
@@ -114,7 +79,7 @@ fn scalar(py: Python<'_>, v: Scalar) -> Option<Bound<'_, PyAny>> {
 /// A list of `items`, each moved in. The items are all made before the
 /// list is, and nothing allocates while its slots are filled, so no list
 /// with an empty slot is ever reachable.
-fn list_of<'py>(
+pub(crate) fn list_of<'py>(
     py: Python<'py>,
     items: impl ExactSizeIterator<Item = Bound<'py, PyAny>>,
 ) -> Option<Bound<'py, PyAny>> {
@@ -128,12 +93,26 @@ fn list_of<'py>(
     Some(list)
 }
 
+/// A `pair`'s tuple of two items made.
+pub(crate) fn pair<'py>(
+    py: Python<'py>,
+    first: &Bound<'py, PyAny>,
+    second: &Bound<'py, PyAny>,
+) -> Option<Bound<'py, PyAny>> {
+    // SAFETY: two live items; a new tuple holding them, or null.
+    own(py, unsafe {
+        ffi::PyTuple_Pack(2, first.as_ptr(), second.as_ptr())
+    })
+}
+
 /// Python values for the core's direct read.
 struct PySink<'a, 'py> {
     py: Python<'py>,
     tree: &'a Tree,
-    /// Each key node's name and its bytes.
+    /// Each key node's name and its bytes' length; what they hold of their
+    /// own.
     names: &'a mut Vec<Option<(Py<PyAny>, u64)>>,
+    size: &'a mut u64,
     meter: &'a Arc<Meter>,
     charge: Option<Charge>,
     reserved: u64,
@@ -141,7 +120,7 @@ struct PySink<'a, 'py> {
     /// The conversion's decode work: a string's bytes four times, bytes'
     /// once ([`crate::value_render`]); in object mode also `build`'s.
     work: u64,
-    obj: Option<ObjMode<'a, 'py>>,
+    obj: Option<ObjMode<'py>>,
     /// Values built so far ([`Self::pace`]).
     paced: u32,
 }
@@ -201,25 +180,29 @@ impl PySink<'_, '_> {
         grown
     }
 
-    /// The key node's name, made once per tree.
-    fn name(&mut self, key: NodeId) -> Option<(*mut ffi::PyObject, u64)> {
+    /// The key node's name, made once per tree, and the charge for its
+    /// bytes, made before it is.
+    fn name(&mut self, key: NodeId) -> Option<*mut ffi::PyObject> {
         let at = key.0 as usize;
-        if let Some(Some((name, len))) = self.names.get(at) {
-            return Some((name.as_ptr(), *len));
+        if let Some(Some((name, bytes))) = self.names.get(at) {
+            let name = name.as_ptr();
+            let charge = bytes.saturating_mul(8);
+            return self.bump(charge).then_some(name);
         }
         let bytes = self.tree.list().name(key);
-        let len = isize::try_from(bytes.len()).ok()?;
-        // SAFETY: the slice is borrowed for the call; the handler is static.
-        let made = own(self.py, unsafe {
-            ffi::PyUnicode_DecodeUTF8(bytes.as_ptr().cast(), len, c"surrogateescape".as_ptr())
-        })?;
+        if !self.bump((bytes.len() as u64).saturating_mul(8)) {
+            return None;
+        }
+        let (made, _) = crate::direct_keys::text(self.py, bytes)?;
         if self.names.len() <= at {
             self.names.resize_with(at + 1, || None);
         }
+        *self.size = self
+            .size
+            .saturating_add(crate::direct_keys::own_bytes(bytes.len()));
         let ptr = made.as_ptr();
-        let size = bytes.len() as u64;
-        *self.names.get_mut(at)? = Some((made.unbind(), size));
-        Some((ptr, size))
+        *self.names.get_mut(at)? = Some((made.unbind(), bytes.len() as u64));
+        Some(ptr)
     }
 }
 
@@ -283,9 +266,9 @@ impl<'py> Sink for PySink<'_, 'py> {
             return None;
         }
         // Made from both items, ready: no tuple is visible half filled.
-        match pyo3::types::PyTuple::new(self.py, [first, second]) {
-            Ok(tuple) => Some(tuple.into_any()),
-            Err(_) => None,
+        match &mut self.obj {
+            Some(obj) => obj.tuple(self.py, &first, &second),
+            None => pair(self.py, &first, &second),
         }
     }
     fn dict(&mut self, node: NodeId, children: usize) -> Option<Self::Obj> {
@@ -295,7 +278,13 @@ impl<'py> Sink for PySink<'_, 'py> {
         if !self.bump(CONTAINER.saturating_add((children as u64).saturating_mul(ITEM))) {
             return None;
         }
-        let costs = self.obj.as_ref().map_or(0, |o| o.costs(node));
+        let costs = match &mut self.obj {
+            Some(obj) => {
+                obj.open(node)?;
+                obj.costs(node)
+            }
+            None => 0,
+        };
         let items = (children as u64).saturating_mul(256);
         if !self.built(costs, items) {
             return None;
@@ -304,20 +293,25 @@ impl<'py> Sink for PySink<'_, 'py> {
         own(self.py, unsafe { ffi::PyDict_New() })
     }
     fn set(&mut self, dict: &Self::Obj, key: NodeId, value: Self::Obj) -> Option<()> {
-        let (mut name, len) = self.name(key)?;
-        if let Some(obj) = &self.obj {
-            name = obj.key(key)?;
-        }
-        if !self.bump(len.saturating_mul(8)) {
+        let name = match &self.obj {
+            Some(obj) => {
+                let (name, bytes) = obj.key(key)?;
+                if !self.bump(bytes.saturating_mul(8)) {
+                    return None;
+                }
+                name
+            }
+            None => self.name(key)?,
+        };
+        // SAFETY: all three are live (the name is held by the tree's keys);
+        // the call takes its own references.
+        if unsafe { ffi::PyDict_SetItem(dict.as_ptr(), name, value.as_ptr()) } != 0 {
+            drop(PyErr::take(self.py));
             return None;
         }
-        // SAFETY: all three are live (the name is held by `names`); the
-        // call takes its own references.
-        if unsafe { ffi::PyDict_SetItem(dict.as_ptr(), name, value.as_ptr()) } == 0 {
-            Some(())
-        } else {
-            drop(PyErr::take(self.py));
-            None
+        match &mut self.obj {
+            Some(obj) => obj.set(dict, name, &value),
+            None => Some(()),
         }
     }
     fn list(&mut self, items: std::vec::Drain<'_, Self::Obj>) -> Option<Self::Obj> {
@@ -328,7 +322,10 @@ impl<'py> Sink for PySink<'_, 'py> {
         if !self.built(n, n) {
             return None;
         }
-        list_of(self.py, items)
+        match &mut self.obj {
+            Some(obj) => obj.list(self.py, items),
+            None => list_of(self.py, items),
+        }
     }
     fn close(&mut self, node: NodeId, dict: Self::Obj) -> Option<Self::Obj> {
         if !self.pace(1) {
@@ -337,14 +334,14 @@ impl<'py> Sink for PySink<'_, 'py> {
         let Some(obj) = &mut self.obj else {
             return Some(dict);
         };
-        let mut work = self.work;
-        let mut memory = 0;
-        let made = obj.construct(node, &dict, &mut work, &mut memory);
-        self.work = work;
+        // The class is called once the read is accepted
+        // ([`crate::direct_object`]); its call is charged now.
+        let (work, memory) = obj.close(node, &dict)?;
+        self.work = self.work.saturating_add(work);
         if !self.bump(memory) {
             return None;
         }
-        made
+        Some(dict)
     }
     fn run(&mut self, run: Run<'_>) -> Option<Self::Obj> {
         if !self.pace(run.len().saturating_add(1)) {
@@ -361,22 +358,27 @@ impl<'py> Sink for PySink<'_, 'py> {
         }
         let py = self.py;
         let len = isize::try_from(run.len()).ok()?;
-        // SAFETY: a new list of `len` empty slots or null. Between its
-        // creation and its last slot's filling only `bool`, `int` and
-        // `float` constructors run: they allocate no object the collector
-        // tracks, so no collection, finalizer or other Python code can run
-        // and reach the list, and the GIL is held throughout. A failed
-        // constructor leaves the list to be freed, which skips empty slots.
+        // SAFETY: a new list of `len` empty slots or null.
         let list = own(py, unsafe { ffi::PyList_New(len) })?;
+        // Out of the collector's sight until every slot is filled: only
+        // this function holds the list, so with its empty slots it is
+        // never visible to a collection or to any other code (with or
+        // without a GIL). A failed element drops it unseen, freeing the
+        // elements made; its dealloc skips empty slots.
+        // SAFETY: a list just made and tracked, held here only.
+        unsafe { ffi::PyObject_GC_UnTrack(list.as_ptr().cast()) };
         let mut at = 0;
-        run.each(|v| {
+        let filled = run.each(|v| {
             let item = scalar(py, v)?;
             // SAFETY: `at` is below `len` (the run has exactly `len`
             // elements); the call steals the item.
             unsafe { ffi::PyList_SetItem(list.as_ptr(), at, item.into_ptr()) };
             at += 1;
             Some(())
-        })?;
+        });
+        filled?;
+        // SAFETY: the list, complete, untracked above.
+        unsafe { ffi::PyObject_GC_Track(list.as_ptr().cast()) };
         Some(list)
     }
     fn room(&mut self, items: usize) -> bool {
@@ -385,13 +387,10 @@ impl<'py> Sink for PySink<'_, 'py> {
 }
 
 /// An attribute in an instance's `__dict__`, read with no code of the
-/// caller's run (the `__dict__` of an instance of a class of ours).
+/// caller's run (the `__dict__` of an instance of a class of ours, a `str`
+/// key), as a strong reference taken in the lookup.
 fn field<'py>(d: &Bound<'py, PyDict>, name: &Bound<'py, PyAny>) -> Option<Bound<'py, PyAny>> {
-    // SAFETY: both live; a borrowed reference or null, with no exception for
-    // a `str` key.
-    let item = unsafe { ffi::PyDict_GetItem(d.as_ptr(), name.as_ptr()) };
-    // SAFETY: a borrowed reference, owned from here.
-    unsafe { Bound::from_borrowed_ptr_or_opt(d.py(), item) }
+    d.get_item(name).ok().flatten()
 }
 
 /// An instance's `__dict__`, as `object.__dict__` gives it (the attribute of
@@ -420,13 +419,22 @@ static CLASSES: PyOnceLock<(Py<PyAny>, Py<PyAny>)> = PyOnceLock::new();
 
 /// `(ObjectReader, ObjectFileReader)`.
 fn classes(py: Python<'_>) -> Option<&(Py<PyAny>, Py<PyAny>)> {
+    use crate::direct_keys::import_attr;
     CLASSES
         .get_or_try_init(py, || {
-            let files = py.import("unityrs.files")?;
-            let readers = py.import("unityrs._object_reader")?;
             Ok::<_, PyErr>((
-                files.getattr("ObjectReader")?.unbind(),
-                readers.getattr("ObjectFileReader")?.unbind(),
+                import_attr(
+                    py,
+                    name!(py, c"unityrs.files")?,
+                    name!(py, c"ObjectReader")?,
+                )?
+                .unbind(),
+                import_attr(
+                    py,
+                    name!(py, c"unityrs._object_reader")?,
+                    name!(py, c"ObjectFileReader")?,
+                )?
+                .unbind(),
             ))
         })
         .ok()
@@ -451,10 +459,10 @@ pub(crate) fn read(
     // The full path's first step (`uses_original`): the `reader` property,
     // which makes the file's reader on its first use.
     if instance_dict(reader)
-        .and_then(|me| field(&me, pyo3::intern!(py, "_reader").as_any()))
+        .and_then(|me| field(&me, name!(py, c"_reader").ok()?.as_any()))
         .is_none()
     {
-        reader.getattr(pyo3::intern!(py, "reader"))?;
+        reader.getattr(name!(py, c"reader")?)?;
     }
     let Some((position, assets)) = ready(py, object, reader) else {
         return Ok(None);
@@ -478,27 +486,44 @@ pub(crate) fn read(
             }
         }
     };
-    let mut names = names_of(&tree);
-    if wrap && names.ok && names.obj.is_none() {
-        // Python's `clean_name` failing leaves the tree to the full path.
-        names.obj = keys_of(py, &tree);
-    }
-    let out = if !names.ok {
-        None
-    } else if wrap {
-        objects(py, object, &tree, &mut names, check_read, assets)
+    let mut keys = crate::direct_keys::keys_of(&tree);
+    let out = if keys.ok {
+        direct(
+            py,
+            object,
+            &tree,
+            &mut keys,
+            check_read,
+            wrap.then_some(assets),
+        )
     } else {
-        direct(py, object, &tree, &mut names.names, check_read, None)
+        None
     };
-    keep(names);
-    let Some(value) = out else {
+    crate::direct_keys::keep(keys);
+    let Some(done) = out else {
         return Ok(None);
     };
     set_end(py, object, &position)?;
+    let value = match done.obj {
+        // The classes, called now ([`crate::direct_object`]).
+        Some(obj) => obj.finish(py)?,
+        None => done.value,
+    };
     if wrap {
         // `result.set_object_reader(self)`, the full path's last step.
-        value.call_method1(pyo3::intern!(py, "set_object_reader"), (reader,))?;
+        let method = value.getattr(name!(py, c"set_object_reader")?)?;
+        // SAFETY: a live item; a new tuple or null with an exception set.
+        let args =
+            unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyTuple_Pack(1, reader.as_ptr())) }?;
+        // SAFETY: live objects; a new reference or null with an exception set.
+        unsafe {
+            Bound::from_owned_ptr_or_err(
+                py,
+                ffi::PyObject_Call(method.as_ptr(), args.as_ptr(), std::ptr::null_mut()),
+            )
+        }?;
     }
+    drop(done.charge);
     Ok(Some(value.unbind()))
 }
 
@@ -506,61 +531,72 @@ pub(crate) fn read(
 /// setter takes any position (the full path's checks, passed).
 fn set_end(py: Python<'_>, object: &ObjectRef, position: &Bound<'_, PyDict>) -> PyResult<()> {
     let end = object.info().byte_start + i128::from(object.info().byte_size);
-    let end = match i64::try_from(end) {
-        Ok(small) => small.into_pyobject(py)?.into_any(),
-        Err(_) => end.into_pyobject(py)?.into_any(),
-    };
-    position.set_item(pyo3::intern!(py, "_position"), end)
+    // SAFETY: a new int or null with an exception set.
+    let end = unsafe {
+        Bound::from_owned_ptr_or_err(
+            py,
+            match i64::try_from(end) {
+                Ok(small) => ffi::PyLong_FromLongLong(small),
+                // Past `i64`: within `u64` (a start and a size, both
+                // bounded by a file's length).
+                Err(_) => ffi::PyLong_FromUnsignedLongLong(u64::try_from(end).unwrap_or(u64::MAX)),
+            },
+        )
+    }?;
+    position.set_item(name!(py, c"_position")?, end)
 }
 
-/// Object mode: where the tree's keys allow it, and no ref type of the file
-/// is the tree's own list (whose references the full path would index).
-fn objects<'py>(
-    py: Python<'py>,
-    object: &ObjectRef,
-    tree: &Arc<Tree>,
-    names: &mut TreeKeys,
-    check_read: bool,
-    assets: Bound<'py, PyAny>,
-) -> Option<Bound<'py, PyAny>> {
-    let refs = object.file().ref_types().unwrap_or_default();
-    if refs.iter().any(|r| {
-        r.nodes
-            .as_ref()
-            .is_some_and(|n| std::ptr::from_ref(&**n) == std::ptr::from_ref(&**tree.list()))
-    }) {
-        return None;
-    }
-    let TreeKeys { names, obj, .. } = names;
-    let keys = obj.as_deref().filter(|k| k.ok)?;
-    let mode = ObjMode::new(py, keys, assets)?;
-    let fixed = mode.fixed(refs.len());
-    direct(py, object, tree, names, check_read, Some((mode, fixed)))
+/// A direct read accepted: its value, and in object mode the classes to
+/// call; its memory's charge, held until the call ends.
+struct Done<'py> {
+    value: Bound<'py, PyAny>,
+    obj: Option<ObjMode<'py>>,
+    charge: Option<Charge>,
 }
 
+/// The read, in object mode where `assets` is given: where the tree's keys
+/// allow it, and no ref type of the file is the tree's own list (whose
+/// references the full path would index).
 fn direct<'py>(
     py: Python<'py>,
     object: &ObjectRef,
     tree: &Arc<Tree>,
-    names: &mut Vec<Option<(Py<PyAny>, u64)>>,
+    keys: &mut TreeKeys,
     check_read: bool,
-    obj: Option<(ObjMode<'_, 'py>, u64)>,
-) -> Option<Bound<'py, PyAny>> {
+    assets: Option<Bound<'py, PyAny>>,
+) -> Option<Done<'py>> {
     let meter = object.file().meter();
+    let refs = object.file().ref_types().unwrap_or_default();
+    if assets.is_some()
+        && refs.iter().any(|r| {
+            r.nodes
+                .as_ref()
+                .is_some_and(|n| std::ptr::from_ref(&**n) == std::ptr::from_ref(&**tree.list()))
+        })
+    {
+        return None;
+    }
     let rows = tree.list().rows().len() as u64;
-    let (obj, fixed) = obj.map_or((None, 0), |(mode, fixed)| (Some(mode), fixed));
     // Object mode holds what the full path stages beside the value.
-    let staged = obj.as_ref().map_or(0, |mode| mode.keys.staged);
+    let staged = if assets.is_some() {
+        crate::direct_keys::staged(tree)
+    } else {
+        0
+    };
+    let TreeKeys {
+        names, obj, size, ..
+    } = keys;
     let mut sink = PySink {
         py,
         tree,
         names,
+        size,
         meter,
         charge: None,
         reserved: 0,
         need: 0,
         work: 0,
-        obj,
+        obj: None,
         paced: 0,
     };
     let held = BASE
@@ -571,10 +607,49 @@ fn direct<'py>(
         return None;
     }
     sink.need = held;
-    let (value, _) = object.emit_typetree(tree, check_read, &mut sink, |s| {
-        s.work.saturating_add(fixed)
-    })?;
-    Some(value)
+    let mut fixed = 0;
+    if let Some(assets) = assets {
+        let made = if let Some(made) = obj {
+            made.clone()
+        } else {
+            // Made within the reservation, as values are, and only where
+            // the work the full path counts for them fits.
+            if !sink.pace(usize::try_from(rows).unwrap_or(usize::MAX))
+                || crate::direct_keys::fixed_most(tree) > meter.work_left()
+            {
+                return None;
+            }
+            let made = crate::direct_keys::obj_keys(py, tree)?;
+            *obj = Some(made.clone());
+            made
+        };
+        if !made.ok {
+            return None;
+        }
+        let objects = ObjMode::new(py, tree.clone(), made, assets)?;
+        // The root's class, before anything is read.
+        objects.class(tree.root())?;
+        fixed = objects.fixed(refs.len());
+        sink.obj = Some(objects);
+    }
+    match object.emit_typetree_uncounted(tree, check_read, &mut sink, meter.work_left()) {
+        Err(work) => {
+            meter.count_work_up_to(work.saturating_add(sink.work));
+            None
+        }
+        Ok((value, _, work)) => {
+            let read = work.saturating_add(sink.work);
+            if !meter.try_count_work(read.saturating_add(fixed)) {
+                meter.count_work_up_to(read);
+                return None;
+            }
+            Some(Done {
+                value,
+                obj: sink.obj.take(),
+                charge: sink.charge.take(),
+            })
+        }
+    }
 }
 
 /// The object's tree and its reader's `__dict__` where every check of the
@@ -596,9 +671,9 @@ fn ready<'py>(
         return None;
     }
     let me = instance_dict(obj)?;
-    let assets = field(&me, pyo3::intern!(py, "assets_file").as_any())?;
+    let assets = field(&me, name!(py, c"assets_file").ok()?.as_any())?;
     let ad = instance_dict(&assets)?;
-    let key = pyo3::intern!(py, "_reader");
+    let key = name!(py, c"_reader").ok()?;
     let reader = if let Some(reader) = field(&me, key.as_any()) {
         reader
     } else {
@@ -618,18 +693,18 @@ fn ready<'py>(
     let has = |d: &Bound<'py, PyDict>, name: &Bound<'py, pyo3::types::PyString>| {
         field(d, name.as_any()).is_some()
     };
-    if has(&rd, pyo3::intern!(py, "read"))
-        || has(&rd, pyo3::intern!(py, "read_bytes"))
-        || has(&ad, pyo3::intern!(py, "_ref_types"))
-        || has(&me, pyo3::intern!(py, "_node"))
+    if has(&rd, name!(py, c"read").ok()?)
+        || has(&rd, name!(py, c"read_bytes").ok()?)
+        || has(&ad, name!(py, c"_ref_types").ok()?)
+        || has(&me, name!(py, c"_node").ok()?)
     {
         return None;
     }
-    let native = field(&ad, pyo3::intern!(py, "_native").as_any())?;
-    if !field(&rd, pyo3::intern!(py, "_native").as_any())?.is(&native) {
+    let native = field(&ad, name!(py, c"_native").ok()?.as_any())?;
+    if !field(&rd, name!(py, c"_native").ok()?.as_any())?.is(&native) {
         return None;
     }
-    let endian = field(&rd, pyo3::intern!(py, "_endian").as_any())?;
+    let endian = field(&rd, name!(py, c"_endian").ok()?.as_any())?;
     let want = if file.header().endian == unityrs_core::stream::Endian::Little {
         "<"
     } else {
@@ -639,21 +714,21 @@ fn ready<'py>(
     if endian.to_str().ok()? != want {
         return None;
     }
-    let size = exact_int(&field(&me, pyo3::intern!(py, "byte_size").as_any())?)?;
-    let start = exact_int(&field(&me, pyo3::intern!(py, "byte_start").as_any())?)?;
+    let size = exact_int(&field(&me, name!(py, c"byte_size").ok()?.as_any())?)?;
+    let start = exact_int(&field(&me, name!(py, c"byte_start").ok()?.as_any())?)?;
     if size != i128::from(info.byte_size) || start != info.byte_start {
         return None;
     }
-    let embedded = field(&me, pyo3::intern!(py, "_has_embedded_nodes").as_any())?;
+    let embedded = field(&me, name!(py, c"_has_embedded_nodes").ok()?.as_any())?;
     if !embedded.is(pyo3::types::PyBool::new(py, true).as_any()) {
         return None;
     }
-    let type_id = field(&me, pyo3::intern!(py, "type_id").as_any())?;
+    let type_id = field(&me, name!(py, c"type_id").ok()?.as_any())?;
     exact_int(&type_id)?;
-    let shared = field(&ad, pyo3::intern!(py, "_type_nodes").as_any())?
+    let shared = field(&ad, name!(py, c"_type_nodes").ok()?.as_any())?
         .cast_into_exact::<PyDict>()
         .ok()?;
-    let head = field(&ad, pyo3::intern!(py, "_head_nodes").as_any())?
+    let head = field(&ad, name!(py, c"_head_nodes").ok()?.as_any())?
         .cast_into_exact::<PyDict>()
         .ok()?;
     if !head.is_empty() || shared.contains(&type_id).ok()? {

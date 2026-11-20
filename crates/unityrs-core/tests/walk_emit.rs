@@ -126,20 +126,37 @@ fn replay(c: &Json, data: &Bytes, read: &mut usize) -> Option<String> {
         endian(c) == Endian::Big,
         options.floats,
         options.limits.max_value_depth,
+        u64::MAX,
         &mut sink,
     );
     match (got, want) {
-        (Some(got), Some(want)) => {
+        (Ok(got), Some(want)) => {
             *read += 1;
+            // Allowed a unit less work than it does, it gives up.
+            if let Some(less) = got.work.checked_sub(1) {
+                let mut sink = JsonSink::new(&tree);
+                let short = emit::emit(
+                    data,
+                    &tree,
+                    endian(c) == Endian::Big,
+                    options.floats,
+                    options.limits.max_value_depth,
+                    less,
+                    &mut sink,
+                );
+                if short.is_ok() {
+                    return Some(format!("{name}: read past its work allowance"));
+                }
+            }
             let have = json!([take(got.value), got.bytes_read, got.work]);
             let want = json!([enc(&want, want.value()), want.bytes_read, work]);
             (have != want).then(|| format!("{name}\n  want {want}\n  have {have}"))
         }
-        (Some(_), None) => Some(format!("{name}: read where UnityPyBoost's reader fails")),
-        (None, Some(_)) if emit::supported(&tree) => Some(format!(
+        (Ok(_), None) => Some(format!("{name}: read where UnityPyBoost's reader fails")),
+        (Err(_), Some(_)) if emit::supported(&tree) => Some(format!(
             "{name}: gave up a read UnityPyBoost's reader completes"
         )),
-        (None, _) => None,
+        (Err(_), _) => None,
     }
 }
 
@@ -255,9 +272,10 @@ fn gives_up_before_reading_what_cannot_fit() {
         false,
         ReadOptions::default().floats,
         512,
+        u64::MAX,
         &mut sink,
     );
-    assert!(got.is_none());
+    assert!(got.is_err());
     assert!(sink.rooms.is_empty(), "{:?}", sink.rooms);
 }
 

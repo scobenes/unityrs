@@ -398,6 +398,3 @@ fn read_method(kind: Kind, array: bool) -> &'static str {
 mod states;
 #[path = "boost_steps.rs"]
 mod steps;
-
-#[cfg(test)]
-pub(crate) use steps::OPEN_SIZE;

@@ -337,8 +337,10 @@ impl ObjectRef {
     /// reader) is read; a `check_read` mismatch gives up too. The read's
     /// work, and `extra_work` of the caller's, are counted on the file's
     /// meter in one check-and-add once the values are made; work the
-    /// allowance cannot hold gives up, counting nothing. Copies none of the
-    /// file's bytes out ([`crate::pin`]): the sink's values are its own.
+    /// allowance cannot hold gives up, counting nothing, and the read stops
+    /// as soon as its own work passes what the allowance holds. Copies none
+    /// of the file's bytes out ([`crate::pin`]): the sink's values are its
+    /// own.
     pub fn emit_typetree<S: crate::walk::emit::Sink>(
         &self,
         tree: &Tree,
@@ -346,37 +348,52 @@ impl ObjectRef {
         sink: &mut S,
         extra_work: impl FnOnce(&S) -> u64,
     ) -> Option<(S::Obj, i64)> {
+        let meter = self.file.meter();
+        let (value, bytes_read, work) = self
+            .emit_typetree_uncounted(tree, check_read, sink, meter.work_left())
+            .ok()?;
+        let work = work.checked_add(extra_work(sink))?;
+        meter.try_count_work(work).then_some((value, bytes_read))
+    }
+
+    /// [`Self::emit_typetree`]'s read, its work (at most `max_work`, or it
+    /// gives up) returned, not counted: the caller counts it. A read that
+    /// gives up returns the work it did (`Err`), for the caller to count.
+    pub fn emit_typetree_uncounted<S: crate::walk::emit::Sink>(
+        &self,
+        tree: &Tree,
+        check_read: bool,
+        sink: &mut S,
+        max_work: u64,
+    ) -> Result<(S::Obj, i64, u64), u64> {
         let info = self.info();
         let file = &self.file;
-        let meter = file.meter();
-        if info.byte_size == 0 || meter.work_used_up().is_some() {
-            return None;
+        if info.byte_size == 0 || file.meter().work_used_up().is_some() {
+            return Err(0);
         }
         let options = file.context().read_options();
         // UnityPy TypeTreeHelper.py:146-153: the memory reader's slice of
         // `byte_size` bytes from `byte_start`, as `read_with_fields` takes it.
         let kind = file.reader_kind();
-        let start = kind.seek(info.byte_start).ok()?;
+        let start = kind.seek(info.byte_start).map_err(|_| 0_u64)?;
         let (range, _) = kind
             .read(file.data().len(), start, i64::from(info.byte_size))
-            .ok()?;
-        let data = file.data().get(range)?;
+            .map_err(|_| 0_u64)?;
+        let data = file.data().get(range).ok_or(0_u64)?;
         let read = crate::walk::emit::emit(
             data,
             tree,
             file.header().endian == crate::stream::Endian::Big,
             options.floats,
             options.limits.max_value_depth,
+            max_work,
             sink,
         )?;
-        let bytes_read = i64::try_from(read.bytes_read).ok()?;
+        let bytes_read = i64::try_from(read.bytes_read).map_err(|_| read.work)?;
         if check_read && bytes_read != i64::from(info.byte_size) {
-            return None;
+            return Err(read.work);
         }
-        let work = read.work.checked_add(extra_work(sink))?;
-        meter
-            .try_count_work(work)
-            .then_some((read.value, bytes_read))
+        Ok((read.value, bytes_read, read.work))
     }
 
     /// `parse_as_dict(check_read=check_read)`: [`Self::read_typetree`] with

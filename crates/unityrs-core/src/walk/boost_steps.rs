@@ -24,10 +24,6 @@ use crate::typetree::{Kind, NodeId, NodeInfo, Shape, Tree};
 use crate::value::{ListIx, PrimArray, PrimRun, Value};
 use crate::walk::f32_bits;
 
-/// The bytes of one open value on the read's stack of them.
-#[cfg(test)]
-pub(crate) const OPEN_SIZE: usize = size_of::<Open>();
-
 /// A value whose children are being read.
 pub(super) struct Open {
     tree: Arc<Tree>,
@@ -40,6 +36,58 @@ pub(super) struct Open {
     /// ([`super::super::Work::enter_repeated`]).
     repeated: bool,
     state: State,
+}
+
+/// Open values kept on the native stack before any is kept on the heap.
+/// The recursive reader this one replaces charged nothing for a level;
+/// to this depth neither does this one, so a read this deep meets its
+/// memory bound where that reader did, with the same error at the same
+/// offset (`tests/walk_golden.rs`). A level deeper is charged as any of
+/// the read's heap is.
+const INLINE_OPENS: usize = 32;
+
+/// The read's open values, innermost last: the first [`INLINE_OPENS`] in
+/// place, any deeper on a charged heap stack (`spill`), grown only when a
+/// value opens past them.
+struct Opens {
+    inline: [Option<Open>; INLINE_OPENS],
+    len: usize,
+    spill: MeteredVec<Open>,
+}
+
+impl Opens {
+    fn new(spill: MeteredVec<Open>) -> Self {
+        Self {
+            inline: [const { None }; INLINE_OPENS],
+            len: 0,
+            spill,
+        }
+    }
+
+    fn push(&mut self, open: Open) -> Result<(), crate::limits::ChargeError> {
+        if let Some(slot) = self.inline.get_mut(self.len) {
+            *slot = Some(open);
+        } else {
+            self.spill.push(open)?;
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    fn pop(&mut self) -> Option<Open> {
+        let at = self.len.checked_sub(1)?;
+        let open = if at < INLINE_OPENS {
+            self.inline.get_mut(at)?.take()
+        } else {
+            self.spill.pop()
+        };
+        self.len = at;
+        open
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 }
 
 /// What a value's first look found.
@@ -72,9 +120,7 @@ impl Reader<'_, '_, '_, '_, '_> {
         lx: ListIx,
         node: NodeId,
     ) -> Result<Out, ReadError> {
-        // The open values, charged as any of the read's heap is (the
-        // recursion they replace took native stack).
-        let mut opens: MeteredVec<Open> = self.builder.vec();
+        let mut opens = Opens::new(self.builder.vec());
         let mut input = match self.head(t, lx, node, false) {
             Head::Read(out) => return out,
             Head::Open(open) => {

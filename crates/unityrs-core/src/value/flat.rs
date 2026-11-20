@@ -81,9 +81,10 @@ impl Pile {
     }
 }
 
-/// Dropped without recursion and without allocating: a value whose items
-/// hold values of their own is taken apart one value at a time. The items
-/// being dropped are a value's own vector; on reaching a value with items,
+/// Dropped without recursion and without allocating, in time linear in
+/// the values held: a value whose items hold values of their own is taken
+/// apart one value at a time, each value looked at once. The items being
+/// dropped are a value's own vector; on reaching a value with items,
 /// the rest of that vector goes into the emptied value, which goes where
 /// one of its items was taken from, and its items are dropped next. A value
 /// of any depth takes the same stack, so a read (and a failed read's
@@ -97,8 +98,8 @@ impl Drop for Value {
         let mut pile = self.take_items();
         let mut hand: Option<Value> = None;
         while let Some(mut value) = hand.take().or_else(|| pile.pop()) {
-            if !value.deep() {
-                // Its items hold nothing: dropping it drops them, one level.
+            if !value.nests() {
+                // A scalar or an empty container: nothing below it.
                 drop(value);
                 continue;
             }
@@ -160,5 +161,36 @@ impl crate::pin::Slices for Value {
                 | Self::Prims(_) => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{ListIx, Map, Value};
+    use crate::typetree::NodeId;
+
+    /// `vector<vector<Inner{int}>>`: `n` empty lists, then `n` lists of one
+    /// class each. Each nested value is taken apart once; a drop that looked
+    /// over the values still waiting at each one took `n * n` steps.
+    #[test]
+    fn a_wide_list_of_short_lists_drops_in_linear_time() {
+        let n = 200_000;
+        let mut outer = Vec::with_capacity(2 * n);
+        outer.extend((0..n).map(|_| Value::List(Vec::new())));
+        outer.extend((0..n).map(|_| {
+            Value::List(vec![Value::Dict(Map {
+                list: ListIx::default(),
+                entries: vec![(NodeId(0), Value::Int(1))],
+            })])
+        }));
+        let value = Value::List(outer);
+        let start = std::time::Instant::now();
+        drop(value);
+        let took = start.elapsed();
+        // Linear: milliseconds even unoptimized; quadratic: hours.
+        assert!(
+            took < std::time::Duration::from_secs(5),
+            "dropped in {took:?}"
+        );
     }
 }

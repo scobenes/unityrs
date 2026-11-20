@@ -352,11 +352,8 @@ fn a_list_read_past_its_first_reservation_holds_no_spare_item() {
                 // What the value holds, the buffer a growth moves out of,
                 // and a little for the read's own small charges a growth
                 // may overlap (far less than a growth past the length
-                // takes: `first * width` more), and UnityPyBoost's reader's
-                // stack of the values it has open (the root, the list, an
-                // element: its first growth's four).
-                let opens = heap_cost(u64::try_from(4 * super::boost::OPEN_SIZE).unwrap());
-                let most = used + heap_cost(u64::try_from(first * width).unwrap()) + 64 + opens;
+                // takes: `first * width` more).
+                let most = used + heap_cost(u64::try_from(first * width).unwrap()) + 64;
                 let held = peak(reader, &t, &data);
                 assert!(
                     held <= most,
