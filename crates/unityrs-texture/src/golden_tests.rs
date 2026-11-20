@@ -28,15 +28,22 @@
 //!   every anchor-index layout) and modes 4 and 5's rotations and index
 //!   selections, their other bits random;
 //! - PVRTC: `mode`, the modulation-mode bit set, and for 2bpp the
-//!   interpolation bits varied, so the missing weights occur often.
+//!   interpolation bits varied, so the missing weights occur often;
+//! - BC6H, unsigned and signed: `mode`, every block's mode drawn from the
+//!   14 legal ones; `edge`, a legal mode with its endpoint bytes each all
+//!   zeros, all ones or random, so the saturating and sign-extreme
+//!   endpoints occur often; `partition`, not drawn but walked in turn,
+//!   every legal mode and, in the two-region modes, every partition.
 //!
 //! The BC and PVRTC cases follow the rest (their seeds continue after
-//! them), PVRTC at sizes of its own, whose block counts are powers of two.
+//! them), PVRTC at sizes of its own, whose block counts are powers of two,
+//! and the BC6H cases follow those.
 //!
 //! A case records the first 128 bits of the sha256 of the image (its
 //! pixels, top row first) or
 //! the decode error's text; an HDR format's case, where one reserved block
-//! refuses the image, also each block's alone. `UNITYRS_GOLDEN_WRITE=1` rewrites the file
+//! refuses the image, also each block's alone (for BC6H, each block's
+//! binary16 values from `decode_bc6h_block`, or its error). `UNITYRS_GOLDEN_WRITE=1` rewrites the file
 //! instead of checking it.
 
 use std::collections::BTreeMap;
@@ -102,9 +109,10 @@ const FORMATS: [(&str, Format, &[&str]); 26] = {
 
 /// The BC and PVRTC formats, after every other case: name, format,
 /// generators.
-const LATER: [(&str, Format, &[&str]); 9] = {
+const LATER: [(&str, Format, &[&str]); 11] = {
     const BCN: &[&str] = &["random", "edge"];
     const PVRTC: &[&str] = &["random", "mode"];
+    const BC6H: &[&str] = &["random", "mode", "edge", "partition"];
     [
         ("DXT1", Format::Dxt1, BCN),
         ("DXT3", Format::Dxt3, BCN),
@@ -115,8 +123,18 @@ const LATER: [(&str, Format, &[&str]); 9] = {
         ("PVRTC_RGB2", Format::PvrtcRgb2, PVRTC),
         ("PVRTC_RGBA4", Format::PvrtcRgba4, PVRTC),
         ("BC7", Format::Bc7, &["partition"]),
+        ("BC6H", Format::Bc6h, BC6H),
+        ("BC6H_SIGNED", Format::Bc6h, BC6H),
     ]
 };
+
+/// BC6H's legal modes, by the number of their 2- or 5-bit prefix.
+const BC6H_MODES: [u8; 14] = [0, 1, 2, 3, 6, 7, 10, 11, 14, 15, 18, 22, 26, 30];
+
+/// Whether a legal BC6H mode has one region (no partition bits).
+fn bc6h_one_region(mode: u8) -> bool {
+    matches!(mode, 3 | 7 | 11 | 15)
+}
 
 /// PVRTC's sizes, whose block counts must be powers of two at both bit
 /// rates: edge blocks cut, and Morton's order square and not.
@@ -168,6 +186,7 @@ impl Target {
             Self::Format(name, _) if name.starts_with("EAC") => "eac",
             Self::Format(name, _) if name.starts_with("ETC") => "etc",
             Self::Format(name, _) if name.starts_with("PVRTC") => "pvrtc",
+            Self::Format(name, _) if name.starts_with("BC6H") => "bc6h",
             Self::Format(name, _) if !name.starts_with("ASTC") => "bcn",
             _ => "astc",
         }
@@ -361,6 +380,76 @@ fn bcn_block(rng: &mut Rng, generator: &str, bytes: usize, format: Format) -> Ve
     b
 }
 
+/// BC6H's every legal block layout, in the order `partition` walks them:
+/// mode, then (in the two-region modes) partition 0 to 31.
+fn bc6h_layouts() -> Vec<[u8; 2]> {
+    let mut out = Vec::new();
+    for mode in BC6H_MODES {
+        let partitions = if bc6h_one_region(mode) { 1 } else { 32 };
+        for p in 0..partitions {
+            out.push([mode, p]);
+        }
+    }
+    out
+}
+
+/// `bits` with BC6H mode `mode`'s prefix: 2 bits for modes 0 and 1, else 5.
+fn bc6h_with_mode(bits: u128, mode: u8) -> u128 {
+    let width = if mode < 2 { 2 } else { 5 };
+    (bits & !((1 << width) - 1)) | u128::from(mode)
+}
+
+/// A BC6H block under `generator`; `i` is its place in the image, which
+/// `partition` walks [`bc6h_layouts`] by.
+#[allow(clippy::cast_possible_truncation, reason = "a random byte")]
+fn bc6h_block(rng: &mut Rng, generator: &str, i: usize) -> Vec<u8> {
+    let random: Vec<u8> = (0..16).map(|_| rng.next_u64() as u8).collect();
+    let mut b: [u8; 16] = random.try_into().unwrap();
+    match generator {
+        "mode" => {
+            let mode = BC6H_MODES[rng.below(BC6H_MODES.len())];
+            b = bc6h_with_mode(u128::from_le_bytes(b), mode).to_le_bytes();
+        }
+        "edge" => {
+            let mode = BC6H_MODES[rng.below(BC6H_MODES.len())];
+            // The endpoints' bytes (every mode's fields end by bit 82).
+            for byte in &mut b[..11] {
+                *byte = [0, 0xff, *byte][rng.below(3)];
+            }
+            b = bc6h_with_mode(u128::from_le_bytes(b), mode).to_le_bytes();
+        }
+        "partition" => {
+            let layouts = bc6h_layouts();
+            let [mode, p] = layouts[i % layouts.len()];
+            let mut bits = bc6h_with_mode(u128::from_le_bytes(b), mode);
+            if !bc6h_one_region(mode) {
+                // The two-region modes' partition: bits 77 to 81.
+                bits = (bits & !(31 << 77)) | (u128::from(p) << 77);
+            }
+            b = bits.to_le_bytes();
+        }
+        _ => {}
+    }
+    b.to_vec()
+}
+
+/// A block's BC6H layout, read from its bits (independently of
+/// [`bc6h_layouts`]); `None` for a reserved mode.
+fn bc6h_layout_of(block: &[u8]) -> Option<[u8; 2]> {
+    let bits = u128::from_le_bytes(block.try_into().unwrap());
+    let mode = if bits & 3 < 2 { bits & 3 } else { bits & 31 };
+    let mode = u8::try_from(mode).unwrap();
+    if !BC6H_MODES.contains(&mode) {
+        return None;
+    }
+    let p = if bc6h_one_region(mode) {
+        0
+    } else {
+        u8::try_from((bits >> 77) & 31).unwrap()
+    };
+    Some([mode, p])
+}
+
 /// BC7's every legal block layout, in the order `partition` walks
 /// them: mode, partition (0 to 15 in mode 0, 0 to 63 in modes 1, 2, 3
 /// and 7, the partition fixing the anchor indices), rotation (modes 4 and
@@ -457,7 +546,9 @@ fn blocks(
         };
         let layouts = bc7_layouts();
         for i in 0..blocks {
-            if generator == "partition" {
+            if target.family() == "bc6h" {
+                data.extend(bc6h_block(&mut rng, generator, i));
+            } else if generator == "partition" {
                 data.extend(bc7_layout_block(&mut rng, &layouts, i));
             } else {
                 data.extend(make(&mut rng, generator, bytes, f));
@@ -493,6 +584,33 @@ fn run(
             all.update(decode(&data, w, h, f));
             for block in data.chunks(bytes) {
                 all.update(decode(block, usize::from(bw), usize::from(bh), f));
+            }
+            hex(&all.finalize()[..16])
+        }
+        // As the HDR formats: the image, then each block's binary16
+        // values, or its error.
+        Target::Format(name, _) if name.starts_with("BC6H") => {
+            let signed = name == "BC6H_SIGNED";
+            let mut all = Sha256::new();
+            let (iw, ih) = (i32::try_from(w).unwrap(), i32::try_from(h).unwrap());
+            let image = if signed {
+                crate::decode_bc6h_signed(&data, iw, ih, &meter)
+            } else {
+                crate::decode(Format::Bc6h, &data, iw, ih, &meter)
+            };
+            all.update(match image {
+                Ok(image) => hex(&Sha256::digest(image.pixels())[..16]),
+                Err(e) => format!("error: {e}"),
+            });
+            for block in data.as_chunks::<16>().0 {
+                match crate::decode_bc6h_block(block, signed) {
+                    Ok(values) => {
+                        for v in values.as_flattened() {
+                            all.update(v.to_le_bytes());
+                        }
+                    }
+                    Err(e) => all.update(format!("error: {e}")),
+                }
             }
             hex(&all.finalize()[..16])
         }
@@ -555,7 +673,7 @@ fn the_decoders_reproduce_the_golden_digests() {
         return;
     }
     let want: J = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    for family in ["astc", "astc-hdr", "etc", "eac", "bcn", "pvrtc"] {
+    for family in ["astc", "astc-hdr", "etc", "eac", "bcn", "pvrtc", "bc6h"] {
         assert!(
             counts[family] >= 10_000,
             "{family}: {} blocks",
@@ -583,7 +701,7 @@ fn the_bc7_cases_cover_every_mode_and_partition() {
     let mut pools = Pools::new();
     let (mut all, mut full) = (std::collections::BTreeSet::new(), 0);
     for (target, generator, seed, size) in cases() {
-        if generator != "partition" {
+        if generator != "partition" || target.name() != "BC7" {
             continue;
         }
         let (data, blocks) = blocks((&fixture, &mut pools), target, generator, seed, size);
@@ -602,4 +720,29 @@ fn the_bc7_cases_cover_every_mode_and_partition() {
     assert_eq!(per_mode, [16, 64, 64, 64, 8, 4, 1, 64]);
     assert_eq!(all.len(), 285);
     assert!(full >= 2, "{full} cases cover every layout");
+}
+
+/// The BC6H `partition` cases cover every legal layout, unsigned and
+/// signed: the 4 one-region modes and the 10 two-region modes' 32
+/// partitions each, 324 in all, and every case of 324 blocks or more
+/// covers them all.
+#[test]
+fn the_bc6h_cases_cover_every_mode_and_partition() {
+    let fixture = J::Null;
+    let mut pools = Pools::new();
+    let mut full = BTreeMap::new();
+    for (target, generator, seed, size) in cases() {
+        if generator != "partition" || target.family() != "bc6h" {
+            continue;
+        }
+        let (data, blocks) = blocks((&fixture, &mut pools), target, generator, seed, size);
+        let seen: std::collections::BTreeSet<_> = data
+            .chunks(16)
+            .map(|block| bc6h_layout_of(block).unwrap())
+            .collect();
+        assert_eq!(seen.len(), blocks.min(324));
+        *full.entry(target.name()).or_insert(0) += usize::from(seen.len() == 324);
+    }
+    assert_eq!(full.len(), 2, "{full:?}");
+    assert!(full.values().all(|&n| n >= 2), "{full:?}");
 }

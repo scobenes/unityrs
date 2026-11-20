@@ -187,6 +187,13 @@ fn raw(colour: [u8; 3]) -> Rgba {
 /// block row `by` of the padded image holds source rows `4 by` to
 /// `4 by + 3`, and source row `y` is output row `h - 1 - y`.
 pub(crate) fn decode(kind: Kind, data: &[u8], w: usize, h: usize, out: &mut [u8]) {
+    match kind {
+        Kind::EacR => return eac_image::<8, false>(data, w, h, out),
+        Kind::EacRSigned => return eac_image::<8, true>(data, w, h, out),
+        Kind::EacRg => return eac_image::<16, false>(data, w, h, out),
+        Kind::EacRgSigned => return eac_image::<16, true>(data, w, h, out),
+        _ => {}
+    }
     let block_bytes = match kind {
         Kind::Etc1 | Kind::Etc2 | Kind::Etc2A1 | Kind::EacR | Kind::EacRSigned => 8,
         Kind::Etc2A8 | Kind::EacRg | Kind::EacRgSigned => 16,
@@ -534,35 +541,89 @@ fn etc2_alpha(bytes: [u8; 8], px: &mut Block) {
     }
 }
 
+/// The EAC formats, `B`-byte blocks (8, R; 16, R then G), `S` signed:
+/// each block's channels' 8 values computed once ([`eac_values`]), as
+/// finished pixels (R with alpha 255, G in its byte), each pixel the
+/// union of its entries by its indices, read at fixed places, and written
+/// straight to its flipped row a block row at a time, as
+/// [`crate::bcn`]'s decoders write.
+fn eac_image<const B: usize, const S: bool>(data: &[u8], w: usize, h: usize, out: &mut [u8]) {
+    crate::place::put_block_data::<B, 16>(
+        out,
+        w.saturating_mul(4),
+        h,
+        (w.div_ceil(4), h.div_ceil(4)),
+        data.as_chunks::<B>().0,
+        |src, rows| {
+            let red = u64::from_be_bytes(half(src, 0));
+            let reds = eac_values::<S>(red).map(|v| v | 0xFF00_0000);
+            if B == 16 {
+                let green = u64::from_be_bytes(half(src, 8));
+                let greens = eac_values::<S>(green).map(|v| v << 8);
+                put_eac(rows, |at| {
+                    pick(&reds, index(red >> at & 7)) | pick(&greens, index(green >> at & 7))
+                });
+            } else {
+                put_eac(rows, |at| pick(&reds, index(red >> at & 7)));
+            }
+            true
+        },
+    );
+}
+
+/// A block's rows from `pixel`, the pixel whose 3-bit indices are at
+/// bit `at` of each channel's block (read big-endian): pixel (x, y)'s at
+/// `45 - 12 x - 3 y`, as `WRITE_ORDER_REV` places them.
+#[allow(clippy::inline_always, reason = "measured: every block's pixels")]
+#[inline(always)]
+fn put_eac(rows: [&mut [u8; 16]; 4], pixel: impl Fn(u32) -> u32) {
+    for (y, row) in (0u32..).zip(rows) {
+        let [a, b, c, d] = [0, 1, 2, 3].map(|x| u128::from(pixel(45 - 12 * x - 3 * y)));
+        *row = (a | b << 32 | c << 64 | d << 96).to_le_bytes();
+    }
+}
+
+/// The 8 values of an EAC block (read big-endian, its base the top byte),
+/// `S` signed, each a byte in a `u32`: `base * 8 + multiplier * modifier`,
+/// `+ 4` unsigned and `+ 1023` signed (a signed base of -128 is -127, the
+/// Tier C patch of the module docs), clamped to 0 to 2047 and kept as its
+/// high 8 bits; a multiplier of 0 reads as 1/8.
+#[allow(clippy::inline_always, reason = "measured: every block's values")]
+#[inline(always)]
+fn eac_values<const S: bool>(block: u64) -> [u32; 8] {
+    let [b0, b1, ..] = block.to_be_bytes();
+    let (base, offset) = if S {
+        (i32::from(i8::from_ne_bytes([b0])).max(-127), 1023)
+    } else {
+        (i32::from(b0), 4)
+    };
+    let multiplier = match i32::from(b1 >> 1 & 0x78) {
+        0 => 1,
+        m => m,
+    };
+    let table = pick(&ETC2_ALPHA_MODS, usize::from(b1 & 0xf));
+    let start = base * 8 + offset;
+    table.map(|m| {
+        let value = start + multiplier * m;
+        u32::try_from(value.clamp(0, 2047) >> 3).unwrap_or(0)
+    })
+}
+
 /// `decode_eac_block` (`signed` false) and `decode_eac_signed_block`: the
 /// `channel` of `px` from the EAC block (0, red, where texture2ddecoder
 /// writes its `BGRA` word's byte 2; 1, green, its byte 1). A signed base of
 /// -128 is -127 (the Tier C patch of the module docs).
 fn eac(bytes: [u8; 8], channel: usize, signed: bool, px: &mut Block) {
-    let (base, offset) = if signed {
-        (i32::from(i8::from_ne_bytes([bytes[0]])).max(-127), 1023)
+    let indices = alpha_indices(bytes);
+    let values = if signed {
+        eac_values::<true>(indices)
     } else {
-        (i32::from(bytes[0]), 4)
+        eac_values::<false>(indices)
     };
-    let multiplier = match i32::from(bytes[1] >> 1 & 0x78) {
-        0 => 1,
-        m => m,
-    };
-    let table = pick(&ETC2_ALPHA_MODS, usize::from(bytes[1] & 0xf));
-    let values = table.map(|m| {
-        let value = base * 8 + multiplier * m + offset;
-        if value < 0 {
-            0
-        } else if value >= 2048 {
-            0xff
-        } else {
-            low(value >> 3)
-        }
-    });
-    let mut indices = alpha_indices(bytes);
+    let mut indices = indices;
     for &at in &WRITE_ORDER_REV {
         if let Some(c) = px.get_mut(at).and_then(|p| p.get_mut(channel & 3)) {
-            *c = pick(&values, index(indices & 7) & 7);
+            *c = low(i32::try_from(pick(&values, index(indices & 7))).unwrap_or(0));
         }
         indices >>= 3;
     }
