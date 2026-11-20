@@ -666,29 +666,9 @@ impl Value {
 
 mod builder;
 mod edit;
+mod flat;
 
 pub use builder::ValueBuilder;
-
-impl crate::pin::Slices for Value {
-    /// Its strings, `TypelessData` and `vector<UInt8>` runs, depth first in
-    /// order.
-    fn each(&mut self, f: &mut dyn FnMut(crate::pin::Slice<'_>)) {
-        use crate::pin::Slice;
-        match self {
-            Self::Str(s) => f(Slice::Str(s)),
-            Self::Bytes(b) | Self::Prims(PrimArray::U8(b)) => f(Slice::Bytes(b)),
-            Self::List(items) => items.iter_mut().for_each(|v| v.each(f)),
-            Self::Tuple(items) => items.iter_mut().for_each(|v| v.each(f)),
-            Self::Dict(m) => m.entries.iter_mut().for_each(|(_, v)| v.each(f)),
-            Self::Bool(_)
-            | Self::Int(_)
-            | Self::UInt(_)
-            | Self::F32(_)
-            | Self::F64(_)
-            | Self::Prims(_) => {}
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests;

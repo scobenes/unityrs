@@ -64,12 +64,8 @@ pub(super) fn decode_layout(data: &[u8; 16], weights: WeightMode) -> Option<Layo
         usize::from(weights.bits) + high_size + if weights.dual_plane { 2 } else { 0 },
     );
     // quant_mode_table (astcenc_quantization.cpp:800-903) selects the
-    // highest precision fitting the available bits; compute that small
-    // search rather than retaining the encoder's 1280-byte table.
-    let quant = (4..=20)
-        .rev()
-        .filter_map(Quant::new)
-        .find(|q| q.bit_count(value_count).is_some_and(|n| n <= available))?;
+    // highest precision fitting the available bits.
+    let quant = ise::highest_fitting(value_count, available)?;
     Some(Layout {
         modes,
         partitions,

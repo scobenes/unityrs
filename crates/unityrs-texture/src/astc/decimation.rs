@@ -69,10 +69,13 @@ pub(super) fn entry(
 /// A texel's weight (0..64) from its entry and the grid's unquantised
 /// weights: astcenc_decompress_symbolic.cpp:106-119, rounded by its initial
 /// 8 and its `lsr<4>`.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured: the texel loop's hot call")]
+#[inline(always)]
 pub(super) fn infill(entry: [u8; ENTRY], grid: &[u8; 64]) -> u8 {
     let [i0, i1, i2, i3, c0, c1, c2, c3] = entry;
-    let at = |i: u8| u32::from(grid.get(usize::from(i)).copied().unwrap_or(0));
+    // An index with a non-zero contribution is inside its grid, below 64
+    // (`every_stored_index_is_inside_its_grid`), and an unused one is 0.
+    let at = |i: u8| u32::from(grid.get(usize::from(i & 63)).copied().unwrap_or(0));
     let sum = 8
         + at(i0) * u32::from(c0)
         + at(i1) * u32::from(c1)
