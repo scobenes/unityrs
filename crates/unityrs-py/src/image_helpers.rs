@@ -40,96 +40,94 @@ fn _texture_preprocess(
     let blob = blob
         .map(|b| crate::buffer_snapshot::BufferSnapshot::new(b, &meter))
         .transpose()?;
+    // Not recursive: inline on any thread (`worker::flat`).
     py.detach(move || {
-        crate::worker::run(
-            unityrs_core::limits::Limits::default().stack_needed(),
-            || {
-                let mut storage = MeteredVec::new(&meter);
-                let mut format_id = texture_format;
-                let mut width = width;
-                let mut height = height;
-                if platform_id == 11 && [7, 10, 28, 12, 29].contains(&format_id) {
-                    storage = platform::swap_bytes_for_xbox(&data, &meter)
-                        .map_err(|e| images::decode_error(e, format_id))?;
-                }
-                if platform_id == 38
-                    && let Some(blob) = &blob
-                    && let Some(bytes) = blob.get(8..12)
-                {
-                    let mut exponent_bytes = [0; 4];
-                    exponent_bytes.copy_from_slice(bytes);
-                    let exponent = u32::from_le_bytes(exponent_bytes);
-                    if exponent > 0 {
-                        format_id = match format_id {
-                            3 => 4,
-                            8 => 14,
-                            other => other,
-                        };
-                        let layout = platform::switch_layout(format_id, width, height, exponent)
-                            .map_err(|e| images::decode_error(e, format_id))?;
-                        storage = platform::deswizzle(&data, &layout, &meter)
-                            .map_err(|e| images::decode_error(e, format_id))?;
-                        let size = layout.padded_size();
-                        width = i32::try_from(size.0)
-                            .map_err(|_| PyValueError::new_err("image size"))?;
-                        height = i32::try_from(size.1)
-                            .map_err(|_| PyValueError::new_err("image size"))?;
-                    }
-                }
-                let mut format = Format::from_texture_format(format_id);
-                if version >= (2017, 3) {
-                    format = format.map(|f| match f {
-                        Format::Dxt1Crunched => Format::UnityDxt1Crunched,
-                        Format::Dxt5Crunched => Format::UnityDxt5Crunched,
+        crate::worker::flat(|| {
+            let mut storage = MeteredVec::new(&meter);
+            let mut format_id = texture_format;
+            let mut width = width;
+            let mut height = height;
+            if platform_id == 11 && [7, 10, 28, 12, 29].contains(&format_id) {
+                storage = platform::swap_bytes_for_xbox(&data, &meter)
+                    .map_err(|e| images::decode_error(e, format_id))?;
+            }
+            if platform_id == 38
+                && let Some(blob) = &blob
+                && let Some(bytes) = blob.get(8..12)
+            {
+                let mut exponent_bytes = [0; 4];
+                exponent_bytes.copy_from_slice(bytes);
+                let exponent = u32::from_le_bytes(exponent_bytes);
+                if exponent > 0 {
+                    format_id = match format_id {
+                        3 => 4,
+                        8 => 14,
                         other => other,
-                    });
+                    };
+                    let layout = platform::switch_layout(format_id, width, height, exponent)
+                        .map_err(|e| images::decode_error(e, format_id))?;
+                    storage = platform::deswizzle(&data, &layout, &meter)
+                        .map_err(|e| images::decode_error(e, format_id))?;
+                    let size = layout.padded_size();
+                    width =
+                        i32::try_from(size.0).map_err(|_| PyValueError::new_err("image size"))?;
+                    height =
+                        i32::try_from(size.1).map_err(|_| PyValueError::new_err("image size"))?;
                 }
-                if let Some(format) = format.filter(|f| f.is_crunched()) {
-                    storage = platform::unpack_crunch(
-                        if storage.is_empty() {
-                            &data
+            }
+            let mut format = Format::from_texture_format(format_id);
+            if version >= (2017, 3) {
+                format = format.map(|f| match f {
+                    Format::Dxt1Crunched => Format::UnityDxt1Crunched,
+                    Format::Dxt5Crunched => Format::UnityDxt5Crunched,
+                    other => other,
+                });
+            }
+            if let Some(format) = format.filter(|f| f.is_crunched()) {
+                storage = platform::unpack_crunch(
+                    if storage.is_empty() {
+                        &data
+                    } else {
+                        storage.as_slice()
+                    },
+                    format,
+                    usize::try_from(width).unwrap_or(0),
+                    usize::try_from(height).unwrap_or(0),
+                    &meter,
+                )
+                .map_err(|error| match error {
+                    unityrs_texture::DecodeError::Crunch(_) => {
+                        let name = if format.is_unity_crunched() {
+                            "unpack_unity_crunch"
                         } else {
-                            storage.as_slice()
-                        },
-                        format,
-                        usize::try_from(width).unwrap_or(0),
-                        usize::try_from(height).unwrap_or(0),
-                        &meter,
-                    )
-                    .map_err(|error| match error {
-                        unityrs_texture::DecodeError::Crunch(_) => {
-                            let name = if format.is_unity_crunched() {
-                                "unpack_unity_crunch"
-                            } else {
-                                "unpack_crunch"
-                            };
-                            PySystemError::new_err(errors::message(&format_args!(
-                                "<built-in function {name}> returned NULL without setting an exception"
-                            )))
-                        }
-                        other => images::decode_error(other, format_id),
-                    })?;
-                }
-                let bytes = if storage.is_empty() {
-                    &data
-                } else {
-                    storage.as_slice()
-                };
-                let _handoff = meter
-                    .charge(bytes.len() as u64 + 1024)
-                    .map_err(errors::charge)?;
-                let out = p::list()?;
-                for value in [
-                    p::bytes(bytes)?,
-                    p::int(i64::from(width))?,
-                    p::int(i64::from(height))?,
-                    p::int(i64::from(format_id))?,
-                ] {
-                    p::push(&out, &value)?;
-                }
-                Ok(out)
-            },
-        )
+                            "unpack_crunch"
+                        };
+                        PySystemError::new_err(errors::message(&format_args!(
+                            "<built-in function {name}> returned NULL without setting an exception"
+                        )))
+                    }
+                    other => images::decode_error(other, format_id),
+                })?;
+            }
+            let bytes = if storage.is_empty() {
+                &data
+            } else {
+                storage.as_slice()
+            };
+            let _handoff = meter
+                .charge(bytes.len() as u64 + 1024)
+                .map_err(errors::charge)?;
+            let out = p::list()?;
+            for value in [
+                p::bytes(bytes)?,
+                p::int(i64::from(width))?,
+                p::int(i64::from(height))?,
+                p::int(i64::from(format_id))?,
+            ] {
+                p::push(&out, &value)?;
+            }
+            Ok(out)
+        })
     })?
 }
 
