@@ -8,8 +8,10 @@
 //! replaced, a memory reader. The read keeps its values being read on the
 //! heap ([`unityrs_core::walk::emit`]), so it takes the same stack at any
 //! depth and runs on the caller's thread, which holds the GIL throughout,
-//! as UnityPyBoost's reader does. Anywhere it
-//! gives up, `None` sends the caller to the full path, which then sets the
+//! as UnityPyBoost's reader does: only for a read of fewer values than the
+//! full path's conversion builds between releases of the GIL (`CHUNK`); a
+//! larger one is the full path's, which reads detached. Anywhere it gives
+//! up, `None` sends the caller to the full path, which then sets the
 //! position and reads (or fails) as it always has; what the direct read did
 //! leaves no trace but the Python objects it drops.
 //!
@@ -21,7 +23,7 @@
 //! Lists are made at their final length from items already built, so no
 //! list with an empty slot is ever visible to a collection; a dict is
 //! complete at each step.
-use crate::direct_object::{ObjKeys, ObjMode};
+use crate::direct_object::{ObjKeys, ObjMode, keys_of};
 use pyo3::{ffi, prelude::*, sync::PyOnceLock, types::PyDict};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use unityrs_core::{
@@ -53,7 +55,7 @@ struct TreeKeys {
     ok: bool,
     names: Vec<Option<(Py<PyAny>, u64)>>,
     /// Object mode's, made at its first read of the tree.
-    obj: Option<ObjKeys>,
+    obj: Option<Arc<ObjKeys>>,
 }
 
 static NAMES: Mutex<Vec<TreeKeys>> = Mutex::new(Vec::new());
@@ -140,9 +142,24 @@ struct PySink<'a, 'py> {
     /// once ([`crate::value_render`]); in object mode also `build`'s.
     work: u64,
     obj: Option<ObjMode<'a, 'py>>,
+    /// Values built so far ([`Self::pace`]).
+    paced: u32,
 }
 
 impl PySink<'_, '_> {
+    /// Counts `n` more values to build: `false` past
+    /// [`crate::value_render::CHUNK`], where the full path's conversion
+    /// would first let other Python threads run. A read that large is left
+    /// to the full path, which reads detached; one this size holds the GIL
+    /// only as long as the full path's conversion does between releases.
+    #[inline]
+    fn pace(&mut self, n: usize) -> bool {
+        self.paced = self
+            .paced
+            .saturating_add(u32::try_from(n).unwrap_or(u32::MAX));
+        self.paced < crate::value_render::CHUNK
+    }
+
     /// Object mode's `build` for one more value: its task's reservation
     /// (256 of memory and of work) and `work` and `memory` more, as
     /// `_object.build` reserves them; `false` when the meter has no room.
@@ -210,12 +227,18 @@ impl<'py> Sink for PySink<'_, 'py> {
     type Obj = Bound<'py, PyAny>;
     #[inline]
     fn scalar(&mut self, v: Scalar) -> Option<Self::Obj> {
+        if !self.pace(1) {
+            return None;
+        }
         if !self.built(0, 0) {
             return None;
         }
         scalar(self.py, v)
     }
     fn str(&mut self, v: &[u8]) -> Option<Self::Obj> {
+        if !self.pace(1) {
+            return None;
+        }
         let n = v.len() as u64;
         if !self.bump(n.saturating_mul(8).saturating_add(64)) {
             return None;
@@ -231,6 +254,9 @@ impl<'py> Sink for PySink<'_, 'py> {
         })
     }
     fn bytes(&mut self, v: &[u8]) -> Option<Self::Obj> {
+        if !self.pace(1) {
+            return None;
+        }
         let n = v.len() as u64;
         if !self.bump(n.saturating_mul(4).saturating_add(64)) {
             return None;
@@ -246,6 +272,9 @@ impl<'py> Sink for PySink<'_, 'py> {
         })
     }
     fn tuple(&mut self, first: Self::Obj, second: Self::Obj) -> Option<Self::Obj> {
+        if !self.pace(1) {
+            return None;
+        }
         if !self.bump(CONTAINER + 2 * ITEM) {
             return None;
         }
@@ -260,6 +289,9 @@ impl<'py> Sink for PySink<'_, 'py> {
         }
     }
     fn dict(&mut self, node: NodeId, children: usize) -> Option<Self::Obj> {
+        if !self.pace(1) {
+            return None;
+        }
         if !self.bump(CONTAINER.saturating_add((children as u64).saturating_mul(ITEM))) {
             return None;
         }
@@ -289,6 +321,9 @@ impl<'py> Sink for PySink<'_, 'py> {
         }
     }
     fn list(&mut self, items: std::vec::Drain<'_, Self::Obj>) -> Option<Self::Obj> {
+        if !self.pace(1) {
+            return None;
+        }
         let n = (items.len() as u64).saturating_mul(256);
         if !self.built(n, n) {
             return None;
@@ -296,6 +331,9 @@ impl<'py> Sink for PySink<'_, 'py> {
         list_of(self.py, items)
     }
     fn close(&mut self, node: NodeId, dict: Self::Obj) -> Option<Self::Obj> {
+        if !self.pace(1) {
+            return None;
+        }
         let Some(obj) = &mut self.obj else {
             return Some(dict);
         };
@@ -309,6 +347,9 @@ impl<'py> Sink for PySink<'_, 'py> {
         made
     }
     fn run(&mut self, run: Run<'_>) -> Option<Self::Obj> {
+        if !self.pace(run.len().saturating_add(1)) {
+            return None;
+        }
         let count = run.len() as u64;
         if !self.bump(CONTAINER.saturating_add(count.saturating_mul(ELEMENT))) {
             return None;
@@ -401,17 +442,50 @@ pub(crate) fn read(
     check_read: bool,
     wrap: bool,
 ) -> PyResult<Option<Py<PyAny>>> {
-    let Some(found) = ready(py, object, reader) else {
+    let Some((object_class, _)) = classes(py) else {
         return Ok(None);
     };
-    let (tree, position, assets) = found;
+    if !reader.get_type().is(object_class) {
+        return Ok(None);
+    }
+    // The full path's first step (`uses_original`): the `reader` property,
+    // which makes the file's reader on its first use.
+    if instance_dict(reader)
+        .and_then(|me| field(&me, pyo3::intern!(py, "_reader").as_any()))
+        .is_none()
+    {
+        reader.getattr(pyo3::intern!(py, "reader"))?;
+    }
+    let Some((position, assets)) = ready(py, object, reader) else {
+        return Ok(None);
+    };
+    let tree = if let Some(tree) = object.compiled_tree() {
+        tree.clone()
+    } else {
+        // The type record's tree, compiled as the full path's read would
+        // compile it next (its position set, files/ObjectReader.py:244-262),
+        // a failure raised as that read raises it.
+        if object.serialized_type().is_none_or(|ty| ty.nodes.is_none()) {
+            return Ok(None);
+        }
+        match py.detach(|| object.tree(None)) {
+            Ok(Some(tree)) => tree.tree,
+            Ok(None) => return Ok(None),
+            Err(error) => {
+                set_end(py, object, &position)?;
+                let failure = crate::worker_error::Failure::parse(error, true);
+                return crate::worker_error::finish(Err(failure));
+            }
+        }
+    };
     let mut names = names_of(&tree);
+    if wrap && names.ok && names.obj.is_none() {
+        // Python's `clean_name` failing leaves the tree to the full path.
+        names.obj = keys_of(py, &tree);
+    }
     let out = if !names.ok {
         None
     } else if wrap {
-        if names.obj.is_none() {
-            names.obj = Some(ObjKeys::new(py, &tree)?);
-        }
         objects(py, object, &tree, &mut names, check_read, assets)
     } else {
         direct(py, object, &tree, &mut names.names, check_read, None)
@@ -420,19 +494,23 @@ pub(crate) fn read(
     let Some(value) = out else {
         return Ok(None);
     };
-    // `reset()` and `Position = byte_start + byte_size`: the memory
-    // reader's setter takes any position (the full path's checks, passed).
-    let end = object.info().byte_start + i128::from(object.info().byte_size);
-    let end = match i64::try_from(end) {
-        Ok(small) => small.into_pyobject(py)?.into_any(),
-        Err(_) => end.into_pyobject(py)?.into_any(),
-    };
-    position.set_item(pyo3::intern!(py, "_position"), end)?;
+    set_end(py, object, &position)?;
     if wrap {
         // `result.set_object_reader(self)`, the full path's last step.
         value.call_method1(pyo3::intern!(py, "set_object_reader"), (reader,))?;
     }
     Ok(Some(value.unbind()))
+}
+
+/// `reset()` and `Position = byte_start + byte_size`: the memory reader's
+/// setter takes any position (the full path's checks, passed).
+fn set_end(py: Python<'_>, object: &ObjectRef, position: &Bound<'_, PyDict>) -> PyResult<()> {
+    let end = object.info().byte_start + i128::from(object.info().byte_size);
+    let end = match i64::try_from(end) {
+        Ok(small) => small.into_pyobject(py)?.into_any(),
+        Err(_) => end.into_pyobject(py)?.into_any(),
+    };
+    position.set_item(pyo3::intern!(py, "_position"), end)
 }
 
 /// Object mode: where the tree's keys allow it, and no ref type of the file
@@ -454,7 +532,7 @@ fn objects<'py>(
         return None;
     }
     let TreeKeys { names, obj, .. } = names;
-    let keys = obj.as_mut().filter(|k| k.ok)?;
+    let keys = obj.as_deref().filter(|k| k.ok)?;
     let mode = ObjMode::new(py, keys, assets)?;
     let fixed = mode.fixed(refs.len());
     direct(py, object, tree, names, check_read, Some((mode, fixed)))
@@ -483,6 +561,7 @@ fn direct<'py>(
         need: 0,
         work: 0,
         obj,
+        paced: 0,
     };
     let held = BASE
         .saturating_add(rows.saturating_mul(16))
@@ -506,13 +585,12 @@ fn ready<'py>(
     py: Python<'py>,
     object: &ObjectRef,
     obj: &Bound<'py, PyAny>,
-) -> Option<(Arc<Tree>, Bound<'py, PyDict>, Bound<'py, PyAny>)> {
+) -> Option<(Bound<'py, PyDict>, Bound<'py, PyAny>)> {
     let file = object.file();
     let info = object.info();
     if info.byte_size == 0 || file.reader_kind() != unityrs_core::stream::ReaderKind::Memory {
         return None;
     }
-    let tree = object.compiled_tree()?.clone();
     let (object_class, reader_class) = classes(py)?;
     if !obj.get_type().is(object_class) {
         return None;
@@ -581,5 +659,5 @@ fn ready<'py>(
     if !head.is_empty() || shared.contains(&type_id).ok()? {
         return None;
     }
-    Some((tree, rd, assets))
+    Some((rd, assets))
 }

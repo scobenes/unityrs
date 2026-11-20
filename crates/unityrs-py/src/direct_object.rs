@@ -15,7 +15,8 @@
 //! module's reservations, each value's, each container's and each class's.
 use crate::python::held as h;
 use pyo3::{ffi, prelude::*, sync::PyOnceLock};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, PoisonError};
 use unityrs_core::typetree::{NodeId, Shape, Tree};
 
 /// One node's strings and costs, as the `_object` module has them.
@@ -29,7 +30,8 @@ struct NodeKeys {
     costs: u64,
 }
 
-/// A tree's object-mode keys, made once and kept with its dict keys.
+/// A tree's object-mode keys, made once for each tree of the same rows
+/// and kept with its dict keys.
 pub(crate) struct ObjKeys {
     pub(crate) ok: bool,
     nodes: Vec<NodeKeys>,
@@ -38,8 +40,56 @@ pub(crate) struct ObjKeys {
     /// The memory the full path charges for that staging, its references'
     /// index and its open (`object_nodes`, `object_result`).
     pub(crate) staged: u64,
-    /// Each node's class as last found, and its field count.
-    classes: Vec<Option<(Py<PyAny>, u64)>>,
+    /// Each node's class as last found, and its field count. Never held
+    /// while Python runs.
+    classes: Mutex<Vec<Option<Known>>>,
+}
+
+/// A class as last found for a node, and its field count.
+type Known = (Py<PyAny>, u64);
+
+/// Object-mode keys by their tree's rows: what they are made of.
+static KEYS: Mutex<Option<HashMap<Vec<u8>, Arc<ObjKeys>>>> = Mutex::new(None);
+/// Rows' keys kept at most.
+const KEPT: usize = 256;
+
+/// What a tree's object-mode keys are made of: each row's level, flags,
+/// type and name, and its children's count.
+fn rows_key(tree: &Tree) -> Option<Vec<u8>> {
+    let list = tree.list();
+    let mut key = Vec::new();
+    for (at, row) in list.rows().iter().enumerate() {
+        let kids = list.children(NodeId(u32::try_from(at).ok()?)).len();
+        key.extend_from_slice(&row.level.to_le_bytes());
+        key.extend_from_slice(&u64::try_from(kids).ok()?.to_le_bytes());
+        key.push(u8::from(row.aligned()));
+        for text in [row.ty.as_bytes(), row.name.as_bytes()] {
+            key.extend_from_slice(&u64::try_from(text.len()).ok()?.to_le_bytes());
+            key.extend_from_slice(text);
+        }
+    }
+    Some(key)
+}
+
+/// The keys of `tree`'s rows, made at the first tree of them.
+pub(crate) fn keys_of(py: Python<'_>, tree: &Tree) -> Option<Arc<ObjKeys>> {
+    let key = rows_key(tree)?;
+    let found = KEYS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(|kept| kept.get(&key).cloned());
+    if found.is_some() {
+        return found;
+    }
+    // Made unlocked: `clean_name` is Python's.
+    let made = Arc::new(ObjKeys::new(py, tree).ok()?);
+    let mut kept = KEYS.lock().unwrap_or_else(PoisonError::into_inner);
+    let kept = kept.get_or_insert_with(HashMap::new);
+    if kept.len() >= KEPT {
+        kept.clear();
+    }
+    Some(kept.entry(key).or_insert(made).clone())
 }
 
 static CLEAN: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
@@ -51,7 +101,7 @@ fn len_of(s: &Bound<'_, PyAny>) -> u64 {
 }
 
 impl ObjKeys {
-    pub(crate) fn new(py: Python<'_>, tree: &Tree) -> PyResult<Self> {
+    fn new(py: Python<'_>, tree: &Tree) -> PyResult<Self> {
         let clean = CLEAN.get_or_try_init(py, || {
             py.import("unityrs.classes._names")?
                 .getattr("clean_name")
@@ -111,7 +161,7 @@ impl ObjKeys {
         }
         Ok(Self {
             ok,
-            classes: (0..nodes.len()).map(|_| None).collect(),
+            classes: Mutex::new((0..nodes.len()).map(|_| None).collect()),
             nodes,
             fixed,
             staged,
@@ -121,7 +171,7 @@ impl ObjKeys {
 
 /// The object-mode part of a direct read.
 pub(crate) struct ObjMode<'a, 'py> {
-    pub(crate) keys: &'a mut ObjKeys,
+    pub(crate) keys: &'a ObjKeys,
     module: Bound<'py, PyAny>,
     assets: Bound<'py, PyAny>,
     empty: Bound<'py, PyAny>,
@@ -130,7 +180,7 @@ pub(crate) struct ObjMode<'a, 'py> {
 impl<'a, 'py> ObjMode<'a, 'py> {
     pub(crate) fn new(
         py: Python<'py>,
-        keys: &'a mut ObjKeys,
+        keys: &'a ObjKeys,
         assets: Bound<'py, PyAny>,
     ) -> Option<Self> {
         let module = MODULE
@@ -188,13 +238,22 @@ impl<'a, 'py> ObjMode<'a, 'py> {
         } else {
             self.module.getattr(nk.ty.bind(py)).ok()?
         };
-        let fields = match self.keys.classes.get(at)? {
-            Some((known, fields)) if known.is(&cls) => *fields,
-            _ => {
-                let fields = class_fields(&cls, pptr)?;
-                *self.keys.classes.get_mut(at)? = Some((cls.clone().unbind(), fields));
-                fields
-            }
+        let lock = || {
+            self.keys
+                .classes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        };
+        let known = match lock().get(at)? {
+            Some((known, fields)) if known.is(&cls) => Some(*fields),
+            _ => None,
+        };
+        let fields = if let Some(fields) = known {
+            fields
+        } else {
+            let fields = class_fields(&cls, pptr)?;
+            *lock().get_mut(at)? = Some((cls.clone().unbind(), fields));
+            fields
         };
         // `build`'s class task, `_construct`'s reservations.
         *work = work.saturating_add(256);

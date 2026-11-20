@@ -88,12 +88,6 @@ def read(data, index, full, limits=None, budget=None):
     env = unityrs.Environment(limits=limits, budget=budget)
     env.load_file(data, name='f')
     obj = sorted(env.objects, key=lambda o: o.path_id)[index]
-    # A first read makes the file's reader and compiles the type's tree,
-    # which the direct read takes only once they are made.
-    try:
-        obj.read()
-    except Exception:
-        pass
     if full:
         obj._native = FullPath(obj._native)
     return obj.read()
@@ -157,9 +151,6 @@ class DirectObject(unittest.TestCase):
         env = unityrs.Environment()
         env.load_file(data, name='f')
         objs = sorted(env.objects, key=lambda o: o.path_id)
-        self.assertIsNone(objs[0]._native.parse_direct(objs[0], True, True))
-        for obj in objs:
-            obj.read()
         taken = [o._native.parse_direct(o, True, True) is not None for o in objs]
         self.assertEqual(taken, [True, True, False, False])
 
@@ -175,6 +166,23 @@ class DirectObject(unittest.TestCase):
                     data, index, full, budget=unityrs.Budget(m))))
                     for full in (False, True)]
                 self.assertEqual(memory[0], memory[1])
+
+    def test_a_tree_refused_raises_the_full_paths_error(self):
+        data = fixture()
+        for limits in (unityrs.Limits(max_tree_depth=2), unityrs.Limits(max_decode_work=1)):
+            errors = []
+            for full in (False, True):
+                env = unityrs.Environment(limits=limits)
+                try:
+                    env.load_file(data, name='f')
+                    obj = sorted(env.objects, key=lambda o: o.path_id)[0]
+                    if full:
+                        obj._native = FullPath(obj._native)
+                    obj.read()
+                except Exception as error:
+                    errors.append((type(error), str(error), obj.reader.Position))
+            self.assertEqual(len(errors), 2)
+            self.assertEqual(errors[0], errors[1])
 
     def test_a_raising_constructor_gives_the_full_paths_object(self):
         data = fixture()
