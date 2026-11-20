@@ -31,6 +31,21 @@ change since its commit to the measured paths, which are the workflow, the input
 measurement imports, and the artifact byte-equal to the file). A run on an emulated host, at the gate scale, with
 fewer rounds than `workloads.json` names or missing a workload is refused.
 
+**The gate.** CI's `bench-gate` job (`ci.yml`) counts instructions instead of timing: in `debian:bookworm`, pinned
+by digest, with valgrind from `install_valgrind.sh`, `bench.py gate` runs each workload's Rust scope
+(`unityrs-bench run WORKLOAD FIXTURE`, `crates/unityrs-bench/src/work.rs`) once under callgrind at the gate scale and
+compares the bench binary's own instruction count (`ir_own`), its allocation calls and the bytes it allocates with
+`benchmarks/gate.json`, within ±1% both ways (`callgrind.py`). libc's count is recorded, not gated. Each workload's
+mode (`calibrating` reports, `enforcing` fails) and the tolerance come from the base branch's gate.json; the counts
+from the PR's. A pull request's job runs the PR's own checker, so the job warns when a change edits it (decision 7).
+A change that moves a count commits the job's uploaded `gate.json` in the same PR.
+
+```sh
+# Locally, x86-64 only (counts from an emulated host are for comparison, not baselines):
+sh tools/bench/install_valgrind.sh PREFIX
+python3 tools/bench/bench.py gate --valgrind PREFIX --out DIR [--repeat N] [--workload NAME ...]
+```
+
 **Failures.** A scope that raises is a result, published as `raised:` and the exception's class name (unpaired). A
 child that crashes, is killed (even from outside: a measured run is never run again), fails its setup or prints
 no valid result (its keys, their types, finite numbers) stops the run with no `wall.json`. Children's stderr is kept
@@ -38,7 +53,9 @@ in `DIR/logs` only, never in the console output or `wall.json`.
 
 | file | role |
 |---|---|
-| `bench.py` | the driver: `gen`, `run`, `render` and `check --wall-run` |
+| `bench.py` | the driver: `gen`, `run`, `gate`, `render` and `check --wall-run` |
+| `callgrind.py` | the gate's callgrind runs, scope checks, per-object sums and verdict against the base branch's policy |
+| `install_valgrind.sh` | bookworm's valgrind 3.19.0 deb, sha256-checked, unpacked without root |
 | `py_workloads.py` | one run of one workload by either implementation, in a fresh process; prints its result as JSON |
 | `results.py` | wall.json's schema, pairing, aggregation and the rendered README section and BENCHMARKS.md |
 | `workloads.json` | the workload table both sides read: fixture, operation, timer label, PARITY.md row and tier |
@@ -46,9 +63,12 @@ in `DIR/logs` only, never in the console output or `wall.json`.
 
 | module | covers | needs |
 |---|---|---|
+| `callgrind/` | callgrind 3.19 output of `unityrs-bench run texture-RGBA32`, recorded (paths replaced, trailing blanks dropped): the scope alone, and with collection on outside it | — |
 | `support.py` | what the tests share: the harness on the path, a synthetic wall.json, a copy of what `render` reads | standard library |
+| `test_callgrind.py` | parsing callgrind output, the scope checks, own/libc sums and allocation calls; a run through a stand-in valgrind | standard library |
 | `test_bench.py` | `check --wall-run`'s verdicts on a fake run, artifact and history; the fixtures' manifest check | standard library |
-| `test_docs.py` | `render --check` on the repository; the "Results pending" form; rendering a synthetic run; schema and publishing refusals | standard library |
+| `test_docs.py` | `render --check` on the repository; the "Results pending" form; rendering a synthetic run; schema and publishing refusals; gate.json required and checked | standard library |
+| `test_gate.py` | the gate's verdict: the two-sided band, the base branch's modes and tolerance and its enforcing workloads, what fails and what reports; gate.json's schema; the base's file; the warning on an edit of the gate's own checker | standard library |
 | `test_readme.py` | this README's tables list every file here and in `tests/`, and no other | standard library |
 | `test_results.py` | pairing, the aggregation of rounds and categories, and the speedup's range | standard library |
 | `test_workloads.py` | `workloads.json` against the fixtures' manifest, PARITY.md's tiers and `py_workloads.py`'s operations, with a fake implementation | standard library |

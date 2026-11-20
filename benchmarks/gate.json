@@ -1,0 +1,324 @@
+{
+ "schema_version": 1,
+ "tolerance_pct": 1.0,
+ "fingerprint": {
+  "valgrind_deb_sha256": "324842f2308a1e42abf2d81ff5eb19a9475fc9db95647f4d9da71444eda4087f",
+  "container": "debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "gcc": "gcc-12 12.2.0-14+deb12u1",
+  "ld": "binutils 2.40-2",
+  "libc": "libc6 2.36-9+deb12u14",
+  "target": "x86_64-unknown-linux-gnu",
+  "guest_cpu": "sse4.1 sse4.2 popcnt avx avx2 fma bmi2"
+ },
+ "workloads": {
+  "load-many-blocks": {
+   "mode": "calibrating",
+   "ir_own": 5006401,
+   "ir_libc": 1466985,
+   "allocs": {
+    "malloc": 101,
+    "calloc": 0,
+    "realloc": 48,
+    "free": 89
+   },
+   "alloc_bytes": 2116674,
+   "digest": "309003cb08bc9ceb6983d964a3d8ae00b9fa5d2775162da3a43065ff38bffb59",
+   "calls": 1
+  },
+  "load-objects-2019": {
+   "mode": "calibrating",
+   "ir_own": 2122750,
+   "ir_libc": 162153,
+   "allocs": {
+    "malloc": 1292,
+    "calloc": 0,
+    "realloc": 1380,
+    "free": 1281
+   },
+   "alloc_bytes": 492491,
+   "digest": "08b152d5afa33fa4251f6bc3edc05aaa7e876ea469ea58c105b689945ccf1ec3",
+   "calls": 1
+  },
+  "load-objects-lz4": {
+   "mode": "calibrating",
+   "ir_own": 14690268,
+   "ir_libc": 2857261,
+   "allocs": {
+    "malloc": 1333,
+    "calloc": 0,
+    "realloc": 1418,
+    "free": 1322
+   },
+   "alloc_bytes": 3647610,
+   "digest": "08b152d5afa33fa4251f6bc3edc05aaa7e876ea469ea58c105b689945ccf1ec3",
+   "calls": 1
+  },
+  "load-objects-lzma": {
+   "mode": "calibrating",
+   "ir_own": 56132136,
+   "ir_libc": 3249675,
+   "allocs": {
+    "malloc": 1345,
+    "calloc": 0,
+    "realloc": 1384,
+    "free": 1336
+   },
+   "alloc_bytes": 2722061,
+   "digest": "08b152d5afa33fa4251f6bc3edc05aaa7e876ea469ea58c105b689945ccf1ec3",
+   "calls": 1
+  },
+  "texture-ARGB4444": {
+   "mode": "calibrating",
+   "ir_own": 404265,
+   "ir_libc": 162008,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 78
+   },
+   "alloc_bytes": 135656,
+   "digest": "9634de964a25d92e573d3ac534a8bafa411de954cb0c7fd57d99da1f00ac72c4",
+   "calls": 1
+  },
+  "texture-ASTC_RGBA_4x4": {
+   "mode": "calibrating",
+   "ir_own": 6945465,
+   "ir_libc": 183600,
+   "allocs": {
+    "malloc": 99,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 84
+   },
+   "alloc_bytes": 256744,
+   "digest": "00adf746c9760f662d443c23574728bd76c46a2de59863b54c8da56116684be5",
+   "calls": 1
+  },
+  "texture-ASTC_RGBA_8x8": {
+   "mode": "calibrating",
+   "ir_own": 5422439,
+   "ir_libc": 192022,
+   "allocs": {
+    "malloc": 99,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 84
+   },
+   "alloc_bytes": 599528,
+   "digest": "b8325d1c10ae2c2d4e915762d1c947bf567ce3b02024368d4cba799e21e4c961",
+   "calls": 1
+  },
+  "texture-ATC_RGBA8": {
+   "mode": "calibrating",
+   "ir_own": 1628088,
+   "ir_libc": 162008,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 78
+   },
+   "alloc_bytes": 135656,
+   "digest": "a1d1d380403e18b9ad15d0561a42775f8e3397e6aef4c8c3a906dd17221df96f",
+   "calls": 1
+  },
+  "texture-BC4": {
+   "mode": "calibrating",
+   "ir_own": 940935,
+   "ir_libc": 63564,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 27,
+    "free": 78
+   },
+   "alloc_bytes": 37352,
+   "digest": "61b14af3dd1592f43fb712117522aa9d0cc942bce570051dc54209a8af8688d6",
+   "calls": 1
+  },
+  "texture-BC5": {
+   "mode": "calibrating",
+   "ir_own": 1333939,
+   "ir_libc": 129262,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 78
+   },
+   "alloc_bytes": 102888,
+   "digest": "8a6c577938faaa7fbeba3b22676c0b1c2d38ec0f59b14fa4d249ab0781403330",
+   "calls": 1
+  },
+  "texture-BC6H": {
+   "mode": "calibrating",
+   "ir_own": 15549491,
+   "ir_libc": 129262,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 78
+   },
+   "alloc_bytes": 102888,
+   "digest": "89b0899ed5a8f8052fe35f41b2c84a734205dbc25ed040125529115740319b6c",
+   "calls": 1
+  },
+  "texture-BC7": {
+   "mode": "calibrating",
+   "ir_own": 6136427,
+   "ir_libc": 213230,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 78
+   },
+   "alloc_bytes": 135656,
+   "digest": "a0c77ef02cae04069eec01c24eb6c0a6ec01e281f57cfff8d911241b98694bc2",
+   "calls": 1
+  },
+  "texture-DXT1": {
+   "mode": "calibrating",
+   "ir_own": 730911,
+   "ir_libc": 162030,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 78
+   },
+   "alloc_bytes": 135656,
+   "digest": "b2e9e43178f605dc40a593cacaee41009ae74fd98c60b967fd02990d2e6321b5",
+   "calls": 1
+  },
+  "texture-DXT5": {
+   "mode": "calibrating",
+   "ir_own": 1049187,
+   "ir_libc": 162030,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 78
+   },
+   "alloc_bytes": 135656,
+   "digest": "5d4eaa36be581779f8e223e308f5b79ce7ff1c7917186bfd87a532f2fb90d093",
+   "calls": 1
+  },
+  "texture-EAC_R": {
+   "mode": "calibrating",
+   "ir_own": 961923,
+   "ir_libc": 162030,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 78
+   },
+   "alloc_bytes": 135656,
+   "digest": "29a4a4131722f5c9332c15cc89a4e4037a2a41d1722a26576c5fa8f836165450",
+   "calls": 1
+  },
+  "texture-ETC2_RGBA8": {
+   "mode": "calibrating",
+   "ir_own": 1873341,
+   "ir_libc": 162008,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 78
+   },
+   "alloc_bytes": 135656,
+   "digest": "bb5eb66b737c61740cfbcf5b077367551f812691c639771b0575818bdc7c6867",
+   "calls": 1
+  },
+  "texture-ETC_RGB4": {
+   "mode": "calibrating",
+   "ir_own": 1283625,
+   "ir_libc": 162008,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 78
+   },
+   "alloc_bytes": 135656,
+   "digest": "e3f34928eb55943b0acad310675c3aa3dbb9df800777c6c07e659cc3186870f2",
+   "calls": 1
+  },
+  "texture-PVRTC_RGBA4": {
+   "mode": "calibrating",
+   "ir_own": 17012002,
+   "ir_libc": 1943768,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 78
+   },
+   "alloc_bytes": 135656,
+   "digest": "11299f7a564983c0514e3843b18fb0afe5f1bb968363acaadd7a2db583b7d1c9",
+   "calls": 1
+  },
+  "texture-RGB24": {
+   "mode": "calibrating",
+   "ir_own": 122917,
+   "ir_libc": 145614,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 29,
+    "free": 78
+   },
+   "alloc_bytes": 102888,
+   "digest": "e308225d343e1017166409399719bfb51c4a4045996d43ebbd2c5981264cb431",
+   "calls": 1
+  },
+  "texture-RGBA32": {
+   "mode": "calibrating",
+   "ir_own": 122915,
+   "ir_libc": 181392,
+   "allocs": {
+    "malloc": 93,
+    "calloc": 0,
+    "realloc": 32,
+    "free": 78
+   },
+   "alloc_bytes": 135656,
+   "digest": "fe817fa765b037d72962128da0bac2aeda878e8b8faecf8b092a4d4baf10755f",
+   "calls": 1
+  },
+  "typetree-objects-2019": {
+   "mode": "calibrating",
+   "ir_own": 98163051,
+   "ir_libc": 29067051,
+   "allocs": {
+    "malloc": 34144,
+    "calloc": 0,
+    "realloc": 10073,
+    "free": 33132
+   },
+   "alloc_bytes": 4984642,
+   "digest": "7f6cce6c09177cfc474d9de5e34c1b3935d61d220b5f23a5687ee074d4f904c6",
+   "calls": 1
+  },
+  "typetree-objects-lz4": {
+   "mode": "calibrating",
+   "ir_own": 98166051,
+   "ir_libc": 29066599,
+   "allocs": {
+    "malloc": 34165,
+    "calloc": 0,
+    "realloc": 10092,
+    "free": 33153
+   },
+   "alloc_bytes": 4984642,
+   "digest": "7f6cce6c09177cfc474d9de5e34c1b3935d61d220b5f23a5687ee074d4f904c6",
+   "calls": 1
+  }
+ }
+}

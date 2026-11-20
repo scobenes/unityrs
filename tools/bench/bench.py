@@ -3,6 +3,7 @@
 
     python tools/bench/bench.py gen --scale gate|full --out DIR [--update]
     scripts/dev python tools/bench/bench.py run --out DIR [--quick] [--workload NAME ...]
+    python tools/bench/bench.py gate --valgrind PREFIX --out DIR [--base SHA] [--container REF] [--workload NAME ...]
     python tools/bench/bench.py render [--check]
     python tools/bench/bench.py check --wall-run [RUN_ID] --base SHA --repo OWNER/REPO
 
@@ -11,6 +12,12 @@
 - `run` times both implementations on the fixtures (cached under `$UNITYRS_BENCH_CACHE`, else under DIR), round by
   round, each run a fresh process (`py_workloads.py`), and writes DIR/wall.json. It refuses any stack but UnityPy
   1.25.2 with the pinned UnityPyBoost, and marks an emulated host, which `render` then refuses.
+- `gate` (CI's bench-gate job) regenerates the gate-scale fixtures and holds them to the manifest, runs every
+  workload once under callgrind (`callgrind.py`), writes the measured counts to DIR/gate.json and compares them with
+  the committed `benchmarks/gate.json` under the policy (modes and tolerance) of the base commit's `--base SHA`
+  (decision 7). It writes the job summary to `$GITHUB_STEP_SUMMARY` (or DIR/summary.md) and fails on what fails
+  the gate. `--repeat N` runs every workload N times and reports each count's spread (calibration only);
+  `--aslr-probe NAME` adds whether libc's count repeats with ASLR off.
 - `render` writes the README's section between its markers and BENCHMARKS.md from `benchmarks/wall.json` and
   `benchmarks/gate.json`; without wall.json the section reads "Results pending" and BENCHMARKS.md does not exist.
   `--check` fails when the committed text differs.
@@ -36,6 +43,7 @@ import json
 import os
 import platform
 import posixpath
+import re
 import resource
 import sys
 import tarfile
@@ -50,6 +58,7 @@ sys.path.insert(0, str(ROOT / "tools" / "parity"))
 sys.path.insert(0, str(ROOT / "tools" / "perf"))
 sys.path.insert(0, str(HERE))
 
+import callgrind  # noqa: E402
 import child  # noqa: E402
 import results  # noqa: E402
 import scratch  # noqa: E402
@@ -385,6 +394,166 @@ def cmd_run(args) -> int:
     return 1 if bad else 0
 
 
+# gate
+
+
+def base_gate(base: str | None, git=None) -> tuple[dict | None, list[str]]:
+    """The base commit's benchmarks/gate.json (None when its tree has none), or why it cannot be read: an unknown
+    commit, a tree or file git cannot read, or a malformed file fails closed, as a policy read from nowhere would
+    let a PR set its own."""
+    git = git or globals()["git"]
+    if not base:
+        return None, []
+    rc, _ = git("cat-file", "-e", f"{base}^{{commit}}")
+    if rc != 0:
+        return None, [f"the base commit {base} is not in the checkout (fetch it)"]
+    path = GATE.relative_to(ROOT).as_posix()
+    rc, listed = git("ls-tree", "--name-only", base, "--", path)
+    if rc != 0:
+        return None, [f"the base's tree cannot be read (git ls-tree exited {rc})"]
+    if not listed.strip():
+        return None, []
+    rc, text = git("show", f"{base}:{path}")
+    if rc != 0:
+        return None, [f"the base's gate.json cannot be read (git show exited {rc})"]
+    try:
+        doc = json.loads(text)
+    except ValueError as e:
+        return None, [f"the base's gate.json: {e}"]
+    bad = callgrind.gate_problems(doc)
+    return (None, [f"the base's gate.json: {b}" for b in bad]) if bad else (doc, [])
+
+
+# The gate's own checker (decision 7): a pull_request run executes the PR's code, so a change to these is the
+# reviewers' to judge, and the job says so loudly. Whole files, bench.py's functions the gate runs, and CI's job.
+GATE_FILES = ("tools/bench/callgrind.py", "tools/bench/install_valgrind.sh")
+GATE_FUNCS = ("base_gate", "gate_changes", "job_text", "cmd_gate", "repeat_lines", "gate_file_problems",
+              "fixtures_at", "manifest_problems", "generate", "bench_binary", "main")
+CI = ".github/workflows/ci.yml"
+
+
+def job_text(text: str, job: str = "bench-gate") -> str | None:
+    """The lines of `job` in a workflow's text, up to the next job (None when it has none)."""
+    lines = text.splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln == f"  {job}:"), None)
+    if start is None:
+        return None
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"  [A-Za-z0-9_-]+:\s*$", lines[i])
+                or re.match(r"\S", lines[i])), len(lines))
+    return "\n".join(lines[start:end]).rstrip()
+
+
+def functions(source: str | None, names) -> dict:
+    """The source of each top-level function of `names` in `source`."""
+    if source is None:
+        return {}
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {"(unparsable)": source}
+    return {n.name: ast.get_source_segment(source, n) for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name in names}
+
+
+def gate_changes(base: str, base_doc: dict | None, pr_doc: dict | None, git=None) -> list[str]:
+    """What this change (`base`..HEAD) edits of the gate's own checker or policy (decision 7), one line each:
+    the gate's files, its functions in bench.py, CI's bench-gate job, and gate.json's tolerance or modes."""
+    git = git or globals()["git"]
+
+    def at(ref: str, path: str) -> str | None:
+        rc, text = git("show", f"{ref}:{path}")
+        return text if rc == 0 else None
+
+    out = [f"{f} changed" for f in GATE_FILES if at(base, f) != at("HEAD", f)]
+    old, new = functions(at(base, "tools/bench/bench.py"), GATE_FUNCS), functions(
+        at("HEAD", "tools/bench/bench.py"), GATE_FUNCS)
+    changed = sorted(n for n in set(old) | set(new) if old.get(n) != new.get(n))
+    if changed:
+        out.append(f"tools/bench/bench.py's gate functions changed: {', '.join(changed)}")
+    if job_text(at(base, CI) or "") != job_text(at("HEAD", CI) or ""):
+        out.append(f"{CI}'s bench-gate job changed")
+    if base_doc is not None and pr_doc is not None:
+        if base_doc.get("tolerance_pct") != pr_doc.get("tolerance_pct"):
+            out.append(f"gate.json's tolerance_pct changed: {base_doc.get('tolerance_pct')} to "
+                       f"{pr_doc.get('tolerance_pct')}")
+        modes = sorted(n for n in set(base_doc["workloads"]) | set(pr_doc["workloads"])
+                       if base_doc["workloads"].get(n, {}).get("mode") != pr_doc["workloads"].get(n, {}).get("mode"))
+        if modes:
+            out.append(f"gate.json's modes changed: {', '.join(modes)}")
+    return out
+
+
+def cmd_gate(args) -> int:
+    table = load_json(WORKLOADS)
+    specs = [w for w in table["workloads"] if not args.workload or w["name"] in args.workload]
+    if not specs:
+        raise SystemExit("bench gate: no workload selected")
+    args.out.mkdir(parents=True, exist_ok=True)
+    pr = load_json(GATE) if GATE.exists() else None
+    fails = [f"benchmarks/gate.json: {b}" for b in callgrind.gate_problems(pr)] if pr else [
+        "benchmarks/gate.json is missing"]
+    base, bad = base_gate(args.base)
+    fails += bad
+    warnings = gate_changes(args.base, base, pr) if args.base and not bad else []
+    for w in warnings:
+        print(f"::warning title=bench-gate checks its own change::{w}", file=sys.stderr)
+    folder = fixtures_at("gate", args.out)
+    binary = bench_binary()
+    modes = {n: e["mode"] for n, e in (pr or {}).get("workloads", {}).items() if isinstance(e, dict)}
+    runs, rustc, tools = [], callgrind.rustc_vv(), callgrind.toolchain()
+    with scratch.folder("unityrs-gate-") as tmp:
+        for _ in range(args.repeat):
+            runs.append(callgrind.measure(binary, args.valgrind, folder, specs, modes, args.container, Path(tmp),
+                                          rustc, tools))
+        lines = []
+        if args.aslr_probe:
+            spec = next((w for w in table["workloads"] if w["name"] == args.aslr_probe), None)
+            lines = callgrind.aslr_probe(binary, args.valgrind, folder, spec, args.aslr_runs, Path(tmp)) if spec \
+                else [f"no workload {args.aslr_probe!r} to probe", ""]
+    measured, problems = runs[0]
+    (args.out / "gate.json").write_text(dump_json(measured), encoding="utf-8")
+    if args.repeat > 1:
+        lines = [*repeat_lines(runs), *lines]
+    names = [s["name"] for s in specs]
+    if pr is not None and not callgrind.gate_problems(pr):
+        if args.workload:
+            pr = {**pr, "workloads": {n: e for n, e in pr["workloads"].items() if n in names}}
+            if base is not None:
+                base = {**base, "workloads": {n: e for n, e in base["workloads"].items() if n in names}}
+        rows, more = callgrind.compare(base, pr, measured, problems, names)
+        fails += more
+    else:
+        rows = []
+    tol = (base or {}).get("tolerance_pct", callgrind.TOLERANCE_PCT)
+    text = callgrind.summary(rows, fails, tol, base is not None, warnings) + ("\n" + "\n".join(lines) if lines else "")
+    target = Path(os.environ["GITHUB_STEP_SUMMARY"]) if os.environ.get("GITHUB_STEP_SUMMARY") else \
+        args.out / "summary.md"
+    with open(target, "a", encoding="utf-8") as f:
+        f.write(text)
+    for f in fails:
+        print(f"bench gate: {f}", file=sys.stderr)
+    print(f"bench gate: {len(names)} workloads measured, {len(fails)} failures; summary in {target.name}")
+    return 1 if fails else 0
+
+
+def repeat_lines(runs: list) -> list[str]:
+    """Markdown: each workload's counts over repeated runs, with the spread of ir_own and ir_libc."""
+    out = [f"### Repeatability ({len(runs)} runs)", "",
+           "| workload | ir_own range (spread) | ir_libc range (spread) | allocs, alloc_bytes and digest repeat |",
+           "|---|---|---|---|"]
+    names = sorted(set().union(*(m["workloads"] for m, _ in runs)))
+    for n in names:
+        got = [m["workloads"].get(n) for m, _ in runs]
+        if None in got:
+            out.append(f"| {n} | rejected in a run | — | — |")
+            continue
+        same = len({json.dumps([g["allocs"], g["alloc_bytes"], g["digest"]]) for g in got}) == 1
+        own, libc = [g["ir_own"] for g in got], [g["ir_libc"] for g in got]
+        out.append(f"| {n} | {max(own) - min(own):,} ({callgrind.spread(own):.6f}%) | "
+                   f"{max(libc) - min(libc):,} ({callgrind.spread(libc):.4f}%) | {'yes' if same else 'no'} |")
+    return [*out, ""]
+
+
 # render
 
 
@@ -394,7 +563,9 @@ def rendered(root: Path) -> tuple[str, str | None, list[str]]:
     wall_path, gate_path = root / WALL.relative_to(ROOT), root / GATE.relative_to(ROOT)
     wall = load_json(wall_path) if wall_path.exists() else None
     gate = load_json(gate_path) if gate_path.exists() else None
-    bad = []
+    bad = gate_file_problems(gate, table)
+    if bad:
+        return "", None, [f"benchmarks/gate.json: {b}" for b in bad]
     if wall is not None:
         bad = results.problems(wall, table) or results.publish_problems(wall, table)
         if bad:
@@ -404,6 +575,20 @@ def rendered(root: Path) -> tuple[str, str | None, list[str]]:
         return readme, None, []
     fixtures = load_json(root / FIXTURES.relative_to(ROOT))
     return readme, results.benchmarks_md(wall, gate, table, fixtures), []
+
+
+def gate_file_problems(gate: dict | None, table: dict) -> list[str]:
+    """Why the committed gate.json is not the gate's baselines (decision 9: required from BN-2 on): missing,
+    malformed (`callgrind.gate_problems`), holding a host path, or not exactly the workload table's workloads."""
+    if gate is None:
+        return ["missing: the gate's baselines are the bench-gate job's measured gate.json"]
+    bad = callgrind.gate_problems(gate)
+    if bad:
+        return bad
+    names = [w["name"] for w in table["workloads"]]
+    bad += [f"{n}: missing" for n in names if n not in gate["workloads"]]
+    bad += [f"{n}: not in workloads.json" for n in gate["workloads"] if n not in names]
+    return bad + [f"a host path: {s!r}" for s in results.strings(gate) if results.HOST_PATH.search(s)]
 
 
 def render(root: Path, check: bool) -> list[str]:
@@ -512,6 +697,15 @@ def main(argv=None) -> int:
     r.add_argument("--out", type=Path, required=True)
     r.add_argument("--quick", action="store_true")
     r.add_argument("--workload", action="append")
+    t = sub.add_parser("gate")
+    t.add_argument("--valgrind", type=Path, required=True, metavar="PREFIX")
+    t.add_argument("--out", type=Path, required=True)
+    t.add_argument("--base", metavar="SHA")
+    t.add_argument("--container", default="local")
+    t.add_argument("--workload", action="append")
+    t.add_argument("--repeat", type=int, default=1)
+    t.add_argument("--aslr-probe", metavar="NAME")
+    t.add_argument("--aslr-runs", type=int, default=3)
     d = sub.add_parser("render")
     d.add_argument("--check", action="store_true")
     c = sub.add_parser("check")
@@ -519,7 +713,7 @@ def main(argv=None) -> int:
     c.add_argument("--base", required=True)
     c.add_argument("--repo", required=True)
     args = ap.parse_args(argv)
-    return {"gen": cmd_gen, "run": cmd_run, "render": cmd_render, "check": cmd_check}[args.cmd](args)
+    return {"gen": cmd_gen, "run": cmd_run, "gate": cmd_gate, "render": cmd_render, "check": cmd_check}[args.cmd](args)
 
 
 if __name__ == "__main__":
