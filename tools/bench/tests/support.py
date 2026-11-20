@@ -79,9 +79,13 @@ def wall(names=None, times=None, status=None, digest=None, rounds=7, emulated=Fa
     return doc
 
 
-def tree(folder: Path, wall_doc: dict | None = None, gate: dict | None = None) -> Path:
-    """A copy of what `render` reads, under `folder`: README.md, workloads.json, fixtures.json, and the given
-    wall.json and gate.json."""
+GATE = json.loads((ROOT / "benchmarks" / "gate.json").read_text(encoding="utf-8"))
+
+
+def tree(folder: Path, wall_doc: dict | None = None, gate=None) -> Path:
+    """A copy of what `render` reads, under `folder`: README.md, workloads.json, fixtures.json, the given
+    wall.json, and the given gate.json (the repository's when None, none when False)."""
+    gate = GATE if gate is None else gate or None
     (folder / "tools" / "bench").mkdir(parents=True)
     (folder / "benchmarks").mkdir()
     shutil.copy(ROOT / "README.md", folder / "README.md")
@@ -93,7 +97,7 @@ def tree(folder: Path, wall_doc: dict | None = None, gate: dict | None = None) -
     return folder
 
 
-def scratch_tree(case, wall_doc: dict | None = None, gate: dict | None = None) -> Path:
+def scratch_tree(case, wall_doc: dict | None = None, gate=None) -> Path:
     """`tree` in a scratch folder the test case owns."""
     import scratch
 

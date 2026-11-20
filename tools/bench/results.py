@@ -436,12 +436,32 @@ def benchmarks_md(wall: dict, gate: dict | None, workloads: dict, fixtures: dict
             out.append(f"| {n} | {reason} | {fmt_s(fig['median']) if fig else 'failed'} |")
     out += ["", "## 7. The gate", ""]
     if gate is None:
-        out.append("No instruction-count baselines are recorded yet: the gate lands with BN-2.")
+        out.append("No instruction-count baselines are recorded yet.")
     else:
-        out += ["| workload | mode | ir_own | ir_libc | digest |", "|---|---|---|---|---|"]
-        for n, g in sorted(gate["workloads"].items()):
-            out.append(f"| {n} | {g['mode']} | {g['ir_own']:,} | {g['ir_libc']:,} | `{str(g['digest'])[:16]}` |")
-        out += ["", "A refresh changes `benchmarks/gate.json` in the same PR; the job's summary shows each delta."]
+        fp = gate["fingerprint"]
+        out += [
+            "CI's `bench-gate` job runs each workload's Rust scope (`unityrs-bench run`) once under callgrind, at",
+            "the gate scale, and holds its instruction count in the bench binary's own code (`ir_own`), its",
+            "`malloc`, `calloc`, `realloc` and `free` calls and the bytes it allocates to `benchmarks/gate.json`",
+            f"within ±{gate['tolerance_pct']}%, in both directions. libc's count (`ir_libc`) is recorded, not gated.",
+            "A `calibrating` workload only reports; an `enforcing` one fails the job out of band. Measured with",
+            f"valgrind 3.19.0 in {fp['container']}, guest CPU features `{fp['guest_cpu']}`.",
+            "",
+            "| workload | mode | ir_own | ir_libc | allocations | bytes allocated | digest |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for w in workloads["workloads"]:
+            g = gate["workloads"].get(w["name"])
+            if g is None:
+                continue
+            allocs = sum(g["allocs"][k] for k in ("malloc", "calloc", "realloc"))
+            out.append(f"| {w['name']} | {g['mode']} | {g['ir_own']:,} | {g['ir_libc']:,} | {allocs:,} | "
+                       f"{g['alloc_bytes']:,} | `{str(g['digest'])[:16]}` |")
+        out += ["", "**A refresh.** A change that moves a count changes `benchmarks/gate.json` in the same PR: the",
+                "job uploads the file it measured (`bench-gate-<run id>-<attempt>`), whose counts replace the old",
+                "ones, and its summary shows each delta against the base branch. Then `python tools/bench/bench.py",
+                "render` regenerates this page. Modes and the tolerance come from the base branch, so a change to",
+                "them lands on its own first."]
     out += [
         "",
         "## 8. Method and caveats",

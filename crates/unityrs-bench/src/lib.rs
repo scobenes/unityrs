@@ -15,6 +15,9 @@
 //! - [`many_blocks`]: one 64 MiB entry in 16 KiB LZ4 blocks.
 //! - [`textures`]: a bundle per texture format, every block legal by
 //!   construction ([`blocks`], [`astc`]).
+//!
+//! `unityrs-bench run WORKLOAD FIXTURE` runs one Rust workload ([`work`]):
+//! its scope is the function the instruction-count gate counts.
 
 pub mod astc;
 pub mod blocks;
@@ -22,6 +25,7 @@ mod files;
 pub mod many_blocks;
 pub mod objects;
 pub mod textures;
+pub mod work;
 
 pub use files::{BuildError, bundle, bundle_lz4hc, serialized};
 
