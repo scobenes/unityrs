@@ -57,11 +57,12 @@ def _decode(obj, data, width, height, texture_format, platform, blob, version):
     version = tuple(version[:2]) if "Crunched" in texture_format.name else (0, 0)
     guard = _guard(obj)
     data = snapshot_bytes(data, guard)
-    mode, w, h, pixels = _native._image_decode(
+    # _image_decode, guard.step(0, len(pixels) + 1024, len(pixels)), and
+    # Image.frombytes(mode, (w, h), pixels), Pillow copying the pixels from
+    # the decoded image itself.
+    return _native._image_frombytes(
         data, width, height, int(texture_format), version,
-        int(platform), blob, _reader(obj))
-    guard.step(0, len(pixels) + 1024, len(pixels))
-    return Image.frombytes(mode, (w, h), pixels)
+        int(platform), blob, _reader(obj), guard, Image.frombytes)
 
 
 def get_image(self):

@@ -18,12 +18,14 @@ mod construction;
 mod crypto_shader;
 mod direct;
 mod direct_keys;
+mod direct_list;
 mod direct_object;
 mod environment;
 mod errors;
 mod exports;
 mod files;
 mod image_helpers;
+mod image_view;
 mod images;
 mod object;
 mod object_nodes;
@@ -53,6 +55,8 @@ mod worker_error;
 
 #[pymodule(name = "_native", gil_used = true)]
 fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // The direct read's list layout check, once, outside any read.
+    direct_list::slots(m.py());
     exports::register(m)?;
     images::register(m)?;
     crypto_shader::register(m)?;

@@ -77,22 +77,7 @@ fn scalar(py: Python<'_>, v: Scalar) -> Option<Bound<'_, PyAny>> {
     })
 }
 
-/// A list of `items`, each moved in. The items are all made before the
-/// list is, and nothing allocates while its slots are filled, so no list
-/// with an empty slot is ever reachable.
-pub(crate) fn list_of<'py>(
-    py: Python<'py>,
-    items: impl ExactSizeIterator<Item = Bound<'py, PyAny>>,
-) -> Option<Bound<'py, PyAny>> {
-    let len = isize::try_from(items.len()).ok()?;
-    // SAFETY: a new list of `len` empty slots or null.
-    let list = own(py, unsafe { ffi::PyList_New(len) })?;
-    for (at, item) in (0..len).zip(items) {
-        // SAFETY: `at` is in range; the call steals the item.
-        unsafe { ffi::PyList_SetItem(list.as_ptr(), at, item.into_ptr()) };
-    }
-    Some(list)
-}
+pub(crate) use crate::direct_list::list_of;
 
 /// A `pair`'s tuple of two items made.
 pub(crate) fn pair<'py>(
@@ -104,6 +89,32 @@ pub(crate) fn pair<'py>(
     own(py, unsafe {
         ffi::PyTuple_Pack(2, first.as_ptr(), second.as_ptr())
     })
+}
+
+/// A primitive run's list, its slots filled in order.
+struct Fill<'py> {
+    py: Python<'py>,
+    list: crate::direct_list::NewList<'py>,
+    at: isize,
+}
+
+impl unityrs_core::walk::emit::Elements for Fill<'_> {
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "once per run element: outlined, it costs a call per element (callgrind)"
+    )]
+    fn element(&mut self, v: Scalar) -> Option<()> {
+        let item = scalar(self.py, v)?;
+        if self.at >= self.list.len() {
+            return None;
+        }
+        // SAFETY: `at` is below the list's length, and each slot is filled
+        // once, in order.
+        unsafe { self.list.put(self.at, item.into_ptr()) };
+        self.at += 1;
+        Some(())
+    }
 }
 
 /// Python values for the core's direct read.
@@ -124,6 +135,9 @@ struct PySink<'a, 'py> {
     obj: Option<ObjMode<'py>>,
     /// Values built so far ([`Self::pace`]).
     paced: u32,
+    /// Whether new lists' slots are stored directly
+    /// ([`crate::direct_list::slots`]).
+    slots: bool,
 }
 
 impl PySink<'_, '_> {
@@ -219,6 +233,7 @@ impl<'py> Sink for PySink<'_, 'py> {
         }
         scalar(self.py, v)
     }
+    #[inline]
     fn str(&mut self, v: &[u8]) -> Option<Self::Obj> {
         if !self.pace(1) {
             return None;
@@ -293,6 +308,7 @@ impl<'py> Sink for PySink<'_, 'py> {
         // SAFETY: a new dict or null.
         own(self.py, unsafe { ffi::PyDict_New() })
     }
+    #[inline]
     fn set(&mut self, dict: &Self::Obj, key: NodeId, value: Self::Obj) -> Option<()> {
         let name = match &self.obj {
             Some(obj) => {
@@ -358,9 +374,7 @@ impl<'py> Sink for PySink<'_, 'py> {
             return None;
         }
         let py = self.py;
-        let len = isize::try_from(run.len()).ok()?;
-        // SAFETY: a new list of `len` empty slots or null.
-        let list = own(py, unsafe { ffi::PyList_New(len) })?;
+        let list = crate::direct_list::NewList::new(py, run.len(), self.slots)?;
         // Out of the collector's sight until every slot is filled: only
         // this function holds the list, so with its empty slots it is
         // never visible to a collection or to any other code (with or
@@ -368,16 +382,12 @@ impl<'py> Sink for PySink<'_, 'py> {
         // elements made; its dealloc skips empty slots.
         // SAFETY: a list just made and tracked, held here only.
         unsafe { ffi::PyObject_GC_UnTrack(list.as_ptr().cast()) };
-        let mut at = 0;
-        let filled = run.each(|v| {
-            let item = scalar(py, v)?;
-            // SAFETY: `at` is below `len` (the run has exactly `len`
-            // elements); the call steals the item.
-            unsafe { ffi::PyList_SetItem(list.as_ptr(), at, item.into_ptr()) };
-            at += 1;
-            Some(())
-        });
-        filled?;
+        let mut fill = Fill { py, list, at: 0 };
+        run.each_into(&mut fill)?;
+        if fill.at != fill.list.len() {
+            return None;
+        }
+        let list = fill.list.into_list();
         // SAFETY: the list, complete, untracked above.
         unsafe { ffi::PyObject_GC_Track(list.as_ptr().cast()) };
         Some(list)
@@ -416,29 +426,53 @@ fn exact_int(v: &Bound<'_, PyAny>) -> Option<i128> {
     }
 }
 
-static CLASSES: PyOnceLock<(Py<PyAny>, Py<PyAny>)> = PyOnceLock::new();
+/// The classes whose exact instances a direct read takes.
+struct Classes {
+    object: Py<PyAny>,
+    reader: Py<PyAny>,
+    file: Py<PyAny>,
+}
 
-/// `(ObjectReader, ObjectFileReader)`.
-fn classes(py: Python<'_>) -> Option<&(Py<PyAny>, Py<PyAny>)> {
+static CLASSES: PyOnceLock<Classes> = PyOnceLock::new();
+
+/// `ObjectReader`, `ObjectFileReader` and `SerializedFile`.
+fn classes(py: Python<'_>) -> Option<&Classes> {
     use crate::direct_keys::import_attr;
     CLASSES
         .get_or_try_init(py, || {
-            Ok::<_, PyErr>((
-                import_attr(
-                    py,
-                    name!(py, c"unityrs.files")?,
-                    name!(py, c"ObjectReader")?,
-                )?
-                .unbind(),
-                import_attr(
+            let files = name!(py, c"unityrs.files")?;
+            Ok::<_, PyErr>(Classes {
+                object: import_attr(py, files, name!(py, c"ObjectReader")?)?.unbind(),
+                reader: import_attr(
                     py,
                     name!(py, c"unityrs._object_reader")?,
                     name!(py, c"ObjectFileReader")?,
                 )?
                 .unbind(),
-            ))
+                file: import_attr(py, files, name!(py, c"SerializedFile")?)?.unbind(),
+            })
         })
         .ok()
+}
+
+/// The file's reader, where `ObjectReader.reader`'s first use on `me` (an
+/// object's `__dict__`) would only copy it to the object's `_reader`, as
+/// [`ready`] does: the object's file an exact `SerializedFile`, whose
+/// `reader` property returns the `ObjectFileReader` it holds.
+fn file_reader<'py>(
+    py: Python<'py>,
+    me: &Bound<'py, PyDict>,
+    classes: &Classes,
+) -> Option<Bound<'py, PyAny>> {
+    let assets = field(me, name!(py, c"assets_file").ok()?.as_any())?;
+    if !assets.get_type().is(&classes.file) {
+        return None;
+    }
+    let shared = field(
+        &instance_dict(&assets)?,
+        name!(py, c"_reader").ok()?.as_any(),
+    )?;
+    shared.get_type().is(&classes.reader).then_some(shared)
 }
 
 /// `reader.read_typetree()`'s dict, or with `wrap` its object
@@ -451,17 +485,25 @@ pub(crate) fn read(
     check_read: bool,
     wrap: bool,
 ) -> PyResult<Option<Py<PyAny>>> {
-    let Some((object_class, _)) = classes(py) else {
+    let Some(cls) = classes(py) else {
         return Ok(None);
     };
-    if !reader.get_type().is(object_class) {
+    if !reader.get_type().is(&cls.object) {
         return Ok(None);
     }
     // The full path's first step (`uses_original`): the `reader` property,
-    // which makes the file's reader on its first use.
-    if instance_dict(reader)
-        .and_then(|me| field(&me, name!(py, c"_reader").ok()?.as_any()))
+    // which makes the file's reader on its first use. Where the file has
+    // made it, the property only copies it to the object, which `ready`
+    // does without running the property's Python.
+    let me = instance_dict(reader);
+    if me
+        .as_ref()
+        .and_then(|me| field(me, name!(py, c"_reader").ok()?.as_any()))
         .is_none()
+        && me
+            .as_ref()
+            .and_then(|me| file_reader(py, me, cls))
+            .is_none()
     {
         reader.getattr(name!(py, c"reader")?)?;
     }
@@ -608,6 +650,7 @@ fn direct<'py>(
         work: 0,
         obj: None,
         paced: 0,
+        slots: crate::direct_list::slots(py),
     };
     let held = BASE
         .saturating_add(rows.saturating_mul(16))
@@ -683,8 +726,8 @@ fn ready<'py>(
     if info.byte_size == 0 || file.reader_kind() != unityrs_core::stream::ReaderKind::Memory {
         return None;
     }
-    let (object_class, reader_class) = classes(py)?;
-    if !obj.get_type().is(object_class) {
+    let cls = classes(py)?;
+    if !obj.get_type().is(&cls.object) {
         return None;
     }
     let me = instance_dict(obj)?;
@@ -696,14 +739,11 @@ fn ready<'py>(
     } else {
         // The `reader` property's first use, which the full path makes
         // first too (`uses_original`): the file's reader, once it has one.
-        let shared = field(&ad, key.as_any())?;
-        if !shared.get_type().is(reader_class) {
-            return None;
-        }
+        let shared = file_reader(py, &me, cls)?;
         me.set_item(key, &shared).ok()?;
         shared
     };
-    if !reader.get_type().is(reader_class) {
+    if !reader.get_type().is(&cls.reader) {
         return None;
     }
     let rd = instance_dict(&reader)?;
