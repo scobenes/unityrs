@@ -59,11 +59,27 @@ fn the_unorm8_store_keeps_the_byte() {
     assert_eq!(unorm16_to_sf16(0xffff), 0x3c00);
     assert_eq!(sf16_to_float(unorm16_to_sf16(0x8080)), 0.501_953_1);
     assert_eq!(unorm16_to_sf16(2), 0x200);
-    // And the interpolation's top byte.
-    assert_eq!(lerp(0, 0xffff, 0), 0);
-    assert_eq!(lerp(0, 0xffff, 64), 255);
-    assert_eq!(lerp(0, 0xffff, 32), 128);
-    assert_eq!(lerp(0x1010, 0x1010, 17), 0x10);
+    // And the interpolation's top byte, each channel with its own weight.
+    let lane = |c0, c1, w| lerp([c0; 4], [c1; 4], [w; 4])[0];
+    assert_eq!(lane(0, 0xffff, 0), 0);
+    assert_eq!(lane(0, 0xffff, 64), 255);
+    assert_eq!(lane(0, 0xffff, 32), 128);
+    assert_eq!(lane(0x1010, 0x1010, 17), 0x10);
+    assert_eq!(
+        lerp([0, 0, 0x1010, 0xffff], [0xffff; 4], [0, 64, 17, 5]),
+        [0, 255, 0x4f, 255]
+    );
+    // Every endpoint pair and weight: the 16-bit interpolation, then its top
+    // byte (astcenc_decompress_symbolic.cpp:43-55).
+    for a in 0..=255 {
+        for b in 0..=255 {
+            for w in 0..=64 {
+                let (c0, c1) = (a * 257, b * 257);
+                let value = (c0 * (64 - u32::from(w)) + c1 * u32::from(w) + 32) >> 6;
+                assert_eq!(u32::from(lane(c0, c1, w)), value >> 8, "{a} {b} {w}");
+            }
+        }
+    }
 }
 
 fn block(fp: (u8, u8), bytes: [u8; 16]) -> Vec<[u8; 4]> {

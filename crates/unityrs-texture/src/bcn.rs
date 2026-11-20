@@ -76,13 +76,24 @@ pub(crate) fn decode(kind: Kind, data: &[u8], w: usize, h: usize, out: &mut [u8]
     } else {
         16
     };
-    let bpp = match kind {
-        Kind::Bc4 => 1,
-        Kind::Bc5 => 3,
-        _ => 4,
-    };
+    // Each mode's pixel size a constant of its own loop.
+    match kind {
+        Kind::Bc4 => blocks::<1>(kind, block_bytes, data, (w, h), out),
+        Kind::Bc5 => blocks::<3>(kind, block_bytes, data, (w, h), out),
+        _ => blocks::<4>(kind, block_bytes, data, (w, h), out),
+    }
+}
+
+/// [`decode`] for `BPP` bytes a pixel.
+fn blocks<const BPP: usize>(
+    kind: Kind,
+    block_bytes: usize,
+    data: &[u8],
+    (w, h): (usize, usize),
+    out: &mut [u8],
+) {
     let (blocks_x, blocks_y) = (w.div_ceil(4), h.div_ceil(4));
-    let row = w.saturating_mul(bpp);
+    let row = w.saturating_mul(BPP);
     let mut blocks = data.chunks_exact(block_bytes);
     for by in 0..blocks_y {
         for bx in 0..blocks_x {
@@ -114,19 +125,41 @@ pub(crate) fn decode(kind: Kind, data: &[u8], w: usize, h: usize, out: &mut [u8]
                 if y >= h {
                     break;
                 }
-                let at = (h - 1 - y).saturating_mul(row).saturating_add(bx * 4 * bpp);
-                let Some(dst) = out.get_mut(at..at.saturating_add(shown * bpp)) else {
+                let at = (h - 1 - y).saturating_mul(row).saturating_add(bx * 4 * BPP);
+                let Some(dst) = out.get_mut(at..at.saturating_add(shown * BPP)) else {
                     continue;
                 };
-                if bpp == 4 {
-                    dst.copy_from_slice(pixels.as_flattened().get(..shown * 4).unwrap_or_default());
+                if BPP == 4 {
+                    put_row(dst, pixels);
                 } else {
-                    for (dst, px) in dst.chunks_exact_mut(bpp).zip(pixels) {
-                        dst.copy_from_slice(px.get(..bpp).unwrap_or_default());
+                    for (dst, px) in dst.as_chunks_mut::<BPP>().0.iter_mut().zip(pixels) {
+                        *dst = *px.first_chunk::<BPP>().unwrap_or(&[0; BPP]);
                     }
                 }
             }
         }
+    }
+}
+
+/// Writes a block row's pixels into `dst`, their place in the image: all 4,
+/// or at the image's right edge as many as `dst` holds. A whole row is a
+/// copy of a constant size, which the compiler inlines; the edge's copy is
+/// kept out of line, so the two are not merged into one call.
+#[allow(clippy::inline_always, reason = "measured: every block row's write")]
+#[inline(always)]
+pub(crate) fn put_row(dst: &mut [u8], pixels: &[Rgba; 4]) {
+    match <&mut [u8; 16]>::try_from(&mut *dst) {
+        Ok(row) => *row = *pixels.as_flattened().as_array().unwrap_or(&[0; 16]),
+        Err(_) => put_edge(dst, pixels),
+    }
+}
+
+/// [`put_row`] at the image's right edge.
+#[cold]
+#[inline(never)]
+fn put_edge(dst: &mut [u8], pixels: &[Rgba; 4]) {
+    if let Some(src) = pixels.as_flattened().get(..dst.len()) {
+        dst.copy_from_slice(src);
     }
 }
 
