@@ -4,10 +4,13 @@ Each case gives a synthetic rig's rest points and a posed body in the hips frame
 and a requested placement, all as f64 bit patterns; the expected centre, frames, twist, body rotation and
 hips solve are the reference's (anim_body_model) with freeze v8's coefficients. The inputs are made with
 products and square roots only, so they are the same on every platform; the check recomputes the outputs
-from the stored inputs. Generate with CI's Python 3.11: from 3.12 `sum` of floats is compensated, so the
-reference's dot products round differently there, and the check allows that (`within`)."""
+from the stored inputs. Freeze v8 was fitted and validated under CPython 3.15.2, whose float `sum` is
+compensated (from 3.12 on), and the reference's dot products and norms use `sum`: generating refuses, and the
+checks skip, under an interpreter without it (test_anim_python_sum.compensated); CI's body-vectors job runs
+them under 3.15.2. Only the twist (the platform's `atan2`) is compared within ulps."""
 
 import json
+import math
 import random
 import struct
 import sys
@@ -16,9 +19,11 @@ from pathlib import Path
 
 PARITY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PARITY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import anim_body_model as model  # noqa: E402
 import anim_body_tolerance as tolerance  # noqa: E402
+from test_anim_python_sum import compensated  # noqa: E402
 
 OUTPUT = PARITY.parents[1] / "crates/unityrs-anim/tests/support/body_vectors.json"
 FREEZE = PARITY / "anim_body_freeze_v8.json"
@@ -69,7 +74,7 @@ def turn(rng, size):
     """A unit quaternion near the identity, w > 0, from products and a square root."""
     x, y, z = (dyadic(rng, size) for _ in range(3))
     w = 1.
-    length = (x * x + y * y + z * z + w * w) ** .5
+    length = math.sqrt(x * x + y * y + z * z + w * w)
     return tuple(v / length for v in (x, y, z, w))
 
 
@@ -134,6 +139,8 @@ def expect(entry):
 
 
 def dump():
+    if not compensated():
+        raise SystemExit(f"body vectors need CPython 3.12+'s compensated sum, not {sys.version.split()[0]}")
     rng = random.Random(20261120)
     cases = [case(rng, variant, absent, pose) for variant, absent in VARIANTS.items() for pose in range(POSES)]
     cases += [case(rng, "full", (), "twisted", refuse=True), case(rng, "no-toes", VARIANTS["no-toes"], "twisted",
@@ -143,16 +150,7 @@ def dump():
     return "\n".join([*lines, "  ]", "}", ""])
 
 
-def within(found, want):
-    """Python 3.12's compensated `sum` against 3.11's: each value within 64 ulps of the larger of it and 1."""
-    if isinstance(want, list):
-        return len(found) == len(want) and all(within(a, b) for a, b in zip(found, want))
-    if not isinstance(want, str) or len(want) != 16:
-        return found == want
-    a, b = unbits(found), unbits(want)
-    return abs(a - b) <= 64 * tolerance.U64 * max(1., abs(b))
-
-
+@unittest.skipUnless(compensated(), "needs CPython 3.12+'s compensated float sum (CI's body-vectors job)")
 class TestBodyVectors(unittest.TestCase):
     def test_the_vectors_cover_solves_and_refusals(self):
         cases = json.loads(OUTPUT.read_text(encoding="utf-8"))["cases"]
@@ -168,16 +166,10 @@ class TestBodyVectors(unittest.TestCase):
         self.assertEqual(stored["freeze"], FREEZE.name)
         for entry in stored["cases"]:
             found, want = expect(entry), dict(entry["expect"])
-            # atan2 is the platform's: the twist within four ulps (and `within` from 3.12).
+            # atan2 is the platform's: the twist within four ulps.
             a, b = unbits(found.pop("twist")), unbits(want.pop("twist"))
-            compensated = 0. if sys.version_info < (3, 12) else 64 * tolerance.U64
-            self.assertLessEqual(abs(a - b), 4 * abs(b) * tolerance.U64 * 2 + compensated, entry["name"])
-            if sys.version_info < (3, 12):
-                self.assertEqual(found, want, entry["name"])
-            else:
-                self.assertEqual(found.keys(), want.keys(), entry["name"])
-                for key in want:
-                    self.assertTrue(within(found[key], want[key]), (entry["name"], key))
+            self.assertLessEqual(abs(a - b), 4 * abs(b) * tolerance.U64 * 2, entry["name"])
+            self.assertEqual(found, want, entry["name"])
 
     def test_the_inputs_regenerate(self):
         stored = json.loads(OUTPUT.read_text(encoding="utf-8"))["cases"]

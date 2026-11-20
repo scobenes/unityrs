@@ -8,7 +8,11 @@
 //! and `anim_body_tolerance.py`), in its operation and summation order:
 //! values are f64 from the f32 inputs, taken exactly, and every sum runs
 //! in `HumanBodyBones` order with `UpperChest` last (`SUM_ORDER`, the
-//! reference's `NAMES`). One step differs: the reference normalizes a
+//! reference's `NAMES`). Where the reference sums with Python's builtin
+//! `sum` (dot products, norms, the mass total), this module sums as
+//! Python 3.15.2's compensated `sum` does (`python_sum`): freeze v8 was
+//! fitted and validated under it; its explicit `+=` loops (the centre) stay
+//! left to right. One step differs: the reference normalizes a
 //! quaternion with `math.hypot`, this module by the square root of the sum
 //! of squares, within an ulp of it. Every constant here is the freeze's,
 //! and the integration tests bind each one to the JSON.
@@ -43,7 +47,7 @@
 //!
 //! The hips solve of 2.3 and the free-combination refusal are
 //! `body_solve`'s.
-use super::{avatar::BODY_BONES, body::BodyAvatar};
+use super::{avatar::BODY_BONES, body::BodyAvatar, python_sum::python_sum};
 use crate::{AnimError, BodyModel};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
@@ -275,16 +279,17 @@ impl BodyAvatar<'_> {
 }
 
 /// Decision 1: each mapped slot's stored mass over the mapped masses' sum,
-/// taken in `SUM_ORDER` (the reference's `folded_masses`, where every
-/// absent slot's mass is zero); 0 for an unmapped slot.
-#[must_use]
-pub fn weights(masses: &[f32; BODY_BONES], mapped: &[bool; BODY_BONES]) -> [f64; BODY_BONES] {
-    let mut total = 0.;
-    for &slot in &SUM_ORDER {
-        if let (Some(true), Some(&mass)) = (mapped.get(slot), masses.get(slot)) {
-            total += f64::from(mass);
+/// that sum the reference's `sum(folded.values())` in `SUM_ORDER`
+/// (`folded_masses`, where every absent slot's mass is zero), compensated
+/// as Python 3.15.2's `sum` is; 0 for an unmapped slot. `body_avatar`
+/// has refused a mass table whose mapped total is not positive.
+fn weights(masses: &[f32; BODY_BONES], mapped: &[bool; BODY_BONES]) -> [f64; BODY_BONES] {
+    let total = python_sum(SUM_ORDER.iter().filter_map(|&slot| {
+        match (mapped.get(slot), masses.get(slot)) {
+            (Some(true), Some(&mass)) => Some(0. + f64::from(mass)),
+            _ => None,
         }
-    }
+    }));
     let mut out = [0.; BODY_BONES];
     for ((weight, &on), &mass) in out.iter_mut().zip(mapped).zip(masses) {
         if on {
@@ -359,12 +364,14 @@ pub fn cross(a: Point, b: Point) -> Point {
     [a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0]
 }
 
-/// The reference's `sum(a * b ...)`: from 0, in order.
+/// The reference's `sum(a * b ...)`, compensated as Python 3.15.2's
+/// `sum` is (`python_sum`).
 pub(crate) fn dot(a: Point, b: Point) -> f64 {
     let ([a0, a1, a2], [b0, b1, b2]) = (a, b);
-    0. + a0 * b0 + a1 * b1 + a2 * b2
+    python_sum([a0 * b0, a1 * b1, a2 * b2])
 }
 
+/// The reference's `norm`: `sqrt(sum(c * c ...))`.
 #[must_use]
 pub fn norm(v: Point) -> f64 {
     dot(v, v).sqrt()
@@ -606,6 +613,11 @@ pub fn quaternion(m: &Matrix) -> Quaternion {
     };
     let [x, y, z, w] = q;
     let length = (0. + x * x + y * y + z * z + w * w).sqrt();
+    // No direction (a zero, overflowing or non-finite length): NaN, which
+    // every caller refuses as non-finite.
+    if !(length.is_finite() && length > 0.) {
+        return [f64::NAN; 4];
+    }
     let q = q.map(|v| v / length);
     if q[3] < 0. { q.map(|v| -v) } else { q }
 }

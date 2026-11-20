@@ -38,7 +38,7 @@ pub fn check(input: &[u8]) -> bool {
                 Err(outcome) => return outcome,
             };
             match rigs(env, &graph, clips.as_slice(), meter, &mut digest) {
-                Ok(()) => Outcome::Done(digest.finish()),
+                Ok(_) => Outcome::Done(digest.finish()),
                 Err(e) => Outcome::anim_error(e),
             }
         })
@@ -180,6 +180,7 @@ fn body_digest(avatar: &Avatar, meter: &Arc<Meter>, digest: &mut Digest) -> Resu
 
 /// Freeze v8's model on the Avatar's rest body: the weights, edges, rest
 /// points, centre of mass, frame and twist scope, or their typed refusal.
+/// The hips solve needs the rig's rest scales, so `rigs` runs it.
 fn model_digest(
     body: &BodyAvatar<'_>,
     meter: &Arc<Meter>,
@@ -208,51 +209,105 @@ fn model_digest(
             if let Err(e) = body_model::frame_scope(&rest) {
                 return soft(e, digest);
             }
-            solve_digest(body, &weights, &edges, &frame, meter, digest)
+            Ok(())
         }
         Err(e) => soft(e, digest),
     }
 }
 
-/// Freeze v8's hips solve on the rest body: the hips frame with each
-/// node's rest rotation, then the solve placing it at a fixed request
-/// under the identity parent, or their typed refusal.
-fn solve_digest(
-    body: &BodyAvatar<'_>,
-    weights: &[f64; 25],
-    edges: &body_model::Edges,
-    rest_frame: &body_model::Matrix,
-    meter: &Arc<Meter>,
-    digest: &mut Digest,
-) -> Result<(), AnimError> {
-    let pose = body.human().pose.as_slice();
-    let rotation = |k: usize| pose.get(k).map_or([0., 0., 0., 1.], |x| x.q.map(f64::from));
-    let local = match body.hips_points(&rotation, meter) {
-        Ok(local) => local,
-        Err(e) => return soft(e, digest),
-    };
-    digest.tag(local.map(|p| p.map(|p| p.map(f64::to_bits))));
-    let hips_scale = body
-        .rest(body_model::HIPS)
-        .map_or(1., |x| f64::from(x.s[0]));
-    let solved = body_solve::solve_hips(
+/// The requests and hips parents each rig's rest body is solved for: the
+/// identity parent, then turned, moved and scaled ones.
+const SOLVES: [([f64; 3], [f64; 4], [f64; 3], [f64; 4], f64); 3] = [
+    (
         [0.25, 1., -0.5],
         [0., 0.6, 0., 0.8],
-        f64::from(body.scale()),
-        &local,
-        weights,
-        edges,
-        rest_frame,
-        &body_solve::HipsParent::IDENTITY,
-        hips_scale,
-    );
-    match solved {
-        Ok((t, q)) => {
-            digest.tag((t.map(f64::to_bits), q.map(f64::to_bits)));
-            Ok(())
+        [0.; 3],
+        [0., 0., 0., 1.],
+        1.,
+    ),
+    (
+        [-1.5, 0.75, 2.],
+        [0.5, -0.5, 0.5, 0.5],
+        [1., 2., 3.],
+        [0., 0.8, 0., 0.6],
+        2.,
+    ),
+    (
+        [0., 0.5, 0.],
+        [0.28, 0., 0.96, 0.],
+        [-0.5, 0., 0.25],
+        [0.6, 0., 0., 0.8],
+        0.5,
+    ),
+];
+
+/// Freeze v8's hips solve on a rig's rest body: its weights, edges and
+/// rest frame, the hips frame from each node's rest rotation and the rig's
+/// own rest scales, then the solve for each of `SOLVES`, or their typed
+/// refusal. Panics on a solve with a non-finite translation or a quaternion
+/// off unit length. The number of solves that succeeded.
+fn solve_digest(
+    body: &BodyAvatar<'_>,
+    paths: &RigPaths<'_>,
+    meter: &Arc<Meter>,
+    digest: &mut Digest,
+) -> Result<usize, AnimError> {
+    let weights = body.weights();
+    let found = body.edges(meter).and_then(|edges| {
+        let rest = body.rest_points(meter)?;
+        let frame = body_model::body_frame(&rest)?;
+        let scales = body.rest_scales(paths, meter)?;
+        Ok((edges, frame, scales))
+    });
+    let (edges, rest_frame, scales) = match found {
+        Ok(found) => found,
+        Err(e) => return soft(e, digest).map(|()| 0),
+    };
+    let scales = scales.as_slice();
+    let rest_scale = |k: usize| scales.get(k).copied().flatten();
+    let pose = body.human().pose.as_slice();
+    let rotation = |k: usize| pose.get(k).map_or([0., 0., 0., 1.], |x| x.q.map(f64::from));
+    let found = body
+        .hips_points(&rotation, &rest_scale, meter)
+        .and_then(|local| Ok((local, body.hips_scale(&rest_scale)?)));
+    let (local, hips_scale) = match found {
+        Ok(found) => found,
+        Err(e) => return soft(e, digest).map(|()| 0),
+    };
+    digest.tag(local.map(|p| p.map(|p| p.map(f64::to_bits))));
+    let mut solved = 0;
+    for (target, request, position, rotation, scale) in SOLVES {
+        meter.count_decode(1)?;
+        let parent = body_solve::HipsParent {
+            position,
+            rotation,
+            scale,
+        };
+        let found = body_solve::solve_hips(
+            target,
+            request,
+            f64::from(body.scale()),
+            &local,
+            &weights,
+            &edges,
+            &rest_frame,
+            &parent,
+            hips_scale,
+        );
+        match found {
+            Ok((t, q)) => {
+                let length = q.iter().map(|v| v * v).sum::<f64>().sqrt();
+                assert!(
+                    t.iter().all(|v| v.is_finite()) && (length - 1.).abs() <= 1e-12,
+                    "a solve off its contract: t {t:?}, q {q:?}"
+                );
+                digest.tag((t.map(f64::to_bits), q.map(f64::to_bits)));
+                solved += 1;
+            }
+            Err(e) => soft(e, digest)?,
         }
-        Err(e) => soft(e, digest),
     }
+    Ok(solved)
 }
 
 fn slots_digest(
@@ -306,16 +361,18 @@ fn slots_digest(
     Ok(())
 }
 
-/// Each discovered rig's Avatar, then the refusal of its own clips and,
-/// with flag 2, of every kept clip.
-fn rigs(
+/// Each discovered rig's Avatar, its rest body's hips solves, then the
+/// refusal of its own clips and, with flag 2, of every kept clip. The
+/// number of hips solves that succeeded.
+pub(crate) fn rigs(
     env: &Environment,
     graph: &Graph,
     kept: &[Clip],
     meter: &Arc<Meter>,
     digest: &mut Digest,
-) -> Result<(), AnimError> {
+) -> Result<usize, AnimError> {
     let discovery = discover(env, graph, meter)?;
+    let mut solved = 0;
     for rig in discovery.rigs() {
         meter.count_decode(1)?;
         digest.tag((rig.node, rig.slots().len(), rig.issues().len()));
@@ -328,6 +385,12 @@ fn rigs(
         };
         digest.tag((avatar.avatar.is_some(), avatar.transform_hierarchy));
         let paths = RigPaths::new(graph, rig.node, meter)?;
+        if let Some(found) = &avatar.avatar {
+            match body_avatar(found, meter) {
+                Ok(body) => solved += solve_digest(&body, &paths, meter, digest)?,
+                Err(e) => soft(e, digest)?,
+            }
+        }
         for slot in rig.slots() {
             meter.count_decode(1)?;
             let Ok(object) = slot.clip() else {
@@ -344,7 +407,7 @@ fn rigs(
             refuse(clip, &avatar, &paths, meter, digest)?;
         }
     }
-    Ok(())
+    Ok(solved)
 }
 
 fn refuse(

@@ -392,14 +392,14 @@ fn rig_bones(rig: &Rig) -> Vec<usize> {
     out
 }
 
-fn field<'v>(value: &'v mut V, path: &[&str]) -> &'v mut V {
+pub(super) fn field<'v>(value: &'v mut V, path: &[&str]) -> &'v mut V {
     path.iter().fold(value, |value, name| match value {
         V::Struct(_, fields) => &mut fields.iter_mut().find(|(f, _)| f == name).unwrap().1,
         _ => panic!("{name}"),
     })
 }
 
-fn rows(value: &mut V) -> &mut Vec<V> {
+pub(super) fn rows(value: &mut V) -> &mut Vec<V> {
     match value {
         V::Vector(_, _, items) => items,
         _ => panic!("not a vector"),

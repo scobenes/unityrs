@@ -621,6 +621,13 @@ coefficient is shipped from a fit.
   against 1.1434 predicted at the freeze, at the same sample; the
   prediction was within 0.168% at every in-scope sample. Round 10's
   hold-out is consumed. Freeze v8 is validated, and B3 is unblocked.
+- **Freeze v8's arithmetic.** v8 was fitted and validated (E3a, the
+  freeze and E3b) under CPython 3.15.2, whose builtin float `sum` is
+  compensated (Neumaier, from 3.12 on); the Rust model mirrors that
+  summation wherever the reference uses `sum`, and its reference vectors
+  are regenerated and checked under 3.15.2. A successor freeze must
+  specify its summation explicitly (left to right, or `math.fsum`) so that
+  its results do not depend on the interpreter.
 
 **Total estimate.** 2.6–3.8k non-test lines. B1 can start now. B2 waits for
 the owner's runs of B1 in both Editor versions, and B3–B5 wait for B2's

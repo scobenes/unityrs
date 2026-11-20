@@ -3,23 +3,28 @@
 //! `tools/parity/tests/test_anim_body_vectors.py`), its analytic solve
 //! cases, the hips frame of a synthetic Avatar and the solve's refusals.
 use super::body_model::{
-    FREEZE, about, close, full, local, matrix, refused, same_rotation, slot_named, turned, verdict,
-    without,
+    FREEZE, about, close, field, full, local, matrix, refused, rows, same_rotation, slot_named,
+    turned, verdict, without,
 };
 use serde_json::Value;
 use unityrs_anim::{
-    AnimError, BodyModel,
+    AnimError, BodyModel, RigPaths,
     humanoid::{
         body_avatar,
         body_model::{self as m, COEFFICIENTS, Edges, Matrix, Point, Points, Quaternion},
         body_solve::{self as s, FREE_COMBINATIONS, HipsParent},
-        read_avatar,
+        read_avatar, rig_avatar, slot_bone,
     },
 };
 use unityrs_core::limits::Meter;
-use unityrs_testkit::scene3d::{
-    Layout,
-    anim::humanoid::{self as h, AVATAR, Rig},
+use unityrs_scene::{GraphOptions, graph_from_game_object};
+use unityrs_testkit::{
+    ngui::V,
+    scene3d::{
+        Layout,
+        anim::humanoid::{self as h, ANIMATOR, AVATAR, Rig},
+        set, xyz,
+    },
 };
 
 const VECTORS: &str = include_str!("../support/body_vectors.json");
@@ -161,6 +166,9 @@ fn solve(
 
 const IDENTITY: Quaternion = [0., 0., 0., 1.];
 
+/// Every node's rest scale one.
+const ONES: fn(usize) -> Option<[f32; 3]> = |_| Some([1.; 3]);
+
 #[test]
 fn the_analytic_solves() {
     let id = HipsParent::IDENTITY;
@@ -244,6 +252,18 @@ fn the_solve_refuses_what_it_cannot_answer() {
         verdict(solve([0., f64::INFINITY, 0., 1.], &id, 1., &local())),
         non_finite
     );
+    // A huge parent rotation with no translation left: its quaternion's
+    // squares overflow, so dividing by their root would leave zeros.
+    let (p_a, _) = solve(IDENTITY, &id, 1., &local()).unwrap();
+    let huge = HipsParent {
+        position: p_a,
+        rotation: [0., 0., 0., 1e200],
+        scale: 1.,
+    };
+    assert_eq!(
+        verdict(solve(IDENTITY, &huge, 1., &local())),
+        Err(refused(BodyModel::DegenerateSolve))
+    );
     // A subnormal parent scale overflows the translation.
     let tiny = HipsParent {
         scale: 1e-320,
@@ -298,7 +318,7 @@ fn the_hips_frame_of_a_hierarchy() {
         let body = body_avatar(&avatar, &meter).unwrap();
         let rest = body.rest_points(&meter).unwrap();
         let hips = rest[m::HIPS].unwrap();
-        let local = body.hips_points(&|_| IDENTITY, &meter).unwrap();
+        let local = body.hips_points(&|_| IDENTITY, &ONES, &meter).unwrap();
         for (a, b) in local.iter().zip(&rest) {
             assert_eq!(*a, b.map(|b| sub(b, hips)));
         }
@@ -331,7 +351,7 @@ fn the_hips_frame_of_a_hierarchy() {
         let arm = body.nodes[m::LEFT_UPPER_ARM].unwrap();
         let q = about([0.3, -0.2, 0.9], 50.);
         let posed = body
-            .hips_points(&|k| if k == arm { q } else { IDENTITY }, &meter)
+            .hips_points(&|k| if k == arm { q } else { IDENTITY }, &ONES, &meter)
             .unwrap();
         let pivot = local[m::LEFT_UPPER_ARM].unwrap();
         for (slot, (a, b)) in posed.iter().zip(&local).enumerate() {
@@ -370,4 +390,116 @@ fn add(a: Point, b: Point) -> Point {
 
 fn sub(a: Point, b: Point) -> Point {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+/// The rest scales are the rig's Transforms', through `m_TOS`: one scaled
+/// lower arm moves the hand, and a node without a scale refuses.
+#[test]
+fn the_rest_scales_come_from_the_rig() {
+    let meter = Meter::unlimited();
+    let rig = Rig {
+        hierarchy: true,
+        ..full()
+    };
+    let mut objects = h::prefab(&rig);
+    let mut bones = h::BONES
+        .iter()
+        .map(|&(bone, _)| bone)
+        .chain(rig.optional.iter().copied());
+    let lower = 102
+        + bones
+            .position(|bone| bone == slot_bone(m::LEFT_LOWER_ARM))
+            .unwrap();
+    let lower = i64::try_from(lower).unwrap();
+    let transform = objects.iter_mut().find(|o| o.path_id == lower).unwrap();
+    set(
+        &mut transform.value,
+        "m_LocalScale",
+        xyz("Vector3f", &[2.; 3]),
+    );
+    let (env, file) = super::file(Layout::Unity2022, &objects);
+    let graph = graph_from_game_object(
+        &env,
+        &file.object(1).unwrap(),
+        &GraphOptions::default(),
+        &meter,
+    )
+    .unwrap();
+    let paths = RigPaths::new(&graph, 0, &meter).unwrap();
+    let avatar = rig_avatar(&env, &file.object(ANIMATOR).unwrap(), &meter)
+        .unwrap()
+        .avatar
+        .unwrap();
+    let body = body_avatar(&avatar, &meter).unwrap();
+    let scales = body.rest_scales(&paths, &meter).unwrap();
+    let scales = scales.as_slice();
+    let arm = body.nodes[m::LEFT_LOWER_ARM].unwrap();
+    for (k, scale) in scales.iter().enumerate() {
+        assert_eq!(
+            *scale,
+            Some(if k == arm { [2.; 3] } else { [1.; 3] }),
+            "node {k}"
+        );
+    }
+    let rest_scale = |k: usize| scales.get(k).copied().flatten();
+    assert_eq!(body.hips_scale(&rest_scale).unwrap(), 1.);
+    let local = body
+        .hips_points(&|_| IDENTITY, &rest_scale, &meter)
+        .unwrap();
+    let unscaled = body.hips_points(&|_| IDENTITY, &ONES, &meter).unwrap();
+    let (elbow, hand) = (
+        unscaled[m::LEFT_LOWER_ARM].unwrap(),
+        unscaled[m::LEFT_HAND].unwrap(),
+    );
+    close(
+        &local[m::LEFT_HAND].unwrap(),
+        &add(elbow, sub(hand, elbow).map(|c| 2. * c)),
+        1e-15,
+    );
+    // No scale for the lower arm, or for the hips: refused, never one.
+    let missing = |k: usize| if k == arm { None } else { Some([1.; 3]) };
+    assert_eq!(
+        verdict(body.hips_points(&|_| IDENTITY, &missing, &meter)),
+        Err(refused(BodyModel::MissingRestScale))
+    );
+    let hips = body.nodes[m::HIPS].unwrap();
+    let no_hips = |k: usize| if k == hips { None } else { Some([1.; 3]) };
+    assert_eq!(
+        verdict(body.hips_scale(&no_hips)),
+        Err(refused(BodyModel::MissingRestScale))
+    );
+}
+
+/// A Head parented to the Animator node, with no Eyes or Jaw, has no
+/// hips-local state: refused, not left out of the centre.
+#[test]
+fn a_mapped_bone_outside_the_hips_refuses() {
+    let meter = Meter::unlimited();
+    let rig = Rig {
+        hierarchy: true,
+        ..without(&["LeftEye", "RightEye", "Jaw"])
+    };
+    let mut object = h::avatar(&rig);
+    let human = ["m_Avatar", "m_Human", "data"];
+    let index = rows(field(
+        &mut object.value,
+        &[&human[..], &["m_HumanBoneIndex"]].concat(),
+    ));
+    let V::Int(head) = index[11] else {
+        panic!("m_HumanBoneIndex")
+    };
+    let head = usize::try_from(head).unwrap();
+    let nodes = rows(field(
+        &mut object.value,
+        &[&human[..], &["m_Skeleton", "data", "m_Node"]].concat(),
+    ));
+    set(&mut nodes[head], "m_ParentId", V::Int(0));
+    let (_, file) = super::file(Layout::Unity2022, &[object]);
+    let avatar = read_avatar(&file.object(AVATAR).unwrap(), &meter).unwrap();
+    let body = body_avatar(&avatar, &meter).unwrap();
+    assert_eq!(body.nodes[m::HEAD], Some(head));
+    assert_eq!(
+        verdict(body.hips_points(&|_| IDENTITY, &ONES, &meter)),
+        Err(refused(BodyModel::DetachedBone))
+    );
 }

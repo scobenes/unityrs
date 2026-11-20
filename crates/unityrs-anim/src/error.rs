@@ -183,6 +183,10 @@ pub enum BodyModel {
     FreeCombination,
     /// The hips solve has no finite answer.
     DegenerateSolve,
+    /// A node below the hips has no rest scale from the rig.
+    MissingRestScale,
+    /// A mapped bone is not below the hips.
+    DetachedBone,
     /// A body position, scale, weight, frame or result is not finite.
     NonFiniteBody,
     /// The frame's lateral is along `up` within its rounding.
@@ -206,6 +210,8 @@ impl BodyModel {
             Self::SpineLateralRange => "spine_lateral_range",
             Self::FreeCombination => "free_combination",
             Self::DegenerateSolve => "degenerate_solve",
+            Self::MissingRestScale => "missing_rest_scale",
+            Self::DetachedBone => "detached_bone",
             Self::NonFiniteBody => "non_finite_body",
             Self::DegenerateFrame => "degenerate_frame",
             Self::InvalidRestFrame => "invalid_rest_frame",

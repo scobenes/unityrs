@@ -5,9 +5,15 @@
 //!
 //! - **The body in the hips frame.** `BodyAvatar::hips_points` walks the
 //!   hips' subtree from the hips at the identity: each node below takes its
-//!   `m_SkeletonPose` translation and uniform scale with the given local
+//!   `m_SkeletonPose` translation, its rest scale and the given local
 //!   rotation (the reference's `body_states` from the hips, on `posed`
 //!   rows), so `c_h` excludes the hips' own scale and every ancestor's.
+//!   The rest scales, the hips' own among them, are the rig's Transforms'
+//!   as the bundle stores them (`BodyAvatar::rest_scales`, through `m_TOS`
+//!   and the rig's paths): the scales E3a and E3b validated, which
+//!   `m_SkeletonPose`'s can miss by an ulp. A node without one refuses
+//!   (`missing_rest_scale`), and so does a mapped slot outside the hips'
+//!   subtree (`detached_bone`).
 //! - **The solve.** `H_A = B_A F(T) F_h^-1`, `P_A = h T_A - k H_A c_h` with
 //!   `k = sigma_p s_h`, and the local hips `t = sigma_p^-1 R_p^-1 (P_A -
 //!   t_p)`, `q = R_p^-1 H_A`, after the twist scope of `body_model`.
@@ -23,9 +29,10 @@
 //! (`unsupported_animator_root`); a non-finite input, local state or
 //! centre refuses (`non_finite_body`), as do `body_model`'s degenerate
 //! frame and invalid rest frame; and so does a non-finite result or a
-//! zero-length quaternion (`degenerate_solve`; the reference returns NaN
-//! or raises). The final quaternion is normalized by the square root of
-//! its sum of squares, within an ulp of the reference's `math.hypot`.
+//! quaternion whose length is zero or overflows (`degenerate_solve`; the
+//! reference returns NaN or raises, or `math.hypot` scales where the square
+//! root of the squares overflows). The final quaternion is normalized by
+//! that square root, within an ulp of the reference's `math.hypot`.
 use super::{
     avatar::BODY_BONES,
     body::BodyAvatar,
@@ -34,7 +41,7 @@ use super::{
         finite_state, frame_scope, multiply, quaternion, refuse, rest_frame_scope, sub, uniform,
     },
 };
-use crate::{AnimError, BodyModel};
+use crate::{AnimError, BodyModel, PathQuery, RigPaths};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
 
@@ -62,15 +69,61 @@ impl HipsParent {
 }
 
 impl BodyAvatar<'_> {
+    /// Each `m_Skeleton` node's rest local scale as the rig's own Transform
+    /// stores it in the bundle: the node's `m_ID` through `m_TOS` to the
+    /// graph node `paths` resolves, and that node's local scale. These are
+    /// the scales freeze v8's E3a and E3b validated (the recorder's captured
+    /// rest scales; `m_SkeletonPose`'s can differ by an ulp). `None` where
+    /// the node has no path or the path names no rig node.
+    pub fn rest_scales(
+        &self,
+        paths: &RigPaths<'_>,
+        meter: &Arc<Meter>,
+    ) -> Result<MeteredVec<Option<[f32; 3]>>, AnimError> {
+        let ids = self.human().skeleton.ids.as_slice();
+        let graph = paths.graph().0;
+        let mut out = MeteredVec::with_capacity(meter, ids.len())?;
+        for &id in ids {
+            let scale = match self.avatar.tos_path(id, meter)? {
+                Some(path) => {
+                    match paths.resolve(PathQuery::HashWithEvidence(id, path.as_bytes()), meter) {
+                        Ok(node) => graph.nodes().get(node).map(|node| node.local.scale),
+                        Err(error) if error.resource_refusal() => return Err(error),
+                        Err(_) => None,
+                    }
+                }
+                None => None,
+            };
+            out.push(scale)?;
+        }
+        Ok(out)
+    }
+
+    /// The hips' own uniform rest scale from `rest_scale`, the reference's
+    /// `hips_scale`. An unavailable scale refuses (`missing_rest_scale`),
+    /// a nonuniform or nonpositive one `unsupported_animator_root`.
+    pub fn hips_scale(
+        &self,
+        rest_scale: &dyn Fn(usize) -> Option<[f32; 3]>,
+    ) -> Result<f64, AnimError> {
+        let hips = self.nodes[HIPS].ok_or(AnimError::InvalidAvatarIndex("m_HumanBoneIndex"))?;
+        uniform(rest_scale(hips).map_or_else(|| refuse(BodyModel::MissingRestScale), Ok)?)
+    }
+
     /// The mapped slots' positions in the hips frame (the hips at the
     /// origin, unrotated, at unit scale), each node below the hips at its
-    /// `m_SkeletonPose` translation and uniform scale with the local
-    /// rotation `rotation(node)`; `None` for a slot outside the hips'
-    /// subtree. A nonuniform, nonpositive or non-finite rest scale refuses
+    /// `m_SkeletonPose` translation, its rest scale `rest_scale(node)` (the
+    /// rig's, `rest_scales`) and the local rotation `rotation(node)`: the
+    /// reference's `body_states` from the hips on `posed` rows. A node
+    /// below the hips without a rest scale refuses (`missing_rest_scale`;
+    /// no other scale stands in), and so does a mapped slot outside the
+    /// hips' subtree (`detached_bone`: the reference has no hips-local state
+    /// for it). A nonuniform, nonpositive or non-finite rest scale refuses
     /// (`unsupported_animator_root`).
     pub fn hips_points(
         &self,
         rotation: &dyn Fn(usize) -> Quaternion,
+        rest_scale: &dyn Fn(usize) -> Option<[f32; 3]>,
         meter: &Arc<Meter>,
     ) -> Result<Points, AnimError> {
         let human = self.human();
@@ -93,11 +146,13 @@ impl BodyAvatar<'_> {
                         let x = pose
                             .get(k)
                             .ok_or(AnimError::InvalidAvatarIndex("m_SkeletonPose"))?;
+                        let s = rest_scale(k)
+                            .map_or_else(|| refuse(BodyModel::MissingRestScale), Ok)?;
                         Some(finite_state(super::body_model::link(
                             parent,
                             x.t.map(f64::from),
                             rotation(k),
-                            uniform(x.s)?,
+                            uniform(s)?,
                         ))?)
                     }
                     None => None,
@@ -108,12 +163,8 @@ impl BodyAvatar<'_> {
         let mut out = [None; BODY_BONES];
         for (point, node) in out.iter_mut().zip(&self.nodes) {
             if let Some(node) = node {
-                *point = states
-                    .as_slice()
-                    .get(*node)
-                    .copied()
-                    .flatten()
-                    .map(|state| state.0);
+                let state = states.as_slice().get(*node).copied().flatten();
+                *point = Some(state.map_or_else(|| refuse(BodyModel::DetachedBone), Ok)?.0);
             }
         }
         Ok(out)
@@ -259,9 +310,13 @@ pub fn solve_hips_with(
     let t = rotate(inverse, sub(p_a, parent.position)).map(|v| v / parent.scale);
     let q = multiply(inverse, quaternion(&solved));
     let [x, y, z, w] = q;
+    // An overflowing square would make every component a finite zero.
     let length = (0. + x * x + y * y + z * z + w * w).sqrt();
+    if !(length.is_finite() && length > 0.) {
+        return refuse(BodyModel::DegenerateSolve);
+    }
     let q = q.map(|v| v / length);
-    if !(length > 0. && t.iter().chain(&q).all(|v| v.is_finite())) {
+    if !t.iter().chain(&q).all(|v| v.is_finite()) {
         return refuse(BodyModel::DegenerateSolve);
     }
     Ok((t, q))
