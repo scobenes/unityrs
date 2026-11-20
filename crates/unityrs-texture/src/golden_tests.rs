@@ -21,13 +21,13 @@
 //!   modes and ETC2 A1's punch-through occur often;
 //! - EAC and ETC2 A8's alpha: `edge`, multipliers of 0 and bases of 0,
 //!   255 and the signed -128;
-//! - BCn: `edge`, colour endpoints equal or swapped and alpha endpoints
+//! - the BC formats: `edge`, colour endpoints equal or swapped and alpha endpoints
 //!   equal, swapped, 0 or 255; BC7's `mode`, the first byte naming each
 //!   of the eight modes, or none (0), equally often;
 //! - PVRTC: `mode`, the modulation-mode bit set, and for 2bpp the
 //!   interpolation bits varied, so the missing weights occur often.
 //!
-//! The BCn and PVRTC cases follow the rest (their seeds continue after
+//! The BC and PVRTC cases follow the rest (their seeds continue after
 //! them), PVRTC at sizes of its own, whose block counts are powers of two.
 //!
 //! A case records the first 128 bits of the sha256 of the image (its
@@ -97,7 +97,7 @@ const FORMATS: [(&str, Format, &[&str]); 26] = {
     ]
 };
 
-/// The BCn and PVRTC formats, after every other case: name, format,
+/// The BC and PVRTC formats, after every other case: name, format,
 /// generators.
 const LATER: [(&str, Format, &[&str]); 8] = {
     const BCN: &[&str] = &["random", "edge"];
@@ -302,7 +302,7 @@ fn etc_block(rng: &mut Rng, generator: &str, bytes: usize, format: Format) -> Ve
     b
 }
 
-/// A BCn or PVRTC block of `bytes` bytes under `generator`.
+/// A BC or PVRTC block of `bytes` bytes under `generator`.
 #[allow(clippy::cast_possible_truncation, reason = "a random byte")]
 fn bcn_block(rng: &mut Rng, generator: &str, bytes: usize, format: Format) -> Vec<u8> {
     let mut b: Vec<u8> = (0..bytes).map(|_| rng.next_u64() as u8).collect();

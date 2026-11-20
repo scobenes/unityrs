@@ -210,7 +210,7 @@ pub(crate) fn decode(kind: Kind, data: &[u8], w: usize, h: usize, out: &mut [u8]
                 }
                 let at = (h - 1 - y).saturating_mul(row).saturating_add(x0 * 4);
                 match out.get_mut(at..at.saturating_add(4 * cols)) {
-                    Some(dst) => crate::bcn::put_row(dst, line),
+                    Some(dst) => crate::place::put_row(dst, line),
                     None => put_short(out, at, line, cols),
                 }
             }
