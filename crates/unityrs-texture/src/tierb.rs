@@ -64,28 +64,60 @@ pub(crate) const fn layout(format: Format) -> Option<Layout> {
     })
 }
 
-/// Widen binary16 exactly to binary64, including subnormals, signed zero,
-/// infinities and NaNs. All finite significands have at most eleven bits.
-fn half(bits: u16) -> f64 {
-    let exponent = (bits >> 10) & 31;
-    let fraction = bits & 1023;
-    let magnitude = match exponent {
-        0 => f64::from(fraction) * 2.0f64.powi(-24),
-        31 if fraction == 0 => f64::INFINITY,
-        31 => f64::NAN,
-        _ => f64::from(1024 + fraction) * 2.0f64.powi(i32::from(exponent) - 25),
-    };
+/// PARITY section 17.1's shared conversion after a decoder yields binary16:
+/// the value clamped to 0 to 1, times 255, rounded half up, NaN 0. Every
+/// negative value (and negative zero) is 0, the rest [`HALF_BYTES`]' entry.
+/// Exact for all 65,536 inputs against the conversion in `f64`
+/// (`half_byte_is_the_f64_conversion`).
+pub(crate) fn half_byte(bits: u16) -> u8 {
     if bits & 0x8000 == 0 {
-        magnitude
+        unsigned_half_byte(bits)
     } else {
-        -magnitude
+        0
     }
 }
 
-/// PARITY section 17.1's shared conversion after a decoder yields binary16.
-pub(crate) fn half_byte(bits: u16) -> u8 {
-    float(half(bits))
+/// [`half_byte`] for a binary16 whose sign bit is clear: [`HALF_BYTES`]'
+/// entry, read without a bounds check's branch (the sign bit masked off).
+#[inline]
+pub(crate) fn unsigned_half_byte(bits: u16) -> u8 {
+    HALF_BYTES
+        .get(usize::from(bits & 0x7FFF))
+        .copied()
+        .unwrap_or(0)
 }
+
+/// [`half_byte`] of every binary16 whose sign bit is clear, in turn: 255
+/// from 1.0 (0x3C00) to infinity (0x7C00), 0 for a NaN, and below 1.0 the
+/// value `m 2^(e - 25)`, its significand `m` (with the implicit bit where
+/// the exponent field is not 0) and `e` its exponent field, 1 for a
+/// subnormal; `m 255 2^e` is below 2^34, so the `f64` conversion's
+/// `floor(v 255 + 0.5)` is exactly `(m 255 2^e + 2^24) >> 25`.
+static HALF_BYTES: [u8; 0x8000] = {
+    let mut table = [0; 0x8000];
+    let mut rest: &mut [u8] = &mut table;
+    let mut bits: u32 = 0;
+    while let [entry, tail @ ..] = rest {
+        let (exponent, fraction) = ((bits >> 10) as u64, (bits & 1023) as u64);
+        let (m, e) = if exponent == 0 {
+            (fraction, 1)
+        } else {
+            (1024 + fraction, exponent)
+        };
+        *entry = if bits > 0x7C00 {
+            0
+        } else if bits >= 0x3C00 {
+            255
+        } else {
+            #[allow(clippy::cast_possible_truncation, reason = "at most 255")]
+            let byte = ((((m * 255) << e) + (1 << 24)) >> 25) as u8;
+            byte
+        };
+        rest = tail;
+        bits += 1;
+    }
+    table
+};
 
 /// Clamp, multiply and round half up in f64. Casting the bounded integral
 /// result is exact; NaN maps explicitly to zero.
@@ -100,7 +132,7 @@ fn float(value: f64) -> u8 {
 
 fn channel(kind: Channel, bytes: &[u8]) -> u8 {
     match (kind, bytes) {
-        (Channel::Half, &[lo, hi]) => float(half(u16::from_le_bytes([lo, hi]))),
+        (Channel::Half, &[lo, hi]) => half_byte(u16::from_le_bytes([lo, hi])),
         (Channel::Float, &[a, b, c, d]) => float(f64::from(f32::from_le_bytes([a, b, c, d]))),
         (Channel::Unsigned, &[byte] | &[_, byte]) => byte,
         // Adding the signed offset is precisely toggling the sign bit of
@@ -173,6 +205,41 @@ pub(crate) fn decode(format: Format, data: &[u8], w: usize, h: usize, out: &mut 
                         *dst = channel(layout.channel, bytes);
                     }
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The conversion [`super::half_byte`] replaced: binary16 widened
+    /// exactly to binary64 (subnormals, signed zero, infinities and NaNs
+    /// among them), then [`super::float`].
+    fn half_byte_f64(bits: u16) -> u8 {
+        let exponent = (bits >> 10) & 31;
+        let fraction = bits & 1023;
+        let magnitude = match exponent {
+            0 => f64::from(fraction) * 2.0f64.powi(-24),
+            31 if fraction == 0 => f64::INFINITY,
+            31 => f64::NAN,
+            _ => f64::from(1024 + fraction) * 2.0f64.powi(i32::from(exponent) - 25),
+        };
+        super::float(if bits & 0x8000 == 0 {
+            magnitude
+        } else {
+            -magnitude
+        })
+    }
+
+    /// The table is the `f64` conversion, for every one of the 65,536
+    /// binary16 values, and its unsigned form for every value of sign 0.
+    #[test]
+    fn half_byte_is_the_f64_conversion() {
+        for bits in 0..=u16::MAX {
+            let want = half_byte_f64(bits);
+            assert_eq!(super::half_byte(bits), want, "{bits:#06x}");
+            if bits < 0x8000 {
+                assert_eq!(super::unsigned_half_byte(bits), want, "{bits:#06x}");
             }
         }
     }
