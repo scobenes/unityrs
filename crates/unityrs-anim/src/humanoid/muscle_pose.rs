@@ -1,10 +1,17 @@
 //! B5a's muscle pose (`docs/plans/humanoid-body.md`, B5a): muscle values to
-//! a bone's local rotation, ported from `anim_humanoid_qualify.muscle_rotation`
-//! with its floating-point order fixed (`tools/parity/anim_muscle_pose.py`).
+//! a bone's local rotation: `anim_humanoid_qualify.muscle_rotation`'s
+//! equation with reference 2's angle rule, its floating-point order fixed
+//! (`tools/parity/anim_muscle_pose.py`).
 //!
-//! For one bone, each animated muscle sets its axis's angle: with
-//! `d = m_Sgn[axis] * value`, the angle is `d * m_Max[axis]` when `d >= 0`
-//! and `d * -m_Min[axis]` otherwise, in radians. The twist (x) and swing
+//! For one bone, each animated muscle sets its axis's angle, in radians:
+//! the limit by the value's sign, then the axis sign,
+//! `m_Sgn[axis] * (value * m_Max[axis])` when `value >= 0` and
+//! `m_Sgn[axis] * (value * -m_Min[axis])` otherwise (reference 2, the plan's
+//! pre-registered correction). `anim_humanoid_qualify`'s hypothesis applied
+//! the sign first, `d = m_Sgn * value`, then the limit by `d`'s sign; the
+//! two agree bit for bit wherever `m_Sgn` is +1 or `m_Max = -m_Min`
+//! exactly, and on the round 10 recordings the hypothesis disagreed on the
+//! other axes alone, by `-|value| * (m_Max + m_Min)`. The twist (x) and swing
 //! (y, z) combine from half-angle tangents,
 //! `joint = normalize((0, tan(y/2), tan(z/2), 1) * (tan(x/2), 0, 0, 1))`,
 //! between the axes' pre rotation and conjugate post rotation:
@@ -15,7 +22,8 @@
 //! Avatar's axes, the rest rotation, the muscle values), in this order and
 //! no other, with no fused multiply-add:
 //!
-//! - `d = f64(sign) * f64(value)`, exact; then one product with the limit;
+//! - `f64(value) * limit`, exact (two f32 operands), then times `f64(sign)`,
+//!   exact (it is +1 or -1);
 //! - `tan(angle / 2)` by the platform's `tan`, as Python's `math.tan` is:
 //!   the one step whose bits are the C library's, so the goldens record
 //!   each tangent (glibc's, where CI runs), and everything after it is
@@ -100,13 +108,13 @@ pub fn normalize(q: [f64; 4]) -> Option<[f64; 4]> {
 pub fn muscle_angles(axes: &Axes, values: &[(f32, usize)]) -> Option<[f64; 3]> {
     let mut angles = [0.; 3];
     for &(value, axis) in values {
-        let d = f64::from(*axes.sign.get(axis)?) * f64::from(value);
-        let limit = if d >= 0. {
+        let value = f64::from(value);
+        let limit = if value >= 0. {
             f64::from(*axes.max.get(axis)?)
         } else {
             -f64::from(*axes.min.get(axis)?)
         };
-        *angles.get_mut(axis)? = d * limit;
+        *angles.get_mut(axis)? = f64::from(*axes.sign.get(axis)?) * (value * limit);
     }
     Some(angles)
 }

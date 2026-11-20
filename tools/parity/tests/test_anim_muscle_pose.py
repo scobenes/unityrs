@@ -1,6 +1,6 @@
-"""B5a's muscle-pose reference (anim_muscle_pose): the hypothesis of anim_humanoid_qualify with its arithmetic
-order written out, the committed goldens Rust must equal, the axes table, the derived agreement bound, and the
-agreement report."""
+"""B5a's muscle-pose reference (anim_muscle_pose): reference 2's angle rule, anim_humanoid_qualify's equation
+otherwise with its arithmetic order written out, the committed goldens Rust must equal, the axes table, clip
+playback's muscle values, the derived agreement bound, and the agreement report."""
 
 import math
 import platform
@@ -25,15 +25,23 @@ def f32_quaternion(q):
     return [pose.f32(v) for v in q]
 
 
+def upper_arm():
+    """Unity's LeftUpperArm z axis: m_Sgn -1, limits -60 and +100 degrees."""
+    return dict(pre=[0., 0., 0., 1.], post=[0., 0., 0., 1.], sign=[1., 1., -1.],
+                min=[pose.f32(math.radians(v)) for v in (-90., -100., -60.)],
+                max=[pose.f32(math.radians(v)) for v in (90., 100., 100.)])
+
+
 class ReferenceTests(unittest.TestCase):
-    def test_it_is_the_qualification_hypothesis_with_its_order_fixed(self):
+    def test_reference_one_is_the_qualification_hypothesis_with_its_order_fixed(self):
         # Under CPython up to 3.11 `sum` adds left to right, so the two agree bit for bit; from 3.12 `sum`
         # compensates and anim_humanoid_qualify.normalize may differ in its last bits, never the reference.
         compared = 0
         for bone in (7, 1, 13, 21, 24, 54):
             axes = pose.synthetic_axes(bone)
             for values in pose.schedule(bone):
-                ours, theirs = pose.muscle_rotation(axes, values), qualify.muscle_rotation(record(axes), values)
+                ours = pose.muscle_rotation(axes, values, pose.hypothesis_angles)
+                theirs = qualify.muscle_rotation(record(axes), values)
                 if sys.version_info < (3, 12):
                     self.assertEqual(ours, theirs)
                 else:
@@ -50,14 +58,56 @@ class ReferenceTests(unittest.TestCase):
             pose.normalize((0., 0., 0., 0.))
 
     def test_the_angle_rule(self):
-        # d = sign * value; d >= 0 takes the max limit, a negative d the min's magnitude; a later muscle on
-        # the same axis replaces an earlier one.
+        # The limit by the value's sign (a zero of either sign takes the max), then the axis sign; a later
+        # muscle on the same axis replaces an earlier one. Reference 1 applied the sign first.
         axes = dict(pre=[0., 0., 0., 1.], post=[0., 0., 0., 1.], sign=[1., -1., 1.], min=[-.5, -.25, 0.],
                     max=[1., .75, 0.])
-        self.assertEqual(pose.angles(axes, [(.5, 0), (.5, 1)]), [.5, -.125, 0.])
-        self.assertEqual(pose.angles(axes, [(-.5, 0), (-.5, 1), (1., 2)]), [-.25, .375, 0.])
+        self.assertEqual(pose.angles(axes, [(.5, 0), (.5, 1)]), [.5, -.375, 0.])
+        self.assertEqual(pose.angles(axes, [(-.5, 0), (-.5, 1), (1., 2)]), [-.25, .125, 0.])
         self.assertEqual(pose.angles(axes, [(.5, 0), (-1., 0)]), [-.5, 0., 0.])
         self.assertEqual(math.copysign(1, pose.angles(axes, [(-0., 0)])[0]), -1.)
+        self.assertEqual(math.copysign(1, pose.angles(axes, [(0., 1)])[1]), -1.)
+        self.assertEqual(pose.hypothesis_angles(axes, [(.5, 0), (.5, 1)]), [.5, -.125, 0.])
+        self.assertEqual(pose.hypothesis_angles(axes, [(-.5, 0), (-.5, 1), (1., 2)]), [-.25, .375, 0.])
+
+    def test_the_discriminating_samples(self):
+        # The plan's: LeftUpperArm z at +1, -1, +.5, -.5 turns -100, +60, -50, +30 degrees; reference 1
+        # turned -60, +100, -30, +50. The difference is -|v| * (m_Max + m_Min).
+        axes = upper_arm()
+        for v, now, before in ((1., -100., -60.), (-1., 60., 100.), (.5, -50., -30.), (-.5, 30., 50.)):
+            new, old = pose.angles(axes, [(v, 2)])[2], pose.hypothesis_angles(axes, [(v, 2)])[2]
+            self.assertAlmostEqual(math.degrees(new), now, places=5)
+            self.assertAlmostEqual(math.degrees(old), before, places=5)
+            self.assertAlmostEqual(new - old, -abs(v) * (axes["max"][2] + axes["min"][2]), places=12)
+
+    def test_the_mirrored_pair_is_the_same_mapping(self):
+        # Sign first with (-m_Max, -m_Min) as the limits on an m_Sgn -1 axis: every value, the same bits.
+        axes = upper_arm()
+        mirrored = dict(axes, min=[-v for v in axes["max"]], max=[-v for v in axes["min"]])
+        for v in (*pose.VALUES, -2. ** -24, .3, -.7):
+            self.assertEqual(struct.pack(">d", pose.angles(axes, [(v, 2)])[2]),
+                             struct.pack(">d", pose.hypothesis_angles(mirrored, [(v, 2)])[2]))
+
+    def test_nothing_changes_with_a_positive_sign_or_symmetric_limits(self):
+        # The pre-registered no-change proof, bit for bit over every value and every synthetic bone's axes.
+        unchanged = changed = 0
+        for bone in sorted({qualify.muscle_bone(m) for m in range(qualify.MUSCLE_COUNT)}):
+            axes = pose.synthetic_axes(bone)
+            for values in pose.schedule(bone):
+                for (value, axis) in values:
+                    one = [(value, axis)]
+                    same = struct.pack(">3d", *pose.angles(axes, one)) == struct.pack(
+                        ">3d", *pose.hypothesis_angles(axes, one))
+                    # Bitwise symmetric: limits of +0 and +0 are not (-m_Min is -0), and may differ in a zero's sign.
+                    symmetric = struct.pack(">d", axes["max"][axis]) == struct.pack(">d", -axes["min"][axis])
+                    if axes["sign"][axis] == 1. or symmetric:
+                        self.assertTrue(same, (bone, value, axis))
+                        unchanged += 1
+                    elif value and axes["max"][axis] != -axes["min"][axis]:
+                        self.assertFalse(same, (bone, value, axis))
+                        changed += 1
+        self.assertGreater(unchanged, 500)
+        self.assertGreater(changed, 50)
 
     def test_the_axes_table(self):
         self.assertEqual(len(pose.MUSCLE_AXES), qualify.MUSCLE_COUNT)
@@ -93,32 +143,104 @@ class ReferenceTests(unittest.TestCase):
     @unittest.skipUnless(platform.libc_ver()[0] == "glibc", "the goldens' tangents are glibc's")
     def test_the_committed_goldens_are_these(self):
         self.assertEqual(pose.GOLDENS.read_text(encoding="utf-8"), pose.dump(pose.goldens()))
+        self.assertEqual(pose.goldens()["reference"], 2)
+
+
+def key(time, value, slope=0.):
+    return dict(time_f32=replay.f32_bits(time), value_f32=replay.f32_bits(value), in_tangent_f32=replay.f32_bits(
+        slope), out_tangent_f32=replay.f32_bits(slope), weighted_mode="None")
+
+
+class ClipPlaybackTests(unittest.TestCase):
+    def doc(self, bindings):
+        return {"spec": {"evidence": {"editor": {"bindings": [
+            dict(path=path, type=kind, property=name, keys=keys) for path, kind, name, keys in bindings]}}}}
+
+    def test_the_animator_property_of_a_muscle(self):
+        self.assertEqual(pose.muscle_property("Left Thumb 1 Stretched"), "LeftHand.Thumb.1 Stretched")
+        self.assertEqual(pose.muscle_property("Right Little Spread"), "RightHand.Little.Spread")
+        self.assertEqual(pose.muscle_property("Left Arm Twist In-Out"), "Left Arm Twist In-Out")
+        self.assertEqual(pose.muscle_property("Spine Front-Back"), "Spine Front-Back")
+
+    def test_values_are_the_clips_own_curves(self):
+        animator = "UnityEngine.Animator"
+        doc = self.doc([("", animator, "Spine Front-Back", [key(0., 0.), key(1., .5)]),
+                        ("", animator, "LeftHand.Thumb.1 Stretched", [key(0., -1.), key(1., -1.)]),
+                        ("Hips", animator, "Chest Front-Back", [key(0., 1.), key(1., 1.)]),
+                        ("", "UnityEngine.Transform", "Chest Left-Right", [key(0., 1.), key(1., 1.)])])
+        names = ("Spine Front-Back", "Left Thumb 1 Stretched", "Chest Front-Back", "Chest Left-Right")
+        sample = dict(local=.5, local_f32=replay.f32_bits(.5))
+        values, errors = pose.clip_values(doc, sample, names)
+        # Hermite with zero slopes at its midpoint; a finger by its Animator property; a curve on another
+        # path or type is not the Animator's, so its muscle is exactly 0.
+        self.assertEqual(values, [.25, -1., 0., 0.])
+        self.assertEqual(errors[2:], [0., 0.])
+        self.assertTrue(0 < errors[0] < 1e-5 and 0 < errors[1] < 1e-5, errors)
+        # The time's own f32 rounding joins the error.
+        late = dict(local=.5 + 2. ** -30, local_f32=replay.f32_bits(.5))
+        self.assertGreater(pose.clip_values(doc, late, names)[1][0], errors[0])
+
+    def test_a_weighted_curve_is_refused(self):
+        weighted = dict(key(0., 0.), weighted_mode="Both")
+        doc = self.doc([("", "UnityEngine.Animator", "Spine Front-Back", [weighted, key(1., 1.)])])
+        with self.assertRaisesRegex(ValueError, "Spine Front-Back"):
+            pose.clip_values(doc, dict(local=.5, local_f32=replay.f32_bits(.5)), ("Spine Front-Back",))
+
+    def test_a_value_error_widens_the_bound(self):
+        axes, rest = pose.synthetic_axes(7), f32_quaternion(pose._quaternion("muscle-pose/7/rest"))
+        values = [(.5, 2), (.5, 1)]
+        self.assertGreater(pose.unity_bound(rest, axes, values, [1e-6, 0.]), pose.unity_bound(rest, axes, values))
+        self.assertEqual(pose.unity_bound(rest, axes, values, [0., 0.]), pose.unity_bound(rest, axes, values))
 
 
 class AgreementTests(unittest.TestCase):
-    def case(self, turn=0.):
-        """One bone's case, its recording the reference's rotation in f32, turned by `turn` radians."""
-        axes, rest = pose.synthetic_axes(7), f32_quaternion(pose._quaternion("muscle-pose/7/rest"))
+    def case(self, turn=0., rule=pose.angles, refusal=False, axes=None):
+        """One bone's case, its recording `rule`'s rotation in f32, turned by `turn` radians."""
+        axes = axes or pose.synthetic_axes(7)
+        rest = f32_quaternion(pose._quaternion("muscle-pose/7/rest"))
         rows = []
         for values in pose.schedule(7)[:20]:
-            local = pose.bone_rotation(rest, axes, values)
+            local = pose.bone_rotation(rest, axes, values, rule)
             recorded = f32_quaternion(pose.multiply(local, (math.sin(turn / 2), 0., 0., math.cos(turn / 2))))
             rows.append(pose.vector_row(rest, axes, values, recorded))
         return dict(format=pose.FORMAT, kind="cases", entries=[dict(editor="2022", case="x", bone=7, name="Spine",
-                                                                   axes=pose.axes_row(axes),
+                                                                   refusal=refusal, axes=pose.axes_row(axes),
                                                                    rest=pose.f32_hexes(rest), vectors=rows)])
 
     def test_a_recording_within_its_bound_agrees(self):
-        (key, (worst, bound, count, outside)), = pose.agreement(self.case()).items()
+        (key, (worst, bound, count, outside, _, _)), = pose.agreement(self.case()).items()
         self.assertEqual((key, count, outside), (("2022", "Spine"), 20, 0))
         # The f32 rounding of the recording alone, well inside the derived bound.
         self.assertLess(worst, bound)
         self.assertLess(bound, 1e-3)
 
     def test_a_turned_recording_disagrees(self):
-        (_, (worst, bound, count, outside)), = pose.agreement(self.case(math.radians(.5))).items()
+        (_, (worst, bound, count, outside, _, _)), = pose.agreement(self.case(math.radians(.5))).items()
         self.assertEqual((count, outside), (20, 20))
         self.assertAlmostEqual(math.degrees(worst), .5, places=4)
+
+    def test_a_refusal_case_is_reported_apart(self):
+        document = self.case(math.radians(.5), refusal=True)
+        self.assertEqual(pose.agreement(document), {})
+        (_, (_, _, count, outside, _, _)), = pose.agreement(document, refusal=True).items()
+        self.assertEqual((count, outside), (20, 20))
+
+    def test_a_change_to_an_agreeing_bone_is_a_regression(self):
+        # Synthetic Spine axes 7 have an m_Sgn -1 axis with unequal limits: recorded by reference 1, they
+        # agreed then and change now, which the regression check names.
+        axes = pose.synthetic_axes(7)
+        self.assertTrue(any(s == -1. and lo != -hi for s, lo, hi in zip(axes["sign"], axes["min"], axes["max"])))
+        rows = pose.agreement(self.case(rule=pose.hypothesis_angles))
+        (_, (_, _, _, outside, changed, was)), = rows.items()
+        self.assertEqual(was, 0)
+        self.assertGreater(changed, 0)
+        self.assertGreater(outside, 0)
+        self.assertEqual(pose.regressions(rows), [("2022", "Spine")])
+        # Recorded by reference 2 on symmetric limits, nothing changes and nothing regresses.
+        symmetric = dict(axes, min=[-v for v in axes["max"]])
+        rows = pose.agreement(self.case(axes=symmetric))
+        self.assertEqual(next(iter(rows.values()))[3:], (0, 0, 0))
+        self.assertEqual(pose.regressions(rows), [])
 
     def test_the_bound_is_derived_at_the_operands(self):
         axes, rest = pose.synthetic_axes(7), f32_quaternion(pose._quaternion("muscle-pose/7/rest"))

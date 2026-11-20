@@ -177,6 +177,7 @@ fn the_axes_table_is_the_references() {
 fn every_golden_is_the_references_bit_for_bit() {
     let goldens: Value = serde_json::from_str(GOLDENS).unwrap();
     assert_eq!(goldens["kind"], "goldens");
+    assert_eq!(goldens["reference"], 2);
     let checked = check(&goldens);
     // Every bone a muscle turns, each muscle at all fifteen values, each
     // bone's muscles jointly.
@@ -188,6 +189,41 @@ fn every_golden_is_the_references_bit_for_bit() {
             checked.libm, checked.rows
         );
     }
+}
+
+/// Reference 2's angle rule: the limit by the value's sign, then the axis
+/// sign. On an `m_Sgn` -1 axis with limits -60 and +100 degrees (Unity's
+/// `LeftUpperArm` z), values +1, -1, +0.5 and -0.5 turn -100, +60, -50 and
+/// +30 degrees; the hypothesis it replaced turned -60, +100, -30 and +50.
+/// With `m_Sgn` +1, or limits mirror images, the two rules are one.
+#[test]
+fn the_limit_follows_the_values_sign() {
+    let degrees = |d: f32| d.to_radians();
+    let mut axes = Axes {
+        pre: [0., 0., 0., 1.],
+        post: [0., 0., 0., 1.],
+        sign: [1., 1., -1.],
+        min: [degrees(-40.), degrees(-30.), degrees(-60.)],
+        max: [degrees(40.), degrees(30.), degrees(100.)],
+        length: 0.,
+        kind: 0,
+    };
+    let z = |axes: &Axes, v: f32| muscle_angles(axes, &[(v, 2)]).unwrap()[2];
+    for (v, want) in [(1., -100.), (-1., 60.), (0.5, -50.), (-0.5, 30.)] {
+        let limit = if v >= 0. { axes.max[2] } else { -axes.min[2] };
+        assert_eq!(z(&axes, v), -(f64::from(v) * f64::from(limit)));
+        assert!(
+            (z(&axes, v).to_degrees() - want).abs() < 1e-4,
+            "{v}: {}",
+            z(&axes, v).to_degrees()
+        );
+    }
+    // A zero of either sign takes the max limit, its sign through m_Sgn.
+    assert_eq!(z(&axes, 0.).to_bits(), (-0_f64).to_bits());
+    assert_eq!(z(&axes, -0.).to_bits(), 0_f64.to_bits());
+    // m_Sgn +1: the value times its own side's limit.
+    axes.sign[2] = 1.;
+    assert_eq!(z(&axes, -1.), -f64::from(-axes.min[2]));
 }
 
 #[test]
