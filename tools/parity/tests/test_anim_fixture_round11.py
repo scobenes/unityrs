@@ -76,7 +76,8 @@ class Built:
         self.clip, self.transforms = clip, {}
         self.avatar_path = doc["spec"].setdefault("avatar_asset", "assets/unityrsfixtures/body/avatar.asset")
         self.human_scale = replay.f32_from_bits(doc["capture"]["humanoid"]["human_scale"])
-        offset = r11.ROUND11_INFO.get(name, {}).get("root") == "offset"
+        self.skeleton(doc)
+        offset = (r11.ROUND11_INFO | body.BODY_INFO).get(name, {}).get("root") == "offset"
         for k, (node, rest) in enumerate(zip(doc["spec"]["nodes"], doc["capture"]["rest"]["transforms"])):
             node["id"] = dict(bundle=0, file_index=0, file="CAB", path_id=str(k + 1))
             values = {key: [replay.f32_from_bits(v) for v in rest[key]] for key in ("translation", "rotation", "scale")}
@@ -91,7 +92,26 @@ class Built:
 
     def asset(self, path, class_id):
         assert (path, class_id) == (self.avatar_path, 90)
-        return {"m_Avatar": {"m_Human": {"data": {"m_Scale": self.human_scale}}}}
+        return {"m_Avatar": {"m_Human": {"data": {"m_Scale": self.human_scale, "m_Skeleton": {"data": dict(
+            m_ID=self.ids, m_Node=[dict(m_ParentId=parent) for parent in self.parents])},
+            "m_HumanBoneIndex": self.bone_index}}}, "m_TOS": self.tos}
+
+    def skeleton(self, doc):
+        """The Avatar's skeleton as Unity builds it: the Animator node and every node below it, parents first,
+        each `m_ID` (a stand-in hash) with its path in `m_TOS`, and the body slots in m_HumanBoneIndex."""
+        spec = doc["spec"]
+        names = {node["address"]: node["name"] for node in spec["nodes"]}
+        base = spec["binding_address"]
+        order = [base] + [node["address"] for node in spec["nodes"] if node["address"].startswith(base + "/")]
+        at = {address: k for k, address in enumerate(order)}
+        self.ids = [1000 + k for k in range(len(order))]
+        self.parents = [at.get(address.rpartition("/")[0], -1) if k else -1 for k, address in enumerate(order)]
+        self.tos = [[self.ids[k], "/".join(names[base + "/" + "/".join(address[len(base) + 1:].split("/")[:n + 1])]
+                                           for n in range(address.count("/") - base.count("/")))]
+                    for k, address in enumerate(order)]
+        nodes = {row["name"]: row["node"] for row in doc["capture"]["humanoid"]["bones"]}
+        self.bone_index = [at[spec["nodes"][nodes[slot]]["address"]] if nodes.get(slot, -1) >= 0 else -1
+                           for slot in runs.SLOTS]
 
     def at(self, doc, address):
         return self.transforms[(0, 1 + [node["address"] for node in doc["spec"]["nodes"]].index(address))]
@@ -156,16 +176,23 @@ class Round11InventoryTests(unittest.TestCase):
             self.assertIn("Full = true, Scoped = true, Extras = FullExtras", fields)
             size = re.search(r"Size = ([\d.]+)f", fields)
             variants = re.search(r"Variants = (\w+|new\[\] \{ ChainVariant.Name)", fields).group(1)
-            parsed[name] = ("compact", next((v for k, v in features.items() if k in fields), ""),
+            parsed[name] = ("tall" if "Tall = true" in fields else "compact",
+                            next((v for k, v in features.items() if k in fields), ""),
                             float(size.group(1)) if size else 1, {"E5Admitted": full.SCOPED_ADMITTED,
                                                                  "FullVariants": full.FULL_VARIANTS}.get(
                                 variants, (body.CHAIN_VARIANT,)))
         topologies = re.search(r"ScopedTopologies = \{(.*?)\};", clips, re.S).group(1)
         self.assertEqual(tuple(re.findall(r'"([a-z-]+)"', topologies)), full.SCOPED_TOPOLOGIES)
-        self.assertIn('Noncoplanar = topology.Noncoplanar, Variants = new[] { "keep-o0-y0-xz0" }', clips)
-        parsed |= {t + "-scoped": (t, "", 1, ("keep-o0-y0-xz0",)) for t in full.SCOPED_TOPOLOGIES}
+        self.assertIn("Noncoplanar = topology.Noncoplanar, Variants = E5Admitted", clips)
+        parsed |= {t + "-scoped": (t, "", 1, full.SCOPED_ADMITTED) for t in full.SCOPED_TOPOLOGIES}
         self.assertEqual(parsed, full.SCOPED_RIGS)
         self.assertEqual(full.SCOPED_ADMITTED, r11.E5_ADMITTED)
+        # Each F5 feature in scope at every scale a chain rig plays it at, but the armature's at F5's own (B4's
+        # human-scale range's lower end, which a full-body Avatar must not cross), which plays at 1.25 instead.
+        chains = {(f, size) for f, size in r11.CHAIN_FEATURES.values() if f} - {("armature", 1)}
+        self.assertEqual({(f, size) for _, f, size, _ in full.SCOPED_RIGS.values() if f}, chains | {("armature", 1.25)})
+        # Expected-absent muscles: a muscle whose bone the rig maps is curved, no other.
+        self.assertIn(".Where(i => mapped.Contains(HumanTrait.BoneName[HumanTrait.BoneFromMuscle(i)])", clips)
         # Every topology B3 admits but the compact rig's own, as body topology (the face is a leaf B3 ignores).
         self.assertEqual({t for t in r11.E5_TOPOLOGIES if t not in ("eyes", "jaw", "eyes-jaw")}, set(full.SCOPED_TOPOLOGIES))
         amplitudes = re.search(r"ScopedAmplitudes = \{(.*?)\n    \};", clips, re.S).group(1)
@@ -186,16 +213,16 @@ class Round11InventoryTests(unittest.TestCase):
 
     def test_the_cases_are_round_11s_own(self):
         # 15 clip rigs x 21 variants x 2 roots, each new chain rig's targets and clip, the refusal full-body clips
-        # (three plain rigs x 4 variants x 2 roots, the armature's chain variant), the in-scope ones (the compact
-        # rig's 11 admitted variants, the large and small rigs' 4, each x 2 roots; three F5 features' chain
-        # variant; nine topologies x 2 roots) and the four sweeps, in the builder's order.
-        scoped = 11 * 2 + 2 * 4 * 2 + 3 + 9 * 2
+        # (three plain rigs x 4 variants x 2 roots, the armature's chain variant), the in-scope ones (the compact,
+        # large, small and tall rigs and nine topologies, each 11 admitted variants x 2 roots; eight F5 feature
+        # rigs' chain variant) and the four sweeps, in the builder's order.
+        scoped = 13 * 11 * 2 + 8
         self.assertEqual(len(r11.ROUND11_CASES), 15 * 21 * 2 + 5 * 2 + 25 + scoped + 4)
         self.assertEqual(len(r11.E5_CASES), 665 + scoped)
         kinds = [r11.ROUND11_INFO[name]["kind"] for name in r11.ROUND11_CASES]
         self.assertEqual(kinds[:10], ["targets", "clip"] * 5)
         self.assertEqual(kinds[10:], ["clip"] * (655 + scoped) + ["probes"] * 4)
-        self.assertEqual(len(r11.ROUND11_BUNDLES), 5 + 15 + 4 + 15 + 4)
+        self.assertEqual(len(r11.ROUND11_BUNDLES), 5 + 15 + 4 + 21 + 4)
         # Only the in-scope clips declare the frozen scope; every other clip is refusal evidence.
         declared = {name: info.get("scope") for name, info in r11.ROUND11_INFO.items()}
         self.assertEqual({name for name, value in declared.items() if value == "in"},
@@ -324,20 +351,25 @@ HUMANOID_SPINE = {"Spine Front-Back": (0, .5, -.25), "Spine Left-Right": (0, 0, 
                   "Spine Twist Left-Right": (0, 0, -.5)}
 
 
-def full_clip(doc, name, scoped=None):
+def full_clip(doc, name):
     """A full-body clip case's authored curves and built clip: its full curves under their Animator
-    properties, and a refusal clip's humanoid Spine curves besides."""
+    properties, and a refusal clip's humanoid Spine curves besides, authored and built."""
     rig = r11.ROUND11_INFO[name]["rig"]
-    scoped = rig in full.SCOPED_RIGS if scoped is None else scoped
-    groups = full.full_groups(list(NAMES), scoped)
-    clip = support.clip_case(doc, r11.ROUND11_INFO[name]["variant"], groups)
-    if not scoped:
-        doc["spec"]["evidence"]["editor"]["bindings"] += humanoid_spine()
+    groups = full.full_groups(list(NAMES), rig)
+    clip = support.clip_case(doc, r11.ROUND11_INFO[name]["variant"],
+                             groups + ([] if rig in full.SCOPED_RIGS else spine_groups()))
     return doc, clip, groups
 
 
-def humanoid_spine():
-    return [support.animator(prop, support.keys((0, .5, 1), values)) for prop, values in HUMANOID_SPINE.items()]
+def spine_groups():
+    """The humanoid Spine curves every humanoid clip keys, as curve groups (authored and compiled)."""
+    return [[(prop, body.MUSCLE_ATTRIBUTE + NAMES.index(prop), (0, .5, 1), values)]
+            for prop, values in HUMANOID_SPINE.items()]
+
+
+def spine_clip(doc, variant):
+    """A Spine-only clip case (E5's clip rigs, the chain clips): its body curves and the humanoid Spine's."""
+    return support.clip_case(doc, variant, spine_groups())
 
 
 class Round11CheckTests(unittest.TestCase):

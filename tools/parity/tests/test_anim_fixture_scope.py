@@ -1,7 +1,9 @@
-"""Round 11's full-body clips as Unity binds them, each clip's declared scope against freeze v8's limits
-(anim_fixture_full, anim_fixture_scope), and B4's exact chain rule on the built Transforms of every clip B4
-reads (anim_fixture_round11.serialized_chain)."""
+"""Round 11's full-body clips as Unity binds them and their expected-absent muscles, each clip's declared scope
+against freeze v8's limits on its authored keys, compiled values and recorded poses (anim_fixture_full,
+anim_fixture_scope), and B4's inputs on every clip B4 reads: the exact chain rule on the built Transforms, the
+Avatar skeleton's Transforms through m_TOS, and the clip settings root.rs reads (anim_fixture_round11)."""
 
+import copy
 import json
 import re
 import unittest
@@ -15,15 +17,16 @@ import anim_fixture_muscles as muscles  # noqa: E402
 import anim_fixture_round11 as r11  # noqa: E402
 import anim_fixture_scope as scope  # noqa: E402
 import anim_replay as replay  # noqa: E402
+import anim_body_runs as runs  # noqa: E402
 from anim_fixture_support import RUN  # noqa: E402
 from test_anim_body_fixtures import source  # noqa: E402
 from test_anim_fixture_round11 import (FREEZE, HUMANOID_SPINE, NAMES, Built, Round11CheckTests,  # noqa: E402
-                                       full_clip, humanoid_spine, round11_docs)
+                                       full_clip, round11_docs, spine_clip)
 
 check = Round11CheckTests.check
 
 
-def doc_of(name, **kwargs):
+def doc_of(name):
     """A full-body clip case; an in-scope one's samples recorded at the rest pose (the synthetic poses follow
     the humanoid Spine curves, whose twist is out of scope)."""
     doc = support.body_doc(name, RUN)
@@ -31,7 +34,7 @@ def doc_of(name, **kwargs):
         rest = doc["capture"]["rest"]["transforms"]
         for sample in doc["capture"]["samples"]:
             sample["pose"]["transforms"] = [dict(row) for row in rest]
-    return full_clip(doc, name, **kwargs)
+    return full_clip(doc, name)
 
 
 class PropertyTests(unittest.TestCase):
@@ -53,7 +56,7 @@ class PropertyTests(unittest.TestCase):
 
     def test_the_full_curves_are_distinct_and_exact(self):
         for scoped in (False, True):
-            groups = full.full_groups(list(NAMES), scoped)
+            groups = full.full_groups(list(NAMES), "compact-scoped" if scoped else "compact-full")
             curves = [group[0][3] for group in groups]
             self.assertEqual(len(groups), 95 if scoped else 92)
             # No two muscles share a curve, so a swapped channel changes the pose; each moves through three
@@ -69,7 +72,7 @@ class PropertyTests(unittest.TestCase):
         freeze = json.loads(FREEZE.read_text(encoding="utf-8"))
         self.assertEqual((scope.LATERAL_LIMIT, scope.TWIST_LIMIT),
                          (freeze["scope"]["lateral_limit"], freeze["bounds"]["twist_limit"]))
-        values = {group[0][0]: group[0][3] for group in full.full_groups(list(NAMES), True)}
+        values = {group[0][0]: group[0][3] for group in full.full_groups(list(NAMES), "compact-scoped")}
         lateral = [abs(v) for name in ("Spine Left-Right", "Chest Left-Right", "UpperChest Left-Right")
                    for v in values[name]]
         self.assertTrue(lateral and max(lateral) <= scope.LATERAL_LIMIT)
@@ -104,9 +107,8 @@ class ScopeTests(unittest.TestCase):
                 self.assertEqual(r11.ROUND11_INFO[name]["scope"], "refusal")
                 for spine in (True, False):
                     doc = support.body_doc(name, RUN)
-                    clip = support.clip_case(doc, r11.ROUND11_INFO[name]["variant"])
-                    if spine:
-                        doc["spec"]["evidence"]["editor"]["bindings"] += humanoid_spine()
+                    variant = r11.ROUND11_INFO[name]["variant"]
+                    clip = spine_clip(doc, variant) if spine else support.clip_case(doc, variant)
                     with self.subTest(name=name, spine=spine):
                         if spine:
                             self.assertIsNotNone(check(self, name, doc, Built(name, doc, clip)))
@@ -125,7 +127,8 @@ class ScopeTests(unittest.TestCase):
                 check(self, name, doc, Built(name, doc, clip))
             # The declaration alone, on curves the design never had.
             with self.assertRaisesRegex(ValueError, "declared in scope but a spine Left-Right key is 0.25"):
-                scope.check_scope(name, "in", doc, body._authored(doc["spec"]["evidence"]["editor"], replay), replay)
+                scope.check_scope(name, "in", doc, body._authored(doc["spec"]["evidence"]["editor"], replay), clip,
+                                  replay)
 
     def test_refuses_an_in_scope_clip_whose_recorded_shoulders_twist(self):
         name = "body-clip-compact-scoped-keep-o0-y0-xz0"
@@ -149,12 +152,12 @@ class ScopeTests(unittest.TestCase):
         with round11_docs():
             doc, clip, _ = doc_of(name)
             authored = body._authored(doc["spec"]["evidence"]["editor"], replay)
-            scope.check_scope(name, "refusal", doc, authored, replay)
+            scope.check_scope(name, "refusal", doc, authored, clip, replay)
             for prop in ("Spine Left-Right", "Chest Left-Right", "UpperChest Left-Right"):
                 for key in authored[prop]["keys"]:
                     key["value_f32"] = replay.f32_bits(.125)
             with self.assertRaisesRegex(ValueError, "declared refusal evidence but its spine Left-Right curves"):
-                scope.check_scope(name, "refusal", doc, authored, replay)
+                scope.check_scope(name, "refusal", doc, authored, clip, replay)
             # And a clip with no spine Left-Right curve has no declared scope to check.
             doc, clip, _ = doc_of(name)
             bindings = doc["spec"]["evidence"]["editor"]["bindings"]
@@ -207,6 +210,145 @@ class SerializedChainTests(unittest.TestCase):
                 with self.subTest(edit=edit), self.assertRaisesRegex(ValueError, pattern):
                     check(self, name, doc, view)
 
+
+
+class ExpectedAbsentTests(unittest.TestCase):
+    def test_a_topology_leaves_its_omitted_bones_muscles_uncurved(self):
+        absent = {rig: full.expected_absent(rig, NAMES) for rig in full.SCOPED_RIGS}
+        shoulders = {f"{side} Shoulder {axis}" for side in ("Left", "Right") for axis in ("Down-Up", "Front-Back")}
+        upper = {"UpperChest Front-Back", "UpperChest Left-Right", "UpperChest Twist Left-Right"}
+        toes = {"Left Toes Up-Down", "Right Toes Up-Down"}
+        self.assertEqual(absent["no-shoulders-scoped"], shoulders)
+        self.assertEqual(absent["tall-scoped"], upper)
+        self.assertEqual(absent["no-upper-chest-toes-scoped"], upper | toes)
+        self.assertEqual(absent["no-left-toes-scoped"], {"Left Toes Up-Down"})
+        for rig in ("compact-scoped", "large-scoped", "armature-large-scoped", "hips-scale-small-scoped",
+                    "noncoplanar-scoped"):
+            self.assertEqual(absent[rig], frozenset())
+        for rig, names in absent.items():
+            self.assertEqual(len(full.full_groups(list(NAMES), rig)), 95 - len(names))
+
+    def test_refuses_a_curve_on_an_expected_absent_muscle(self):
+        with round11_docs():
+            for name in ("body-clip-no-shoulders-scoped-level", "body-clip-tall-scoped-bake-o1-y0-xz1-offset",
+                         "body-clip-no-upper-chest-toes-scoped-keep-o1-y1-xz1-motion"):
+                doc, clip, _ = doc_of(name)
+                with self.subTest(name=name):
+                    self.assertIsNotNone(check(self, name, doc, Built(name, doc, clip)))
+            name = "body-clip-no-shoulders-scoped-level"
+            doc, clip, _ = doc_of(name)
+            doc["spec"]["evidence"]["editor"]["bindings"].append(
+                support.animator("Left Shoulder Front-Back", support.keys(body.BODY_TIMES, (0, .1, 0, .1, 0))))
+            with self.assertRaisesRegex(ValueError, "curves expected-absent muscle"):
+                check(self, name, doc, Built(name, doc, clip))
+
+
+class CompiledScopeTests(unittest.TestCase):
+    def test_refuses_an_in_scope_clip_whose_compiled_values_cross_the_limit(self):
+        # The authored keys inside the limit, the built clip's Chest Left-Right over it at a sample time.
+        name = "body-clip-large-scoped-orientation-offset"
+        with round11_docs():
+            doc, clip, groups = doc_of(name)
+            authored = body._authored(doc["spec"]["evidence"]["editor"], replay)
+            scope.check_scope(name, "in", doc, authored, clip, replay)
+            over = [[(prop, attribute, times, tuple(.25 if prop == "Chest Left-Right" and k == 2 else v
+                                                    for k, v in enumerate(values)))]
+                    for (prop, attribute, times, values), in groups]
+            built = support.clip_case(copy.deepcopy(doc), r11.ROUND11_INFO[name]["variant"], over)
+            with self.assertRaisesRegex(ValueError, "its compiled spine Left-Right value at 0.5 is 0.25"):
+                scope.check_scope(name, "in", doc, authored, built, replay)
+
+    def test_refusal_evidence_must_cross_the_limit_as_compiled(self):
+        # Authored over the limit, but a built clip without the Spine's slots plays it at 0 throughout.
+        name = "body-clip-tall-keep-o0-y0-xz0-start-offset"
+        with round11_docs():
+            doc = support.body_doc(name, RUN)
+            clip = spine_clip(doc, r11.ROUND11_INFO[name]["variant"])
+            authored = body._authored(doc["spec"]["evidence"]["editor"], replay)
+            scope.check_scope(name, "refusal", doc, authored, clip, replay)
+            bare = support.clip_case(copy.deepcopy(doc), r11.ROUND11_INFO[name]["variant"])
+            with self.assertRaisesRegex(ValueError, "compiled spine Left-Right values stay within"):
+                scope.check_scope(name, "refusal", doc, authored, bare, replay)
+
+
+class B4InputTests(unittest.TestCase):
+    def test_f4s_compact_clips_are_b4s_too(self):
+        self.assertEqual(len(r11.F4_CLIPS), 2 * len(body.CLIP_VARIANTS))
+        self.assertTrue(r11.F4_CLIPS | r11.F5_CHAIN_CLIPS | r11.E5_CASES <= r11.B4_CASES)
+        with round11_docs():
+            for name in ("body-clip-level-offset", "body-clip-height-from-feet-knee-goals",
+                         "body-clip-keep-o1-y1-xz1-motion"):
+                doc = support.body_doc(name, RUN)
+                clip = spine_clip(doc, body.BODY_INFO[name]["variant"])
+                with self.subTest(name=name):
+                    self.assertIsNotNone(check(self, name, doc, Built(name, doc, clip)))
+                view = Built(name, doc, clip)
+                view.at(doc, "0/0")["m_LocalScale"]["x"] = 1.5
+                with self.subTest(name=name, edit="hips"), self.assertRaisesRegex(ValueError, "not one B4 admits"):
+                    check(self, name, doc, view)
+
+    def skeleton_case(self, edit):
+        name = "body-clip-compact-scoped-level"
+        doc, clip, _ = doc_of(name)
+        view = Built(name, doc, clip)
+        at = {path: k for k, (_, path) in enumerate(view.tos)}
+        edit(view, at)
+        return name, doc, view
+
+    def test_the_avatar_skeleton_resolves_as_b4_resolves_it(self):
+        def shared(view, at):
+            view.tos[at["Hips/LeftUpperLeg/LeftLowerLeg"]][1] = "Hips/LeftUpperLeg"
+
+        def misparented(view, at):
+            view.parents[at["Hips/LeftUpperLeg/LeftLowerLeg"]] = at["Hips"]
+
+        def finger(at, bone):
+            return next(k for path, k in at.items() if path.endswith("/" + bone))
+
+        def unresolved(view, at):
+            view.tos[finger(at, "Left Thumb Intermediate")][1] = "Hips/Elsewhere"
+
+        def unnamed(view, at):
+            tip = finger(at, "Left Thumb Distal")
+            view.tos[tip][1], view.parents[tip] = "Nowhere", -1
+
+        def remapped(view, at):
+            view.bone_index[runs.SLOTS.index("Spine")] = at["Hips/Spine/Chest"]
+
+        with round11_docs():
+            name, doc, view = self.skeleton_case(lambda view, at: None)
+            self.assertIsNotNone(check(self, name, doc, view))
+            for edit, pattern in ((shared, "share a Transform"), (misparented, "missing or misparented"),
+                                  (unresolved, "missing or misparented"), (unnamed, "not the Avatar skeleton's"),
+                                  (remapped, "Spine resolves to another Transform")):
+                name, doc, view = self.skeleton_case(edit)
+                with self.subTest(edit=edit.__name__), self.assertRaisesRegex(ValueError, pattern):
+                    check(self, name, doc, view)
+
+    def test_the_built_settings_b4_reads(self):
+        with round11_docs():
+            for name, field, value in (("body-clip-compact-scoped-level", "m_Mirror", True),
+                                       ("body-clip-level", "m_LoopTime", True),
+                                       ("body-chain-armature-clip", "m_CycleOffset", .5),
+                                       ("body-clip-small-scoped-bake-o1-y1-xz0", "m_StartAtOrigin", False),
+                                       ("body-clip-level-offset", "m_ValueArrayReferencePose", [1.])):
+                info = (r11.ROUND11_INFO | body.BODY_INFO)[name]
+                doc = support.body_doc(name, RUN)
+                clip = full_clip(doc, name)[1] if name in r11.ROUND11_INFO else spine_clip(doc, info["variant"])
+                clip["m_MuscleClip"][field] = value
+                pattern = "additive reference pose" if field == "m_ValueArrayReferencePose" else "settings B4 reads"
+                with self.subTest(name=name, field=field), self.assertRaisesRegex(ValueError, pattern):
+                    check(self, name, doc, Built(name, doc, clip))
+            # The motion variant binds all seven motion slots, any other none, B4's rule.
+            name = "body-chain-armature-clip"
+            doc = support.body_doc(name, RUN)
+            clip = spine_clip(doc, body.CHAIN_VARIANT)
+            r11.clip_configuration(name, body.BODY_INFO[name], clip, replay)
+            clip["m_MuscleClip"]["m_IndexArray"][6] = -1
+            with self.assertRaisesRegex(ValueError, "binds 6 motion slot"):
+                r11.clip_configuration(name, body.BODY_INFO[name], clip, replay)
+            with self.assertRaisesRegex(ValueError, "binds 6 motion slot"):
+                r11.clip_configuration(name, dict(variant="level"), clip, replay)
 
 if __name__ == "__main__":
     unittest.main()

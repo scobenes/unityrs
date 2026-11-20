@@ -15,10 +15,10 @@ UnityrsBodyFixtures.cs and UnityrsBodyMuscles.cs:
   the bone offsets and the hips' own offset; the feature stays at F5's exact
   value, the armature's transform included, as B4 admits it.
 - **E5's full-body clips** (anim_fixture_full): a distinct curve on every
-  muscle under its Animator property, on rigs mapping every bone a muscle
-  turns, so a recording carries each bone's channels through a real clip:
-  refusal evidence over the frozen lateral limit, and in-scope clips on
-  every chain feature, topology and admitted variant class.
+  muscle under its Animator property (but a topology's expected-absent
+  ones), on rigs mapping every bone a muscle turns, so a recording carries
+  each bone's channels through a real clip: refusal evidence over the frozen
+  lateral limit, and in-scope clips over B4's whole admitted matrix.
 - **B5a's muscle sweeps** (anim_fixture_muscles): every one of the 95
   muscles alone at both signs out to its limits, then each bone's muscles
   jointly; each single-muscle sample must turn the muscle's bone.
@@ -28,14 +28,22 @@ module extends their tables only while it runs (`round11_tables`), and no
 pinned module imports it. A round 11 run declares its generation in
 `round.json` beside `run.json`; `complete` here requires that declaration,
 the whole body inventory (every earlier body case and every round 11 case
-listed and recorded), each E5 case's human scale inside B4's range, its
-chain exactly as B4 admits it (B4's own comparison, on the recorded rest
-pose and on the bundle's serialized Transforms, the Animator node's
-placement, its ancestor, the unit scales below the hips and the serialized
-Avatar's human scale included; F5's own chain clips too), each clip's
-declared scope against the freeze's limits (anim_fixture_scope), each
-full-body clip's every curve and each sweep's response from its zero-vector
-sample. The plain `anim_replay.py
+listed and recorded), and on every case B4 reads (E5's, F5's chain clips
+and F4's compact clips, `B4_CASES`) B4's inputs as chain.rs reads them: the
+chain exactly as B4 admits it (on the recorded rest pose and on the bundle's
+serialized Transforms, the Animator node's placement, its ancestor and the
+unit scales below the hips), the serialized Avatar's human scale inside
+B4's range, the Avatar skeleton's Transforms as `rest_scales` resolves them
+through `m_TOS` (`avatar_skeleton`), and a clip's settings as `root_settings`
+reads them (`clip_configuration`). It also checks each clip's declared scope
+against the freeze's limits on its compiled values and recorded poses
+(anim_fixture_scope), each full-body clip's every curve and each sweep's
+response from its zero-vector sample.
+
+Completion checks the collection only. B5a's confirmation (anim_muscle_pose
+on both Editors' round 11 runs) and B5b's comparison of Rust's replay
+against both Editors' recordings, typed refusals included, are separate
+steps run on the completed runs afterwards (docs/plans/humanoid-body.md). The plain `anim_replay.py
 complete` refuses a round 11 run (its cases are unknown there), and this
 one refuses a run without the declaration. B2 never reads round 11's
 cases: they are not in its tables.
@@ -56,8 +64,8 @@ import anim_fixture_body as body  # noqa: E402
 from anim_fixture_body import CHAIN_VARIANT, CLIP_VARIANTS, PROBE_GROUPS, SPINE_PROBE, _fixture  # noqa: E402
 from anim_fixture_muscles import (FINGER_BONES, FINGERS_RIG, MUSCLE_SWEEPS, MUSCLE_VALUES, finger_rows,  # noqa: E402
                                   muscle_bone, muscle_vectors)
-from anim_fixture_full import (FULL_EXTRAS, FULL_RIGS, SCOPED_RIGS, feature, full_groups, placements,  # noqa: E402
-                               topology, variants)
+from anim_fixture_full import (FULL_EXTRAS, FULL_RIGS, SCOPED_RIGS, expected_absent, feature, full_groups,  # noqa: E402
+                               muscle_property, placements, topology, variants)
 from anim_fixture_full import size as full_size  # noqa: E402
 from anim_fixture_scope import check_scope  # noqa: E402
 from anim_reference import angle  # noqa: E402
@@ -205,7 +213,9 @@ def check_chain(rig, spec, capture, replay):
               and same(stored("0/0", "scale", 3), (scale,) * 3)
               and near(stored(hips, "translation", 3), (0, .125 * size, .8375 * size)))
     else:
-        ok = hips == "0/0" and near(stored(hips, "translation", 3), (0, .88 * size * hips_scale, 0))
+        # The hips' height is the rig's topology's: the tall rig's 1.18, every other's .88 (UnityrsBodyFixtures.cs).
+        height = 1.18 if rig in FULL_CLIP_RIGS and topology(rig) == "tall" else .88
+        ok = hips == "0/0" and near(stored(hips, "translation", 3), (0, height * size * hips_scale, 0))
     ok = ok and same(stored("0", "scale", 3), (ANIMATOR_SCALE if feature == "scaled-animator" else 1,) * 3)
     ok = ok and same(stored(hips, "scale", 3), (hips_scale,) * 3)
     replay.require(ok, f"body rig chain differs from the {rig} rig")
@@ -301,8 +311,12 @@ def check_clip(name, info, editor, capture, clip, replay):
     """A clip's checks, and a full-body clip's every muscle curve, authored and built, at every key."""
     if info["rig"] not in FULL_CLIP_RIGS:
         return _BASE["check_clip"](name, info, editor, capture, clip, replay)
-    groups = full_groups([row["name"] for row in capture["humanoid"]["muscles"]], info["rig"] in SCOPED_RIGS)
+    names = [row["name"] for row in capture["humanoid"]["muscles"]]
+    groups = full_groups(names, info["rig"])
     authored = body._authored(editor, replay)
+    # A muscle whose bone the rig omits has no curve: the declared absence is exact.
+    present = sorted(name for name in expected_absent(info["rig"], names) if muscle_property(name) in authored)
+    replay.require(not present, f"{name} curves expected-absent muscle(s) {present}")
     runtime = body._runtime_slots(clip, replay)
     index = clip.get("m_MuscleClip", {}).get("m_IndexArray") or []
     for group in groups:
@@ -322,24 +336,94 @@ def check_clip(name, info, editor, capture, clip, replay):
     return _BASE["check_clip"](name, info, stripped, capture, clip, replay)
 
 
-# F5's own chain clips, which B4 reads too: each checked as B4 admits it, as round 11's are.
+def avatar_skeleton(name, doc, avatar, replay):
+    """The Avatar skeleton's Transforms as B4 resolves them (body_solve.rs `rest_scales`, chain.rs
+    `animator_chain`): each skeleton node's `m_ID` through `m_TOS` to the built Transform at that path under the
+    Animator node. The hips and every mapped slot resolve to the capture's node; no two skeleton nodes share a
+    Transform; below the hips each node resolves, its Transform's parent is its skeleton parent's, and every
+    Transform there is one a skeleton node names."""
+    from anim_body_runs import human_of, mapping
+
+    spec, require = doc["spec"], replay.require
+    human = human_of(avatar)
+    skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
+    ids, rows = skeleton.get("m_ID") or [], skeleton.get("m_Node") or []
+    tos = dict(map(tuple, avatar.get("m_TOS") or []))
+    require(len(ids) == len(rows) > 0, f"malformed Avatar skeleton in {name}")
+    names = {node["address"]: node["name"] for node in spec["nodes"]}
+    base = spec["binding_address"]
+    paths = {"": base}
+    for address in names:
+        if address.startswith(base + "/"):
+            parts = address[len(base) + 1:].split("/")
+            path = "/".join(names[base + "/" + "/".join(parts[:k + 1])] for k in range(len(parts)))
+            require(path not in paths, f"two Transforms at {path!r} in {name}")
+            paths[path] = address
+    found = [paths.get(tos.get(node_id)) if tos.get(node_id) is not None else None for node_id in ids]
+    resolved = [address for address in found if address is not None]
+    require(len(set(resolved)) == len(resolved), f"two Avatar skeleton nodes share a Transform in {name}")
+    slots = mapping(human)
+    captured = {row["name"]: row["node"] for row in doc["capture"]["humanoid"]["bones"]}
+    for slot, k in slots.items():
+        node = captured.get(slot, -1)
+        require(k < len(found) and node >= 0 and found[k] == spec["nodes"][node]["address"],
+                f"the Avatar's {slot} resolves to another Transform than the capture's in {name}")
+    hips = slots.get("Hips")
+    require(hips is not None, f"the Avatar maps no Hips in {name}")
+    below = []
+    for k, row in enumerate(rows):
+        parent = row.get("m_ParentId")
+        parent = parent if type(parent) is int and 0 <= parent < k else None
+        inside = parent is not None and (parent == hips or below[parent])
+        if inside:
+            require(found[k] is not None and found[k].rpartition("/")[0] == found[parent],
+                    f"Avatar skeleton node {k} is missing or misparented below the hips in {name}")
+        below.append(inside)
+    top = found[hips]
+    under = {address for address in names if address.startswith(top + "/")}
+    require(under == {found[k] for k, inside in enumerate(below) if inside},
+            f"a Transform below the hips is not the Avatar skeleton's in {name}")
+
+
+def clip_configuration(name, info, clip, replay):
+    """The built clip's settings B4 reads (root.rs `root_settings`) beyond the variant's flags, which
+    anim_fixture_body.check_clip compares: start at origin, no mirror, loop or cycle offset, the motion slots all
+    bound for a motion variant and none otherwise, and no additive reference pose."""
+    muscle = clip.get("m_MuscleClip", {})
+    built = dict(m_StartAtOrigin=True, m_Mirror=False, m_LoopTime=False, m_LoopBlend=False, m_CycleOffset=0.)
+    replay.require(all(body._built(muscle.get(key), want, replay) for key, want in built.items()),
+                   f"built clip settings B4 reads differ from the {info['variant']} variant in {name}")
+    replay.require(not muscle.get("m_ValueArrayReferencePose"), f"built clip has an additive reference pose in {name}")
+    runtime = body._runtime_slots(clip, replay)
+    index = muscle.get("m_IndexArray") or []
+    bound = sum(body._built_track(runtime, index, attribute) is not None for attribute in range(7))
+    replay.require(bound == (7 if body.CLIP_VARIANTS[info["variant"]]["motion"] else 0),
+                   f"built clip binds {bound} motion slot(s), not the {info['variant']} variant's, in {name}")
+
+
+# The clips B4 reads beyond round 11's own: F5's chain clips and F4's compact clips, each checked as B4 reads it.
 F5_CHAIN_CLIPS = frozenset(f"body-chain-{rig}-clip" for rig in body.CHAIN_RIGS)
+F4_CLIPS = frozenset(name for name, info in body.BODY_INFO.items() if info["kind"] == "clip" and info["rig"] == "compact")
+B4_CASES = E5_CASES | F5_CHAIN_CLIPS | F4_CLIPS
 
 
 def check_body(name, fixture, doc, view, clip_key, replay):
-    """The body checks; an E5 case's (and F5's chain clips') built chain as B4 admits it and serialized human
-    scale inside B4's range; an E5 clip's declared scope; a muscle sweep's response."""
+    """The body checks; on every case B4 reads, B4's inputs as chain.rs and root.rs read them; an E5 clip's
+    declared scope; a muscle sweep's response."""
     result = _BASE["check_body"](name, fixture, doc, view, clip_key, replay)
     if name in MUSCLE_CASES:
         check_response(name, doc, replay)
-    if name in E5_CASES or name in F5_CHAIN_CLIPS:
-        info = (ROUND11_INFO | body.BODY_INFO)[name]
+    info = (ROUND11_INFO | body.BODY_INFO)[name]
+    if name in B4_CASES:
         serialized_chain(name, info["rig"], info["root"], doc["spec"], view, replay)
         scale = human_scale(name, doc["spec"], view, replay)
         replay.require(H_RANGE[0] <= scale <= H_RANGE[1], f"human scale {scale!r} of {name} is outside B4's range")
+        avatar_skeleton(name, doc, view.asset(doc["spec"]["avatar_asset"], 90), replay)
+        if info["kind"] == "clip":
+            clip_configuration(name, info, view.value(clip_key), replay)
     if "scope" in ROUND11_INFO.get(name, {}):
         authored = body._authored(doc["spec"]["evidence"]["editor"], replay)
-        check_scope(name, ROUND11_INFO[name]["scope"], doc, authored, replay)
+        check_scope(name, ROUND11_INFO[name]["scope"], doc, authored, view.value(clip_key), replay)
     return result
 
 

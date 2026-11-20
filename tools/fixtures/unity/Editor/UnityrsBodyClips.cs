@@ -18,8 +18,8 @@ using Object = UnityEngine.Object;
 // and an offset root, on every clip rig (ClipRigs), each in its own bundle;
 // and full-body clips, every muscle on a curve of its own, on rigs mapping
 // every bone a muscle turns: refusal evidence over freeze v8's lateral limit
-// (FullRigs), and clips inside its scope on every chain feature, body
-// topology and admitted variant (ScopedRigs).
+// (FullRigs), and clips inside its scope over B4's whole admitted matrix
+// (ScopedRigs). A body clip Unity does not build as authored fails the run.
 static partial class UnityrsFixtureBuilder
 {
     const string BodyClipBundle = "body-clips";
@@ -107,29 +107,42 @@ static partial class UnityrsFixtureBuilder
         new BodyRig { Name = "small-full", Full = true, Extras = FullExtras, Size = .82f },
         new BodyRig { Name = "armature-large-full", Full = true, Extras = FullExtras, Armature = true, Size = 1.8f },
     };
-    // E5's in-scope full-body clips (anim_fixture_full.py SCOPED_RIGS): every
-    // muscle on a curve, the Spine's three too, with the frozen-limited ones
-    // inside freeze v8's scope (ScopedAmplitudes). The compact rig plays every
-    // admitted variant, the large and small rigs FullVariants, each F5 feature
-    // the chain variant at the identity, every other body topology B3 admits one
-    // variant; the plain chains at both placements.
+    // E5's in-scope full-body clips (anim_fixture_full.py SCOPED_RIGS), B5b's
+    // passing evidence over B4's whole admitted matrix: every muscle on a curve,
+    // the Spine's three too, with the frozen-limited ones inside freeze v8's
+    // scope (ScopedAmplitudes). The plain chain plays every admitted variant at
+    // both placements on the compact, large, small and tall rigs and on every
+    // other body topology B3 admits; each F5 feature plays the chain variant at
+    // the identity at its chain rigs' scales, the armature at 1.25 for F5's own 1
+    // (B4's human-scale range's lower end, which a full-body Avatar must not cross).
     static readonly string[] ScopedTopologies = {
         "no-upper-chest", "no-shoulders", "no-left-toes", "no-right-toes", "no-toes", "no-upper-chest-toes",
         "no-upper-chest-left-toes", "no-upper-chest-right-toes", "noncoplanar"
     };
     static BodyRig[] ScopedRigs => new[] {
         new BodyRig { Name = "compact-scoped", Full = true, Scoped = true, Extras = FullExtras, Variants = E5Admitted },
-        new BodyRig { Name = "large-scoped", Full = true, Scoped = true, Extras = FullExtras, Size = 1.5f, Variants = FullVariants },
-        new BodyRig { Name = "small-scoped", Full = true, Scoped = true, Extras = FullExtras, Size = .82f, Variants = FullVariants },
+        new BodyRig { Name = "large-scoped", Full = true, Scoped = true, Extras = FullExtras, Size = 1.5f, Variants = E5Admitted },
+        new BodyRig { Name = "small-scoped", Full = true, Scoped = true, Extras = FullExtras, Size = .82f, Variants = E5Admitted },
+        new BodyRig { Name = "tall-scoped", Full = true, Scoped = true, Extras = FullExtras, Tall = true, Variants = E5Admitted },
         new BodyRig { Name = "armature-scoped", Full = true, Scoped = true, Extras = FullExtras, Armature = true, Size = 1.25f,
+            Variants = new[] { ChainVariant.Name } },
+        new BodyRig { Name = "armature-large-scoped", Full = true, Scoped = true, Extras = FullExtras, Armature = true, Size = 1.8f,
             Variants = new[] { ChainVariant.Name } },
         new BodyRig { Name = "scaled-animator-scoped", Full = true, Scoped = true, Extras = FullExtras, ScaledAnimator = true,
             Variants = new[] { ChainVariant.Name } },
+        new BodyRig { Name = "scaled-animator-large-scoped", Full = true, Scoped = true, Extras = FullExtras, ScaledAnimator = true,
+            Size = 1.5f, Variants = new[] { ChainVariant.Name } },
+        new BodyRig { Name = "scaled-animator-small-scoped", Full = true, Scoped = true, Extras = FullExtras, ScaledAnimator = true,
+            Size = .82f, Variants = new[] { ChainVariant.Name } },
         new BodyRig { Name = "hips-scale-scoped", Full = true, Scoped = true, Extras = FullExtras, HipsScale = 1.2f,
             Variants = new[] { ChainVariant.Name } },
+        new BodyRig { Name = "hips-scale-large-scoped", Full = true, Scoped = true, Extras = FullExtras, HipsScale = 1.2f,
+            Size = 1.2f, Variants = new[] { ChainVariant.Name } },
+        new BodyRig { Name = "hips-scale-small-scoped", Full = true, Scoped = true, Extras = FullExtras, HipsScale = 1.2f,
+            Size = .7f, Variants = new[] { ChainVariant.Name } },
     }.Concat(ScopedTopologies.Select(name => ProbeRigs.Single(rig => rig.Name == name)).Select(topology => new BodyRig {
         Name = topology.Name + "-scoped", Full = true, Scoped = true, Extras = FullExtras, Omit = topology.Omit,
-        Noncoplanar = topology.Noncoplanar, Variants = new[] { "keep-o0-y0-xz0" }
+        Noncoplanar = topology.Noncoplanar, Variants = E5Admitted
     })).ToArray();
     // Each muscle's curve shape at BodyTimes: eighths in [-1, 1], the muscle index
     // taken modulo 17, 13 and 11 at different keys, so no two of the 95 curves
@@ -149,14 +162,18 @@ static partial class UnityrsFixtureBuilder
         ? ScopedAmplitudes.Where(row => row.muscles.Contains(name)).Select(row => row.amplitude).DefaultIfEmpty(.5f).First() : .5f;
     static float[] FullValues(int muscle, bool scoped) =>
         BodyTimes.Select((_, key) => Amplitude(HumanTrait.MuscleName[muscle], scoped) * CurveUnit(muscle, key)).ToArray();
-    // An in-scope clip curves every muscle; a refusal clip every muscle but the
-    // Spine's three, which keep AuthorHumanoidClip's curves (Left-Right .375).
-    static int[] FullMuscles(bool scoped) => Enumerable.Range(0, HumanTrait.MuscleCount)
-        .Where(i => scoped || !SpineMuscles.Contains(HumanTrait.MuscleName[i])).ToArray();
+    // An in-scope clip curves every muscle whose bone the rig maps; a refusal
+    // clip every such muscle but the Spine's three, which keep
+    // AuthorHumanoidClip's curves (Left-Right .375). A muscle whose bone the
+    // rig's topology omits (shoulders, UpperChest, toes) is expected absent
+    // (anim_fixture_full.py expected_absent): no bone could show it.
+    static int[] FullMuscles(bool scoped, string[] mapped) => Enumerable.Range(0, HumanTrait.MuscleCount)
+        .Where(i => mapped.Contains(HumanTrait.BoneName[HumanTrait.BoneFromMuscle(i)])
+            && (scoped || !SpineMuscles.Contains(HumanTrait.MuscleName[i]))).ToArray();
     // The Animator curve property Unity binds for a HumanTrait muscle
     // (anim_fixture_full.py muscle_property): "LeftHand.Thumb.1 Stretched" for
-    // "Left Thumb 1 Stretched", a body muscle's own name. VerifyMuscleBindings
-    // fails the run where Unity does not bind one.
+    // "Left Thumb 1 Stretched", a body muscle's own name. CheckCompiledTracks
+    // fails the run where the built clip did not compile one to its muscle.
     static string MuscleProperty(string name)
     {
         var parts = name.Split(new[] { ' ' }, 3);
@@ -239,7 +256,7 @@ static partial class UnityrsFixtureBuilder
             clip.SetCurve("", typeof(Animator), prefix + "." + axes[i], PolyLine(times, values.Select(q => q[i]).ToArray()));
     }
 
-    static void AddBodyCurves(AnimationClip clip, BodyClipVariant variant, bool full, bool scoped)
+    static void AddBodyCurves(AnimationClip clip, BodyClipVariant variant, bool full, bool scoped, string[] mapped)
     {
         // The start variant moves the whole body path rigidly: turned about +Y, then offset in XZ.
         var start = Quaternion.Euler(0, variant.Start ? StartYaw : 0, 0);
@@ -253,7 +270,7 @@ static partial class UnityrsFixtureBuilder
         }
         var names = HumanTrait.MuscleName;
         if (full)
-            foreach (int muscle in FullMuscles(scoped))
+            foreach (int muscle in FullMuscles(scoped, mapped))
                 clip.SetCurve("", typeof(Animator), MuscleProperty(names[muscle]), PolyLine(BodyTimes, FullValues(muscle, scoped)));
         if (variant.Knee)
             foreach (var (muscle, values) in KneeCurves)
@@ -269,10 +286,11 @@ static partial class UnityrsFixtureBuilder
         clip.EnsureQuaternionContinuity();
     }
 
-    static AnimationClip AuthorBodyClip(string dir, string name, BodyClipVariant variant, bool full = false, bool scoped = false)
+    static AnimationClip AuthorBodyClip(string dir, string name, BodyClipVariant variant, bool full = false, bool scoped = false,
+        string[] mapped = null)
     {
         var clip = AuthorHumanoidClip(dir, name, bodyMotion: false,
-            extra: authored => AddBodyCurves(authored, variant, full, scoped));
+            extra: authored => AddBodyCurves(authored, variant, full, scoped, mapped));
         SetBodySettings(clip, variant);
         return clip;
     }
@@ -328,6 +346,7 @@ static partial class UnityrsFixtureBuilder
         {
             var hips = BuildBodySkeleton(rig.transform, rigSpec);
             var skeleton = rig.GetComponentsInChildren<Transform>();
+            var mapped = skeleton.Select(bone => bone.name).Where(HumanTrait.BoneName.Contains).ToArray();
             avatar = AvatarBuilder.BuildHumanAvatar(rig, DescribeHumanoid(skeleton, rigSpec.Tall));
             Require(avatar != null && avatar.isValid && avatar.isHuman,
                 "AvatarBuilder.BuildHumanAvatar returned an invalid Humanoid Avatar for " + bundle + ".");
@@ -338,17 +357,16 @@ static partial class UnityrsFixtureBuilder
             var clips = new List<(AnimationClip clip, BodyClipVariant variant)>();
             foreach (var variant in RigVariants(spec))
             {
-                // Unity may refuse a variant's settings, or motion or goal curves on a
-                // human-motion clip: only that variant is then not covered.
+                // Unity refusing a variant's settings, or dropping a curve the variant
+                // authors, fails that variant and the run: round 11's completion needs
+                // every body case recorded as authored.
                 AnimationClip clip = null;
                 string missing = null;
-                try { clip = AuthorBodyClip(dir, ClipName(spec, variant), variant, rigSpec.Full, rigSpec.Scoped); }
+                try { clip = AuthorBodyClip(dir, ClipName(spec, variant), variant, rigSpec.Full, rigSpec.Scoped, mapped); }
                 catch (CoverageUnavailable error) { missing = error.Message; }
-                if (missing == null && rigSpec.Full && !KeepsCurves(clip, FullMuscles(rigSpec.Scoped)
+                if (missing == null && rigSpec.Full && !KeepsCurves(clip, FullMuscles(rigSpec.Scoped, mapped)
                         .Select(i => MuscleProperty(HumanTrait.MuscleName[i])).ToArray()))
                     missing = "The Editor dropped a full-body muscle curve.";
-                if (missing == null && rigSpec.Full)
-                    VerifyMuscleBindings(rig, clip, FullMuscles(rigSpec.Scoped), ClipName(spec, variant));
                 if (missing == null && variant.Motion && !KeepsCurves(clip, "MotionT.x", "MotionQ.w"))
                     missing = "The Editor dropped the authored MotionT and MotionQ curves.";
                 if (missing == null && variant.Goals && !KeepsCurves(clip, "LeftFootT.x", "RightFootQ.w"))
@@ -356,7 +374,7 @@ static partial class UnityrsFixtureBuilder
                 if (missing != null)
                 {
                     foreach (string suffix in Placed(spec) ? new[] { "", "-offset" } : new[] { "" })
-                        report.Set(ClipName(spec, variant) + suffix, "not_covered", missing);
+                        report.Set(ClipName(spec, variant) + suffix, "failed", missing);
                     continue;
                 }
                 clips.Add((clip, variant));
@@ -375,7 +393,6 @@ static partial class UnityrsFixtureBuilder
                 placements.Add((SavePrefab(root, dir + "/offset.prefab"), "-offset", "offset"));
             }
             var clipPaths = clips.Select(row => AssetDatabase.GetAssetPath(row.clip)).ToArray();
-            var mapped = skeleton.Select(bone => bone.name).Where(HumanTrait.BoneName.Contains).ToArray();
             build.AddBodyBundle(bundle, assets.Concat(clipPaths).Concat(placements.Select(row => row.path)).ToArray());
             string probe = rigSpec.Armature ? "HumanoidRig/Armature/Hips/Spine" : "HumanoidRig/Hips/Spine";
             for (int i = 0; i < clips.Count; i++)
@@ -399,8 +416,8 @@ static partial class UnityrsFixtureBuilder
         }
     }
 
-    // Before recording: the built clip keeps its playback mode and authored root
-    // settings. Settings Unity changed in the build make the case not covered.
+    // Before recording: the built clip keeps its playback mode, authored root
+    // settings and compiled tracks. Anything Unity changed in the build fails the case.
     static void CheckBuiltBody(ReplayCase replay, string path)
     {
         var bundle = AssetBundle.LoadFromFile(path);
@@ -416,9 +433,10 @@ static partial class UnityrsFixtureBuilder
             Require(avatar != null && avatar.isValid && avatar.isHuman, "The built body Avatar is invalid in " + replay.Bundle + ".");
             if (replay.BodyClip != null)
             {
-                Unavailable(BodySettingsMatch(AnimationUtility.GetAnimationClipSettings(clip), replay.BodyClip),
+                Require(BodySettingsMatch(AnimationUtility.GetAnimationClipSettings(clip), replay.BodyClip),
                     "The built clip did not keep its authored root settings in " + replay.Bundle + ".");
-                CheckCompiledTracks(clip, replay.BodyClip, replay.OutputName, replay.Body.Spec.Full, replay.Body.Spec.Scoped);
+                CheckCompiledTracks(clip, replay.BodyClip, replay.OutputName, replay.Body.Spec.Full, replay.Body.Spec.Scoped,
+                    replay.Body.Mapped);
             }
         }
         finally { bundle.Unload(true); }
@@ -428,7 +446,8 @@ static partial class UnityrsFixtureBuilder
     // MotionT and MotionQ 0 to 6, RootT and RootQ 7 to 13, the foot goals 14 to 27, muscles from 42.
     const int MotionAttribute = 0, RootAttribute = 7, LeftFootGoal = 14, RightFootGoal = 21, MuscleAttribute = 42;
 
-    static IEnumerable<(string track, int attribute)> CompiledTracks(BodyClipVariant variant, bool full, bool scoped)
+    static IEnumerable<(string track, int attribute)> CompiledTracks(BodyClipVariant variant, bool full, bool scoped,
+        string[] mapped)
     {
         IEnumerable<(string, int)> Span(string prefix, int first, string axes) =>
             axes.Select((axis, i) => (prefix + "." + axis, first + i));
@@ -436,7 +455,7 @@ static partial class UnityrsFixtureBuilder
         if (variant.Motion)
             tracks = tracks.Concat(Span("MotionT", MotionAttribute, "xyz")).Concat(Span("MotionQ", MotionAttribute + 3, "xyzw"));
         if (full)
-            tracks = tracks.Concat(FullMuscles(scoped).Select(i => (MuscleProperty(HumanTrait.MuscleName[i]), MuscleAttribute + i)));
+            tracks = tracks.Concat(FullMuscles(scoped, mapped).Select(i => (MuscleProperty(HumanTrait.MuscleName[i]), MuscleAttribute + i)));
         if (variant.Knee)
         {
             var names = HumanTrait.MuscleName;
@@ -448,30 +467,26 @@ static partial class UnityrsFixtureBuilder
         return tracks;
     }
 
-    // Before an F4 or F5 clip case records: every track it relies on is compiled
-    // into the built clip, bound to the Animator root (path 0, Animator class 95,
-    // humanoid custom type 8) in m_ClipBindingConstant, the runtime track table.
-    // Where Unity exposes m_MuscleClip.m_IndexArray on the bundle-loaded clip,
-    // the track's attribute must also index that same slot, as playback reads it.
-    // Otherwise the case fails with the missing tracks; completion then checks
-    // the slots' values in the runtime data.
-    static void CheckCompiledTracks(AnimationClip clip, BodyClipVariant variant, string name, bool full, bool scoped)
+    // Before a body clip case records: every track it relies on is compiled into
+    // the built clip, bound to the Animator root (path 0, Animator class 95,
+    // humanoid custom type 8) in m_ClipBindingConstant, the runtime track table:
+    // a full-body clip's every curved muscle at its Animator attribute
+    // (MuscleAttribute + muscle), which shows Unity bound the curve's property to
+    // that muscle. Where Unity exposes m_MuscleClip.m_IndexArray on the
+    // bundle-loaded clip, the track's attribute must also index that same slot,
+    // as playback reads it. A table Unity does not expose fails the case too:
+    // round 10 found it exposed in both Editors, and without it the run could
+    // not show its tracks bind. Completion then checks the slots' values.
+    static void CheckCompiledTracks(AnimationClip clip, BodyClipVariant variant, string name, bool full, bool scoped,
+        string[] mapped)
     {
         using (var serialized = new SerializedObject(clip))
         {
             var slots = CompiledSlots(serialized);
-            // The Editor may not serialize a bundle-loaded clip's runtime data. Offline
-            // completion reads the compiled slots from the bundle itself, so a missing
-            // table is reported and left to that check rather than failing the case.
-            if (slots == null)
-            {
-                Debug.LogWarning("Unity did not expose the compiled track table of the built clip for " + name
-                    + "; completion checks its tracks from the bundle.");
-                return;
-            }
+            Require(slots != null, "Unity did not expose the compiled track table of the built clip for " + name + ".");
             var index = serialized.FindProperty("m_MuscleClip.m_IndexArray");
             bool indexed = index != null && index.isArray;
-            var missing = CompiledTracks(variant, full, scoped).Where(track => !slots.TryGetValue(track.attribute, out int slot)
+            var missing = CompiledTracks(variant, full, scoped, mapped).Where(track => !slots.TryGetValue(track.attribute, out int slot)
                 || indexed && (track.attribute >= index.arraySize
                     || index.GetArrayElementAtIndex(track.attribute).intValue != slot)).Select(track => track.track).ToArray();
             Require(missing.Length == 0, "The built clip lost or moved its compiled " + string.Join(", ", missing)
@@ -497,43 +512,6 @@ static partial class UnityrsFixtureBuilder
                 slots.Add(Field(row, "attribute"), i);
         }
         return slots;
-    }
-
-    // Before a full-body clip records, every curved muscle binds. Where the Editor
-    // lists the rig's animatable Animator properties, each muscle's property is
-    // among them; where it exposes the authored clip's compiled track table, each
-    // muscle's curve compiled to its Animator attribute (MuscleAttribute + muscle).
-    // A muscle that does not bind fails the run: a curve under a name Unity does not
-    // know would record nothing for that bone. The built clip's table and offline
-    // completion check the same slots again.
-    static void VerifyMuscleBindings(GameObject rig, AnimationClip clip, int[] muscles, string name)
-    {
-        var names = HumanTrait.MuscleName;
-        var animatable = new HashSet<string>(AnimationUtility.GetAnimatableBindings(rig, rig)
-            .Where(binding => binding.path.Length == 0 && binding.type == typeof(Animator))
-            .Select(binding => binding.propertyName), StringComparer.Ordinal);
-        if (animatable.Contains(SpineMuscles[0]))
-        {
-            var unknown = muscles.Select(i => MuscleProperty(names[i])).Where(property => !animatable.Contains(property)).ToArray();
-            Require(unknown.Length == 0, "Unity lists no animatable Animator property " + string.Join(", ", unknown)
-                + " on the rig of " + name + ".");
-        }
-        else
-            Debug.LogWarning("Unity lists no humanoid muscle among the animatable bindings of " + name
-                + "; the compiled track tables are checked instead.");
-        using (var serialized = new SerializedObject(clip))
-        {
-            // An authored asset may hold no compiled rows yet; the built clip's table is then the check.
-            var slots = CompiledSlots(serialized);
-            if (slots == null || slots.Count == 0)
-            {
-                Debug.LogWarning("Unity did not expose the compiled track table of the authored " + name
-                    + "; the built clip's table and completion check its muscle tracks.");
-                return;
-            }
-            var unbound = muscles.Where(i => !slots.ContainsKey(MuscleAttribute + i)).Select(i => MuscleProperty(names[i])).ToArray();
-            Require(unbound.Length == 0, "The authored " + name + " compiled no muscle track for " + string.Join(", ", unbound) + ".");
-        }
     }
 }
 #endif

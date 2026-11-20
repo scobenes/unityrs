@@ -95,6 +95,9 @@ static partial class UnityrsFixtureBuilder
     sealed class RunReport
     {
         readonly Dictionary<string, RunCase> cases;
+        // Cases no run may leave not covered: one fails the run as a failed case does, so "ready" means
+        // each was recorded (or, in a build-only run, built and skipped).
+        readonly HashSet<string> required = new HashSet<string>(StringComparer.Ordinal);
         readonly Action<string> log;
 
         public RunReport(Action<string> log, IEnumerable<string> names = null)
@@ -109,10 +112,14 @@ static partial class UnityrsFixtureBuilder
             name = name, status = "not_covered", reason = reason
         });
 
-        // Optional cases that fail, as never produced, unless a step reaches them.
-        public void AddPending(IEnumerable<string> names)
+        // Cases that fail, as never produced, unless a step reaches them; not covered is an error for them too.
+        public void AddRequired(IEnumerable<string> names)
         {
-            foreach (string name in names) cases.Add(name, new RunCase { name = name });
+            foreach (string name in names)
+            {
+                cases.Add(name, new RunCase { name = name });
+                required.Add(name);
+            }
         }
 
         // Fail, with an error line, each case no step has reached yet.
@@ -172,7 +179,10 @@ static partial class UnityrsFixtureBuilder
                 log(row.status + " " + row.name + (row.reason.Length > 0 ? ": " + row.reason : ""));
             }
             File.WriteAllText(Path.Combine(directory, "run.json"), JsonUtility.ToJson(new RunManifest { run = run, cases = rows }, true));
-            return rows.Where(row => row.status == "failed").Select(row => row.name).ToArray();
+            foreach (var row in rows.Where(row => required.Contains(row.name) && row.status == "not_covered"))
+                log("ERROR " + row.name + ": a required case was not covered.");
+            return rows.Where(row => row.status == "failed" || required.Contains(row.name) && row.status == "not_covered")
+                .Select(row => row.name).ToArray();
         }
     }
 

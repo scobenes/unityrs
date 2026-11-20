@@ -292,6 +292,7 @@ def clip_case(doc, variant_name, more=()):
                  s=dict(x=1., y=1., z=1.))
     return {"m_MuscleClip": built | dict(m_HeightFromFeet=variant["height_from_feet"], m_Level=variant["level"],
                                          m_OrientationOffsetY=variant["orientation"], m_StartAtOrigin=True,
+                                         m_Mirror=False, m_LoopTime=False, m_LoopBlend=False, m_CycleOffset=0.,
                                          m_StartX=start, m_Clip=stream["m_Clip"], m_IndexArray=stream["m_IndexArray"]),
             "m_ClipBindingConstant": stream["m_ClipBindingConstant"]}
 

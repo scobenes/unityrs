@@ -4,11 +4,14 @@ B5b needs complete replays that pass with the frozen refusals enforced, and repl
 11 clip declares which it is (anim_fixture_round11.ROUND11_INFO's `scope`):
 
 - `in`: every frame inside the frozen scope. Each spine Left-Right curve's authored keys are within the freeze's
-  `scope.lateral_limit` (the curves are polylines, so the keys bound the whole curve), and every recorded
-  sample's shoulder-hip twist (anim_body_model.shoulder_hip_twist on the recorded pose) is within its
-  `bounds.twist_limit`.
-- `refusal`: refusal evidence. Some spine Left-Right key is over the lateral limit, so the clip's frames there
-  are outside the frozen scope.
+  `scope.lateral_limit`, and so is its compiled value, as playback reads it (the built clip's slot at the
+  muscle's Animator attribute), at every recorded sample's time; and every recorded sample's shoulder-hip twist
+  (anim_body_model.shoulder_hip_twist on Unity's recorded pose) is within its `bounds.twist_limit`. The twist is
+  a completion check on what Unity recorded, never a prediction.
+- `refusal`: refusal evidence. Some spine Left-Right key is over the lateral limit, and so is some compiled
+  value at a recorded sample's time, so Unity played frames outside the frozen scope.
+
+A muscle without a compiled slot plays as 0 (E5's Spine-only clips curve the Spine's alone).
 
 The limits are read from the freeze artifact itself (anim_body_freeze_v8.json), never restated here.
 """
@@ -17,6 +20,7 @@ import json
 from pathlib import Path
 
 from anim_body_model import LATERAL_MUSCLES, Refused, shoulder_hip_twist
+from anim_fixture_body import MUSCLE_ATTRIBUTE, _built_track, _runtime_slots
 from anim_body_tolerance import FRAME_BONES
 from anim_reference import multiply
 
@@ -58,17 +62,40 @@ def lateral_keys(authored, replay):
                   for key in authored.get(prop, {}).get("keys") or [])]
 
 
-def check_scope(name, declared, doc, authored, replay):
-    """A clip's declared scope against the frozen limits; refuses a clip whose curves or recorded poses
-    disagree with its declaration."""
+def compiled_lateral(doc, clip, replay):
+    """The largest compiled spine Left-Right magnitude at each recorded sample's time, on its source clock."""
+    capture = doc["capture"]
+    names = [row["name"] for row in capture["humanoid"]["muscles"]]
+    replay.require(all(name in names for name in LATERAL_MUSCLES), "the capture lacks a spine Left-Right muscle")
+    runtime = _runtime_slots(clip, replay)
+    index = clip.get("m_MuscleClip", {}).get("m_IndexArray") or []
+    tracks = [_built_track(runtime, index, MUSCLE_ATTRIBUTE + names.index(name)) for name in LATERAL_MUSCLES]
+    rows = []
+    for sample in capture["samples"]:
+        time = sample.get("effective_source", sample["local"])
+        replay.require(type(time) in (int, float), "a sample without a source time")
+        rows.append((time, max(abs(track(time)) if track else 0. for track in tracks)))
+    return rows
+
+
+def check_scope(name, declared, doc, authored, clip, replay):
+    """A clip's declared scope against the frozen limits; refuses a clip whose curves, compiled values or
+    recorded poses disagree with its declaration."""
     replay.require(declared in SCOPES, f"{name} declares no scope")
     lateral = max(abs(v) for v in lateral_keys(authored, replay))
+    compiled = compiled_lateral(doc, clip, replay)
     if declared == "refusal":
         replay.require(lateral > LATERAL_LIMIT, f"{name} is declared refusal evidence but its spine Left-Right "
                                                 f"curves stay within the frozen limit {LATERAL_LIMIT}")
+        replay.require(any(value > LATERAL_LIMIT for _, value in compiled),
+                       f"{name} is declared refusal evidence but its compiled spine Left-Right values stay within "
+                       f"the frozen limit {LATERAL_LIMIT} at every recorded sample")
         return
     replay.require(lateral <= LATERAL_LIMIT,
                    f"{name} is declared in scope but a spine Left-Right key is {lateral} over {LATERAL_LIMIT}")
+    for time, value in compiled:
+        replay.require(value <= LATERAL_LIMIT, f"{name} is declared in scope but its compiled spine Left-Right "
+                                               f"value at {time} is {value}, over {LATERAL_LIMIT}")
     capture = doc["capture"]
     nodes = {row["name"]: row["node"] for row in capture["humanoid"]["bones"]}
     replay.require(all(nodes.get(bone, -1) >= 0 for bone in FRAME_BONES), f"{name} lacks a frame bone")

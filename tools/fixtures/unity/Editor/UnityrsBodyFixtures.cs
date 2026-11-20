@@ -363,8 +363,9 @@ static partial class UnityrsFixtureBuilder
         .Concat(ClipRigs.Concat(FullRigs).Concat(ScopedRigs).SelectMany(rig => ClipCases(rig)))
         .Concat(MuscleSweeps.Select(sweep => sweep.name));
 
-    // Each body case fails until a step prepares it, so none can vanish unseen.
-    static void AddBodyCases(RunReport report) => report.AddPending(BodyCases());
+    // Each body case fails until a step prepares it, so none can vanish unseen, and the run fails unless
+    // each records: round 11's completion requires every body case recorded, so "ready" means it will pass that.
+    static void AddBodyCases(RunReport report) => report.AddRequired(BodyCases());
 
     static void BuildBody(Build build, RunReport report)
     {
@@ -779,7 +780,7 @@ static partial class UnityrsFixtureBuilder
                     BodySchedule(mapped, targets: true));
                 if (chainMissing != null)
                 {
-                    report.Set(bundle + "-clip", "not_covered", chainMissing);
+                    report.Set(bundle + "-clip", "failed", chainMissing);
                     return;
                 }
                 var clipReplay = Replay(bundle + "-clip", prefab, clipPaths[1], "clip", "identity");
