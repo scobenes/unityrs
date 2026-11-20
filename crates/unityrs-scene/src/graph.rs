@@ -83,6 +83,8 @@ struct Walk<'a> {
     meter: &'a Arc<Meter>,
     graph: Graph,
     visited: Visited,
+    /// Whether `check_parent` found the node being read misparented.
+    mismatch: bool,
 }
 impl<'a> Walk<'a> {
     fn new(env: &'a Environment, opts: &'a GraphOptions, meter: &'a Arc<Meter>) -> Self {
@@ -94,9 +96,12 @@ impl<'a> Walk<'a> {
                 nodes: MeteredVec::new(meter),
                 roots: MeteredVec::new(meter),
                 issues: MeteredVec::new(meter),
+                dropped: MeteredVec::new(meter),
+                mismatched: MeteredVec::new(meter),
                 held: crate::held::Held::new(meter),
             },
             visited: Visited::new(meter),
+            mismatch: false,
         }
     }
     fn resolve(&mut self, from: &ObjectRef, pointer: PPtr) -> Result<ObjectRef, SceneError> {
@@ -129,6 +134,8 @@ impl<'a> Walk<'a> {
         }
         let id = self.graph.nodes.len();
         self.graph.nodes.push(node)?;
+        self.graph.dropped.push(false)?;
+        self.graph.mismatched.push(false)?;
         self.graph.roots.push(id)?;
         self.enqueue(&mut pending, id, 1, &children)?;
         while let Some(item) = pending.as_mut_slice().last_mut().and_then(Option::take) {
@@ -148,6 +155,7 @@ impl<'a> Walk<'a> {
                         pointer: item.pointer,
                         reason,
                     })?;
+                    self.drop_child(item.parent);
                     continue;
                 }
             };
@@ -158,6 +166,7 @@ impl<'a> Walk<'a> {
                     depth: item.depth,
                     limit,
                 })?;
+                self.drop_child(item.parent);
                 continue;
             }
             if !self.visited.insert(&transform)? {
@@ -165,17 +174,22 @@ impl<'a> Walk<'a> {
                     transform,
                     parent: Some(item.parent),
                 })?;
+                self.drop_child(item.parent);
                 continue;
             }
+            self.mismatch = false;
             let (node, children) = match self.node(transform.clone(), Some(item.parent)) {
                 Ok(n) => n,
                 Err(e) => {
                     self.malformed(transform, e)?;
+                    self.drop_child(item.parent);
                     continue;
                 }
             };
             let id = self.graph.nodes.len();
             self.graph.nodes.push(node)?;
+            self.graph.dropped.push(false)?;
+            self.graph.mismatched.push(self.mismatch)?;
             self.graph
                 .nodes
                 .as_mut_slice()
@@ -186,6 +200,11 @@ impl<'a> Walk<'a> {
             self.enqueue(&mut pending, id, item.depth, &children)?;
         }
         Ok(())
+    }
+    fn drop_child(&mut self, parent: NodeId) {
+        if let Some(dropped) = self.graph.dropped.as_mut_slice().get_mut(parent) {
+            *dropped = true;
+        }
     }
     fn limit(&self, obj: &ObjectRef) -> u32 {
         let file = obj.file().context().limits.max_tree_depth;
@@ -247,6 +266,7 @@ impl<'a> Walk<'a> {
             }
             Ok(_) => (),
         }
+        self.mismatch = true;
         self.graph.issues.push(Issue::ParentMismatch {
             transform: transform.clone(),
             expected: id,

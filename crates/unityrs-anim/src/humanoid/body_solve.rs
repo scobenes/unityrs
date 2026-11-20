@@ -16,9 +16,13 @@
 //!   subtree (`detached_bone`). The lookup must follow the Avatar's
 //!   hierarchy: two skeleton nodes on one Transform refuse
 //!   (`shared_transform`), as does a Transform below the hips whose parent
-//!   is not its skeleton parent's (`misparented_transform`).
+//!   is not its skeleton parent's, or whose `m_Father` disagrees with the
+//!   `m_Children` that reached it (`misparented_transform`), one below the
+//!   hips that no skeleton node there names (`unmapped_transform`), and a
+//!   graph that dropped a child there (`truncated_rig`).
 //! - **The solve.** `H_A = B_A F(T) F_h^-1`, `P_A = h T_A - k H_A c_h` with
-//!   `k = sigma_p s_h`, and the local hips `t = sigma_p^-1 R_p^-1 (P_A -
+//!   `k = sigma_p s_h` (`h T_A` the `AnimatorBodyPose`'s metres, which
+//!   root projection makes), and the local hips `t = sigma_p^-1 R_p^-1 (P_A -
 //!   t_p)`, `q = R_p^-1 H_A`, after the twist scope of `body_model`.
 //! - **Free combinations.** Freeze v8's design has full rank (29 of 29), so
 //!   `FREE_COMBINATIONS` is empty and no Avatar projects onto one; an edge
@@ -47,6 +51,7 @@ use super::{
 use crate::{AnimError, BodyModel, PathQuery, RigPaths};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
+use unityrs_scene::Graph;
 
 /// Freeze v8's `scope.free`: the coefficient combinations the training
 /// design left free, as `(i, j, weight)` terms. Its design has full rank.
@@ -71,6 +76,65 @@ impl HipsParent {
     };
 }
 
+/// Every Transform below the hips' is the Transform of a skeleton node
+/// below the hips, as E3a requires of the captured ones
+/// (`unmapped_transform`), and the graph kept the whole subtree: a node
+/// of it that the graph dropped a child of (past the depth limit, a cycle,
+/// a broken pointer or a child that failed to read) refuses
+/// (`truncated_rig`), and so does a node of it, the hips included, whose
+/// `m_Father` is not the node that lists it (`misparented_transform`).
+/// Drops and mismatches elsewhere in the scene do not count. The walk
+/// visits only those skeleton nodes' Transforms and charges each
+/// membership search.
+fn complete_below_hips(
+    graph: &Graph,
+    found: &[Option<usize>],
+    below: &[bool],
+    hips: usize,
+    meter: &Arc<Meter>,
+) -> Result<(), AnimError> {
+    let Some(&Some(top)) = found.get(hips) else {
+        return Ok(());
+    };
+    let mut inside: MeteredVec<usize> = MeteredVec::with_capacity(meter, found.len())?;
+    for (node, _) in found.iter().zip(below).filter(|(_, below)| **below) {
+        if let &Some(node) = node {
+            inside.push(node)?;
+        }
+    }
+    let n = inside.len() as u64;
+    let search = u64::from(n.bit_width()).max(1);
+    meter.count_decode(n * search)?;
+    let inside = inside.as_mut_slice();
+    inside.sort_unstable();
+    let nodes = graph.nodes();
+    let mut stack: MeteredVec<usize> = MeteredVec::new(meter);
+    stack.push(top)?;
+    while let Some(at) = stack.pop() {
+        meter.count_decode(1)?;
+        if graph.dropped_child(at) {
+            return refuse(BodyModel::TruncatedRig);
+        }
+        if graph.mismatched_parent(at) {
+            return refuse(BodyModel::MisparentedTransform);
+        }
+        let children = nodes
+            .get(at)
+            .map_or(&[][..], |node| node.children.as_slice());
+        for &child in children {
+            meter.count_decode(search)?;
+            if inside.binary_search(&child).is_err() {
+                return refuse(BodyModel::UnmappedTransform);
+            }
+            if stack.len() >= inside.len() {
+                return Err(AnimError::MissingPath);
+            }
+            stack.push(child)?;
+        }
+    }
+    Ok(())
+}
+
 impl BodyAvatar<'_> {
     /// Each `m_Skeleton` node's rest local scale as the rig's own Transform
     /// stores it in the bundle: the node's `m_ID` through `m_TOS` to the
@@ -86,6 +150,11 @@ impl BodyAvatar<'_> {
     /// (`misparented_transform`), such as a Transform elsewhere under the
     /// Animator for a bone the Avatar places below the hips. A node of the
     /// subtree without a Transform is `None`, which `hips_points` refuses.
+    /// A Transform below the hips' that no skeleton node there names
+    /// refuses (`unmapped_transform`), as E3a's `rest_translations` does,
+    /// and so does a graph that dropped a child there (`truncated_rig`) or
+    /// kept a Transform there, the hips included, whose `m_Father`
+    /// disagrees with its lister (`misparented_transform`).
     pub fn rest_scales(
         &self,
         paths: &RigPaths<'_>,
@@ -110,19 +179,17 @@ impl BodyAvatar<'_> {
             found.push(node)?;
         }
         let found = found.as_slice();
-        // One Transform per skeleton node.
-        let mut seen: MeteredVec<bool> = MeteredVec::with_capacity(meter, graph.nodes().len())?;
-        for _ in graph.nodes() {
-            seen.push(false)?;
-        }
-        let seen = seen.as_mut_slice();
-        let mut shared = false;
+        // One Transform per skeleton node: the Transforms found, sorted, so
+        // the work is the skeleton's size, not the scene's.
+        let mut mapped: MeteredVec<usize> = MeteredVec::with_capacity(meter, ids.len())?;
         for &node in found.iter().flatten() {
-            if let Some(seen) = seen.get_mut(node) {
-                shared |= std::mem::replace(seen, true);
-            }
+            mapped.push(node)?;
         }
-        if shared {
+        let n = mapped.len() as u64;
+        meter.count_decode(n * u64::from(n.bit_width()).max(1))?;
+        let mapped = mapped.as_mut_slice();
+        mapped.sort_unstable();
+        if mapped.windows(2).any(|pair| pair.first() == pair.last()) {
             return refuse(BodyModel::SharedTransform);
         }
         // Below the hips, each Transform's parent is its skeleton parent's.
@@ -145,6 +212,7 @@ impl BodyAvatar<'_> {
             }
             below.push(inside)?;
         }
+        complete_below_hips(graph, found, below.as_slice(), hips, meter)?;
         let mut out = MeteredVec::with_capacity(meter, ids.len())?;
         for node in found {
             out.push(
@@ -295,17 +363,25 @@ fn turn(m: &Matrix, v: Point) -> Point {
     m.map(|row| super::body_model::dot(row, v))
 }
 
+/// The body's pose in the Animator node's frame `A`: `T_A` in metres
+/// (`m_Scale` applied once, by root projection's `animator_body`) and
+/// `B_A`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimatorBodyPose {
+    pub translation: Point,
+    pub rotation: Quaternion,
+}
+
 /// 2.3: the hips' local translation and rotation placing the body at
-/// `(T_A, B_A) = (target, rotation)`, with `local` the body in the hips
-/// frame (`BodyAvatar::hips_points`), `rest_frame` the Avatar's `F(T)`
-/// (`body_frame` of `BodyAvatar::rest_points`), `human_scale` `m_Scale`
-/// and `hips_scale` the hips' own uniform rest scale. Freeze v8's
-/// coefficients; `solve_hips_with` takes others.
-#[allow(clippy::too_many_arguments, reason = "the reference's signature")]
+/// `pose`, with `local` the body in the hips frame
+/// (`BodyAvatar::hips_points`), `rest_frame` the Avatar's `F(T)`
+/// (`body_frame` of `BodyAvatar::rest_points`) and `hips_scale` the hips'
+/// own uniform rest scale. `pose.translation` is in metres, so `P_A =
+/// T_A - k H_A c_h` is the reference's `h T_A - k H_A c_h` with `h`
+/// applied by the projection. Freeze v8's coefficients; `solve_hips_with`
+/// takes others.
 pub fn solve_hips(
-    target: Point,
-    rotation: Quaternion,
-    human_scale: f64,
+    pose: AnimatorBodyPose,
     local: &Points,
     weights: &[f64; BODY_BONES],
     edges: &Edges,
@@ -315,9 +391,7 @@ pub fn solve_hips(
 ) -> Result<(Point, Quaternion), AnimError> {
     solve_hips_with(
         &COEFFICIENTS,
-        target,
-        rotation,
-        human_scale,
+        pose,
         local,
         weights,
         edges,
@@ -332,9 +406,7 @@ pub fn solve_hips(
 #[allow(clippy::too_many_arguments, reason = "the reference's signature")]
 pub fn solve_hips_with(
     table: &[(usize, usize, f64)],
-    target: Point,
-    rotation: Quaternion,
-    human_scale: f64,
+    pose: AnimatorBodyPose,
     local: &Points,
     weights: &[f64; BODY_BONES],
     edges: &Edges,
@@ -346,11 +418,14 @@ pub fn solve_hips_with(
     if !(positive(parent.scale) && positive(hips_scale)) {
         return Err(AnimError::UnsupportedAnimatorRoot);
     }
+    let AnimatorBodyPose {
+        translation: target,
+        rotation,
+    } = pose;
     finite(&target)?;
     finite(&rotation)?;
     finite(&parent.position)?;
     finite(&parent.rotation)?;
-    finite(&[human_scale])?;
     free_scope(edges)?;
     rest_frame_scope(rest_frame)?;
     frame_scope(local)?;
@@ -361,7 +436,7 @@ pub fn solve_hips_with(
     );
     let k = parent.scale * hips_scale;
     let turned = turn(&solved, c_h);
-    let p_a = super::body_model::zip3(target, turned, |t, h| human_scale * t - k * h);
+    let p_a = super::body_model::zip3(target, turned, |t, h| t - k * h);
     let inverse = conjugate(parent.rotation);
     let t = rotate(inverse, sub(p_a, parent.position)).map(|v| v / parent.scale);
     let Some(rotation) = quaternion(&solved) else {
@@ -382,3 +457,4 @@ pub fn solve_hips_with(
 }
 
 const _: () = crate::send_sync::<HipsParent>();
+const _: () = crate::send_sync::<AnimatorBodyPose>();

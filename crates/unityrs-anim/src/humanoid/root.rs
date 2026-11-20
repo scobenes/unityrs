@@ -13,7 +13,9 @@
 //!   keep-original the motion slots, otherwise the body. The yaw is the
 //!   twist about up, `2 atan2(q_y, q_w)`, plus the orientation offset unless
 //!   baked; the height adds the level unless baked.
-//! - **The body in `A`.** `T_A = h y^-1 (RootT - r)`, `B_A = y^-1 RootQ`.
+//! - **The body in `A`.** `T_A = h y^-1 (RootT - r)`, `B_A = y^-1 RootQ`:
+//!   an `AnimatorBodyPose`, in metres. This is the one place `m_Scale`
+//!   applies; `body_solve::solve_hips` takes the metres.
 //! - **No body slots.** The plan's `T_A = 0` and identity `B_A` refuses
 //!   (`unsupported_humanoid_root_basis(m_IndexArray)`): E4 compares only
 //!   clips with body slots.
@@ -49,7 +51,7 @@
 pub use super::root_sample::{RootSample, SampledPose, U32, root_sample, root_timing};
 use super::{
     body_model::{Point, Quaternion, U64, multiply, refuse},
-    body_solve::{conjugate, rotate},
+    body_solve::{AnimatorBodyPose, conjugate, rotate},
     clip::SettingValue,
     root_sample::{humanoid, normalize},
 };
@@ -340,13 +342,13 @@ pub fn project(
     Ok(([xz[0], height[1] + lift, xz[2]], about_up(angle)))
 }
 
-/// `X_A = X_r^-1 o X_b`, the reference's `animator_body`: `(T_A in metres,
-/// B_A)`.
+/// `X_A = X_r^-1 o X_b`, the reference's `animator_body`: `T_A` in
+/// metres and `B_A`.
 pub fn animator_body(
     body: (Point, Quaternion),
     root: (Point, Quaternion),
     human_scale: f64,
-) -> Result<(Point, Quaternion), AnimError> {
+) -> Result<AnimatorBodyPose, AnimError> {
     let ((position, rotation), (r, y)) = (body, root);
     let inverse = conjugate(y);
     let d = [position[0] - r[0], position[1] - r[1], position[2] - r[2]];
@@ -355,7 +357,10 @@ pub fn animator_body(
     if !target.iter().chain(&turned).all(|v| v.is_finite()) {
         return refuse(BodyModel::NonFiniteBody);
     }
-    Ok((target, turned))
+    Ok(AnimatorBodyPose {
+        translation: target,
+        rotation: turned,
+    })
 }
 
 /// The target body pose `(T_A, B_A)` of 2.4 at the clip time `time`, for
@@ -367,7 +372,7 @@ pub fn target_body_pose(
     time: f64,
     human_scale: f64,
     meter: &Arc<Meter>,
-) -> Result<(Point, Quaternion), AnimError> {
+) -> Result<AnimatorBodyPose, AnimError> {
     let settings = root_settings(clip, meter)?;
     let sampled = root_sample(clip, time, meter)?;
     let Some(body) = sampled.body else {
