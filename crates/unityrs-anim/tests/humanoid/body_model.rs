@@ -25,24 +25,24 @@ use unityrs_testkit::{
     },
 };
 
-const FREEZE: &str = include_str!("../../../../tools/parity/anim_body_freeze_v8.json");
+pub(super) const FREEZE: &str = include_str!("../../../../tools/parity/anim_body_freeze_v8.json");
 
-fn refused(cause: BodyModel) -> String {
+pub(super) fn refused(cause: BodyModel) -> String {
     AnimError::UnsupportedHumanoidBodyModel(cause).to_string()
 }
 
 /// A result's verdict: `Ok(())` or its error's name.
-fn verdict<T>(result: Result<T, AnimError>) -> Result<(), String> {
+pub(super) fn verdict<T>(result: Result<T, AnimError>) -> Result<(), String> {
     result.map(drop).map_err(|e| e.to_string())
 }
 
-fn slot_named(name: &str) -> usize {
+pub(super) fn slot_named(name: &str) -> usize {
     BODY_SLOTS.iter().position(|slot| *slot == name).unwrap()
 }
 
 /// The number after `"key": ` at or past `from` in the freeze's text,
 /// parsed exactly (`serde_json`'s default parse may round).
-fn token(key: &str, from: usize) -> f64 {
+pub(super) fn token(key: &str, from: usize) -> f64 {
     let needle = format!("\"{key}\": ");
     let start = from + FREEZE[from..].find(&needle).unwrap() + needle.len();
     let end = start + FREEZE[start..].find([',', '\n', '}']).unwrap();
@@ -115,7 +115,7 @@ fn every_constant_is_freeze_v8s() {
 }
 
 /// Points at the named slots.
-fn points(named: &[(&str, Point)]) -> Points {
+pub(super) fn points(named: &[(&str, Point)]) -> Points {
     let mut out = [None; 25];
     for &(name, p) in named {
         out[slot_named(name)] = Some(p);
@@ -123,7 +123,7 @@ fn points(named: &[(&str, Point)]) -> Points {
     out
 }
 
-fn close(got: &[f64], want: &[f64], bound: f64) {
+pub(super) fn close(got: &[f64], want: &[f64], bound: f64) {
     assert_eq!(got.len(), want.len());
     for (a, b) in got.iter().zip(want) {
         assert!((a - b).abs() <= bound, "{got:?} against {want:?}");
@@ -158,7 +158,7 @@ fn the_centre_of_a_single_segment() {
 
 /// The five-bone rig of the reference's frame cases, in its hips frame:
 /// `F(T)` is the identity.
-fn local() -> Points {
+pub(super) fn local() -> Points {
     points(&[
         ("Hips", [0., 0., 0.]),
         ("LeftUpperLeg", [-0.1, -0.1, 0.]),
@@ -168,14 +168,14 @@ fn local() -> Points {
     ])
 }
 
-fn about(axis: Point, degrees: f64) -> Quaternion {
+pub(super) fn about(axis: Point, degrees: f64) -> Quaternion {
     let half = degrees.to_radians() / 2.;
     let n = m::norm(axis);
     let (s, c) = half.sin_cos();
     [axis[0] * s / n, axis[1] * s / n, axis[2] * s / n, c]
 }
 
-fn turned(p: &Points, q: Quaternion, only: impl Fn(usize) -> bool) -> Points {
+pub(super) fn turned(p: &Points, q: Quaternion, only: impl Fn(usize) -> bool) -> Points {
     let mut out = *p;
     for (slot, point) in out.iter_mut().enumerate() {
         if only(slot) {
@@ -185,7 +185,7 @@ fn turned(p: &Points, q: Quaternion, only: impl Fn(usize) -> bool) -> Points {
     out
 }
 
-fn same_rotation(got: Quaternion, want: Quaternion, bound: f64) {
+pub(super) fn same_rotation(got: Quaternion, want: Quaternion, bound: f64) {
     let sign = if got.iter().zip(&want).map(|(a, b)| a * b).sum::<f64>() < 0. {
         -1.
     } else {
@@ -195,7 +195,7 @@ fn same_rotation(got: Quaternion, want: Quaternion, bound: f64) {
 }
 
 #[allow(clippy::many_single_char_names, reason = "the reference's names")]
-fn matrix(q: Quaternion) -> Matrix {
+pub(super) fn matrix(q: Quaternion) -> Matrix {
     let [x, y, z, w] = q;
     [
         [
@@ -228,9 +228,16 @@ fn the_quaternion_of_a_matrix_on_every_branch() {
         about([0.3, -0.5, 0.8], 75.),
     ];
     for q in cases {
-        same_rotation(m::quaternion(&matrix(q)), q, 2e-15);
-        assert!(m::quaternion(&matrix(q))[3] >= 0.);
+        same_rotation(m::quaternion(&matrix(q)).unwrap(), q, 2e-15);
+        assert!(m::quaternion(&matrix(q)).unwrap()[3] >= 0.);
     }
+    // No direction: a length that overflows, or a non-finite entry.
+    let mut huge = matrix([0., 0., 0., 1.]);
+    (huge[2][1], huge[1][2]) = (1e300, -1e300);
+    assert_eq!(m::quaternion(&huge), None);
+    let mut nan = matrix([0., 0., 0., 1.]);
+    nan[0][1] = f64::NAN;
+    assert_eq!(m::quaternion(&nan), None);
 }
 
 #[test]
@@ -392,14 +399,14 @@ fn rig_bones(rig: &Rig) -> Vec<usize> {
     out
 }
 
-fn field<'v>(value: &'v mut V, path: &[&str]) -> &'v mut V {
+pub(super) fn field<'v>(value: &'v mut V, path: &[&str]) -> &'v mut V {
     path.iter().fold(value, |value, name| match value {
         V::Struct(_, fields) => &mut fields.iter_mut().find(|(f, _)| f == name).unwrap().1,
         _ => panic!("{name}"),
     })
 }
 
-fn rows(value: &mut V) -> &mut Vec<V> {
+pub(super) fn rows(value: &mut V) -> &mut Vec<V> {
     match value {
         V::Vector(_, _, items) => items,
         _ => panic!("not a vector"),
@@ -508,7 +515,7 @@ fn humanoid_with(
     read_avatar(&file.object(AVATAR).unwrap(), &Meter::unlimited()).unwrap()
 }
 
-fn full() -> Rig {
+pub(super) fn full() -> Rig {
     Rig {
         optional: OPTIONAL_BONES.iter().map(|&(bone, _)| bone).collect(),
         body_offset: [0., 1., 0.],
@@ -516,7 +523,7 @@ fn full() -> Rig {
     }
 }
 
-fn without(names: &[&str]) -> Rig {
+pub(super) fn without(names: &[&str]) -> Rig {
     let mut rig = full();
     rig.optional
         .retain(|&bone| !names.iter().any(|n| slot_bone(slot_named(n)) == bone));

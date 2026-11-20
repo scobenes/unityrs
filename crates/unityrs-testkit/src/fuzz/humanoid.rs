@@ -178,6 +178,20 @@ fn rigs() -> Vec<(&'static str, Rig)> {
             },
         ),
         (
+            "body-hierarchy",
+            Rig {
+                hierarchy: true,
+                ..body(&[])
+            },
+        ),
+        (
+            "body-hierarchy-no-upper-chest",
+            Rig {
+                hierarchy: true,
+                ..body(&[54])
+            },
+        ),
+        (
             "body-root-height",
             Rig {
                 body_offset: [0., 1.5, 0.],

@@ -444,6 +444,7 @@ name = "unityrs-anim"
 version = "0.0.1"
 dependencies = [
  "unityrs-core",
+ "unityrs-pysum",
  "unityrs-scene",
 ]
 
@@ -555,6 +556,10 @@ dependencies = [
  "thiserror",
  "unityrs-core",
 ]
+
+[[package]]
+name = "unityrs-pysum"
+version = "0.0.1"
 
 [[package]]
 name = "unityrs-scene"

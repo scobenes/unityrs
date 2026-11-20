@@ -8,7 +8,11 @@
 //! and `anim_body_tolerance.py`), in its operation and summation order:
 //! values are f64 from the f32 inputs, taken exactly, and every sum runs
 //! in `HumanBodyBones` order with `UpperChest` last (`SUM_ORDER`, the
-//! reference's `NAMES`). One step differs: the reference normalizes a
+//! reference's `NAMES`). Where the reference sums with Python's builtin
+//! `sum` (dot products, norms, the mass total), this module sums as
+//! Python 3.15.2's compensated `sum` does (`unityrs_pysum`): freeze v8 was
+//! fitted and validated under it; its explicit `+=` loops (the centre) stay
+//! left to right. One step differs: the reference normalizes a
 //! quaternion with `math.hypot`, this module by the square root of the sum
 //! of squares, within an ulp of it. Every constant here is the freeze's,
 //! and the integration tests bind each one to the JSON.
@@ -41,11 +45,13 @@
 //!   axis); and a rest frame that is not finite and orthonormal
 //!   (`invalid_rest_frame`).
 //!
-//! The hips solve of 2.3 and the free-combination refusal come in B3b2.
+//! The hips solve of 2.3 and the free-combination refusal are
+//! `body_solve`'s.
 use super::{avatar::BODY_BONES, body::BodyAvatar};
 use crate::{AnimError, BodyModel};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
+use unityrs_pysum::python_sum;
 
 /// A position in f64.
 pub type Point = [f64; 3];
@@ -168,7 +174,7 @@ pub const FRAME_DEPTH: f64 = 16.;
 /// (`rest_frame_scope`).
 pub const REST_DEPTH: f64 = 32.;
 
-fn refuse<T>(cause: BodyModel) -> Result<T, AnimError> {
+pub(crate) fn refuse<T>(cause: BodyModel) -> Result<T, AnimError> {
     Err(AnimError::UnsupportedHumanoidBodyModel(cause))
 }
 
@@ -182,24 +188,10 @@ pub fn coefficient(table: &[(usize, usize, f64)], parent: usize, child: usize) -
 }
 
 impl BodyAvatar<'_> {
-    /// Decision 1: each mapped slot's stored mass over the stored masses'
-    /// sum, taken in `SUM_ORDER` (the reference's `folded_masses`, where
-    /// every absent slot's mass is zero); 0 for an unmapped slot.
+    /// Decision 1, on the Avatar's masses and mapped slots (`weights`).
     #[must_use]
     pub fn weights(&self) -> [f64; BODY_BONES] {
-        let mut total = 0.;
-        for &slot in &SUM_ORDER {
-            if let (Some(Some(_)), Some(&mass)) = (self.nodes.get(slot), self.masses.get(slot)) {
-                total += f64::from(mass);
-            }
-        }
-        let mut out = [0.; BODY_BONES];
-        for ((weight, node), &mass) in out.iter_mut().zip(&self.nodes).zip(&self.masses) {
-            if node.is_some() {
-                *weight = f64::from(mass) / total;
-            }
-        }
-        out
+        weights(&self.masses, &self.nodes.map(|node| node.is_some()))
     }
 
     /// Each mapped slot's nearest mapped body-slot ancestor in the Avatar's
@@ -287,10 +279,33 @@ impl BodyAvatar<'_> {
     }
 }
 
+/// Decision 1: each mapped slot's stored mass over the mapped masses' sum,
+/// that sum the reference's `sum(folded.values())` in `SUM_ORDER`
+/// (`folded_masses`, where every absent slot's mass is zero), compensated
+/// as Python 3.15.2's `sum` is; 0 for an unmapped slot. `body_avatar`
+/// has refused a mass table whose mapped total is not positive.
+fn weights(masses: &[f32; BODY_BONES], mapped: &[bool; BODY_BONES]) -> [f64; BODY_BONES] {
+    let total = python_sum(SUM_ORDER.iter().filter_map(|&slot| {
+        match (mapped.get(slot), masses.get(slot)) {
+            (Some(true), Some(&mass)) => Some(0. + f64::from(mass)),
+            _ => None,
+        }
+    }));
+    let mut out = [0.; BODY_BONES];
+    for ((weight, &on), &mass) in out.iter_mut().zip(mapped).zip(masses) {
+        if on {
+            *weight = f64::from(mass) / total;
+        }
+    }
+    out
+}
+
 /// A linked state whose position, rotation and accumulated scale are all
 /// finite, or `non_finite_body`: a chain of large scales can overflow the
 /// product, and an infinite scale times a zero translation is NaN.
-fn finite_state(state: (Point, Quaternion, f64)) -> Result<(Point, Quaternion, f64), AnimError> {
+pub(crate) fn finite_state(
+    state: (Point, Quaternion, f64),
+) -> Result<(Point, Quaternion, f64), AnimError> {
     let (position, rotation, scale) = state;
     if position.iter().chain(&rotation).all(|v| v.is_finite()) && scale.is_finite() {
         Ok(state)
@@ -299,7 +314,7 @@ fn finite_state(state: (Point, Quaternion, f64)) -> Result<(Point, Quaternion, f
     }
 }
 
-fn finite(values: &[f64]) -> Result<(), AnimError> {
+pub(crate) fn finite(values: &[f64]) -> Result<(), AnimError> {
     if values.iter().all(|v| v.is_finite()) {
         Ok(())
     } else {
@@ -308,7 +323,7 @@ fn finite(values: &[f64]) -> Result<(), AnimError> {
 }
 
 /// The reference's `uniform`: one scale for all three axes, positive.
-fn uniform(s: [f32; 3]) -> Result<f64, AnimError> {
+pub(crate) fn uniform(s: [f32; 3]) -> Result<f64, AnimError> {
     let [x, y, z] = s.map(f64::from);
     let (max, min) = (x.max(y).max(z), x.min(y).min(z));
     let magnitude = x.abs().max(y.abs()).max(z.abs());
@@ -320,21 +335,21 @@ fn uniform(s: [f32; 3]) -> Result<f64, AnimError> {
 }
 
 /// `f` of `a` and `b` per component.
-fn zip3(a: Point, b: Point, f: impl Fn(f64, f64) -> f64) -> Point {
+pub(crate) fn zip3(a: Point, b: Point, f: impl Fn(f64, f64) -> f64) -> Point {
     let ([a0, a1, a2], [b0, b1, b2]) = (a, b);
     [f(a0, b0), f(a1, b1), f(a2, b2)]
 }
 
-fn add(a: Point, b: Point) -> Point {
+pub(crate) fn add(a: Point, b: Point) -> Point {
     zip3(a, b, |a, b| a + b)
 }
 
-fn sub(a: Point, b: Point) -> Point {
+pub(crate) fn sub(a: Point, b: Point) -> Point {
     zip3(a, b, |a, b| a - b)
 }
 
 /// The reference's `link` without its error terms.
-fn link(
+pub(crate) fn link(
     (position, rotation, scale): (Point, Quaternion, f64),
     t: Point,
     q: Quaternion,
@@ -350,12 +365,14 @@ pub fn cross(a: Point, b: Point) -> Point {
     [a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0]
 }
 
-/// The reference's `sum(a * b ...)`: from 0, in order.
-fn dot(a: Point, b: Point) -> f64 {
+/// The reference's `sum(a * b ...)`, compensated as Python 3.15.2's
+/// `sum` is (`python_sum`).
+pub(crate) fn dot(a: Point, b: Point) -> f64 {
     let ([a0, a1, a2], [b0, b1, b2]) = (a, b);
-    0. + a0 * b0 + a1 * b1 + a2 * b2
+    python_sum([a0 * b0, a1 * b1, a2 * b2])
 }
 
+/// The reference's `norm`: `sqrt(sum(c * c ...))`.
 #[must_use]
 pub fn norm(v: Point) -> f64 {
     dot(v, v).sqrt()
@@ -564,10 +581,13 @@ pub fn product_transposed(a: &Matrix, b: &Matrix) -> Matrix {
 /// A rotation matrix's unit quaternion, `w >= 0`, by Shepperd's method
 /// (the reference's `quaternion`): the largest of the four components
 /// from the diagonal, the first on a tie, the rest from off-diagonal sums
-/// and differences.
+/// and differences. `None` when it has no direction: the length of the
+/// four is zero, overflows or is not finite, or a component is not finite
+/// (the reference returns NaN or raises), so a result is always a finite
+/// unit quaternion.
 #[must_use]
 #[allow(clippy::many_single_char_names, reason = "the reference's names")]
-pub fn quaternion(m: &Matrix) -> Quaternion {
+pub fn quaternion(m: &Matrix) -> Option<Quaternion> {
     let [[m00, m01, m02], [m10, m11, m12], [m20, m21, m22]] = *m;
     let trace = m00 + m11 + m22;
     let mut pick = (0, m00);
@@ -597,8 +617,12 @@ pub fn quaternion(m: &Matrix) -> Quaternion {
     };
     let [x, y, z, w] = q;
     let length = (0. + x * x + y * y + z * z + w * w).sqrt();
+    if !(length.is_finite() && length > 0.) {
+        return None;
+    }
     let q = q.map(|v| v / length);
-    if q[3] < 0. { q.map(|v| -v) } else { q }
+    let q = if q[3] < 0. { q.map(|v| -v) } else { q };
+    q.iter().all(|v| v.is_finite()).then_some(q)
 }
 
 /// Refuses a rest frame `F(T)` that is not finite or not orthonormal
@@ -630,8 +654,9 @@ pub fn rest_frame_scope(rest: &Matrix) -> Result<(), AnimError> {
 pub fn body_rotation(points: &Points, rest_frame: &Matrix) -> Result<Quaternion, AnimError> {
     rest_frame_scope(rest_frame)?;
     frame_scope(points)?;
-    let q = quaternion(&product_transposed(&body_frame(points)?, rest_frame));
-    finite(&q)?;
+    let Some(q) = quaternion(&product_transposed(&body_frame(points)?, rest_frame)) else {
+        return refuse(BodyModel::NonFiniteBody);
+    };
     Ok(q)
 }
 

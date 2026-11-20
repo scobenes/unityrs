@@ -542,7 +542,7 @@ class PortTests(unittest.TestCase):
         self.assertEqual(T.port_problems(ROOT), [])
         # Not vacuous: the repository's ports are seen, each with its section and its notice.
         sources = {s for p in (ROOT / "crates").rglob("*.rs") for s, _ in T.port_headers(p.read_text())}
-        self.assertTrue({"liblz4 1.9.4", "CPython 3.11", "UnityPy 1.25.2"} <= sources, sources)
+        self.assertTrue({"liblz4 1.9.4", "CPython 3.11", "CPython 3.15.2", "UnityPy 1.25.2"} <= sources, sources)
         generated = {
             p.relative_to(ROOT).as_posix(): [(h.generator, h.source, h.spdx) for h in T.source_headers(p.read_text())]
             for p in (ROOT / "crates").rglob("*.rs")
@@ -579,6 +579,7 @@ class PortTests(unittest.TestCase):
                 "etcpak 0.9.14": ["LICENSE-ETCPAK"],
                 "bc7enc in etcpak 0.9.14": ["LICENSE-BC7ENC"],
                 "CPython 3.11": ["NOTICE-PSF", "LICENSE-PSF"],
+                "CPython 3.15.2": ["NOTICE-PSF", "LICENSE-PSF"],
                 "Pillow 9.5.0": ["LICENSE-PILLOW"],
                 "Little CMS 2.15": ["LICENSE-LCMS"],
                 "texture2ddecoder 1.0.5": ["LICENSE-TEXTURE2DDECODER", "LICENSE-ASSETSTUDIO", "LICENSE-MIKUNYAN"],

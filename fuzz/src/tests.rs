@@ -550,6 +550,39 @@ fn anim_checks_run_every_synthetic_seed_and_truncations() {
     );
 }
 
+/// A clean hierarchy seed's rig solves its hips for every request and
+/// parent of the target, each a finite translation and a unit quaternion
+/// (the target asserts those).
+#[test]
+fn humanoid_hierarchy_seeds_solve() {
+    let mut seeds = 0;
+    for (name, case) in unityrs_testkit::fuzz::anim_humanoid_cases() {
+        if !name.contains("body-hierarchy") {
+            continue;
+        }
+        let solved = std::sync::atomic::AtomicUsize::new(0);
+        crate::scene::check(&case.encode(), |case, limit| {
+            crate::scene::run_root(case, limit, |env, _, file, meter| {
+                let graph = match crate::scene::graph(env, file, case.flags, meter) {
+                    Ok(g) => g,
+                    Err(outcome) => return outcome,
+                };
+                let mut digest = crate::scene::Digest::default();
+                match crate::anim_humanoid::rigs(env, &graph, &[], meter, &mut digest) {
+                    Ok(n) => {
+                        solved.fetch_max(n, std::sync::atomic::Ordering::Relaxed);
+                        crate::scene::Outcome::Done(digest.finish())
+                    }
+                    Err(e) => crate::scene::Outcome::anim_error(e),
+                }
+            })
+        });
+        assert_eq!(solved.into_inner(), 3, "{name}");
+        seeds += 1;
+    }
+    assert!(seeds >= 2, "the hierarchy seeds: {seeds}");
+}
+
 #[test]
 fn humanoid_check_runs_every_synthetic_seed_and_truncations() {
     let mut done = 0;

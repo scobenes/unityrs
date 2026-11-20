@@ -1,0 +1,20 @@
+[package]
+name = "unityrs-pysum"
+description = "CPython 3.12+'s compensated float sum, bit for bit, for the humanoid body model."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# It ports CPython 3.15.2's builtin sum float path (PSF-2.0: src/lib.rs),
+# whose agreement is its LICENSE-PSF, with the summary of changes the
+# agreement asks for in NOTICE-PSF, which its package carries. See
+# THIRD_PARTY_LICENSES.
+license = "(MIT OR Apache-2.0) AND PSF-2.0"
+repository.workspace = true
+authors.workspace = true
+
+[dev-dependencies]
+# The vectors (tests/support/python_sum.json) are JSON.
+serde_json = "=1.0.154"
+
+[lints]
+workspace = true
