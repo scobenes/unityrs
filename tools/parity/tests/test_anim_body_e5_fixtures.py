@@ -48,8 +48,9 @@ class E5InventoryTests(unittest.TestCase):
         self.assertEqual(parsed, body.CHAIN_RIGS)
         self.assertEqual(body.E5_CHAIN_RIGS, ("scaled-animator-large", "scaled-animator-small", "hips-scale-large",
                                               "hips-scale-small", "armature-large"))
-        # Size scales an armature's translation and hips offset too, exactly so at Size 1.
-        self.assertIn('Child(root, "Armature", new Vector3(0, .05f, .1f) * rig.Size);', builder)
+        # Size scales the hips' offset in an armature, exactly so at Size 1, never the armature's own transform,
+        # which B4 admits only at F5's value.
+        self.assertIn('Child(root, "Armature", new Vector3(0, .05f, .1f));', builder)
         self.assertIn("hips.localPosition = new Vector3(0, .125f, .8375f) * rig.Size;", builder)
         self.assertIn(".Concat(ClipRigs.SelectMany(rig => ClipCases(rig)));", builder)
         self.assertIn("() => BuildBodyClips(build, report, rig));", builder)

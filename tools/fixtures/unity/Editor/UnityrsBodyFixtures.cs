@@ -51,7 +51,8 @@ static partial class UnityrsFixtureBuilder
     // F6 rigs that came with the range sweeps (anim_fixture_body.py LATER_RIGS), each required.
     static readonly string[] LaterRigs = { "no-upper-chest-toes", "no-upper-chest-left-toes", "no-upper-chest-right-toes" };
     // F5: each plays F3's targets and the F4 all-original motion clip. Size scales
-    // every offset below the Animator, an armature's translation too; the
+    // every bone offset and the hips' own offset, never the armature's transform:
+    // B4 admits the armature only at its fixture transform (BETWEEN). The
     // feature's own scale and turn stay. The last five put each feature at a
     // second human scale for E5, inside B4's range.
     static readonly BodyRig[] ChainRigs = {
@@ -476,7 +477,7 @@ static partial class UnityrsFixtureBuilder
         {
             // An FBX-like armature: scaled, translated and turned, with the hips
             // turned back so the T-pose stays upright and facing +Z.
-            top = Child(root, "Armature", new Vector3(0, .05f, .1f) * rig.Size);
+            top = Child(root, "Armature", new Vector3(0, .05f, .1f));
             top.localRotation = Quaternion.Euler(-90, 0, 0);
             top.localScale = Vector3.one * ArmatureScale;
         }

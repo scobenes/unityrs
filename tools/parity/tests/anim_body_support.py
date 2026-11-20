@@ -72,14 +72,14 @@ ANIMATOR_SCALE = {rig: 1.25 for rig, (feature, _) in CHAIN_RIGS.items() if featu
 
 def rig_nodes(rig):
     """Spec nodes and rest transforms, with F5's Animator, armature and hips scales (a sized rig's offsets
-    scaled, an armature's translation too)."""
+    scaled, the hips' own offset too, never the armature's transform)."""
     feature, size = CHAIN_RIGS.get(rig, ("", 1))
     nodes, rest = [("", "HumanoidFixture"), ("0", "HumanoidRig")], [transform(), transform(
         s=ANIMATOR_SCALE.get(rig, 1.))]
     top, addresses, counts = "0", {"": "0"}, {}
     if feature == "armature":
         nodes.append(("0/0", "Armature"))
-        rest.append(transform((0, .05 * size, .1 * size), euler((-90, 0, 0), 4), .8))
+        rest.append(transform((0, .05, .1), euler((-90, 0, 0), 4), .8))
         top = addresses[""] = "0/0"
     for name, parent, offset in layout(rig):
         base = addresses[parent]

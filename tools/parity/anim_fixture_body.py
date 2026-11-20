@@ -41,7 +41,8 @@ PROBE_RIGS = {
 HOLDOUT_RIGS = ("holdout", "holdout-2")
 HOLDOUT = HOLDOUT_RIGS[-1]
 # F5: the chain from the Animator to the hips, each on the compact rig, as (feature, size). Size scales every
-# offset below the Animator (an armature's translation too); the feature's own scale and turn stay as F5's. The
+# bone offset and the hips' own offset; the feature (the Animator's scale, the armature's transform, which B4
+# admits only at F5's exact value, or the hips scale) stays as F5's. The
 # rigs after the first four put each feature at a second human scale for E5, a generation of their own (E5_CASES).
 CHAIN_RIGS = {"scaled-animator": ("scaled-animator", 1), "large": ("", 1.5), "armature": ("armature", 1),
               "hips-scale": ("hips-scale", 1), "scaled-animator-large": ("scaled-animator", 1.5),
