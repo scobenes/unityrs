@@ -17,6 +17,7 @@ from anim_fixture_support import RUN, write
 
 import anim_body_model as model  # noqa: E402  (test_anim_replay puts it on the path)
 import anim_fixture_body as body  # noqa: E402
+from anim_fixture_round11 import CHAIN_FEATURES  # noqa: E402
 import anim_fixture_coverage  # noqa: E402
 import anim_fixture_rigs as rigs_module  # noqa: E402
 import anim_replay as replay  # noqa: E402
@@ -25,8 +26,8 @@ import anim_replay_complete as complete  # noqa: E402
 from anim_replay_complete import OPTIONAL_CASES, complete_folder  # noqa: E402
 
 EDITOR = Path(__file__).resolve().parents[2] / "fixtures" / "unity" / "Editor"
-# A run's body cases from before the range sweeps and their topology rigs (and before E5's).
-EARLIER = [name for name in body.BODY_CASES if name not in set().union(*body.LATER_CASES[2:], body.E5_CASES)]
+# A run's body cases from before the range sweeps and their topology rigs.
+EARLIER = [name for name in body.BODY_CASES if name not in set().union(*body.LATER_CASES[2:])]
 
 
 class View:
@@ -62,8 +63,8 @@ def yaw_gap(doc, k):
 
 class BodyInventoryTests(unittest.TestCase):
     def test_cases_mirror_the_builder(self):
-        self.assertEqual(len(body.BODY_CASES), 124 + len(body.E5_CASES))
-        kinds = [info["kind"] for name, info in body.BODY_INFO.items() if name not in body.E5_CASES]
+        self.assertEqual(len(body.BODY_CASES), 124)
+        kinds = [info["kind"] for info in body.BODY_INFO.values()]
         self.assertEqual((kinds.count("probes"), kinds.count("targets"), kinds.count("clip")), (34, 8, 82))
         self.assertEqual(body.EXTRA_CASES, {"body-probes-tall-2", "body-probes-tall-3",
                                             *(f"body-probes-compact-{k}" for k in range(2, 6))})
@@ -81,7 +82,7 @@ class BodyInventoryTests(unittest.TestCase):
         self.assertTrue(body.BODY_CASES.keys().isdisjoint(anim_fixture_coverage.COVERAGE_CASES))
         builder = source("UnityrsBodyFixtures.cs")
         rigs = re.findall(r'new BodyRig \{ Name = "([a-z0-9-]+)"', builder)
-        self.assertEqual(rigs, [*body.PROBE_RIGS, *body.CHAIN_RIGS])
+        self.assertEqual(rigs, [*body.PROBE_RIGS, *CHAIN_FEATURES])  # freeze v8's chain rigs, then round 11's
         # Each hold-out rig, by its topology in the builder's table alone, is inside the frozen scope, with the
         # proportions anim_fixture_rigs gives it.
         for rig in body.HOLDOUT_RIGS:

@@ -10,8 +10,7 @@ names: each case it lists as recorded that the builder's case tables
 (anim_fixture_body, anim_fixture_contract, anim_fixture_coverage) give a
 humanoid Avatar is read from the path the table lays out for it, and its
 role comes from the same table: `holdout` for the hold-out rig's cases
-(anim_fixture_body.HOLDOUT_RIGS), `e5` for round 11's E5 cases
-(anim_fixture_body.E5_CASES, never loaded here), `training` for every other. The role is
+(anim_fixture_body.HOLDOUT_RIGS), `training` for every other. The role is
 decided before the file is opened, so a training load never reads a
 hold-out byte, and no load reads a hold-out file at all: a hold-out run is
 made (`Run.sealed`) only from the recordings sealed completion validated
@@ -50,7 +49,7 @@ import anim_body_adequacy as adequacy
 import anim_replay as replay
 from anim_body_model import centre
 from anim_body_tolerance import NAMES, U64, body_states, edges, readback_position
-from anim_fixture_body import BODY_CASES, BODY_INFO, E5_CASES, HOLDOUT_RIGS
+from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT_RIGS
 from anim_fixture_contract import REPLAY_CASES, VECTOR_CASES
 from anim_fixture_coverage import COVERAGE_CASES
 
@@ -68,8 +67,7 @@ CASES = {**{name: (fixture, "") for name, fixture in (REPLAY_CASES | COVERAGE_CA
 
 
 def role_of(case):
-    """A body case's role: a hold-out rig's, E5's (round 11's recordings, which B2 never reads), or training."""
-    return "holdout" if BODY_INFO.get(case, {}).get("rig") in HOLDOUT_RIGS else "e5" if case in E5_CASES else "training"
+    return "holdout" if BODY_INFO.get(case, {}).get("rig") in HOLDOUT_RIGS else "training"
 
 
 REQUIRED = frozenset(name for name in BODY_CASES if role_of(name) == "training")

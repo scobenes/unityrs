@@ -230,6 +230,7 @@ static partial class UnityrsFixtureBuilder
                     var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
                     BuildAndCapture(build, report, staging, run, target, variant.Record, Log);
                     failures = report.Write(staging, projectPath, run);
+                    if (run.variant == "builtin") WriteRound(staging, run.run_id);
                     Log(failures.Length == 0 ? "Finished." : "Finished with fixture errors: " + string.Join(", ", failures));
                 }
                 catch (Exception error)

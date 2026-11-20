@@ -59,7 +59,7 @@ static partial class UnityrsFixtureBuilder
         return rows.ToArray();
     }
 
-    // The variants B4 admits (freeze v8's E4 passing set, anim_fixture_body.py
+    // The variants B4 admits (freeze v8's E4 passing set, anim_fixture_round11.py
     // E5_ADMITTED). Each records with its start-offset twin where it has one.
     static readonly string[] E5Admitted = {
         "bake-o0-y0-xz1", "bake-o0-y1-xz0", "bake-o0-y1-xz1", "bake-o1-y0-xz0", "bake-o1-y0-xz1", "bake-o1-y1-xz0",
@@ -68,15 +68,18 @@ static partial class UnityrsFixtureBuilder
     static BodyClipVariant[] E5Variants => ClipVariants.Where(row => E5Admitted.Contains(
         row.Start ? row.Name.Substring(0, row.Name.Length - "-start".Length) : row.Name)).ToArray();
 
-    // E5's clip rigs (anim_fixture_body.py CLIP_RIGS): the plain chain at B4's
-    // highest human scale (F5's large rig), the tall rig's and near its lowest
-    // (SmallRig), then every admitted training topology but the compact rig's,
-    // whose clips body-clips records. Never a hold-out rig.
+    // E5's clip rigs (anim_fixture_round11.py CLIP_RIGS): the plain chain at
+    // B4's highest human scale (F5's large rig), the tall rig's and near its
+    // lowest (SmallRig), then every training topology B3's topology scope
+    // admits but the compact rig's, whose clips body-clips records. No rig B3
+    // refuses (no-chest, no-neck, one shoulder) and never a hold-out rig.
     static readonly BodyRig SmallRig = new BodyRig { Name = "small", Size = .82f };
-    static readonly string[] SealedRigs = { "holdout", HoldoutRig };
+    static readonly string[] E5Topologies = {
+        "no-upper-chest", "no-shoulders", "no-left-toes", "no-right-toes", "no-toes", "no-upper-chest-toes",
+        "no-upper-chest-left-toes", "no-upper-chest-right-toes", "eyes", "jaw", "eyes-jaw", "noncoplanar"
+    };
     static BodyRig[] ClipRigs => new[] { ChainRigs.Single(rig => rig.Name == "large"), ProbeRigs.Single(rig => rig.Name == "tall"),
-        SmallRig }.Concat(ProbeRigs.Where(rig => rig.Name != "compact" && rig.Name != "tall" && !SealedRigs.Contains(rig.Name)))
-        .ToArray();
+        SmallRig }.Concat(E5Topologies.Select(name => ProbeRigs.Single(rig => rig.Name == name))).ToArray();
 
     // The compact rig's bundle body-clips, or a clip rig's own.
     static string ClipBundle(BodyRig rig) => rig == null ? BodyClipBundle : BodyClipBundle + "-" + rig.Name;

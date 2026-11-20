@@ -11,10 +11,11 @@ import struct
 from test_anim_replay import bits
 
 import anim_body_tolerance as tolerance  # noqa: E402  (test_anim_replay puts it on the path)
-from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CHAIN_RIGS, CLIP_VARIANTS,  # noqa: E402
+from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CLIP_VARIANTS,  # noqa: E402
                                body_requests, distinguishing_curves, PROBE_GROUPS, SPINE,
                                START_OFFSET, START_YAW, expected_case_row, probe_schedule, schedule_name)
 from anim_fixture_rigs import rig_layout  # noqa: E402
+from anim_fixture_round11 import CHAIN_FEATURES  # noqa: E402
 from anim_reference import euler, multiply  # noqa: E402
 import anim_replay as replay  # noqa: E402
 
@@ -67,13 +68,13 @@ def transform(t=(0, 0, 0), q=(0, 0, 0, 1), s=1.):
     return dict(translation=[bits(v) for v in t], rotation=[bits(v) for v in q], scale=[bits(s)] * 3)
 
 
-ANIMATOR_SCALE = {rig: 1.25 for rig, (feature, _) in CHAIN_RIGS.items() if feature == "scaled-animator"}
+ANIMATOR_SCALE = {rig: 1.25 for rig, (feature, _) in CHAIN_FEATURES.items() if feature == "scaled-animator"}
 
 
 def rig_nodes(rig):
     """Spec nodes and rest transforms, with F5's Animator, armature and hips scales (a sized rig's offsets
     scaled, the hips' own offset too, never the armature's transform)."""
-    feature, size = CHAIN_RIGS.get(rig, ("", 1))
+    feature, size = CHAIN_FEATURES.get(rig, ("", 1))
     nodes, rest = [("", "HumanoidFixture"), ("0", "HumanoidRig")], [transform(), transform(
         s=ANIMATOR_SCALE.get(rig, 1.))]
     top, addresses, counts = "0", {"": "0"}, {}

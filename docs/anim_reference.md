@@ -1009,10 +1009,14 @@ the plan's hypotheses. None of it is a playback claim.
 
 ### Body fixtures
 
-The main menu item builds 932 optional `body-…` cases, each kind in its own
+The main menu item builds 767 optional `body-…` cases, each kind in its own
 bundle build after the main and coverage builds. Their tables are in
-`UnityrsBodyFixtures.cs` and `UnityrsBodyClips.cs`, mirrored by
-[`anim_fixture_body.py`](../tools/parity/anim_fixture_body.py).
+`UnityrsBodyFixtures.cs`, `UnityrsBodyClips.cs` and `UnityrsBodyMuscles.cs`,
+mirrored by [`anim_fixture_body.py`](../tools/parity/anim_fixture_body.py)
+and, for round 11's 643, by
+[`anim_fixture_round11.py`](../tools/parity/anim_fixture_round11.py) and
+[`anim_fixture_muscles.py`](../tools/parity/anim_fixture_muscles.py), which
+freeze v8's sources never import.
 
 | Cases | Plan | Contents |
 |---|---|---|
@@ -1024,7 +1028,8 @@ bundle build after the main and coverage builds. Their tables are in
 | `body-targets-{compact,tall}[-offset]` (4) | F3 | The three combined vectors with nonidentity body targets on identity and offset roots |
 | `body-clip-<variant>[-offset]` (78) | F4 | 39 body-motion clips on the compact rig, each on an identity and an offset root |
 | `body-chain-<f5>-{targets,clip}` (18) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale; then, for E5, the scaled Animator at sizes 1.5 and 0.82, the hips scale at 1.2 and 0.7 and the armature at 1.8, a size scaling every bone offset and the hips' own offset but never the armature's transform, which B4 admits only at F5's value. Each plays F3's targets and the all-original F4 clip with changing `MotionT` and `MotionQ` curves, whose residual body translation and tilt change through the chain and whose motion the original-root rule keeps. Completion requires its built motion slots; if Unity drops them, that clip case is not covered. |
-| `body-clip-<rig>-<variant>[-offset]` (798) | E5 | The 21 variants B4 admits (freeze v8's E4 passing set, each with its `-start` twin where it has one) on 19 more rigs, each rig in a bundle `body-clips-<rig>`: F5's large rig, the tall rig and a plain `small` rig (size 0.82), at the top, middle and bottom of B4's human-scale range, then every admitted training topology but the compact rig's. Never a hold-out rig. |
+| `body-clip-<rig>-<variant>[-offset]` (630) | E5 | The 21 variants B4 admits (freeze v8's E4 passing set, each with its `-start` twin where it has one) on 15 more rigs, each rig in a bundle `body-clips-<rig>`: F5's large rig, the tall rig and a plain `small` rig (size 0.82), at the top, middle and bottom of B4's human-scale range, then every training topology B3's topology scope admits but the compact rig's. No topology B3 refuses (`no-chest`, `no-neck`, one shoulder), never a hold-out rig. |
+| `body-probes-limb-twist-{compact,tall}`, `body-probes-fingers` (3) | B5a | Known vectors for the 50 muscles the body probes leave out, each sweep in a bundle of its own: the ten limb twist muscles on the compact and tall rigs, and the forty finger muscles on the compact rig with all thirty finger bones mapped. Each muscle alone at ±1, ±.75, ±.5, ±.25 and ±.125, then each group (a twist muscle with its bone's probe muscles, a finger's four muscles) jointly at two opposite vectors: 123 and 423 samples with the spine anchors. |
 
 **Rig geometry.** One parameterized layout gives every rig. Unchanged, it
 repeats the P2b offsets in the same sibling order. An omitted bone's
@@ -1221,11 +1226,18 @@ vectors do.
 
 - A run with no `body-…` row completes as before.
 - A run with any body row must list every body case.
-- E5's cases (round 11: the clip rigs and the five chain rigs added for E5)
-  are a generation of their own. A run without them completes as before;
-  a run with any of them must list and record every one. Each one's
-  recorded human scale must lie in B4's range, from the armature rig's
-  `0x3f47f9bb` to the large rig's `0x3fb7a311`. B2 never reads them.
+- Round 11's cases (E5's clip and chain rigs, B5a's muscle sweeps) are
+  unknown to `anim_replay.py complete`, which refuses a run listing them.
+  The builder declares such a run in `round.json` beside `run.json`
+  (`unityrs.fixture_round`, round 11, the run's id), and
+  `anim_fixture_round11.py complete <folder>` completes it: it refuses a run
+  without that declaration, one not listing every body case (earlier and
+  round 11), and one with a round 11 case not recorded, then runs every
+  check below with round 11's tables. An E5 recording's human scale must lie
+  in B4's range, from the armature rig's `0x3f47f9bb` to the large rig's
+  `0x3fb7a311`, and a chain rig must show its F5 feature exactly (the
+  armature's translation, rotation and scale as B4 admits them). B2 and
+  the freeze never read round 11's cases.
 - A recorded case needs `replays/body/<case>.pending.json` and its bundle.
 - A failed case fails the run.
 
