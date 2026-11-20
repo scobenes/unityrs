@@ -31,7 +31,7 @@
 //! at each step. Every Python object is made by a call checked for
 //! failure: a failed allocation gives up, and the full path meets it and
 //! raises; once the read is accepted, it raises.
-use crate::direct_classes::{classes, file_reader};
+use crate::direct_classes::classes;
 use crate::direct_keys::{TreeKeys, name};
 use crate::direct_object::ObjMode;
 use pyo3::{ffi, prelude::*, types::PyDict};
@@ -401,16 +401,13 @@ impl<'py> Sink for PySink<'_, 'py> {
 /// An attribute in an instance's `__dict__`, read with no code of the
 /// caller's run (the `__dict__` of an instance of a class of ours, a `str`
 /// key), as a strong reference taken in the lookup.
-pub(crate) fn field<'py>(
-    d: &Bound<'py, PyDict>,
-    name: &Bound<'py, PyAny>,
-) -> Option<Bound<'py, PyAny>> {
+fn field<'py>(d: &Bound<'py, PyDict>, name: &Bound<'py, PyAny>) -> Option<Bound<'py, PyAny>> {
     d.get_item(name).ok().flatten()
 }
 
 /// An instance's `__dict__`, as `object.__dict__` gives it (the attribute of
 /// every class here, none of which defines its own).
-pub(crate) fn instance_dict<'py>(obj: &Bound<'py, PyAny>) -> Option<Bound<'py, PyDict>> {
+fn instance_dict<'py>(obj: &Bound<'py, PyAny>) -> Option<Bound<'py, PyDict>> {
     // SAFETY: a live object; a new reference or null with an exception set.
     own(obj.py(), unsafe {
         ffi::PyObject_GenericGetDict(obj.as_ptr(), std::ptr::null_mut())
@@ -446,27 +443,15 @@ pub(crate) fn read(
     if !reader.get_type().is(&cls.object) {
         return Ok(None);
     }
+    // A replaced `ObjectReader.reader` is left to the full path alone, never
+    // called here first.
+    if !crate::direct_classes::unreplaced(py, cls) {
+        return Ok(None);
+    }
     // The full path's first step (`uses_original`): the `reader` property
     // (which makes the file's reader on its first use), its value the
-    // reader `ready` checks. While the property is unreplaced, its value is
-    // the object's `_reader`, or where the file has made its reader, that
-    // reader, copied to the object as the property copies it.
-    let me = instance_dict(reader);
-    let key = name!(py, c"_reader")?;
-    let kept = me
-        .as_ref()
-        .filter(|_| crate::direct_classes::unreplaced(py, cls, false))
-        .and_then(|me| field(me, key.as_any()));
-    let copied = || {
-        let me = me.as_ref()?;
-        let shared = file_reader(py, me, cls)?;
-        me.set_item(key, &shared).ok()?;
-        Some(shared)
-    };
-    let file_reader = match kept.or_else(copied) {
-        Some(shared) => shared,
-        None => reader.getattr(name!(py, c"reader")?)?,
-    };
+    // reader `ready` checks.
+    let file_reader = reader.getattr(name!(py, c"reader")?)?;
     let Some((position, assets)) = ready(py, object, reader, &file_reader) else {
         return Ok(None);
     };

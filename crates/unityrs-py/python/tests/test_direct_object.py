@@ -165,21 +165,25 @@ class DirectObject(unittest.TestCase):
         taken = [o._native.parse_direct(o, True, True) is not None for o in objs]
         self.assertEqual(taken, [True, True, False, False])
 
-    def test_a_replaced_reader_property_runs(self):
-        """Where the file has made its reader, a direct read copies it to
-        the object as the `reader` property would, unless either class's
-        property has been replaced (after the read's first, or with one
-        that looks the same): then the replacement runs."""
+    def test_a_replaced_reader_property_runs_as_the_full_paths(self):
+        """A replaced `reader` property (on either class, after an object's
+        first read, or dressed as the original) runs exactly as often as on
+        the full path, with the full path's value: a replaced
+        `ObjectReader.reader` is never called by the direct read itself."""
         from unityrs.files import ObjectReader, SerializedFile
 
-        def first():
+        def fresh(full, read_before):
             env = unityrs.Environment()
             env.load_file(fixture(), name='f')
             obj = sorted(env.objects, key=lambda o: o.path_id)[1]
             obj.assets_file.reader
+            if read_before:
+                obj.read_typetree()
+            if full:
+                obj._native = FullPath(obj._native)
             return obj
 
-        expected = first().read_typetree()
+        expected = fresh(True, False).read_typetree()
         for cls in (ObjectReader, SerializedFile):
             original = cls.__dict__['reader']
             calls = []
@@ -190,21 +194,49 @@ class DirectObject(unittest.TestCase):
                 calls.append(type(self).__name__)
                 return original.fget(self)
 
-            obj, again = first(), first()
-            again.read_typetree()
-            cls.reader = property(get, original.fset)
-            try:
-                with self.subTest(cls=cls.__name__):
-                    self.assertEqual(obj.read_typetree(), expected)
-                    self.assertEqual(calls, [cls.__name__])
-                    # An object read before, its `_reader` kept: a
-                    # replaced `ObjectReader.reader` runs on it too.
-                    del calls[:]
-                    self.assertEqual(again.read_typetree(), expected)
-                    replaced = ['ObjectReader'] if cls is ObjectReader else []
-                    self.assertEqual(calls, replaced)
-            finally:
-                cls.reader = original
+            for read_before in (False, True):
+                objs = [fresh(full, read_before) for full in (False, True)]
+                cls.reader = property(get, original.fset)
+                try:
+                    seen = []
+                    for obj in objs:
+                        del calls[:]
+                        seen.append((obj.read_typetree(), list(calls)))
+                finally:
+                    cls.reader = original
+                with self.subTest(cls=cls.__name__, read_before=read_before):
+                    self.assertEqual(seen[0], seen[1])
+                    self.assertEqual(seen[0][0], expected)
+                    if cls is ObjectReader:
+                        self.assertIn('ObjectReader', seen[0][1])
+
+    def test_a_pair_of_two_classes(self):
+        """A `pair` whose items are both classes' objects: each made, the
+        pair then their tuple, as on the full path."""
+        import attrs
+        classes = unityrs.classes
+
+        @attrs.define(slots=False)
+        class Y7Pairs(classes.Object):
+            m_Pair: object = None
+
+        tree = node('Y7Pairs', 'Base', [node('pair', 'm_Pair', [
+            floats('Vector3f', 'first', 'xyz'), floats('Vector3f', 'second', 'xyz')])])
+        data = S.serialized_file([S.Type(114, tree)],
+                                 [S.Obj(1, 0, struct.pack('<6f', 1, 2, 3, 4, 5, 6))])
+        classes.Y7Pairs = Y7Pairs
+        try:
+            env = unityrs.Environment()
+            env.load_file(data, name='f')
+            obj = env.objects[0]
+            self.assertIsNotNone(obj._native.parse_direct(obj, True, True))
+            direct = read(data, 0, False)
+            full = read(data, 0, True)
+        finally:
+            del classes.Y7Pairs
+        self.assertIs(type(direct.m_Pair), tuple)
+        self.assertEqual([type(v).__name__ for v in direct.m_Pair], ['Vector3f', 'Vector3f'])
+        self.assertEqual(shape(direct), shape(full))
 
     def test_a_container_freed_by_a_collection_callback(self):
         """A collection's callback, run while the classes are called, that
@@ -213,11 +245,17 @@ class DirectObject(unittest.TestCase):
         the read to raise, never to write into freed memory."""
         import gc
 
+        pending = []
+
         def hook(phase, info):
             if phase != 'start':
                 return
             for o in gc.get_objects():
-                if type(o) is dict and type(o.get('m_Children')) is list:
+                children = o.get('m_Children') if type(o) is dict else None
+                # The list while a child's object is still to go in it:
+                # its items still the classes' dicts.
+                if type(children) is list and any(type(c) is dict for c in children):
+                    pending.append(len(children))
                     o.pop('m_Children').clear()
 
         for _ in range(3):
@@ -228,10 +266,12 @@ class DirectObject(unittest.TestCase):
             gc.callbacks.append(hook)
             gc.set_threshold(1, 1, 1)
             try:
-                # The list's slot gone (`IndexError`), or the root's
-                # field (`TypeError`), as the collection fell.
+                # The list's slot gone (`IndexError`), or then the
+                # root's field (`TypeError`).
                 with self.assertRaises((IndexError, TypeError)):
                     obj._native.parse_direct(obj, True, True)
+                self.assertEqual(pending, [2])
+                del pending[:]
             finally:
                 gc.set_threshold(*threshold)
                 gc.callbacks.remove(hook)

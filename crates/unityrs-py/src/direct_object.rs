@@ -24,7 +24,7 @@
 //! module's reservations, each value's, each container's and each class's.
 use crate::direct_keys::{ObjKeys, import_attr, name};
 use pyo3::{ffi, prelude::*, sync::PyOnceLock};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use unityrs_core::typetree::{NodeId, Tree};
 
@@ -46,24 +46,28 @@ fn checked() -> MutexGuard<'static, Option<HashMap<Vec<usize>, Checked>>> {
     CHECKED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Where a class's dict is, and its object goes: each container (and key)
-/// held here, from the dict's placing until its object is put, so no
-/// code the classes' calls run (a constructor, a collection's callbacks)
-/// can free one before the object is put in it.
+/// Where a pending value is, and its object goes: each container (and
+/// key) held here, from the value's placing until its object is put, so
+/// no code the classes' calls run (a constructor, a collection's
+/// callbacks) can free one before the object is put in it. Only dicts and
+/// lists are written into, through `PyDict_SetItem` and `PyList_SetItem`
+/// (each under the object's own lock where the GIL is off): no tuple is
+/// ever changed once made.
 enum Place<'py> {
     /// The read's value.
     Root,
     /// A field of a class's dict, under a key.
     Dict(Bound<'py, PyAny>, Bound<'py, PyAny>),
-    /// An item of a list.
+    /// An item of a list, or of a pair's items ([`Pending::cls`]).
     List(Bound<'py, PyAny>, isize),
-    /// An item of a `pair`'s tuple.
-    Tuple(Bound<'py, PyAny>, isize),
 }
 
-/// A class to call once the read is accepted.
+/// A value to make once the read is accepted.
 struct Pending<'py> {
-    cls: Bound<'py, PyAny>,
+    /// The class to call with `dict`; `None` for a `pair` whose items are
+    /// pending: `dict` is then a list of its two items, made a tuple once
+    /// both are made (as `tuple(items)`).
+    cls: Option<Bound<'py, PyAny>>,
     dict: Bound<'py, PyAny>,
     at: Place<'py>,
 }
@@ -78,8 +82,12 @@ pub(crate) struct ObjMode<'py> {
     pending: Vec<Pending<'py>>,
     /// The pending classes not yet in a container, the last read last.
     loose: Vec<usize>,
-    /// A container's items that are classes' dicts, as it is made.
+    /// A container's items that are pending ([`Self::pending_value`]), as
+    /// it is made.
     found: Vec<(isize, *mut ffi::PyObject)>,
+    /// The item lists of the pairs pending, by address (each held by its
+    /// `Pending`, so never reused while the read lasts).
+    pairs: HashSet<usize>,
     /// The classes of the dicts being read, and their field counts.
     opened: Vec<(Bound<'py, PyAny>, u64)>,
 }
@@ -118,6 +126,7 @@ impl<'py> ObjMode<'py> {
             pending: Vec::new(),
             loose: Vec::new(),
             found: Vec::new(),
+            pairs: HashSet::new(),
             opened: Vec::new(),
         })
     }
@@ -169,7 +178,7 @@ impl<'py> ObjMode<'py> {
         key: *mut ffi::PyObject,
         value: &Bound<'py, PyAny>,
     ) -> Option<()> {
-        if !is_dict(value) {
+        if !self.pending_value(value) {
             return Some(());
         }
         self.found.clear();
@@ -186,11 +195,13 @@ impl<'py> ObjMode<'py> {
         items: impl ExactSizeIterator<Item = Bound<'py, PyAny>>,
     ) -> Option<Bound<'py, PyAny>> {
         self.found.clear();
-        let found = &mut self.found;
+        let (found, pairs) = (&mut self.found, &self.pairs);
         let list = crate::direct::list_of(
             py,
             items.enumerate().map(|(at, item)| {
-                if is_dict(&item) {
+                if is_dict(&item)
+                    || (!pairs.is_empty() && pairs.contains(&(item.as_ptr() as usize)))
+                {
                     found.push((at.cast_signed(), item.as_ptr()));
                 }
                 item
@@ -200,22 +211,33 @@ impl<'py> ObjMode<'py> {
         Some(list)
     }
 
-    /// A `pair`'s tuple.
+    /// A `pair`'s tuple; where an item is pending, a list of the two,
+    /// itself pending, made a tuple once both are made ([`Pending::cls`]).
     pub(crate) fn tuple(
         &mut self,
         py: Python<'py>,
         first: &Bound<'py, PyAny>,
         second: &Bound<'py, PyAny>,
     ) -> Option<Bound<'py, PyAny>> {
-        let tuple = crate::direct::pair(py, first, second)?;
-        self.found.clear();
-        for (at, item) in [first, second].into_iter().enumerate() {
-            if is_dict(item) {
-                self.found.push((at.cast_signed(), item.as_ptr()));
-            }
+        if !self.pending_value(first) && !self.pending_value(second) {
+            return crate::direct::pair(py, first, second);
         }
-        self.place(|at| Place::Tuple(tuple.clone(), at))?;
-        Some(tuple)
+        let items = self.list(py, [first.clone(), second.clone()].into_iter())?;
+        self.pairs.insert(items.as_ptr() as usize);
+        self.loose.push(self.pending.len());
+        self.pending.push(Pending {
+            cls: None,
+            dict: items.clone(),
+            at: Place::Root,
+        });
+        Some(items)
+    }
+
+    /// Whether `value` is a value still to be made: a class's dict, or a
+    /// pair's items.
+    fn pending_value(&self, value: &Bound<'py, PyAny>) -> bool {
+        is_dict(value)
+            || (!self.pairs.is_empty() && self.pairs.contains(&(value.as_ptr() as usize)))
     }
 
     /// Class `node`'s dict opened: its class found and checked before any
@@ -303,7 +325,7 @@ impl<'py> ObjMode<'py> {
         memory = memory.saturating_add(fields.saturating_add(len).saturating_mul(256) + 512);
         self.loose.push(self.pending.len());
         self.pending.push(Pending {
-            cls,
+            cls: Some(cls),
             dict: dict.clone(),
             at: Place::Root,
         });
@@ -421,7 +443,12 @@ impl<'py> ObjMode<'py> {
             let made = unsafe {
                 Bound::from_owned_ptr_or_err(
                     py,
-                    ffi::PyObject_Call(p.cls.as_ptr(), empty.as_ptr(), p.dict.as_ptr()),
+                    match &p.cls {
+                        Some(cls) => {
+                            ffi::PyObject_Call(cls.as_ptr(), empty.as_ptr(), p.dict.as_ptr())
+                        }
+                        None => ffi::PyList_AsTuple(p.dict.as_ptr()),
+                    },
                 )
             }?;
             let failed = match p.at {
@@ -439,7 +466,6 @@ impl<'py> ObjMode<'py> {
                 Place::List(list, at) => unsafe {
                     ffi::PyList_SetItem(list.as_ptr(), at, made.into_ptr())
                 },
-                Place::Tuple(tuple, at) => put_in_tuple(py, tuple, at, made),
             };
             if failed != 0 {
                 return Err(fetched(py));
@@ -447,30 +473,6 @@ impl<'py> ObjMode<'py> {
         }
         root.ok_or_else(|| pyo3::exceptions::PySystemError::new_err("a direct read lost its value"))
     }
-}
-
-/// `PyTuple_SetItem(tuple, at, made)` for a tuple held by `Place`.
-/// `PyTuple_SetItem` refuses a tuple with any reference but one, so this
-/// one is let go first, where the tuple has exactly one other (its
-/// container's), which keeps it alive through the call: the call runs no
-/// Python before its store, and the tuple is not touched after. Any other
-/// count is refused as `PyTuple_SetItem` refuses it.
-fn put_in_tuple<'py>(
-    py: Python<'py>,
-    tuple: Bound<'py, PyAny>,
-    at: isize,
-    made: Bound<'py, PyAny>,
-) -> std::ffi::c_int {
-    let ptr = tuple.as_ptr();
-    // SAFETY: a live object's count.
-    if unsafe { ffi::Py_REFCNT(ptr) } != 2 {
-        pyo3::exceptions::PySystemError::new_err("a direct read's tuple is shared").restore(py);
-        return -1;
-    }
-    drop(tuple);
-    // SAFETY: the tuple's other reference keeps it alive (above); the call
-    // takes the object's reference, and raises for a slot out of range.
-    unsafe { ffi::PyTuple_SetItem(ptr, at, made.into_ptr()) }
 }
 
 /// The fields `_construct` counts for `cls`: `__attrs_attrs__`,
