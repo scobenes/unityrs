@@ -6,8 +6,8 @@ use std::{mem::discriminant, sync::Arc};
 use unityrs_anim::{
     AnimError, Clip, RigPaths, discover,
     humanoid::{
-        Avatar, BODY_SLOTS, BoneMass, DofKind, HumanoidClip, RigAvatar, SettingValue, Xform,
-        body_avatar, dropped_muscles, humanoid_refusal, read_avatar, rig_avatar,
+        Avatar, BODY_SLOTS, BodyAvatar, BoneMass, DofKind, HumanoidClip, RigAvatar, SettingValue,
+        Xform, body_avatar, body_model, dropped_muscles, humanoid_refusal, read_avatar, rig_avatar,
     },
     read_clip,
 };
@@ -174,7 +174,45 @@ fn body_digest(avatar: &Avatar, meter: &Arc<Meter>, digest: &mut Digest) -> Resu
         ));
     }
     digest.tag((body.scale().to_bits(), body.root().t.map(f32::to_bits)));
-    Ok(())
+    model_digest(&body, meter, digest)
+}
+
+/// Freeze v8's model on the Avatar's rest body: the weights, edges, rest
+/// points, centre of mass, frame and twist scope, or their typed refusal.
+fn model_digest(
+    body: &BodyAvatar<'_>,
+    meter: &Arc<Meter>,
+    digest: &mut Digest,
+) -> Result<(), AnimError> {
+    let bits = |p: Option<[f64; 3]>| p.map(|p| p.map(f64::to_bits));
+    let weights = body.weights();
+    digest.tag(weights.map(f64::to_bits));
+    let (edges, rest) = match body
+        .edges(meter)
+        .and_then(|e| Ok((e, body.rest_points(meter)?)))
+    {
+        Ok(found) => found,
+        Err(e) => return soft(e, digest),
+    };
+    digest.tag((edges, rest.map(bits)));
+    digest.tag(bits(body_model::centre(
+        &rest,
+        &weights,
+        &edges,
+        &body_model::COEFFICIENTS,
+    )));
+    match body_model::body_frame(&rest)
+        .and_then(|f| Ok((f, body_model::shoulder_hip_twist(&rest)?)))
+    {
+        Ok((frame, twist)) => {
+            digest.tag((frame.map(|row| row.map(f64::to_bits)), twist.to_bits()));
+            if let Err(e) = body_model::frame_scope(&rest) {
+                return soft(e, digest);
+            }
+            Ok(())
+        }
+        Err(e) => soft(e, digest),
+    }
 }
 
 fn slots_digest(
