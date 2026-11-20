@@ -1,6 +1,6 @@
 [package]
 name = "unityrs-bench"
-description = "The benchmark suite's fixtures (docs/plans/bench.md): public synthetic inputs from the testkit's builders."
+description = "The benchmark suite's fixtures and Rust workloads (docs/plans/bench.md): public synthetic inputs from the testkit's builders, and the scopes the instruction-count gate measures."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,8 +15,13 @@ unityrs-testkit = { path = "../unityrs-testkit" }
 # The LZ4HC fixture's encoder: liblz4 1.9.4's HC, as unityrs's writer and
 # Unity encode LZ4HC (the testkit writes that codec as plain LZ4).
 unityrs-compress-sys = { path = "../unityrs-compress-sys" }
-# The ASTC tiles' legality: the LDR decoder's error status (plan section 2).
+# The ASTC tiles' legality: the LDR decoder's error status (plan section 2);
+# the texture workloads' decoders.
 unityrs-texture = { path = "../unityrs-texture" }
+# The workloads (`unityrs-bench run`): the environment, objects and typetrees.
+unityrs-core = { path = "../unityrs-core" }
+# The typetree workloads' digest: each value in the canonical dump encoding.
+unityrs-dump = { path = "../unityrs-dump" }
 # The manifest's digests.
 sha2 = "=0.11.1"
 # The manifest, and the oracle-checked ASTC blocks in unityrs-texture's
