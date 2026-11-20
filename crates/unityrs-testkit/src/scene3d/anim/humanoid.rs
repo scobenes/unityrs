@@ -706,6 +706,19 @@ pub fn clip_stored(
     }
     // Built clips store start-at-origin on, whatever their XZ basis flag.
     set(muscle, "m_StartAtOrigin", V::Bool(true));
+    // The identity start, `m_StartX`.
+    set(
+        muscle,
+        "m_StartX",
+        st(
+            "xform",
+            vec![
+                ("t", xyz("Vector3f", &[0.; 3])),
+                ("q", xyz("Quaternionf", &[0., 0., 0., 1.])),
+                ("s", xyz("Vector3f", &[1.; 3])),
+            ],
+        ),
+    );
     for field in ["m_CycleOffset", "m_Level", "m_OrientationOffsetY"] {
         set(muscle, field, V::Float(0.));
     }

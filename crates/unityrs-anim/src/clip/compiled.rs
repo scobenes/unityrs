@@ -140,7 +140,12 @@ impl StreamSlot {
         finite && self.seed.replace(value).is_none()
     }
 
-    fn at(&self, slot: usize, sample: f64, meter: &Meter) -> Result<SlotValue, AnimError> {
+    pub(crate) fn at(
+        &self,
+        slot: usize,
+        sample: f64,
+        meter: &Meter,
+    ) -> Result<SlotValue, AnimError> {
         let keys = self.keys();
         meter.count_decode(work_for_search(keys.len()) + 12)?;
         let next = keys.partition_point(|key| key.time <= sample);
