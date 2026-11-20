@@ -169,6 +169,21 @@ pub enum BodyModel {
     /// The absent body slots but the leaves are no recorded training rig's
     /// pattern.
     UnrecordedTopology,
+    /// An edge between mapped slots that freeze v8 fitted no coefficient
+    /// for.
+    UnfittedEdge,
+    /// The shoulder-hip twist exceeds the frozen limit.
+    ShoulderHipTwist,
+    /// The shoulder-hip twist is undefined: no `up`, or a lateral along it.
+    UndefinedTwist,
+    /// A spine Left-Right muscle exceeds the frozen lateral limit.
+    SpineLateralRange,
+    /// A body position, scale, weight, frame or result is not finite.
+    NonFiniteBody,
+    /// The frame's lateral is along `up` within its rounding.
+    DegenerateFrame,
+    /// The rest frame is not finite or not orthonormal.
+    InvalidRestFrame,
 }
 
 impl BodyModel {
@@ -180,6 +195,13 @@ impl BodyModel {
             Self::NeckAbsent => "neck_absent",
             Self::OneShoulder => "one_shoulder",
             Self::UnrecordedTopology => "unrecorded_topology",
+            Self::UnfittedEdge => "unfitted_edge",
+            Self::ShoulderHipTwist => "shoulder_hip_twist",
+            Self::UndefinedTwist => "undefined_twist",
+            Self::SpineLateralRange => "spine_lateral_range",
+            Self::NonFiniteBody => "non_finite_body",
+            Self::DegenerateFrame => "degenerate_frame",
+            Self::InvalidRestFrame => "invalid_rest_frame",
         }
     }
 }
