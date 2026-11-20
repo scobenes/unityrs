@@ -77,6 +77,10 @@ pub struct Rig {
     pub bone_mass: Option<Vec<f32>>,
     /// `m_Scale`.
     pub scale: f32,
+    /// The Avatar's human skeleton in `HumanTrait`'s hierarchy over the
+    /// present bones, at `t_pose`, its nodes ordered by depth (`arrange`);
+    /// otherwise every bone hangs on `Hips` at the origin.
+    pub hierarchy: bool,
 }
 
 impl Default for Rig {
@@ -97,6 +101,7 @@ impl Default for Rig {
             optional: Vec::new(),
             bone_mass: None,
             scale: 1.,
+            hierarchy: false,
         }
     }
 }
@@ -353,7 +358,7 @@ pub fn avatar(rig: &Rig) -> Object {
             ("m_RootMotionSkeletonIndexArray", ints([])),
         ],
     );
-    Object::new(
+    let mut avatar = Object::new(
         AVATAR,
         90,
         st(
@@ -364,7 +369,156 @@ pub fn avatar(rig: &Rig) -> Object {
                 ("m_TOS", vector(pair(V::UInt(0), V::Str(Vec::new())), tos)),
             ],
         ),
-    )
+    );
+    if rig.hierarchy {
+        arrange(rig, &mut avatar.value);
+    }
+    avatar
+}
+
+/// `HumanTrait`'s parent of a `HumanBodyBones` bone the rig can hold.
+#[must_use]
+pub const fn trait_parent(bone: usize) -> Option<usize> {
+    Some(match bone {
+        1 | 2 | 7 => 0,
+        3 => 1,
+        4 => 2,
+        5 => 3,
+        6 => 4,
+        8 => 7,
+        54 => 8,
+        9 | 11 | 12 => 54,
+        10 => 9,
+        13 => 11,
+        14 => 12,
+        15 => 13,
+        16 => 14,
+        17 => 15,
+        18 => 16,
+        19 => 5,
+        20 => 6,
+        21..=23 => 10,
+        _ => return None,
+    })
+}
+
+/// A T-pose position in the Animator frame per `HumanBodyBones` bone,
+/// dyadic so every offset between two is exact in f32.
+#[must_use]
+pub const fn t_pose(bone: usize) -> [f32; 3] {
+    match bone {
+        0 => [0., 1., 0.],
+        1 => [-0.125, 0.875, 0.],
+        2 => [0.125, 0.875, 0.],
+        3 => [-0.125, 0.5, 0.],
+        4 => [0.125, 0.5, 0.],
+        5 => [-0.125, 0.125, 0.],
+        6 => [0.125, 0.125, 0.],
+        7 => [0., 1.125, 0.],
+        8 => [0., 1.25, 0.],
+        54 => [0., 1.375, 0.],
+        9 => [0., 1.5, 0.],
+        10 => [0., 1.625, 0.],
+        11 => [-0.0625, 1.4375, 0.],
+        12 => [0.0625, 1.4375, 0.],
+        13 => [-0.1875, 1.4375, 0.],
+        14 => [0.1875, 1.4375, 0.],
+        15 => [-0.4375, 1.4375, 0.],
+        16 => [0.4375, 1.4375, 0.],
+        17 => [-0.6875, 1.4375, 0.],
+        18 => [0.6875, 1.4375, 0.],
+        19 => [-0.125, 0., 0.125],
+        20 => [0.125, 0., 0.125],
+        21 => [-0.03125, 1.6875, 0.0625],
+        22 => [0.03125, 1.6875, 0.0625],
+        _ => [0., 1.5625, 0.0625],
+    }
+}
+
+fn field<'v>(value: &'v mut V, path: &[&str]) -> Option<&'v mut V> {
+    path.iter().try_fold(value, |value, name| match value {
+        V::Struct(_, fields) => fields.iter_mut().find(|(f, _)| f == name).map(|f| &mut f.1),
+        _ => None,
+    })
+}
+
+fn rows<'v>(value: &'v mut V, path: &[&str]) -> &'v mut [V] {
+    match field(value, path) {
+        Some(V::Vector(_, _, items)) => items,
+        _ => &mut [],
+    }
+}
+
+/// Puts the Avatar's human skeleton in `HumanTrait`'s hierarchy at
+/// `t_pose`: each bone under its nearest present `HumanTrait` ancestor,
+/// with the offset between their T-pose positions, and the nodes reordered
+/// by depth so each parent precedes its children, as the reader requires.
+fn arrange(rig: &Rig, avatar: &mut V) {
+    let bones: Vec<usize> = bones(rig).iter().map(|&(bone, _)| bone).collect();
+    let node = |bone: usize| bones.iter().position(|&b| b == bone).map(|k| k + 1);
+    let parent = |bone: usize| {
+        let mut up = trait_parent(bone);
+        while let Some(b) = up {
+            if node(b).is_some() {
+                return Some(b);
+            }
+            up = trait_parent(b);
+        }
+        None
+    };
+    let n = bones.len() + 1;
+    let up: Vec<usize> = (0..n)
+        .map(|k| match k.checked_sub(1).and_then(|b| bones.get(b)) {
+            Some(&bone) => parent(bone).and_then(node).unwrap_or(0),
+            None => 0,
+        })
+        .collect();
+    let depth = |mut k: usize| {
+        let mut d = 0;
+        while k != 0 && d < n {
+            k = up[k];
+            d += 1;
+        }
+        d
+    };
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&k| (depth(k), k));
+    let mut moved = vec![0; n];
+    for (new, &old) in order.iter().enumerate() {
+        moved[old] = new;
+    }
+    let human = ["m_Avatar", "m_Human", "data"];
+    let at = |tail: &[&'static str]| [&human[..], tail].concat();
+    let permute = |items: &mut [V]| {
+        let old = items.to_vec();
+        for (item, &k) in items.iter_mut().zip(&order) {
+            *item = old[k].clone();
+        }
+    };
+    let pose = rows(avatar, &at(&["m_SkeletonPose", "data", "m_X"]));
+    for (k, &bone) in bones.iter().enumerate() {
+        let from = parent(bone).map_or([0.; 3], t_pose);
+        let to = t_pose(bone);
+        if let Some(x) = pose.get_mut(k + 1) {
+            set(x, "t", xyz("float3", &[0, 1, 2].map(|c| to[c] - from[c])));
+        }
+    }
+    permute(pose);
+    let nodes = rows(avatar, &at(&["m_Skeleton", "data", "m_Node"]));
+    for (k, row) in nodes.iter_mut().enumerate().skip(1) {
+        let parent = i32::try_from(moved[up[k]]).unwrap_or_default();
+        set(row, "m_ParentId", V::Int(parent));
+    }
+    permute(nodes);
+    permute(rows(avatar, &at(&["m_Skeleton", "data", "m_ID"])));
+    for slot in rows(avatar, &at(&["m_HumanBoneIndex"])) {
+        if let V::Int(index) = slot
+            && let Ok(old) = usize::try_from(*index)
+            && let Some(&new) = moved.get(old)
+        {
+            *index = i32::try_from(new).unwrap_or_default();
+        }
+    }
 }
 
 /// The prefab: `GameObject` 1 holds the Animator; the rig's bone `i` is

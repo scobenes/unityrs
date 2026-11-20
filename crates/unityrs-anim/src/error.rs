@@ -178,6 +178,11 @@ pub enum BodyModel {
     UndefinedTwist,
     /// A spine Left-Right muscle exceeds the frozen lateral limit.
     SpineLateralRange,
+    /// An edge of the Avatar is in a free coefficient combination's
+    /// support.
+    FreeCombination,
+    /// The hips solve has no finite answer.
+    DegenerateSolve,
 }
 
 impl BodyModel {
@@ -193,6 +198,8 @@ impl BodyModel {
             Self::ShoulderHipTwist => "shoulder_hip_twist",
             Self::UndefinedTwist => "undefined_twist",
             Self::SpineLateralRange => "spine_lateral_range",
+            Self::FreeCombination => "free_combination",
+            Self::DegenerateSolve => "degenerate_solve",
         }
     }
 }

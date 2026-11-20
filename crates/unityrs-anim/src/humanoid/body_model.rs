@@ -32,7 +32,8 @@
 //!   Left-Right muscle exceeds `LATERAL_LIMIT` refuses
 //!   (`spine_lateral_range`).
 //!
-//! The hips solve of 2.3 and the free-combination refusal come in B3b2.
+//! The hips solve of 2.3 and the free-combination refusal are
+//! `body_solve`'s.
 use super::{avatar::BODY_BONES, body::BodyAvatar};
 use crate::{AnimError, BodyModel};
 use std::sync::Arc;
@@ -138,7 +139,7 @@ pub const LATERAL_MUSCLES: [usize; 3] = [1, 4, 7];
 /// Freeze v8's `bounds.unit_roundoff_f64`.
 pub const U64: f64 = 1. / 9_007_199_254_740_992.;
 
-fn refuse<T>(cause: BodyModel) -> Result<T, AnimError> {
+pub(crate) fn refuse<T>(cause: BodyModel) -> Result<T, AnimError> {
     Err(AnimError::UnsupportedHumanoidBodyModel(cause))
 }
 
@@ -152,24 +153,10 @@ pub fn coefficient(table: &[(usize, usize, f64)], parent: usize, child: usize) -
 }
 
 impl BodyAvatar<'_> {
-    /// Decision 1: each mapped slot's stored mass over the stored masses'
-    /// sum, taken in `SUM_ORDER` (the reference's `folded_masses`, where
-    /// every absent slot's mass is zero); 0 for an unmapped slot.
+    /// Decision 1, on the Avatar's masses and mapped slots (`weights`).
     #[must_use]
     pub fn weights(&self) -> [f64; BODY_BONES] {
-        let mut total = 0.;
-        for &slot in &SUM_ORDER {
-            if let (Some(Some(_)), Some(&mass)) = (self.nodes.get(slot), self.masses.get(slot)) {
-                total += f64::from(mass);
-            }
-        }
-        let mut out = [0.; BODY_BONES];
-        for ((weight, node), &mass) in out.iter_mut().zip(&self.nodes).zip(&self.masses) {
-            if node.is_some() {
-                *weight = f64::from(mass) / total;
-            }
-        }
-        out
+        weights(&self.masses, &self.nodes.map(|node| node.is_some()))
     }
 
     /// Each mapped slot's nearest mapped body-slot ancestor in the Avatar's
@@ -257,8 +244,28 @@ impl BodyAvatar<'_> {
     }
 }
 
+/// Decision 1: each mapped slot's stored mass over the mapped masses' sum,
+/// taken in `SUM_ORDER` (the reference's `folded_masses`, where every
+/// absent slot's mass is zero); 0 for an unmapped slot.
+#[must_use]
+pub fn weights(masses: &[f32; BODY_BONES], mapped: &[bool; BODY_BONES]) -> [f64; BODY_BONES] {
+    let mut total = 0.;
+    for &slot in &SUM_ORDER {
+        if let (Some(true), Some(&mass)) = (mapped.get(slot), masses.get(slot)) {
+            total += f64::from(mass);
+        }
+    }
+    let mut out = [0.; BODY_BONES];
+    for ((weight, &on), &mass) in out.iter_mut().zip(mapped).zip(masses) {
+        if on {
+            *weight = f64::from(mass) / total;
+        }
+    }
+    out
+}
+
 /// The reference's `uniform`: one scale for all three axes, positive.
-fn uniform(s: [f32; 3]) -> Result<f64, AnimError> {
+pub(crate) fn uniform(s: [f32; 3]) -> Result<f64, AnimError> {
     let [x, y, z] = s.map(f64::from);
     let (max, min) = (x.max(y).max(z), x.min(y).min(z));
     let magnitude = x.abs().max(y.abs()).max(z.abs());
@@ -270,21 +277,21 @@ fn uniform(s: [f32; 3]) -> Result<f64, AnimError> {
 }
 
 /// `f` of `a` and `b` per component.
-fn zip3(a: Point, b: Point, f: impl Fn(f64, f64) -> f64) -> Point {
+pub(crate) fn zip3(a: Point, b: Point, f: impl Fn(f64, f64) -> f64) -> Point {
     let ([a0, a1, a2], [b0, b1, b2]) = (a, b);
     [f(a0, b0), f(a1, b1), f(a2, b2)]
 }
 
-fn add(a: Point, b: Point) -> Point {
+pub(crate) fn add(a: Point, b: Point) -> Point {
     zip3(a, b, |a, b| a + b)
 }
 
-fn sub(a: Point, b: Point) -> Point {
+pub(crate) fn sub(a: Point, b: Point) -> Point {
     zip3(a, b, |a, b| a - b)
 }
 
 /// The reference's `link` without its error terms.
-fn link(
+pub(crate) fn link(
     (position, rotation, scale): (Point, Quaternion, f64),
     t: Point,
     q: Quaternion,
@@ -301,7 +308,7 @@ pub fn cross(a: Point, b: Point) -> Point {
 }
 
 /// The reference's `sum(a * b ...)`: from 0, in order.
-fn dot(a: Point, b: Point) -> f64 {
+pub(crate) fn dot(a: Point, b: Point) -> f64 {
     let ([a0, a1, a2], [b0, b1, b2]) = (a, b);
     0. + a0 * b0 + a1 * b1 + a2 * b2
 }
