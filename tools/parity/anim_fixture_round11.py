@@ -14,9 +14,11 @@ UnityrsBodyFixtures.cs and UnityrsBodyMuscles.cs:
   scale, with its targets and the all-Original motion clip. Size scales
   the bone offsets and the hips' own offset; the feature stays at F5's exact
   value, the armature's transform included, as B4 admits it.
-- **E5's full-body clips** (anim_fixture_full): a curve on every muscle,
-  on rigs mapping every bone a muscle turns, so a recording carries each
-  bone's channels through a real clip.
+- **E5's full-body clips** (anim_fixture_full): a distinct curve on every
+  muscle under its Animator property, on rigs mapping every bone a muscle
+  turns, so a recording carries each bone's channels through a real clip:
+  refusal evidence over the frozen lateral limit, and in-scope clips on
+  every chain feature, topology and admitted variant class.
 - **B5a's muscle sweeps** (anim_fixture_muscles): every one of the 95
   muscles alone at both signs out to its limits, then each bone's muscles
   jointly; each single-muscle sample must turn the muscle's bone.
@@ -29,8 +31,11 @@ the whole body inventory (every earlier body case and every round 11 case
 listed and recorded), each E5 case's human scale inside B4's range, its
 chain exactly as B4 admits it (B4's own comparison, on the recorded rest
 pose and on the bundle's serialized Transforms, the Animator node's
-placement and its ancestor included), each full-body clip's every curve and
-each sweep's response from its zero-vector sample. The plain `anim_replay.py
+placement, its ancestor, the unit scales below the hips and the serialized
+Avatar's human scale included; F5's own chain clips too), each clip's
+declared scope against the freeze's limits (anim_fixture_scope), each
+full-body clip's every curve and each sweep's response from its zero-vector
+sample. The plain `anim_replay.py
 complete` refuses a round 11 run (its cases are unknown there), and this
 one refuses a run without the declaration. B2 never reads round 11's
 cases: they are not in its tables.
@@ -51,7 +56,10 @@ import anim_fixture_body as body  # noqa: E402
 from anim_fixture_body import CHAIN_VARIANT, CLIP_VARIANTS, PROBE_GROUPS, SPINE_PROBE, _fixture  # noqa: E402
 from anim_fixture_muscles import (FINGER_BONES, FINGERS_RIG, MUSCLE_SWEEPS, MUSCLE_VALUES, finger_rows,  # noqa: E402
                                   muscle_bone, muscle_vectors)
-from anim_fixture_full import FULL_EXTRAS, FULL_RIGS, full_groups, placements, variants  # noqa: E402
+from anim_fixture_full import (FULL_EXTRAS, FULL_RIGS, SCOPED_RIGS, feature, full_groups, placements,  # noqa: E402
+                               topology, variants)
+from anim_fixture_full import size as full_size  # noqa: E402
+from anim_fixture_scope import check_scope  # noqa: E402
 from anim_reference import angle  # noqa: E402
 
 ROUND = 11
@@ -77,7 +85,9 @@ ANIMATOR_SCALE, HIPS_SCALE = 1.25, 1.2
 OFFSET_PLACEMENT = ((2, .25, -1), tuple(struct.unpack(">f", bytes.fromhex(bits))[0]
                                        for bits in ("00000000", "3e99f61c", "00000000", "3f7426cb")))
 # Every round 11 rig's (feature, size): the chain rigs', the full-body clip rigs', a sized clip rig's.
-RIG_FEATURES = {"small": ("", RIG_SIZES["small"])} | CHAIN_FEATURES | FULL_RIGS
+FULL_CLIP_RIGS = (*FULL_RIGS, *SCOPED_RIGS)
+RIG_FEATURES = {"small": ("", RIG_SIZES["small"])} | CHAIN_FEATURES | {rig: (feature(rig), full_size(rig))
+                                                                      for rig in FULL_CLIP_RIGS}
 # The variants B4 admits, freeze v8's E4 passing set; with their start-offset twins, 21 rows.
 E5_ADMITTED = ("bake-o0-y0-xz1", "bake-o0-y1-xz0", "bake-o0-y1-xz1", "bake-o1-y0-xz0", "bake-o1-y0-xz1",
                "bake-o1-y1-xz0", "bake-o1-y1-xz1", "keep-o0-y0-xz0", "keep-o1-y1-xz1-motion", "level",
@@ -90,6 +100,9 @@ def _cases():
 
     def add(name, fixture, kind, rig, variant="", root="identity"):
         cases[name], info[name] = fixture, dict(kind=kind, rig=rig, variant=variant, root=root)
+        # A clip's declared scope (anim_fixture_scope): only the in-scope full-body clips play inside it.
+        if kind == "clip":
+            info[name]["scope"] = "in" if rig in SCOPED_RIGS else "refusal"
 
     # In the builder's order: the chain rigs, the clip rigs, the sweeps.
     for rig in CHAIN_RIGS:
@@ -102,8 +115,8 @@ def _cases():
             for prefab, suffix in (("identity", ""), ("offset", "-offset")):
                 clip = f"body-clip-{rig}-{variant}"
                 add(clip + suffix, _fixture("body-clips-" + rig, prefab, clip, "clip"), "clip", rig, variant, prefab)
-    for rig in FULL_RIGS:
-        probe = "HumanoidRig/Armature/Hips/Spine" if FULL_RIGS[rig][0] == "armature" else SPINE_PROBE
+    for rig in FULL_CLIP_RIGS:
+        probe = "HumanoidRig/Armature/Hips/Spine" if feature(rig) == "armature" else SPINE_PROBE
         for variant in variants(rig):
             for prefab, suffix in placements(rig):
                 clip = f"body-clip-{rig}-{variant}"
@@ -125,9 +138,9 @@ _BASE = {name: getattr(body, name) for name in ("rig_bones", "check_chain", "pro
 
 def rig_bones(rig):
     """The rig's mapped human bones: the fingers rig's are the compact rig's and every finger bone, a full-body
-    clip rig's the compact rig's, the face and every finger."""
-    if rig in FULL_RIGS:
-        return _BASE["rig_bones"]("compact") | set(FULL_EXTRAS)
+    clip rig's its topology's, the face and every finger."""
+    if rig in FULL_CLIP_RIGS:
+        return _BASE["rig_bones"](topology(rig)) | set(FULL_EXTRAS)
     return _BASE["rig_bones"]("compact") | set(FINGER_BONES) if rig == FINGERS_RIG else _BASE["rig_bones"](rig)
 
 
@@ -138,9 +151,14 @@ def rig_layout(rig):
 
     if rig == FINGERS_RIG:
         return base("compact") + finger_rows()
-    if rig in FULL_RIGS:
-        size = FULL_RIGS[rig][1]
-        return [(name, parent, tuple(size * v for v in offset)) for name, parent, offset in base("eyes-jaw") + finger_rows()]
+    if rig in FULL_CLIP_RIGS:
+        # The topology's rows with the face after the Head, as RigNodes creates them, then the fingers.
+        rows = base(topology(rig))
+        have = {name for name, _, _ in rows}
+        face = [row for row in base("eyes-jaw") if row[0] not in have and row[1] == "Head"]
+        at = [name for name, _, _ in rows].index("Head") + 1
+        rows = rows[:at] + face + rows[at:] + finger_rows()
+        return [(name, parent, tuple(full_size(rig) * v for v in offset)) for name, parent, offset in rows]
     if rig in RIG_SIZES and rig != "large":
         size = RIG_SIZES[rig]
         return [(name, parent, tuple(size * v for v in offset)) for name, parent, offset in base("compact")]
@@ -237,7 +255,8 @@ def serialized_chain(name, rig, root, spec, view, replay):
     zero's sign: the prefab root (the Animator node's one ancestor) at the identity; the Animator node at unit
     scale or, with that feature, ANIMATOR_SCALE, and at the identity or, a plain chain's offset root only,
     OFFSET_PLACEMENT; the armature, with that feature, the one node between it and the hips, exactly ARMATURE,
-    and none otherwise; the hips at unit scale or, with that feature, HIPS_SCALE."""
+    and none otherwise; the hips at unit scale or, with that feature, HIPS_SCALE; every node below the hips at
+    unit scale exactly (`unit_below_hips`)."""
     feature, _ = RIG_FEATURES.get(rig, ("", 1))
     nodes = {node["address"]: node for node in spec["nodes"]}
 
@@ -263,15 +282,26 @@ def serialized_chain(name, rig, root, spec, view, replay):
     ok = (hips == ["0/0/0" if armature else "0/0"] and at("", (0, 0, 0), (0, 0, 0, 1), 1)
           and at("0", *placed, ANIMATOR_SCALE if feature == "scaled-animator" else 1)
           and (not armature or nodes.get("0/0", {}).get("name") == "Armature" and at("0/0", *ARMATURE))
-          and same(local(hips[0])[2], (HIPS_SCALE if feature == "hips-scale" else 1,) * 3))
+          and same(local(hips[0])[2], (HIPS_SCALE if feature == "hips-scale" else 1,) * 3)
+          and all(same(local(address)[2], (1,) * 3) for address in nodes if address.startswith(hips[0] + "/")))
     replay.require(ok, f"the built chain of {name} is not one B4 admits as the {rig} rig at the {root} root")
+
+
+def human_scale(name, spec, view, replay):
+    """The serialized Avatar's m_Scale, as B4 reads it (chain.rs `scale`), not the capture's."""
+    from anim_body_runs import human_of
+
+    avatar = view.asset(spec["avatar_asset"], 90)
+    scale = human_of(avatar).get("m_Scale") if isinstance(avatar, dict) else None
+    replay.require(type(scale) in (int, float), f"no serialized Avatar m_Scale in {name}")
+    return scale
 
 
 def check_clip(name, info, editor, capture, clip, replay):
     """A clip's checks, and a full-body clip's every muscle curve, authored and built, at every key."""
-    if info["rig"] not in FULL_RIGS:
+    if info["rig"] not in FULL_CLIP_RIGS:
         return _BASE["check_clip"](name, info, editor, capture, clip, replay)
-    groups = full_groups([row["name"] for row in capture["humanoid"]["muscles"]])
+    groups = full_groups([row["name"] for row in capture["humanoid"]["muscles"]], info["rig"] in SCOPED_RIGS)
     authored = body._authored(editor, replay)
     runtime = body._runtime_slots(clip, replay)
     index = clip.get("m_MuscleClip", {}).get("m_IndexArray") or []
@@ -292,17 +322,24 @@ def check_clip(name, info, editor, capture, clip, replay):
     return _BASE["check_clip"](name, info, stripped, capture, clip, replay)
 
 
+# F5's own chain clips, which B4 reads too: each checked as B4 admits it, as round 11's are.
+F5_CHAIN_CLIPS = frozenset(f"body-chain-{rig}-clip" for rig in body.CHAIN_RIGS)
+
+
 def check_body(name, fixture, doc, view, clip_key, replay):
-    """The body checks; an E5 case's recorded human scale inside B4's range and its built chain as B4 admits it;
-    a muscle sweep's response."""
+    """The body checks; an E5 case's (and F5's chain clips') built chain as B4 admits it and serialized human
+    scale inside B4's range; an E5 clip's declared scope; a muscle sweep's response."""
     result = _BASE["check_body"](name, fixture, doc, view, clip_key, replay)
     if name in MUSCLE_CASES:
         check_response(name, doc, replay)
-    if name in E5_CASES:
-        info = ROUND11_INFO[name]
+    if name in E5_CASES or name in F5_CHAIN_CLIPS:
+        info = (ROUND11_INFO | body.BODY_INFO)[name]
         serialized_chain(name, info["rig"], info["root"], doc["spec"], view, replay)
-        scale, = body._f32s([doc["capture"]["humanoid"].get("human_scale")], replay, 1, f"human_scale in {name}")
+        scale = human_scale(name, doc["spec"], view, replay)
         replay.require(H_RANGE[0] <= scale <= H_RANGE[1], f"human scale {scale!r} of {name} is outside B4's range")
+    if "scope" in ROUND11_INFO.get(name, {}):
+        authored = body._authored(doc["spec"]["evidence"]["editor"], replay)
+        check_scope(name, ROUND11_INFO[name]["scope"], doc, authored, replay)
     return result
 
 

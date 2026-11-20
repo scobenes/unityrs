@@ -18,9 +18,10 @@ static partial class UnityrsFixtureBuilder
     internal sealed class BodyRig
     {
         public string Name;
-        // Full: an E5 full-body clip rig, every muscle on a curve in its clips (UnityrsBodyClips.cs FullRigs).
-        public bool Tall, Noncoplanar, Armature, ScaledAnimator, Full;
-        public string[] Omit = Array.Empty<string>(), Extras = Array.Empty<string>();
+        // Full: an E5 full-body clip rig, every muscle on a curve in its clips (UnityrsBodyClips.cs FullRigs);
+        // Scoped: one whose curves stay inside freeze v8's scope (ScopedRigs), playing Variants.
+        public bool Tall, Noncoplanar, Armature, ScaledAnimator, Full, Scoped;
+        public string[] Omit = Array.Empty<string>(), Extras = Array.Empty<string>(), Variants;
         public float Arms = 1, Legs = 1, Size = 1, HipsScale = 1;
     }
 
@@ -359,7 +360,7 @@ static partial class UnityrsFixtureBuilder
         .Concat(ExtraProbes.Select(extra => extra.name)).Concat(TwistProbes.Select(twist => twist.name))
         .Concat(RangeProbes.Select(range => range.name)).Concat(BandProbes.Select(band => band.name))
         .Concat(ClipCases()).Concat(ChainRigs.Concat(E5ChainRigs).SelectMany(rig => RigCases(rig, true)))
-        .Concat(ClipRigs.Concat(FullRigs).SelectMany(rig => ClipCases(rig)))
+        .Concat(ClipRigs.Concat(FullRigs).Concat(ScopedRigs).SelectMany(rig => ClipCases(rig)))
         .Concat(MuscleSweeps.Select(sweep => sweep.name));
 
     // Each body case fails until a step prepares it, so none can vanish unseen.
@@ -398,7 +399,7 @@ static partial class UnityrsFixtureBuilder
                 () => BuildBodyRig(build, report, rig, chain: true), true);
         report.Prepare(build, "Prepare " + BodyClipBundle, ClipCases().ToArray(), () => BuildBodyClips(build, report), true);
         // E5's clip rigs and full-body clip rigs, each in a bundle of its own: Unity refusing one's Avatar is an error.
-        foreach (var rig in ClipRigs.Concat(FullRigs))
+        foreach (var rig in ClipRigs.Concat(FullRigs).Concat(ScopedRigs))
             report.Prepare(build, "Prepare " + ClipBundle(rig), ClipCases(rig).ToArray(), () => BuildBodyClips(build, report, rig));
         BuildMuscleSweeps(build, report);
         var prepared = new HashSet<string>(build.Replays.Select(replay => replay.OutputName), StringComparer.Ordinal);
