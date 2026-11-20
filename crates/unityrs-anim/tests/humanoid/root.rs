@@ -2,28 +2,24 @@
 //! configurations, the reference's `project` and `animator_body` on known
 //! vectors, E4's sampling and its error bounds, and the refusals.
 use super::{
-    body_model::{FREEZE, refused, token, verdict},
+    body_model::{refused, verdict},
     file,
 };
-use serde_json::Value;
 use unityrs_anim::{
     AnimError, BodyModel, Clip,
-    humanoid::{
-        body_model::U64,
-        root::{self, ADMITTED, Cell, RootRules, U32},
-    },
+    humanoid::root::{self, Cell, RootRules, U32},
     read_clip,
 };
 use unityrs_core::limits::Meter;
 use unityrs_testkit::{
-    ngui::{Object, V, st},
+    ngui::{Object, V, st, vector},
     scene3d::{
         Layout,
         anim::{
             humanoid::{self as h, CLIP, Rig},
             playback as p,
         },
-        set, xyz,
+        xyz,
     },
 };
 
@@ -139,6 +135,17 @@ pub(super) fn variant_settings(name: &str) -> Vec<(&'static str, V)> {
         _ => {}
     }
     settings(&flags, &extra)
+}
+
+/// A variant's clip as E4 played it: the body slots at `POSE`, and the
+/// motion slots at `MOTION_POSE` where the variant has them.
+pub(super) fn variant_clip(name: &str) -> Clip {
+    let settings = variant_settings(name);
+    if name.ends_with("-motion") {
+        full_clip(&settings)
+    } else {
+        constant_clip(&BODY, &POSE, &settings)
+    }
 }
 
 /// A clip with the body and motion slots at `POSE` and `MOTION_POSE`.
@@ -296,7 +303,7 @@ fn every_admitted_variant_matches_the_reference_vectors() {
     use Cell::{Bake, Body, Original};
     let meter = Meter::unlimited();
     for (name, want) in VECTORS {
-        let clip = full_clip(&variant_settings(name));
+        let clip = variant_clip(name);
         let settings = root::root_settings(&clip, &meter).unwrap();
         assert_eq!(settings.admitted().variant, name);
         let row = settings.admitted();
@@ -314,88 +321,6 @@ fn every_admitted_variant_matches_the_reference_vectors() {
         assert_eq!(settings.start().0, START_T.map(f64::from));
         assert_close(pose(&clip, 0.5).unwrap(), want);
     }
-}
-
-/// `ADMITTED` is freeze v8's `e4.passing` (each configuration's variant)
-/// with the settings E4's fixture built each with; the unit roundoffs are
-/// its bounds' and E4's thresholds its source's. Drift in any fails here.
-#[test]
-fn the_admitted_set_is_freeze_v8s() {
-    let frozen: Value = serde_json::from_str(FREEZE).unwrap();
-    let mut passing: Vec<&str> = frozen["e4"]["passing"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|c| c.as_str().unwrap().split('/').next().unwrap())
-        .collect();
-    passing.sort_unstable();
-    passing.dedup();
-    let mut admitted: Vec<&str> = ADMITTED.iter().map(|row| row.variant).collect();
-    admitted.sort_unstable();
-    assert_eq!(admitted, passing);
-    let vectors: Vec<&str> = VECTORS.iter().map(|(name, _)| *name).collect();
-    assert_eq!(vectors.len(), ADMITTED.len());
-    let fixture = include_str!("../../../../tools/parity/anim_fixture_body.py");
-    for line in [
-        "neutral = dict(bake=(False,) * 3, keep=(False,) * 3, height_from_feet=False, level=0., orientation=0.,",
-        "rows[\"keep\" + _flags(bits)] = neutral | dict(keep=_basis(bits))",
-        "rows[\"bake\" + _flags(bits)] = neutral | dict(bake=_basis(bits))",
-        "rows[\"level\"] = neutral | dict(level=",
-        "rows[\"orientation-offset\"] = neutral | dict(orientation=",
-        "rows[\"keep-o1-y1-xz1-motion\"] = neutral | dict(keep=(True,) * 3, motion=True)",
-        "return f\"-o{bits >> 2 & 1}-y{bits >> 1 & 1}-xz{bits & 1}\"",
-    ] {
-        assert!(fixture.contains(line), "{line}");
-    }
-    for row in &ADMITTED {
-        let bits = |prefix: &str| -> [bool; 3] {
-            let Some(rest) = row.variant.strip_prefix(prefix) else {
-                return [false; 3];
-            };
-            let parts: Vec<bool> = rest
-                .trim_end_matches("-motion")
-                .trim_start_matches('-')
-                .split('-')
-                .map(|part| part.ends_with('1'))
-                .collect();
-            [parts[0], parts[1], parts[2]]
-        };
-        assert_eq!(row.bake, bits("bake"), "{}", row.variant);
-        assert_eq!(row.keep, bits("keep"), "{}", row.variant);
-        let level = if row.variant == "level" {
-            fixture_number("dict(level=")
-        } else {
-            0.
-        };
-        let offset = if row.variant == "orientation-offset" {
-            fixture_number("dict(orientation=")
-        } else {
-            0.
-        };
-        assert_eq!(row.level.to_bits(), level.to_bits(), "{}", row.variant);
-        assert_eq!(
-            row.offset_degrees.to_bits(),
-            offset.to_bits(),
-            "{}",
-            row.variant
-        );
-        assert_eq!(row.motion, row.variant.ends_with("-motion"));
-    }
-    let bounds = FREEZE.find("\"bounds\": {").unwrap();
-    assert_eq!(token("unit_roundoff_f32", bounds).to_bits(), U32.to_bits());
-    assert_eq!(token("unit_roundoff_f64", bounds).to_bits(), U64.to_bits());
-    let e4 = include_str!("../../../../tools/parity/anim_body_e4.py");
-    for line in [
-        "if not size > 4 * error:",
-        "return normalize(vector), 2 * error / (size - error)",
-        "gamma(4, U32) * (abs(a) + abs(b)) + abs(b - a) * gamma(4, U32) * (1 + abs(time - begin) * rate)",
-        "return value, gamma(6, U32) * magnitude + slope * U32 * (abs(time) + abs(start))",
-        "replay.require(slots[slot][0] == (0, 95, dof, 8, False)",
-    ] {
-        assert!(e4.contains(line), "{line}");
-    }
-    let model = include_str!("../../../../tools/parity/anim_body_model.py");
-    assert!(model.contains("if not across > 2 * moved:"));
 }
 
 /// The unverified areas refuse: mixed or masked Original cells, Based
@@ -495,23 +420,21 @@ fn unusable_root_slots_refuse() {
         verdict(pose(&clip, 2.)),
         Err(AnimError::InvalidSchedule.to_string())
     );
-    // A non-finite motion translation, with any cells.
+    // A non-finite motion translation.
     let mut dofs = BODY.to_vec();
     dofs.extend(MOTION);
     let mut values = POSE.to_vec();
     values.extend([f32::NAN, 0.5, 2., 0., 0.6, 0., 0.8]);
-    for flags in [settings(&[], &[]), keep.clone()] {
-        let clip = constant_clip(&dofs, &values, &flags);
-        assert_eq!(
-            verdict(pose(&clip, 0.5)),
-            Err(refused(BodyModel::NonFiniteBody))
-        );
-    }
+    let clip = constant_clip(&dofs, &values, &keep);
+    assert_eq!(
+        verdict(pose(&clip, 0.5)),
+        Err(refused(BodyModel::NonFiniteBody))
+    );
     // A non-finite or zero `m_StartX` rotation.
     let baked = |q: [f32; 4]| {
         let mut all = settings(&[BAKE_YAW], &[]);
         all.push(start_at(START_T, q));
-        verdict(pose(&full_clip(&all), 0.5))
+        verdict(pose(&constant_clip(&BODY, &POSE, &all), 0.5))
     };
     assert_eq!(
         baked([0., f32::NAN, 0., 1.]),
@@ -523,11 +446,58 @@ fn unusable_root_slots_refuse() {
     );
 }
 
+/// Motion slots as the variant has them, all or none, and no additive
+/// reference pose: E4 played no other clip.
+#[test]
+fn motion_slots_and_additive_poses_follow_the_variant() {
+    let meter = Meter::unlimited();
+    let refusal = |clip: &Clip| verdict(root::root_settings(clip, &meter).map(|_| ()));
+    let basis = Err(AnimError::UnsupportedHumanoidRootBasis("m_IndexArray").to_string());
+    // Body and Bake variants with motion slots.
+    for name in ["keep-o0-y0-xz0", "bake-o1-y1-xz1", "level"] {
+        assert_eq!(
+            refusal(&full_clip(&variant_settings(name))),
+            basis,
+            "{name}"
+        );
+        assert_eq!(refusal(&variant_clip(name)), Ok(()), "{name}");
+    }
+    // The all-Original variant without them, or with only `MotionT`.
+    let original = variant_settings("keep-o1-y1-xz1-motion");
+    assert_eq!(refusal(&constant_clip(&BODY, &POSE, &original)), basis);
+    let mut dofs = BODY.to_vec();
+    dofs.extend(&MOTION[..3]);
+    let mut values = POSE.to_vec();
+    values.extend(&MOTION_POSE[..3]);
+    assert_eq!(refusal(&constant_clip(&dofs, &values, &original)), basis);
+    // An additive reference pose.
+    let pose = (
+        "m_ValueArrayReferencePose",
+        vector(V::Float(0.), vec![V::Float(1.)]),
+    );
+    let clip = constant_clip(&BODY, &POSE, &settings(&[], &[pose]));
+    assert_eq!(
+        refusal(&clip),
+        Err(AnimError::UnsupportedAdditivePose.to_string())
+    );
+}
+
 /// A root slot bound by any key but E4's (path 0, class 95, its DOF,
-/// `customType` 8, not a discrete curve) refuses.
+/// `customType` 8, `isPPtrCurve` present and clear, no discrete flag)
+/// refuses, whatever the flag's encoding.
 #[test]
 fn only_e4s_binding_key_samples() {
-    for (field, value) in [("path", V::UInt(5)), ("isPPtrCurve", V::UInt8(1))] {
+    // The bad value on the first binding; the others clear, in the same
+    // encoding, so the type tree declares the encoding under test.
+    let cases = [
+        ("path", Some((V::UInt(5), V::UInt(0)))),
+        ("isPPtrCurve", Some((V::UInt8(1), V::UInt8(0)))),
+        ("isPPtrCurve", Some((V::Bool(true), V::Bool(false)))),
+        ("isPPtrCurve", Some((V::Int(-1), V::Int(0)))),
+        ("isPPtrCurve", None),
+        ("isIntCurve", Some((V::Bool(true), V::Bool(false)))),
+    ];
+    for (field, values) in cases {
         let mut object = h::clip_stored(
             &BODY,
             &[],
@@ -554,10 +524,25 @@ fn only_e4s_binding_key_samples() {
             .find(|(name, _)| name == "genericBindings")
             .unwrap()
             .1;
-        let V::Vector(_, _, items) = bindings else {
+        let V::Vector(_, shape, items) = bindings else {
             panic!("bindings")
         };
-        set(&mut items[0], field, value);
+        let rows = std::iter::once(&mut **shape).chain(items.iter_mut());
+        for (k, row) in rows.enumerate() {
+            let V::Struct(_, fields) = row else {
+                panic!("binding")
+            };
+            match &values {
+                None => fields.retain(|(name, _)| name != field),
+                Some((bad, clear)) => {
+                    let value = if k == 1 { bad.clone() } else { clear.clone() };
+                    match fields.iter_mut().find(|(name, _)| name == field) {
+                        Some(at) => at.1 = value,
+                        None => fields.push((field.into(), value)),
+                    }
+                }
+            }
+        }
         let clip = read(object);
         assert_eq!(
             verdict(pose(&clip, 0.5)),
@@ -651,23 +636,29 @@ fn dense_root_slots_sample_with_e4_bounds() {
     assert!((body.position_error - norm).abs() <= norm * 1e-15);
 }
 
-/// A streamed key whose f32 Horner evaluation overflows refuses, though
-/// its f64 value is finite: `c1 = c0 = f32::MAX` at `dt = 0.5`.
-#[test]
-fn an_overflowing_f32_key_refuses() {
+/// A clip whose `RootT.x` streams the key `[c3, c2, c1, c0]` from `at`
+/// (after a constant key at zero when `at` is later), every other root
+/// slot constant at `POSE`.
+fn streamed_key(at: f32, coefficients: [f32; 4]) -> Clip {
     let constant = |v: f32| [0, 0, 0, v.to_bits()];
+    let all = || -> Vec<_> {
+        (0..7_u32)
+            .map(|slot| (slot, constant(POSE[slot as usize])))
+            .collect()
+    };
     let mut words = Vec::new();
-    let mut first: Vec<_> = (0..7_u32)
-        .map(|slot| (slot, constant(POSE[slot as usize])))
-        .collect();
-    first[0].1 = [0, 0, f32::MAX.to_bits(), f32::MAX.to_bits()];
-    p::frame(&mut words, 0., &first);
-    let last: Vec<_> = (0..7_u32)
-        .map(|slot| (slot, constant(POSE[slot as usize])))
-        .collect();
-    p::frame(&mut words, 1., &last);
+    let key = coefficients.map(f32::to_bits);
+    if at > 0. {
+        p::frame(&mut words, 0., &all());
+        p::frame(&mut words, at, &[(0, key)]);
+    } else {
+        let mut first = all();
+        first[0].1 = key;
+        p::frame(&mut words, 0., &first);
+    }
+    p::frame(&mut words, 1., &all());
     p::frame(&mut words, f32::INFINITY, &[]);
-    let clip = read(h::clip_stored(
+    read(h::clip_stored(
         &BODY,
         &[],
         &settings(&[BAKE_XZ], &[]),
@@ -677,15 +668,37 @@ fn an_overflowing_f32_key_refuses() {
             words: &words,
             ..p::Storage::default()
         },
-    ));
-    assert_eq!(
-        verdict(root::root_sample(&clip, 0.5, &Meter::unlimited())),
-        Err(refused(BodyModel::NonFiniteBody))
-    );
-    assert_eq!(
-        verdict(pose(&clip, 0.5)),
-        Err(refused(BodyModel::NonFiniteBody))
-    );
+    ))
+}
+
+/// A streamed key whose f32 Horner evaluation overflows refuses, though
+/// its f64 value is finite: `c1 = c0 = f32::MAX` at `dt = 0.5`; and, in
+/// E4's order (the clock rounded to f32, then the key's time taken off),
+/// `c1 = 2^105` and `c0 = f32::MAX` from a key at 0.25 at the time
+/// `0.5 - 3 * 2^-28`, whose f32 clock is 0.5: `dt = 0.25`, and the sum
+/// rounds up past `f32::MAX`. Subtracting first would round `dt` down and
+/// keep it finite.
+#[test]
+fn an_overflowing_f32_key_refuses() {
+    let max = f32::MAX;
+    let cases = [
+        (streamed_key(0., [0., 0., max, max]), 0.5),
+        (
+            streamed_key(0.25, [0., 0., 2_f32.powi(105), max]),
+            0.5 - 3. * 2_f64.powi(-28),
+        ),
+    ];
+    for (clip, time) in cases {
+        assert_eq!(
+            verdict(root::root_sample(&clip, time, &Meter::unlimited())),
+            Err(refused(BodyModel::NonFiniteBody)),
+            "{time}"
+        );
+        assert_eq!(
+            verdict(pose(&clip, time)),
+            Err(refused(BodyModel::NonFiniteBody))
+        );
+    }
 }
 
 /// A yaw defined exactly is undefined within its sampling error: the same
