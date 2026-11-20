@@ -194,9 +194,9 @@ fn _image_decode(
     let blob = blob
         .map(|v| crate::buffer_snapshot::BufferSnapshot::new(v, &meter))
         .transpose()?;
-    let limits = reader.map_or_else(Limits::default, |r| r.inner.file().context().limits);
+    // Decoding does not recurse: inline on any thread (`worker::flat`).
     let native = py.detach(|| {
-        crate::worker::run(limits.stack_needed(), || {
+        crate::worker::flat(|| {
             let fields = TextureFields {
                 texture_format,
                 width,

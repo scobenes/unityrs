@@ -159,6 +159,17 @@ impl NativeObject {
         self.parse_with_position(py, check_read, Some(rows))
             .and_then(|result| result.bind(py).get_item(0).map(Bound::unbind))
     }
+    /// `reader.read_typetree()`'s dict, or with `wrap` its object, read
+    /// directly; `None` where the caller takes the full path (`crate::direct`).
+    fn parse_direct(
+        &self,
+        py: Python<'_>,
+        reader: &Bound<'_, PyAny>,
+        check_read: bool,
+        wrap: bool,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        crate::direct::read(py, &self.inner, reader, check_read, wrap)
+    }
     #[pyo3(signature = (check_read, rows=None))]
     fn parse_with_position(
         &self,
@@ -172,12 +183,12 @@ impl NativeObject {
             .transpose()?;
         let meter = self.inner.file().meter();
         let native = py.detach(|| {
-            crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
+            crate::worker::run_read(&self.inner, tree.is_some(), || {
                 let parsed = self
                     .inner
                     .read_typetree(tree.as_ref(), check_read)
                     .map_err(|error| Failure::parse(error, self.inner.info().byte_size > 0))?;
-                // The parsed tree is dropped here, on the advertised stack.
+                // The parsed tree is dropped here, on the worker when read there.
                 Ok::<_, Failure>((|| {
                     let _staging = meter.charge(256).map_err(errors::charge)?;
                     let mut charge = unityrs_core::limits::Charge::zero(meter);
@@ -253,7 +264,7 @@ impl NativeObject {
             .map(|rows| crate::tree::compile_rows(&self.inner, rows.as_unbound()))
             .transpose()?;
         let native = py.detach(|| {
-            crate::worker::run(self.inner.file().context().limits.stack_needed(), || {
+            crate::worker::run_read(&self.inner, tree.is_some(), || {
                 let (parsed, progress) = self
                     .inner
                     .read_object_fields_with_nodes(tree.as_ref())

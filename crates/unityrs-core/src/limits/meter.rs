@@ -230,6 +230,21 @@ impl Meter {
             .map_err(|done| self.decode_refused(done, bytes))
     }
 
+    /// Counts `bytes` of work done if the bound holds them, in one atomic
+    /// check-and-add as [`Self::count_decode`], and whether it did. A `false`
+    /// counts nothing and records no refusal: a direct read
+    /// ([`crate::ObjectRef::emit_typetree`]) then leaves the object to the
+    /// full reader, which meets the refusal itself.
+    #[must_use]
+    pub fn try_count_work(&self, bytes: u64) -> bool {
+        let limit = self.work_limit;
+        self.work
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |done| {
+                done.checked_add(bytes).filter(|t| *t <= limit)
+            })
+            .is_ok()
+    }
+
     /// Takes back `bytes` counted by [`Self::count_decode`] for a growth
     /// the allocator then failed (nothing was allocated).
     pub(crate) fn uncount_decode(&self, bytes: u64) {
@@ -297,6 +312,12 @@ impl Meter {
         let attempted = done.saturating_add(bytes);
         self.work_refusal.fetch_max(attempted, Ordering::AcqRel);
         LimitError::refused(LimitKind::DecodeWork, attempted, self.work_limit)
+    }
+
+    /// The work this open's allowance still holds.
+    #[must_use]
+    pub fn work_left(&self) -> u64 {
+        self.work_limit.saturating_sub(self.decoded())
     }
 
     /// Work counted so far by this open.

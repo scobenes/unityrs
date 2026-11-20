@@ -25,10 +25,8 @@ pub(crate) fn tree_error(error: TreeError) -> PyErr {
 }
 
 pub(crate) fn object_nodes(object: &ObjectRef) -> PyResult<(Py<PyAny>, TreeTraversal)> {
-    let found = crate::worker::run(object.file().context().limits.stack_needed(), || {
-        object.tree(None)
-    })?
-    .map_err(errors::parse)?;
+    let found =
+        crate::worker::run_read(object, false, || object.tree(None))?.map_err(errors::parse)?;
     let Some(tree) = found else {
         return Err(errors::parse(unityrs_core::walk::ParseError::NoTypeTree {
             class_id: object.class_id(),

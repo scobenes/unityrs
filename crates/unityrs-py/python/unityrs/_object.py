@@ -7,9 +7,45 @@ supply the zero-byte reader's two construction rules.
 """
 from types import SimpleNamespace
 
+from attrs import NOTHING, Factory
+
 
 def get_annotation_keys(cls):
     return set(getattr(cls, '__annotations__', {}))
+
+
+def plain_class(cls, keys):
+    """Whether ``cls(**values)``, its values under exactly ``keys``, runs no
+    code but attrs' generated ``__init__`` storing them: the direct read
+    calls such a class only once the read is done, and leaves any other to
+    this module, which may call it again where it raises.
+    """
+    try:
+        if (type(cls).__call__ is not type.__call__ or cls.__new__ is not object.__new__
+                or cls.__setattr__ is not object.__setattr__
+                or getattr(cls, '__abstractmethods__', None)
+                or hasattr(cls, '__attrs_pre_init__') or hasattr(cls, '__attrs_post_init__')):
+            return False
+        # The class whose `__init__` runs, and its fields.
+        owner = next(base for base in cls.__mro__ if '__init__' in vars(base))
+        code = getattr(vars(owner)['__init__'], '__code__', None)
+        if (code is None or not code.co_filename.startswith('<attrs generated ')
+                or '__attrs_attrs__' not in vars(owner)):
+            return False
+        keys = set(keys)
+        names = set()
+        for field in vars(owner)['__attrs_attrs__']:
+            if field.validator is not None or field.converter is not None:
+                return False
+            given = field.init and field.alias in keys
+            if not given and (field.init and field.default is NOTHING
+                              or isinstance(field.default, Factory)):
+                return False
+            if field.init:
+                names.add(field.alias)
+        return keys <= names
+    except Exception:
+        return False
 
 
 def _reserve(charge, memory, work):
