@@ -4,21 +4,21 @@ using System.Linq;
 using UnityEngine;
 
 // B5a's muscle sweeps (anim_fixture_muscles.py MUSCLE_SWEEPS): known vectors
-// for the muscles the body probes leave out, so the Rust muscle pose can be
-// checked on every muscle a clip animates. The ten limb twist muscles on the
-// compact and tall rigs, and the forty finger muscles on the compact rig with
-// mapped fingers (FingersRig). Each muscle is probed alone at every
-// MuscleValues value, both signs out to its limits (a twist sweep probes only
-// its twist muscles alone, the body probes having the others), then each
-// group (a twist muscle with its bone's probe muscles, a finger's four
-// muscles) is set jointly at MuscleCombined's two vectors. Each sweep is a
-// bundle of its own. B2 never reads them.
+// for every one of HumanTrait's 95 muscles, so the Rust muscle pose can be
+// checked on every muscle a clip animates. Each sweep gives every muscle it
+// covers one schedule: the muscle alone at every MuscleValues value (both
+// endpoints and four interior values per sign), then each bone's muscles
+// jointly at MuscleCombined's two opposite vectors. The sweeps: every body
+// muscle the compact and the tall rig map, the face aside (each limb's twist
+// muscle in its bone's group); the forty finger muscles on the compact rig
+// with mapped fingers (FingersRig); the Eyes' and the Jaw's six on the
+// eyes-jaw rig. Each sweep is a bundle of its own. B2 never reads them.
 static partial class UnityrsFixtureBuilder
 {
     static readonly float[] MuscleValues = { 1, -1, .75f, -.75f, .5f, -.5f, .25f, -.25f, .125f, -.125f };
     static readonly float[][] MuscleCombined = { new[] { .6f, -.5f, .4f, -.3f }, new[] { -.6f, .5f, -.4f, .3f } };
 
-    // Each limb twist muscle and the bone whose probe muscles it is combined with.
+    // Each limb twist muscle and the bone whose group it joins.
     static readonly (string muscle, string bone)[] LimbTwists = {
         ("Left Upper Leg Twist In-Out", "LeftUpperLeg"), ("Left Lower Leg Twist In-Out", "LeftLowerLeg"),
         ("Left Foot Twist In-Out", "LeftFoot"), ("Right Upper Leg Twist In-Out", "RightUpperLeg"),
@@ -48,15 +48,25 @@ static partial class UnityrsFixtureBuilder
         side.side + " " + finger + " 1 Stretched", side.side + " " + finger + " Spread",
         side.side + " " + finger + " 2 Stretched", side.side + " " + finger + " 3 Stretched" })).ToArray();
 
-    static string[][] TwistGroups => LimbTwists.Select(row =>
-        new[] { row.muscle }.Concat(ProbeGroups.Single(group => group[0] == row.bone).Skip(1)).ToArray()).ToArray();
+    static readonly string[] Face = { "LeftEye", "RightEye", "Jaw" };
+
+    // A sweep's muscle groups: each finger's, the face bones', or each mapped
+    // body bone's probe muscles with its limb twist muscle.
+    static string[][] SweepGroups(string name, string[] mapped)
+    {
+        if (name == "body-probes-fingers") return FingerGroups;
+        bool face = name == "body-probes-face";
+        return ProbeGroups.Where(group => mapped.Contains(group[0]) && Face.Contains(group[0]) == face)
+            .Select(group => group.Skip(1).Concat(LimbTwists.Where(row => row.bone == group[0])
+                .Select(row => row.muscle)).ToArray()).ToArray();
+    }
 
     // The compact rig with all thirty finger bones mapped.
     static readonly BodyRig FingersRig = new BodyRig { Name = "fingers", Extras = FingerBones };
 
     static readonly (string name, string rig)[] MuscleSweeps = {
-        ("body-probes-limb-twist-compact", "compact"), ("body-probes-limb-twist-tall", "tall"),
-        ("body-probes-fingers", "fingers"),
+        ("body-probes-muscles-compact", "compact"), ("body-probes-muscles-tall", "tall"),
+        ("body-probes-fingers", "fingers"), ("body-probes-face", "eyes-jaw"),
     };
 
     static BodyRig MuscleRig(string rig) => rig == FingersRig.Name ? FingersRig : ProbeRigs.Single(row => row.Name == rig);
@@ -79,14 +89,12 @@ static partial class UnityrsFixtureBuilder
             }
     }
 
-    static BodyProbe[] MuscleSchedule(string name)
+    static BodyProbe[] MuscleSchedule(string name, string[] mapped)
     {
         var names = HumanTrait.MuscleName;
-        var groups = name == "body-probes-fingers" ? FingerGroups : TwistGroups;
-        // A twist sweep probes its twist muscles alone (the body probes have the rest); the finger sweep every muscle.
-        var singles = name == "body-probes-fingers" ? groups.SelectMany(group => group) : groups.Select(group => group[0]);
+        var groups = SweepGroups(name, mapped);
         var vectors = new List<float[]>();
-        foreach (string muscle in singles)
+        foreach (string muscle in groups.SelectMany(group => group))
             foreach (float value in MuscleValues)
             {
                 var vector = new float[names.Length];

@@ -28,6 +28,25 @@ CASES = sorted(r11.ROUND11_CASES)
 EVERY = [*body.BODY_CASES, *CASES]
 TWIST_MUSCLES = tuple(muscle for muscle, _ in muscles.LIMB_TWISTS)
 FINGER_MUSCLES = tuple(muscle for group in muscles.FINGER_GROUPS for muscle in group)
+NAMES = (*support.PROBE_MUSCLES, *TWIST_MUSCLES, *FINGER_MUSCLES)
+
+
+def responding_axes():
+    """The synthetic pose generator's axes, with each limb twist muscle turning its bone about x and each finger
+    muscle its phalanx (a stretch about z, a spread about y)."""
+    axes = dict(support.AXES)
+    axes.update({muscle: (bone, 0) for muscle, bone in muscles.LIMB_TWISTS})
+    axes.update({muscle: (muscles.muscle_bone(muscle, body.PROBE_GROUPS), 1 if "Spread" in muscle else 2)
+                 for muscle in FINGER_MUSCLES})
+    return axes
+
+
+def limits(muscle):
+    """The synthetic limits, the twist and finger muscles' at 40 degrees."""
+    return (-40, 40) if muscle in TWIST_MUSCLES or muscle in FINGER_MUSCLES else LIMITS(muscle)
+
+
+LIMITS = support.limits
 
 
 def floats(text):
@@ -42,8 +61,8 @@ def round11_docs():
         bones = tuple(b for b in support.BONES if not b.startswith("Finger "))
         stack.enter_context(mock.patch.multiple(
             support, BODY_INFO=body.BODY_INFO, probe_schedule=r11.probe_schedule, schedule_name=r11.schedule_name,
-            layout=r11.rig_layout, BONES=(*bones[:-1], *muscles.FINGER_BONES, bones[-1]),
-            MUSCLES=(*support.PROBE_MUSCLES, *TWIST_MUSCLES, *FINGER_MUSCLES)))
+            layout=r11.rig_layout, BONES=(*bones[:-1], *muscles.FINGER_BONES, bones[-1]), MUSCLES=NAMES,
+            AXES=responding_axes(), limits=limits))
         yield
 
 
@@ -63,16 +82,25 @@ class Round11InventoryTests(unittest.TestCase):
         self.assertEqual(set(r11.E5_TOPOLOGIES),
                          set(body.PROBE_RIGS) - refused - {"compact", "tall", *body.HOLDOUT_RIGS})
         builder = source("UnityrsBodyFixtures.cs")
-        table = builder[builder.index("BodyRig[] ChainRigs = {"):]
-        rows = re.findall(r'new BodyRig \{ Name = "([a-z-]+)"([^}]*)\}', table[:table.index("};")])
         features = {"ScaledAnimator = true": "scaled-animator", "Armature = true": "armature",
                     "HipsScale = 1.2f": "hips-scale"}
-        parsed = {}
-        for name, fields in rows:
-            size = re.search(r"Size = ([\d.]+)f", fields)
-            parsed[name] = (next((v for k, v in features.items() if k in fields), ""), float(size.group(1)) if size else 1)
-        self.assertEqual(parsed, r11.CHAIN_FEATURES)
-        self.assertEqual(tuple(body.CHAIN_RIGS), tuple(r11.CHAIN_FEATURES)[:4])
+
+        def chain_table(text, table):
+            text = text[text.index(f"BodyRig[] {table} = {{"):]
+            parsed = {}
+            for name, fields in re.findall(r'new BodyRig \{ Name = "([a-z-]+)"([^}]*)\}', text[:text.index("};")]):
+                size = re.search(r"Size = ([\d.]+)f", fields)
+                parsed[name] = (next((v for k, v in features.items() if k in fields), ""),
+                                float(size.group(1)) if size else 1)
+            return parsed
+
+        # The builder's ChainRigs stay freeze v8's four, which B4's tests read; round 11's are E5ChainRigs.
+        v8, e5 = chain_table(builder, "ChainRigs"), chain_table(clips, "E5ChainRigs")
+        self.assertEqual(tuple(v8), tuple(body.CHAIN_RIGS))
+        self.assertEqual(tuple(e5), r11.CHAIN_RIGS)
+        self.assertEqual(v8 | e5, r11.CHAIN_FEATURES)
+        self.assertIn(".Concat(ChainRigs.Concat(E5ChainRigs).SelectMany(rig => RigCases(rig, true)))", builder)
+        self.assertIn("foreach (var rig in ChainRigs.Concat(E5ChainRigs))", builder)
         # Size scales the hips' offset in an armature, never the armature's own transform (B4 admits F5's only).
         self.assertIn('Child(root, "Armature", new Vector3(0, .05f, .1f));', builder)
         self.assertIn("hips.localPosition = new Vector3(0, .125f, .8375f) * rig.Size;", builder)
@@ -87,12 +115,14 @@ class Round11InventoryTests(unittest.TestCase):
         self.assertEqual(len(r11.E5_VARIANTS), 21)
 
     def test_the_cases_are_round_11s_own(self):
-        # 15 clip rigs x 21 variants x 2 roots, each new chain rig's targets and clip, and the three sweeps.
-        self.assertEqual(len(r11.ROUND11_CASES), 15 * 21 * 2 + 5 * 2 + 3)
+        # 15 clip rigs x 21 variants x 2 roots, each new chain rig's targets and clip, and the four sweeps, in the
+        # builder's order: the chains, the clips, the sweeps.
+        self.assertEqual(len(r11.ROUND11_CASES), 15 * 21 * 2 + 5 * 2 + 4)
         self.assertEqual(len(r11.E5_CASES), 640)
-        kinds = [r11.ROUND11_INFO[name]["kind"] for name in CASES]
-        self.assertEqual((kinds.count("clip"), kinds.count("targets"), kinds.count("probes")), (635, 5, 3))
-        self.assertEqual(len(r11.ROUND11_BUNDLES), 15 + 5 + 3)
+        kinds = [r11.ROUND11_INFO[name]["kind"] for name in r11.ROUND11_CASES]
+        self.assertEqual(kinds[:10], ["targets", "clip"] * 5)
+        self.assertEqual(kinds[10:], ["clip"] * 630 + ["probes"] * 4)
+        self.assertEqual(len(r11.ROUND11_BUNDLES), 5 + 15 + 4)
         for rig in r11.CLIP_RIGS:
             for variant in r11.E5_VARIANTS:
                 for root, suffix in (("identity", ""), ("offset", "-offset")):
@@ -148,34 +178,43 @@ class MuscleSweepTests(unittest.TestCase):
             row = re.search(table + r" = \{(.*?)\};", text).group(1)
             self.assertEqual(tuple(re.findall(r'"(\w+)"', row)), getattr(muscles, table.upper()))
         sweeps = re.search(r"MuscleSweeps = \{(.*?)\};", text, re.S).group(1)
-        self.assertEqual(dict(re.findall(r'\("([a-z-]+)", "([a-z]+)"\)', sweeps)), muscles.MUSCLE_SWEEPS)
+        self.assertEqual(dict(re.findall(r'\("([a-z-]+)", "([a-z-]+)"\)', sweeps)), muscles.MUSCLE_SWEEPS)
         self.assertIn('const string BodyRound = "11";', text)
         self.assertIn('"{\\"format\\": \\"unityrs.fixture_round\\", \\"round\\": " + BodyRound + ", \\"run_id\\": \\"" '
                       '+ runId + "\\"}\\n"', text)
         self.assertIn('if (run.variant == "builtin") WriteRound(staging, run.run_id);',
                       source("UnityrsFixtureBuilder.cs"))
 
-    def test_they_probe_every_muscle_the_body_probes_leave_out(self):
+    def test_every_muscle_has_the_same_schedule(self):
         probed = [muscle for _, group in body.PROBE_GROUPS for muscle in group]
-        everything = [*probed, *TWIST_MUSCLES, *FINGER_MUSCLES]
-        self.assertEqual((len(probed), len(set(everything))), (45, 95))
-        names = (*support.PROBE_MUSCLES, *TWIST_MUSCLES, *FINGER_MUSCLES)
-        index = {name: i for i, name in enumerate(names)}
-        for name, alone, count in (("body-probes-limb-twist-compact", TWIST_MUSCLES, 120),
-                                   ("body-probes-fingers", FINGER_MUSCLES, 420)):
-            vectors = muscles.muscle_vectors(name, index, body.PROBE_GROUPS)
-            self.assertEqual(len(vectors), count)
-            singles = {(names[i], v) for vector in vectors if len(vector) == 1 for i, v in vector.items()}
-            # Each muscle alone at every value, out to both limits, each value exact in f32.
-            self.assertEqual(singles, {(m, v) for m in alone for v in muscles.MUSCLE_VALUES})
-            self.assertTrue({1, -1} <= set(muscles.MUSCLE_VALUES))
-            self.assertTrue(all(replay.f32_from_bits(replay.f32_bits(v)) == v for v in muscles.MUSCLE_VALUES))
-            # Then each group jointly, both signs.
-            joint = [vector for vector in vectors if len(vector) > 1]
-            self.assertEqual(len(joint), 2 * len(muscles.groups(name, body.PROBE_GROUPS)))
+        self.assertEqual((len(probed), len(set(NAMES))), (45, 95))
+        index = {name: i for i, name in enumerate(NAMES)}
+        covered = []
+        for name, rig, count, groups in (("body-probes-muscles-compact", "compact", 49, 21),
+                                         ("body-probes-muscles-tall", "tall", 46, 20),
+                                         ("body-probes-fingers", "fingers", 40, 10),
+                                         ("body-probes-face", "eyes-jaw", 6, 3)):
+            mapped = r11.rig_bones(rig)
+            rows = muscles.groups(name, body.PROBE_GROUPS, mapped)
+            alone = [muscle for _, group in rows for muscle in group]
+            self.assertEqual((len(alone), len(rows)), (count, groups), name)
+            self.assertTrue(all(muscles.muscle_bone(m, body.PROBE_GROUPS) in mapped for m in alone))
+            covered += alone
+            vectors = muscles.muscle_vectors(name, index, body.PROBE_GROUPS, mapped)
+            self.assertEqual(len(vectors), 10 * count + 2 * groups)
+            # Each muscle alone at both endpoints and four interior values per sign, each exact in f32.
+            singles = [(NAMES[i], v) for vector in vectors[:10 * count] for i, v in vector.items()]
+            self.assertEqual(singles, [(m, v) for m in alone for v in muscles.MUSCLE_VALUES])
+            # Then each bone's muscles jointly, at two opposite vectors.
+            joint = vectors[10 * count:]
+            self.assertEqual([set(vector) for vector in joint[::2]], [{index[m] for m in group} for _, group in rows])
             self.assertTrue(all(a == {k: -v for k, v in b.items()} for a, b in zip(joint[::2], joint[1::2])))
-        schedule = r11.probe_schedule("tall", names, False, "body-probes-limb-twist-tall")
-        self.assertEqual(len(schedule), 123)
+            self.assertEqual(len(r11.probe_schedule(rig, NAMES, False, name)), len(vectors) + 3)
+        # The compact rig's sweep and the fingers' and face's cover all 95 (the tall rig's repeats its own).
+        self.assertEqual(sorted(set(covered)), sorted(NAMES))
+        self.assertTrue(set({1, -1, .125, -.125}) <= set(muscles.MUSCLE_VALUES))
+        self.assertEqual(len(muscles.MUSCLE_VALUES), 10)
+        self.assertTrue(all(replay.f32_from_bits(replay.f32_bits(v)) == v for v in muscles.MUSCLE_VALUES))
         self.assertEqual(r11.schedule_name("body-probes-fingers"), "body-probes-fingers")
         self.assertIsNone(r11.schedule_name("body-probes-compact"))
 
@@ -204,6 +243,18 @@ class Round11CheckTests(unittest.TestCase):
                 with self.subTest(name=name):
                     self.assertIsNone(self.check(name, self.doc(name)))
 
+    def test_refuses_a_sweep_whose_muscle_turns_no_bone(self):
+        with round11_docs():
+            for name, bone in (("body-probes-fingers", "Left Ring Distal"),
+                               ("body-probes-muscles-compact", "RightLowerArm"), ("body-probes-face", "Jaw")):
+                doc = self.doc(name)
+                node = next(row["node"] for row in doc["capture"]["humanoid"]["bones"] if row["name"] == bone)
+                rest = doc["capture"]["rest"]["transforms"][node]["rotation"]
+                for sample in doc["capture"]["samples"]:
+                    sample["pose"]["transforms"][node]["rotation"] = list(rest)
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, "turned no bone in " + name):
+                    self.check(name, doc)
+
     def test_refuses_a_muscle_sweep_off_its_schedule(self):
         with round11_docs():
             name = "body-probes-fingers"
@@ -228,22 +279,31 @@ class Round11CheckTests(unittest.TestCase):
                 with self.subTest(rig=rig), self.assertRaisesRegex(ValueError, "body rig chain differs"):
                     self.check(name, doc)
 
-    def test_refuses_the_armature_the_earlier_builder_scaled(self):
-        # Before 0025d26e the builder scaled the armature's translation with the rig; B4 admits F5's alone.
-        name = "body-chain-armature-large-targets"
+    def test_refuses_any_chain_feature_b4_refuses(self):
+        # B4's comparison, bit for bit: the armature the builder scaled before 0025d26e, an ulp off in any stored
+        # component, the same rotation's other sign, and the Animator node's or the hips' scale an ulp off.
+        def ulp(bits, k=1):
+            return f"{int(bits, 16) + k:08x}"
+
         with round11_docs():
-            for field, value in (("translation", (0, .09, .18)), ("rotation", (-.5, 0, 0, .8660254)),
-                                 ("scale", (.8 * 1.8,) * 3)):
-                doc = self.doc(name)
-                doc["capture"]["rest"]["transforms"][2][field] = [replay.f32_bits(v) for v in value]
-                with self.subTest(field=field), self.assertRaisesRegex(ValueError, "body rig chain differs"):
-                    self.check(name, doc)
-            # The same rotation's other sign is the same rotation.
-            doc = self.doc(name)
-            rotation = doc["capture"]["rest"]["transforms"][2]["rotation"]
-            doc["capture"]["rest"]["transforms"][2]["rotation"] = [replay.f32_bits(-replay.f32_from_bits(v))
-                                                                   for v in rotation]
-            self.assertIsNone(self.check(name, doc))
+            for name, node, field, edit in (
+                    ("armature-large", 2, "translation", lambda v: [replay.f32_bits(x) for x in (0, .09, .18)]),
+                    ("armature-large", 2, "translation", lambda v: [v[0], ulp(v[1]), v[2]]),
+                    ("armature-large", 2, "rotation", lambda v: [ulp(v[0]), *v[1:]]),
+                    ("armature-large", 2, "rotation", lambda v: [replay.f32_bits(-replay.f32_from_bits(x)) for x in v]),
+                    ("armature-large", 2, "scale", lambda v: [ulp(v[0], -1), *v[1:]]),
+                    ("scaled-animator-small", 1, "scale", lambda v: [*v[:2], ulp(v[2])]),
+                    ("hips-scale-large", 2, "scale", lambda v: [ulp(v[0]), *v[1:]])):
+                doc = self.doc(f"body-chain-{name}-targets")
+                transforms = doc["capture"]["rest"]["transforms"]
+                transforms[node][field] = edit(transforms[node][field])
+                with self.subTest(name=name, field=field), self.assertRaisesRegex(ValueError, "body rig chain differs"):
+                    self.check(f"body-chain-{name}-targets", doc)
+            # A stored zero of either sign is B4's zero.
+            doc = self.doc("body-chain-armature-large-targets")
+            doc["capture"]["rest"]["transforms"][2]["translation"][0] = "80000000"
+            doc["capture"]["rest"]["transforms"][2]["rotation"][1] = "80000000"
+            self.assertIsNone(self.check("body-chain-armature-large-targets", doc))
 
     def test_refuses_a_human_scale_outside_b4s_range(self):
         name = "body-chain-armature-large-targets"
@@ -261,7 +321,7 @@ class Round11CheckTests(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, "outside B4's range"):
                             self.check(name, doc)
             # An earlier case and a muscle sweep keep their own human scale.
-            for name in ("body-chain-large-targets", "body-probes-limb-twist-tall"):
+            for name in ("body-chain-large-targets", "body-probes-muscles-tall"):
                 doc = self.doc(name)
                 doc["capture"]["humanoid"]["human_scale"] = replay.f32_bits(2)
                 self.assertIsNone(self.check(name, doc))
@@ -310,16 +370,23 @@ class Round11RunTests(unittest.TestCase):
         result = self.round11(CASES)
         self.assertIn(f"round 11 run lacks {len(body.BODY_CASES)} body case(s): ", result.stderr)
 
-    def test_a_declared_run_records_every_round_11_case(self):
+    def test_a_declared_run_records_every_body_case(self):
+        # A partial run fails: every case a round 11 run expects must be recorded, the earlier ones too.
         result = self.round11(EVERY)
         self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertIn(f"round 11 cases not recorded ({len(CASES)}): body-chain-armature-large-clip (not_covered)",
+        self.assertIn(f"round 11 body cases not recorded ({len(EVERY)}): body-chain-armature-clip (not_covered)",
                       result.stderr)
+        clips = [name for name in body.BODY_CASES if name.startswith("body-clip-")]
+        # (run_with keeps earlier statuses: each call states every one it changes.)
+        result = self.round11(EVERY, dict.fromkeys(EVERY, "recorded") | dict.fromkeys(clips, "not_covered"))
+        self.assertIn(f"round 11 body cases not recorded ({len(clips)}): body-clip-", result.stderr)
+        result = self.round11(EVERY, dict.fromkeys(EVERY, "recorded") | {"body-chain-armature-clip": "not_covered"})
+        self.assertIn("round 11 body cases not recorded (1): body-chain-armature-clip (not_covered)", result.stderr)
         # Every one recorded passes the inventory, and completion then checks each with round 11's tables.
         name = "body-probes-fingers"
-        result = self.round11(EVERY, dict.fromkeys(CASES, "recorded"))
+        result = self.round11(EVERY, dict.fromkeys(EVERY, "recorded"))
         self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertNotIn("round 11 cases not recorded", result.stderr)
+        self.assertNotIn("body cases not recorded", result.stderr)
         self.assertIn(f"{name}: missing replays/body/{name}.pending.json", result.stderr)
 
 

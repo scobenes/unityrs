@@ -15,7 +15,7 @@ from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CLIP
                                body_requests, distinguishing_curves, PROBE_GROUPS, SPINE,
                                START_OFFSET, START_YAW, expected_case_row, probe_schedule, schedule_name)
 from anim_fixture_rigs import rig_layout  # noqa: E402
-from anim_fixture_round11 import CHAIN_FEATURES  # noqa: E402
+from anim_fixture_round11 import ARMATURE, CHAIN_FEATURES  # noqa: E402
 from anim_reference import euler, multiply  # noqa: E402
 import anim_replay as replay  # noqa: E402
 
@@ -80,7 +80,7 @@ def rig_nodes(rig):
     top, addresses, counts = "0", {"": "0"}, {}
     if feature == "armature":
         nodes.append(("0/0", "Armature"))
-        rest.append(transform((0, .05, .1), euler((-90, 0, 0), 4), .8))
+        rest.append(transform(*ARMATURE))
         top = addresses[""] = "0/0"
     for name, parent, offset in layout(rig):
         base = addresses[parent]

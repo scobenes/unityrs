@@ -74,6 +74,17 @@ static partial class UnityrsFixtureBuilder
     // admits but the compact rig's, whose clips body-clips records. No rig B3
     // refuses (no-chest, no-neck, one shoulder) and never a hold-out rig.
     static readonly BodyRig SmallRig = new BodyRig { Name = "small", Size = .82f };
+    // E5's chain rigs (anim_fixture_round11.py CHAIN_RIGS): each F5 feature at a
+    // second human scale inside B4's range, built as ChainRigs are. They are E5
+    // recordings, not B4's training rigs, so they stay out of ChainRigs, which
+    // B4's tests read as freeze v8's set.
+    static readonly BodyRig[] E5ChainRigs = {
+        new BodyRig { Name = "scaled-animator-large", ScaledAnimator = true, Size = 1.5f },
+        new BodyRig { Name = "scaled-animator-small", ScaledAnimator = true, Size = .82f },
+        new BodyRig { Name = "hips-scale-large", HipsScale = 1.2f, Size = 1.2f },
+        new BodyRig { Name = "hips-scale-small", HipsScale = 1.2f, Size = .7f },
+        new BodyRig { Name = "armature-large", Armature = true, Size = 1.8f },
+    };
     static readonly string[] E5Topologies = {
         "no-upper-chest", "no-shoulders", "no-left-toes", "no-right-toes", "no-toes", "no-upper-chest-toes",
         "no-upper-chest-left-toes", "no-upper-chest-right-toes", "eyes", "jaw", "eyes-jaw", "noncoplanar"

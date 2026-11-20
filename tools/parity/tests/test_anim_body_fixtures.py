@@ -17,7 +17,6 @@ from anim_fixture_support import RUN, write
 
 import anim_body_model as model  # noqa: E402  (test_anim_replay puts it on the path)
 import anim_fixture_body as body  # noqa: E402
-from anim_fixture_round11 import CHAIN_FEATURES  # noqa: E402
 import anim_fixture_coverage  # noqa: E402
 import anim_fixture_rigs as rigs_module  # noqa: E402
 import anim_replay as replay  # noqa: E402
@@ -82,7 +81,7 @@ class BodyInventoryTests(unittest.TestCase):
         self.assertTrue(body.BODY_CASES.keys().isdisjoint(anim_fixture_coverage.COVERAGE_CASES))
         builder = source("UnityrsBodyFixtures.cs")
         rigs = re.findall(r'new BodyRig \{ Name = "([a-z0-9-]+)"', builder)
-        self.assertEqual(rigs, [*body.PROBE_RIGS, *CHAIN_FEATURES])  # freeze v8's chain rigs, then round 11's
+        self.assertEqual(rigs, [*body.PROBE_RIGS, *body.CHAIN_RIGS])
         # Each hold-out rig, by its topology in the builder's table alone, is inside the frozen scope, with the
         # proportions anim_fixture_rigs gives it.
         for rig in body.HOLDOUT_RIGS:
