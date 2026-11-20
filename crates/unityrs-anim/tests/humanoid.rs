@@ -154,6 +154,8 @@ mod body;
 mod body_model;
 #[path = "humanoid/body_solve.rs"]
 mod body_solve;
+#[path = "humanoid/chain.rs"]
+mod chain;
 #[path = "humanoid/root.rs"]
 mod root;
 

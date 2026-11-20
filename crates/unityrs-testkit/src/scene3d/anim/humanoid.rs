@@ -81,6 +81,10 @@ pub struct Rig {
     /// present bones, at `t_pose`, its nodes ordered by depth (`arrange`);
     /// otherwise every bone hangs on `Hips` at the origin.
     pub hierarchy: bool,
+    /// Nodes between the Animator node and `Hips`, top down, each a local
+    /// translation, rotation and uniform scale: `GameObject`s `90 + k`
+    /// named `Armature<k>`, prefixing every rig path.
+    pub armature: Vec<([f32; 3], [f32; 4], f32)>,
 }
 
 impl Default for Rig {
@@ -102,6 +106,7 @@ impl Default for Rig {
             bone_mass: None,
             scale: 1.,
             hierarchy: false,
+            armature: Vec::new(),
         }
     }
 }
@@ -162,6 +167,10 @@ fn path(rig: &Rig, bones: &[(usize, &str)], bone: usize) -> String {
         names.push(bones[parent].1);
         at = parent;
     }
+    let armature: Vec<String> = (0..rig.armature.len())
+        .map(|k| format!("Armature{k}"))
+        .collect();
+    names.extend(armature.iter().rev().map(String::as_str));
     names.reverse();
     names.join("/")
 }
@@ -554,7 +563,8 @@ pub fn prefab(rig: &Rig) -> Vec<Object> {
     let mut objects = vec![
         Object::new(1, 1, game_object(b"rig", &[(0, 101), (0, ANIMATOR)])),
         Object::new(101, 4, {
-            let mut root = transform((0, 1), (0, 0), &[(0, 102)], false);
+            let first = if rig.armature.is_empty() { 102 } else { 190 };
+            let mut root = transform((0, 1), (0, 0), &[(0, first)], false);
             if rig.root_offset {
                 set(
                     &mut root,
@@ -565,6 +575,26 @@ pub fn prefab(rig: &Rig) -> Vec<Object> {
             root
         }),
     ];
+    for (k, &(position, rotation, scale)) in rig.armature.iter().enumerate() {
+        let id = 90 + i64::try_from(k).unwrap_or_default();
+        let name = format!("Armature{k}");
+        objects.push(Object::new(
+            id,
+            1,
+            game_object(name.as_bytes(), &[(0, id + 100)]),
+        ));
+        let father = if k == 0 { 101 } else { id + 99 };
+        let child = if k + 1 == rig.armature.len() {
+            102
+        } else {
+            id + 101
+        };
+        let mut node = transform((0, id), (0, father), &[(0, child)], false);
+        set(&mut node, "m_LocalPosition", xyz("Vector3f", &position));
+        set(&mut node, "m_LocalRotation", xyz("Quaternionf", &rotation));
+        set(&mut node, "m_LocalScale", xyz("Vector3f", &[scale; 3]));
+        objects.push(Object::new(id + 100, 4, node));
+    }
     let children = |of: usize| -> Vec<_> {
         (1..bones.len())
             .filter(|&i| rig_parent(rig, &bones, i) == Some(of))
@@ -579,7 +609,12 @@ pub fn prefab(rig: &Rig) -> Vec<Object> {
             name.as_bytes()
         };
         objects.push(Object::new(id, 1, game_object(name, &[(0, id + 100)])));
-        let father = rig_parent(rig, &bones, i).map_or(101, |parent| {
+        let top = if rig.armature.is_empty() {
+            101
+        } else {
+            189 + i64::try_from(rig.armature.len()).unwrap_or_default()
+        };
+        let father = rig_parent(rig, &bones, i).map_or(top, |parent| {
             102 + i64::try_from(parent).unwrap_or_default()
         });
         objects.push(Object::new(

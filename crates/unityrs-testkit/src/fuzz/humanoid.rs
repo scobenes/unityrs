@@ -185,6 +185,25 @@ fn rigs() -> Vec<(&'static str, Rig)> {
             },
         ),
         (
+            "body-hierarchy-armature",
+            Rig {
+                hierarchy: true,
+                armature: vec![([0., 0.05, 0.1], [0., 0.6, 0., 0.8], 0.8)],
+                ..body(&[])
+            },
+        ),
+        (
+            "body-hierarchy-deep-armature",
+            Rig {
+                hierarchy: true,
+                armature: vec![
+                    ([0., 0.05, 0.1], [0., 0.6, 0., 0.8], 0.8),
+                    ([0.25, 0., 0.], [0.6, 0., 0., 0.8], 1.5),
+                ],
+                ..body(&[])
+            },
+        ),
+        (
             "body-hierarchy-no-upper-chest",
             Rig {
                 hierarchy: true,
