@@ -1,26 +1,27 @@
 //! Freeze v8's chain from the Animator node to the hips (plan 2.3, B4b):
-//! the hips parent in `A` from the rig's Transforms, the recorded rigs,
+//! the hips parent in `A` from the rig's Transforms, the chain's validated
+//! scope (the human scale's range, unit rest scales below the hips, the
+//! plain chain or one F5 feature at its fixture value, the placement),
 //! and the admission of each against the root configurations.
 use super::{
     body_model::{FREEZE, full, local, refused, verdict},
     file,
-    root::{full_clip, variant_settings},
+    root::variant_clip,
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
 use unityrs_anim::{
     AnimError, BodyModel, RigPaths,
     humanoid::{
-        BODY_SLOTS, body_avatar,
+        body_avatar,
         body_model::{self as m, Edges},
         body_solve::{self as s, AnimatorBodyPose, HipsParent},
         chain::{
-            AnimatorChain, CHAIN_VARIANT, COMPACT_LAYOUT, OFFSET_PLACEMENT, RECORDED_RIGS,
-            RecordedRig, admit_chain,
+            ANIMATOR_SCALE, AnimatorChain, BETWEEN, CHAIN_VARIANT, ChainFeature, HIPS_SCALE,
+            HUMAN_SCALE_EVIDENCE, HUMAN_SCALE_RANGE, OFFSET_PLACEMENT, admit_chain,
         },
         rig_avatar,
         root::{self, ADMITTED},
-        slot_bone,
     },
 };
 use unityrs_core::limits::Meter;
@@ -71,6 +72,11 @@ fn scale(objects: &mut [Object], transform: i64, value: [f32; 3]) {
     local_trs(objects, transform, "m_LocalScale", &value);
 }
 
+fn offset(objects: &mut [Object]) {
+    local_trs(objects, 101, "m_LocalPosition", &OFFSET_PLACEMENT.0);
+    local_trs(objects, 101, "m_LocalRotation", &OFFSET_PLACEMENT.1);
+}
+
 fn rig(armature: Vec<([f32; 3], [f32; 4], f32)>) -> Rig {
     Rig {
         hierarchy: true,
@@ -79,161 +85,128 @@ fn rig(armature: Vec<([f32; 3], [f32; 4], f32)>) -> Rig {
     }
 }
 
-/// A `COMPACT_LAYOUT` bone's offset from the hips.
-fn below_hips(name: &str) -> [f64; 3] {
-    let mut at = COMPACT_LAYOUT.iter().find(|row| row.0 == name).unwrap();
-    let mut sum = [0.; 3];
-    while !at.1.is_empty() {
-        sum = [0, 1, 2].map(|k| sum[k] + at.2[k]);
-        at = COMPACT_LAYOUT.iter().find(|row| row.0 == at.1).unwrap();
-    }
-    sum
-}
-
-/// `recorded` as its fixture builds it: the compact layout's bones at
-/// `hips` in `A`, `scale` times their offsets, the hips' Transform and the
-/// chain's nodes the recorded ones; `edit` then changes the objects.
-#[allow(clippy::cast_possible_truncation, reason = "f32 fixture positions")]
-fn built(
-    recorded: &RecordedRig,
-    hips: [f64; 3],
-    scale_by: f64,
-    stretch: impl Fn(&str) -> f64,
+/// The testkit rig with F5's `feature` at its fixture value.
+fn featured(
+    feature: ChainFeature,
     edit: impl FnOnce(&mut [Object]),
 ) -> Result<AnimatorChain, AnimError> {
-    let positions = COMPACT_LAYOUT
-        .iter()
-        .map(|&(name, _, _)| {
-            let slot = BODY_SLOTS.iter().position(|s| *s == name).unwrap();
-            let offset = below_hips(name).map(|v| v * stretch(name));
-            let at = [0, 1, 2].map(|k| (hips[k] + scale_by * offset[k]) as f32);
-            (slot_bone(slot), at)
-        })
-        .collect();
-    let between = recorded
-        .between
-        .map(|n| vec![(n.position, n.rotation, n.scale)])
-        .unwrap_or_default();
-    let rig = Rig {
-        positions,
-        optional: vec![8, 54, 9, 11, 12, 19, 20],
-        ..rig(between)
+    let between = if feature == ChainFeature::Intermediate {
+        vec![BETWEEN]
+    } else {
+        Vec::new()
     };
-    chain(&rig, |o| {
-        let hips = recorded.hips;
-        local_trs(o, 102, "m_LocalPosition", &hips.position);
-        local_trs(o, 102, "m_LocalRotation", &hips.rotation);
-        scale(o, 102, [hips.scale; 3]);
-        scale(o, 101, [recorded.animator_scale; 3]);
+    chain(&rig(between), |o| {
+        match feature {
+            ChainFeature::ScaledAnimator => scale(o, 101, [ANIMATOR_SCALE; 3]),
+            ChainFeature::HipsScale => scale(o, 102, [HIPS_SCALE; 3]),
+            _ => {}
+        }
         edit(o);
     })
 }
 
-/// Each recorded rig built as the fixture does: the hips in `A` and the
-/// compact bones' scale below it.
-fn as_recorded(name: &str, edit: impl FnOnce(&mut [Object])) -> Result<AnimatorChain, AnimError> {
-    let recorded = RECORDED_RIGS.iter().find(|r| r.rig == name).unwrap();
-    let (hips, scale_by) = match name {
-        "large" => ([0., 1.32, 0.], 1.5),
-        "hips-scale" => ([0., 1.056, 0.], 1.2),
-        "armature" => ([0., 0.72, 0.], 0.8),
-        _ => ([0., 0.88, 0.], 1.),
-    };
-    built(recorded, hips, scale_by, |_| 1., edit)
-}
+const FEATURES: [ChainFeature; 3] = [
+    ChainFeature::ScaledAnimator,
+    ChainFeature::Intermediate,
+    ChainFeature::HipsScale,
+];
 
-fn rig_of(found: &AnimatorChain) -> Option<(&'static str, bool)> {
-    found.recorded().map(|(rig, offset)| (rig.rig, offset))
-}
-
-/// A quarter turn about up, as f32 components.
-const TURN: [f32; 4] = [0., 0.707_106_77, 0., 0.707_106_77];
-const ROOT: Result<(), String> = Ok(());
-
+/// The plain chain at identity and offset placement, and each F5 feature
+/// alone at identity: one node between (its transform the hips parent's,
+/// exactly, as the reference's `link` from the identity), a scaled
+/// Animator node (which never enters `A`) and a hips scale.
 #[test]
-fn each_recorded_rig_is_named() {
-    for recorded in &RECORDED_RIGS {
-        let found = as_recorded(recorded.rig, |_| {}).unwrap();
-        assert_eq!(rig_of(&found), Some((recorded.rig, false)));
-        assert_eq!(found.hips_scale(), f64::from(recorded.hips.scale));
-        match recorded.between {
-            None => assert_eq!(found.parent(), HipsParent::IDENTITY),
-            Some(node) => {
-                // One node between: its transform is the hips parent's,
-                // exactly, as the reference's `link` from the identity.
-                assert_eq!(found.parent().position, node.position.map(f64::from));
-                assert_eq!(found.parent().rotation, node.rotation.map(f64::from));
-                assert_eq!(found.parent().scale, f64::from(node.scale));
-            }
-        }
+fn the_validated_chains_are_in_scope() {
+    let plain = chain(&rig(Vec::new()), |_| {}).unwrap();
+    assert_eq!(plain.validated(), Some((ChainFeature::Plain, false)));
+    assert_eq!(plain.parent(), HipsParent::IDENTITY);
+    let placed = chain(&rig(Vec::new()), offset).unwrap();
+    assert_eq!(placed.validated(), Some((ChainFeature::Plain, true)));
+    for feature in FEATURES {
+        let found = featured(feature, |_| {}).unwrap();
+        assert_eq!(found.validated(), Some((feature, false)), "{feature:?}");
     }
-    let found = as_recorded("compact", |o| {
-        local_trs(o, 101, "m_LocalPosition", &OFFSET_PLACEMENT.0);
-        local_trs(o, 101, "m_LocalRotation", &OFFSET_PLACEMENT.1);
-    })
-    .unwrap();
-    assert_eq!(rig_of(&found), Some(("compact", true)));
+    let found = featured(ChainFeature::Intermediate, |_| {}).unwrap();
+    let (t, q, s) = BETWEEN;
+    assert_eq!(found.parent().position, t.map(f64::from));
+    assert_eq!(found.parent().rotation, q.map(f64::from));
+    assert_eq!(found.parent().scale, f64::from(s));
+    let found = featured(ChainFeature::HipsScale, |_| {}).unwrap();
+    assert_eq!(found.hips_scale(), f64::from(HIPS_SCALE));
+    // Either bound of the human scale's range.
+    for h in HUMAN_SCALE_RANGE {
+        let at = chain(
+            &Rig {
+                scale: h,
+                body_offset: [0., h, 0.],
+                ..rig(Vec::new())
+            },
+            |_| {},
+        );
+        assert_eq!(
+            at.unwrap().validated(),
+            Some((ChainFeature::Plain, false)),
+            "{h}"
+        );
+    }
 }
 
-/// Chains and rigs E4 never passed compose but name no recorded rig: the
-/// parameters, the placement and the rest skeleton must all be the
-/// fixture's.
+/// Chains outside the validated scope compose but have none: a human
+/// scale outside the range (Codex's `m_Scale = m_RootX.t.y = 2`), a rest
+/// scale below the hips other than one, an F5 value but the fixture's,
+/// two features together, an F5 feature off the identity placement by
+/// any amount, or more than one node between.
 #[test]
-fn unrecorded_rigs_are_not_named() {
-    let unnamed = |found: Result<AnimatorChain, AnimError>| {
-        assert_eq!(rig_of(&found.unwrap()), None);
+fn chains_out_of_scope_have_none() {
+    let none = |found: Result<AnimatorChain, AnimError>| {
+        assert_eq!(found.unwrap().validated(), None);
     };
-    // The testkit's own geometry, and one bone off the layout.
-    unnamed(chain(&rig(Vec::new()), |_| {}));
-    let arms = |name: &str| if name.ends_with("Hand") { 1.01 } else { 1. };
-    unnamed(built(&RECORDED_RIGS[0], [0., 0.88, 0.], 1., arms, |_| {}));
-    // A hips scale of 10, or an Animator scale but the recorded one.
-    let ten = RecordedRig {
-        hips: unityrs_anim::humanoid::chain::RecordedNode {
-            position: [0., 8.8, 0.],
-            rotation: [0., 0., 0., 1.],
-            scale: 10.,
-        },
-        ..RECORDED_RIGS[4]
-    };
-    unnamed(built(&ten, [0., 8.8, 0.], 10., |_| 1., |_| {}));
-    unnamed(as_recorded("scaled-animator", |o| scale(o, 101, [1.5; 3])));
-    // F5 rigs at the offset placement, which E4 passed only at identity.
-    for name in ["scaled-animator", "large", "armature", "hips-scale"] {
-        unnamed(as_recorded(name, |o| {
-            local_trs(o, 101, "m_LocalPosition", &OFFSET_PLACEMENT.0);
-            local_trs(o, 101, "m_LocalRotation", &OFFSET_PLACEMENT.1);
+    let [low, high] = HUMAN_SCALE_RANGE;
+    for h in [2., low.next_down(), high.next_up()] {
+        none(chain(
+            &Rig {
+                scale: h,
+                body_offset: [0., h, 0.],
+                ..rig(Vec::new())
+            },
+            |_| {},
+        ));
+    }
+    // The Spine's rest scale (the eighth bone, Transform 109) of two.
+    none(chain(&rig(Vec::new()), |o| scale(o, 109, [2.; 3])));
+    none(chain(&rig(Vec::new()), |o| {
+        scale(o, 109, [1. + f32::EPSILON; 3]);
+    }));
+    // A hips scale of 10, an Animator scale of 1.5, another armature.
+    none(chain(&rig(Vec::new()), |o| scale(o, 102, [10.; 3])));
+    none(chain(&rig(Vec::new()), |o| scale(o, 101, [1.5; 3])));
+    let (t, q, _) = BETWEEN;
+    none(chain(&rig(vec![(t, q, 0.9)]), |_| {}));
+    // Two features together.
+    let animator = |o: &mut [Object]| scale(o, 101, [ANIMATOR_SCALE; 3]);
+    let hips = |o: &mut [Object]| scale(o, 102, [HIPS_SCALE; 3]);
+    none(featured(ChainFeature::Intermediate, animator));
+    none(featured(ChainFeature::Intermediate, hips));
+    none(featured(ChainFeature::ScaledAnimator, hips));
+    // F5 at the offset placement, or 5e-7 off the identity.
+    for feature in FEATURES {
+        none(featured(feature, offset));
+        none(featured(feature, |o| {
+            local_trs(o, 101, "m_LocalPosition", &[5e-7, 0., 0.]);
         }));
     }
-    // Two features together: a scaled Animator with the armature, a hips
-    // scale with it, a scaled Animator with a hips scale.
-    unnamed(as_recorded("armature", |o| scale(o, 101, [1.25; 3])));
-    unnamed(as_recorded("armature", |o| scale(o, 102, [1.2; 3])));
-    unnamed(as_recorded("hips-scale", |o| scale(o, 101, [1.25; 3])));
-    // The large rig's hips over the compact skeleton: an unrecorded size.
-    unnamed(built(&RECORDED_RIGS[2], [0., 1.32, 0.], 1., |_| 1., |_| {}));
-    // The compact rig's Transforms over the large rig's skeleton.
-    unnamed(built(
-        &RECORDED_RIGS[0],
-        [0., 1.32, 0.],
-        1.5,
-        |_| 1.,
-        |_| {},
-    ));
-}
-
-/// Two nodes compose as the reference's `link` does: the second's
-/// translation turned by the first's rotation and scaled by its scale.
-#[test]
-fn deep_chains_compose_and_bad_links_refuse() {
+    none(chain(&rig(Vec::new()), |o| {
+        local_trs(o, 101, "m_LocalPosition", &[5e-7, 0., 0.]);
+    }));
+    // Two nodes between: (0, 1, 0) plus 2 times (1, 0, 0) turned a
+    // quarter about up, (0, 0, -1), as the reference's `link` composes.
     let deep = vec![
         ([0., 1., 0.], TURN, 2.),
         ([1., 0., 0.], [0., 0., 0., 1.], 1.),
     ];
     let found = chain(&rig(deep), |_| {}).unwrap();
-    let parent = found.parent();
-    // (0, 1, 0) plus 2 times (1, 0, 0) turned a quarter about up: (0, 0, -1).
     let want = [0., 1., -2.];
+    let parent = found.parent();
     assert!(
         parent
             .position
@@ -242,9 +215,17 @@ fn deep_chains_compose_and_bad_links_refuse() {
             .all(|(p, w)| (p - w).abs() < 1e-6)
     );
     assert_eq!(parent.scale, 2.);
-    assert_eq!(rig_of(&found), None);
+    assert_eq!(found.validated(), None);
+}
+
+/// A quarter turn about up, as f32 components.
+const TURN: [f32; 4] = [0., 0.707_106_77, 0., 0.707_106_77];
+
+/// Nonuniform, nonpositive or underflowing scales, malformed rotations and
+/// overflowing links refuse as the chain composes.
+#[test]
+fn bad_links_refuse() {
     let root = Err(AnimError::UnsupportedAnimatorRoot.to_string());
-    // Nonuniform or nonpositive scales anywhere on the chain.
     let squashed = vec![([0.; 3], [0., 0., 0., 1.], 1.)];
     assert_eq!(
         verdict(chain(&rig(squashed), |o| scale(o, 190, [1., 2., 1.]))),
@@ -258,7 +239,7 @@ fn deep_chains_compose_and_bad_links_refuse() {
         verdict(chain(&rig(Vec::new()), |o| scale(o, 102, [-1.; 3]))),
         root
     );
-    // Singular or materially non-unit rotations, between or on the hips.
+    // Singular or materially non-unit rotations between.
     for q in [
         [0., 0., 0., 0.5],
         [0.; 4],
@@ -267,13 +248,17 @@ fn deep_chains_compose_and_bad_links_refuse() {
     ] {
         let between = vec![([0., 0.05, 0.1], q, 0.8)];
         assert_eq!(verdict(chain(&rig(between), |_| {})), root, "{q:?}");
-        let hips = |o: &mut [Object]| local_trs(o, 102, "m_LocalRotation", &q);
-        assert_eq!(verdict(chain(&rig(Vec::new()), hips)), root, "{q:?}");
     }
     // An f32 unit quaternion is a rotation.
     let between = vec![([0., 0.05, 0.1], [-0.707_106_77, 0., 0., 0.707_106_77], 0.8)];
     assert!(chain(&rig(between), |_| {}).is_ok());
-    // A link that overflows refuses as it composes: nine scales of 3e38.
+    // A composed scale that underflows to zero (eight of 1e-42) or to a
+    // subnormal (seven of 1e-44).
+    for (depth, tiny) in [(8, 1e-42), (7, 1e-44)] {
+        let small = vec![([0.; 3], [0., 0., 0., 1.], tiny); depth];
+        assert_eq!(verdict(chain(&rig(small), |_| {})), root, "{depth}");
+    }
+    // A link that overflows: nine scales of 3e38.
     let huge = vec![([0.; 3], [0., 0., 0., 1.], 3e38); 9];
     assert_eq!(
         verdict(chain(&rig(huge), |_| {})),
@@ -281,60 +266,38 @@ fn deep_chains_compose_and_bad_links_refuse() {
     );
 }
 
-/// The compact rig takes every admitted variant, at both placements;
-/// F5's rigs only `CHAIN_VARIANT`, the one E4 passed on them, so `large`
-/// with any other clip refuses; an unrecorded rig takes none. A clip with
-/// one cell off Original never reaches the chain: `root_settings` refuses
-/// it.
+/// The plain chain takes every admitted variant, at both placements; an
+/// F5 feature only `CHAIN_VARIANT`, the one E4 passed on it; a chain out
+/// of scope none.
 #[test]
 fn admission_follows_e4s_passing_set() {
     let meter = Meter::unlimited();
     let admitted = |found: &AnimatorChain, name: &str| {
-        let clip = full_clip(&variant_settings(name));
-        let settings = root::root_settings(&clip, &meter).unwrap();
+        let settings = root::root_settings(&variant_clip(name), &meter).unwrap();
         verdict(admit_chain(found, &settings))
     };
     let refusal = Err(AnimError::UnsupportedAnimatorRoot.to_string());
-    let compact = as_recorded("compact", |_| {}).unwrap();
-    let offset = as_recorded("compact", |o| {
-        local_trs(o, 101, "m_LocalPosition", &OFFSET_PLACEMENT.0);
-        local_trs(o, 101, "m_LocalRotation", &OFFSET_PLACEMENT.1);
-    })
-    .unwrap();
-    let unrecorded = chain(&rig(Vec::new()), |_| {}).unwrap();
+    let plain = chain(&rig(Vec::new()), |_| {}).unwrap();
+    let placed = chain(&rig(Vec::new()), offset).unwrap();
+    let outside = chain(&rig(Vec::new()), |o| scale(o, 102, [10.; 3])).unwrap();
     for row in &ADMITTED {
-        assert_eq!(admitted(&compact, row.variant), ROOT, "{}", row.variant);
-        assert_eq!(admitted(&offset, row.variant), ROOT, "{}", row.variant);
-        assert_eq!(
-            admitted(&unrecorded, row.variant),
-            refusal,
-            "{}",
-            row.variant
-        );
-        for name in ["scaled-animator", "large", "armature", "hips-scale"] {
-            let found = as_recorded(name, |_| {}).unwrap();
+        assert_eq!(admitted(&plain, row.variant), Ok(()), "{}", row.variant);
+        assert_eq!(admitted(&placed, row.variant), Ok(()), "{}", row.variant);
+        assert_eq!(admitted(&outside, row.variant), refusal, "{}", row.variant);
+        for feature in FEATURES {
+            let found = featured(feature, |_| {}).unwrap();
             let want = if row.variant == CHAIN_VARIANT {
-                ROOT
+                Ok(())
             } else {
                 refusal.clone()
             };
             assert_eq!(
                 admitted(&found, row.variant),
                 want,
-                "{name} {}",
+                "{feature:?} {}",
                 row.variant
             );
         }
-    }
-    for off in [
-        "m_KeepOriginalOrientation",
-        "m_KeepOriginalPositionY",
-        "m_KeepOriginalPositionXZ",
-    ] {
-        let mut settings = variant_settings(CHAIN_VARIANT);
-        settings.retain(|(field, _)| *field != off);
-        let clip = full_clip(&settings);
-        assert!(root::root_settings(&clip, &meter).is_err(), "{off}");
     }
 }
 
@@ -346,7 +309,7 @@ fn admission_follows_e4s_passing_set() {
 /// scaled 1.5, and a hips scale of 1.2.
 #[test]
 fn projection_then_solve_applies_the_human_scale_once() {
-    let clip = full_clip(&variant_settings(CHAIN_VARIANT));
+    let clip = variant_clip(CHAIN_VARIANT);
     let pose: AnimatorBodyPose =
         root::target_body_pose(&clip, 0.5, 1.25, &Meter::unlimited()).unwrap();
     let rest = local();
@@ -397,150 +360,178 @@ fn projection_then_solve_applies_the_human_scale_once() {
     }
 }
 
-fn euler_x(degrees: f64) -> [f64; 4] {
-    let (s, c) = (degrees.to_radians() / 2.).sin_cos();
-    [s, 0., 0., c]
+const BUILDER: &str =
+    include_str!("../../../../tools/fixtures/unity/Editor/UnityrsBodyFixtures.cs");
+const FIXTURE: &str = include_str!("../../../../tools/parity/anim_fixture_body.py");
+
+/// A C# or Python number literal: `1.25f`, `.8`, `-1`.
+fn number(text: &str) -> f64 {
+    text.trim().trim_end_matches('f').parse().unwrap()
 }
 
-/// `RECORDED_RIGS` is freeze v8's `e4.passing` (each configuration's rig,
-/// variants and placements) with the parameters its fixtures built each
-/// with; `COMPACT_LAYOUT` is `rig_layout`'s compact rig. Drift fails here.
+/// The number after `key` in `source`, up to `,`, `;`, `)` or `}`.
+fn value_after(source: &str, key: &str) -> f64 {
+    let at = source.find(key).unwrap_or_else(|| panic!("{key}")) + key.len();
+    let end = at + source[at..].find([',', ';', ')', '}']).unwrap();
+    number(&source[at..end])
+}
+
+/// The arguments of the call after `key`: `new Vector3(0, .05f, .1f)`.
+fn arguments_after(source: &str, key: &str) -> Vec<f64> {
+    let at = source.find(key).unwrap_or_else(|| panic!("{key}")) + key.len();
+    let end = at + source[at..].find(')').unwrap();
+    source[at..end].split(',').map(number).collect()
+}
+
+/// `Quaternion.Euler` of one nonzero axis, in f32: `(sin, cos)` of half.
+fn euler(degrees: &[f64]) -> [f32; 4] {
+    let mut q = [0., 0., 0., 1.];
+    let axes: Vec<usize> = (0..3).filter(|&k| degrees[k] != 0.).collect();
+    assert!(axes.len() <= 1, "{degrees:?}");
+    if let Some(&k) = axes.first() {
+        let (sin, cos) = (degrees[k].to_radians() / 2.).sin_cos();
+        q[k] = sin;
+        q[3] = cos;
+    }
+    #[allow(clippy::cast_possible_truncation, reason = "Unity's f32 quaternion")]
+    q.map(|v| v as f32)
+}
+
+/// Unity's f32 `Quaternion.Euler` can round a component an ulp away from
+/// the f64 rotation rounded; the constants hold the recorded bits.
+fn within_an_ulp(computed: [f32; 4], recorded: [f32; 4]) -> bool {
+    computed
+        .iter()
+        .zip(recorded)
+        .all(|(&a, b)| a.to_bits().abs_diff(b.to_bits()) <= 1 && a.signum() == b.signum())
+}
+
+fn f32s(values: &[f64]) -> Vec<f32> {
+    #[allow(clippy::cast_possible_truncation, reason = "f32 fixture values")]
+    values.iter().map(|&v| v as f32).collect()
+}
+
+/// Each F5 rig's feature, from its `ChainRigs` entry in the builder: a
+/// rig whose only change is its size (`large`) is the plain chain.
+fn chain_rigs() -> Vec<(String, ChainFeature)> {
+    let at = BUILDER
+        .find("static readonly BodyRig[] ChainRigs = {")
+        .unwrap();
+    let block = &BUILDER[at..at + BUILDER[at..].find("};").unwrap()];
+    block
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("new BodyRig { Name = \""))
+        .map(|rest| {
+            let (name, rest) = rest.split_once('"').unwrap();
+            let feature = if rest.contains("ScaledAnimator = true") {
+                ChainFeature::ScaledAnimator
+            } else if rest.contains("Armature = true") {
+                ChainFeature::Intermediate
+            } else if rest.contains("HipsScale = ") {
+                ChainFeature::HipsScale
+            } else {
+                assert!(rest.trim() == ", Size = 1.5f },", "{rest}");
+                ChainFeature::Plain
+            };
+            (name.to_owned(), feature)
+        })
+        .collect()
+}
+
+/// Freeze v8's `e4.passing`, tuple by tuple (variant, rig, Editor version,
+/// placement), is the compact rig with every admitted variant at both
+/// placements and each F5 rig with `CHAIN_VARIANT` at identity, in each
+/// Editor version; each lies in the scope `admit_chain` admits for its
+/// rig's feature. Removing or adding one tuple fails here.
 #[test]
-fn the_recorded_rigs_are_freeze_v8s() {
+fn every_passing_tuple_is_freeze_v8s() {
     let frozen: Value = serde_json::from_str(FREEZE).unwrap();
-    let passing: Vec<Vec<&str>> = frozen["e4"]["passing"]
+    let passing: BTreeSet<String> = frozen["e4"]["passing"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|c| c.as_str().unwrap().split('/').collect())
+        .map(|c| c.as_str().unwrap().to_owned())
         .collect();
-    let rigs: BTreeSet<&str> = passing.iter().map(|c| c[1]).collect();
-    let ours: BTreeSet<&str> = RECORDED_RIGS.iter().map(|r| r.rig).collect();
-    assert_eq!(rigs, ours);
-    let all: BTreeSet<&str> = ADMITTED.iter().map(|r| r.variant).collect();
-    for recorded in &RECORDED_RIGS {
-        let of = |part: usize| -> BTreeSet<&str> {
-            passing
-                .iter()
-                .filter(|c| c[1] == recorded.rig)
-                .map(|c| c[part])
-                .collect()
-        };
-        let variants = of(0);
-        if recorded.every_variant {
-            assert_eq!(variants, all);
-        } else {
-            assert_eq!(variants, BTreeSet::from([CHAIN_VARIANT]));
+    let versions: Vec<&str> = frozen["scope"]["editor_versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let rigs = chain_rigs();
+    let named: Vec<&str> = rigs.iter().map(|(name, _)| name.as_str()).collect();
+    let listed = FIXTURE
+        .split("CHAIN_RIGS = (")
+        .nth(1)
+        .unwrap()
+        .split(')')
+        .next()
+        .unwrap();
+    let listed: Vec<&str> = listed.split(", ").map(|n| n.trim_matches('"')).collect();
+    assert_eq!(named, listed);
+    let mut expected = BTreeSet::new();
+    for version in &versions {
+        for row in &ADMITTED {
+            for placement in ["identity", "offset"] {
+                expected.insert(format!("{}/compact/{version}/{placement}", row.variant));
+            }
         }
-        let places = of(3);
-        let want = if recorded.offset {
-            BTreeSet::from(["identity", "offset"])
-        } else {
-            BTreeSet::from(["identity"])
-        };
-        assert_eq!(places, want, "{}", recorded.rig);
+        for name in &named {
+            expected.insert(format!("{CHAIN_VARIANT}/{name}/{version}/identity"));
+        }
     }
-    let fixture = include_str!("../../../../tools/parity/anim_fixture_body.py");
-    for line in [
-        "CHAIN_VARIANT = \"keep-o1-y1-xz1-motion\"",
-        "CHAIN_RIGS = (\"scaled-animator\", \"large\", \"armature\", \"hips-scale\")",
-        "\"scaled-animator\": near(scale(\"0\"), 1.25),",
-        "\"armature\": nodes.get(\"0/0\", (0, \"\"))[1] == \"Armature\" and near(scale(\"0/0\"), .8) and hips == \"0/0/0\",",
-        "\"hips-scale\": near(scale(hips), 1.2),",
-        "\"large\": abs(_f32s(rest[nodes[hips][0]][\"translation\"], replay, 3)[1] - 1.32) <= 1e-5,",
-        "return all(abs(v - want) <= 1e-6 for v in values)",
-    ] {
-        assert!(fixture.contains(line), "{line}");
+    assert_eq!(passing, expected);
+    // Each tuple within the scope: an F5 feature only with the chain
+    // variant, only at identity.
+    for tuple in &passing {
+        let parts: Vec<&str> = tuple.split('/').collect();
+        let feature = rigs
+            .iter()
+            .find(|(name, _)| name == parts[1])
+            .map_or(ChainFeature::Plain, |&(_, feature)| feature);
+        if feature != ChainFeature::Plain {
+            assert_eq!((parts[0], parts[3]), (CHAIN_VARIANT, "identity"), "{tuple}");
+        }
     }
-    let builder = include_str!("../../../../tools/fixtures/unity/Editor/UnityrsBodyFixtures.cs");
-    for line in [
-        "new BodyRig { Name = \"scaled-animator\", ScaledAnimator = true },",
-        "new BodyRig { Name = \"large\", Size = 1.5f },",
-        "new BodyRig { Name = \"armature\", Armature = true },",
-        "new BodyRig { Name = \"hips-scale\", HipsScale = 1.2f },",
-        "const float AnimatorScale = 1.25f, ArmatureScale = .8f;",
-        "top = Child(root, \"Armature\", new Vector3(0, .05f, .1f));",
-        "top.localRotation = Quaternion.Euler(-90, 0, 0);",
-        "hips.localPosition = new Vector3(0, .125f, .8375f);",
-        "hips.localRotation = Quaternion.Euler(90, 0, 0);",
-        "hips.localScale = Vector3.one * rig.HipsScale;",
-        "hips.localPosition *= rig.HipsScale;",
-        "if (rig.ScaledAnimator) rigObject.transform.localScale = Vector3.one * AnimatorScale;",
-        "rigObject.transform.localPosition = new Vector3(2, .25f, -1);",
-        "rigObject.transform.localRotation = Quaternion.Euler(0, 35, 0);",
-        "nodes.Add(new BodyNode { Name = name, Parent = parent, Offset = offset * rig.Size });",
-    ] {
-        assert!(builder.contains(line), "{line}");
+    // The scope's evidence: the training recordings the human scale's range
+    // and the unit rest scales were measured on, with both rigs at its ends.
+    assert_eq!(frozen["training"]["digest"], HUMAN_SCALE_EVIDENCE);
+    let training = frozen["scope"]["training_rigs"].as_array().unwrap();
+    for rig in ["armature", "large", "compact"] {
+        assert!(training.iter().any(|r| r == rig), "{rig}");
     }
-    let near = |a: f64, b: f64| (a - b).abs() <= 1e-7;
-    let f = f64::from;
-    let [compact, animator, large, armature, hips_scale] = RECORDED_RIGS;
-    let hips_y = COMPACT_LAYOUT[0].2[1];
-    assert_eq!(
-        (compact.size, animator.animator_scale, large.size),
-        (1., 1.25, 1.5)
-    );
-    assert!(near(f(compact.hips.position[1]), hips_y));
-    assert!(near(f(large.hips.position[1]), 1.5 * hips_y));
-    assert!(near(f(hips_scale.hips.position[1]), 1.2 * hips_y));
-    assert_eq!(hips_scale.hips.scale, 1.2);
-    let between = armature.between.unwrap();
-    assert_eq!((between.position, between.scale), ([0., 0.05, 0.1], 0.8));
-    for (got, want) in [
-        (between.rotation, euler_x(-90.)),
-        (armature.hips.rotation, euler_x(90.)),
-    ] {
-        assert!(got.iter().zip(want).all(|(g, w)| near(f(*g), w)));
-    }
-    assert_eq!(armature.hips.position, [0., 0.125, 0.8375]);
-    let (s, c) = (35_f64.to_radians() / 2.).sin_cos();
-    let turn = OFFSET_PLACEMENT.1;
-    assert!(near(f(turn[1]), s) && near(f(turn[3]), c) && turn[0] == 0. && turn[2] == 0.);
-    assert_eq!(OFFSET_PLACEMENT.0, [2., 0.25, -1.]);
 }
 
-/// `COMPACT_LAYOUT` is `rig_layout`'s compact rig, and the large rig's
-/// size `RIG_SIZES`'.
+/// F5's values, read as values from the builder and the fixture checker.
 #[test]
-fn the_compact_layout_is_rig_layouts() {
-    let layout = include_str!("../../../../tools/parity/anim_fixture_rigs.py");
-    for line in [
-        "rows = [(\"Hips\", \"\", (0, (1.18 if tall else .88) - (1 - legs) * (1.06 if tall else .73), 0)),",
-        "(\"Spine\", \"Hips\", (0, .21 if tall else .16, 0)), (\"Chest\", \"Spine\", (0, .27 if tall else .13, 0))]",
-        "rows.append((\"UpperChest\", \"Chest\", (0, .08, 0)))",
-        "rows += [(\"Neck\", torso, (0, .14, 0)), (\"Head\", \"Neck\", (0, .12, 0))]",
-        "rows += [(side + \"UpperLeg\", \"Hips\", (sign * (.10 if tall else .13), -.05, hip_z)),",
-        "(side + \"LowerLeg\", side + \"UpperLeg\", (0, (-.58 if tall else -.36) * legs, .04)),",
-        "(side + \"Foot\", side + \"LowerLeg\", (0, (-.48 if tall else -.37) * legs, -.04)),",
-        "(side + \"Toes\", side + \"Foot\", (0, -.04, .14)),",
-        "(side + \"Shoulder\", torso, (sign * .08, .08, shoulder_z)),",
-        "(side + \"UpperArm\", side + \"Shoulder\", (sign * (.10 if tall else .14), 0, 0)),",
-        "(side + \"LowerArm\", side + \"UpperArm\", (sign * (.34 if tall else .26) * arms, 0, 0)),",
-        "(side + \"Hand\", side + \"LowerArm\", (sign * (.26 if tall else .23) * arms, 0, 0))]",
-        "RIG_SIZES = {\"large\": 1.5}",
-    ] {
-        assert!(layout.contains(line), "{line}");
-    }
-    let mut want = vec![
-        ("Hips", "", [0., 0.88, 0.]),
-        ("Spine", "Hips", [0., 0.16, 0.]),
-        ("Chest", "Spine", [0., 0.13, 0.]),
-        ("UpperChest", "Chest", [0., 0.08, 0.]),
-        ("Neck", "UpperChest", [0., 0.14, 0.]),
-        ("Head", "Neck", [0., 0.12, 0.]),
+fn the_f5_values_are_the_fixtures() {
+    let animator = value_after(BUILDER, "const float AnimatorScale = ");
+    let armature = value_after(BUILDER, ", ArmatureScale = ");
+    let hips = value_after(BUILDER, "Name = \"hips-scale\", HipsScale = ");
+    assert_eq!(
+        f32s(&[animator, armature, hips]),
+        [ANIMATOR_SCALE, BETWEEN.2, HIPS_SCALE]
+    );
+    let checks = [
+        value_after(FIXTURE, "\"scaled-animator\": near(scale(\"0\"), "),
+        value_after(FIXTURE, "near(scale(\"0/0\"), "),
+        value_after(FIXTURE, "\"hips-scale\": near(scale(hips), "),
     ];
-    for (side, sign) in [("Left", -1.), ("Right", 1.)] {
-        let name = |bone: &str| -> &'static str { format!("{side}{bone}").leak() };
-        want.extend([
-            (name("UpperLeg"), "Hips", [sign * 0.13, -0.05, 0.]),
-            (name("LowerLeg"), name("UpperLeg"), [0., -0.36, 0.04]),
-            (name("Foot"), name("LowerLeg"), [0., -0.37, -0.04]),
-            (name("Toes"), name("Foot"), [0., -0.04, 0.14]),
-            (name("Shoulder"), "UpperChest", [sign * 0.08, 0.08, 0.]),
-            (name("UpperArm"), name("Shoulder"), [sign * 0.14, 0., 0.]),
-            (name("LowerArm"), name("UpperArm"), [sign * 0.26, 0., 0.]),
-            (name("Hand"), name("LowerArm"), [sign * 0.23, 0., 0.]),
-        ]);
-    }
-    assert_eq!(COMPACT_LAYOUT.to_vec(), want);
+    assert_eq!(f32s(&checks), [ANIMATOR_SCALE, BETWEEN.2, HIPS_SCALE]);
+    let (t, q, _) = BETWEEN;
+    let at = arguments_after(BUILDER, "top = Child(root, \"Armature\", new Vector3(");
+    assert_eq!(f32s(&at), t);
+    let turned = arguments_after(BUILDER, "top.localRotation = Quaternion.Euler(");
+    assert!(within_an_ulp(euler(&turned), q), "{turned:?}");
+    let placed = arguments_after(BUILDER, "rigObject.transform.localPosition = new Vector3(");
+    assert_eq!(f32s(&placed), OFFSET_PLACEMENT.0);
+    let turned = arguments_after(
+        BUILDER,
+        "rigObject.transform.localRotation = Quaternion.Euler(",
+    );
+    assert!(
+        within_an_ulp(euler(&turned), OFFSET_PLACEMENT.1),
+        "{turned:?}"
+    );
+    assert!(FIXTURE.contains(&format!("CHAIN_VARIANT = \"{CHAIN_VARIANT}\"")));
 }

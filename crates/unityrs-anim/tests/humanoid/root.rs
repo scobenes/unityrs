@@ -110,7 +110,7 @@ fn fixture_number(key: &str) -> f32 {
 /// A variant's settings, from its name as E4's fixture spells it
 /// (`_flags`: `-o<bit>-y<bit>-xz<bit>`) and the fixture's level and
 /// orientation offset.
-pub(super) fn variant_settings(name: &str) -> Vec<(&'static str, V)> {
+fn variant_settings(name: &str) -> Vec<(&'static str, V)> {
     let mut extra = Vec::new();
     let mut flags = Vec::new();
     for (prefix, fields) in [
@@ -149,7 +149,7 @@ pub(super) fn variant_clip(name: &str) -> Clip {
 }
 
 /// A clip with the body and motion slots at `POSE` and `MOTION_POSE`.
-pub(super) fn full_clip(settings: &[(&'static str, V)]) -> Clip {
+fn full_clip(settings: &[(&'static str, V)]) -> Clip {
     let mut dofs = BODY.to_vec();
     dofs.extend(MOTION);
     let mut values = POSE.to_vec();

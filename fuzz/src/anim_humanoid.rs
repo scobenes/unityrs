@@ -466,9 +466,9 @@ pub(crate) fn rigs(
 }
 
 /// The rig's Animator chain (`humanoid::chain`), held to a finite parent
-/// with a positive scale (the identity for a recorded rig with no node
-/// between), the recorded rig it names, then its admission with each kept
-/// clip's admitted root settings.
+/// with a normal positive scale (the identity for the plain chain or a
+/// scaled Animator or hips), its scope, then its admission with each kept
+/// clip's admitted root settings or their refusal.
 fn chain_digest(
     body: &BodyAvatar<'_>,
     paths: &RigPaths<'_>,
@@ -487,16 +487,17 @@ fn chain_digest(
             .iter()
             .chain(&parent.rotation)
             .all(|v| v.is_finite())
+            && parent.scale.is_normal()
             && parent.scale > 0.
             && found.hips_scale() > 0.,
         "a finite chain"
     );
-    let recorded = found.recorded();
-    if recorded.is_some_and(|(rig, _)| rig.between.is_none()) {
-        assert_eq!(parent, body_solve::HipsParent::IDENTITY, "a plain chain");
+    let scope = found.validated();
+    if scope.is_some_and(|(feature, _)| feature != chain::ChainFeature::Intermediate) {
+        assert_eq!(parent, body_solve::HipsParent::IDENTITY, "no node between");
     }
     digest.tag((
-        recorded.map(|(rig, offset)| (rig.rig, offset)),
+        scope.map(|(feature, offset)| (discriminant(&feature), offset)),
         parent.position.map(f64::to_bits),
         parent.rotation.map(f64::to_bits),
         parent.scale.to_bits(),

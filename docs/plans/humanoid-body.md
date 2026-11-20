@@ -510,6 +510,30 @@ coefficient is shipped from a fit.
 | B4 | Root projection and frames | Target body pose per verified 2.4 combination, conversion from the Animator to the hips parent with scale, narrowed refusals | 0.4–0.6k | B3, F4, F5 |
 | B5 | Integration and L11 | Lift the body-bearing refusal behind the release gate below, add collector integration, run the gated same-bundle replay (E5), and promote the PARITY row | 0.4–0.6k | B4 |
 
+**B4's admitted scope.** B4 admits only what freeze v8's evidence
+validated, as checkable settings, ranges and structure, never a rig's
+identity; `humanoid_refusal` stays global until B5's predicate and E5.
+
+- **Settings.** The clip's settings are one of `e4.passing`'s eleven
+  variants, field by field: the six bake and keep-original flags, and
+  `m_Level` and `m_OrientationOffsetY` to the bit. Its motion slots are
+  all bound for the all-Original variant and none for the others. It has
+  no additive reference pose, and E4's exact slot binding key.
+- **Chain.** The plain chain admits every variant, at the identity or at
+  E4's offset placement. One F5 feature alone admits only the
+  all-Original variant, at an exactly identity placement: the Animator
+  node at scale 1.25, one armature node at its fixture transform, or the
+  hips at scale 1.2. Every ancestor of the Animator node is exactly at the
+  identity.
+- **Ranges.** `m_Scale` lies in [0.78115433, 1.4346639], the range over
+  E3a's and E4's training rigs (the hold-out stays sealed). Every rest
+  scale below the hips is exactly 1, as on every validated rig.
+
+The plain chain at any human scale in the range admits every variant, so
+the `large` rig's size takes the Bake and Body variants E4 compared only
+on the compact rig. B5's predicate and E5's same-bundle replay are the
+release gate.
+
 **B5's release gate.**
 
 - **Predicate.** A runtime configuration predicate decides admission. It
