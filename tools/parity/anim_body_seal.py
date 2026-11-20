@@ -76,15 +76,15 @@ FREEZE_PATH = HERE / "anim_body_freeze_v7.json"
 # The account's own home (its passwd entry, never $HOME).
 LEDGER_DIR = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local" / "state" / "unityrs" / "e3b"
 HOLDOUT_CASES = tuple(sorted(name for name, info in BODY_INFO.items() if info["rig"] == HOLDOUT))
-# The in-scope comparisons each Editor version's hold-out must reach, from its design: body-probes-holdout's
-# schedule (anim_fixture_body.probe_schedule) has 45 known vectors on the compact topology. Seven bend the spine
-# sideways by .25 or more (the three single Left-Right probes, the three combined vectors and the noncommuting
-# anchor), past any lateral limit under .25, and 2.2's frame scope refuses five more by design (the single Twist
-# probes of Spine, Chest and UpperChest, and each shoulder's Front-Back): IN_SCOPE_BY_DESIGN. The minimum allows
-# three more frame refusals for the hold-out's longer arms, and no fewer.
+# The in-scope comparisons each Editor version's hold-out must reach, from its design: body-probes-holdout-2's
+# schedule (anim_fixture_body.probe_schedule) has 48 known vectors on the compact topology: the three spine
+# anchors and 45 draws (anim_fixture_rigs.holdout_plan). By design no draw bends the spine sideways or sets a
+# muscle 2.2's frame scope refuses (FRAME_REFUSED: a spine twist, a shoulder's Front-Back); only the noncommuting
+# anchor bends it sideways, by .375, past any lateral limit under .25. That leaves IN_SCOPE_BY_DESIGN. The
+# minimum allows three frame refusals the draws' combined bends may still cause, and no more.
 FRAME_REFUSED = ("Spine Twist Left-Right", "Chest Twist Left-Right", "UpperChest Twist Left-Right",
                  "Left Shoulder Front-Back", "Right Shoulder Front-Back")
-IN_SCOPE_BY_DESIGN = 33
+IN_SCOPE_BY_DESIGN = 47
 MIN_COMPARISONS = IN_SCOPE_BY_DESIGN - 3
 
 
@@ -296,6 +296,10 @@ def e3b(folders, path, unityrs, readers, complete_folder):
     replay.require(reader == artifact["reader"]["sha256"], "the unityrs CLI is not the frozen one")
     avatar_of, clip_of = readers(unityrs)
     runs, _, design = freeze.frozen_training(folders, artifact, avatar_of, clip_of)
+    # Section 7's criterion predicted again at every planned hold-out sample, before anything opens.
+    planned = freeze.holdout.predicted(runs, design, artifact["coefficients"], avatar_of)
+    short = [line for entry in planned.values() for line in entry["failures"]]
+    replay.require(not short, f"the hold-out is predicted short of its margin: {short[:3]}")
     preflight(runs)
     claim(freeze_sha256)
     try:

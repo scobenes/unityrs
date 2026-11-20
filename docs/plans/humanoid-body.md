@@ -566,6 +566,34 @@ coefficient is shipped from a fit.
 - **No pass on nothing.** E0, E2, E3 and E4 fail with no comparison, and a
   bound that bounds nothing (an unknown design column, an infinite `u_s`, a
   turn of 2 or more) fails every comparison against it.
+- **E3b on freeze v7: FAIL.** E3b ran once, on round 9's hold-out, and
+  failed in both Editor versions on one check alone. At one hold-out
+  sample (local 0.651947021484375), `u_s` 3.521e-05 exceeds `E_unity,s`
+  3.512e-05, by 0.26%: the adequacy criterion of section 7, not a
+  residual. Every in-scope residual was within 0.3% of its `T_s`, with 33
+  in-scope comparisons per version (minimum 30) and E0 passing. Freeze
+  v7 is not validated, so B3 stays blocked. Round 9's hold-out is
+  consumed, and E3b is not re-run on it. A later fix to the source scan
+  (file-name constants only, for Python 3.11) changes v7's source digest;
+  v7 is spent, so nothing rebinds it. Round 8's sealed hold-out
+  records the same poses, so it is no fresh test either. The criterion
+  depends only on the frozen design and the hold-out's planned geometry
+  and poses, so it was predictable before the freeze. The recovery:
+  - the freeze and E3a now require it, with margin, at every planned
+    hold-out sample, predicted from the fixture spec alone: the base
+    rig's recorded rotations on the hold-out rig's layout, the hips
+    placed by the model, and `E_unity,s / u_s` of at least 1.05 in each
+    Editor version, checked again before E3b claims its shot. On round
+    9's training runs this prediction flags the failing sample;
+  - five extra probe cases tighten the coefficient combinations that
+    drive it (the shoulder links' sum and difference, and the lower
+    legs'). The criterion is block-l1, so repeating rows of a given
+    leverage cannot lower `u_s` past what that leverage allows: added
+    poses lift the worst planned margin only modestly, which is why the
+    required margin is 1.05 and not larger;
+  - a new hold-out rig, `holdout-2` (arms 0.8, legs 1.2), with 45 fresh
+    pose draws from a new Sobol seed, is recorded in the next run. Both
+    earlier hold-out rigs stay sealed and are never fitted.
 
 **Total estimate.** 2.6–3.8k non-test lines. B1 can start now. B2 waits for
 the owner's runs of B1 in both Editor versions, and B3–B5 wait for B2's

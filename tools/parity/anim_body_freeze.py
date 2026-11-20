@@ -83,12 +83,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import anim_body_adequacy as adequacy  # noqa: E402
 import anim_body_check as check  # noqa: E402
 import anim_body_e4 as e4_check  # noqa: E402
+import anim_body_holdout as holdout  # noqa: E402
 import anim_body_seal as seal  # noqa: E402
 import anim_replay as replay  # noqa: E402
 from anim_body_model import ANGLE_FLOOR, HYPOTHESES, TWIST_LIMIT  # noqa: E402
 from anim_body_runs import EDITORS, Design, digest, load, observe, role_of, solve  # noqa: E402
 from anim_body_tolerance import OPERATIONS, U32, U64  # noqa: E402
-from anim_fixture_body import BAND_CASES, BODY_INFO, HOLDOUT, rig_bones  # noqa: E402
+from anim_fixture_body import BAND_CASES, BODY_INFO, HOLDOUT, HOLDOUT_RIGS, rig_bones  # noqa: E402
 
 FORMAT = "unityrs.anim_body_freeze"
 VERSION = 7
@@ -163,7 +164,11 @@ def e3a(folders, avatar_of, clip_of):
     coefficients = solve(design)
     found, failures = lateral(runs, rows, design, coefficients)
     report = check.e3(rows, design, coefficients, found["limit"])
-    report["failures"] += failures + missing(runs)
+    # Section 7's criterion at every planned hold-out sample, with margin, from the spec alone.
+    plan = holdout.predicted(runs, design, coefficients, avatar_of)
+    report["failures"] += failures + missing(runs) + [line for entry in plan.values() for line in entry["failures"]]
+    report["holdout_plan"] = {version: {key: entry[key] for key in ("worst_margin", "in_frame", "refused")}
+                              | dict(minimum=holdout.HOLDOUT_MARGIN) for version, entry in plan.items()}
     report["passed"] = not report["failures"]
     return report | dict(coefficients=coefficients, digest=digest(inputs_of(runs)), lateral=found,
                          lateral_limit=found["limit"]), runs, rows, design
@@ -216,7 +221,7 @@ def freeze(folders, path, avatar_of, clip_of, evidence=(), unityrs=None):
     replay.require(all(abs(a) <= check.COEFFICIENT_LIMIT for a in coefficients.values()),
                    f"the freeze needs every coefficient within |a| <= {check.COEFFICIENT_LIMIT}")
     inputs = inputs_of(runs)
-    replay.require(all(row["rig"] != HOLDOUT and role_of(row["case"]) == "training" for row in inputs),
+    replay.require(all(row["rig"] not in HOLDOUT_RIGS and role_of(row["case"]) == "training" for row in inputs),
                    "a hold-out input reached the freeze")
     commit, files, source_digest = seal.code_state()
     rigs = sorted({row["rig"] for row in inputs} - {"p2b"})
@@ -231,7 +236,7 @@ def freeze(folders, path, avatar_of, clip_of, evidence=(), unityrs=None):
         training=dict(digest=digest(inputs), inputs=sorted(inputs, key=lambda row: (row["run"], row["case"])),
                       holdout_rows=0),
         e3a=dict(passed=True, samples=report["samples"], worst_ratio=report["worst_ratio"],
-                 refused=report["refused"]),
+                 refused=report["refused"], holdout_plan=report["holdout_plan"]),
         e4=dict(passed=True, note="per configuration (variant/rig/Editor version/root placement): B4 and B5 "
                                   "implement the passing ones alone; excluded ones compared nothing",
                 samples=root["samples"], start_pairs=root["start_pairs"], passing=root["passing"],
@@ -260,10 +265,15 @@ def read_freeze(path, data=None):
     data = artifact["training"]
     inputs = data["inputs"]
     replay.require(data["holdout_rows"] == 0 and inputs
-                   and all(row["rig"] != HOLDOUT and role_of(row["case"]) == "training" for row in inputs),
+                   and all(row["rig"] not in HOLDOUT_RIGS and role_of(row["case"]) == "training" for row in inputs),
                    "the freeze artifact was produced from hold-out inputs")
     replay.require(data["digest"] == digest(inputs), "the freeze artifact's digest disagrees with its inputs")
     replay.require(artifact["e3a"].get("passed") is True, "the freeze artifact records no passed E3a")
+    plan = artifact["e3a"].get("holdout_plan") or {}
+    replay.require(sorted(plan) == sorted(artifact["scope"]["editor_versions"])
+                   and all(entry["minimum"] == holdout.HOLDOUT_MARGIN and entry["worst_margin"] is not None
+                           and entry["worst_margin"] >= entry["minimum"] for entry in plan.values()),
+                   "the freeze records no predicted hold-out margin of at least the code's in every version")
     replay.require(artifact["e4"].get("passed") is True and artifact["e4"]["passing"],
                    "the freeze artifact records no passed E4")
     scope = artifact["scope"]

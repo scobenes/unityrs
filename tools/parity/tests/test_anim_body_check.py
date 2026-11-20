@@ -7,12 +7,13 @@ import unittest
 from unittest import mock
 
 import anim_body_support as support
-from anim_body_model_support import BITS, CLIPS, F32, avatar, coefficients, recording, write_run
+from anim_body_model_support import BITS, CLIPS, F32, avatar, coefficients, planned_margins, recording, write_run
 
 import anim_body_adequacy as adequacy  # noqa: E402  (test_anim_replay puts it on the path)
 import anim_body_check as check  # noqa: E402
 import anim_body_e4 as e4  # noqa: E402
 import anim_body_freeze as freeze  # noqa: E402
+import anim_body_holdout as holdout  # noqa: E402
 import anim_body_model as model  # noqa: E402
 import anim_body_runs as runs  # noqa: E402
 import anim_body_tolerance as tolerance  # noqa: E402
@@ -62,6 +63,9 @@ class Checks(unittest.TestCase):
         family = mock.patch.object(e4, "EDITORS", (write_run.__defaults__[0].split(".")[0],))
         family.start()
         self.addCleanup(family.stop)
+        plan = mock.patch.object(holdout, "predicted", planned_margins())
+        plan.start()
+        self.addCleanup(plan.stop)
 
     def run_mode(self, mode, docs=None, avatar_of=avatars, clip_of=clips):
         return checked(mode, scratch.for_case(self), docs if docs is not None else self.docs, avatar_of, clip_of)

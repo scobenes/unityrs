@@ -19,9 +19,10 @@ import pathlib
 import unittest
 from unittest import mock
 
-from anim_body_model_support import BITS, CLIPS, F32, avatar, recording, write_run
+from anim_body_model_support import BITS, CLIPS, F32, avatar, planned_margins, recording, write_run
 
 import anim_body_freeze as freeze  # noqa: E402  (test_anim_replay puts it on the path)
+import anim_body_holdout as holdout  # noqa: E402
 import anim_body_runs as runs  # noqa: E402
 import anim_body_seal as seal  # noqa: E402
 import anim_replay as replay  # noqa: E402
@@ -32,7 +33,7 @@ import scratch  # noqa: E402
 # A training set whose design has full rank, as the freeze needs.
 TRAINING = ("body-probes-compact", "body-targets-tall", "body-clip-level", "body-chain-hips-scale-targets",
             "body-probes-noncoplanar", "body-probes-no-upper-chest")
-HOLDOUT = "body-probes-holdout"
+HOLDOUT = body.primary_probes(body.HOLDOUT)
 VERSIONS = ("2022.3.62f3", "6000.6.9f1")
 GIT_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
 
@@ -66,7 +67,7 @@ def git(folder, *args):
 class FreezeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.docs = {name: recording(name, samples=12) for name in (*TRAINING, HOLDOUT)}
+        cls.docs = {name: recording(name, samples=None if name == "body-probes-compact" else 12) for name in (*TRAINING, HOLDOUT)}
 
     def setUp(self):
         root = scratch.for_case(self)
@@ -102,6 +103,7 @@ class FreezeTests(unittest.TestCase):
                    mock.patch.object(seal, "reader_sha256", return_value="5" * 64),
                    mock.patch.object(seal, "executable", side_effect=lambda unityrs: unityrs),
                    mock.patch.object(seal, "code_repo", return_value=self.repo.resolve()),
+                   mock.patch.object(holdout, "predicted", planned_margins()),
                    mock.patch.object(freeze, "completion", return_value=sealed_completion))
         for patch in patches:
             patch.start()
@@ -149,6 +151,28 @@ class FreezeTests(unittest.TestCase):
         if message:
             self.assertIn(message, text)
         return text
+
+    def test_the_freeze_and_e3b_need_the_predicted_hold_out_margin(self):
+        short = "2022.3.62f3/body-probes-holdout-2@0.25: predicted u_s 2e-05 against E_unity,s 2e-05, margin 1 under 1.25"
+        with mock.patch.object(holdout, "predicted", planned_margins([short])):
+            code, text = self.main("e3a")
+            self.assertEqual(code, 1, text)
+            self.assertIn(short, text)
+            self.assertEqual(self.main("freeze", "--freeze", str(self.artifact))[0], 2)
+        self.assertFalse(self.artifact.exists())
+        artifact = self.frozen()
+        self.assertEqual(artifact["e3a"]["holdout_plan"], {version: dict(worst_margin=2., in_frame=1, refused=0,
+                                                                         minimum=holdout.HOLDOUT_MARGIN)
+                                                           for version in VERSIONS})
+        # E3b predicts again before it claims anything: a short prediction leaves the shot unspent.
+        with mock.patch.object(holdout, "predicted", planned_margins([short])), \
+                mock.patch.object(freeze, "completion", return_value=mock.Mock(side_effect=AssertionError("unsealed"))):
+            self.e3b("the hold-out is predicted short of its margin")
+        self.assertFalse(self.claimed() or self.ledger.exists())
+        # An artifact that records no margin of at least the code's is refused.
+        self.rewrite(dict(artifact, e3a=dict(artifact["e3a"], holdout_plan={})))
+        self.e3b("no predicted hold-out margin")
+        self.assertFalse(self.claimed())
 
     def test_e3b_refuses_without_the_canonical_artifact(self):
         code, text = self.main("e3b")
@@ -267,12 +291,13 @@ class FreezeTests(unittest.TestCase):
         self.assertNotIn(VERSIONS[1], text)
 
     def test_e3b_fails_each_version_under_the_design_minimum(self):
-        with mock.patch.object(seal, "MIN_COMPARISONS", seal.IN_SCOPE_BY_DESIGN - 3):
-            self.assertEqual(self.frozen()["scope"]["holdout_minimum"], 30)
+        minimum = seal.IN_SCOPE_BY_DESIGN - 3
+        with mock.patch.object(seal, "MIN_COMPARISONS", minimum):
+            self.assertEqual(self.frozen()["scope"]["holdout_minimum"], minimum)
             text = self.e3b(code=1)
         self.assertIn("2 failure(s)", text)
         for version in VERSIONS:
-            self.assertRegex(text, f"{version}: [0-9]+ in-scope comparison\\(s\\), under the minimum 30")
+            self.assertRegex(text, f"{version}: [0-9]+ in-scope comparison\\(s\\), under the minimum {minimum}")
 
     def test_the_freeze_then_the_hold_out(self):
         artifact = self.frozen()

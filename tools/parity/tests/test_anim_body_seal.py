@@ -239,7 +239,7 @@ class ReaderEntryTests(unittest.TestCase):
 
 class MinimumTests(unittest.TestCase):
     def test_the_minimum_comes_from_the_hold_out_design(self):
-        self.assertEqual(seal.HOLDOUT_CASES, ("body-probes-holdout",))
+        self.assertEqual(seal.HOLDOUT_CASES, ("body-probes-holdout-2",))
         names = [muscle for _, group in body.PROBE_GROUPS for muscle in group]
         points = body.probe_schedule(body.HOLDOUT, names, False)
         lateral = [names.index(muscle) for muscle in LATERAL_MUSCLES]
@@ -247,7 +247,7 @@ class MinimumTests(unittest.TestCase):
         wide = [vector for _, vector in points if max(abs(vector[i]) for i in lateral) >= .25]
         kept = [vector for _, vector in points if max(abs(vector[i]) for i in lateral) == 0
                 and not any(vector[i] for i in refused)]
-        self.assertEqual((len(points), len(wide), len(kept)), (45, 7, seal.IN_SCOPE_BY_DESIGN))
+        self.assertEqual((len(points), len(wide), len(kept)), (48, 1, seal.IN_SCOPE_BY_DESIGN))
         self.assertEqual(seal.MIN_COMPARISONS, seal.IN_SCOPE_BY_DESIGN - 3)
 
 

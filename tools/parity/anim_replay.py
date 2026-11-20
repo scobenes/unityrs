@@ -647,9 +647,9 @@ def derive(manifest, bundle_dir=None):
 def require_unsealed(path):
     """Refuses, by name and before any byte is read, a pending recording (only `complete` reads one) and any file
     of a hold-out case (its recording or bundle, sealed until E3b), under its own name or a link's."""
-    from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT
+    from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT_RIGS
 
-    cases = [case for case, info in BODY_INFO.items() if info["rig"] == HOLDOUT]
+    cases = [case for case, info in BODY_INFO.items() if info["rig"] in HOLDOUT_RIGS]
     for name in {Path(path).name, Path(path).resolve().name}:
         require(not any(name.startswith(case + ".") or name == BODY_CASES[case].bundle for case in cases),
                 f"{name}: a sealed hold-out file (only E3b unseals it: anim_body_freeze.py e3b)")

@@ -10,8 +10,8 @@ from uuid import uuid4
 from zlib import crc32
 
 import child
-from anim_fixture_body import (BAND_CASES, BODY_BUNDLES, BODY_CASES, BODY_INFO, HOLDOUT, LATER_CASES, check_body,
-                               primary_probes)
+from anim_fixture_body import (BAND_CASES, BODY_BUNDLES, BODY_CASES, BODY_INFO, HOLDOUT, HOLDOUT_RIGS, LATER_CASES,
+                               check_body, primary_probes)
 from anim_fixture_coverage import BASIS_CASES, COVERAGE_CASES, check_coverage, required_coverage
 from anim_fixture_contract import (ASSETS, MOTION, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
                                    check_built_clip, check_built_static, check_discovery, check_evidence,
@@ -686,7 +686,7 @@ def complete_folder(folder, unityrs, inspect_dir, replay, unseal=None):
     results, views, recordings, unsealed = [], {}, {}, []
     paths, recorded_mixed, run, uncovered = recorded_paths(folder, replay, manifest, run)
     holdout = {folder / "replays" / "body" / f"{name}.pending.json": name for name, info in BODY_INFO.items()
-               if info["rig"] == HOLDOUT}
+               if info["rig"] in HOLDOUT_RIGS}
     sealed = sorted(holdout[path] for path in paths if path in holdout)
     replay.require(unseal is None or isinstance(unseal, str),
                    "the hold-out unseals only through E3b's claim (anim_body_freeze.py e3b)")
@@ -694,6 +694,8 @@ def complete_folder(folder, unityrs, inspect_dir, replay, unseal=None):
         from anim_body_seal import require_claim
 
         require_claim(unseal)
+        # Only the current hold-out rig's cases open; a spent one's stay sealed for good.
+        paths = [path for path in paths if path not in holdout or BODY_INFO[holdout[path]]["rig"] == HOLDOUT]
     elif sealed:
         paths = [path for path in paths if path not in holdout]
     check_static(bundle_dir, views, unityrs, inspect_dir, replay, run)

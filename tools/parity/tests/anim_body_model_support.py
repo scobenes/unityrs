@@ -168,6 +168,16 @@ def avatar(doc, value=COEFFICIENT):
     return {"m_Avatar": {"m_Human": {"data": human}}, "m_TOS": [[zlib.crc32(p.encode()), p] for p in paths]}
 
 
+def planned_margins(failures=()):
+    """A stand-in for anim_body_holdout.predicted: these short-run synthetic designs (a few samples per case)
+    cannot predict the hold-out, so the E0-E4 tests take its margins as given; test_anim_body_holdout checks the
+    prediction itself."""
+    def predicted(runs, *args, **kwargs):
+        return {run.version: dict(worst_margin=.9 if failures else 2., in_frame=1, refused=0, failures=list(failures),
+                                  samples=[]) for run in runs}
+    return predicted
+
+
 def write_run(folder, docs, version=RUN["editor_version"]):
     """A completed run folder: run.json and each recording under replays/body/ (a clip completed)."""
     body = folder / "replays" / "body"

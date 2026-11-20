@@ -12,8 +12,9 @@ from test_anim_replay import bits
 
 import anim_body_tolerance as tolerance  # noqa: E402  (test_anim_replay puts it on the path)
 from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CLIP_VARIANTS,  # noqa: E402
-                               body_requests, distinguishing_curves, PROBE_GROUPS, PROBE_RIGS, SPINE,
+                               body_requests, distinguishing_curves, PROBE_GROUPS, SPINE,
                                START_OFFSET, START_YAW, expected_case_row, probe_schedule, schedule_name)
+from anim_fixture_rigs import rig_layout  # noqa: E402
 from anim_reference import euler, multiply  # noqa: E402
 import anim_replay as replay  # noqa: E402
 
@@ -58,44 +59,8 @@ MUSCLE_LIMITS = {
 }
 GROUP_AXES = {3: "XZY", 2: "XZ", 1: "X"}
 ARM_AXES = {"Shoulder": "ZY", "UpperArm": "ZY", "LowerArm": "Y", "Hand": "ZY", "Eye": "XY", "Jaw": "XY"}
-# The rigs whose hip and shoulder children leave the plane, as the builder's.
-NONCOPLANAR = {"noncoplanar", "no-chest"}
-
-
-def layout(rig):
-    """The builder's T-pose (UnityrsBodyFixtures.cs BodyLayout) as (name, parent, offset)."""
-    base, omit, extras = PROBE_RIGS.get(rig, ("compact", (), ()))
-    tall = base == "tall"
-    size = 1.5 if rig == "large" else 1
-    arms, legs = (1.3, .8) if rig == "holdout" else (1, 1)
-    hip_z, shoulder_z = (.03, -.025) if rig in NONCOPLANAR else (0, 0)
-    rows = [("Hips", "", (0, (1.18 if tall else .88) - (1 - legs) * (1.06 if tall else .73), 0)),
-            ("Spine", "Hips", (0, .21 if tall else .16, 0)), ("Chest", "Spine", (0, .27 if tall else .13, 0))]
-    torso = "Chest" if tall else "UpperChest"
-    if not tall:
-        rows.append(("UpperChest", "Chest", (0, .08, 0)))
-    rows += [("Neck", torso, (0, .14, 0)), ("Head", "Neck", (0, .12, 0))]
-    rows += [row for row in (("LeftEye", "Head", (-.03, .06, .08)), ("RightEye", "Head", (.03, .06, .08)),
-                             ("Jaw", "Head", (0, -.03, .05))) if row[0] in extras]
-    for side, sign in (("Left", -1), ("Right", 1)):
-        rows += [(side + "UpperLeg", "Hips", (sign * (.10 if tall else .13), -.05, hip_z)),
-                 (side + "LowerLeg", side + "UpperLeg", (0, (-.58 if tall else -.36) * legs, .04)),
-                 (side + "Foot", side + "LowerLeg", (0, (-.48 if tall else -.37) * legs, -.04)),
-                 (side + "Toes", side + "Foot", (0, -.04, .14)),
-                 (side + "Shoulder", torso, (sign * .08, .08, shoulder_z)),
-                 (side + "UpperArm", side + "Shoulder", (sign * (.10 if tall else .14), 0, 0)),
-                 (side + "LowerArm", side + "UpperArm", (sign * (.34 if tall else .26) * arms, 0, 0)),
-                 (side + "Hand", side + "LowerArm", (sign * (.26 if tall else .23) * arms, 0, 0))]
-    offsets = {name: (parent, tuple(size * v for v in offset)) for name, parent, offset in rows}
-    result = []
-    for name, (parent, offset) in offsets.items():
-        if name in omit:
-            continue
-        while parent in omit:
-            offset = tuple(a + b for a, b in zip(offset, offsets[parent][1]))
-            parent = offsets[parent][0]
-        result.append((name, parent, offset))
-    return result
+# The builder's T-pose (UnityrsBodyFixtures.cs BodyLayout) as (name, parent, offset).
+layout = rig_layout
 
 
 def transform(t=(0, 0, 0), q=(0, 0, 0, 1), s=1.):

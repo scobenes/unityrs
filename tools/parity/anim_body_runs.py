@@ -10,7 +10,7 @@ names: each case it lists as recorded that the builder's case tables
 (anim_fixture_body, anim_fixture_contract, anim_fixture_coverage) give a
 humanoid Avatar is read from the path the table lays out for it, and its
 role comes from the same table: `holdout` for the hold-out rig's cases
-(anim_fixture_body.HOLDOUT), `training` for every other. The role is
+(anim_fixture_body.HOLDOUT_RIGS), `training` for every other. The role is
 decided before the file is opened, so a training load never reads a
 hold-out byte, and no load reads a hold-out file at all: a hold-out run is
 made (`Run.sealed`) only from the recordings sealed completion validated
@@ -49,7 +49,7 @@ import anim_body_adequacy as adequacy
 import anim_replay as replay
 from anim_body_model import centre
 from anim_body_tolerance import NAMES, U64, body_states, edges, readback_position
-from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT
+from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT_RIGS
 from anim_fixture_contract import REPLAY_CASES, VECTOR_CASES
 from anim_fixture_coverage import COVERAGE_CASES
 
@@ -67,7 +67,7 @@ CASES = {**{name: (fixture, "") for name, fixture in (REPLAY_CASES | COVERAGE_CA
 
 
 def role_of(case):
-    return "holdout" if BODY_INFO.get(case, {}).get("rig") == HOLDOUT else "training"
+    return "holdout" if BODY_INFO.get(case, {}).get("rig") in HOLDOUT_RIGS else "training"
 
 
 REQUIRED = frozenset(name for name in BODY_CASES if role_of(name) == "training")
@@ -142,7 +142,7 @@ class Run:
                                 sha256=sha256))
 
     def check_rigs(self):
-        loaded = {row["rig"] == HOLDOUT for row in self.inputs}
+        loaded = {row["rig"] in HOLDOUT_RIGS for row in self.inputs}
         replay.require(loaded <= {self.role == "holdout"}, f"a {self.role} load read the wrong rig")
 
 
@@ -336,7 +336,7 @@ class Design:
     """The weighted design matrix of the fitting rows and its pseudo-inverse's pieces."""
 
     def __init__(self, rows):
-        replay.require(all(row["rig"] != HOLDOUT for row in rows), "the fit refuses hold-out rows")
+        replay.require(all(row["rig"] not in HOLDOUT_RIGS for row in rows), "the fit refuses hold-out rows")
         self.fitting = [row for row in rows if row["fit"]]
         self.keys = sorted({key for row in self.fitting for key in row["columns"]})
         replay.require(self.keys, "no fitting rows")

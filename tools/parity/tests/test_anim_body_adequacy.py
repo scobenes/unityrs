@@ -206,7 +206,7 @@ class CheckpointTests(unittest.TestCase):
 
     def test_the_design_mode_predicts_an_extra_probe_case_from_its_rig(self):
         # Synthetic poses turn each bone by its own muscles, as Unity does, so the prediction is the recording.
-        name = sorted(body.EXTRA_CASES)[0]
+        name = "body-probes-tall-2"
         rig = body.EXTRA_RIGS[name]
         source = replay.read_json(json.dumps(body_doc(f"body-probes-{rig}", RUN)))
         predicted = design.predict(name, source)
@@ -304,7 +304,7 @@ class CheckpointTests(unittest.TestCase):
     def test_the_envelope_bounds_a_planned_pose_conservatively(self):
         # Every recorded identity-root pose of the rig lends its hips and read-back; the merged row takes
         # the largest epsilon and E_eval and the smallest E_unity.
-        name = sorted(body.EXTRA_CASES)[0]
+        name = "body-probes-tall-2"
         rig = body.EXTRA_RIGS[name]
         docs = {case: replay.read_json(json.dumps(body_doc(case, RUN, samples=None if case.startswith("body-probes")
                                                                      else 4)))
@@ -348,24 +348,23 @@ class CheckpointTests(unittest.TestCase):
         self.assertFalse(body.TWIST_CASES & set(design.planned(adequacy.load(self.folder))))
 
     def test_every_planned_sample_is_required(self):
-        name = sorted(body.EXTRA_CASES)[0]
-        sweeps = body.RANGE_CASES | body.BAND_CASES
-        self.record([case for case in self.design() if case not in sweeps | {name}])
+        planned = body.RANGE_CASES | body.BAND_CASES | body.EXTRA_CASES
+        self.record([case for case in self.design() if case not in planned])
         _, report, text = self.run_checkpoint()
-        self.assertEqual(report["missing_planned"], [f"{case}: not recorded" for case in sorted(sweeps | {name})])
-        self.assertIn(f"missing planned samples ['{sorted(sweeps)[0]}: not recorded'", text)
+        self.assertEqual(report["missing_planned"], [f"{case}: not recorded" for case in sorted(planned)])
+        self.assertIn(f"missing planned samples ['{sorted(planned)[0]}: not recorded'", text)
         self.assertFalse(report["adequate"])
-        self.record([name, *sweeps], samples=5)
+        self.record(planned, samples=5)
         _, report, _ = self.run_checkpoint()
         want = []
-        for case in sorted(sweeps | {name}):
+        for case in sorted(planned):
             rig = body.BODY_INFO[case]["rig"]
             want += [f"{case}@{t}" for t, _ in body.probe_schedule(rig, list(support.MUSCLES), False, case)[5:]]
         self.assertEqual(report["missing_planned"], want)
         self.assertFalse(report["adequate"])
 
     def test_design_only_adds_every_unrecorded_extra_case(self):
-        name = sorted(body.EXTRA_CASES)[0]
+        name = "body-probes-tall-2"
         self.record([f"body-probes-{body.EXTRA_RIGS[name]}"], samples=None)
         self.record(["body-probes-compact"], samples=4)
         out = io.StringIO()
@@ -375,11 +374,19 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn(code, (0, 1))
         # The tall rig's planned cases are predicted; the compact rig's probe case is short, and the noncoplanar
         # rig's unrecorded, so their range and band sweeps stay missing.
-        self.assertEqual(report["predicted"], ["body-probes-band-tall", "body-probes-range-tall", name])
-        self.assertIn(f"(predicted with body-probes-band-tall, body-probes-range-tall, {name})", out.getvalue())
+        tall = sorted(["body-probes-band-tall", "body-probes-range-tall",
+                       *(case for case in body.EXTRA_CASES if body.EXTRA_RIGS[case] == "tall")])
+        self.assertEqual(report["predicted"], tall)
+        self.assertIn(f"(predicted with {', '.join(tall)})", out.getvalue())
         self.assertIn(name, {row["name"] for row in report["samples"]})
-        self.assertEqual(report["missing_planned"], [f"body-probes-{kind}-{rig}: not recorded" for kind in ("band", "range")
-                                                     for rig in ("compact", "noncoplanar")])
+        # The hold-out's prediction needs the compact rig's whole probe case.
+        self.assertEqual(report["holdout_plan"]["worst_margin"], None)
+        self.assertRegex(report["holdout_plan"]["failures"][0], r"^body-probes-holdout-2: not predicted: .*no recorded pose")
+        self.assertEqual(code, 1)
+        self.assertEqual(report["missing_planned"], sorted([f"body-probes-{kind}-{rig}: not recorded" for kind in ("band", "range")
+                                                            for rig in ("compact", "noncoplanar")]
+                                                           + [f"{case}: not recorded" for case in body.EXTRA_CASES
+                                                              if body.EXTRA_RIGS[case] == "compact"]))
         # Without the flag the checkpoint reads only what was recorded.
         self.assertNotIn(name, {row["name"] for row in self.run_checkpoint()[1]["samples"]})
 

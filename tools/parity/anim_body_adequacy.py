@@ -74,7 +74,7 @@ from anim_body_tolerance import (BODY_SLOTS, U32, U64, body_frame, body_states, 
 from anim_body_design import conservative, planned  # noqa: E402
 from anim_body_model import Refused, topology_scope  # noqa: E402
 from anim_reference import gamma  # noqa: E402
-from anim_fixture_body import (BAND_CASES, BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, RANGE_CASES,  # noqa: E402
+from anim_fixture_body import (BAND_CASES, BODY_INFO, EXTRA_CASES, HOLDOUT_RIGS, PROBE_RIGS, RANGE_CASES,  # noqa: E402
                                TWIST_CASES, probe_schedule, rig_bones)
 
 CONDITION_LIMIT = 1e6
@@ -91,7 +91,7 @@ def scope_refusal(mapped, masses=None):
 
 
 # The training rigs inside the frozen topology scope; the others' samples are refused, never fitted.
-TRAINING_RIGS = {rig for rig in PROBE_RIGS.keys() - {HOLDOUT} if scope_refusal(rig_bones(rig)) is None}
+TRAINING_RIGS = {rig for rig in PROBE_RIGS.keys() - set(HOLDOUT_RIGS) if scope_refusal(rig_bones(rig)) is None}
 F32 = replay.f32_from_bits
 
 
@@ -240,7 +240,7 @@ def samples(name, doc, parents, masses, skeleton=None, translations=None):
         row["refused"] = scope_refusal(mapped & BODY_SLOTS, masses)
         # A twist sweep measures the frame (E2), and a band sweep validates its lateral domain (E2, E3): both
         # are evaluated, never fitted.
-        row["fit"] = (epsilon is not None and info is not None and info["rig"] != HOLDOUT
+        row["fit"] = (epsilon is not None and info is not None and info["rig"] not in HOLDOUT_RIGS
                       and info["variant"] not in ("twist", "band") and row["refused"] is None)
         # What B2's checks (anim_body_check.py) evaluate the model and its bounds from.
         row["state"] = dict(bones=bones, local=local, rest_local=rest_local, chain=chain, weights=weights,
@@ -388,7 +388,7 @@ def adequate(report):
             and report["condition"] is not None and report["condition"] <= CONDITION_LIMIT
             and not report["uncertainty_failures"] and not report["untrained"] and not report["edge_mismatches"]
             and not report["missing_coefficients"] and not report["coverage"]["missing"]
-            and not report.get("missing_planned"))
+            and not report.get("missing_planned") and not (report.get("holdout_plan") or {}).get("failures"))
 
 
 def coverage_of(documents):
@@ -432,6 +432,25 @@ def load(folder):
     return {name: doc for name, doc in documents.items() if name not in TWIST_CASES}
 
 
+def holdout_plan(documents, rows, parents, masses):
+    """The hold-out rig's predicted margins (anim_body_holdout) under this checkpoint's design, fitted for the
+    hips placement alone; the hold-out's files are never read."""
+    from anim_body_holdout import margins, planned, source_rig
+    from anim_body_runs import Design, solve
+
+    design = Design([row for row in rows if row["rig"] not in HOLDOUT_RIGS])
+    name = next(case for case, info in BODY_INFO.items() if info["rig"] == HOLDOUT_RIGS[-1] and not info["variant"])
+    source = documents.get(next(case for case, info in BODY_INFO.items() if info["kind"] == "probes"
+                                and info["rig"] == source_rig(HOLDOUT_RIGS[-1]) and not info["variant"]))
+    if source is None:
+        return dict(worst_margin=None, failures=[f"{name}: its base rig's probe case is not recorded"])
+    try:
+        plan = planned(name, source, solve(design), lambda doc, _: list(samples(name, doc, parents, masses)))
+        return margins(plan, design.hips_uncertainty, name)
+    except ValueError as error:
+        return dict(worst_margin=None, failures=[f"{name}: not predicted: {error}"])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("folder", type=Path)
@@ -450,6 +469,8 @@ def main(argv=None):
             rows += conservative([list(samples(name, doc, parents, masses)) for doc in variants])
         report = adequacy(rows, coverage_of(documents), expected_inventory(parents))
         report["missing_planned"] = missing_planned(documents | {name: variants[0] for name, variants in extra.items()})
+        if args.design_only:
+            report["holdout_plan"] = holdout_plan(documents, rows, parents, masses)
     except (KeyError, TypeError, IndexError, ValueError, OSError, StopIteration) as exc:
         print(f"anim_body_adequacy: {exc}", file=sys.stderr)
         return 2
@@ -462,7 +483,8 @@ def main(argv=None):
           f"{len(report.get('uncertainty_failures', []))} u_s failures, worst margin E_unity,s/u_s "
           f"{report.get('worst_margin')}, margins {report.get('margins')}, "
           f"missing rigs {report['coverage']['missing']}, missing edges {report['missing_coefficients']}, "
-          f"missing planned samples {report['missing_planned']}: "
+          f"missing planned samples {report['missing_planned']}, "
+          f"predicted hold-out margin {(report.get('holdout_plan') or {}).get('worst_margin')}: "
           + ("adequate" if report["adequate"] else "short")
           + (f" (predicted with {', '.join(predicted)})" if predicted else ""))
     return 0 if report["adequate"] else 1
