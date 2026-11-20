@@ -20,7 +20,15 @@
 //! - ETC: `diff`, the differential bit set, so ETC2's T, H and planar
 //!   modes and ETC2 A1's punch-through occur often;
 //! - EAC and ETC2 A8's alpha: `edge`, multipliers of 0 and bases of 0,
-//!   255 and the signed -128.
+//!   255 and the signed -128;
+//! - BCn: `edge`, colour endpoints equal or swapped and alpha endpoints
+//!   equal, swapped, 0 or 255; BC7's `mode`, the first byte naming each
+//!   of the eight modes, or none (0), equally often;
+//! - PVRTC: `mode`, the modulation-mode bit set, and for 2bpp the
+//!   interpolation bits varied, so the missing weights occur often.
+//!
+//! The BCn and PVRTC cases follow the rest (their seeds continue after
+//! them), PVRTC at sizes of its own, whose block counts are powers of two.
 //!
 //! A case records the first 128 bits of the sha256 of the image (its
 //! pixels, top row first) or
@@ -89,6 +97,37 @@ const FORMATS: [(&str, Format, &[&str]); 26] = {
     ]
 };
 
+/// The BCn and PVRTC formats, after every other case: name, format,
+/// generators.
+const LATER: [(&str, Format, &[&str]); 8] = {
+    const BCN: &[&str] = &["random", "edge"];
+    const PVRTC: &[&str] = &["random", "mode"];
+    [
+        ("DXT1", Format::Dxt1, BCN),
+        ("DXT3", Format::Dxt3, BCN),
+        ("DXT5", Format::Dxt5, BCN),
+        ("BC4", Format::Bc4, BCN),
+        ("BC5", Format::Bc5, BCN),
+        ("BC7", Format::Bc7, &["random", "mode"]),
+        ("PVRTC_RGB2", Format::PvrtcRgb2, PVRTC),
+        ("PVRTC_RGBA4", Format::PvrtcRgba4, PVRTC),
+    ]
+};
+
+/// PVRTC's sizes, whose block counts must be powers of two at both bit
+/// rates: edge blocks cut, and Morton's order square and not.
+const PVRTC_SIZES: [(usize, usize); 9] = [
+    (1, 1),
+    (5, 3),
+    (13, 15),
+    (29, 13),
+    (61, 30),
+    (128, 32),
+    (16, 256),
+    (254, 127),
+    (256, 256),
+];
+
 /// What a case decodes.
 #[derive(Clone, Copy)]
 enum Target {
@@ -124,6 +163,8 @@ impl Target {
             Self::Format(_, f) if f.is_astc_hdr() => "astc-hdr",
             Self::Format(name, _) if name.starts_with("EAC") => "eac",
             Self::Format(name, _) if name.starts_with("ETC") => "etc",
+            Self::Format(name, _) if name.starts_with("PVRTC") => "pvrtc",
+            Self::Format(name, _) if !name.starts_with("ASTC") => "bcn",
             _ => "astc",
         }
     }
@@ -143,10 +184,14 @@ fn cases() -> Vec<(Target, &'static str, u64, (usize, usize))> {
             ));
         }
     }
+    let later = LATER
+        .iter()
+        .map(|&(name, f, gens)| (Target::Format(name, f), gens));
     let mut out = Vec::new();
-    for (target, gens) in targets {
+    for (target, gens) in targets.into_iter().chain(later) {
+        let pvrtc = target.family() == "pvrtc";
         for &generator in gens {
-            for &size in &SIZES {
+            for &size in if pvrtc { &PVRTC_SIZES[..] } else { &SIZES } {
                 let seed = 0x601d_0000 + u64::try_from(out.len()).unwrap();
                 out.push((target, generator, seed, size));
             }
@@ -257,6 +302,61 @@ fn etc_block(rng: &mut Rng, generator: &str, bytes: usize, format: Format) -> Ve
     b
 }
 
+/// A BCn or PVRTC block of `bytes` bytes under `generator`.
+#[allow(clippy::cast_possible_truncation, reason = "a random byte")]
+fn bcn_block(rng: &mut Rng, generator: &str, bytes: usize, format: Format) -> Vec<u8> {
+    let mut b: Vec<u8> = (0..bytes).map(|_| rng.next_u64() as u8).collect();
+    match (generator, format) {
+        ("mode", Format::Bc7) => {
+            // Mode `m` is the first byte's lowest set bit; 8 is none.
+            let m = rng.below(9);
+            b[0] = if m == 8 {
+                0
+            } else {
+                (b[0] & !((2_u16 << m) - 1) as u8) | 1 << m
+            };
+        }
+        ("mode", _) => {
+            // The modulation-mode bit (bit 0 of colour A).
+            b[4] |= 1;
+            if rng.below(2) == 0 {
+                b[0] |= 1;
+            }
+        }
+        ("edge", _) => {
+            let (colour, alpha): (&[usize], &[usize]) = match format {
+                Format::Dxt1 => (&[0], &[]),
+                Format::Dxt3 => (&[8], &[]),
+                Format::Dxt5 => (&[8], &[0]),
+                Format::Bc4 => (&[], &[0]),
+                _ => (&[], &[0, 8]),
+            };
+            for &at in colour {
+                let c0 = u16::from_le_bytes([b[at], b[at + 1]]);
+                let c1 = u16::from_le_bytes([b[at + 2], b[at + 3]]);
+                // Equal, or c0 below c1: BC1's three-colour form.
+                let (c0, c1) = match rng.below(3) {
+                    0 => (c0, c0),
+                    1 => (c0.min(c1), c0.max(c1)),
+                    _ => (c0, c1),
+                };
+                b[at..at + 2].copy_from_slice(&c0.to_le_bytes());
+                b[at + 2..at + 4].copy_from_slice(&c1.to_le_bytes());
+            }
+            for &at in alpha {
+                match rng.below(4) {
+                    0 => b[at + 1] = b[at],
+                    1 => b[at] = 0,
+                    2 => b[at + 1] = 255,
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    b
+}
+
 /// A footprint's fixture blocks and decodable modes, each made once.
 type Pools = BTreeMap<(u8, u8), (Vec<[u8; 16]>, Vec<u16>)>;
 
@@ -280,8 +380,12 @@ fn run(
             data.extend(astc_block(&mut rng, generator, pool, modes));
         }
     } else if let Target::Format(_, f) = target {
+        let make = match target.family() {
+            "bcn" | "pvrtc" => bcn_block,
+            _ => etc_block,
+        };
         for _ in 0..blocks {
-            data.extend(etc_block(&mut rng, generator, bytes, f));
+            data.extend(make(&mut rng, generator, bytes, f));
         }
     }
     let meter = Meter::unlimited();
@@ -362,7 +466,7 @@ fn the_decoders_reproduce_the_golden_digests() {
         return;
     }
     let want: J = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    for family in ["astc", "astc-hdr", "etc", "eac"] {
+    for family in ["astc", "astc-hdr", "etc", "eac", "bcn", "pvrtc"] {
         assert!(
             counts[family] >= 10_000,
             "{family}: {} blocks",
