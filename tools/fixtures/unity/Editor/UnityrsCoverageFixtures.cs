@@ -8,7 +8,8 @@ using UnityEngine;
 using Object = UnityEngine.Object;
 
 // Optional coverage: two humanoid refusal probes and the root basis matrix
-// (UnityrsBasisFixtures.cs), built in their own bundle build, and a probe showing why the integer discrete binding is not covered. A case is not covered only when an
+// (UnityrsBasisFixtures.cs), built in their own bundle build, and a probe showing why the integer discrete binding is not covered.
+// The body fixtures (UnityrsBodyFixtures.cs) build in a third. A case is not covered only when an
 // explicit check shows Unity cannot produce it (CoverageUnavailable, with the
 // reason); any other error fails the case and leaves the main fixtures intact.
 static partial class UnityrsFixtureBuilder
@@ -96,22 +97,23 @@ static partial class UnityrsFixtureBuilder
         report.Prepare(build, "Prepare " + BasisBundle, BasisCases, () => BuildBasisMatrix(build), true);
     }
 
-    // Build the coverage bundles apart from the main fixtures, then move them
-    // beside the others. Returns null, with the cases failed, if that fails.
-    static Dictionary<string, string[]> BuildCoverageBundles(Build build, RunReport report, string staging, string bundles,
-        BuildTarget target)
+    // Build one group of optional bundles (coverage or body) apart from the main
+    // fixtures, then move them beside the others. Returns null, with the
+    // group's cases failed, if that fails.
+    static Dictionary<string, string[]> BuildOptionalBundles(Build build, RunReport report, string staging, string bundles,
+        BuildTarget target, string label, List<AssetBundleBuild> group, Func<ReplayCase, bool> member)
     {
-        if (build.CoverageBundles.Count == 0) return null;
-        var names = build.Replays.Where(replay => replay.Optional).Select(replay => replay.OutputName).ToArray();
+        if (group.Count == 0) return null;
+        var names = build.Replays.Where(replay => replay.Optional && member(replay)).Select(replay => replay.OutputName).ToArray();
         Dictionary<string, string[]> contents = null;
-        string folder = Path.Combine(staging, "coverage-bundles");
-        bool built = report.Try("Build coverage bundles", names, () => {
+        string folder = Path.Combine(staging, label + "-bundles");
+        bool built = report.Try("Build " + label + " bundles", names, () => {
             Directory.CreateDirectory(folder);
-            var manifest = BuildPipeline.BuildAssetBundles(folder, build.CoverageBundles.ToArray(),
+            var manifest = BuildPipeline.BuildAssetBundles(folder, group.ToArray(),
                 BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.StrictMode, target);
-            Require(manifest != null, "Unity could not build the coverage bundles. See the log and Console.");
+            Require(manifest != null, "Unity could not build the " + label + " bundles. See the log and Console.");
             contents = BundleContents(manifest);
-            foreach (var bundle in build.CoverageBundles)
+            foreach (var bundle in group)
             {
                 string name = bundle.assetBundleName;
                 Require(contents.ContainsKey(name), "Unity did not emit " + name + ".");
@@ -122,9 +124,29 @@ static partial class UnityrsFixtureBuilder
         catch (IOException error) { Debug.LogException(error); }
         catch (UnauthorizedAccessException error) { Debug.LogException(error); }
         if (!built) return null;
-        // A failed check leaves its case failed and unrecorded.
-        build.Replays.RemoveAll(replay => replay.Optional && !report.Try("Check built " + replay.OutputName,
-            new[] { replay.OutputName }, () => CheckBuiltCoverage(replay, Path.Combine(bundles, replay.Bundle))));
+        // A failed check leaves its case failed and unrecorded; a body clip whose
+        // built settings Unity changed is not covered. Cases sharing a bundle,
+        // Avatar and clip (an identity and an offset root) share one check
+        // and its outcome, and each keeps its own capture.
+        var outcomes = new Dictionary<string, Exception>(StringComparer.Ordinal);
+        build.Replays.RemoveAll(replay => {
+            if (!replay.Optional || !member(replay)) return false;
+            string key = replay.Bundle + "\n" + replay.Avatar + "\n" + replay.Clip;
+            if (!outcomes.TryGetValue(key, out var failure))
+            {
+                try
+                {
+                    string path = Path.Combine(bundles, replay.Bundle);
+                    if (replay.Body != null) CheckBuiltBody(replay, path);
+                    else CheckBuiltCoverage(replay, path);
+                }
+                catch (Exception error) { failure = error; }
+                outcomes.Add(key, failure);
+            }
+            return !report.Try("Check built " + replay.OutputName, new[] { replay.OutputName }, () => {
+                if (failure != null) throw failure;
+            }, optional: replay.Body != null);
+        });
         return contents;
     }
 

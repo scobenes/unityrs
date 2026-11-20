@@ -16,6 +16,14 @@ fixtures (two humanoid refusal probes). When Unity cannot provide one of
 them, `run.json` lists it as not covered and the dialog still says **ready**.
 The integer discrete binding is always listed as not covered.
 
+The main run also builds and records the 106 optional **body motion**
+fixtures (`body-…` in `run.json`, recordings in `replays/body`). They take
+longer than the rest: expect the run to take several minutes more, with the
+progress bar on **Recording body-…**. Each body rig, clip set and chain is
+built on its own, so a rig or clip setting Unity refuses is listed as not
+covered or failed in `run.json` without stopping the others. Send the whole
+folder as before; nothing else changes in the steps below.
+
 1. Open the [unityrs repository on GitHub](https://github.com/scobenes/unityrs).
    Select the branch or commit you were given in the branch menu, then
    click **Code → Download ZIP**. Extract the ZIP.
@@ -102,6 +110,15 @@ clip-settings refusal probes from 2022.3 and 6000 main runs
 (`REQUIRED_COVERAGE` in `tools/parity/anim_fixture_coverage.py`). An older
 run that predates them, or one that reports either as not covered, is
 refused: rerun the main menu item with the current Editor folder.
+
+A run's body fixtures are optional as a group: an older run without any
+`body-…` row completes as before, and a newer one must list all 106. After
+`complete`, run the B1 adequacy checkpoint on each version's folder:
+
+    python3 -I tools/parity/anim_body_adequacy.py <folder> --json report.json
+
+It exits 0 when the recordings pin the body model (docs/plans/humanoid-body.md
+section 2.5) and 1 when they are short; then extend the fixtures before B2.
 
 If the maintainer needs a manual FBX fallback, use a **CC0-licensed rigged
 model**. Exclude TurboSquid and Mixamo assets because their licences forbid

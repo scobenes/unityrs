@@ -10,6 +10,8 @@ from uuid import uuid4
 from zlib import crc32
 
 import child
+from anim_fixture_body import (BAND_CASES, BODY_BUNDLES, BODY_CASES, BODY_INFO, HOLDOUT, HOLDOUT_RIGS, LATER_CASES,
+                               check_body, primary_probes)
 from anim_fixture_coverage import BASIS_CASES, COVERAGE_CASES, check_coverage, required_coverage
 from anim_fixture_contract import (ASSETS, MOTION, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
                                    check_built_clip, check_built_static, check_discovery, check_evidence,
@@ -19,8 +21,14 @@ PENDING_FORMAT = "unityrs.anim_replay_pending"
 OPTIONAL_CASES = {
     "urp-materials", "packed-rotation-slopes", "authored-runtime-precedence", "mixed-transform-storage",
     "humanoid-twist-refusal", "humanoid-non-neutral-setting-refusal", "humanoid-slot-axis-inventory",
-    "humanoid-root-hips-comparison", "integer-discrete-binding", *BASIS_CASES,
+    "humanoid-root-hips-comparison", "integer-discrete-binding", *BASIS_CASES, *BODY_CASES,
 }
+
+
+def pending_pose(name, doc):
+    """A known-vector capture keeps the pending human_pose schema until its slot inventory is added."""
+    pose = name in VECTOR_CASES or name in BODY_CASES and BODY_INFO[name]["kind"] != "clip"
+    return pose and "humanoid" not in doc["spec"]["evidence"]
 
 
 def wire_value(value, replay):
@@ -483,14 +491,40 @@ def complete_recording(name, fixture, doc, bundle_dir, views, unityrs, inspect_d
     check_discovery(fixture, view, discovery, clip)
     spec["evidence"]["discovery"] = discovery
     doc["format"] = "unityrs.anim_replay"
-    if name in VECTOR_CASES and "humanoid" not in spec["evidence"]:
+    restore_parsed_clock(spec, capture, replay)
+    if pending_pose(name, doc):
         replay._shape(replay.SCHEMA["$defs"]["capture"], capture, "/capture")
         replay._validate_recording(spec, capture, pending_humanoid=True)
     else:
         replay.validate(doc)
     check_evidence(fixture, doc, view, replay)
     check_coverage(name, fixture, doc, view, clip, avatar, replay)
+    if name in BODY_CASES:
+        settings = check_body(name, fixture, doc, view, clip, replay)
+        if settings is not None:
+            spec["evidence"]["body_settings"] = settings
+    elif spec["evidence"]["editor"].get("body_case"):
+        replay.require(False, f"{name} claims body fixture evidence")
     return doc
+
+
+def restore_parsed_clock(spec, capture, replay):
+    """Undo JsonUtility's misparse of a schedule time in a recording made before the recorder kept its clock.
+
+    The recorder captured from a JSON round trip of its own spec, and 2022.3's JsonUtility read some 16-digit
+    times on the 2^-16 grid one ulp off. A sample whose `local` (and so `source`) is the schedule's time one
+    double ulp away, at exactly the schedule's f32 sample time and effective source, was sampled at the
+    scheduled time: its double labels take the schedule's value. Any other difference stays and is refused."""
+    start, stop = float(spec["start"]), float(spec["stop"])
+    for point, sample in zip(spec["schedule"], capture["samples"]):
+        local, recorded = point["local"], sample.get("local")
+        if (type(local) is not float or type(recorded) is not float or recorded == local
+                or abs(recorded - local) > math.ulp(local)):
+            continue
+        local_f32, source, effective = replay.clocks(spec, local, replay.f32_from_bits(replay.f32_bits(stop - start)))
+        if (sample.get("local_f32"), sample.get("effective_source")) == (local_f32, effective) \
+                and sample.get("source") in (start + recorded, stop if recorded == stop - start else None):
+            sample["local"], sample["source"] = local, source
 
 
 def run_stamp(run):
@@ -545,7 +579,11 @@ def recorded_paths(folder, replay, manifest, run):
             path = paths[name] if name in paths else folder / "bundles" / STATIC_CASES[name][0]
             if not path.is_file() or path.stat().st_size == 0:
                 errors.append(f"{name}: missing {path.relative_to(folder)}")
-        if name in COVERAGE_CASES and status == "recorded":
+        if name in BODY_CASES and status == "recorded":
+            paths[name] = replay_dir / "body" / f"{name}.pending.json"
+            if not paths[name].is_file() or paths[name].stat().st_size == 0:
+                errors.append(f"{name}: missing {paths[name].relative_to(folder)}")
+        elif name in COVERAGE_CASES and status == "recorded":
             # A recorded coverage case is checked like a required one. Any
             # other status, as in a run that predates it, needs no recording.
             paths[name] = replay_dir / f"{name}.pending.json"
@@ -553,8 +591,34 @@ def recorded_paths(folder, replay, manifest, run):
                 errors.append(f"{name}: missing {paths[name].relative_to(folder)}")
         elif name in OPTIONAL_CASES and status == "recorded" and name != "mixed-transform-storage":
             errors.append(f"{name}: no recording defined for this optional case")
-    # A run older than the basis matrix has no rows for it.
-    errors.extend(f"missing run.json case: {name}" for name in sorted(expected - statuses.keys() - BASIS_CASES.keys()))
+    # A run older than the basis matrix has no rows for it; one older than the
+    # body fixtures has none of theirs, and a newer one has them all. The extra
+    # probe cases and then the twist sweeps came later again, each a generation
+    # of its own.
+    body = BODY_CASES.keys() - set().union(*LATER_CASES)
+    older = BASIS_CASES.keys() | (set() if statuses.keys() & body else body)
+    for generation in LATER_CASES:
+        older |= set() if statuses.keys() & generation else generation
+    errors.extend(f"missing run.json case: {name}" for name in sorted(expected - statuses.keys() - older))
+    # A later case is required once its rig's own probe case records; a later rig's own probe case is required
+    # whenever the run has its generation, so an Avatar Unity refuses is an error, not lost coverage.
+    errors.extend(f"{name}: required once {primary} records, but {statuses[name]}"
+                  for name in sorted(set().union(*LATER_CASES))
+                  for primary in [primary_probes(BODY_INFO[name]["rig"])]
+                  if primary != name and statuses.get(primary) == "recorded"
+                  and statuses.get(name, "recorded") != "recorded")
+    for generation in LATER_CASES:
+        rigs = sorted(name for name in generation if name == primary_probes(BODY_INFO[name]["rig"]))
+        missing = [f"{name} ({statuses[name]})" for name in rigs
+                   if statuses.keys() & generation and statuses.get(name, "recorded") != "recorded"]
+        if missing:
+            errors.append("training rigs not recorded: " + ", ".join(missing))
+    # The band sweeps validate B2's lateral domain: once the run has them, each is required whatever its rig's
+    # own probe case did.
+    missing = [f"{name} ({statuses[name]})" for name in sorted(BAND_CASES)
+               if statuses.keys() & BAND_CASES and statuses.get(name, "recorded") != "recorded"]
+    if missing:
+        errors.append("band sweeps not recorded: " + ", ".join(missing))
     # Coverage confirmed on this Editor version is no longer optional.
     errors.extend(f"{name}: required for Unity {run['editor_version']} but {statuses[name]}"
                   for name in sorted(required_coverage(run["editor_version"]))
@@ -564,8 +628,8 @@ def recorded_paths(folder, replay, manifest, run):
     replay.require(not errors, "incomplete fixture run:\n" + "\n".join(errors))
     expected_bundles = {fixture.bundle for fixture in REPLAY_CASES.values()} | {name for name, _ in STATIC_CASES.values()}
     # Unity builds a coverage bundle before its recording can still be refused.
-    recorded = {COVERAGE_CASES[name].bundle for name in COVERAGE_CASES if name in paths}
-    optional = {fixture.bundle for fixture in COVERAGE_CASES.values()}
+    recorded = {fixture.bundle for name, fixture in (COVERAGE_CASES | BODY_CASES).items() if name in paths}
+    optional = {fixture.bundle for fixture in COVERAGE_CASES.values()} | BODY_BUNDLES
     built = {path.name for path in (folder / "bundles").iterdir()}
     replay.require(expected_bundles | recorded <= built <= expected_bundles | optional,
                    "unexpected fixture bundle inventory")
@@ -605,26 +669,49 @@ def check_static(bundle_dir, views, unityrs, inspect_dir, replay, run):
             raise ValueError(f"{case}: {exc}") from exc
 
 
-def complete_folder(folder, unityrs, inspect_dir, replay):
-    """Validate every result before writing any completed recordings."""
+def complete_folder(folder, unityrs, inspect_dir, replay, unseal=None):
+    """Validate every result before writing any completed recordings; returns (count, uncovered, sealed), or
+    with `unseal` (count, uncovered, [(hold-out case, sha256 of the bytes read, its validated document)]).
+
+    The hold-out rig's body cases (by the builder's case table) stay sealed: neither their recordings nor
+    their bundles are opened, and they are listed as sealed. Only E3b unseals them: `unseal` is its freeze's
+    sha256, and before any hold-out file opens anim_body_seal.require_claim refuses unless E3b claimed that
+    freeze's one shot; the validated hold-out recordings are returned once every check has passed."""
     manifest, run = read_manifest(folder, replay)
     if run.get("variant", "builtin") != "builtin":
         from anim_fixture_variants import complete_variant
 
         return complete_variant(folder, manifest, run, unityrs, inspect_dir, replay)
     bundle_dir = folder / "bundles"
-    results, views, recordings = [], {}, {}
+    results, views, recordings, unsealed = [], {}, {}, []
     paths, recorded_mixed, run, uncovered = recorded_paths(folder, replay, manifest, run)
+    holdout = {folder / "replays" / "body" / f"{name}.pending.json": name for name, info in BODY_INFO.items()
+               if info["rig"] in HOLDOUT_RIGS}
+    sealed = sorted(holdout[path] for path in paths if path in holdout)
+    replay.require(unseal is None or isinstance(unseal, str),
+                   "the hold-out unseals only through E3b's claim (anim_body_freeze.py e3b)")
+    if sealed and unseal is not None:
+        from anim_body_seal import require_claim
+
+        require_claim(unseal)
+        # Only the current hold-out rig's cases open; a spent one's stay sealed for good.
+        paths = [path for path in paths if path not in holdout or BODY_INFO[holdout[path]]["rig"] == HOLDOUT]
+    elif sealed:
+        paths = [path for path in paths if path not in holdout]
     check_static(bundle_dir, views, unityrs, inspect_dir, replay, run)
-    fixtures = REPLAY_CASES | VECTOR_CASES | COVERAGE_CASES
+    fixtures = REPLAY_CASES | VECTOR_CASES | COVERAGE_CASES | BODY_CASES
     for path in paths:
         try:
-            document = replay.read_json(path.read_text(encoding="utf-8"))
+            raw = path.read_bytes()
+            document = replay.read_json(raw.decode("utf-8"))
             name = path.name.removesuffix(".pending.json")
             result = complete_recording(name, fixtures[name], document, bundle_dir, views, unityrs, inspect_dir, replay, run)
             recordings[name] = result
             output = path.with_name(name + ".json")
-            if name in VECTOR_CASES and "humanoid" not in result["spec"]["evidence"]:
+            if path in holdout:
+                replay.require(pending_pose(name, result), f"{name}: a hold-out case keeps its pending recording")
+                unsealed.append((name, hashlib.sha256(raw).hexdigest(), document))
+            if pending_pose(name, result):
                 if output.exists():
                     existing = replay.read_json(output.read_text(encoding="utf-8"))
                     replay.require(existing.get("format") == "unityrs.anim_replay"
@@ -661,4 +748,4 @@ def complete_folder(folder, unityrs, inspect_dir, replay):
                                f"{output.name} already exists with different content")
         finally:
             staged.unlink(missing_ok=True)
-    return len(results), uncovered
+    return len(results), uncovered, unsealed if unseal is not None else sealed
