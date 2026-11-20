@@ -209,6 +209,8 @@ pub use select::{
 pub(crate) const fn send_sync<T: Send + Sync + ?Sized>() {}
 
 #[cfg(test)]
+mod golden_tests;
+#[cfg(test)]
 mod tests {
     use std::path::Path;
 
