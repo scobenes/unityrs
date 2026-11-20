@@ -23,7 +23,10 @@
 //!   255 and the signed -128;
 //! - the BC formats: `edge`, colour endpoints equal or swapped and alpha endpoints
 //!   equal, swapped, 0 or 255; BC7's `mode`, the first byte naming each
-//!   of the eight modes, or none (0), equally often;
+//!   of the eight modes, or none (0), equally often; BC7's `partition`,
+//!   not drawn but walked in turn, every legal mode and partition (so
+//!   every anchor-index layout) and modes 4 and 5's rotations and index
+//!   selections, their other bits random;
 //! - PVRTC: `mode`, the modulation-mode bit set, and for 2bpp the
 //!   interpolation bits varied, so the missing weights occur often.
 //!
@@ -99,7 +102,7 @@ const FORMATS: [(&str, Format, &[&str]); 26] = {
 
 /// The BC and PVRTC formats, after every other case: name, format,
 /// generators.
-const LATER: [(&str, Format, &[&str]); 8] = {
+const LATER: [(&str, Format, &[&str]); 9] = {
     const BCN: &[&str] = &["random", "edge"];
     const PVRTC: &[&str] = &["random", "mode"];
     [
@@ -111,6 +114,7 @@ const LATER: [(&str, Format, &[&str]); 8] = {
         ("BC7", Format::Bc7, &["random", "mode"]),
         ("PVRTC_RGB2", Format::PvrtcRgb2, PVRTC),
         ("PVRTC_RGBA4", Format::PvrtcRgba4, PVRTC),
+        ("BC7", Format::Bc7, &["partition"]),
     ]
 };
 
@@ -357,17 +361,84 @@ fn bcn_block(rng: &mut Rng, generator: &str, bytes: usize, format: Format) -> Ve
     b
 }
 
+/// BC7's every legal block layout, in the order `partition` walks
+/// them: mode, partition (0 to 15 in mode 0, 0 to 63 in modes 1, 2, 3
+/// and 7, the partition fixing the anchor indices), rotation (modes 4 and
+/// 5) and index selection (mode 4).
+fn bc7_layouts() -> Vec<[u8; 4]> {
+    let mut out = Vec::new();
+    for mode in 0..8_u8 {
+        let (partitions, rotations, selections) = match mode {
+            0 => (16, 1, 1),
+            1 | 2 | 3 | 7 => (64, 1, 1),
+            4 => (1, 4, 2),
+            5 => (1, 4, 1),
+            _ => (1, 1, 1),
+        };
+        for p in 0..partitions {
+            for r in 0..rotations {
+                for s in 0..selections {
+                    out.push([mode, p, r, s]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The `partition` generator's block `i`: layout `i` (cycling) of
+/// [`bc7_layouts`] over random bits.
+#[allow(clippy::cast_possible_truncation, reason = "a random byte")]
+fn bc7_layout_block(rng: &mut Rng, layouts: &[[u8; 4]], i: usize) -> Vec<u8> {
+    let random: Vec<u8> = (0..16).map(|_| rng.next_u64() as u8).collect();
+    let mut bits = u128::from_le_bytes(random.try_into().unwrap());
+    let [mode, p, r, s] = layouts[i % layouts.len()];
+    // The mode's unary prefix, then its partition or rotation and index
+    // selection fields.
+    let fields: &[(u8, u32)] = match mode {
+        0 => &[(p, 4)],
+        4 => &[(r, 2), (s, 1)],
+        5 => &[(r, 2)],
+        6 => &[],
+        _ => &[(p, 6)],
+    };
+    let mut at = u32::from(mode) + 1;
+    bits = (bits & !((1 << at) - 1)) | (1 << mode);
+    for &(value, width) in fields {
+        bits = (bits & !(((1 << width) - 1) << at)) | (u128::from(value) << at);
+        at += width;
+    }
+    bits.to_le_bytes().to_vec()
+}
+
+/// A block's BC7 layout, read from its bits as the specification lays
+/// them out (independently of [`bc7_layouts`]); `None` for mode 8.
+fn bc7_layout_of(block: &[u8]) -> Option<[u8; 4]> {
+    let bits = u128::from_le_bytes(block.try_into().unwrap());
+    let mode = bits.trailing_zeros();
+    let field = |at: u32, width: u32| u8::try_from((bits >> (mode + 1 + at)) & ((1 << width) - 1));
+    let m = u8::try_from(mode).ok()?;
+    Some(match mode {
+        0 => [m, field(0, 4).unwrap(), 0, 0],
+        1 | 2 | 3 | 7 => [m, field(0, 6).unwrap(), 0, 0],
+        4 => [m, 0, field(0, 2).unwrap(), field(2, 1).unwrap()],
+        5 => [m, 0, field(0, 2).unwrap(), 0],
+        6 => [m, 0, 0, 0],
+        _ => return None,
+    })
+}
+
 /// A footprint's fixture blocks and decodable modes, each made once.
 type Pools = BTreeMap<(u8, u8), (Vec<[u8; 16]>, Vec<u16>)>;
 
-/// The case's image digest, or its error's text, and its block count.
-fn run(
+/// The case's blocks and their count.
+fn blocks(
     (fixture, pools): (&J, &mut Pools),
     target: Target,
     generator: &str,
     seed: u64,
     (w, h): (usize, usize),
-) -> (String, usize) {
+) -> (Vec<u8>, usize) {
     let (bw, bh, bytes, is_astc) = target.block();
     let blocks = w.div_ceil(usize::from(bw)) * h.div_ceil(usize::from(bh));
     let mut rng = Rng::new(seed);
@@ -384,10 +455,28 @@ fn run(
             "bcn" | "pvrtc" => bcn_block,
             _ => etc_block,
         };
-        for _ in 0..blocks {
-            data.extend(make(&mut rng, generator, bytes, f));
+        let layouts = bc7_layouts();
+        for i in 0..blocks {
+            if generator == "partition" {
+                data.extend(bc7_layout_block(&mut rng, &layouts, i));
+            } else {
+                data.extend(make(&mut rng, generator, bytes, f));
+            }
         }
     }
+    (data, blocks)
+}
+
+/// The case's image digest, or its error's text, and its block count.
+fn run(
+    inputs: (&J, &mut Pools),
+    target: Target,
+    generator: &str,
+    seed: u64,
+    (w, h): (usize, usize),
+) -> (String, usize) {
+    let (bw, bh, bytes, _) = target.block();
+    let (data, blocks) = blocks(inputs, target, generator, seed, (w, h));
     let meter = Meter::unlimited();
     let decode = |data: &[u8], w: usize, h: usize, f: Format| {
         let (w, h) = (i32::try_from(w).unwrap(), i32::try_from(h).unwrap());
@@ -482,4 +571,35 @@ fn the_decoders_reproduce_the_golden_digests() {
     for (g, w) in got.iter().zip(want) {
         assert_eq!(g, w);
     }
+}
+
+/// The `partition` cases cover every legal BC7 layout, by construction
+/// and not by chance: 16 partitions of mode 0, 64 of modes 1, 2, 3 and 7,
+/// 8 rotations and index selections of mode 4, 4 rotations of mode 5 and
+/// mode 6, 285 in all; every case of 285 blocks or more covers them all.
+#[test]
+fn the_bc7_cases_cover_every_mode_and_partition() {
+    let fixture = J::Null;
+    let mut pools = Pools::new();
+    let (mut all, mut full) = (std::collections::BTreeSet::new(), 0);
+    for (target, generator, seed, size) in cases() {
+        if generator != "partition" {
+            continue;
+        }
+        let (data, blocks) = blocks((&fixture, &mut pools), target, generator, seed, size);
+        let mut seen = std::collections::BTreeSet::new();
+        for block in data.chunks(16) {
+            seen.insert(bc7_layout_of(block).unwrap());
+        }
+        assert_eq!(seen.len(), blocks.min(285));
+        full += usize::from(seen.len() == 285);
+        all.extend(seen);
+    }
+    let mut per_mode = [0; 8];
+    for [mode, ..] in &all {
+        per_mode[usize::from(*mode)] += 1;
+    }
+    assert_eq!(per_mode, [16, 64, 64, 64, 8, 4, 1, 64]);
+    assert_eq!(all.len(), 285);
+    assert!(full >= 2, "{full} cases cover every layout");
 }
