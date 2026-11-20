@@ -47,13 +47,10 @@ use super::{
         finite_state, frame_scope, multiply, quaternion, refuse, rest_frame_scope, sub, uniform,
     },
 };
-use crate::{AnimError, BodyModel, PathQuery, RigPaths, read::same_object};
+use crate::{AnimError, BodyModel, PathQuery, RigPaths};
 use std::sync::Arc;
-use unityrs_core::{
-    ObjectRef,
-    limits::{Meter, MeteredVec},
-};
-use unityrs_scene::{Component, Graph, Issue};
+use unityrs_core::limits::{Meter, MeteredVec};
+use unityrs_scene::Graph;
 
 /// Freeze v8's `scope.free`: the coefficient combinations the training
 /// design left free, as `(i, j, weight)` terms. Its design has full rank.
@@ -80,9 +77,10 @@ impl HipsParent {
 
 /// Every Transform below the hips' is the Transform of a skeleton node
 /// below the hips, as E3a requires of the captured ones
-/// (`unmapped_transform`), and the graph kept the whole subtree: a depth
-/// limit anywhere, or a cycle, a broken pointer or a dropped object that
-/// may have been a Transform there, refuses (`truncated_rig`). The walk
+/// (`unmapped_transform`), and the graph kept the whole subtree: a node
+/// of it that the graph dropped a child of (past the depth limit, a cycle,
+/// a broken pointer or a child that failed to read) refuses
+/// (`truncated_rig`). Drops elsewhere in the scene do not count. The walk
 /// visits only those skeleton nodes' Transforms and charges each
 /// membership search.
 fn complete_below_hips(
@@ -107,12 +105,13 @@ fn complete_below_hips(
     let inside = inside.as_mut_slice();
     inside.sort_unstable();
     let nodes = graph.nodes();
-    let mut walked: MeteredVec<usize> = MeteredVec::new(meter);
     let mut stack: MeteredVec<usize> = MeteredVec::new(meter);
     stack.push(top)?;
     while let Some(at) = stack.pop() {
         meter.count_decode(1)?;
-        walked.push(at)?;
+        if graph.dropped_child(at) {
+            return refuse(BodyModel::TruncatedRig);
+        }
         let children = nodes
             .get(at)
             .map_or(&[][..], |node| node.children.as_slice());
@@ -125,37 +124,6 @@ fn complete_below_hips(
                 return Err(AnimError::MissingPath);
             }
             stack.push(child)?;
-        }
-    }
-    let walked = walked.as_slice();
-    let transform = |from: &ObjectRef| {
-        walked.iter().any(|&id| {
-            nodes
-                .get(id)
-                .is_some_and(|node| same_object(&node.transform, from))
-        })
-    };
-    for issue in graph.issues() {
-        meter.count_decode(walked.len() as u64)?;
-        let dropped = match issue {
-            Issue::Depth { .. } => true,
-            Issue::Cycle { parent, .. } => parent.is_some_and(|parent| walked.contains(&parent)),
-            Issue::ParentMismatch { expected, .. } => walked.contains(expected),
-            Issue::Unresolved { from, .. } => transform(from),
-            // A component that fails to read stays as `Other`; any other
-            // object dropped may have been a child Transform.
-            Issue::Malformed { object, .. } => {
-                meter.count_decode(nodes.len() as u64)?;
-                !nodes.iter().any(|node| {
-                    node.components.as_slice().iter().any(|component| {
-                        matches!(component, Component::Other(_, kept) if same_object(kept, object))
-                    })
-                })
-            }
-            Issue::Builtin { .. } => false,
-        };
-        if dropped {
-            return refuse(BodyModel::TruncatedRig);
         }
     }
     Ok(())

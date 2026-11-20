@@ -199,8 +199,9 @@ pub enum BodyModel {
     MisparentedTransform,
     /// A rig Transform below the hips' is no `m_Skeleton` node's.
     UnmappedTransform,
-    /// The rig's graph may have dropped a Transform below the hips: a depth
-    /// limit, a cycle, a broken pointer or an unreadable object.
+    /// The rig's graph dropped a child of a Transform below the hips: past
+    /// the depth limit, a cycle, a broken pointer or a child that failed
+    /// to read.
     TruncatedRig,
     /// A body position, scale, weight, frame or result is not finite.
     NonFiniteBody,

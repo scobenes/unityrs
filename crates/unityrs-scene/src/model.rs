@@ -17,6 +17,8 @@ pub struct Graph {
     pub(crate) nodes: MeteredVec<Node>,
     pub(crate) roots: MeteredVec<NodeId>,
     pub(crate) issues: MeteredVec<Issue>,
+    /// Per node, whether the walk dropped a child of it.
+    pub(crate) dropped: MeteredVec<bool>,
     pub(crate) held: crate::held::Held,
 }
 impl Graph {
@@ -34,6 +36,14 @@ impl Graph {
     #[must_use]
     pub fn issues(&self) -> &[Issue] {
         self.issues.as_slice()
+    }
+    /// Whether the walk dropped a child of node `id`: a child pointer that
+    /// did not resolve, a child past the depth limit, one already reached
+    /// (a cycle), or one that failed to read. Recorded as the graph is
+    /// built, in constant time per child.
+    #[must_use]
+    pub fn dropped_child(&self, id: NodeId) -> bool {
+        self.dropped.as_slice().get(id).copied().unwrap_or(false)
     }
 }
 /// Transform or its `RectTransform` subclass.
