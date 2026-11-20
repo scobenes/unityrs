@@ -54,8 +54,9 @@ class ReferenceTests(unittest.TestCase):
         q = (1., 2. ** -27, 2. ** -27, 2. ** -27)
         naive = math.sqrt(((q[0] * q[0] + q[1] * q[1]) + q[2] * q[2]) + q[3] * q[3])
         self.assertEqual(pose.normalize(q), tuple(x / naive for x in q))
-        with self.assertRaisesRegex(ValueError, "zero quaternion"):
-            pose.normalize((0., 0., 0., 0.))
+        # A zero or NaN norm is None, as Rust's.
+        self.assertIsNone(pose.normalize((0., 0., 0., 0.)))
+        self.assertIsNone(pose.normalize((math.nan, 0., 0., 1.)))
 
     def test_the_angle_rule(self):
         # The limit by the value's sign (a zero of either sign takes the max), then the axis sign; a later
@@ -169,7 +170,7 @@ class ClipPlaybackTests(unittest.TestCase):
                         ("Hips", animator, "Chest Front-Back", [key(0., 1.), key(1., 1.)]),
                         ("", "UnityEngine.Transform", "Chest Left-Right", [key(0., 1.), key(1., 1.)])])
         names = ("Spine Front-Back", "Left Thumb 1 Stretched", "Chest Front-Back", "Chest Left-Right")
-        sample = dict(local=.5, local_f32=replay.f32_bits(.5))
+        sample = dict(local=.5, effective_source=.5)
         values, errors = pose.clip_values(doc, sample, names)
         # Hermite with zero slopes at its midpoint; a finger by its Animator property; a curve on another
         # path or type is not the Animator's, so its muscle is exactly 0.
@@ -177,14 +178,22 @@ class ClipPlaybackTests(unittest.TestCase):
         self.assertEqual(errors[2:], [0., 0.])
         self.assertTrue(0 < errors[0] < 1e-5 and 0 < errors[1] < 1e-5, errors)
         # The time's own f32 rounding joins the error.
-        late = dict(local=.5 + 2. ** -30, local_f32=replay.f32_bits(.5))
+        late = dict(local=.5, effective_source=.5 + 2. ** -30)
         self.assertGreater(pose.clip_values(doc, late, names)[1][0], errors[0])
+
+    def test_curves_are_sampled_on_the_source_clock(self):
+        doc = self.doc([("", "UnityEngine.Animator", "Spine Front-Back", [key(0., 0.), key(1., .5)])])
+        # A clip whose source starts later than the playable: its curve at the source time, not the local one.
+        values, _ = pose.clip_values(doc, dict(local=0., effective_source=.5), ("Spine Front-Back",))
+        self.assertEqual(values, [.25])
+        with self.assertRaisesRegex(ValueError, "source time"):
+            pose.clip_values(doc, dict(local=.5), ("Spine Front-Back",))
 
     def test_a_weighted_curve_is_refused(self):
         weighted = dict(key(0., 0.), weighted_mode="Both")
         doc = self.doc([("", "UnityEngine.Animator", "Spine Front-Back", [weighted, key(1., 1.)])])
         with self.assertRaisesRegex(ValueError, "Spine Front-Back"):
-            pose.clip_values(doc, dict(local=.5, local_f32=replay.f32_bits(.5)), ("Spine Front-Back",))
+            pose.clip_values(doc, dict(local=.5, effective_source=.5), ("Spine Front-Back",))
 
     def test_a_value_error_widens_the_bound(self):
         axes, rest = pose.synthetic_axes(7), f32_quaternion(pose._quaternion("muscle-pose/7/rest"))
@@ -192,9 +201,46 @@ class ClipPlaybackTests(unittest.TestCase):
         self.assertGreater(pose.unity_bound(rest, axes, values, [1e-6, 0.]), pose.unity_bound(rest, axes, values))
         self.assertEqual(pose.unity_bound(rest, axes, values, [0., 0.]), pose.unity_bound(rest, axes, values))
 
+    def test_a_value_error_at_zero_reaches_either_limit(self):
+        # m_Max 0 and m_Min -60 degrees: at v = 0 an evaluation error of either sign can turn the axis by the
+        # larger limit's magnitude times the error, so the error widens the bound on both sides of 0.
+        axes, rest = upper_arm(), [0., 0., 0., 1.]
+        axes["max"][2] = 0.
+        for value in (0., -0., 1e-3, -1e-3):
+            self.assertGreater(pose.unity_bound(rest, axes, [(value, 2)], [1e-4]),
+                               pose.unity_bound(rest, axes, [(value, 2)]) + .9e-4 * abs(axes["min"][2]), value)
+
+
+class DomainTests(unittest.TestCase):
+    def test_none_where_rust_gives_none(self):
+        axes, rest = upper_arm(), [0., 0., 0., 1.]
+        # A NaN or infinite muscle value gives a NaN tangent, as C's tan does, then no rotation: Rust's None.
+        for value in (math.nan, math.inf, -math.inf):
+            self.assertIsNone(pose.bone_rotation(rest, axes, [(value, 2)]), value)
+        self.assertTrue(math.isnan(pose.tangents([math.inf, 0., 0.])[0]))
+        # An axis past z, and a zero quaternion.
+        self.assertIsNone(pose.angles(axes, [(1., 3)]))
+        self.assertIsNone(pose.bone_rotation(rest, axes, [(1., 3)]))
+        self.assertIsNone(pose.normalize((0., 0., 0., 0.)))
+        self.assertIsNone(pose.bone_rotation(rest, dict(axes, pre=[0., 0., 0., 0.]), [(1., 0)]))
+        self.assertIsNotNone(pose.bone_rotation(rest, axes, [(1., 2)]))
+        with self.assertRaisesRegex(ValueError, "no rotation"):
+            pose.vector_row(rest, axes, [(math.nan, 2)])
+
+    def test_a_hand_the_avatar_does_not_map_is_none(self):
+        bones = list(range(100, 155))
+        human = {"m_HumanBoneIndex": bones[:25], "m_LeftHand": {"data": {"m_HandBoneIndex": []}},
+                 "m_RightHand": {"data": {"m_HandBoneIndex": list(range(200, 215))}}}
+        # An empty hand table: every finger of that hand is None, never an IndexError, as Rust's `bone_node`.
+        self.assertEqual([pose.avatar_node(human, bone) for bone in range(24, 39)], [None] * 15)
+        self.assertEqual([pose.avatar_node(human, bone) for bone in range(39, 54)], list(range(200, 215)))
+        self.assertEqual((pose.avatar_node(human, 0), pose.avatar_node(human, 54)), (100, 109))
+        with self.assertRaises(IndexError):
+            qualify.bone_node(human, 24)
+
 
 class AgreementTests(unittest.TestCase):
-    def case(self, turn=0., rule=pose.angles, refusal=False, axes=None):
+    def case(self, turn=0., rule=pose.angles, refusal=False, axes=None, editor="2022", confirmation=False):
         """One bone's case, its recording `rule`'s rotation in f32, turned by `turn` radians."""
         axes = axes or pose.synthetic_axes(7)
         rest = f32_quaternion(pose._quaternion("muscle-pose/7/rest"))
@@ -203,9 +249,10 @@ class AgreementTests(unittest.TestCase):
             local = pose.bone_rotation(rest, axes, values, rule)
             recorded = f32_quaternion(pose.multiply(local, (math.sin(turn / 2), 0., 0., math.cos(turn / 2))))
             rows.append(pose.vector_row(rest, axes, values, recorded))
-        return dict(format=pose.FORMAT, kind="cases", entries=[dict(editor="2022", case="x", bone=7, name="Spine",
-                                                                   refusal=refusal, axes=pose.axes_row(axes),
-                                                                   rest=pose.f32_hexes(rest), vectors=rows)])
+        return dict(format=pose.FORMAT, kind="cases", required={}, missing={},
+                    entries=[dict(editor=editor, case="x", bone=7, name="Spine", refusal=refusal,
+                                  confirmation=confirmation, axes=pose.axes_row(axes), rest=pose.f32_hexes(rest),
+                                  vectors=rows)])
 
     def test_a_recording_within_its_bound_agrees(self):
         (key, (worst, bound, count, outside, _, _)), = pose.agreement(self.case()).items()
@@ -252,6 +299,94 @@ class AgreementTests(unittest.TestCase):
         self.assertLess(large, 2e4 * pose.U32)
         self.assertEqual(pose.U32, struct.unpack(">f", bytes.fromhex("33800000"))[0])
         self.assertGreater(small, replay.F64_ANGLE_FLOOR)
+
+
+class FailureTests(unittest.TestCase):
+    """`agree`'s exit status: it fails unless both Editors compare, every acceptance and confirmation sample is
+    within its bound, and every required case was recorded and compared."""
+
+    def document(self, **changes):
+        cases = AgreementTests.case
+        entries = [cases(self, editor=editor)["entries"][0] for editor in pose.EDITORS]
+        document = dict(format=pose.FORMAT, kind="cases", reference=pose.REFERENCE, entries=entries,
+                        required={editor: ["x"] for editor in pose.EDITORS},
+                        missing={editor: [] for editor in pose.EDITORS})
+        return document | changes
+
+    def test_a_complete_agreeing_document_passes(self):
+        self.assertEqual(pose.failures(self.document()), [])
+        self.assertEqual(self.agree(self.document()), (0, ""))
+
+    def test_no_comparison_fails(self):
+        document = self.document(required={})
+        self.assertEqual(pose.failures(dict(document, entries=[])),
+                         ["no comparison in Editor 2022", "no comparison in Editor 6000"])
+        self.assertEqual(pose.failures(dict(document, entries=document["entries"][:1])),
+                         ["no comparison in Editor 6000"])
+        # Rows without a recording compare nothing.
+        bare = [dict(entry, vectors=[{k: v for k, v in row.items() if k != "recorded"} for row in entry["vectors"]])
+                for entry in document["entries"]]
+        self.assertEqual(len(pose.failures(dict(document, entries=bare))), 2)
+        code, message = self.agree(dict(document, entries=[]))
+        self.assertEqual(code, 1)
+        self.assertIn("no comparison", message)
+
+    def test_any_sample_outside_its_bound_fails(self):
+        turned = AgreementTests.case(self, math.radians(.5))["entries"][0]
+        document = self.document()
+        document["entries"][1] = dict(turned, editor="6000")
+        self.assertEqual(pose.failures(document), ["acceptance samples outside their bound: 6000 Spine in 20"])
+        # A bone reference 1 already failed on fails too: no row is excused.
+        before = AgreementTests.case(self, math.radians(.5), rule=pose.hypothesis_angles)["entries"][0]
+        document["entries"][1] = dict(before, editor="6000")
+        (_, (_, _, _, outside, _, was)), = pose.agreement(dict(document, entries=document["entries"][1:])).items()
+        self.assertGreater(min(outside, was), 0)
+        self.assertEqual(len(pose.failures(document)), 1)
+        # Round 11's confirmation alike; the refusal table never counts.
+        document["entries"][1] = dict(turned, editor="6000", confirmation=True)
+        self.assertEqual(pose.failures(document), ["confirmation samples outside their bound: 6000 Spine in 20"])
+        document["entries"][1] = dict(turned, editor="6000", refusal=True)
+        document["entries"].append(self.document()["entries"][1])
+        self.assertEqual(pose.failures(document), [])
+        self.assertEqual(self.agree(dict(document, entries=[document["entries"][0], dict(turned, editor="6000")]))[0],
+                         1)
+
+    def test_a_missing_required_case_fails(self):
+        document = self.document(missing={"2022": [], "6000": ["body-probes-face"]})
+        self.assertEqual(pose.failures(document), ["Editor 6000's runs lack 1 required case(s): body-probes-face"])
+        document = self.document(required={"2022": ["x", "body-probes-face"], "6000": ["x"]})
+        self.assertEqual(pose.failures(document),
+                         ["Editor 2022 compares no sample of 1 required case(s): body-probes-face"])
+        self.assertEqual(self.agree(document)[0], 1)
+
+    def test_a_document_without_its_inventory_is_refused(self):
+        document = self.document()
+        del document["required"]
+        code, message = self.agree(document)
+        self.assertEqual(code, 1)
+        self.assertIn("make it again", message)
+
+    def agree(self, document):
+        """`agree`'s exit status and stderr on `document`."""
+        import contextlib
+        import io
+        import json
+
+        import scratch
+
+        path = scratch.for_case(self) / "cases.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        argv, err = sys.argv, io.StringIO()
+        sys.argv = ["anim_muscle_pose.py", "agree", str(path)]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                pose.main()
+            code = 0
+        except SystemExit as exit:
+            code = exit.code
+        finally:
+            sys.argv = argv
+        return code, err.getvalue()
 
 
 if __name__ == "__main__":

@@ -6,9 +6,9 @@ use std::{mem::discriminant, sync::Arc};
 use unityrs_anim::{
     AnimError, Clip, RigPaths, discover,
     humanoid::{
-        Avatar, BODY_SLOTS, BodyAvatar, BoneMass, DofKind, HumanoidClip, RigAvatar, SettingValue,
-        Xform, body_avatar, body_model, body_solve, chain, dropped_muscles, humanoid_refusal,
-        read_avatar, rig_avatar, root,
+        Avatar, BODY_SLOTS, BodyAvatar, BoneMass, DofKind, HumanoidClip, MUSCLE_COUNT, RigAvatar,
+        SettingValue, Xform, body_avatar, body_model, body_solve, chain, dropped_muscles, gate,
+        humanoid_refusal, muscle_pose, read_avatar, rig_avatar, root,
     },
     read_clip,
 };
@@ -438,6 +438,7 @@ pub(crate) fn rigs(
         digest.tag((avatar.avatar.is_some(), avatar.transform_hierarchy));
         let paths = RigPaths::new(graph, rig.node, meter)?;
         if let Some(found) = &avatar.avatar {
+            muscle_digest(found, meter, digest)?;
             match body_avatar(found, meter) {
                 Ok(body) => {
                     solved += solve_digest(&body, &paths, meter, digest)?;
@@ -508,9 +509,108 @@ fn chain_digest(
         match root::root_settings(clip, meter) {
             Ok(settings) => {
                 digest.tag(chain::admit_chain(&found, &settings).map_err(|e| e.to_string()));
+                gate_digest(body, &found, &settings, meter, digest)?;
             }
             Err(e) => soft(e, digest)?,
         }
+    }
+    Ok(())
+}
+
+/// The release gate (`humanoid::gate`) on the chain and a kept clip's
+/// settings, under each Editor family and one it does not know: the
+/// configuration or its refusal. The empty `VERIFIED` table admits
+/// nothing, and a class made from the configuration holds it.
+fn gate_digest(
+    body: &BodyAvatar<'_>,
+    found: &chain::AnimatorChain,
+    settings: &root::RootSettings,
+    meter: &Arc<Meter>,
+    digest: &mut Digest,
+) -> Result<(), AnimError> {
+    for version in ["2022.3.62f3", "6000.6.9f1", "5.6.7f1"] {
+        meter.count_decode(1)?;
+        let configuration = match gate::configuration(body, found, settings, version, meter) {
+            Ok(configuration) => configuration,
+            Err(e) => {
+                soft(e, digest)?;
+                continue;
+            }
+        };
+        assert!(
+            gate::EDITORS.contains(&configuration.editor),
+            "a known family"
+        );
+        assert!(
+            gate::release_gate(&gate::VERIFIED, &configuration).is_err(),
+            "nothing verified"
+        );
+        let class = gate::VerifiedClass {
+            absent: configuration.absent,
+            feature: configuration.feature,
+            offset: configuration.offset,
+            human_scale: [configuration.human_scale; 2],
+            variant: configuration.variant,
+        };
+        assert!(
+            gate::release_gate(&[class], &configuration).is_ok(),
+            "its own class holds"
+        );
+        digest.tag((
+            configuration.absent,
+            discriminant(&configuration.feature),
+            configuration.offset,
+            configuration.human_scale.to_bits(),
+            configuration.variant,
+            configuration.editor,
+        ));
+    }
+    Ok(())
+}
+
+/// Each mapped bone's muscle pose (`humanoid::muscle_pose`) from the
+/// Avatar's own axes and rest rotation, at a vector with both endpoints,
+/// both zeros and values past the limits: `None` (no axes record, or a zero
+/// quaternion) or a unit rotation, whatever finite values the Avatar holds.
+fn muscle_digest(
+    avatar: &Avatar,
+    meter: &Arc<Meter>,
+    digest: &mut Digest,
+) -> Result<(), AnimError> {
+    const VALUES: [f32; 7] = [1., -1., 0.5, -0., 1.5, -0.25, 0.];
+    let human = &avatar.human;
+    let mut values = [0_f32; MUSCLE_COUNT];
+    for (muscle, value) in values.iter_mut().enumerate() {
+        *value = VALUES[muscle % VALUES.len()];
+    }
+    for bone in 0..55 {
+        meter.count_decode(1)?;
+        let Some(node) = human.bone_node(bone) else {
+            continue;
+        };
+        let record = human
+            .skeleton
+            .nodes
+            .as_slice()
+            .get(node)
+            .and_then(|node| usize::try_from(node.axes).ok())
+            .and_then(|k| human.skeleton.axes.as_slice().get(k));
+        let Some(axes) = record else {
+            digest.tag((bone, "no axes"));
+            continue;
+        };
+        let rest = human
+            .pose
+            .as_slice()
+            .get(node)
+            .map_or([0., 0., 0., 1.], |x| x.q);
+        let muscles = muscle_pose::bone_muscles(&values, bone);
+        let rotation = muscle_pose::bone_rotation(rest, axes, &muscles);
+        if let Some(q) = rotation {
+            let norm = muscle_pose::multiply(q, [-q[0], -q[1], -q[2], q[3]])[3].sqrt();
+            assert!((norm - 1.).abs() < 1e-9, "a unit rotation: {q:?}");
+        }
+        digest.tag((bone, rotation.map(|q| q.map(f64::to_bits))));
     }
     Ok(())
 }

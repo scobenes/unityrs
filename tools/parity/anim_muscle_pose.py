@@ -19,20 +19,29 @@ between platforms (glibc's and Apple's in the last bit for about one angle in te
 their tangents and the local rotation, so Rust checks the angles bit for bit anywhere, the tangents where its
 `tan` is glibc's (CI), and the rest bit for bit given the tangents. The goldens are generated in the container.
 
+The bit-for-bit claim has a narrower domain than "any input": the same finite f32 inputs, and the same `tan`
+bits (one C library, or rows that record the tangents); across C libraries only the angles are bit for bit.
+`angles`, `normalize` and the rotations built on them return None where Rust's return `None`: an axis past z,
+or a zero or NaN quaternion, which a NaN or infinite muscle value gives (`tangents` gives such an angle's tangent as NaN, as C's `tan` does, where Python's raises).
+
     python3 -I tools/parity/anim_muscle_pose.py golden [--check]
         The goldens (GOLDENS): synthetic axes for every bone a muscle turns, each muscle alone at every value
         of VALUES, each bone's muscles jointly, as the f64 bits of the angles, tangents and local rotation.
     python3 -I tools/parity/anim_muscle_pose.py cases --unityrs PATH --out FILE <run folder>...
         Real-Avatar cases from training runs (never a hold-out recording): every recorded known vector and
-        clip-playback sample (its muscle values the clip's own authored curves at the sample's time, each
-        with the curve's own f32 evaluation error), each with Unity's recorded local rotation and its derived
-        bound, and the golden schedule
-        on each distinct real axes record (generate them in the container, whose `tan` is CI's). They stay
-        private; `UNITYRS_MUSCLE_POSE_CASES=FILE cargo test`
-        checks Rust against them.
+        clip-playback sample (its muscle values the clip's own authored curves at the sample's source time,
+        each with the curve's own f32 evaluation error), each with Unity's recorded local rotation and its
+        derived bound, and the golden schedule on each distinct real axes record (generate them in the
+        container, whose `tan` is CI's). A round 11 run adds its sweeps and full-body clips
+        (anim_muscle_round11) as confirmation entries. The file records each Editor's required cases and the
+        ones its runs lack. They stay private; `UNITYRS_MUSCLE_POSE_CASES=FILE cargo test` checks Rust
+        against them.
     python3 -I tools/parity/anim_muscle_pose.py agree FILE
-        Each bone's worst angle to Unity's recording against its bound, the Spine first, and how many of its
-        recorded rows reference 2 changes from reference 1 (none may change on a bone reference 1 agreed on).
+        Each bone's worst angle to Unity's recording against its bound, the Spine first, for acceptance
+        (rounds 1 to 10) and confirmation (round 11), and the refusal cases apart; how many of its recorded
+        rows reference 2 changes from reference 1. It exits non-zero (`failures`) on an Editor with no
+        comparison, any acceptance or confirmation sample outside its bound, a required case missing or
+        never compared, or a changed row on a bone reference 1 agreed on.
 
 **The agreement bound** (`unity_bound`) is derived, never fitted: Unity's own f32 error along the same path,
 each operation bounded at its actual operands as section 2.5 of docs/plans/humanoid-body.md derives E3a's,
@@ -90,16 +99,18 @@ def multiply(a, b):
 
 
 def normalize(q):
+    """`q` over its norm; None for a norm that is not positive (zero or NaN), as Rust's `normalize`."""
     norm = math.sqrt(((q[0] * q[0] + q[1] * q[1]) + q[2] * q[2]) + q[3] * q[3])
-    replay.require(norm > 0, "zero quaternion")
-    return tuple(x / norm for x in q)
+    return tuple(x / norm for x in q) if norm > 0 else None
 
 
 def angles(axes, values):
     """Reference 2: each axis's angle, the limit by the value's sign, then the axis sign (a later muscle on the
-    same axis replaces an earlier one)."""
+    same axis replaces an earlier one). None for an axis past z, as Rust's `muscle_angles`."""
     result = [0., 0., 0.]
     for value, axis in values:
+        if axis not in (0, 1, 2):
+            return None
         limit = axes["max"][axis] if value >= 0 else -axes["min"][axis]
         result[axis] = axes["sign"][axis] * (value * limit)
     return result
@@ -115,33 +126,42 @@ def hypothesis_angles(axes, values):
 
 
 def tangents(half_turns):
-    """The platform's tan of each half angle: the one step whose bits are the C library's."""
-    return [math.tan(a / 2) for a in half_turns]
+    """The platform's tan of each half angle: the one step whose bits are the C library's. A non-finite angle's
+    is NaN, as C's `tan` gives it (Python's raises)."""
+    return [math.tan(a / 2) if math.isfinite(a) else math.nan for a in half_turns]
 
 
 def joint_rotation(axes, tangent):
+    """None for a zero or NaN quaternion, as Rust's."""
     tx, ty, tz = tangent
     joint = normalize(multiply((0., ty, tz, 1.), (tx, 0., 0., 1.)))
+    if joint is None:
+        return None
     post = axes["post"]
     return normalize(multiply(multiply(axes["pre"], joint), (-post[0], -post[1], -post[2], post[3])))
 
 
 def muscle_rotation(axes, values, rule=angles):
-    return joint_rotation(axes, tangents(rule(axes, values)))
+    turns = rule(axes, values)
+    return None if turns is None else joint_rotation(axes, tangents(turns))
 
 
 def bone_rotation(rest, axes, values, rule=angles):
-    return normalize(multiply(rest, muscle_rotation(axes, values, rule)))
+    """A bone's local rotation; None where Rust's `bone_rotation` is None (a zero or NaN quaternion, which a
+    non-finite muscle value gives)."""
+    rotation = muscle_rotation(axes, values, rule)
+    return None if rotation is None else normalize(multiply(rest, rotation))
 
 
 def unity_bound(rest, axes, values, value_errors=()):
     """The derived bound on the angle between Unity's f32 local rotation and the exact one, in radians.
     `value_errors`, one per value, bound each muscle value's own error (a clip curve's f32 evaluation); each
-    moves its angle by at most its limit's magnitude times the error."""
+    moves its angle by at most the larger limit's magnitude times the error, since an error can carry the
+    value across 0, to the other limit's side."""
     tangents, errors = [], []
     moved = [0., 0., 0.]
-    for (value, axis), error in zip(values, value_errors):
-        moved[axis] = abs(axes["max"][axis] if value >= 0 else axes["min"][axis]) * error
+    for (_, axis), error in zip(values, value_errors):
+        moved[axis] = max(abs(axes["max"][axis]), abs(axes["min"][axis])) * error
     for a, shift in zip(angles(axes, values), moved):
         t = math.tan(a / 2)
         tangents.append(t)
@@ -213,9 +233,11 @@ def f32_hexes(values):
 
 def vector_row(rest, axes, values, recorded=None, value_errors=()):
     turns = angles(axes, values)
+    local = bone_rotation(rest, axes, values)
+    replay.require(local is not None, f"no rotation for muscle values {values}")
     row = dict(values=[[replay.f32_bits(v), axis] for v, axis in values], angles=[f64_hex(v) for v in turns],
                tangents=[f64_hex(v) for v in tangents(turns)],
-               local=[f64_hex(v) for v in bone_rotation(rest, axes, values)])
+               local=[f64_hex(v) for v in local])
     if recorded is not None:
         row.update(recorded=f32_hexes(recorded), bound=unity_bound(rest, axes, values, value_errors))
     return row
@@ -255,15 +277,17 @@ def muscle_property(name):
 
 
 def clip_values(doc, sample, names):
-    """A clip-playback sample's muscle values from the clip's own authored curves at its time, and each one's
-    error bound: Unity's f32 curve evaluation (anim_body_model.curve's operand magnitude at gamma_12) and the
-    clip time's own f32 rounding, and the f32 rounding of the value itself. A muscle without a curve is
-    exactly 0."""
+    """A clip-playback sample's muscle values from the clip's own authored curves at its time on the clip's
+    source clock (`effective_source`, the time the clip is sampled at, not the playable's `local`), and each
+    one's error bound: Unity's f32 curve evaluation (anim_body_model.curve's operand magnitude at gamma_12), the
+    time's own f32 rounding, and the f32 rounding of the value itself. A muscle without a curve is exactly 0."""
     from anim_body_model import Refused, curve
 
     authored = {row["property"]: row["keys"] for row in doc["spec"]["evidence"]["editor"]["bindings"]
                 if (row["path"], row["type"]) == ("", "UnityEngine.Animator") and row.get("keys")}
-    time, time_f32 = sample["local"], replay.f32_from_bits(sample["local_f32"])
+    time = sample.get("effective_source")
+    replay.require(type(time) in (int, float) and math.isfinite(time), "a clip sample without a source time")
+    time_f32 = f32(time)
     gamma = 12 * U32 / (1 - 12 * U32)
     values, errors = [], []
     for name in names:
@@ -285,18 +309,30 @@ def clip_values(doc, sample, names):
 
 def cases(unityrs, folders):
     """Real-Avatar cases from training runs: each bone's recorded samples, known vectors and clip playback alike,
-    and the schedule on its axes."""
+    and the schedule on its axes. A round 11 run (`round.json`) adds its inventory (anim_muscle_round11: the
+    sweeps and full-body clips), and its entries are confirmation, never acceptance. Each Editor's required
+    cases and the ones its runs lack are recorded for `agree`."""
     import anim_body_runs as runs
+    import anim_muscle_round11 as round11
     from anim_body_freeze import readers
     from anim_fixture_coverage import REFUSALS
-    from anim_humanoid_qualify import bone_node, vec
+    from anim_humanoid_qualify import vec
 
     avatar_of, _ = readers(unityrs)
-    entries, generated = [], {}
+    entries, generated, required, missing = [], {}, {}, {}
     for folder in folders:
         run = runs.Run(folder, "training", pending=True)
         editor = run.version.split(".")[0]
-        for case, doc in sorted(run.documents.items()):
+        confirmation = round11.declared_round(folder) == round11.ROUND
+        documents = dict(run.documents)
+        missing.setdefault(editor, set()).update(run.missing)
+        if confirmation:
+            extra = round11.Recordings(folder)
+            replay.require(not documents.keys() & extra.documents.keys(), f"{folder.name}: a case is read twice")
+            documents |= extra.documents
+            required.setdefault(editor, set()).update(extra.required)
+            missing[editor].update(extra.missing)
+        for case, doc in sorted(documents.items()):
             capture = doc["capture"]
             if not capture["samples"] or "humanoid" not in capture:
                 continue
@@ -319,8 +355,11 @@ def cases(unityrs, folders):
             skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
             bones = capture["humanoid"]["bones"]
             for bone in sorted({row["bone"] for row in muscles}):
-                node = bone_node(human, bone)
-                if node is None or bones[bone]["node"] < 0 or skeleton["m_Node"][node]["m_AxesId"] < 0:
+                # A bone the capture marks absent is skipped before the Avatar is indexed for it.
+                if bones[bone]["node"] < 0:
+                    continue
+                node = avatar_node(human, bone)
+                if node is None or skeleton["m_Node"][node]["m_AxesId"] < 0:
                     continue
                 record = skeleton["m_AxesArray"][skeleton["m_Node"][node]["m_AxesId"]]
                 axes = {key: [f32(v) for v in vec(record[name])] for key, name in
@@ -340,23 +379,39 @@ def cases(unityrs, folders):
                         seen.add(key)
                         rows.append(vector_row(rest, axes, values, recorded, [value_errors[m] for m in ordinals]))
                 entries.append(dict(editor=editor, case=case, bone=bone, name=bones[bone]["name"],
-                                    playback=playback, refusal=case in REFUSALS, axes=axes_row(axes),
+                                    playback=playback, refusal=case in REFUSALS, confirmation=confirmation,
+                                    axes=axes_row(axes),
                                     rest=f32_hexes(rest), vectors=rows))
                 generated.setdefault((editor, bone, json.dumps(axes_row(axes))), (axes, rest))
     for (editor, bone, _), (axes, rest) in sorted(generated.items()):
         entries.append(dict(editor=editor, case="generated", bone=bone, axes=axes_row(axes), rest=f32_hexes(rest),
                             vectors=[vector_row(rest, axes, values) for values in schedule(bone)]))
-    return dict(format=FORMAT, kind="cases", reference=REFERENCE, muscle_axes=list(MUSCLE_AXES), entries=entries)
+    return dict(format=FORMAT, kind="cases", reference=REFERENCE, muscle_axes=list(MUSCLE_AXES),
+                required={editor: sorted(cases) for editor, cases in sorted(required.items())},
+                missing={editor: sorted(cases) for editor, cases in sorted(missing.items())}, entries=entries)
 
 
-def agreement(document, refusal=False):
+def avatar_node(human, bone):
+    """The Avatar's human skeleton node of a HumanBodyBones index, or None, as Rust's lookup: a finger of a hand
+    the Avatar does not map (an empty `m_HandBoneIndex`) is None, never indexed."""
+    from anim_humanoid_qualify import bone_node
+
+    if 24 <= bone <= 53:
+        hand = human[("m_LeftHand", "m_RightHand")[(bone - 24) // 15]]
+        if len(hand.get("data", hand)["m_HandBoneIndex"]) <= (bone - 24) % 15:
+            return None
+    return bone_node(human, bone)
+
+
+def agreement(document, refusal=False, confirmation=False):
     """{(editor, bone name): (worst angle, its bound, samples, samples outside, rows reference 2 changes from
-    reference 1, samples outside under reference 1)} over recorded vectors: acceptance's, or with `refusal` the
-    refusal cases' (anim_fixture_coverage.REFUSALS: playback B5a must refuse, such as limb twist, which Unity
-    spreads over neighbouring bones), reported apart and never part of acceptance."""
+    reference 1, samples outside under reference 1)} over recorded vectors: acceptance's (rounds 1 to 10), with
+    `confirmation` round 11's, or with `refusal` the refusal cases' of any round (anim_fixture_coverage.REFUSALS:
+    playback B5a must refuse, such as limb twist, which Unity spreads over neighbouring bones), reported apart
+    and never part of acceptance or confirmation."""
     result = {}
     for entry in document["entries"]:
-        if entry.get("refusal", False) != refusal:
+        if entry.get("refusal", False) != refusal or not refusal and entry.get("confirmation", False) != confirmation:
             continue
         axes, rest = axes_of(entry["axes"]), [replay.f32_from_bits(v) for v in entry["rest"]]
         for row in entry["vectors"]:
@@ -379,6 +434,37 @@ def agreement(document, refusal=False):
 def regressions(rows):
     """The bones reference 1 agreed on whose recorded rows reference 2 changes: none is allowed."""
     return sorted(key for key, (_, _, _, _, changed, was) in rows.items() if not was and changed)
+
+
+EDITORS = ("2022", "6000")
+
+
+def failures(document):
+    """Why `agree` fails, empty when it passes: an Editor with no comparison; an acceptance or confirmation
+    sample outside its bound, on any bone (one reference 1 already failed included); a required case missing
+    from its run or with no compared sample; a regression from reference 1. The refusal table never counts."""
+    found = []
+    tables = {"acceptance": agreement(document), "confirmation": agreement(document, confirmation=True)}
+    for title, table in tables.items():
+        outside = [f"{editor} {name} in {rows[3]}" for (editor, name), rows in sorted(table.items()) if rows[3]]
+        if outside:
+            found.append(f"{title} samples outside their bound: " + ", ".join(outside))
+    for editor in EDITORS:
+        if not sum(rows[2] for table in tables.values() for (e, _), rows in table.items() if e == editor):
+            found.append(f"no comparison in Editor {editor}")
+    for editor, cases in sorted(document["missing"].items()):
+        if cases:
+            found.append(f"Editor {editor}'s runs lack {len(cases)} required case(s): " + ", ".join(cases[:20]))
+    for editor, cases in sorted(document["required"].items()):
+        compared = {entry["case"] for entry in document["entries"] if entry["editor"] == editor
+                    and any("recorded" in row for row in entry["vectors"])}
+        lacking = sorted(set(cases) - compared)
+        if lacking:
+            found.append(f"Editor {editor} compares no sample of {len(lacking)} required case(s): "
+                         + ", ".join(lacking[:20]))
+    if regressions(tables["acceptance"]):
+        found.append(f"reference 2 changes bones reference 1 agreed on: {regressions(tables['acceptance'])}")
+    return found
 
 
 def main():
@@ -406,8 +492,11 @@ def main():
         else:
             document = replay.read_json(args.file.read_text(encoding="utf-8"))
             replay.require(document.get("reference") == REFERENCE, f"{args.file.name} is not reference {REFERENCE}'s")
-            rows = agreement(document)
-            for title, table in (("Acceptance", rows), ("Refusal cases (not acceptance)", agreement(document, True))):
+            replay.require("required" in document and "missing" in document,
+                           f"{args.file.name} records no required cases: make it again with `cases`")
+            for title, table in (("Acceptance (rounds 1 to 10)", agreement(document)),
+                                 ("Confirmation (round 11)", agreement(document, confirmation=True)),
+                                 ("Refusal cases (not acceptance)", agreement(document, True))):
                 print(f"{title}:")
                 for (editor, name), (worst, bound, count, outside, changed, was) in sorted(
                         table.items(), key=lambda kv: (kv[0][1] != "Spine", kv[0][1], kv[0][0])):
@@ -415,7 +504,8 @@ def main():
                     print(f"{editor} {name:16s} worst {math.degrees(worst):.3e} deg  bound "
                           f"{math.degrees(bound):.3e} deg  {count} samples  {verdict}  ({changed} changed from "
                           f"reference 1, outside in {was})")
-            replay.require(not regressions(rows), f"reference 2 changes bones reference 1 agreed on: {regressions(rows)}")
+            found = failures(document)
+            replay.require(not found, "; ".join(found))
     except (ValueError, OSError) as exc:
         parser.exit(1, f"anim_muscle_pose: {exc}\n")
 

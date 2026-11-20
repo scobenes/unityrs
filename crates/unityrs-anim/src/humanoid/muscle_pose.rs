@@ -38,6 +38,14 @@
 //!   follow.
 //!
 //! Each later muscle on the same axis replaces the earlier one's angle.
+//!
+//! **The domain of "bit for bit".** The ports agree bit for bit on the
+//! same finite f32 inputs given the same `tan` bits: one C library, or the
+//! tangents a row records. Across C libraries only the angles are pinned.
+//! A NaN or infinite muscle value has a NaN tangent, which gives `None`
+//! here. The Python reference also returns `None` for it, as it does for
+//! an axis past z or a zero quaternion.
+//!
 //! Nothing here plays a muscle yet: every humanoid clip still refuses, and
 //! the release gate's table (`gate.rs`) is empty. Which bones the equation
 //! holds for is measured by the agreement check against Unity's recordings

@@ -94,9 +94,42 @@ struct Checked {
     rows: usize,
     /// Rows whose `tan` here differs from the row's in the last bits.
     libm: usize,
-    /// (editor, bone name): worst angle to Unity's recording, its bound,
-    /// samples, samples outside the bound.
-    agreement: BTreeMap<(String, String), (f64, f64, usize, usize)>,
+    /// (table, editor, bone name): worst angle to Unity's recording, its
+    /// bound, samples, samples outside the bound.
+    agreement: BTreeMap<(Table, String, String), Tally>,
+}
+
+/// Worst angle to Unity's recording, its bound, samples, samples outside.
+type Tally = (f64, f64, usize, usize);
+
+/// Which agreement table an entry's rows go to, as `anim_muscle_pose.py
+/// agree` sorts them: a refusal case (`humanoid-twist-refusal`, playback
+/// B5a must refuse) is reported apart, never in acceptance or confirmation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Table {
+    Acceptance,
+    Confirmation,
+    Refusal,
+}
+
+impl Table {
+    fn of(entry: &Value) -> Self {
+        if entry["refusal"].as_bool().unwrap_or(false) {
+            Self::Refusal
+        } else if entry["confirmation"].as_bool().unwrap_or(false) {
+            Self::Confirmation
+        } else {
+            Self::Acceptance
+        }
+    }
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Acceptance => "Acceptance (rounds 1 to 10)",
+            Self::Confirmation => "Confirmation (round 11)",
+            Self::Refusal => "Refusal cases (not acceptance)",
+        }
+    }
 }
 
 /// Every row of a reference file, bit for bit.
@@ -132,6 +165,7 @@ fn check(document: &Value) -> Checked {
                 let turn = angle(local, recorded.map(f64::from));
                 let bound = row["bound"].as_f64().unwrap();
                 let key = (
+                    Table::of(entry),
                     entry["editor"].as_str().unwrap().to_owned(),
                     entry["name"].as_str().unwrap().to_owned(),
                 );
@@ -265,8 +299,15 @@ fn real_avatar_cases_when_given() {
         checked.rows, checked.libm
     );
     let mut rows: Vec<_> = checked.agreement.iter().collect();
-    rows.sort_by_key(|((editor, name), _)| (name != "Spine", name.clone(), editor.clone()));
-    for ((editor, name), (worst, bound, count, outside)) in rows {
+    rows.sort_by_key(|((table, editor, name), _)| {
+        (*table, name != "Spine", name.clone(), editor.clone())
+    });
+    let mut title = None;
+    for ((table, editor, name), (worst, bound, count, outside)) in rows {
+        if title != Some(*table) {
+            title = Some(*table);
+            eprintln!("{}:", table.title());
+        }
         let verdict = if *outside == 0 {
             "agrees".to_owned()
         } else {
@@ -278,4 +319,16 @@ fn real_avatar_cases_when_given() {
             bound.to_degrees()
         );
     }
+}
+
+/// A refusal case's rows go to their own table, never acceptance's or
+/// confirmation's, as Python's `agree` sorts them.
+#[test]
+fn refusal_rows_are_a_table_apart() {
+    let entry = |refusal: bool, confirmation: bool| serde_json::json!({"refusal": refusal, "confirmation": confirmation});
+    assert_eq!(Table::of(&entry(false, false)), Table::Acceptance);
+    assert_eq!(Table::of(&entry(false, true)), Table::Confirmation);
+    assert_eq!(Table::of(&entry(true, false)), Table::Refusal);
+    assert_eq!(Table::of(&entry(true, true)), Table::Refusal);
+    assert_eq!(Table::of(&serde_json::json!({})), Table::Acceptance);
 }
