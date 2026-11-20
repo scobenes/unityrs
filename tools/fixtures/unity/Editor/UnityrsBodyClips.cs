@@ -13,6 +13,9 @@ using Object = UnityEngine.Object;
 // a level offset and an orientation offset alone; each of those again starting
 // at a nonzero XZ and yaw; motion curves apart from the body; and height from
 // feet with a knee bend, with and without foot goal curves.
+//
+// E5: the variants B4 admits, each with its start-offset twin, on an identity
+// and an offset root, on every clip rig (ClipRigs), each in its own bundle.
 static partial class UnityrsFixtureBuilder
 {
     const string BodyClipBundle = "body-clips";
@@ -56,8 +59,31 @@ static partial class UnityrsFixtureBuilder
         return rows.ToArray();
     }
 
-    static IEnumerable<string> ClipCases() => ClipVariants.SelectMany(row =>
-        new[] { "body-clip-" + row.Name, "body-clip-" + row.Name + "-offset" });
+    // The variants B4 admits (freeze v8's E4 passing set, anim_fixture_body.py
+    // E5_ADMITTED). Each records with its start-offset twin where it has one.
+    static readonly string[] E5Admitted = {
+        "bake-o0-y0-xz1", "bake-o0-y1-xz0", "bake-o0-y1-xz1", "bake-o1-y0-xz0", "bake-o1-y0-xz1", "bake-o1-y1-xz0",
+        "bake-o1-y1-xz1", "keep-o0-y0-xz0", "keep-o1-y1-xz1-motion", "level", "orientation-offset"
+    };
+    static BodyClipVariant[] E5Variants => ClipVariants.Where(row => E5Admitted.Contains(
+        row.Start ? row.Name.Substring(0, row.Name.Length - "-start".Length) : row.Name)).ToArray();
+
+    // E5's clip rigs (anim_fixture_body.py CLIP_RIGS): the plain chain at B4's
+    // highest human scale (F5's large rig), the tall rig's and near its lowest
+    // (SmallRig), then every admitted training topology but the compact rig's,
+    // whose clips body-clips records. Never a hold-out rig.
+    static readonly BodyRig SmallRig = new BodyRig { Name = "small", Size = .82f };
+    static readonly string[] SealedRigs = { "holdout", HoldoutRig };
+    static BodyRig[] ClipRigs => new[] { ChainRigs.Single(rig => rig.Name == "large"), ProbeRigs.Single(rig => rig.Name == "tall"),
+        SmallRig }.Concat(ProbeRigs.Where(rig => rig.Name != "compact" && rig.Name != "tall" && !SealedRigs.Contains(rig.Name)))
+        .ToArray();
+
+    // The compact rig's bundle body-clips, or a clip rig's own.
+    static string ClipBundle(BodyRig rig) => rig == null ? BodyClipBundle : BodyClipBundle + "-" + rig.Name;
+    static string ClipName(BodyRig rig, BodyClipVariant row) => "body-clip-" + (rig == null ? "" : rig.Name + "-") + row.Name;
+
+    static IEnumerable<string> ClipCases(BodyRig rig = null) => (rig == null ? ClipVariants : E5Variants).SelectMany(row =>
+        new[] { ClipName(rig, row), ClipName(rig, row) + "-offset" });
 
     static readonly float[] BodyTimes = { 0, .25f, .5f, .75f, 1 };
     // RootT in normalized units, and RootQ as Euler degrees (tilt, yaw, roll).
@@ -185,30 +211,35 @@ static partial class UnityrsFixtureBuilder
         return properties.All(bound.Contains);
     }
 
-    static void BuildBodyClips(Build build, RunReport report)
+    // The compact rig's clips (`spec` null, every variant) or an E5 clip rig's (the admitted variants).
+    static void BuildBodyClips(Build build, RunReport report, BodyRig spec = null)
     {
+        var rigSpec = spec ?? ProbeRigs[0];
+        string bundle = ClipBundle(spec);
+        Require(!rigSpec.Armature && !rigSpec.ScaledAnimator && rigSpec.HipsScale == 1,
+            "A clip rig is a plain chain: " + rigSpec.Name + ".");
         var rig = new GameObject("HumanoidRig");
         GameObject root = null;
         Avatar avatar = null;
         try
         {
-            var hips = BuildBodySkeleton(rig.transform, ProbeRigs[0]);
+            var hips = BuildBodySkeleton(rig.transform, rigSpec);
             var skeleton = rig.GetComponentsInChildren<Transform>();
-            avatar = AvatarBuilder.BuildHumanAvatar(rig, DescribeHumanoid(skeleton, false));
+            avatar = AvatarBuilder.BuildHumanAvatar(rig, DescribeHumanoid(skeleton, rigSpec.Tall));
             Require(avatar != null && avatar.isValid && avatar.isHuman,
-                "AvatarBuilder.BuildHumanAvatar returned an invalid Humanoid Avatar.");
-            avatar.name = BodyClipBundle;
+                "AvatarBuilder.BuildHumanAvatar returned an invalid Humanoid Avatar for " + bundle + ".");
+            avatar.name = bundle;
             avatar.hideFlags = HideFlags.None;
-            string dir = Folder(Assets + "/" + BodyClipBundle);
+            string dir = Folder(Assets + "/" + bundle);
             var animator = SaveCoverageRig(rig, hips, skeleton, avatar, dir, out var assets);
             var clips = new List<(AnimationClip clip, BodyClipVariant variant)>();
-            foreach (var variant in ClipVariants)
+            foreach (var variant in spec == null ? ClipVariants : E5Variants)
             {
                 // Unity may refuse a variant's settings, or motion or goal curves on a
                 // human-motion clip: only that variant is then not covered.
                 AnimationClip clip = null;
                 string missing = null;
-                try { clip = AuthorBodyClip(dir, "body-clip-" + variant.Name, variant); }
+                try { clip = AuthorBodyClip(dir, ClipName(spec, variant), variant); }
                 catch (CoverageUnavailable error) { missing = error.Message; }
                 if (missing == null && variant.Motion && !KeepsCurves(clip, "MotionT.x", "MotionQ.w"))
                     missing = "The Editor dropped the authored MotionT and MotionQ curves.";
@@ -217,7 +248,7 @@ static partial class UnityrsFixtureBuilder
                 if (missing != null)
                 {
                     foreach (string suffix in new[] { "", "-offset" })
-                        report.Set("body-clip-" + variant.Name + suffix, "not_covered", missing);
+                        report.Set(ClipName(spec, variant) + suffix, "not_covered", missing);
                     continue;
                 }
                 clips.Add((clip, variant));
@@ -232,16 +263,16 @@ static partial class UnityrsFixtureBuilder
             string offsetPrefab = SavePrefab(root, dir + "/offset.prefab");
             var clipPaths = clips.Select(row => AssetDatabase.GetAssetPath(row.clip)).ToArray();
             var mapped = skeleton.Select(bone => bone.name).Where(HumanTrait.BoneName.Contains).ToArray();
-            build.AddBodyBundle(BodyClipBundle, assets.Concat(clipPaths).Concat(new[] { prefab, offsetPrefab }).ToArray());
+            build.AddBodyBundle(bundle, assets.Concat(clipPaths).Concat(new[] { prefab, offsetPrefab }).ToArray());
             for (int i = 0; i < clips.Count; i++)
             {
                 var variant = clips[i].variant;
                 foreach (var (path, suffix, rootKind) in new[] { (prefab, "", "identity"), (offsetPrefab, "-offset", "offset") })
                 {
-                    var body = new BodyCase { Kind = "clip", Rig = "compact", Variant = variant.Name, Root = rootKind,
-                        Spec = ProbeRigs[0], Mapped = mapped };
-                    var replay = BodyReplay(BodyClipBundle, path, assets[0], clipPaths[i],
-                        "body-clip-" + variant.Name + suffix, body, "HumanoidRig/Hips/Spine");
+                    var body = new BodyCase { Kind = "clip", Rig = rigSpec.Name, Variant = variant.Name, Root = rootKind,
+                        Spec = rigSpec, Mapped = mapped };
+                    var replay = BodyReplay(bundle, path, assets[0], clipPaths[i],
+                        ClipName(spec, variant) + suffix, body, "HumanoidRig/Hips/Spine");
                     replay.BodyClip = variant;
                     build.Replays.Add(replay);
                 }

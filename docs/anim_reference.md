@@ -1009,7 +1009,7 @@ the plan's hypotheses. None of it is a playback claim.
 
 ### Body fixtures
 
-The main menu item builds 118 optional `body-…` cases, each kind in its own
+The main menu item builds 932 optional `body-…` cases, each kind in its own
 bundle build after the main and coverage builds. Their tables are in
 `UnityrsBodyFixtures.cs` and `UnityrsBodyClips.cs`, mirrored by
 [`anim_fixture_body.py`](../tools/parity/anim_fixture_body.py).
@@ -1023,7 +1023,8 @@ bundle build after the main and coverage builds. Their tables are in
 | `body-probes-band-{compact,tall,noncoplanar}` (3) | F9 | Lateral band sweeps on the same three rigs, each in a bundle of its own: 296 known vectors crossing combined spine Left-Right values up to ±3/8 with tilts and small arm-leg yaw gaps, and the side bends (below), all required once the run has them |
 | `body-targets-{compact,tall}[-offset]` (4) | F3 | The three combined vectors with nonidentity body targets on identity and offset roots |
 | `body-clip-<variant>[-offset]` (78) | F4 | 39 body-motion clips on the compact rig, each on an identity and an offset root |
-| `body-chain-<f5>-{targets,clip}` (8) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale. Each plays F3's targets and the all-original F4 clip with changing `MotionT` and `MotionQ` curves, whose residual body translation and tilt change through the chain and whose motion the original-root rule keeps. Completion requires its built motion slots; if Unity drops them, that clip case is not covered. |
+| `body-chain-<f5>-{targets,clip}` (18) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale; then, for E5, the scaled Animator at sizes 1.5 and 0.82, the hips scale at 1.2 and 0.7 and the armature at 1.8, a size scaling every offset below the Animator (the armature's translation too). Each plays F3's targets and the all-original F4 clip with changing `MotionT` and `MotionQ` curves, whose residual body translation and tilt change through the chain and whose motion the original-root rule keeps. Completion requires its built motion slots; if Unity drops them, that clip case is not covered. |
+| `body-clip-<rig>-<variant>[-offset]` (798) | E5 | The 21 variants B4 admits (freeze v8's E4 passing set, each with its `-start` twin where it has one) on 19 more rigs, each rig in a bundle `body-clips-<rig>`: F5's large rig, the tall rig and a plain `small` rig (size 0.82), at the top, middle and bottom of B4's human-scale range, then every admitted training topology but the compact rig's. Never a hold-out rig. |
 
 **Rig geometry.** One parameterized layout gives every rig. Unchanged, it
 repeats the P2b offsets in the same sibling order. An omitted bone's
@@ -1220,6 +1221,11 @@ vectors do.
 
 - A run with no `body-…` row completes as before.
 - A run with any body row must list every body case.
+- E5's cases (round 11: the clip rigs and the five chain rigs added for E5)
+  are a generation of their own. A run without them completes as before;
+  a run with any of them must list and record every one. Each one's
+  recorded human scale must lie in B4's range, from the armature rig's
+  `0x3f47f9bb` to the large rig's `0x3fb7a311`. B2 never reads them.
 - A recorded case needs `replays/body/<case>.pending.json` and its bundle.
 - A failed case fails the run.
 

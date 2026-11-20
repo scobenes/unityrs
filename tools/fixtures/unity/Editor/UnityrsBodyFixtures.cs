@@ -50,12 +50,20 @@ static partial class UnityrsFixtureBuilder
     };
     // F6 rigs that came with the range sweeps (anim_fixture_body.py LATER_RIGS), each required.
     static readonly string[] LaterRigs = { "no-upper-chest-toes", "no-upper-chest-left-toes", "no-upper-chest-right-toes" };
-    // F5: each plays F3's targets and the F4 all-off clip.
+    // F5: each plays F3's targets and the F4 all-original motion clip. Size scales
+    // every offset below the Animator, an armature's translation too; the
+    // feature's own scale and turn stay. The last five put each feature at a
+    // second human scale for E5, inside B4's range.
     static readonly BodyRig[] ChainRigs = {
         new BodyRig { Name = "scaled-animator", ScaledAnimator = true },
         new BodyRig { Name = "large", Size = 1.5f },
         new BodyRig { Name = "armature", Armature = true },
         new BodyRig { Name = "hips-scale", HipsScale = 1.2f },
+        new BodyRig { Name = "scaled-animator-large", ScaledAnimator = true, Size = 1.5f },
+        new BodyRig { Name = "scaled-animator-small", ScaledAnimator = true, Size = .82f },
+        new BodyRig { Name = "hips-scale-large", HipsScale = 1.2f, Size = 1.2f },
+        new BodyRig { Name = "hips-scale-small", HipsScale = 1.2f, Size = .7f },
+        new BodyRig { Name = "armature-large", Armature = true, Size = 1.8f },
     };
     static readonly string[] TargetRigs = { "compact", "tall" };
     // Extra probe cases, each on its own bundle of a probe rig (tools/parity/anim_fixture_body.py
@@ -353,7 +361,8 @@ static partial class UnityrsFixtureBuilder
     static IEnumerable<string> BodyCases() => ProbeRigs.SelectMany(rig => RigCases(rig, false))
         .Concat(ExtraProbes.Select(extra => extra.name)).Concat(TwistProbes.Select(twist => twist.name))
         .Concat(RangeProbes.Select(range => range.name)).Concat(BandProbes.Select(band => band.name))
-        .Concat(ClipCases()).Concat(ChainRigs.SelectMany(rig => RigCases(rig, true)));
+        .Concat(ClipCases()).Concat(ChainRigs.SelectMany(rig => RigCases(rig, true)))
+        .Concat(ClipRigs.SelectMany(rig => ClipCases(rig)));
 
     // Each body case fails until a step prepares it, so none can vanish unseen.
     static void AddBodyCases(RunReport report) => report.AddPending(BodyCases());
@@ -390,6 +399,9 @@ static partial class UnityrsFixtureBuilder
             report.Prepare(build, "Prepare body-chain-" + rig.Name, RigCases(rig, true).ToArray(),
                 () => BuildBodyRig(build, report, rig, chain: true), true);
         report.Prepare(build, "Prepare " + BodyClipBundle, ClipCases().ToArray(), () => BuildBodyClips(build, report), true);
+        // E5's clip rigs, each in a bundle of its own: Unity refusing one's Avatar is an error.
+        foreach (var rig in ClipRigs)
+            report.Prepare(build, "Prepare " + ClipBundle(rig), ClipCases(rig).ToArray(), () => BuildBodyClips(build, report, rig));
         var prepared = new HashSet<string>(build.Replays.Select(replay => replay.OutputName), StringComparer.Ordinal);
         report.FailUnreached(BodyCases().Where(name => !prepared.Contains(name)),
             "No preparation step produced this body fixture.");
@@ -464,7 +476,7 @@ static partial class UnityrsFixtureBuilder
         {
             // An FBX-like armature: scaled, translated and turned, with the hips
             // turned back so the T-pose stays upright and facing +Z.
-            top = Child(root, "Armature", new Vector3(0, .05f, .1f));
+            top = Child(root, "Armature", new Vector3(0, .05f, .1f) * rig.Size);
             top.localRotation = Quaternion.Euler(-90, 0, 0);
             top.localScale = Vector3.one * ArmatureScale;
         }
@@ -474,7 +486,7 @@ static partial class UnityrsFixtureBuilder
         if (rig.Armature)
         {
             // Hips at (0, .72, 0) in the rig: the armature's inverse turn of (0, .67, -.1), over its scale.
-            hips.localPosition = new Vector3(0, .125f, .8375f);
+            hips.localPosition = new Vector3(0, .125f, .8375f) * rig.Size;
             hips.localRotation = Quaternion.Euler(90, 0, 0);
         }
         if (rig.HipsScale != 1)

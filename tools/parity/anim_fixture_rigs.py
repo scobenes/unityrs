@@ -17,13 +17,12 @@ shoulder only its Down-Up probe, of any other bone any single probe or
 combined vector.
 """
 
-from anim_fixture_body import PROBE_GROUPS, PROBE_RIGS, rig_bones, sobol
+from anim_fixture_body import PROBE_GROUPS, PROBE_RIGS, RIG_SIZES, rig_bones, sobol
 
 # (arms, legs) length factors of the builder's BodyRig, 1 elsewhere.
 RIG_PROPORTIONS = {"holdout": (1.3, .8), "holdout-2": (.8, 1.2)}
-# Rigs whose hip and shoulder children leave the plane, and F5's larger rig.
+# Rigs whose hip and shoulder children leave the plane. A rig's size (RIG_SIZES) scales every offset.
 NONCOPLANAR = ("noncoplanar", "no-chest")
-RIG_SIZES = {"large": 1.5}
 
 
 def rig_layout(rig):

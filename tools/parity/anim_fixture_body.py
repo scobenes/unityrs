@@ -40,8 +40,23 @@ PROBE_RIGS = {
 # and "holdout-2" (short arms, long legs, its own pose draws), the one E3b reads next (HOLDOUT).
 HOLDOUT_RIGS = ("holdout", "holdout-2")
 HOLDOUT = HOLDOUT_RIGS[-1]
-# F5: the chain from the Animator to the hips, each on the compact rig.
-CHAIN_RIGS = ("scaled-animator", "large", "armature", "hips-scale")
+# F5: the chain from the Animator to the hips, each on the compact rig, as (feature, size). Size scales every
+# offset below the Animator (an armature's translation too); the feature's own scale and turn stay as F5's. The
+# rigs after the first four put each feature at a second human scale for E5, a generation of their own (E5_CASES).
+CHAIN_RIGS = {"scaled-animator": ("scaled-animator", 1), "large": ("", 1.5), "armature": ("armature", 1),
+              "hips-scale": ("hips-scale", 1), "scaled-animator-large": ("scaled-animator", 1.5),
+              "scaled-animator-small": ("scaled-animator", .82), "hips-scale-large": ("hips-scale", 1.2),
+              "hips-scale-small": ("hips-scale", .7), "armature-large": ("armature", 1.8)}
+E5_CHAIN_RIGS = tuple(CHAIN_RIGS)[4:]
+# E5's clip rigs (UnityrsBodyClips.cs ClipRigs), each in a bundle body-clips-<rig>: the plain chain at B4's
+# highest human scale (F5's large rig), the tall rig's, and near its lowest (a plain rig of its own), then every
+# admitted training topology but the compact rig's, whose clips body-clips records. Never a hold-out rig.
+CLIP_RIGS = ("large", "tall", "small",
+             *(rig for rig in PROBE_RIGS if rig not in ("compact", "tall", *HOLDOUT_RIGS)))
+RIG_SIZES = {"small": .82} | {rig: size for rig, (_, size) in CHAIN_RIGS.items() if size != 1}
+# B4's human-scale range, as f32 bits: the armature rig's and the large rig's recorded humanScale. Every E5 case's
+# recorded human scale must fall inside it, or B4 refuses the case and it covers nothing.
+H_RANGE = tuple(struct.unpack(">f", bytes.fromhex(bits))[0] for bits in ("3f47f9bb", "3fb7a311"))
 TARGET_RIGS = ("compact", "tall")
 SIDES = ("Left", "Right")
 LIMBS = ("UpperLeg", "LowerLeg", "Foot", "Toes", "Shoulder", "UpperArm", "LowerArm", "Hand")
@@ -177,6 +192,12 @@ def _clip_variants():
 
 
 CLIP_VARIANTS = _clip_variants()
+# The variants B4 admits (freeze v8's E4 passing set). E5's clip rigs record each with its start-offset twin, where
+# it has one: 21 rows.
+E5_ADMITTED = ("bake-o0-y0-xz1", "bake-o0-y1-xz0", "bake-o0-y1-xz1", "bake-o1-y0-xz0", "bake-o1-y0-xz1",
+               "bake-o1-y1-xz0", "bake-o1-y1-xz1", "keep-o0-y0-xz0", "keep-o1-y1-xz1-motion", "level",
+               "orientation-offset")
+E5_VARIANTS = tuple(name for name in CLIP_VARIANTS if name.removesuffix("-start") in E5_ADMITTED)
 # F5 plays the all-original clip with changing MotionT and MotionQ, so the residual body translation and tilt
 # change through each chain and the original-root rule has motion to keep; completion requires its motion slots.
 CHAIN_VARIANT = "keep-o1-y1-xz1-motion"
@@ -234,9 +255,14 @@ def _cases():
         for prefab, suffix in (("identity", ""), ("offset", "-offset")):
             add(f"body-clip-{variant}{suffix}", _fixture("body-clips", prefab, "body-clip-" + variant, "clip"),
                 "clip", "compact", variant, prefab)
-    for rig in CHAIN_RIGS:
+    for rig in CLIP_RIGS:
+        for variant in E5_VARIANTS:
+            for prefab, suffix in (("identity", ""), ("offset", "-offset")):
+                clip = f"body-clip-{rig}-{variant}"
+                add(clip + suffix, _fixture("body-clips-" + rig, prefab, clip, "clip"), "clip", rig, variant, prefab)
+    for rig, (feature, _) in CHAIN_RIGS.items():
         bundle = "body-chain-" + rig
-        probe = "HumanoidRig/Armature/Hips/Spine" if rig == "armature" else SPINE_PROBE
+        probe = "HumanoidRig/Armature/Hips/Spine" if feature == "armature" else SPINE_PROBE
         add(bundle + "-targets", _fixture(bundle, "identity", bundle + "-muscles", "targets", probe), "targets", rig)
         add(bundle + "-clip", _fixture(bundle, "identity", bundle + "-clip", "clip", probe), "clip", rig, CHAIN_VARIANT)
     return cases, info
@@ -247,6 +273,11 @@ EXTRA_CASES = frozenset(name for name, info in BODY_INFO.items() if info["varian
 TWIST_CASES = frozenset(TWIST_RIGS)
 RANGE_CASES = frozenset(RANGE_RIGS)
 BAND_CASES = frozenset(BAND_RIGS)
+# Round 11's cases for E5 (docs/plans/humanoid-body.md): the clip rigs' and the new chain rigs'. A generation of
+# their own, absent from older runs; once a run has them, each is required (anim_replay_complete). B2 never reads
+# them (anim_body_runs.role_of).
+E5_BUNDLES = frozenset({"body-clips-" + rig for rig in CLIP_RIGS} | {"body-chain-" + rig for rig in E5_CHAIN_RIGS})
+E5_CASES = frozenset(name for name, fixture in BODY_CASES.items() if fixture.bundle in E5_BUNDLES)
 # The rigs added with the range sweeps: UpperChest absent with both, the left or the right Toes.
 LATER_RIGS = ("no-upper-chest-toes", "no-upper-chest-left-toes", "no-upper-chest-right-toes")
 # The body cases added after the first body run, each generation absent from older runs and required once its
@@ -479,6 +510,9 @@ def check_body(name, fixture, doc, view, clip_key, replay):
             require(_raw([row.get("mass")], 1), f"malformed human_bones mass of {row['name']} in {name}")
     mapped = {row["name"] for row in human["bones"] if row["node"] >= 0}
     require(mapped == rig_bones(info["rig"]), f"captured Avatar topology differs from the {info['rig']} rig")
+    if name in E5_CASES:
+        scale, = _f32s([human.get("human_scale")], replay, 1, f"human_scale in {name}")
+        require(H_RANGE[0] <= scale <= H_RANGE[1], f"human scale {scale!r} of {name} is outside B4's range {H_RANGE}")
     samples = capture["samples"]
     rows = editor.get("body_samples")
     playback = info["kind"] == "clip"
@@ -559,9 +593,10 @@ def check_targets(name, info, spec, capture, editor, replay):
 
 
 def check_chain(rig, spec, capture, replay):
-    """The F5 chain each rig claims, in the recorded rest pose."""
+    """The F5 chain each rig claims, in the recorded rest pose: its feature, and a sized rig's hips position."""
     nodes = {node["address"]: (i, node["name"]) for i, node in enumerate(spec["nodes"])}
     rest = capture["rest"]["transforms"]
+    feature, size = CHAIN_RIGS.get(rig, ("", RIG_SIZES.get(rig, 1)))
 
     def scale(address):
         return _f32s(rest[nodes[address][0]]["scale"], replay, 3)
@@ -572,16 +607,19 @@ def check_chain(rig, spec, capture, replay):
     hips = [address for address, (_, label) in nodes.items() if label == "Hips"]
     replay.require(len(hips) == 1, "body rig has no single Hips node")
     hips = hips[0]
-    armature = rig == "armature"
+    armature = feature == "armature"
     checks = {
         "scaled-animator": near(scale("0"), 1.25),
         "armature": nodes.get("0/0", (0, ""))[1] == "Armature" and near(scale("0/0"), .8) and hips == "0/0/0",
         "hips-scale": near(scale(hips), 1.2),
-        "large": abs(_f32s(rest[nodes[hips][0]]["translation"], replay, 3)[1] - 1.32) <= 1e-5,
     }
-    replay.require(checks.get(rig, True) and (armature or hips == "0/0")
-                   and (rig == "scaled-animator" or near(scale("0"), 1))
-                   and (rig == "hips-scale" or near(scale(hips), 1)), f"body rig chain differs from the {rig} rig")
+    # Size scales the compact rig's hips offset (under the hips scale), or the armature's own.
+    want = (0, .125 * size, .8375 * size) if armature else (0, .88 * size * (1.2 if feature == "hips-scale" else 1), 0)
+    sized = size == 1 or all(abs(v - w) <= 1e-5 for v, w in zip(_f32s(rest[nodes[hips][0]]["translation"], replay, 3),
+                                                                  want))
+    replay.require(checks.get(feature, True) and sized and (armature or hips == "0/0")
+                   and (feature == "scaled-animator" or near(scale("0"), 1))
+                   and (feature == "hips-scale" or near(scale(hips), 1)), f"body rig chain differs from the {rig} rig")
 
 
 def _authored(editor, replay):

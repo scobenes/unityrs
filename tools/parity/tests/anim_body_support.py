@@ -11,7 +11,7 @@ import struct
 from test_anim_replay import bits
 
 import anim_body_tolerance as tolerance  # noqa: E402  (test_anim_replay puts it on the path)
-from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CLIP_VARIANTS,  # noqa: E402
+from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CHAIN_RIGS, CLIP_VARIANTS,  # noqa: E402
                                body_requests, distinguishing_curves, PROBE_GROUPS, SPINE,
                                START_OFFSET, START_YAW, expected_case_row, probe_schedule, schedule_name)
 from anim_fixture_rigs import rig_layout  # noqa: E402
@@ -67,17 +67,19 @@ def transform(t=(0, 0, 0), q=(0, 0, 0, 1), s=1.):
     return dict(translation=[bits(v) for v in t], rotation=[bits(v) for v in q], scale=[bits(s)] * 3)
 
 
-ANIMATOR_SCALE = {"scaled-animator": 1.25}
+ANIMATOR_SCALE = {rig: 1.25 for rig, (feature, _) in CHAIN_RIGS.items() if feature == "scaled-animator"}
 
 
 def rig_nodes(rig):
-    """Spec nodes and rest transforms, with F5's Animator, armature and hips scales."""
+    """Spec nodes and rest transforms, with F5's Animator, armature and hips scales (a sized rig's offsets
+    scaled, an armature's translation too)."""
+    feature, size = CHAIN_RIGS.get(rig, ("", 1))
     nodes, rest = [("", "HumanoidFixture"), ("0", "HumanoidRig")], [transform(), transform(
         s=ANIMATOR_SCALE.get(rig, 1.))]
     top, addresses, counts = "0", {"": "0"}, {}
-    if rig == "armature":
+    if feature == "armature":
         nodes.append(("0/0", "Armature"))
-        rest.append(transform((0, .05, .1), euler((-90, 0, 0), 4), .8))
+        rest.append(transform((0, .05 * size, .1 * size), euler((-90, 0, 0), 4), .8))
         top = addresses[""] = "0/0"
     for name, parent, offset in layout(rig):
         base = addresses[parent]
@@ -85,9 +87,9 @@ def rig_nodes(rig):
         counts[base] += 1
         addresses[name] = address
         nodes.append((address, name))
-        if name == "Hips" and rig == "armature":
-            rest.append(transform((0, .125, .8375), euler((90, 0, 0), 4)))
-        elif name == "Hips" and rig == "hips-scale":
+        if name == "Hips" and feature == "armature":
+            rest.append(transform((0, .125 * size, .8375 * size), euler((90, 0, 0), 4)))
+        elif name == "Hips" and feature == "hips-scale":
             rest.append(transform(tuple(1.2 * v for v in offset), s=1.2))
         else:
             rest.append(transform(offset))
