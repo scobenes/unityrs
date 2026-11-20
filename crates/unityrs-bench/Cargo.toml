@@ -1,0 +1,27 @@
+[package]
+name = "unityrs-bench"
+description = "The benchmark suite's fixtures (docs/plans/bench.md): public synthetic inputs from the testkit's builders."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+# Every fixture byte comes from the testkit's builders and its SplitMix64.
+unityrs-testkit = { path = "../unityrs-testkit" }
+# The LZ4HC fixture's encoder: liblz4 1.9.4's HC, as unityrs's writer and
+# Unity encode LZ4HC (the testkit writes that codec as plain LZ4).
+unityrs-compress-sys = { path = "../unityrs-compress-sys" }
+# The ASTC tiles' legality: the LDR decoder's error status (plan section 2).
+unityrs-texture = { path = "../unityrs-texture" }
+# The manifest's digests.
+sha2 = "=0.11.1"
+# The manifest, and the oracle-checked ASTC blocks in unityrs-texture's
+# tests/fixtures/astc.json, which the ASTC tiles are drawn from.
+serde_json = "=1.0.154"
+
+[lints]
+workspace = true

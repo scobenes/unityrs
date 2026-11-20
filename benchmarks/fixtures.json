@@ -1,0 +1,725 @@
+{
+ "schema_version": 1,
+ "scales": {
+  "full": {
+   "files": [
+    {
+     "bytes": 39057847,
+     "name": "many-blocks.bundle",
+     "sha256": "5457663e6fa8d872409cb485126799d1ec9cf7336c33fd91fd163b2852addcbf"
+    },
+    {
+     "bytes": 23121792,
+     "name": "objects-2019.assets",
+     "sha256": "636b1dc471c93fb79ede6fe19b202e52d41c518a6639fa9fdcd9d45fca825f8d"
+    },
+    {
+     "bytes": 5087065,
+     "name": "objects-lz4.bundle",
+     "sha256": "b00dcd729c4fc1017b07937f5339350c0d8e3c2f96f0bfd33776a879053ceedf"
+    },
+    {
+     "bytes": 3826117,
+     "name": "objects-lzma.bundle",
+     "sha256": "ceabe63c095851c8f2c7ddcf756b2de613638c4364834f8468b67f18e2a4a8f0"
+    },
+    {
+     "bytes": 8390603,
+     "name": "textures-ARGB4444.bundle",
+     "sha256": "35bc720d93f59af14e19e23b657d3628d00d362fc81e5faf274528f02757ac63"
+    },
+    {
+     "bytes": 8391092,
+     "name": "textures-ASTC_RGBA_4x4.bundle",
+     "sha256": "e53d8031eefac0949081a452ba48c0e24057bec2d1801088cd8125d8765e83da"
+    },
+    {
+     "bytes": 2099634,
+     "name": "textures-ASTC_RGBA_8x8.bundle",
+     "sha256": "da41262a2e6156b8fc44d7b32f91df5a4ca28029034e25493c46efa6e489a53c"
+    },
+    {
+     "bytes": 8391084,
+     "name": "textures-ATC_RGBA8.bundle",
+     "sha256": "edb041bd933f2214cb95b81d06fa3427eef6c7ecc19af11530fca4f67e256bb9"
+    },
+    {
+     "bytes": 4196713,
+     "name": "textures-BC4.bundle",
+     "sha256": "40ba437c834e61c047f9e1e50cdefb86f365e37954e743285b113206abd06611"
+    },
+    {
+     "bytes": 8391018,
+     "name": "textures-BC5.bundle",
+     "sha256": "2cc80cb2a5334b7482e8af3836d7f012683a64143689e26c69d0f37b94b02fd1"
+    },
+    {
+     "bytes": 8391019,
+     "name": "textures-BC6H.bundle",
+     "sha256": "4f6f7d9fc488f08599803f4bc135ad6737924aadf9760cd75a0694f7e7e6ee4c"
+    },
+    {
+     "bytes": 8391018,
+     "name": "textures-BC7.bundle",
+     "sha256": "e2609e02a76a2fa1f1a450480d7651d887505a0374d6211fb06aa543a48e27ff"
+    },
+    {
+     "bytes": 4196714,
+     "name": "textures-DXT1.bundle",
+     "sha256": "70d6c267f48b209c30da7179e93aad2eb2030e38dc6f0083f3671b95e97deae3"
+    },
+    {
+     "bytes": 8391019,
+     "name": "textures-DXT5.bundle",
+     "sha256": "ec234106b81c6ccbf9d91807d1218d1139861b93d34e34031cc2a9e076c8d4bc"
+    },
+    {
+     "bytes": 4196715,
+     "name": "textures-EAC_R.bundle",
+     "sha256": "62c5f209a54027b2071f4c936f40bc8b7b6b61ae7cb9c608aed7a37bd175a66e"
+    },
+    {
+     "bytes": 8391085,
+     "name": "textures-ETC2_RGBA8.bundle",
+     "sha256": "612a020281b3ae2ed23d7af9aee5d4431d39760aaa876946c1c1392fe76ecc59"
+    },
+    {
+     "bytes": 4196778,
+     "name": "textures-ETC_RGB4.bundle",
+     "sha256": "4a5be5280cf40fbd5512f22707950791139b319a186e3ed8aa81a9a77223abe6"
+    },
+    {
+     "bytes": 4196785,
+     "name": "textures-PVRTC_RGBA4.bundle",
+     "sha256": "1fa6711290384dea8279d70cf4671c9ae29e8e4647d490dc8872c3c915b28336"
+    },
+    {
+     "bytes": 12584877,
+     "name": "textures-RGB24.bundle",
+     "sha256": "547b62ed20182cef2e0761cf10fc3e0cbaa2e2b56a9c8f295118528e12591a63"
+    },
+    {
+     "bytes": 16779182,
+     "name": "textures-RGBA32.bundle",
+     "sha256": "5d3126ac0a0bd873a1a9305a803316053dcce05b11ada94df746e2e308dd6dc7"
+    }
+   ],
+   "generator": "unityrs-bench gen",
+   "inventories": {
+    "many-blocks.bundle": {
+     "blocks": 4096,
+     "entry": "CAB-bench-many-blocks.resS",
+     "entry_bytes": 67108864,
+     "entry_sha256": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "kind": "many-blocks"
+    },
+    "objects-2019.assets": {
+     "by_class": {
+      "BoxCollider": 2000,
+      "Camera": 2000,
+      "GameObject": 2000,
+      "Light": 2000,
+      "Material": 2000,
+      "MeshFilter": 2000,
+      "MeshRenderer": 2000,
+      "Rigidbody": 2000,
+      "TextAsset": 2000,
+      "Transform": 2000
+     },
+     "kind": "objects",
+     "objects": 20000,
+     "serialized_files": 1
+    },
+    "objects-lz4.bundle": {
+     "by_class": {
+      "BoxCollider": 2000,
+      "Camera": 2000,
+      "GameObject": 2000,
+      "Light": 2000,
+      "Material": 2000,
+      "MeshFilter": 2000,
+      "MeshRenderer": 2000,
+      "Rigidbody": 2000,
+      "TextAsset": 2000,
+      "Transform": 2000
+     },
+     "kind": "objects",
+     "objects": 20000,
+     "serialized_files": 1
+    },
+    "objects-lzma.bundle": {
+     "by_class": {
+      "BoxCollider": 2000,
+      "Camera": 2000,
+      "GameObject": 2000,
+      "Light": 2000,
+      "Material": 2000,
+      "MeshFilter": 2000,
+      "MeshRenderer": 2000,
+      "Rigidbody": 2000,
+      "TextAsset": 2000,
+      "Transform": 2000
+     },
+     "kind": "objects",
+     "objects": 20000,
+     "serialized_files": 1
+    },
+    "textures-ARGB4444.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 8388608,
+     "format": "ARGB4444",
+     "format_id": 2,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 4194304,
+     "textures": 4,
+     "width": 1024
+    },
+    "textures-ASTC_RGBA_4x4.bundle": {
+     "block_mix_each": {
+      "partitions:1": 32768,
+      "partitions:2": 16384,
+      "partitions:3": 8192,
+      "partitions:4": 4096,
+      "void": 4096
+     },
+     "data_bytes": 8388608,
+     "format": "ASTC_RGBA_4x4",
+     "format_id": 54,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-ASTC_RGBA_8x8.bundle": {
+     "block_mix_each": {
+      "partitions:1": 8192,
+      "partitions:2": 4096,
+      "partitions:3": 2048,
+      "partitions:4": 1024,
+      "void": 1024
+     },
+     "data_bytes": 2097152,
+     "format": "ASTC_RGBA_8x8",
+     "format_id": 57,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-ATC_RGBA8.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 8388608,
+     "format": "ATC_RGBA8",
+     "format_id": 36,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-BC4.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 4194304,
+     "format": "BC4",
+     "format_id": 26,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-BC5.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 8388608,
+     "format": "BC5",
+     "format_id": 27,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-BC6H.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 8388608,
+     "format": "BC6H",
+     "format_id": 24,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-BC7.bundle": {
+     "block_mix_each": {
+      "mode:1": 26214,
+      "mode:5": 19661,
+      "mode:6": 19661
+     },
+     "data_bytes": 8388608,
+     "format": "BC7",
+     "format_id": 25,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-DXT1.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 4194304,
+     "format": "DXT1",
+     "format_id": 10,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-DXT5.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 8388608,
+     "format": "DXT5",
+     "format_id": 12,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-EAC_R.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 4194304,
+     "format": "EAC_R",
+     "format_id": 41,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-ETC2_RGBA8.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 8388608,
+     "format": "ETC2_RGBA8",
+     "format_id": 47,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-ETC_RGB4.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 4194304,
+     "format": "ETC_RGB4",
+     "format_id": 34,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-PVRTC_RGBA4.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 4194304,
+     "format": "PVRTC_RGBA4",
+     "format_id": 33,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 8388608,
+     "textures": 8,
+     "width": 1024
+    },
+    "textures-RGB24.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 12582912,
+     "format": "RGB24",
+     "format_id": 3,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 4194304,
+     "textures": 4,
+     "width": 1024
+    },
+    "textures-RGBA32.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 16777216,
+     "format": "RGBA32",
+     "format_id": 4,
+     "height": 1024,
+     "kind": "textures",
+     "pixels": 4194304,
+     "textures": 4,
+     "width": 1024
+    }
+   },
+   "scale": "full",
+   "schema_version": 1,
+   "unity_version": "2022.3.62f1"
+  },
+  "gate": {
+   "files": [
+    {
+     "bytes": 611190,
+     "name": "many-blocks.bundle",
+     "sha256": "ba1fc63bebd7586f59080c02f1a45fb1be635fd9d840b8922348c3e398471568"
+    },
+    {
+     "bytes": 1173780,
+     "name": "objects-2019.assets",
+     "sha256": "bb67d77d04eb9e0801f9ed8167d68bba236770ef9e024b44a1695daef3450f50"
+    },
+    {
+     "bytes": 255236,
+     "name": "objects-lz4.bundle",
+     "sha256": "bfebacfb49952e28492ecc9f3e9b1c4cd999a9667b88433c19ff7b538b13b84e"
+    },
+    {
+     "bytes": 191691,
+     "name": "objects-lzma.bundle",
+     "sha256": "2669d5f3a373018ab0aecdbd46d158bedef781e3a23ff0e6f08751e6ff85f854"
+    },
+    {
+     "bytes": 67270,
+     "name": "textures-ARGB4444.bundle",
+     "sha256": "985d3269969909d65427131be779edcbe52c0e564513877436ada1ba2fe02a5b"
+    },
+    {
+     "bytes": 34506,
+     "name": "textures-ASTC_RGBA_4x4.bundle",
+     "sha256": "68b3b84768f33bfd68d2d434baefd13c640e0b7755ca05bd380a0ab36252c69e"
+    },
+    {
+     "bytes": 9930,
+     "name": "textures-ASTC_RGBA_8x8.bundle",
+     "sha256": "8b76a7b189db58f6f2d8e9900c3a44ab5e5784414b0db818c27cc40fbcbae628"
+    },
+    {
+     "bytes": 34498,
+     "name": "textures-ATC_RGBA8.bundle",
+     "sha256": "ed8a4d157a9aa6e72b83e8b9e6f76f19aec3ca76be62bf3796c27032a571a3ba"
+    },
+    {
+     "bytes": 18096,
+     "name": "textures-BC4.bundle",
+     "sha256": "a612f203a2d3dbc4c82f1e6ebce26b1dcfc23f1c8389e218215209efb749e421"
+    },
+    {
+     "bytes": 34480,
+     "name": "textures-BC5.bundle",
+     "sha256": "3f0e41de3adba8bc8545177542ca56812529b300175d83a6b020e2dd8a5f2629"
+    },
+    {
+     "bytes": 34481,
+     "name": "textures-BC6H.bundle",
+     "sha256": "ffe39309633842d59cc16cf5b77a5f8a2448cdb3c252e1c6759d74deea012414"
+    },
+    {
+     "bytes": 34480,
+     "name": "textures-BC7.bundle",
+     "sha256": "46c2ceeced1a538ac736d09923c5d6e0c612d3aa3fe9b5eba2176ff277f8b1ad"
+    },
+    {
+     "bytes": 18097,
+     "name": "textures-DXT1.bundle",
+     "sha256": "4a5e8a4d5519070602237d277b9ce07fbb6fbac7b23e38934616da7843b16ff9"
+    },
+    {
+     "bytes": 34481,
+     "name": "textures-DXT5.bundle",
+     "sha256": "31ebd2ca0224a3cd9aee2f2b20f89f5a3037d97c143f2a570f73788c31b6ef53"
+    },
+    {
+     "bytes": 18098,
+     "name": "textures-EAC_R.bundle",
+     "sha256": "6faf8dd7788c592c8ff3176be16feccf332e311811976701a74e2a114dbbde36"
+    },
+    {
+     "bytes": 34499,
+     "name": "textures-ETC2_RGBA8.bundle",
+     "sha256": "ed2d9c1e852d8a53a7bffe0ed94994b135197d6a6bf8cd014c4462bde9a043c0"
+    },
+    {
+     "bytes": 18113,
+     "name": "textures-ETC_RGB4.bundle",
+     "sha256": "4aa790e74a6d189da7dd9ec689a1c872ca1b04a2f44e9013fc3bdc1600a2cb57"
+    },
+    {
+     "bytes": 18120,
+     "name": "textures-PVRTC_RGBA4.bundle",
+     "sha256": "9f810ac3b925522e9e73eb417291f37ed5ff4d269969f7da9cfe87202de6e8e1"
+    },
+    {
+     "bytes": 100023,
+     "name": "textures-RGB24.bundle",
+     "sha256": "0b89c6c39aa50547ffe3398678a7ea98bfe757e9e433cda3e59708b641a72946"
+    },
+    {
+     "bytes": 132798,
+     "name": "textures-RGBA32.bundle",
+     "sha256": "74c4856fb73843318ad973fc69e206a2ca4307f1de86bbd14161fb457c3fab7b"
+    }
+   ],
+   "generator": "unityrs-bench gen",
+   "inventories": {
+    "many-blocks.bundle": {
+     "blocks": 64,
+     "entry": "CAB-bench-many-blocks.resS",
+     "entry_bytes": 1048576,
+     "entry_sha256": "309003cb08bc9ceb6983d964a3d8ae00b9fa5d2775162da3a43065ff38bffb59",
+     "kind": "many-blocks"
+    },
+    "objects-2019.assets": {
+     "by_class": {
+      "BoxCollider": 100,
+      "Camera": 100,
+      "GameObject": 100,
+      "Light": 100,
+      "Material": 100,
+      "MeshFilter": 100,
+      "MeshRenderer": 100,
+      "Rigidbody": 100,
+      "TextAsset": 100,
+      "Transform": 100
+     },
+     "kind": "objects",
+     "objects": 1000,
+     "serialized_files": 1
+    },
+    "objects-lz4.bundle": {
+     "by_class": {
+      "BoxCollider": 100,
+      "Camera": 100,
+      "GameObject": 100,
+      "Light": 100,
+      "Material": 100,
+      "MeshFilter": 100,
+      "MeshRenderer": 100,
+      "Rigidbody": 100,
+      "TextAsset": 100,
+      "Transform": 100
+     },
+     "kind": "objects",
+     "objects": 1000,
+     "serialized_files": 1
+    },
+    "objects-lzma.bundle": {
+     "by_class": {
+      "BoxCollider": 100,
+      "Camera": 100,
+      "GameObject": 100,
+      "Light": 100,
+      "Material": 100,
+      "MeshFilter": 100,
+      "MeshRenderer": 100,
+      "Rigidbody": 100,
+      "TextAsset": 100,
+      "Transform": 100
+     },
+     "kind": "objects",
+     "objects": 1000,
+     "serialized_files": 1
+    },
+    "textures-ARGB4444.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 65536,
+     "format": "ARGB4444",
+     "format_id": 2,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-ASTC_RGBA_4x4.bundle": {
+     "block_mix_each": {
+      "partitions:1": 512,
+      "partitions:2": 256,
+      "partitions:3": 128,
+      "partitions:4": 64,
+      "void": 64
+     },
+     "data_bytes": 32768,
+     "format": "ASTC_RGBA_4x4",
+     "format_id": 54,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-ASTC_RGBA_8x8.bundle": {
+     "block_mix_each": {
+      "partitions:1": 128,
+      "partitions:2": 64,
+      "partitions:3": 32,
+      "partitions:4": 16,
+      "void": 16
+     },
+     "data_bytes": 8192,
+     "format": "ASTC_RGBA_8x8",
+     "format_id": 57,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-ATC_RGBA8.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 32768,
+     "format": "ATC_RGBA8",
+     "format_id": 36,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-BC4.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 16384,
+     "format": "BC4",
+     "format_id": 26,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-BC5.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 32768,
+     "format": "BC5",
+     "format_id": 27,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-BC6H.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 32768,
+     "format": "BC6H",
+     "format_id": 24,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-BC7.bundle": {
+     "block_mix_each": {
+      "mode:1": 410,
+      "mode:5": 307,
+      "mode:6": 307
+     },
+     "data_bytes": 32768,
+     "format": "BC7",
+     "format_id": 25,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-DXT1.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 16384,
+     "format": "DXT1",
+     "format_id": 10,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-DXT5.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 32768,
+     "format": "DXT5",
+     "format_id": 12,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-EAC_R.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 16384,
+     "format": "EAC_R",
+     "format_id": 41,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-ETC2_RGBA8.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 32768,
+     "format": "ETC2_RGBA8",
+     "format_id": 47,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-ETC_RGB4.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 16384,
+     "format": "ETC_RGB4",
+     "format_id": 34,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-PVRTC_RGBA4.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 16384,
+     "format": "PVRTC_RGBA4",
+     "format_id": 33,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-RGB24.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 98304,
+     "format": "RGB24",
+     "format_id": 3,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    },
+    "textures-RGBA32.bundle": {
+     "block_mix_each": {},
+     "data_bytes": 131072,
+     "format": "RGBA32",
+     "format_id": 4,
+     "height": 128,
+     "kind": "textures",
+     "pixels": 32768,
+     "textures": 2,
+     "width": 128
+    }
+   },
+   "scale": "gate",
+   "schema_version": 1,
+   "unity_version": "2022.3.62f1"
+  }
+ }
+}
