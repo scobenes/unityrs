@@ -140,6 +140,10 @@ pub(crate) fn named<'py>(py: Python<'py>, bytes: &[u8]) -> Option<Named<'py>> {
     let key = crate::direct::own(py, unsafe {
         ffi::PyObject_Call(clean.as_ptr(), args.as_ptr(), kwargs.as_ptr())
     })?;
+    // Only an exact `str`: a subclass's own `__hash__` or `__eq__` could
+    // run as the read's dicts are filled, so its object goes to the full
+    // path.
+    let key = key.cast_into_exact::<PyString>().ok()?.into_any();
     let key_text: Arc<str> = Arc::from(key.cast::<PyString>().ok()?.to_str().ok()?);
     keep_text(py, bytes, &text, len, Some((&key, &key_text)));
     Some(Named { len, key, key_text })

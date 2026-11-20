@@ -69,6 +69,12 @@ pub trait Sink {
     fn room(&mut self, items: usize) -> bool;
 }
 
+/// Where a primitive run's elements go ([`Run::each_into`]).
+pub trait Elements {
+    /// One element; `None` refuses it, and the rest.
+    fn element(&mut self, v: Scalar) -> Option<()>;
+}
+
 /// One scalar of a primitive run ([`Run::each`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Scalar {
@@ -108,31 +114,58 @@ impl Run<'_> {
 
     /// Each element in order, until `f` refuses one (`None`).
     #[inline]
-    pub fn each(&self, mut f: impl FnMut(Scalar) -> Option<()>) -> Option<()> {
+    pub fn each(&self, f: impl FnMut(Scalar) -> Option<()>) -> Option<()> {
+        struct Each<F>(F);
+        impl<F: FnMut(Scalar) -> Option<()>> Elements for Each<F> {
+            #[inline]
+            fn element(&mut self, v: Scalar) -> Option<()> {
+                (self.0)(v)
+            }
+        }
+        self.each_into(&mut Each(f))
+    }
+
+    /// Each element in order into `to`, until it refuses one (`None`): as
+    /// [`Self::each`], for a sink whose [`Elements::element`] is to be
+    /// inlined into each kind's loop.
+    #[inline]
+    pub fn each_into<E: Elements>(&self, to: &mut E) -> Option<()> {
+        let mut f = |v| to.element(v);
         let (big, floats) = (self.big, self.floats);
         macro_rules! each {
-            ($n:literal, |$b:ident| $conv:expr) => {{
-                for $b in self.bytes.as_chunks::<$n>().0 {
-                    let $b = *$b;
-                    f($conv)?;
+            // Each byte order its own loop, so it is not tested per
+            // element.
+            ($n:literal, |$b:ident, $big:ident| $conv:expr) => {{
+                let chunks = self.bytes.as_chunks::<$n>().0;
+                if big {
+                    for $b in chunks {
+                        let ($b, $big) = (*$b, true);
+                        let _ = $big;
+                        f($conv)?;
+                    }
+                } else {
+                    for $b in chunks {
+                        let ($b, $big) = (*$b, false);
+                        let _ = $big;
+                        f($conv)?;
+                    }
                 }
             }};
         }
         match self.kind {
-            Kind::U8 => each!(1, |b| Scalar::Int(i64::from(b[0]))),
-            Kind::Bool => each!(1, |b| Scalar::Bool(b[0] != 0)),
-            Kind::S8 => each!(1, |b| Scalar::Int(i64::from(i8::from_le_bytes(b)))),
-            Kind::U16 => each!(2, |b| Scalar::Int(i64::from(num!(big, u16, b)))),
-            Kind::S16 => each!(2, |b| Scalar::Int(i64::from(num!(big, i16, b)))),
-            Kind::U32 => each!(4, |b| Scalar::Int(i64::from(num!(big, u32, b)))),
-            Kind::S32 => each!(4, |b| Scalar::Int(i64::from(num!(big, i32, b)))),
-            Kind::U64 => each!(8, |b| Scalar::UInt(num!(big, u64, b))),
-            Kind::S64 => each!(8, |b| Scalar::Int(num!(big, i64, b))),
-            Kind::F32 => each!(4, |b| Scalar::Float(f64::from(f32::from_bits(f32_bits(
-                num!(big, u32, b),
-                floats
-            ))))),
-            Kind::F64 => each!(8, |b| Scalar::Float(f64::from_bits(num!(big, u64, b)))),
+            Kind::U8 => each!(1, |b, big| Scalar::Int(i64::from(b[0]))),
+            Kind::Bool => each!(1, |b, big| Scalar::Bool(b[0] != 0)),
+            Kind::S8 => each!(1, |b, big| Scalar::Int(i64::from(i8::from_le_bytes(b)))),
+            Kind::U16 => each!(2, |b, big| Scalar::Int(i64::from(num!(big, u16, b)))),
+            Kind::S16 => each!(2, |b, big| Scalar::Int(i64::from(num!(big, i16, b)))),
+            Kind::U32 => each!(4, |b, big| Scalar::Int(i64::from(num!(big, u32, b)))),
+            Kind::S32 => each!(4, |b, big| Scalar::Int(i64::from(num!(big, i32, b)))),
+            Kind::U64 => each!(8, |b, big| Scalar::UInt(num!(big, u64, b))),
+            Kind::S64 => each!(8, |b, big| Scalar::Int(num!(big, i64, b))),
+            Kind::F32 => each!(4, |b, big| Scalar::Float(f64::from(f32::from_bits(
+                f32_bits(num!(big, u32, b), floats)
+            )))),
+            Kind::F64 => each!(8, |b, big| Scalar::Float(f64::from_bits(num!(big, u64, b)))),
             _ => return None,
         }
         Some(())
@@ -185,34 +218,37 @@ pub fn emit<S: Sink>(
     sink: &mut S,
 ) -> Result<Emitted<S::Obj>, u64> {
     let mut r = Emit {
-        max_work,
-        bytes: data,
-        pos: 0,
-        big,
-        floats,
+        cur: Cur {
+            bytes: data,
+            pos: 0,
+            big,
+            floats,
+            work: 0,
+            max_work,
+        },
         tree,
-        work: 0,
         max_depth: max_depth as usize,
         frames: Vec::with_capacity(16),
         stack: Vec::with_capacity(64),
         sink,
     };
     let Some(value) = r.read(tree.root()) else {
-        return Err(r.work);
+        return Err(r.cur.work);
     };
     Ok(Emitted {
         value,
-        bytes_read: r.pos,
-        work: r.work,
+        bytes_read: r.cur.pos,
+        work: r.cur.work,
     })
 }
 
 /// A value being read: a class or an array whose children are read in turn.
-enum Frame<O> {
+enum Frame<'a, O> {
     /// `read_class` (UnityPy TypeTreeHelper.cpp:394-445): child `next` of
-    /// the node's is read next.
+    /// `kids`, the node's children, is read next.
     Class {
         node: NodeId,
+        kids: &'a [NodeId],
         next: usize,
         dict: O,
         align: bool,
@@ -245,13 +281,32 @@ enum Frame<O> {
     },
 }
 
-/// What a frame does next.
 /// A value's first look: read whole, or a frame opened for its children.
 enum Entered<O> {
     Read(O),
     Opened,
 }
 
+/// What a value's first look found to open, its work counted and, for an
+/// array, its length read.
+#[derive(Clone, Copy)]
+enum Open {
+    Pair {
+        align: bool,
+    },
+    Array {
+        elem: NodeId,
+        ei: NodeInfo,
+        run: bool,
+        count: usize,
+        align: bool,
+    },
+    Class {
+        align: bool,
+    },
+}
+
+/// What a frame does next.
 enum Step<O> {
     /// Read this node and hand its value back.
     Read(NodeId),
@@ -259,32 +314,40 @@ enum Step<O> {
     Done(O),
 }
 
-struct Emit<'a, S: Sink> {
+/// The read's place in the bytes and its work, apart from its frames, so a
+/// class's children can be read while its frame is held.
+struct Cur<'a> {
     bytes: &'a [u8],
     /// `ptr - start`: may pass the end after an alignment (R3).
     pos: usize,
     big: bool,
     floats: FloatMode,
-    tree: &'a Tree,
     work: u64,
     /// The work it may do: past it, it gives up as soon as it passes it.
     max_work: u64,
-    max_depth: usize,
-    /// The values being read, outermost first: the read's depth.
-    frames: Vec<Frame<S::Obj>>,
-    /// The items of the arrays being read, each array's after its parent's.
-    stack: Vec<S::Obj>,
-    sink: &'a mut S,
 }
 
-impl<S: Sink> Emit<'_, S> {
+struct Emit<'a, 's, S: Sink> {
+    cur: Cur<'a>,
+    tree: &'a Tree,
+    max_depth: usize,
+    /// The values being read, outermost first: the read's depth.
+    frames: Vec<Frame<'a, S::Obj>>,
+    /// The items of the arrays being read, each array's after its parent's.
+    stack: Vec<S::Obj>,
+    sink: &'s mut S,
+}
+
+impl Cur<'_> {
     /// R2: `ptr + n > end` fails.
+    #[inline]
     fn bound(&self, n: usize) -> Option<usize> {
         self.pos
             .checked_add(n)
             .filter(|end| *end <= self.bytes.len())
     }
 
+    #[inline]
     fn fixed<const N: usize>(&mut self) -> Option<[u8; N]> {
         let end = self.bound(N)?;
         let b = <[u8; N]>::try_from(self.bytes.get(self.pos..end)?).ok()?;
@@ -292,21 +355,33 @@ impl<S: Sink> Emit<'_, S> {
         Some(b)
     }
 
+    /// The next `n` bytes, passed over.
+    #[inline]
+    fn take(&mut self, n: usize) -> Option<&[u8]> {
+        let end = self.bound(n)?;
+        let b = self.bytes.get(self.pos..end)?;
+        self.pos = end;
+        Some(b)
+    }
+
     /// R3: from the object's start, no bounds check.
+    #[inline]
     fn align4(&mut self) {
         self.pos = self.pos.checked_add(3).map_or(usize::MAX & !3, |p| p & !3);
     }
 
     /// `_read_length`: a negative length gives up.
+    #[inline]
     fn length(&mut self) -> Option<usize> {
         let n = num!(self.big, i32, self.fixed::<4>()?);
         usize::try_from(n).ok()
     }
 
-    fn prim(&mut self, kind: Kind) -> Option<S::Obj> {
+    #[inline]
+    fn prim(&mut self, kind: Kind) -> Option<Scalar> {
         let big = self.big;
         let int = Scalar::Int;
-        let v = match kind {
+        Some(match kind {
             Kind::U8 => int(i64::from(self.fixed::<1>()?[0])),
             Kind::S8 => int(i64::from(i8::from_le_bytes(self.fixed()?))),
             Kind::Bool => Scalar::Bool(self.fixed::<1>()?[0] != 0),
@@ -322,125 +397,17 @@ impl<S: Sink> Emit<'_, S> {
             }
             Kind::F64 => Scalar::Float(f64::from_bits(num!(big, u64, self.fixed()?))),
             _ => return None,
-        };
-        self.sink.scalar(v)
-    }
-
-    /// Reads `root`'s value: each node entered ([`Self::enter`]) is either
-    /// read whole or opens a frame, whose children are read in turn and
-    /// handed to it ([`Self::accept`]) until it is complete ([`Self::step`]).
-    fn read(&mut self, root: NodeId) -> Option<S::Obj> {
-        let mut node = Some(root);
-        let mut value = None;
-        loop {
-            if let Some(n) = node.take()
-                && let Entered::Read(v) = self.enter(n)?
-            {
-                value = Some(v);
-            }
-            if let Some(v) = value.take() {
-                if self.frames.is_empty() {
-                    return Some(v);
-                }
-                self.accept(v)?;
-            }
-            match self.step()? {
-                Step::Read(n) => node = Some(n),
-                Step::Done(v) => value = Some(v),
-            }
-        }
-    }
-
-    /// `read_typetree_value` (UnityPy TypeTreeHelper.cpp:702-883) up to its
-    /// children: a value read whole, or a frame opened.
-    fn enter(&mut self, node: NodeId) -> Option<Entered<S::Obj>> {
-        if self.frames.len() >= self.max_depth {
-            return None;
-        }
-        let me = *self.tree.info(node)?;
-        self.work = self.work.saturating_add(VALUE_WORK);
-        if self.work > self.max_work {
-            return None;
-        }
-        // R15: a flagged node aligns after its value.
-        let mut align = me.align;
-        let out = match me.shape {
-            Shape::Prim => self.prim(me.kind)?,
-            // R6: always aligned.
-            Shape::Str => {
-                let len = self.length()?;
-                let end = self.bound(len)?;
-                let s = self.bytes.get(self.pos..end)?;
-                self.pos = end;
-                self.align4();
-                self.sink.str(s)?
-            }
-            // R7: aligned only by its flag.
-            Shape::Bytes => {
-                let len = self.length()?;
-                let end = self.bound(len)?;
-                let b = self.bytes.get(self.pos..end)?;
-                self.pos = end;
-                self.sink.bytes(b)?
-            }
-            Shape::Pair => {
-                let (a, b) = two(self.tree, node);
-                self.frames.push(Frame::Pair {
-                    a,
-                    b,
-                    items: (None, None),
-                    align,
-                });
-                return Some(Entered::Opened);
-            }
-            Shape::Vector {
-                elem,
-                run,
-                array_align,
-            } => {
-                align |= array_align;
-                let count = self.length()?;
-                let ei = self.tree.info(elem).copied().unwrap_or(me);
-                // R10: a run aligns once after when its element is flagged.
-                align |= run && ei.align;
-                if run && let Some(width) = ei.kind.prim_size() {
-                    self.run(ei.kind, width, count)?
-                } else {
-                    self.array(elem, ei, run, count, align)?;
-                    return Some(Entered::Opened);
-                }
-            }
-            Shape::Class => {
-                if me.dup_names {
-                    return None;
-                }
-                let children = self.tree.list().children(node).len();
-                let dict = self.sink.dict(node, children)?;
-                self.frames.push(Frame::Class {
-                    node,
-                    next: 0,
-                    dict,
-                    align,
-                });
-                return Some(Entered::Opened);
-            }
-            Shape::BadPair | Shape::BadVector | Shape::RefObject => return None,
-        };
-        if align {
-            self.align4();
-        }
-        Some(Entered::Read(out))
-    }
-
-    /// Whether `count` elements of at least `min_size` bytes each can fit
-    /// in what is left: if not, the full reader fails on them.
-    fn fits(&self, count: usize, min_size: u32) -> bool {
-        let left = self.bytes.len().saturating_sub(self.pos);
-        min_size == 0 || count <= left / min_size as usize
+        })
     }
 
     /// A primitive run: its bounds first, then each element.
-    fn run(&mut self, kind: Kind, width: u32, count: usize) -> Option<S::Obj> {
+    fn run<S: Sink>(
+        &mut self,
+        sink: &mut S,
+        kind: Kind,
+        width: u32,
+        count: usize,
+    ) -> Option<S::Obj> {
         let total = count.checked_mul(width as usize)?;
         let end = self.bound(total)?;
         // Counted once the sink takes the run: a run it refuses is no
@@ -457,9 +424,212 @@ impl<S: Sink> Emit<'_, S> {
             floats: self.floats,
         };
         self.pos = end;
-        let out = self.sink.run(run)?;
+        let out = sink.run(run)?;
         self.work = work;
         Some(out)
+    }
+
+    /// `read_typetree_value` (UnityPy TypeTreeHelper.cpp:702-883) of node
+    /// `me` up to its children: its value read whole (`Ok`), or what it
+    /// opens (`Err`).
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "once per value: inlined into the class loop it saves a call per value (callgrind)"
+    )]
+    fn look<S: Sink>(
+        &mut self,
+        tree: &Tree,
+        me: &NodeInfo,
+        sink: &mut S,
+    ) -> Option<Result<S::Obj, Open>> {
+        self.work = self.work.saturating_add(VALUE_WORK);
+        if self.work > self.max_work {
+            return None;
+        }
+        // R15: a flagged node aligns after its value.
+        let mut align = me.align;
+        let out = match me.shape {
+            Shape::Prim => sink.scalar(self.prim(me.kind)?)?,
+            // R6: always aligned.
+            Shape::Str => {
+                let len = self.length()?;
+                let end = self.bound(len)?;
+                let s = self.bytes.get(self.pos..end)?;
+                self.pos = end;
+                self.align4();
+                sink.str(s)?
+            }
+            // R7: aligned only by its flag.
+            Shape::Bytes => {
+                let len = self.length()?;
+                sink.bytes(self.take(len)?)?
+            }
+            Shape::Pair => return Some(Err(Open::Pair { align })),
+            Shape::Vector {
+                elem,
+                run,
+                array_align,
+            } => {
+                align |= array_align;
+                let count = self.length()?;
+                let ei = tree.info(elem).copied().unwrap_or(*me);
+                // R10: a run aligns once after when its element is flagged.
+                align |= run && ei.align;
+                if run && let Some(width) = ei.kind.prim_size() {
+                    self.run(sink, ei.kind, width, count)?
+                } else {
+                    return Some(Err(Open::Array {
+                        elem,
+                        ei,
+                        run,
+                        count,
+                        align,
+                    }));
+                }
+            }
+            Shape::Class => return Some(Err(Open::Class { align })),
+            Shape::BadPair | Shape::BadVector | Shape::RefObject => return None,
+        };
+        if align {
+            self.align4();
+        }
+        Some(Ok(out))
+    }
+
+    /// Whether `count` elements of at least `min_size` bytes each can fit
+    /// in what is left: if not, the full reader fails on them.
+    fn fits(&self, count: usize, min_size: u32) -> bool {
+        let left = self.bytes.len().saturating_sub(self.pos);
+        min_size == 0 || count <= left / min_size as usize
+    }
+}
+
+impl<'a, S: Sink> Emit<'a, '_, S> {
+    /// Reads `root`'s value: each node entered ([`Self::enter`]) is either
+    /// read whole or opens a frame, whose children are read in turn and
+    /// handed to it ([`Self::accept`]) until it is complete ([`Self::step`]).
+    /// A class's children read whole are set in its dict as they are read
+    /// ([`Self::class_children`]).
+    fn read(&mut self, root: NodeId) -> Option<S::Obj> {
+        let mut value = match self.enter(root)? {
+            Entered::Read(v) => return Some(v),
+            Entered::Opened => None,
+        };
+        loop {
+            if let Some(v) = value.take() {
+                if self.frames.is_empty() {
+                    return Some(v);
+                }
+                self.accept(v)?;
+            }
+            if self.class_children()? {
+                continue;
+            }
+            match self.step()? {
+                Step::Read(n) => {
+                    if let Entered::Read(v) = self.enter(n)? {
+                        value = Some(v);
+                    }
+                }
+                Step::Done(v) => value = Some(v),
+            }
+        }
+    }
+
+    /// The innermost frame, where it is a class: its children read in
+    /// turn, each one read whole set in its dict, up to the first that
+    /// opens a frame (`true`, that frame now innermost) or the last.
+    /// Each child as [`Self::step`] and [`Self::enter`] take it.
+    #[inline]
+    fn class_children(&mut self) -> Option<bool> {
+        let depth = self.frames.len();
+        let Self {
+            cur,
+            tree,
+            frames,
+            sink,
+            max_depth,
+            ..
+        } = self;
+        let Some(Frame::Class {
+            kids, next, dict, ..
+        }) = frames.last_mut()
+        else {
+            return Some(false);
+        };
+        let tree: &'a Tree = tree;
+        while let Some(&c) = kids.get(*next) {
+            let me = tree.info(c)?;
+            if me.kind == Kind::ManagedReferencesRegistry || depth >= *max_depth {
+                return None;
+            }
+            match cur.look(tree, me, &mut **sink)? {
+                Ok(v) => {
+                    *next += 1;
+                    sink.set(dict, me.key, v)?;
+                }
+                Err(open) => {
+                    let me = *me;
+                    self.open(c, &me, open)?;
+                    return Some(true);
+                }
+            }
+        }
+        Some(false)
+    }
+
+    /// `read_typetree_value` (UnityPy TypeTreeHelper.cpp:702-883) up to its
+    /// children: a value read whole, or a frame opened.
+    fn enter(&mut self, node: NodeId) -> Option<Entered<S::Obj>> {
+        if self.frames.len() >= self.max_depth {
+            return None;
+        }
+        let me = *self.tree.info(node)?;
+        match self.cur.look(self.tree, &me, &mut *self.sink)? {
+            Ok(v) => Some(Entered::Read(v)),
+            Err(open) => {
+                self.open(node, &me, open)?;
+                Some(Entered::Opened)
+            }
+        }
+    }
+
+    /// Opens the frame `look` found for node `me`.
+    fn open(&mut self, node: NodeId, me: &NodeInfo, open: Open) -> Option<()> {
+        match open {
+            Open::Pair { align } => {
+                let (a, b) = two(self.tree, node);
+                self.frames.push(Frame::Pair {
+                    a,
+                    b,
+                    items: (None, None),
+                    align,
+                });
+            }
+            Open::Array {
+                elem,
+                ei,
+                run,
+                count,
+                align,
+            } => self.array(elem, ei, run, count, align)?,
+            Open::Class { align } => {
+                if me.dup_names {
+                    return None;
+                }
+                let kids = self.tree.list().children(node);
+                let dict = self.sink.dict(node, kids.len())?;
+                self.frames.push(Frame::Class {
+                    node,
+                    kids,
+                    next: 0,
+                    dict,
+                    align,
+                });
+            }
+        }
+        Some(())
     }
 
     /// Opens the frame of an array read element by element: a `pair` run
@@ -473,7 +643,7 @@ impl<S: Sink> Emit<'_, S> {
         align: bool,
     ) -> Option<()> {
         if (run && ei.shape != Shape::Pair)
-            || !self.fits(count, ei.min_size)
+            || !self.cur.fits(count, ei.min_size)
             || !self.sink.room(count)
         {
             return None;
@@ -504,9 +674,9 @@ impl<S: Sink> Emit<'_, S> {
     fn accept(&mut self, v: S::Obj) -> Option<()> {
         match self.frames.last_mut()? {
             Frame::Class {
-                node, next, dict, ..
+                kids, next, dict, ..
             } => {
-                let c = *self.tree.list().children(*node).get(*next)?;
+                let c = *kids.get(*next)?;
                 let key = self.tree.info(c)?.key;
                 *next += 1;
                 self.sink.set(dict, key, v)
@@ -541,10 +711,7 @@ impl<S: Sink> Emit<'_, S> {
     /// frame closed, its alignment applied).
     fn step(&mut self) -> Option<Step<S::Obj>> {
         let read = match self.frames.last_mut()? {
-            Frame::Class { node, next, .. } => {
-                let kids = self.tree.list().children(*node);
-                kids.get(*next).copied()
-            }
+            Frame::Class { kids, next, .. } => kids.get(*next).copied(),
             Frame::List { elem, left, .. } => (*left > 0).then_some(*elem),
             Frame::Pairs {
                 a, b, left, first, ..
@@ -552,8 +719,8 @@ impl<S: Sink> Emit<'_, S> {
                 Some(_) => Some(*b),
                 None if *left > 0 => {
                     // The element's own value, as UnityPyBoost's reader counts it.
-                    self.work = self.work.saturating_add(VALUE_WORK);
-                    if self.work > self.max_work {
+                    self.cur.work = self.cur.work.saturating_add(VALUE_WORK);
+                    if self.cur.work > self.cur.max_work {
                         return None;
                     }
                     Some(*a)
@@ -589,7 +756,7 @@ impl<S: Sink> Emit<'_, S> {
             } => (self.sink.tuple(first?, second?)?, align),
         };
         if align {
-            self.align4();
+            self.cur.align4();
         }
         Some(Step::Done(value))
     }
