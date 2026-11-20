@@ -80,6 +80,19 @@ fn scalar(py: Python<'_>, v: Scalar) -> Option<Bound<'_, PyAny>> {
 
 pub(crate) use crate::direct_list::list_of;
 
+/// A `pair`'s tuple of two items made, a failure raised.
+pub(crate) fn pair_raised<'py>(
+    py: Python<'py>,
+    first: &Bound<'py, PyAny>,
+    second: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    // SAFETY: two live items; a new tuple holding them, or null with an
+    // exception set.
+    unsafe {
+        Bound::from_owned_ptr_or_err(py, ffi::PyTuple_Pack(2, first.as_ptr(), second.as_ptr()))
+    }
+}
+
 /// A `pair`'s tuple of two items made.
 pub(crate) fn pair<'py>(
     py: Python<'py>,
@@ -295,42 +308,42 @@ impl<'py> Sink for PySink<'_, 'py> {
         if !self.bump(CONTAINER.saturating_add((children as u64).saturating_mul(ITEM))) {
             return None;
         }
-        let costs = match &mut self.obj {
+        // A class's stand-in for its dict ([`ObjMode::open`]).
+        let (costs, stand) = match &mut self.obj {
             Some(obj) => {
-                obj.open(node)?;
-                obj.costs(node)
+                let stand = obj.open(node)?;
+                (obj.costs(node), Some(stand))
             }
-            None => 0,
+            None => (0, None),
         };
         let items = (children as u64).saturating_mul(256);
         if !self.built(costs, items) {
             return None;
+        }
+        if stand.is_some() {
+            return stand;
         }
         // SAFETY: a new dict or null.
         own(self.py, unsafe { ffi::PyDict_New() })
     }
     #[inline]
     fn set(&mut self, dict: &Self::Obj, key: NodeId, value: Self::Obj) -> Option<()> {
-        let name = match &self.obj {
-            Some(obj) => {
-                let (name, bytes) = obj.key(key)?;
-                if !self.bump(bytes.saturating_mul(8)) {
-                    return None;
-                }
-                name
+        if let Some(obj) = &self.obj {
+            // A class's field, kept until its object is made.
+            let (name, bytes) = obj.key(key)?;
+            if !self.bump(bytes.saturating_mul(8)) {
+                return None;
             }
-            None => self.name(key)?,
-        };
+            return self.obj.as_mut()?.set(dict, name, value);
+        }
+        let name = self.name(key)?;
         // SAFETY: all three are live (the name is held by the tree's keys);
         // the call takes its own references.
         if unsafe { ffi::PyDict_SetItem(dict.as_ptr(), name, value.as_ptr()) } != 0 {
             drop(PyErr::take(self.py));
             return None;
         }
-        match &mut self.obj {
-            Some(obj) => obj.set(dict, name, &value),
-            None => Some(()),
-        }
+        Some(())
     }
     fn list(&mut self, items: std::vec::Drain<'_, Self::Obj>) -> Option<Self::Obj> {
         if !self.pace(1) {
@@ -494,7 +507,7 @@ pub(crate) fn read(
     set_end(py, object, &position)?;
     let value = match done.obj {
         // The classes, called now ([`crate::direct_object`]).
-        Some(obj) => obj.finish(py)?,
+        Some(obj) => obj.finish(py, &done.value)?,
         None => done.value,
     };
     if wrap {

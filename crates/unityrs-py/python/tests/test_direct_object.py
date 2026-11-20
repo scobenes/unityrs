@@ -250,83 +250,82 @@ class DirectObject(unittest.TestCase):
         self.assertEqual([type(v).__name__ for v in direct.m_Pair], ['Vector3f', 'Vector3f'])
         self.assertEqual(shape(direct), shape(full))
 
-    def test_a_half_made_pairs_parent_changed_while_its_items_are_made(self):
-        """Code run while a pair's items are made (here a profile hook, as
-        the first item's class is called) finds only an opaque stand-in
-        for the pair in its parent: trying to grow it changes nothing (the
-        full path's object), and replacing it raises."""
+    def test_no_half_made_container_while_the_classes_are_called(self):
+        """While the classes are called (here, as the first of them is,
+        from a profile hook that also forces a collection), no container of
+        the read is yet in its parent, nor holds a value still to be made:
+        none is reachable to be changed (a pair's parent given a third
+        item, or a key that collides; a list of pairs swapped; the root's
+        children freed), and the read is the full path's."""
         classes = unityrs.classes
-        for change in ('grow', 'replace'):
-            seen = []
+        targets = {'pair': classes.Vector3f.__init__.__code__,
+                   'children': classes.PPtr.__init__.__code__}
+
+        def watched():
+            # The pair's parent, the root's dict with its children, or any
+            # list holding a stand-in.
+            for o in gc.get_objects():
+                if type(o) is dict and (o.get('m_Items') == [7]
+                                        or {'m_Children', 'm_GameObject'} <= o.keys()):
+                    yield o
+                elif type(o) is list and any(type(v) is object for v in o):
+                    yield o
+
+        for name, code in targets.items():
+            seen, calls = [], []
 
             def profile(frame, event, arg):
-                if event != 'call' or frame.f_code is not classes.Vector3f.__init__.__code__ or seen:
+                if event != 'call' or frame.f_code is not code or calls:
                     return
-                for o in gc.get_objects():
-                    # The root's dict.
-                    if (type(o) is dict and o.keys() == {'m_Pair', 'm_Items'}
-                            and o['m_Items'] == [7]):
-                        stand = o['m_Pair']
-                        seen.append(type(stand))
-                        if change == 'replace':
-                            o['m_Pair'] = [1, 2, 3]
-                        else:
-                            try:
-                                stand.append(3)
-                            except AttributeError:
-                                pass
+                calls.append(name)
+                gc.collect()
+                seen.extend(o for o in watched() if id(o) not in before)
 
-            with pairs_class() as data, self.subTest(change=change):
+            with pairs_class() as pairs, self.subTest(target=name):
+                data = pairs if name == 'pair' else fixture()
                 full = read(data, 0, True)
                 env = unityrs.Environment()
                 env.load_file(data, name='f')
-                obj = env.objects[0]
+                obj = sorted(env.objects, key=lambda o: o.path_id)[0]
+                # Those of values made before (the full path's object's).
+                before = {id(o) for o in watched()}
                 sys.setprofile(profile)
                 try:
-                    if change == 'replace':
-                        with self.assertRaises(RuntimeError):
-                            obj._native.parse_direct(obj, True, True)
-                    else:
-                        direct = obj._native.parse_direct(obj, True, True)
+                    direct = obj._native.parse_direct(obj, True, True)
                 finally:
                     sys.setprofile(None)
-                self.assertEqual(seen, [object])
-                if change == 'grow':
-                    self.assertEqual(shape(direct), shape(full))
+                self.assertEqual(calls, [name])
+                self.assertEqual(seen, [])
+                self.assertEqual(shape(direct), shape(full))
 
-    def test_a_container_freed_while_its_items_are_made(self):
-        """A container freed while a child's object is still to go in it
-        (the root's list of children, taken from the root's dict, emptied,
-        and a collection forced, as the first class is called) leaves the
-        read to raise, never to write into freed memory."""
-        pptr = unityrs.classes.PPtr.__init__.__code__
-        for _ in range(3):
-            pending = []
+    def test_a_failed_pair_allocation_raises_memory_error(self):
+        """A pair's tuple whose allocation fails (`_testcapi`'s failing
+        allocator, from the return of its last item's class) raises
+        `MemoryError`, as on the full path, never a `SystemError`."""
+        try:
+            import _testcapi
+        except ImportError:
+            self.skipTest('no _testcapi')
+        code = unityrs.classes.Vector3f.__init__.__code__
+        with pairs_class() as data:
+            env = unityrs.Environment()
+            env.load_file(data, name='f')
+            obj = env.objects[0]
+            returns = []
 
             def profile(frame, event, arg):
-                if event != 'call' or frame.f_code is not pptr or pending:
-                    return
-                for o in gc.get_objects():
-                    children = o.get('m_Children') if type(o) is dict else None
-                    # The root's list, its children still the classes'
-                    # dicts (their objects not yet in it).
-                    if (type(children) is list and len(children) == 2
-                            and all(type(c) is dict for c in children)
-                            and [c.get('m_PathID') for c in children] == [8, 9]):
-                        pending.append(len(children))
-                        o.pop('m_Children').clear()
-                gc.collect()
-
-            env = unityrs.Environment()
-            env.load_file(fixture(), name='f')
-            obj = sorted(env.objects, key=lambda o: o.path_id)[0]
+                if event == 'return' and frame.f_code is code:
+                    returns.append(1)
+                    if len(returns) == 2:
+                        _testcapi.set_nomemory(0, 1)
             sys.setprofile(profile)
             try:
-                with self.assertRaises(IndexError):
+                with self.assertRaises(MemoryError):
                     obj._native.parse_direct(obj, True, True)
             finally:
                 sys.setprofile(None)
-            self.assertEqual(pending, [2])
+                _testcapi.remove_mem_hooks()
+            self.assertEqual(len(returns), 2)
 
     def test_work_and_memory_bounds_are_the_full_paths(self):
         data = fixture()

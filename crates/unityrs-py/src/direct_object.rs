@@ -7,12 +7,13 @@
 //! `classes` attribute its type names, called with the dict's fields under
 //! their cleaned names.
 //!
-//! The read finds and checks each class as its dict opens, then makes the
-//! dict, its fields' objects in place, and charges the call; only a read
-//! that is then accepted (its
-//! bytes, its memory and its work) calls the classes, in the order the full
-//! path does (each class's fields' before it), once each, after the
-//! reader's position is set, putting each object where its dict was. So
+//! The read finds and checks each class as its dict opens, then keeps its
+//! fields, and charges the call; only a read that is then accepted (its
+//! bytes, its memory and its work) makes the classes' objects, in the
+//! order the full path does (each class's fields' before it), once each,
+//! after the reader's position is set, each container whole from its
+//! parts' objects (until then each pending value is an opaque stand-in
+//! in no container, so no code a call runs sees a half-made one). So
 //! only a class whose call runs no code of its own is taken
 //! (`_object.plain_class`: attrs' generated `__init__`, storing exactly the
 //! dict's fields); any other, a missing one (an `UnknownObject`) or a name
@@ -24,7 +25,7 @@
 //! module's reservations, each value's, each container's and each class's.
 use crate::direct_keys::{ObjKeys, import_attr, name};
 use pyo3::{ffi, prelude::*, sync::PyOnceLock};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use unityrs_core::typetree::{NodeId, Tree};
 
@@ -46,42 +47,42 @@ fn checked() -> MutexGuard<'static, Option<HashMap<Vec<usize>, Checked>>> {
     CHECKED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Where a pending value is, and its object goes: each container (and
-/// key) held here, from the value's placing until its object is put, so
-/// no code the classes' calls run (a constructor, a collection's
-/// callbacks) can free one before the object is put in it. Only dicts and
-/// lists are written into, through `PyDict_SetItem` and `PyList_SetItem`
-/// (each under the object's own lock where the GIL is off), and only where
-/// the slot still holds what the read put there; no tuple is ever changed
-/// once made.
-enum Place<'py> {
-    /// The read's value.
-    Root,
-    /// A field of a class's dict, under a key.
-    Dict(Bound<'py, PyAny>, Bound<'py, PyAny>),
-    /// An item of a list.
-    List(Bound<'py, PyAny>, isize),
-    /// Item 0 or 1 of the pending pair at this index of `pending`.
-    Pair(usize, usize),
-}
-
-/// A value to make once the read is accepted.
+/// A value to make once the read is accepted, from values each already
+/// made then (`Pending` is in completion order: a value's parts first).
+/// Each container is made whole, with its parts' objects, only then:
+/// none is put in another, or changed, once any code but the read's can
+/// see it, as on the full path, which makes each value from the bottom up.
 enum Make<'py> {
-    /// A class, called with its dict.
-    Class(Bound<'py, PyAny>),
-    /// A `pair` with an item pending: its two items, held here (never in
-    /// a Python container), each pending one replaced by its object as it
-    /// is made; then their tuple.
+    /// A class, called with a new dict of these fields.
+    Class(
+        Bound<'py, PyAny>,
+        Vec<(Bound<'py, PyAny>, Bound<'py, PyAny>)>,
+    ),
+    /// A list of these items.
+    List(Vec<Bound<'py, PyAny>>),
+    /// A `pair`'s tuple of these items.
     Pair([Bound<'py, PyAny>; 2]),
 }
 
-/// A value to make once the read is accepted, and where it goes.
+/// A value to make once the read is accepted.
 struct Pending<'py> {
     make: Make<'py>,
-    /// What stands where the value goes until it is made: the class's
-    /// dict, or for a pair a new `object()` of its own.
+    /// What stands for the value among the read's until it is made: a new
+    /// `object()` of its own, opaque, in no container.
+    /// Held, so its address ([`ObjMode::stands`]) is not reused while
+    /// the read lasts.
+    _stand: Bound<'py, PyAny>,
+}
+
+/// A class whose dict is being read.
+struct Open<'py> {
+    cls: Bound<'py, PyAny>,
+    /// `_construct`'s field count for it.
+    fields: u64,
     stand: Bound<'py, PyAny>,
-    at: Place<'py>,
+    /// Its fields so far, a key set twice keeping its first place and its
+    /// last value, as a dict's would.
+    items: Vec<(Bound<'py, PyAny>, Bound<'py, PyAny>)>,
 }
 
 /// The object-mode part of a direct read.
@@ -90,23 +91,13 @@ pub(crate) struct ObjMode<'py> {
     tree: Arc<Tree>,
     module: Bound<'py, PyAny>,
     assets: Bound<'py, PyAny>,
-    /// Each class read, in the order its dict was complete.
+    /// Each value to make, in the order it was complete.
     pending: Vec<Pending<'py>>,
-    /// The pending classes not yet in a container, the last read last.
-    loose: Vec<usize>,
-    /// A container's items that are pending ([`Self::pending_value`]), as
-    /// it is made.
-    found: Vec<(isize, *mut ffi::PyObject)>,
-    /// The stand-ins of the pairs pending, by address (each held by its
-    /// `Pending`, so never reused while the read lasts).
-    pairs: HashSet<usize>,
-    /// The classes of the dicts being read, and their field counts.
-    opened: Vec<(Bound<'py, PyAny>, u64)>,
-}
-
-fn is_dict(v: &Bound<'_, PyAny>) -> bool {
-    // SAFETY: a type check of a live object.
-    unsafe { ffi::PyDict_CheckExact(v.as_ptr()) != 0 }
+    /// Each pending value's index, by its stand-in's address (each held by
+    /// its `Pending`, so never reused while the read lasts).
+    stands: HashMap<usize, usize>,
+    /// The classes whose dicts are being read, the innermost last.
+    opened: Vec<Open<'py>>,
 }
 
 /// A Python failure taken as raised, never empty.
@@ -136,9 +127,7 @@ impl<'py> ObjMode<'py> {
             module,
             assets,
             pending: Vec::new(),
-            loose: Vec::new(),
-            found: Vec::new(),
-            pairs: HashSet::new(),
+            stands: HashMap::new(),
             opened: Vec::new(),
         })
     }
@@ -167,106 +156,78 @@ impl<'py> ObjMode<'py> {
             .map_or(u64::MAX, |n| n.costs)
     }
 
-    /// The classes' dicts among a container's items, the last of the loose
-    /// ones in order, now at `at` of each.
-    fn place(&mut self, at: impl Fn(isize) -> Place<'py>) -> Option<()> {
-        let base = self.loose.len().checked_sub(self.found.len())?;
-        for (i, &(slot, ptr)) in self.found.iter().enumerate() {
-            let p = self.pending.get_mut(*self.loose.get(base + i)?)?;
-            if p.stand.as_ptr() != ptr {
-                return None;
-            }
-            p.at = at(slot);
-        }
-        self.loose.truncate(base);
-        self.found.clear();
-        Some(())
+    /// Whether `value` is the stand-in of a value still to be made.
+    fn pending_value(&self, value: &Bound<'py, PyAny>) -> bool {
+        !self.stands.is_empty() && self.stands.contains_key(&(value.as_ptr() as usize))
     }
 
-    /// `value` set in class dict `dict` under `key`.
+    /// `make` pending: its new stand-in.
+    fn defer(&mut self, py: Python<'py>, make: Make<'py>) -> Option<Bound<'py, PyAny>> {
+        let stand = py.get_type::<PyAny>().call0().ok()?;
+        self.stands
+            .insert(stand.as_ptr() as usize, self.pending.len());
+        self.pending.push(Pending {
+            make,
+            _stand: stand.clone(),
+        });
+        Some(stand)
+    }
+
+    /// Field `key` of the innermost class being read (`dict` its stand-in)
+    /// set to `value`.
     pub(crate) fn set(
         &mut self,
         dict: &Bound<'py, PyAny>,
         key: *mut ffi::PyObject,
-        value: &Bound<'py, PyAny>,
+        value: Bound<'py, PyAny>,
     ) -> Option<()> {
-        if !self.pending_value(value) {
-            return Some(());
-        }
-        self.found.clear();
-        self.found.push((0, value.as_ptr()));
+        let open = self.opened.last_mut().filter(|o| o.stand.is(dict))?;
         // SAFETY: `key` is live: the tree's keys hold it.
         let key = unsafe { Bound::from_borrowed_ptr(dict.py(), key) };
-        self.place(|_| Place::Dict(dict.clone(), key.clone()))
+        put_field(&mut open.items, key, value);
+        Some(())
     }
 
-    /// A list of `items`.
+    /// A list of `items`; where one is pending, the list pending too.
     pub(crate) fn list(
         &mut self,
         py: Python<'py>,
         items: impl ExactSizeIterator<Item = Bound<'py, PyAny>>,
     ) -> Option<Bound<'py, PyAny>> {
-        self.found.clear();
-        let (found, pairs) = (&mut self.found, &self.pairs);
-        let list = crate::direct::list_of(
-            py,
-            items.enumerate().map(|(at, item)| {
-                if is_dict(&item)
-                    || (!pairs.is_empty() && pairs.contains(&(item.as_ptr() as usize)))
-                {
-                    found.push((at.cast_signed(), item.as_ptr()));
-                }
-                item
-            }),
-        )?;
-        self.place(|at| Place::List(list.clone(), at))?;
-        Some(list)
+        let items: Vec<_> = items.collect();
+        if items.iter().any(|item| self.pending_value(item)) {
+            return self.defer(py, Make::List(items));
+        }
+        crate::direct::list_of(py, items.into_iter())
     }
 
-    /// A `pair`'s tuple; where an item is pending, a new `object()` that
-    /// stands in for it until both items are made ([`Make::Pair`]).
+    /// A `pair`'s tuple; where an item is pending, the pair pending too.
     pub(crate) fn tuple(
         &mut self,
         py: Python<'py>,
         first: &Bound<'py, PyAny>,
         second: &Bound<'py, PyAny>,
     ) -> Option<Bound<'py, PyAny>> {
-        if !self.pending_value(first) && !self.pending_value(second) {
-            return crate::direct::pair(py, first, second);
+        if self.pending_value(first) || self.pending_value(second) {
+            return self.defer(py, Make::Pair([first.clone(), second.clone()]));
         }
-        let stand = py.get_type::<PyAny>().call0().ok()?;
-        self.found.clear();
-        for (at, item) in [first, second].into_iter().enumerate() {
-            if self.pending_value(item) {
-                self.found.push((at.cast_signed(), item.as_ptr()));
-            }
-        }
-        let me = self.pending.len();
-        self.place(|at| Place::Pair(me, at.cast_unsigned()))?;
-        self.pairs.insert(stand.as_ptr() as usize);
-        self.loose.push(me);
-        self.pending.push(Pending {
-            make: Make::Pair([first.clone(), second.clone()]),
-            stand: stand.clone(),
-            at: Place::Root,
-        });
-        Some(stand)
-    }
-
-    /// Whether `value` is a value still to be made: a class's dict, or a
-    /// pair's stand-in.
-    fn pending_value(&self, value: &Bound<'py, PyAny>) -> bool {
-        is_dict(value)
-            || (!self.pairs.is_empty() && self.pairs.contains(&(value.as_ptr() as usize)))
+        crate::direct::pair(py, first, second)
     }
 
     /// Class `node`'s dict opened: its class found and checked before any
     /// of its fields is read; `None` where the full path is to read the
-    /// object (the class missing, or not plain).
-    pub(crate) fn open(&mut self, node: NodeId) -> Option<()> {
-        let found = self.class(node)?;
-        self.opened.push(found);
-        Some(())
+    /// object (the class missing, or not plain). Its stand-in, which the
+    /// read takes for its dict.
+    pub(crate) fn open(&mut self, node: NodeId) -> Option<Bound<'py, PyAny>> {
+        let (cls, fields) = self.class(node)?;
+        let stand = cls.py().get_type::<PyAny>().call0().ok()?;
+        self.opened.push(Open {
+            cls,
+            fields,
+            stand: stand.clone(),
+            items: Vec::new(),
+        });
+        Some(stand)
     }
 
     /// Class `node`'s class and field count, where it is plain.
@@ -316,24 +277,17 @@ impl<'py> ObjMode<'py> {
         let py = dict.py();
         let nk = self.keys.nodes.get(node.0 as usize)?;
         let (pptr, costs) = (nk.pptr, nk.costs);
-        let (cls, fields) = self.opened.pop()?;
+        let mut open = self.opened.pop().filter(|o| o.stand.is(dict))?;
         // `build`'s class task, `_construct`'s reservations.
         let mut work = 256_u64;
         let mut memory = 256_u64;
         if pptr {
             work += 256;
             memory += 2048;
-            let key = name!(py, c"assetsfile").ok()?;
-            // SAFETY: live objects; the dict takes its own references.
-            if unsafe { ffi::PyDict_SetItem(dict.as_ptr(), key.as_ptr(), self.assets.as_ptr()) }
-                != 0
-            {
-                drop(PyErr::take(py));
-                return None;
-            }
+            let key = name!(py, c"assetsfile").ok()?.clone().into_any();
+            put_field(&mut open.items, key, self.assets.clone());
         }
-        // SAFETY: a live dict.
-        let len = u64::try_from(unsafe { ffi::PyDict_Size(dict.as_ptr()) }).ok()?;
+        let (fields, len) = (open.fields, open.items.len() as u64);
         work = work
             .saturating_add(
                 fields
@@ -343,11 +297,12 @@ impl<'py> ObjMode<'py> {
             )
             .saturating_add(costs);
         memory = memory.saturating_add(fields.saturating_add(len).saturating_mul(256) + 512);
-        self.loose.push(self.pending.len());
+        // The stand-in the read already holds for the dict stays its.
+        self.stands
+            .insert(open.stand.as_ptr() as usize, self.pending.len());
         self.pending.push(Pending {
-            make: Make::Class(cls),
-            stand: dict.clone(),
-            at: Place::Root,
+            make: Make::Class(open.cls, open.items),
+            _stand: open.stand,
         });
         Some((work, memory))
     }
@@ -450,93 +405,82 @@ impl<'py> ObjMode<'py> {
             .collect()
     }
 
-    /// The read accepted, its position set: each class called, in order,
-    /// its object put where its dict was (each pair made once its items
-    /// are); the root's object. A call that fails raises, as does a slot
-    /// that no longer holds what the read put there.
-    pub(crate) fn finish(mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    /// The read accepted, its position set: each pending value made, in
+    /// order, from its parts' objects (each class called with a new dict
+    /// of its fields), as the full path makes them; `root`'s object. A
+    /// call that fails raises.
+    pub(crate) fn finish(
+        mut self,
+        py: Python<'py>,
+        root: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         // SAFETY: a new empty tuple or null with an exception set.
         let empty = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyTuple_New(0)) }?;
         let lost = || pyo3::exceptions::PySystemError::new_err("a direct read lost its value");
-        let mut pending: Vec<Option<Pending<'py>>> = self.pending.drain(..).map(Some).collect();
-        let mut root = None;
-        for at in 0..pending.len() {
-            let p = pending
-                .get_mut(at)
-                .and_then(Option::take)
-                .ok_or_else(lost)?;
-            let made = match &p.make {
-                // SAFETY: live objects; a new reference or null with an
-                // exception set.
-                Make::Class(cls) => unsafe {
-                    Bound::from_owned_ptr_or_err(
-                        py,
-                        ffi::PyObject_Call(cls.as_ptr(), empty.as_ptr(), p.stand.as_ptr()),
-                    )
-                }?,
+        let pending = std::mem::take(&mut self.pending);
+        let mut made: Vec<Bound<'py, PyAny>> = Vec::with_capacity(pending.len());
+        // A part's object: its own where it was pending (made before it).
+        let part = |made: &[Bound<'py, PyAny>], v: &Bound<'py, PyAny>| match self
+            .stands
+            .get(&(v.as_ptr() as usize))
+        {
+            Some(&at) => made.get(at).cloned().ok_or_else(lost),
+            None => Ok(v.clone()),
+        };
+        for p in &pending {
+            let object = match &p.make {
+                Make::Class(cls, items) => {
+                    // SAFETY: a new dict or null with an exception set.
+                    let dict = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyDict_New()) }?;
+                    for (key, value) in items {
+                        let value = part(&made, value)?;
+                        // SAFETY: live objects (exact `str` keys); the dict
+                        // takes its own references.
+                        if unsafe {
+                            ffi::PyDict_SetItem(dict.as_ptr(), key.as_ptr(), value.as_ptr())
+                        } != 0
+                        {
+                            return Err(fetched(py));
+                        }
+                    }
+                    // SAFETY: live objects; a new reference or null with an
+                    // exception set.
+                    unsafe {
+                        Bound::from_owned_ptr_or_err(
+                            py,
+                            ffi::PyObject_Call(cls.as_ptr(), empty.as_ptr(), dict.as_ptr()),
+                        )
+                    }?
+                }
+                Make::List(items) => {
+                    let items = items
+                        .iter()
+                        .map(|v| part(&made, v))
+                        .collect::<PyResult<Vec<_>>>()?;
+                    pyo3::types::PyList::new(py, items)?.into_any()
+                }
                 Make::Pair([first, second]) => {
-                    crate::direct::pair(py, first, second).ok_or_else(|| fetched(py))?
+                    let (first, second) = (part(&made, first)?, part(&made, second)?);
+                    crate::direct::pair_raised(py, &first, &second)?
                 }
             };
-            put(py, &mut pending, p, made, &mut root)?;
+            made.push(object);
         }
-        root.ok_or_else(lost)
+        part(&made, root)
     }
 }
 
-/// `made` put where `p`'s stand-in is: the root, a pending pair's item, or
-/// a dict's or list's slot, which must still hold the stand-in.
-fn put<'py>(
-    py: Python<'py>,
-    pending: &mut [Option<Pending<'py>>],
-    p: Pending<'py>,
-    made: Bound<'py, PyAny>,
-    root: &mut Option<Bound<'py, PyAny>>,
-) -> PyResult<()> {
-    let changed = || {
-        pyo3::exceptions::PyRuntimeError::new_err("a direct read's value changed while it was made")
-    };
-    let failed = match p.at {
-        Place::Root => {
-            *root = Some(made);
-            0
-        }
-        Place::Pair(pair, item) => {
-            let Some(Some(Pending {
-                make: Make::Pair(items),
-                ..
-            })) = pending.get_mut(pair)
-            else {
-                return Err(changed());
-            };
-            *items.get_mut(item).ok_or_else(changed)? = made;
-            0
-        }
-        Place::Dict(dict, key) => {
-            // SAFETY: the dict and key are held (`Place`); a borrowed item
-            // or null, compared and not kept.
-            let now = unsafe { ffi::PyDict_GetItemWithError(dict.as_ptr(), key.as_ptr()) };
-            if now != p.stand.as_ptr() {
-                return Err(PyErr::take(py).unwrap_or_else(changed));
-            }
-            // SAFETY: as above; the call takes its own references.
-            unsafe { ffi::PyDict_SetItem(dict.as_ptr(), key.as_ptr(), made.as_ptr()) }
-        }
-        Place::List(list, at) => {
-            // SAFETY: the list is held (`Place`); a borrowed item or null,
-            // compared and not kept.
-            let now = unsafe { ffi::PyList_GetItem(list.as_ptr(), at) };
-            if now != p.stand.as_ptr() {
-                return Err(PyErr::take(py).unwrap_or_else(changed));
-            }
-            // SAFETY: as above; the call takes the object's reference.
-            unsafe { ffi::PyList_SetItem(list.as_ptr(), at, made.into_ptr()) }
-        }
-    };
-    if failed != 0 {
-        return Err(fetched(py));
+/// `key` set to `value` among a dict's `items`, as `PyDict_SetItem` sets
+/// it (the keys are the tree's interned `str`s, alike only when the same).
+fn put_field<'py>(
+    items: &mut Vec<(Bound<'py, PyAny>, Bound<'py, PyAny>)>,
+    key: Bound<'py, PyAny>,
+    value: Bound<'py, PyAny>,
+) {
+    match items.iter_mut().find(|(k, _)| k.is(&key)) {
+        Some(item) => item.1 = value,
+        None => items.push((key, value)),
     }
-    Ok(())
 }
 
 /// The fields `_construct` counts for `cls`: `__attrs_attrs__`,
