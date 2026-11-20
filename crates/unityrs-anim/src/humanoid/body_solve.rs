@@ -16,9 +16,10 @@
 //!   subtree (`detached_bone`). The lookup must follow the Avatar's
 //!   hierarchy: two skeleton nodes on one Transform refuse
 //!   (`shared_transform`), as does a Transform below the hips whose parent
-//!   is not its skeleton parent's (`misparented_transform`), one below the
+//!   is not its skeleton parent's, or whose `m_Father` disagrees with the
+//!   `m_Children` that reached it (`misparented_transform`), one below the
 //!   hips that no skeleton node there names (`unmapped_transform`), and a
-//!   graph that may have dropped one there (`truncated_rig`).
+//!   graph that dropped a child there (`truncated_rig`).
 //! - **The solve.** `H_A = B_A F(T) F_h^-1`, `P_A = h T_A - k H_A c_h` with
 //!   `k = sigma_p s_h` (`h T_A` the `AnimatorBodyPose`'s metres, which
 //!   root projection makes), and the local hips `t = sigma_p^-1 R_p^-1 (P_A -
@@ -80,7 +81,9 @@ impl HipsParent {
 /// (`unmapped_transform`), and the graph kept the whole subtree: a node
 /// of it that the graph dropped a child of (past the depth limit, a cycle,
 /// a broken pointer or a child that failed to read) refuses
-/// (`truncated_rig`). Drops elsewhere in the scene do not count. The walk
+/// (`truncated_rig`), and so does a node of it, the hips included, whose
+/// `m_Father` is not the node that lists it (`misparented_transform`).
+/// Drops and mismatches elsewhere in the scene do not count. The walk
 /// visits only those skeleton nodes' Transforms and charges each
 /// membership search.
 fn complete_below_hips(
@@ -111,6 +114,9 @@ fn complete_below_hips(
         meter.count_decode(1)?;
         if graph.dropped_child(at) {
             return refuse(BodyModel::TruncatedRig);
+        }
+        if graph.mismatched_parent(at) {
+            return refuse(BodyModel::MisparentedTransform);
         }
         let children = nodes
             .get(at)
@@ -146,7 +152,9 @@ impl BodyAvatar<'_> {
     /// subtree without a Transform is `None`, which `hips_points` refuses.
     /// A Transform below the hips' that no skeleton node there names
     /// refuses (`unmapped_transform`), as E3a's `rest_translations` does,
-    /// and so does a graph that may have dropped one (`truncated_rig`).
+    /// and so does a graph that dropped a child there (`truncated_rig`) or
+    /// kept a Transform there, the hips included, whose `m_Father`
+    /// disagrees with its lister (`misparented_transform`).
     pub fn rest_scales(
         &self,
         paths: &RigPaths<'_>,

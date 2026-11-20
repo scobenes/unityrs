@@ -4,7 +4,7 @@
 //! plain chain or one F5 feature at its fixture value, the placement),
 //! and the admission of each against the root configurations.
 use super::{
-    body_model::{FREEZE, field, full, local, refused, verdict},
+    body_model::{FREEZE, full, local, refused, verdict},
     body_solve::{extra, named_extra},
     file,
     root::variant_clip,
@@ -29,11 +29,11 @@ use unityrs_anim::{
 use unityrs_core::limits::Meter;
 use unityrs_scene::{GraphOptions, graph_from_game_object, graph_from_scene_file};
 use unityrs_testkit::{
-    ngui::{Object, V, pptr, st},
+    ngui::Object,
     scene3d::{
         Layout,
         anim::humanoid::{self as h, ANIMATOR, Rig},
-        game_object, set, transform, xyz,
+        set, xyz,
     },
 };
 
@@ -43,7 +43,10 @@ use unityrs_testkit::{
     clippy::redundant_closure_for_method_calls,
     reason = "the method path is not general over the borrows' lifetimes"
 )]
-fn chain(rig: &Rig, edit: impl FnOnce(&mut Vec<Object>)) -> Result<AnimatorChain, AnimError> {
+pub(super) fn chain(
+    rig: &Rig,
+    edit: impl FnOnce(&mut Vec<Object>),
+) -> Result<AnimatorChain, AnimError> {
     read(
         rig,
         GraphOptions::default(),
@@ -56,14 +59,14 @@ fn chain(rig: &Rig, edit: impl FnOnce(&mut Vec<Object>)) -> Result<AnimatorChain
 
 /// `run` on `rig`'s prefab after `edit`, its graph read with `options`
 /// from the prefab root, or with `scene` from the whole file (the rig's
-/// root first), and the decode work the read and `run` charged.
-fn read<R>(
+/// root first), and the decode work charged in all and by `run` alone.
+pub(super) fn read<R>(
     rig: &Rig,
     options: GraphOptions,
     scene: bool,
     edit: impl FnOnce(&mut Vec<Object>),
     run: impl FnOnce(&BodyAvatar<'_>, &RigPaths<'_>, &Arc<Meter>) -> R,
-) -> (R, u64) {
+) -> (R, [u64; 2]) {
     let meter = Meter::unlimited();
     let mut objects = h::prefab(rig);
     edit(&mut objects);
@@ -80,8 +83,9 @@ fn read<R>(
         .avatar
         .unwrap();
     let body = body_avatar(&avatar, &meter).unwrap();
+    let before = meter.decoded();
     let out = run(&body, &paths, &meter);
-    (out, meter.decoded())
+    (out, [meter.decoded(), meter.decoded() - before])
 }
 
 fn local_trs(objects: &mut [Object], transform: i64, field: &str, value: &[f32]) {
@@ -103,7 +107,7 @@ fn offset(objects: &mut [Object]) {
     local_trs(objects, 101, "m_LocalRotation", &OFFSET_PLACEMENT.1);
 }
 
-fn rig(armature: Vec<([f32; 3], [f32; 4], f32)>) -> Rig {
+pub(super) fn rig(armature: Vec<([f32; 3], [f32; 4], f32)>) -> Rig {
     Rig {
         hierarchy: true,
         armature,
@@ -229,155 +233,6 @@ fn every_rest_scale_below_the_hips_must_be_one() {
     }
 }
 
-fn items<'o>(objects: &'o mut [Object], id: i64, name: &str) -> &'o mut Vec<V> {
-    let object = objects.iter_mut().find(|o| o.path_id == id).unwrap();
-    let V::Vector(_, _, items) = field(&mut object.value, &[name]) else {
-        panic!("{name}")
-    };
-    items
-}
-
-fn listed(objects: &mut [Object], game_object: i64, component: i64) {
-    let pair = st(
-        "ComponentPair",
-        vec![("component", pptr("Component", (0, component)))],
-    );
-    items(objects, game_object, "m_Component").push(pair);
-}
-
-/// The Spine's Transform (109) gains child Transform 181, which fails to
-/// read (its `m_GameObject` is a Transform), and, when `listed`, the
-/// Spine's `GameObject` (9) lists it as a component too.
-fn broken_child(objects: &mut Vec<Object>, listed_too: bool) {
-    objects.push(Object::new(
-        181,
-        4,
-        transform((0, 101), (0, 109), &[], false),
-    ));
-    items(objects, 109, "m_Children").push(pptr("Transform", (0, 181)));
-    if listed_too {
-        listed(objects, 9, 181);
-    }
-}
-
-/// A child the graph dropped below the hips refuses (`truncated_rig`) and
-/// leaves the chain out of scope, even when a surviving `GameObject` also
-/// lists the dropped Transform as a component (kept as `Other`).
-#[test]
-fn a_dropped_child_below_the_hips_refuses() {
-    for listed_too in [false, true] {
-        let edit = |o: &mut Vec<Object>| broken_child(o, listed_too);
-        let (found, _) = read(
-            &rig(Vec::new()),
-            GraphOptions::default(),
-            false,
-            edit,
-            |body, paths, meter| verdict(body.rest_scales(paths, meter)),
-        );
-        assert_eq!(found, Err(refused(BodyModel::TruncatedRig)), "{listed_too}");
-        let found = chain(&rig(Vec::new()), edit).unwrap();
-        assert_eq!(found.validated(), None, "{listed_too}");
-    }
-}
-
-/// A drop outside the hips' subtree leaves the scope alone: a second root
-/// in the file whose chain of Transforms runs one deeper than the rig's
-/// deepest bone, read to that bone's depth, loses its last child while the
-/// rig stays in scope.
-#[test]
-fn a_drop_under_another_root_keeps_the_scope() {
-    let full = rig(Vec::new());
-    let depth = |paths: &RigPaths<'_>| {
-        let nodes = paths.graph().0.nodes();
-        let depth = |mut at: usize| {
-            let mut depth = 1;
-            while let Some(parent) = nodes[at].parent {
-                (at, depth) = (parent, depth + 1);
-            }
-            depth
-        };
-        (0..nodes.len()).map(depth).max().unwrap()
-    };
-    let (deepest, _) = read(
-        &full,
-        GraphOptions::default(),
-        false,
-        |_| (),
-        |_, paths, _| depth(paths),
-    );
-    let other = |o: &mut Vec<Object>| {
-        for k in 0..=i64::from(deepest) {
-            let (go, t) = (5000 + k, 5100 + k);
-            let father = if k == 0 { 0 } else { t - 1 };
-            let children: &[(i32, i64)] = if k < i64::from(deepest) {
-                &[(0, t + 1)]
-            } else {
-                &[]
-            };
-            o.push(Object::new(go, 1, game_object(b"Other", &[(0, t)])));
-            o.push(Object::new(
-                t,
-                4,
-                transform((0, go), (0, father), children, false),
-            ));
-        }
-    };
-    let limited = GraphOptions {
-        max_depth: Some(deepest),
-    };
-    let dropped = |paths: &RigPaths<'_>| {
-        let graph = paths.graph().0;
-        (0..graph.nodes().len()).any(|k| graph.dropped_child(k))
-    };
-    for (options, any) in [(GraphOptions::default(), false), (limited, true)] {
-        let ((found, lost), _) = read(&full, options, true, other, |body, paths, meter| {
-            (body.animator_chain(paths, meter), dropped(paths))
-        });
-        assert_eq!(lost, any);
-        assert_eq!(
-            found.unwrap().validated(),
-            Some((ChainFeature::Plain, false))
-        );
-    }
-}
-
-/// Many malformed components on one node cost linear work and drop
-/// nothing: the hips' `GameObject` lists a `LODGroup` without `m_LODs`
-/// `n` times, and the chain stays in scope.
-#[test]
-#[allow(
-    clippy::redundant_closure_for_method_calls,
-    reason = "the method path is not general over the borrows' lifetimes"
-)]
-fn many_malformed_components_cost_linear_work() {
-    let work = |n: i64| {
-        let edit = |o: &mut Vec<Object>| {
-            o.push(Object::new(6000, 205, st("LODGroup", Vec::new())));
-            for _ in 0..n {
-                listed(o, 2, 6000);
-            }
-        };
-        let (found, work) = read(
-            &rig(Vec::new()),
-            GraphOptions::default(),
-            false,
-            edit,
-            |body, paths, meter| body.animator_chain(paths, meter),
-        );
-        assert_eq!(
-            found.unwrap().validated(),
-            Some((ChainFeature::Plain, false)),
-            "{n}"
-        );
-        work
-    };
-    let (none, some, more) = (work(0), work(1000), work(2000));
-    assert!(some > none);
-    let (first, second) = (some - none, more - some);
-    assert!(first.abs_diff(second) <= first / 10, "{none} {some} {more}");
-}
-
-/// Chains outside the validated scope compose but have none: a human
 /// scale outside the range (Codex's `m_Scale = m_RootX.t.y = 2`), a rest
 /// scale below the hips other than one, an F5 value but the fixture's,
 /// two features together, an F5 feature off the identity placement by
