@@ -51,12 +51,12 @@ pub(super) fn read_bits(data: &[u8], offset: usize, count: usize) -> Option<u32>
     if count > 16 || offset.checked_add(count)? > data.len().checked_mul(8)? {
         return None;
     }
-    let mut value = 0;
-    for bit in 0..count {
-        let pos = offset + bit;
-        value |= u32::from((data.get(pos / 8)? >> (pos % 8)) & 1) << bit;
-    }
-    Some(value)
+    // At most 16 bits from a bit offset of at most 7 lie in 3 bytes; the
+    // bytes past the data's end (never among the bits read) are zero.
+    let start = offset / 8;
+    let byte = |i: usize| u32::from(data.get(start + i).copied().unwrap_or(0));
+    let word = byte(0) | byte(1) << 8 | byte(2) << 16;
+    Some((word >> (offset % 8)) & ((1 << count) - 1))
 }
 
 /// Decodes `data`, blocks of `tables`' footprint in raster order, into
@@ -69,13 +69,36 @@ pub(super) fn read_bits(data: &[u8], offset: usize, count: usize) -> Option<u32>
 pub(crate) fn decode_image(
     tables: &mut Tables,
     data: &[u8],
+    size: (usize, usize),
+    flip: bool,
+    error: [u8; 4],
+    out: &mut [u8],
+) {
+    // A block's rows of texels, 4 bytes each, by the footprint's width
+    // (`context::FOOTPRINTS`), so a whole row is a copy of a constant size.
+    let image = match tables.footprint().width() {
+        4 => image::<16>,
+        5 => image::<20>,
+        6 => image::<24>,
+        8 => image::<32>,
+        10 => image::<40>,
+        12 => image::<48>,
+        _ => return,
+    };
+    image(tables, data, size, flip, error, out);
+}
+
+/// [`decode_image`] for a footprint `ROW / 4` texels wide.
+fn image<const ROW: usize>(
+    tables: &mut Tables,
+    data: &[u8],
     (width, height): (usize, usize),
     flip: bool,
     error: [u8; 4],
     out: &mut [u8],
 ) {
     let fp = tables.footprint();
-    let (bw, bh) = (usize::from(fp.width()), usize::from(fp.height()));
+    let (bw, bh) = (ROW / 4, usize::from(fp.height()));
     let across = width.div_ceil(bw);
     let blocks = across * height.div_ceil(bh);
     let mut texels = [0; 4 * block::MAX_TEXELS];
@@ -83,17 +106,30 @@ pub(crate) fn decode_image(
         block::decode(tables, bytes, &mut texels, error);
         let (x0, y0) = ((i % across) * bw, (i / across) * bh);
         let n = bw.min(width - x0);
-        for (y, src) in texels.chunks_exact(4 * bw).take(bh).enumerate() {
+        for (y, src) in texels.as_chunks::<ROW>().0.iter().take(bh).enumerate() {
             let at = y0 + y;
             if at >= height {
                 break;
             }
             let row = if flip { height - 1 - at } else { at };
             let start = (row * width + x0) * 4;
-            if let (Some(dst), Some(src)) = (out.get_mut(start..start + 4 * n), src.get(..4 * n)) {
-                dst.copy_from_slice(src);
+            if let Some(dst) = out.get_mut(start..start + 4 * n) {
+                match <&mut [u8; ROW]>::try_from(&mut *dst) {
+                    Ok(dst) => *dst = *src,
+                    Err(_) => edge(dst, src),
+                }
             }
         }
+    }
+}
+
+/// A block's row cut at the image's right edge: its first texels, as many
+/// as `dst` holds. Out of line, so the whole rows' copies stay inlined.
+#[cold]
+#[inline(never)]
+fn edge(dst: &mut [u8], src: &[u8]) {
+    if let Some(src) = src.get(..dst.len()) {
+        dst.copy_from_slice(src);
     }
 }
 
