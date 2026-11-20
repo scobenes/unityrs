@@ -147,7 +147,8 @@ hips), clip slot tables with writers,
 locomotion, IK, body, translation and dropped muscles, non-neutral and
 missing settings, dense, constant and streamed storage with non-finite
 values, malformed index arrays, root clips binding the motion and body
-DOFs (all body, baked, levelled, all Original and streamed), and broken
+DOFs (all body, each of the seven bake masks, levelled, with the
+orientation offset, all Original and streamed), and broken
 Avatar index tables, in 2022.3,
 6000.x and 2019.4 layouts, each with a second clip outside the controller,
 as a plain serialized file and inside a bundle, at meters 0, 1, 16 and 64.

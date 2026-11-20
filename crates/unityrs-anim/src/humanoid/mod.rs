@@ -25,6 +25,7 @@ pub mod body_solve;
 pub mod chain;
 mod clip;
 pub mod root;
+mod root_sample;
 
 pub use avatar::{
     Avatar, Axes, BODY_BONES, BoneMass, HAND_BONES, Human, Skeleton, SkeletonNode, Twist, Xform,

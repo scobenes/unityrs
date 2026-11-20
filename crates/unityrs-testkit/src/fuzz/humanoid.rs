@@ -75,7 +75,11 @@ fn variants() -> Vec<(String, Layout, Vec<Object>)> {
             rig_with(&rig, muscles()),
         ));
     }
-    for (name, clip) in clips().into_iter().chain(root_clips()) {
+    let clips = clips()
+        .into_iter()
+        .map(|(name, clip)| (name.to_owned(), clip))
+        .chain(root_clips());
+    for (name, clip) in clips {
         out.push((
             format!("clip-{name}"),
             Layout::Unity2022,
@@ -299,22 +303,24 @@ fn dense(rate: f32, bits: &[u32]) -> Object {
 
 /// Root-projection clips: all body, baked, levelled, all Original and
 /// streamed.
-fn root_clips() -> Vec<(&'static str, Object)> {
-    vec![
-        ("root-body", root_clip(&[], 0)),
+fn root_clips() -> Vec<(String, Object)> {
+    const BAKE: [&str; 3] = [
+        "m_LoopBlendOrientation",
+        "m_LoopBlendPositionY",
+        "m_LoopBlendPositionXZ",
+    ];
+    let mut out = vec![
+        ("root-body".to_owned(), root_clip(&[], 0)),
         (
-            "root-bake",
-            root_clip(
-                &[
-                    flag("m_LoopBlendOrientation", true),
-                    flag("m_LoopBlendPositionXZ", true),
-                ],
-                0,
-            ),
+            "root-level".to_owned(),
+            root_clip(&[("m_Level", V::Float(0.125))], 0),
         ),
-        ("root-level", root_clip(&[("m_Level", V::Float(0.125))], 0)),
         (
-            "root-original",
+            "root-orientation-offset".to_owned(),
+            root_clip(&[("m_OrientationOffsetY", V::Float(30.))], 0),
+        ),
+        (
+            "root-original".to_owned(),
             root_clip(
                 &[
                     flag("m_KeepOriginalOrientation", true),
@@ -324,8 +330,25 @@ fn root_clips() -> Vec<(&'static str, Object)> {
                 0,
             ),
         ),
-        ("root-streamed", root_clip(&[], 14)),
-    ]
+        ("root-streamed".to_owned(), root_clip(&[], 14)),
+    ];
+    // Every bake mask of E4's passing variants.
+    for bits in 1..8_usize {
+        let flags: Vec<_> = (0..3)
+            .filter(|k| bits >> (2 - k) & 1 == 1)
+            .map(|k| flag(BAKE[k], true))
+            .collect();
+        out.push((
+            format!(
+                "root-bake-o{}-y{}-xz{}",
+                bits >> 2 & 1,
+                bits >> 1 & 1,
+                bits & 1
+            ),
+            root_clip(&flags, 0),
+        ));
+    }
+    out
 }
 
 /// A clip binding the motion and body DOFs 0-13 to a turned, lifted root,

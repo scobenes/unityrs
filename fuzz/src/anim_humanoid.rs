@@ -103,12 +103,14 @@ pub(crate) fn root_digest(
         Ok(settings) => settings,
         Err(e) => return soft(e, digest).map(|()| 0),
     };
+    let rules = settings.rules();
     digest.tag((
-        discriminant(&settings.rules.yaw),
-        discriminant(&settings.rules.height),
-        discriminant(&settings.rules.xz),
-        settings.level.to_bits(),
-        settings.offset_degrees.to_bits(),
+        settings.admitted().variant,
+        discriminant(&rules.yaw),
+        discriminant(&rules.height),
+        discriminant(&rules.xz),
+        settings.start().0.map(f64::to_bits),
+        settings.start().1.map(f64::to_bits),
     ));
     let timing = match root::root_timing(clip, meter) {
         Ok(timing) => timing,
@@ -119,7 +121,7 @@ pub(crate) fn root_digest(
     for time in [start, start + (stop - start) / 2., stop] {
         for scale in [1., 1.75] {
             meter.count_decode(1)?;
-            match root::target_body_pose(clip, &settings, time, scale, meter) {
+            match root::target_body_pose(clip, time, scale, meter) {
                 Ok((t, q)) => {
                     assert!(t.iter().all(|v| v.is_finite()), "finite T_A");
                     let length = q.iter().map(|v| v * v).sum::<f64>().sqrt();
