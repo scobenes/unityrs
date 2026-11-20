@@ -1009,12 +1009,13 @@ the plan's hypotheses. None of it is a playback claim.
 
 ### Body fixtures
 
-The main menu item builds 768 optional `body-…` cases, each kind in its own
+The main menu item builds 793 optional `body-…` cases, each kind in its own
 bundle build after the main and coverage builds. Their tables are in
 `UnityrsBodyFixtures.cs`, `UnityrsBodyClips.cs` and `UnityrsBodyMuscles.cs`,
 mirrored by [`anim_fixture_body.py`](../tools/parity/anim_fixture_body.py)
-and, for round 11's 644, by
-[`anim_fixture_round11.py`](../tools/parity/anim_fixture_round11.py) and
+and, for round 11's 669, by
+[`anim_fixture_round11.py`](../tools/parity/anim_fixture_round11.py),
+[`anim_fixture_full.py`](../tools/parity/anim_fixture_full.py) and
 [`anim_fixture_muscles.py`](../tools/parity/anim_fixture_muscles.py), which
 freeze v8's sources never import.
 
@@ -1029,6 +1030,7 @@ freeze v8's sources never import.
 | `body-clip-<variant>[-offset]` (78) | F4 | 39 body-motion clips on the compact rig, each on an identity and an offset root |
 | `body-chain-<f5>-{targets,clip}` (18) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale; then, for E5, the scaled Animator at sizes 1.5 and 0.82, the hips scale at 1.2 and 0.7 and the armature at 1.8, a size scaling every bone offset and the hips' own offset but never the armature's transform, which B4 admits only at F5's value. Each plays F3's targets and the all-original F4 clip with changing `MotionT` and `MotionQ` curves, whose residual body translation and tilt change through the chain and whose motion the original-root rule keeps. Completion requires its built motion slots; if Unity drops them, that clip case is not covered. |
 | `body-clip-<rig>-<variant>[-offset]` (630) | E5 | The 21 variants B4 admits (freeze v8's E4 passing set, each with its `-start` twin where it has one) on 15 more rigs, each rig in a bundle `body-clips-<rig>`: F5's large rig, the tall rig and a plain `small` rig (size 0.82), at the top, middle and bottom of B4's human-scale range, then every training topology B3's topology scope admits but the compact rig's. No topology B3 refuses (`no-chest`, `no-neck`, one shoulder), never a hold-out rig. |
+| `body-clip-<rig>-full-<variant>[-offset]` (25) | E5 | Full-body clips: a curve on every one of the 95 muscles (the Spine's three as every humanoid clip keys them, each other muscle a polyline through the body clips' five key times at eighths within ±.5), on rigs mapping every bone a muscle turns (the compact topology with the face and all thirty fingers), each rig in a bundle `body-clips-<rig>-full`: the compact, large and small plain chains under four admitted variants (`keep-o0-y0-xz0`, `bake-o1-y1-xz1`, `level`, the chain variant) on both roots, and the large armature under the chain variant on the identity root, the one pairing B4 admits for an F5 feature. Completion checks every full curve, authored and built, at every key |
 | `body-probes-muscles-{compact,tall}`, `body-probes-fingers`, `body-probes-face` (4) | B5a | Known vectors for every one of the 95 muscles, each sweep in a bundle of its own: every body muscle the compact and tall rigs map, the face aside (each limb's twist muscle in its bone's group); the forty finger muscles on the compact rig with all thirty finger bones mapped; the Eyes' and the Jaw's six on the eyes-jaw rig. Each muscle alone at ±1, ±.75, ±.5, ±.25 and ±.125, then each bone's muscles jointly at two opposite vectors: 535, 503, 423 and 69 samples with the spine anchors. Each single-muscle sample must turn the muscle's bone by a quarter degree or more. |
 
 **Rig geometry.** One parameterized layout gives every rig. Unchanged, it
@@ -1238,8 +1240,15 @@ vectors do.
   `0x3fb7a311`, and a chain rig must show its F5 feature as B4 compares it,
   each stored component bit for bit with either zero's sign allowed (the
   Animator node's and the hips' scale, the armature's translation, rotation
-  and scale; the rotation's other sign refused). B2 and
-  the freeze never read round 11's cases.
+  and scale; the rotation's other sign refused), in the recorded rest pose
+  and in the bundle's serialized Transforms alike: there, as B4 reads them,
+  the prefab root (the Animator node's one ancestor) exactly at the
+  identity, and the Animator node exactly at the identity or, for a plain
+  chain on its offset root, at B4's `OFFSET_PLACEMENT`. A muscle sweep's
+  single-muscle sample must turn its muscle's bone by a quarter degree or
+  more from the recorded zero-vector sample, and a full-body clip must keep
+  every muscle's curve, authored and built. B2 and the freeze never read
+  round 11's cases.
 - A recorded case needs `replays/body/<case>.pending.json` and its bundle.
 - A failed case fails the run.
 

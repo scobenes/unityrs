@@ -16,11 +16,12 @@ fixtures (two humanoid refusal probes). When Unity cannot provide one of
 them, `run.json` lists it as not covered and the dialog still says **ready**.
 The integer discrete binding is always listed as not covered.
 
-The main run also builds and records the 768 optional **body motion**
+The main run also builds and records the 793 optional **body motion**
 fixtures (`body-…` in `run.json`, recordings in `replays/body`). They take
-longer than the rest: most are round 11's 644 replays (E5's clip and chain
-replays, about 0.55 MB each, and four muscle sweeps), so expect a much
-longer run and about 460 MB more output, with the
+longer than the rest: most are round 11's 669 replays (E5's clip and chain
+replays, about 0.55 MB each, 25 full-body clip replays of about 1.3 MB,
+and four muscle sweeps), so expect a much
+longer run and about 490 MB more output, with the
 progress bar on **Recording body-…**. Each body rig, clip set and chain is
 built on its own, so a rig or clip setting Unity refuses is listed as not
 covered or failed in `run.json` without stopping the others. Send the whole
@@ -117,7 +118,7 @@ A run's body fixtures are optional as a group: an older run without any
 `body-…` row completes as before, and a newer one must list all 124 earlier
 ones. A round 11 run (with `round.json`) completes only through
 `python3 -I tools/parity/anim_fixture_round11.py complete <folder>`, which
-requires all 768 listed and recorded. After `complete`, run
+requires all 793 listed and recorded. After `complete`, run
 the B1 adequacy checkpoint on each version's folder:
 
     python3 -I tools/parity/anim_body_adequacy.py <folder> --json report.json

@@ -15,7 +15,9 @@ using Object = UnityEngine.Object;
 // feet with a knee bend, with and without foot goal curves.
 //
 // E5: the variants B4 admits, each with its start-offset twin, on an identity
-// and an offset root, on every clip rig (ClipRigs), each in its own bundle.
+// and an offset root, on every clip rig (ClipRigs), each in its own bundle;
+// and full-body clips, every muscle on a curve, on rigs mapping every bone a
+// muscle turns (FullRigs).
 static partial class UnityrsFixtureBuilder
 {
     const string BodyClipBundle = "body-clips";
@@ -89,6 +91,35 @@ static partial class UnityrsFixtureBuilder
         "no-upper-chest", "no-shoulders", "no-left-toes", "no-right-toes", "no-toes", "no-upper-chest-toes",
         "no-upper-chest-left-toes", "no-upper-chest-right-toes", "eyes", "jaw", "eyes-jaw", "noncoplanar"
     };
+    // E5's full-body clips (anim_fixture_full.py): every muscle on a curve, on
+    // rigs that map every bone a muscle turns (the face and all thirty fingers
+    // added), so a recording carries each bone's channels through a real clip.
+    // The compact, large and small plain chains play four admitted variants at
+    // both placements; the large armature plays the chain variant at the
+    // identity, the one pairing B4 admits for an F5 feature.
+    static readonly string[] FullVariants = { "keep-o0-y0-xz0", "bake-o1-y1-xz1", "level", "keep-o1-y1-xz1-motion" };
+    static string[] FullExtras => Face.Concat(FingerBones).ToArray();
+    static BodyRig[] FullRigs => new[] {
+        new BodyRig { Name = "compact-full", Full = true, Extras = FullExtras },
+        new BodyRig { Name = "large-full", Full = true, Extras = FullExtras, Size = 1.5f },
+        new BodyRig { Name = "small-full", Full = true, Extras = FullExtras, Size = .82f },
+        new BodyRig { Name = "armature-large-full", Full = true, Extras = FullExtras, Armature = true, Size = 1.8f },
+    };
+    // A full-body clip's curve on a muscle at BodyTimes: eighths within +-.5,
+    // three distinct values per muscle.
+    static float[] FullValues(int muscle) =>
+        BodyTimes.Select((_, key) => ((muscle * 7 + key * 3) % 9 - 4) / 8f).ToArray();
+    // Every muscle but the Spine's three, which every humanoid clip keys (AuthorHumanoidClip).
+    static int[] FullMuscles() => Enumerable.Range(0, HumanTrait.MuscleCount)
+        .Where(i => !SpineMuscles.Contains(HumanTrait.MuscleName[i])).ToArray();
+
+    // A rig's clip variants: every variant on the compact rig, the admitted ones on
+    // an E5 clip rig, FullVariants on a plain full rig and the chain variant on an F5 one.
+    static BodyClipVariant[] RigVariants(BodyRig rig) => rig == null ? ClipVariants : !rig.Full ? E5Variants
+        : rig.Armature ? new[] { ChainVariant } : ClipVariants.Where(row => FullVariants.Contains(row.Name)).ToArray();
+    // Only a plain chain plays at the offset placement too.
+    static bool Placed(BodyRig rig) => rig == null || !rig.Armature;
+
     static BodyRig[] ClipRigs => new[] { ChainRigs.Single(rig => rig.Name == "large"), ProbeRigs.Single(rig => rig.Name == "tall"),
         SmallRig }.Concat(E5Topologies.Select(name => ProbeRigs.Single(rig => rig.Name == name))).ToArray();
 
@@ -96,8 +127,8 @@ static partial class UnityrsFixtureBuilder
     static string ClipBundle(BodyRig rig) => rig == null ? BodyClipBundle : BodyClipBundle + "-" + rig.Name;
     static string ClipName(BodyRig rig, BodyClipVariant row) => "body-clip-" + (rig == null ? "" : rig.Name + "-") + row.Name;
 
-    static IEnumerable<string> ClipCases(BodyRig rig = null) => (rig == null ? ClipVariants : E5Variants).SelectMany(row =>
-        new[] { ClipName(rig, row), ClipName(rig, row) + "-offset" });
+    static IEnumerable<string> ClipCases(BodyRig rig = null) => RigVariants(rig).SelectMany(row =>
+        Placed(rig) ? new[] { ClipName(rig, row), ClipName(rig, row) + "-offset" } : new[] { ClipName(rig, row) });
 
     static readonly float[] BodyTimes = { 0, .25f, .5f, .75f, 1 };
     // RootT in normalized units, and RootQ as Euler degrees (tilt, yaw, roll).
@@ -155,7 +186,7 @@ static partial class UnityrsFixtureBuilder
             clip.SetCurve("", typeof(Animator), prefix + "." + axes[i], PolyLine(times, values.Select(q => q[i]).ToArray()));
     }
 
-    static void AddBodyCurves(AnimationClip clip, BodyClipVariant variant)
+    static void AddBodyCurves(AnimationClip clip, BodyClipVariant variant, bool full)
     {
         // The start variant moves the whole body path rigidly: turned about +Y, then offset in XZ.
         var start = Quaternion.Euler(0, variant.Start ? StartYaw : 0, 0);
@@ -168,6 +199,9 @@ static partial class UnityrsFixtureBuilder
             SetRotationCurves(clip, "MotionQ", BodyTimes, MotionYaw.Select(yaw => Quaternion.Euler(0, yaw, 0)).ToArray());
         }
         var names = HumanTrait.MuscleName;
+        if (full)
+            foreach (int muscle in FullMuscles())
+                clip.SetCurve("", typeof(Animator), names[muscle], PolyLine(BodyTimes, FullValues(muscle)));
         if (variant.Knee)
             foreach (var (muscle, values) in KneeCurves)
                 clip.SetCurve("", typeof(Animator), names[MuscleIndex(names, muscle)], PolyLine(KneeTimes, values));
@@ -182,9 +216,9 @@ static partial class UnityrsFixtureBuilder
         clip.EnsureQuaternionContinuity();
     }
 
-    static AnimationClip AuthorBodyClip(string dir, string name, BodyClipVariant variant)
+    static AnimationClip AuthorBodyClip(string dir, string name, BodyClipVariant variant, bool full = false)
     {
-        var clip = AuthorHumanoidClip(dir, name, bodyMotion: false, extra: authored => AddBodyCurves(authored, variant));
+        var clip = AuthorHumanoidClip(dir, name, bodyMotion: false, extra: authored => AddBodyCurves(authored, variant, full));
         SetBodySettings(clip, variant);
         return clip;
     }
@@ -225,13 +259,14 @@ static partial class UnityrsFixtureBuilder
         return properties.All(bound.Contains);
     }
 
-    // The compact rig's clips (`spec` null, every variant) or an E5 clip rig's (the admitted variants).
+    // The compact rig's clips (`spec` null, every variant), an E5 clip rig's (the
+    // admitted variants) or an E5 full-body clip rig's (RigVariants).
     static void BuildBodyClips(Build build, RunReport report, BodyRig spec = null)
     {
         var rigSpec = spec ?? ProbeRigs[0];
         string bundle = ClipBundle(spec);
-        Require(!rigSpec.Armature && !rigSpec.ScaledAnimator && rigSpec.HipsScale == 1,
-            "A clip rig is a plain chain: " + rigSpec.Name + ".");
+        Require(!rigSpec.ScaledAnimator && rigSpec.HipsScale == 1 && (!rigSpec.Armature || rigSpec.Full),
+            "A clip rig is a plain chain, or a full-body clip rig's armature: " + rigSpec.Name + ".");
         var rig = new GameObject("HumanoidRig");
         GameObject root = null;
         Avatar avatar = null;
@@ -247,21 +282,24 @@ static partial class UnityrsFixtureBuilder
             string dir = Folder(Assets + "/" + bundle);
             var animator = SaveCoverageRig(rig, hips, skeleton, avatar, dir, out var assets);
             var clips = new List<(AnimationClip clip, BodyClipVariant variant)>();
-            foreach (var variant in spec == null ? ClipVariants : E5Variants)
+            foreach (var variant in RigVariants(spec))
             {
                 // Unity may refuse a variant's settings, or motion or goal curves on a
                 // human-motion clip: only that variant is then not covered.
                 AnimationClip clip = null;
                 string missing = null;
-                try { clip = AuthorBodyClip(dir, ClipName(spec, variant), variant); }
+                try { clip = AuthorBodyClip(dir, ClipName(spec, variant), variant, rigSpec.Full); }
                 catch (CoverageUnavailable error) { missing = error.Message; }
+                if (missing == null && rigSpec.Full
+                    && !KeepsCurves(clip, FullMuscles().Select(i => HumanTrait.MuscleName[i]).ToArray()))
+                    missing = "The Editor dropped a full-body muscle curve.";
                 if (missing == null && variant.Motion && !KeepsCurves(clip, "MotionT.x", "MotionQ.w"))
                     missing = "The Editor dropped the authored MotionT and MotionQ curves.";
                 if (missing == null && variant.Goals && !KeepsCurves(clip, "LeftFootT.x", "RightFootQ.w"))
                     missing = "The Editor dropped the authored foot goal curves.";
                 if (missing != null)
                 {
-                    foreach (string suffix in new[] { "", "-offset" })
+                    foreach (string suffix in Placed(spec) ? new[] { "", "-offset" } : new[] { "" })
                         report.Set(ClipName(spec, variant) + suffix, "not_covered", missing);
                     continue;
                 }
@@ -272,21 +310,26 @@ static partial class UnityrsFixtureBuilder
             root = new GameObject("HumanoidFixture");
             rig.transform.SetParent(root.transform, false);
             string prefab = SavePrefab(root, dir + "/identity.prefab");
-            rig.transform.localPosition = new Vector3(2, .25f, -1);
-            rig.transform.localRotation = Quaternion.Euler(0, 35, 0);
-            string offsetPrefab = SavePrefab(root, dir + "/offset.prefab");
+            var placements = new List<(string path, string suffix, string root)> { (prefab, "", "identity") };
+            if (Placed(spec))
+            {
+                rig.transform.localPosition = new Vector3(2, .25f, -1);
+                rig.transform.localRotation = Quaternion.Euler(0, 35, 0);
+                placements.Add((SavePrefab(root, dir + "/offset.prefab"), "-offset", "offset"));
+            }
             var clipPaths = clips.Select(row => AssetDatabase.GetAssetPath(row.clip)).ToArray();
             var mapped = skeleton.Select(bone => bone.name).Where(HumanTrait.BoneName.Contains).ToArray();
-            build.AddBodyBundle(bundle, assets.Concat(clipPaths).Concat(new[] { prefab, offsetPrefab }).ToArray());
+            build.AddBodyBundle(bundle, assets.Concat(clipPaths).Concat(placements.Select(row => row.path)).ToArray());
+            string probe = rigSpec.Armature ? "HumanoidRig/Armature/Hips/Spine" : "HumanoidRig/Hips/Spine";
             for (int i = 0; i < clips.Count; i++)
             {
                 var variant = clips[i].variant;
-                foreach (var (path, suffix, rootKind) in new[] { (prefab, "", "identity"), (offsetPrefab, "-offset", "offset") })
+                foreach (var (path, suffix, rootKind) in placements)
                 {
                     var body = new BodyCase { Kind = "clip", Rig = rigSpec.Name, Variant = variant.Name, Root = rootKind,
                         Spec = rigSpec, Mapped = mapped };
                     var replay = BodyReplay(bundle, path, assets[0], clipPaths[i],
-                        ClipName(spec, variant) + suffix, body, "HumanoidRig/Hips/Spine");
+                        ClipName(spec, variant) + suffix, body, probe);
                     replay.BodyClip = variant;
                     build.Replays.Add(replay);
                 }
@@ -318,7 +361,7 @@ static partial class UnityrsFixtureBuilder
             {
                 Unavailable(BodySettingsMatch(AnimationUtility.GetAnimationClipSettings(clip), replay.BodyClip),
                     "The built clip did not keep its authored root settings in " + replay.Bundle + ".");
-                CheckCompiledTracks(clip, replay.BodyClip, replay.OutputName);
+                CheckCompiledTracks(clip, replay.BodyClip, replay.OutputName, replay.Body.Spec.Full);
             }
         }
         finally { bundle.Unload(true); }
@@ -328,13 +371,15 @@ static partial class UnityrsFixtureBuilder
     // MotionT and MotionQ 0 to 6, RootT and RootQ 7 to 13, the foot goals 14 to 27, muscles from 42.
     const int MotionAttribute = 0, RootAttribute = 7, LeftFootGoal = 14, RightFootGoal = 21, MuscleAttribute = 42;
 
-    static IEnumerable<(string track, int attribute)> CompiledTracks(BodyClipVariant variant)
+    static IEnumerable<(string track, int attribute)> CompiledTracks(BodyClipVariant variant, bool full)
     {
         IEnumerable<(string, int)> Span(string prefix, int first, string axes) =>
             axes.Select((axis, i) => (prefix + "." + axis, first + i));
         var tracks = Span("RootT", RootAttribute, "xyz").Concat(Span("RootQ", RootAttribute + 3, "xyzw"));
         if (variant.Motion)
             tracks = tracks.Concat(Span("MotionT", MotionAttribute, "xyz")).Concat(Span("MotionQ", MotionAttribute + 3, "xyzw"));
+        if (full)
+            tracks = tracks.Concat(FullMuscles().Select(i => (HumanTrait.MuscleName[i], MuscleAttribute + i)));
         if (variant.Knee)
         {
             var names = HumanTrait.MuscleName;
@@ -353,7 +398,7 @@ static partial class UnityrsFixtureBuilder
     // the track's attribute must also index that same slot, as playback reads it.
     // Otherwise the case fails with the missing tracks; completion then checks
     // the slots' values in the runtime data.
-    static void CheckCompiledTracks(AnimationClip clip, BodyClipVariant variant, string name)
+    static void CheckCompiledTracks(AnimationClip clip, BodyClipVariant variant, string name, bool full)
     {
         using (var serialized = new SerializedObject(clip))
         {
@@ -379,7 +424,7 @@ static partial class UnityrsFixtureBuilder
             }
             var index = serialized.FindProperty("m_MuscleClip.m_IndexArray");
             bool indexed = index != null && index.isArray;
-            var missing = CompiledTracks(variant).Where(track => !slots.TryGetValue(track.attribute, out int slot)
+            var missing = CompiledTracks(variant, full).Where(track => !slots.TryGetValue(track.attribute, out int slot)
                 || indexed && (track.attribute >= index.arraySize
                     || index.GetArrayElementAtIndex(track.attribute).intValue != slot)).Select(track => track.track).ToArray();
             Require(missing.Length == 0, "The built clip lost or moved its compiled " + string.Join(", ", missing)

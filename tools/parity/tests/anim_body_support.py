@@ -15,7 +15,6 @@ from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CLIP
                                body_requests, distinguishing_curves, PROBE_GROUPS, SPINE,
                                START_OFFSET, START_YAW, expected_case_row, probe_schedule, schedule_name)
 from anim_fixture_rigs import rig_layout  # noqa: E402
-from anim_fixture_round11 import ARMATURE, CHAIN_FEATURES  # noqa: E402
 from anim_reference import euler, multiply  # noqa: E402
 import anim_replay as replay  # noqa: E402
 
@@ -68,15 +67,24 @@ def transform(t=(0, 0, 0), q=(0, 0, 0, 1), s=1.):
     return dict(translation=[bits(v) for v in t], rotation=[bits(v) for v in q], scale=[bits(s)] * 3)
 
 
-ANIMATOR_SCALE = {rig: 1.25 for rig, (feature, _) in CHAIN_FEATURES.items() if feature == "scaled-animator"}
+# F5's armature exactly as freeze v8's chain admits it (chain.rs BETWEEN; Quaternion.Euler(-90, 0, 0) as Unity
+# records it, 0x3f3504f4). B2's own: no round 11 table moves B2's inputs.
+HALF = replay.f32_from_bits("3f3504f4")
+ARMATURE = ((0, .05, .1), (-HALF, 0, 0, HALF), .8)
+# Each synthetic chain rig's (F5 feature, size): freeze v8's four. Round 11's tests patch in their own rigs.
+RIG_FEATURES = {"scaled-animator": ("scaled-animator", 1), "large": ("", 1.5), "armature": ("armature", 1),
+                "hips-scale": ("hips-scale", 1)}
+
+
+def animator_scale(rig):
+    return 1.25 if RIG_FEATURES.get(rig, ("", 1))[0] == "scaled-animator" else 1.
 
 
 def rig_nodes(rig):
     """Spec nodes and rest transforms, with F5's Animator, armature and hips scales (a sized rig's offsets
     scaled, the hips' own offset too, never the armature's transform)."""
-    feature, size = CHAIN_FEATURES.get(rig, ("", 1))
-    nodes, rest = [("", "HumanoidFixture"), ("0", "HumanoidRig")], [transform(), transform(
-        s=ANIMATOR_SCALE.get(rig, 1.))]
+    feature, size = RIG_FEATURES.get(rig, ("", 1))
+    nodes, rest = [("", "HumanoidFixture"), ("0", "HumanoidRig")], [transform(), transform(s=animator_scale(rig))]
     top, addresses, counts = "0", {"": "0"}, {}
     if feature == "armature":
         nodes.append(("0/0", "Armature"))
@@ -206,7 +214,7 @@ def body_doc(name, run, *, samples=None):
         # recorder's conversion to the Animator divides by that scale again.
         turn = tolerance.matrix_quaternion(tolerance.product(frame(pose), rest_frame, transpose=True))
         body = centre()
-        rows.append(dict(readback_position=[bits(v / ANIMATOR_SCALE.get(rig, 1.)) for v in body],
+        rows.append(dict(readback_position=[bits(v / animator_scale(rig)) for v in body],
                          readback_rotation=[bits(v) for v in turn],
                          readback_muscles=[bits(v) for v in muscles],
                          world_position=[bits(v) for v in body], world_rotation=[bits(0)] * 3 + [bits(1)],
@@ -251,8 +259,9 @@ def animator(prop, rows):
                 object_keys=[], keys=rows)
 
 
-def clip_case(doc, variant_name):
-    """Give a clip case the authored curves, captured settings and built clip of its variant."""
+def clip_case(doc, variant_name, more=()):
+    """Give a clip case the authored curves, captured settings and built clip of its variant (and of `more`
+    curve groups besides)."""
     variant = CLIP_VARIANTS[variant_name]
     turn = euler((0, START_YAW if variant["start"] else 0, 0), 4)
     path, rotations = [], []
@@ -264,7 +273,7 @@ def clip_case(doc, variant_name):
         rotations.append(multiply(turn, euler(angles, 4)))
     bindings = [animator(f"RootT.{a}", keys(BODY_TIMES, [p[i] for p in path])) for i, a in enumerate("xyz")]
     bindings += [animator(f"RootQ.{a}", keys(BODY_TIMES, [q[i] for q in rotations])) for i, a in enumerate("xyzw")]
-    extras = distinguishing_curves(variant, list(MUSCLES))
+    extras = distinguishing_curves(variant, list(MUSCLES)) + list(more)
     bindings += [animator(prop, keys(times, values)) for group in extras for prop, _, times, values in group]
     doc["spec"]["evidence"]["editor"]["bindings"] = bindings
     flags = dict(zip(("loopBlendOrientation", "loopBlendPositionY", "loopBlendPositionXZ"), variant["bake"]))

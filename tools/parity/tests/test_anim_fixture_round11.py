@@ -13,11 +13,12 @@ import test_anim_replay_coverage as coverage  # noqa: F401  (puts tools/parity o
 import anim_body_support as support
 from anim_fixture_support import RUN, write
 import test_anim_body_fixtures as fixtures
-from test_anim_body_fixtures import View, source
+from test_anim_body_fixtures import source
 
 import anim_body_runs as runs  # noqa: E402
 import anim_body_seal as seal  # noqa: E402
 import anim_fixture_body as body  # noqa: E402
+import anim_fixture_full as full  # noqa: E402
 import anim_fixture_muscles as muscles  # noqa: E402
 import anim_fixture_round11 as r11  # noqa: E402
 import anim_replay as replay  # noqa: E402
@@ -62,8 +63,31 @@ def round11_docs():
         stack.enter_context(mock.patch.multiple(
             support, BODY_INFO=body.BODY_INFO, probe_schedule=r11.probe_schedule, schedule_name=r11.schedule_name,
             layout=r11.rig_layout, BONES=(*bones[:-1], *muscles.FINGER_BONES, bones[-1]), MUSCLES=NAMES,
-            AXES=responding_axes(), limits=limits))
+            AXES=responding_axes(), limits=limits, RIG_FEATURES=r11.RIG_FEATURES))
         yield
+
+
+class Built:
+    """A built bundle's view: the clip, and each node's serialized Transform (its recorded rest, the Animator
+    node at the offset placement for an offset root)."""
+
+    def __init__(self, name, doc, clip=None):
+        self.clip, self.transforms = clip, {}
+        offset = r11.ROUND11_INFO.get(name, {}).get("root") == "offset"
+        for k, (node, rest) in enumerate(zip(doc["spec"]["nodes"], doc["capture"]["rest"]["transforms"])):
+            node["id"] = dict(bundle=0, file_index=0, file="CAB", path_id=str(k + 1))
+            values = {key: [replay.f32_from_bits(v) for v in rest[key]] for key in ("translation", "rotation", "scale")}
+            if offset and node["address"] == "0":
+                values["translation"], values["rotation"] = map(list, r11.OFFSET_PLACEMENT)
+            self.transforms[(0, k + 1)] = {field: dict(zip(axes, values[key])) for field, key, axes in (
+                ("m_LocalPosition", "translation", "xyz"), ("m_LocalRotation", "rotation", "xyzw"),
+                ("m_LocalScale", "scale", "xyz"))}
+
+    def value(self, key):
+        return self.clip if key is None else self.transforms[key]
+
+    def at(self, doc, address):
+        return self.transforms[(0, 1 + [node["address"] for node in doc["spec"]["nodes"]].index(address))]
 
 
 class Round11InventoryTests(unittest.TestCase):
@@ -104,8 +128,22 @@ class Round11InventoryTests(unittest.TestCase):
         # Size scales the hips' offset in an armature, never the armature's own transform (B4 admits F5's only).
         self.assertIn('Child(root, "Armature", new Vector3(0, .05f, .1f));', builder)
         self.assertIn("hips.localPosition = new Vector3(0, .125f, .8375f) * rig.Size;", builder)
-        self.assertIn(".Concat(ClipRigs.SelectMany(rig => ClipCases(rig))).Concat(MuscleSweeps.Select(sweep => sweep.name));",
-                      builder)
+        self.assertIn(".Concat(ClipRigs.Concat(FullRigs).SelectMany(rig => ClipCases(rig)))", builder)
+        # The full-body clip rigs and variants, and each full curve's values.
+        table = clips[clips.index("BodyRig[] FullRigs => new[] {"):]
+        parsed = {}
+        for name, fields in re.findall(r'new BodyRig \{ Name = "([a-z-]+)"([^}]*)\}', table[:table.index("};")]):
+            self.assertIn("Full = true, Extras = FullExtras", fields)
+            size = re.search(r"Size = ([\d.]+)f", fields)
+            parsed[name] = ("armature" if "Armature = true" in fields else "", float(size.group(1)) if size else 1)
+        self.assertEqual(parsed, full.FULL_RIGS)
+        self.assertEqual(tuple(re.findall(r'"([a-z0-9-]+)"', re.search(r"FullVariants = \{(.*?)\};", clips).group(1))),
+                         full.FULL_VARIANTS)
+        self.assertIn("static string[] FullExtras => Face.Concat(FingerBones).ToArray();", clips)
+        self.assertEqual(set(full.FULL_EXTRAS), {"LeftEye", "RightEye", "Jaw", *muscles.FINGER_BONES})
+        self.assertIn("BodyTimes.Select((_, key) => ((muscle * 7 + key * 3) % 9 - 4) / 8f).ToArray();", clips)
+        self.assertEqual(full.full_values(0), (-.5, -.125, .25, -.5, -.125))
+        self.assertTrue(all(len(set(full.full_values(m))) == 3 for m in range(95)))
         self.assertIn("BuildMuscleSweeps(build, report);", builder)
 
     def test_the_admitted_variants_are_freeze_v8s_e4_passing_set(self):
@@ -115,14 +153,22 @@ class Round11InventoryTests(unittest.TestCase):
         self.assertEqual(len(r11.E5_VARIANTS), 21)
 
     def test_the_cases_are_round_11s_own(self):
-        # 15 clip rigs x 21 variants x 2 roots, each new chain rig's targets and clip, and the four sweeps, in the
-        # builder's order: the chains, the clips, the sweeps.
-        self.assertEqual(len(r11.ROUND11_CASES), 15 * 21 * 2 + 5 * 2 + 4)
-        self.assertEqual(len(r11.E5_CASES), 640)
+        # 15 clip rigs x 21 variants x 2 roots, each new chain rig's targets and clip, the full-body clips (three
+        # plain rigs x 4 variants x 2 roots, the armature's chain variant) and the four sweeps, in the builder's
+        # order: the chains, the clips, the full-body clips, the sweeps.
+        self.assertEqual(len(r11.ROUND11_CASES), 15 * 21 * 2 + 5 * 2 + 25 + 4)
+        self.assertEqual(len(r11.E5_CASES), 665)
         kinds = [r11.ROUND11_INFO[name]["kind"] for name in r11.ROUND11_CASES]
         self.assertEqual(kinds[:10], ["targets", "clip"] * 5)
-        self.assertEqual(kinds[10:], ["clip"] * 630 + ["probes"] * 4)
-        self.assertEqual(len(r11.ROUND11_BUNDLES), 5 + 15 + 4)
+        self.assertEqual(kinds[10:], ["clip"] * 655 + ["probes"] * 4)
+        self.assertEqual(len(r11.ROUND11_BUNDLES), 5 + 15 + 4 + 4)
+        rows = [r11.ROUND11_INFO[name] | dict(name=name) for name in list(r11.ROUND11_CASES)[640:665]]
+        self.assertEqual({row["rig"] for row in rows}, set(full.FULL_RIGS))
+        self.assertEqual([row["name"] for row in rows if row["rig"] == "armature-large-full"],
+                         ["body-clip-armature-large-full-" + body.CHAIN_VARIANT])
+        self.assertTrue(set(full.FULL_VARIANTS) <= set(r11.E5_ADMITTED) and body.CHAIN_VARIANT in full.FULL_VARIANTS)
+        self.assertEqual(r11.ROUND11_CASES["body-clip-armature-large-full-" + body.CHAIN_VARIANT].probe[0],
+                         "HumanoidRig/Armature/Hips/Spine")
         for rig in r11.CLIP_RIGS:
             for variant in r11.E5_VARIANTS:
                 for root, suffix in (("identity", ""), ("offset", "-offset")):
@@ -231,8 +277,8 @@ class MuscleSweepTests(unittest.TestCase):
 
 
 class Round11CheckTests(unittest.TestCase):
-    def check(self, name, doc):
-        return r11.check_body(name, body.BODY_CASES[name], doc, View(None), None, replay)
+    def check(self, name, doc, view=None):
+        return r11.check_body(name, body.BODY_CASES[name], doc, view or Built(name, doc), None, replay)
 
     def doc(self, name):
         return support.body_doc(name, RUN)
@@ -325,6 +371,108 @@ class Round11CheckTests(unittest.TestCase):
                 doc = self.doc(name)
                 doc["capture"]["humanoid"]["human_scale"] = replay.f32_bits(2)
                 self.assertIsNone(self.check(name, doc))
+
+
+class Round11BuiltTests(unittest.TestCase):
+    check = Round11CheckTests.check
+    doc = Round11CheckTests.doc
+
+    def test_refuses_a_built_chain_b4_refuses(self):
+        # B4's rule on the bundle's serialized Transforms (chain.rs animator_chain), not the captured rest alone.
+        def ulp(value, k=1):
+            return replay.f32_from_bits(f"{int(replay.f32_bits(value), 16) + k:08x}")
+
+        name = "body-chain-armature-large-targets"
+        with round11_docs():
+            self.assertIsNone(self.check(name, self.doc(name)))
+            for address, field, axis, edit in (
+                    ("0/0", "m_LocalPosition", "y", ulp), ("0/0", "m_LocalRotation", "w", ulp),
+                    ("0/0", "m_LocalScale", "z", ulp), ("0", "m_LocalPosition", "x", lambda v: v + 2.),
+                    ("0", "m_LocalScale", "x", lambda v: 1.25), ("", "m_LocalPosition", "z", lambda v: .5),
+                    ("", "m_LocalRotation", "y", lambda v: .1), ("", "m_LocalScale", "y", ulp)):
+                doc = self.doc(name)
+                view = Built(name, doc)
+                row = view.at(doc, address)[field]
+                row[axis] = edit(row[axis])
+                with self.subTest(address=address, field=field), self.assertRaisesRegex(
+                        ValueError, f"the built chain of {name} is not one B4 admits"):
+                    self.check(name, doc, view)
+            # Either zero's sign is B4's zero.
+            doc = self.doc(name)
+            view = Built(name, doc)
+            view.at(doc, "0/0")["m_LocalPosition"]["x"] = -0.
+            view.at(doc, "")["m_LocalRotation"]["y"] = -0.
+            self.assertIsNone(self.check(name, doc, view))
+
+    def test_only_a_plain_chain_plays_at_the_offset_placement(self):
+        # (A plain chain's offset root passes: test_full_body_clips_carry_every_muscle.)
+        with round11_docs():
+            for name in ("body-chain-scaled-animator-large-targets", "body-chain-hips-scale-small-targets"):
+                doc = self.doc(name)
+                view, rig = Built(name, doc), r11.ROUND11_INFO[name]["rig"]
+                self.assertIsNone(r11.serialized_chain(name, rig, "identity", doc["spec"], view, replay))
+                view.at(doc, "0")["m_LocalPosition"].update(zip("xyz", r11.OFFSET_PLACEMENT[0]))
+                view.at(doc, "0")["m_LocalRotation"].update(zip("xyzw", r11.OFFSET_PLACEMENT[1]))
+                for root in ("identity", "offset"):
+                    with self.subTest(name=name, root=root), self.assertRaisesRegex(ValueError, "not one B4 admits"):
+                        r11.serialized_chain(name, rig, root, doc["spec"], view, replay)
+
+    def full_clip(self, name):
+        doc = self.doc(name)
+        groups = full.full_groups(list(NAMES))
+        return doc, support.clip_case(doc, r11.ROUND11_INFO[name]["variant"], groups), groups
+
+    def test_full_body_clips_carry_every_muscle(self):
+        with round11_docs():
+            for name in ("body-clip-compact-full-keep-o0-y0-xz0", "body-clip-large-full-level-offset",
+                         "body-clip-armature-large-full-" + body.CHAIN_VARIANT):
+                doc, clip, groups = self.full_clip(name)
+                self.assertEqual(len(groups), 92)
+                with self.subTest(name=name):
+                    self.assertIsNotNone(self.check(name, doc, Built(name, doc, clip)))
+
+    def test_refuses_a_full_body_clip_that_drops_or_moves_a_channel(self):
+        name = "body-clip-small-full-bake-o1-y1-xz1-offset"
+        with round11_docs():
+            doc, clip, groups = self.full_clip(name)
+            # A finger muscle's slot dropped from the built clip.
+            prop, attribute = groups[-1][0][:2]
+            clip["m_MuscleClip"]["m_IndexArray"][attribute] = -1
+            with self.assertRaisesRegex(ValueError, f"built clip lost its full-body {prop} slot"):
+                self.check(name, doc, Built(name, doc, clip))
+            # A twist muscle's authored key moved.
+            doc, clip, groups = self.full_clip(name)
+            prop = "Left Arm Twist In-Out"
+            row = next(row for row in doc["spec"]["evidence"]["editor"]["bindings"] if row["property"] == prop)
+            row["keys"][2]["value_f32"] = replay.f32_bits(.75)
+            with self.assertRaisesRegex(ValueError, f"authored full-body {prop} curve mismatch"):
+                self.check(name, doc, Built(name, doc, clip))
+            # A clip without the full curves (the Spine's alone) is not a full-body clip.
+            doc = self.doc(name)
+            clip = support.clip_case(doc, r11.ROUND11_INFO[name]["variant"])
+            with self.assertRaisesRegex(ValueError, "authored full-body .* curve mismatch"):
+                self.check(name, doc, Built(name, doc, clip))
+
+    def test_the_response_is_from_the_zero_vector_sample(self):
+        # A bone the zero vector already turns does not count as a muscle's response.
+        name = "body-probes-face"
+        with round11_docs():
+            doc = self.doc(name)
+            node = next(row["node"] for row in doc["capture"]["humanoid"]["bones"] if row["name"] == "Jaw")
+            samples = doc["capture"]["samples"]
+            turned = [replay.f32_bits(v) for v in support.euler((20, 0, 0), 4)]
+            for sample in samples:
+                sample["pose"]["transforms"][node]["rotation"] = list(turned)
+            with self.assertRaisesRegex(ValueError, "turned no bone in body-probes-face"):
+                self.check(name, doc)
+            # And a sweep without the zero vector has no baseline.
+            doc = self.doc(name)
+            samples = doc["capture"]["samples"]
+            for sample in samples:
+                if all(v in ("00000000", "80000000") for v in sample["muscles_f32"]):
+                    sample["muscles_f32"][0] = replay.f32_bits(.5)
+            with self.assertRaisesRegex(ValueError, "records no zero-vector sample"):
+                self.check(name, doc)
 
 
 class Round11RunTests(unittest.TestCase):
