@@ -624,7 +624,9 @@ The Rust test `recorded_humanoid_refusals` (`UNITYRS_ANIM_HUMANOID`,
 `UNITYRS_ANIM_BUNDLES`, with `run.json` beside the bundles folder) reads
 the same bundles, checks the run's clip set, the inventory, settings,
 Avatar twist and stretch, the dropped muscles and the neutral twin's
-values, binds each clip to its own completed replay (bundle digests,
+values, runs `humanoid::body_avatar` on each Avatar (its masses, slot paths
+and rest body must pass, or its topology refuse as outside the body model's
+scope), binds each clip to its own completed replay (bundle digests,
 prefab, clip, Animator and Avatar) and the `-offset` clips to a translated
 and rotated Animator rest. Its refusal must be one of the listed causes, a
 refusal probe's carrying the probe's code, or
@@ -998,3 +1000,422 @@ identities, derives clocks and ranges from serialized playback, and reports
 worst Unity-space errors by rig, node or renderer, property and source time.
 The ungated synthetic tests exercise both clip modes with testkit bundles.
 L11 status requires the owner-built Editor recordings.
+
+## Humanoid body fixtures and B1 tolerances
+
+B1 of the [humanoid body motion plan](plans/humanoid-body.md) adds its
+Editor fixtures, recorder rows and tolerances. All of it is evidence for
+the plan's hypotheses. None of it is a playback claim.
+
+### Body fixtures
+
+The main menu item builds 118 optional `body-…` cases, each kind in its own
+bundle build after the main and coverage builds. Their tables are in
+`UnityrsBodyFixtures.cs` and `UnityrsBodyClips.cs`, mirrored by
+[`anim_fixture_body.py`](../tools/parity/anim_fixture_body.py).
+
+| Cases | Plan | Contents |
+|---|---|---|
+| `body-probes-<rig>` (19) | F1, F6 | Known-vector `SetHumanPose` on each rig. The rigs are the two P2b rigs, each F6 topology, a noncoplanar rig and the hold-out rig. The vectors are one per probe muscle of each mapped bone, then three combined vectors over every probe muscle. Twist and stretch stay out. |
+| `body-probes-tall-2` (1) | F1 | 26 extra known vectors on the tall rig, in a bundle of their own. Each moves two of the trunk, shoulder, upper-arm and upper-leg bones, the poses the adequacy checkpoint predicts it needs (below). |
+| `body-probes-twist-{compact,tall}` (2) | F2 | Twist sweeps on the two P2b rigs, each in a bundle of its own: 84 known vectors, the shoulder-hip twist swept by the Spine and Chest twist muscles under an upright and three tilted body targets (below) |
+| `body-probes-range-{compact,tall,noncoplanar}` (3) | F8 | Range sweeps on three training rigs, each in a bundle of its own: 263 known vectors filling every mapped spine bone's muscle cube jointly under the twist sweeps' tilts (below) |
+| `body-probes-band-{compact,tall,noncoplanar}` (3) | F9 | Lateral band sweeps on the same three rigs, each in a bundle of its own: 296 known vectors crossing combined spine Left-Right values up to ±3/8 with tilts and small arm-leg yaw gaps, and the side bends (below), all required once the run has them |
+| `body-targets-{compact,tall}[-offset]` (4) | F3 | The three combined vectors with nonidentity body targets on identity and offset roots |
+| `body-clip-<variant>[-offset]` (78) | F4 | 39 body-motion clips on the compact rig, each on an identity and an offset root |
+| `body-chain-<f5>-{targets,clip}` (8) | F5 | A scaled Animator node, a larger skeleton, an intermediate scaled, moved and turned `Armature` node, and a non-unit hips scale. Each plays F3's targets and the all-original F4 clip with changing `MotionT` and `MotionQ` curves, whose residual body translation and tilt change through the chain and whose motion the original-root rule keeps. Completion requires its built motion slots; if Unity drops them, that clip case is not covered. |
+
+**Rig geometry.** One parameterized layout gives every rig. Unchanged, it
+repeats the P2b offsets in the same sibling order. An omitted bone's
+children keep their place: its offset is added to theirs. The noncoplanar
+rig moves the upper legs to `z = .03` and the shoulders to `z = -.025`.
+The no-Chest rig does the same, because Spine's three children are its
+own edges only there, and only off one plane can each be separated. The
+hold-out rig scales the arms by 1.3 and the legs by 0.8, and lowers the
+hips to keep the feet on the ground.
+
+**Schedules.** Each known-vector case keeps the P2b anchors at 0, .5 and 1
+(neutral, single-axis, noncommuting), so the Spine endpoint checks still
+hold. The probes fill each half at `.5 (k + 391/1024) / n`, rounded to a
+`2^-16` grid, so each time is exact in JSON and as an f32. A probe sets one
+muscle to 1, -.9 or .8 by its place in its group, near the muscle's limits,
+so each probe turns its edges as far as it can. The combined vectors cycle
+five values per probe muscle.
+
+**Extra probes.** An extra probe case (`ExtraProbes`, mirrored by
+`EXTRA_PROBES`) gives each listed bone the muscles of one of its rig's own
+probe vectors: single probe `k`, or combined vector `c`. Every other
+muscle is zero. Each bone's local rotation is then one its rig's probe case
+records, so the case can be predicted before it is recorded. Its schedule
+keeps the anchors and the grid. It builds its own bundle, so a rerun
+leaves the other cases' bundles unchanged. A run with body rows but none
+for the extra cases predates them and completes. Once the rig's own probe
+case records, its extra case is required: in the builder, Unity refusing
+it is an error rather than not covered, and completion refuses a run where
+it is not recorded.
+
+**Twist sweeps.** A twist sweep (`TwistProbes`, mirrored by `TWIST_RIGS`)
+sets the Spine and Chest twist muscles together to `degrees / 80`, so with
+HumanTrait's default limits (±40° each) the upper body turns about the
+spine by 0, ±2, ±4, ±6, ±8, ±10, ±15, ±20, ±30, ±45 and ±60°. Every other
+muscle is zero. Each twist runs under four body targets without offset:
+upright, and the pitch and roll pairs (12°, 7°), (−9°, −11°) and
+(12°, −11°) from F3's tilts, with no yaw. The anchors stay upright. That is
+84 vectors plus the anchors, so the read-back frame's turn about `up` can
+be measured against the twist and the tilt (2.2). The sweeps are a later
+generation than the extra probes, required the same way once their rig's
+probe case records, and only on training rigs. The adequacy checkpoint
+does not read them.
+
+**Range sweeps.** A range sweep (`RangeProbes`, mirrored by `RANGE_RIGS`)
+moves every mapped spine bone's three muscles (Front-Back, Left-Right and
+Twist of Spine, Chest and UpperChest) over the whole cube `[-1, 1]^3`
+together. The vectors are the first 256 points of the unscrambled 9-d Sobol
+sequence with Joe and Kuo's direction numbers, each coordinate `x` as
+`2 x - 1`, so every value is exact in f32. A rig without UpperChest takes
+the first six coordinates. Then come the seven joint corners the sequence
+lacks, every mapped spine bone at the same corner; `(-1, -1, -1)` is the
+sequence's first point. Every other muscle is zero. The body target takes
+the twist sweeps' four tilts, each over an aligned block of 64 consecutive
+Sobol points. Such a block is itself a net that fills the whole cube, where
+every fourth point would keep Spine Front-Back and Left-Right in one
+quadrant. The corners cycle through the tilts, and the anchors stay
+upright. The design comes from the cube alone, never from recorded or real
+animation. With the anchors that is 266 samples per case, on the compact,
+tall and noncoplanar rigs. The sweeps are fitted with the probes, and each
+is required once its rig records. The three rigs with UpperChest absent and
+both, the left or the right Toes absent came with them, in the same later
+generation. Those rigs are required whenever a run has that generation: an
+Avatar Unity refuses fails the run instead of going uncovered.
+
+**Lateral band sweeps.** A band sweep (`BandProbes`, mirrored by
+`BAND_RIGS`) validates the frame past its lateral domain. B2's checker
+refuses a spine Left-Right value beyond the largest one at which every
+training sample passes E2 and E3a. Past it, 2.2's frame leaves Unity's
+read-back by an unexplained second-order yaw of up to 0.08°. The vectors are
+the range sweeps' 256 Sobol points, rescaled per bone: Front-Back over
+`[-1, 1]`, Left-Right over `±3/8` and Twist over `±1/32`. Each is `2 x - 1`
+times a power of two, so exact in f32. The twists stay small, so most poses
+stay inside the frame's shoulder-hip twist scope, and they open an arm-leg
+yaw gap of a few degrees. The tilts are the range sweeps'. Then come 40
+side bends (`BandBends`), every mapped spine bone alike with Front-Back
+zero, under each tilt. Four are twisted: Left-Right and Twist at
+`±(15/128, 1/32)`, `±(9/64, -1/32)`, `±(11/64, 1/32)` and
+`±(13/64, -1/32)`. They open yaw gaps of either sign in the band's low
+bins, from just past the validated domain, which the Sobol points' largest
+Left-Right reaches only sparsely. The fifth is pure, Left-Right `±3/8`
+with Twist zero: the oppositely tilted arm and leg laterals at a near-zero
+yaw gap, the shape no lateral-weighting rule fits. With the anchors that
+is 299 samples per case. A run that has the band sweeps requires all
+three, whatever their rigs' own probe cases did: Unity refusing one is an
+Editor error. They are a later generation of their own. They are evaluated (E2, E3a, and their
+margins in the adequacy checkpoint) but never fitted, so they validate
+the fit without moving it. The design comes from the cube alone.
+
+**F3 targets.** The targets alternate two requests. One moves the rest
+body by `(.05, -.03, .04)` and tilts it by `Euler(12, -20, 7)`. The other
+moves it by `(-.04, .02, -.06)` and tilts it by `Euler(-9, 35, -11)`. The
+anchors carry them too.
+
+**F4 clips.** Every F4 clip has `RootT` with XZ and Y motion, and a `RootQ`
+whose yaw turns back and forth. Both are on linear segments, with keys at
+0, .25, .5, .75 and 1. The variants are:
+
+- the eight keep-original combinations with bake off;
+- the seven other bake combinations with keep-original off;
+- height from feet, `level = .125` and `orientationOffsetY = 30`, each alone;
+- each of those 18 again from a nonzero start, its whole path turned 50°
+  about +Y and moved by `(.6, 0, -.4)`;
+- separate `MotionT`/`MotionQ` curves on the all-original combination,
+  with a `MotionT` Y that starts above zero and changes, unlike a zero or
+  start-height rule;
+- height from feet with alternating knee bends, with and without foot
+  goal curves.
+
+The builder confirms each variant's settings after authoring and after the
+build. If Unity changes a setting, or drops the motion or goal curves while
+authoring, that variant is not covered and the rest still record.
+
+Before an F4 or F5 clip case records, the builder also checks the built
+clip's compiled tracks: `RootT` and `RootQ` (Animator attributes 7–13),
+and, where the variant relies on them, `MotionT` and `MotionQ` (0–6), the
+knee muscles (42 onward) and the foot goals (14–27). Each must be in
+`m_ClipBindingConstant`'s runtime track table, bound to the Animator root.
+Where Unity exposes `m_MuscleClip.m_IndexArray` on the bundle-loaded clip,
+the attribute must index that same slot. A missing or moved track fails the
+case with the tracks named, and it is not recorded. `complete` then checks
+the slots' values.
+
+### Recorder rows
+
+A body case's editor evidence holds:
+
+- `body_case`: the kind, rig, variant, root and clip settings;
+- `body_samples`, one row per sample:
+  - F2's `GetHumanPose` read-back, converted to `A` as the rest body is (an
+    inverse Animator transform of `bodyPosition · humanScale`, divided by
+    `humanScale`);
+  - the raw world read-back and its muscle array (`readback_muscles`, raw
+    bits);
+  - `nodes`: Unity's own evaluation of every node, its world position,
+    rotation and `lossyScale`, and about the hips its
+    `hips.InverseTransformPoint` position and `hips.rotation⁻¹` rotation;
+  - during clip playback, the getter values `Animator.rootPosition` and
+    `rootRotation` (`root_*`). Playback runs with `applyRootMotion` off, so
+    they may be the Animator node's own transform rather than the clip's
+    root projection. `Animator.bodyPosition` and `bodyRotation` are not
+    read: outside `OnAnimatorIK` Unity warns on every call, and
+    `GetHumanPose` already gives the body. Recordings that hold them keep
+    them, unread;
+  - for a clip, a second playback with `applyRootMotion` on (`motion_*`):
+    a fresh instance each sample, the graph set to 0, evaluated once at 0
+    and once by the sample time. It records the Animator node's resulting
+    local position and rotation, and `deltaPosition` and `deltaRotation`
+    as Unity reports them;
+- `body_targets`: each known vector's requested offset and tilt, and the
+  body pose `SetHumanPose` received;
+- `human_bones`: HumanTrait's 55 bones with `GetParentBone`, `RequiredBone`
+  and `GetBoneDefaultHierarchyMass`, for E0b.
+
+Every body value is raw f32 bits, nonfinite included, so a case records
+whatever Unity returns. After each case the recorder logs one warning per
+field that held nonfinite values, with the count and the first value
+(`Nonfinite <field> in <case>: <count> of <n> values (NaN)`).
+`complete` refuses a nonfinite value, naming the field, wherever the
+analysis reads it: the read-back pose, every node row, the body targets,
+the root-motion transform and the body slots' masses. The read-back
+muscles, the getter rows, the root-motion deltas and the other bones'
+masses are kept as recorded.
+
+The recorder samples from its own copy of the spec. It keeps the
+schedule's exact times there, because 2022.3's `JsonUtility` read some
+16-digit times on the 2^-16 grid one ulp off. `complete` restores a
+recording made before that fix only where a sample's `local` and
+`source` are the schedule's time one double ulp away, at exactly the
+scheduled f32 sample time and effective source.
+
+Analysis uses them as follows:
+
+- The read-back is E2's and the adequacy checkpoint's target for a clip.
+- `nodes` checks B2's forward kinematics and hips-local positions against
+  Unity's own, sample by sample, before any fit.
+- The getter rows are evidence of what those getters return with root motion
+  off. They are not taken as the clip's root projection.
+- The root-motion rows are the projection: B2's root-motion model (keep
+  original, bake and the offsets) must reproduce the Animator node's
+  transform from its rest transform.
+
+While recording, every body sample also checks that the built Avatar maps
+exactly the bones the case's schedule assumes (`GetBoneTransform`). It also
+checks the F5 chain at that sample: the Animator node's scale, the armature
+and its scale, the sampled hips scale, and every other mapped bone's
+authored offset. Any difference fails the case.
+
+Known-vector body cases keep the pending human_pose schema, as the P2b known
+vectors do.
+
+### Completion
+
+`complete` treats the body cases as one optional group:
+
+- A run with no `body-…` row completes as before.
+- A run with any body row must list every body case.
+- A recorded case needs `replays/body/<case>.pending.json` and its bundle.
+- A failed case fails the run.
+
+For each recording `complete` checks:
+
+- the case row, against the builder's tables;
+- the bone and mass table;
+- that the captured mapped bones are the rig's topology;
+- read-back rows for every sample, with unit rotations, the read-back
+  muscles, and root and root-motion rows exactly in clip playback, each
+  finite where the analysis reads it;
+- a node row per node per sample, with unit rotations and the hips at the
+  origin of their own frame;
+- the schedule's times and muscles, exactly;
+- each body target, as requested (zero for probes) and as applied, within
+  `1e-5`;
+- the F5 chain in the rest pose;
+- for a clip, the authored body, knee, motion and goal curves, and the
+  captured and built root settings;
+- for a knee, motion or goal variant (and F5's clip), that the built clip
+  keeps each of those slots (Animator attributes 0–6, 14–27 and 42 onward)
+  where playback reads them: the DOF's `m_IndexArray` entry is present (not
+  -1) and names a slot of `m_MuscleClip`'s data bound to that attribute,
+  with the authored value at every key, sampled as playback samples it (a
+  dense slot linearly between its frames). A surviving `m_EditorCurves` or
+  `m_FloatCurves` copy does not count. Otherwise the variant does not
+  count as covered.
+
+It copies the built `m_MuscleClip` root fields and the compiled Animator
+attributes into `evidence.body_settings` for B2. Any other case that
+claims body rows is refused.
+
+### B1 tolerances
+
+[`anim_body_tolerance.py`](../tools/parity/anim_body_tolerance.py) derives
+section 2.5's bounds, and its docstring holds the derivation. The
+operation model is the one the per-recording tolerances above use, applied
+operation by operation at its actual operands:
+
+- A value computed through `n` dependent roundings errs by at most
+  `γ(n) = n·u / (1 − n·u)` of the absolute values of its operands, with
+  `u = 2^-24` for Unity's f32 and `2^-53` for the model's f64.
+- Each operation adds `2^-126` for flush-to-zero.
+- Recorded f32 values decode exactly. Each rounding is counted once.
+
+All bounds are on a vector's Euclidean norm. The tests check each one by
+hand, and the forward kinematics against chains emulated in f32.
+
+| Operation | Depth | Rounds at |
+|---|---|---|
+| `rotate` | 6 | Unity's `v + w t + u × t`, `t = 2(u × v)`: the absolute values of each cross product's operands |
+| `compose` | 4 | A quaternion product: its sixteen products |
+| `matrix` | 3 | One entry of a 3×3 product or matrix-vector product: its products |
+| `quaternion`, `unquaternion` | 4, 8 | A quaternion's rotation matrix; Unity's matrix-to-quaternion conversion and its f32 store |
+| `midpoint`, `lateral`, `cross`, `normalize` | 2, 2, 2, 6 | 2.2's up and lateral vectors at the four points, each cross product at its operands, and each normalization |
+| scale product, add, subtraction, division | 1 | Their results |
+
+**Rotations.** An error `|dq|` in a quaternion moves Unity's rotation of `v`
+by at most `κ(q) |dq| |v|`, with `κ = 2 √(|u|² + (|w| + 2|u|)²)`.
+
+**Forward kinematics.** One link sets `p' = p + s R t`, `q' = q q_link`
+and `s' = s s_link`. The offset's rotation rounds at `t`, the scale product
+and the add at their results, the rotation product at its products, and
+the scale product once. The parent's errors carry over, its rotation's
+through `κ`. A chain is walked from an exact identity at its base:
+
+- the hips, for 2.3's hips-local pose, so where the hips sit in `A` does
+  not enter;
+- the Animator node, for the hips parent `(t_p, R_p, σ_p)`;
+- the world, for Unity's read-back.
+
+**Centre of mass.** `c = Σ_i m_i (p_i + Σ_j a_ij (p_j − p_i))`. Under
+`|a_ij| ≤ 1` (B2 refits and checks it), input errors reach `c` as
+`Σ_i m_i (|dp_i| + Σ_j |d(p_j − p_i)|)`. An edge difference's error walks
+the links from `i` to `j` again from `i`'s state with no position error, so
+a common translation cancels, plus the subtraction at its result. The sum's
+own rounding is `γ(n_max + 2N + 2)` of `M = Σ_i m_i (|p_i| + Σ_j |p_j − p_i|)`.
+The sums run in HumanBodyBones order.
+
+**The frame.** Each normalization multiplies its vector's error by
+`2 / |v|`, for the up vector and for `lateral × û`, so the bound grows
+without limit as that cross product vanishes. `H_A = M(B_A) F(T) F_hᵀ`
+rounds at its operands.
+
+**`ε`.** Unity's world centre of mass and the recorder's conversion:
+
+- GetHumanPose's stored `w = c / h` and the recorder's `h w` round at the
+  world value;
+- the subtraction of the Animator's world position rounds at the
+  difference `d`, and the inverse rotation at `d`;
+- the division by the Animator's scale, and the stored division by `h`, at
+  the result.
+
+The Animator's own tracked errors carry through, and `ε = E_c / s_root +`
+the conversion's bound.
+
+**`E_unity`.** Unity's own error in the recorded hips-local translation:
+
+- **The target.** A known vector's is the exact f32 body pose the recorder
+  passed to SetHumanPose, so only `h T_A` rounds and `B_A` is exact. A
+  clip's stands in by its read-back. The position carries `ε`. The
+  rotation carries Unity's world frame and T-pose frame, its
+  matrix-to-quaternion conversion and store, and the recorder's product
+  with the inverse Animator rotation.
+- **The hips-local centre of mass** `c_h` (`E_ch`, magnitude `M_h`), and
+  both frames: `|dH| ≤ |dF_h| + |dF_T| + |dB_A|` plus `H_A`'s rounding.
+- **The solve** `P_A = h T_A − k H_A c_h`: `k (E_ch + |dH| M_h)`, the
+  matrix-vector product at `|H_A| M_h`, the product by `k` and the
+  subtraction at its result.
+- **The local conversion** `σ_p⁻¹ R_p⁻¹ (P_A − t_p)`: `t_p`'s error, the
+  subtraction at its result `d` (`σ_p R_p` times the recorded hips
+  translation), `R_p`'s error acting on `d`, the inverse rotation at `d`
+  and the division at its result. `σ_p`'s error cancels in
+  `k / σ_p = s_h` and acts only on `h T_A − t_p`.
+
+**`E_eval`.** The model's own error at a sample, with the fitted
+coefficients. B2's f64 reference runs the same path from the recorded f32
+inputs taken exactly, at `u = 2^-53`. Storing the hips translation as f32
+adds `2^-24` of a bound on the model's pre-cast translation,
+`(h|T_A| + k M_h + |t_p|) / σ_p` plus the path's own error. These
+roundings are the model's, not Unity's, so `E_unity` does not count them.
+
+**`T`.** E3's comparison tolerance is `T_s = E_unity,s + u_s + E_eval,s`
+(section 2.5).
+
+These are B1's bounds. B2 freezes its own and reruns the check if they
+differ.
+
+### Adequacy checkpoint
+
+After the owner's first run of these fixtures, run the checkpoint on each
+version's folder:
+
+```sh
+python3 -I tools/parity/anim_body_adequacy.py <folder> --json report.json
+```
+
+`--design-only` predicts before a run. It adds every extra probe case the
+folder lacks, built from its rig's recorded probe case by
+[`anim_body_design.py`](../tools/parity/anim_body_design.py), then runs the
+same checkpoint, and the report lists the predicted cases.
+
+- Each planned bone takes the local rotation Unity recorded for the same
+  muscles, bit for bit. The pose's hips-local kinematics, its columns (up
+  to a turn of the block, which leaves `u_s` unchanged) and its `J_s` are
+  then exact. Its body target is the recorder's known vector, the same in
+  every probe sample.
+- Unity's solved hips transform and world read-back are not known before a
+  run, and they set `ε` and `E_unity,s`. They are bounded by an envelope:
+  every recorded sample of the rig's identity-root probe and target cases
+  lends the planned pose its hips transform and read-back.
+- Each planned sample takes the largest `ε` and `E_eval,s` and the
+  smallest `E_unity,s` over the envelope. A larger `ε` weights its block
+  less, so it can only raise `u_s` elsewhere. A smaller `E_unity,s` lowers
+  the sample's own bound. The predicted margin is therefore conservative.
+
+A recorded run of the planned case stays the checkpoint of record.
+
+[`anim_body_adequacy.py`](../tools/parity/anim_body_adequacy.py) builds a
+row block from every body read-back sample of the training rigs. The
+hold-out rig takes no part: its recordings are never read, so they cannot
+change the verdict. Only the post-freeze evaluation, E3b, reads them. Each sample's three equations are weighted by `1/ε`.
+Each coefficient `a_ij`, keyed by edge, has the column `m_i (p_ij − p_i)`
+in `A`. Edges come from the recorded hierarchy: a mapped body-slot bone and
+its nearest mapped ancestor by node address. Masses are the E0b-folded
+defaults from `human_bones`. The checkpoint reports:
+
+1. **Rank and condition** of `A_w`. A Householder QR is followed by a
+   one-sided Jacobi SVD of its triangle. The numerical rank uses
+   `σ_max · max(R, N) · 2^-52`, and the condition limit is `1e6`. Each null
+   direction is listed as a free combination.
+2. **`u_s ≤ E_unity,s`**, per component of the hips translation, on every
+   training body sample and every P2b humanoid recording:
+   the coefficients' worst-case uncertainty within the recording's own
+   noise floor. The report lists each failure, every sample's `E_unity,s`,
+   `u_s`, `E_eval,s` and `T_s`, and the distribution of the margins
+   `E_unity,s / u_s`.
+   - `u_s` sums, over the blocks, the 2-norm of each block of `J_s A_w⁺`.
+   - `J_s` is the full sensitivity `−σ_p⁻¹ R_p⁻¹ (H_A H_rec⁻¹) m_i
+     (p_ij − p_i)` with the solved hips orientation of 2.3:
+     `H_A H_rec⁻¹ = B_A F(T) F(pose)⁻¹`. `B_A` is the rotation the
+     recorder passed to SetHumanPose for a known vector, the read-back
+     body rotation for a clip, and the model's own otherwise.
+   - `A_w⁺ = V Σ⁻² Vᵀ A_wᵀ`, over the kept singular values.
+   - There is no per-sample `E_unity` against `ε` veto (section 2.5).
+3. **The coefficient inventory.**
+   - Each sample's recorded edges must be the edges HumanTrait's parents
+     give its mapped bones.
+   - Every edge of the F1 and F6 training rigs must have fitting rows.
+   - A sample whose edges no fitting row trains is listed apart.
+4. **Topology coverage.** A training rig counts only through its own
+   `body-probes-` case, with read-back rows and that rig's mapped bones.
+5. **The extra probe plan.** Every scheduled sample of every extra probe
+   case must be recorded with read-back. A missing case or sample is named.
+
+Rank and `u_s` do not depend on column scale, so the masses matter only to
+the condition number. The right-hand side is never needed. The script exits
+0 when every item passes, 1 when any is short (B1 then extends the fixtures
+before B2 starts) and 2 for unreadable input.

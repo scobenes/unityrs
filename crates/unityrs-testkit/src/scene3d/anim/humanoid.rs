@@ -25,6 +25,21 @@ pub const BONES: [(usize, &str); 15] = [
     (18, "RightHand"),
 ];
 
+/// `HumanBodyBones` index and name of each optional body bone a rig may
+/// add after `BONES`, each a child of `Hips` as well.
+pub const OPTIONAL_BONES: [(usize, &str); 10] = [
+    (8, "Chest"),
+    (54, "UpperChest"),
+    (9, "Neck"),
+    (11, "LeftShoulder"),
+    (12, "RightShoulder"),
+    (19, "LeftToes"),
+    (20, "RightToes"),
+    (21, "LeftEye"),
+    (22, "RightEye"),
+    (23, "Jaw"),
+];
+
 /// Path IDs: `GameObject` 1 and on, `Transform` 101 and on, then these.
 pub const ANIMATOR: i64 = 200;
 pub const AVATAR: i64 = 201;
@@ -56,6 +71,12 @@ pub struct Rig {
     pub body_offset: [f32; 3],
     /// Move the Animator node off the identity.
     pub root_offset: bool,
+    /// `HumanBodyBones` indices from `OPTIONAL_BONES` the rig adds, in order.
+    pub optional: Vec<usize>,
+    /// `m_HumanBoneMass`; `None` stores an equal share per mapped slot.
+    pub bone_mass: Option<Vec<f32>>,
+    /// `m_Scale`.
+    pub scale: f32,
 }
 
 impl Default for Rig {
@@ -73,6 +94,9 @@ impl Default for Rig {
             avatar: true,
             body_offset: [0.; 3],
             root_offset: false,
+            optional: Vec::new(),
+            bone_mass: None,
+            scale: 1.,
         }
     }
 }
@@ -94,10 +118,30 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-fn path(bone: usize) -> String {
+/// The rig's bones: `BONES`, then the optional bones it adds.
+fn bones(rig: &Rig) -> Vec<(usize, &'static str)> {
+    let mut out = BONES.to_vec();
+    out.extend(
+        rig.optional
+            .iter()
+            .filter_map(|bone| OPTIONAL_BONES.iter().find(|(b, _)| b == bone)),
+    );
+    out
+}
+
+fn path(bones: &[(usize, &str)], bone: usize) -> String {
     match bone {
         0 => "Hips".to_owned(),
-        _ => format!("Hips/{}", BONES[bone].1),
+        _ => format!("Hips/{}", bones[bone].1),
+    }
+}
+
+/// The 25-slot `m_HumanBoneIndex` position of a `HumanBodyBones` index.
+const fn slot(bone: usize) -> usize {
+    match bone {
+        0..=8 => bone,
+        54 => 9,
+        _ => bone + 1,
     }
 }
 
@@ -152,9 +196,11 @@ fn axes() -> V {
 }
 
 /// The human skeleton: node 0 is the Animator node, node `i + 1` is
-/// `BONES[i]`. Every bone but those `no_axes` names has an axes record.
+/// the rig's bone `i`. Every bone but the one `no_axes` names has an axes
+/// record.
 fn skeleton(rig: &Rig, axes_rows: bool) -> V {
-    let nodes = 1 + BONES.len();
+    let bones = bones(rig);
+    let nodes = 1 + bones.len();
     let node = |parent: i32, axes: i32| {
         st(
             "Node",
@@ -163,7 +209,7 @@ fn skeleton(rig: &Rig, axes_rows: bool) -> V {
     };
     let mut rows = vec![node(-1, -1)];
     let mut records = Vec::new();
-    for bone in 0..BONES.len() {
+    for bone in 0..bones.len() {
         let axes_id = if axes_rows && rig.no_axes != Some(bone) {
             records.push(axes());
             i32::try_from(records.len() - 1).unwrap_or_default()
@@ -176,7 +222,7 @@ fn skeleton(rig: &Rig, axes_rows: bool) -> V {
         if i == 0 {
             0
         } else {
-            crc32(path(i - 1).as_bytes())
+            crc32(path(&bones, i - 1).as_bytes())
         }
     });
     data(st(
@@ -198,20 +244,39 @@ fn pose(count: usize) -> V {
 
 /// `m_HumanBoneIndex` in Mecanim body order: `HumanBodyBones` 0-8,
 /// `UpperChest`, then 9-23.
-fn human_bones(rig: &Rig) -> V {
+fn human_bones(rig: &Rig) -> [i32; 25] {
     let mut index = [-1_i32; 25];
-    for (node, &(bone, _)) in BONES.iter().enumerate() {
+    for (node, &(bone, _)) in bones(rig).iter().enumerate() {
         if rig.unmapped_bone != Some(bone) {
-            let slot = if bone <= 8 { bone } else { bone + 1 };
-            index[slot] = i32::try_from(node + 1).unwrap_or_default();
+            index[slot(bone)] = i32::try_from(node + 1).unwrap_or_default();
         }
     }
-    ints(index)
+    index
+}
+
+/// `m_HumanBoneMass`: the rig's, or an equal share per mapped slot but the
+/// zero-mass leaves (slots 22-24: the Eyes and the Jaw), as Unity gives
+/// them none.
+fn bone_mass(rig: &Rig, index: &[i32; 25]) -> V {
+    let masses = rig.bone_mass.clone().unwrap_or_else(|| {
+        let heavy = |(slot, &node): (usize, &i32)| node >= 0 && slot < 22;
+        let mapped = index.iter().enumerate().filter(|&e| heavy(e)).count();
+        #[allow(clippy::cast_precision_loss, reason = "at most 25 slots")]
+        let share = 1. / mapped.max(1) as f32;
+        index
+            .iter()
+            .enumerate()
+            .map(|e| if heavy(e) { share } else { 0. })
+            .collect()
+    });
+    vector(V::Float(0.), masses.into_iter().map(V::Float).collect())
 }
 
 #[must_use]
 pub fn avatar(rig: &Rig) -> Object {
-    let nodes = 1 + BONES.len();
+    let bones = bones(rig);
+    let nodes = 1 + bones.len();
+    let index = human_bones(rig);
     let hand = || data(st("Hand", vec![("m_HandBoneIndex", ints([-1; 15]))]));
     let [arm, fore_arm, upper_leg, leg] = rig.twist;
     let [arm_stretch, leg_stretch, feet] = rig.stretch;
@@ -223,8 +288,9 @@ pub fn avatar(rig: &Rig) -> Object {
             ("m_SkeletonPose", pose(nodes)),
             ("m_LeftHand", hand()),
             ("m_RightHand", hand()),
-            ("m_HumanBoneIndex", human_bones(rig)),
-            ("m_Scale", V::Float(1.)),
+            ("m_HumanBoneIndex", ints(index)),
+            ("m_HumanBoneMass", bone_mass(rig, &index)),
+            ("m_Scale", V::Float(rig.scale)),
             ("m_ArmTwist", V::Float(arm)),
             ("m_ForeArmTwist", V::Float(fore_arm)),
             ("m_UpperLegTwist", V::Float(upper_leg)),
@@ -239,9 +305,9 @@ pub fn avatar(rig: &Rig) -> Object {
     ));
     let identity = || ints((0..nodes).map(|i| i32::try_from(i).unwrap_or_default()));
     let mut tos = vec![pair(V::UInt(0), V::Str(Vec::new()))];
-    for bone in 0..BONES.len() {
+    for bone in 0..bones.len() {
         if rig.no_tos != Some(bone) {
-            let path = path(bone);
+            let path = path(&bones, bone);
             tos.push(pair(
                 V::UInt(crc32(path.as_bytes())),
                 V::Str(path.into_bytes()),
@@ -301,10 +367,11 @@ pub fn avatar(rig: &Rig) -> Object {
     )
 }
 
-/// The prefab: `GameObject` 1 holds the Animator; `BONES[i]` is `GameObject`
-/// `i + 2`. Each `Transform` ID is its `GameObject` ID + 100.
+/// The prefab: `GameObject` 1 holds the Animator; the rig's bone `i` is
+/// `GameObject` `i + 2`. Each `Transform` ID is its `GameObject` ID + 100.
 #[must_use]
 pub fn prefab(rig: &Rig) -> Vec<Object> {
+    let bones = bones(rig);
     let mut objects = vec![
         Object::new(1, 1, game_object(b"rig", &[(0, 101), (0, ANIMATOR)])),
         Object::new(101, 4, {
@@ -319,10 +386,10 @@ pub fn prefab(rig: &Rig) -> Vec<Object> {
             root
         }),
     ];
-    let children: Vec<_> = (1..BONES.len())
+    let children: Vec<_> = (1..bones.len())
         .map(|i| (0, 102 + i64::try_from(i).unwrap_or_default()))
         .collect();
-    for (i, &(_, name)) in BONES.iter().enumerate() {
+    for (i, &(_, name)) in bones.iter().enumerate() {
         let id = 2 + i64::try_from(i).unwrap_or_default();
         let name = if rig.renamed == Some(i) {
             b"Renamed".as_slice()

@@ -2,8 +2,10 @@
 //! `tools/parity/anim_humanoid_qualify.py` on a completed Editor run: Rust
 //! reads the same digest-pinned bundles, checks the recorded slot
 //! inventory, storage, settings, Avatar twist and stretch and dropped
-//! muscles, and its typed refusal for each clip must be one of the causes
-//! the evidence lists (cross-check obligation 3). The clip set is the
+//! muscles and the body model's Avatar inputs (`body_avatar`: in scope or
+//! refused by it, never invalid), and its typed refusal for each clip must
+//! be one of the causes the evidence lists (cross-check obligation 3). The
+//! clip set is the
 //! run's: every required humanoid clip and every optional one `run.json`
 //! marks recorded, each bound to its own completed replay (the same
 //! digest-pinned bundles, prefab, clip, Animator and Avatar). A clip the
@@ -13,10 +15,10 @@
 use crate::{J, Result, address, index, list, load, object, require, same, string};
 use std::{path::Path, sync::Arc};
 use unityrs_anim::{
-    RigPaths, StorageKind, discover,
+    AnimError, RigPaths, StorageKind, discover,
     humanoid::{
-        DofKind, NEUTRAL_STRETCH, NEUTRAL_TWIST, SettingValue, dropped_muscles, humanoid_refusal,
-        rig_avatar,
+        DofKind, NEUTRAL_STRETCH, NEUTRAL_TWIST, SettingValue, body_avatar, dropped_muscles,
+        humanoid_refusal, rig_avatar,
     },
     read_clip,
 };
@@ -217,6 +219,12 @@ pub(crate) fn check_clip(entry: &J, dir: &Path) -> Result<String> {
         same(&read.object, &object(&files, &spec["avatar"])?),
         "Avatar identity",
     )?;
+    // The body model's inputs on the Editor-built Avatar: its masses, slot
+    // paths and rest body pass, or its topology is outside the scope.
+    match body_avatar(read, meter) {
+        Ok(_) | Err(AnimError::UnsupportedHumanoidBodyModel(_)) => {}
+        Err(error) => return Err(format!("body-model inputs: {error}").into()),
+    }
     let stretch = [
         ("m_ArmStretch", read.human.arm_stretch),
         ("m_LegStretch", read.human.leg_stretch),

@@ -1,12 +1,13 @@
-//! Read every Avatar and humanoid clip slot table of a mutated rig, then
-//! the ordered humanoid refusal of each discovered rig's clips.
+//! Read every Avatar and humanoid clip slot table of a mutated rig, with
+//! each Avatar's body-model inputs (masses, slot table, scope and rest
+//! body), then the ordered humanoid refusal of each discovered rig's clips.
 use crate::scene::{Digest, Outcome, anim_refusal};
 use std::{mem::discriminant, sync::Arc};
 use unityrs_anim::{
     AnimError, Clip, RigPaths, discover,
     humanoid::{
-        Avatar, DofKind, HumanoidClip, RigAvatar, SettingValue, Xform, dropped_muscles,
-        humanoid_refusal, read_avatar, rig_avatar,
+        Avatar, BODY_SLOTS, BoneMass, DofKind, HumanoidClip, RigAvatar, SettingValue, Xform,
+        body_avatar, dropped_muscles, humanoid_refusal, read_avatar, rig_avatar,
     },
     read_clip,
 };
@@ -143,6 +144,36 @@ fn avatar_digest(
         let path = avatar.tos_path(id, meter)?;
         digest.tag((node.parent, node.axes, id, path.map(|p| p.as_bytes().len())));
     }
+    body_digest(avatar, meter, digest)
+}
+
+/// The body-model inputs, or their typed refusal.
+fn body_digest(avatar: &Avatar, meter: &Arc<Meter>, digest: &mut Digest) -> Result<(), AnimError> {
+    match avatar.human.bone_mass {
+        Some(BoneMass::Slots(masses)) => {
+            meter.count_decode(masses.len() as u64)?;
+            for mass in masses {
+                digest.tag(mass.to_bits());
+            }
+        }
+        Some(BoneMass::Length(n)) => digest.tag(n),
+        None => {}
+    }
+    let body = match body_avatar(avatar, meter) {
+        Ok(body) => body,
+        Err(e) => return soft(e, digest),
+    };
+    for slot in 0..BODY_SLOTS.len() {
+        meter.count_decode(1)?;
+        let path = body.slot_path(slot, meter)?;
+        digest.tag((
+            body.nodes[slot],
+            body.masses[slot].to_bits(),
+            body.rest(slot).map(|x| x.t.map(f32::to_bits)),
+            path.map(|p| p.as_bytes().len()),
+        ));
+    }
+    digest.tag((body.scale().to_bits(), body.root().t.map(f32::to_bits)));
     Ok(())
 }
 

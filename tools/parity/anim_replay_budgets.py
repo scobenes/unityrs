@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import anim_replay  # noqa: E402
 import child  # noqa: E402
-from anim_replay import TRS, read_json, require  # noqa: E402
+from anim_replay import TRS, read_json, require, require_unsealed  # noqa: E402
 from anim_replay_complete import wire_value  # noqa: E402
 
 STREAM_SEED, STREAM_END = 0xff7fffff, 0x7f800000
@@ -623,6 +623,7 @@ def main():
     parser.add_argument("--verify", action="store_true")
     args = parser.parse_args()
     try:
+        require_unsealed(args.replay)
         manifest = read_json(args.replay.read_text(encoding="utf-8"))
         folder, unityrs = (args.show_dir, None) if args.show_dir else (args.bundle_dir, args.unityrs)
         if args.verify:

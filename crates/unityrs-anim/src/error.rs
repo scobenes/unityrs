@@ -87,6 +87,8 @@ pub enum AnimError {
     UnsupportedTranslationDof,
     UnsupportedAdditivePose,
     UnsupportedHumanoidIk,
+    InvalidBodyAvatar(BodyAvatarFault),
+    UnsupportedHumanoidBodyModel(BodyModel),
 }
 
 /// Why a humanoid clip needs the unsupported body model.
@@ -108,8 +110,84 @@ impl BodyMotion {
     }
 }
 
+/// Why an Avatar's tables cannot feed the body model
+/// (`docs/plans/humanoid-body.md` E0a to E0c). A slot is an index into the
+/// 25-slot `m_HumanBoneIndex` order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyAvatarFault {
+    /// The Avatar serializes no `m_HumanBoneMass`.
+    MassMissing,
+    /// `m_HumanBoneMass` has this many entries, not one per body slot.
+    MassLength(usize),
+    MassNonFinite(usize),
+    MassNegative(usize),
+    /// An unmapped slot holds a nonzero mass.
+    MassAbsentSlot(usize),
+    /// The masses do not sum to one within the derived bound.
+    MassSum,
+    /// An `m_TOS` ID appears again with another path: the reference takes
+    /// the last, a first-match lookup the first, so neither is trusted.
+    TosConflict(u32),
+    /// A mapped slot's skeleton node has no `m_TOS` path.
+    SlotPath(usize),
+    /// A mapped slot's node resolves to an earlier slot's `m_TOS` path.
+    SlotAlias(usize),
+    /// `m_Scale` is not finite and positive.
+    Scale,
+    /// `m_RootX.t.y` is not `m_Scale` within two f32 roundings.
+    RootHeight,
+}
+
+impl fmt::Display for BodyAvatarFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MassMissing => f.write_str("mass_missing"),
+            Self::MassLength(n) => write!(f, "mass_length({n})"),
+            Self::MassNonFinite(slot) => write!(f, "mass_non_finite({slot})"),
+            Self::MassNegative(slot) => write!(f, "mass_negative({slot})"),
+            Self::MassAbsentSlot(slot) => write!(f, "mass_absent_slot({slot})"),
+            Self::MassSum => f.write_str("mass_sum"),
+            Self::TosConflict(id) => write!(f, "tos_conflict({id})"),
+            Self::SlotPath(slot) => write!(f, "slot_path({slot})"),
+            Self::SlotAlias(slot) => write!(f, "slot_alias({slot})"),
+            Self::Scale => f.write_str("scale"),
+            Self::RootHeight => f.write_str("root_height"),
+        }
+    }
+}
+
+/// Why the frozen body model's scope leaves an Avatar out (plan 2.1 and
+/// section 8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyModel {
+    /// A zero-mass leaf (an Eye or the Jaw) has a nonzero mass.
+    LeafMass,
+    ChestAbsent,
+    NeckAbsent,
+    /// Exactly one of the two Shoulders is mapped.
+    OneShoulder,
+    /// The absent body slots but the leaves are no recorded training rig's
+    /// pattern.
+    UnrecordedTopology,
+}
+
+impl BodyModel {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::LeafMass => "leaf_mass",
+            Self::ChestAbsent => "chest_absent",
+            Self::NeckAbsent => "neck_absent",
+            Self::OneShoulder => "one_shoulder",
+            Self::UnrecordedTopology => "unrecorded_topology",
+        }
+    }
+}
+
 const _: () = crate::send_sync::<AnimError>();
 const _: () = crate::send_sync::<BodyMotion>();
+const _: () = crate::send_sync::<BodyAvatarFault>();
+const _: () = crate::send_sync::<BodyModel>();
 
 impl AnimError {
     pub(crate) fn resource_refusal(&self) -> bool {
@@ -250,6 +328,10 @@ impl fmt::Display for AnimError {
             Self::UnsupportedTranslationDof => f.write_str("unsupported_translation_dof"),
             Self::UnsupportedAdditivePose => f.write_str("unsupported_additive_pose"),
             Self::UnsupportedHumanoidIk => f.write_str("unsupported_humanoid_ik"),
+            Self::InvalidBodyAvatar(fault) => write!(f, "invalid_body_avatar({fault})"),
+            Self::UnsupportedHumanoidBodyModel(cause) => {
+                write!(f, "unsupported_humanoid_body_model({})", cause.name())
+            }
         }
     }
 }

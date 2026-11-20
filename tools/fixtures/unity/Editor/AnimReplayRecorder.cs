@@ -147,7 +147,8 @@ public static partial class AnimReplayRecorder
     }
 
     static Capture RecordCapture(Spec spec, string bundleDir, bool pending,
-        Action<AnimationClip, AssetBundle> inspectClip = null, Action<Transform, float> inspectPose = null)
+        Action<AnimationClip, AssetBundle> inspectClip = null, Action<Transform, float> inspectPose = null,
+        BodyHooks body = null)
     {
         Need(spec != null && spec.bundles != null && spec.bundles.Length > 0, "Expected a replay specification with bundles.");
         Need(pending || (spec.prefab != null && spec.clip != null
@@ -244,15 +245,7 @@ public static partial class AnimReplayRecorder
                             animation.Stop();
                             animation.enabled = animation == binding;
                         }
-                        foreach (var animator in rig.GetComponentsInChildren<Animator>(true))
-                        {
-                            animator.enabled = animator == binding;
-                            animator.applyRootMotion = false;
-                            animator.fireEvents = false;
-                            animator.runtimeAnimatorController = null;
-                            animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
-                            animator.speed = 1;
-                        }
+                        DisableAnimators(rig, binding);
 
                         var target = binding as Animator;
                         if (target != null)
@@ -278,20 +271,31 @@ public static partial class AnimReplayRecorder
                         }
                         else if (knownPose)
                         {
-                            SampleMuscles(target, point.muscles);
-                            sample.muscles_f32 = point.muscles.Select(Bits).ToArray();
+                            if (body != null) body.Apply(i, target, point.muscles);
+                            else SampleMuscles(target, point.muscles);
+                            sample.muscles_f32 = point.muscles.Select((value, k) => Bits(value, "known muscle " + k)).ToArray();
                             sample.pose = ReadPose(nodes, renderers, spec.renderers, pending);
+                            body?.Read(target, nodes, playback: false);
                         }
                         else
                         {
                             sample.pose = SampleAnimator(target, clip, time, () => {
                                 if (inspectPose != null) inspectPose(root, time);
+                                // Read back while the graph still owns the pose.
+                                body?.Read(target, nodes, playback: true);
                                 return ReadPose(nodes, renderers, spec.renderers, pending);
                             });
                         }
                         capture.samples[i] = sample;
                     }
                     finally { Object.DestroyImmediate(rig); }
+                    if (body != null && body.RootMotion)
+                    {
+                        // The second, root-motion playback, from a fresh instance.
+                        var moving = Object.Instantiate(prefab, anchor.transform, false);
+                        try { body.PlayRootMotion(PrepareAnimators(moving, spec), clip, (float)spec.schedule[i].local); }
+                        finally { Object.DestroyImmediate(moving); }
+                    }
                 }
             }
             finally { EditorSceneManager.ClosePreviewScene(scene); }
@@ -302,6 +306,33 @@ public static partial class AnimReplayRecorder
         {
             for (int i = bundles.Count - 1; i >= 0; --i) bundles[i].Unload(true);
         }
+    }
+
+    static void DisableAnimators(GameObject rig, Behaviour binding)
+    {
+        foreach (var animator in rig.GetComponentsInChildren<Animator>(true))
+        {
+            animator.enabled = animator == binding;
+            animator.applyRootMotion = false;
+            animator.fireEvents = false;
+            animator.runtimeAnimatorController = null;
+            animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            animator.speed = 1;
+        }
+    }
+
+    // A fresh instance's bound Animator, set up as the main playback's.
+    static Animator PrepareAnimators(GameObject rig, Spec spec)
+    {
+        var binding = At<Animator>(rig.transform, spec.binding_address, spec.binding_component);
+        foreach (var animation in rig.GetComponentsInChildren<Animation>(true))
+        {
+            animation.playAutomatically = false;
+            animation.Stop();
+            animation.enabled = false;
+        }
+        DisableAnimators(rig, binding);
+        return binding;
     }
 
     static string BuiltAssetKey(string[] keys, string assetPath)
@@ -432,7 +463,9 @@ public static partial class AnimReplayRecorder
         animation.Sample();
     }
 
-    static void SampleMuscles(Animator animator, float[] values)
+    // A tilt moves the rest body by the offset and turns it by the tilt; the
+    // applied pose is returned.
+    static HumanPose SampleMuscles(Animator animator, float[] values, Vector3 offset = default, Quaternion? tilt = null)
     {
         Need(values != null && values.Length == HumanTrait.MuscleCount
             && values.All(v => -1 <= v && v <= 1), "Invalid known muscle vector.");
@@ -440,25 +473,21 @@ public static partial class AnimReplayRecorder
         {
             var pose = ReadRestBody(animator, handler);
             pose.muscles = (float[])values.Clone();
+            if (tilt.HasValue)
+            {
+                pose.bodyPosition += offset;
+                pose.bodyRotation = tilt.Value * pose.bodyRotation;
+            }
             handler.SetHumanPose(ref pose);
+            return pose;
         }
     }
 
     static HumanPose ReadRestBody(Animator animator, HumanPoseHandler handler)
     {
-        // GetHumanPose returns a world pose, with position divided by human scale.
-        // SetHumanPose takes the corresponding normalized pose in Animator root space.
         var pose = new HumanPose();
         handler.GetHumanPose(ref pose);
-        var root = animator.transform;
-        float scale = animator.humanScale;
-        float determinant = root.localToWorldMatrix.determinant;
-        Need(scale > 0 && !float.IsInfinity(scale) && determinant != 0
-            && !float.IsNaN(determinant) && !float.IsInfinity(determinant),
-            "Cannot express the body pose in the Animator root.");
-        pose.bodyPosition = root.InverseTransformPoint(pose.bodyPosition * scale) / scale;
-        pose.bodyRotation = Quaternion.Inverse(root.rotation) * pose.bodyRotation;
-        return pose;
+        return InAnimatorSpace(animator, pose);
     }
 
     static Pose ReadPose(Transform[] nodes, SkinnedMeshRenderer[] renderers, RendererSpec[] specs, bool pending)
@@ -486,12 +515,13 @@ public static partial class AnimReplayRecorder
                     && channel.full_weights.Length == mesh.GetBlendShapeFrameCount(j), "Blend-shape layout mismatch.");
                 for (int k = 0; k < channel.full_weights.Length; ++k)
                     Need(channel.full_weights[k] == mesh.GetBlendShapeFrameWeight(j, k), "Blend-shape full weight mismatch.");
-                values[j] = Bits(renderer.GetBlendShapeWeight(j));
+                values[j] = Bits(renderer.GetBlendShapeWeight(j), "blend-shape weight " + channel.name);
             }
             weights[i] = new Weights { channels = values };
         }
         return new Pose { transforms = nodes.Select(n => new Trs {
-            translation = Bits(n.localPosition), rotation = Bits(n.localRotation), scale = Bits(n.localScale)
+            translation = Bits(n.localPosition, "translation of " + n.name), rotation = Bits(n.localRotation, "rotation of " + n.name),
+            scale = Bits(n.localScale, "scale of " + n.name)
         }).ToArray(), weights = weights };
     }
 
@@ -525,14 +555,16 @@ public static partial class AnimReplayRecorder
             int bone = HumanTrait.BoneFromMuscle(i);
             int axis = Enumerable.Range(0, 3).Single(a => HumanTrait.MuscleFromBone(bone, a) == i);
             return new Muscle { name = muscleNames[i], bone = bone, axis = axis,
-                min = Bits(HumanTrait.GetMuscleDefaultMin(i)), max = Bits(HumanTrait.GetMuscleDefaultMax(i)) };
+                min = Bits(HumanTrait.GetMuscleDefaultMin(i), "muscle min " + muscleNames[i]),
+                max = Bits(HumanTrait.GetMuscleDefaultMax(i), "muscle max " + muscleNames[i]) };
         }).ToArray();
         var description = animator.avatar.humanDescription;
         result.limits = (description.human ?? Array.Empty<HumanBone>()).Select(b => new Limit {
-            bone = b.boneName, human = b.humanName, axis_length = Bits(b.limit.axisLength),
-            min = Bits(b.limit.min), max = Bits(b.limit.max), center = Bits(b.limit.center), defaults = b.limit.useDefaultValues
+            bone = b.boneName, human = b.humanName, axis_length = Bits(b.limit.axisLength, "limit axis length " + b.humanName),
+            min = Bits(b.limit.min, "limit min " + b.humanName), max = Bits(b.limit.max, "limit max " + b.humanName),
+            center = Bits(b.limit.center, "limit center " + b.humanName), defaults = b.limit.useDefaultValues
         }).ToArray();
-        result.human_scale = Bits(animator.humanScale);
+        result.human_scale = Bits(animator.humanScale, "human_scale");
         result.upper_arm_twist = Bits(description.upperArmTwist);
         result.lower_arm_twist = Bits(description.lowerArmTwist);
         result.upper_leg_twist = Bits(description.upperLegTwist);
@@ -545,9 +577,9 @@ public static partial class AnimReplayRecorder
         using (var handler = new HumanPoseHandler(animator.avatar, animator.transform))
         {
             var pose = ReadRestBody(animator, handler);
-            result.rest_body_position = Bits(pose.bodyPosition);
-            result.rest_body_rotation = Bits(pose.bodyRotation);
-            result.rest_muscles = pose.muscles.Select(Bits).ToArray();
+            result.rest_body_position = Bits(pose.bodyPosition, "rest_body_position");
+            result.rest_body_rotation = Bits(pose.bodyRotation, "rest_body_rotation");
+            result.rest_muscles = pose.muscles.Select((value, i) => Bits(value, "rest muscle " + i)).ToArray();
         }
         return result;
     }
@@ -573,11 +605,17 @@ public static partial class AnimReplayRecorder
             }).ToArray();
     }
 
-    static string[] Bits(Vector3 v) => new[] { Bits(v.x), Bits(v.y), Bits(v.z) };
-    static string[] Bits(Quaternion q) => new[] { Bits(q.x), Bits(q.y), Bits(q.z), Bits(q.w) };
-    static string Bits(float f)
+    static string[] Bits(Vector3 v) => Bits(v, null);
+    static string[] Bits(Quaternion q) => Bits(q, null);
+    static string[] Bits(Vector3 v, string field) => new[] { Bits(v.x, field), Bits(v.y, field), Bits(v.z, field) };
+    static string[] Bits(Quaternion q, string field) =>
+        new[] { Bits(q.x, field), Bits(q.y, field), Bits(q.z, field), Bits(q.w, field) };
+    static string Bits(float f) => Bits(f, null);
+    // Strict: a nonfinite value fails the capture, naming its field where the caller gives one.
+    static string Bits(float f, string field)
     {
-        Need(!float.IsNaN(f) && !float.IsInfinity(f), "Nonfinite f32 in fixture capture.");
+        Need(!float.IsNaN(f) && !float.IsInfinity(f), "Nonfinite f32 in fixture capture"
+            + (field == null ? "" : ": " + field) + " (" + f.ToString(CultureInfo.InvariantCulture) + ").");
         return BitConverter.ToUInt32(BitConverter.GetBytes(f), 0).ToString("x8", CultureInfo.InvariantCulture);
     }
     static void Need(bool condition, string message)

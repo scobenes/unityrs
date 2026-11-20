@@ -377,7 +377,8 @@ def check_built_clip(name, fixture, view, clip_key, nodes, avatar, editor_bindin
         has_body = any(key in runtime or key in authored or (0, 95, HUMANOID_ATTRIBUTES[key], 8, False) in by_hash
                        for key in BODY)
         view.require(has_body == ("muscle_only" not in fixture.checks), "built humanoid body motion mismatch")
-        if name.removesuffix(VECTOR_SUFFIX).endswith("-offset"):
+        # The builder's case table names the prefab; a case name's suffix can be a clip setting.
+        if fixture.prefab == "offset":
             transform = view.value(nodes["0"][0])
             view.require(transform.get("m_LocalPosition") == {"x": 2, "y": .25, "z": -1}
                          and transform.get("m_LocalRotation", {}).get("y", 0) != 0,
