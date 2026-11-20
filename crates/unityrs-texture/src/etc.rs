@@ -209,10 +209,25 @@ pub(crate) fn decode(kind: Kind, data: &[u8], w: usize, h: usize, out: &mut [u8]
                     break;
                 }
                 let at = (h - 1 - y).saturating_mul(row).saturating_add(x0 * 4);
-                if let Some(dst) = out.get_mut(at..at.saturating_add(4 * cols)) {
-                    crate::bcn::put_row(dst, line);
+                match out.get_mut(at..at.saturating_add(4 * cols)) {
+                    Some(dst) => crate::bcn::put_row(dst, line),
+                    None => put_short(out, at, line, cols),
                 }
             }
+        }
+    }
+}
+
+/// A block row's `cols` pixels from `at` where `out` ends before the row
+/// does (no caller's image does): each pixel that fits, as the per-pixel
+/// write did.
+#[cold]
+#[inline(never)]
+fn put_short(out: &mut [u8], at: usize, line: &[Rgba; 4], cols: usize) {
+    for (c, px) in line.iter().enumerate().take(cols) {
+        let at = at.saturating_add(c * 4);
+        if let Some(dst) = out.get_mut(at..at.saturating_add(4)) {
+            dst.copy_from_slice(px);
         }
     }
 }
