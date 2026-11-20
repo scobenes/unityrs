@@ -70,7 +70,7 @@
   },
   "texture-ARGB4444": {
    "mode": "calibrating",
-   "ir_own": 394633,
+   "ir_own": 394555,
    "ir_libc": 159038,
    "allocs": {
     "malloc": 93,
@@ -84,7 +84,7 @@
   },
   "texture-ASTC_RGBA_4x4": {
    "mode": "calibrating",
-   "ir_own": 6935833,
+   "ir_own": 6979675,
    "ir_libc": 180630,
    "allocs": {
     "malloc": 99,
@@ -98,7 +98,7 @@
   },
   "texture-ASTC_RGBA_8x8": {
    "mode": "calibrating",
-   "ir_own": 5412807,
+   "ir_own": 5423797,
    "ir_libc": 189052,
    "allocs": {
     "malloc": 99,
@@ -112,7 +112,7 @@
   },
   "texture-ATC_RGBA8": {
    "mode": "calibrating",
-   "ir_own": 1618456,
+   "ir_own": 1618386,
    "ir_libc": 159038,
    "allocs": {
     "malloc": 93,
@@ -126,7 +126,7 @@
   },
   "texture-BC4": {
    "mode": "calibrating",
-   "ir_own": 931303,
+   "ir_own": 517197,
    "ir_libc": 60602,
    "allocs": {
     "malloc": 93,
@@ -140,7 +140,7 @@
   },
   "texture-BC5": {
    "mode": "calibrating",
-   "ir_own": 1324307,
+   "ir_own": 906385,
    "ir_libc": 126300,
    "allocs": {
     "malloc": 93,
@@ -154,7 +154,7 @@
   },
   "texture-BC6H": {
    "mode": "calibrating",
-   "ir_own": 15539859,
+   "ir_own": 15539851,
    "ir_libc": 126300,
    "allocs": {
     "malloc": 93,
@@ -168,8 +168,8 @@
   },
   "texture-BC7": {
    "mode": "calibrating",
-   "ir_own": 6126795,
-   "ir_libc": 210268,
+   "ir_own": 1112673,
+   "ir_libc": 159068,
    "allocs": {
     "malloc": 93,
     "calloc": 0,
@@ -182,7 +182,7 @@
   },
   "texture-DXT1": {
    "mode": "calibrating",
-   "ir_own": 721279,
+   "ir_own": 570249,
    "ir_libc": 159068,
    "allocs": {
     "malloc": 93,
@@ -196,7 +196,7 @@
   },
   "texture-DXT5": {
    "mode": "calibrating",
-   "ir_own": 1039555,
+   "ir_own": 867603,
    "ir_libc": 159068,
    "allocs": {
     "malloc": 93,
@@ -210,7 +210,7 @@
   },
   "texture-EAC_R": {
    "mode": "calibrating",
-   "ir_own": 952291,
+   "ir_own": 954263,
    "ir_libc": 159068,
    "allocs": {
     "malloc": 93,
@@ -224,7 +224,7 @@
   },
   "texture-ETC2_RGBA8": {
    "mode": "calibrating",
-   "ir_own": 1863709,
+   "ir_own": 1865679,
    "ir_libc": 159038,
    "allocs": {
     "malloc": 93,
@@ -238,7 +238,7 @@
   },
   "texture-ETC_RGB4": {
    "mode": "calibrating",
-   "ir_own": 1273993,
+   "ir_own": 1275963,
    "ir_libc": 159038,
    "allocs": {
     "malloc": 93,
@@ -252,8 +252,8 @@
   },
   "texture-PVRTC_RGBA4": {
    "mode": "calibrating",
-   "ir_own": 17002370,
-   "ir_libc": 1940798,
+   "ir_own": 5949075,
+   "ir_libc": 159038,
    "allocs": {
     "malloc": 93,
     "calloc": 0,
@@ -266,7 +266,7 @@
   },
   "texture-RGB24": {
    "mode": "calibrating",
-   "ir_own": 113285,
+   "ir_own": 113207,
    "ir_libc": 142652,
    "allocs": {
     "malloc": 93,
@@ -280,7 +280,7 @@
   },
   "texture-RGBA32": {
    "mode": "calibrating",
-   "ir_own": 113283,
+   "ir_own": 113205,
    "ir_libc": 178430,
    "allocs": {
     "malloc": 93,
