@@ -508,7 +508,7 @@ coefficient is shipped from a fit.
 | B2 | Reference and body checker | 2.1–2.5 in the f64 reference with frozen bounds and the analytic cases. A checker runs E0–E4. **Input:** a completed run in both 2022.3 and 6000, read with Unity 6 reader support on main. **Order:** first E3a on the training rigs, then the freeze commit (model choices, coefficients, scope with the lateral limit E2 and E3a set, bounds, E4's passing configurations), then E3b on the hold-out rig against that commit, once. | 0.6–0.9k | B1 recordings |
 | B3 | Rust body model | Read and validate `m_HumanBoneMass`; E0's runtime checks (3.2, E0 at runtime); the centre of mass, frame and closed-form hips solve; the free-combination refusal; synthetic tests and fuzz targets for the new reads | 0.5–0.7k | B2 (E3b passing) and E2 passing |
 | B4 | Root projection and frames | Target body pose per verified 2.4 combination, conversion from the Animator to the hips parent with scale, narrowed refusals | 0.4–0.6k | B3, F4, F5 |
-| B5 | Integration and L11 | Lift the body-bearing refusal behind the release gate below, add collector integration, run the gated same-bundle replay (E5), and promote the PARITY row. **Checklist:** E5 covers every class B4 admits by argument (h-linearity, "B4's admitted scope" (b)): the plain chain off the recorded rigs' human scales with every variant and at the offset placement, and each F5 feature off its rig's human scale, before the refusal lifts | 0.4–0.6k | B4 |
+| B5 | Integration and L11 | Lift the body-bearing refusal behind the release gate below, add collector integration, run the gated same-bundle replay (E5), and promote the PARITY row. **Checklist:** before the refusal lifts, E5 covers every class in "B4's admitted scope" (b), exactly as (b) defines it | 0.4–0.6k | B4 |
 
 **B4's admitted scope.** B4 admits only what freeze v8's evidence
 validated, as checkable settings, ranges and structure, never a rig's
@@ -565,10 +565,11 @@ predicate and E5 are the release gate.
   The freeze needs E3a passed on every required case of both versions, E4
   passed, full rank and every coefficient within `|a| ≤ 1`. It records E4
   per configuration (variant, rig, Editor version, root placement, each F5
-  chain its own): B4 and B5 implement only the passing configurations it
-  names, a configuration with no comparison is listed as excluded (or as
-  refused, when the topology scope refused all its samples), never
-  passing, and each Editor family the code requires (the same constant
+  chain its own). B4 admits the passing configurations it names and,
+  by argument, the classes "B4's admitted scope" (b) lists; B5 lifts the
+  refusal only for configurations it names or E5 verifies. A
+  configuration with no comparison is listed as excluded (or as refused,
+  when the topology scope refused all its samples), never passing, and each Editor family the code requires (the same constant
   E3b uses) needs a comparison of its own, whatever runs are given. It records the code's git commit and a digest of its
   sources: the checker's entry points, every local module they import,
   transitively (recording validation, case tables and Avatar decoding

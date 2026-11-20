@@ -19,7 +19,7 @@ use unityrs_anim::{
 use unityrs_core::limits::Meter;
 use unityrs_scene::{GraphOptions, graph_from_game_object};
 use unityrs_testkit::{
-    ngui::{Object, V, pptr},
+    ngui::{Object, V, pair, pptr},
     scene3d::{
         Layout,
         anim::humanoid::{self as h, ANIMATOR, AVATAR, Rig},
@@ -514,6 +514,11 @@ fn a_mapped_bone_outside_the_hips_refuses() {
 /// leaves its objects: the Transforms (`GameObject` `i + 2`'s is `i + 102`,
 /// the Animator node's 101) and the Avatar.
 fn lookup(edit: impl FnOnce(&mut Vec<Object>)) -> Result<(), String> {
+    lookup_with(GraphOptions::default(), edit)
+}
+
+/// `lookup` on a graph read with `options`.
+fn lookup_with(options: GraphOptions, edit: impl FnOnce(&mut Vec<Object>)) -> Result<(), String> {
     let meter = Meter::unlimited();
     let rig = Rig {
         hierarchy: true,
@@ -522,13 +527,7 @@ fn lookup(edit: impl FnOnce(&mut Vec<Object>)) -> Result<(), String> {
     let mut objects = h::prefab(&rig);
     edit(&mut objects);
     let (env, file) = super::file(Layout::Unity2022, &objects);
-    let graph = graph_from_game_object(
-        &env,
-        &file.object(1).unwrap(),
-        &GraphOptions::default(),
-        &meter,
-    )
-    .unwrap();
+    let graph = graph_from_game_object(&env, &file.object(1).unwrap(), &options, &meter).unwrap();
     let paths = RigPaths::new(&graph, 0, &meter).unwrap();
     let avatar = rig_avatar(&env, &file.object(ANIMATOR).unwrap(), &meter)
         .unwrap()
@@ -564,9 +563,86 @@ pub(super) fn extra(objects: &mut Vec<Object>, under: i64, scale: f32) {
 #[test]
 fn a_transform_below_the_hips_without_a_skeleton_node_refuses() {
     let unmapped = Err(refused(BodyModel::UnmappedTransform));
-    assert_eq!(lookup(|objects| extra(objects, 109, 2.)), unmapped);
+    assert_eq!(
+        lookup(|objects| extra(objects, transform_of(7), 2.)),
+        unmapped
+    );
     let hand = transform_of(17);
     assert_eq!(lookup(|objects| extra(objects, hand, 1.)), unmapped);
+}
+
+/// `extra`'s Transform at scale 2 under the Spine, named by an `m_TOS`
+/// path and by the skeleton's first row: the Animator node's, outside the
+/// hips' subtree.
+pub(super) fn named_extra(objects: &mut Vec<Object>) {
+    let spine = transform_of(7);
+    extra(objects, spine, 2.);
+    let avatar = objects.iter_mut().find(|o| o.path_id == AVATAR).unwrap();
+    let tos = rows(field(&mut avatar.value, &["m_TOS"]));
+    let spine = tos
+        .iter()
+        .find_map(|row| match row {
+            V::Pair(_, path) => match &**path {
+                V::Str(text) if text.ends_with(b"/Spine") => Some(text.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+    let path = [spine.as_slice(), b"/Extra"].concat();
+    tos.push(pair(V::UInt(h::crc32(&path)), V::Str(path.clone())));
+    let ids = skeleton_ids(objects);
+    assert_eq!(ids[0], V::UInt(0));
+    ids[0] = V::UInt(h::crc32(&path));
+}
+
+/// A skeleton row outside the hips' subtree does not admit a Transform
+/// below the hips: `named_extra`'s refuses as if unnamed.
+#[test]
+fn a_row_outside_the_hips_subtree_names_no_transform_below_it() {
+    assert_eq!(
+        lookup(named_extra),
+        Err(refused(BodyModel::UnmappedTransform))
+    );
+}
+
+/// A graph that drops a Transform below the hips refuses: read to the
+/// depth of the deepest bone, every mapped bone kept and an unmapped
+/// child one level below it pruned, which the full read refuses as
+/// unmapped.
+#[test]
+fn a_graph_pruned_below_the_hips_refuses() {
+    let meter = Meter::unlimited();
+    let rig = Rig {
+        hierarchy: true,
+        ..full()
+    };
+    let objects = h::prefab(&rig);
+    let (env, file) = super::file(Layout::Unity2022, &objects);
+    let root = file.object(1).unwrap();
+    let graph = graph_from_game_object(&env, &root, &GraphOptions::default(), &meter).unwrap();
+    let nodes = graph.nodes();
+    let depth = |mut at: usize| {
+        let mut depth = 1;
+        while let Some(parent) = nodes[at].parent {
+            (at, depth) = (parent, depth + 1);
+        }
+        depth
+    };
+    let deepest = (0..nodes.len()).max_by_key(|&k| depth(k)).unwrap();
+    let (leaf, limit) = (nodes[deepest].transform.path_id(), depth(deepest));
+    let limited = GraphOptions {
+        max_depth: Some(limit),
+    };
+    assert_eq!(lookup_with(limited, |_| ()), Ok(()));
+    assert_eq!(
+        lookup(|objects| extra(objects, leaf, 1.)),
+        Err(refused(BodyModel::UnmappedTransform))
+    );
+    assert_eq!(
+        lookup_with(limited, |objects| extra(objects, leaf, 1.)),
+        Err(refused(BodyModel::TruncatedRig))
+    );
 }
 
 fn skeleton_ids(objects: &mut [Object]) -> &mut Vec<V> {

@@ -5,7 +5,7 @@
 //! and the admission of each against the root configurations.
 use super::{
     body_model::{FREEZE, full, local, refused, verdict},
-    body_solve::extra,
+    body_solve::{extra, named_extra},
     file,
     root::variant_clip,
 };
@@ -169,21 +169,36 @@ fn the_human_scale_range_is_the_recorded_endpoints() {
 }
 
 /// The rest-scale rule: every Transform below the hips at exactly one, on
-/// every component. Any one of them an ulp off on one component, or
-/// mirrored, takes the chain out of scope; the hips' own scale is the
-/// chain's (`HIPS_SCALE`), not this rule's.
+/// every component. Each bone of the full rig, the optional ones among
+/// them, an ulp off on any one axis, or mirrored, takes the chain out of
+/// scope; the hips' own scale is the chain's (`HIPS_SCALE`), not this
+/// rule's. The Transforms are `102 + i` for `bones` index `i`, the hips
+/// first.
 #[test]
 fn every_rest_scale_below_the_hips_must_be_one() {
-    let bones = i64::try_from(h::BONES.len()).unwrap();
-    let plain = chain(&rig(Vec::new()), |_| {}).unwrap();
+    let full = rig(Vec::new());
+    let bones = i64::try_from(h::BONES.len() + full.optional.len()).unwrap();
+    assert_eq!(full.optional.len(), 10);
+    let plain = chain(&full, |_| {}).unwrap();
     assert_eq!(plain.validated(), Some((ChainFeature::Plain, false)));
+    // The last bone's Transform is a Transform, and past it is none: the
+    // sweep's range is the rig's.
+    let ends = chain(&full, |o| {
+        let class = |id| o.iter().find(|o| o.path_id == id).map(|o| o.class_id);
+        assert_eq!((class(101 + bones), class(102 + bones)), (Some(4), None));
+    });
+    assert!(ends.is_ok());
+    let mut values = vec![[-1.; 3]];
+    for axis in 0..3 {
+        for off in [1_f32.next_up(), 1_f32.next_down()] {
+            let mut value = [1.; 3];
+            value[axis] = off;
+            values.push(value);
+        }
+    }
     for transform in 103..102 + bones {
-        for value in [
-            [1_f32.next_up(), 1., 1.],
-            [1., 1., 1_f32.next_down()],
-            [-1.; 3],
-        ] {
-            let found = chain(&rig(Vec::new()), |o| scale(o, transform, value));
+        for &value in &values {
+            let found = chain(&full, |o| scale(o, transform, value));
             assert_eq!(found.unwrap().validated(), None, "{transform} {value:?}");
         }
     }
@@ -212,6 +227,8 @@ fn chains_out_of_scope_have_none() {
         Ok(())
     );
     none(chain(&rig(Vec::new()), |o| extra(o, 109, 2.)));
+    // The same, named by a skeleton row outside the hips' subtree.
+    none(chain(&rig(Vec::new()), named_extra));
     // A hips scale of 10, an Animator scale of 1.5, another armature.
     none(chain(&rig(Vec::new()), |o| scale(o, 102, [10.; 3])));
     none(chain(&rig(Vec::new()), |o| scale(o, 101, [1.5; 3])));

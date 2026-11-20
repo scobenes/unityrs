@@ -199,6 +199,9 @@ pub enum BodyModel {
     MisparentedTransform,
     /// A rig Transform below the hips' is no `m_Skeleton` node's.
     UnmappedTransform,
+    /// The rig's graph may have dropped a Transform below the hips: a depth
+    /// limit, a cycle, a broken pointer or an unreadable object.
+    TruncatedRig,
     /// A body position, scale, weight, frame or result is not finite.
     NonFiniteBody,
     /// The frame's lateral is along `up` within its rounding.
@@ -229,6 +232,7 @@ impl BodyModel {
             Self::UndefinedYaw => "undefined_yaw",
             Self::MisparentedTransform => "misparented_transform",
             Self::UnmappedTransform => "unmapped_transform",
+            Self::TruncatedRig => "truncated_rig",
             Self::NonFiniteBody => "non_finite_body",
             Self::DegenerateFrame => "degenerate_frame",
             Self::InvalidRestFrame => "invalid_rest_frame",

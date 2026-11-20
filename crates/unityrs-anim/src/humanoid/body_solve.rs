@@ -16,8 +16,9 @@
 //!   subtree (`detached_bone`). The lookup must follow the Avatar's
 //!   hierarchy: two skeleton nodes on one Transform refuse
 //!   (`shared_transform`), as does a Transform below the hips whose parent
-//!   is not its skeleton parent's (`misparented_transform`) and one below
-//!   the hips that no skeleton node names (`unmapped_transform`).
+//!   is not its skeleton parent's (`misparented_transform`), one below the
+//!   hips that no skeleton node there names (`unmapped_transform`), and a
+//!   graph that may have dropped one there (`truncated_rig`).
 //! - **The solve.** `H_A = B_A F(T) F_h^-1`, `P_A = h T_A - k H_A c_h` with
 //!   `k = sigma_p s_h` (`h T_A` the `AnimatorBodyPose`'s metres, which
 //!   root projection makes), and the local hips `t = sigma_p^-1 R_p^-1 (P_A -
@@ -46,9 +47,13 @@ use super::{
         finite_state, frame_scope, multiply, quaternion, refuse, rest_frame_scope, sub, uniform,
     },
 };
-use crate::{AnimError, BodyModel, PathQuery, RigPaths};
+use crate::{AnimError, BodyModel, PathQuery, RigPaths, read::same_object};
 use std::sync::Arc;
-use unityrs_core::limits::{Meter, MeteredVec};
+use unityrs_core::{
+    ObjectRef,
+    limits::{Meter, MeteredVec},
+};
+use unityrs_scene::{Component, Graph, Issue};
 
 /// Freeze v8's `scope.free`: the coefficient combinations the training
 /// design left free, as `(i, j, weight)` terms. Its design has full rank.
@@ -73,6 +78,89 @@ impl HipsParent {
     };
 }
 
+/// Every Transform below the hips' is the Transform of a skeleton node
+/// below the hips, as E3a requires of the captured ones
+/// (`unmapped_transform`), and the graph kept the whole subtree: a depth
+/// limit anywhere, or a cycle, a broken pointer or a dropped object that
+/// may have been a Transform there, refuses (`truncated_rig`). The walk
+/// visits only those skeleton nodes' Transforms and charges each
+/// membership search.
+fn complete_below_hips(
+    graph: &Graph,
+    found: &[Option<usize>],
+    below: &[bool],
+    hips: usize,
+    meter: &Arc<Meter>,
+) -> Result<(), AnimError> {
+    let Some(&Some(top)) = found.get(hips) else {
+        return Ok(());
+    };
+    let mut inside: MeteredVec<usize> = MeteredVec::with_capacity(meter, found.len())?;
+    for (node, _) in found.iter().zip(below).filter(|(_, below)| **below) {
+        if let &Some(node) = node {
+            inside.push(node)?;
+        }
+    }
+    let n = inside.len() as u64;
+    let search = u64::from(n.bit_width()).max(1);
+    meter.count_decode(n * search)?;
+    let inside = inside.as_mut_slice();
+    inside.sort_unstable();
+    let nodes = graph.nodes();
+    let mut walked: MeteredVec<usize> = MeteredVec::new(meter);
+    let mut stack: MeteredVec<usize> = MeteredVec::new(meter);
+    stack.push(top)?;
+    while let Some(at) = stack.pop() {
+        meter.count_decode(1)?;
+        walked.push(at)?;
+        let children = nodes
+            .get(at)
+            .map_or(&[][..], |node| node.children.as_slice());
+        for &child in children {
+            meter.count_decode(search)?;
+            if inside.binary_search(&child).is_err() {
+                return refuse(BodyModel::UnmappedTransform);
+            }
+            if stack.len() >= inside.len() {
+                return Err(AnimError::MissingPath);
+            }
+            stack.push(child)?;
+        }
+    }
+    let walked = walked.as_slice();
+    let transform = |from: &ObjectRef| {
+        walked.iter().any(|&id| {
+            nodes
+                .get(id)
+                .is_some_and(|node| same_object(&node.transform, from))
+        })
+    };
+    for issue in graph.issues() {
+        meter.count_decode(walked.len() as u64)?;
+        let dropped = match issue {
+            Issue::Depth { .. } => true,
+            Issue::Cycle { parent, .. } => parent.is_some_and(|parent| walked.contains(&parent)),
+            Issue::ParentMismatch { expected, .. } => walked.contains(expected),
+            Issue::Unresolved { from, .. } => transform(from),
+            // A component that fails to read stays as `Other`; any other
+            // object dropped may have been a child Transform.
+            Issue::Malformed { object, .. } => {
+                meter.count_decode(nodes.len() as u64)?;
+                !nodes.iter().any(|node| {
+                    node.components.as_slice().iter().any(|component| {
+                        matches!(component, Component::Other(_, kept) if same_object(kept, object))
+                    })
+                })
+            }
+            Issue::Builtin { .. } => false,
+        };
+        if dropped {
+            return refuse(BodyModel::TruncatedRig);
+        }
+    }
+    Ok(())
+}
+
 impl BodyAvatar<'_> {
     /// Each `m_Skeleton` node's rest local scale as the rig's own Transform
     /// stores it in the bundle: the node's `m_ID` through `m_TOS` to the
@@ -88,8 +176,9 @@ impl BodyAvatar<'_> {
     /// (`misparented_transform`), such as a Transform elsewhere under the
     /// Animator for a bone the Avatar places below the hips. A node of the
     /// subtree without a Transform is `None`, which `hips_points` refuses.
-    /// A Transform below the hips' that no skeleton node names refuses
-    /// (`unmapped_transform`), as E3a's `rest_translations` does.
+    /// A Transform below the hips' that no skeleton node there names
+    /// refuses (`unmapped_transform`), as E3a's `rest_translations` does,
+    /// and so does a graph that may have dropped one (`truncated_rig`).
     pub fn rest_scales(
         &self,
         paths: &RigPaths<'_>,
@@ -147,29 +236,7 @@ impl BodyAvatar<'_> {
             }
             below.push(inside)?;
         }
-        // Every Transform below the hips' is a skeleton node's, as E3a
-        // requires of the captured ones. Each node walked is one of
-        // `mapped`, so the walk is the skeleton's size too.
-        if let Some(&Some(top)) = found.get(hips) {
-            let mut stack: MeteredVec<usize> = MeteredVec::new(meter);
-            stack.push(top)?;
-            while let Some(at) = stack.pop() {
-                meter.count_decode(1)?;
-                let children = graph
-                    .nodes()
-                    .get(at)
-                    .map_or(&[][..], |node| node.children.as_slice());
-                for &child in children {
-                    if mapped.binary_search(&child).is_err() {
-                        return refuse(BodyModel::UnmappedTransform);
-                    }
-                    if stack.len() >= mapped.len() {
-                        return Err(AnimError::MissingPath);
-                    }
-                    stack.push(child)?;
-                }
-            }
-        }
+        complete_below_hips(graph, found, below.as_slice(), hips, meter)?;
         let mut out = MeteredVec::with_capacity(meter, ids.len())?;
         for node in found {
             out.push(
