@@ -310,6 +310,11 @@ pub struct NodeInfo {
     pub repeated: bool,
     /// A direct child is a `ManagedReferencesRegistry` (the registry scope).
     pub has_registry: bool,
+    /// Every direct child is read whole, with no children of its own (a
+    /// [`Shape::Prim`], [`Shape::Str`] or [`Shape::Bytes`]): UnityPyBoost's
+    /// reader reads such a class where it opens. Found once here, so a
+    /// read never scans the children for it.
+    pub leaves: bool,
 }
 
 /// A compiled typetree.
@@ -351,6 +356,7 @@ const BLANK: NodeInfo = NodeInfo {
     dup_names: false,
     repeated: false,
     has_registry: false,
+    leaves: false,
 };
 
 /// FNV-1a over a name, to number the names of one length
@@ -560,6 +566,25 @@ fn min_size_of(list: &NodeList, info: &MeteredVec<NodeInfo>, node: NodeId) -> u3
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// Children [`leaves_of`] looked at on this thread (the tests: a tree's
+    /// children are scanned once, at its compile, whatever reads it).
+    pub(crate) static LEAF_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// [`NodeInfo::leaves`]: every child read whole, the shapes known.
+fn leaves_of(list: &NodeList, info: &MeteredVec<NodeInfo>, node: NodeId) -> bool {
+    list.children(node).iter().all(|c| {
+        #[cfg(test)]
+        LEAF_SCANS.with(|s| s.set(s.get().saturating_add(1)));
+        matches!(
+            info_at(info, *c).shape,
+            Shape::Prim | Shape::Str | Shape::Bytes
+        )
+    })
+}
+
 impl Tree {
     /// Classifies every node. Fails when the tree is deeper than
     /// `limits.max_tree_depth`, when the list's meter refuses the tree's
@@ -660,11 +685,14 @@ impl Tree {
             }
         }
 
-        // Minimum sizes, children first (reverse pre-order).
+        // Minimum sizes, children first (reverse pre-order), and whether
+        // a node's children are all read whole.
         for p in (0..n).rev() {
             let min = min_size_of(&list, &info, id(p));
+            let leaves = leaves_of(&list, &info, id(p));
             if let Some(pi) = info.as_mut_slice().get_mut(p) {
                 pi.min_size = min;
+                pi.leaves = leaves;
             }
         }
 

@@ -154,6 +154,16 @@ fn case(c: &Json) -> Case {
 
 /// Reads `case`'s object with `reader` on `meter`.
 fn read(case: &Case, reader: &str, meter: &Arc<Meter>) -> Result<Parsed, ReadError> {
+    read_data(case, &case.data, reader, meter)
+}
+
+/// Reads `data` through `case`'s tree with `reader` on `meter`.
+fn read_data(
+    case: &Case,
+    data: &Bytes,
+    reader: &str,
+    meter: &Arc<Meter>,
+) -> Result<Parsed, ReadError> {
     let options = ReadOptions::default();
     let ctx = ReadCtx {
         endian: Endian::Little,
@@ -162,8 +172,8 @@ fn read(case: &Case, reader: &str, meter: &Arc<Meter>) -> Result<Parsed, ReadErr
         meter,
     };
     match reader {
-        "boost" => walk::boost::read(&case.data, &case.tree, &ctx),
-        _ => walk::python::read(&case.data, 0, &case.tree, &ctx),
+        "boost" => walk::boost::read(data, &case.tree, &ctx),
+        _ => walk::python::read(data, 0, &case.tree, &ctx),
     }
 }
 
@@ -199,7 +209,10 @@ fn gives(r: &Result<Parsed, ReadError>, want: &Json) -> Result<(), String> {
 }
 
 /// Each read of `recipe`'s cases gives UnityPy's outcome on an unlimited
-/// meter and on one of `ceiling(case)` bytes, and returns every charge.
+/// meter and on one of `ceiling(case)` bytes, and returns every charge;
+/// then a read of zeros through the same tree on the same meter (every
+/// count and length 0) succeeds with the value and the charge it has on a
+/// fresh meter, and returns its charge when dropped.
 fn under(recipe: &str, ceiling: impl Fn(&Json) -> u64) {
     for c in &cases(recipe) {
         let case = case(c);
@@ -213,6 +226,18 @@ fn under(recipe: &str, ceiling: impl Fn(&Json) -> u64) {
             gives(&r, want)
                 .unwrap_or_else(|e| panic!("{what} under {limit} bytes: {e}, UnityPy gave {want}"));
             assert_eq!(meter.used(), 0, "{what}: the charges are returned");
+            let zeros = Bytes::from(vec![0u8; 1 << 12]);
+            let fresh = Meter::unlimited();
+            let want = read_data(&case, &zeros, reader, &fresh)
+                .unwrap_or_else(|e| panic!("{what}, zeros: {e}"));
+            let got = read_data(&case, &zeros, reader, &meter)
+                .unwrap_or_else(|e| panic!("{what}, zeros after the error: {e}"));
+            assert_eq!(got.value(), want.value(), "{what}, zeros");
+            assert_eq!(got.bytes_read, want.bytes_read, "{what}, zeros");
+            assert_eq!(meter.used(), fresh.used(), "{what}, zeros: the charge");
+            assert!(meter.used() > 0, "{what}, zeros: the value is charged");
+            drop(got);
+            assert_eq!(meter.used(), 0, "{what}, zeros: the charge is returned");
         }
     }
 }

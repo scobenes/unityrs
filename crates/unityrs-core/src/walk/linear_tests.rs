@@ -620,3 +620,44 @@ fn a_list_past_its_first_reservation_grows_in_logarithmic_moves() {
     assert_eq!(items.capacity(), LEN);
     assert_eq!(moves, 4);
 }
+
+/// Codex's review of the in-place read: a class of `width` ints whose
+/// first field is cut short, inside a root class, compiled and then read
+/// eight times on one tree. Whether its children are all read whole is
+/// found once, at the compile (`width` children looked at, one more for the
+/// root's); each read looks at none, and takes the same turns and fails the
+/// same way however wide the class is.
+#[test]
+fn a_classs_children_are_scanned_once_at_its_trees_compile() {
+    use crate::typetree::tree::LEAF_SCANS;
+    let read = |width: u32| {
+        let mut rows = vec![
+            NodeRow::new(0, "Base", "Base"),
+            NodeRow::new(1, "Wide", "wide"),
+        ];
+        for i in 0..width {
+            rows.push(NodeRow::new(2, "int", format!("f{i}").as_str()));
+        }
+        LEAF_SCANS.with(|s| s.set(0));
+        let tree = compile(rows);
+        let at_compile = LEAF_SCANS.with(std::cell::Cell::get);
+        assert_eq!(at_compile, u64::from(width) + 1, "width {width}");
+        let reads: Vec<_> = (0..8)
+            .map(|_| {
+                let (got, visits) = read_visits("boost", &tree, &[1, 2], &[], Limits::default());
+                (format!("{:?}", got.unwrap_err()), visits)
+            })
+            .collect();
+        assert_eq!(
+            LEAF_SCANS.with(std::cell::Cell::get),
+            at_compile,
+            "width {width}"
+        );
+        assert!(
+            reads.iter().all(|r| *r == reads[0]),
+            "width {width}: {reads:?}"
+        );
+        reads[0].clone()
+    };
+    assert_eq!(read(16), read(4096));
+}

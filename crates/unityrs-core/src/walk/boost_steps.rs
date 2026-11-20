@@ -375,7 +375,8 @@ impl Reader<'_, '_, '_, '_, '_> {
                     at,
                 )?;
                 let mut fields = Fields::new(node, dict);
-                if self.in_place() && kids.iter().all(|&c| t.info(c).is_some_and(scalar)) {
+                // Its children's shapes, found at the compile ([`NodeInfo::leaves`]).
+                if me.leaves && self.in_place() {
                     let step = self.class::<true>(&mut fields, t, lx, &mut None, opened);
                     return self.flat(step, align).map(Some);
                 }

@@ -426,6 +426,62 @@ fn a_values_slices_are_copied_out_of_its_lists_tuples_and_byte_runs() {
     }
 }
 
+/// Containers nested deeper than the walk keeps open in place (16):
+/// `m_Deep`, vectors 20 deep of one element each, the innermost of two
+/// strings, between a string before it and one after. The walk keeps the
+/// containers past the 16th on the heap, comes back out through them and
+/// finds the string after: every slice is copied out, S = 5 + 9 + 10 + 5.
+#[test]
+fn slices_nested_past_the_walks_inline_containers_are_copied_out() {
+    const DEPTH: u8 = 20;
+    let mut nodes = vec![
+        NodeSpec::new(0, "Base", "Base"),
+        NodeSpec::new(1, "string", "m_First"),
+    ];
+    for k in 0..DEPTH {
+        let name = if k == 0 { "m_Deep" } else { "data" };
+        nodes.push(NodeSpec::new(1 + 2 * k, "vector", name));
+        nodes.push(NodeSpec::new(2 + 2 * k, "Array", "Array"));
+        nodes.push(NodeSpec::new(3 + 2 * k, "int", "size"));
+    }
+    nodes.push(NodeSpec::new(1 + 2 * DEPTH, "string", "data"));
+    nodes.push(NodeSpec::new(1, "string", "m_After"));
+    let mut w = ByteWriter::le();
+    string(&mut w, b"first");
+    for _ in 1..DEPTH {
+        w.i32(1);
+    }
+    w.i32(2);
+    string(&mut w, b"deep-text");
+    string(&mut w, b"deep-text2");
+    string(&mut w, b"after");
+    let file = build_file(&one_object(1, nodes, w.into_inner()));
+    let r = read(&bundle(&file, 2 << 20, TestCodec::Lz4, 1 << 16), true);
+    let mut depth = 0_u8;
+    let Value::Dict(m) = r.value.value() else {
+        panic!("{:?}", r.value.value())
+    };
+    let mut v = &m.entries()[1].1;
+    while let Value::List(items) = v {
+        depth += 1;
+        v = &items[0];
+    }
+    assert_eq!(depth, DEPTH);
+    let mut got = Vec::new();
+    value_slices(r.value.value(), &mut got);
+    let texts: Vec<&[u8]> = vec![b"first", b"deep-text", b"deep-text2", b"after"];
+    assert_eq!(got, texts);
+    assert_eq!(r.file.copies().values, 1);
+    assert_eq!(
+        r.file.copies().value_bytes,
+        5 + 9 + 10 + 5,
+        "every slice, once"
+    );
+    for s in got {
+        assert!(!in_run(&r.file, s), "{s:?} is a copy");
+    }
+}
+
 /// `check_read`'s error carries the value the read made (what
 /// `check_read=False` returns), which a caller may keep as it keeps any
 /// value: its slices are copied out too. The object's `byte_size` covers 8
