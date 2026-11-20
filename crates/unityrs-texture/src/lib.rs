@@ -159,6 +159,7 @@ mod format;
 mod formats;
 mod hdr;
 mod image;
+mod place;
 pub mod platform;
 mod pvrtc;
 mod raw;
