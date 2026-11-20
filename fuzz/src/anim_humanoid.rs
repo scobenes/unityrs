@@ -195,12 +195,10 @@ fn model_digest(
         Err(e) => return soft(e, digest),
     };
     digest.tag((edges, rest.map(bits)));
-    digest.tag(bits(body_model::centre(
-        &rest,
-        &weights,
-        &edges,
-        &body_model::COEFFICIENTS,
-    )));
+    match body_model::centre(&rest, &weights, &edges, &body_model::COEFFICIENTS) {
+        Ok(centre) => digest.tag(bits(Some(centre))),
+        Err(e) => soft(e, digest)?,
+    }
     match body_model::body_frame(&rest)
         .and_then(|f| Ok((f, body_model::shoulder_hip_twist(&rest)?)))
     {

@@ -178,6 +178,12 @@ pub enum BodyModel {
     UndefinedTwist,
     /// A spine Left-Right muscle exceeds the frozen lateral limit.
     SpineLateralRange,
+    /// A body position, scale, weight, frame or result is not finite.
+    NonFiniteBody,
+    /// The frame's lateral is along `up` within its rounding.
+    DegenerateFrame,
+    /// The rest frame is not finite or not orthonormal.
+    InvalidRestFrame,
 }
 
 impl BodyModel {
@@ -193,6 +199,9 @@ impl BodyModel {
             Self::ShoulderHipTwist => "shoulder_hip_twist",
             Self::UndefinedTwist => "undefined_twist",
             Self::SpineLateralRange => "spine_lateral_range",
+            Self::NonFiniteBody => "non_finite_body",
+            Self::DegenerateFrame => "degenerate_frame",
+            Self::InvalidRestFrame => "invalid_rest_frame",
         }
     }
 }
