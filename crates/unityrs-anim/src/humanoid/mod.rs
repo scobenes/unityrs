@@ -16,7 +16,8 @@
 //! `body_avatar` validates the Avatar inputs of the humanoid body model
 //! (`docs/plans/humanoid-body.md`), and `body_model` holds freeze v8's
 //! centre of mass, frame and scope, `body_solve` its hips solve, `root`
-//! its root projection and `chain` the Animator chain to the hips; no
+//! its root projection, `chain` the Animator chain to the hips and
+//! `muscle_pose` each bone's local rotation from its muscles (B5a); no
 //! refusal above calls them yet.
 mod avatar;
 mod body;
@@ -25,6 +26,7 @@ pub mod body_solve;
 pub mod chain;
 mod clip;
 pub mod gate;
+pub mod muscle_pose;
 pub mod root;
 mod root_sample;
 

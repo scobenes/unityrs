@@ -160,6 +160,8 @@ mod chain;
 mod chain_graph;
 #[path = "humanoid/gate.rs"]
 mod gate;
+#[path = "humanoid/muscle_pose.rs"]
+mod muscle_pose;
 #[path = "humanoid/root.rs"]
 mod root;
 #[path = "humanoid/root_drift.rs"]
