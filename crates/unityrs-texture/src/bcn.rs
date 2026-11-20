@@ -32,10 +32,15 @@
 //! **Block order** (`put_block`, `decode_bcn`): blocks fill the padded
 //! image left to right, then top to bottom, each a 4x4 square; UnityPy then
 //! crops it and flips it top to bottom. [`decode()`] writes each block's
-//! pixels that fall inside the texture straight to their flipped rows.
+//! pixels that fall inside the texture straight to their flipped rows
+//! ([`put_blocks`]), a block's row of pixels at a time.
+//!
+//! **For speed**, each block's colours are computed once into a palette
+//! (BC1's four, the alpha block's eight, BC7's per subset and index), and
+//! the pixels are the palette's entries, each a `u32` of its four bytes;
+//! the arithmetic per entry is Pillow's.
 
-/// One pixel, `[r, g, b, a]`.
-type Rgba = [u8; 4];
+use crate::place::put_blocks;
 
 /// Which of Pillow's decoders.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +59,9 @@ pub(crate) enum Kind {
     Bc7,
 }
 
+/// A block's 16 pixels, each `u32::from_le_bytes([r, g, b, a])`.
+type Pixels = [u32; 16];
+
 /// The `i`th entry of `table`, or the default where it has none (never, for
 /// the indices the decoders compute).
 fn pick<T: Copy + Default>(table: &[T], i: usize) -> T {
@@ -70,205 +78,303 @@ fn byte(v: u32) -> u8 {
 /// block's pixel its mode keeps (4 for `RGBA`, 3 for BC5's `RGB`, 1 for
 /// BC4's `L`): block row `by` of the padded image holds source rows `4 by`
 /// to `4 by + 3`, and source row `y` is output row `h - 1 - y`.
+// Each block decoder through an inlined closure: passed itself, its `Fn`
+// shim was a call per block (measured).
+#[allow(
+    clippy::inline_always,
+    clippy::redundant_closure,
+    reason = "measured: every block's decode inlined"
+)]
 pub(crate) fn decode(kind: Kind, data: &[u8], w: usize, h: usize, out: &mut [u8]) {
-    let block_bytes = if matches!(kind, Kind::Bc1 | Kind::Bc4) {
-        8
-    } else {
-        16
-    };
-    // Each mode's pixel size a constant of its own loop.
+    let size = (w, h);
     match kind {
-        Kind::Bc4 => blocks::<1>(kind, block_bytes, data, (w, h), out),
-        Kind::Bc5 => blocks::<3>(kind, block_bytes, data, (w, h), out),
-        _ => blocks::<4>(kind, block_bytes, data, (w, h), out),
+        Kind::Bc1 => blocks::<8, 16>(
+            data,
+            size,
+            out,
+            #[inline(always)]
+            |s, r| bc1_block(s, r),
+        ),
+        Kind::Bc2 => blocks::<16, 16>(
+            data,
+            size,
+            out,
+            #[inline(always)]
+            |s, r| bc2_block(s, r),
+        ),
+        Kind::Bc3 => blocks::<16, 16>(
+            data,
+            size,
+            out,
+            #[inline(always)]
+            |s, r| bc3_block(s, r),
+        ),
+        Kind::Bc4 => blocks::<8, 4>(
+            data,
+            size,
+            out,
+            #[inline(always)]
+            |s, r| bc4_block(s, r),
+        ),
+        Kind::Bc5 => blocks::<16, 12>(
+            data,
+            size,
+            out,
+            #[inline(always)]
+            |s, r| bc5_block(s, r),
+        ),
+        Kind::Bc7 => blocks::<16, 16>(
+            data,
+            size,
+            out,
+            #[inline(always)]
+            |s, r| bc7_block(s, r),
+        ),
     }
 }
 
-/// [`decode`] for `BPP` bytes a pixel.
-fn blocks<const BPP: usize>(
-    kind: Kind,
-    block_bytes: usize,
+/// [`decode`] for blocks of `B` bytes, each of whose rows of 4 pixels is
+/// `N` bytes, `block` writing a block's rows.
+#[allow(
+    clippy::inline_always,
+    reason = "measured: each block's decode inlined into the block loop"
+)]
+#[inline(always)]
+fn blocks<const B: usize, const N: usize>(
     data: &[u8],
     (w, h): (usize, usize),
     out: &mut [u8],
+    block: impl Fn(&[u8; B], [&mut [u8; N]; 4]),
 ) {
-    let (blocks_x, blocks_y) = (w.div_ceil(4), h.div_ceil(4));
-    let row = w.saturating_mul(BPP);
-    let mut blocks = data.chunks_exact(block_bytes);
-    for by in 0..blocks_y {
-        for bx in 0..blocks_x {
+    let mut blocks = data.as_chunks::<B>().0.iter();
+    put_blocks(
+        out,
+        w.saturating_mul(N / 4),
+        h,
+        (w.div_ceil(4), h.div_ceil(4)),
+        #[inline(always)]
+        |_, _, rows| {
             let Some(src) = blocks.next() else {
-                return;
+                return false;
             };
-            let mut col = [[0u8; 4]; 16];
-            match kind {
-                Kind::Bc1 => bc1_color(src, &mut col, false),
-                Kind::Bc2 => {
-                    bc1_color(src.get(8..).unwrap_or_default(), &mut col, true);
-                    bc2_alpha(src, &mut col);
-                }
-                Kind::Bc3 => {
-                    bc1_color(src.get(8..).unwrap_or_default(), &mut col, true);
-                    bc3_alpha(src, &mut col, 3);
-                }
-                Kind::Bc4 => bc3_alpha(src, &mut col, 0),
-                Kind::Bc5 => {
-                    bc3_alpha(src, &mut col, 0);
-                    bc3_alpha(src.get(8..).unwrap_or_default(), &mut col, 1);
-                }
-                Kind::Bc7 => bc7_block(src, &mut col),
-            }
-            // The block's pixels inside the texture, a row of them at a time.
-            let shown = w.saturating_sub(bx * 4).min(4);
-            for (r, pixels) in col.as_chunks::<4>().0.iter().enumerate() {
-                let y = by * 4 + r;
-                if y >= h {
-                    break;
-                }
-                let at = (h - 1 - y).saturating_mul(row).saturating_add(bx * 4 * BPP);
-                let Some(dst) = out.get_mut(at..at.saturating_add(shown * BPP)) else {
-                    continue;
-                };
-                if BPP == 4 {
-                    put_row(dst, pixels);
-                } else {
-                    for (dst, px) in dst.as_chunks_mut::<BPP>().0.iter_mut().zip(pixels) {
-                        *dst = *px.first_chunk::<BPP>().unwrap_or(&[0; BPP]);
-                    }
-                }
-            }
+            block(src, rows);
+            true
+        },
+    );
+}
+
+/// `decode_bc1_color` as DXT1 decodes it, into the block's rows.
+#[allow(clippy::inline_always, reason = "measured: every block's decode")]
+#[inline(always)]
+fn bc1_block(src: &[u8; 8], rows: [&mut [u8; 16]; 4]) {
+    let colour = u64::from_le_bytes(*src);
+    let palette = bc1_palette(colour, false);
+    put_rgba::<0>(rows, &palette, colour >> 32, &[0; 16], 0);
+}
+
+/// `decode_bc2_block`, into the block's rows.
+#[allow(clippy::inline_always, reason = "measured: every block's decode")]
+#[inline(always)]
+fn bc2_block(src: &[u8; 16], rows: [&mut [u8; 16]; 4]) {
+    let (alpha, colour) = halves(src);
+    let palette = bc1_palette(colour, true).map(|p| p & 0x00FF_FFFF);
+    put_rgba::<4>(rows, &palette, colour >> 32, &BC2_ALPHA, alpha);
+}
+
+/// BC3's colour and alpha blocks, into the block's rows.
+#[allow(clippy::inline_always, reason = "measured: every block's decode")]
+#[inline(always)]
+fn bc3_block(src: &[u8; 16], rows: [&mut [u8; 16]; 4]) {
+    let (alpha, colour) = halves(src);
+    let palette = bc1_palette(colour, true).map(|p| p & 0x00FF_FFFF);
+    let mut values = [0; 16];
+    for (v, a) in values.iter_mut().zip(bc3_palette(alpha)) {
+        *v = u32::from(a) << 24;
+    }
+    put_rgba::<3>(rows, &palette, colour >> 32, &values, alpha >> 16);
+}
+
+/// `decode_bc4_block`, into the block's rows of `L`.
+#[allow(clippy::inline_always, reason = "measured: every block's decode")]
+#[inline(always)]
+fn bc4_block(src: &[u8; 8], rows: [&mut [u8; 4]; 4]) {
+    let block = u64::from_le_bytes(*src);
+    let values = bc3_palette(block);
+    for (y, row) in rows.into_iter().enumerate() {
+        for (x, v) in row.iter_mut().enumerate() {
+            *v = pick(&values, alpha_index(block, 4 * y + x));
         }
     }
 }
 
-/// Writes a block row's pixels into `dst`, their place in the image: all 4,
-/// or at the image's right edge as many as `dst` holds. A whole row is a
-/// copy of a constant size, which the compiler inlines; the edge's copy is
-/// kept out of line, so the two are not merged into one call.
-#[allow(clippy::inline_always, reason = "measured: every block row's write")]
+/// `decode_bc5_block`, into the block's rows of `RGB`: blue is the 0 of
+/// Pillow's zeroed block.
+#[allow(clippy::inline_always, reason = "measured: every block's decode")]
 #[inline(always)]
-pub(crate) fn put_row(dst: &mut [u8], pixels: &[Rgba; 4]) {
-    match <&mut [u8; 16]>::try_from(&mut *dst) {
-        Ok(row) => *row = *pixels.as_flattened().as_array().unwrap_or(&[0; 16]),
-        Err(_) => put_edge(dst, pixels),
+fn bc5_block(src: &[u8; 16], rows: [&mut [u8; 12]; 4]) {
+    let (red, green) = halves(src);
+    let (reds, greens) = (bc3_palette(red), bc3_palette(green));
+    for (y, row) in rows.into_iter().enumerate() {
+        let mut v = 0u128;
+        for x in 0..4 {
+            let n = 4 * y + x;
+            let px = u32::from(pick(&reds, alpha_index(red, n)))
+                | u32::from(pick(&greens, alpha_index(green, n))) << 8;
+            v |= u128::from(px) << (24 * x);
+        }
+        if let Some(bytes) = v.to_le_bytes().first_chunk::<12>() {
+            *row = *bytes;
+        }
     }
 }
 
-/// [`put_row`] at the image's right edge.
-#[cold]
-#[inline(never)]
-fn put_edge(dst: &mut [u8], pixels: &[Rgba; 4]) {
-    if let Some(src) = pixels.as_flattened().get(..dst.len()) {
-        dst.copy_from_slice(src);
+/// Pixel `n`'s 3-bit index in an alpha block: bits `16 + 3n` on.
+#[inline]
+fn alpha_index(block: u64, n: usize) -> usize {
+    #[allow(clippy::cast_possible_truncation, reason = "masked to 3 bits")]
+    let i = (block >> (16 + 3 * n) & 7) as usize;
+    i
+}
+
+/// A 16-byte block's two halves, each a little-endian `u64`.
+fn halves(b: &[u8; 16]) -> (u64, u64) {
+    let v = u128::from_le_bytes(*b);
+    #[allow(clippy::cast_possible_truncation, reason = "the low half")]
+    (v as u64, (v >> 64) as u64)
+}
+
+/// `decode_bc2_block`'s alphas by their 4 bits `av`, `(av << 4) | av`,
+/// in the alpha byte.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "evaluated at compile time, av below 16"
+)]
+const BC2_ALPHA: [u32; 16] = {
+    let mut a = [0; 16];
+    let mut av: u32 = 0;
+    while av < 16 {
+        a[av as usize] = (av << 4 | av) << 24;
+        av += 1;
+    }
+    a
+};
+
+/// Writes a block's pixels into its rows of `[r, g, b, a]`: pixel `n` is
+/// the union of `palette`'s entry by its 2-bit index (bits `2n` of `lut`)
+/// and `alpha`'s by its `AB`-bit one (bits `AB n` of `alut`).
+#[inline]
+fn put_rgba<const AB: u32>(
+    rows: [&mut [u8; 16]; 4],
+    palette: &[u32; 4],
+    lut: u64,
+    alpha: &[u32; 16],
+    alut: u64,
+) {
+    for (r, row) in rows.into_iter().enumerate() {
+        for (x, dst) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            // Each index from the block itself, none waiting on the last.
+            let n = 4 * r + x;
+            let (i, ai) = (
+                (lut >> (2 * n)) & 3,
+                (alut >> (AB as usize * n)) & ((1 << AB) - 1),
+            );
+            #[allow(clippy::cast_possible_truncation, reason = "masked indices")]
+            let p = pick(palette, i as usize) | if AB == 0 { 0 } else { pick(alpha, ai as usize) };
+            *dst = p.to_le_bytes();
+        }
     }
 }
 
-/// `LOAD16`/`LOAD32`: a little-endian value of `src`'s bytes from `at`.
-fn load(src: &[u8], at: usize, len: usize) -> u32 {
-    (0..len).rev().fold(0, |v, i| {
-        (v << 8) | u32::from(src.get(at + i).copied().unwrap_or(0))
-    })
-}
-
-/// `decode_565`.
-fn decode_565(x: u32) -> Rgba {
+/// `decode_565`, as a pixel of alpha 255.
+fn decode_565(x: u32) -> [u32; 4] {
     let mut r = (x & 0xf800) >> 8;
     r |= r >> 5;
     let mut g = (x & 0x7e0) >> 3;
     g |= g >> 6;
     let mut b = (x & 0x1f) << 3;
     b |= b >> 5;
-    [byte(r), byte(g), byte(b), 0xff]
+    [r, g, b, 0xff]
 }
 
-/// `decode_bc1_color`: `src` is the 8-byte colour block.
-fn bc1_color(src: &[u8], dst: &mut [Rgba; 16], separate_alpha: bool) {
-    let (c0, c1, lut) = (load(src, 0, 2), load(src, 2, 2), load(src, 4, 4));
-    let p0 = decode_565(c0);
-    let p1 = decode_565(c1);
-    let [r0, g0, b0, _] = p0.map(u32::from);
-    let [r1, g1, b1, _] = p1.map(u32::from);
-    let (p2, p3) = if c0 > c1 || separate_alpha {
-        (
-            [
-                byte((2 * r0 + r1) / 3),
-                byte((2 * g0 + g1) / 3),
-                byte((2 * b0 + b1) / 3),
-                0xff,
-            ],
-            [
-                byte((r0 + 2 * r1) / 3),
-                byte((g0 + 2 * g1) / 3),
-                byte((b0 + 2 * b1) / 3),
-                0xff,
-            ],
-        )
-    } else {
-        (
-            [
-                byte(u32::midpoint(r0, r1)),
-                byte(u32::midpoint(g0, g1)),
-                byte(u32::midpoint(b0, b1)),
-                0xff,
-            ],
-            [0, 0, 0, 0],
-        )
-    };
-    let p = [p0, p1, p2, p3];
-    for (n, px) in dst.iter_mut().enumerate() {
-        *px = pick(&p, ((lut >> (2 * n)) & 3) as usize);
-    }
+/// `decode_bc1_color`'s four colours: `block` is the 8-byte colour block,
+/// whose indices (its high 32 bits) pick them. The thirds, each
+/// `(2a + b) / 3`, and the half `(a + b) / 2` are computed for the three
+/// channels at once, each in a 21-bit lane of a `u64` ([`lanes`]): a sum
+/// is at most 765, and `x * 683 >> 11` is `x / 3` for every `x` to 2047,
+/// so no lane's product reaches the next; each result is its lane's low
+/// byte. The form, four colours or three and transparent black, is chosen
+/// without a branch.
+#[inline]
+fn bc1_palette(block: u64, separate_alpha: bool) -> [u32; 4] {
+    #[allow(clippy::cast_possible_truncation, reason = "the block's fields")]
+    let (c0, c1) = (u32::from(block as u16), u32::from((block >> 16) as u16));
+    let (l0, l1) = (lanes(decode_565(c0)), lanes(decode_565(c1)));
+    let third = |v: u64| unlanes((v * 683) >> 11);
+    let (t2, t3) = (third(2 * l0 + l1), third(l0 + 2 * l1));
+    // Lane by lane: no lane's sum reaches the next.
+    #[allow(clippy::manual_midpoint, reason = "the lanes' sums, under 2^10")]
+    let half = unlanes((l0 + l1) >> 1);
+    let four = u32::from(c0 > c1 || separate_alpha).wrapping_neg();
+    [
+        unlanes(l0),
+        unlanes(l1),
+        (t2 & four) | (half & !four),
+        t3 & four,
+    ]
 }
 
-/// `decode_bc2_block`'s alpha: pixel `n`'s 4 bits from bit `4n` of the
-/// block, widened as `(av << 4) | av`.
-fn bc2_alpha(src: &[u8], dst: &mut [Rgba; 16]) {
-    for (n, px) in dst.iter_mut().enumerate() {
-        let bit = n * 4;
-        let av = 0xf & (u32::from(src.get(bit >> 3).copied().unwrap_or(0)) >> (bit & 7));
-        px[3] = byte((av << 4) | av);
-    }
+/// A pixel's red, green and blue in the 21-bit lanes of a `u64`.
+fn lanes([r, g, b, _]: [u32; 4]) -> u64 {
+    u64::from(r) | u64::from(g) << 21 | u64::from(b) << 42
 }
 
-/// `decode_bc3_alpha`, unsigned, into each pixel's band `channel` (its `o`):
-/// `src` begins with the 8-byte alpha block.
-fn bc3_alpha(src: &[u8], dst: &mut [Rgba; 16], channel: usize) {
-    let (a0, a1) = (load(src, 0, 1), load(src, 1, 1));
-    let (lut1, lut2) = (load(src, 2, 3), load(src, 5, 3));
-    let a: [u8; 8] = if a0 > a1 {
-        [
-            byte(a0),
-            byte(a1),
-            byte((6 * a0 + a1) / 7),
-            byte((5 * a0 + 2 * a1) / 7),
-            byte((4 * a0 + 3 * a1) / 7),
-            byte((3 * a0 + 4 * a1) / 7),
-            byte((2 * a0 + 5 * a1) / 7),
-            byte((a0 + 6 * a1) / 7),
-        ]
-    } else {
-        [
-            byte(a0),
-            byte(a1),
-            byte((4 * a0 + a1) / 5),
-            byte((3 * a0 + 2 * a1) / 5),
-            byte((2 * a0 + 3 * a1) / 5),
-            byte((a0 + 4 * a1) / 5),
-            0,
-            0xff,
-        ]
-    };
-    for (n, px) in dst.iter_mut().enumerate() {
-        let lut = if n < 8 { lut1 } else { lut2 };
-        if let Some(c) = px.get_mut(channel) {
-            *c = pick(&a, ((lut >> (3 * (n % 8))) & 7) as usize);
-        }
-    }
+/// The pixel of [`lanes`]' low bytes, of alpha 255: each byte moved down
+/// to its place.
+fn unlanes(v: u64) -> u32 {
+    #[allow(clippy::cast_possible_truncation, reason = "masked to 3 bytes")]
+    let rgb = ((v & 0xFF) | (v >> 13 & 0xFF00) | (v >> 26 & 0xFF_0000)) as u32;
+    rgb | 0xFF00_0000
 }
+
+/// `decode_bc3_alpha`'s eight values, unsigned: `block` is the 8-byte
+/// alpha block, whose 3-bit indices, pixel `n`'s from bit `16 + 3n`, pick
+/// them. Pillow's two forms are one computation over eight lanes, its
+/// constants chosen by the endpoints' order (no branch on it): entry `i`
+/// is `(wa a0 + wb a1) / d`, so the endpoints are themselves, with `d`'s
+/// division a multiply by `ceil(2^16 / d)` kept high, exact for the sums
+/// up to `255 d` (`alpha_divisions_are_exact`), and the six-value form's
+/// last two its 0 and 255.
+#[inline]
+fn bc3_palette(block: u64) -> [u8; 8] {
+    // By `a0 > a1`: the six-value form, then the eight-value one.
+    const WA: [[u16; 8]; 2] = [[5, 0, 4, 3, 2, 1, 0, 0], [7, 0, 6, 5, 4, 3, 2, 1]];
+    const WB: [[u16; 8]; 2] = [[0, 5, 1, 2, 3, 4, 0, 0], [0, 7, 1, 2, 3, 4, 5, 6]];
+    const ENDS: [[u16; 8]; 2] = [[0, 0, 0, 0, 0, 0, 0, 0xff], [0; 8]];
+    const M: [u16; 2] = [ALPHA_DIV[0], ALPHA_DIV[1]];
+    let [a0, a1, ..] = block.to_le_bytes().map(u16::from);
+    let sel = usize::from(a0 > a1);
+    let (wa, wb, ends, m) = (
+        pick(&WA, sel),
+        pick(&WB, sel),
+        pick(&ENDS, sel),
+        pick(&M, sel),
+    );
+    let mut out = [0; 8];
+    for (o, ((wa, wb), end)) in out.iter_mut().zip(wa.iter().zip(wb).zip(ends)) {
+        // At most `255 d`.
+        let sum = wa * a0 + wb * a1;
+        *o = byte((u32::from(sum) * u32::from(m)) >> 16 | u32::from(end));
+    }
+    out
+}
+
+/// `ceil(2^16 / 5)` and `ceil(2^16 / 7)`.
+const ALPHA_DIV: [u16; 2] = [13108, 9363];
 
 /// `bc7_mode_info`: subsets, partition bits, rotation bits, index-selection
 /// bits, colour bits, alpha bits, p-bits per endpoint, p-bits per subset,
 /// index bits and second index bits.
+#[derive(Clone, Copy)]
 struct ModeInfo {
     ns: u32,
     pb: u32,
@@ -379,18 +485,10 @@ fn bc7_weights(n: u32) -> &'static [u32] {
     }
 }
 
-/// `bc7_get_subset`.
-fn bc7_subset(ns: u32, partition: usize, n: usize) -> usize {
-    let v = match ns {
-        2 => 1 & (pick(&BC7_SI2, partition) >> n),
-        3 => 3 & (pick(&BC7_SI3, partition) >> (2 * n)),
-        _ => 0,
-    };
-    v as usize
-}
-
 /// `expand_quantized`: `v` widened from `bits` bits to 8 by replication, in
 /// a `UINT8` as Pillow keeps it.
+#[allow(clippy::inline_always, reason = "measured: the mode's widths folded")]
+#[inline(always)]
 fn expand_quantized(v: u32, bits: u32) -> u32 {
     let v = (v << 8u32.saturating_sub(bits)) & 0xff;
     v | v.checked_shr(bits).unwrap_or(0)
@@ -399,6 +497,8 @@ fn expand_quantized(v: u32, bits: u32) -> u32 {
 /// `get_bits`: `count` bits (at most 8) of the block from bit `bit`. Every
 /// mode's fields fill the block's 128 bits exactly, so no read runs past
 /// it.
+#[allow(clippy::inline_always, reason = "measured: the mode's widths folded")]
+#[inline(always)]
 fn get_bits(block: u128, bit: u32, count: u32) -> u32 {
     if count == 0 {
         return 0;
@@ -407,11 +507,27 @@ fn get_bits(block: u128, bit: u32, count: u32) -> u32 {
     u32::try_from(v).unwrap_or(0)
 }
 
-/// `bc7_lerp`.
-fn bc7_lerp(e0: [u32; 4], e1: [u32; 4], s0: u32, s1: u32) -> Rgba {
-    let (t0, t1) = (64 - s0, 64 - s1);
-    let c = |i: usize, t: u32, s: u32| byte((t * pick(&e0, i) + s * pick(&e1, i) + 32) >> 6);
-    [c(0, t0, s0), c(1, t0, s0), c(2, t0, s0), c(3, t1, s1)]
+/// `bc7_lerp` at weight `s` of 64, `((64 - s) e0 + s e1 + 32) >> 6`, for
+/// the channels `keep` holds the bytes of, the rest 0: the four channels
+/// at once, each in a `u16` (each endpoint under 256, so the sum under
+/// 2^14).
+fn lerp_pixel(e0: [u16; 4], e1: [u16; 4], s: u32, keep: u32) -> u32 {
+    let s = u16::try_from(s).unwrap_or(0);
+    let t = 64 - s;
+    let [a0, a1, a2, a3] = e0;
+    let [b0, b1, b2, b3] = e1;
+    let v = [
+        (t * a0 + s * b0 + 32) >> 6,
+        (t * a1 + s * b1 + 32) >> 6,
+        (t * a2 + s * b2 + 32) >> 6,
+        (t * a3 + s * b3 + 32) >> 6,
+    ];
+    u32::from_le_bytes(v.map(|c| byte(u32::from(c)))) & keep
+}
+
+/// An endpoint's channels, each under 256, as [`lerp_pixel`] takes them.
+fn narrow(e: [u32; 4]) -> [u16; 4] {
+    e.map(|c| u16::from(byte(c)))
 }
 
 /// The six endpoints a BC7 block holds at most (three subsets), each
@@ -420,6 +536,8 @@ type Endpoints = [[u32; 4]; 6];
 
 /// `decode_bc7_block`'s endpoints: read from bit `*bit` (moved past them),
 /// channel by channel, then the p-bits, then each widened to 8 bits.
+#[allow(clippy::inline_always, reason = "measured: the mode's widths folded")]
+#[inline(always)]
 fn bc7_endpoints(block: u128, info: &ModeInfo, bit: &mut u32) -> Endpoints {
     let mut load = |n: u32| {
         let v = get_bits(block, *bit, n);
@@ -486,28 +604,54 @@ fn bc7_endpoints(block: u128, info: &ModeInfo, bit: &mut u32) -> Endpoints {
     endpoints
 }
 
-/// `decode_bc7_block`.
-fn bc7_block(src: &[u8], col: &mut [Rgba; 16]) {
-    let first = u32::from(src.first().copied().unwrap_or(0));
-    if first == 0 {
+/// The pixels of `bc7_block`'s modes 4 and 5 (one subset, two index sets,
+/// rotation and index selection): their two palettes, one per index set,
+/// each holding the channels its set weights, rotated, so a pixel is the
+/// two entries' union.
+struct Split {
+    first: [u32; 16],
+    second: [u32; 16],
+}
+
+/// `decode_bc7_block`, into the block's rows of `[r, g, b, a]`.
+fn bc7_block(src: &[u8; 16], rows: [&mut [u8; 16]; 4]) {
+    let px = bc7_pixels(src);
+    for (row, px) in rows.into_iter().zip(px.as_chunks::<4>().0) {
+        for (dst, p) in row.as_chunks_mut::<4>().0.iter_mut().zip(px) {
+            *dst = p.to_le_bytes();
+        }
+    }
+}
+
+/// `decode_bc7_block`'s pixels.
+fn bc7_pixels(src: &[u8; 16]) -> Pixels {
+    let [first, ..] = *src;
+    let block = u128::from_le_bytes(*src);
+    // The mode is the number of unset bits before the first set bit; each
+    // mode's decode is its own copy, its fields' widths constants.
+    match first.trailing_zeros() {
+        0 => bc7_mode::<0>(block),
+        1 => bc7_mode::<1>(block),
+        2 => bc7_mode::<2>(block),
+        3 => bc7_mode::<3>(block),
+        4 => bc7_mode::<4>(block),
+        5 => bc7_mode::<5>(block),
+        6 => bc7_mode::<6>(block),
+        7 => bc7_mode::<7>(block),
         // The degenerate case: no mode bit.
-        *col = [[0, 0, 0, 255]; 16];
-        return;
+        _ => [u32::from_le_bytes([0, 0, 0, 255]); 16],
     }
-    let mut bytes = [0u8; 16];
-    for (b, s) in bytes.iter_mut().zip(src) {
-        *b = *s;
-    }
-    let block = u128::from_le_bytes(bytes);
-    // The mode is the number of unset bits before the first set bit.
-    let mode = first.trailing_zeros();
-    let Some(info) = BC7_MODES.get(mode as usize) else {
-        return;
+}
+
+/// [`bc7_pixels`] for mode `M`.
+#[allow(clippy::inline_always, reason = "measured: the mode's widths folded")]
+#[inline(always)]
+fn bc7_mode<const M: u32>(block: u128) -> Pixels {
+    let Some(info) = BC7_MODES.get(M as usize) else {
+        return [0; 16];
     };
+    let mode = M;
     let mut bit = mode + 1;
-    let has_ib2 = info.ab != 0 && info.ib2 != 0;
-    let cw = bc7_weights(info.ib);
-    let aw = bc7_weights(if has_ib2 { info.ib2 } else { info.ib });
     let partition = get_bits(block, bit, info.pb) as usize;
     bit += info.pb;
     let rotation = get_bits(block, bit, info.rb);
@@ -515,42 +659,134 @@ fn bc7_block(src: &[u8], col: &mut [Rgba; 16]) {
     let index_sel = get_bits(block, bit, info.isb);
     bit += info.isb;
     let endpoints = bc7_endpoints(block, info, &mut bit);
-    let mut cibit = bit;
-    let mut aibit = cibit + 16 * info.ib - info.ns;
-    for (i, px) in col.iter_mut().enumerate() {
-        let s = bc7_subset(info.ns, partition, i) << 1;
-        let mut ib = info.ib;
-        let anchor = |table: &[u32; 64]| pick(table, partition) as usize == i;
-        if i == 0 {
-            ib -= 1;
-        } else if info.ns == 2 {
-            if anchor(&BC7_AI0) {
-                ib -= 1;
-            }
-        } else if info.ns == 3 && (anchor(&BC7_AI1) || anchor(&BC7_AI2)) {
-            ib -= 1;
+    // The index sets, from bit `bit` and 16 indices of `ib` bits on, each
+    // anchor index one bit short; at most 63 bits each.
+    let indices = |at: u32| -> u64 {
+        #[allow(clippy::cast_possible_truncation, reason = "at most 63 bits")]
+        let v = block.checked_shr(at).unwrap_or(0) as u64;
+        v
+    };
+    let mut ci = indices(bit);
+    if info.ab != 0 && info.ib2 != 0 {
+        let mut ai = indices(bit + 16 * info.ib - info.ns);
+        let split = bc7_split(info, &endpoints, rotation, index_sel);
+        let (m0, m1) = ((1u64 << info.ib) - 1, (1u64 << info.ib2) - 1);
+        let mut px = [0; 16];
+        for (i, p) in px.iter_mut().enumerate() {
+            // Pixel 0 alone is an anchor: one subset.
+            let anchor = u32::from(i == 0);
+            #[allow(clippy::cast_possible_truncation, reason = "masked to 4 bits")]
+            let (i0, i1) = ((ci & m0 >> anchor) as usize, (ai & m1 >> anchor) as usize);
+            ci >>= info.ib - anchor;
+            ai >>= info.ib2 - anchor;
+            *p = pick(&split.first, i0) | pick(&split.second, i1);
         }
-        let i0 = get_bits(block, cibit, ib) as usize;
-        cibit += ib;
-        let (e0, e1) = (pick(&endpoints, s), pick(&endpoints, s + 1));
-        let mut c = if has_ib2 {
-            let ib2 = if i == 0 { info.ib2 - 1 } else { info.ib2 };
-            let i1 = get_bits(block, aibit, ib2) as usize;
-            aibit += ib2;
-            if index_sel != 0 {
-                bc7_lerp(e0, e1, pick(aw, i1), pick(cw, i0))
-            } else {
-                bc7_lerp(e0, e1, pick(cw, i0), pick(aw, i1))
-            }
-        } else {
-            bc7_lerp(e0, e1, pick(cw, i0), pick(cw, i0))
-        };
+        return px;
+    }
+    // Each subset's palette, 16 entries apart.
+    let cw = bc7_weights(info.ib);
+    let mut palette = [0u32; 64];
+    for (s, entries) in palette
+        .as_chunks_mut::<16>()
+        .0
+        .iter_mut()
+        .take(info.ns as usize)
+        .enumerate()
+    {
+        let (e0, e1) = (pick(&endpoints, 2 * s), pick(&endpoints, 2 * s + 1));
+        let (e0, e1) = (narrow(e0), narrow(e1));
+        for (entry, &w) in entries.iter_mut().zip(cw) {
+            *entry = lerp_pixel(e0, e1, w, u32::MAX);
+        }
+    }
+    let (mut subsets, anchors, sb) = bc7_layout(info.ns, partition);
+    let mut px = [0; 16];
+    for (i, p) in px.iter_mut().enumerate() {
+        let anchor = (anchors >> i) & 1;
+        let nb = info.ib - anchor;
+        #[allow(clippy::cast_possible_truncation, reason = "masked to 4 bits")]
+        let k = (ci & ((1 << nb) - 1)) as usize;
+        ci >>= nb;
+        let s = (subsets & ((1 << sb) - 1)) as usize;
+        subsets >>= sb;
+        *p = pick(&palette, (s << 4 | k) & 63);
+    }
+    px
+}
+
+/// `bc7_block`'s modes 4 and 5: the palettes of their two index sets.
+#[allow(clippy::inline_always, reason = "measured: the mode's widths folded")]
+#[inline(always)]
+fn bc7_split(info: &ModeInfo, endpoints: &Endpoints, rotation: u32, index_sel: u32) -> Split {
+    let [e0, e1, ..] = *endpoints;
+    let (e0, e1) = (narrow(e0), narrow(e1));
+    let (cw, aw) = (bc7_weights(info.ib), bc7_weights(info.ib2));
+    // The first index set weights the colour, the second the alpha, or
+    // with the index selection the reverse.
+    let (first_mask, second_mask) = if index_sel != 0 {
+        (0xFF00_0000, 0x00FF_FFFF)
+    } else {
+        (0x00FF_FFFF, 0xFF00_0000)
+    };
+    let rotate = |v: u32| -> u32 {
+        let mut b = v.to_le_bytes();
         match rotation {
-            1 => c.swap(0, 3),
-            2 => c.swap(1, 3),
-            3 => c.swap(2, 3),
+            1 => b.swap(0, 3),
+            2 => b.swap(1, 3),
+            3 => b.swap(2, 3),
             _ => {}
         }
-        *px = c;
+        u32::from_le_bytes(b)
+    };
+    let mut split = Split {
+        first: [0; 16],
+        second: [0; 16],
+    };
+    for (entry, &w) in split.first.iter_mut().zip(cw) {
+        *entry = rotate(lerp_pixel(e0, e1, w, first_mask));
+    }
+    for (entry, &w) in split.second.iter_mut().zip(aw) {
+        *entry = rotate(lerp_pixel(e0, e1, w, second_mask));
+    }
+    split
+}
+
+/// `bc7_get_subset` for every pixel of a partition, pixel `i`'s subset in
+/// bits `i b` to `i b + b - 1`; the anchors, pixel `i`'s in bit `i`: pixel
+/// 0 and the anchor of each further subset; and `b`, the bits a subset
+/// takes (0, 1 or 2).
+#[allow(clippy::inline_always, reason = "measured: the mode's widths folded")]
+#[inline(always)]
+fn bc7_layout(ns: u32, partition: usize) -> (u32, u32, u32) {
+    match ns {
+        2 => (
+            pick(&BC7_SI2, partition),
+            1 | 1 << pick(&BC7_AI0, partition),
+            1,
+        ),
+        3 => (
+            pick(&BC7_SI3, partition),
+            1 | 1 << pick(&BC7_AI1, partition) | 1 << pick(&BC7_AI2, partition),
+            2,
+        ),
+        _ => (0, 1, 0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The divisions by multiplication are exact over every sum they take:
+    /// [`super::bc1_palette`]'s thirds (to 765, in fact to 2047) and
+    /// [`super::bc3_palette`]'s fifths and sevenths (to `255 d`).
+    #[test]
+    fn alpha_divisions_are_exact() {
+        for x in 0..2048_u64 {
+            assert_eq!((x * 683) >> 11, x / 3, "{x}");
+        }
+        for (d, m) in [(5_u16, super::ALPHA_DIV[0]), (7, super::ALPHA_DIV[1])] {
+            for x in 0..=255 * u32::from(d) {
+                assert_eq!((x * u32::from(m)) >> 16, x / u32::from(d), "{x} / {d}");
+            }
+        }
     }
 }

@@ -20,7 +20,18 @@
 //! - ETC: `diff`, the differential bit set, so ETC2's T, H and planar
 //!   modes and ETC2 A1's punch-through occur often;
 //! - EAC and ETC2 A8's alpha: `edge`, multipliers of 0 and bases of 0,
-//!   255 and the signed -128.
+//!   255 and the signed -128;
+//! - the BC formats: `edge`, colour endpoints equal or swapped and alpha endpoints
+//!   equal, swapped, 0 or 255; BC7's `mode`, the first byte naming each
+//!   of the eight modes, or none (0), equally often; BC7's `partition`,
+//!   not drawn but walked in turn, every legal mode and partition (so
+//!   every anchor-index layout) and modes 4 and 5's rotations and index
+//!   selections, their other bits random;
+//! - PVRTC: `mode`, the modulation-mode bit set, and for 2bpp the
+//!   interpolation bits varied, so the missing weights occur often.
+//!
+//! The BC and PVRTC cases follow the rest (their seeds continue after
+//! them), PVRTC at sizes of its own, whose block counts are powers of two.
 //!
 //! A case records the first 128 bits of the sha256 of the image (its
 //! pixels, top row first) or
@@ -89,6 +100,38 @@ const FORMATS: [(&str, Format, &[&str]); 26] = {
     ]
 };
 
+/// The BC and PVRTC formats, after every other case: name, format,
+/// generators.
+const LATER: [(&str, Format, &[&str]); 9] = {
+    const BCN: &[&str] = &["random", "edge"];
+    const PVRTC: &[&str] = &["random", "mode"];
+    [
+        ("DXT1", Format::Dxt1, BCN),
+        ("DXT3", Format::Dxt3, BCN),
+        ("DXT5", Format::Dxt5, BCN),
+        ("BC4", Format::Bc4, BCN),
+        ("BC5", Format::Bc5, BCN),
+        ("BC7", Format::Bc7, &["random", "mode"]),
+        ("PVRTC_RGB2", Format::PvrtcRgb2, PVRTC),
+        ("PVRTC_RGBA4", Format::PvrtcRgba4, PVRTC),
+        ("BC7", Format::Bc7, &["partition"]),
+    ]
+};
+
+/// PVRTC's sizes, whose block counts must be powers of two at both bit
+/// rates: edge blocks cut, and Morton's order square and not.
+const PVRTC_SIZES: [(usize, usize); 9] = [
+    (1, 1),
+    (5, 3),
+    (13, 15),
+    (29, 13),
+    (61, 30),
+    (128, 32),
+    (16, 256),
+    (254, 127),
+    (256, 256),
+];
+
 /// What a case decodes.
 #[derive(Clone, Copy)]
 enum Target {
@@ -124,6 +167,8 @@ impl Target {
             Self::Format(_, f) if f.is_astc_hdr() => "astc-hdr",
             Self::Format(name, _) if name.starts_with("EAC") => "eac",
             Self::Format(name, _) if name.starts_with("ETC") => "etc",
+            Self::Format(name, _) if name.starts_with("PVRTC") => "pvrtc",
+            Self::Format(name, _) if !name.starts_with("ASTC") => "bcn",
             _ => "astc",
         }
     }
@@ -143,10 +188,14 @@ fn cases() -> Vec<(Target, &'static str, u64, (usize, usize))> {
             ));
         }
     }
+    let later = LATER
+        .iter()
+        .map(|&(name, f, gens)| (Target::Format(name, f), gens));
     let mut out = Vec::new();
-    for (target, gens) in targets {
+    for (target, gens) in targets.into_iter().chain(later) {
+        let pvrtc = target.family() == "pvrtc";
         for &generator in gens {
-            for &size in &SIZES {
+            for &size in if pvrtc { &PVRTC_SIZES[..] } else { &SIZES } {
                 let seed = 0x601d_0000 + u64::try_from(out.len()).unwrap();
                 out.push((target, generator, seed, size));
             }
@@ -257,17 +306,139 @@ fn etc_block(rng: &mut Rng, generator: &str, bytes: usize, format: Format) -> Ve
     b
 }
 
+/// A BC or PVRTC block of `bytes` bytes under `generator`.
+#[allow(clippy::cast_possible_truncation, reason = "a random byte")]
+fn bcn_block(rng: &mut Rng, generator: &str, bytes: usize, format: Format) -> Vec<u8> {
+    let mut b: Vec<u8> = (0..bytes).map(|_| rng.next_u64() as u8).collect();
+    match (generator, format) {
+        ("mode", Format::Bc7) => {
+            // Mode `m` is the first byte's lowest set bit; 8 is none.
+            let m = rng.below(9);
+            b[0] = if m == 8 {
+                0
+            } else {
+                (b[0] & !((2_u16 << m) - 1) as u8) | 1 << m
+            };
+        }
+        ("mode", _) => {
+            // The modulation-mode bit (bit 0 of colour A).
+            b[4] |= 1;
+            if rng.below(2) == 0 {
+                b[0] |= 1;
+            }
+        }
+        ("edge", _) => {
+            let (colour, alpha): (&[usize], &[usize]) = match format {
+                Format::Dxt1 => (&[0], &[]),
+                Format::Dxt3 => (&[8], &[]),
+                Format::Dxt5 => (&[8], &[0]),
+                Format::Bc4 => (&[], &[0]),
+                _ => (&[], &[0, 8]),
+            };
+            for &at in colour {
+                let c0 = u16::from_le_bytes([b[at], b[at + 1]]);
+                let c1 = u16::from_le_bytes([b[at + 2], b[at + 3]]);
+                // Equal, or c0 below c1: BC1's three-colour form.
+                let (c0, c1) = match rng.below(3) {
+                    0 => (c0, c0),
+                    1 => (c0.min(c1), c0.max(c1)),
+                    _ => (c0, c1),
+                };
+                b[at..at + 2].copy_from_slice(&c0.to_le_bytes());
+                b[at + 2..at + 4].copy_from_slice(&c1.to_le_bytes());
+            }
+            for &at in alpha {
+                match rng.below(4) {
+                    0 => b[at + 1] = b[at],
+                    1 => b[at] = 0,
+                    2 => b[at + 1] = 255,
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    b
+}
+
+/// BC7's every legal block layout, in the order `partition` walks
+/// them: mode, partition (0 to 15 in mode 0, 0 to 63 in modes 1, 2, 3
+/// and 7, the partition fixing the anchor indices), rotation (modes 4 and
+/// 5) and index selection (mode 4).
+fn bc7_layouts() -> Vec<[u8; 4]> {
+    let mut out = Vec::new();
+    for mode in 0..8_u8 {
+        let (partitions, rotations, selections) = match mode {
+            0 => (16, 1, 1),
+            1 | 2 | 3 | 7 => (64, 1, 1),
+            4 => (1, 4, 2),
+            5 => (1, 4, 1),
+            _ => (1, 1, 1),
+        };
+        for p in 0..partitions {
+            for r in 0..rotations {
+                for s in 0..selections {
+                    out.push([mode, p, r, s]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The `partition` generator's block `i`: layout `i` (cycling) of
+/// [`bc7_layouts`] over random bits.
+#[allow(clippy::cast_possible_truncation, reason = "a random byte")]
+fn bc7_layout_block(rng: &mut Rng, layouts: &[[u8; 4]], i: usize) -> Vec<u8> {
+    let random: Vec<u8> = (0..16).map(|_| rng.next_u64() as u8).collect();
+    let mut bits = u128::from_le_bytes(random.try_into().unwrap());
+    let [mode, p, r, s] = layouts[i % layouts.len()];
+    // The mode's unary prefix, then its partition or rotation and index
+    // selection fields.
+    let fields: &[(u8, u32)] = match mode {
+        0 => &[(p, 4)],
+        4 => &[(r, 2), (s, 1)],
+        5 => &[(r, 2)],
+        6 => &[],
+        _ => &[(p, 6)],
+    };
+    let mut at = u32::from(mode) + 1;
+    bits = (bits & !((1 << at) - 1)) | (1 << mode);
+    for &(value, width) in fields {
+        bits = (bits & !(((1 << width) - 1) << at)) | (u128::from(value) << at);
+        at += width;
+    }
+    bits.to_le_bytes().to_vec()
+}
+
+/// A block's BC7 layout, read from its bits as the specification lays
+/// them out (independently of [`bc7_layouts`]); `None` for mode 8.
+fn bc7_layout_of(block: &[u8]) -> Option<[u8; 4]> {
+    let bits = u128::from_le_bytes(block.try_into().unwrap());
+    let mode = bits.trailing_zeros();
+    let field = |at: u32, width: u32| u8::try_from((bits >> (mode + 1 + at)) & ((1 << width) - 1));
+    let m = u8::try_from(mode).ok()?;
+    Some(match mode {
+        0 => [m, field(0, 4).unwrap(), 0, 0],
+        1 | 2 | 3 | 7 => [m, field(0, 6).unwrap(), 0, 0],
+        4 => [m, 0, field(0, 2).unwrap(), field(2, 1).unwrap()],
+        5 => [m, 0, field(0, 2).unwrap(), 0],
+        6 => [m, 0, 0, 0],
+        _ => return None,
+    })
+}
+
 /// A footprint's fixture blocks and decodable modes, each made once.
 type Pools = BTreeMap<(u8, u8), (Vec<[u8; 16]>, Vec<u16>)>;
 
-/// The case's image digest, or its error's text, and its block count.
-fn run(
+/// The case's blocks and their count.
+fn blocks(
     (fixture, pools): (&J, &mut Pools),
     target: Target,
     generator: &str,
     seed: u64,
     (w, h): (usize, usize),
-) -> (String, usize) {
+) -> (Vec<u8>, usize) {
     let (bw, bh, bytes, is_astc) = target.block();
     let blocks = w.div_ceil(usize::from(bw)) * h.div_ceil(usize::from(bh));
     let mut rng = Rng::new(seed);
@@ -280,10 +451,32 @@ fn run(
             data.extend(astc_block(&mut rng, generator, pool, modes));
         }
     } else if let Target::Format(_, f) = target {
-        for _ in 0..blocks {
-            data.extend(etc_block(&mut rng, generator, bytes, f));
+        let make = match target.family() {
+            "bcn" | "pvrtc" => bcn_block,
+            _ => etc_block,
+        };
+        let layouts = bc7_layouts();
+        for i in 0..blocks {
+            if generator == "partition" {
+                data.extend(bc7_layout_block(&mut rng, &layouts, i));
+            } else {
+                data.extend(make(&mut rng, generator, bytes, f));
+            }
         }
     }
+    (data, blocks)
+}
+
+/// The case's image digest, or its error's text, and its block count.
+fn run(
+    inputs: (&J, &mut Pools),
+    target: Target,
+    generator: &str,
+    seed: u64,
+    (w, h): (usize, usize),
+) -> (String, usize) {
+    let (bw, bh, bytes, _) = target.block();
+    let (data, blocks) = blocks(inputs, target, generator, seed, (w, h));
     let meter = Meter::unlimited();
     let decode = |data: &[u8], w: usize, h: usize, f: Format| {
         let (w, h) = (i32::try_from(w).unwrap(), i32::try_from(h).unwrap());
@@ -362,7 +555,7 @@ fn the_decoders_reproduce_the_golden_digests() {
         return;
     }
     let want: J = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    for family in ["astc", "astc-hdr", "etc", "eac"] {
+    for family in ["astc", "astc-hdr", "etc", "eac", "bcn", "pvrtc"] {
         assert!(
             counts[family] >= 10_000,
             "{family}: {} blocks",
@@ -378,4 +571,35 @@ fn the_decoders_reproduce_the_golden_digests() {
     for (g, w) in got.iter().zip(want) {
         assert_eq!(g, w);
     }
+}
+
+/// The `partition` cases cover every legal BC7 layout, by construction
+/// and not by chance: 16 partitions of mode 0, 64 of modes 1, 2, 3 and 7,
+/// 8 rotations and index selections of mode 4, 4 rotations of mode 5 and
+/// mode 6, 285 in all; every case of 285 blocks or more covers them all.
+#[test]
+fn the_bc7_cases_cover_every_mode_and_partition() {
+    let fixture = J::Null;
+    let mut pools = Pools::new();
+    let (mut all, mut full) = (std::collections::BTreeSet::new(), 0);
+    for (target, generator, seed, size) in cases() {
+        if generator != "partition" {
+            continue;
+        }
+        let (data, blocks) = blocks((&fixture, &mut pools), target, generator, seed, size);
+        let mut seen = std::collections::BTreeSet::new();
+        for block in data.chunks(16) {
+            seen.insert(bc7_layout_of(block).unwrap());
+        }
+        assert_eq!(seen.len(), blocks.min(285));
+        full += usize::from(seen.len() == 285);
+        all.extend(seen);
+    }
+    let mut per_mode = [0; 8];
+    for [mode, ..] in &all {
+        per_mode[usize::from(*mode)] += 1;
+    }
+    assert_eq!(per_mode, [16, 64, 64, 64, 8, 4, 1, 64]);
+    assert_eq!(all.len(), 285);
+    assert!(full >= 2, "{full} cases cover every layout");
 }
