@@ -243,7 +243,8 @@ fn scan(file_module: &str, text: &str, declared: &mut Vec<String>, asserted: &mu
             let Some(end) = rest.rfind(">()") else { break };
             let path = rest[..end].trim();
             let path = path.strip_prefix("dyn ").unwrap_or(path);
-            let path = path.split('<').next().unwrap_or(path).trim();
+            // A trait object's bounds (`dyn T + Send`) are not its path.
+            let path = path.split(['<', '+']).next().unwrap_or(path).trim();
             let full = match path.strip_prefix("crate::") {
                 Some(abs) => abs.to_owned(),
                 None => join(&module, path),
@@ -276,6 +277,15 @@ mod tests {
         );
         assert_eq!(d, ["env::resource::Permit", "env::resource::inner::E"]);
         assert!(a.contains("env::resource::Ok"));
+    }
+
+    #[test]
+    fn a_trait_object_is_named_without_its_bounds() {
+        let (_, a) = run(
+            "walk",
+            "const _: () = crate::send_sync::<dyn emit::Elements + Send + Sync>();\n",
+        );
+        assert!(a.contains("walk::emit::Elements"), "{a:?}");
     }
 
     #[test]

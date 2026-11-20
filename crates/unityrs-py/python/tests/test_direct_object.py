@@ -1,4 +1,7 @@
 """Object mode's direct read gives the full path's objects, work and memory."""
+import contextlib
+import functools
+import gc
 import struct
 import sys
 import unittest
@@ -84,6 +87,30 @@ def fixture():
     return S.serialized_file(types, objs)
 
 
+@contextlib.contextmanager
+def pairs_class():
+    """A file of one `Y7Pairs`, whose `m_Pair` holds two `Vector3f` (and
+    `m_Items` a list, so its dict is one a collection tracks), with a plain
+    class for it in `unityrs.classes` while in use."""
+    import attrs
+    classes = unityrs.classes
+
+    @attrs.define(slots=False)
+    class Y7Pairs(classes.Object):
+        m_Pair: object = None
+        m_Items: object = None
+
+    tree = node('Y7Pairs', 'Base', [node('pair', 'm_Pair', [
+        floats('Vector3f', 'first', 'xyz'), floats('Vector3f', 'second', 'xyz')]),
+        vector('m_Items', node('int', 'data'))])
+    classes.Y7Pairs = Y7Pairs
+    try:
+        yield S.serialized_file([S.Type(114, tree)],
+                                [S.Obj(1, 0, struct.pack('<6f2i', 1, 2, 3, 4, 5, 6, 1, 7))])
+    finally:
+        del classes.Y7Pairs
+
+
 def large_fixture(count=10000):
     """A small object, then one of more values than a direct read takes."""
     small = node('TextAsset', 'Base', [string('m_Name'), string('m_Script')])
@@ -163,6 +190,171 @@ class DirectObject(unittest.TestCase):
         objs = sorted(env.objects, key=lambda o: o.path_id)
         taken = [o._native.parse_direct(o, True, True) is not None for o in objs]
         self.assertEqual(taken, [True, True, False, False])
+
+    def test_a_replaced_reader_property_runs_as_the_full_paths(self):
+        """A replaced `reader` property (on either class, after an object's
+        first read, or dressed as the original) runs exactly as often as on
+        the full path, with the full path's value: a replaced
+        `ObjectReader.reader` is never called by the direct read itself."""
+        from unityrs.files import ObjectReader, SerializedFile
+
+        def fresh(full, read_before):
+            env = unityrs.Environment()
+            env.load_file(fixture(), name='f')
+            obj = sorted(env.objects, key=lambda o: o.path_id)[1]
+            obj.assets_file.reader
+            if read_before:
+                obj.read_typetree()
+            if full:
+                obj._native = FullPath(obj._native)
+            return obj
+
+        expected = fresh(True, False).read_typetree()
+        for cls in (ObjectReader, SerializedFile):
+            original = cls.__dict__['reader']
+            calls = []
+
+            # Its name, module and code's wrapper as the original's.
+            @functools.wraps(original.fget)
+            def get(self, original=original):
+                calls.append(type(self).__name__)
+                return original.fget(self)
+
+            for read_before in (False, True):
+                objs = [fresh(full, read_before) for full in (False, True)]
+                cls.reader = property(get, original.fset)
+                try:
+                    seen = []
+                    for obj in objs:
+                        del calls[:]
+                        seen.append((obj.read_typetree(), list(calls)))
+                finally:
+                    cls.reader = original
+                with self.subTest(cls=cls.__name__, read_before=read_before):
+                    self.assertEqual(seen[0], seen[1])
+                    self.assertEqual(seen[0][0], expected)
+                    if cls is ObjectReader:
+                        self.assertIn('ObjectReader', seen[0][1])
+
+    def test_a_pair_of_two_classes(self):
+        """A `pair` whose items are both classes' objects: each made, the
+        pair then their tuple, as on the full path."""
+        with pairs_class() as data:
+            env = unityrs.Environment()
+            env.load_file(data, name='f')
+            obj = env.objects[0]
+            self.assertIsNotNone(obj._native.parse_direct(obj, True, True))
+            direct = read(data, 0, False)
+            full = read(data, 0, True)
+        self.assertIs(type(direct.m_Pair), tuple)
+        self.assertEqual([type(v).__name__ for v in direct.m_Pair], ['Vector3f', 'Vector3f'])
+        self.assertEqual(shape(direct), shape(full))
+
+    def test_no_half_made_container_while_the_classes_are_called(self):
+        """While the classes are called (here, as the first of them is,
+        from a profile hook that also forces a collection), no container of
+        the read is yet in its parent, nor holds a value still to be made:
+        none is reachable to be changed (a pair's parent given a third
+        item, or a key that collides; a list of pairs swapped; the root's
+        children freed), and the read is the full path's."""
+        classes = unityrs.classes
+        targets = {'pair': classes.Vector3f.__init__.__code__,
+                   'children': classes.PPtr.__init__.__code__}
+
+        def watched():
+            # The pair's parent, the root's dict with its children, or any
+            # list holding a stand-in.
+            for o in gc.get_objects():
+                if type(o) is dict and (o.get('m_Items') == [7]
+                                        or {'m_Children', 'm_GameObject'} <= o.keys()):
+                    yield o
+                elif type(o) is list and any(type(v) is object for v in o):
+                    yield o
+
+        for name, code in targets.items():
+            seen, calls = [], []
+
+            def profile(frame, event, arg):
+                if event != 'call' or frame.f_code is not code or calls:
+                    return
+                calls.append(name)
+                gc.collect()
+                seen.extend(o for o in watched() if id(o) not in before)
+
+            with pairs_class() as pairs, self.subTest(target=name):
+                data = pairs if name == 'pair' else fixture()
+                full = read(data, 0, True)
+                env = unityrs.Environment()
+                env.load_file(data, name='f')
+                obj = sorted(env.objects, key=lambda o: o.path_id)[0]
+                # Those of values made before (the full path's object's).
+                before = {id(o) for o in watched()}
+                sys.setprofile(profile)
+                try:
+                    direct = obj._native.parse_direct(obj, True, True)
+                finally:
+                    sys.setprofile(None)
+                self.assertEqual(calls, [name])
+                self.assertEqual(seen, [])
+                self.assertEqual(shape(direct), shape(full))
+
+    def test_a_failed_pair_allocation_raises_memory_error(self):
+        """A pair's tuple whose allocation fails (`_testcapi`'s failing
+        allocator, from the return of its last item's class) raises
+        `MemoryError`, as on the full path, never a `SystemError`."""
+        try:
+            import _testcapi
+        except ImportError:
+            self.skipTest('no _testcapi')
+        code = unityrs.classes.Vector3f.__init__.__code__
+        with pairs_class() as data:
+            env = unityrs.Environment()
+            env.load_file(data, name='f')
+            obj = env.objects[0]
+            returns = []
+
+            def profile(frame, event, arg):
+                if event == 'return' and frame.f_code is code:
+                    returns.append(1)
+                    if len(returns) == 2:
+                        _testcapi.set_nomemory(0, 1)
+            sys.setprofile(profile)
+            try:
+                with self.assertRaises(MemoryError):
+                    obj._native.parse_direct(obj, True, True)
+            finally:
+                sys.setprofile(None)
+                _testcapi.remove_mem_hooks()
+            self.assertEqual(len(returns), 2)
+
+    def test_a_failed_list_allocation_raises_memory_error(self):
+        """A list of classes' objects whose allocation fails (after the
+        root's last child is made) raises `MemoryError`, never a
+        `PanicException` (PyO3's constructors panic on a null)."""
+        try:
+            import _testcapi
+        except ImportError:
+            self.skipTest('no _testcapi')
+        code = unityrs.classes.PPtr.__init__.__code__
+        env = unityrs.Environment()
+        env.load_file(fixture(), name='f')
+        obj = sorted(env.objects, key=lambda o: o.path_id)[0]
+        returns = []
+
+        def profile(frame, event, arg):
+            # The pointers: the game object's, then the two children's.
+            if event == 'return' and frame.f_code is code:
+                returns.append(1)
+                if len(returns) == 3:
+                    _testcapi.set_nomemory(0, 1)
+        sys.setprofile(profile)
+        try:
+            with self.assertRaises(MemoryError):
+                obj._native.parse_direct(obj, True, True)
+        finally:
+            sys.setprofile(None)
+            _testcapi.remove_mem_hooks()
+        self.assertEqual(len(returns), 3)
 
     def test_work_and_memory_bounds_are_the_full_paths(self):
         data = fixture()

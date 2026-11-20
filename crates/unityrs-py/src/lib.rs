@@ -17,7 +17,9 @@ mod codecs;
 mod construction;
 mod crypto_shader;
 mod direct;
+mod direct_classes;
 mod direct_keys;
+mod direct_list;
 mod direct_object;
 mod environment;
 mod errors;
@@ -53,11 +55,14 @@ mod worker_error;
 
 #[pymodule(name = "_native", gil_used = true)]
 fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // The direct read's list layout check, once, outside any read.
+    direct_list::slots(m.py());
     exports::register(m)?;
     images::register(m)?;
     crypto_shader::register(m)?;
     image_helpers::register(m)?;
     m.add_function(wrap_pyfunction!(standalone_tree::standalone_tree_read, m)?)?;
+    m.add_function(wrap_pyfunction!(direct_classes::_direct_originals, m)?)?;
     m.add_function(wrap_pyfunction!(codecs::codec, m)?)?;
     m.add_class::<save::NativeCab>()?;
     m.add_function(wrap_pyfunction!(class_tpk::class_tpk_lz4, m)?)?;

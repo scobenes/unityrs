@@ -217,6 +217,8 @@ const _: () = {
     // A sink builds a caller's values (Python's, on the caller's thread):
     // the trait asks neither, and a sink that is both is.
     send_sync::<dyn walk::emit::Sink<Obj = ()> + Send + Sync>();
+    // Where a sink's run elements go: likewise.
+    send_sync::<dyn walk::emit::Elements + Send + Sync>();
 };
 
 #[cfg(test)]
