@@ -4,15 +4,12 @@ The stand-in is the hold-out rig's own pose: its base rig's recorded
 rotations on the builder's layout. Its rows give the same E_unity,s and
 J_s, and so the same u_s and margin at every sample, as a recording of
 the hold-out rig that follows the model, so the freeze's margin flags a
-sample E3b would fail. With UNITYRS_E3B_ROUND9 (the two round-9 run folders,
-joined by the path separator) and UNITYRS_E3B_READER (the unityrs CLI freeze
-v7 pins), the prediction is also checked on the recorded training runs: it
-flags round 9's failing hold-out sample from the spec alone, reading no
-hold-out file."""
+sample E3b would fail. anim_body_round9.py checks the prediction on the
+recorded round-9 training runs (local, so not a test here): it flags round
+9's failing hold-out sample from the spec alone, reading no hold-out file."""
 
 import copy
 import json
-import os
 import unittest
 from unittest import mock
 
@@ -117,24 +114,3 @@ class PredictionTests(unittest.TestCase):
         doc = copy.deepcopy(self.own)
         doc["spec"]["evidence"]["editor"]["body_targets"][1]["offset"][0] = replay.f32_bits(.1)
         return doc
-
-
-@unittest.skipUnless(os.environ.get("UNITYRS_E3B_ROUND9") and os.environ.get("UNITYRS_E3B_READER"),
-                     "the round-9 training runs are not given")
-class Round9Tests(unittest.TestCase):
-    def test_the_prediction_flags_round_9s_failing_sample(self):
-        import pathlib
-
-        import anim_body_freeze as freeze
-        import anim_body_seal as seal
-
-        folders = [pathlib.Path(path) for path in os.environ["UNITYRS_E3B_ROUND9"].split(os.pathsep)]
-        artifact = json.loads((seal.HERE / "anim_body_freeze_v7.json").read_text(encoding="utf-8"))
-        avatar_of, clip_of = freeze.readers(os.environ["UNITYRS_E3B_READER"])
-        runs, _, design = freeze.frozen_training(folders, artifact, avatar_of, clip_of)
-        found = holdout.predicted(runs, design, artifact["coefficients"], avatar_of, rig=HOLDOUT_RIGS[0])
-        self.assertEqual(sorted(found), artifact["scope"]["editor_versions"])
-        for entry in found.values():
-            [sample] = [row for row in entry["samples"] if row["local"] == 0.651947021484375]
-            self.assertLess(sample["margin"], 1)
-            self.assertTrue(any("@0.651947021484375:" in line for line in entry["failures"]))
