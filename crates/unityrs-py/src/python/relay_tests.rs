@@ -71,3 +71,36 @@ fn python_callback_unwind_returns_worker_error_without_deadlock() -> PyResult<()
         })
     })
 }
+
+/// A callback that panics where dispatch runs it, as PyO3 resumes a panic
+/// from Python code.
+unsafe fn panicking(_: *mut ()) {
+    std::panic::resume_unwind(Box::new("synthetic callback panic"))
+}
+
+#[test]
+fn a_panicking_callback_answers_inline_and_pooled_alike() -> PyResult<()> {
+    let _serial = crate::tests::serial();
+    unityrs_testkit::guard::finishes("callback panic under DEADLOCK_GUARD", || -> PyResult<()> {
+        // A caller whose stack covers the work runs it inline; a small one pools.
+        for stack in [256 << 20, 256 << 10] {
+            crate::worker::tests::on_thread(stack, |py| {
+                let answered = py.detach(|| {
+                    crate::worker::run(1 << 20, || {
+                        let request = super::PythonRequest {
+                            data: std::ptr::null_mut(),
+                            invoke: panicking,
+                        };
+                        super::request(super::Request::Python(request)).is_err()
+                    })
+                });
+                assert!(
+                    matches!(answered, Err(ref e) if e.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py))
+                );
+                let again = py.detach(|| crate::worker::run(1 << 20, || 3));
+                assert!(matches!(again, Ok(3)));
+            });
+        }
+        Ok(())
+    })
+}
