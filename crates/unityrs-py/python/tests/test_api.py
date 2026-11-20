@@ -265,6 +265,8 @@ else:
                 self.assertEqual(packaged.read_bytes(), original.read_bytes())
 
     def test_deep_read_on_small_python_stack(self):
+        # The type-tree read runs inline on the calling thread (its depth is
+        # on the heap), so a 64 KiB thread and the main thread both read it.
         import child
         script = r"""
 import gc, sys, threading
@@ -279,7 +281,6 @@ for _ in range(depth):
     node = S.Node("Thing", "x", [node])
 data = S.serialized_file([S.Type(49, node)], [S.Obj(1, 49, b"\x01\x00\x00\x00")], version=11)
 bad_data = S.serialized_file([S.Type(49, node)], [S.Obj(1, 49, b"\x01\x00\x00\x00" + bytes(4))], version=11)
-threading.stack_size(64 * 1024)
 result = []
 def read():
     budget = unityrs.Budget(1 << 30)
@@ -299,17 +300,36 @@ def read():
     del obj
     gc.collect()
     assert budget.used == 0, budget.used
+    obj = unityrs.Environment(data, limits=unityrs.Limits(max_tree_depth=depth+1, max_value_depth=depth+1), budget=budget).objects[0]
+    value = obj.read()
+    for _ in range(depth-1):
+        value = value.x
+    assert value.leaf == answer, value.leaf
+    del obj, value
+    gc.collect()
+    assert budget.used == 0, budget.used
     result.append(answer)
-t = threading.Thread(target=read)
-t.start()
-t.join()
+if sys.argv[3] == "main":
+    read()
+else:
+    # 64 KiB, or the least a platform of larger pages takes.
+    for size in (64 << 10, 128 << 10, 256 << 10):
+        try:
+            threading.stack_size(size)
+            break
+        except ValueError:
+            pass
+    t = threading.Thread(target=read)
+    t.start()
+    t.join()
 assert result == [1], result
 """
-        for depth in (250, 2000, 10000):
-            with self.subTest(depth=depth):
-                proc = child.run([sys.executable, "-c", script, str(ROOT / "tools/parity/tests"), str(depth)],
-                                 stdout=child.PIPE, stderr=child.PIPE, text=True, timeout=45)
-                self.assertEqual(proc.returncode, 0, proc.stderr)
+        for where in ("thread", "main"):
+            for depth in (250, 2000, 10000):
+                with self.subTest(where=where, depth=depth):
+                    proc = child.run([sys.executable, "-c", script, str(ROOT / "tools/parity/tests"), str(depth), where],
+                                     stdout=child.PIPE, stderr=child.PIPE, text=True, timeout=45)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_core_call_releases_gil(self):
         import child
