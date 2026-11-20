@@ -624,7 +624,8 @@ coefficient is shipped from a fit.
 - **Freeze v8's arithmetic.** v8 was fitted and validated (E3a, the
   freeze and E3b) under CPython 3.15.2, whose builtin float `sum` is
   compensated (Neumaier, from 3.12 on); the Rust model mirrors that
-  summation wherever the reference uses `sum`, and its reference vectors
+  summation wherever the reference uses `sum`, through `unityrs-pysum` (a
+  PSF-2.0 port of that float path), and its reference vectors
   are regenerated and checked under 3.15.2. A successor freeze must
   specify its summation explicitly (left to right, or `math.fsum`) so that
   its results do not depend on the interpreter.

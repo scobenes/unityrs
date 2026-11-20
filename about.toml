@@ -86,6 +86,11 @@ accepted = ["PSF-2.0"]
 [unityrs-cli]
 accepted = ["PSF-2.0"]
 
+# unityrs-pysum ports CPython 3.15.2's builtin float sum; its LICENSE-PSF
+# holds that release's PSF License Agreement (about.hbs, "Ported code").
+[unityrs-pysum]
+accepted = ["PSF-2.0"]
+
 # unityrs-texture's sprite solve ports OpenBLAS files from GotoBLAS2, under
 # The University of Texas at Austin's licence: BSD-2-Clause with a "views and
 # conclusions" paragraph, BSD-2-Clause-Views (about.hbs, "Ported code"; the

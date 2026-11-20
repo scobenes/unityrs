@@ -1,8 +1,8 @@
-"""Generate and check the vectors holding the Rust body model's `python_sum` to CPython's compensated float sum.
+"""Generate and check the vectors holding unityrs-pysum's `python_sum` to CPython's compensated float sum.
 
 Freeze v8 was fitted and validated under CPython 3.15.2, whose builtin `sum` compensates float additions
-(Neumaier) from 3.12 on; the Rust model mirrors it. This writes `crates/unityrs-anim/tests/support/
-python_sum.json`: random and adversarial float vectors (cancellation, huge and tiny mixes, subnormals, signed
+(Neumaier) from 3.12 on; the Rust model sums with unityrs-pysum, which mirrors it. This writes
+`crates/unityrs-pysum/tests/support/python_sum.json`: random and adversarial float vectors (cancellation, huge and tiny mixes, subnormals, signed
 zeros, overflow, infinities, NaN) with `sum`'s result, as f64 bit patterns. A NaN result is stored as "nan":
 its sign and payload are the hardware's. Generating, and the check, need a compensating interpreter
 (`compensated`); an older one skips the check and refuses to generate."""
@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 PARITY = Path(__file__).resolve().parents[1]
-OUTPUT = PARITY.parents[1] / "crates/unityrs-anim/tests/support/python_sum.json"
+OUTPUT = PARITY.parents[1] / "crates/unityrs-pysum/tests/support/python_sum.json"
 NAN = float("nan")
 INF = float("inf")
 EDGES = (0., -0., 1., -1., 1e16, -1e16, 1e308, -1e308, 1.7976931348623157e308, 5e-324, -5e-324, 2.2250738585072014e-308,

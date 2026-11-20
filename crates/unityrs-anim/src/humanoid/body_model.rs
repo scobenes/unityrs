@@ -10,7 +10,7 @@
 //! in `HumanBodyBones` order with `UpperChest` last (`SUM_ORDER`, the
 //! reference's `NAMES`). Where the reference sums with Python's builtin
 //! `sum` (dot products, norms, the mass total), this module sums as
-//! Python 3.15.2's compensated `sum` does (`python_sum`): freeze v8 was
+//! Python 3.15.2's compensated `sum` does (`unityrs_pysum`): freeze v8 was
 //! fitted and validated under it; its explicit `+=` loops (the centre) stay
 //! left to right. One step differs: the reference normalizes a
 //! quaternion with `math.hypot`, this module by the square root of the sum
@@ -47,10 +47,11 @@
 //!
 //! The hips solve of 2.3 and the free-combination refusal are
 //! `body_solve`'s.
-use super::{avatar::BODY_BONES, body::BodyAvatar, python_sum::python_sum};
+use super::{avatar::BODY_BONES, body::BodyAvatar};
 use crate::{AnimError, BodyModel};
 use std::sync::Arc;
 use unityrs_core::limits::{Meter, MeteredVec};
+use unityrs_pysum::python_sum;
 
 /// A position in f64.
 pub type Point = [f64; 3];

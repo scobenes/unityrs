@@ -22,7 +22,6 @@ mod body;
 pub mod body_model;
 pub mod body_solve;
 mod clip;
-pub mod python_sum;
 
 pub use avatar::{
     Avatar, Axes, BODY_BONES, BoneMass, HAND_BONES, Human, Skeleton, SkeletonNode, Twist, Xform,

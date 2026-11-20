@@ -41,6 +41,10 @@ allow = ["0BSD"]
 crate = "unityrs-core"
 allow = ["PSF-2.0"]
 
+[[licenses.exceptions]]
+crate = "unityrs-pysum"
+allow = ["PSF-2.0"]
+
 [[licenses.clarify]]
 crate = "unityrs-texture"
 expression = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0 AND LicenseRef-Crunch AND Zlib"
