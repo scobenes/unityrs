@@ -182,13 +182,6 @@ fn raw(colour: [u8; 3]) -> Rgba {
     [red, green, blue, 255]
 }
 
-/// Sets the block's pixel `at`, which is always in it.
-fn put(out: &mut Block, at: usize, px: Rgba) {
-    if let Some(p) = out.get_mut(at) {
-        *p = px;
-    }
-}
-
 /// Decodes `data` (at least the padded image's blocks) into `out`, the
 /// `w` x `h` image's rows top to bottom, as [`crate::bcn`]'s `decode` does:
 /// block row `by` of the padded image holds source rows `4 by` to
@@ -207,14 +200,17 @@ pub(crate) fn decode(kind: Kind, data: &[u8], w: usize, h: usize, out: &mut [u8]
                 return;
             };
             let px = block(kind, half(src, 0), half(src, 8));
-            for (n, p) in px.iter().enumerate() {
-                let (x, y) = (bx * 4 + n % 4, by * 4 + n / 4);
-                if x >= w || y >= h {
-                    continue;
+            let x0 = bx * 4;
+            // The block's columns inside the image: 4 but at its right edge.
+            let cols = (w - x0).min(4);
+            for (r, line) in px.as_chunks::<4>().0.iter().enumerate() {
+                let y = by * 4 + r;
+                if y >= h {
+                    break;
                 }
-                let at = (h - 1 - y).saturating_mul(row).saturating_add(x * 4);
-                if let Some(dst) = out.get_mut(at..at.saturating_add(4)) {
-                    dst.copy_from_slice(p);
+                let at = (h - 1 - y).saturating_mul(row).saturating_add(x0 * 4);
+                if let Some(dst) = out.get_mut(at..at.saturating_add(4 * cols)) {
+                    crate::bcn::put_row(dst, line);
                 }
             }
         }
@@ -272,19 +268,26 @@ fn sub_blocks(
 ) -> Block {
     let code = [usize::from(bytes[3] >> 5), usize::from(bytes[3] >> 2 & 7)];
     let table = pick(&ETC1_SUBBLOCKS, usize::from(bytes[3] & 1));
+    // Each sub-block's pixel for each pair of index bits: `sub * 4 + msb * 2
+    // + lsb`.
+    let mut set = [[0; 4]; 8];
+    for (k, px) in set.iter_mut().enumerate() {
+        let (sub, n) = (k >> 2, k & 3);
+        let (lsb, msb) = (u32::from(n & 1 == 1), u32::from(n >> 1 == 1));
+        let size = i32::from(modifier(pick(&code, sub), n & 1));
+        *px = applicate(pick(&colours, sub), if msb == 1 { -size } else { size });
+        // The Tier C patch (module docs): (0, 0, 0, 0), not the colour.
+        if transparent(lsb, msb) {
+            *px = TRANSPARENT;
+        }
+    }
     let (mut lsb, mut msb) = index_bits(bytes);
     let mut out = [[0; 4]; 16];
-    for i in 0..16 {
-        let sub = pick(&table, i);
-        let size = i32::from(modifier(pick(&code, sub), index(u64::from(lsb & 1))));
-        let px = applicate(pick(&colours, sub), if msb & 1 == 1 { -size } else { size });
-        // The Tier C patch (module docs): (0, 0, 0, 0), not the colour.
-        let px = if transparent(lsb & 1, msb & 1) {
-            TRANSPARENT
-        } else {
-            px
-        };
-        put(&mut out, pick(&WRITE_ORDER, i), px);
+    for (&at, &sub) in WRITE_ORDER.iter().zip(&table) {
+        let n = index(u64::from((msb & 1) << 1 | (lsb & 1)));
+        if let Some(px) = out.get_mut(at) {
+            *px = pick(&set, (sub << 2 | n) & 7);
+        }
         lsb >>= 1;
         msb >>= 1;
     }
@@ -331,20 +334,19 @@ fn etc1(bytes: [u8; 8]) -> Block {
 /// The T and H modes' 16 pixels from their four colours: with the high
 /// index bits shifted one left, the index is `(k & 2) | (j & 1)`, and with
 /// `punch` index 2 is transparent.
-fn four_colours(bytes: [u8; 8], set: [Rgba; 4], punch: bool) -> Block {
+fn four_colours(bytes: [u8; 8], mut set: [Rgba; 4], punch: bool) -> Block {
+    // The Tier C patch (module docs): (0, 0, 0, 0), where
+    // texture2ddecoder masks the alpha alone.
+    if let (true, Some(px)) = (punch, set.get_mut(2)) {
+        *px = TRANSPARENT;
+    }
     let (mut lsb, msb) = index_bits(bytes);
     let mut msb = msb << 1;
     let mut out = [[0; 4]; 16];
-    for i in 0..16 {
-        let n = index(u64::from((msb & 2) | (lsb & 1)));
-        // The Tier C patch (module docs): (0, 0, 0, 0), where
-        // texture2ddecoder masks the alpha alone.
-        let px = if punch && n == 2 {
-            TRANSPARENT
-        } else {
-            pick(&set, n)
-        };
-        put(&mut out, pick(&WRITE_ORDER, i), px);
+    for &at in &WRITE_ORDER {
+        if let Some(px) = out.get_mut(at) {
+            *px = pick(&set, index(u64::from((msb & 2) | (lsb & 1))) & 3);
+        }
         lsb >>= 1;
         msb >>= 1;
     }
@@ -501,11 +503,11 @@ fn etc2_alpha(bytes: [u8; 8], px: &mut Block) {
     if bytes[1] & 0xf0 != 0 {
         let multiplier = i32::from(bytes[1] >> 4);
         let table = pick(&ETC2_ALPHA_MODS, usize::from(bytes[1] & 0xf));
+        let alphas = table.map(|m| clamp(base + multiplier * m));
         let mut indices = alpha_indices(bytes);
-        for i in 0..16 {
-            let alpha = clamp(base + multiplier * pick(&table, index(indices & 7)));
-            if let Some(p) = px.get_mut(pick(&WRITE_ORDER_REV, i)) {
-                p[3] = alpha;
+        for &at in &WRITE_ORDER_REV {
+            if let Some(p) = px.get_mut(at) {
+                p[3] = pick(&alphas, index(indices & 7) & 7);
             }
             indices >>= 3;
         }
@@ -532,21 +534,20 @@ fn eac(bytes: [u8; 8], channel: usize, signed: bool, px: &mut Block) {
         m => m,
     };
     let table = pick(&ETC2_ALPHA_MODS, usize::from(bytes[1] & 0xf));
-    let mut indices = alpha_indices(bytes);
-    for i in 0..16 {
-        let value = base * 8 + multiplier * pick(&table, index(indices & 7)) + offset;
-        let v = if value < 0 {
+    let values = table.map(|m| {
+        let value = base * 8 + multiplier * m + offset;
+        if value < 0 {
             0
         } else if value >= 2048 {
             0xff
         } else {
             low(value >> 3)
-        };
-        if let Some(c) = px
-            .get_mut(pick(&WRITE_ORDER_REV, i))
-            .and_then(|p| p.get_mut(channel))
-        {
-            *c = v;
+        }
+    });
+    let mut indices = alpha_indices(bytes);
+    for &at in &WRITE_ORDER_REV {
+        if let Some(c) = px.get_mut(at).and_then(|p| p.get_mut(channel & 3)) {
+            *c = pick(&values, index(indices & 7) & 7);
         }
         indices >>= 3;
     }
