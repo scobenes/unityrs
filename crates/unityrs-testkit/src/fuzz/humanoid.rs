@@ -291,14 +291,14 @@ fn root_clips() -> Vec<(String, Object)> {
         "m_LoopBlendPositionXZ",
     ];
     let mut out = vec![
-        ("root-body".to_owned(), root_clip(&[], 0)),
+        ("root-body".to_owned(), root_clip(&[], 0, false)),
         (
             "root-level".to_owned(),
-            root_clip(&[("m_Level", V::Float(0.125))], 0),
+            root_clip(&[("m_Level", V::Float(0.125))], 0, false),
         ),
         (
             "root-orientation-offset".to_owned(),
-            root_clip(&[("m_OrientationOffsetY", V::Float(30.))], 0),
+            root_clip(&[("m_OrientationOffsetY", V::Float(30.))], 0, false),
         ),
         (
             "root-original".to_owned(),
@@ -309,9 +309,22 @@ fn root_clips() -> Vec<(String, Object)> {
                     flag("m_KeepOriginalPositionXZ", true),
                 ],
                 0,
+                true,
             ),
         ),
-        ("root-streamed".to_owned(), root_clip(&[], 14)),
+        ("root-streamed".to_owned(), root_clip(&[], 7, false)),
+        (
+            "root-original-streamed".to_owned(),
+            root_clip(
+                &[
+                    flag("m_KeepOriginalOrientation", true),
+                    flag("m_KeepOriginalPositionY", true),
+                    flag("m_KeepOriginalPositionXZ", true),
+                ],
+                14,
+                true,
+            ),
+        ),
     ];
     // Every bake mask of E4's passing variants.
     for bits in 1..8_usize {
@@ -326,26 +339,29 @@ fn root_clips() -> Vec<(String, Object)> {
                 bits >> 1 & 1,
                 bits & 1
             ),
-            root_clip(&flags, 0),
+            root_clip(&flags, 0, false),
         ));
     }
     out
 }
 
-/// A clip binding the motion and body DOFs 0-13 to a turned, lifted root,
-/// the first `streamed` slots streamed with a slope over the interval and
-/// the rest constants.
-fn root_clip(settings: &[(&str, V)], streamed: u32) -> Object {
-    let pose: [f32; 14] = [
+/// A clip binding the body DOFs 7-13 to a turned, lifted root, and the
+/// motion DOFs 0-6 first when `motion` (as E4's variant has them), the
+/// first `streamed` slots streamed with a slope over the interval and the
+/// rest constants.
+fn root_clip(settings: &[(&str, V)], streamed: u32, motion: bool) -> Object {
+    let all: [f32; 14] = [
         1., 0.5, 2., 0., 0.6, 0., 0.8, 0.25, 1., -0.5, 0.1, 0.3, -0.05, 0.9,
     ];
-    let dofs: Vec<u32> = (0..14).collect();
+    let from: u32 = if motion { 0 } else { 7 };
+    let pose = &all[from as usize..];
+    let dofs: Vec<u32> = (from..14).collect();
     let bits = |v: f32| v.to_bits();
     let mut words = Vec::new();
     let keys = |slope: f32| -> Vec<(u32, [u32; 4])> {
         (0..streamed)
             .zip(pose)
-            .map(|(slot, v)| (slot, [0, 0, bits(slope), bits(v)]))
+            .map(|(slot, &v)| (slot, [0, 0, bits(slope), bits(v)]))
             .collect()
     };
     if streamed > 0 {

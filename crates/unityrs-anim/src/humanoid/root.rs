@@ -29,11 +29,14 @@
 //! - flags no admitted variant has (`unsupported_humanoid_root_basis`, the
 //!   first keep-original flag set, which a bake flag never masks);
 //! - a level or orientation offset other than the variant's, a mirror, a
-//!   cycle offset or loop flags (`unsupported_humanoid_clip_settings`).
+//!   cycle offset or loop flags (`unsupported_humanoid_clip_settings`);
+//! - motion slots (`MotionT`, `MotionQ`) other than the variant's: all
+//!   bound for the all-Original variant, none for the others
+//!   (`unsupported_humanoid_root_basis(m_IndexArray)`);
+//! - an additive reference pose (`unsupported_additive_pose`), which the
+//!   fixture requires off.
 //!
-//! An all-Original clip without motion slots refuses
-//! (`unsupported_humanoid_root_basis(m_IndexArray)`). A yaw whose error E4
-//! leaves unbounded, at f32 with its source's error or at f64, refuses
+//! A yaw whose error E4 leaves unbounded, at f32 with its source's error or at f64, refuses
 //! (`undefined_yaw`), and so does a non-finite or zero `m_StartX`
 //! rotation (`non_finite_body`, `degenerate_root_rotation`).
 //!
@@ -100,6 +103,8 @@ const fn admitted(variant: &'static str, bake: [bool; 3], keep: [bool; 3]) -> Ad
 }
 
 const NONE: [bool; 3] = [false; 3];
+/// `MotionT` and `MotionQ`'s DOFs.
+const MOTION_DOFS: std::ops::Range<usize> = 0..7;
 const ALL: [bool; 3] = [true; 3];
 
 /// Freeze v8's E4-passing root configurations, which a test binds to
@@ -179,7 +184,8 @@ impl RootSettings {
 /// The clip's root settings if they are one of `ADMITTED`, field by field,
 /// else the typed refusal (the module documents which).
 pub fn root_settings(clip: &Clip, meter: &Arc<Meter>) -> Result<RootSettings, AnimError> {
-    let settings = humanoid(clip)?.settings();
+    let human = humanoid(clip)?;
+    let settings = human.settings();
     let value = |field: &'static str| {
         settings
             .iter()
@@ -235,6 +241,21 @@ pub fn root_settings(clip: &Clip, meter: &Arc<Meter>) -> Result<RootSettings, An
         };
         return Err(AnimError::UnsupportedHumanoidClipSettings(field));
     };
+    // E4 played each variant with its motion slots all bound or all
+    // unbound, as its fixture marks it, and never an additive clip.
+    let bound = MOTION_DOFS
+        .filter(|&dof| {
+            human
+                .slots()
+                .any(|slot| slot.dof == dof && slot.storage.is_some())
+        })
+        .count();
+    if !matches!((row.motion, bound), (true, 7) | (false, 0)) {
+        return Err(AnimError::UnsupportedHumanoidRootBasis("m_IndexArray"));
+    }
+    if human.has_reference_pose() {
+        return Err(AnimError::UnsupportedAdditivePose);
+    }
     let [yaw, height, xz] = [0, 1, 2].map(|k| match (bake.get(k), keep.get(k)) {
         (Some(true), _) => Cell::Bake,
         (_, Some(true)) => Cell::Original,

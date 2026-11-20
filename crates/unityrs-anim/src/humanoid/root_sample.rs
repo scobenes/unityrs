@@ -222,9 +222,14 @@ impl Storage<'_> {
             return Ok((value, 0.));
         };
         let [c3, c2, c1, c0] = key.coefficients.map(f32::from_bits);
-        // Unity's f32 Horner: every step must stay finite.
+        // Unity's f32 Horner, in E4's order: the clock rounds to f32, then
+        // the key's time is subtracted in f32. Every step must stay finite.
         #[allow(clippy::cast_possible_truncation, reason = "Unity's f32 clock")]
-        let t = (time - key.time) as f32;
+        let (clock, start) = (time as f32, key.time as f32);
+        let t = clock - start;
+        if !t.is_finite() {
+            return refuse(BodyModel::NonFiniteBody);
+        }
         let mut horner = c3;
         for c in [c2, c1, c0] {
             let product = horner * t;

@@ -541,14 +541,24 @@ fn check_bindings(
         let class = class.as_i64().ok_or(AnimError::Malformed("typeID"))?;
         let custom = dict.int(record, "customType")?;
         let attribute = dict.count(record, "attribute")?;
-        let flag = |name| -> Result<bool, AnimError> {
-            Ok(dict
-                .field(record, name)?
-                .and_then(Value::as_u64)
-                .is_some_and(|value| value != 0))
+        // A discrete-curve flag as E4 reads it, Python's truth of the
+        // value: a boolean, or an integer of either sign, nonzero when
+        // set. Absent is `None`; any other value is malformed.
+        let flag = |name| -> Result<Option<bool>, AnimError> {
+            Ok(match dict.field(record, name)? {
+                None => None,
+                Some(Value::Bool(value)) => Some(*value),
+                Some(value) => match (value.as_i64(), value.as_u64()) {
+                    (Some(value), _) => Some(value != 0),
+                    (None, Some(_)) => Some(true),
+                    (None, None) => return Err(AnimError::Malformed(name)),
+                },
+            })
         };
-        let discrete =
-            flag("isPPtrCurve")? || flag("isIntCurve")? || flag("isSerializeReferenceCurve")?;
+        let pptr = flag("isPPtrCurve")?;
+        let discrete = pptr.unwrap_or(false)
+            || flag("isIntCurve")?.unwrap_or(false)
+            || flag("isSerializeReferenceCurve")?.unwrap_or(false);
         let transform = class == 4 || (class == 224 && (1..=4).contains(&attribute));
         let mut exact = false;
         let (role, width, kind) = if class == 95 && custom == 8 {
@@ -562,8 +572,9 @@ fn check_bindings(
             {
                 return Err(AnimError::ConflictingHumanMapping(attribute));
             }
-            // E4's key: path 0 and a float curve.
-            exact = dict.count(record, "path")? == 0 && !discrete;
+            // E4's key: path 0, `isPPtrCurve` present and clear, and no
+            // other discrete flag set.
+            exact = dict.count(record, "path")? == 0 && pptr == Some(false) && !discrete;
             (Role::Human(attribute), 1, BindingKind::UnsupportedScalar)
         } else if transform {
             let width = match (custom, attribute) {
