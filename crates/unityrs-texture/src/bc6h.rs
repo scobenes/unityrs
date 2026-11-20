@@ -125,8 +125,10 @@ fn unquantize(value: i32, bits: u32, signed: bool) -> i32 {
     }
 }
 
-/// The interpolated value as binary16 bits: at most 0x7BFF unsigned, and
-/// signed at most 0x7BFF in magnitude, with the sign bit.
+/// The interpolated value as binary16 bits: at most 0x7BFF unsigned;
+/// signed, the magnitude at most 0x7BFF with the sign bit, but for -32768
+/// (which mode 15 can produce), whose magnitude is 0x7C00, so 0xFC00
+/// (negative infinity).
 fn finish(value: i32, signed: bool) -> u16 {
     let bits = if signed {
         ((value.abs() * 31) >> 5) | if value < 0 { 0x8000 } else { 0 }
