@@ -82,6 +82,7 @@ fn read(clip: Object) -> Clip {
 
 fn pose(clip: &Clip, time: f64) -> Result<([f64; 3], [f64; 4]), AnimError> {
     root::target_body_pose(clip, time, SCALE, &Meter::unlimited())
+        .map(|pose| (pose.translation, pose.rotation))
 }
 
 fn assert_close(got: ([f64; 3], [f64; 4]), want: [u64; 7]) {
