@@ -78,7 +78,7 @@ class RenderTests(unittest.TestCase):
             "texture-XYZ: not in workloads.json": lambda g: g["workloads"].update({"texture-XYZ": g["workloads"][
                 "texture-DXT1"]}),
             "texture-DXT1: mode 'strict'": lambda g: g["workloads"]["texture-DXT1"].update(mode="strict"),
-            "a host path": lambda g: g["fingerprint"].update(container="/home/someone/image"),
+            "a host path": lambda g: g["fingerprint"].update(container="/root/someone/image"),
         }
         for want, edit in cases.items():
             gate = copy.deepcopy(GATE)
