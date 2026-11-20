@@ -152,6 +152,8 @@ mod refusals;
 mod body;
 #[path = "humanoid/body_model.rs"]
 mod body_model;
+#[path = "humanoid/body_solve.rs"]
+mod body_solve;
 
 fn muscle_field(clip: &mut Object, name: &str, value: V) {
     let V::Struct(_, root) = &mut clip.value else {

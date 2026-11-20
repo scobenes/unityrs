@@ -7,7 +7,8 @@ use unityrs_anim::{
     AnimError, Clip, RigPaths, discover,
     humanoid::{
         Avatar, BODY_SLOTS, BodyAvatar, BoneMass, DofKind, HumanoidClip, RigAvatar, SettingValue,
-        Xform, body_avatar, body_model, dropped_muscles, humanoid_refusal, read_avatar, rig_avatar,
+        Xform, body_avatar, body_model, body_solve, dropped_muscles, humanoid_refusal, read_avatar,
+        rig_avatar,
     },
     read_clip,
 };
@@ -207,6 +208,47 @@ fn model_digest(
             if let Err(e) = body_model::frame_scope(&rest) {
                 return soft(e, digest);
             }
+            solve_digest(body, &weights, &edges, &frame, meter, digest)
+        }
+        Err(e) => soft(e, digest),
+    }
+}
+
+/// Freeze v8's hips solve on the rest body: the hips frame with each
+/// node's rest rotation, then the solve placing it at a fixed request
+/// under the identity parent, or their typed refusal.
+fn solve_digest(
+    body: &BodyAvatar<'_>,
+    weights: &[f64; 25],
+    edges: &body_model::Edges,
+    rest_frame: &body_model::Matrix,
+    meter: &Arc<Meter>,
+    digest: &mut Digest,
+) -> Result<(), AnimError> {
+    let pose = body.human().pose.as_slice();
+    let rotation = |k: usize| pose.get(k).map_or([0., 0., 0., 1.], |x| x.q.map(f64::from));
+    let local = match body.hips_points(&rotation, meter) {
+        Ok(local) => local,
+        Err(e) => return soft(e, digest),
+    };
+    digest.tag(local.map(|p| p.map(|p| p.map(f64::to_bits))));
+    let hips_scale = body
+        .rest(body_model::HIPS)
+        .map_or(1., |x| f64::from(x.s[0]));
+    let solved = body_solve::solve_hips(
+        [0.25, 1., -0.5],
+        [0., 0.6, 0., 0.8],
+        f64::from(body.scale()),
+        &local,
+        weights,
+        edges,
+        rest_frame,
+        &body_solve::HipsParent::IDENTITY,
+        hips_scale,
+    );
+    match solved {
+        Ok((t, q)) => {
+            digest.tag((t.map(f64::to_bits), q.map(f64::to_bits)));
             Ok(())
         }
         Err(e) => soft(e, digest),
