@@ -51,24 +51,36 @@ fn checked() -> MutexGuard<'static, Option<HashMap<Vec<usize>, Checked>>> {
 /// no code the classes' calls run (a constructor, a collection's
 /// callbacks) can free one before the object is put in it. Only dicts and
 /// lists are written into, through `PyDict_SetItem` and `PyList_SetItem`
-/// (each under the object's own lock where the GIL is off): no tuple is
-/// ever changed once made.
+/// (each under the object's own lock where the GIL is off), and only where
+/// the slot still holds what the read put there; no tuple is ever changed
+/// once made.
 enum Place<'py> {
     /// The read's value.
     Root,
     /// A field of a class's dict, under a key.
     Dict(Bound<'py, PyAny>, Bound<'py, PyAny>),
-    /// An item of a list, or of a pair's items ([`Pending::cls`]).
+    /// An item of a list.
     List(Bound<'py, PyAny>, isize),
+    /// Item 0 or 1 of the pending pair at this index of `pending`.
+    Pair(usize, usize),
 }
 
 /// A value to make once the read is accepted.
+enum Make<'py> {
+    /// A class, called with its dict.
+    Class(Bound<'py, PyAny>),
+    /// A `pair` with an item pending: its two items, held here (never in
+    /// a Python container), each pending one replaced by its object as it
+    /// is made; then their tuple.
+    Pair([Bound<'py, PyAny>; 2]),
+}
+
+/// A value to make once the read is accepted, and where it goes.
 struct Pending<'py> {
-    /// The class to call with `dict`; `None` for a `pair` whose items are
-    /// pending: `dict` is then a list of its two items, made a tuple once
-    /// both are made (as `tuple(items)`).
-    cls: Option<Bound<'py, PyAny>>,
-    dict: Bound<'py, PyAny>,
+    make: Make<'py>,
+    /// What stands where the value goes until it is made: the class's
+    /// dict, or for a pair a new `object()` of its own.
+    stand: Bound<'py, PyAny>,
     at: Place<'py>,
 }
 
@@ -85,7 +97,7 @@ pub(crate) struct ObjMode<'py> {
     /// A container's items that are pending ([`Self::pending_value`]), as
     /// it is made.
     found: Vec<(isize, *mut ffi::PyObject)>,
-    /// The item lists of the pairs pending, by address (each held by its
+    /// The stand-ins of the pairs pending, by address (each held by its
     /// `Pending`, so never reused while the read lasts).
     pairs: HashSet<usize>,
     /// The classes of the dicts being read, and their field counts.
@@ -161,7 +173,7 @@ impl<'py> ObjMode<'py> {
         let base = self.loose.len().checked_sub(self.found.len())?;
         for (i, &(slot, ptr)) in self.found.iter().enumerate() {
             let p = self.pending.get_mut(*self.loose.get(base + i)?)?;
-            if p.dict.as_ptr() != ptr {
+            if p.stand.as_ptr() != ptr {
                 return None;
             }
             p.at = at(slot);
@@ -211,8 +223,8 @@ impl<'py> ObjMode<'py> {
         Some(list)
     }
 
-    /// A `pair`'s tuple; where an item is pending, a list of the two,
-    /// itself pending, made a tuple once both are made ([`Pending::cls`]).
+    /// A `pair`'s tuple; where an item is pending, a new `object()` that
+    /// stands in for it until both items are made ([`Make::Pair`]).
     pub(crate) fn tuple(
         &mut self,
         py: Python<'py>,
@@ -222,19 +234,27 @@ impl<'py> ObjMode<'py> {
         if !self.pending_value(first) && !self.pending_value(second) {
             return crate::direct::pair(py, first, second);
         }
-        let items = self.list(py, [first.clone(), second.clone()].into_iter())?;
-        self.pairs.insert(items.as_ptr() as usize);
-        self.loose.push(self.pending.len());
+        let stand = py.get_type::<PyAny>().call0().ok()?;
+        self.found.clear();
+        for (at, item) in [first, second].into_iter().enumerate() {
+            if self.pending_value(item) {
+                self.found.push((at.cast_signed(), item.as_ptr()));
+            }
+        }
+        let me = self.pending.len();
+        self.place(|at| Place::Pair(me, at.cast_unsigned()))?;
+        self.pairs.insert(stand.as_ptr() as usize);
+        self.loose.push(me);
         self.pending.push(Pending {
-            cls: None,
-            dict: items.clone(),
+            make: Make::Pair([first.clone(), second.clone()]),
+            stand: stand.clone(),
             at: Place::Root,
         });
-        Some(items)
+        Some(stand)
     }
 
     /// Whether `value` is a value still to be made: a class's dict, or a
-    /// pair's items.
+    /// pair's stand-in.
     fn pending_value(&self, value: &Bound<'py, PyAny>) -> bool {
         is_dict(value)
             || (!self.pairs.is_empty() && self.pairs.contains(&(value.as_ptr() as usize)))
@@ -325,8 +345,8 @@ impl<'py> ObjMode<'py> {
         memory = memory.saturating_add(fields.saturating_add(len).saturating_mul(256) + 512);
         self.loose.push(self.pending.len());
         self.pending.push(Pending {
-            cls: Some(cls),
-            dict: dict.clone(),
+            make: Make::Class(cls),
+            stand: dict.clone(),
             at: Place::Root,
         });
         Some((work, memory))
@@ -431,48 +451,92 @@ impl<'py> ObjMode<'py> {
     }
 
     /// The read accepted, its position set: each class called, in order,
-    /// its object put where its dict was; the root's object. A call that
-    /// fails raises.
+    /// its object put where its dict was (each pair made once its items
+    /// are); the root's object. A call that fails raises, as does a slot
+    /// that no longer holds what the read put there.
     pub(crate) fn finish(mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         // SAFETY: a new empty tuple or null with an exception set.
         let empty = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyTuple_New(0)) }?;
+        let lost = || pyo3::exceptions::PySystemError::new_err("a direct read lost its value");
+        let mut pending: Vec<Option<Pending<'py>>> = self.pending.drain(..).map(Some).collect();
         let mut root = None;
-        for p in self.pending.drain(..) {
-            // SAFETY: live objects; a new reference or null with an
-            // exception set.
-            let made = unsafe {
-                Bound::from_owned_ptr_or_err(
-                    py,
-                    match &p.cls {
-                        Some(cls) => {
-                            ffi::PyObject_Call(cls.as_ptr(), empty.as_ptr(), p.dict.as_ptr())
-                        }
-                        None => ffi::PyList_AsTuple(p.dict.as_ptr()),
-                    },
-                )
-            }?;
-            let failed = match p.at {
-                Place::Root => {
-                    root = Some(made);
-                    0
+        for at in 0..pending.len() {
+            let p = pending
+                .get_mut(at)
+                .and_then(Option::take)
+                .ok_or_else(lost)?;
+            let made = match &p.make {
+                // SAFETY: live objects; a new reference or null with an
+                // exception set.
+                Make::Class(cls) => unsafe {
+                    Bound::from_owned_ptr_or_err(
+                        py,
+                        ffi::PyObject_Call(cls.as_ptr(), empty.as_ptr(), p.stand.as_ptr()),
+                    )
+                }?,
+                Make::Pair([first, second]) => {
+                    crate::direct::pair(py, first, second).ok_or_else(|| fetched(py))?
                 }
-                // SAFETY: the dict and key are held (`Place`); the call
-                // takes its own reference to each.
-                Place::Dict(dict, key) => unsafe {
-                    ffi::PyDict_SetItem(dict.as_ptr(), key.as_ptr(), made.as_ptr())
-                },
-                // SAFETY: the list is held (`Place`); the call takes the
-                // object's reference, and raises for a slot gone.
-                Place::List(list, at) => unsafe {
-                    ffi::PyList_SetItem(list.as_ptr(), at, made.into_ptr())
-                },
             };
-            if failed != 0 {
-                return Err(fetched(py));
-            }
+            put(py, &mut pending, p, made, &mut root)?;
         }
-        root.ok_or_else(|| pyo3::exceptions::PySystemError::new_err("a direct read lost its value"))
+        root.ok_or_else(lost)
     }
+}
+
+/// `made` put where `p`'s stand-in is: the root, a pending pair's item, or
+/// a dict's or list's slot, which must still hold the stand-in.
+fn put<'py>(
+    py: Python<'py>,
+    pending: &mut [Option<Pending<'py>>],
+    p: Pending<'py>,
+    made: Bound<'py, PyAny>,
+    root: &mut Option<Bound<'py, PyAny>>,
+) -> PyResult<()> {
+    let changed = || {
+        pyo3::exceptions::PyRuntimeError::new_err("a direct read's value changed while it was made")
+    };
+    let failed = match p.at {
+        Place::Root => {
+            *root = Some(made);
+            0
+        }
+        Place::Pair(pair, item) => {
+            let Some(Some(Pending {
+                make: Make::Pair(items),
+                ..
+            })) = pending.get_mut(pair)
+            else {
+                return Err(changed());
+            };
+            *items.get_mut(item).ok_or_else(changed)? = made;
+            0
+        }
+        Place::Dict(dict, key) => {
+            // SAFETY: the dict and key are held (`Place`); a borrowed item
+            // or null, compared and not kept.
+            let now = unsafe { ffi::PyDict_GetItemWithError(dict.as_ptr(), key.as_ptr()) };
+            if now != p.stand.as_ptr() {
+                return Err(PyErr::take(py).unwrap_or_else(changed));
+            }
+            // SAFETY: as above; the call takes its own references.
+            unsafe { ffi::PyDict_SetItem(dict.as_ptr(), key.as_ptr(), made.as_ptr()) }
+        }
+        Place::List(list, at) => {
+            // SAFETY: the list is held (`Place`); a borrowed item or null,
+            // compared and not kept.
+            let now = unsafe { ffi::PyList_GetItem(list.as_ptr(), at) };
+            if now != p.stand.as_ptr() {
+                return Err(PyErr::take(py).unwrap_or_else(changed));
+            }
+            // SAFETY: as above; the call takes the object's reference.
+            unsafe { ffi::PyList_SetItem(list.as_ptr(), at, made.into_ptr()) }
+        }
+    };
+    if failed != 0 {
+        return Err(fetched(py));
+    }
+    Ok(())
 }
 
 /// The fields `_construct` counts for `cls`: `__attrs_attrs__`,

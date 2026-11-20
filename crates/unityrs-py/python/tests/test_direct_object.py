@@ -1,5 +1,7 @@
 """Object mode's direct read gives the full path's objects, work and memory."""
+import contextlib
 import functools
+import gc
 import struct
 import sys
 import unittest
@@ -83,6 +85,30 @@ def fixture():
             S.Obj(3, 2, text('n') + text('') + struct.pack('<i', 9)),
             S.Obj(4, 3, struct.pack('<3f', 1.5, -2.0, 3.25) + struct.pack('<3i', 2, 5, 6))]
     return S.serialized_file(types, objs)
+
+
+@contextlib.contextmanager
+def pairs_class():
+    """A file of one `Y7Pairs`, whose `m_Pair` holds two `Vector3f` (and
+    `m_Items` a list, so its dict is one a collection tracks), with a plain
+    class for it in `unityrs.classes` while in use."""
+    import attrs
+    classes = unityrs.classes
+
+    @attrs.define(slots=False)
+    class Y7Pairs(classes.Object):
+        m_Pair: object = None
+        m_Items: object = None
+
+    tree = node('Y7Pairs', 'Base', [node('pair', 'm_Pair', [
+        floats('Vector3f', 'first', 'xyz'), floats('Vector3f', 'second', 'xyz')]),
+        vector('m_Items', node('int', 'data'))])
+    classes.Y7Pairs = Y7Pairs
+    try:
+        yield S.serialized_file([S.Type(114, tree)],
+                                [S.Obj(1, 0, struct.pack('<6f2i', 1, 2, 3, 4, 5, 6, 1, 7))])
+    finally:
+        del classes.Y7Pairs
 
 
 def large_fixture(count=10000):
@@ -213,69 +239,94 @@ class DirectObject(unittest.TestCase):
     def test_a_pair_of_two_classes(self):
         """A `pair` whose items are both classes' objects: each made, the
         pair then their tuple, as on the full path."""
-        import attrs
-        classes = unityrs.classes
-
-        @attrs.define(slots=False)
-        class Y7Pairs(classes.Object):
-            m_Pair: object = None
-
-        tree = node('Y7Pairs', 'Base', [node('pair', 'm_Pair', [
-            floats('Vector3f', 'first', 'xyz'), floats('Vector3f', 'second', 'xyz')])])
-        data = S.serialized_file([S.Type(114, tree)],
-                                 [S.Obj(1, 0, struct.pack('<6f', 1, 2, 3, 4, 5, 6))])
-        classes.Y7Pairs = Y7Pairs
-        try:
+        with pairs_class() as data:
             env = unityrs.Environment()
             env.load_file(data, name='f')
             obj = env.objects[0]
             self.assertIsNotNone(obj._native.parse_direct(obj, True, True))
             direct = read(data, 0, False)
             full = read(data, 0, True)
-        finally:
-            del classes.Y7Pairs
         self.assertIs(type(direct.m_Pair), tuple)
         self.assertEqual([type(v).__name__ for v in direct.m_Pair], ['Vector3f', 'Vector3f'])
         self.assertEqual(shape(direct), shape(full))
 
-    def test_a_container_freed_by_a_collection_callback(self):
-        """A collection's callback, run while the classes are called, that
-        frees a container a class's object is yet to go in (the root's list
-        of children, deleted from its dict, and that list emptied) leaves
-        the read to raise, never to write into freed memory."""
-        import gc
+    def test_a_half_made_pairs_parent_changed_while_its_items_are_made(self):
+        """Code run while a pair's items are made (here a profile hook, as
+        the first item's class is called) finds only an opaque stand-in
+        for the pair in its parent: trying to grow it changes nothing (the
+        full path's object), and replacing it raises."""
+        classes = unityrs.classes
+        for change in ('grow', 'replace'):
+            seen = []
 
-        pending = []
+            def profile(frame, event, arg):
+                if event != 'call' or frame.f_code is not classes.Vector3f.__init__.__code__ or seen:
+                    return
+                for o in gc.get_objects():
+                    # The root's dict.
+                    if (type(o) is dict and o.keys() == {'m_Pair', 'm_Items'}
+                            and o['m_Items'] == [7]):
+                        stand = o['m_Pair']
+                        seen.append(type(stand))
+                        if change == 'replace':
+                            o['m_Pair'] = [1, 2, 3]
+                        else:
+                            try:
+                                stand.append(3)
+                            except AttributeError:
+                                pass
 
-        def hook(phase, info):
-            if phase != 'start':
-                return
-            for o in gc.get_objects():
-                children = o.get('m_Children') if type(o) is dict else None
-                # The list while a child's object is still to go in it:
-                # its items still the classes' dicts.
-                if type(children) is list and any(type(c) is dict for c in children):
-                    pending.append(len(children))
-                    o.pop('m_Children').clear()
+            with pairs_class() as data, self.subTest(change=change):
+                full = read(data, 0, True)
+                env = unityrs.Environment()
+                env.load_file(data, name='f')
+                obj = env.objects[0]
+                sys.setprofile(profile)
+                try:
+                    if change == 'replace':
+                        with self.assertRaises(RuntimeError):
+                            obj._native.parse_direct(obj, True, True)
+                    else:
+                        direct = obj._native.parse_direct(obj, True, True)
+                finally:
+                    sys.setprofile(None)
+                self.assertEqual(seen, [object])
+                if change == 'grow':
+                    self.assertEqual(shape(direct), shape(full))
 
+    def test_a_container_freed_while_its_items_are_made(self):
+        """A container freed while a child's object is still to go in it
+        (the root's list of children, taken from the root's dict, emptied,
+        and a collection forced, as the first class is called) leaves the
+        read to raise, never to write into freed memory."""
+        pptr = unityrs.classes.PPtr.__init__.__code__
         for _ in range(3):
+            pending = []
+
+            def profile(frame, event, arg):
+                if event != 'call' or frame.f_code is not pptr or pending:
+                    return
+                for o in gc.get_objects():
+                    children = o.get('m_Children') if type(o) is dict else None
+                    # The root's list, its children still the classes'
+                    # dicts (their objects not yet in it).
+                    if (type(children) is list and len(children) == 2
+                            and all(type(c) is dict for c in children)
+                            and [c.get('m_PathID') for c in children] == [8, 9]):
+                        pending.append(len(children))
+                        o.pop('m_Children').clear()
+                gc.collect()
+
             env = unityrs.Environment()
             env.load_file(fixture(), name='f')
             obj = sorted(env.objects, key=lambda o: o.path_id)[0]
-            threshold = gc.get_threshold()
-            gc.callbacks.append(hook)
-            gc.set_threshold(1, 1, 1)
+            sys.setprofile(profile)
             try:
-                # The list's slot gone (`IndexError`), or then the
-                # root's field (`TypeError`).
-                with self.assertRaises((IndexError, TypeError)):
+                with self.assertRaises(IndexError):
                     obj._native.parse_direct(obj, True, True)
-                self.assertEqual(pending, [2])
-                del pending[:]
             finally:
-                gc.set_threshold(*threshold)
-                gc.callbacks.remove(hook)
-            gc.collect()
+                sys.setprofile(None)
+            self.assertEqual(pending, [2])
 
     def test_work_and_memory_bounds_are_the_full_paths(self):
         data = fixture()
