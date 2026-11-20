@@ -395,7 +395,7 @@ jobs:
       # The benchmark harness's own tests (docs/plans/bench.md section 5.3):
       # standard library only, so they need no oracle; an exact minimum.
       - name: Self-tests (benchmark harness)
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/bench/tests=51'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/bench/tests=84'
 
   # A PR that changes benchmarks/wall.json publishes a run: the file must be
   # the artifact of the bench-wall.yml run it names, dispatched, successful,
@@ -420,6 +420,100 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: python tools/bench/bench.py check --wall-run --base "$BASE_SHA" --repo "$GITHUB_REPOSITORY"
+
+  # The instruction-count gate (docs/plans/bench.md decisions 6 and 7, section
+  # 5.1): each Rust workload's scope once under callgrind (valgrind 3.19.0,
+  # bookworm's deb, sha256-pinned) in debian:bookworm pinned by digest, its
+  # own instructions, allocation calls and bytes held to the PR's
+  # benchmarks/gate.json within the base branch's tolerance, in the base
+  # branch's mode per workload (a calibrating workload only reports). No path
+  # filter: it always reports. The measured gate.json is the artifact a
+  # refresh commits. The ASLR probe records whether libc's count repeats with
+  # ASLR off (`setarch -R`, which needs the unconfined seccomp profile); it
+  # never fails the job. Timeout: provisional, the gate step measured 47 s
+  # under emulation for all 22 workloads; the cold build dominates.
+  bench-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    container:
+      image: debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
+      options: --security-opt seccomp=unconfined
+    env:
+      CARGO_HOME: /opt/cargo
+      RUSTUP_HOME: /opt/rustup
+      BENCH_IMAGE: debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
+    steps:
+      - name: Install Debian build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            gcc g++ make libc6-dev git curl ca-certificates python3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Trust the checked-out workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install checksum-verified rustup and the pinned toolchain
+        run: |
+          set -eu
+          test "$(uname -m)" = x86_64
+          installer="$RUNNER_TEMP/rustup-init"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init \
+            --output "$installer"
+          printf '%s  %s\n' 20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c "$installer" \
+            | sha256sum --check --strict
+          chmod +x "$installer"
+          "$installer" -y --no-modify-path --default-toolchain none
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          "$CARGO_HOME/bin/rustup" toolchain install --no-self-update
+      - name: Restore the cargo cache
+        id: cargo-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            /opt/cargo/registry
+            /opt/cargo/git
+            target
+          key: bench-gate-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - name: Build unityrs-bench
+        run: cargo build --release --locked -p unityrs-bench
+      - name: Save the cargo cache
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            /opt/cargo/registry
+            /opt/cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+      - name: Install valgrind 3.19.0
+        run: sh tools/bench/install_valgrind.sh "$RUNNER_TEMP/valgrind"
+      - name: Count each workload's instructions and compare with gate.json
+        env:
+          UNITYRS_BENCH_BIN: target/release/unityrs-bench
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: >-
+          UNITYRS_BENCH_CACHE="$RUNNER_TEMP/bench-cache"
+          python3 tools/bench/bench.py gate --valgrind "$RUNNER_TEMP/valgrind" --out "$RUNNER_TEMP/bench-gate"
+          --base "$BASE_SHA" --container "$BENCH_IMAGE" --aslr-probe typetree-objects-lz4 --aslr-runs 3
+      # In a container job runner.temp names the host's path: the upload
+      # takes a path relative to the workspace.
+      - name: Stage the measured gate.json for upload
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/bench-gate/gate.json" ]; then
+            mkdir -p bench-gate && cp "$RUNNER_TEMP/bench-gate/gate.json" bench-gate/gate.json
+          fi
+      - name: Upload the measured gate.json
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bench-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bench-gate/gate.json
+          if-no-files-found: warn
+          retention-days: 30
 
   # The parity tools' Python side, on the pinned oracle stack (docs/DESIGN.md
   # section 3) and with UnityPy's samples, so the tests that need them run;

@@ -166,6 +166,7 @@ scripts/dev python tools/bench/bench.py run --out DIR           # the full compa
 scripts/dev python tools/bench/bench.py run --out DIR --quick   # gate scale, 3 rounds
 python tools/bench/bench.py render [--check]
 python tools/bench/bench.py check --wall-run RUN_ID             # CI: wall.json equals that run's artifact
+python3 tools/bench/bench.py gate --valgrind PREFIX --out DIR    # CI: the instruction-count gate (5.1)
 ```
 
 ### 4.5 Results
@@ -199,7 +200,7 @@ The job:
 4. compares each workload's `ir_own`, `allocs` and `alloc_bytes` with the PR's own `gate.json`, under the base branch's mode and tolerance (decision 7);
 5. writes a job summary with base, PR and measured counts for every workload, and uploads the measured `gate.json`.
 
-**What fails.** An `enforcing` workload with any gated count outside ±1%, with the "refresh the baseline" message. A digest change on an enforcing workload. A workload missing from the PR's `gate.json`. A scope check (4.2). A fingerprint mismatch. A `calibrating` workload only reports.
+**What fails.** An `enforcing` workload with any gated count outside ±1%, with the "refresh the baseline" message. A digest change on an enforcing workload. A workload missing from the PR's `gate.json`. A scope check (4.2). A fingerprint mismatch, once any workload is `enforcing`; while every workload is `calibrating` there is no enforced count for it to guard, so it is reported. A `calibrating` workload only reports. A base branch without `gate.json` makes every workload `calibrating`, and a base commit missing from the checkout fails the job, as a policy read from nowhere would let a PR set its own.
 
 **A refresh.** The job compares the measured counts with the PR's own `gate.json`, so a change in counts passes only if the PR also changes `gate.json`. That change is the refresh. It shows in the diff, and the job summary shows each delta against the base branch's counts. The new counts come from the job's uploaded file, and `BENCHMARKS.md` is regenerated with them. A fingerprint change (toolchain, container or valgrind) is refreshed the same way. `main`'s own run catches drift when two PRs merge one after another.
 
@@ -295,6 +296,7 @@ The spike ran in `unityrs-dev`: x86-64 Debian 12 under Rosetta, with 10 cores an
 | guest CPUID | Under valgrind the guest reads a built-in `Intel Core i5 670` (SSE4.2, no AVX), not the host. So counts depend on the host's capability class, and baselines come from the runners. |
 | small and large scopes | `unityrs dump` of one 7-object bundle, scoped to `dump_on`: 2,399,110 in 3 of 3 runs. Whole process: a spread of 0.022%. 128 MiB of LZ4 decode, scoped to `BundleFile::entry_bytes`: 86,040,117 in 3 of 3 runs. |
 | hash maps, 11 runs | `unityrs dump` of the testkit's 518 bundle and serialized seed files, which exercises `walk/dict.rs`, `value/builder.rs` and the environment registry. Scoped to `dump_on`, the total was 211.43 to 211.64 million over 11 runs, **a spread of 0.103%**. Interposing `getrandom` with fixed bytes, which pins every `RandomState` seed, still gave 0.092% over 6 runs. One thread does all the counted work (`--separate-threads`). **By object:** unityrs's own code was 186,657,811 to 186,659,198 (0.0007%), and libc's 24.77 to 24.99 million (0.9%), all of it in glibc malloc internals. So the hasher is not the source: the allocator varies with addresses, and ASLR cannot be disabled in the container. The plan therefore gates `ir_own` (decision 6), pins no hasher, and records libc beside it. BN-2 also records whether libc's count repeats with ASLR off on a runner (`setarch -R` under an unconfined seccomp profile). Gating libc's instructions would be a later policy change (decision 7). Decision 6 stands. |
+| BN-2's gate, 10 runs (2026-11-19) | In `unityrs-dev`, all 22 BN-1 workloads at the gate scale, each scope toggled alone (`unityrs-bench run`): `ir_own` was identical in 10 of 10 runs for every workload (a spread of 0), and so were the four allocation-call counts, `alloc_bytes` and the digests. libc's count moved by 2 instructions in two workloads (`load-objects-lz4`, `load-objects-lzma`, under 0.0002%) and not at all in the rest. One pass of all 22 takes about 50 s under emulation. Whether libc's count repeats with ASLR off cannot be measured there: `setarch -R` is refused (`EPERM`, the default seccomp profile). The `bench-gate` job therefore runs with `seccomp=unconfined` and records it on the runner in its summary (`bench.py gate --aslr-probe`). Valgrind's guest CPUID follows the host's class (no AVX under Rosetta, AVX2 on the runners), so the committed counts from the container differ from the runner's: the workloads stay `calibrating` and the first runs on `main` refresh them. |
 | UnityPy under callgrind | It runs, about 52x slower than native. `import UnityPy` alone is 5.09 billion `Ir`, with a spread of 0.09% that dwarfs small workloads. UnityPy is wall clock only. |
 
 ---

@@ -1,0 +1,1760 @@
+# callgrind format
+version: 1
+creator: callgrind-3.19.0
+pid: 1
+cmd:  /bench/unityrs-bench run texture-RGBA32 /bench/gate/textures-RGBA32.bundle
+part: 1
+
+
+desc: I1 cache:
+desc: D1 cache:
+desc: LL cache:
+
+desc: Timerange: Basic block 0 - 253461
+desc: Trigger: Program termination
+
+positions: line
+events: Ir
+summary: 7013076
+
+
+ob=(3) /usr/lib/x86_64-linux-gnu/libc.so.6
+fl=(3) ???
+fn=(4262) 0x0000000000097360
+0 1815
+cfn=(4368) 0x0000000000094990
+calls=96 0
+0 68
+0 37
+cfn=(4300) 0x0000000000096b20
+calls=3 0
+0 157
+0 243
+
+fn=(4322) brk
+0 8
+
+fn=(4832) 0x0000000000096120
+0 1216
+
+fn=(4966) free
+0 323
+cfn=(4832)
+calls=116 0
+0 1088
+0 85
+
+fn=(4212) malloc
+0 958
+cfn=(4262)
+calls=89 0
+0 2056
+0 105
+
+fn=(4170) 0x00000000000271d0
+cob=(6) /bench/unityrs-bench
+cfi=(6) ???
+cfn=(4184) main
+calls=1 0
+0 7013076
+
+fn=(4300)
+0 105
+cfn=(4318) __default_morecore
+calls=2 0
+0 40
+0 12
+
+fn=(4368)
+0 68
+
+fn=(4806) 0x0000000000098340
+0 542
+cfn=(4262)
+calls=6 0
+0 264
+0 34
+cfn=(3280) memcpy
+calls=6 0
+0 20
+0 2
+0 8
+cfn=(4832)
+calls=6 0
+0 128
+0 122
+
+fn=(4122) (below main)
+cfn=(4170)
+calls=1 0
+0 7013076
+
+fn=(4804) realloc
+0 624
+cfn=(4806)
+calls=33 0
+0 1120
+0 252
+
+fn=(5012) 0x00000000000a3640
+0 15430
+
+fn=(3280)
+0 34035
+
+fn=(4318)
+0 4
+cfn=(4320) sbrk
+calls=3 0
+0 32
+0 4
+
+fn=(4320)
+0 17
+cfn=(4322)
+calls=2 0
+0 8
+0 7
+
+fn=(5576) 0x00000000000a2800
+0 306
+
+ob=(1) /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+fl=(1) ???
+fn=(0) 0x000000000001ab70
+cob=(6)
+cfi=(6)
+cfn=(4120) (below main)
+calls=1 0
+0 7013076
+
+ob=(6)
+fl=(6)
+fn=(5836) unityrs_texture::contain::contain::<(), core::panic::unwind_safe::AssertUnwindSafe<unityrs_texture::decode::decode_with::{closure#1}>>
+0 68
+cfn=(5838) unityrs_texture::decode::fill
+calls=2 0
+0 37188
+0 34
+
+fn=(5302) <alloc::raw_vec::RawVecInner>::finish_grow
+0 48
+cfn=(5060) __rustc::__rust_no_alloc_shim_is_unstable_v2
+calls=2 0
+0 2
+0 6
+cfn=(5062) __rustc::__rust_alloc
+calls=2 0
+0 528
+0 578
+cfn=(5334) __rustc::__rust_realloc
+calls=28 0
+0 1274
+0 64
+cfn=(5060)
+calls=46 0
+0 16
+0 48
+cfn=(5062)
+calls=46 0
+0 2179
+0 394
+cfn=(5334)
+calls=4 0
+0 1054
+0 14
+cfn=(5060)
+calls=2 0
+0 2
+0 6
+cfn=(5062)
+calls=2 0
+0 118
+0 70
+
+fn=(5310) <unityrs_core::budget::Permit>::absorb
+0 608
+cfn=(5312) <unityrs_core::budget::Permit>::absorb_record
+calls=104 0
+0 1165
+0 256
+
+fn=(5412) unityrs_core::limits::vec::grow_counted::<i32>
+0 2030
+cfn=(5226) <unityrs_core::limits::meter::Meter>::reserve
+calls=29 0
+0 1050
+0 610
+cfn=(5302)
+calls=29 0
+0 1779
+0 680
+cfn=(5304) <unityrs_core::budget::Permit>::shrink_to
+calls=29 0
+0 340
+0 150
+cfn=(5306) <unityrs_core::limits::meter::Charge>::absorb
+calls=29 0
+0 2120
+0 1420
+
+fn=(5554) alloc::boxed::box_new_uninit
+0 6
+cfn=(5060)
+calls=2 0
+0 1
+0 3
+cfn=(5062)
+calls=2 0
+0 194
+0 6
+
+fn=(5692) unityrs_core::once::get_or_publish_result::<alloc::sync::Arc<unityrs_core::typetree::tree::Tree>, unityrs_core::typetree::rows::TreeError, <unityrs_core::files::serialized::SerializedType>::tree_with<<unityrs_core::files::serialized::SerializedType>::tree::{closure#0}>::{closure#0}>
+0 56
+cfn=(5694) <unityrs_core::typetree::tree::Tree>::compile_inner
+calls=1 0
+0 43639
+0 52
+cfn=(5730) <std::sync::once_lock::OnceLock<core::result::Result<alloc::sync::Arc<unityrs_core::typetree::tree::Tree>, unityrs_core::once::KeptError<unityrs_core::typetree::rows::TreeError>>>>::initialize::<<std::sync::once_lock::OnceLock<core::result::Result<alloc::sync::Arc<unityrs_core::typetree::tree::Tree>, unityrs_core::once::KeptError<unityrs_core::typetree::rows::TreeError>>>>::get_or_init<unityrs_core::once::get_or_publish_result<alloc::sync::Arc<unityrs_core::typetree::tree::Tree>, unityrs_core::typetree::rows::TreeError, <unityrs_core::files::serialized::SerializedType>::tree_with<<unityrs_core::files::serialized::SerializedType>::tree::{closure#0}>::{closure#0}>::{closure#1}>::{closure#0}, !>
+calls=1 0
+0 88
+0 1
+
+fn=(5732) <std::sync::once::Once>::call_once_force::<<std::sync::once_lock::OnceLock<core::result::Result<alloc::sync::Arc<unityrs_core::typetree::tree::Tree>, unityrs_core::once::KeptError<unityrs_core::typetree::rows::TreeError>>>>::initialize<<std::sync::once_lock::OnceLock<core::result::Result<alloc::sync::Arc<unityrs_core::typetree::tree::Tree>, unityrs_core::once::KeptError<unityrs_core::typetree::rows::TreeError>>>>::get_or_init<unityrs_core::once::get_or_publish_result<alloc::sync::Arc<unityrs_core::typetree::tree::Tree>, unityrs_core::typetree::rows::TreeError, <unityrs_core::files::serialized::SerializedType>::tree_with<<unityrs_core::files::serialized::SerializedType>::tree::{closure#0}>::{closure#0}>::{closure#1}>::{closure#0}, !>::{closure#0}>::{closure#0}
+0 9
+
+fn=(5762) <unityrs_core::walk::dict::Dict>::finish
+0 60
+cfn=(5764) unityrs_core::limits::vec::shrink_charged::<(unityrs_core::typetree::rows::NodeId, unityrs_core::value::Value)>
+calls=4 0
+0 128
+0 120
+
+fn=(5870) core::fmt::write
+0 1198
+cfn=(5878) <alloc::string::String as core::fmt::Write>::write_str
+calls=8 0
+0 768
+0 1224
+cfn=(5902) <&u8 as core::fmt::LowerHex>::fmt
+calls=32 0
+0 4807
+0 48
+cfn=(5888) <u64 as core::fmt::Display>::fmt
+calls=2 0
+0 1218
+cfn=(5882) <u32 as core::fmt::Display>::fmt
+calls=4 0
+0 636
+cfn=(5872) <&str as core::fmt::Display>::fmt
+calls=2 0
+0 400
+0 540
+
+fn=(5882)
+0 160
+cfn=(5884) <core::fmt::Formatter>::pad_integral
+calls=4 0
+0 460
+0 16
+
+fn=(5888)
+0 104
+cfn=(5884)
+calls=2 0
+0 1106
+0 8
+
+fn=(5902)
+0 64
+cfn=(5904) <u8 as core::fmt::LowerHex>::fmt
+calls=32 0
+0 4743
+
+fn=(5060)
+0 26
+
+fn=(5334)
+0 204
+cob=(3)
+cfi=(3)
+cfn=(4804)
+calls=32 0
+0 1996
+0 128
+
+fn=(5688) <unityrs_core::object::ObjectRef>::read_fields_mode
+0 28
+cfn=(5690) <unityrs_core::object::ObjectRef>::tree
+calls=2 0
+0 43936
+0 162
+cfn=(5734) unityrs_core::walk::read::read_with_fields
+calls=2 0
+0 27725
+0 42
+cfn=(5494) unityrs_core::pin::try_copy_out
+calls=2 0
+0 44
+0 20
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 122
+0 22
+
+fn=(5712) core::slice::sort::shared::smallsort::insertion_sort_shift_left::<u32, <[u32]>::sort_unstable_by_key<((usize, usize), u32), unityrs_core::typetree::tree::names::number<unityrs_core::typetree::tree::names::name_ids::{closure#0}>::{closure#1}>::{closure#0}>
+0 488
+
+fn=(5720) core::ptr::drop_glue::<unityrs_core::typetree::tree::names::Scratch>
+0 11
+cfn=(5370) __rustc::__rust_dealloc
+calls=1 0
+0 89
+0 2
+cfn=(5314) core::ptr::drop_glue::<unityrs_core::limits::meter::Charge>
+calls=1 0
+0 67
+0 6
+cfn=(5314)
+calls=1 0
+0 67
+0 9
+cfn=(5314)
+calls=1 0
+0 67
+
+fn=(5738) <unityrs_core::value::builder::ValueBuilder>::new
+0 44
+cfn=(5740) <unityrs_core::limits::vec::MeteredVec<triomphe::arc::Arc<unityrs_core::typetree::rows::NodeList>>>::push
+calls=2 0
+0 1416
+0 48
+
+fn=(5752) unityrs_core::limits::vec::grow_counted::<(unityrs_core::typetree::rows::NodeId, unityrs_core::value::Value)>
+0 750
+cfn=(5226)
+calls=4 0
+0 356
+0 244
+cfn=(5302)
+calls=4 0
+0 673
+0 260
+cfn=(5304)
+calls=4 0
+0 136
+0 60
+cfn=(5306)
+calls=4 0
+0 848
+0 488
+
+fn=(5758) <unityrs_core::limits::vec::MeteredVec<(unityrs_core::typetree::rows::NodeId, unityrs_core::value::Value)>>::push
+0 720
+cfn=(5752)
+calls=40 0
+0 1000
+0 1040
+
+fn=(5872)
+0 10
+cfn=(5874) <str as core::fmt::Display>::fmt
+calls=2 0
+0 390
+
+fn=(5844) core::ptr::drop_glue::<unityrs_core::value::Value>
+0 46
+cfn=(5845) core::ptr::drop_glue::<unityrs_core::value::Value>'2
+calls=2 0
+0 78
+0 56
+cfn=(5845)
+calls=28 0
+0 1220
+0 148
+cfn=(5370)
+calls=2 0
+0 178
+
+fn=(5845)
+0 952
+cfn=(5322) bytes::bytes::shared_drop
+calls=2 0
+0 18
+0 16
+cfn=(5322)
+calls=2 0
+0 18
+0 20
+cfn=(5845)
+calls=2 0
+0 46
+0 20
+cfn=(5845)
+calls=10 0
+0 230
+0 76
+cfn=(5370)
+calls=2 0
+0 178
+
+fn=(5846) <unityrs_core::limits::meter::Charge as core::ops::drop::Drop>::drop
+0 34
+
+fn=(5848) <unityrs_core::budget::PermitRecord as core::ops::drop::Drop>::drop
+0 16
+
+fn=(5062)
+0 364
+cob=(3)
+cfi=(3)
+cfn=(4212)
+calls=93 0
+0 3119
+0 222
+
+fn=(5306)
+0 800
+cfn=(5308) <alloc::vec::into_iter::IntoIter<unityrs_core::limits::meter::Charge> as core::ops::drop::Drop>::drop
+calls=97 0
+0 736
+0 544
+cfn=(5310)
+calls=97 0
+0 2029
+0 96
+cfn=(5314)
+calls=97 0
+0 2304
+0 256
+
+fn=(5734)
+0 152
+cfn=(5214) bytes::bytes::shared_clone
+calls=2 0
+0 20
+0 26
+cfn=(5736) unityrs_core::walk::boost::read_resolved
+calls=2 0
+0 27361
+0 74
+cfn=(5322)
+calls=2 0
+0 18
+0 74
+
+fn=(5800) unityrs_texture::platform::decode_in_as
+0 18
+cfn=(5802) unityrs_texture::platform::platform_decode
+calls=2 0
+0 56504
+0 6
+
+fn=(5808) <unityrs_texture::format::Format>::texture_format
+0 16
+
+fn=(5810) unityrs_texture::decode::plan
+0 342
+cfn=(5812) unityrs_texture::tierb::layout
+calls=6 0
+0 48
+0 72
+cfn=(5814) <unityrs_texture::format::Format>::library
+calls=6 0
+0 126
+0 126
+cfn=(5816) unityrs_texture::decode::length::raw_pixel_bytes
+calls=6 0
+0 318
+0 60
+cfn=(5818) <unityrs_texture::format::Format>::raw_bits
+calls=6 0
+0 228
+0 246
+cfn=(5820) unityrs_texture::decode::length::scratch_charge
+calls=6 0
+0 276
+0 66
+
+fn=(5828) <unityrs_core::limits::vec::MeteredVec<u8>>::with_capacity
+0 44
+cfn=(5830) unityrs_core::limits::vec::grow_counted::<u8>
+calls=2 0
+0 1704
+0 40
+
+fn=(5878)
+0 576
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=32 0
+0 478
+0 580
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=16 0
+0 212
+0 174
+cfn=(5880) <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>
+calls=6 0
+0 1542
+0 18
+
+fn=(5886) <core::fmt::Formatter>::pad_integral::write_prefix
+0 798
+
+fn=(5892) sha2::sha256::shani_cpuid::init_get::init_inner
+0 23
+
+fn=(5840) unityrs_texture::raw::decode
+0 1358
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=256 0
+0 30912
+0 4880
+
+fn=(5312)
+0 1165
+
+fn=(5350) <std::sys::sync::once::futex::Once>::call
+0 37
+cfn=(5732)
+calls=1 0
+0 9
+0 12
+
+fn=(5410) <unityrs_core::limits::vec::MeteredVec<i32>>::with_capacity
+0 92
+cfn=(5412)
+calls=11 0
+0 2698
+0 80
+
+fn=(5682) <alloc::vec::Vec<unityrs_texture::decode::Image> as alloc::vec::spec_from_iter::SpecFromIter<unityrs_texture::decode::Image, core::iter::adapters::GenericShunt<core::iter::adapters::map::Map<core::slice::iter::Iter<unityrs_core::object::ObjectRef>, unityrs_bench::work::texture>, core::result::Result<core::convert::Infallible, alloc::string::String>>>>::from_iter
+0 21
+cfn=(5684) unityrs_bench::work::texture
+calls=1 0
+0 103805
+0 59
+cfn=(5060)
+calls=1 0
+0 1
+0 3
+cfn=(5062)
+calls=1 0
+0 187
+0 32
+cfn=(5684)
+calls=1 0
+0 59592
+0 102
+
+fn=(5696) <unityrs_core::limits::vec::MeteredVec<unityrs_core::typetree::tree::NodeInfo>>::with_capacity
+0 22
+cfn=(5698) unityrs_core::limits::vec::grow_counted::<unityrs_core::typetree::tree::NodeInfo>
+calls=1 0
+0 790
+0 20
+
+fn=(5718) core::slice::sort::shared::smallsort::insertion_sort_shift_left::<(u64, u32, u32), <(u64, u32, u32) as core::cmp::PartialOrd>::lt>
+0 314
+
+fn=(5728) <unityrs_core::limits::vec::MeteredVec<unityrs_core::typetree::tree::NodeInfo>>::into_boxed_slice
+0 53
+
+fn=(5740)
+0 84
+cfn=(5226)
+calls=2 0
+0 178
+0 168
+cfn=(5302)
+calls=2 0
+0 336
+0 82
+cfn=(5304)
+calls=2 0
+0 68
+0 30
+cfn=(5306)
+calls=2 0
+0 424
+0 46
+
+fn=(5746) <unityrs_core::walk::boost::Reader>::value
+0 174
+cfn=(5748) <unityrs_core::walk::boost::Reader>::class
+calls=2 0
+0 21861
+0 150
+
+fn=(5747) <unityrs_core::walk::boost::Reader>::value'2
+0 3696
+cfn=(5760) <unityrs_core::walk::boost::Reader>::prim
+calls=36 0
+0 1528
+0 296
+cfn=(5754) <unityrs_core::walk::boost::Reader>::length
+calls=2 0
+0 46
+0 50
+cfn=(5280) <bytes::bytes::Bytes>::slice::<core::ops::range::Range<usize>>
+calls=2 0
+0 82
+0 32
+cfn=(5754)
+calls=2 0
+0 46
+0 18
+cfn=(5749) <unityrs_core::walk::boost::Reader>::class'2
+calls=2 0
+0 7032
+0 360
+cfn=(5280)
+calls=2 0
+0 82
+0 1752
+
+fn=(5760)
+0 1528
+
+fn=(5768) <unityrs_core::value::builder::ValueBuilder>::finish
+0 80
+cfn=(5306)
+calls=2 0
+0 424
+0 68
+
+fn=(5824) unityrs_texture::decode::decode_with
+0 52
+cfn=(5810)
+calls=2 0
+0 636
+0 26
+cfn=(5826) <unityrs_core::limits::meter::Meter>::count_decode
+calls=2 0
+0 28
+0 54
+cfn=(5828)
+calls=2 0
+0 1788
+0 106
+cob=(3)
+cfi=(3)
+cfn=(5012)
+calls=2 0
+0 14362
+0 34
+cfn=(5822) unityrs_texture::decode::length::astc_footprint
+calls=2 0
+0 60
+0 44
+cfn=(5836)
+calls=2 0
+0 37290
+0 46
+
+fn=(5898) <alloc::collections::btree::map::entry::VacantEntry<alloc::string::String, serde_json::value::Value>>::insert_entry
+0 36
+cfn=(5900) <alloc::collections::btree::node::Handle<alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Mut, alloc::string::String, serde_json::value::Value, alloc::collections::btree::node::marker::Leaf>, alloc::collections::btree::node::marker::Edge>>::insert_recursing::<alloc::alloc::Global, <alloc::collections::btree::map::entry::VacantEntry<alloc::string::String, serde_json::value::Value>>::insert_entry::{closure#0}>
+calls=1 0
+0 97
+0 6
+cfn=(5060)
+calls=1 0
+0 1
+0 3
+cfn=(5062)
+calls=1 0
+0 185
+0 39
+
+fn=(5834) <unityrs_core::limits::meter::Charge>::release
+0 42
+cfn=(5304)
+calls=2 0
+0 68
+
+fn=(4186) std::rt::lang_start_internal
+cfn=(5072) std::rt::lang_start::<std::process::ExitCode>::{closure#0}
+calls=1 0
+0 7013076
+
+fn=(5072)
+cfn=(5074) std::sys::backtrace::__rust_begin_short_backtrace::<fn() -> std::process::ExitCode, std::process::ExitCode>
+calls=1 0
+0 7013076
+
+fn=(5304)
+0 884
+
+fn=(5318) core::ptr::drop_glue::<unityrs_core::budget::PermitRecords>
+0 622
+
+fn=(5322)
+0 72
+
+fn=(5680) core::iter::adapters::try_process::<core::iter::adapters::map::Map<core::slice::iter::Iter<unityrs_core::object::ObjectRef>, unityrs_bench::work::texture>, unityrs_texture::decode::Image, core::result::Result<core::convert::Infallible, alloc::string::String>, <core::result::Result<alloc::vec::Vec<unityrs_texture::decode::Image>, alloc::string::String> as core::iter::traits::collect::FromIterator<core::result::Result<unityrs_texture::decode::Image, alloc::string::String>>>::from_iter<core::iter::adapters::map::Map<core::slice::iter::Iter<unityrs_core::object::ObjectRef>, unityrs_bench::work::texture>>::{closure#0}, alloc::vec::Vec<unityrs_texture::decode::Image>>
+0 16
+cfn=(5682)
+calls=1 0
+0 163802
+0 17
+
+fn=(5704) unityrs_core::typetree::tree::names::name_ids
+0 19
+cfn=(5410)
+calls=1 0
+0 684
+0 545
+cfn=(5412)
+calls=27 0
+0 648
+0 174
+cfn=(5410)
+calls=1 0
+0 818
+0 408
+cfn=(5412)
+calls=27 0
+0 648
+0 204
+cfn=(5412)
+calls=1 0
+0 770
+0 44
+cfn=(5370)
+calls=1 0
+0 89
+0 4
+cfn=(5314)
+calls=1 0
+0 67
+0 5
+cfn=(5410)
+calls=1 0
+0 684
+0 512
+cfn=(5412)
+calls=25 0
+0 600
+0 1719
+cfn=(5714) unityrs_core::typetree::tree::name_hash
+calls=16 0
+0 924
+0 192
+cfn=(5716) <unityrs_core::limits::vec::MeteredVec<(u64, u32, u32)>>::push
+calls=16 0
+0 3537
+0 510
+cfn=(5718)
+calls=5 0
+0 314
+0 754
+cfn=(5412)
+calls=24 0
+0 4167
+0 622
+cfn=(5720)
+calls=1 0
+0 318
+0 292
+cfn=(5370)
+calls=1 0
+0 89
+0 3
+cfn=(5314)
+calls=1 0
+0 67
+0 7
+cfn=(5370)
+calls=1 0
+0 89
+0 2
+cfn=(5314)
+calls=1 0
+0 67
+0 18
+cfn=(5706) core::slice::sort::unstable::ipnsort::<u32, <[u32]>::sort_unstable_by_key<((usize, usize), u32), unityrs_core::typetree::tree::names::number<unityrs_core::typetree::tree::names::name_ids::{closure#0}>::{closure#1}>::{closure#0}>
+calls=1 0
+0 6414
+0 2
+
+fn=(5710) core::slice::sort::shared::smallsort::small_sort_network::<u32, <[u32]>::sort_unstable_by_key<((usize, usize), u32), unityrs_core::typetree::tree::names::number<unityrs_core::typetree::tree::names::name_ids::{closure#0}>::{closure#1}>::{closure#0}>
+0 4469
+cfn=(5712)
+calls=2 0
+0 488
+0 1280
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=1 0
+0 26
+0 23
+
+fn=(5714)
+0 924
+
+fn=(5722) <unityrs_core::limits::vec::MeteredVec<(i32, u32)>>::with_capacity
+0 22
+cfn=(5536) unityrs_core::limits::vec::grow_counted::<(i32, u32)>
+calls=1 0
+0 771
+0 20
+
+fn=(5804) unityrs_texture::platform::platform_plan
+0 24
+cfn=(5806) unityrs_texture::platform::prepared
+calls=2 0
+0 810
+0 86
+
+fn=(5812)
+0 304
+
+fn=(5826)
+0 28
+
+fn=(5832) <unityrs_core::limits::meter::Meter>::charge
+0 16
+cfn=(5226)
+calls=2 0
+0 178
+0 72
+
+fn=(5866) unityrs_bench::work::digest
+0 120
+cfn=(5868) alloc::fmt::format::format_inner
+calls=2 0
+0 3866
+0 30
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 20
+0 18
+cfn=(5370)
+calls=2 0
+0 178
+0 28
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 28
+0 10
+cfn=(5890) sha2::sha256::compress256
+calls=2 0
+0 6803
+0 20
+cfn=(5890)
+calls=2 0
+0 6825548
+0 20
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 28
+0 5
+cfn=(5060)
+calls=1 0
+0 1
+0 4
+cfn=(5062)
+calls=1 0
+0 59
+0 16
+cfn=(5896) <alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>>::insert
+calls=1 0
+0 273
+0 3
+cfn=(5060)
+calls=1 0
+0 1
+0 4
+cfn=(5062)
+calls=1 0
+0 59
+0 15
+cfn=(5896)
+calls=1 0
+0 246
+0 34
+cob=(3)
+cfi=(3)
+cfn=(5012)
+calls=1 0
+0 12
+0 21
+cfn=(5890)
+calls=1 0
+0 3382
+0 22
+cfn=(5060)
+calls=1 0
+0 1
+0 4
+cfn=(5062)
+calls=1 0
+0 196
+0 25
+cfn=(5870)
+calls=1 0
+0 230
+0 496
+cfn=(5870)
+calls=31 0
+0 7169
+0 210
+
+fn=(5880)
+0 120
+cfn=(5302)
+calls=6 0
+0 1362
+0 60
+
+fn=(5896)
+0 46
+cob=(3)
+cfi=(3)
+cfn=(5576)
+calls=1 0
+0 22
+0 55
+cfn=(5898)
+calls=2 0
+0 367
+0 29
+
+fn=(5842) core::ptr::drop_glue::<unityrs_core::value::Parsed>
+0 56
+cfn=(5370)
+calls=2 0
+0 178
+0 4
+cfn=(5844)
+calls=2 0
+0 1726
+0 14
+cfn=(5314)
+calls=2 0
+0 148
+
+fn=(5314)
+0 14
+cfn=(5846)
+calls=2 0
+0 34
+0 10
+cfn=(5316) core::ptr::drop_glue::<unityrs_core::budget::Permit>
+calls=2 0
+0 66
+0 192
+cfn=(5316)
+calls=6 0
+0 162
+0 156
+cfn=(5316)
+calls=5 0
+0 81
+0 92
+cfn=(5316)
+calls=2 0
+0 54
+0 920
+cfn=(5316)
+calls=99 0
+0 992
+0 416
+
+fn=(5316)
+0 14
+cfn=(5848)
+calls=2 0
+0 16
+0 16
+cfn=(5318)
+calls=2 0
+0 20
+0 78
+cfn=(5318)
+calls=6 0
+0 84
+0 39
+cfn=(5318)
+calls=5 0
+0 42
+0 26
+cfn=(5318)
+calls=2 0
+0 28
+0 544
+cfn=(5318)
+calls=99 0
+0 448
+
+fn=(5494)
+0 44
+
+fn=(5678) unityrs_bench::work::run_texture_rgba32
+0 23
+cfn=(5680)
+calls=1 0
+0 163835
+0 13
+
+fn=(5694)
+0 25
+cfn=(5226)
+calls=1 0
+0 105
+0 38
+cfn=(5410)
+calls=1 0
+0 684
+0 410
+cfn=(5412)
+calls=27 0
+0 648
+0 1256
+cfn=(5370)
+calls=1 0
+0 89
+0 2
+cfn=(5314)
+calls=1 0
+0 67
+0 4
+cfn=(5696)
+calls=1 0
+0 832
+0 1522
+cfn=(5702) core::slice::memchr::memchr_aligned
+calls=1 0
+0 108
+0 83
+cfn=(5700) unityrs_core::typetree::tree::kind_of
+calls=27 0
+0 1406
+0 486
+cfn=(5698)
+calls=27 0
+0 594
+0 173
+cfn=(5704)
+calls=1 0
+0 27030
+0 58
+cfn=(5722)
+calls=1 0
+0 813
+0 360
+cfn=(5536)
+calls=25 0
+0 525
+0 2425
+cfn=(5370)
+calls=1 0
+0 89
+0 2
+cfn=(5314)
+calls=1 0
+0 67
+0 7
+cfn=(5370)
+calls=1 0
+0 89
+0 3
+cfn=(5314)
+calls=1 0
+0 67
+0 2630
+cfn=(5724) unityrs_core::typetree::tree::py_kinds
+calls=1 0
+0 315
+0 22
+cfn=(5728)
+calls=1 0
+0 53
+0 23
+cfn=(5306)
+calls=1 0
+0 212
+0 27
+cfn=(5554)
+calls=1 0
+0 210
+0 5
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=1 0
+0 61
+0 14
+
+fn=(5716)
+0 363
+cfn=(5226)
+calls=4 0
+0 420
+0 336
+cfn=(5302)
+calls=4 0
+0 842
+0 164
+cfn=(5304)
+calls=4 0
+0 136
+0 60
+cfn=(5306)
+calls=4 0
+0 848
+0 368
+
+fn=(5730)
+0 27
+cfn=(5350)
+calls=1 0
+0 58
+0 3
+
+fn=(5736)
+0 134
+cfn=(5738)
+calls=2 0
+0 1508
+0 38
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 122
+0 26
+cfn=(5742) <unityrs_core::walk::dict::Trees>::new
+calls=2 0
+0 1510
+0 94
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 146
+0 114
+cfn=(5746)
+calls=2 0
+0 22185
+0 234
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 146
+0 14
+cfn=(5768)
+calls=2 0
+0 572
+0 8
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 122
+0 48
+cfn=(5370)
+calls=2 0
+0 178
+0 4
+cfn=(5314)
+calls=2 0
+0 134
+0 24
+
+fn=(5744) <unityrs_core::limits::vec::MeteredVec<alloc::sync::Arc<unityrs_core::typetree::tree::Tree>>>::push
+0 82
+cfn=(5226)
+calls=2 0
+0 178
+0 168
+cfn=(5302)
+calls=2 0
+0 336
+0 82
+cfn=(5304)
+calls=2 0
+0 68
+0 30
+cfn=(5306)
+calls=2 0
+0 424
+0 46
+
+fn=(5772) unityrs_bench::work::field
+0 128
+cfn=(5774) <unityrs_core::value::Parsed>::attr
+calls=8 0
+0 30744
+0 88
+
+fn=(5798) <unityrs_texture::format::Format>::from_texture_format
+0 16
+
+fn=(5816)
+0 30
+cfn=(5812)
+calls=6 0
+0 48
+0 30
+cfn=(5814)
+calls=6 0
+0 126
+0 84
+
+fn=(5822)
+0 24
+cfn=(5814)
+calls=8 0
+0 168
+0 48
+
+fn=(5830)
+0 98
+cfn=(5832)
+calls=2 0
+0 266
+0 112
+cfn=(5834)
+calls=2 0
+0 110
+0 30
+cfn=(5306)
+calls=2 0
+0 424
+0 34
+cfn=(5302)
+calls=2 0
+0 610
+0 20
+
+fn=(5214)
+0 80
+
+fn=(5308)
+0 736
+
+fn=(5536)
+0 350
+cfn=(5226)
+calls=3 0
+0 105
+0 63
+cfn=(5302)
+calls=3 0
+0 235
+0 47
+cfn=(5304)
+calls=3 0
+0 34
+0 15
+cfn=(5306)
+calls=3 0
+0 212
+0 235
+
+fn=(5708) core::slice::sort::unstable::quicksort::quicksort::<u32, <[u32]>::sort_unstable_by_key<((usize, usize), u32), unityrs_core::typetree::tree::names::number<unityrs_core::typetree::tree::names::name_ids::{closure#0}>::{closure#1}>::{closure#0}>
+0 21
+cfn=(5710)
+calls=1 0
+0 6286
+
+fn=(5724)
+0 47
+cfn=(5726) <unityrs_core::limits::vec::MeteredVec<i8>>::into_boxed_slice
+calls=1 0
+0 42
+0 21
+cfn=(5306)
+calls=1 0
+0 193
+0 12
+
+fn=(5726)
+0 42
+
+fn=(5754)
+0 92
+
+fn=(5806)
+0 120
+cfn=(5808)
+calls=4 0
+0 16
+0 44
+cfn=(5810)
+calls=4 0
+0 1272
+0 168
+
+fn=(5900)
+0 34
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=1 0
+0 10
+0 17
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=1 0
+0 10
+0 26
+
+fn=(5838)
+0 34
+cfn=(5840)
+calls=2 0
+0 37150
+0 4
+
+fn=(4120)
+cob=(3)
+cfi=(3)
+cfn=(4122)
+calls=1 0
+0 7013076
+
+fn=(4184)
+cfn=(4186)
+calls=1 0
+0 7013076
+
+fn=(5074)
+cfn=(5076) unityrs_bench::main
+calls=1 0
+0 7013076
+
+fn=(5076)
+cfn=(5678)
+calls=1 0
+0 163871
+cfn=(5866)
+calls=1 0
+0 6849205
+
+fn=(5280)
+0 92
+cfn=(5214)
+calls=7 0
+0 40
+0 32
+
+fn=(5370)
+0 17
+cob=(3)
+cfi=(3)
+cfn=(4966)
+calls=78 0
+0 1496
+
+fn=(5686) <unityrs_core::object::ObjectRef>::read_object_fields
+0 30
+cfn=(5688)
+calls=2 0
+0 72101
+0 16
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 122
+0 8
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 122
+0 8
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 194
+0 14
+
+fn=(5690)
+0 64
+cfn=(5692)
+calls=2 0
+0 43836
+0 36
+
+fn=(5702)
+0 108
+
+fn=(5706)
+0 98
+cfn=(5708)
+calls=1 0
+0 6307
+0 9
+
+fn=(5742)
+0 50
+cfn=(5744)
+calls=2 0
+0 1414
+0 46
+
+fn=(5756) <unityrs_core::walk::dict::Dict>::set
+0 1522
+cfn=(5766) <unityrs_core::limits::vec::MeteredVec<(unityrs_core::typetree::rows::NodeId, unityrs_core::value::Value)>>::push_entry
+calls=2 0
+0 646
+0 444
+cfn=(5758)
+calls=40 0
+0 2760
+0 626
+
+fn=(5766)
+0 76
+cfn=(5752)
+calls=2 0
+0 50
+0 76
+cfn=(5306)
+calls=2 0
+0 424
+0 20
+
+fn=(5770) unityrs_bench::work::int
+0 66
+cfn=(5772)
+calls=6 0
+0 29362
+0 150
+
+fn=(5820)
+0 66
+cfn=(5822)
+calls=6 0
+0 180
+0 30
+
+fn=(5868)
+0 396
+cfn=(5870)
+calls=2 0
+0 3440
+0 30
+
+fn=(5874)
+0 10
+cfn=(5876) <core::fmt::Formatter>::pad
+calls=2 0
+0 380
+
+fn=(5884)
+0 1324
+cfn=(5886)
+calls=37 0
+0 777
+0 592
+cfn=(5878)
+calls=31 0
+0 1302
+cfn=(5878)
+calls=6 0
+0 1134
+0 16
+cfn=(5886)
+calls=1 0
+0 21
+0 12
+cfn=(5906) <alloc::string::String as core::fmt::Write>::write_char
+calls=1 0
+0 19
+0 8
+cfn=(5878)
+calls=1 0
+0 40
+0 16
+
+fn=(5904)
+0 952
+cfn=(5884)
+calls=32 0
+0 3695
+0 96
+
+fn=(5906)
+0 19
+
+fn=(5226)
+0 837
+cfn=(5228) <unityrs_core::budget::Unbounded as unityrs_core::budget::MemoryBudget>::try_reserve
+calls=86 0
+0 135
+0 1703
+
+fn=(5228)
+0 135
+
+fn=(5684)
+0 22
+cfn=(5686)
+calls=2 0
+0 72615
+0 16
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 122
+0 10
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 122
+0 10
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 122
+0 8
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 122
+0 10
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 118
+0 14
+cfn=(5770)
+calls=2 0
+0 8542
+0 20
+cfn=(5770)
+calls=2 0
+0 10794
+0 18
+cfn=(5770)
+calls=2 0
+0 10242
+0 12
+cfn=(5842)
+calls=2 0
+0 2126
+0 48
+cfn=(5772)
+calls=2 0
+0 1598
+0 26
+cfn=(5214)
+calls=2 0
+0 20
+0 4
+cfn=(5798)
+calls=2 0
+0 16
+0 24
+cfn=(5800)
+calls=2 0
+0 56528
+0 48
+cfn=(5322)
+calls=2 0
+0 18
+0 2
+
+fn=(5698)
+0 427
+cfn=(5226)
+calls=1 0
+0 105
+0 59
+cfn=(5302)
+calls=1 0
+0 228
+0 38
+cfn=(5304)
+calls=1 0
+0 34
+0 15
+cfn=(5306)
+calls=1 0
+0 212
+0 266
+
+fn=(5700)
+0 1406
+
+fn=(5748)
+0 78
+cfn=(5750) <unityrs_core::walk::dict::Dict>::new
+calls=2 0
+0 1525
+0 30
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 118
+0 844
+cfn=(5747)
+calls=30 0
+0 12772
+0 1260
+cfn=(5756)
+calls=30 0
+0 4426
+0 374
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 146
+0 10
+cfn=(5762)
+calls=2 0
+0 154
+0 124
+
+fn=(5749)
+0 78
+cfn=(5750)
+calls=2 0
+0 1532
+0 30
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 118
+0 358
+cfn=(5747)
+calls=12 0
+0 2248
+0 504
+cfn=(5756)
+calls=12 0
+0 1572
+0 158
+cob=(3)
+cfi=(3)
+cfn=(3280)
+calls=2 0
+0 146
+0 10
+cfn=(5762)
+calls=2 0
+0 154
+0 124
+
+fn=(5750)
+0 128
+cfn=(5752)
+calls=4 0
+0 2765
+0 164
+
+fn=(5764)
+0 128
+
+fn=(5774)
+0 2208
+cfn=(5776) unityrs_core::walk::write::pyobj::clean_name
+calls=66 0
+0 26320
+0 486
+cob=(3)
+cfi=(3)
+cfn=(5576)
+calls=8 0
+0 128
+0 1312
+cob=(3)
+cfi=(3)
+cfn=(5576)
+calls=10 0
+0 156
+0 134
+
+fn=(5776)
+0 8528
+cob=(3)
+cfi=(3)
+cfn=(5012)
+calls=66 0
+0 1056
+0 16736
+
+fn=(5802)
+0 34
+cfn=(5804)
+calls=2 0
+0 920
+0 28
+cfn=(5806)
+calls=2 0
+0 810
+0 80
+cfn=(5824)
+calls=2 0
+0 54526
+0 106
+
+fn=(5814)
+0 78
+cfn=(5812)
+calls=26 0
+0 208
+0 260
+
+fn=(5818)
+0 18
+cfn=(5814)
+calls=6 0
+0 126
+0 84
+
+fn=(5876)
+0 44
+cfn=(5878)
+calls=2 0
+0 336
+
+fn=(5890)
+0 30
+cfn=(5894) sha2::sha256::soft::unroll::compress
+calls=4 0
+0 6832288
+0 7
+cfn=(5892)
+calls=1 0
+0 23
+0 9
+cfn=(5894)
+calls=1 0
+0 3376
+
+fn=(5894)
+0 6835664
+
+totals: 7013076

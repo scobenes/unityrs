@@ -1,10 +1,12 @@
 """`render` (decision 9): the committed README section and BENCHMARKS.md are what wall.json and gate.json render
-to; without wall.json the section reads "Results pending" and BENCHMARKS.md does not exist; a missing gate.json is
-tolerated; an emulated or malformed wall.json is refused. Standard library only."""
+to; without wall.json the section reads "Results pending" and BENCHMARKS.md does not exist; a missing or malformed
+gate.json is refused (it is required from BN-2 on); an emulated or malformed wall.json is refused. Standard library
+only."""
 
+import copy
 import unittest
 
-from support import ROOT, bench, results, scratch_tree, wall
+from support import GATE, ROOT, bench, results, scratch_tree, wall
 
 
 class CommittedDocsTests(unittest.TestCase):
@@ -41,7 +43,7 @@ class RenderTests(unittest.TestCase):
         for n in range(1, 9):
             self.assertIn(f"\n## {n}. ", md)
         self.assertIn("| texture-BC6H | PARITY.md row is Tier B |", md)
-        self.assertIn("the gate lands with BN-2", md)
+        self.assertIn("| texture-DXT1 | calibrating | ", md)
 
     def test_a_stale_section_or_benchmarks_md_fails_the_check(self):
         root = scratch_tree(self, wall())
@@ -58,14 +60,31 @@ class RenderTests(unittest.TestCase):
         (root / "BENCHMARKS.md").write_text("orphan\n", encoding="utf-8")
         self.assertEqual(bench.render(root, check=True), ["BENCHMARKS.md exists without benchmarks/wall.json"])
 
-    def test_a_gate_json_renders_its_table_and_a_missing_one_is_tolerated(self):
-        gate = {"schema_version": 1, "tolerance_pct": 1.0, "fingerprint": {}, "workloads": {
-            "load-objects-lz4": {"mode": "calibrating", "ir_own": 123456, "ir_libc": 789, "digest": "ab" * 32,
-                                 "allocs": {}, "alloc_bytes": 0, "calls": 1}}}
+    def test_a_gate_json_renders_its_table(self):
+        gate = copy.deepcopy(GATE)
+        gate["workloads"]["load-objects-lz4"].update(ir_own=123456, ir_libc=789, digest="ab" * 32, alloc_bytes=5,
+                                                     allocs={"malloc": 3, "calloc": 1, "realloc": 2, "free": 4})
         root = scratch_tree(self, wall(), gate)
         self.assertEqual(bench.render(root, check=False), [])
         md = (root / "BENCHMARKS.md").read_text(encoding="utf-8")
-        self.assertIn("| load-objects-lz4 | calibrating | 123,456 | 789 | `abababababababab` |", md)
+        self.assertIn("| load-objects-lz4 | calibrating | 123,456 | 789 | 6 | 5 | `abababababababab` |", md)
+
+    def test_a_missing_or_malformed_gate_json_is_refused(self):
+        self.assertEqual(bench.render(scratch_tree(self, gate=False), check=True),
+                         ["benchmarks/gate.json: missing: the gate's baselines are the bench-gate job's measured "
+                          "gate.json"])
+        cases = {
+            "texture-DXT1: missing": lambda g: g["workloads"].pop("texture-DXT1"),
+            "texture-XYZ: not in workloads.json": lambda g: g["workloads"].update({"texture-XYZ": g["workloads"][
+                "texture-DXT1"]}),
+            "texture-DXT1: mode 'strict'": lambda g: g["workloads"]["texture-DXT1"].update(mode="strict"),
+            "a host path": lambda g: g["fingerprint"].update(container="/home/someone/image"),
+        }
+        for want, edit in cases.items():
+            gate = copy.deepcopy(GATE)
+            edit(gate)
+            bad = bench.render(scratch_tree(self, wall(), gate), check=True)
+            self.assertTrue(bad and want in bad[0], (want, bad))
 
     def test_an_emulated_run_is_refused(self):
         root = scratch_tree(self, wall(emulated=True))
