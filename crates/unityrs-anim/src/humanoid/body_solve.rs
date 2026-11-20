@@ -16,7 +16,8 @@
 //!   subtree (`detached_bone`). The lookup must follow the Avatar's
 //!   hierarchy: two skeleton nodes on one Transform refuse
 //!   (`shared_transform`), as does a Transform below the hips whose parent
-//!   is not its skeleton parent's (`misparented_transform`).
+//!   is not its skeleton parent's (`misparented_transform`) and one below
+//!   the hips that no skeleton node names (`unmapped_transform`).
 //! - **The solve.** `H_A = B_A F(T) F_h^-1`, `P_A = h T_A - k H_A c_h` with
 //!   `k = sigma_p s_h` (`h T_A` the `AnimatorBodyPose`'s metres, which
 //!   root projection makes), and the local hips `t = sigma_p^-1 R_p^-1 (P_A -
@@ -87,6 +88,8 @@ impl BodyAvatar<'_> {
     /// (`misparented_transform`), such as a Transform elsewhere under the
     /// Animator for a bone the Avatar places below the hips. A node of the
     /// subtree without a Transform is `None`, which `hips_points` refuses.
+    /// A Transform below the hips' that no skeleton node names refuses
+    /// (`unmapped_transform`), as E3a's `rest_translations` does.
     pub fn rest_scales(
         &self,
         paths: &RigPaths<'_>,
@@ -111,19 +114,17 @@ impl BodyAvatar<'_> {
             found.push(node)?;
         }
         let found = found.as_slice();
-        // One Transform per skeleton node.
-        let mut seen: MeteredVec<bool> = MeteredVec::with_capacity(meter, graph.nodes().len())?;
-        for _ in graph.nodes() {
-            seen.push(false)?;
-        }
-        let seen = seen.as_mut_slice();
-        let mut shared = false;
+        // One Transform per skeleton node: the Transforms found, sorted, so
+        // the work is the skeleton's size, not the scene's.
+        let mut mapped: MeteredVec<usize> = MeteredVec::with_capacity(meter, ids.len())?;
         for &node in found.iter().flatten() {
-            if let Some(seen) = seen.get_mut(node) {
-                shared |= std::mem::replace(seen, true);
-            }
+            mapped.push(node)?;
         }
-        if shared {
+        let n = mapped.len() as u64;
+        meter.count_decode(n * u64::from(n.bit_width()).max(1))?;
+        let mapped = mapped.as_mut_slice();
+        mapped.sort_unstable();
+        if mapped.windows(2).any(|pair| pair.first() == pair.last()) {
             return refuse(BodyModel::SharedTransform);
         }
         // Below the hips, each Transform's parent is its skeleton parent's.
@@ -145,6 +146,29 @@ impl BodyAvatar<'_> {
                 return refuse(BodyModel::MisparentedTransform);
             }
             below.push(inside)?;
+        }
+        // Every Transform below the hips' is a skeleton node's, as E3a
+        // requires of the captured ones. Each node walked is one of
+        // `mapped`, so the walk is the skeleton's size too.
+        if let Some(&Some(top)) = found.get(hips) {
+            let mut stack: MeteredVec<usize> = MeteredVec::new(meter);
+            stack.push(top)?;
+            while let Some(at) = stack.pop() {
+                meter.count_decode(1)?;
+                let children = graph
+                    .nodes()
+                    .get(at)
+                    .map_or(&[][..], |node| node.children.as_slice());
+                for &child in children {
+                    if mapped.binary_search(&child).is_err() {
+                        return refuse(BodyModel::UnmappedTransform);
+                    }
+                    if stack.len() >= mapped.len() {
+                        return Err(AnimError::MissingPath);
+                    }
+                    stack.push(child)?;
+                }
+            }
         }
         let mut out = MeteredVec::with_capacity(meter, ids.len())?;
         for node in found {

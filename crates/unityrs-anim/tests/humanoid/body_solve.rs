@@ -23,7 +23,7 @@ use unityrs_testkit::{
     scene3d::{
         Layout,
         anim::humanoid::{self as h, ANIMATOR, AVATAR, Rig},
-        pointers, set, xyz,
+        game_object, pointers, set, transform, xyz,
     },
 };
 
@@ -513,7 +513,7 @@ fn a_mapped_bone_outside_the_hips_refuses() {
 /// The rest-scale lookup's verdict on a hierarchy rig's prefab as `edit`
 /// leaves its objects: the Transforms (`GameObject` `i + 2`'s is `i + 102`,
 /// the Animator node's 101) and the Avatar.
-fn lookup(edit: impl FnOnce(&mut [Object])) -> Result<(), String> {
+fn lookup(edit: impl FnOnce(&mut Vec<Object>)) -> Result<(), String> {
     let meter = Meter::unlimited();
     let rig = Rig {
         hierarchy: true,
@@ -542,6 +542,31 @@ fn lookup(edit: impl FnOnce(&mut [Object])) -> Result<(), String> {
 fn transform_of(bone: usize) -> i64 {
     let index = h::BONES.iter().position(|&(b, _)| b == bone).unwrap();
     102 + i64::try_from(index).unwrap()
+}
+
+/// A Transform 180 (`GameObject` 80, "Extra") under Transform `under`, at
+/// uniform `scale`, that no `m_TOS` path or skeleton node names.
+pub(super) fn extra(objects: &mut Vec<Object>, under: i64, scale: f32) {
+    let parent = objects.iter_mut().find(|o| o.path_id == under).unwrap();
+    let V::Vector(_, _, children) = field(&mut parent.value, &["m_Children"]) else {
+        panic!("m_Children")
+    };
+    children.push(pptr("Transform", (0, 180)));
+    objects.push(Object::new(80, 1, game_object(b"Extra", &[(0, 180)])));
+    let mut node = transform((0, 80), (0, under), &[], false);
+    set(&mut node, "m_LocalScale", xyz("Vector3f", &[scale; 3]));
+    objects.push(Object::new(180, 4, node));
+}
+
+/// A Transform below the hips that the Avatar's skeleton does not name
+/// refuses, as E3a's `rest_translations` does: one at scale 2 under the
+/// Spine, and one at unit scale under the left hand.
+#[test]
+fn a_transform_below_the_hips_without_a_skeleton_node_refuses() {
+    let unmapped = Err(refused(BodyModel::UnmappedTransform));
+    assert_eq!(lookup(|objects| extra(objects, 109, 2.)), unmapped);
+    let hand = transform_of(17);
+    assert_eq!(lookup(|objects| extra(objects, hand, 1.)), unmapped);
 }
 
 fn skeleton_ids(objects: &mut [Object]) -> &mut Vec<V> {

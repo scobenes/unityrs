@@ -508,7 +508,7 @@ coefficient is shipped from a fit.
 | B2 | Reference and body checker | 2.1–2.5 in the f64 reference with frozen bounds and the analytic cases. A checker runs E0–E4. **Input:** a completed run in both 2022.3 and 6000, read with Unity 6 reader support on main. **Order:** first E3a on the training rigs, then the freeze commit (model choices, coefficients, scope with the lateral limit E2 and E3a set, bounds, E4's passing configurations), then E3b on the hold-out rig against that commit, once. | 0.6–0.9k | B1 recordings |
 | B3 | Rust body model | Read and validate `m_HumanBoneMass`; E0's runtime checks (3.2, E0 at runtime); the centre of mass, frame and closed-form hips solve; the free-combination refusal; synthetic tests and fuzz targets for the new reads | 0.5–0.7k | B2 (E3b passing) and E2 passing |
 | B4 | Root projection and frames | Target body pose per verified 2.4 combination, conversion from the Animator to the hips parent with scale, narrowed refusals | 0.4–0.6k | B3, F4, F5 |
-| B5 | Integration and L11 | Lift the body-bearing refusal behind the release gate below, add collector integration, run the gated same-bundle replay (E5), and promote the PARITY row | 0.4–0.6k | B4 |
+| B5 | Integration and L11 | Lift the body-bearing refusal behind the release gate below, add collector integration, run the gated same-bundle replay (E5), and promote the PARITY row. **Checklist:** E5 covers every class B4 admits by argument (h-linearity, "B4's admitted scope" (b)): the plain chain off the recorded rigs' human scales with every variant and at the offset placement, and each F5 feature off its rig's human scale, before the refusal lifts | 0.4–0.6k | B4 |
 
 **B4's admitted scope.** B4 admits only what freeze v8's evidence
 validated, as checkable settings, ranges and structure, never a rig's
@@ -529,10 +529,24 @@ identity; `humanoid_refusal` stays global until B5's predicate and E5.
   E3a's and E4's training rigs (the hold-out stays sealed). Every rest
   scale below the hips is exactly 1, as on every validated rig.
 
-The plain chain at any human scale in the range admits every variant, so
-the `large` rig's size takes the Bake and Body variants E4 compared only
-on the compact rig. B5's predicate and E5's same-bundle replay are the
-release gate.
+What a recording verified and what B4 admits by argument:
+
+- **(a) Verified by a recording** (`e4.passing`'s 52 tuples, both Editor
+  versions): the compact rig with each of the eleven variants, at the
+  identity and at the offset placement; and F5's four rigs
+  (`scaled-animator`, `armature`, `hips-scale`, `large`), each with the
+  all-Original motion variant at the identity.
+- **(b) Admitted by argument:** the plain chain at any human scale in the
+  range but the compact rig's, with any variant at either placement (the
+  `large` rig's one cell in (a) aside), and each F5 feature at a human
+  scale in the range other than its rig's. The argument is h-linearity: for fixed
+  serialized inputs, `m_Scale` only multiplies the residual translation
+  after projection, the cell choice and the rotation do not depend on it,
+  and the projection's position error scales with it.
+
+Unity's read-back for (b) is not verified. B5's E5 same-bundle replay
+must cover every class in (b) before the global refusal lifts; B5's
+predicate and E5 are the release gate.
 
 **B5's release gate.**
 

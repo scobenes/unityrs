@@ -11,8 +11,9 @@
 //! nonpositive scale on it refuses (`unsupported_animator_root`), as the
 //! reference's `uniform` does, and so do a rotation more than
 //! `UNIT_TOLERANCE` from unit length and a composed scale that is zero or
-//! subnormal; a hips Transform outside the Animator node's subtree refuses
-//! (`detached_bone`), and a non-finite link `non_finite_body`.
+//! subnormal, the hips' own link included; a hips Transform outside the
+//! Animator node's subtree refuses (`detached_bone`), and a non-finite
+//! link `non_finite_body`.
 //!
 //! It then states the chain's scope: whether it lies within what freeze
 //! v8's evidence validated, as checkable ranges and structure, never as a
@@ -20,7 +21,8 @@
 //! - the Avatar's human scale `m_Scale` within `HUMAN_SCALE_RANGE`, the
 //!   range over the training rigs E3a and E4 validated;
 //! - every rest scale below the hips (the skeleton nodes' Transforms the
-//!   solve reads, `rest_scales`) exactly one, as on every validated rig;
+//!   solve reads, `rest_scales`, which refuses a Transform there that no
+//!   skeleton node names) exactly one, as on every validated rig;
 //! - every ancestor of the Animator node exactly at the identity;
 //! - the plain chain (the hips directly below the Animator node, both at
 //!   unit scale) or one of F5's features alone, at its fixture value
@@ -230,6 +232,14 @@ impl BodyAvatar<'_> {
         }
         let hips_local = node(hips)?.local;
         let hips_scale = uniform(hips_local.scale)?;
+        // The hips' own link must hold as the reference's `link` requires:
+        // a rotation and a finite translation. Its result is not `A`'s.
+        link(
+            &parent,
+            hips_local.position.map(f64::from),
+            hips_local.rotation.map(f64::from),
+            hips_scale,
+        )?;
         let placed = node(animator)?.local;
         uniform(placed.scale)?;
         let ancestors = ancestors_at_identity(graph, animator, meter)?;

@@ -5,6 +5,7 @@
 //! and the admission of each against the root configurations.
 use super::{
     body_model::{FREEZE, full, local, refused, verdict},
+    body_solve::extra,
     file,
     root::variant_clip,
 };
@@ -37,7 +38,7 @@ use unityrs_testkit::{
 
 /// The chain of `rig`'s prefab after `edit`, which takes the objects: the
 /// Animator node's Transform is 101, the hips' 102.
-fn chain(rig: &Rig, edit: impl FnOnce(&mut [Object])) -> Result<AnimatorChain, AnimError> {
+fn chain(rig: &Rig, edit: impl FnOnce(&mut Vec<Object>)) -> Result<AnimatorChain, AnimError> {
     let meter = Meter::unlimited();
     let mut objects = h::prefab(rig);
     edit(&mut objects);
@@ -88,7 +89,7 @@ fn rig(armature: Vec<([f32; 3], [f32; 4], f32)>) -> Rig {
 /// The testkit rig with F5's `feature` at its fixture value.
 fn featured(
     feature: ChainFeature,
-    edit: impl FnOnce(&mut [Object]),
+    edit: impl FnOnce(&mut Vec<Object>),
 ) -> Result<AnimatorChain, AnimError> {
     let between = if feature == ChainFeature::Intermediate {
         vec![BETWEEN]
@@ -120,7 +121,7 @@ fn the_validated_chains_are_in_scope() {
     let plain = chain(&rig(Vec::new()), |_| {}).unwrap();
     assert_eq!(plain.validated(), Some((ChainFeature::Plain, false)));
     assert_eq!(plain.parent(), HipsParent::IDENTITY);
-    let placed = chain(&rig(Vec::new()), offset).unwrap();
+    let placed = chain(&rig(Vec::new()), |o| offset(o)).unwrap();
     assert_eq!(placed.validated(), Some((ChainFeature::Plain, true)));
     for feature in FEATURES {
         let found = featured(feature, |_| {}).unwrap();
@@ -133,21 +134,58 @@ fn the_validated_chains_are_in_scope() {
     assert_eq!(found.parent().scale, f64::from(s));
     let found = featured(ChainFeature::HipsScale, |_| {}).unwrap();
     assert_eq!(found.hips_scale(), f64::from(HIPS_SCALE));
-    // Either bound of the human scale's range.
-    for h in HUMAN_SCALE_RANGE {
-        let at = chain(
-            &Rig {
-                scale: h,
-                body_offset: [0., h, 0.],
-                ..rig(Vec::new())
-            },
-            |_| {},
-        );
-        assert_eq!(
-            at.unwrap().validated(),
-            Some((ChainFeature::Plain, false)),
-            "{h}"
-        );
+}
+
+/// The plain rig at human scale `h` (`m_Scale` and `m_RootX.t.y`).
+fn at_scale(h: f32) -> Option<(ChainFeature, bool)> {
+    let rig = Rig {
+        scale: h,
+        body_offset: [0., h, 0.],
+        ..rig(Vec::new())
+    };
+    chain(&rig, |_| {}).unwrap().validated()
+}
+
+/// The human scale's range, its endpoints as literal bits apart from
+/// `HUMAN_SCALE_RANGE`: the armature rig's and the large rig's `m_Scale`
+/// as freeze v8's training recordings store them. Each endpoint and one
+/// ulp inside it are in scope, one ulp outside is not.
+#[test]
+fn the_human_scale_range_is_the_recorded_endpoints() {
+    let plain = Some((ChainFeature::Plain, false));
+    let (low, high) = (0x3f47_f9bb_u32, 0x3fb7_a311_u32);
+    assert_eq!(HUMAN_SCALE_RANGE.map(f32::to_bits), [low, high]);
+    for (bits, inside) in [
+        (low - 1, false),
+        (low, true),
+        (low + 1, true),
+        (high - 1, true),
+        (high, true),
+        (high + 1, false),
+    ] {
+        let want = if inside { plain } else { None };
+        assert_eq!(at_scale(f32::from_bits(bits)), want, "{bits:#x}");
+    }
+}
+
+/// The rest-scale rule: every Transform below the hips at exactly one, on
+/// every component. Any one of them an ulp off on one component, or
+/// mirrored, takes the chain out of scope; the hips' own scale is the
+/// chain's (`HIPS_SCALE`), not this rule's.
+#[test]
+fn every_rest_scale_below_the_hips_must_be_one() {
+    let bones = i64::try_from(h::BONES.len()).unwrap();
+    let plain = chain(&rig(Vec::new()), |_| {}).unwrap();
+    assert_eq!(plain.validated(), Some((ChainFeature::Plain, false)));
+    for transform in 103..102 + bones {
+        for value in [
+            [1_f32.next_up(), 1., 1.],
+            [1., 1., 1_f32.next_down()],
+            [-1.; 3],
+        ] {
+            let found = chain(&rig(Vec::new()), |o| scale(o, transform, value));
+            assert_eq!(found.unwrap().validated(), None, "{transform} {value:?}");
+        }
     }
 }
 
@@ -161,36 +199,33 @@ fn chains_out_of_scope_have_none() {
     let none = |found: Result<AnimatorChain, AnimError>| {
         assert_eq!(found.unwrap().validated(), None);
     };
-    let [low, high] = HUMAN_SCALE_RANGE;
-    for h in [2., low.next_down(), high.next_up()] {
-        none(chain(
-            &Rig {
-                scale: h,
-                body_offset: [0., h, 0.],
-                ..rig(Vec::new())
-            },
-            |_| {},
-        ));
-    }
+    assert_eq!(at_scale(2.), None);
     // The Spine's rest scale (the eighth bone, Transform 109) of two.
     none(chain(&rig(Vec::new()), |o| scale(o, 109, [2.; 3])));
     none(chain(&rig(Vec::new()), |o| {
         scale(o, 109, [1. + f32::EPSILON; 3]);
     }));
+    // An extra Transform at scale 2 below the hips that the Avatar does
+    // not name.
+    assert_eq!(
+        verdict(chain(&rig(Vec::new()), |o| extra(o, 109, 2.))),
+        Ok(())
+    );
+    none(chain(&rig(Vec::new()), |o| extra(o, 109, 2.)));
     // A hips scale of 10, an Animator scale of 1.5, another armature.
     none(chain(&rig(Vec::new()), |o| scale(o, 102, [10.; 3])));
     none(chain(&rig(Vec::new()), |o| scale(o, 101, [1.5; 3])));
     let (t, q, _) = BETWEEN;
     none(chain(&rig(vec![(t, q, 0.9)]), |_| {}));
     // Two features together.
-    let animator = |o: &mut [Object]| scale(o, 101, [ANIMATOR_SCALE; 3]);
-    let hips = |o: &mut [Object]| scale(o, 102, [HIPS_SCALE; 3]);
+    let animator = |o: &mut Vec<Object>| scale(o, 101, [ANIMATOR_SCALE; 3]);
+    let hips = |o: &mut Vec<Object>| scale(o, 102, [HIPS_SCALE; 3]);
     none(featured(ChainFeature::Intermediate, animator));
     none(featured(ChainFeature::Intermediate, hips));
     none(featured(ChainFeature::ScaledAnimator, hips));
     // F5 at the offset placement, or 5e-7 off the identity.
     for feature in FEATURES {
-        none(featured(feature, offset));
+        none(featured(feature, |o| offset(o)));
         none(featured(feature, |o| {
             local_trs(o, 101, "m_LocalPosition", &[5e-7, 0., 0.]);
         }));
@@ -249,6 +284,24 @@ fn bad_links_refuse() {
         let between = vec![([0., 0.05, 0.1], q, 0.8)];
         assert_eq!(verdict(chain(&rig(between), |_| {})), root, "{q:?}");
     }
+    // The hips' own link: a zero or non-unit rotation, a translation
+    // that is not finite.
+    for q in [[0.; 4], [0., 0., 0., 0.5]] {
+        let found = chain(&rig(Vec::new()), |o| {
+            local_trs(o, 102, "m_LocalRotation", &q);
+        });
+        assert_eq!(verdict(found), root, "{q:?}");
+    }
+    for t in [[f32::NAN, 0., 0.], [0., f32::INFINITY, 0.]] {
+        let found = chain(&rig(Vec::new()), |o| {
+            local_trs(o, 102, "m_LocalPosition", &t);
+        });
+        assert_eq!(
+            verdict(found),
+            Err(refused(BodyModel::NonFiniteBody)),
+            "{t:?}"
+        );
+    }
     // An f32 unit quaternion is a rotation.
     let between = vec![([0., 0.05, 0.1], [-0.707_106_77, 0., 0., 0.707_106_77], 0.8)];
     assert!(chain(&rig(between), |_| {}).is_ok());
@@ -278,7 +331,7 @@ fn admission_follows_e4s_passing_set() {
     };
     let refusal = Err(AnimError::UnsupportedAnimatorRoot.to_string());
     let plain = chain(&rig(Vec::new()), |_| {}).unwrap();
-    let placed = chain(&rig(Vec::new()), offset).unwrap();
+    let placed = chain(&rig(Vec::new()), |o| offset(o)).unwrap();
     let outside = chain(&rig(Vec::new()), |o| scale(o, 102, [10.; 3])).unwrap();
     for row in &ADMITTED {
         assert_eq!(admitted(&plain, row.variant), Ok(()), "{}", row.variant);
