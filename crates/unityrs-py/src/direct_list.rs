@@ -38,7 +38,7 @@ pub(crate) struct Slots(());
 /// `crate::native`), to be all of: `CPython` (`sys.implementation.name`);
 /// a version from 3.10 to 3.14 (a later one is not taken on
 /// trust); a GIL build with the GIL on (`Py_GIL_DISABLED` unset or false,
-/// and `sys._is_gil_enabled()` true where it exists); and one where a probe
+/// and from 3.13 `sys._is_gil_enabled()` true); and one where a probe
 /// list's type, size and item array are found where a GIL build has them.
 /// A free-threaded build (this abi3 module declares `gil_used`, but such a
 /// build keeps its own object header even with the GIL on) fails the build
@@ -75,10 +75,17 @@ fn interpreter(py: Python<'_>) -> Option<bool> {
     if disabled {
         return Some(false);
     }
-    match sys.getattr("_is_gil_enabled") {
-        Ok(enabled) => enabled.call0().ok()?.is_truthy().ok(),
-        Err(_) => Some(true),
+    // 3.13 added `sys._is_gil_enabled()`: from there it must answer
+    // true, and a failed lookup or call fails the check.
+    if version.minor < 13 {
+        return Some(true);
     }
+    sys.getattr("_is_gil_enabled")
+        .ok()?
+        .call0()
+        .ok()?
+        .is_truthy()
+        .ok()
 }
 
 /// Whether a probe list's type, size and item array are where a GIL

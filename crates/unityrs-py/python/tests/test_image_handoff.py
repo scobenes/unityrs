@@ -1,10 +1,14 @@
 """The decoded pixels Pillow is handed, and the charges around them."""
 import gc
+import sys
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / 'tools/parity'))
 
 import unityrs
 from unityrs.classes import _images

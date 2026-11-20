@@ -62,6 +62,7 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crypto_shader::register(m)?;
     image_helpers::register(m)?;
     m.add_function(wrap_pyfunction!(standalone_tree::standalone_tree_read, m)?)?;
+    m.add_function(wrap_pyfunction!(direct_classes::_direct_originals, m)?)?;
     m.add_function(wrap_pyfunction!(codecs::codec, m)?)?;
     m.add_class::<save::NativeCab>()?;
     m.add_function(wrap_pyfunction!(class_tpk::class_tpk_lz4, m)?)?;

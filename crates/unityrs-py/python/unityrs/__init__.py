@@ -28,6 +28,10 @@ from . import config, enums
 from .helpers import _tpk
 from ._filesystem import local_fs, is_local, find_sensitive_path, confined_path
 from .files import BundleFile, EndianBinaryReader, EndianBinaryReader_Stream, File, ObjectReader, SerializedFile, WebFile
+from . import _native as _direct_native
+# The direct read's `reader` properties, as this import made them.
+_direct_native._direct_originals(ObjectReader.__dict__["reader"], SerializedFile.__dict__["reader"])
+del _direct_native
 
 __version__ = "0.0.1"
 reSplit = re.compile(r"(.*?([^\/\\]+?))\.split\d+")

@@ -1,4 +1,5 @@
 """Object mode's direct read gives the full path's objects, work and memory."""
+import functools
 import struct
 import sys
 import unittest
@@ -167,7 +168,8 @@ class DirectObject(unittest.TestCase):
     def test_a_replaced_reader_property_runs(self):
         """Where the file has made its reader, a direct read copies it to
         the object as the `reader` property would, unless either class's
-        property has been replaced: then the replacement runs."""
+        property has been replaced (after the read's first, or with one
+        that looks the same): then the replacement runs."""
         from unityrs.files import ObjectReader, SerializedFile
 
         def first():
@@ -182,18 +184,58 @@ class DirectObject(unittest.TestCase):
             original = cls.__dict__['reader']
             calls = []
 
+            # Its name, module and code's wrapper as the original's.
+            @functools.wraps(original.fget)
             def get(self, original=original):
                 calls.append(type(self).__name__)
                 return original.fget(self)
 
-            obj = first()
+            obj, again = first(), first()
+            again.read_typetree()
             cls.reader = property(get, original.fset)
             try:
                 with self.subTest(cls=cls.__name__):
                     self.assertEqual(obj.read_typetree(), expected)
                     self.assertEqual(calls, [cls.__name__])
+                    # An object read before, its `_reader` kept: a
+                    # replaced `ObjectReader.reader` runs on it too.
+                    del calls[:]
+                    self.assertEqual(again.read_typetree(), expected)
+                    replaced = ['ObjectReader'] if cls is ObjectReader else []
+                    self.assertEqual(calls, replaced)
             finally:
                 cls.reader = original
+
+    def test_a_container_freed_by_a_collection_callback(self):
+        """A collection's callback, run while the classes are called, that
+        frees a container a class's object is yet to go in (the root's list
+        of children, deleted from its dict, and that list emptied) leaves
+        the read to raise, never to write into freed memory."""
+        import gc
+
+        def hook(phase, info):
+            if phase != 'start':
+                return
+            for o in gc.get_objects():
+                if type(o) is dict and type(o.get('m_Children')) is list:
+                    o.pop('m_Children').clear()
+
+        for _ in range(3):
+            env = unityrs.Environment()
+            env.load_file(fixture(), name='f')
+            obj = sorted(env.objects, key=lambda o: o.path_id)[0]
+            threshold = gc.get_threshold()
+            gc.callbacks.append(hook)
+            gc.set_threshold(1, 1, 1)
+            try:
+                # The list's slot gone (`IndexError`), or the root's
+                # field (`TypeError`), as the collection fell.
+                with self.assertRaises((IndexError, TypeError)):
+                    obj._native.parse_direct(obj, True, True)
+            finally:
+                gc.set_threshold(*threshold)
+                gc.callbacks.remove(hook)
+            gc.collect()
 
     def test_work_and_memory_bounds_are_the_full_paths(self):
         data = fixture()

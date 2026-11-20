@@ -446,23 +446,28 @@ pub(crate) fn read(
     if !reader.get_type().is(&cls.object) {
         return Ok(None);
     }
-    // The full path's first step (`uses_original`): the `reader` property,
-    // which makes the file's reader on its first use. Where the file has
-    // made it, the property only copies it to the object, which `ready`
-    // does without running the property's Python.
+    // The full path's first step (`uses_original`): the `reader` property
+    // (which makes the file's reader on its first use), its value the
+    // reader `ready` checks. While the property is unreplaced, its value is
+    // the object's `_reader`, or where the file has made its reader, that
+    // reader, copied to the object as the property copies it.
     let me = instance_dict(reader);
-    if me
+    let key = name!(py, c"_reader")?;
+    let kept = me
         .as_ref()
-        .and_then(|me| field(me, name!(py, c"_reader").ok()?.as_any()))
-        .is_none()
-        && me
-            .as_ref()
-            .and_then(|me| file_reader(py, me, cls))
-            .is_none()
-    {
-        reader.getattr(name!(py, c"reader")?)?;
-    }
-    let Some((position, assets)) = ready(py, object, reader) else {
+        .filter(|_| crate::direct_classes::unreplaced(py, cls, false))
+        .and_then(|me| field(me, key.as_any()));
+    let copied = || {
+        let me = me.as_ref()?;
+        let shared = file_reader(py, me, cls)?;
+        me.set_item(key, &shared).ok()?;
+        Some(shared)
+    };
+    let file_reader = match kept.or_else(copied) {
+        Some(shared) => shared,
+        None => reader.getattr(name!(py, c"reader")?)?,
+    };
+    let Some((position, assets)) = ready(py, object, reader, &file_reader) else {
         return Ok(None);
     };
     let tree = if let Some(tree) = object.compiled_tree() {
@@ -675,6 +680,7 @@ fn ready<'py>(
     py: Python<'py>,
     object: &ObjectRef,
     obj: &Bound<'py, PyAny>,
+    reader: &Bound<'py, PyAny>,
 ) -> Option<(Bound<'py, PyDict>, Bound<'py, PyAny>)> {
     let file = object.file();
     let info = object.info();
@@ -688,20 +694,10 @@ fn ready<'py>(
     let me = instance_dict(obj)?;
     let assets = field(&me, name!(py, c"assets_file").ok()?.as_any())?;
     let ad = instance_dict(&assets)?;
-    let key = name!(py, c"_reader").ok()?;
-    let reader = if let Some(reader) = field(&me, key.as_any()) {
-        reader
-    } else {
-        // The `reader` property's first use, which the full path makes
-        // first too (`uses_original`): the file's reader, once it has one.
-        let shared = file_reader(py, &me, cls)?;
-        me.set_item(key, &shared).ok()?;
-        shared
-    };
     if !reader.get_type().is(&cls.reader) {
         return None;
     }
-    let rd = instance_dict(&reader)?;
+    let rd = instance_dict(reader)?;
     let has = |d: &Bound<'py, PyDict>, name: &Bound<'py, pyo3::types::PyString>| {
         field(d, name.as_any()).is_some()
     };

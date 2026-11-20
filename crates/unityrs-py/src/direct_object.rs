@@ -46,24 +46,26 @@ fn checked() -> MutexGuard<'static, Option<HashMap<Vec<usize>, Checked>>> {
     CHECKED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Where a class's dict is, and its object goes.
-#[derive(Clone, Copy)]
-enum Place {
+/// Where a class's dict is, and its object goes: each container (and key)
+/// held here, from the dict's placing until its object is put, so no
+/// code the classes' calls run (a constructor, a collection's callbacks)
+/// can free one before the object is put in it.
+enum Place<'py> {
     /// The read's value.
     Root,
-    /// A field of a class's dict, under a key the tree's keys hold.
-    Dict(*mut ffi::PyObject, *mut ffi::PyObject),
+    /// A field of a class's dict, under a key.
+    Dict(Bound<'py, PyAny>, Bound<'py, PyAny>),
     /// An item of a list.
-    List(*mut ffi::PyObject, isize),
-    /// An item of a `pair`'s tuple, which only its container holds.
-    Tuple(*mut ffi::PyObject, isize),
+    List(Bound<'py, PyAny>, isize),
+    /// An item of a `pair`'s tuple.
+    Tuple(Bound<'py, PyAny>, isize),
 }
 
 /// A class to call once the read is accepted.
 struct Pending<'py> {
     cls: Bound<'py, PyAny>,
     dict: Bound<'py, PyAny>,
-    at: Place,
+    at: Place<'py>,
 }
 
 /// The object-mode part of a direct read.
@@ -146,7 +148,7 @@ impl<'py> ObjMode<'py> {
 
     /// The classes' dicts among a container's items, the last of the loose
     /// ones in order, now at `at` of each.
-    fn place(&mut self, at: impl Fn(isize) -> Place) -> Option<()> {
+    fn place(&mut self, at: impl Fn(isize) -> Place<'py>) -> Option<()> {
         let base = self.loose.len().checked_sub(self.found.len())?;
         for (i, &(slot, ptr)) in self.found.iter().enumerate() {
             let p = self.pending.get_mut(*self.loose.get(base + i)?)?;
@@ -172,8 +174,9 @@ impl<'py> ObjMode<'py> {
         }
         self.found.clear();
         self.found.push((0, value.as_ptr()));
-        let parent = dict.as_ptr();
-        self.place(|_| Place::Dict(parent, key))
+        // SAFETY: `key` is live: the tree's keys hold it.
+        let key = unsafe { Bound::from_borrowed_ptr(dict.py(), key) };
+        self.place(|_| Place::Dict(dict.clone(), key.clone()))
     }
 
     /// A list of `items`.
@@ -193,8 +196,7 @@ impl<'py> ObjMode<'py> {
                 item
             }),
         )?;
-        let ptr = list.as_ptr();
-        self.place(|at| Place::List(ptr, at))?;
+        self.place(|at| Place::List(list.clone(), at))?;
         Some(list)
     }
 
@@ -212,8 +214,7 @@ impl<'py> ObjMode<'py> {
                 self.found.push((at.cast_signed(), item.as_ptr()));
             }
         }
-        let ptr = tuple.as_ptr();
-        self.place(|at| Place::Tuple(ptr, at))?;
+        self.place(|at| Place::Tuple(tuple.clone(), at))?;
         Some(tuple)
     }
 
@@ -423,20 +424,22 @@ impl<'py> ObjMode<'py> {
                     ffi::PyObject_Call(p.cls.as_ptr(), empty.as_ptr(), p.dict.as_ptr()),
                 )
             }?;
-            // SAFETY: each container is live (the root holds it) and was
-            // made by this read; nothing else holds a tuple, whose only
-            // reference is its container's. Each call takes the object's
-            // reference or its own.
-            let failed = unsafe {
-                match p.at {
-                    Place::Root => {
-                        root = Some(made);
-                        0
-                    }
-                    Place::Dict(dict, key) => ffi::PyDict_SetItem(dict, key, made.as_ptr()),
-                    Place::List(list, at) => ffi::PyList_SetItem(list, at, made.into_ptr()),
-                    Place::Tuple(tuple, at) => ffi::PyTuple_SetItem(tuple, at, made.into_ptr()),
+            let failed = match p.at {
+                Place::Root => {
+                    root = Some(made);
+                    0
                 }
+                // SAFETY: the dict and key are held (`Place`); the call
+                // takes its own reference to each.
+                Place::Dict(dict, key) => unsafe {
+                    ffi::PyDict_SetItem(dict.as_ptr(), key.as_ptr(), made.as_ptr())
+                },
+                // SAFETY: the list is held (`Place`); the call takes the
+                // object's reference, and raises for a slot gone.
+                Place::List(list, at) => unsafe {
+                    ffi::PyList_SetItem(list.as_ptr(), at, made.into_ptr())
+                },
+                Place::Tuple(tuple, at) => put_in_tuple(py, tuple, at, made),
             };
             if failed != 0 {
                 return Err(fetched(py));
@@ -444,6 +447,30 @@ impl<'py> ObjMode<'py> {
         }
         root.ok_or_else(|| pyo3::exceptions::PySystemError::new_err("a direct read lost its value"))
     }
+}
+
+/// `PyTuple_SetItem(tuple, at, made)` for a tuple held by `Place`.
+/// `PyTuple_SetItem` refuses a tuple with any reference but one, so this
+/// one is let go first, where the tuple has exactly one other (its
+/// container's), which keeps it alive through the call: the call runs no
+/// Python before its store, and the tuple is not touched after. Any other
+/// count is refused as `PyTuple_SetItem` refuses it.
+fn put_in_tuple<'py>(
+    py: Python<'py>,
+    tuple: Bound<'py, PyAny>,
+    at: isize,
+    made: Bound<'py, PyAny>,
+) -> std::ffi::c_int {
+    let ptr = tuple.as_ptr();
+    // SAFETY: a live object's count.
+    if unsafe { ffi::Py_REFCNT(ptr) } != 2 {
+        pyo3::exceptions::PySystemError::new_err("a direct read's tuple is shared").restore(py);
+        return -1;
+    }
+    drop(tuple);
+    // SAFETY: the tuple's other reference keeps it alive (above); the call
+    // takes the object's reference, and raises for a slot out of range.
+    unsafe { ffi::PyTuple_SetItem(ptr, at, made.into_ptr()) }
 }
 
 /// The fields `_construct` counts for `cls`: `__attrs_attrs__`,
