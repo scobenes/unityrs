@@ -19,7 +19,7 @@
 //! its sign. An empty sum is 0. The tests hold it bit for bit to Python
 //! 3.15.2's `sum` on random and adversarial vectors
 //! (`tests/support/python_sum.json`, written by
-//! `tools/parity/tests/test_anim_python_sum.py`).
+//! `tools/parity/vectors/test_anim_python_sum.py`).
 
 /// The running sum and its compensation.
 #[derive(Clone, Copy)]

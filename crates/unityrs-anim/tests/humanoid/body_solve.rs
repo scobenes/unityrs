@@ -1,6 +1,6 @@
 //! Freeze v8's hips solve (`humanoid::body_solve`): the f64 reference's
 //! vectors (`tests/support/body_vectors.json`, synthetic rigs, written by
-//! `tools/parity/tests/test_anim_body_vectors.py`), its analytic solve
+//! `tools/parity/vectors/test_anim_body_vectors.py`), its analytic solve
 //! cases, the hips frame of a synthetic Avatar and the solve's refusals.
 use super::body_model::{
     FREEZE, about, close, field, full, local, matrix, refused, rows, same_rotation, slot_named,
@@ -19,11 +19,11 @@ use unityrs_anim::{
 use unityrs_core::limits::Meter;
 use unityrs_scene::{GraphOptions, graph_from_game_object};
 use unityrs_testkit::{
-    ngui::V,
+    ngui::{Object, V, pptr},
     scene3d::{
         Layout,
         anim::humanoid::{self as h, ANIMATOR, AVATAR, Rig},
-        set, xyz,
+        pointers, set, xyz,
     },
 };
 
@@ -501,5 +501,110 @@ fn a_mapped_bone_outside_the_hips_refuses() {
     assert_eq!(
         verdict(body.hips_points(&|_| IDENTITY, &ONES, &meter)),
         Err(refused(BodyModel::DetachedBone))
+    );
+}
+
+/// The rest-scale lookup's verdict on a hierarchy rig's prefab as `edit`
+/// leaves its objects: the Transforms (`GameObject` `i + 2`'s is `i + 102`,
+/// the Animator node's 101) and the Avatar.
+fn lookup(edit: impl FnOnce(&mut [Object])) -> Result<(), String> {
+    let meter = Meter::unlimited();
+    let rig = Rig {
+        hierarchy: true,
+        ..full()
+    };
+    let mut objects = h::prefab(&rig);
+    edit(&mut objects);
+    let (env, file) = super::file(Layout::Unity2022, &objects);
+    let graph = graph_from_game_object(
+        &env,
+        &file.object(1).unwrap(),
+        &GraphOptions::default(),
+        &meter,
+    )
+    .unwrap();
+    let paths = RigPaths::new(&graph, 0, &meter).unwrap();
+    let avatar = rig_avatar(&env, &file.object(ANIMATOR).unwrap(), &meter)
+        .unwrap()
+        .avatar
+        .unwrap();
+    let body = body_avatar(&avatar, &meter).unwrap();
+    verdict(body.rest_scales(&paths, &meter))
+}
+
+/// A rig bone's Transform ID in `h::prefab`.
+fn transform_of(bone: usize) -> i64 {
+    let index = h::BONES.iter().position(|&(b, _)| b == bone).unwrap();
+    102 + i64::try_from(index).unwrap()
+}
+
+fn skeleton_ids(objects: &mut [Object]) -> &mut Vec<V> {
+    let avatar = objects.iter_mut().find(|o| o.path_id == AVATAR).unwrap();
+    rows(field(
+        &mut avatar.value,
+        &["m_Avatar", "m_Human", "data", "m_Skeleton", "data", "m_ID"],
+    ))
+}
+
+/// Two skeleton nodes resolving to one Transform refuse, even when one is
+/// unmapped: here the Animator node's row repeats the last bone's `m_ID`.
+#[test]
+fn a_transform_shared_by_two_skeleton_nodes_refuses() {
+    assert_eq!(lookup(|_| ()), Ok(()));
+    assert_eq!(
+        lookup(|objects| {
+            let ids = skeleton_ids(objects);
+            assert_eq!(ids[0], V::UInt(0));
+            ids[0] = ids[ids.len() - 1].clone();
+        }),
+        Err(refused(BodyModel::SharedTransform))
+    );
+}
+
+/// A Transform elsewhere under the Animator for a bone the Avatar places
+/// below the hips refuses: the left hand's Transform moved onto the
+/// Animator node, its `m_TOS` path and `m_ID` following it, while the
+/// skeleton keeps it under the lower arm.
+#[test]
+fn a_transform_outside_its_skeleton_parent_refuses() {
+    let (hand, arm) = (transform_of(17), transform_of(15));
+    let new = b"LeftHand";
+    assert_eq!(
+        lookup(|objects| {
+            for object in objects.iter_mut() {
+                match object.path_id {
+                    101 => {
+                        let V::Vector(_, _, children) = field(&mut object.value, &["m_Children"])
+                        else {
+                            panic!("m_Children")
+                        };
+                        children.push(pptr("Transform", (0, hand)));
+                    }
+                    id if id == arm => {
+                        set(&mut object.value, "m_Children", pointers("Transform", &[]));
+                    }
+                    id if id == hand => {
+                        set(&mut object.value, "m_Father", pptr("Transform", (0, 101)));
+                    }
+                    _ => {}
+                }
+            }
+            let avatar = objects.iter_mut().find(|o| o.path_id == AVATAR).unwrap();
+            let mut old = None;
+            for row in rows(field(&mut avatar.value, &["m_TOS"])) {
+                if let V::Pair(id, path) = row
+                    && let V::Str(text) = &**path
+                    && text.ends_with(b"/LeftLowerArm/LeftHand")
+                {
+                    old = Some((**id).clone());
+                    (**id, **path) = (V::UInt(h::crc32(new)), V::Str(new.to_vec()));
+                }
+            }
+            let old = old.expect("the left hand's m_TOS entry");
+            let ids = skeleton_ids(objects);
+            let row = ids.iter().position(|id| *id == old).unwrap();
+            ids[row] = V::UInt(h::crc32(new));
+        }),
+        Err(refused(BodyModel::MisparentedTransform))
     );
 }

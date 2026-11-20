@@ -13,7 +13,10 @@
 //!   and the rig's paths): the scales E3a and E3b validated, which
 //!   `m_SkeletonPose`'s can miss by an ulp. A node without one refuses
 //!   (`missing_rest_scale`), and so does a mapped slot outside the hips'
-//!   subtree (`detached_bone`).
+//!   subtree (`detached_bone`). The lookup must follow the Avatar's
+//!   hierarchy: two skeleton nodes on one Transform refuse
+//!   (`shared_transform`), as does a Transform below the hips whose parent
+//!   is not its skeleton parent's (`misparented_transform`).
 //! - **The solve.** `H_A = B_A F(T) F_h^-1`, `P_A = h T_A - k H_A c_h` with
 //!   `k = sigma_p s_h`, and the local hips `t = sigma_p^-1 R_p^-1 (P_A -
 //!   t_p)`, `q = R_p^-1 H_A`, after the twist scope of `body_model`.
@@ -75,26 +78,79 @@ impl BodyAvatar<'_> {
     /// the scales freeze v8's E3a and E3b validated (the recorder's captured
     /// rest scales; `m_SkeletonPose`'s can differ by an ulp). `None` where
     /// the node has no path or the path names no rig node.
+    ///
+    /// The lookup must be the Avatar's hierarchy: two skeleton nodes, mapped
+    /// or not, that resolve to one Transform refuse (`shared_transform`),
+    /// and so does a node of the hips' subtree, the hips excluded, whose
+    /// Transform's parent is not the Transform of its skeleton parent
+    /// (`misparented_transform`), such as a Transform elsewhere under the
+    /// Animator for a bone the Avatar places below the hips. A node of the
+    /// subtree without a Transform is `None`, which `hips_points` refuses.
     pub fn rest_scales(
         &self,
         paths: &RigPaths<'_>,
         meter: &Arc<Meter>,
     ) -> Result<MeteredVec<Option<[f32; 3]>>, AnimError> {
-        let ids = self.human().skeleton.ids.as_slice();
+        let human = self.human();
+        let ids = human.skeleton.ids.as_slice();
+        let skeleton = human.skeleton.nodes.as_slice();
         let graph = paths.graph().0;
-        let mut out = MeteredVec::with_capacity(meter, ids.len())?;
+        let mut found: MeteredVec<Option<usize>> = MeteredVec::with_capacity(meter, ids.len())?;
         for &id in ids {
-            let scale = match self.avatar.tos_path(id, meter)? {
+            let node = match self.avatar.tos_path(id, meter)? {
                 Some(path) => {
                     match paths.resolve(PathQuery::HashWithEvidence(id, path.as_bytes()), meter) {
-                        Ok(node) => graph.nodes().get(node).map(|node| node.local.scale),
+                        Ok(node) => graph.nodes().get(node).map(|_| node),
                         Err(error) if error.resource_refusal() => return Err(error),
                         Err(_) => None,
                     }
                 }
                 None => None,
             };
-            out.push(scale)?;
+            found.push(node)?;
+        }
+        let found = found.as_slice();
+        // One Transform per skeleton node.
+        let mut seen: MeteredVec<bool> = MeteredVec::with_capacity(meter, graph.nodes().len())?;
+        for _ in graph.nodes() {
+            seen.push(false)?;
+        }
+        let seen = seen.as_mut_slice();
+        let mut shared = false;
+        for &node in found.iter().flatten() {
+            if let Some(seen) = seen.get_mut(node) {
+                shared |= std::mem::replace(seen, true);
+            }
+        }
+        if shared {
+            return refuse(BodyModel::SharedTransform);
+        }
+        // Below the hips, each Transform's parent is its skeleton parent's.
+        let hips = self.nodes[HIPS].ok_or(AnimError::InvalidAvatarIndex("m_HumanBoneIndex"))?;
+        let mut below: MeteredVec<bool> = MeteredVec::with_capacity(meter, skeleton.len())?;
+        for (k, node) in skeleton.iter().enumerate() {
+            let parent = usize::try_from(node.parent)
+                .ok()
+                .filter(|&parent| parent < k);
+            let inside =
+                parent.is_some_and(|p| p == hips || below.as_slice().get(p) == Some(&true));
+            // A node or parent without a Transform has no scale, which
+            // `hips_scale` and `hips_points` refuse.
+            let pair =
+                parent.and_then(|p| Some((found.get(k).copied()??, found.get(p).copied()??)));
+            if let (true, Some((t, want))) = (inside, pair)
+                && graph.nodes().get(t).map(|node| node.parent) != Some(Some(want))
+            {
+                return refuse(BodyModel::MisparentedTransform);
+            }
+            below.push(inside)?;
+        }
+        let mut out = MeteredVec::with_capacity(meter, ids.len())?;
+        for node in found {
+            out.push(
+                node.and_then(|node| graph.nodes().get(node))
+                    .map(|node| node.local.scale),
+            )?;
         }
         Ok(out)
     }
@@ -308,7 +364,10 @@ pub fn solve_hips_with(
     let p_a = super::body_model::zip3(target, turned, |t, h| human_scale * t - k * h);
     let inverse = conjugate(parent.rotation);
     let t = rotate(inverse, sub(p_a, parent.position)).map(|v| v / parent.scale);
-    let q = multiply(inverse, quaternion(&solved));
+    let Some(rotation) = quaternion(&solved) else {
+        return refuse(BodyModel::DegenerateSolve);
+    };
+    let q = multiply(inverse, rotation);
     let [x, y, z, w] = q;
     // An overflowing square would make every component a finite zero.
     let length = (0. + x * x + y * y + z * z + w * w).sqrt();

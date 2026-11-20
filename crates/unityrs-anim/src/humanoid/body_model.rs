@@ -581,10 +581,13 @@ pub fn product_transposed(a: &Matrix, b: &Matrix) -> Matrix {
 /// A rotation matrix's unit quaternion, `w >= 0`, by Shepperd's method
 /// (the reference's `quaternion`): the largest of the four components
 /// from the diagonal, the first on a tie, the rest from off-diagonal sums
-/// and differences.
+/// and differences. `None` when it has no direction: the length of the
+/// four is zero, overflows or is not finite, or a component is not finite
+/// (the reference returns NaN or raises), so a result is always a finite
+/// unit quaternion.
 #[must_use]
 #[allow(clippy::many_single_char_names, reason = "the reference's names")]
-pub fn quaternion(m: &Matrix) -> Quaternion {
+pub fn quaternion(m: &Matrix) -> Option<Quaternion> {
     let [[m00, m01, m02], [m10, m11, m12], [m20, m21, m22]] = *m;
     let trace = m00 + m11 + m22;
     let mut pick = (0, m00);
@@ -614,13 +617,12 @@ pub fn quaternion(m: &Matrix) -> Quaternion {
     };
     let [x, y, z, w] = q;
     let length = (0. + x * x + y * y + z * z + w * w).sqrt();
-    // No direction (a zero, overflowing or non-finite length): NaN, which
-    // every caller refuses as non-finite.
     if !(length.is_finite() && length > 0.) {
-        return [f64::NAN; 4];
+        return None;
     }
     let q = q.map(|v| v / length);
-    if q[3] < 0. { q.map(|v| -v) } else { q }
+    let q = if q[3] < 0. { q.map(|v| -v) } else { q };
+    q.iter().all(|v| v.is_finite()).then_some(q)
 }
 
 /// Refuses a rest frame `F(T)` that is not finite or not orthonormal
@@ -652,8 +654,9 @@ pub fn rest_frame_scope(rest: &Matrix) -> Result<(), AnimError> {
 pub fn body_rotation(points: &Points, rest_frame: &Matrix) -> Result<Quaternion, AnimError> {
     rest_frame_scope(rest_frame)?;
     frame_scope(points)?;
-    let q = quaternion(&product_transposed(&body_frame(points)?, rest_frame));
-    finite(&q)?;
+    let Some(q) = quaternion(&product_transposed(&body_frame(points)?, rest_frame)) else {
+        return refuse(BodyModel::NonFiniteBody);
+    };
     Ok(q)
 }
 

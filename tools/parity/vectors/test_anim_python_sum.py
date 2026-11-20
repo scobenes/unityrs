@@ -4,10 +4,13 @@ Freeze v8 was fitted and validated under CPython 3.15.2, whose builtin `sum` com
 (Neumaier) from 3.12 on; the Rust model sums with unityrs-pysum, which mirrors it. This writes
 `crates/unityrs-pysum/tests/support/python_sum.json`: random and adversarial float vectors (cancellation, huge and tiny mixes, subnormals, signed
 zeros, overflow, infinities, NaN) with `sum`'s result, as f64 bit patterns. A NaN result is stored as "nan":
-its sign and payload are the hardware's. Generating, and the check, need a compensating interpreter
-(`compensated`); an older one skips the check and refuses to generate."""
+its sign and payload are the hardware's. Generating needs exactly CPython 3.15.2 (`canonical`), which the
+vectors record; the checks run on any interpreter whose sum is compensated (`compensated`), skip on any
+other, and hold the recorded version to 3.15.2. They live outside tests/ so that the parity suite, run under
+3.11, never discovers them: CI's body-vectors job runs this folder under 3.15.2."""
 
 import json
+import platform
 import random
 import struct
 import sys
@@ -22,9 +25,20 @@ EDGES = (0., -0., 1., -1., 1e16, -1e16, 1e308, -1e308, 1.7976931348623157e308, 5
          1e-300, 0.1, 0.2, 0.3, 2. ** 53, 2. ** -53, 1. + 2. ** -52, INF, -INF, NAN)
 
 
+# The interpreter freeze v8 was fitted and validated under, which generates and is recorded in the vectors.
+CANONICAL = "3.15.2"
+
+
 def compensated():
     """Whether this interpreter's `sum` of floats is CPython 3.12+'s compensated one."""
     return sys.version_info >= (3, 12) and sum([1e16, 1.0, -1e16]) == 1.0 and sum([0.1] * 10) == 1.0
+
+
+def canonical():
+    """Refuse to generate vectors under anything but CPython 3.15.2 with a compensated sum."""
+    found = f"{platform.python_implementation()} {platform.python_version()}"
+    if found != f"CPython {CANONICAL}" or not compensated():
+        raise SystemExit(f"vectors are generated under CPython {CANONICAL} only, not {found}")
 
 
 def bits(value):
@@ -59,11 +73,10 @@ def result(values):
     return "nan" if total != total else bits(total)
 
 
-def dump():
-    if not compensated():
-        raise SystemExit(f"python_sum vectors need CPython 3.12+'s compensated sum, not {sys.version.split()[0]}")
+def dump(python=CANONICAL):
+    """The vectors' file, recording `python`, with this interpreter's sums."""
     rows = [dict(v=[bits(x) for x in values], sum=result(values)) for values in vectors()]
-    lines = ["{", f'  "python": "{sys.version.split()[0]}",', '  "vectors": [']
+    lines = ["{", f'  "python": "{python}",', '  "vectors": [']
     lines.append(",\n".join("    " + json.dumps(row) for row in rows))
     return "\n".join([*lines, "  ]", "}", ""])
 
@@ -71,7 +84,9 @@ def dump():
 @unittest.skipUnless(compensated(), "needs CPython 3.12+'s compensated float sum (CI's body-vectors job)")
 class TestPythonSum(unittest.TestCase):
     def test_checked_in_vectors_are_this_interpreters_sum(self):
-        self.assertEqual(OUTPUT.read_text(encoding="utf-8").split("\n", 2)[2], dump().split("\n", 2)[2])
+        stored = OUTPUT.read_text(encoding="utf-8")
+        self.assertEqual(json.loads(stored)["python"], CANONICAL)
+        self.assertEqual(stored, dump())
 
     def test_the_vectors_cover_the_edges(self):
         stored = json.loads(OUTPUT.read_text(encoding="utf-8"))["vectors"]
@@ -85,6 +100,7 @@ class TestPythonSum(unittest.TestCase):
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--generate"]:
+        canonical()
         OUTPUT.write_text(dump(), encoding="utf-8")
     else:
         unittest.main()

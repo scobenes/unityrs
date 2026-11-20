@@ -1,6 +1,6 @@
 //! `python_sum` bit for bit against Python 3.15.2's compensated
 //! `sum` on random and adversarial vectors (`support/python_sum.json`,
-//! written by `tools/parity/tests/test_anim_python_sum.py`).
+//! written by `tools/parity/vectors/test_anim_python_sum.py`).
 use serde_json::Value;
 use unityrs_pysum::python_sum;
 

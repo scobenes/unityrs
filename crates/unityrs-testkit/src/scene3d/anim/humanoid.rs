@@ -134,11 +134,36 @@ fn bones(rig: &Rig) -> Vec<(usize, &'static str)> {
     out
 }
 
-fn path(bones: &[(usize, &str)], bone: usize) -> String {
-    match bone {
-        0 => "Hips".to_owned(),
-        _ => format!("Hips/{}", bones[bone].1),
+/// The rig bone (an index into `bones`) a bone's Transform hangs on: with
+/// `hierarchy`, its nearest present `HumanTrait` ancestor, as the Avatar's
+/// skeleton has it (`arrange`); otherwise `Hips`. `None` for `Hips`.
+fn rig_parent(rig: &Rig, bones: &[(usize, &str)], bone: usize) -> Option<usize> {
+    if bone == 0 {
+        return None;
     }
+    if !rig.hierarchy {
+        return Some(0);
+    }
+    let mut up = trait_parent(bones[bone].0);
+    while let Some(b) = up {
+        if let Some(k) = bones.iter().position(|&(other, _)| other == b) {
+            return Some(k);
+        }
+        up = trait_parent(b);
+    }
+    Some(0)
+}
+
+/// A bone's path from the Animator node: its Transform's ancestors' names.
+fn path(rig: &Rig, bones: &[(usize, &str)], bone: usize) -> String {
+    let mut names = vec![bones[bone].1];
+    let mut at = bone;
+    while let Some(parent) = rig_parent(rig, bones, at) {
+        names.push(bones[parent].1);
+        at = parent;
+    }
+    names.reverse();
+    names.join("/")
 }
 
 /// The 25-slot `m_HumanBoneIndex` position of a `HumanBodyBones` index.
@@ -227,7 +252,7 @@ fn skeleton(rig: &Rig, axes_rows: bool) -> V {
         if i == 0 {
             0
         } else {
-            crc32(path(&bones, i - 1).as_bytes())
+            crc32(path(rig, &bones, i - 1).as_bytes())
         }
     });
     data(st(
@@ -312,7 +337,7 @@ pub fn avatar(rig: &Rig) -> Object {
     let mut tos = vec![pair(V::UInt(0), V::Str(Vec::new()))];
     for bone in 0..bones.len() {
         if rig.no_tos != Some(bone) {
-            let path = path(&bones, bone);
+            let path = path(rig, &bones, bone);
             tos.push(pair(
                 V::UInt(crc32(path.as_bytes())),
                 V::Str(path.into_bytes()),
@@ -540,9 +565,12 @@ pub fn prefab(rig: &Rig) -> Vec<Object> {
             root
         }),
     ];
-    let children: Vec<_> = (1..bones.len())
-        .map(|i| (0, 102 + i64::try_from(i).unwrap_or_default()))
-        .collect();
+    let children = |of: usize| -> Vec<_> {
+        (1..bones.len())
+            .filter(|&i| rig_parent(rig, &bones, i) == Some(of))
+            .map(|i| (0, 102 + i64::try_from(i).unwrap_or_default()))
+            .collect()
+    };
     for (i, &(_, name)) in bones.iter().enumerate() {
         let id = 2 + i64::try_from(i).unwrap_or_default();
         let name = if rig.renamed == Some(i) {
@@ -551,15 +579,13 @@ pub fn prefab(rig: &Rig) -> Vec<Object> {
             name.as_bytes()
         };
         objects.push(Object::new(id, 1, game_object(name, &[(0, id + 100)])));
-        let (father, own) = if i == 0 {
-            ((0, 101), children.as_slice())
-        } else {
-            ((0, 102), &[][..])
-        };
+        let father = rig_parent(rig, &bones, i).map_or(101, |parent| {
+            102 + i64::try_from(parent).unwrap_or_default()
+        });
         objects.push(Object::new(
             id + 100,
             4,
-            transform((0, id), father, own, false),
+            transform((0, id), (0, father), &children(i), false),
         ));
     }
     let mut animator = super::animator(ANIMATOR, (0, CONTROLLER));

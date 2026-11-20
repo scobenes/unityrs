@@ -228,9 +228,16 @@ fn the_quaternion_of_a_matrix_on_every_branch() {
         about([0.3, -0.5, 0.8], 75.),
     ];
     for q in cases {
-        same_rotation(m::quaternion(&matrix(q)), q, 2e-15);
-        assert!(m::quaternion(&matrix(q))[3] >= 0.);
+        same_rotation(m::quaternion(&matrix(q)).unwrap(), q, 2e-15);
+        assert!(m::quaternion(&matrix(q)).unwrap()[3] >= 0.);
     }
+    // No direction: a length that overflows, or a non-finite entry.
+    let mut huge = matrix([0., 0., 0., 1.]);
+    (huge[2][1], huge[1][2]) = (1e300, -1e300);
+    assert_eq!(m::quaternion(&huge), None);
+    let mut nan = matrix([0., 0., 0., 1.]);
+    nan[0][1] = f64::NAN;
+    assert_eq!(m::quaternion(&nan), None);
 }
 
 #[test]

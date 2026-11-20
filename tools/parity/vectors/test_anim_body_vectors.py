@@ -5,9 +5,11 @@ and a requested placement, all as f64 bit patterns; the expected centre, frames,
 hips solve are the reference's (anim_body_model) with freeze v8's coefficients. The inputs are made with
 products and square roots only, so they are the same on every platform; the check recomputes the outputs
 from the stored inputs. Freeze v8 was fitted and validated under CPython 3.15.2, whose float `sum` is
-compensated (from 3.12 on), and the reference's dot products and norms use `sum`: generating refuses, and the
-checks skip, under an interpreter without it (test_anim_python_sum.compensated); CI's body-vectors job runs
-them under 3.15.2. Only the twist (the platform's `atan2`) is compared within ulps."""
+compensated (from 3.12 on), and the reference's dot products and norms use `sum`: generating needs exactly
+CPython 3.15.2, which the vectors record (test_anim_python_sum.canonical), and the checks skip under an
+interpreter without a compensated sum (test_anim_python_sum.compensated) and hold the recorded version to
+3.15.2. CI's body-vectors job runs this folder under 3.15.2; the parity suite (tests/, under 3.11) never
+discovers it. Only the twist (the platform's `atan2`) is compared within ulps."""
 
 import json
 import math
@@ -23,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import anim_body_model as model  # noqa: E402
 import anim_body_tolerance as tolerance  # noqa: E402
-from test_anim_python_sum import compensated  # noqa: E402
+from test_anim_python_sum import CANONICAL, canonical, compensated  # noqa: E402
 
 OUTPUT = PARITY.parents[1] / "crates/unityrs-anim/tests/support/body_vectors.json"
 FREEZE = PARITY / "anim_body_freeze_v8.json"
@@ -139,13 +141,12 @@ def expect(entry):
 
 
 def dump():
-    if not compensated():
-        raise SystemExit(f"body vectors need CPython 3.12+'s compensated sum, not {sys.version.split()[0]}")
+    """The vectors' file, recording CPython 3.15.2, with this interpreter's results."""
     rng = random.Random(20261120)
     cases = [case(rng, variant, absent, pose) for variant, absent in VARIANTS.items() for pose in range(POSES)]
     cases += [case(rng, "full", (), "twisted", refuse=True), case(rng, "no-toes", VARIANTS["no-toes"], "twisted",
                                                                   refuse=True)]
-    lines = ["{", f'  "freeze": "{FREEZE.name}",', '  "cases": [']
+    lines = ["{", f'  "python": "{CANONICAL}",', f'  "freeze": "{FREEZE.name}",', '  "cases": [']
     lines.append(",\n".join("    " + json.dumps(entry, allow_nan=False) for entry in cases))
     return "\n".join([*lines, "  ]", "}", ""])
 
@@ -163,6 +164,7 @@ class TestBodyVectors(unittest.TestCase):
 
     def test_checked_in_vectors_come_from_the_reference(self):
         stored = json.loads(OUTPUT.read_text(encoding="utf-8"))
+        self.assertEqual(stored["python"], CANONICAL)
         self.assertEqual(stored["freeze"], FREEZE.name)
         for entry in stored["cases"]:
             found, want = expect(entry), dict(entry["expect"])
@@ -181,6 +183,7 @@ class TestBodyVectors(unittest.TestCase):
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--generate"]:
+        canonical()
         OUTPUT.write_text(dump(), encoding="utf-8")
     else:
         unittest.main()
