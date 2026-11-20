@@ -24,7 +24,8 @@ static partial class UnityrsFixtureBuilder
     }
 
     // F1 rigs: the two P2b rigs, then F6's topologies on the compact rig.
-    // The last is the hold-out rig, never used to fit.
+    // The last two are the hold-out rigs, never used to fit: "holdout" was
+    // spent by E3b on freeze v7, and "holdout-2" (HoldoutRig) is the next.
     static readonly BodyRig[] ProbeRigs = {
         new BodyRig { Name = "compact" }, new BodyRig { Name = "tall", Tall = true },
         // Spine's three children are its own edges here alone: off one plane, so each separates.
@@ -45,6 +46,7 @@ static partial class UnityrsFixtureBuilder
         new BodyRig { Name = "eyes-jaw", Extras = new[] { "LeftEye", "RightEye", "Jaw" } },
         new BodyRig { Name = "noncoplanar", Noncoplanar = true },
         new BodyRig { Name = "holdout", Arms = 1.3f, Legs = .8f },
+        new BodyRig { Name = "holdout-2", Arms = .8f, Legs = 1.2f },
     };
     // F6 rigs that came with the range sweeps (anim_fixture_body.py LATER_RIGS), each required.
     static readonly string[] LaterRigs = { "no-upper-chest-toes", "no-upper-chest-left-toes", "no-upper-chest-right-toes" };
@@ -57,7 +59,8 @@ static partial class UnityrsFixtureBuilder
     };
     static readonly string[] TargetRigs = { "compact", "tall" };
     // Extra probe cases, each on its own bundle of a probe rig (tools/parity/anim_fixture_body.py
-    // EXTRA_PROBES): independent poses where B1's adequacy checkpoint found the rig short.
+    // EXTRA_PROBES): independent poses where B1's adequacy checkpoint found the rig short. The cases after
+    // tall-2 (anim_fixture_extras.py) came with the second hold-out rig, after E3b on freeze v7.
     static readonly (string name, string rig, (string bone, int source)[][] plan)[] ExtraProbes = {
         ("body-probes-tall-2", "tall", new[]
         {
@@ -88,6 +91,133 @@ static partial class UnityrsFixtureBuilder
             new[] { ("LeftUpperLeg", -3), ("RightUpperLeg", -2) },
             new[] { ("LeftUpperLeg", -3), ("RightUpperArm", -3) },
         }),
+        ("body-probes-compact-2", "compact", new[]
+        {
+            new[] { ("LeftShoulder", 1), ("RightShoulder", 1), ("Neck", 1) },
+            new[] { ("LeftShoulder", 1), ("RightShoulder", 1), ("Head", 1) },
+            new[] { ("LeftShoulder", 1), ("RightShoulder", 1), ("Neck", -1) },
+            new[] { ("LeftShoulder", 1), ("RightShoulder", 1), ("Head", -2) },
+            new[] { ("LeftShoulder", 1), ("RightShoulder", 1), ("LeftHand", 1) },
+            new[] { ("LeftShoulder", 1), ("RightShoulder", 1), ("RightHand", 1) },
+            new[] { ("LeftShoulder", 1), ("RightShoulder", 1), ("Neck", 1) },
+            new[] { ("LeftShoulder", 1), ("RightShoulder", 1), ("Head", 1) },
+            new[] { ("LeftShoulder", 1), ("RightShoulder", 1), ("Neck", -1) },
+            new[] { ("LeftShoulder", 1), ("RightShoulder", 1), ("Head", -2) },
+            new[] { ("LeftShoulder", 1), ("RightShoulder", 1), ("LeftHand", 1) },
+            new[] { ("LeftShoulder", 1), ("RightShoulder", 1), ("RightHand", 1) },
+        }),
+        ("body-probes-compact-3", "compact", new[]
+        {
+            new[] { ("LeftShoulder", 1), ("LeftUpperArm", 1), ("Neck", 1) },
+            new[] { ("LeftShoulder", 1), ("LeftUpperArm", 1), ("Head", 1) },
+            new[] { ("LeftShoulder", 1), ("LeftUpperArm", 1), ("Neck", -1) },
+            new[] { ("LeftShoulder", 1), ("LeftUpperArm", 1), ("Head", -2) },
+            new[] { ("LeftShoulder", 1), ("LeftUpperArm", 1), ("LeftHand", 1) },
+            new[] { ("LeftShoulder", 1), ("LeftUpperArm", 1), ("RightHand", 1) },
+            new[] { ("LeftShoulder", 1), ("LeftUpperArm", 1), ("Neck", 1) },
+            new[] { ("LeftShoulder", 1), ("LeftUpperArm", 1), ("Head", 1) },
+            new[] { ("LeftShoulder", 1), ("LeftUpperArm", 1), ("Neck", -1) },
+            new[] { ("LeftShoulder", 1), ("LeftUpperArm", 1), ("Head", -2) },
+            new[] { ("LeftShoulder", 1), ("LeftUpperArm", 1), ("LeftHand", 1) },
+            new[] { ("LeftShoulder", 1), ("LeftUpperArm", 1), ("RightHand", 1) },
+        }),
+        ("body-probes-compact-4", "compact", new[]
+        {
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Neck", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Head", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Neck", -1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Head", -2) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("LeftHand", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("RightHand", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Neck", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Head", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Neck", -1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Head", -2) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("LeftHand", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("RightHand", 1) },
+        }),
+        ("body-probes-compact-5", "compact", new[]
+        {
+            new[] { ("Spine", 1), ("RightUpperArm", 1), ("Neck", 1) },
+            new[] { ("Spine", 1), ("RightUpperArm", 1), ("Head", 1) },
+            new[] { ("Spine", 1), ("RightUpperArm", 1), ("Neck", -1) },
+            new[] { ("Spine", 1), ("RightUpperArm", 1), ("Head", -2) },
+            new[] { ("Spine", 1), ("RightUpperArm", 1), ("LeftHand", 1) },
+            new[] { ("Spine", 1), ("RightUpperArm", 1), ("RightHand", 1) },
+            new[] { ("Spine", 1), ("RightUpperArm", 1), ("Neck", 1) },
+            new[] { ("Spine", 1), ("RightUpperArm", 1), ("Head", 1) },
+            new[] { ("Spine", 1), ("RightUpperArm", 1), ("Neck", -1) },
+            new[] { ("Spine", 1), ("RightUpperArm", 1), ("Head", -2) },
+            new[] { ("Spine", 1), ("RightUpperArm", 1), ("LeftHand", 1) },
+            new[] { ("Spine", 1), ("RightUpperArm", 1), ("RightHand", 1) },
+        }),
+        ("body-probes-tall-3", "tall", new[]
+        {
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Neck", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Head", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Neck", -1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Head", -2) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("LeftHand", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("RightHand", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Neck", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Head", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Neck", -1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("Head", -2) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("LeftHand", 1) },
+            new[] { ("LeftLowerLeg", 1), ("RightLowerLeg", 1), ("RightHand", 1) },
+        }),
+    };
+    // The current hold-out rig's own pose draws (tools/parity/anim_fixture_rigs.py holdout_plan: unscrambled
+    // Sobol points past HOLDOUT_SEED, three (bone, source) picks each, a repeated bone dropped). Each bone takes
+    // one of the rig's own probe vectors, as an extra probe case's do, and no draw bends the spine sideways or
+    // sets a muscle 2.2's frame scope refuses.
+    const string HoldoutRig = "holdout-2";
+    static readonly (string bone, int source)[][] HoldoutPlan = {
+        new[] { ("Spine", 1), ("LeftLowerArm", -2), ("Neck", -1) },
+        new[] { ("RightFoot", -3), ("LeftLowerLeg", 1), ("LeftShoulder", 1) },
+        new[] { ("LeftUpperArm", 2), ("RightToes", -3), ("LeftHand", 2) },
+        new[] { ("LeftUpperLeg", -2), ("Chest", 1), ("RightLowerLeg", -3) },
+        new[] { ("LeftLowerLeg", 1), ("LeftFoot", -1), ("RightUpperLeg", -2) },
+        new[] { ("RightLowerArm", -2), ("RightHand", -3), ("RightUpperArm", 1) },
+        new[] { ("LeftShoulder", 1), ("Head", 2), ("LeftToes", -1) },
+        new[] { ("UpperChest", 1), ("RightShoulder", 1), ("Spine", 1) },
+        new[] { ("Neck", 1), ("LeftUpperArm", -3) },
+        new[] { ("RightShoulder", 1), ("LeftShoulder", 1), ("Head", 3) },
+        new[] { ("LeftHand", -1), ("RightLowerLeg", -2), ("RightFoot", 1) },
+        new[] { ("LeftFoot", -3), ("RightLowerArm", 1), ("RightHand", -2) },
+        new[] { ("RightUpperLeg", 2), ("RightFoot", 1), ("LeftLowerArm", -3) },
+        new[] { ("LeftLowerArm", -3), ("Spine", 1), ("LeftLowerLeg", -1) },
+        new[] { ("LeftToes", 1), ("RightUpperArm", 2), ("UpperChest", 1) },
+        new[] { ("Chest", 1), ("LeftUpperLeg", -3), ("RightToes", -2) },
+        new[] { ("Chest", 1), ("RightShoulder", 1), ("RightLowerLeg", -1) },
+        new[] { ("RightToes", -2), ("Neck", -2), ("RightLowerArm", -3) },
+        new[] { ("LeftLowerArm", -1), ("LeftHand", -1), ("LeftShoulder", 1) },
+        new[] { ("LeftLowerLeg", -3), ("LeftFoot", -3), ("UpperChest", 1) },
+        new[] { ("LeftFoot", -1), ("Chest", 1), ("Spine", 1) },
+        new[] { ("RightHand", -3), ("LeftToes", -1), ("RightFoot", -3) },
+        new[] { ("LeftUpperArm", 1), ("RightUpperLeg", -1) },
+        new[] { ("Head", -1), ("RightUpperArm", 1), ("LeftUpperLeg", 1) },
+        new[] { ("Neck", 2), ("LeftLowerLeg", -1), ("LeftHand", 1) },
+        new[] { ("LeftShoulder", 1), ("RightLowerArm", -3), ("LeftFoot", -2) },
+        new[] { ("LeftHand", 1), ("UpperChest", 1), ("Head", -3) },
+        new[] { ("RightLowerLeg", -2), ("RightToes", -2), ("RightShoulder", 1) },
+        new[] { ("LeftUpperLeg", 1), ("RightHand", -2), ("LeftToes", 1) },
+        new[] { ("RightUpperArm", -2), ("RightFoot", 1), ("Chest", 1) },
+        new[] { ("LeftToes", -1), ("LeftUpperArm", -3), ("RightUpperLeg", -2) },
+        new[] { ("Spine", 1), ("LeftUpperLeg", -1), ("LeftLowerArm", -1) },
+        new[] { ("Spine", 1), ("RightLowerLeg", 1), ("Chest", 1) },
+        new[] { ("LeftToes", -2), ("RightLowerArm", -2) },
+        new[] { ("RightUpperArm", -1), ("UpperChest", 1) },
+        new[] { ("RightUpperLeg", -3), ("LeftShoulder", 1) },
+        new[] { ("RightLowerLeg", -1), ("LeftUpperArm", -3), ("LeftFoot", -1) },
+        new[] { ("LeftHand", -3), ("LeftUpperLeg", -1) },
+        new[] { ("RightShoulder", 1), ("RightFoot", -2) },
+        new[] { ("Neck", -1), ("Spine", 1) },
+        new[] { ("Head", 3), ("LeftToes", -1), ("RightToes", 1) },
+        new[] { ("LeftUpperArm", -3), ("Chest", 1), ("UpperChest", 1) },
+        new[] { ("RightHand", 1), ("LeftLowerArm", 1), ("LeftLowerLeg", -3) },
+        new[] { ("RightFoot", -2), ("RightUpperLeg", -2), ("RightLowerArm", -1) },
+        new[] { ("LeftLowerLeg", 1), ("Head", -1), ("RightHand", 1) },
     };
     // Twist sweeps, each on its own bundle of a training rig (anim_fixture_body.py TWIST_RIGS): the
     // Spine and Chest twist muscles together at degrees / TwistRange (HumanTrait's default limits,
@@ -234,7 +364,7 @@ static partial class UnityrsFixtureBuilder
         // A rig that came with the range sweeps is a required training rig: Unity refusing its Avatar is an error.
         foreach (var rig in ProbeRigs)
             if (report.Prepare(build, "Prepare body-" + rig.Name, RigCases(rig, false).ToArray(),
-                    () => BuildBodyRig(build, report, rig, chain: false), !LaterRigs.Contains(rig.Name)))
+                    () => BuildBodyRig(build, report, rig, chain: false), !LaterRigs.Contains(rig.Name) && rig.Name != HoldoutRig))
                 builtRigs.Add(rig.Name);
         // Once its rig builds, an extra probe case is required: Unity refusing it is an error.
         foreach (var extra in ExtraProbes)
@@ -656,7 +786,7 @@ static partial class UnityrsFixtureBuilder
                 return;
             }
             AddProbeReplay(build, Replay("body-probes-" + rig.Name, prefab, clipPaths[0], "probes", "identity"),
-                BodySchedule(mapped, targets: false));
+                rig.Name == HoldoutRig ? ExtraSchedule(mapped, HoldoutPlan) : BodySchedule(mapped, targets: false));
             if (!targets) return;
             foreach (var (path, suffix, rootKind) in new[] { (prefab, "", "identity"), (offsetPrefab, "-offset", "offset") })
                 AddProbeReplay(build, Replay("body-targets-" + rig.Name + suffix, path, clipPaths[0], "targets", rootKind),

@@ -97,5 +97,15 @@ pub(crate) fn decode_image(
     }
 }
 
+/// Each whole 16-byte block of `data`, in order: whether astcenc's LDR
+/// decoder reads it as an error block at `tables`' footprint.
+pub(crate) fn error_blocks(tables: &mut Tables, data: &[u8]) -> Vec<bool> {
+    data.as_chunks::<16>()
+        .0
+        .iter()
+        .map(|b| block::is_error(tables, b))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests;

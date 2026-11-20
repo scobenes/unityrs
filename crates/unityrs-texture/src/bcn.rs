@@ -107,16 +107,23 @@ pub(crate) fn decode(kind: Kind, data: &[u8], w: usize, h: usize, out: &mut [u8]
                 }
                 Kind::Bc7 => bc7_block(src, &mut col),
             }
-            for (n, px) in col.iter().enumerate() {
-                let (x, y) = (bx * 4 + n % 4, by * 4 + n / 4);
-                if x >= w || y >= h {
-                    continue;
+            // The block's pixels inside the texture, a row of them at a time.
+            let shown = w.saturating_sub(bx * 4).min(4);
+            for (r, pixels) in col.as_chunks::<4>().0.iter().enumerate() {
+                let y = by * 4 + r;
+                if y >= h {
+                    break;
                 }
-                let at = (h - 1 - y).saturating_mul(row).saturating_add(x * bpp);
-                if let (Some(dst), Some(src)) =
-                    (out.get_mut(at..at.saturating_add(bpp)), px.get(..bpp))
-                {
-                    dst.copy_from_slice(src);
+                let at = (h - 1 - y).saturating_mul(row).saturating_add(bx * 4 * bpp);
+                let Some(dst) = out.get_mut(at..at.saturating_add(shown * bpp)) else {
+                    continue;
+                };
+                if bpp == 4 {
+                    dst.copy_from_slice(pixels.as_flattened().get(..shown * 4).unwrap_or_default());
+                } else {
+                    for (dst, px) in dst.chunks_exact_mut(bpp).zip(pixels) {
+                        dst.copy_from_slice(px.get(..bpp).unwrap_or_default());
+                    }
                 }
             }
         }

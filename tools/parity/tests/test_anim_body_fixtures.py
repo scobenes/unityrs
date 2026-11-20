@@ -2,6 +2,8 @@
 fail-closed, and a run without them, or with all of them unrecorded, still completes."""
 
 import copy
+import hashlib
+import json
 import math
 import re
 import unittest
@@ -13,10 +15,14 @@ from anim_body_support import MUSCLES, body_doc, clip_case
 from anim_coverage_support import COVERAGE
 from anim_fixture_support import RUN, write
 
-import anim_fixture_body as body  # noqa: E402  (test_anim_replay puts it on the path)
+import anim_body_model as model  # noqa: E402  (test_anim_replay puts it on the path)
+import anim_fixture_body as body  # noqa: E402
 import anim_fixture_coverage  # noqa: E402
+import anim_fixture_rigs as rigs_module  # noqa: E402
 import anim_replay as replay  # noqa: E402
-from anim_replay_complete import OPTIONAL_CASES  # noqa: E402
+import anim_body_seal as seal  # noqa: E402
+import anim_replay_complete as complete  # noqa: E402
+from anim_replay_complete import OPTIONAL_CASES, complete_folder  # noqa: E402
 
 EDITOR = Path(__file__).resolve().parents[2] / "fixtures" / "unity" / "Editor"
 # A run's body cases from before the range sweeps and their topology rigs.
@@ -56,23 +62,42 @@ def yaw_gap(doc, k):
 
 class BodyInventoryTests(unittest.TestCase):
     def test_cases_mirror_the_builder(self):
-        self.assertEqual(len(body.BODY_CASES), 118)
+        self.assertEqual(len(body.BODY_CASES), 124)
         kinds = [info["kind"] for info in body.BODY_INFO.values()]
-        self.assertEqual((kinds.count("probes"), kinds.count("targets"), kinds.count("clip")), (28, 8, 82))
-        self.assertEqual(body.EXTRA_CASES, {"body-probes-tall-2"})
+        self.assertEqual((kinds.count("probes"), kinds.count("targets"), kinds.count("clip")), (34, 8, 82))
+        self.assertEqual(body.EXTRA_CASES, {"body-probes-tall-2", "body-probes-tall-3",
+                                            *(f"body-probes-compact-{k}" for k in range(2, 6))})
+        # The fifth generation: the cases added with the second hold-out rig, absent from older runs.
+        self.assertEqual(body.LATER_CASES[-1], {"body-probes-holdout-2", *body.EXTRA_CASES - {"body-probes-tall-2"}})
         self.assertEqual(body.TWIST_CASES, {"body-probes-twist-compact", "body-probes-twist-tall"})
         self.assertEqual(body.RANGE_CASES, {"body-probes-range-compact", "body-probes-range-tall",
                                             "body-probes-range-noncoplanar"})
         self.assertEqual(body.BAND_CASES, {"body-probes-band-compact", "body-probes-band-tall",
                                            "body-probes-band-noncoplanar"})
-        self.assertEqual(body.LATER_CASES[-1], body.BAND_CASES)
+        self.assertEqual(body.LATER_CASES[3], body.BAND_CASES)
         self.assertLessEqual(set(body.LATER_RIGS), set(body.PROBE_RIGS))
         self.assertEqual(len(body.CLIP_VARIANTS), 39)
         self.assertLessEqual(body.BODY_CASES.keys(), OPTIONAL_CASES)
         self.assertTrue(body.BODY_CASES.keys().isdisjoint(anim_fixture_coverage.COVERAGE_CASES))
         builder = source("UnityrsBodyFixtures.cs")
-        rigs = re.findall(r'new BodyRig \{ Name = "([a-z-]+)"', builder)
+        rigs = re.findall(r'new BodyRig \{ Name = "([a-z0-9-]+)"', builder)
         self.assertEqual(rigs, [*body.PROBE_RIGS, *body.CHAIN_RIGS])
+        # Each hold-out rig, by its topology in the builder's table alone, is inside the frozen scope, with the
+        # proportions anim_fixture_rigs gives it.
+        for rig in body.HOLDOUT_RIGS:
+            holdout = re.search(r'new BodyRig \{ Name = "' + rig + r'"([^}]*)\}', builder).group(1)
+            self.assertFalse(re.search(r"Omit|Extras", holdout))
+            self.assertEqual(tuple(float(v) for v in re.findall(r"(?:Arms|Legs) = ([\d.]+)f", holdout)),
+                             rigs_module.RIG_PROPORTIONS[rig])
+            self.assertEqual(body.PROBE_RIGS[rig], ("compact", (), ()))
+            model.topology_scope(body.rig_bones(rig))
+        self.assertEqual(body.HOLDOUT, body.HOLDOUT_RIGS[-1])
+        self.assertIn(f'const string HoldoutRig = "{body.HOLDOUT}";', builder)
+        table = builder[builder.index("HoldoutPlan = {"):]
+        table = table[:table.index("\n    };")]
+        self.assertEqual([tuple((bone, int(source)) for bone, source in re.findall(r'\("([A-Za-z]+)", (-?\d)\)', line))
+                          for line in re.findall(r'new\[\] \{ (\(.*?\)) \}', table)],
+                         list(rigs_module.holdout_plan(body.HOLDOUT)))
         table = builder[builder.index("ProbeGroups = {"):]
         groups = re.findall(r'new\[\] \{ "([A-Za-z]+)", ((?:"[^"]+"(?:, )?)+) \}', table[:table.index("};")])
         self.assertEqual([(bone, tuple(re.findall(r'"([^"]+)"', muscles))) for bone, muscles in groups],
@@ -119,7 +144,8 @@ class BodyInventoryTests(unittest.TestCase):
         self.assertIn('sweep == "band" ? RangeSchedule(mapped, band: true)', builder)
         later = re.search(r"LaterRigs = \{ ([^}]*) \}", builder).group(1)
         self.assertEqual(tuple(re.findall(r'"([^"]+)"', later)), body.LATER_RIGS)
-        self.assertIn("() => BuildBodyRig(build, report, rig, chain: false), !LaterRigs.Contains(rig.Name)))", builder)
+        self.assertIn("() => BuildBodyRig(build, report, rig, chain: false), !LaterRigs.Contains(rig.Name) "
+                      "&& rig.Name != HoldoutRig))", builder)
         bones = re.search(r"RangeBones = \{ ([^}]*) \}", builder).group(1)
         self.assertEqual(tuple(re.findall(r'"([^"]+)"', bones)), body.RANGE_BONES)
         table = builder[builder.index("SobolDirections = {"):]
@@ -145,9 +171,30 @@ class BodyInventoryTests(unittest.TestCase):
                 anchors = {t: [vector[i] for i in spine] for t, vector in points if t in (0, .5, 1)}
                 self.assertEqual(anchors, {t: list(v) for t, v in body.ANCHORS.items()})
                 probes = sum(len(group) for bone, group in body.PROBE_GROUPS if bone in body.rig_bones(rig))
+                if rig == body.HOLDOUT and not targets:
+                    probes = rigs_module.HOLDOUT_DRAWS - 3
                 self.assertEqual(len(points), 6 if targets else probes + 6)
         self.assertNotIn("Chest", body.rig_bones("no-chest"))
         self.assertEqual(body.rig_bones("eyes-jaw") - body.rig_bones("compact"), {"LeftEye", "RightEye", "Jaw"})
+
+    def test_the_hold_out_draws_are_fresh_and_in_scope(self):
+        names = list(MUSCLES)
+        plan = rigs_module.holdout_plan(body.HOLDOUT)
+        self.assertEqual(len(plan), rigs_module.HOLDOUT_DRAWS)
+        self.assertTrue(all(len({bone for bone, _ in draw}) == len(draw) in (2, 3) for draw in plan))
+        self.assertEqual(plan, rigs_module.holdout_plan(body.HOLDOUT))
+        self.assertNotEqual(plan, rigs_module.holdout_plan(body.HOLDOUT, seed=0))
+        drawn = [vector for _, vector in body.probe_schedule(body.HOLDOUT, names, False)]
+        spent = {tuple(vector) for rig in body.HOLDOUT_RIGS[:-1] for _, vector in body.probe_schedule(rig, names, False)}
+        self.assertEqual(len(drawn), len(plan) + 3)
+        # No draw repeats a spent hold-out's pose (beyond the shared anchors), bends the spine sideways, or sets
+        # a muscle the frame scope refuses.
+        anchors = {tuple(vector) for t, vector in body.probe_schedule(body.HOLDOUT, names, False) if t in (0, .5, 1)}
+        self.assertFalse(({tuple(vector) for vector in drawn} - anchors) & spent)
+        sideways = [names.index(m) for m in names if "Left-Right" in m and m.split()[0] in ("Spine", "Chest", "UpperChest")]
+        refused = [names.index(m) for m in seal.FRAME_REFUSED if m in names]
+        for vector in set(map(tuple, drawn)) - anchors:
+            self.assertFalse(any(vector[i] for i in sideways + refused), vector)
 
     def test_extra_probes_take_each_bone_from_a_recorded_probe_vector(self):
         names = list(MUSCLES)
@@ -168,7 +215,6 @@ class BodyInventoryTests(unittest.TestCase):
                         muscles = [names.index(muscle) for muscle in group]
                         self.assertTrue(any([vector[i] for i in muscles] == [other[i] for i in muscles] for other in own),
                                         (name, t, bone))
-
 
     def test_twist_sweeps_cross_each_twist_with_each_tilt_on_training_rigs(self):
         names = list(MUSCLES)
@@ -566,13 +612,15 @@ class CheckBodyTests(unittest.TestCase):
             slot = [row["attribute"] for row in bindings].index(attribute)
             changed = copy.deepcopy(built)
             data = changed["m_MuscleClip"]["m_Clip"]["data"]["m_StreamedClip"]["data"]
-            cursor, frame = 0, 0
+            cursor, keys = 0, 0
             while data[cursor] != 0x7f800000:
                 count = data[cursor + 1]
                 for i in range(cursor + 2, cursor + 2 + 5 * count, 5):
-                    if data[i] == slot and frame == 1:
-                        data[i + 4] = int(replay.f32_bits(.75), 16)
-                cursor, frame = cursor + 2 + 5 * count, frame + 1
+                    if data[i] == slot:
+                        keys += 1
+                        if keys == 2:
+                            data[i + 4] = int(replay.f32_bits(.75), 16)
+                cursor += 2 + 5 * count
             self.assert_refused("built clip lost its", name, doc, changed)
         name = "body-clip-keep-o1-y1-xz1-motion"
         doc = body_doc(name, RUN)
@@ -699,6 +747,47 @@ class BodyRunTests(unittest.TestCase):
         (self.bundles / "body-unknown").write_bytes(b"UnityFS\0")
         result = self.run_with(EARLIER)
         self.assertIn("unexpected fixture bundle inventory", result.stderr)
+
+    def test_the_hold_out_stays_sealed_until_a_freeze_unseals_it(self):
+        name, spent = body.primary_probes(body.HOLDOUT), body.primary_probes(body.HOLDOUT_RIGS[0])
+        (self.replays / "body").mkdir()
+        recording, bundle = self.replays / "body" / f"{name}.pending.json", self.bundles / body.BODY_CASES[name].bundle
+        # No file of either hold-out can be read: completion that opens one fails. A spent hold-out stays
+        # sealed for good, even once E3b claims the current one's shot.
+        paths = [recording, bundle, self.replays / "body" / f"{spent}.pending.json", self.bundles / body.BODY_CASES[spent].bundle]
+        for path in paths:
+            path.write_bytes(b"{")
+            path.chmod(0)
+            self.addCleanup(path.chmod, 0o600)
+        result = self.run_with([*EARLIER, *body.LATER_CASES[-1]], {name: "recorded", spent: "recorded"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for case in (name, spent):
+            self.assertIn(f"Sealed hold-out case, not opened: {case}", result.stdout)
+        self.assertFalse(recording.with_name(f"{name}.json").exists())
+        # Only E3b opens it, with its freeze's sha256 and only once that freeze's shot is claimed; never by a path.
+        with self.assertRaisesRegex(ValueError, "only through E3b's claim"):
+            complete_folder(self.folder, "unityrs", self.inspect, replay, self.folder / "freeze.json")
+        ledger, key = self.folder.parent / "ledger", "a" * 64
+        with mock.patch.object(seal, "LEDGER_DIR", ledger):
+            with self.assertRaisesRegex(ValueError, "only after E3b claims its shot"):
+                complete_folder(self.folder, "unityrs", self.inspect, replay, key)
+            seal.claim(key)
+            with self.assertRaisesRegex(ValueError, f"{name}.pending.json: .*Permission denied"):
+                complete_folder(self.folder, "unityrs", self.inspect, replay, key)
+            # Validated, the hold-out recording is returned with the sha256 of the bytes completion read.
+            recording.chmod(0o600)
+            doc = body_doc(name, RUN)
+            data = json.dumps(doc).encode("utf-8")
+            recording.write_bytes(data)
+            original = complete.complete_recording
+
+            def validated(case, *args):
+                return copy.deepcopy(doc) if case == name else original(case, *args)
+
+            with mock.patch.object(complete, "complete_recording", validated):
+                result = complete_folder(self.folder, "unityrs", self.inspect, replay, key)
+        self.assertEqual(result[2], [(name, hashlib.sha256(data).hexdigest(), doc)])
+        self.assertFalse(recording.with_name(f"{name}.json").exists())
 
     def test_an_ordinary_case_claiming_body_rows_is_refused(self):
         self.coverage = coverage.coverage_archives(self.bundles, self.inspect)

@@ -3,8 +3,8 @@
 use unityrs_core::limits::{Limits, heap_cost};
 
 use super::{
-    C_FIN, CHECK_ENV_BLOCK, CONTAINER_LEVEL_STACK, PANIC_SLOT, SELECTED as PROVISIONAL,
-    THREAD_STACK, WORKER_STATE, c_hdr, memory_bound,
+    C_FIN, CHECK_ENV_BLOCK, CONTAINER_LEVEL_STACK, PANIC_SLOT, SELECTED, THREAD_STACK,
+    WORKER_STATE, c_hdr, memory_bound,
 };
 use crate::alloc::Measured;
 use crate::spec::model::Spec;
@@ -70,8 +70,8 @@ fn every_term_is_5_3_s() {
         kept: 10_000,
         peak: 20_000,
     };
-    let b = memory_bound(&s, measured, CHECK_ENV_BLOCK, &PROVISIONAL);
-    let k = PROVISIONAL;
+    let b = memory_bound(&s, measured, CHECK_ENV_BLOCK, &SELECTED);
+    let k = SELECTED;
     let stack = Limits::default().stack_needed() as u64;
     // threads 3, download_concurrency 2: 6 blocking-pool threads, 5 sockets.
     let worker = 2 * stack + CONTAINER_LEVEL_STACK * 17 + WORKER_STATE + PANIC_SLOT;
@@ -110,8 +110,8 @@ fn the_stdin_watch_s_stack_is_counted() {
     let plain = spec(&format!("{inputs}{DIRECTORY}"));
     let watched = spec(&format!(r#"{inputs},"stop_on_stdin_eof":true{DIRECTORY}"#));
     let measured = Measured { kept: 0, peak: 0 };
-    let a = memory_bound(&plain, measured, 0, &PROVISIONAL);
-    let b = memory_bound(&watched, measured, 0, &PROVISIONAL);
+    let a = memory_bound(&plain, measured, 0, &SELECTED);
+    let b = memory_bound(&watched, measured, 0, &SELECTED);
     assert_eq!(b.c_thr, a.c_thr + THREAD_STACK);
     assert_eq!(b.total(), a.total() + THREAD_STACK);
 }
@@ -126,7 +126,7 @@ fn c_parse_is_the_peak_past_what_the_rest_holds() {
     let c_spec = kept;
     let at = c_spec + 268_435_456 + C_FIN;
     for (peak, want) in [(at - 1, 0), (at, 0), (at + 5, 5)] {
-        let b = memory_bound(&s, Measured { kept, peak }, 0, &PROVISIONAL);
+        let b = memory_bound(&s, Measured { kept, peak }, 0, &SELECTED);
         assert_eq!(b.c_parse, want, "{peak}");
     }
 }
@@ -180,8 +180,8 @@ fn c_hdr_counts_the_unitycn_key_at_its_cap() {
 }
 
 /// Calibration is certified for 4 KiB pages only: any other size, or an
-/// unknown one, is uncertified, with its stderr line; 4 KiB keeps the
-/// provisional label and adds no line.
+/// unknown one, is uncertified and adds a stderr line. On 4 KiB pages,
+/// certification follows the compiled calibration flag.
 #[test]
 fn only_4_kib_pages_are_certified() {
     use super::Certification;

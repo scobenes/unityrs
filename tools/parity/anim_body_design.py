@@ -47,8 +47,8 @@ import math
 
 import anim_replay as replay
 from anim_body_tolerance import rotate
-from anim_fixture_body import (BODY_INFO, HOLDOUT, PROBE_GROUPS, PROBE_VALUES, RANGE_BONES, body_requests,
-                               primary_probes, probe_schedule)
+from anim_fixture_body import (BODY_INFO, HOLDOUT_RIGS, PROBE_GROUPS, PROBE_VALUES, RANGE_BONES, body_requests,
+                               primary_probes, probe_schedule, schedule_name)
 from anim_reference import euler, multiply, normalize
 
 # Degrees by which a probe's recorded turn may miss its value's limit angle: f32 rotations hold some 1e-5.
@@ -58,7 +58,7 @@ ANGLE_SLACK = 1e-3
 def envelope(documents, rig):
     """The recorded (hips transform, read-back) pairs that bound a planned pose of `rig`: every sample with
     read-back of the rig's identity-root probe and target cases."""
-    replay.require(rig != HOLDOUT, "the hold-out rig plans no poses")
+    replay.require(rig not in HOLDOUT_RIGS, "a hold-out rig lends no recorded hips")
     pairs = []
     for name, info in BODY_INFO.items():
         doc = documents.get(name)
@@ -164,7 +164,7 @@ def predict(name, source, hips=None):
     at = capture["samples"].index(neutral)
     hips_transform, readback = hips or (neutral["pose"]["transforms"][bones["Hips"]], editor["body_samples"][at])
     probed = {i for muscles in groups.values() for i in muscles}
-    plan = probe_schedule(info["rig"], names, False, name)
+    plan = probe_schedule(info["rig"], names, False, schedule_name(name))
     spine = muscle_map(capture, bones) if info["variant"] in ("range", "band") else {}
     scale = replay.f32_from_bits(capture["humanoid"]["human_scale"])
     turned = [tilted(tilt, hips_transform, readback, editor["body_targets"][at], scale)

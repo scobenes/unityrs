@@ -2,10 +2,9 @@
 
 This inventory covers the integrated directory/store sinks and local/HTTP(S) sources.
 It reconciles `BATCH_SPEC.md` §§6/10 and `plans/batch.md` §§2.11, 5.1–5.4.
-The bound and `bound::PROVISIONAL` remain **provisional estimates**. A component
-measurement or a passing whole-process verification is not a calibrated constant.
-Store ownership and process scenes are covered below; native store/stop
-calibration and final acceptance remain pending.
+The bound uses `bound::SELECTED`, generated from native component and
+whole-run measurements with store and stop coverage. The fixed base preserves
+overlap from zero-deduction measurements. See the [calibration procedure](README.md).
 
 ## Memory ownership
 
@@ -20,7 +19,7 @@ calibration and final acceptance remain pending.
 | Local staging (`stage/local`, `controller/stages`) | One admitted stage envelope per active copy; copy buffer, paths, future, task and file owners stay in the slot until receipt. |
 | URL stage (`stage/url`, `stage/slot`, `controller/network`) | Future representation checked against 16 KiB inside the 128 KiB stage envelope. The slot retains its future, task, file, held end and residual owner through stop. |
 | Both request tables (`http/permit`, `run/process/network`) | At most `dc` slots per runtime, allocated once before the head. Variable slot/vector ownership belongs to `2(dc+1) m_pool`; it is not hidden in fixed `c_base`. Acquisition adds no slot allocation. The isolated table probe includes `dc=256`. |
-| Runtimes, pools and task cells (`lifetime/runtimes`, `execution`) | Two current-thread runtimes, each with exactly `dc+1` prewarmed blocking threads. Current-thread bookkeeping and shared TLS configuration are fixed `C_base`; thread/task increments and tables follow `m_pool`. Both pools have distinct tally names and explicit 2 MiB stacks. Independent gates initialize both real pools and task cells; final coefficient selection still requires the native calibration matrix. |
+| Runtimes, pools and task cells (`lifetime/runtimes`, `execution`) | Two current-thread runtimes, each with exactly `dc+1` prewarmed blocking threads. Current-thread bookkeeping and shared TLS configuration belong to `C_base`. Thread/task increments and tables follow `m_pool`. Both pools have distinct tally names and explicit 2 MiB stacks. Independent gates initialize both real pools and task cells and check the selected increment. |
 | Connection and response (`http/connect`, `http/shared`, `http/response`) | Response owns the unspawned hyper driver, TLS state, full backing allocations and permit. The 3.5 MiB transport envelope and charged DATA pieces fit the existing 4 MiB connection allowance; a slice length never replaces backing capacity. Focused transport gates remain independently required. |
 | Resolver and moved writes (`http/resolve`, `stage/url`) | Closure owns the operation token until return, including after timeout. Lookup's 512 KiB Rust reservation stays with it. A permit cannot begin a second blocking operation while quarantined. Host copies and addresses use its network share; native resolver heap is separate provisioning. |
 | Header values/table (`stage/env`, `stage/headers`) | One owned value/name per distinct variable; values remain live for masking. Exact 25% table growth bounds old/new allocation overlap within existing 48 B table + 32 B spare masker allowances. Validation consumes the original value allocation. Requests use bounded header copies in `C_hdr`. |
@@ -28,7 +27,7 @@ calibration and final acceptance remain pending.
 | Sort and winner/member streams (`sort`, `winners`) | Charged phase account of limit `I`; phase 6 separately retains its 40 MiB proof. Run files and merge generations live on disk, with bounded cursor buffers. |
 | Publication, resume hashing and ZIP (`publish`, `archive`, `outcomes`) | Dispatcher/task vector, reusable 16 MiB drive buffer and archive scratch charged to phase `I`. Resume hit drops hash scratch before a miss transfer. ZIP central directory, member streams and outcomes live on disk. |
 | Frozen work (`run::Parked`, `phase1::Owners`, `finish::Spool`) | Controller, workers and active tasks retain owners and spool leases through process exit. Frozen phase/attempt charges stay booked against `I`; the finisher allocates independently against `C_fin`. |
-| Finishing (`finish`, `manifest`, `run/process/threads`) | Separate 24 MiB account, rows streamed directly to sink, no full manifest row collection. Frozen-publication scenes retain a live 16 MiB buffer through terminal finishing; independent row-chunk and store final-head scenes cover the finishing working set. Native calibration remains pending. |
+| Finishing (`finish`, `manifest`, `run/process/threads`) | Separate 24 MiB account with rows streamed directly to the sink. Frozen-publication scenes retain a live 16 MiB buffer through terminal finishing. Independent row-chunk and store final-head scenes cover the finishing working set. |
 | Reset table, lifecycle/stop state, diagnostic ring and slots, progress mailbox/line, preflight head scratch and host-line scratch (`sys`, `lifetime`, `diagnostic`, `progress`, `start`) | Fixed capacities in `C_base`/`C_fin`, as applicable. No history accumulates per request or output. Successful startup warnings use main after controller spawn, preserving independent progress and avoiding an extra detached writer stack. Early failures write warning and error within one terminal writer budget. |
 | Startup journal IDs/line, archive resume metadata | Existing named slopes: `dc × 2080 B`, 16 KiB line and `archives × 160 B`. Store scenes exercise actual abort, LIST, credential, signing and multipart holders. |
 
@@ -64,7 +63,12 @@ official tally registrations and the allocation-free testkit ledger. Every
 allocation/charge transition contributes to a coherent maximum residual. It
 checks live held charges plus applicable uncharged terms separately from the
 whole bound. It never adds unused admission capacity to the residual allowance.
-An uncharged 64 MiB holder fails that gate while still fitting the whole bound.
+The negative control allocates an uncharged holder as phase 5's admission
+opens and keeps it through exit. Its size is an expected allowance the test
+restates from 5.3's inputs and the compiled selection, never the gate's own
+allowance, plus a margin well under `I`. An allowance that also counted the
+unused `I` would let it pass. It exceeds the residual allowance while the
+whole-process peak stays below the total bound.
 Observation code is absent without `test-hooks` and never runs in a signal
 handler. Test-only report/hold descriptors are outside the measured heap.
 

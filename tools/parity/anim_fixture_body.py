@@ -15,11 +15,12 @@ from math import isfinite
 
 from anim_body_tolerance import BODY_SLOTS
 from anim_fixture_contract import BODY, MUSCLES, SPINE, Fixture, compiled_curves
+from anim_fixture_extras import ADDED_PROBES, ADDED_RIGS
 from anim_reference import angle, dense, euler, multiply, streamed
 
 # name: (base rig, omitted bones, mapped extras). F6 rigs are on the compact
-# rig; "noncoplanar" moves the hip and shoulder children off one plane and
-# "holdout" (long arms, short legs) is never fitted.
+# rig; "noncoplanar" moves the hip and shoulder children off one plane, and
+# the hold-out rigs (HOLDOUT_RIGS, other proportions) are never fitted.
 PROBE_RIGS = {
     "compact": ("compact", (), ()), "tall": ("tall", (), ()),
     "no-chest": ("compact", ("Chest", "UpperChest"), ()), "no-upper-chest": ("compact", ("UpperChest",), ()),
@@ -33,9 +34,12 @@ PROBE_RIGS = {
     "no-upper-chest-right-toes": ("compact", ("UpperChest", "RightToes"), ()),
     "eyes": ("compact", (), ("LeftEye", "RightEye")), "jaw": ("compact", (), ("Jaw",)),
     "eyes-jaw": ("compact", (), ("LeftEye", "RightEye", "Jaw")),
-    "noncoplanar": ("compact", (), ()), "holdout": ("compact", (), ()),
+    "noncoplanar": ("compact", (), ()), "holdout": ("compact", (), ()), "holdout-2": ("compact", (), ()),
 }
-HOLDOUT = "holdout"
+# Every hold-out rig, sealed and never fitted: "holdout" (long arms, short legs), spent by E3b on freeze v7,
+# and "holdout-2" (short arms, long legs, its own pose draws), the one E3b reads next (HOLDOUT).
+HOLDOUT_RIGS = ("holdout", "holdout-2")
+HOLDOUT = HOLDOUT_RIGS[-1]
 # F5: the chain from the Animator to the hips, each on the compact rig.
 CHAIN_RIGS = ("scaled-animator", "large", "armature", "hips-scale")
 TARGET_RIGS = ("compact", "tall")
@@ -92,8 +96,8 @@ EXTRA_PROBES = {
         (("LeftUpperLeg", -3), ("RightUpperLeg", -2)),
         (("LeftUpperLeg", -3), ("RightUpperArm", -3)),
     ),
-}
-EXTRA_RIGS = {"body-probes-tall-2": "tall"}
+} | ADDED_PROBES
+EXTRA_RIGS = {"body-probes-tall-2": "tall"} | ADDED_RIGS
 # Twist sweeps, each on its own bundle of a training rig (never the hold-out): the shoulder-hip twist swept by
 # the Spine and Chest twist muscles together (HumanTrait's default limits, +-40 degrees each, so a value of
 # degrees / 80 for both), crossed with an upright body and three pitch and roll tilts of the body target taken
@@ -247,7 +251,9 @@ BAND_CASES = frozenset(BAND_RIGS)
 LATER_RIGS = ("no-upper-chest-toes", "no-upper-chest-left-toes", "no-upper-chest-right-toes")
 # The body cases added after the first body run, each generation absent from older runs and required once its
 # rig's own probe case records.
-LATER_CASES = (EXTRA_CASES, TWIST_CASES, RANGE_CASES | {"body-probes-" + rig for rig in LATER_RIGS}, BAND_CASES)
+# The fifth: the extra probe cases and the hold-out rig added after E3b on freeze v7 (anim_fixture_extras).
+LATER_CASES = (EXTRA_CASES - ADDED_RIGS.keys(), TWIST_CASES, RANGE_CASES | {"body-probes-" + rig for rig in LATER_RIGS},
+               BAND_CASES, frozenset(ADDED_RIGS) | {"body-probes-" + HOLDOUT})
 
 
 def primary_probes(rig):
@@ -400,6 +406,10 @@ def probe_schedule(rig, names, targets, extra=None):
         vectors = band_vectors(rig, index)
     elif extra is not None:
         vectors = [compose(rig, names, sources) for sources in EXTRA_PROBES[extra]]
+    elif rig == HOLDOUT and not targets:
+        from anim_fixture_rigs import holdout_plan
+
+        vectors = [compose(rig, names, sources) for sources in holdout_plan(rig)]
     else:
         vectors = combined if targets else singles + combined
     return _scheduled(vectors, index, len(names))

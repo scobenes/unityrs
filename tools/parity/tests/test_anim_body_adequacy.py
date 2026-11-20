@@ -124,13 +124,19 @@ class CheckpointTests(unittest.TestCase):
     def setUp(self):
         self.folder = scratch.for_case(self)
         (self.folder / "replays" / "body").mkdir(parents=True)
+        self.recorded = set()
 
     def record(self, names, samples=10, edit=None):
+        """Each case's recording at its case table path, and run.json listing every one recorded so far."""
         for name in names:
             doc = body_doc(name, RUN, samples=samples)
+            doc["spec"]["bundles"] = [dict(name=body.BODY_CASES[name].bundle)]
             if edit:
                 edit(doc)
             write(self.folder / "replays" / "body" / f"{name}.pending.json", doc)
+            self.recorded.add(name)
+        cases = [dict(name=name, status="recorded", reason="") for name in sorted(self.recorded)]
+        write(self.folder / "run.json", dict(format="unityrs.fixture_run", version=1, run=RUN, cases=cases))
 
     def run_checkpoint(self):
         out = io.StringIO()
@@ -152,22 +158,23 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn(code, (0, 1))
         self.assertEqual(report["coverage"]["missing"], [])
         self.assertEqual(report["rank"], len(report["coefficients"]))
-        self.assertIn("Spine>Neck", report["coefficients"])
+        self.assertIn("Chest>Neck", report["coefficients"])
         self.assertLess(report["condition"], adequacy.CONDITION_LIMIT)
         self.assertEqual((report["untrained"], report["edge_mismatches"], report["missing_coefficients"]), ([], [], []))
         self.assertNotIn("necessary", report)
         self.assertEqual(report["adequate"], adequacy.adequate(report))
         self.assertIn(f"rank {report['rank']}/{report['rank']}", text)
 
-    def test_a_coplanar_branch_stays_free(self):
-        with mock.patch.object(support, "NONCOPLANAR", {"noncoplanar"}):
-            self.record(self.design())
-        code, report, _ = self.run_checkpoint()
-        self.assertEqual(code, 1)
-        self.assertEqual(report["rank"], len(report["coefficients"]) - 1)
-        self.assertEqual(set(report["free"][0]), {"Spine>Neck", "Spine>LeftShoulder", "Spine>RightShoulder"})
-        self.assertIsNone(report["condition"])
-        self.assertFalse(report["adequate"])
+    def test_out_of_scope_rigs_are_refused_not_fitted(self):
+        # The frozen topology scope: Chest or Neck absent, or one Shoulder, is never fitted or credited.
+        self.record(self.design())
+        _, report, _ = self.run_checkpoint()
+        self.assertEqual(adequacy.TRAINING_RIGS & {"no-chest", "no-neck", "no-left-shoulder", "no-right-shoulder"},
+                         set())
+        refused = {line.split(": ", 1)[1] for line in report["refused"]}
+        self.assertEqual(refused, {"topology: Chest absent", "topology: Neck absent", "topology: exactly one Shoulder"})
+        self.assertFalse({"Spine>Neck", "UpperChest>Head"} & set(report["coefficients"]))
+        self.assertFalse(any(sample["name"].startswith("body-probes-no-neck") for sample in report["samples"]))
 
     def test_coverage_comes_only_from_probe_cases(self):
         # A clip on the compact rig, the hold-out (never read), a probe case without
@@ -184,7 +191,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(report["coverage"]["recorded"], [])
         self.assertIn("compact", report["coverage"]["missing"])
         self.assertNotIn("holdout", report["coverage"]["missing"])
-        self.assertIn("Spine>Neck", report["missing_coefficients"])
+        self.assertIn("Chest>Neck", report["missing_coefficients"])
         self.assertTrue(report["untrained"] and all("Head>" in line for line in report["untrained"]))
 
     def test_an_edge_off_the_hierarchy_is_reported(self):
@@ -199,7 +206,7 @@ class CheckpointTests(unittest.TestCase):
 
     def test_the_design_mode_predicts_an_extra_probe_case_from_its_rig(self):
         # Synthetic poses turn each bone by its own muscles, as Unity does, so the prediction is the recording.
-        name = sorted(body.EXTRA_CASES)[0]
+        name = "body-probes-tall-2"
         rig = body.EXTRA_RIGS[name]
         source = replay.read_json(json.dumps(body_doc(f"body-probes-{rig}", RUN)))
         predicted = design.predict(name, source)
@@ -297,7 +304,7 @@ class CheckpointTests(unittest.TestCase):
     def test_the_envelope_bounds_a_planned_pose_conservatively(self):
         # Every recorded identity-root pose of the rig lends its hips and read-back; the merged row takes
         # the largest epsilon and E_eval and the smallest E_unity.
-        name = sorted(body.EXTRA_CASES)[0]
+        name = "body-probes-tall-2"
         rig = body.EXTRA_RIGS[name]
         docs = {case: replay.read_json(json.dumps(body_doc(case, RUN, samples=None if case.startswith("body-probes")
                                                                      else 4)))
@@ -341,24 +348,23 @@ class CheckpointTests(unittest.TestCase):
         self.assertFalse(body.TWIST_CASES & set(design.planned(adequacy.load(self.folder))))
 
     def test_every_planned_sample_is_required(self):
-        name = sorted(body.EXTRA_CASES)[0]
-        sweeps = body.RANGE_CASES | body.BAND_CASES
-        self.record([case for case in self.design() if case not in sweeps | {name}])
+        planned = body.RANGE_CASES | body.BAND_CASES | body.EXTRA_CASES
+        self.record([case for case in self.design() if case not in planned])
         _, report, text = self.run_checkpoint()
-        self.assertEqual(report["missing_planned"], [f"{case}: not recorded" for case in sorted(sweeps | {name})])
-        self.assertIn(f"missing planned samples ['{sorted(sweeps)[0]}: not recorded'", text)
+        self.assertEqual(report["missing_planned"], [f"{case}: not recorded" for case in sorted(planned)])
+        self.assertIn(f"missing planned samples ['{sorted(planned)[0]}: not recorded'", text)
         self.assertFalse(report["adequate"])
-        self.record([name, *sweeps], samples=5)
+        self.record(planned, samples=5)
         _, report, _ = self.run_checkpoint()
         want = []
-        for case in sorted(sweeps | {name}):
+        for case in sorted(planned):
             rig = body.BODY_INFO[case]["rig"]
             want += [f"{case}@{t}" for t, _ in body.probe_schedule(rig, list(support.MUSCLES), False, case)[5:]]
         self.assertEqual(report["missing_planned"], want)
         self.assertFalse(report["adequate"])
 
     def test_design_only_adds_every_unrecorded_extra_case(self):
-        name = sorted(body.EXTRA_CASES)[0]
+        name = "body-probes-tall-2"
         self.record([f"body-probes-{body.EXTRA_RIGS[name]}"], samples=None)
         self.record(["body-probes-compact"], samples=4)
         out = io.StringIO()
@@ -368,11 +374,19 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn(code, (0, 1))
         # The tall rig's planned cases are predicted; the compact rig's probe case is short, and the noncoplanar
         # rig's unrecorded, so their range and band sweeps stay missing.
-        self.assertEqual(report["predicted"], ["body-probes-band-tall", "body-probes-range-tall", name])
-        self.assertIn(f"(predicted with body-probes-band-tall, body-probes-range-tall, {name})", out.getvalue())
+        tall = sorted(["body-probes-band-tall", "body-probes-range-tall",
+                       *(case for case in body.EXTRA_CASES if body.EXTRA_RIGS[case] == "tall")])
+        self.assertEqual(report["predicted"], tall)
+        self.assertIn(f"(predicted with {', '.join(tall)})", out.getvalue())
         self.assertIn(name, {row["name"] for row in report["samples"]})
-        self.assertEqual(report["missing_planned"], [f"body-probes-{kind}-{rig}: not recorded" for kind in ("band", "range")
-                                                     for rig in ("compact", "noncoplanar")])
+        # The hold-out's prediction needs the compact rig's whole probe case.
+        self.assertEqual(report["holdout_plan"]["worst_margin"], None)
+        self.assertRegex(report["holdout_plan"]["failures"][0], r"^body-probes-holdout-2: not predicted: .*no recorded pose")
+        self.assertEqual(code, 1)
+        self.assertEqual(report["missing_planned"], sorted([f"body-probes-{kind}-{rig}: not recorded" for kind in ("band", "range")
+                                                            for rig in ("compact", "noncoplanar")]
+                                                           + [f"{case}: not recorded" for case in body.EXTRA_CASES
+                                                              if body.EXTRA_RIGS[case] == "compact"]))
         # Without the flag the checkpoint reads only what was recorded.
         self.assertNotIn(name, {row["name"] for row in self.run_checkpoint()[1]["samples"]})
 

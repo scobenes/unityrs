@@ -6,13 +6,15 @@ the adequacy checkpoint sees a consistent fit.
 """
 
 import copy
+import struct
 
 from test_anim_replay import bits
 
 import anim_body_tolerance as tolerance  # noqa: E402  (test_anim_replay puts it on the path)
 from anim_fixture_body import (BODY_INFO, BODY_PATH, BODY_TIMES, BODY_TURN, CLIP_VARIANTS,  # noqa: E402
-                               body_requests, distinguishing_curves, PROBE_GROUPS, PROBE_RIGS, SPINE,
+                               body_requests, distinguishing_curves, PROBE_GROUPS, SPINE,
                                START_OFFSET, START_YAW, expected_case_row, probe_schedule, schedule_name)
+from anim_fixture_rigs import rig_layout  # noqa: E402
 from anim_reference import euler, multiply  # noqa: E402
 import anim_replay as replay  # noqa: E402
 
@@ -26,7 +28,21 @@ PARENT = {"Hips": None, "LeftUpperLeg": "Hips", "RightUpperLeg": "Hips", "LeftLo
           "LeftHand": "LeftLowerArm", "RightHand": "RightLowerArm", "LeftToes": "LeftFoot", "RightToes": "RightFoot",
           "LeftEye": "Head", "RightEye": "Head", "Jaw": "Head"}
 BONES = (*BODY, *(f"Finger {i}" for i in range(30)), "UpperChest")
-MASSES = {name: .02 + .01 * (i % 7) for i, name in enumerate(tolerance.NAMES)}
+# Each body slot's own default mass, exact in f32 so its hierarchy sums are too.
+# The Eyes and the Jaw weigh nothing, as in every recorded Avatar.
+MASSES = {name: 0. if name in ("LeftEye", "RightEye", "Jaw") else (2 + i % 7) / 128
+          for i, name in enumerate(tolerance.NAMES)}
+
+
+def hierarchy_masses(parents):
+    """HumanTrait.GetBoneDefaultHierarchyMass, as the recorder writes it: own mass plus the descendants'."""
+    total = dict.fromkeys(parents, 0.)
+    for name in parents:
+        bone = name
+        while bone is not None:
+            total[bone] += MASSES.get(name, 0.)
+            bone = parents[bone]
+    return total
 PROBE_MUSCLES = tuple(muscle for _, group in PROBE_GROUPS for muscle in group)
 MUSCLES = (*PROBE_MUSCLES, *(f"Other muscle {i}" for i in range(95 - len(PROBE_MUSCLES))))
 COEFFICIENT = .4
@@ -43,54 +59,21 @@ MUSCLE_LIMITS = {
 }
 GROUP_AXES = {3: "XZY", 2: "XZ", 1: "X"}
 ARM_AXES = {"Shoulder": "ZY", "UpperArm": "ZY", "LowerArm": "Y", "Hand": "ZY", "Eye": "XY", "Jaw": "XY"}
-# The rigs whose hip and shoulder children leave the plane, as the builder's.
-NONCOPLANAR = {"noncoplanar", "no-chest"}
-
-
-def layout(rig):
-    """The builder's T-pose (UnityrsBodyFixtures.cs BodyLayout) as (name, parent, offset)."""
-    base, omit, extras = PROBE_RIGS.get(rig, ("compact", (), ()))
-    tall = base == "tall"
-    size = 1.5 if rig == "large" else 1
-    arms, legs = (1.3, .8) if rig == "holdout" else (1, 1)
-    hip_z, shoulder_z = (.03, -.025) if rig in NONCOPLANAR else (0, 0)
-    rows = [("Hips", "", (0, (1.18 if tall else .88) - (1 - legs) * (1.06 if tall else .73), 0)),
-            ("Spine", "Hips", (0, .21 if tall else .16, 0)), ("Chest", "Spine", (0, .27 if tall else .13, 0))]
-    torso = "Chest" if tall else "UpperChest"
-    if not tall:
-        rows.append(("UpperChest", "Chest", (0, .08, 0)))
-    rows += [("Neck", torso, (0, .14, 0)), ("Head", "Neck", (0, .12, 0))]
-    rows += [row for row in (("LeftEye", "Head", (-.03, .06, .08)), ("RightEye", "Head", (.03, .06, .08)),
-                             ("Jaw", "Head", (0, -.03, .05))) if row[0] in extras]
-    for side, sign in (("Left", -1), ("Right", 1)):
-        rows += [(side + "UpperLeg", "Hips", (sign * (.10 if tall else .13), -.05, hip_z)),
-                 (side + "LowerLeg", side + "UpperLeg", (0, (-.58 if tall else -.36) * legs, .04)),
-                 (side + "Foot", side + "LowerLeg", (0, (-.48 if tall else -.37) * legs, -.04)),
-                 (side + "Toes", side + "Foot", (0, -.04, .14)),
-                 (side + "Shoulder", torso, (sign * .08, .08, shoulder_z)),
-                 (side + "UpperArm", side + "Shoulder", (sign * (.10 if tall else .14), 0, 0)),
-                 (side + "LowerArm", side + "UpperArm", (sign * (.34 if tall else .26) * arms, 0, 0)),
-                 (side + "Hand", side + "LowerArm", (sign * (.26 if tall else .23) * arms, 0, 0))]
-    offsets = {name: (parent, tuple(size * v for v in offset)) for name, parent, offset in rows}
-    result = []
-    for name, (parent, offset) in offsets.items():
-        if name in omit:
-            continue
-        while parent in omit:
-            offset = tuple(a + b for a, b in zip(offset, offsets[parent][1]))
-            parent = offsets[parent][0]
-        result.append((name, parent, offset))
-    return result
+# The builder's T-pose (UnityrsBodyFixtures.cs BodyLayout) as (name, parent, offset).
+layout = rig_layout
 
 
 def transform(t=(0, 0, 0), q=(0, 0, 0, 1), s=1.):
     return dict(translation=[bits(v) for v in t], rotation=[bits(v) for v in q], scale=[bits(s)] * 3)
 
 
+ANIMATOR_SCALE = {"scaled-animator": 1.25}
+
+
 def rig_nodes(rig):
     """Spec nodes and rest transforms, with F5's Animator, armature and hips scales."""
     nodes, rest = [("", "HumanoidFixture"), ("0", "HumanoidRig")], [transform(), transform(
-        s=1.25 if rig == "scaled-animator" else 1.)]
+        s=ANIMATOR_SCALE.get(rig, 1.))]
     top, addresses, counts = "0", {"": "0"}, {}
     if rig == "armature":
         nodes.append(("0/0", "Armature"))
@@ -182,7 +165,8 @@ def body_doc(name, run, *, samples=None):
         schedule = schedule[:samples]
     human_bones = [dict(name=b, node=index.get(b, -1), required=b in ("Hips", "Spine")) for b in BONES]
     parents = {b: PARENT.get(b) for b in BONES}
-    table = [dict(name=b, parent=BONES.index(parents[b]) if parents[b] else -1, mass=bits(MASSES.get(b, 0.)),
+    hierarchy = hierarchy_masses(parents)
+    table = [dict(name=b, parent=BONES.index(parents[b]) if parents[b] else -1, mass=bits(hierarchy[b]),
                   required=row["required"]) for b, row in zip(BONES, human_bones)]
     masses = {b: MASSES[b] for b in tolerance.BODY_SLOTS}
     rows, samples_out, targets = [], [], []
@@ -203,21 +187,26 @@ def body_doc(name, run, *, samples=None):
             if bone in index:
                 pose[index[bone]]["rotation"] = [bits(v) for v in rotation]
 
-        def centre(base, include):
-            frames = tolerance.kinematics(nodes, pose, replay.f32_from_bits, base, include_base=include)
+        def centre():
+            """c in A, the Animator's frame without its scale."""
+            frames = tolerance.kinematics(nodes, pose, replay.f32_from_bits, "0", include_base=False)
             bones = tolerance.bone_frames(human_bones, nodes, frames)
             weights = tolerance.folded_masses(masses, parents, set(bones))
             c = [sum(weights[b] * bones[b].position[k] for b in tolerance.ordered(bones)) for k in range(3)]
             for i, j in tolerance.edges(parents, set(bones)):
                 for k in range(3):
                     c[k] += COEFFICIENT * weights[i] * (bones[j].position[k] - bones[i].position[k])
-            return [bits(v) for v in c]
+            return c
 
-        # The model's body rotation, F(pose) F(T)^-1 (2.2), as Unity's read-back.
+        # The model's body rotation, F(pose) F(T)^-1 (2.2), as Unity's read-back. Unity's world body
+        # position is free of the Animator's scale (the Animator sits at the origin here), and the
+        # recorder's conversion to the Animator divides by that scale again.
         turn = tolerance.matrix_quaternion(tolerance.product(frame(pose), rest_frame, transpose=True))
-        rows.append(dict(readback_position=centre("0", False), readback_rotation=[bits(v) for v in turn],
+        body = centre()
+        rows.append(dict(readback_position=[bits(v / ANIMATOR_SCALE.get(rig, 1.)) for v in body],
+                         readback_rotation=[bits(v) for v in turn],
                          readback_muscles=[bits(v) for v in muscles],
-                         world_position=centre("", True), world_rotation=[bits(0)] * 3 + [bits(1)],
+                         world_position=[bits(v) for v in body], world_rotation=[bits(0)] * 3 + [bits(1)],
                          nodes=world_nodes(nodes, pose, human_bones),
                          **dict.fromkeys(("root_position", "root_rotation",
                                           "motion_position", "motion_rotation", "motion_delta_position",
@@ -284,24 +273,45 @@ def clip_case(doc, variant_name):
     built = dict(zip(("m_LoopBlendOrientation", "m_LoopBlendPositionY", "m_LoopBlendPositionXZ"), variant["bake"]))
     built |= dict(zip(("m_KeepOriginalOrientation", "m_KeepOriginalPositionY", "m_KeepOriginalPositionXZ"),
                       map(int, variant["keep"])))
-    stream = compiled(extras)
+    body = [(7 + i, BODY_TIMES, [p[i] for p in path]) for i in range(3)]
+    body += [(10 + i, BODY_TIMES, [q[i] for q in rotations]) for i in range(4)]
+    stream = compiled(extras, body)
+    start = dict(t=dict(zip("xyz", (f32(v) for v in path[0]))), q=dict(zip("xyzw", (f32(v) for v in rotations[0]))),
+                 s=dict(x=1., y=1., z=1.))
     return {"m_MuscleClip": built | dict(m_HeightFromFeet=variant["height_from_feet"], m_Level=variant["level"],
                                          m_OrientationOffsetY=variant["orientation"], m_StartAtOrigin=True,
-                                         m_Clip=stream["m_Clip"], m_IndexArray=stream["m_IndexArray"]),
+                                         m_StartX=start, m_Clip=stream["m_Clip"], m_IndexArray=stream["m_IndexArray"]),
             "m_ClipBindingConstant": stream["m_ClipBindingConstant"]}
+
+
+def f32(value):
+    return struct.unpack(">f", struct.pack(">f", value))[0]
+
+
+def hermite(times, values):
+    """Streamed keys (time, (c3, c2, c1, c0)) of a curve through `values` with zero tangents, as f32."""
+    keys = []
+    for k, (t, v) in enumerate(zip(times, values)):
+        if k + 1 < len(times):
+            dt, dv = times[k + 1] - t, values[k + 1] - v
+            keys.append((t, (f32(-2 * dv / dt ** 3), f32(3 * dv / dt ** 2), 0., f32(v))))
+        else:
+            keys.append((t, (0., 0., 0., f32(v))))
+    return keys
 
 def word(value):
     return int(bits(value), 16)
 
 
-def compiled(extras):
-    """The built clip's streamed slots: the body's seven held at zero, then each distinguishing curve."""
-    slots = [(a, (0, 1), (0, 0)) for a in range(7, 14)]
+def compiled(extras, body=None):
+    """The built clip's streamed slots: the body's seven (`body`'s curves, or held at zero), then each
+    distinguishing curve, each a Hermite cubic through its keys with zero tangents."""
+    slots = body or [(a, (0, 1), (0, 0)) for a in range(7, 14)]
     slots += [(attribute, times, values) for group in extras for _, attribute, times, values in group]
     frames = {}
     for slot, (_, times, values) in enumerate(slots):
-        for t, v in zip(times, values):
-            frames.setdefault(t, []).append((slot, 0, 0, 0, word(v)))
+        for t, coefficients in hermite(times, values):
+            frames.setdefault(t, []).append((slot, *(word(c) for c in coefficients)))
     data = []
     for t in sorted(frames):
         data += [word(t), len(frames[t])]

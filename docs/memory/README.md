@@ -1,9 +1,9 @@
 # Aggregate memory calibration
 
-The bound in `docs/plans/batch.md` section 5.3 remains provisional. The
-regeneration tool validates public aggregate evidence; it does not collect
-measurements or certify that submitted observations are authentic. No measured
-constant set is installed by this change.
+The bound in [batch.md §5.3](../plans/batch.md#53-the-constant-terms) uses
+calibrated constants from the checked-in [aggregate evidence](constants-v1.json).
+The collector measures the raw terms. The regeneration tool validates the
+aggregate records and derives the compiled selection.
 
 `tools/memory/regenerate.py` uses Python's standard library. Its input and output
 formats are [aggregate-input-v1.schema.json](aggregate-input-v1.schema.json) and
@@ -68,8 +68,12 @@ threads and outstanding task cells require independent probes.
 Whole-run records combine a directly observed zero-deduction one-worker,
 one-download base with the five independent component increments, representation
 floors and fixed-envelope certificates from the matching synthetic axis. They
-must not understate that axis's component/floor/envelope evidence. This is
-explicitly mixed evidence, not six slopes fitted from a corpus run.
+must not understate that axis's component/floor/envelope evidence. When the
+same build's synthetic axis was also measured on another host, each component
+coefficient, floor and envelope is the maximum over every matching
+target/profile/sink record of that build. `c_base` stays the directly observed
+whole-run base. This is explicitly mixed evidence, not six slopes fitted from a
+corpus run.
 `whole_run_coverage` names both-builds, one-worker, eight-workers, resume, loose,
 archive, phase-seven and component-probes, plus store-roundtrip for a store
 record. All are required true in final mode, with store-roundtrip false and
@@ -129,16 +133,12 @@ and cannot produce a Rust replacement. A zero raw coefficient in a partial
 record can represent no observation only with its coverage flag false; it must
 not be presented as a complete calibration.
 
-Store/stop process gates are implemented. Eligible native calibration records
-and final acceptance remain pending.
-
 `final` requires all eight native synthetic target/profile/sink combinations,
-matching native whole-run aggregates for both profiles and sinks on at least one architecture, and complete
-applicable coverage. It is reserved for the complete store and stop calibration
-and review. The generator can then emit a candidate `MEASURED: Constants`, with
-the unchanged 4 MiB connection envelope. Generating at the compiled selection
-path integrates the candidate into the build; independent verification and
-review still precede acceptance.
+matching native whole-run aggregates for both profiles and sinks on at least
+one architecture, and complete applicable coverage of the store and stop
+scenes. The generator emits `MEASURED: Constants` with the fixed 4 MiB connection
+envelope. Generate at the compiled selection path to integrate a candidate,
+then verify it with the independent gates before accepting it.
 
 1. Check out the exact integrated revision and locked dependencies. Apply the
    production allocator configuration before measuring.
@@ -285,16 +285,12 @@ cargo test --locked --release -p unityrs-batch --features test-hooks \
   --test memory_gate --test store_memory_gate --test memory_constants --test limit_squeeze
 ```
 
-The checked-in `bound/measured.rs` is generated with `--bootstrap` and selects
-`PROVISIONAL`, with `CALIBRATED = false`. Final generation replaces that file
-with measured values and `CALIBRATED = true`. Execution, CLI `--check` and the
-independent gates import `SELECTED`; no build script runs the generator. The
-same saturating calculator serves both CLI paths. Page sizes other than 4 KiB
-remain uncertified even after complete calibration, without a manifest change.
-
-Until the native matrix, matching whole-run aggregate and independent candidate
-verification exist, the estimates and all existing provisional documentation
-remain. No diagnostic record is installed as a final constant set.
+The checked-in `bound/measured.rs` selects `MEASURED`, with `CALIBRATED = true`.
+The `--bootstrap` mode can generate a selection of `PROVISIONAL` with
+`CALIBRATED = false` when developing without final evidence. Generation is
+explicit. Execution and CLI `--check` share the saturating calculator and
+`SELECTED` with the verification gates. Hosts with an unknown page size or a
+page size other than 4 KiB report the bound as uncertified on stderr.
 
 Build provenance also records numeric C/C++ compiler versions per host; both
 must match across all synthetic and whole-run records. The shared native
@@ -314,9 +310,8 @@ record's feature provenance describes that graph. This separates observer
 overhead from the retained test-hook footprint without an inaccurate exclusion
 attestation or a subtraction of unrelated peaks.
 
-While selected evidence is absent, CI checks the generated fallback with
-`--bootstrap --check`. When selected evidence is committed, CI compares it
-with the compiled file without rewriting either:
+CI checks the committed evidence against the compiled file on every
+calibration job. The check is read-only.
 
 ```sh
 python tools/memory/regenerate.py --compiled-evidence docs/memory/constants-v1.json \

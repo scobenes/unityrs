@@ -10,7 +10,8 @@ from uuid import uuid4
 from zlib import crc32
 
 import child
-from anim_fixture_body import BAND_CASES, BODY_BUNDLES, BODY_CASES, BODY_INFO, LATER_CASES, check_body, primary_probes
+from anim_fixture_body import (BAND_CASES, BODY_BUNDLES, BODY_CASES, BODY_INFO, HOLDOUT, HOLDOUT_RIGS, LATER_CASES,
+                               check_body, primary_probes)
 from anim_fixture_coverage import BASIS_CASES, COVERAGE_CASES, check_coverage, required_coverage
 from anim_fixture_contract import (ASSETS, MOTION, REPLAY_CASES, STATIC_CASES, VECTOR_CASES, VECTOR_SUFFIX,
                                    check_built_clip, check_built_static, check_discovery, check_evidence,
@@ -668,25 +669,48 @@ def check_static(bundle_dir, views, unityrs, inspect_dir, replay, run):
             raise ValueError(f"{case}: {exc}") from exc
 
 
-def complete_folder(folder, unityrs, inspect_dir, replay):
-    """Validate every result before writing any completed recordings."""
+def complete_folder(folder, unityrs, inspect_dir, replay, unseal=None):
+    """Validate every result before writing any completed recordings; returns (count, uncovered, sealed), or
+    with `unseal` (count, uncovered, [(hold-out case, sha256 of the bytes read, its validated document)]).
+
+    The hold-out rig's body cases (by the builder's case table) stay sealed: neither their recordings nor
+    their bundles are opened, and they are listed as sealed. Only E3b unseals them: `unseal` is its freeze's
+    sha256, and before any hold-out file opens anim_body_seal.require_claim refuses unless E3b claimed that
+    freeze's one shot; the validated hold-out recordings are returned once every check has passed."""
     manifest, run = read_manifest(folder, replay)
     if run.get("variant", "builtin") != "builtin":
         from anim_fixture_variants import complete_variant
 
         return complete_variant(folder, manifest, run, unityrs, inspect_dir, replay)
     bundle_dir = folder / "bundles"
-    results, views, recordings = [], {}, {}
+    results, views, recordings, unsealed = [], {}, {}, []
     paths, recorded_mixed, run, uncovered = recorded_paths(folder, replay, manifest, run)
+    holdout = {folder / "replays" / "body" / f"{name}.pending.json": name for name, info in BODY_INFO.items()
+               if info["rig"] in HOLDOUT_RIGS}
+    sealed = sorted(holdout[path] for path in paths if path in holdout)
+    replay.require(unseal is None or isinstance(unseal, str),
+                   "the hold-out unseals only through E3b's claim (anim_body_freeze.py e3b)")
+    if sealed and unseal is not None:
+        from anim_body_seal import require_claim
+
+        require_claim(unseal)
+        # Only the current hold-out rig's cases open; a spent one's stay sealed for good.
+        paths = [path for path in paths if path not in holdout or BODY_INFO[holdout[path]]["rig"] == HOLDOUT]
+    elif sealed:
+        paths = [path for path in paths if path not in holdout]
     check_static(bundle_dir, views, unityrs, inspect_dir, replay, run)
     fixtures = REPLAY_CASES | VECTOR_CASES | COVERAGE_CASES | BODY_CASES
     for path in paths:
         try:
-            document = replay.read_json(path.read_text(encoding="utf-8"))
+            raw = path.read_bytes()
+            document = replay.read_json(raw.decode("utf-8"))
             name = path.name.removesuffix(".pending.json")
             result = complete_recording(name, fixtures[name], document, bundle_dir, views, unityrs, inspect_dir, replay, run)
             recordings[name] = result
             output = path.with_name(name + ".json")
+            if path in holdout:
+                replay.require(pending_pose(name, result), f"{name}: a hold-out case keeps its pending recording")
+                unsealed.append((name, hashlib.sha256(raw).hexdigest(), document))
             if pending_pose(name, result):
                 if output.exists():
                     existing = replay.read_json(output.read_text(encoding="utf-8"))
@@ -724,4 +748,4 @@ def complete_folder(folder, unityrs, inspect_dir, replay):
                                f"{output.name} already exists with different content")
         finally:
             staged.unlink(missing_ok=True)
-    return len(results), uncovered
+    return len(results), uncovered, unsealed if unseal is not None else sealed

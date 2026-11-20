@@ -10,8 +10,8 @@
 //!   iterative walk of an input's view (4.1, 4.2; `batch.md` 2.3).
 //! - [`alloc`]: the counting allocator the binary installs, which counts
 //!   each refusal and each thread's live bytes (`batch.md` 2.7).
-//! - [`bound`]: 5.1's memory bound, `--check`'s `memory_bound`, whose
-//!   constants are provisional until X12 measures them.
+//! - [`bound`]: 5.1's memory bound, `--check`'s `memory_bound`, using the
+//!   constants calibrated per `docs/memory/README.md`.
 //! - [`progress`]: the progress stream's lines (section 10), `ms` on the
 //!   boot clock from the process's start ([`progress::clock`]), and the
 //!   main thread's own `exit` line, bounded in time ([`progress::early`]).

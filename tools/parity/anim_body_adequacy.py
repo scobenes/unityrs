@@ -70,53 +70,126 @@ import anim_replay as replay  # noqa: E402
 from anim_body_tolerance import (BODY_SLOTS, U32, U64, body_frame, body_states, bone_frames, decode,  # noqa: E402
                                  edges, evaluation_error, folded_masses, frame_error, hips_error, kinematics,
                                  matrix_quaternion, measurement_tolerance, norm, ordered, product, quaternion_matrix,
-                                 readback_turn, recorded_edges, rotate, tracked, uniform)
+                                 readback_position, readback_turn, recorded_edges, rotate, tracked, uniform)
 from anim_body_design import conservative, planned  # noqa: E402
-from anim_fixture_body import (BAND_CASES, BODY_INFO, EXTRA_CASES, HOLDOUT, PROBE_RIGS, RANGE_CASES,  # noqa: E402
+from anim_body_model import Refused, topology_scope  # noqa: E402
+from anim_reference import gamma  # noqa: E402
+from anim_fixture_body import (BAND_CASES, BODY_INFO, EXTRA_CASES, HOLDOUT_RIGS, PROBE_RIGS, RANGE_CASES,  # noqa: E402
                                TWIST_CASES, probe_schedule, rig_bones)
 
 CONDITION_LIMIT = 1e6
-TRAINING_RIGS = PROBE_RIGS.keys() - {HOLDOUT}
+
+
+def scope_refusal(mapped, masses=None):
+    """The model's topology refusal for these mapped body slots and, when given, the masses by slot
+    (anim_body_model.topology_scope), or None."""
+    try:
+        topology_scope(mapped, masses)
+    except Refused as exc:
+        return str(exc)
+    return None
+
+
+# The training rigs inside the frozen topology scope; the others' samples are refused, never fitted.
+TRAINING_RIGS = {rig for rig in PROBE_RIGS.keys() - set(HOLDOUT_RIGS) if scope_refusal(rig_bones(rig)) is None}
 F32 = replay.f32_from_bits
 
 
 def bone_table(documents):
-    """HumanTrait's parents and default masses, identical in every body recording."""
-    tables = {json.dumps(doc["spec"]["evidence"]["editor"]["human_bones"], sort_keys=True)
+    """HumanTrait's parents and default (own) masses, identical in every body recording."""
+    parents, masses, _ = default_masses(documents)
+    return parents, masses
+
+
+def default_masses(documents):
+    """HumanTrait's parents, each body slot's own default mass and a bound on its error.
+
+    The recorder's `mass` is HumanTrait.GetBoneDefaultHierarchyMass: the bone's
+    default mass plus those of all its descendants (Hips holds the whole body).
+    A bone's own mass is its hierarchy mass less its children's. Unity sums the
+    hierarchy masses at f32, over at most the 25 body slots, so each own mass is
+    off by at most gamma_n of the hierarchy masses it subtracts. Only the body
+    slots are read: their hierarchy masses exclude the fingers (each Hand's
+    equals its own), and Unity 6 returns unspecified values for the finger
+    bones."""
+    tables = {json.dumps(body_rows(doc["spec"]["evidence"]["editor"]["human_bones"]))
               for doc in documents if doc["spec"]["evidence"]["editor"].get("human_bones")}
     if len(tables) != 1:
         raise ValueError("expected one HumanTrait bone table across the body recordings")
     rows = json.loads(tables.pop())
-    names = [row["name"] for row in rows]
-    parents = {row["name"]: names[row["parent"]] if row["parent"] >= 0 else None for row in rows}
-    masses = {row["name"]: F32(row["mass"]) for row in rows if row["name"] in BODY_SLOTS}
+    parents = {name: parent for name, parent, _ in rows}
+    hierarchy = {name: F32(mass) for name, _, mass in rows}
+    children = {name: [child for child in hierarchy if parents[child] == name] for name in hierarchy}
+    masses, errors = {}, {}
+    for name in hierarchy:
+        own = hierarchy[name] - sum(hierarchy[child] for child in children[name])
+        errors[name] = gamma(len(hierarchy), U32) * (hierarchy[name] + sum(hierarchy[c] for c in children[name]))
+        if not own >= -errors[name]:
+            raise ValueError(f"HumanTrait hierarchy mass of {name} is below its children's")
+        masses[name] = max(own, 0.)
     if masses.keys() != BODY_SLOTS:
         raise ValueError("the bone table lacks a body slot")
-    return parents, masses
+    return parents, masses, errors
 
 
-def samples(name, doc, parents, masses):
-    """One row per sample: its coefficient columns in A, its J_s rows, epsilon, E_unity and E_eval."""
+def body_rows(table):
+    """A recorder bone table's body slots as sorted (name, parent name, hierarchy mass bits): the fingers'
+    rows are discarded before any comparison, since Unity 6 leaves their masses unspecified."""
+    names = [row["name"] for row in table]
+    rows = [(row["name"], names[row["parent"]] if row["parent"] >= 0 else None, row["mass"])
+            for row in table if row["name"] in BODY_SLOTS]
+    if any(parent is not None and parent not in BODY_SLOTS for _, parent, _ in rows):
+        raise ValueError("a body slot's HumanTrait parent is not a body slot")
+    return sorted(rows)
+
+
+def samples(name, doc, parents, masses, skeleton=None, translations=None):
+    """One row per sample: its coefficient columns in A, its J_s rows, epsilon, E_unity and E_eval.
+
+    `skeleton` is the Avatar's m_SkeletonPose as body-slot positions in A (2.2's F(T) comes from it); the
+    recorded rest pose stands in without it. `translations` (capture node: f32 bits) are the Avatar's own
+    translations below the hips (anim_body_runs.rest_translations), the ones Unity's playback writes; the
+    recorded rest pose's stand in without them. The hips solve's bones take those translations and the rest
+    scales under their sampled rotations, and the hips the rest scale; `drift` names each node whose sampled
+    translation or scale is not those, for E3 to compare."""
     spec, capture = doc["spec"], doc["capture"]
     human, bones_rows = capture["humanoid"], capture["humanoid"]["bones"]
     editor = spec["evidence"]["editor"]
-    readbacks = editor.get("body_samples") or [None] * len(capture["samples"])
-    targets = editor.get("body_targets") or [None] * len(capture["samples"])
+    count = len(capture["samples"])
+    readbacks = editor.get("body_samples") or [None] * count
+    targets = editor.get("body_targets") or [None] * count
     info = BODY_INFO.get(name)
     nodes, animator = spec["nodes"], spec["binding_address"]
     scale = F32(human["human_scale"])
     hips_address = nodes[next(row["node"] for row in bones_rows if row["name"] == "Hips")]["address"]
     links = recorded_edges(bones_rows, nodes)
     rest_transforms = capture["rest"]["transforms"]
+    if translations is not None:
+        rest_transforms = [dict(row, translation=translations[i]) if i in translations else row
+                           for i, row in enumerate(rest_transforms)]
     rest = bone_frames(bones_rows, nodes, kinematics(nodes, rest_transforms, F32, animator))
-    rest_frame = body_frame({name: frame.position for name, frame in rest.items()})
+    rest_frame = body_frame(skeleton or {name: frame.position for name, frame in rest.items()})
+    hips_node = next(i for i, node in enumerate(nodes) if node["address"] == hips_address)
+    under = [i for i, node in enumerate(nodes) if node["address"].startswith(hips_address + "/")]
+
+    def posed(transforms):
+        """The sampled rotations on the rest translations and scales below the hips, and the rest hips scale."""
+        rows = list(transforms)
+        for i in under:
+            rows[i] = dict(transforms[i], translation=rest_transforms[i]["translation"],
+                           scale=rest_transforms[i]["scale"])
+        rows[hips_node] = dict(transforms[hips_node], scale=rest_transforms[hips_node]["scale"])
+        return rows
     # Unity's T-pose frame and the model's, from the hips-local rest pose.
     rest_local = {unit: body_states(nodes, rest_transforms, F32, bones_rows, links, hips_address, unit)[0]
                   for unit in (U32, U64)}
     rest_turn = frame_error({n: b.position for n, b in rest_local[U32].items()},
                             {n: b.e_position for n, b in rest_local[U32].items()})
-    for sample, readback, known in zip(capture["samples"], readbacks, targets):
+    for sample, readback, known in zip(capture["samples"], readbacks, targets, strict=True):
         transforms = sample["pose"]["transforms"]
+        drift = [nodes[i]["address"] for i in (*under, hips_node)
+                 for field in ("translation", "scale") if (i != hips_node or field == "scale")
+                 and transforms[i][field] != rest_transforms[i][field]]
         frames = kinematics(nodes, transforms, F32, animator)
         bones = bone_frames(bones_rows, nodes, frames)
         mapped = set(bones)
@@ -124,13 +197,14 @@ def samples(name, doc, parents, masses):
         weights = folded_masses(masses, parents, mapped)
         columns = {f"{i}>{j}": tuple(weights[i] * (b - a) for a, b in zip(bones[i].position, bones[j].position))
                    for i, j in links}
-        local = {unit: body_states(nodes, transforms, F32, bones_rows, links, hips_address, unit) for unit in (U32, U64)}
+        local = {unit: body_states(nodes, posed(transforms), F32, bones_rows, links, hips_address, unit)
+                 for unit in (U32, U64)}
         chain = {unit: tracked(nodes, transforms, F32, animator, unit)[hips_address.rpartition("/")[0]]
                  for unit in (U32, U64)}
-        hips_row = transforms[next(i for i, node in enumerate(nodes) if node["address"] == hips_address)]
-        hips_scale = uniform(decode(hips_row["scale"], 3, F32))
+        hips_row = transforms[hips_node]
+        hips_scale = uniform(decode(rest_transforms[hips_node]["scale"], 3, F32))
         hips_local = decode(hips_row["translation"], 3, F32)
-        epsilon, turn = None, 0.
+        epsilon, turn, world_bones, root = None, 0., None, None
         if readback is not None:
             world = decode(readback["world_position"], 3, F32)
             world_bones, differences = body_states(nodes, transforms, F32, bones_rows, links, "")
@@ -143,7 +217,8 @@ def samples(name, doc, parents, masses):
         elif readback is not None:
             # A clip: the read-back stands in for Unity's target, with Unity's forward centre of mass
             # and frame and the recorder's conversions (epsilon and readback_turn).
-            target, body_rotation = decode(readback["readback_position"], 3, F32), decode(readback["readback_rotation"], 4, F32)
+            target = readback_position(readback, root, F32)
+            body_rotation = decode(readback["readback_rotation"], 4, F32)
             target_error = epsilon
             turn = readback_turn(world_bones, rest_turn, body_rotation,
                                  decode(readback["world_rotation"], 4, F32), root)
@@ -162,8 +237,20 @@ def samples(name, doc, parents, masses):
         row = dict(name=name, local=sample["local"], rig=info["rig"] if info else "p2b", columns=columns,
                    jacobian=jacobian, unity=unity, evaluation=evaluation, fit=False, epsilon=epsilon,
                    edges=None if links == expected else f"recorded {links} but HumanTrait gives {expected}")
-        # A band sweep validates B2's lateral domain: evaluated, never fitted.
-        row["fit"] = epsilon is not None and info is not None and info["rig"] != HOLDOUT and info["variant"] != "band"
+        row["refused"] = scope_refusal(mapped & BODY_SLOTS, masses)
+        # A twist sweep measures the frame (E2), and a band sweep validates its lateral domain (E2, E3): both
+        # are evaluated, never fitted.
+        row["fit"] = (epsilon is not None and info is not None and info["rig"] not in HOLDOUT_RIGS
+                      and info["variant"] not in ("twist", "band") and row["refused"] is None)
+        # What B2's checks (anim_body_check.py) evaluate the model and its bounds from.
+        row["state"] = dict(bones=bones, local=local, rest_local=rest_local, chain=chain, weights=weights,
+                            links=links, scale=scale, target=target, body_rotation=body_rotation,
+                            target_kind="known" if known is not None else "readback" if readback else None,
+                            target_error=target_error, turn=turn, rest_frame=rest_frame, hips_scale=hips_scale,
+                            hips_local=hips_local, hips_rotation=decode(hips_row["rotation"], 4, F32),
+                            readback=readback, known=known, world_bones=world_bones, root=root,
+                            rest_turn=rest_turn, sample=sample, case=name, drift=drift,
+                            muscle_names=[muscle["name"] for muscle in human["muscles"]])
         yield row
 
 
@@ -264,7 +351,10 @@ def adequacy(rows, coverage, inventory=()):
     gram = [[sum(vectors[k][i] * vectors[k][j] / sigma[k] ** 2 for k in kept) for j in range(width)]
             for i in range(width)]
     failures, untrained, margins, table = [], [], [], []
+    report["refused"] = sorted({f"{row['name']}: {row['refused']}" for row in rows if row.get("refused")})
     for row in rows:
+        if row.get("refused"):
+            continue
         if not row["jacobian"].keys() <= set(keys):
             untrained.append(f"{row['name']}@{row['local']}: {sorted(row['jacobian'].keys() - set(keys))}")
             continue
@@ -298,7 +388,7 @@ def adequate(report):
             and report["condition"] is not None and report["condition"] <= CONDITION_LIMIT
             and not report["uncertainty_failures"] and not report["untrained"] and not report["edge_mismatches"]
             and not report["missing_coefficients"] and not report["coverage"]["missing"]
-            and not report.get("missing_planned"))
+            and not report.get("missing_planned") and not (report.get("holdout_plan") or {}).get("failures"))
 
 
 def coverage_of(documents):
@@ -334,17 +424,33 @@ def missing_planned(documents):
 
 
 def load(folder):
-    """Every humanoid recording but the hold-out rig's, which the checkpoint never reads, and the twist
-    sweeps', which it does not use."""
-    documents = {}
-    for path in sorted((folder / "replays").rglob("*.pending.json")):
-        name = path.name.removesuffix(".pending.json")
-        if BODY_INFO.get(name, {}).get("rig") == HOLDOUT or name in TWIST_CASES:
-            continue
-        doc = replay.read_json(path.read_text(encoding="utf-8"))
-        if "humanoid" in doc.get("capture", {}):
-            documents[name] = doc
-    return documents
+    """Every humanoid recording of the training role (anim_body_runs: by run.json and the case table), so
+    the hold-out rig's are never read, but the twist sweeps', which the checkpoint does not use."""
+    from anim_body_runs import Run
+
+    documents = Run(folder, "training", pending=True).documents
+    return {name: doc for name, doc in documents.items() if name not in TWIST_CASES}
+
+
+def holdout_plan(documents, rows, parents, masses):
+    """The hold-out rig's predicted margins (anim_body_holdout) under this checkpoint's design, fitted for the
+    hips placement alone; the hold-out's files are never read."""
+    from anim_body_holdout import margins, planned, source_rig
+    from anim_body_runs import Design, solve
+
+    design = Design([row for row in rows if row["rig"] not in HOLDOUT_RIGS])
+    name = next(case for case, info in BODY_INFO.items() if info["rig"] == HOLDOUT_RIGS[-1] and not info["variant"])
+    source = documents.get(next(case for case, info in BODY_INFO.items() if info["kind"] == "probes"
+                                and info["rig"] == source_rig(HOLDOUT_RIGS[-1]) and not info["variant"]))
+    if source is None:
+        return dict(worst_margin=None, failures=[f"{name}: its base rig's probe case is not recorded"])
+    try:
+        plan = planned(name, source, solve(design), lambda doc, _: list(samples(name, doc, parents, masses)))
+        from anim_body_seal import MIN_COMPARISONS
+
+        return margins(plan, design.hips_uncertainty, name, minimum=MIN_COMPARISONS)
+    except ValueError as error:
+        return dict(worst_margin=None, failures=[f"{name}: not predicted: {error}"])
 
 
 def main(argv=None):
@@ -365,6 +471,8 @@ def main(argv=None):
             rows += conservative([list(samples(name, doc, parents, masses)) for doc in variants])
         report = adequacy(rows, coverage_of(documents), expected_inventory(parents))
         report["missing_planned"] = missing_planned(documents | {name: variants[0] for name, variants in extra.items()})
+        if args.design_only:
+            report["holdout_plan"] = holdout_plan(documents, rows, parents, masses)
     except (KeyError, TypeError, IndexError, ValueError, OSError, StopIteration) as exc:
         print(f"anim_body_adequacy: {exc}", file=sys.stderr)
         return 2
@@ -377,7 +485,8 @@ def main(argv=None):
           f"{len(report.get('uncertainty_failures', []))} u_s failures, worst margin E_unity,s/u_s "
           f"{report.get('worst_margin')}, margins {report.get('margins')}, "
           f"missing rigs {report['coverage']['missing']}, missing edges {report['missing_coefficients']}, "
-          f"missing planned samples {report['missing_planned']}: "
+          f"missing planned samples {report['missing_planned']}, "
+          f"predicted hold-out margin {(report.get('holdout_plan') or {}).get('worst_margin')}: "
           + ("adequate" if report["adequate"] else "short")
           + (f" (predicted with {', '.join(predicted)})" if predicted else ""))
     return 0 if report["adequate"] else 1

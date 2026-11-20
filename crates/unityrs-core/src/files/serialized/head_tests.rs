@@ -46,6 +46,7 @@ fn nested(meter: &Arc<Meter>, depth: u64) -> MeteredVec<Handler> {
             hash: key(0),
             nodes: Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
             refs,
+            listed_refs: true,
         })
         .unwrap();
     let mut rows = MeteredVec::new(meter);
@@ -57,6 +58,7 @@ fn nested(meter: &Arc<Meter>, depth: u64) -> MeteredVec<Handler> {
             hash: key(1),
             nodes: Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
             refs: MeteredVec::new(meter),
+            listed_refs: true,
         })
         .unwrap();
     handlers
@@ -155,6 +157,7 @@ fn a_shared_placeholder_mutation_invalidates_ordinary_wrappers_and_all_list_owne
             hash: key(2),
             nodes: Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
             refs: MeteredVec::new(&meter),
+            listed_refs: true,
         })
         .unwrap();
     handlers
@@ -164,6 +167,7 @@ fn a_shared_placeholder_mutation_invalidates_ordinary_wrappers_and_all_list_owne
             hash: key(3),
             nodes: None,
             refs: MeteredVec::new(&meter),
+            listed_refs: true,
         })
         .unwrap();
     let index = HashIndex::new(handlers.as_slice(), 1, &meter).unwrap();
@@ -261,6 +265,7 @@ fn chain(meter: &Arc<Meter>, links: u64) -> MeteredVec<Handler> {
                 hash: key(i),
                 nodes: Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
                 refs,
+                listed_refs: true,
             })
             .unwrap();
     }
@@ -378,6 +383,7 @@ fn snapshot_caching_preserves_heads_mutation_order() {
                     hash: key(h),
                     nodes: Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
                     refs,
+                    listed_refs: true,
                 })
                 .unwrap();
         }
@@ -488,6 +494,7 @@ fn unused_shared_handlers_spend_decode_work() {
                 hash: key(i),
                 nodes: None,
                 refs: MeteredVec::new(&meter),
+                listed_refs: true,
             })
             .unwrap();
     }
@@ -576,6 +583,7 @@ fn shared_expansion_charges_each_materialised_child() {
                     hash: Hash::from([i; 16]),
                     nodes: Some(NodeList::from_rows(rows).unwrap().into_shared().unwrap()),
                     refs,
+                    listed_refs: true,
                 })
                 .unwrap();
         }

@@ -221,7 +221,7 @@ pub(super) struct Parser<'a> {
     /// UnityPy's MIT table).
     pub(super) common: Option<&'a CommonStrings>,
     /// The format (`header.version`).
-    version: u32,
+    pub(super) version: u32,
     /// `_enable_type_tree` as read so far.
     enable_type_tree: bool,
     /// Charges of what the type records keep outside their node lists.

@@ -255,6 +255,18 @@ pub fn build(spec: &BundleSpec) -> Vec<u8> {
 /// `UnityFS`.
 #[must_use]
 pub fn build_with_signature(spec: &BundleSpec, signature: &[u8]) -> Vec<u8> {
+    build_with_encoder(spec, signature, compress)
+}
+
+/// [`build_with_signature`], each data block and the blocks info stored by
+/// `encode(codec, decoded)` instead of [`compress`]: for a caller whose
+/// blocks need another encoder of the same format (a real LZ4HC, say).
+#[must_use]
+pub fn build_with_encoder(
+    spec: &BundleSpec,
+    signature: &[u8],
+    encode: impl Fn(TestCodec, &[u8]) -> Vec<u8>,
+) -> Vec<u8> {
     // The decoded data and the directory.
     let mut data = Vec::new();
     let mut directory = ByteWriter::be();
@@ -286,7 +298,7 @@ pub fn build_with_signature(spec: &BundleSpec, signature: &[u8]) -> Vec<u8> {
         let chunk = chunks.get(i).copied().unwrap_or_default();
         let over = spec.block_overrides.iter().find(|o| o.block == i);
         let codec = over.and_then(|o| o.codec).unwrap_or(spec.data_codec);
-        let bytes = compress(codec, chunk);
+        let bytes = encode(codec, chunk);
         let uncompressed = over
             .and_then(|o| o.uncompressed)
             .unwrap_or_else(|| u32::try_from(chunk.len()).unwrap_or(u32::MAX));
@@ -300,7 +312,7 @@ pub fn build_with_signature(spec: &BundleSpec, signature: &[u8]) -> Vec<u8> {
     }
     rows.bytes(directory.as_slice());
     let info = rows.into_inner();
-    let info_stored = compress(spec.info_codec, &info);
+    let info_stored = encode(spec.info_codec, &info);
 
     let mut flags = u32::from(spec.info_codec.id()) | 0x40 | spec.extra_flags;
     if spec.info_at_end {

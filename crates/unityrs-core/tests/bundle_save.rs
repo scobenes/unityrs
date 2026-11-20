@@ -231,3 +231,76 @@ fn output_owns_its_charge_until_dropped_and_work_can_refuse_save() {
     ));
     assert_eq!(meter.used(), used);
 }
+
+#[test]
+fn semantic_save_refuses_a_serialized_child_that_would_reload_as_a_brotli_webfile() {
+    use unityrs_core::Error;
+    use unityrs_core::files::File;
+    use unityrs_testkit::blob::NodeSpec;
+    use unityrs_testkit::serialized::{ObjectSpec, one_object};
+    // Below format 9 a save writes the data right after the 16-byte header
+    // in path-id order. Table order [2, 1] puts path 2's data, which opens
+    // with `brotli`, at 0x10 in the input and at 0x20 in the output, where
+    // detection takes a file of 128 bytes or more for a brotli WebFile.
+    let cab = |first: i64| {
+        let mut marked = b"brotli".to_vec();
+        marked.resize(32, 1);
+        let mut cab = one_object(49, vec![NodeSpec::new(0, "aa", "aa")], marked);
+        cab.format = 8;
+        cab.objects[0].type_id = 49;
+        cab.objects[0].path_id = first;
+        cab.objects.push(ObjectSpec {
+            path_id: 3 - first,
+            type_id: 49,
+            class_id: 49,
+            data: vec![0; 16],
+            ..ObjectSpec::default()
+        });
+        let mut spec = spec(8);
+        spec.entries = vec![EntrySpec {
+            name: b"CAB-marker".to_vec(),
+            data: unityrs_testkit::serialized::build(&cab),
+            flags: 4,
+        }];
+        let b = load(Bytes::from(build(&spec)), &Meter::unlimited());
+        let File::Serialized(sf) = b.entry(0).unwrap() else {
+            panic!("the input's child is a SerializedFile")
+        };
+        (b, sf)
+    };
+    let (b, sf) = cab(2);
+    let unitypy = SaveOptions {
+        layout: SaveLayout::UnityPy,
+    };
+    let written = sf.save(unitypy).unwrap();
+    assert!(written.len() >= 128);
+    assert_eq!(&written[0x20..0x26], b"brotli");
+    // UnityPy's layout writes it, and the reloaded child fails as a WebFile.
+    let saved = b
+        .save(BundleSaveOptions {
+            layout: SaveLayout::UnityPy,
+            ..BundleSaveOptions::default()
+        })
+        .unwrap();
+    let back = load(saved, &Meter::unlimited());
+    let Err(Error::Entry { source, .. }) = back.entry(0) else {
+        panic!("the saved child must be detected as a WebFile")
+    };
+    assert!(matches!(
+        *source,
+        Error::Malformed {
+            what: "WebFile",
+            ..
+        }
+    ));
+    // The semantic layout refuses it before output, directly or held.
+    let collision = Err(SaveError::Range("SerializedFile WebFile marker collision"));
+    assert_eq!(sf.save(SaveOptions::default()), collision);
+    assert_eq!(b.save(BundleSaveOptions::default()), collision);
+    // In path-id order the marker stays at 0x10: saved and reloaded alike.
+    let (b, _) = cab(1);
+    let saved = b.save(BundleSaveOptions::default()).unwrap();
+    let back = load(saved.clone(), &Meter::unlimited());
+    assert!(matches!(back.entry(0).unwrap(), File::Serialized(_)));
+    assert_eq!(back.save(BundleSaveOptions::default()).unwrap(), saved);
+}
