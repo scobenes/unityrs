@@ -1,0 +1,13 @@
+Python's builtin sum in unityrs-pysum, and the changes made to it
+-----------------------------------------------------------------
+
+crates/unityrs-pysum/src/lib.rs of the unityrs repository translates the
+float path of CPython 3.15.2's builtin sum (Python/bltinmodule.c:
+builtin_sum_impl, with its CompensatedSum, cs_from_double, cs_add and
+cs_to_double) to Rust.
+
+The changes made to it: it is rewritten in Rust as a function of an
+iterator of f64 values. It keeps only the float path: it takes no int,
+complex or other items, no start value but the integer 0, and never falls
+back to generic addition. The compensated step and the final combination
+are Python's.

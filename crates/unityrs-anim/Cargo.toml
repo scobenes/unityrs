@@ -11,6 +11,9 @@ authors.workspace = true
 [dependencies]
 unityrs-core = { path = "../unityrs-core" }
 unityrs-scene = { path = "../unityrs-scene" }
+# Python 3.15.2's compensated float sum, which freeze v8's body model
+# was fitted under (a PSF-2.0 port, in a crate of its own).
+unityrs-pysum = { path = "../unityrs-pysum" }
 
 [dev-dependencies]
 serde_json = "=1.0.154"

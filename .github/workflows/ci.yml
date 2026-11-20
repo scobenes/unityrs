@@ -848,6 +848,33 @@ jobs:
           python tools/parity/compare.py --oracle "$RUNNER_TEMP/dumps/g3.jsonl.gz" \
             "$RUNNER_TEMP/dumps/g3-unityrs.jsonl.gz"
 
+  # Freeze v8's body model was fitted and validated under CPython 3.15.2,
+  # whose float sum is compensated (from 3.12 on), so its vectors are
+  # checked under 3.15.2 alone: the Rust model's reference vectors and the
+  # compensated-sum vectors are recomputed and compared with the committed
+  # ones exactly, without writing.
+  body-vectors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        # bash -eo pipefail: a step fails at its first failing command.
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.15.2"
+      # tools/parity/vectors holds these suites outside tests/, so the parity
+      # job's 3.11 never discovers them; unittest-suites fails on a skip or
+      # on fewer than the minimum.
+      - name: Check the body vectors under freeze v8's interpreter
+        run: |
+          python -c "import platform; assert platform.python_version() == '3.15.2', platform.python_version()"
+          python scripts/unittest-suites tools/parity/vectors=5
+
   # glTF structural validation and independent reconstruction.
   gltf:
     env:
