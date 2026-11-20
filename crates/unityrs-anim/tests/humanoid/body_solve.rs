@@ -12,18 +12,18 @@ use unityrs_anim::{
     humanoid::{
         body_avatar,
         body_model::{self as m, COEFFICIENTS, Edges, Matrix, Point, Points, Quaternion},
-        body_solve::{self as s, FREE_COMBINATIONS, HipsParent},
+        body_solve::{self as s, AnimatorBodyPose, FREE_COMBINATIONS, HipsParent},
         read_avatar, rig_avatar, slot_bone,
     },
 };
 use unityrs_core::limits::Meter;
 use unityrs_scene::{GraphOptions, graph_from_game_object};
 use unityrs_testkit::{
-    ngui::{Object, V, pptr},
+    ngui::{Object, V, pair, pptr},
     scene3d::{
         Layout,
         anim::humanoid::{self as h, ANIMATOR, AVATAR, Rig},
-        pointers, set, xyz,
+        game_object, pointers, set, transform, xyz,
     },
 };
 
@@ -98,10 +98,13 @@ fn the_reference_vectors() {
             rotation: floats(&case["parent"]["rotation"]),
             scale: float(&case["parent"]["scale"]),
         };
+        // The reference's `h T_A`, as root projection makes it.
+        let human_scale = float(&case["human_scale"]);
         let found = s::solve_hips(
-            floats(&case["target"]),
-            floats(&case["rotation"]),
-            float(&case["human_scale"]),
+            AnimatorBodyPose {
+                translation: floats::<3>(&case["target"]).map(|t| human_scale * t),
+                rotation: floats(&case["rotation"]),
+            },
             &pose,
             &weights,
             &edges,
@@ -150,11 +153,13 @@ fn solve(
             }
         }
     }
+    // `h T_A` with `h = 2`.
     s::solve_hips_with(
         &table,
-        [0.1, 0.62, -0.05],
-        rotation,
-        2.,
+        AnimatorBodyPose {
+            translation: [0.2, 1.24, -0.1],
+            rotation,
+        },
         pose,
         &weights,
         &edges,
@@ -327,9 +332,10 @@ fn the_hips_frame_of_a_hierarchy() {
         let rest_frame = m::body_frame(&rest).unwrap();
         let (target, request) = ([0.25, 1., -0.5], about([0.1, 1., 0.2], 70.));
         let (t, q) = s::solve_hips(
-            target,
-            request,
-            1.,
+            AnimatorBodyPose {
+                translation: target,
+                rotation: request,
+            },
             &local,
             &weights,
             &edges,
@@ -507,7 +513,12 @@ fn a_mapped_bone_outside_the_hips_refuses() {
 /// The rest-scale lookup's verdict on a hierarchy rig's prefab as `edit`
 /// leaves its objects: the Transforms (`GameObject` `i + 2`'s is `i + 102`,
 /// the Animator node's 101) and the Avatar.
-fn lookup(edit: impl FnOnce(&mut [Object])) -> Result<(), String> {
+fn lookup(edit: impl FnOnce(&mut Vec<Object>)) -> Result<(), String> {
+    lookup_with(GraphOptions::default(), edit)
+}
+
+/// `lookup` on a graph read with `options`.
+fn lookup_with(options: GraphOptions, edit: impl FnOnce(&mut Vec<Object>)) -> Result<(), String> {
     let meter = Meter::unlimited();
     let rig = Rig {
         hierarchy: true,
@@ -516,13 +527,7 @@ fn lookup(edit: impl FnOnce(&mut [Object])) -> Result<(), String> {
     let mut objects = h::prefab(&rig);
     edit(&mut objects);
     let (env, file) = super::file(Layout::Unity2022, &objects);
-    let graph = graph_from_game_object(
-        &env,
-        &file.object(1).unwrap(),
-        &GraphOptions::default(),
-        &meter,
-    )
-    .unwrap();
+    let graph = graph_from_game_object(&env, &file.object(1).unwrap(), &options, &meter).unwrap();
     let paths = RigPaths::new(&graph, 0, &meter).unwrap();
     let avatar = rig_avatar(&env, &file.object(ANIMATOR).unwrap(), &meter)
         .unwrap()
@@ -536,6 +541,108 @@ fn lookup(edit: impl FnOnce(&mut [Object])) -> Result<(), String> {
 fn transform_of(bone: usize) -> i64 {
     let index = h::BONES.iter().position(|&(b, _)| b == bone).unwrap();
     102 + i64::try_from(index).unwrap()
+}
+
+/// A Transform 180 (`GameObject` 80, "Extra") under Transform `under`, at
+/// uniform `scale`, that no `m_TOS` path or skeleton node names.
+pub(super) fn extra(objects: &mut Vec<Object>, under: i64, scale: f32) {
+    let parent = objects.iter_mut().find(|o| o.path_id == under).unwrap();
+    let V::Vector(_, _, children) = field(&mut parent.value, &["m_Children"]) else {
+        panic!("m_Children")
+    };
+    children.push(pptr("Transform", (0, 180)));
+    objects.push(Object::new(80, 1, game_object(b"Extra", &[(0, 180)])));
+    let mut node = transform((0, 80), (0, under), &[], false);
+    set(&mut node, "m_LocalScale", xyz("Vector3f", &[scale; 3]));
+    objects.push(Object::new(180, 4, node));
+}
+
+/// A Transform below the hips that the Avatar's skeleton does not name
+/// refuses, as E3a's `rest_translations` does: one at scale 2 under the
+/// Spine, and one at unit scale under the left hand.
+#[test]
+fn a_transform_below_the_hips_without_a_skeleton_node_refuses() {
+    let unmapped = Err(refused(BodyModel::UnmappedTransform));
+    assert_eq!(
+        lookup(|objects| extra(objects, transform_of(7), 2.)),
+        unmapped
+    );
+    let hand = transform_of(17);
+    assert_eq!(lookup(|objects| extra(objects, hand, 1.)), unmapped);
+}
+
+/// `extra`'s Transform at scale 2 under the Spine, named by an `m_TOS`
+/// path and by the skeleton's first row: the Animator node's, outside the
+/// hips' subtree.
+pub(super) fn named_extra(objects: &mut Vec<Object>) {
+    let spine = transform_of(7);
+    extra(objects, spine, 2.);
+    let avatar = objects.iter_mut().find(|o| o.path_id == AVATAR).unwrap();
+    let tos = rows(field(&mut avatar.value, &["m_TOS"]));
+    let spine = tos
+        .iter()
+        .find_map(|row| match row {
+            V::Pair(_, path) => match &**path {
+                V::Str(text) if text.ends_with(b"/Spine") => Some(text.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+    let path = [spine.as_slice(), b"/Extra"].concat();
+    tos.push(pair(V::UInt(h::crc32(&path)), V::Str(path.clone())));
+    let ids = skeleton_ids(objects);
+    assert_eq!(ids[0], V::UInt(0));
+    ids[0] = V::UInt(h::crc32(&path));
+}
+
+/// A skeleton row outside the hips' subtree does not admit a Transform
+/// below the hips: `named_extra`'s refuses as if unnamed.
+#[test]
+fn a_row_outside_the_hips_subtree_names_no_transform_below_it() {
+    assert_eq!(
+        lookup(named_extra),
+        Err(refused(BodyModel::UnmappedTransform))
+    );
+}
+
+/// A graph that drops a Transform below the hips refuses: read to the
+/// depth of the deepest bone, every mapped bone kept and an unmapped
+/// child one level below it pruned, which the full read refuses as
+/// unmapped.
+#[test]
+fn a_graph_pruned_below_the_hips_refuses() {
+    let meter = Meter::unlimited();
+    let rig = Rig {
+        hierarchy: true,
+        ..full()
+    };
+    let objects = h::prefab(&rig);
+    let (env, file) = super::file(Layout::Unity2022, &objects);
+    let root = file.object(1).unwrap();
+    let graph = graph_from_game_object(&env, &root, &GraphOptions::default(), &meter).unwrap();
+    let nodes = graph.nodes();
+    let depth = |mut at: usize| {
+        let mut depth = 1;
+        while let Some(parent) = nodes[at].parent {
+            (at, depth) = (parent, depth + 1);
+        }
+        depth
+    };
+    let deepest = (0..nodes.len()).max_by_key(|&k| depth(k)).unwrap();
+    let (leaf, limit) = (nodes[deepest].transform.path_id(), depth(deepest));
+    let limited = GraphOptions {
+        max_depth: Some(limit),
+    };
+    assert_eq!(lookup_with(limited, |_| ()), Ok(()));
+    assert_eq!(
+        lookup(|objects| extra(objects, leaf, 1.)),
+        Err(refused(BodyModel::UnmappedTransform))
+    );
+    assert_eq!(
+        lookup_with(limited, |objects| extra(objects, leaf, 1.)),
+        Err(refused(BodyModel::TruncatedRig))
+    );
 }
 
 fn skeleton_ids(objects: &mut [Object]) -> &mut Vec<V> {

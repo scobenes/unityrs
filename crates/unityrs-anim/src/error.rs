@@ -197,6 +197,12 @@ pub enum BodyModel {
     UndefinedYaw,
     /// A rig Transform's parent is not its `m_Skeleton` parent's.
     MisparentedTransform,
+    /// A rig Transform below the hips' is no `m_Skeleton` node's.
+    UnmappedTransform,
+    /// The rig's graph dropped a child of a Transform below the hips: past
+    /// the depth limit, a cycle, a broken pointer or a child that failed
+    /// to read.
+    TruncatedRig,
     /// A body position, scale, weight, frame or result is not finite.
     NonFiniteBody,
     /// The frame's lateral is along `up` within its rounding.
@@ -226,6 +232,8 @@ impl BodyModel {
             Self::DegenerateRootRotation => "degenerate_root_rotation",
             Self::UndefinedYaw => "undefined_yaw",
             Self::MisparentedTransform => "misparented_transform",
+            Self::UnmappedTransform => "unmapped_transform",
+            Self::TruncatedRig => "truncated_rig",
             Self::NonFiniteBody => "non_finite_body",
             Self::DegenerateFrame => "degenerate_frame",
             Self::InvalidRestFrame => "invalid_rest_frame",

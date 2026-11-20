@@ -17,6 +17,10 @@ pub struct Graph {
     pub(crate) nodes: MeteredVec<Node>,
     pub(crate) roots: MeteredVec<NodeId>,
     pub(crate) issues: MeteredVec<Issue>,
+    /// Per node, whether the walk dropped a child of it.
+    pub(crate) dropped: MeteredVec<bool>,
+    /// Per node, whether its `m_Father` is not the node that lists it.
+    pub(crate) mismatched: MeteredVec<bool>,
     pub(crate) held: crate::held::Held,
 }
 impl Graph {
@@ -34,6 +38,21 @@ impl Graph {
     #[must_use]
     pub fn issues(&self) -> &[Issue] {
         self.issues.as_slice()
+    }
+    /// Whether the walk dropped a child of node `id`: a child pointer that
+    /// did not resolve, a child past the depth limit, one already reached
+    /// (a cycle), or one that failed to read. Recorded as the graph is
+    /// built, in constant time per child.
+    #[must_use]
+    pub fn dropped_child(&self, id: NodeId) -> bool {
+        self.dropped.as_slice().get(id).copied().unwrap_or(false)
+    }
+    /// Whether node `id`'s `m_Father` disagrees with the node whose
+    /// `m_Children` reached it (`Issue::ParentMismatch`, an unresolved
+    /// `m_Father` among them). Recorded as the graph is built.
+    #[must_use]
+    pub fn mismatched_parent(&self, id: NodeId) -> bool {
+        self.mismatched.as_slice().get(id).copied().unwrap_or(false)
     }
 }
 /// Transform or its `RectTransform` subclass.

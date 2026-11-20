@@ -7,8 +7,8 @@ use unityrs_anim::{
     AnimError, Clip, RigPaths, discover,
     humanoid::{
         Avatar, BODY_SLOTS, BodyAvatar, BoneMass, DofKind, HumanoidClip, RigAvatar, SettingValue,
-        Xform, body_avatar, body_model, body_solve, dropped_muscles, humanoid_refusal, read_avatar,
-        rig_avatar, root,
+        Xform, body_avatar, body_model, body_solve, chain, dropped_muscles, humanoid_refusal,
+        read_avatar, rig_avatar, root,
     },
     read_clip,
 };
@@ -122,7 +122,8 @@ pub(crate) fn root_digest(
         for scale in [1., 1.75] {
             meter.count_decode(1)?;
             match root::target_body_pose(clip, time, scale, meter) {
-                Ok((t, q)) => {
+                Ok(pose) => {
+                    let (t, q) = (pose.translation, pose.rotation);
                     assert!(t.iter().all(|v| v.is_finite()), "finite T_A");
                     let length = q.iter().map(|v| v * v).sum::<f64>().sqrt();
                     assert!((length - 1.).abs() <= 1e-12, "unit B_A");
@@ -330,10 +331,14 @@ fn solve_digest(
             rotation,
             scale,
         };
+        // `m_Scale` applied once, as root projection applies it.
+        let human_scale = f64::from(body.scale());
+        let pose = body_solve::AnimatorBodyPose {
+            translation: target.map(|t| human_scale * t),
+            rotation: request,
+        };
         let found = body_solve::solve_hips(
-            target,
-            request,
-            f64::from(body.scale()),
+            pose,
             &local,
             &weights,
             &edges,
@@ -434,7 +439,10 @@ pub(crate) fn rigs(
         let paths = RigPaths::new(graph, rig.node, meter)?;
         if let Some(found) = &avatar.avatar {
             match body_avatar(found, meter) {
-                Ok(body) => solved += solve_digest(&body, &paths, meter, digest)?,
+                Ok(body) => {
+                    solved += solve_digest(&body, &paths, meter, digest)?;
+                    chain_digest(&body, &paths, kept, meter, digest)?;
+                }
                 Err(e) => soft(e, digest)?,
             }
         }
@@ -455,6 +463,56 @@ pub(crate) fn rigs(
         }
     }
     Ok(solved)
+}
+
+/// The rig's Animator chain (`humanoid::chain`), held to a finite parent
+/// with a normal positive scale (the identity for the plain chain or a
+/// scaled Animator or hips), its scope, then its admission with each kept
+/// clip's admitted root settings or their refusal.
+fn chain_digest(
+    body: &BodyAvatar<'_>,
+    paths: &RigPaths<'_>,
+    kept: &[Clip],
+    meter: &Arc<Meter>,
+    digest: &mut Digest,
+) -> Result<(), AnimError> {
+    let found = match body.animator_chain(paths, meter) {
+        Ok(found) => found,
+        Err(e) => return soft(e, digest),
+    };
+    let parent = found.parent();
+    assert!(
+        parent
+            .position
+            .iter()
+            .chain(&parent.rotation)
+            .all(|v| v.is_finite())
+            && parent.scale.is_normal()
+            && parent.scale > 0.
+            && found.hips_scale() > 0.,
+        "a finite chain"
+    );
+    let scope = found.validated();
+    if scope.is_some_and(|(feature, _)| feature != chain::ChainFeature::Intermediate) {
+        assert_eq!(parent, body_solve::HipsParent::IDENTITY, "no node between");
+    }
+    digest.tag((
+        scope.map(|(feature, offset)| (discriminant(&feature), offset)),
+        parent.position.map(f64::to_bits),
+        parent.rotation.map(f64::to_bits),
+        parent.scale.to_bits(),
+        found.hips_scale().to_bits(),
+    ));
+    for clip in kept {
+        meter.count_decode(1)?;
+        match root::root_settings(clip, meter) {
+            Ok(settings) => {
+                digest.tag(chain::admit_chain(&found, &settings).map_err(|e| e.to_string()));
+            }
+            Err(e) => soft(e, digest)?,
+        }
+    }
+    Ok(())
 }
 
 fn refuse(
