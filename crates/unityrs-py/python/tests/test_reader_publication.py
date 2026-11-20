@@ -36,21 +36,13 @@ class ReaderPublication(unittest.TestCase):
         values, errors = [], []
 
         class PublicationLock:
-            # The RLock's protocol: `with`, and `acquire` and `release`
-            # where a hot path calls them directly.
-            def acquire(self):
+            def __enter__(self):
                 if threading.current_thread().name == 'reader-second':
                     second_attempted.set()
                 lock.acquire()
 
-            def release(self):
-                lock.release()
-
-            def __enter__(self):
-                self.acquire()
-
             def __exit__(self, *args):
-                self.release()
+                lock.release()
 
         class PausedNative:
             def __getattr__(self, name):

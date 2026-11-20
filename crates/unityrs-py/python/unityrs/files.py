@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from .enums import ClassIDType, BuildTarget
 from .helpers.UnityVersion import UnityVersion
 from ._reader_snapshot import reference_types, set_reference_types
-from ._output import exact_string, save_text as _save_text
+from ._output import exact_string
 
 # files/File.py:13; files/__init__.py:1-14: the public legacy directory row.
 DirectoryInfo = namedtuple('DirectoryInfo', 'path offset size')
@@ -136,6 +136,16 @@ class File:
         return f"<{type(self).__name__}>"
 
 
+def _save_text(value, guard):
+    if value is None:
+        return None
+    if isinstance(value, (str, os.PathLike)):
+        value = exact_string(value)
+    size = str.__len__(value) if isinstance(value, str) else len(value)
+    guard.step(0, size * 4 + 64, 0)
+    return value.encode("utf-8", "surrogateescape")
+
+
 def _writer_text(value, guard):
     # UnityPy's writer calls `value.encode(...)` (streams/EndianBinaryWriter.py:84-92),
     # so a value without one, None or an int, raises its AttributeError there.
@@ -149,18 +159,13 @@ class SerializedFile(File):
 
     @property
     def reader(self):
-        # Not `with`, which on CPython 3.11 binds the lock's `__enter__` and
-        # `__exit__` anew each time: the same two RLock calls, made directly.
-        (lock := self._sync_owner._lock).acquire()
-        try:
+        with self._sync_owner._lock:
             if '_reader' not in self.__dict__:
                 from ._object_reader import ObjectFileReader
                 guard = self._native.tree_traversal()
                 guard.step(0, 2048, 1)
                 self._reader = ObjectFileReader(self._native, self.__dict__.get('_bytes_io_reader', False))
             return self._reader
-        finally:
-            lock.release()
 
     @reader.setter
     def reader(self, value):
@@ -610,8 +615,7 @@ class ObjectReader:
     def read_typetree(self, nodes=None, wrap=False, check_read=True, *, as_dict=None):
         if as_dict is not None:
             wrap = not as_dict
-        (lock := self.assets_file._sync_owner._lock).acquire()  # As `SerializedFile.reader`'s.
-        try:
+        with self.assets_file._sync_owner._lock:
             if nodes is None and (value := self._native.parse_direct(self, check_read, bool(wrap))) is not None:
                 return value  # The full path below, read directly where nothing of it differs.
             from ._reader_snapshot import uses_original, read_replacement
@@ -636,8 +640,6 @@ class ObjectReader:
                 value, count = self._native.parse_with_position(check_read, rows)
                 return value
             return self._read_object(rows, check_read)
-        finally:
-            lock.release()
 
     def _read_object(self, rows, check_read):
         from ._object import build
@@ -662,13 +664,10 @@ class ObjectReader:
 
     @property
     def reader(self):
-        (lock := self.assets_file._sync_owner._lock).acquire()
-        try:
+        with self.assets_file._sync_owner._lock:
             if '_reader' not in self.__dict__:
                 self._reader = self.assets_file.reader
             return self._reader
-        finally:
-            lock.release()
 
     @reader.setter
     def reader(self, value):
