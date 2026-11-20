@@ -181,6 +181,13 @@ impl SerializedType {
         self.tree_with(|nodes| Tree::compile(nodes, limits))
     }
 
+    /// [`Self::tree`] once it is compiled and kept, without compiling or
+    /// waiting: `None` before that, or after a failed compile.
+    #[must_use]
+    pub fn compiled_tree(&self) -> Option<&Arc<Tree>> {
+        self.tree.get()?.as_ref().ok()
+    }
+
     fn tree_with(
         &self,
         compile: impl FnOnce(crate::typetree::SharedNodes) -> Result<Arc<Tree>, TreeError>,

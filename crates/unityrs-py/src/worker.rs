@@ -132,16 +132,7 @@ pub(crate) fn run<T: Send>(stack: usize, f: impl FnOnce() -> T + Send) -> PyResu
         }
     }
     if !crate::python::relay::relayed() && crate::stack::covers(stack) {
-        let relay = crate::python::relay::Relay::inline();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| relay.enter(f)))
-            .map_err(|_| PyRuntimeError::new_err("core worker failed"))?;
-        if relay.panicked() {
-            return Err(PyRuntimeError::new_err("core worker failed"));
-        }
-        return match relay.take_error() {
-            Some(error) => Err(error),
-            None => Ok(result),
-        };
+        return inline(f);
     }
     let relay = crate::python::relay::Relay::default();
     let mut out = None;
@@ -172,6 +163,56 @@ pub(crate) fn run<T: Send>(stack: usize, f: impl FnOnce() -> T + Send) -> PyResu
         // A panicked worker retires: each panic leaves a fresh thread.
         Some(Err(_)) | None => return Err(PyRuntimeError::new_err("core worker failed")),
     };
+    if relay.panicked() {
+        return Err(PyRuntimeError::new_err("core worker failed"));
+    }
+    match relay.take_error() {
+        Some(error) => Err(error),
+        None => Ok(result),
+    }
+}
+
+/// Work whose native stack does not grow with its input (no recursion:
+/// the type-tree read and its rendering keep their depth on the heap) runs
+/// inline on any thread, the main thread included, with no stack check. On
+/// a worker serving a caller elsewhere it takes a worker as [`run`] does, so
+/// its callbacks still reach that caller.
+pub(crate) fn flat<T: Send>(f: impl FnOnce() -> T + Send) -> PyResult<T> {
+    if crate::python::relay::relayed() {
+        return run(MIN_STACK, f);
+    }
+    inline(f)
+}
+
+/// An object's type-tree read (or its tree's resolution), `rows` given or
+/// not: [`flat`] where all of it is, else on a worker of the parse
+/// allowance. Flat: UnityPyBoost's reader (`byte_size > 0`), the tree
+/// compiled from the given rows or the type record's own nodes, the value's
+/// pinning and rendering. Recursive, so on a worker: the pure-Python reader
+/// (`byte_size == 0`), and a tree a provider makes (a class database's, a
+/// generator's).
+pub(crate) fn run_read<T: Send>(
+    object: &unityrs_core::ObjectRef,
+    rows: bool,
+    f: impl FnOnce() -> T + Send,
+) -> PyResult<T> {
+    let embedded = rows
+        || object
+            .serialized_type()
+            .is_some_and(|ty| ty.nodes.is_some());
+    if object.info().byte_size > 0 && embedded {
+        flat(f)
+    } else {
+        run(object.file().context().limits.stack_needed(), f)
+    }
+}
+
+/// `f` on this thread, its callbacks emitted in place, with a worker's
+/// answers to a panic or a callback's failure.
+fn inline<T>(f: impl FnOnce() -> T) -> PyResult<T> {
+    let relay = crate::python::relay::Relay::inline();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| relay.enter(f)))
+        .map_err(|_| PyRuntimeError::new_err("core worker failed"))?;
     if relay.panicked() {
         return Err(PyRuntimeError::new_err("core worker failed"));
     }

@@ -211,6 +211,12 @@ const _: () = {
     send_sync::<walk::ReadError>();
     send_sync::<walk::ReadOptions>();
     send_sync::<walk::WriteCtx<'static>>();
+    send_sync::<walk::emit::Emitted<()>>();
+    send_sync::<walk::emit::Run<'static>>();
+    send_sync::<walk::emit::Scalar>();
+    // A sink builds a caller's values (Python's, on the caller's thread):
+    // the trait asks neither, and a sink that is both is.
+    send_sync::<dyn walk::emit::Sink<Obj = ()> + Send + Sync>();
 };
 
 #[cfg(test)]
