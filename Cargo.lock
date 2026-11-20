@@ -1569,6 +1569,8 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "unityrs-compress-sys",
+ "unityrs-core",
+ "unityrs-dump",
  "unityrs-testkit",
  "unityrs-texture",
 ]
