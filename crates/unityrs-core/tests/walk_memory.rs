@@ -784,6 +784,11 @@ fn compiles(counting: bool) {
         assert_eq!(s.as_bytes(), n);
         s
     };
-    let work = compile_on(&m, compile_rows(B, &mut theirs), true, Some(&table));
-    assert_eq!(work, 0, "the compile through the table read no name");
+    let rows = compile_rows(B, &mut theirs);
+    let edges = u64::try_from(rows.len() - 1).unwrap();
+    let work = compile_on(&m, rows, true, Some(&table));
+    assert_eq!(
+        work, edges,
+        "the compile through the table read no name, and counted its edges"
+    );
 }

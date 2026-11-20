@@ -6,7 +6,7 @@
         "size": 18167
       }
     },
-    "stderr": "{\"crashes\":0,\"decode_work\":25189,\"files\":1,\"index_sha256_mismatch\":0,\"inputs\":1,\"objects\":4,\"output_bytes\":18167,\"workers\":1}",
+    "stderr": "{\"crashes\":0,\"decode_work\":25436,\"files\":1,\"index_sha256_mismatch\":0,\"inputs\":1,\"objects\":4,\"output_bytes\":18167,\"workers\":1}",
     "stdout": ""
   },
   "lz4/extract": {
@@ -51,7 +51,7 @@
         "size": 18167
       }
     },
-    "stderr": "{\"crashes\":0,\"decode_work\":25189,\"files\":1,\"index_sha256_mismatch\":0,\"inputs\":1,\"objects\":4,\"output_bytes\":18167,\"workers\":1}",
+    "stderr": "{\"crashes\":0,\"decode_work\":25436,\"files\":1,\"index_sha256_mismatch\":0,\"inputs\":1,\"objects\":4,\"output_bytes\":18167,\"workers\":1}",
     "stdout": ""
   },
   "lzma/extract": {
@@ -96,7 +96,7 @@
         "size": 18167
       }
     },
-    "stderr": "{\"crashes\":0,\"decode_work\":25189,\"files\":1,\"index_sha256_mismatch\":0,\"inputs\":1,\"objects\":4,\"output_bytes\":18167,\"workers\":1}",
+    "stderr": "{\"crashes\":0,\"decode_work\":25436,\"files\":1,\"index_sha256_mismatch\":0,\"inputs\":1,\"objects\":4,\"output_bytes\":18167,\"workers\":1}",
     "stdout": ""
   },
   "root_flags/extract": {

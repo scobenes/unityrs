@@ -498,7 +498,8 @@ fn objects_over_one_span_stop_at_the_opens_work() {
 /// the compile reads the tree's names (`Tree::compile`, "Work": each buffer
 /// that shares its length with another hashed once). Those bytes are the
 /// open's work: a file whose class has `R` children named by `R` distinct
-/// strings of `L` bytes counts `R` x `L` for its compile, on the meter its
+/// strings of `L` bytes counts `R` x `L` for its compile, and one step for
+/// each of its `R` edges (its last pass, after the names), on the meter its
 /// objects are read on, and a read under an allowance below it fails with
 /// the compile's `DecodeWork` refusal, which the type keeps (plan 3.1: not
 /// transient), so a second object of the type is refused without a compile.
@@ -540,8 +541,8 @@ fn an_objects_tree_compile_counts_the_names_it_reads_on_the_open() {
     f.types()[0].tree(&f.context().limits).unwrap().unwrap();
     assert_eq!(
         m.decoded() - load,
-        names,
-        "the compile reads each name once"
+        names + u64::try_from(R).unwrap(),
+        "the compile reads each name once, and looks at each edge"
     );
     let (m, f) = open(load + names - 1);
     let mut granted = Vec::new();

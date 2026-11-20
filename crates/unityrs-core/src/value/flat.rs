@@ -133,17 +133,70 @@ impl Drop for Value {
     }
 }
 
+/// Containers open in [`Value::each`] kept in place before any is kept on
+/// the heap: most values nest no deeper, so a visit allocates nothing.
+const INLINE_OPENS: usize = 16;
+
+/// A stack whose first [`INLINE_OPENS`] items are in place, any more on the
+/// heap: a value of any depth takes the same native stack. A slot past the
+/// top holds a spent item (`T::default()`, or one popped).
+struct Stack<T> {
+    inline: [T; INLINE_OPENS],
+    len: usize,
+    spill: Vec<T>,
+}
+
+impl<T: Default> Stack<T> {
+    fn new() -> Self {
+        Self {
+            inline: Default::default(),
+            len: 0,
+            spill: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, item: T) {
+        match self.inline.get_mut(self.len) {
+            Some(slot) => *slot = item,
+            None => self.spill.push(item),
+        }
+        self.len += 1;
+    }
+
+    fn last_mut(&mut self) -> Option<&mut T> {
+        let at = self.len.checked_sub(1)?;
+        match self.inline.get_mut(at) {
+            Some(slot) => Some(slot),
+            None => self.spill.last_mut(),
+        }
+    }
+
+    fn pop(&mut self) {
+        if self.len > INLINE_OPENS {
+            self.spill.pop();
+        }
+        self.len = self.len.saturating_sub(1);
+    }
+}
+
 impl crate::pin::Slices for Value {
     /// Its strings, `TypelessData` and `vector<UInt8>` runs, depth first in
     /// order: the containers open above the one visited are iterators on a
-    /// heap stack, so a value of any depth takes the same native stack.
+    /// stack of their own ([`Stack`]), so a value of any depth takes the
+    /// same native stack, and one no deeper than [`INLINE_OPENS`]
+    /// allocates nothing.
     fn each(&mut self, f: &mut dyn FnMut(crate::pin::Slice<'_>)) {
         use crate::pin::Slice;
         enum Open<'a> {
             Items(std::slice::IterMut<'a, Value>),
             Entries(std::slice::IterMut<'a, (NodeId, Value)>),
         }
-        let mut opens: Vec<Open<'_>> = Vec::new();
+        impl Default for Open<'_> {
+            fn default() -> Self {
+                Self::Items(std::slice::IterMut::default())
+            }
+        }
+        let mut opens: Stack<Open<'_>> = Stack::new();
         let mut next = Some(self);
         loop {
             let value = if let Some(value) = next.take() {

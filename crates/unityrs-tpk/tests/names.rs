@@ -93,9 +93,10 @@ fn provider() -> TpkProvider {
 }
 
 /// Each root's compile reads no name: the work its list's meter (the
-/// provider's) counts is unchanged by it, where a compile of the same rows
-/// with no table reads the three long buffers and compares the two of one
-/// content, 4 x 100,000 bytes a root. Both key the children alike: `a'`
+/// provider's) counts is its four edges alone (the compile's last pass,
+/// one step an edge), where a compile of the same rows with no table also
+/// reads the three long buffers and compares the two of one content,
+/// 4 x 100,000 bytes a root. Both key the children alike: `a'`
 /// takes `a`'s key and slot, `b` a slot of its own.
 #[test]
 fn a_trees_compile_reads_none_of_the_tpks_strings() {
@@ -112,9 +113,19 @@ fn a_trees_compile_reads_none_of_the_tpks_strings() {
             script: None,
         };
         let tree = provider.tree(&req).unwrap().unwrap();
-        assert_eq!(meter.decoded(), before, "class {class_id}: names read");
+        let edges = u64::try_from(list.len() - 1).unwrap();
+        assert_eq!(edges, 4);
+        assert_eq!(
+            meter.decoded() - before,
+            edges,
+            "class {class_id}: names read"
+        );
         let plain = Tree::compile(list, &Limits::default()).unwrap();
-        assert_eq!(meter.decoded() - before, 4 * len, "class {class_id}");
+        assert_eq!(
+            meter.decoded() - before,
+            4 * len + 2 * edges,
+            "class {class_id}"
+        );
         for t in [&tree, &plain] {
             let info = |i: u32| *t.info(NodeId(i)).unwrap();
             let keys: Vec<_> = (1..=4).map(|i| (info(i).key.0, info(i).slot)).collect();
