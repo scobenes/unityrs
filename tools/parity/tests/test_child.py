@@ -63,6 +63,10 @@ class RunTests(unittest.TestCase):
         self.assertIn(f"killed by SIGKILL on each of its {n} runs", str(cm.exception))
         self.assertIn("the system ended it from outside (the OOM killer, or a person)", str(cm.exception))
 
+    def test_once_runs_a_killed_child_once_and_returns_the_kill(self):
+        proc = child.run([PY, "-c", marked(1, "sys.exit(0)"), self.marks], capture_output=True, once=True)
+        self.assertEqual((proc.returncode, runs(self.marks)), (-signal.SIGKILL, 1))
+
     def test_every_other_ending_is_the_first_runs_result(self):
         for last, code in (
             ("sys.exit(0)", 0),

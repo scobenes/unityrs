@@ -1,0 +1,289 @@
+{
+ "schema_version": 1,
+ "rounds": 7,
+ "warmup": 1,
+ "quick_rounds": 3,
+ "categories": [
+  {
+   "name": "load",
+   "label": "load and list objects",
+   "timer": "load from bytes; list every file's object table"
+  },
+  {
+   "name": "typetree",
+   "label": "read every typetree",
+   "timer": "parse_as_dict() on every object"
+  },
+  {
+   "name": "texture",
+   "label": "read and decode textures",
+   "timer": "obj.read().image.tobytes() for each Texture2D"
+  }
+ ],
+ "workloads": [
+  {
+   "name": "load-objects-lz4",
+   "category": "load",
+   "fixture": "objects-lz4.bundle",
+   "op": "load",
+   "timer": "load from bytes; list every file's object table",
+   "parity_row": {
+    "section": "6",
+    "item": "LZ4 (2), LZ4HC (3)"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "load-objects-lzma",
+   "category": "load",
+   "fixture": "objects-lzma.bundle",
+   "op": "load",
+   "timer": "load from bytes; list every file's object table",
+   "parity_row": {
+    "section": "6",
+    "item": "LZMA (1)"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "load-objects-2019",
+   "category": "load",
+   "fixture": "objects-2019.assets",
+   "op": "load",
+   "timer": "load from bytes; list every file's object table",
+   "parity_row": {
+    "section": "7.2",
+    "item": "`SerializedFile`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "load-many-blocks",
+   "category": "load",
+   "fixture": "many-blocks.bundle",
+   "op": "load_entries",
+   "timer": "load from bytes; read every entry's bytes",
+   "parity_row": {
+    "section": "6",
+    "item": "LZ4 (2), LZ4HC (3)"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "typetree-objects-lz4",
+   "category": "typetree",
+   "fixture": "objects-lz4.bundle",
+   "op": "typetree",
+   "timer": "parse_as_dict() on every object",
+   "parity_row": {
+    "section": "8",
+    "item": "`ObjectReader.parse_as_dict`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "typetree-objects-2019",
+   "category": "typetree",
+   "fixture": "objects-2019.assets",
+   "op": "typetree",
+   "timer": "parse_as_dict() on every object",
+   "parity_row": {
+    "section": "8",
+    "item": "`ObjectReader.parse_as_dict`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-RGBA32",
+   "category": "texture",
+   "fixture": "textures-RGBA32.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`RGBA32`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-RGB24",
+   "category": "texture",
+   "fixture": "textures-RGB24.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`RGB24`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-ARGB4444",
+   "category": "texture",
+   "fixture": "textures-ARGB4444.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`ARGB4444`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-DXT1",
+   "category": "texture",
+   "fixture": "textures-DXT1.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`DXT1`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-BC4",
+   "category": "texture",
+   "fixture": "textures-BC4.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`BC4`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-ETC_RGB4",
+   "category": "texture",
+   "fixture": "textures-ETC_RGB4.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`ETC_RGB4`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-EAC_R",
+   "category": "texture",
+   "fixture": "textures-EAC_R.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`EAC_R`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-PVRTC_RGBA4",
+   "category": "texture",
+   "fixture": "textures-PVRTC_RGBA4.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`PVRTC_RGBA4`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-DXT5",
+   "category": "texture",
+   "fixture": "textures-DXT5.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`DXT5`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-BC5",
+   "category": "texture",
+   "fixture": "textures-BC5.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`BC5`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-BC6H",
+   "category": "texture",
+   "fixture": "textures-BC6H.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`BC6H`"
+   },
+   "tier": "B"
+  },
+  {
+   "name": "texture-BC7",
+   "category": "texture",
+   "fixture": "textures-BC7.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`BC7`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-ETC2_RGBA8",
+   "category": "texture",
+   "fixture": "textures-ETC2_RGBA8.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`ETC2_RGBA8`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-ATC_RGBA8",
+   "category": "texture",
+   "fixture": "textures-ATC_RGBA8.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`ATC_RGBA8`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-ASTC_RGBA_4x4",
+   "category": "texture",
+   "fixture": "textures-ASTC_RGBA_4x4.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`ASTC_RGBA_4x4`"
+   },
+   "tier": "A"
+  },
+  {
+   "name": "texture-ASTC_RGBA_8x8",
+   "category": "texture",
+   "fixture": "textures-ASTC_RGBA_8x8.bundle",
+   "op": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "parity_row": {
+    "section": "17",
+    "item": "`ASTC_RGBA_8x8`"
+   },
+   "tier": "A"
+  }
+ ]
+}

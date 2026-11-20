@@ -6101,6 +6101,7 @@ Used by:
 - unityrs-anim 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-audio 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-batch 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-bench 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-bench-lzma 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-cli 0.0.1 (https://github.com/scobenes/unityrs)
 - unityrs-compress-sys 0.0.1 (https://github.com/scobenes/unityrs)

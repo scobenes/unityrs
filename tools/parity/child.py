@@ -7,7 +7,9 @@ next run, so `run`, `forked` and `run_all` run it again, up to `KILLED_RUNS` run
 every one of them fails, saying the system killed it (`SystemKilled`). Every other ending is the child's own and
 comes back at once, after one run: an exit status, an abort (SIGABRT), a segfault, any other signal. A child the
 caller kills itself (a `timeout`, which `subprocess.run` ends with SIGKILL and reports as `TimeoutExpired`;
-`run_all`'s `stop`) is the caller's doing, never run again.
+`run_all`'s `stop`) is the caller's doing, never run again. A caller that measures the run (the benchmark) passes
+`run(..., once=True)`: a second run would measure something else, so a kill comes back as the result, its to
+fail on.
 
 Each run of a child also gets a scratch folder its parent owns and removes when the run ends, however it ends,
 named in its `UNITYRS_TEST_SCRATCH` (`scratch.py`).
@@ -68,10 +70,11 @@ def _env(kwargs: dict, folder) -> dict:
     return env
 
 
-def run(args, *, check: bool = False, **kwargs) -> subprocess.CompletedProcess:
+def run(args, *, check: bool = False, once: bool = False, **kwargs) -> subprocess.CompletedProcess:
     """`subprocess.run(args, **kwargs)`, run again while SIGKILL from outside ends it, up to `KILLED_RUNS` runs in
     all (module docs). Every other outcome is the first run's, returned as `subprocess.run` returns it, and with
-    `check` a non-zero status raises `CalledProcessError` as there.
+    `check` a non-zero status raises `CalledProcessError` as there. With `once`, it runs once, and a SIGKILL is
+    the result too (returned, or raised by `check`).
 
     The streams must be ones a second run can use again: `input=`, `capture_output`, PIPE, DEVNULL, STDOUT or
     the caller's own; an open file would hand the second run what the first left.
@@ -82,10 +85,10 @@ def run(args, *, check: bool = False, **kwargs) -> subprocess.CompletedProcess:
         stream = kwargs.get(name)
         if stream is not None and not (isinstance(stream, int) and stream < 0):
             raise TypeError(f"child.run: {name}={stream!r}: a run again would reuse what the killed run left in it")
-    for _ in range(KILLED_RUNS):
+    for _ in range(1 if once else KILLED_RUNS):
         with scratch.folder("unityrs-child-") as own:
             proc = subprocess.run(args, check=False, **{**kwargs, "env": _env(kwargs, own)})
-        if not killed(proc.returncode):
+        if once or not killed(proc.returncode):
             if check:
                 proc.check_returncode()
             return proc
