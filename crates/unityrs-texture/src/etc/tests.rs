@@ -3,7 +3,7 @@
 //! here from its bit layout, not from the port; `tests/etc_oracle.rs`
 //! replays what texture2ddecoder gives through UnityPy.
 
-use super::{Block, TRANSPARENT, eac, etc1, etc2};
+use super::{Block, Kind, TRANSPARENT, block, decode, eac, etc1, etc2, half};
 
 /// ETC1's individual mode: base colours (0xAA, 0x33, 0x00) and (0x55, 0xCC,
 /// 0x00) from byte 0 to 2's nibbles, codewords 1 and 6, the flip bit 0
@@ -146,4 +146,20 @@ fn a_signed_eac_base_of_minus_128_is_minus_127() {
         let want = u8::try_from((128 * 8 + 14 * multiplier + 4) >> 3).unwrap();
         assert_eq!(unsigned, [[want, 0, 0, 255]; 16]);
     }
+}
+
+/// An output shorter than the image keeps each pixel that fits: a 4x1
+/// image into 4 bytes holds the block's first pixel, a 3x1 image into 9
+/// bytes its first two, as the pixel-by-pixel write gave.
+#[test]
+fn a_short_output_keeps_the_pixels_that_fit() {
+    let data = [0xA5, 0x3C, 0x00, 0x38, 0x00, 0x40, 0x00, 0x40];
+    let px = block(Kind::Etc1, half(&data, 0), half(&data, 8));
+    let mut out = [7; 4];
+    decode(Kind::Etc1, &data, 4, 1, &mut out);
+    assert_eq!(out, px[0]);
+    let mut out = [7; 9];
+    decode(Kind::Etc1, &data, 3, 1, &mut out);
+    assert_eq!(out[..8], *px[..2].as_flattened());
+    assert_eq!(out[8], 7);
 }
