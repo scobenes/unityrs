@@ -37,6 +37,7 @@ import hashlib
 import json
 import math
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -632,8 +633,11 @@ def qualify_folder(folder, unityrs):
         except (KeyError, TypeError, IndexError, ValueError, StopIteration) as exc:
             raise ValueError(f"{name}: {exc!r}") from exc
     for entry in entries:
-        twin_case = entry["case"].removesuffix("-offset")
-        if twin_case != entry["case"] and twin_case in docs:
+        # The identity-root twin, by the case table's prefab, not by the case name.
+        fixture = cases[entry["case"]]
+        twin_case = next((name for name, other in cases.items() if fixture.prefab == "offset"
+                          and other == replace(fixture, prefab="identity")), None)
+        if twin_case in docs:
             # The same clip on an identity Animator root, sampled on the same schedule.
             doc, other = docs[entry["case"]][0], docs[twin_case][0]
             hips = entry["root_hips"]["hips_node"]

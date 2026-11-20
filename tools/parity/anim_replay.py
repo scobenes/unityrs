@@ -644,6 +644,18 @@ def derive(manifest, bundle_dir=None):
             "targets": _targets(spec), "samples": result}
 
 
+def require_unsealed(path):
+    """Refuses, by name and before any byte is read, a pending recording (only `complete` reads one) and any file
+    of a hold-out case (its recording or bundle, sealed until E3b), under its own name or a link's."""
+    from anim_fixture_body import BODY_CASES, BODY_INFO, HOLDOUT_RIGS
+
+    cases = [case for case, info in BODY_INFO.items() if info["rig"] in HOLDOUT_RIGS]
+    for name in {Path(path).name, Path(path).resolve().name}:
+        require(not any(name.startswith(case + ".") or name == BODY_CASES[case].bundle for case in cases),
+                f"{name}: a sealed hold-out file (only E3b unseals it: anim_body_freeze.py e3b)")
+        require(not name.endswith(".pending.json"), f"{name}: a pending replay needs the complete command")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("complete", "validate", "validate-spec", "derive", "capture-id"))
@@ -666,12 +678,15 @@ def main():
             if isinstance(result, str):
                 print(result)
                 return
-            count, uncovered = result
+            count, uncovered, sealed = result
             print(f"Completed and validated {count} replay(s).")
             for row in uncovered:
                 print(f"Optional coverage not recorded: {row}")
+            for name in sealed:
+                print(f"Sealed hold-out case, not opened: {name} (only E3b unseals it: anim_body_freeze.py e3b)")
             return
         require(args.unityrs is None and args.inspect_dir is None, "inspection options require complete")
+        require_unsealed(args.file)
         value = read_json(args.file.read_text(encoding="utf-8"))
         if args.mode == "validate-spec":
             require(args.bundle_dir is None, "bundle verification requires a capture")

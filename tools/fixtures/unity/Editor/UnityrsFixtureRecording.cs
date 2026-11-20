@@ -11,6 +11,16 @@ using UnityEngine.SceneManagement;
 
 public static partial class AnimReplayRecorder
 {
+    // An authored muscle vector with every signed zero as +0, in place: a negative factor times zero is -0,
+    // whose f32 bits differ from the +0 the parity tools expect. Every known vector's schedule, pose and bits
+    // come through it.
+    internal static float[] Canonical(float[] values)
+    {
+        for (int i = 0; i < values.Length; i++)
+            if (values[i] == 0f) values[i] = 0f;
+        return values;
+    }
+
     // The pending DTO carries only Editor-visible identity. JsonUtility
     // serializes nested objects inline, so the handoff uses explicit types
     // without the built-ID fields instead of serializing empty IDs.
@@ -55,6 +65,11 @@ public static partial class AnimReplayRecorder
         public float spine_endpoint_tolerance_degrees;
         public string expected_refusal;
         public TwistEffect[] twist_effects;
+        // Body fixture rows (UnityrsBodyRecording.cs), empty for every other case.
+        public BodyCaseRow[] body_case;
+        public BodySampleRow[] body_samples;
+        public BodyTargetRow[] body_targets;
+        public HumanBoneRow[] human_bones;
     }
     [Serializable] sealed class PendingEvidence
     {
@@ -97,7 +112,7 @@ public static partial class AnimReplayRecorder
         var bindings = ReadBindings(clip, out double[] authoredTimes);
         var keys = authoredTimes.Where(time => start <= time && time <= stop).Concat(new[] { start, stop })
             .Distinct().OrderBy(time => time).ToArray();
-        var points = Schedule(keys, fixture.HeldTime);
+        var points = fixture.BodyProbes != null ? BodyPoints(fixture, keys) : Schedule(keys, fixture.HeldTime);
         string probeAddress = Address(prefab.transform, prefab.transform.Find(fixture.ProbePath));
         var nodes = prefab.GetComponentsInChildren<Transform>(true)
             .Select(node => new Node { name = node.name, address = Address(prefab.transform, node) }).ToArray();
@@ -142,7 +157,7 @@ public static partial class AnimReplayRecorder
             Need(human && !clip.legacy && !fixture.HeldTime.HasValue,
                 "Known-vector baselines require an unheld Humanoid clip schedule.");
             pending = new PendingPoseSpec { schedule = points.Select(point => new Point {
-                local = point.local, muscles = fixture.KnownMuscles((float)point.local)
+                local = point.local, muscles = Canonical(fixture.KnownMuscles((float)point.local))
             }).ToArray() };
         }
         else
@@ -181,24 +196,39 @@ public static partial class AnimReplayRecorder
         bool mixed = false;
 
         var spec = JsonUtility.FromJson<Spec>(JsonUtility.ToJson(pending));
-        var capture = RecordCapture(spec, bundles, pending: true, inspectClip: (builtClip, bundle) => {
-            if (fixture.ProbeMixedStorage)
-            {
-                mixed = HasMixedTransformStorage(builtClip, out string reason);
-                if (!mixed) log("mixed-transform-storage not covered: " + reason);
-            }
-            if (referenceAssets == null) return;
-            var keysInBundle = bundle.GetAllAssetNames();
-            builtReferences = referenceAssets.Select(path => bundle.LoadAsset<Mesh>(BuiltAssetKey(keysInBundle, path))).ToArray();
-            Need(builtReferences.All(mesh => mesh != null) && builtReferences[0] != builtReferences[1],
-                "Built object-reference assets are missing or indistinguishable.");
-        }, inspectPose: (root, time) => {
-            if (referenceAssets == null) return;
-            int key = time < .5f ? 0 : 1;
-            var mesh = root.Find(UnityrsFixtureBuilder.ReferencePath).GetComponent<MeshFilter>().sharedMesh;
-            Need(mesh == builtReferences[key], "Built playback missed the authored MeshFilter object reference at " + time + ".");
-            referenceSamples.Add(new ObjectKey { time_f32 = Bits(time), asset = referenceAssets[key], name = mesh.name });
-        });
+        // JsonUtility does not parse every double it writes back exactly (2022.3 read a
+        // 16-digit time on the 2^-16 grid one ulp off), so the capture keeps the exact clock.
+        Need(spec.schedule.Length == points.Length, "The pending schedule did not survive its JSON round trip.");
+        for (int i = 0; i < points.Length; i++) spec.schedule[i].local = points[i].local;
+        spec.start = start;
+        spec.stop = stop;
+        spec.held_boundaries = pending.held_boundaries;
+        var body = fixture.Body == null ? null : new BodyHooks { Probes = fixture.BodyProbes, Case = fixture.Body };
+        Need(body == null || knownPose == (fixture.BodyProbes != null), "Body known vectors need their probe schedule.");
+        Capture capture;
+        try
+        {
+            capture = RecordCapture(spec, bundles, pending: true, body: body, inspectClip: (builtClip, bundle) => {
+                if (fixture.ProbeMixedStorage)
+                {
+                    mixed = HasMixedTransformStorage(builtClip, out string reason);
+                    if (!mixed) log("mixed-transform-storage not covered: " + reason);
+                }
+                if (referenceAssets == null) return;
+                var keysInBundle = bundle.GetAllAssetNames();
+                builtReferences = referenceAssets.Select(path => bundle.LoadAsset<Mesh>(BuiltAssetKey(keysInBundle, path))).ToArray();
+                Need(builtReferences.All(mesh => mesh != null) && builtReferences[0] != builtReferences[1],
+                    "Built object-reference assets are missing or indistinguishable.");
+            }, inspectPose: (root, time) => {
+                if (referenceAssets == null) return;
+                int key = time < .5f ? 0 : 1;
+                var mesh = root.Find(UnityrsFixtureBuilder.ReferencePath).GetComponent<MeshFilter>().sharedMesh;
+                Need(mesh == builtReferences[key], "Built playback missed the authored MeshFilter object reference at " + time + ".");
+                referenceSamples.Add(new ObjectKey { time_f32 = Bits(time), asset = referenceAssets[key], name = mesh.name });
+            });
+        }
+        // A body case's nonfinite values are named even when it fails.
+        finally { body?.ReportNonfinite(fixture.OutputName); }
         editor.object_reference_samples = referenceSamples.ToArray();
         pending.prefab_asset = spec.prefab_asset;
         pending.clip_asset = spec.clip_asset;
@@ -211,12 +241,15 @@ public static partial class AnimReplayRecorder
             "Built playback missed the authored endpoint probes for " + clip.name + ".");
         if (fixture.HeldTime.HasValue)
             SetHeldEvidence(pending, spec, capture, fixture, target);
+        if (body != null)
+            SetBodyEvidence(editor, fixture, body, capture, knownPose);
 
         // The final human_pose schema needs an inspected runtime slot
         // inventory. Keep these captures until the maintainer adds it.
-        if (knownPose)
+        // Body fixtures keep their own folder.
+        if (body != null || knownPose)
         {
-            output = Path.Combine(output, "known-vectors");
+            output = Path.Combine(output, body != null ? "body" : "known-vectors");
             Directory.CreateDirectory(output);
         }
         string path = Path.Combine(output, fixture.OutputName + ".pending.json");
