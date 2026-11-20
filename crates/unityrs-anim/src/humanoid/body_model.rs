@@ -31,6 +31,15 @@
 //!   along it) refuses as `undefined_twist`. A pose whose largest spine
 //!   Left-Right muscle exceeds `LATERAL_LIMIT` refuses
 //!   (`spine_lateral_range`).
+//! - **Refusals the reference lacks**, each refusing where the reference
+//!   would answer: a non-finite state, point, weight, frame or result
+//!   (`non_finite_body`; a chain of large scales overflows, and an infinite
+//!   scale times a zero translation is NaN); an `up` within its own
+//!   rounding of zero (`undefined_twist`, not only an exact zero); a
+//!   lateral along `up` within `frame_threshold` (`degenerate_frame`,
+//!   where the reference would take a rounding residual as the forward
+//!   axis); and a rest frame that is not finite and orthonormal
+//!   (`invalid_rest_frame`).
 //!
 //! The hips solve of 2.3 and the free-combination refusal are
 //! `body_solve`'s.
@@ -139,6 +148,27 @@ pub const LATERAL_MUSCLES: [usize; 3] = [1, 4, 7];
 /// Freeze v8's `bounds.unit_roundoff_f64`.
 pub const U64: f64 = 1. / 9_007_199_254_740_992.;
 
+/// The reference's `shoulder_hip_twist`: a lateral within `ALONG_UP * U64`
+/// of its own length of `up` is along it.
+pub const ALONG_UP: f64 = 64.;
+
+/// The reference's `uniform`: three scales are one within this fraction of
+/// the largest.
+pub const UNIFORM_TOLERANCE: f64 = 1e-6;
+
+/// Higham's `gamma_n = n u / (1 - n u)` at f64.
+#[must_use]
+pub const fn gamma(n: f64) -> f64 {
+    n * U64 / (1. - n * U64)
+}
+
+/// The degenerate-frame threshold's operation depth (`frame_threshold`).
+pub const FRAME_DEPTH: f64 = 16.;
+
+/// The rest frame's orthonormality bound's operation depth
+/// (`rest_frame_scope`).
+pub const REST_DEPTH: f64 = 32.;
+
 pub(crate) fn refuse<T>(cause: BodyModel) -> Result<T, AnimError> {
     Err(AnimError::UnsupportedHumanoidBodyModel(cause))
 }
@@ -219,12 +249,12 @@ impl BodyAvatar<'_> {
                 let x = pose
                     .get(k)
                     .ok_or(AnimError::InvalidAvatarIndex("m_SkeletonPose"))?;
-                link(
+                finite_state(link(
                     *parent,
                     x.t.map(f64::from),
                     x.q.map(f64::from),
                     uniform(x.s)?,
-                )
+                ))?
             };
             states.push(state)?;
         }
@@ -264,13 +294,35 @@ pub fn weights(masses: &[f32; BODY_BONES], mapped: &[bool; BODY_BONES]) -> [f64;
     out
 }
 
+/// A linked state whose position, rotation and accumulated scale are all
+/// finite, or `non_finite_body`: a chain of large scales can overflow the
+/// product, and an infinite scale times a zero translation is NaN.
+pub(crate) fn finite_state(
+    state: (Point, Quaternion, f64),
+) -> Result<(Point, Quaternion, f64), AnimError> {
+    let (position, rotation, scale) = state;
+    if position.iter().chain(&rotation).all(|v| v.is_finite()) && scale.is_finite() {
+        Ok(state)
+    } else {
+        refuse(BodyModel::NonFiniteBody)
+    }
+}
+
+pub(crate) fn finite(values: &[f64]) -> Result<(), AnimError> {
+    if values.iter().all(|v| v.is_finite()) {
+        Ok(())
+    } else {
+        refuse(BodyModel::NonFiniteBody)
+    }
+}
+
 /// The reference's `uniform`: one scale for all three axes, positive.
 pub(crate) fn uniform(s: [f32; 3]) -> Result<f64, AnimError> {
     let [x, y, z] = s.map(f64::from);
     let (max, min) = (x.max(y).max(z), x.min(y).min(z));
     let magnitude = x.abs().max(y.abs()).max(z.abs());
     let finite = x.is_finite() && y.is_finite() && z.is_finite();
-    if !finite || max - min > 1e-6 * magnitude || min <= 0. {
+    if !finite || max - min > UNIFORM_TOLERANCE * magnitude || min <= 0. {
         return Err(AnimError::UnsupportedAnimatorRoot);
     }
     Ok(x)
@@ -344,14 +396,20 @@ pub fn unity_rotate(q: Quaternion, v: Point) -> Point {
 
 /// 2.1's centre of mass in the frame of `points`, with the coefficients
 /// of `table` (`COEFFICIENTS` for the frozen model; an edge it lacks takes
-/// 0, as in the reference). `None` when an edge's end has no point.
-#[must_use]
+/// 0, as in the reference). A non-finite point, weight or centre refuses
+/// (`non_finite_body`), and an edge whose end has no point is an index
+/// fault.
 pub fn centre(
     points: &Points,
     weights: &[f64; BODY_BONES],
     edges: &Edges,
     table: &[(usize, usize, f64)],
-) -> Option<Point> {
+) -> Result<Point, AnimError> {
+    finite(weights)?;
+    for point in points.iter().flatten() {
+        finite(point)?;
+    }
+    let missing = AnimError::InvalidAvatarIndex("m_HumanBoneIndex");
     let point = |slot: usize| points.get(slot).copied().flatten();
     let weight = |slot: usize| weights.get(slot).copied().unwrap_or(0.);
     let mut c = [0.; 3];
@@ -363,72 +421,116 @@ pub fn centre(
     for &child in &SUM_ORDER {
         if let Some(&Some(parent)) = edges.get(child) {
             let a = coefficient(table, parent, child).unwrap_or(0.);
-            let difference = sub(point(child)?, point(parent)?);
-            c = zip3(c, difference, |c, d| c + a * weight(parent) * d);
+            let (Some(to), Some(from)) = (point(child), point(parent)) else {
+                return Err(missing);
+            };
+            c = zip3(c, sub(to, from), |c, d| c + a * weight(parent) * d);
         }
     }
-    Some(c)
+    finite(&c)?;
+    Ok(c)
 }
 
+/// The four frame bones' points, each finite (`non_finite_body`); a
+/// missing one leaves the twist undefined.
 fn frame_points(points: &Points) -> Result<[Point; 4], AnimError> {
     let mut out = [[0.; 3]; 4];
     for (point, slot) in out.iter_mut().zip(FRAME_BONES) {
-        *point =
-            points
-                .get(slot)
-                .copied()
-                .flatten()
-                .ok_or(AnimError::UnsupportedHumanoidBodyModel(
-                    BodyModel::UndefinedTwist,
-                ))?;
+        *point = match points.get(slot).copied().flatten() {
+            Some(p) => p,
+            None => return refuse(BodyModel::UndefinedTwist),
+        };
+        finite(point)?;
     }
     Ok(out)
 }
 
-fn unit(v: Point) -> Result<Point, AnimError> {
-    let length = norm(v);
-    if !(length > 0. && length.is_finite()) {
+/// `P`, the sum of the frame points' norms: the scale every rounding in
+/// the frame is relative to.
+fn magnitude(points: &[Point; 4]) -> f64 {
+    points.iter().map(|&p| norm(p)).sum()
+}
+
+/// `up` (any positive multiple) unless it is within its own rounding of
+/// zero: each component sums four points with three roundings, so the
+/// computed `up` is off by at most `gamma(3) P`. `gamma(FRAME_DEPTH) P`
+/// dominates that; at or below it `up` has no direction (`undefined_twist`,
+/// the reference's "no up").
+fn checked_up(up: Point, points: &[Point; 4]) -> Result<Point, AnimError> {
+    let length = norm(up);
+    if !(length > gamma(FRAME_DEPTH) * magnitude(points) && length.is_finite()) {
         return refuse(BodyModel::UndefinedTwist);
     }
-    Ok(v.map(|c| c / length))
+    Ok(up.map(|c| c / length))
+}
+
+/// The degenerate-frame threshold on `|lateral x up_hat|`. With `P` the
+/// sum of the frame points' norms, the computed lateral is off by at most
+/// `gamma(3) P`, the unit `up` by `2 gamma(3) P / |up|` from its inputs
+/// and `gamma(6)` from its normalization, and the cross product's own
+/// roundings by `gamma(8) |lateral|`, so a lateral exactly along `up` can
+/// show a cross product of at most `gamma(3) P + |lateral| (gamma(14) + 2
+/// gamma(3) P / |up|)`. `gamma(FRAME_DEPTH) (P + |lateral| (1 + P / |up|))`
+/// dominates it term by term.
+#[must_use]
+pub fn frame_threshold(points: &[Point; 4], lateral: Point, up: Point) -> f64 {
+    let p = magnitude(points);
+    gamma(FRAME_DEPTH) * (p + norm(lateral) * (1. + p / norm(up)))
 }
 
 /// 2.2's frame `F` by rows: the matrix with the columns `(right, up,
-/// forward)`. A degenerate frame (no `up`, or a lateral along it) refuses
-/// as an undefined twist, which `frame_scope` refuses first.
+/// forward)`. An `up` within its rounding of zero refuses as an undefined
+/// twist; a lateral whose cross product with `up` is within
+/// `frame_threshold` refuses as `degenerate_frame`: collinear points whose
+/// rounding residual would otherwise become the forward axis.
 pub fn body_frame(points: &Points) -> Result<Matrix, AnimError> {
-    let [ul, ur, ll, lr] = frame_points(points)?;
+    let frame = frame_points(points)?;
+    let [ul, ur, ll, lr] = frame;
     let up = sub(sub(add(ul, ur), ll), lr).map(|c| c / 2.);
     let lateral = add(sub(ur, ul), sub(lr, ll));
-    let up = unit(up)?;
-    let forward = unit(cross(lateral, up))?;
-    let [r0, r1, r2] = cross(up, forward);
-    let ([u0, u1, u2], [f0, f1, f2]) = (up, forward);
-    Ok([[r0, u0, f0], [r1, u1, f1], [r2, u2, f2]])
+    let up_hat = checked_up(up, &frame)?;
+    let forward = cross(lateral, up_hat);
+    let length = norm(forward);
+    if !(length > frame_threshold(&frame, lateral, up) && length.is_finite()) {
+        return refuse(BodyModel::DegenerateFrame);
+    }
+    let forward = forward.map(|c| c / length);
+    let [r0, r1, r2] = cross(up_hat, forward);
+    let ([u0, u1, u2], [f0, f1, f2]) = (up_hat, forward);
+    let out = [[r0, u0, f0], [r1, u1, f1], [r2, u2, f2]];
+    finite(out.as_flattened())?;
+    Ok(out)
 }
 
 /// The angle about 2.2's `up` between the upper-arm and the upper-leg
 /// laterals, in radians, unsigned.
 pub fn shoulder_hip_twist(points: &Points) -> Result<f64, AnimError> {
-    let [ul, ur, ll, lr] = frame_points(points)?;
-    let up = unit(sub(add(ul, ur), add(ll, lr)))?;
+    let frame = frame_points(points)?;
+    let [ul, ur, ll, lr] = frame;
+    let up = checked_up(sub(add(ul, ur), add(ll, lr)), &frame)?;
     let flat = |v: Point| {
         let along = dot(v, up);
         let moved = zip3(v, up, |v, u| v - along * u);
         // A lateral along up has no direction about it.
-        if norm(moved) > 64. * U64 * norm(v) {
+        if norm(moved) > ALONG_UP * U64 * norm(v) {
             Ok(moved)
         } else {
             refuse(BodyModel::UndefinedTwist)
         }
     };
     let (top, bottom) = (flat(sub(ur, ul))?, flat(sub(lr, ll))?);
-    Ok(dot(cross(bottom, top), up).atan2(dot(bottom, top)).abs())
+    let twist = dot(cross(bottom, top), up).atan2(dot(bottom, top)).abs();
+    finite(&[twist])?;
+    Ok(twist)
 }
 
 /// Refuses a pose outside 2.2's frozen twist scope.
 pub fn frame_scope(points: &Points) -> Result<(), AnimError> {
-    let twist = shoulder_hip_twist(points)?;
+    twist_scope(shoulder_hip_twist(points)?)
+}
+
+/// Refuses a twist over `TWIST_LIMIT` (`shoulder_hip_twist`); NaN refuses.
+pub fn twist_scope(twist: f64) -> Result<(), AnimError> {
     if twist <= TWIST_LIMIT {
         Ok(())
     } else {
@@ -508,14 +610,38 @@ pub fn quaternion(m: &Matrix) -> Quaternion {
     if q[3] < 0. { q.map(|v| -v) } else { q }
 }
 
+/// Refuses a rest frame `F(T)` that is not finite or not orthonormal
+/// within `gamma(REST_DEPTH)` per entry of `F^T F - I` (`invalid_rest_frame`).
+/// `body_frame`'s columns are unit within `gamma(6)` and pairwise
+/// orthogonal within `gamma(16)` (the forward from a rounded cross product
+/// of unit vectors, the right from another), and each entry of `F^T F` adds
+/// a three-term dot product's `gamma(3)`: `gamma(32)` dominates.
+pub fn rest_frame_scope(rest: &Matrix) -> Result<(), AnimError> {
+    let bound = gamma(REST_DEPTH);
+    let [[a0, b0, c0], [a1, b1, c1], [a2, b2, c2]] = *rest;
+    let columns = [[a0, a1, a2], [b0, b1, b2], [c0, c1, c2]];
+    let finite = rest.as_flattened().iter().all(|v| v.is_finite());
+    let orthonormal = columns.iter().enumerate().all(|(i, &x)| {
+        columns.iter().enumerate().all(|(j, &y)| {
+            let want = if i == j { 1. } else { 0. };
+            (dot(x, y) - want).abs() <= bound
+        })
+    });
+    if finite && orthonormal {
+        Ok(())
+    } else {
+        refuse(BodyModel::InvalidRestFrame)
+    }
+}
+
 /// 2.2: `F(pose) F(T)^-1` as a quaternion, `F(T)` given as its matrix,
-/// after the twist scope.
+/// after the twist scope and `rest_frame_scope`.
 pub fn body_rotation(points: &Points, rest_frame: &Matrix) -> Result<Quaternion, AnimError> {
+    rest_frame_scope(rest_frame)?;
     frame_scope(points)?;
-    Ok(quaternion(&product_transposed(
-        &body_frame(points)?,
-        rest_frame,
-    )))
+    let q = quaternion(&product_transposed(&body_frame(points)?, rest_frame));
+    finite(&q)?;
+    Ok(q)
 }
 
 const _: () = crate::send_sync::<Point>();

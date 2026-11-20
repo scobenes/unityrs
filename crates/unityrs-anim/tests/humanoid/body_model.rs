@@ -93,6 +93,11 @@ fn every_constant_is_freeze_v8s() {
     let frame: Vec<_> = FRAME_BONES.iter().map(|&s| BODY_SLOTS[s]).collect();
     assert_eq!(frame, names(tolerance, "FRAME_BONES"));
     let model = include_str!("../../../../tools/parity/anim_body_model.py");
+    // The reference's own thresholds, from its source.
+    let along = format!("> {} * U64 * norm(v)", m::ALONG_UP);
+    assert!(model.contains(&along), "{along}");
+    let uniform = format!("> {:e} * max(map(abs, scale))", m::UNIFORM_TOLERANCE);
+    assert!(tolerance.contains(&uniform), "{uniform}");
     assert_eq!(
         names(model, "LATERAL_MUSCLES"),
         [
@@ -145,7 +150,10 @@ fn the_centre_of_a_single_segment() {
     );
     // An edge whose end has no point has no centre.
     edges[m::NECK] = Some(m::HIPS);
-    assert_eq!(m::centre(&p, &weights, &edges, &table), None);
+    assert_eq!(
+        verdict(m::centre(&p, &weights, &edges, &table)),
+        Err(AnimError::InvalidAvatarIndex("m_HumanBoneIndex").to_string())
+    );
 }
 
 /// The five-bone rig of the reference's frame cases, in its hips frame:
@@ -401,9 +409,22 @@ fn rows(value: &mut V) -> &mut Vec<V> {
 /// `rig`'s Avatar with `HumanTrait`'s hierarchy over its present bones and
 /// `layout`'s T-pose, `scale` on node `scaled` if given.
 fn humanoid(rig: &Rig, scaled: Option<(usize, [f32; 3])>) -> unityrs_anim::humanoid::Avatar {
+    humanoid_with(rig, scaled, None)
+}
+
+/// `humanoid` with bone `moved.0` hung on bone `moved.1` at the same
+/// T-pose position.
+fn humanoid_with(
+    rig: &Rig,
+    scaled: Option<(usize, [f32; 3])>,
+    moved: Option<(usize, usize)>,
+) -> unityrs_anim::humanoid::Avatar {
     let bones = rig_bones(rig);
     let node = |bone: usize| bones.iter().position(|&b| b == bone).map(|k| k + 1);
     let parent = |bone: usize| {
+        if let Some((_, to)) = moved.filter(|&(from, _)| from == bone) {
+            return Some(to);
+        }
         let mut up = trait_parent(bone);
         while let Some(b) = up {
             if node(b).is_some() {
@@ -595,5 +616,151 @@ fn the_rest_points_weights_and_centre() {
         &scaled[m::LEFT_FOOT].unwrap(),
         &[0, 1, 2].map(|k| hips[k] + 2. * (foot[k] - hips[k])),
         1e-6,
+    );
+}
+
+/// A chain of nine `1e38` scales overflows the accumulated f64 scale; a
+/// zero translation below it would be `inf * 0`.
+#[test]
+fn a_non_finite_body_refuses() {
+    let meter = Meter::unlimited();
+    let mut avatar = h::avatar(&full());
+    let human = ["m_Avatar", "m_Human", "data"];
+    let nodes = rows(field(
+        &mut avatar.value,
+        &[&human[..], &["m_Skeleton", "data", "m_Node"]].concat(),
+    ));
+    for (k, node) in nodes.iter_mut().enumerate().skip(1) {
+        set(node, "m_ParentId", V::Int(i32::try_from(k - 1).unwrap()));
+    }
+    let pose = rows(field(
+        &mut avatar.value,
+        &[&human[..], &["m_SkeletonPose", "data", "m_X"]].concat(),
+    ));
+    for x in pose.iter_mut().skip(1).take(9) {
+        set(x, "s", xyz("float3", &[1e38; 3]));
+    }
+    let (_, file) = file(Layout::Unity2022, &[avatar]);
+    let avatar = read_avatar(&file.object(AVATAR).unwrap(), &meter).unwrap();
+    let body = body_avatar(&avatar, &meter).unwrap();
+    assert_eq!(
+        verdict(body.rest_points(&meter)),
+        Err(refused(BodyModel::NonFiniteBody))
+    );
+    // A non-finite point or weight refuses in the centre and the frame.
+    let mut weights = [0.; 25];
+    weights[m::HIPS] = 1.;
+    let mut p = local();
+    p[m::HIPS] = Some([f64::INFINITY, 0., 0.]);
+    let none = [None; 25];
+    assert_eq!(
+        verdict(m::centre(&p, &weights, &none, &[])),
+        Err(refused(BodyModel::NonFiniteBody))
+    );
+    weights[m::HIPS] = f64::NAN;
+    assert_eq!(
+        verdict(m::centre(&local(), &weights, &none, &[])),
+        Err(refused(BodyModel::NonFiniteBody))
+    );
+    p[m::LEFT_UPPER_ARM] = Some([f64::NAN, 0., 0.]);
+    assert_eq!(
+        verdict(m::body_frame(&p)),
+        Err(refused(BodyModel::NonFiniteBody))
+    );
+    assert_eq!(
+        verdict(m::frame_scope(&p)),
+        Err(refused(BodyModel::NonFiniteBody))
+    );
+}
+
+#[test]
+fn collinear_frame_points_refuse() {
+    // Normalizing up leaves a residual of 6 * 0.8 - 8 * 0.6 that would
+    // become the forward axis.
+    let p = points(&[
+        ("LeftUpperLeg", [0., 0., 0.]),
+        ("RightUpperLeg", [3., 4., 0.]),
+        ("LeftUpperArm", [6., 8., 0.]),
+        ("RightUpperArm", [9., 12., 0.]),
+    ]);
+    assert_eq!(
+        verdict(m::body_frame(&p)),
+        Err(refused(BodyModel::DegenerateFrame))
+    );
+    assert_eq!(
+        verdict(m::frame_scope(&p)),
+        Err(refused(BodyModel::UndefinedTwist))
+    );
+    // The threshold is a few ulps of the inputs: the five-bone rig is far
+    // above it.
+    let rest = local();
+    let frame = [
+        m::LEFT_UPPER_ARM,
+        m::RIGHT_UPPER_ARM,
+        m::LEFT_UPPER_LEG,
+        m::RIGHT_UPPER_LEG,
+    ]
+    .map(|s| rest[s].unwrap());
+    let threshold = m::frame_threshold(&frame, [0.6, 0., 0.], [0., 0.6, 0.]);
+    assert!(threshold < 1e-13 && threshold > 0., "{threshold}");
+}
+
+#[test]
+fn the_rest_frame_must_be_a_rotation() {
+    let invalid = Err(refused(BodyModel::InvalidRestFrame));
+    let mut nan = m::body_frame(&local()).unwrap();
+    nan[1][2] = f64::NAN;
+    for rest in [
+        nan,
+        [[0.; 3]; 3],
+        [[1., 0., 0.], [0., 1., 0.], [0., 0., 2.]],
+        [[1., 1e-9, 0.], [0., 1., 0.], [0., 0., 1.]],
+    ] {
+        assert_eq!(verdict(m::rest_frame_scope(&rest)), invalid);
+        assert_eq!(verdict(m::body_rotation(&local(), &rest)), invalid);
+    }
+}
+
+#[test]
+fn the_body_rotation_against_a_turned_rest_frame() {
+    // F(T) = R0, F(pose) = turn R0: the rotation is turn. A dropped
+    // transpose (turn R0 R0) or a reversed product (R0^T turn R0) is not.
+    let r0 = about([0.2, 0.9, -0.3], 63.);
+    let turn = about([-0.5, 0.1, 0.7], 41.);
+    let rest = m::body_frame(&turned(&local(), r0, |_| true)).unwrap();
+    close(rest.as_flattened(), matrix(r0).as_flattened(), 1e-15);
+    let pose = turned(&local(), m::multiply(turn, r0), |_| true);
+    same_rotation(m::body_rotation(&pose, &rest).unwrap(), turn, 1e-14);
+}
+
+#[test]
+fn the_twist_limit_is_inclusive() {
+    let up = f64::from_bits(TWIST_LIMIT.to_bits() + 1);
+    let down = f64::from_bits(TWIST_LIMIT.to_bits() - 1);
+    assert_eq!(verdict(m::twist_scope(down)), Ok(()));
+    assert_eq!(verdict(m::twist_scope(TWIST_LIMIT)), Ok(()));
+    assert_eq!(
+        verdict(m::twist_scope(up)),
+        Err(refused(BodyModel::ShoulderHipTwist))
+    );
+    assert_eq!(
+        verdict(m::twist_scope(f64::NAN)),
+        Err(refused(BodyModel::ShoulderHipTwist))
+    );
+}
+
+/// A zero-mass Eye with an identity rest interposed above Jaw keeps every
+/// path and rest position, but the Avatar's chain then has the edge
+/// `LeftEye>Jaw`, which the freeze never fitted.
+#[test]
+fn an_interposed_eye_refuses() {
+    let meter = Meter::unlimited();
+    let avatar = humanoid_with(&full(), None, Some((23, 21)));
+    let body = body_avatar(&avatar, &meter).unwrap();
+    let rest = body.rest_points(&meter).unwrap();
+    close(&rest[m::JAW].unwrap(), &layout(23), 1e-6);
+    assert_eq!(
+        verdict(body.edges(&meter)),
+        Err(refused(BodyModel::UnfittedEdge))
     );
 }

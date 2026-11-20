@@ -20,7 +20,9 @@
 //!
 //! Departures from the reference, each refusing where it would answer: a
 //! non-finite or nonpositive parent or hips scale refuses
-//! (`unsupported_animator_root`), and so does a non-finite result or a
+//! (`unsupported_animator_root`); a non-finite input, local state or
+//! centre refuses (`non_finite_body`), as do `body_model`'s degenerate
+//! frame and invalid rest frame; and so does a non-finite result or a
 //! zero-length quaternion (`degenerate_solve`; the reference returns NaN
 //! or raises). The final quaternion is normalized by the square root of
 //! its sum of squares, within an ulp of the reference's `math.hypot`.
@@ -28,8 +30,8 @@ use super::{
     avatar::BODY_BONES,
     body::BodyAvatar,
     body_model::{
-        COEFFICIENTS, Edges, HIPS, Matrix, Point, Points, Quaternion, body_frame, centre,
-        frame_scope, multiply, quaternion, refuse, sub, uniform,
+        COEFFICIENTS, Edges, HIPS, Matrix, Point, Points, Quaternion, body_frame, centre, finite,
+        finite_state, frame_scope, multiply, quaternion, refuse, rest_frame_scope, sub, uniform,
     },
 };
 use crate::{AnimError, BodyModel};
@@ -91,12 +93,12 @@ impl BodyAvatar<'_> {
                         let x = pose
                             .get(k)
                             .ok_or(AnimError::InvalidAvatarIndex("m_SkeletonPose"))?;
-                        Some(super::body_model::link(
+                        Some(finite_state(super::body_model::link(
                             parent,
                             x.t.map(f64::from),
                             rotation(k),
                             uniform(x.s)?,
-                        ))
+                        ))?)
                     }
                     None => None,
                 }
@@ -237,10 +239,15 @@ pub fn solve_hips_with(
     if !(positive(parent.scale) && positive(hips_scale)) {
         return Err(AnimError::UnsupportedAnimatorRoot);
     }
+    finite(&target)?;
+    finite(&rotation)?;
+    finite(&parent.position)?;
+    finite(&parent.rotation)?;
+    finite(&[human_scale])?;
     free_scope(edges)?;
+    rest_frame_scope(rest_frame)?;
     frame_scope(local)?;
-    let c_h = centre(local, weights, edges, table)
-        .ok_or(AnimError::InvalidAvatarIndex("m_HumanBoneIndex"))?;
+    let c_h = centre(local, weights, edges, table)?;
     let solved = super::body_model::product_transposed(
         &product(&quaternion_matrix(rotation), rest_frame),
         &body_frame(local)?,

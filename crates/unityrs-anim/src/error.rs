@@ -183,6 +183,12 @@ pub enum BodyModel {
     FreeCombination,
     /// The hips solve has no finite answer.
     DegenerateSolve,
+    /// A body position, scale, weight, frame or result is not finite.
+    NonFiniteBody,
+    /// The frame's lateral is along `up` within its rounding.
+    DegenerateFrame,
+    /// The rest frame is not finite or not orthonormal.
+    InvalidRestFrame,
 }
 
 impl BodyModel {
@@ -200,6 +206,9 @@ impl BodyModel {
             Self::SpineLateralRange => "spine_lateral_range",
             Self::FreeCombination => "free_combination",
             Self::DegenerateSolve => "degenerate_solve",
+            Self::NonFiniteBody => "non_finite_body",
+            Self::DegenerateFrame => "degenerate_frame",
+            Self::InvalidRestFrame => "invalid_rest_frame",
         }
     }
 }
