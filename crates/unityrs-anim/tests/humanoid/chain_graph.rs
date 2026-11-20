@@ -20,8 +20,10 @@
 //! | `ParentMismatch` | a kept child whose `m_Father` is not its lister | refuses: `misparented_transform` |
 //!
 //! A Transform whose `m_Father` names a node that does not list it is
-//! never reached, records nothing and is no node: no skeleton path
-//! resolves to it.
+//! reached only if some other node's `m_Children` lists it. It is then a
+//! kept child with a `ParentMismatch` (the Spine-to-Animator test below).
+//! If no node lists it, it is never reached, records nothing and is no
+//! node, so no skeleton path resolves to it.
 use super::{
     body_model::{field, refused, verdict},
     chain::{chain, read, rig},
