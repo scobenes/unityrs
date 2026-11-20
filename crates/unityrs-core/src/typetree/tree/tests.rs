@@ -323,3 +323,73 @@ fn colliding_names_group_in_k_log_k_comparisons() {
         assert_eq!((real.key, real.slot), (key, slot), "child {c:?}, compiled");
     }
 }
+
+/// A list on `meter` of a `Base` root, a `Wide` class and its `width`
+/// `int`s: `width + 1` edges.
+fn wide_on(meter: &Arc<Meter>, width: u32) -> crate::typetree::SharedNodes {
+    let mut rows = MeteredVec::new(meter);
+    rows.push(NodeRow::new(0, "Base", "Base")).unwrap();
+    rows.push(NodeRow::new(1, "Wide", "wide")).unwrap();
+    for i in 0..width {
+        rows.push(NodeRow::new(2, "int", format!("f{i}").as_str()))
+            .unwrap();
+    }
+    NodeList::from_rows(rows).unwrap().into_shared().unwrap()
+}
+
+fn leaf_scans() -> u64 {
+    super::LEAF_SCANS.with(std::cell::Cell::get)
+}
+
+/// Codex's review: whether a node's children are all read whole
+/// ([`super::NodeInfo::leaves`]) is the compile's last pass, its edges
+/// counted as the list's work before it looks at any, and nothing after
+/// it fails. A compile refused there, at the work one step short of them,
+/// has looked at no child; and through a type's cache, a lookup the
+/// meter refuses for memory another holds for a while looks at none
+/// either, the next one looks at each edge once and keeps the tree, and
+/// one after it looks at none.
+#[test]
+fn a_compile_looks_at_each_edge_once_and_none_when_refused() {
+    const WIDTH: u32 = 512;
+    let edges = u64::from(WIDTH) + 1;
+    let meter = Meter::for_input(&Limits::default(), Arc::new(Unbounded), Reservation::Input);
+    let list = wide_on(&meter, WIDTH);
+    let (before, scans) = (meter.decoded(), leaf_scans());
+    let tree = Tree::compile(list, &Limits::default()).unwrap();
+    let work = meter.decoded() - before;
+    assert_eq!(leaf_scans() - scans, edges);
+    assert!(tree.info(NodeId(1)).unwrap().leaves && !tree.info(NodeId(0)).unwrap().leaves);
+
+    let short = Limits {
+        max_decode_work: work - 1,
+        ..Limits::default()
+    };
+    let meter = Meter::for_input(&short, Arc::new(Unbounded), Reservation::Input);
+    let list = wide_on(&meter, WIDTH);
+    let scans = leaf_scans();
+    let e = Tree::compile(list, &short).map(|_| ());
+    let refused = crate::LimitError::refused(LimitKind::DecodeWork, work, work - 1);
+    assert_eq!(e, Err(TreeError::Limit(refused)));
+    assert_eq!(
+        leaf_scans(),
+        scans,
+        "refused at its edges, it looked at none"
+    );
+
+    let meter = Meter::new(1 << 20, Arc::new(Unbounded), Reservation::Input);
+    let ty = crate::files::SerializedType::new(114, Some(wide_on(&meter, WIDTH)));
+    let held = meter.charge((1 << 20) - meter.used() - 8).unwrap();
+    let scans = leaf_scans();
+    assert!(matches!(
+        ty.tree(&Limits::default()),
+        Some(Err(TreeError::Charge(_)))
+    ));
+    assert_eq!(leaf_scans(), scans, "a refused lookup looks at none");
+    drop(held);
+    let first = ty.tree(&Limits::default()).unwrap().unwrap();
+    assert_eq!(leaf_scans() - scans, edges, "the next looks at each once");
+    let again = ty.tree(&Limits::default()).unwrap().unwrap();
+    assert!(Arc::ptr_eq(&first, &again));
+    assert_eq!(leaf_scans() - scans, edges, "and the one after at none");
+}

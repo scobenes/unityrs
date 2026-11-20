@@ -18,10 +18,10 @@ use super::super::dict::Dict;
 use super::super::{Out, ReadDetail, ReadError, ReadErrorKind, charge_error};
 use super::states::{Elements, Fields, RefFields, Resolved, State, Step};
 use super::{Reader, as_u64, read_method, two};
-use crate::limits::MeteredVec;
+use crate::limits::{ChargeError, MeteredVec};
 use crate::raw::RawStr;
 use crate::typetree::{Kind, NodeId, NodeInfo, Shape, Tree};
-use crate::value::{ListIx, PrimArray, PrimRun, Value};
+use crate::value::{ListIx, PrimArray, PrimRun, Value, ValueBuilder};
 use crate::walk::f32_bits;
 
 /// A value whose children are being read.
@@ -47,42 +47,71 @@ pub(super) struct Open {
 const INLINE_OPENS: usize = 32;
 
 /// The read's open values, innermost last: the first [`INLINE_OPENS`] in
-/// place, any deeper on a charged heap stack (`spill`), grown only when a
-/// value opens past them.
+/// place, any deeper on a charged heap stack (`spill`), made and grown
+/// only when a value opens past them. A child opens straight into the slot
+/// past the innermost ([`Self::split`]), and is on the stack once
+/// [`Self::commit`] counts it.
 struct Opens {
     inline: [Option<Open>; INLINE_OPENS],
     len: usize,
-    spill: MeteredVec<Open>,
+    spill: Option<MeteredVec<Open>>,
+    /// The slot past the innermost once the inline ones are full: its
+    /// value moves to `spill` when committed.
+    next: Option<Open>,
 }
 
 impl Opens {
-    fn new(spill: MeteredVec<Open>) -> Self {
+    fn new() -> Self {
         Self {
             inline: [const { None }; INLINE_OPENS],
             len: 0,
-            spill,
+            spill: None,
+            next: None,
         }
     }
 
-    fn push(&mut self, open: Open) -> Result<(), crate::limits::ChargeError> {
-        if let Some(slot) = self.inline.get_mut(self.len) {
-            *slot = Some(open);
-        } else {
-            self.spill.push(open)?;
+    /// The innermost open value, stepped where it lies, and the slot a
+    /// child it opens goes to.
+    fn split(&mut self) -> (Option<&mut Open>, &mut Option<Open>) {
+        let Self {
+            inline,
+            len,
+            spill,
+            next,
+        } = self;
+        let (below, above) = inline.split_at_mut((*len).min(INLINE_OPENS));
+        let top = match len.checked_sub(INLINE_OPENS) {
+            None | Some(0) => below.last_mut().and_then(Option::as_mut),
+            Some(_) => spill.as_mut().and_then(|s| s.as_mut_slice().last_mut()),
+        };
+        (top, above.first_mut().unwrap_or(next))
+    }
+
+    /// Counts the child [`Self::split`]'s slot holds as the innermost:
+    /// one past the inline ones moves to `spill`, charged on `builder`'s
+    /// meter.
+    fn commit(&mut self, builder: &ValueBuilder) -> Result<(), ChargeError> {
+        if self.len >= INLINE_OPENS {
+            let Some(open) = self.next.take() else {
+                return Ok(());
+            };
+            self.spill.get_or_insert_with(|| builder.vec()).push(open)?;
         }
         self.len += 1;
         Ok(())
     }
 
-    fn pop(&mut self) -> Option<Open> {
-        let at = self.len.checked_sub(1)?;
-        let open = if at < INLINE_OPENS {
-            self.inline.get_mut(at)?.take()
-        } else {
-            self.spill.pop()
+    /// Drops the innermost open value in place.
+    fn drop_top(&mut self) {
+        let Some(at) = self.len.checked_sub(1) else {
+            return;
         };
+        if let Some(slot) = self.inline.get_mut(at) {
+            *slot = None;
+        } else if let Some(spill) = &mut self.spill {
+            drop(spill.pop());
+        }
         self.len = at;
-        open
     }
 
     fn is_empty(&self) -> bool {
@@ -90,112 +119,157 @@ impl Opens {
     }
 }
 
-/// What a value's first look found.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "moved once a value; boxed, it would allocate outside the meter"
-)]
-enum Head {
-    /// Read whole: `value`'s result.
-    Read(Result<Out, ReadError>),
-    /// A value with children to read.
-    Open(Open),
-}
-
-#[allow(
-    clippy::large_enum_variant,
-    reason = "moved once a step; boxed, it would allocate outside the meter"
-)]
-enum Resumed {
-    /// The open, then the child it opened.
-    Push(Open, Open),
-    Done(Open, Result<Out, ReadError>),
-}
-
 impl Reader<'_, '_, '_, '_, '_> {
-    /// `read_typetree_value` of `node` and all it holds.
+    /// `read_typetree_value` of `node` and all it holds. The innermost open
+    /// value is stepped where it lies on the stack, a child read whole is
+    /// handed straight back to it, and a child that opens is made in its
+    /// place on the stack.
     pub(super) fn value(
         &mut self,
         t: &Arc<Tree>,
         lx: ListIx,
         node: NodeId,
     ) -> Result<Out, ReadError> {
-        let mut opens = Opens::new(self.builder.vec());
-        let mut input = match self.head(t, lx, node, false) {
-            Head::Read(out) => return out,
-            Head::Open(open) => {
-                opens.push(open).map_err(|e| charge_error(self.at(), e))?;
-                None
-            }
-        };
-        while let Some(open) = opens.pop() {
-            match self.resume(open, input.take()) {
-                Resumed::Push(open, child) => {
-                    opens.push(open).map_err(|e| charge_error(self.at(), e))?;
-                    opens.push(child).map_err(|e| charge_error(self.at(), e))?;
-                }
-                Resumed::Done(open, out) => {
-                    let out = self.close(&open, out);
-                    drop(open);
-                    if opens.is_empty() {
-                        return out;
-                    }
-                    input = Some(out);
-                }
-            }
+        let mut opens = Opens::new();
+        let (_, slot) = opens.split();
+        if let Some(out) = self.head(t, lx, node, false, slot)? {
+            return Ok(out);
         }
-        Err(self.fail(ReadErrorKind::Other, ReadDetail::Python("no value read")))
-    }
-
-    /// Runs `open`'s steps, reading whole children in place, until it opens
-    /// a child or is done.
-    fn resume(&mut self, mut open: Open, mut input: Option<Result<Out, ReadError>>) -> Resumed {
-        loop {
-            match self.step(&open.tree, open.lx, &mut open.state, input.take()) {
-                Step::Done(out) => return Resumed::Done(open, out),
-                Step::Child {
-                    tree,
-                    lx,
-                    node,
-                    repeated,
-                } => {
-                    let t = tree.as_ref().unwrap_or(&open.tree);
-                    match self.head(t, lx, node, repeated) {
-                        Head::Read(out) => input = Some(out),
-                        Head::Open(child) => return Resumed::Push(open, child),
+        let mut input = None;
+        'read: loop {
+            opens
+                .commit(&self.builder)
+                .map_err(|e| charge_error(self.at(), e))?;
+            loop {
+                let (Some(open), slot) = opens.split() else {
+                    return Err(
+                        self.fail(ReadErrorKind::Other, ReadDetail::Python("no value read"))
+                    );
+                };
+                match self.step(&open.tree, open.lx, &mut open.state, &mut input, slot) {
+                    Step::Open => break,
+                    Step::Done(out) => {
+                        input = Some(out);
+                        self.close(open.align, open.repeated, &mut input);
+                        opens.drop_top();
+                        if opens.is_empty() {
+                            break 'read;
+                        }
                     }
                 }
             }
         }
+        input.unwrap_or_else(|| {
+            Err(self.fail(ReadErrorKind::Other, ReadDetail::Python("no value read")))
+        })
     }
 
-    /// A child's read up to its children (`child`, then `value`'s entry).
-    fn head(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId, repeated: bool) -> Head {
+    /// A child's read up to its children (`child`, then `value`'s entry):
+    /// its value when read whole, else `None` with the value in `opened`.
+    pub(super) fn head(
+        &mut self,
+        t: &Arc<Tree>,
+        lx: ListIx,
+        node: NodeId,
+        repeated: bool,
+        opened: &mut Option<Open>,
+    ) -> Result<Option<Out>, ReadError> {
+        if !repeated {
+            return self.enter(t, lx, node, false, opened);
+        }
+        self.work.enter_repeated();
+        let read = self.enter(t, lx, node, true, opened);
+        if !matches!(read, Ok(None)) {
+            self.work.leave_repeated();
+        }
+        read
+    }
+
+    /// [`Self::head`] of a node without children: its value.
+    pub(super) fn leaf(
+        &mut self,
+        t: &Tree,
+        node: NodeId,
+        repeated: bool,
+    ) -> Result<Out, ReadError> {
         if repeated {
             self.work.enter_repeated();
         }
-        let head = self.enter(t, lx, node, repeated);
-        if repeated && matches!(head, Head::Read(_)) {
+        let read = self.enter_leaf(t, node);
+        if repeated {
             self.work.leave_repeated();
         }
-        head
+        read
+    }
+
+    /// [`Self::enter`] of a node without children.
+    #[inline]
+    fn enter_leaf(&mut self, t: &Tree, node: NodeId) -> Result<Out, ReadError> {
+        if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
+            return Ok(Out::Plain(Value::Int(0)));
+        }
+        let at = self.at();
+        self.work.enter(at)?;
+        self.open_leaf(t, node)
+            .or_else(|error| self.leave(Err(error)))
+    }
+
+    /// [`Self::open`] of a node without children.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: a per-value call of the reader"
+    )]
+    #[inline(always)]
+    fn open_leaf(&mut self, t: &Tree, node: NodeId) -> Result<Out, ReadError> {
+        let me = t.info(node).copied().ok_or_else(|| {
+            self.fail(
+                ReadErrorKind::Other,
+                ReadDetail::Python("node outside its tree"),
+            )
+        })?;
+        self.work.kept(self.at())?;
+        let v = self.scalar(me)?;
+        Ok(self.read(v, me.align))
+    }
+
+    /// Whether a value opened now is held at a level the stack keeps in
+    /// place ([`INLINE_OPENS`]): one past them is charged.
+    fn in_place(&self) -> bool {
+        usize::try_from(self.work.depth).is_ok_and(|d| d <= INLINE_OPENS)
+    }
+
+    /// The end of a class or a list whose children are all read whole,
+    /// read where it opens (`step`, run with no stack slot): its value
+    /// aligned and its level left, as [`Self::close`] would on the stack,
+    /// which would hold it in place ([`Self::in_place`]), so nothing is
+    /// charged either way. None of its children opens, so the read takes
+    /// no deeper a native stack.
+    fn flat(&mut self, step: Step, align: bool) -> Result<Out, ReadError> {
+        match step {
+            Step::Done(out) => out.map(|out| self.read(out, align)),
+            Step::Open => Err(self.fail(ReadErrorKind::Other, ReadDetail::Python("not flat"))),
+        }
     }
 
     /// `value`'s entry: a recorded error reads nothing more; the level,
     /// then `read_typetree_value`.
-    fn enter(&mut self, t: &Arc<Tree>, lx: ListIx, node: NodeId, repeated: bool) -> Head {
+    #[inline]
+    fn enter(
+        &mut self,
+        t: &Arc<Tree>,
+        lx: ListIx,
+        node: NodeId,
+        repeated: bool,
+        opened: &mut Option<Open>,
+    ) -> Result<Option<Out>, ReadError> {
         if self.progress.as_ref().is_some_and(|p| p.error.is_some()) {
-            return Head::Read(Ok(Out::Plain(Value::Int(0))));
+            return Ok(Some(Out::Plain(Value::Int(0))));
         }
         let at = self.at();
-        if let Err(error) = self.work.enter(at) {
-            return Head::Read(Err(error));
-        }
-        match self.open(t, lx, node, repeated) {
-            Ok(Head::Read(out)) => Head::Read(self.leave(out)),
-            Ok(open) => open,
-            Err(error) => Head::Read(self.leave(Err(error))),
-        }
+        self.work.enter(at)?;
+        // A value read whole has left its level ([`Self::read`]).
+        self.open(t, lx, node, repeated, opened)
+            .or_else(|error| self.leave(Err(error)).map(Some))
     }
 
     /// `value`'s exit: the level left, and an error recovered when the
@@ -208,28 +282,36 @@ impl Reader<'_, '_, '_, '_, '_> {
         }
     }
 
-    /// An open value's end: aligned when read, then `value`'s and
-    /// `child`'s exits.
-    fn close(&mut self, open: &Open, out: Result<Out, ReadError>) -> Result<Out, ReadError> {
-        if out.is_ok() && open.align {
+    /// An open value's end, on its result where it lies: aligned when
+    /// read, then `value`'s and `child`'s exits ([`Self::leave`]).
+    fn close(&mut self, align: bool, repeated: bool, out: &mut Option<Result<Out, ReadError>>) {
+        let read = matches!(out, Some(Ok(_)));
+        if read && align {
             self.align4();
         }
-        let out = self.leave(out);
-        if open.repeated {
+        self.work.leave();
+        if !read
+            && let Some(progress) = &mut self.progress
+            && let Some(Err(error)) = out.take()
+        {
+            *out = Some(progress.recover(error));
+        }
+        if repeated {
             self.work.leave_repeated();
         }
-        out
     }
 
     /// `read_typetree_value` (UnityPy TypeTreeHelper.cpp:702-883) up to the
-    /// node's children: a value without any is read whole.
+    /// node's children: a value without any is read whole (`Some`), one
+    /// with children is left in `opened`.
     fn open(
         &mut self,
         t: &Arc<Tree>,
         lx: ListIx,
         node: NodeId,
         repeated: bool,
-    ) -> Result<Head, ReadError> {
+        opened: &mut Option<Open>,
+    ) -> Result<Option<Out>, ReadError> {
         let me = t.info(node).copied().ok_or_else(|| {
             self.fail(
                 ReadErrorKind::Other,
@@ -240,29 +322,9 @@ impl Reader<'_, '_, '_, '_, '_> {
         // R15: a flagged node aligns after its value.
         let mut align = me.align;
         let state = match me.shape {
-            Shape::Prim => {
-                let v = self.prim(me.kind)?;
-                return Ok(self.read(Out::Plain(v), align));
-            }
-            // R6 (UnityPy TypeTreeHelper.cpp:288-305): length, bounds, the
-            // raw bytes, then always aligned.
-            Shape::Str => {
-                let len = self.length()?;
-                self.method = "read_str";
-                let end = self.bound(len, "EOFError")?;
-                let s = RawStr::from_shared(self.data.slice(self.pos..end));
-                self.pos = end;
-                self.align4();
-                return Ok(self.read(Out::Plain(Value::Str(s)), align));
-            }
-            // R7 (UnityPy TypeTreeHelper.cpp:307-323): aligned only by its flag.
-            Shape::Bytes => {
-                let len = self.length()?;
-                self.method = "read_bytes";
-                let end = self.bound(len, "ValueError")?;
-                let b = self.data.slice(self.pos..end);
-                self.pos = end;
-                return Ok(self.read(Out::Plain(Value::Bytes(b)), align));
+            Shape::Prim | Shape::Str | Shape::Bytes => {
+                let v = self.scalar(me)?;
+                return Ok(Some(self.read(v, align)));
             }
             // R8 (UnityPy TypeTreeHelper.cpp:325-351).
             Shape::Pair => {
@@ -293,9 +355,9 @@ impl Reader<'_, '_, '_, '_, '_> {
                 array_align,
             } => {
                 align |= array_align;
-                match self.vector(t, me, elem, run, &mut align)? {
+                match self.vector(t, lx, me, elem, run, &mut align, opened)? {
                     Ok(state) => state,
-                    Err(read) => return Ok(read),
+                    Err(read) => return Ok(Some(read)),
                 }
             }
             Shape::BadVector => {
@@ -312,28 +374,42 @@ impl Reader<'_, '_, '_, '_, '_> {
                     me.dup_names && self.progress.is_none(),
                     at,
                 )?;
-                State::Class(Fields::new(node, dict))
+                let mut fields = Fields::new(node, dict);
+                // Its children's shapes, found at the compile ([`NodeInfo::leaves`]).
+                if me.leaves && self.in_place() {
+                    let step = self.class::<true>(&mut fields, t, lx, &mut None, opened);
+                    return self.flat(step, align).map(Some);
+                }
+                State::Class(fields)
             }
         };
-        Ok(Head::Open(Open {
+        *opened = Some(Open {
             tree: t.clone(),
             lx,
             align,
             repeated,
             state,
-        }))
+        });
+        Ok(None)
     }
 
-    /// R9's vector after its length: a run read whole (`Err`, the value
-    /// read), or the state of its elements.
+    /// R9's vector after its length: a run, or a list of elements read
+    /// whole ([`Self::flat`]), read whole (`Err`: the value, aligned and
+    /// its level left), or the state of its elements.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the vector's node, then its read"
+    )]
     fn vector(
         &mut self,
         t: &Arc<Tree>,
+        lx: ListIx,
         me: NodeInfo,
         elem: NodeId,
         run: bool,
         align: &mut bool,
-    ) -> Result<Result<State, Head>, ReadError> {
+        opened: &mut Option<Open>,
+    ) -> Result<Result<State, Out>, ReadError> {
         let count = self.length()?;
         let ei = t.info(elem).copied().unwrap_or(me);
         if run {
@@ -359,15 +435,57 @@ impl Reader<'_, '_, '_, '_, '_> {
         items
             .reserve_exact(first)
             .map_err(|e| charge_error(at, e))?;
-        Ok(Ok(State::List(Elements::new(elem, count, first, items))))
+        let mut elements = Elements::new(elem, count, first, items);
+        if self.in_place() && scalar(&ei) {
+            let step = self.elements::<true>(&mut elements, t, lx, &mut None, opened);
+            return self.flat(step, *align).map(Err);
+        }
+        Ok(Ok(State::List(elements)))
     }
 
-    /// A value read whole, aligned when flagged.
-    fn read(&mut self, out: Out, align: bool) -> Head {
+    /// A value read whole, aligned when flagged; its level left (`leave`
+    /// of a value read).
+    fn read(&mut self, out: Out, align: bool) -> Out {
         if align {
             self.align4();
         }
-        Head::Read(Ok(out))
+        self.work.leave();
+        out
+    }
+
+    /// A node without children (R4-R7), before its alignment.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: a per-value call of the reader"
+    )]
+    #[inline(always)]
+    fn scalar(&mut self, me: NodeInfo) -> Result<Out, ReadError> {
+        Ok(Out::Plain(match me.shape {
+            Shape::Prim => self.prim(me.kind)?,
+            // R6 (UnityPy TypeTreeHelper.cpp:288-305): length, bounds, the
+            // raw bytes, then always aligned.
+            Shape::Str => {
+                let len = self.length()?;
+                self.method = "read_str";
+                let end = self.bound(len, "EOFError")?;
+                let s = RawStr::from_shared(self.data.slice(self.pos..end));
+                self.pos = end;
+                self.align4();
+                Value::Str(s)
+            }
+            // R7 (UnityPy TypeTreeHelper.cpp:307-323): aligned only by its flag.
+            Shape::Bytes => {
+                let len = self.length()?;
+                self.method = "read_bytes";
+                let end = self.bound(len, "ValueError")?;
+                let b = self.data.slice(self.pos..end);
+                self.pos = end;
+                Value::Bytes(b)
+            }
+            _ => {
+                return Err(self.fail(ReadErrorKind::Other, ReadDetail::Python("not a scalar")));
+            }
+        }))
     }
 
     /// A primitive run (`read_num_array` and friends), or `None` for a
@@ -427,4 +545,9 @@ impl Reader<'_, '_, '_, '_, '_> {
             first: None,
         })
     }
+}
+
+/// Whether a node is read whole, with no children ([`Reader::scalar`]).
+fn scalar(ci: &NodeInfo) -> bool {
+    matches!(ci.shape, Shape::Prim | Shape::Str | Shape::Bytes)
 }

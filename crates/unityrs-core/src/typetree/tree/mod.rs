@@ -31,7 +31,7 @@
 use std::sync::Arc;
 
 use crate::error::{LimitError, LimitKind};
-use crate::limits::{Charge, ChargeError, Limits, MeteredVec, heap_cost};
+use crate::limits::{Charge, ChargeError, Limits, Meter, MeteredVec, heap_cost};
 use crate::typetree::{NodeId, NodeList, TreeError};
 
 pub use names::NameTable;
@@ -310,6 +310,11 @@ pub struct NodeInfo {
     pub repeated: bool,
     /// A direct child is a `ManagedReferencesRegistry` (the registry scope).
     pub has_registry: bool,
+    /// Every direct child is read whole, with no children of its own (a
+    /// [`Shape::Prim`], [`Shape::Str`] or [`Shape::Bytes`]): UnityPyBoost's
+    /// reader reads such a class where it opens. Found once here, so a
+    /// read never scans the children for it.
+    pub leaves: bool,
 }
 
 /// A compiled typetree.
@@ -351,6 +356,7 @@ const BLANK: NodeInfo = NodeInfo {
     dup_names: false,
     repeated: false,
     has_registry: false,
+    leaves: false,
 };
 
 /// FNV-1a over a name, to number the names of one length
@@ -560,6 +566,36 @@ fn min_size_of(list: &NodeList, info: &MeteredVec<NodeInfo>, node: NodeId) -> u3
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// Children [`leaves`] looked at on this thread (the tests: a tree's
+    /// children are looked at once, by the compile that keeps them).
+    pub(crate) static LEAF_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Node facts read through [`Tree::info`] on this thread.
+    pub(crate) static INFO_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// [`NodeInfo::leaves`] for every node, the shapes known: each edge looked
+/// at once, its child's shape, all of them counted as the list's work
+/// before any is ([`TreeError::Limit`]).
+fn leaves(list: &NodeList, info: &mut [NodeInfo], meter: &Meter) -> Result<(), TreeError> {
+    meter
+        .count_work(as_u64(list.len().saturating_sub(1)))
+        .map_err(TreeError::Limit)?;
+    for p in 0..info.len() {
+        let all = list.children(id(p)).iter().all(|c| {
+            #[cfg(test)]
+            LEAF_SCANS.with(|s| s.set(s.get().saturating_add(1)));
+            info.get(c.index())
+                .is_some_and(|ci| matches!(ci.shape, Shape::Prim | Shape::Str | Shape::Bytes))
+        });
+        if let Some(pi) = info.get_mut(p) {
+            pi.leaves = all;
+        }
+    }
+    Ok(())
+}
+
 impl Tree {
     /// Classifies every node. Fails when the tree is deeper than
     /// `limits.max_tree_depth`, when the list's meter refuses the tree's
@@ -669,8 +705,11 @@ impl Tree {
         }
 
         let py = py_kinds(&list, nul_types, &mut charge)?;
-        let (info, c) = info.into_boxed_slice()?;
+        let (mut info, c) = info.into_boxed_slice()?;
         charge.absorb(c);
+        // Last, as nothing after it can fail: a compile that looks at the
+        // children keeps what it found, and one refused has looked at none.
+        leaves(&list, &mut info, &meter)?;
         Ok(Arc::new(Self {
             list,
             info,
@@ -711,6 +750,8 @@ impl Tree {
     /// A node's precomputed facts.
     #[must_use]
     pub fn info(&self, id: NodeId) -> Option<&NodeInfo> {
+        #[cfg(test)]
+        INFO_READS.with(|s| s.set(s.get().saturating_add(1)));
         self.info.get(id.index())
     }
 

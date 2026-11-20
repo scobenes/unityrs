@@ -1,7 +1,10 @@
 //! The compile's work on its rows' strings (review round 13): a name is
 //! read by buffer, never by row, and counted as the list's work before it
 //! is read (`names`'s docs, "Work"), and a type's kind and NUL check read
-//! at most [`super::KIND_SCAN`] bytes of it. Each test sees the work
+//! at most [`super::KIND_SCAN`] bytes of it. Its last pass looks once at
+//! each edge (whether a node's children are all read whole), one step an
+//! edge counted before it: a list of `n` rows adds `n - 1` to what its
+//! names count ([`edges`]). Each test sees the work
 //! through the list's meter (plan section 9, "How a test sees bounded
 //! work") and the bytes really read through the compile's own counts.
 
@@ -23,6 +26,11 @@ use crate::typetree::{NodeId, NodeList, NodeRow, TreeError};
 
 /// The longest string a blob's row can name: `parse_blob`'s window.
 const WINDOW: usize = 32_767;
+
+/// The work the compile's last pass counts for `list`: one step an edge.
+fn edges(list: &crate::typetree::SharedNodes) -> u64 {
+    u64::try_from(list.len() - 1).unwrap()
+}
 
 fn read_now() -> u64 {
     READ.with(std::cell::Cell::get)
@@ -79,7 +87,8 @@ fn blob(buffer: &[u8], children: &[u32]) -> Vec<u8> {
 /// once whatever their number (the two strings: one length, two hashes),
 /// each type's kind reads at most [`KIND_SCAN`] bytes, and every name byte
 /// read is counted on the list's meter: the open's work stays within twice
-/// the string buffer, the parse's one pass included, plus one step per row.
+/// the string buffer, the parse's one pass included, plus two steps a row
+/// (the parse's, and the compile's look at the row's edge).
 #[test]
 fn rows_naming_one_long_string_read_it_at_most_once() {
     const R: usize = 100_000;
@@ -103,15 +112,20 @@ fn rows_naming_one_long_string_read_it_at_most_once() {
         "the buffer pass and each parsed row"
     );
     let (read, scanned) = (read_now(), scanned_now());
+    let edges = edges(&list);
     let tree = Tree::compile(list, &limits).unwrap();
     let (read, scanned) = (read_now() - read, scanned_now() - scanned);
     let compiled = meter.decoded() - parsed;
     let len = u64::try_from(L).unwrap();
     assert_eq!(read, 2 * len, "the two strings, hashed once each");
-    assert_eq!(compiled, read, "every byte read is counted");
+    assert_eq!(
+        compiled,
+        read + edges,
+        "every byte read and edge is counted"
+    );
     assert!(
         parsed + compiled
-            <= 2 * u64::try_from(buffer.len()).unwrap() + u64::try_from(R + 1).unwrap(),
+            <= 2 * u64::try_from(buffer.len()).unwrap() + 2 * u64::try_from(R + 1).unwrap(),
         "the open's work: {parsed} + {compiled}"
     );
     let rows = u64::try_from(R + 1).unwrap();
@@ -186,7 +200,7 @@ fn names_the_compile_reads_are_the_lists_work_and_stop_at_its_allowance() {
     let tree = Tree::compile(list_on(&meter, windows()), &Limits::default()).unwrap();
     let read = read_now() - before;
     assert_eq!(read, (2 * r - 1) * window, "{read}");
-    assert_eq!(meter.decoded(), read, "counted as read");
+    assert_eq!(meter.decoded(), read + r, "counted as read, and each edge");
     for i in 1..=u32::try_from(R).unwrap() {
         let info = tree.info(NodeId(i)).unwrap();
         assert_eq!((info.key, info.slot), (NodeId(1), 0), "child {i}");
@@ -199,7 +213,7 @@ fn names_the_compile_reads_are_the_lists_work_and_stop_at_its_allowance() {
 /// every name collide: every child is keyed and slotted as a Python dict
 /// keys it (its name's first sibling, slots in first-sighting order),
 /// marked `repeated` exactly when a sibling shares its name, and every name
-/// byte the compile reads is counted on the list's meter.
+/// byte the compile reads is counted on the list's meter, with its edges.
 #[test]
 fn names_number_as_a_dict_keys_them_and_every_byte_read_is_counted() {
     let mut rng = Rng::new(13);
@@ -246,7 +260,11 @@ fn names_number_as_a_dict_keys_them_and_every_byte_read_is_counted() {
                 Tree::compile(list.clone(), &Limits::default()).unwrap()
             };
             let read = read_now() - before.0;
-            assert_eq!(meter.decoded() - before.1, read, "case {case}");
+            assert_eq!(
+                meter.decoded() - before.1,
+                read + edges(&list),
+                "case {case}"
+            );
             for p in 0..u32::try_from(list.len()).unwrap() {
                 let kids = list.children(NodeId(p));
                 let mut first: HashMap<&[u8], (NodeId, u32)> = HashMap::new();
