@@ -117,7 +117,10 @@ pub struct SerializedType {
     pub script_id: Option<ShortArray<16>>,
     /// `old_type_hash` (format 13 and up), as `script_id`.
     pub old_type_hash: Option<ShortArray<16>>,
-    /// The stored tree, when type trees are enabled.
+    /// The stored tree, when type trees are enabled. Replacing it is safe
+    /// after a compile: [`Self::tree`] serves its kept compile only for the
+    /// list it was made from, and compiles a replacement on each ask, so a
+    /// caller that replaces it often builds a new record instead.
     pub nodes: Option<crate::typetree::SharedNodes>,
     /// Plain types, format 21 and up, type trees enabled.
     pub type_dependencies: Option<Box<[i32]>>,
@@ -127,7 +130,29 @@ pub struct SerializedType {
     pub namespace: Option<RawStr>,
     /// `m_AssemblyName`.
     pub assembly: Option<RawStr>,
-    tree: ResultCell<Arc<Tree>, TreeError>,
+    tree: OnceLock<Compiled>,
+}
+
+/// [`SerializedType::tree`]'s kept answer and the list it is of, published
+/// together once a compile ends in a value or an error its cell keeps: a
+/// refusal that keeps nothing pins no list. A later ask whose
+/// [`SerializedType::nodes`] is another list never reads it (URS-30). The
+/// list is held, so its address names it while the pair lives (no other
+/// list can be allocated there), and the check is one pointer comparison.
+#[derive(Debug)]
+struct Compiled {
+    nodes: crate::typetree::SharedNodes,
+    tree: Result<Arc<Tree>, crate::once::KeptError<TreeError>>,
+}
+
+impl Compiled {
+    /// The kept answer, when it is of `nodes`.
+    fn of(
+        &self,
+        nodes: &crate::typetree::SharedNodes,
+    ) -> Option<&Result<Arc<Tree>, crate::once::KeptError<TreeError>>> {
+        crate::typetree::SharedNodes::ptr_eq(&self.nodes, nodes).then_some(&self.tree)
+    }
 }
 
 impl SerializedType {
@@ -182,18 +207,45 @@ impl SerializedType {
     }
 
     /// [`Self::tree`] once it is compiled and kept, without compiling or
-    /// waiting: `None` before that, or after a failed compile.
+    /// waiting: `None` before that, after a failed compile, or when
+    /// [`Self::nodes`] has been replaced since.
     #[must_use]
     pub fn compiled_tree(&self) -> Option<&Arc<Tree>> {
-        self.tree.get()?.as_ref().ok()
+        self.tree.get()?.of(self.nodes.as_ref()?)?.as_ref().ok()
     }
 
+    /// The compile of [`Self::nodes`]. It runs in a cell of its own
+    /// ([`get_or_publish_result`], so the meter's work rules apply); what
+    /// that cell keeps is then published in the record with the list, when
+    /// the record holds nothing yet. Replaced nodes compile on each ask and
+    /// are never served the record's answer.
     fn tree_with(
         &self,
         compile: impl FnOnce(crate::typetree::SharedNodes) -> Result<Arc<Tree>, TreeError>,
     ) -> Option<Result<Arc<Tree>, TreeError>> {
         let nodes = self.nodes.as_ref()?;
-        Some(get_or_publish_result(&self.tree, nodes.meter(), || compile(nodes.clone())).cloned())
+        let answer = |kept: &Result<Arc<Tree>, crate::once::KeptError<TreeError>>| {
+            kept.as_ref().map(Arc::clone).map_err(|k| k.error().clone())
+        };
+        let held = self.tree.get();
+        if let Some(kept) = held.and_then(|c| c.of(nodes)) {
+            return Some(answer(kept));
+        }
+        let cell: ResultCell<Arc<Tree>, TreeError> = ResultCell::new();
+        let got = get_or_publish_result(&cell, nodes.meter(), || compile(nodes.clone())).cloned();
+        let Some(kept) = cell.into_inner() else {
+            return Some(got);
+        };
+        if held.is_some() {
+            return Some(answer(&kept));
+        }
+        let compiled = Compiled {
+            nodes: nodes.clone(),
+            tree: kept,
+        };
+        // The first answer published wins.
+        let won = crate::once::get_or_publish(&self.tree, move || compiled);
+        Some(answer(&won.tree))
     }
 }
 

@@ -136,6 +136,105 @@ fn a_compile_the_meter_refuses_on_its_own_runs_a_bounded_number_of_times() {
 }
 
 #[test]
+fn replaced_nodes_are_never_served_the_old_compile() {
+    // URS-30: `nodes` is a public field, and the compiled tree was cached
+    // without regard to it, so a record whose nodes were replaced after a
+    // compile kept answering with the old tree (and a kept error with the
+    // old error).
+    use crate::limits::Limits;
+    let shared = |rows: Vec<NodeRow>| NodeList::trusted(rows).unwrap().into_shared().unwrap();
+    let limits = Limits::default();
+    let a = shared(vec![
+        NodeRow::new(0, "A", "Base"),
+        NodeRow::new(1, "int", "x"),
+    ]);
+    let b = shared(vec![
+        NodeRow::new(0, "B", "Base"),
+        NodeRow::new(1, "float", "y"),
+    ]);
+    let compiled_from = |t: &SerializedType| t.tree(&limits).unwrap().unwrap().list().clone();
+    let is = |l: &crate::typetree::SharedNodes, m: &crate::typetree::SharedNodes| {
+        crate::typetree::SharedNodes::ptr_eq(l, m)
+    };
+
+    let mut t = SerializedType::new(1, Some(a.clone()));
+    let first = t.tree(&limits).unwrap().unwrap();
+    assert!(is(first.list(), &a));
+    assert!(
+        Arc::ptr_eq(&first, &t.tree(&limits).unwrap().unwrap()),
+        "kept and reused"
+    );
+    assert!(t.compiled_tree().is_some_and(|c| Arc::ptr_eq(c, &first)));
+
+    t.nodes = Some(b.clone());
+    assert!(is(&compiled_from(&t), &b), "the replacement is compiled");
+    assert!(t.compiled_tree().is_none(), "the kept tree is not B's");
+    t.nodes = None;
+    assert!(t.tree(&limits).is_none() && t.compiled_tree().is_none());
+    t.nodes = Some(a.clone());
+    assert!(
+        t.compiled_tree().is_some_and(|c| Arc::ptr_eq(c, &first)),
+        "A's again"
+    );
+
+    // A kept failure is A's alone.
+    let mut deep = SerializedType::new(2, Some(a.clone()));
+    let too_deep = |_: crate::typetree::SharedNodes| {
+        Err(crate::typetree::TreeError::Limit(
+            crate::LimitError::refused(crate::LimitKind::TreeDepth, 2, 1),
+        ))
+    };
+    assert!(deep.tree_with(too_deep).unwrap().is_err());
+    assert!(deep.tree(&limits).unwrap().is_err(), "kept for A");
+    deep.nodes = Some(b.clone());
+    assert!(is(&compiled_from(&deep), &b), "B compiles");
+
+    // A record whose first compile is of a replacement keeps that one.
+    let mut late = SerializedType::new(3, None);
+    late.nodes = Some(b.clone());
+    let kept = late.tree(&limits).unwrap().unwrap();
+    assert!(is(kept.list(), &b));
+    assert!(late.compiled_tree().is_some_and(|c| Arc::ptr_eq(c, &kept)));
+}
+
+#[test]
+fn a_refused_compile_pins_no_list() {
+    // Review of URS-30: the key was published before the compile, so a
+    // compile the pool refused (nothing kept) still held the list, and a
+    // replaced list stayed charged to the meter until the record dropped.
+    use crate::budget::{Counting, Reservation};
+    use crate::limits::{Meter, MeteredVec};
+    use crate::typetree::{Tree, TreeError};
+    let pool = Arc::new(Counting::new(4096));
+    let meter = Meter::new(u64::MAX, pool.clone(), Reservation::Dependency);
+    let list = |name: &str| {
+        let rows = MeteredVec::from_vec(vec![NodeRow::new(0, name, "Base")], &meter).unwrap();
+        NodeList::from_rows(rows).unwrap().into_shared().unwrap()
+    };
+    let before_a = meter.used();
+    let a = list("A");
+    let a_cost = meter.used() - before_a;
+    assert!(a_cost > 0);
+    let mut t = SerializedType::new(1, Some(a));
+    let compile = |nodes: crate::typetree::SharedNodes| {
+        let _scratch = nodes.meter().charge(1024).map_err(TreeError::Charge)?;
+        Ok(Tree::for_tests(nodes))
+    };
+    let other = meter.charge(4096 - pool.used()).unwrap();
+    assert!(
+        t.tree_with(compile).unwrap().is_err(),
+        "refused, kept nothing"
+    );
+    drop(other);
+    let b = list("B");
+    let with_both = meter.used();
+    t.nodes = Some(b);
+    assert_eq!(meter.used(), with_both - a_cost, "A's charge returned");
+    assert!(t.tree_with(compile).unwrap().is_ok());
+    assert!(t.compiled_tree().is_some(), "B's compile is kept");
+}
+
+#[test]
 // The conversion keeps the test meaningful against a narrower field type.
 #[allow(clippy::useless_conversion)]
 fn byte_start_holds_what_python_adds() {

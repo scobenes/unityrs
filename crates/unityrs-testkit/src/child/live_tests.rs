@@ -115,3 +115,27 @@ fn only_a_child_of_this_process_can_be_adopted() {
     })
     .unwrap();
 }
+#[test]
+fn a_line_written_just_before_exit_is_not_lost() {
+    // URS-33: the reader polls the FIFO, so a child that traces and exits
+    // at once could be seen ended before its line was read, and the wait
+    // answered BrokenPipe with the line still in the FIFO.
+    child::scene(|scene| {
+        let fifo = Fifo::new(scene, "trace")?;
+        for i in 0..100 {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c")
+                .arg("printf 'last %s\\n' \"$2\" > \"$1\"")
+                .arg("sh")
+                .arg(fifo.path())
+                .arg(i.to_string());
+            let live = child::live(scene, &mut cmd, false)?;
+            assert_eq!(fifo.line_while(scene, live)?, format!("last {i}"));
+            assert!(scene.wait(live)?.success());
+            let error = fifo.line_while(scene, live).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::BrokenPipe, "nothing more");
+        }
+        Ok(())
+    })
+    .unwrap();
+}
