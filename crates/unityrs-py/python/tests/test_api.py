@@ -361,7 +361,7 @@ t.join()
 
     def test_wheel_contains_dependency_notices(self):
         import importlib.metadata
-        files = importlib.metadata.files("unityrs")
+        files = importlib.metadata.files("unityrs-py")
         self.assertTrue(any(str(f).endswith("THIRD_PARTY_LICENSES") for f in files))
 
     def test_stream_origin_and_top_level_registry(self):

@@ -10,7 +10,7 @@ API of the published crates and of the `unityrs` Python package.
 ## [1.0.0] - 2026-11-20
 
 The first release: a Rust library, the `unityrs` command-line tool and the
-`unityrs` Python package (one abi3 wheel per platform, Python 3.10+), all
+`unityrs` Python package (`pip install unityrs-py`; one abi3 wheel per platform, Python 3.10+), all
 measured against UnityPy 1.25.2 with UnityPyBoost. `PARITY.md` lists every
 behaviour with its tier and its test; `docs/DESIGN.md` section 3 defines the
 tiers.
