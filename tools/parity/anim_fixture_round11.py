@@ -55,6 +55,7 @@ import argparse
 import math
 import struct
 import sys
+import zlib
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -64,8 +65,8 @@ import anim_fixture_body as body  # noqa: E402
 from anim_fixture_body import CHAIN_VARIANT, CLIP_VARIANTS, PROBE_GROUPS, SPINE_PROBE, _fixture  # noqa: E402
 from anim_fixture_muscles import (FINGER_BONES, FINGERS_RIG, MUSCLE_SWEEPS, MUSCLE_VALUES, finger_rows,  # noqa: E402
                                   muscle_bone, muscle_vectors)
-from anim_fixture_full import (FULL_EXTRAS, FULL_RIGS, SCOPED_RIGS, expected_absent, feature, full_groups,  # noqa: E402
-                               muscle_property, placements, topology, variants)
+from anim_fixture_full import (FULL_RIGS, SCOPED_RIGS, expected_absent, extras, feature, full_groups,  # noqa: E402
+                               mapped_bones, muscle_property, placements, topology, variants)
 from anim_fixture_full import size as full_size  # noqa: E402
 from anim_fixture_scope import check_scope  # noqa: E402
 from anim_reference import angle  # noqa: E402
@@ -146,9 +147,9 @@ _BASE = {name: getattr(body, name) for name in ("rig_bones", "check_chain", "pro
 
 def rig_bones(rig):
     """The rig's mapped human bones: the fingers rig's are the compact rig's and every finger bone, a full-body
-    clip rig's its topology's, the face and every finger."""
+    clip rig's its topology's, its face and every finger."""
     if rig in FULL_CLIP_RIGS:
-        return _BASE["rig_bones"](topology(rig)) | set(FULL_EXTRAS)
+        return mapped_bones(rig)
     return _BASE["rig_bones"]("compact") | set(FINGER_BONES) if rig == FINGERS_RIG else _BASE["rig_bones"](rig)
 
 
@@ -160,10 +161,10 @@ def rig_layout(rig):
     if rig == FINGERS_RIG:
         return base("compact") + finger_rows()
     if rig in FULL_CLIP_RIGS:
-        # The topology's rows with the face after the Head, as RigNodes creates them, then the fingers.
+        # The topology's rows with its face after the Head, as RigNodes creates them, then the fingers.
         rows = base(topology(rig))
         have = {name for name, _, _ in rows}
-        face = [row for row in base("eyes-jaw") if row[0] not in have and row[1] == "Head"]
+        face = [row for row in base("eyes-jaw") if row[0] not in have and row[1] == "Head" and row[0] in extras(rig)]
         at = [name for name, _, _ in rows].index("Head") + 1
         rows = rows[:at] + face + rows[at:] + finger_rows()
         return [(name, parent, tuple(full_size(rig) * v for v in offset)) for name, parent, offset in rows]
@@ -339,7 +340,8 @@ def check_clip(name, info, editor, capture, clip, replay):
 def avatar_skeleton(name, doc, avatar, replay):
     """The Avatar skeleton's Transforms as B4 resolves them (body_solve.rs `rest_scales`, chain.rs
     `animator_chain`): each skeleton node's `m_ID` through `m_TOS` to the built Transform at that path under the
-    Animator node. The hips and every mapped slot resolve to the capture's node; no two skeleton nodes share a
+    Animator node, its `m_ID` the CRC-32 of that path (targets.rs `resolve_hash`, which finds the Transform by
+    the hash and checks the path as evidence). The hips and every mapped slot resolve to the capture's node; no two skeleton nodes share a
     Transform; below the hips each node resolves, its Transform's parent is its skeleton parent's, and every
     Transform there is one a skeleton node names."""
     from anim_body_runs import human_of, mapping
@@ -360,6 +362,9 @@ def avatar_skeleton(name, doc, avatar, replay):
             require(path not in paths, f"two Transforms at {path!r} in {name}")
             paths[path] = address
     found = [paths.get(tos.get(node_id)) if tos.get(node_id) is not None else None for node_id in ids]
+    for node_id, address in zip(ids, found):
+        require(address is None or zlib.crc32(tos[node_id].encode("utf-8")) == node_id,
+                f"an Avatar skeleton ID is not its m_TOS path's hash ({tos.get(node_id)!r}) in {name}")
     resolved = [address for address in found if address is not None]
     require(len(set(resolved)) == len(resolved), f"two Avatar skeleton nodes share a Transform in {name}")
     slots = mapping(human)

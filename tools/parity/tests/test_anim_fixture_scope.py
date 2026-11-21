@@ -7,6 +7,7 @@ import copy
 import json
 import re
 import unittest
+import zlib
 
 import test_anim_replay_coverage  # noqa: F401  (puts tools/parity on the path)
 
@@ -95,7 +96,10 @@ class ScopeTests(unittest.TestCase):
                          "body-clip-scaled-animator-scoped-" + body.CHAIN_VARIANT,
                          "body-clip-hips-scale-scoped-" + body.CHAIN_VARIANT,
                          "body-clip-no-upper-chest-toes-scoped-keep-o0-y0-xz0-offset",
-                         "body-clip-noncoplanar-scoped-keep-o0-y0-xz0"):
+                         "body-clip-noncoplanar-scoped-keep-o0-y0-xz0",
+                         "body-clip-compact-no-face-scoped-keep-o0-y0-xz0",
+                         "body-clip-compact-eyes-scoped-bake-o1-y1-xz1-offset",
+                         "body-clip-tall-jaw-scoped-bake-o1-y1-xz1"):
                 doc, clip, _ = doc_of(name)
                 with self.subTest(name=name):
                     self.assertIsNotNone(check(self, name, doc, Built(name, doc, clip)))
@@ -270,6 +274,27 @@ class CompiledScopeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "compiled spine Left-Right values stay within"):
                 scope.check_scope(name, "refusal", doc, authored, bare, replay)
 
+    def test_a_malformed_lateral_slot_refuses(self):
+        # A muscle the clip does not curve (m_IndexArray -1) plays 0; any other unreadable slot is an error.
+        name = "body-clip-large-scoped-orientation-offset"
+        attribute = body.MUSCLE_ATTRIBUTE + 4  # Chest Left-Right
+        with round11_docs():
+            doc, clip, _ = doc_of(name)
+            authored = body._authored(doc["spec"]["evidence"]["editor"], replay)
+            index = clip["m_MuscleClip"]["m_IndexArray"]
+            other = next(slot for k, slot in enumerate(index) if slot >= 0 and k != attribute)
+            for edit, pattern in ((lambda index: index.__setitem__(attribute, other), "is malformed"),
+                                  (lambda index: index.__setitem__(attribute, len(index) + 999), "is malformed"),
+                                  (lambda index: index.__setitem__(attribute, "1"), "no entry"),
+                                  (lambda index: index.__delitem__(slice(attribute, None)), "no entry")):
+                broken = copy.deepcopy(clip)
+                edit(broken["m_MuscleClip"]["m_IndexArray"])
+                with self.subTest(pattern=pattern), self.assertRaisesRegex(ValueError, pattern):
+                    scope.check_scope(name, "in", doc, authored, broken, replay)
+            del clip["m_MuscleClip"]["m_IndexArray"]
+            with self.assertRaisesRegex(ValueError, "no entry"):
+                scope.check_scope(name, "in", doc, authored, clip, replay)
+
 
 class B4InputTests(unittest.TestCase):
     def test_f4s_compact_clips_are_b4s_too(self):
@@ -296,8 +321,18 @@ class B4InputTests(unittest.TestCase):
         return name, doc, view
 
     def test_the_avatar_skeleton_resolves_as_b4_resolves_it(self):
+        def name_path(view, k, path):
+            """A node named by another path, its m_ID that path's hash, as Unity would build it."""
+            view.ids[k] = view.tos[k][0] = zlib.crc32(path.encode("utf-8"))
+            view.tos[k][1] = path
+
         def shared(view, at):
-            view.tos[at["Hips/LeftUpperLeg/LeftLowerLeg"]][1] = "Hips/LeftUpperLeg"
+            name_path(view, at["Hips/LeftUpperLeg/LeftLowerLeg"], "Hips/LeftUpperLeg")
+
+        def rehashed(view, at):
+            # The right path under another ID: Rust finds the Transform by the hash, so it would not resolve.
+            k = at["Hips/LeftUpperLeg/LeftLowerLeg"]
+            view.ids[k] = view.tos[k][0] = view.ids[k] ^ 1
 
         def misparented(view, at):
             view.parents[at["Hips/LeftUpperLeg/LeftLowerLeg"]] = at["Hips"]
@@ -306,11 +341,12 @@ class B4InputTests(unittest.TestCase):
             return next(k for path, k in at.items() if path.endswith("/" + bone))
 
         def unresolved(view, at):
-            view.tos[finger(at, "Left Thumb Intermediate")][1] = "Hips/Elsewhere"
+            name_path(view, finger(at, "Left Thumb Intermediate"), "Hips/Elsewhere")
 
         def unnamed(view, at):
             tip = finger(at, "Left Thumb Distal")
-            view.tos[tip][1], view.parents[tip] = "Nowhere", -1
+            name_path(view, tip, "Nowhere")
+            view.parents[tip] = -1
 
         def remapped(view, at):
             view.bone_index[runs.SLOTS.index("Spine")] = at["Hips/Spine/Chest"]
@@ -318,7 +354,8 @@ class B4InputTests(unittest.TestCase):
         with round11_docs():
             name, doc, view = self.skeleton_case(lambda view, at: None)
             self.assertIsNotNone(check(self, name, doc, view))
-            for edit, pattern in ((shared, "share a Transform"), (misparented, "missing or misparented"),
+            for edit, pattern in ((shared, "share a Transform"), (rehashed, "not its m_TOS path's hash"),
+                                  (misparented, "missing or misparented"),
                                   (unresolved, "missing or misparented"), (unnamed, "not the Avatar skeleton's"),
                                   (remapped, "Spine resolves to another Transform")):
                 name, doc, view = self.skeleton_case(edit)

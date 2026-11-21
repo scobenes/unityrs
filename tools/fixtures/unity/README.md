@@ -12,15 +12,15 @@ There are three runs for each Unity version, **2022.3.62f3** first and then
 All three menu items are under **Tools → unityrs** and come from the same
 **Editor** folder. Each folder is inside `UnityrsFixturesOutput` in the
 project that ran it. The main run also builds the optional coverage
-fixtures (two humanoid refusal probes). When Unity cannot provide one of
-them, `run.json` lists it as not covered and the dialog still says **ready**.
-The integer discrete binding is always listed as not covered.
+fixtures (two humanoid refusal probes). Both are required: when Unity cannot
+provide one, `run.json` lists it as not covered and the dialog says **built
+with errors**. The integer discrete binding is always listed as not covered.
 
-The main run also builds and records the 1087 **body motion** fixtures
+The main run also builds and records the 1111 **body motion** fixtures
 (`body-…` in `run.json`, recordings in `replays/body`). They take longer
-than the rest: most are round 11's 963 replays (E5's clip and chain
-replays, about 0.55 MB each, 319 full-body clip replays of about 1.3 MB,
-and four muscle sweeps), so expect a much longer run and about 880 MB more
+than the rest: most are round 11's 987 replays (E5's clip and chain
+replays, about 0.55 MB each, 343 full-body clip replays of about 1.3 MB,
+and four muscle sweeps), so expect a much longer run and about 910 MB more
 output, with the progress bar on **Recording body-…**. Each body rig, clip
 set and chain is built on its own, so one Unity refuses does not stop the
 others, but every body case must record: one that does not (not covered or
@@ -42,7 +42,9 @@ folder as before; nothing else changes in the steps below.
    scripts to finish importing.
 3. Exit Play Mode and close any animation preview. In Unity, choose
    **Tools → unityrs → Build and record all fixtures**. Save the scene if
-   Unity asks, then wait for the results dialog.
+   Unity asks, then wait for the results dialog. (**Build fixtures only**
+   records nothing: its dialog says **unityrs fixtures built, not recorded**,
+   and its output is not a run to send.)
 4. If the dialog says **unityrs fixtures ready** or **unityrs fixtures built
    with errors**, zip the folder named after your Unity version (e.g.
    `2022.3.62f3`) inside `UnityrsFixturesOutput`, and send the zip (USB stick

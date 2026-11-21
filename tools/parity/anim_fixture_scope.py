@@ -20,7 +20,7 @@ import json
 from pathlib import Path
 
 from anim_body_model import LATERAL_MUSCLES, Refused, shoulder_hip_twist
-from anim_fixture_body import MUSCLE_ATTRIBUTE, _built_track, _runtime_slots
+from anim_fixture_body import MUSCLE_ATTRIBUTE, _runtime_slots
 from anim_body_tolerance import FRAME_BONES
 from anim_reference import multiply
 
@@ -62,19 +62,34 @@ def lateral_keys(authored, replay):
                   for key in authored.get(prop, {}).get("keys") or [])]
 
 
+def lateral_track(runtime, index, attribute, replay):
+    """A spine Left-Right muscle's compiled track, or None for a muscle the clip does not curve (`m_IndexArray`
+    -1). A malformed slot refuses: no index entry, a slot outside the runtime table or bound to another
+    attribute, or a table whose slots cannot be told apart."""
+    replay.require(isinstance(index, list) and 0 <= attribute < len(index) and type(index[attribute]) is int,
+                   f"the built clip's m_IndexArray has no entry for Animator attribute {attribute}")
+    slot = index[attribute]
+    if slot == -1:
+        return None
+    replay.require(0 <= slot < len(runtime) and runtime[slot][0] == (0, 95, attribute, 8, False)
+                   and runtime[slot][1] is not None,
+                   f"the built clip's spine Left-Right slot {slot} for Animator attribute {attribute} is malformed")
+    return runtime[slot][1]
+
+
 def compiled_lateral(doc, clip, replay):
     """The largest compiled spine Left-Right magnitude at each recorded sample's time, on its source clock."""
     capture = doc["capture"]
     names = [row["name"] for row in capture["humanoid"]["muscles"]]
     replay.require(all(name in names for name in LATERAL_MUSCLES), "the capture lacks a spine Left-Right muscle")
     runtime = _runtime_slots(clip, replay)
-    index = clip.get("m_MuscleClip", {}).get("m_IndexArray") or []
-    tracks = [_built_track(runtime, index, MUSCLE_ATTRIBUTE + names.index(name)) for name in LATERAL_MUSCLES]
+    index = clip.get("m_MuscleClip", {}).get("m_IndexArray")
+    tracks = [lateral_track(runtime, index, MUSCLE_ATTRIBUTE + names.index(name), replay) for name in LATERAL_MUSCLES]
     rows = []
     for sample in capture["samples"]:
         time = sample.get("effective_source", sample["local"])
         replay.require(type(time) in (int, float), "a sample without a source time")
-        rows.append((time, max(abs(track(time)) if track else 0. for track in tracks)))
+        rows.append((time, max(abs(track(time)) if track is not None else 0. for track in tracks)))
     return rows
 
 

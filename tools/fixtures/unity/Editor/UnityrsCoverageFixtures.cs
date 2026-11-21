@@ -83,8 +83,10 @@ static partial class UnityrsFixtureBuilder
 
     static void AddCoverageCases(RunReport report)
     {
+        // Completion requires both humanoid refusal probes in each Editor (anim_fixture_coverage.py
+        // REQUIRED_COVERAGE), so a run that leaves either not covered is not ready.
         foreach (string name in CoverageCases.Concat(BasisCases))
-            report.AddDeferred(name, "The coverage fixture was not prepared.");
+            report.AddDeferred(name, "The coverage fixture was not prepared.", name == TwistCase || name == SettingsCase);
     }
 
     static void BuildCoverage(Build build, RunReport report)

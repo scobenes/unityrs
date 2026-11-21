@@ -19,10 +19,12 @@ Each clip declares its scope against freeze v8's (anim_fixture_scope):
   plain chain plays every variant B4 admits at both placements on the compact, large, small and tall rigs and
   on every other body topology B3 admits; each F5 feature plays the chain variant at the identity at every
   scale a chain rig plays it at, but the armature at 1.25 and 1.8: at F5's own scale its human scale is B4's
-  range's lower end, which a full-body Avatar must not cross.
+  range's lower end, which a full-body Avatar must not cross. The face configurations B3 admits besides both
+  eyes and the jaw (FACE_RIGS: no face, the eyes alone, the jaw alone) play two variants, a keep and a bake,
+  at both placements on the compact and tall rigs.
 
-A rig maps every bone a muscle turns but those its topology omits (no shoulders, no UpperChest, no toes, the
-tall rig's UpperChest): those bones' muscles are **expected absent** (`expected_absent`), never curved, since
+A rig maps every bone a muscle turns but those its topology or face configuration omits (no shoulders, no
+UpperChest, no toes, the tall rig's UpperChest, an eye or the jaw): those bones' muscles are **expected absent** (`expected_absent`), never curved, since
 no bone could show them, and completion requires that they are not.
 
 Each muscle `m` has its own polyline through BODY_TIMES, `amplitude(m) * unit(m, key)`, where `unit` takes the
@@ -50,6 +52,9 @@ SCOPED_ADMITTED = ("bake-o0-y0-xz1", "bake-o0-y1-xz0", "bake-o0-y1-xz1", "bake-o
                    "orientation-offset")
 SCOPED_TOPOLOGIES = ("no-upper-chest", "no-shoulders", "no-left-toes", "no-right-toes", "no-toes",
                      "no-upper-chest-toes", "no-upper-chest-left-toes", "no-upper-chest-right-toes", "noncoplanar")
+# The face configurations B3 admits besides both eyes and the jaw: name: the face bones mapped.
+FACES = {"no-face": (), "eyes": ("LeftEye", "RightEye"), "jaw": ("Jaw",)}
+FACE_VARIANTS = ("keep-o0-y0-xz0", "bake-o1-y1-xz1")
 # rig: (topology, F5 feature, size, variants). Each F5 feature at its chain rigs' scales
 # (anim_fixture_round11.CHAIN_FEATURES), the armature at 1.25 for F5's own 1.
 SCOPED_RIGS = {"compact-scoped": ("compact", "", 1, SCOPED_ADMITTED),
@@ -64,6 +69,7 @@ SCOPED_RIGS = {"compact-scoped": ("compact", "", 1, SCOPED_ADMITTED),
                "hips-scale-scoped": ("compact", "hips-scale", 1, (CHAIN_VARIANT,)),
                "hips-scale-large-scoped": ("compact", "hips-scale", 1.2, (CHAIN_VARIANT,)),
                "hips-scale-small-scoped": ("compact", "hips-scale", .7, (CHAIN_VARIANT,))} | {
+    f"{base}-{face}-scoped": (base, "", 1, FACE_VARIANTS) for base in ("compact", "tall") for face in FACES} | {
     topology + "-scoped": (topology, "", 1, SCOPED_ADMITTED) for topology in SCOPED_TOPOLOGIES}
 # An in-scope clip's amplitudes: (muscle names, amplitude); every other muscle's is 1/2.
 SCOPED_AMPLITUDES = ((("Spine Left-Right", "Chest Left-Right", "UpperChest Left-Right"), 3 / 16),
@@ -119,11 +125,21 @@ def muscle_property(name):
     return f"{side}Hand.{finger}.{part}" if side in SIDES and finger in FINGERS and part else name
 
 
+def face(rig):
+    """The face bones a full-body clip rig maps: both eyes and the jaw, or its face configuration's."""
+    return next((bones for name, bones in FACES.items() if rig.endswith(f"-{name}-scoped")), FACE)
+
+
+def extras(rig):
+    """A full-body clip rig's bones beyond its topology: its face and every finger."""
+    return (*face(rig), *FINGER_BONES)
+
+
 def mapped_bones(rig):
-    """The human bones a full-body clip rig maps: its topology's, the face and every finger."""
+    """The human bones a full-body clip rig maps: its topology's, its face and every finger."""
     from anim_fixture_body import rig_bones
 
-    return rig_bones(topology(rig)) | set(FULL_EXTRAS)
+    return rig_bones(topology(rig)) | set(extras(rig))
 
 
 def expected_absent(rig, names):
@@ -142,3 +158,11 @@ def full_groups(names, rig):
     scoped, absent = rig in SCOPED_RIGS, expected_absent(rig, names)
     return [[(muscle_property(name), MUSCLE_ATTRIBUTE + i, BODY_TIMES, full_values(i, name, scoped))]
             for i, name in enumerate(names) if name not in absent and (scoped or name not in SPINE_MUSCLES)]
+
+
+def authored_muscles(names, rig, time):
+    """{Animator property: value} a full-body clip authors at one of BODY_TIMES: each curved muscle's own key, the
+    recorder's Spine reference pose (UnityrsFixtureBuilder.AuthoredMuscles evaluates the clip's curves there). An
+    in-scope clip's Spine keys are its own; a refusal clip's keep every humanoid clip's (AuthorHumanoidClip)."""
+    key = BODY_TIMES.index(time)
+    return {prop: values[key] for (prop, _, _, values), in full_groups(names, rig)}

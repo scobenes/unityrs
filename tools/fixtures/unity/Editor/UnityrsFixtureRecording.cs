@@ -312,9 +312,13 @@ public static partial class AnimReplayRecorder
             return new Quaternion(Component(0), Component(1), Component(2), Component(3));
         }
 
-        // Evaluate the authored muscle vectors independently on the source rig.
+        // Evaluate the clip's own authored muscle values independently on the
+        // source rig: an in-scope full-body clip authors its own Spine curves,
+        // which differ from KnownHumanoidMuscles (anim_fixture_full.py).
         // Compare local Spine rotations so root motion and placement do not
         // change the endpoint being tested.
+        var authoredClip = AssetDatabase.LoadAssetAtPath<AnimationClip>(fixture.Clip);
+        Need(authoredClip != null, "Could not read the authored clip of " + name + ".");
         Quaternion AuthoredRotation(float time)
         {
             Scene scene = EditorSceneManager.NewPreviewScene();
@@ -326,7 +330,7 @@ public static partial class AnimReplayRecorder
                 var animator = At<Animator>(instance.transform, fixture.BindingAddress, 0);
                 animator.runtimeAnimatorController = null;
                 animator.applyRootMotion = false;
-                SampleMuscles(animator, UnityrsFixtureBuilder.KnownHumanoidMuscles(time));
+                SampleMuscles(animator, UnityrsFixtureBuilder.AuthoredMuscles(authoredClip, time));
                 var bone = animator.GetBoneTransform(HumanBodyBones.Spine);
                 Need(bone != null && bone == instance.transform.Find(fixture.ProbePath), "Authored Avatar is missing the Spine probe.");
                 return bone.localRotation;

@@ -115,6 +115,13 @@ static partial class UnityrsFixtureBuilder
     // other body topology B3 admits; each F5 feature plays the chain variant at
     // the identity at its chain rigs' scales, the armature at 1.25 for F5's own 1
     // (B4's human-scale range's lower end, which a full-body Avatar must not cross).
+    // The face configurations B3 admits besides both eyes and the jaw (FaceRigs:
+    // no face, the eyes alone, the jaw alone) play FaceVariants, a keep and a
+    // bake, at both placements on the compact and tall rigs.
+    static readonly (string name, string[] bones)[] FaceRigs = {
+        ("no-face", new string[0]), ("eyes", new[] { "LeftEye", "RightEye" }), ("jaw", new[] { "Jaw" })
+    };
+    static readonly string[] FaceVariants = { "keep-o0-y0-xz0", "bake-o1-y1-xz1" };
     static readonly string[] ScopedTopologies = {
         "no-upper-chest", "no-shoulders", "no-left-toes", "no-right-toes", "no-toes", "no-upper-chest-toes",
         "no-upper-chest-left-toes", "no-upper-chest-right-toes", "noncoplanar"
@@ -140,7 +147,10 @@ static partial class UnityrsFixtureBuilder
             Size = 1.2f, Variants = new[] { ChainVariant.Name } },
         new BodyRig { Name = "hips-scale-small-scoped", Full = true, Scoped = true, Extras = FullExtras, HipsScale = 1.2f,
             Size = .7f, Variants = new[] { ChainVariant.Name } },
-    }.Concat(ScopedTopologies.Select(name => ProbeRigs.Single(rig => rig.Name == name)).Select(topology => new BodyRig {
+    }.Concat(new[] { "compact", "tall" }.SelectMany(rig => FaceRigs.Select(face => new BodyRig {
+        Name = rig + "-" + face.name + "-scoped", Full = true, Scoped = true, Extras = face.bones.Concat(FingerBones).ToArray(),
+        Tall = rig == "tall", Variants = FaceVariants
+    }))).Concat(ScopedTopologies.Select(name => ProbeRigs.Single(rig => rig.Name == name)).Select(topology => new BodyRig {
         Name = topology.Name + "-scoped", Full = true, Scoped = true, Extras = FullExtras, Omit = topology.Omit,
         Noncoplanar = topology.Noncoplanar, Variants = E5Admitted
     })).ToArray();
@@ -484,13 +494,15 @@ static partial class UnityrsFixtureBuilder
         {
             var slots = CompiledSlots(serialized);
             Require(slots != null, "Unity did not expose the compiled track table of the built clip for " + name + ".");
+            // Each slot through m_IndexArray, as playback and completion find it: a clip
+            // whose index Unity does not expose fails, never skips that check.
             var index = serialized.FindProperty("m_MuscleClip.m_IndexArray");
-            bool indexed = index != null && index.isArray;
+            Require(index != null && index.isArray, "Unity did not expose m_IndexArray of the built clip for " + name + ".");
             var missing = CompiledTracks(variant, full, scoped, mapped).Where(track => !slots.TryGetValue(track.attribute, out int slot)
-                || indexed && (track.attribute >= index.arraySize
-                    || index.GetArrayElementAtIndex(track.attribute).intValue != slot)).Select(track => track.track).ToArray();
+                || track.attribute >= index.arraySize
+                || index.GetArrayElementAtIndex(track.attribute).intValue != slot).Select(track => track.track).ToArray();
             Require(missing.Length == 0, "The built clip lost or moved its compiled " + string.Join(", ", missing)
-                + " track(s) in " + name + (indexed ? " (m_IndexArray checked)." : " (m_IndexArray not exposed)."));
+                + " track(s) in " + name + ".");
         }
     }
 

@@ -5,6 +5,7 @@ round 11 run with the whole inventory; freeze v8's provenance holds on this chec
 import json
 import re
 import unittest
+import zlib
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest import mock
@@ -98,17 +99,17 @@ class Built:
 
     def skeleton(self, doc):
         """The Avatar's skeleton as Unity builds it: the Animator node and every node below it, parents first,
-        each `m_ID` (a stand-in hash) with its path in `m_TOS`, and the body slots in m_HumanBoneIndex."""
+        each `m_ID` its path's CRC-32, with the path in `m_TOS`, and the body slots in m_HumanBoneIndex."""
         spec = doc["spec"]
         names = {node["address"]: node["name"] for node in spec["nodes"]}
         base = spec["binding_address"]
         order = [base] + [node["address"] for node in spec["nodes"] if node["address"].startswith(base + "/")]
         at = {address: k for k, address in enumerate(order)}
-        self.ids = [1000 + k for k in range(len(order))]
         self.parents = [at.get(address.rpartition("/")[0], -1) if k else -1 for k, address in enumerate(order)]
-        self.tos = [[self.ids[k], "/".join(names[base + "/" + "/".join(address[len(base) + 1:].split("/")[:n + 1])]
-                                           for n in range(address.count("/") - base.count("/")))]
-                    for k, address in enumerate(order)]
+        paths = ["/".join(names[base + "/" + "/".join(address[len(base) + 1:].split("/")[:n + 1])]
+                          for n in range(address.count("/") - base.count("/"))) for address in order]
+        self.ids = [zlib.crc32(path.encode("utf-8")) for path in paths]
+        self.tos = [[node_id, path] for node_id, path in zip(self.ids, paths)]
         nodes = {row["name"]: row["node"] for row in doc["capture"]["humanoid"]["bones"]}
         self.bone_index = [at[spec["nodes"][nodes[slot]]["address"]] if nodes.get(slot, -1) >= 0 else -1
                            for slot in runs.SLOTS]
@@ -184,8 +185,24 @@ class Round11InventoryTests(unittest.TestCase):
         topologies = re.search(r"ScopedTopologies = \{(.*?)\};", clips, re.S).group(1)
         self.assertEqual(tuple(re.findall(r'"([a-z-]+)"', topologies)), full.SCOPED_TOPOLOGIES)
         self.assertIn("Noncoplanar = topology.Noncoplanar, Variants = E5Admitted", clips)
+        # The face configurations, on the compact and tall rigs, before the topologies (the builder's order).
+        self.assertIn('("no-face", new string[0]), ("eyes", new[] { "LeftEye", "RightEye" }), ("jaw", new[] { "Jaw" })',
+                      clips)
+        self.assertEqual(full.FACES, {"no-face": (), "eyes": ("LeftEye", "RightEye"), "jaw": ("Jaw",)})
+        self.assertEqual(tuple(re.findall(r'"([a-z0-9-]+)"', re.search(r"FaceVariants = \{(.*?)\};", clips).group(1))),
+                         full.FACE_VARIANTS)
+        self.assertIn('}.Concat(new[] { "compact", "tall" }.SelectMany(rig => FaceRigs.Select(face => new BodyRig {\n'
+                      '        Name = rig + "-" + face.name + "-scoped", Full = true, Scoped = true, '
+                      'Extras = face.bones.Concat(FingerBones).ToArray(),\n'
+                      '        Tall = rig == "tall", Variants = FaceVariants\n    }))).Concat(ScopedTopologies', clips)
+        parsed |= {f"{rig}-{face}-scoped": (rig, "", 1, full.FACE_VARIANTS) for rig in ("compact", "tall")
+                   for face in full.FACES}
         parsed |= {t + "-scoped": (t, "", 1, full.SCOPED_ADMITTED) for t in full.SCOPED_TOPOLOGIES}
+        self.assertEqual(list(parsed), list(full.SCOPED_RIGS))
         self.assertEqual(parsed, full.SCOPED_RIGS)
+        self.assertEqual(full.mapped_bones("tall-jaw-scoped") - full.mapped_bones("tall-no-face-scoped"), {"Jaw"})
+        self.assertEqual(full.expected_absent("compact-eyes-scoped", NAMES),
+                         {"Jaw Close", "Jaw Left-Right"})
         self.assertEqual(full.SCOPED_ADMITTED, r11.E5_ADMITTED)
         # Each F5 feature in scope at every scale a chain rig plays it at, but the armature's at F5's own (B4's
         # human-scale range's lower end, which a full-body Avatar must not cross), which plays at 1.25 instead.
@@ -205,6 +222,31 @@ class Round11InventoryTests(unittest.TestCase):
         self.assertIn('? parts[0] + "Hand." + parts[1] + "." + parts[2] : name;', clips)
         self.assertIn("BuildMuscleSweeps(build, report);", builder)
 
+    def test_the_recorders_reference_is_each_clips_own_authored_values(self):
+        recorder, motion = source("UnityrsFixtureRecording.cs"), source("UnityrsHumanoidMotion.cs")
+        self.assertIn("SampleMuscles(animator, UnityrsFixtureBuilder.AuthoredMuscles(authoredClip, time));", recorder)
+        self.assertIn("var authoredClip = AssetDatabase.LoadAssetAtPath<AnimationClip>(fixture.Clip);", recorder)
+        self.assertNotIn("KnownHumanoidMuscles(time)", recorder)
+        self.assertIn('EditorCurveBinding.FloatCurve("", typeof(Animator), MuscleProperty(names[i])));', motion)
+        self.assertIn("if (curve != null) vector[i] = curve.Evaluate(time);", motion)
+        spine = ("Spine Front-Back", "Spine Left-Right", "Spine Twist Left-Right")
+        with round11_docs():
+            for rig in full.SCOPED_RIGS:
+                name = next(case for case, info in r11.ROUND11_INFO.items() if info["rig"] == rig)
+                doc = full_clip(support.body_doc(name, RUN), name)[0]
+                authored = body._authored(doc["spec"]["evidence"]["editor"], replay)
+                for time, known in ((0, 0), (1, 2)):
+                    reference = full.authored_muscles(NAMES, rig, time)
+                    with self.subTest(rig=rig, time=time):
+                        # The reference is the clip's own key at that time, for every curve it authors.
+                        self.assertEqual({prop: replay.f32_from_bits(next(
+                            key["value_f32"] for key in authored[prop]["keys"]
+                            if replay.f32_from_bits(key["time_f32"]) == time)) for prop in reference}, reference)
+                        # The in-scope Spine is not KnownHumanoidMuscles', which the recorder read before.
+                        self.assertNotEqual([reference[prop] for prop in spine],
+                                            [HUMANOID_SPINE[prop][known] for prop in spine])
+        self.assertEqual(full.authored_muscles(NAMES, "compact-scoped", 0)["Spine Front-Back"], -.3125)
+
     def test_the_admitted_variants_are_freeze_v8s_e4_passing_set(self):
         passing = json.loads(FREEZE.read_text(encoding="utf-8"))["e4"]["passing"]
         compact = {entry.split("/")[0] for entry in passing if entry.split("/")[1] == "compact"}
@@ -215,14 +257,15 @@ class Round11InventoryTests(unittest.TestCase):
         # 15 clip rigs x 21 variants x 2 roots, each new chain rig's targets and clip, the refusal full-body clips
         # (three plain rigs x 4 variants x 2 roots, the armature's chain variant), the in-scope ones (the compact,
         # large, small and tall rigs and nine topologies, each 11 admitted variants x 2 roots; eight F5 feature
-        # rigs' chain variant) and the four sweeps, in the builder's order.
-        scoped = 13 * 11 * 2 + 8
+        # rigs' chain variant; three face configurations on the compact and tall rigs, each 2 variants x 2 roots)
+        # and the four sweeps, in the builder's order.
+        scoped = 13 * 11 * 2 + 8 + 2 * 3 * 2 * 2
         self.assertEqual(len(r11.ROUND11_CASES), 15 * 21 * 2 + 5 * 2 + 25 + scoped + 4)
         self.assertEqual(len(r11.E5_CASES), 665 + scoped)
         kinds = [r11.ROUND11_INFO[name]["kind"] for name in r11.ROUND11_CASES]
         self.assertEqual(kinds[:10], ["targets", "clip"] * 5)
         self.assertEqual(kinds[10:], ["clip"] * (655 + scoped) + ["probes"] * 4)
-        self.assertEqual(len(r11.ROUND11_BUNDLES), 5 + 15 + 4 + 21 + 4)
+        self.assertEqual(len(r11.ROUND11_BUNDLES), 5 + 15 + 4 + 27 + 4)
         # Only the in-scope clips declare the frozen scope; every other clip is refusal evidence.
         declared = {name: info.get("scope") for name, info in r11.ROUND11_INFO.items()}
         self.assertEqual({name for name, value in declared.items() if value == "in"},
@@ -298,8 +341,16 @@ class MuscleSweepTests(unittest.TestCase):
         self.assertIn('const string BodyRound = "11";', text)
         self.assertIn('"{\\"format\\": \\"unityrs.fixture_round\\", \\"round\\": " + BodyRound + ", \\"run_id\\": \\"" '
                       '+ runId + "\\"}\\n"', text)
-        self.assertIn('if (run.variant == "builtin") WriteRound(staging, run.run_id);',
-                      source("UnityrsFixtureBuilder.cs"))
+        # Only a recorded run declares the round, and only a recorded run's dialog says ready.
+        builder = source("UnityrsFixtureBuilder.cs")
+        self.assertIn('if (run.variant == "builtin" && variant.Record) WriteRound(staging, run.run_id);', builder)
+        self.assertIn('if (failures.Length == 0 && !variant.Record)\n'
+                      '                EditorUtility.DisplayDialog("unityrs fixtures built, not recorded",', builder)
+        # Both humanoid refusal probes are required, as completion requires them.
+        self.assertIn('report.AddDeferred(name, "The coverage fixture was not prepared.", '
+                      'name == TwistCase || name == SettingsCase);', source("UnityrsCoverageFixtures.cs"))
+        self.assertIn('return rows.Where(row => row.status == "failed" || required.Contains(row.name) '
+                      '&& row.status == "not_covered")', builder)
 
     def test_every_muscle_has_the_same_schedule(self):
         probed = [muscle for _, group in body.PROBE_GROUPS for muscle in group]
