@@ -188,6 +188,40 @@ fn replaced_nodes_are_never_served_the_old_compile() {
 }
 
 #[test]
+fn a_refused_compile_pins_no_list() {
+    // Review of URS-30: the key was published before the compile, so a
+    // compile the pool refused (nothing kept) still held the list, and a
+    // replaced list stayed charged to the meter until the record dropped.
+    use crate::budget::{Counting, Reservation};
+    use crate::limits::{Meter, MeteredVec};
+    use crate::typetree::{Tree, TreeError};
+    let pool = Arc::new(Counting::new(4096));
+    let meter = Meter::new(u64::MAX, pool.clone(), Reservation::Dependency);
+    let list = |name: &str| {
+        let rows = MeteredVec::from_vec(vec![NodeRow::new(0, name, "Base")], &meter).unwrap();
+        NodeList::from_rows(rows).unwrap().into_shared().unwrap()
+    };
+    let before_a = meter.used();
+    let a = list("A");
+    let a_cost = meter.used() - before_a;
+    assert!(a_cost > 0);
+    let mut t = SerializedType::new(1, Some(a));
+    let compile = |nodes: crate::typetree::SharedNodes| {
+        let _scratch = nodes.meter().charge(1024).map_err(TreeError::Charge)?;
+        Ok(Tree::for_tests(nodes))
+    };
+    let other = meter.charge(4096 - pool.used()).unwrap();
+    assert!(t.tree_with(compile).unwrap().is_err(), "refused, kept nothing");
+    drop(other);
+    let b = list("B");
+    let with_both = meter.used();
+    t.nodes = Some(b);
+    assert_eq!(meter.used(), with_both - a_cost, "A's charge returned");
+    assert!(t.tree_with(compile).unwrap().is_ok());
+    assert!(t.compiled_tree().is_some(), "B's compile is kept");
+}
+
+#[test]
 // The conversion keeps the test meaningful against a narrower field type.
 #[allow(clippy::useless_conversion)]
 fn byte_start_holds_what_python_adds() {

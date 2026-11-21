@@ -359,7 +359,7 @@ impl Fifo {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
             if !scene.running(live)? {
-                return self.rest();
+                return self.rest(deadline);
             }
             assert!(
                 Instant::now() < deadline,
@@ -367,13 +367,13 @@ impl Fifo {
             );
         }
     }
-    /// A line its ended writer left, or `BrokenPipe` when there is none. The
-    /// read that bumps the empty count to `seen + 1` may have started before
-    /// the exit; the one after it started later, so it found every byte the
-    /// writer wrote, and the reader sent their lines before it.
-    fn rest(&self) -> io::Result<String> {
+    /// A line its ended writer left, or `BrokenPipe` when there is none,
+    /// within the caller's `deadline`. The read that bumps the empty count to
+    /// `seen + 1` may have started before the exit; the one after it started
+    /// later, so it found every byte the writer wrote, and the reader sent
+    /// their lines before it.
+    fn rest(&self, deadline: Instant) -> io::Result<String> {
         use std::sync::atomic::Ordering;
-        let deadline = Instant::now() + DEADLOCK_GUARD;
         let seen = self.empty.load(Ordering::Acquire);
         while self.empty.load(Ordering::Acquire) < seen + 2 {
             match self.rx.recv_timeout(Duration::from_millis(1)) {

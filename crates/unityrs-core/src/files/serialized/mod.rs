@@ -133,20 +133,24 @@ pub struct SerializedType {
     tree: OnceLock<Compiled>,
 }
 
-/// [`SerializedType::tree`]'s cell and the list its compile is of: the
-/// first ask publishes the pair, and a later ask whose [`SerializedType::nodes`]
-/// is another list never reads the cell (URS-30). The list is held, so its
-/// address names it while the pair lives (no other list can be allocated
-/// there), and the check is one pointer comparison.
+/// [`SerializedType::tree`]'s kept answer and the list it is of, published
+/// together once a compile ends in a value or an error its cell keeps: a
+/// refusal that keeps nothing pins no list. A later ask whose
+/// [`SerializedType::nodes`] is another list never reads it (URS-30). The
+/// list is held, so its address names it while the pair lives (no other
+/// list can be allocated there), and the check is one pointer comparison.
 #[derive(Debug)]
 struct Compiled {
     nodes: crate::typetree::SharedNodes,
-    tree: ResultCell<Arc<Tree>, TreeError>,
+    tree: Result<Arc<Tree>, crate::once::KeptError<TreeError>>,
 }
 
 impl Compiled {
-    /// The cell, when its compile is of `nodes`.
-    fn of(&self, nodes: &crate::typetree::SharedNodes) -> Option<&ResultCell<Arc<Tree>, TreeError>> {
+    /// The kept answer, when it is of `nodes`.
+    fn of(
+        &self,
+        nodes: &crate::typetree::SharedNodes,
+    ) -> Option<&Result<Arc<Tree>, crate::once::KeptError<TreeError>>> {
         crate::typetree::SharedNodes::ptr_eq(&self.nodes, nodes).then_some(&self.tree)
     }
 }
@@ -207,30 +211,41 @@ impl SerializedType {
     /// [`Self::nodes`] has been replaced since.
     #[must_use]
     pub fn compiled_tree(&self) -> Option<&Arc<Tree>> {
-        self.tree.get()?.of(self.nodes.as_ref()?)?.get()?.as_ref().ok()
+        self.tree.get()?.of(self.nodes.as_ref()?)?.as_ref().ok()
     }
 
-    /// The compile of [`Self::nodes`], kept in the record's cell when the
-    /// cell is for these nodes (or new). Replaced nodes compile in a cell of
-    /// their own that is dropped with the answer: the meter's work rules
-    /// still apply, and the record's cell is never served for them.
+    /// The compile of [`Self::nodes`]. It runs in a cell of its own
+    /// ([`get_or_publish_result`], so the meter's work rules apply); what
+    /// that cell keeps is then published in the record with the list, when
+    /// the record holds nothing yet. Replaced nodes compile on each ask and
+    /// are never served the record's answer.
     fn tree_with(
         &self,
         compile: impl FnOnce(crate::typetree::SharedNodes) -> Result<Arc<Tree>, TreeError>,
     ) -> Option<Result<Arc<Tree>, TreeError>> {
         let nodes = self.nodes.as_ref()?;
-        let compiled = crate::once::get_or_publish(&self.tree, || Compiled {
-            nodes: nodes.clone(),
-            tree: OnceLock::new(),
-        });
-        let replaced;
-        let cell = if let Some(cell) = compiled.of(nodes) {
-            cell
-        } else {
-            replaced = ResultCell::new();
-            &replaced
+        let answer = |kept: &Result<Arc<Tree>, crate::once::KeptError<TreeError>>| {
+            kept.as_ref().map(Arc::clone).map_err(|k| k.error().clone())
         };
-        Some(get_or_publish_result(cell, nodes.meter(), || compile(nodes.clone())).cloned())
+        let held = self.tree.get();
+        if let Some(kept) = held.and_then(|c| c.of(nodes)) {
+            return Some(answer(kept));
+        }
+        let cell: ResultCell<Arc<Tree>, TreeError> = ResultCell::new();
+        let got = get_or_publish_result(&cell, nodes.meter(), || compile(nodes.clone())).cloned();
+        let Some(kept) = cell.into_inner() else {
+            return Some(got);
+        };
+        if held.is_some() {
+            return Some(answer(&kept));
+        }
+        let compiled = Compiled {
+            nodes: nodes.clone(),
+            tree: kept,
+        };
+        // The first answer published wins.
+        let won = crate::once::get_or_publish(&self.tree, move || compiled);
+        Some(answer(&won.tree))
     }
 }
 
