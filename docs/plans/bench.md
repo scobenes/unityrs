@@ -90,6 +90,7 @@ The full set is about 460 MB (the column sums to 457), counting `many-blocks` at
   - A workload's figure is the median of its 7 round times, with the min and max as the spread.
   - A category's figure (a README row) is the sum of its paired workloads' times in each round, then the median of those 7 round totals. The min and max of the round totals give its spread.
   - The speedup is the ratio of the two medians. Its range is min(UnityPy) / max(unityrs) to max(UnityPy) / min(unityrs), from the round totals.
+  - A category's peak-memory and process-CPU ratios are aggregated the same way, from each run's peak PSS and CPU time: the per-round sums over its paired workloads, then UnityPy's median over unityrs's. A run without a peak PSS (null with no `/proc` to sample, or zero when the sampler caught no process) leaves its category's memory ratio out, rendered "—"; so does a zero unityrs median. Only the medians are divided.
 - **Throughput** is source MB/s plus the row's own unit, computed from the inventory counts.
 
 ---
@@ -165,7 +166,7 @@ Only then is the row paired. The gate's Rust scope for this row is `run_extract`
 scripts/dev python tools/bench/bench.py run --out DIR           # the full comparison
 scripts/dev python tools/bench/bench.py run --out DIR --quick   # gate scale, 3 rounds
 python tools/bench/bench.py render [--check]
-python tools/bench/bench.py check --wall-run RUN_ID             # CI: wall.json equals that run's artifact
+python tools/bench/bench.py check --wall-run --base SHA --repo OWNER/REPO   # CI: each changed results file is its own run's artifact
 python3 tools/bench/bench.py gate --valgrind PREFIX --out DIR    # CI: the instruction-count gate (5.1)
 ```
 
@@ -184,6 +185,8 @@ python3 tools/bench/bench.py gate --valgrind PREFIX --out DIR    # CI: the instr
 - `workloads`: a map from each name to its `mode`, `ir_own`, `allocs` (call counts of `malloc`, `calloc`, `realloc` and `free` from unityrs frames), `alloc_bytes`, `digest` and `calls`, with `ir_libc` beside them, informational only.
 
 No field holds a host path or a user name.
+
+**Several runner CPUs.** GitHub's `ubuntu-24.04` runners differ in CPU model between runs (AMD EPYC or Intel Xeon), and some rows move with it. `benchmarks/wall.json` is the primary run. A run on another CPU is committed beside it as `benchmarks/wall-<cpu>.json`, for example `wall-epyc.json`: the artifact of another `bench-wall.yml` run, renamed and otherwise byte-equal. Each file is validated as `wall.json` is. `render` refuses one without `wall.json` beside it, and two files on the same CPU model. Every results file must be a regular file, not a symlink: `render` and `check --wall-run` refuse a link, whose target could change while the link's own path stays unchanged in git.
 
 ---
 
@@ -219,6 +222,8 @@ A PR that publishes commits that file and the rendered docs. CI's `check --wall-
 - between its `head_sha` and the PR's base, `git diff` shows no changes to the measured paths (`crates/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `tools/bench/`, `tools/parity/requirements-oracle.txt`, `benchmarks/fixtures.json`);
 - the committed `wall.json` is byte-equal to the run's artifact.
 
+A `wall-<cpu>.json` (4.5) the PR adds or changes is verified the same way, each against its own run.
+
 There is no weekly job.
 
 `workflow_dispatch` works only once the workflow is on the default branch. So publication takes two PRs. BN-1 lands the harness, the workflow and the rendering, with the README section reading "Results pending". After it merges, a dispatched run on `main` produces the numbers, and BN-1b commits `wall.json` with the rendered docs. That is the first public result.
@@ -240,30 +245,39 @@ The README gets a "Performance" section after "Goals":
 ```markdown
 ## Performance
 
-unityrs against UnityPy 1.25.2 with UnityPyBoost, the same Python script on both, on public synthetic
-fixtures, on GitHub's ubuntu-24.04 runner (<CPU>), commit <sha>, <date>. Median of 7 rounds, each a fresh
-process with a warm file cache. API rows time the operation after imports; the extraction row times the
-whole process, imports included.
+unityrs against UnityPy with UnityPyBoost, the same Python script on both, on public synthetic
+fixtures, on GitHub's ubuntu-24.04 runner. Median of 7 rounds, each a fresh process with a warm file cache.
+API rows time the operation after imports; the extraction row times the whole process, imports included.
+The speedup, peak memory and process CPU columns are each UnityPy's figure over unityrs's, so ×2.0 means
+unityrs needs half. Each workload runs in its own process; peak memory adds up those processes' peaks
+(summed PSS) over a row's workloads, and CPU their CPU time, imports included, each the median over rounds.
 
-| operation (timer contains) | inventory | UnityPy | unityrs | speedup |
-|---|---|---|---|---|
-| load and list objects | <the paired load fixtures, listed from their rows> | … | … | ×… |
-| read every typetree | <n> objects in 2 layouts | … | … | ×… |
-| read and decode textures | <k> formats, <p> Mpixel | … | … | ×… |
-| read and export meshes to OBJ | <m> meshes, <v> vertices | … | … | ×… |
-| read audio samples | <c> clips, PCM16 and FADPCM, <t> min | … | … | ×… |
-| read animation clips | <a> clips | … | … | ×… |
-| extract textures, meshes, text and audio | <b> bundles, <f> files | … | … | ×… |
+Runner CPU: <CPU>; UnityPy <version>; commit <sha>, <date>.
 
-Breakdown, memory, unityrs-only rows and how to rerun: [BENCHMARKS.md](BENCHMARKS.md).
+| operation (timer contains) | inventory | UnityPy | unityrs | speedup | peak memory (sum of workload peaks) | process CPU |
+|---|---|---|---|---|---|---|
+| load and list objects | <the paired load fixtures, listed from their rows> | … | … | ×… | ×… | ×… |
+| read every typetree | <n> objects in 2 layouts | … | … | ×… | ×… | ×… |
+| read and decode textures | <k> formats, <p> Mpixel | … | … | ×… | ×… | ×… |
+| read and export meshes to OBJ | <m> meshes, <v> vertices | … | … | ×… | ×… | ×… |
+| read audio samples | <c> clips, PCM16 and FADPCM, <t> min | … | … | ×… | ×… | ×… |
+| read animation clips | <a> clips | … | … | ×… | ×… | ×… |
+| extract textures, meshes, text and audio | <b> bundles, <f> files | … | … | ×… | ×… | ×… |
+
+<a note on runner CPUs: with one committed run, that GitHub's runners vary in CPU and this is one CPU's;
+with several, that each CPU's run has its own table>
+
+Breakdown, unityrs-only rows and how to rerun: [BENCHMARKS.md](BENCHMARKS.md).
 ```
+
+With a `wall-<cpu>.json` beside `wall.json` (4.5), the "Runner CPU" line and its table repeat for each run, `wall.json`'s first.
 
 `BENCHMARKS.md` has these sections:
 1. how to rerun;
-2. this run (machine, versions, run id);
+2. this run (machine, versions, run id), or each run when several CPUs are committed;
 3. inputs, with exact bytes and verified block mixes;
-4. the summary with ranges;
-5. one table per category, each row labelled by its timer, with median, spread, CPU, PSS and throughput for UnityPy, the wheel and the Rust library;
+4. the summary with ranges, one table per committed run;
+5. one table per category (from `wall.json`'s run), each row labelled by its timer, with median, spread, CPU, PSS and throughput for UnityPy, the wheel and the Rust library;
 6. unityrs-only rows, with reasons;
 7. the gate: each workload's mode, `ir_own`, `ir_libc` and digest prefix, and how to refresh;
 8. method and caveats.
