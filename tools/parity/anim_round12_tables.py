@@ -280,10 +280,16 @@ def _floats(curve, key, count):
         return None
 
 
+# An unweighted key's weights as Keyframe's four-argument constructor leaves them (UnityCsReference
+# Runtime/Export/Animation/AnimationCurve.bindings.cs, 2022.3 and 6000.6), and as both Editors recorded them for
+# round 11's in-scope clips: 0, not the 1/3 a weighted key starts from.
+UNWEIGHTED = "00000000"
+
+
 def _curve_problem(curve, times, values, slopes, mode):
     """Why an authored curve is not the tables' (None if it is): its key times, its key values (a muscle's bit for
-    bit), unweighted keys with finite weights, `mode` tangents on both sides of every key, and each interval's
-    tangents the slope between its keys (a muscle's the tables' slope), to a millionth."""
+    bit), unweighted keys with the unweighted weights exactly, `mode` tangents on both sides of every key, and each
+    interval's tangents the slope between its keys (a muscle's the tables' slope), to a millionth."""
     n = len(times)
     got = {key: _floats(curve, key, n) for key in ("times", "values", "in_tangents", "out_tangents", "in_weights",
                                                      "out_weights")}
@@ -294,7 +300,7 @@ def _curve_problem(curve, times, values, slopes, mode):
         return "key times differ from the tables'"
     if slopes is not None and curve["values"] != values:
         return "key values differ from the tables'"
-    if any(m != "None" for m in modes[0]) or not all(map(math.isfinite, got["in_weights"] + got["out_weights"])):
+    if any(m != "None" for m in modes[0]) or any(w != UNWEIGHTED for w in curve["in_weights"] + curve["out_weights"]):
         return "keys are weighted"
     if any(m != mode for m in modes[1] + modes[2]):
         return f"tangent modes are not {mode}"
@@ -308,8 +314,9 @@ def _curve_problem(curve, times, values, slopes, mode):
 
 
 def _body_problem(curves, want):
-    """Why the authored body or motion curves' values are not the tables' to 1e-5 (a rotation's at either sign), or
-    None."""
+    """Why the authored body or motion curves' values are not the tables' to 1e-5, or None. A rotation keeps each
+    key's sign as the tables author it, and never turns to the other hemisphere between keys: a flipped interior key
+    plays the long way round between its neighbours, whatever its tangents."""
     groups = {}
     for prop, (_, values, slopes, _) in want.items():
         if slopes is None:
@@ -318,10 +325,10 @@ def _body_problem(curves, want):
         got = [[_value(b) for b in curves[prop]["values"]] for prop in props]
         expected = [[_value(b) for b in want[prop][1]] for prop in props]
         for k in range(len(expected[0])):
-            g, e = [row[k] for row in got], [row[k] for row in expected]
-            if not (max(abs(a - b) for a, b in zip(g, e)) <= 1e-5
-                    or len(props) == 4 and max(abs(a + b) for a, b in zip(g, e)) <= 1e-5):
-                return f"{prefix}'s key {k} differs from the tables'"
+            if max(abs(row[k] - want_row[k]) for row, want_row in zip(got, expected)) > 1e-5:
+                return f"{prefix}'s key {k} differs from the tables' (a rotation's sign as authored)"
+        if len(props) == 4 and any(sum(row[k] * row[k + 1] for row in got) < 0 for k in range(len(got[0]) - 1)):
+            return f"{prefix} turns to the other hemisphere between keys"
     return None
 
 
@@ -329,7 +336,8 @@ def check_authored(authored, doc=None):
     """The problems with a run's authored.json against the tables: every subset, twist-clip and twin case authored
     once; each clip's bindings, keyed by (path, type, property) and never twice, exactly its case's muscle list (a
     twin's no limb-twist curve) and, on a full-body clip, its body and motion curves; each curve's keys the tables'
-    `curves`, unweighted, on its tangent mode, its tangents its slopes."""
+    `curves`, unweighted, on its tangent mode, its tangents its slopes; a rotation's keys at their authored signs;
+    no object-reference binding."""
     doc = document() if doc is None else doc
     problems = []
     names = authored.get("muscle_names") or []
@@ -349,6 +357,9 @@ def check_authored(authored, doc=None):
         if any((rows[case]["bindings"], rows[case]["rig"], variants.get(case))
                != (row["bindings"], row["rig"], variants.get(cases[0])) for case in cases):
             problems.append(f"{label}: its cases {cases} differ in rig, bindings or variant")
+            continue
+        if clip.get("object_bindings") != []:
+            problems.append(f"{label}: object-reference bindings {clip.get('object_bindings')} (none expected)")
             continue
         curves, twice = {}, set()
         for b in clip.get("bindings") or []:

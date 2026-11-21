@@ -172,6 +172,9 @@ static partial class UnityrsFixtureBuilder
     static void BuildRound12()
     {
         var target = EditorUserBuildSettings.activeBuildTarget;
+        // Nothing from an earlier run reaches this one's authored.json or inventory, even if it stops before preparing.
+        round12Clips = new List<R12Clip>();
+        round12Bones = new Dictionary<string, string[]>(StringComparer.Ordinal);
         Run(new Variant {
             Name = "round12", Root = Round12Output, Folder = target.ToString(), Target = target, Record = true,
             BodyOnly = true, KeepStaging = true, Cases = Round12.cases.Select(row => row.name).ToArray(),

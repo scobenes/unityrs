@@ -147,9 +147,9 @@ def authored(doc, names):
             n = len(times)
             bindings.append(dict(path="", type=r12.ANIMATOR, property=prop, times=list(times), values=list(values),
                                  in_tangents=[r12.bits(0.)] + slopes, out_tangents=slopes + [r12.bits(0.)],
-                                 in_weights=[r12.bits(0.)] * n, out_weights=[r12.bits(0.)] * n,
+                                 in_weights=[r12.UNWEIGHTED] * n, out_weights=[r12.UNWEIGHTED] * n,
                                  weighted_modes=["None"] * n, left_modes=[mode] * n, right_modes=[mode] * n))
-        clips.append(dict(clip=row["name"], cases=cases, bindings=bindings))
+        clips.append(dict(clip=row["name"], cases=cases, bindings=bindings, object_bindings=[]))
     return dict(format="unityrs.round12_authored", run_id="r", muscle_names=names, clips=clips)
 
 
@@ -214,12 +214,29 @@ class AuthoredTests(unittest.TestCase):
         def elsewhere(clip):
             clip["bindings"].append(dict(muscle(clip), path="HumanoidRig/Hips", type="UnityEngine.Transform"))
 
+        def weight(clip):
+            muscle(clip)["out_weights"][1] = r12.bits(1 / 3)
+
+        def reference(clip):
+            clip["object_bindings"].append(dict(path="HumanoidRig", type="UnityEngine.MeshFilter", property="m_Mesh",
+                                                times=[r12.bits(0.)]))
+
+        def flipped(clip):
+            # An interior RootQ key at the other sign, its neighbours' tangents recomputed to match: the same keys
+            # up to sign, but playback between them takes the long way round.
+            curves = [b for b in clip["bindings"] if b["property"].startswith("RootQ.")]
+            for curve in curves:
+                curve["values"][2] = r12.bits(-r12._value(curve["values"][2]))
+                slopes = r12.slope_bits([f32(t) for t in curve["times"]], [f32(v) for v in curve["values"]])
+                curve["in_tangents"], curve["out_tangents"] = [r12.bits(0.)] + slopes, slopes + [r12.bits(0.)]
+
         def twist(clip):
             twin_rig = clip["bindings"][0]
             clip["bindings"].append(dict(twin_rig, property="Left Arm Twist In-Out"))
         for family, change in (("subset", value), ("subset", constant), ("twist-clip", value), ("twist-clip", constant),
                                ("subset", weighted), ("twist-clip", mode), ("twin", root_mode), ("subset", twice),
-                               ("twist-clip", root_value), ("twin", no_root), ("subset", elsewhere), ("twin", twist)):
+                               ("twist-clip", root_value), ("twin", no_root), ("subset", elsewhere), ("twin", twist),
+                               ("subset", weight), ("twin", reference), ("twist-clip", flipped)):
             self.assertTrue(broken(family, change), (family, change.__name__))
         run = self.fresh()
         run["clips"].pop()

@@ -248,20 +248,19 @@ static partial class UnityrsFixtureBuilder
                 Application.logMessageReceived += UnityLog;
                 try
                 {
-                    Require(!EditorApplication.isPlayingOrWillChangePlaymode && !AnimationMode.InAnimationMode(),
-                        "Exit Play Mode and animation preview, then try again.");
-                    Require(variant.PipelineReady(), variant.PipelineMessage);
-                    CheckOwned(generated);
-                    Folder(Assets);
-                    WriteMarker(generated, run.Stamp);
-
                     var report = new RunReport(Log, variant.Cases);
                     variant.AddDeferred(report);
-                    // A run with a last step (round 12) writes it and run.json even when building or recording
-                    // stops, then fails: its staging folder is kept and nothing is published.
+                    // A run with a last step (round 12) writes it and run.json even when a preflight check, building
+                    // or recording stops it, then fails: its staging folder is kept and nothing is published.
                     Exception stopped = null;
                     try
                     {
+                        Require(!EditorApplication.isPlayingOrWillChangePlaymode && !AnimationMode.InAnimationMode(),
+                            "Exit Play Mode and animation preview, then try again.");
+                        Require(variant.PipelineReady(), variant.PipelineMessage);
+                        CheckOwned(generated);
+                        Folder(Assets);
+                        WriteMarker(generated, run.Stamp);
                         Progress("Preparing fixtures", .05f);
                         var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
                         BuildAndCapture(build, report, staging, run, target, variant.Record, Log, variant.BodyOnly);
@@ -296,6 +295,8 @@ static partial class UnityrsFixtureBuilder
                     // Only a recorded run is a round: a build-only run's replays are skipped, which completion refuses.
                     if (run.variant == "builtin" && variant.Record) WriteRound(staging, run.run_id);
                     Log(failures.Length == 0 ? "Finished." : "Finished with fixture errors: " + string.Join(", ", failures));
+                    // Paths in this log are inside the run's folder, which is published as this one.
+                    Log("Publishing to " + shown + ".");
                 }
                 catch (Exception error)
                 {
@@ -306,7 +307,7 @@ static partial class UnityrsFixtureBuilder
             }
             Progress("Publishing results", .98f);
             publishing = true;
-            Publish(staging, destination);
+            Publish(staging, destination, replace: failures.Length == 0);
             publishing = false;
             EditorUtility.ClearProgressBar();
             string location = "Unity " + version + " / " + target + "\n\nOutput in your project folder:\n" + shown
@@ -576,9 +577,12 @@ static partial class UnityrsFixtureBuilder
         }
     }
 
-    static void Publish(string staging, string output)
+    // Only a run without failures may replace an earlier output; one with failures publishes to a new folder only.
+    static void Publish(string staging, string output, bool replace)
     {
         CheckOwned(output);
+        Require(replace || !Directory.Exists(output),
+            "A run with failures never replaces an output, and " + Path.GetFileName(output) + " already exists.");
         string prior = staging + ".previous";
         if (Directory.Exists(output)) MoveWithRetry(output, prior);
         try { MoveWithRetry(staging, output); }

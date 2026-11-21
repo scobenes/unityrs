@@ -13,14 +13,14 @@ using UnityEngine;
 // - every clip it authors (the clip subset, the twist clips and their twins) has exactly its case's Animator muscle
 //   bindings from the tables (a twin no limb-twist curve), or its cases fail; each clip's curves (every binding, the
 //   root and motion curves too, keyed by path, type and property: key times, values, tangents and weights as f32
-//   bits, weighted modes and left and right tangent modes) go to authored.json, which
+//   bits, weighted modes and left and right tangent modes; and any object-reference curve) go to authored.json, which
 //   tools/parity/anim_round12_tables.py --authored checks against the tables;
 // - the built bundle's twin keeps no compiled limb-twist track, and a subset clip exactly its muscles' tracks
 //   (UnityrsBodyClips.cs CheckTracks), fatally;
 // - each built Avatar, loaded back from its bundle, is logged with its four twist settings against the authored
 //   tuple;
 // - inventory.json walks replays/body: a table case without a readable capture of the tables' sample times, each
-//   sample holding a finite local transform for every bone the case maps, fails, and any file there that is not a
+//   sample holding a finite local transform for every bone the case maps, each at a node of its own, fails, and any file there that is not a
 //   table case's is listed; then authored.json and round.json.
 static partial class UnityrsFixtureBuilder
 {
@@ -29,7 +29,14 @@ static partial class UnityrsFixtureBuilder
         public string path, type, property;
         public string[] times, values, in_tangents, out_tangents, in_weights, out_weights, weighted_modes, left_modes, right_modes;
     }
-    [Serializable] sealed class R12Clip { public string clip; public string[] cases; public R12Curve[] bindings; }
+    [Serializable] sealed class R12ObjectCurve { public string path, type, property; public string[] times; }
+    [Serializable] sealed class R12Clip
+    {
+        public string clip;
+        public string[] cases;
+        public R12Curve[] bindings;
+        public R12ObjectCurve[] object_bindings;
+    }
     [Serializable] sealed class R12Authored
     {
         public string format = "unityrs.round12_authored", run_id;
@@ -69,6 +76,11 @@ static partial class UnityrsFixtureBuilder
                     left_modes = indices.Select(i => AnimationUtility.GetKeyLeftTangentMode(curve, i).ToString()).ToArray(),
                     right_modes = indices.Select(i => AnimationUtility.GetKeyRightTangentMode(curve, i).ToString()).ToArray()
                 };
+            }).ToArray(),
+            // Object-reference curves too, which no round 12 clip authors: the checker refuses any.
+            object_bindings = AnimationUtility.GetObjectReferenceCurveBindings(clip).Select(binding => new R12ObjectCurve {
+                path = binding.path, type = binding.type.FullName, property = binding.propertyName,
+                times = AnimationUtility.GetObjectReferenceCurve(clip, binding).Select(key => F32Bits(key.time)).ToArray()
             }).ToArray()
         });
         var have = bindings.Where(binding => binding.path == "" && binding.type == typeof(Animator))
@@ -189,6 +201,9 @@ static partial class UnityrsFixtureBuilder
         if (nodes.Length != mapped.Length
             || !new HashSet<string>(nodes.Select(bone => bone.name), StringComparer.Ordinal).SetEquals(mapped))
             return "its mapped bones are not the case's " + mapped.Length;
+        // Each bone at a node of its own: bones sharing one would pass on a single finite transform.
+        if (nodes.Select(bone => bone.node).Distinct().Count() != nodes.Length)
+            return "two of its mapped bones share a node";
         for (int k = 0; k < capture.samples.Length; k++)
         {
             var transforms = capture.samples[k]?.pose?.transforms;
