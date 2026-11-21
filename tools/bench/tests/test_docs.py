@@ -57,6 +57,8 @@ class RenderTests(unittest.TestCase):
 
     def test_benchmarks_md_without_wall_json_fails_the_check(self):
         root = scratch_tree(self)
+        # The copied README may hold published results; render it for this tree, which has no wall.json.
+        self.assertEqual(bench.render(root, check=False), [])
         (root / "BENCHMARKS.md").write_text("orphan\n", encoding="utf-8")
         self.assertEqual(bench.render(root, check=True), ["BENCHMARKS.md exists without benchmarks/wall.json"])
 
