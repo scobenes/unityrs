@@ -1,7 +1,7 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPyBoost/TypeTreeHelper.cpp (clean_name). See THIRD_PARTY_LICENSES.
 //! Charged snapshots of current Python values. No generated schema is retained.
 //! The synthetic node names describe only the values supplied by this caller.
-use crate::errors;
+use crate::{direct_keys::name, errors};
 use pyo3::{
     ffi,
     prelude::*,
@@ -281,7 +281,7 @@ impl Fields {
                 .as_ref()
                 .and_then(|iter| iter.bind(py).clone().next());
             let key = if let Some(attr) = attr {
-                attr?.getattr("name")?
+                attr?.getattr(name!(py, c"name")?)?
             } else {
                 self.attrs = None;
                 let Some(key) = self
@@ -396,7 +396,7 @@ impl State<'_> {
                     .transpose()?
             };
             if !dict && attrs.is_none() && keys.is_none() {
-                return Err(pyo3::exceptions::PyTypeError::new_err(
+                return Err(crate::errors::new::<pyo3::exceptions::PyTypeError>(
                     "unsupported Python value in export or save",
                 ));
             }
@@ -529,7 +529,13 @@ fn scalar_for_shape(
                         .grow(u64::try_from(len)?.saturating_mul(4))
                         .map_err(errors::charge)?;
                 }
-                let encoded = input.call_method1("encode", ("utf8", "surrogateescape"))?;
+                let encoded = crate::python::held::call(
+                    &input.getattr(name!(py, c"encode")?)?,
+                    &[
+                        name!(py, c"utf8")?.clone().into_any(),
+                        name!(py, c"surrogateescape")?.clone().into_any(),
+                    ],
+                )?;
                 let (bytes, logical_len) = writer_buffer(&encoded, staging.meter())?;
                 staging
                     .meter()
@@ -571,14 +577,14 @@ fn scalar_for_shape(
         // Match the writer's Python protocols and struct.error before any
         // narrowing into Rust integers. This also handles arbitrary __bool__,
         // __index__, and __float__ implementations on the caller's thread.
-        let packed = py
-            .import("struct")?
-            .call_method1("pack", (format, input.bind(py)))?;
+        let packed = struct_pack(py, format, input.bind(py))?;
         let bytes = packed.cast::<PyBytes>()?.as_bytes();
         let mut raw = [0_u8; 8];
         raw.get_mut(..bytes.len())
             .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("invalid numeric snapshot width")
+                crate::errors::new::<pyo3::exceptions::PyValueError>(
+                    "invalid numeric snapshot width",
+                )
             })?
             .copy_from_slice(bytes);
         Ok::<_, PyErr>(match kind {
@@ -634,29 +640,38 @@ fn none_for_shape(
             } else {
                 "i"
             };
-            py.import("struct")?
-                .call_method1("pack", (format, input.bind(py)))?;
-            Err(pyo3::exceptions::PyTypeError::new_err(
+            struct_pack(py, format, input.bind(py))?;
+            Err(crate::errors::new::<pyo3::exceptions::PyTypeError>(
                 "None is not a numeric writer value",
             ))
         }),
         Kind::Str => crate::python::relay::attach(|py| {
-            input.bind(py).getattr("encode")?;
-            Err(pyo3::exceptions::PyTypeError::new_err(
+            input.bind(py).getattr(name!(py, c"encode")?)?;
+            Err(crate::errors::new::<pyo3::exceptions::PyTypeError>(
                 "None is not a string writer value",
             ))
         }),
         _ if tree.list().children(node).is_empty() => {
             Ok((RawStr::from_static(b"int"), Inspect::Scalar(Value::Int(0))))
         }
-        _ => Err(pyo3::exceptions::PyTypeError::new_err(
+        _ => Err(crate::errors::new::<pyo3::exceptions::PyTypeError>(
             "unsupported None in structured writer value",
         )),
     }
 }
 
+/// `struct.pack(format, value)`, every object made fallibly.
+fn struct_pack<'py>(
+    py: Python<'py>,
+    format: &str,
+    value: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let pack = crate::direct_keys::import_attr(py, name!(py, c"struct")?, name!(py, c"pack")?)?;
+    crate::python::held::call(&pack, &[errors::text_of(py, format)?, value.clone()])
+}
+
 fn next_depth(depth: u32, step: u32) -> PyResult<u32> {
-    depth
-        .checked_add(step)
-        .ok_or_else(|| errors::LimitError::new_err("Python value depth overflow"))
+    depth.checked_add(step).ok_or_else(|| {
+        crate::errors::new::<crate::errors::LimitError>("Python value depth overflow")
+    })
 }

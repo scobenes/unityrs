@@ -252,9 +252,9 @@ pub(crate) fn decode_error(error: unityrs_meshdecode::MeshError) -> PyErr {
         unityrs_meshdecode::MeshError::Resource(error) => errors::core(error),
         _ => {
             if let Some((name, message)) = error.python() {
-                named_error(name, message)
+                named_error(name, &message)
             } else {
-                PyNotImplementedError::new_err(errors::message(&error))
+                crate::errors::new::<PyNotImplementedError>(errors::message(&error))
             }
         }
     }
@@ -265,6 +265,6 @@ pub(crate) fn mesh_error(error: MeshError) -> PyErr {
         MeshError::Decode(error) => decode_error(error),
         MeshError::Charge(error) => errors::charge(error),
         MeshError::Core(error) => errors::core(error),
-        _ => PyValueError::new_err(errors::message(&error)),
+        _ => crate::errors::new::<PyValueError>(errors::message(&error)),
     }
 }

@@ -109,9 +109,11 @@ impl Failure {
             Self::Mesh(error) => crate::exports::mesh::mesh_error(error),
             Self::MeshDecode(error) => crate::exports::mesh::decode_error(error),
             Self::Parse(error, boost) => crate::errors::parse_reader(&error, boost),
-            Self::Static(name, text) => crate::exports::named_error(name, text.to_owned()),
-            Self::Message(name, text) => crate::exports::named_error(name, text),
-            Self::Integer(error) => error.into(),
+            Self::Static(name, text) => crate::exports::named_error(name, text),
+            Self::Message(name, text) => crate::exports::named_error(name, &text),
+            Self::Integer(error) => crate::errors::new::<pyo3::exceptions::PyOverflowError>(
+                &crate::errors::message(&error),
+            ),
         }
     }
 }

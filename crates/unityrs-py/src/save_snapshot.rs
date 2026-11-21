@@ -43,7 +43,7 @@ pub(crate) fn serialized(
     externals: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     let File::Serialized(source) = &file.inner else {
-        return Err(PyTypeError::new_err("not a SerializedFile"));
+        return Err(crate::errors::new::<PyTypeError>("not a SerializedFile"));
     };
     let meter = source.meter();
     // The Python facade charges its lists and encodings before construction;

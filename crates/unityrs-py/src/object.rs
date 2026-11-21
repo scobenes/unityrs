@@ -17,13 +17,10 @@ impl NativeObject {
 }
 #[pymethods]
 impl NativeObject {
-    fn monobehaviour_head_nodes(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<(Py<PyAny>, crate::traversal::TreeTraversal)> {
+    fn monobehaviour_head_nodes(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let file = self.inner.file();
         let version = file.version().ok_or_else(|| {
-            pyo3::exceptions::PyNotImplementedError::new_err("Unsupported comparison")
+            crate::errors::new::<pyo3::exceptions::PyNotImplementedError>("Unsupported comparison")
         })?;
         let request = unityrs_core::provider::TreeRequest {
             class_id: 114,
@@ -37,14 +34,16 @@ impl NativeObject {
                 })
             })?
             .map_err(|error| errors::parse(unityrs_core::walk::ParseError::Provider(error)))?
-            .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(114))?;
+            .ok_or_else(|| {
+                crate::errors::new_with::<pyo3::exceptions::PyKeyError>(|py| {
+                    crate::python::held::int(py, 114)
+                })
+            })?;
         let mut guard =
             crate::traversal::TreeTraversal::on(file.meter(), file.context().limits.max_tree_depth);
         guard.expand(u64::from(tree.tree.depth()), 0, 0)?;
-        Ok((
-            crate::tree::rows_to_python(tree.tree.list(), &mut guard)?,
-            guard,
-        ))
+        let rows = crate::tree::rows_to_python(tree.tree.list(), &mut guard)?;
+        p::held::with_guard(py, (rows, guard))
     }
 
     fn set_raw_data(&self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -88,7 +87,7 @@ impl NativeObject {
             Some(">") => unityrs_core::stream::Endian::Big,
             Some("<") => unityrs_core::stream::Endian::Little,
             Some(_) => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
+                return Err(crate::errors::new::<pyo3::exceptions::PyValueError>(
                     "unsupported writer endian",
                 ));
             }
@@ -134,7 +133,7 @@ impl NativeObject {
             unityrs_core::walk::WriteError::Limit(e) => errors::core(e.into()),
             _ => crate::exports::named_error(
                 error.exceptions().first().copied().unwrap_or("ValueError"),
-                errors::message(&error),
+                &errors::message(&error),
             ),
         })?;
         let data = out.as_slice().get(offset..).unwrap_or_default();
@@ -147,8 +146,9 @@ impl NativeObject {
             &self.inner.file().context().limits,
         )
     }
-    fn nodes(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, crate::traversal::TreeTraversal)> {
-        py.detach(|| crate::tree::object_nodes(&self.inner))
+    fn nodes(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let nodes = py.detach(|| crate::tree::object_nodes(&self.inner))?;
+        p::held::with_guard(py, nodes)
     }
     fn parse_nodes(
         &self,
@@ -318,8 +318,9 @@ fn object_result(
                 .map_err(errors::charge)?;
             crate::python::relay::attach(|py| -> PyResult<PyErr> {
                 let mut args = Vec::new();
-                args.try_reserve_exact(names.len())
-                    .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("diagnostic"))?;
+                args.try_reserve_exact(names.len()).map_err(|_| {
+                    crate::errors::new::<pyo3::exceptions::PyMemoryError>("diagnostic")
+                })?;
                 for name in &names {
                     args.push(h::string(py, name.as_bytes())?);
                 }

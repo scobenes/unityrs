@@ -190,7 +190,7 @@ impl Relay {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .panicked = true;
-                Err(pyo3::exceptions::PyRuntimeError::new_err(
+                Err(crate::errors::new::<pyo3::exceptions::PyRuntimeError>(
                     "core worker failed",
                 ))
             },
@@ -253,29 +253,41 @@ fn emit(request: Request) -> PyResult<Response> {
     Python::attach(|py| {
         let Request::Warning(value, bundle) = request else {
             let Request::DecryptKey(meter) = request else {
-                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                return Err(crate::errors::new::<pyo3::exceptions::PyRuntimeError>(
                     "invalid relay request",
                 ));
             };
-            let key = py
-                .import("unityrs.helpers.ArchiveStorageManager")?
-                .getattr("DECRYPT_KEY")?;
+            let key = crate::direct_keys::import_attr(
+                py,
+                crate::direct_keys::name!(py, c"unityrs.helpers.ArchiveStorageManager")?,
+                crate::direct_keys::name!(py, c"DECRYPT_KEY")?,
+            )?;
             if key.is_none() {
                 return Ok(Response::DecryptKey(None));
             }
             let snapshot = crate::buffer_snapshot::BufferSnapshot::new(&key, &meter)?;
             let key = <[u8; 16]>::try_from(snapshot.as_ref()).map_err(|_| {
-                pyo3::exceptions::PyValueError::new_err("AssetBundle Key length is wrong")
+                crate::errors::new::<pyo3::exceptions::PyValueError>(
+                    "AssetBundle Key length is wrong",
+                )
             })?;
             return Ok(Response::DecryptKey(Some(key)));
         };
         // This private protocol returns immutable encoded bytes. Extract the
         // exact owner, never PyBackedBytes' infallible mutable-buffer copy.
-        let (bytes, parse_typetree): (Py<PyBytes>, bool) = py
-            .import("unityrs.config")?
-            .getattr("_warn_fallback")?
-            .call1((super::string(value.as_bytes())?, bundle))?
-            .extract()?;
+        let warn = crate::direct_keys::import_attr(
+            py,
+            crate::direct_keys::name!(py, c"unityrs.config")?,
+            crate::direct_keys::name!(py, c"_warn_fallback")?,
+        )?;
+        let (bytes, parse_typetree): (Py<PyBytes>, bool) = super::held::call(
+            &warn,
+            &[
+                super::held::string(py, value.as_bytes())?,
+                super::held::boolean(py, bundle)?,
+            ],
+        )?
+        .extract()?;
         let bytes = PyBackedBytes::from(bytes.into_bound(py));
         Ok(Response::Warning(
             RawStr::from(unityrs_core::Bytes::from_owner(bytes)),
@@ -304,7 +316,7 @@ pub(crate) fn request(request: Request) -> PyResult<Response> {
 pub(crate) fn warning(value: &RawStr, bundle: bool) -> PyResult<(RawStr, bool)> {
     match request(Request::Warning(value.clone(), bundle))? {
         Response::Warning(value, bundle) => Ok((value, bundle)),
-        _ => Err(pyo3::exceptions::PyRuntimeError::new_err(
+        _ => Err(crate::errors::new::<pyo3::exceptions::PyRuntimeError>(
             "invalid relay response",
         )),
     }
@@ -313,7 +325,7 @@ pub(crate) fn warning(value: &RawStr, bundle: bool) -> PyResult<(RawStr, bool)> 
 pub(crate) fn decrypt_key(meter: &Arc<Meter>) -> PyResult<Option<[u8; 16]>> {
     match request(Request::DecryptKey(meter.clone()))? {
         Response::DecryptKey(key) => Ok(key),
-        _ => Err(pyo3::exceptions::PyRuntimeError::new_err(
+        _ => Err(crate::errors::new::<pyo3::exceptions::PyRuntimeError>(
             "invalid relay response",
         )),
     }

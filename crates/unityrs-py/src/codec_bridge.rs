@@ -1,5 +1,6 @@
 // Ported from UnityPy 1.25.2 (MIT): helpers/CompressionHelper.py:158-231, helpers/CompressionHelper.py:238-258, files/BundleFile.py:489-521. See LICENSE-UNITYPY and THIRD_PARTY_LICENSES.
 //! Live codec-map lookups relayed to the calling Python thread, without core locks.
+use crate::direct_keys::name;
 use crate::{
     buffer_snapshot::BufferSnapshot,
     errors,
@@ -30,46 +31,26 @@ pub(crate) struct Call {
 
 pub(crate) fn invoke(call: &Call) -> PyResult<Response> {
     crate::python::relay::attach(|py| {
-        let module = py.import("unityrs.helpers.CompressionHelper")?;
+        // Every name interned (`name!`) and every call's arguments made
+        // fallibly: a failed allocation raises, never panics.
+        let module = PyModule::import(py, name!(py, c"unityrs.helpers.CompressionHelper")?)?;
         let id = call.which.id();
         if call.kind == 2 {
-            // Validate the compressor before the chunk map, as UnityPy does.
-            if !module.getattr("COMPRESSION_MAP")?.contains(id)? {
-                return Err(pyo3::exceptions::PyNotImplementedError::new_err(
-                    errors::message(&format_args!(
-                        "No compression function in the CompressionHelper.COMPRESSION_MAP for {id}"
-                    )),
-                ));
-            }
-            let map = module.getattr("COMPRESSION_CHUNK_SIZE_MAP")?;
-            if !map.contains(id)? {
-                return Err(pyo3::exceptions::PyNotImplementedError::new_err(
-                    errors::message(&format_args!(
-                        "No chunk size in the CompressionHelper.COMPRESSION_CHUNK_SIZE_MAP for {id}"
-                    )),
-                ));
-            }
-            let size = map.get_item(id)?.extract::<usize>()?;
-            if size == 0 {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "codec chunk size must be positive",
-                ));
-            }
-            let selected = module.getattr("COMPRESSION_MAP")?.get_item(id)?;
-            let builtin = id < 4
-                && module
-                    .getattr("_DEFAULT_COMPRESSION_MAP")?
-                    .get_item(id)
-                    .is_ok_and(|default| default.is(&selected));
-            return Ok(Response::Encoder(selected.unbind(), size, builtin));
+            return encoder(py, &module, id);
         }
-        let (name, defaults) = if call.kind == 0 {
-            ("DECOMPRESSION_MAP", "_DEFAULT_DECOMPRESSION_MAP")
+        let (map_name, defaults) = if call.kind == 0 {
+            (
+                name!(py, c"DECOMPRESSION_MAP")?,
+                name!(py, c"_DEFAULT_DECOMPRESSION_MAP")?,
+            )
         } else {
-            ("COMPRESSION_MAP", "_DEFAULT_COMPRESSION_MAP")
+            (
+                name!(py, c"COMPRESSION_MAP")?,
+                name!(py, c"_DEFAULT_COMPRESSION_MAP")?,
+            )
         };
         let map = if call.selected.is_none() {
-            Some(module.getattr(name)?)
+            Some(module.getattr(map_name)?)
         } else {
             None
         };
@@ -77,25 +58,27 @@ pub(crate) fn invoke(call: &Call) -> PyResult<Response> {
             && !map.contains(id)?
         {
             return if call.kind == 0 {
-                Err(pyo3::exceptions::PyValueError::new_err(errors::message(
-                    &format_args!(
+                Err(crate::errors::new::<pyo3::exceptions::PyValueError>(
+                    errors::message(&format_args!(
                         "Unknown compression! flag: {}, compression flag: {id}",
                         call.flags
-                    ),
-                )))
-            } else {
-                Err(pyo3::exceptions::PyNotImplementedError::new_err(
-                    errors::message(&format_args!(
-                        "No compression function in the CompressionHelper.COMPRESSION_MAP for {id}"
                     )),
                 ))
+            } else {
+                Err(
+                    crate::errors::new::<pyo3::exceptions::PyNotImplementedError>(errors::message(
+                        &format_args!(
+                            "No compression function in the CompressionHelper.COMPRESSION_MAP for {id}"
+                        ),
+                    )),
+                )
             };
         }
         let selected = match (&call.selected, map) {
             (Some(selected), _) => selected.bind(py).clone(),
             (_, Some(map)) => map.get_item(id)?,
             _ => {
-                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                return Err(crate::errors::new::<pyo3::exceptions::PyRuntimeError>(
                     "missing codec selection",
                 ));
             }
@@ -115,15 +98,60 @@ pub(crate) fn invoke(call: &Call) -> PyResult<Response> {
             .map_err(errors::charge)?;
         let input = p::bytes(&call.data)?;
         let result = if call.kind == 0 {
-            selected.call1((input, call.size))?
+            p::held::call(
+                &selected,
+                &[input.into_bound(py), p::held::uint(py, call.size.into())?],
+            )?
         } else {
-            selected.call1((input,))?
+            p::held::call1(&selected, input.bind(py))?
         };
         Ok(Response::Codec(Some(BufferSnapshot::new(
             &result,
             &call.meter,
         )?)))
     })
+}
+
+/// The encoder for `id` and its chunk size (`call.kind == 2`).
+fn encoder(py: Python<'_>, module: &Bound<'_, PyModule>, id: u8) -> PyResult<Response> {
+    // Validate the compressor before the chunk map, as UnityPy does.
+    if !module
+        .getattr(name!(py, c"COMPRESSION_MAP")?)?
+        .contains(id)?
+    {
+        return Err(
+            crate::errors::new::<pyo3::exceptions::PyNotImplementedError>(errors::message(
+                &format_args!(
+                    "No compression function in the CompressionHelper.COMPRESSION_MAP for {id}"
+                ),
+            )),
+        );
+    }
+    let map = module.getattr(name!(py, c"COMPRESSION_CHUNK_SIZE_MAP")?)?;
+    if !map.contains(id)? {
+        return Err(
+            crate::errors::new::<pyo3::exceptions::PyNotImplementedError>(errors::message(
+                &format_args!(
+                    "No chunk size in the CompressionHelper.COMPRESSION_CHUNK_SIZE_MAP for {id}"
+                ),
+            )),
+        );
+    }
+    let size = map.get_item(id)?.extract::<usize>()?;
+    if size == 0 {
+        return Err(crate::errors::new::<pyo3::exceptions::PyValueError>(
+            "codec chunk size must be positive",
+        ));
+    }
+    let selected = module
+        .getattr(name!(py, c"COMPRESSION_MAP")?)?
+        .get_item(id)?;
+    let builtin = id < 4
+        && module
+            .getattr(name!(py, c"_DEFAULT_COMPRESSION_MAP")?)?
+            .get_item(id)
+            .is_ok_and(|default| default.is(&selected));
+    Ok(Response::Encoder(selected.unbind(), size, builtin))
 }
 
 struct Bridge(Codec);
@@ -177,9 +205,9 @@ impl BlockCodec for Bridge {
                 Codec::Lzma => unityrs_core::codec::Lzma.decode(input, size, out),
                 _ => unityrs_core::codec::Lz4.decode(input, size, out),
             },
-            _ => Err(failure(pyo3::exceptions::PyRuntimeError::new_err(
-                "invalid codec response",
-            ))),
+            _ => Err(failure(crate::errors::new::<
+                pyo3::exceptions::PyRuntimeError,
+            >("invalid codec response"))),
         }
     }
 
@@ -197,9 +225,11 @@ impl BlockCodec for Bridge {
                 Ok(out.into_bytes()?)
             }
             Response::Codec(None) => unityrs_core::codec::encode::compress(data, which, meter),
-            _ => Err(SaveError::Read(failure(
-                pyo3::exceptions::PyRuntimeError::new_err("invalid compressor response"),
-            ))),
+            _ => Err(SaveError::Read(failure(crate::errors::new::<
+                pyo3::exceptions::PyRuntimeError,
+            >(
+                "invalid compressor response"
+            )))),
         }
     }
 
@@ -216,9 +246,11 @@ impl BlockCodec for Bridge {
                 chunk,
                 builtin,
             }))),
-            _ => Err(SaveError::Read(failure(
-                pyo3::exceptions::PyRuntimeError::new_err("invalid chunk response"),
-            ))),
+            _ => Err(SaveError::Read(failure(crate::errors::new::<
+                pyo3::exceptions::PyRuntimeError,
+            >(
+                "invalid chunk response"
+            )))),
         }
     }
 }
@@ -275,9 +307,11 @@ impl BlockCodec for Captured {
                 out.extend_from_slice(&bytes)?;
                 Ok(out.into_bytes()?)
             }
-            _ => Err(SaveError::Read(failure(
-                pyo3::exceptions::PyRuntimeError::new_err("invalid captured compressor response"),
-            ))),
+            _ => Err(SaveError::Read(failure(crate::errors::new::<
+                pyo3::exceptions::PyRuntimeError,
+            >(
+                "invalid captured compressor response",
+            )))),
         }
     }
 }

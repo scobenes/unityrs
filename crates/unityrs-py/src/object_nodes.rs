@@ -54,8 +54,9 @@ const FIELDS: [&str; 11] = [
 
 fn build_nodes<'py>(py: Python<'py>, node_lists: &[SharedNodes]) -> PyResult<Bound<'py, PyAny>> {
     let mut keys = Vec::new();
-    keys.try_reserve_exact(FIELDS.len())
-        .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("node key allocation"))?;
+    keys.try_reserve_exact(FIELDS.len()).map_err(|_| {
+        crate::errors::new::<pyo3::exceptions::PyMemoryError>("node key allocation")
+    })?;
     for name in FIELDS {
         keys.push(h::string(py, name.as_bytes())?);
     }
@@ -73,7 +74,9 @@ fn build_nodes<'py>(py: Python<'py>, node_lists: &[SharedNodes]) -> PyResult<Bou
         children,
     ] = keys.as_slice()
     else {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err("node keys"));
+        return Err(crate::errors::new::<pyo3::exceptions::PyRuntimeError>(
+            "node keys",
+        ));
     };
     let optional = |value: Option<i64>| value.map_or_else(|| Ok(h::none(py)), |n| h::int(py, n));
     let mut pace = Pace::new();
@@ -128,9 +131,9 @@ pub(crate) fn references(
         .count_decode((refs.len() as u64 + node_lists.len() as u64).saturating_mul(64))
         .map_err(errors::charge)?;
     let mut indices = HashMap::new();
-    indices
-        .try_reserve(node_lists.len())
-        .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("reference list index allocation"))?;
+    indices.try_reserve(node_lists.len()).map_err(|_| {
+        crate::errors::new::<pyo3::exceptions::PyMemoryError>("reference list index allocation")
+    })?;
     for (index, list) in node_lists.iter().enumerate() {
         indices.insert(std::ptr::from_ref(&**list) as usize, index);
     }
@@ -156,9 +159,9 @@ pub(crate) fn references(
                 .map_err(errors::charge)?;
         }
         // Grown after the record's charge, which covers its slot.
-        records
-            .try_reserve(1)
-            .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("reference record allocation"))?;
+        records.try_reserve(1).map_err(|_| {
+            crate::errors::new::<pyo3::exceptions::PyMemoryError>("reference record allocation")
+        })?;
         records.push((reference, index));
     }
     crate::python::relay::attach(|py| {

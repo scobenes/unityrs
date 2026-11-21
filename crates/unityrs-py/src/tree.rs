@@ -20,7 +20,7 @@ pub(crate) fn tree_error(error: TreeError) -> PyErr {
     match error {
         TreeError::Charge(e) => errors::charge(e),
         TreeError::Limit(e) => errors::core(e.into()),
-        _ => pyo3::exceptions::PyValueError::new_err(errors::message(&error)),
+        _ => crate::errors::new::<pyo3::exceptions::PyValueError>(errors::message(&error)),
     }
 }
 

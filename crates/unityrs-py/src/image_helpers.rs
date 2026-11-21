@@ -69,10 +69,10 @@ fn _texture_preprocess(
                     storage = platform::deswizzle(&data, &layout, &meter)
                         .map_err(|e| images::decode_error(e, format_id))?;
                     let size = layout.padded_size();
-                    width =
-                        i32::try_from(size.0).map_err(|_| PyValueError::new_err("image size"))?;
-                    height =
-                        i32::try_from(size.1).map_err(|_| PyValueError::new_err("image size"))?;
+                    width = i32::try_from(size.0)
+                        .map_err(|_| crate::errors::new::<PyValueError>("image size"))?;
+                    height = i32::try_from(size.1)
+                        .map_err(|_| crate::errors::new::<PyValueError>("image size"))?;
                 }
             }
             let mut format = Format::from_texture_format(format_id);
@@ -102,7 +102,7 @@ fn _texture_preprocess(
                         } else {
                             "unpack_crunch"
                         };
-                        PySystemError::new_err(errors::message(&format_args!(
+                        crate::errors::new::<PySystemError>(errors::message(&format_args!(
                             "<built-in function {name}> returned NULL without setting an exception"
                         )))
                     }
@@ -141,13 +141,13 @@ fn array(input: &Bound<'_, PyAny>, meter: &Arc<Meter>) -> PyResult<VertexArray> 
     };
     let size = count
         .checked_mul(dimension)
-        .ok_or_else(|| PyValueError::new_err("vertex size overflow"))?;
+        .ok_or_else(|| crate::errors::new::<PyValueError>("vertex size overflow"))?;
     let mut values = MeteredVec::with_capacity(meter, size).map_err(errors::charge)?;
     meter.count_decode(size as u64).map_err(errors::charge)?;
     for i in 0..count {
         let row = input.get_item(i)?;
         if row.len()? != dimension {
-            return Err(PyTypeError::new_err(
+            return Err(crate::errors::new::<PyTypeError>(
                 "sprite vertex tuples must have one dimension",
             ));
         }
@@ -176,7 +176,7 @@ fn triangles(input: &Bound<'_, PyAny>, meter: &Arc<Meter>) -> PyResult<Triangles
             let tri = group.get_item(j)?;
             let triple = tri
                 .extract::<[u32; 3]>()
-                .map_err(|_| PyIndexError::new_err("list index out of range"))?;
+                .map_err(|_| crate::errors::new::<PyIndexError>("list index out of range"))?;
             tris.push(triple).map_err(errors::charge)?;
         }
         groups

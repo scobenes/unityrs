@@ -27,13 +27,12 @@ pub(crate) fn cn_key(
     let data = crate::buffer_snapshot::BufferSnapshot::new(data, &meter)?;
     let key = crate::buffer_snapshot::BufferSnapshot::new(key, &meter)?;
     if ![16, 24, 32].contains(&key.len()) {
-        return Err(PyValueError::new_err(errors::message(&format_args!(
-            "Incorrect AES key length ({} bytes)",
-            key.len()
-        ))));
+        return Err(crate::errors::new::<PyValueError>(errors::message(
+            &format_args!("Incorrect AES key length ({} bytes)", key.len()),
+        )));
     }
     if !vector.len().is_multiple_of(16) {
-        return Err(PyValueError::new_err(
+        return Err(crate::errors::new::<PyValueError>(
             "Data must be aligned to block boundary in ECB mode",
         ));
     }

@@ -6,12 +6,12 @@ use unityrs_core::File;
 
 pub(crate) fn snapshot(file: &crate::files::NativeFile) -> PyResult<(Py<PyAny>, TreeTraversal)> {
     let File::Serialized(file) = &file.inner else {
-        return Err(pyo3::exceptions::PyAttributeError::new_err(
+        return Err(crate::errors::new::<pyo3::exceptions::PyAttributeError>(
             "not a serialized file",
         ));
     };
     let refs = file.ref_types().ok_or_else(|| {
-        pyo3::exceptions::PyAttributeError::new_err(
+        crate::errors::new::<pyo3::exceptions::PyAttributeError>(
             "'SerializedFile' object has no attribute 'ref_types'",
         )
     })?;

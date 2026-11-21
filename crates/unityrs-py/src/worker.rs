@@ -106,11 +106,12 @@ fn start(stack: usize, mut job: Job) -> PyResult<Worker> {
             Err(mpsc::SendError(back)) => job = back,
         }
     }
-    let worker = spawn(stack).map_err(|_| PyOSError::new_err("could not create core worker"))?;
+    let worker = spawn(stack)
+        .map_err(|_| crate::errors::new::<PyOSError>("could not create core worker"))?;
     worker
         .jobs
         .send(job)
-        .map_err(|_| PyRuntimeError::new_err("core worker failed"))?;
+        .map_err(|_| crate::errors::new::<PyRuntimeError>("core worker failed"))?;
     Ok(worker)
 }
 
@@ -161,10 +162,12 @@ pub(crate) fn run<T: Send>(stack: usize, f: impl FnOnce() -> T + Send) -> PyResu
             result
         }
         // A panicked worker retires: each panic leaves a fresh thread.
-        Some(Err(_)) | None => return Err(PyRuntimeError::new_err("core worker failed")),
+        Some(Err(_)) | None => {
+            return Err(crate::errors::new::<PyRuntimeError>("core worker failed"));
+        }
     };
     if relay.panicked() {
-        return Err(PyRuntimeError::new_err("core worker failed"));
+        return Err(crate::errors::new::<PyRuntimeError>("core worker failed"));
     }
     match relay.take_error() {
         Some(error) => Err(error),
@@ -212,9 +215,9 @@ pub(crate) fn run_read<T: Send>(
 fn inline<T>(f: impl FnOnce() -> T) -> PyResult<T> {
     let relay = crate::python::relay::Relay::inline();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| relay.enter(f)))
-        .map_err(|_| PyRuntimeError::new_err("core worker failed"))?;
+        .map_err(|_| crate::errors::new::<PyRuntimeError>("core worker failed"))?;
     if relay.panicked() {
-        return Err(PyRuntimeError::new_err("core worker failed"));
+        return Err(crate::errors::new::<PyRuntimeError>("core worker failed"));
     }
     match relay.take_error() {
         Some(error) => Err(error),

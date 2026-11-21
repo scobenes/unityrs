@@ -76,7 +76,7 @@ pub(crate) fn codec(
     let native = native.map_err(|error| match error {
         Failure::Core(unityrs_core::Error::Decompress { detail, .. }) => {
             let (name, text) = detail.split_once(": ").unwrap_or(("ValueError", &detail));
-            crate::exports::named_error(name, errors::message(&text))
+            crate::exports::named_error(name, &errors::message(&text))
         }
         error => error.python(),
     })?;

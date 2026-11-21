@@ -25,11 +25,12 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn _array_format(py: Python<'_>, graphics_format: i32) -> PyResult<i32> {
-    py.detach(|| {
+fn _array_format(py: Python<'_>, graphics_format: i32) -> PyResult<Py<PyAny>> {
+    let format = py.detach(|| {
         unityrs_texture::array::texture_format(graphics_format)
-            .map_err(|e| PyNotImplementedError::new_err(errors::message(&e)))
-    })
+            .map_err(|e| crate::errors::new::<PyNotImplementedError>(errors::message(&e)))
+    })?;
+    crate::python::held::int(py, format.into()).map(Bound::unbind)
 }
 
 #[pyfunction]
@@ -48,7 +49,7 @@ fn _image_resource(
     guard: Option<Py<crate::traversal::TreeTraversal>>,
 ) -> PyResult<Py<PyAny>> {
     let unityrs_core::File::Serialized(file) = &file.inner else {
-        return Err(PyTypeError::new_err(
+        return Err(crate::errors::new::<PyTypeError>(
             "resource owner is not a SerializedFile",
         ));
     };
@@ -99,7 +100,7 @@ pub(crate) fn meter(reader: Option<&NativeObject>) -> Arc<Meter> {
     )
 }
 
-fn exception(class: &str, message: String) -> PyErr {
+fn exception(class: &str, message: &str) -> PyErr {
     crate::python::relay::attach(|py| {
         let cls = if matches!(class, "DecompressionBombError" | "UFuncTypeError") {
             let module = if class == "DecompressionBombError" {
@@ -107,12 +108,12 @@ fn exception(class: &str, message: String) -> PyErr {
             } else {
                 "numpy.core._exceptions"
             };
-            py.import(module).and_then(|m| m.getattr(class))
+            errors::class_named(py, module, class)
         } else {
-            py.import("builtins").and_then(|m| m.getattr(class))
+            errors::class_named(py, "builtins", class)
         };
-        match cls.and_then(|cls| cls.cast_into::<pyo3::types::PyType>().map_err(Into::into)) {
-            Ok(cls) => PyErr::from_type(cls, (message,)),
+        match cls {
+            Ok(cls) => errors::typed(&cls, message),
             Err(error) => error,
         }
     })
@@ -121,22 +122,28 @@ fn exception(class: &str, message: String) -> PyErr {
 pub(crate) fn decode_error(error: DecodeError, format: i32) -> PyErr {
     match error {
         DecodeError::Charge(e) => errors::charge(e),
-        DecodeError::NoImageData => PyValueError::new_err("Texture2D has no image data"),
-        DecodeError::NegativeSize { .. } => PyValueError::new_err("Width and height must be >= 0"),
+        DecodeError::NoImageData => {
+            crate::errors::new::<PyValueError>("Texture2D has no image data")
+        }
+        DecodeError::NegativeSize { .. } => {
+            crate::errors::new::<PyValueError>("Width and height must be >= 0")
+        }
         DecodeError::NotEnoughData { needed, got } if matches!(format, 48..=59 | 66..=71) => {
-            PyValueError::new_err(errors::message(&format_args!(
+            crate::errors::new::<PyValueError>(errors::message(&format_args!(
                 "Invalid ASTC data size: {got} < {needed}"
             )))
         }
-        DecodeError::NotEnoughData { .. } => PyValueError::new_err("not enough image data"),
+        DecodeError::NotEnoughData { .. } => {
+            crate::errors::new::<PyValueError>("not enough image data")
+        }
         DecodeError::PillowMemoryError { .. } => PyMemoryError::new_err(()),
         e @ DecodeError::DecompressionBomb { .. } => {
-            exception("DecompressionBombError", errors::message(&e))
+            exception("DecompressionBombError", &errors::message(&e))
         }
         e @ (DecodeError::TooLarge { .. } | DecodeError::Panicked { .. }) => {
-            errors::LimitError::new_err(errors::message(&e))
+            crate::errors::new::<crate::errors::LimitError>(errors::message(&e))
         }
-        e => PyNotImplementedError::new_err(errors::message(&e)),
+        e => crate::errors::new::<PyNotImplementedError>(errors::message(&e)),
     }
 }
 
@@ -145,7 +152,7 @@ pub(crate) fn write_error(error: unityrs_texture::write::WriteError) -> PyErr {
     match error {
         WriteError::Charge(e) => errors::charge(e),
         WriteError::Decode(e) => decode_error(e, 4),
-        e => PyNotImplementedError::new_err(errors::message(&e)),
+        e => crate::errors::new::<PyNotImplementedError>(errors::message(&e)),
     }
 }
 
@@ -154,9 +161,9 @@ pub(crate) fn sprite_error(error: unityrs_texture::sprite::SpriteError) -> PyErr
         return errors::charge(e);
     }
     if let Some((class, message)) = error.python() {
-        return exception(class, message);
+        return exception(class, &message);
     }
-    PyNotImplementedError::new_err(errors::message(&error))
+    crate::errors::new::<PyNotImplementedError>(errors::message(&error))
 }
 
 pub(crate) fn output(image: &Image, meter: &Arc<Meter>) -> PyResult<Py<PyAny>> {
