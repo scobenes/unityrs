@@ -5,22 +5,32 @@ prediction carries its own derived bound: never fitted, frozen before round 12 c
 Every operation states its assumption; the f64 value is the reference, and the radius covers Unity evaluating the
 same equation in f32 (u = 2^-24), with its inputs' errors propagated:
 
-- **A limit product** (`limit_angle`): the product rounds once (u|v L|); a value's own error moves the angle by at
-  most the larger limit's magnitude times it, since the error can carry the value across 0.
-- **Scalars** (`scale`, `add`): |a| e_b + |b| e_a + e_a e_b, then one rounding at the perturbed magnitudes.
+Every rounding allowance is charged at the input interval's worst endpoint (the largest magnitude any input within
+its radius gives), never at the nominal value: an f32 operation on a perturbed input rounds at that input.
+
+- **A limit product** (`limit_angle`): a value's own error moves the angle by at most the larger limit's magnitude
+  times it, since the error can carry the value across 0; the product rounds once at the perturbed angle,
+  u (|v L| + that move).
+- **Scalars** (`scale`, `add`, `sub`): |a| e_b + |b| e_a + e_a e_b (a sum: e_a + e_b), then one rounding at the
+  perturbed magnitude. A share 1 - w is `sub` on w's own radius, so D2's sequential subtraction (w = 1 - t rounded,
+  then 1 - w) carries both roundings.
 - **tan(theta/2)** (`tan_half`): over the whole interval [theta - e, theta + e], the derivative's supremum at the
-  outer end, plus one ulp (2u|tan|). An interval meeting a pole (|theta| + e >= pi) refuses (`Pole`).
-- **sin, cos, atan** (`axis_angle`, `atan2_half`): one ulp each (2u|value|), the argument's error times a derivative
-  bounded by 1.
+  outer end, plus one ulp at the outer end (2u tan((|theta| + e)/2)). An interval meeting a pole (|theta| + e >= pi)
+  refuses (`Pole`).
+- **sin, cos, atan** (`axis_angle`, `atan2_half`): the argument's error times a derivative bounded by 1 (2 for
+  2 atan), plus one ulp at the interval's largest magnitude.
 - **Quaternion products** (`product`): |a| e_b + |b| e_a + e_a e_b, plus 2 gamma_4 (|a| + e_a)(|b| + e_b) of rounding:
   the perturbed norms, so both operands may carry error.
 - **Normalizing** (`unit`): 2e/|q| + 4u (the exact norm; a sum of squares within gamma_4, sqrt and the division
   within u each); an axis (`unit3`) 2e/|v| + 3u + gamma_3; a norm not above its error refuses.
-- **The angle** (`angle_bound`): 4 asin(e/2) plus `anim_replay.F64_ANGLE_FLOOR`, the one capture convention: Unity's
-  recorded f32 components are compared as stored.
+- **The angle** (`angle_bound`): a stored quaternion within e (2-norm) of a unit one, whatever its own norm, points
+  within asin(e) of it in R^4, so the rotations differ by at most 2 asin(e) (pi from e = 1); plus
+  `anim_replay.F64_ANGLE_FLOOR`, the one capture convention: Unity's recorded f32 components are compared as
+  stored.
 """
 
 import math
+import struct
 import sys
 from pathlib import Path
 
@@ -31,6 +41,9 @@ import anim_replay as replay  # noqa: E402
 U = 2.0 ** -24
 GAMMA4 = 4 * U / (1 - 4 * U)
 GAMMA3 = 3 * U / (1 - 3 * U)
+# f64's unit roundoff, for the witness's own separation angle (`separation`).
+U64 = 2.0 ** -53
+GAMMA4_64 = 4 * U64 / (1 - 4 * U64)
 
 
 class Pole(ValueError):
@@ -66,7 +79,7 @@ def limit_angle(axes, axis, value, value_error=0.):
     limit = axes["max"][axis] if value >= 0 else -axes["min"][axis]
     theta = axes["sign"][axis] * (value * limit)
     moved = max(abs(axes["max"][axis]), abs(axes["min"][axis])) * value_error
-    return (theta, abs(theta) * U + moved)
+    return (theta, moved + U * (abs(theta) + moved))
 
 
 def scale(a, b):
@@ -75,15 +88,29 @@ def scale(a, b):
     return (x * y, abs(x) * ey + abs(y) * ex + ex * ey + U * (abs(x) + ex) * (abs(y) + ey))
 
 
+def _f32(x):
+    return struct.unpack("<f", struct.pack("<f", x))[0]
+
+
+def _sum(value, error):
+    """A sum's radius: its inputs' errors, then one rounding at the perturbed result, none where the inputs are
+    exact and the result is an f32 (1 - 0, 1 - .25: Unity's subtraction is exact there too)."""
+    return error + (0. if error == 0 and _f32(value) == value else U * (abs(value) + error))
+
+
 def add(a, b):
     (x, ex), (y, ey) = a, b
-    return (x + y, ex + ey + U * (abs(x) + ex + abs(y) + ey))
+    return (x + y, _sum(x + y, ex + ey))
+
+
+def sub(a, b):
+    (x, ex), (y, ey) = a, b
+    return (x - y, _sum(x - y, ex + ey))
 
 
 def one_minus(w):
-    """1 - w for an exact f32 w: Unity's f32 subtraction rounds once."""
-    value = 1. - w
-    return (value, U * abs(value))
+    """1 - w, w a value with its radius: Unity's f32 subtraction rounds once at the perturbed result."""
+    return sub(exact(1.), w)
 
 
 def tan_half(a):
@@ -93,15 +120,16 @@ def tan_half(a):
     if not math.isfinite(outer) or outer >= math.pi:
         raise Pole(f"tan(theta/2) meets a pole: |theta| + e = {outer!r}")
     value = math.tan(theta / 2)
-    slope = (1 + math.tan(outer / 2) ** 2) / 2
-    return (value, slope * error + 2 * U * abs(value))
+    widest = math.tan(outer / 2)
+    slope = (1 + widest ** 2) / 2
+    return (value, slope * error + 2 * U * widest)
 
 
 def atan2_half(t):
     """2 atan(t): the inverse of `tan_half`, its derivative bounded by 2 (half angle) and one ulp."""
     value, error = t
     angle = 2 * math.atan(value)
-    return (angle, 2 * error + 2 * U * abs(angle))
+    return (angle, 2 * error + 2 * U * 2 * math.atan(abs(value) + error))
 
 
 def product(a, b):
@@ -143,7 +171,7 @@ def axis_angle(axis, phi):
     (a, ea), (angle, e) = axis, phi
     half, eh = angle / 2, e / 2
     s, c = math.sin(half), math.cos(half)
-    es, ec = eh + 2 * U * abs(s), eh + 2 * U * abs(c)
+    es, ec = eh + 2 * U * min(1., abs(s) + eh), eh + 2 * U * min(1., abs(c) + eh)
     # The three components s * a_i: |s| e_a + e_s |a| + e_s e_a, then their rounding.
     vector = abs(s) * ea + es + es * ea + U * (abs(s) + es) * (1 + ea)
     return ((s * a[0], s * a[1], s * a[2], c), vector + ec)
@@ -164,4 +192,17 @@ def local(rest, axes, joint_rotation):
 
 
 def angle_bound(error):
-    return 4 * math.asin(min(1., error / 2)) + replay.F64_ANGLE_FLOOR
+    return 2 * math.asin(min(1., error)) + replay.F64_ANGLE_FLOOR
+
+
+def separation(p, q):
+    """The rotation angle between two f64 quaternions and its own f64 error: 2 atan2(|v|, |w|) of conj(p) q, well
+    conditioned near the identity (acos of a dot product is not). That angle is twice the angle in R^4 between r and
+    the w axis, whose gradient is at most 1/|r|; r's components carry at most gamma_4 |p| |q| each (2 gamma_4 |p| |q|
+    together, |r| = |p| |q|), and |v|, atan2 and the doubling a few ulps more, charged generously."""
+    r = multiply(conj(p), q)
+    size = norm(p) * norm(q)
+    if not size > 0:
+        raise Pole("a prediction with a zero norm")
+    turn = 2 * math.atan2(norm(r[:3]), abs(r[3]))
+    return turn, 2 * (2 * GAMMA4_64 * size) / (size * (1 - 4 * GAMMA4_64)) + 8 * U64 * turn

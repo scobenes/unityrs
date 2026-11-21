@@ -1,20 +1,22 @@
 """Round 12's witness rule (round 12 design v4 section 2), on actual built Avatars, before collection.
 
 For every two candidates (anim_twist_model: 126 limb x 5 foot) whose keys differ on a proposed admission cell
-(`canonical`), a witness is a named exploration or selection row (anim_twist_tables: a case and a vector index)
-where some chain bone's two predictions are further apart than the sum of their derived bounds
-(anim_twist_bound), so no one recording can satisfy both. A pair with neither equal keys nor a witness refuses the
-cell; a search that finds no witness never makes two candidates equivalent.
+(`canonical`), a witness is a named exploration or selection row (anim_twist_tables: a case and its capture sample
+index) where some chain bone's two predictions are further apart than the sum of their derived bounds
+(anim_twist_bound) and the separation's own f64 error, so no one recording can satisfy both. A pair with neither
+equal keys nor a witness refuses the cell; a search that finds no witness never makes two candidates equivalent.
 
-The search runs in two passes, exactly the rule, never an approximation of it: limb pairs on the bones only the
-limb candidate moves (the arm chains, the upper and lower legs) and foot pairs on the Toes, then every joint pair
-neither settles on the Foot, which both move.
+The search runs in passes, exactly the rule, never an approximation of it: limb pairs on the bones only the limb
+candidate moves (the arm chains, the upper and lower legs) and foot pairs on the Toes; a joint pair takes a limb or
+foot pair's witness only where both its candidates predict on that row; every other joint pair is searched on every
+chain bone of every row.
 
     python3 -I tools/parity/anim_twist_witness.py --unityrs PATH --out FILE <round 11 run folder>
-        One Editor's run folder. It opens only the allowlisted exploration captures (one identity-root
-        full-body clip per scoped rig, for its Avatar and rest pose; never a sweep, fingers, face or hold-out),
-        and writes the result: per cell, the pairs its keys separate and those without a witness; per row group,
-        the rows that first witness some pair; the witnesses' margins over their bounds.
+        One Editor's run folder. It opens only the named exploration captures (`allowlisted`: one identity-root
+        in-scope clip per scoped rig, for its Avatar and rest pose; never a sweep, fingers, face or hold-out, never
+        through a symlink), and writes the result: per cell, the pairs its keys separate and those without a
+        witness; every limb, foot and searched joint pair's witness row; per row group, the rows that witness some
+        pair; the witnesses' margins over their bounds.
 """
 
 import argparse
@@ -45,73 +47,123 @@ CHAIN_BONES = (1, 2, 3, 4, 5, 6, 13, 14, 15, 16, 17, 18, 19, 20)
 LIMB_ONLY = {"Left": (13, 15, 17, 1, 3), "Right": (14, 16, 18, 2, 4)}
 FOOT, TOES = {"Left": 5, "Right": 6}, {"Left": 19, "Right": 20}
 PAIR_BONES = ((13, 15), (15, 17), (1, 3), (3, 5))
+# How far a chain bone's recorded rest may turn from the Avatar's m_SkeletonPose: f32 storage, far under any
+# other Avatar's rest.
+REST_MATCH = 1e-5
 ADMISSION = (("t0", ("compact", "tall")), ("t1", ("compact", "tall")), ("m1", ("compact", "tall")),
              ("t5", SCOPED_RIGS))
 
 
-def allowlisted(folder, rig):
-    """The one capture a rig's Avatar comes from: its scoped clip's first identity-root variant."""
-    body = folder / "replays" / "body"
-    found = sorted(p for p in body.glob(f"body-clip-{rig}-scoped-*.pending.json")
-                   if not p.name.endswith("-offset.pending.json"))
-    replay.require(found, f"no identity-root scoped clip for {rig} in {folder}")
-    return found[0]
+def allowlisted(rig):
+    """The one round 11 case a rig's Avatar comes from, by name: its scoped clip's first identity-root variant
+    (anim_fixture_full.variants' order), an in-scope clip of round 11's table, never a sweep or a hold-out."""
+    import anim_fixture_full as full
+    import anim_fixture_round11 as r11
+
+    scoped = rig + "-scoped"
+    replay.require(rig in SCOPED_RIGS and scoped in full.SCOPED_RIGS, f"{rig} is not a scoped full-body rig")
+    case = f"body-clip-{scoped}-{full.variants(scoped)[0]}"
+    info = r11.ROUND11_INFO.get(case)
+    replay.require(info is not None and info["kind"] == "clip" and info["rig"] == scoped
+                   and info["root"] == "identity" and info.get("scope") == "in",
+                   f"{case} is not an identity-root in-scope round 11 clip")
+    return case
 
 
-def load_rig(folder, rig, unityrs, views):
-    """{bone: {"axes", "rest"}}, the toes per side and the x-sign products per side and pair, from one allowlisted
-    capture and its bundle's Avatar (the bundle checked against the capture's pinned sha256)."""
+def run_file(folder, *parts):
+    """A file of the run itself: no component a symlink (lstat), and resolving inside the run folder."""
+    root = folder.resolve()
+    path = folder
+    for part in parts:
+        replay.require(part not in ("", ".", "..") and "/" not in part and "\\" not in part,
+                       f"{part!r} is not a plain file name")
+        path = path / part
+        replay.require(not path.is_symlink(), f"{path.name} is a symlink")
+    replay.require(path.is_file() and path.resolve().is_relative_to(root), f"{path.name} is not a file of the run")
+    return path
+
+
+def load_rig(folder, rig, unityrs, views, run):
+    """{bone: {"axes", "rest"}}, the toes, the x-sign products and the x reaches per side, from one allowlisted
+    capture and its bundle's Avatar: the capture of this run and Editor and of its named case, at its placement,
+    every chain bone's recorded rest the Avatar's own (m_SkeletonPose, by m_TOS path), and the bundle the
+    capture's pinned sha256."""
+    import anim_fixture_round11 as r11
     from anim_body_runs import human_of
-    from anim_humanoid_qualify import vec
+    from anim_fixture_contract import check_identity
+    from anim_humanoid_qualify import node_paths, tos_paths, vec
+    from anim_muscle_confirm import placement
     from anim_muscle_pose import avatar_node, f32
-    from anim_replay_complete import BundleView, bundle_digest, read_manifest
+    from anim_replay_complete import BundleView, bundle_digest, check_recording_run, read_manifest
 
-    path = allowlisted(folder, rig)
+    case = allowlisted(rig)
+    path = run_file(folder, "replays", "body", case + ".pending.json")
     doc = replay.read_json(path.read_text(encoding="utf-8"))
-    capture = doc["capture"]
+    spec, capture = doc["spec"], doc["capture"]
+    check_recording_run(doc, run, replay, case)
+    check_identity(case, r11.ROUND11_CASES[case], spec, capture, replay)
+    placement(case, r11.ROUND11_INFO[case], doc)
     names = [row["name"] for row in capture["humanoid"]["muscles"]]
     replay.require(all(names[m] == name for name, m in tables.NAMES.items()),
-                   f"{path.name}: the muscle names differ from anim_twist_tables.NAMES")
-    bundle = (folder / "bundles" / doc["spec"]["bundles"][0]["name"]).resolve()
+                   f"{case}: the muscle names differ from anim_twist_tables.NAMES")
+    bundle = run_file(folder, "bundles", spec["bundles"][0]["name"]).resolve()
     digest = bundle_digest(bundle)
     replay.require(capture["bundle_sha256"] == [digest], f"{bundle.name} differs from the capture's pinned sha256")
     if (bundle, digest) not in views:
         views[(bundle, digest)] = BundleView(bundle, digest, 0, unityrs, None, replay, read_manifest(folder, replay)[1])
     view = views[(bundle, digest)]
-    human = human_of(view.value(view.asset(doc["spec"]["avatar_asset"], 90)))
+    avatar = view.value(view.asset(spec["avatar_asset"], 90))
+    human = human_of(avatar)
     skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
+    poses = human["m_SkeletonPose"].get("data", human["m_SkeletonPose"])["m_X"]
+    paths, recorded_paths = tos_paths(avatar), node_paths(spec)
     bones = capture["humanoid"]["bones"]
     found, nodes = {}, {}
     for bone in CHAIN_BONES:
-        node = avatar_node(human, bone)
-        if bones[bone]["node"] < 0 or node is None:
+        node, recorded = avatar_node(human, bone), bones[bone]["node"]
+        replay.require((node is None) == (recorded < 0), f"{case}: bone {bone} is mapped by only one of the capture "
+                                                         "and the Avatar")
+        if node is None:
             continue
-        record = skeleton["m_AxesArray"][skeleton["m_Node"][node]["m_AxesId"]]
+        axes_id = skeleton["m_Node"][node]["m_AxesId"]
+        replay.require(type(axes_id) is int and 0 <= axes_id < len(skeleton["m_AxesArray"]),
+                       f"{case}: bone {bone} has no axes record (m_AxesId {axes_id!r})")
+        replay.require(recorded_paths.get(recorded) == paths.get(skeleton["m_ID"][node]) is not None,
+                       f"{case}: bone {bone} is recorded from another transform than the Avatar's")
+        rest = [replay.f32_from_bits(v) for v in capture["rest"]["transforms"][recorded]["rotation"]]
+        # The Avatar stores its pose in f32 off unit by an ulp or two (w 1 + 2^-22 at the identity): the same
+        # rotation, to REST_MATCH.
+        replay.require(bound.separation(rest, [float(poses[node]["q"][a]) for a in "xyzw"])[0] <= REST_MATCH,
+                       f"{case}: bone {bone} is recorded at a rest rotation not the Avatar's")
+        record = skeleton["m_AxesArray"][axes_id]
         axes = {key: [f32(v) for v in vec(record[name])] for key, name in
                 (("pre", "m_PreQ"), ("post", "m_PostQ"), ("sign", "m_Sgn"))}
         axes |= {key: [f32(v) for v in vec(record["m_Limit"][name])] for key, name in
                  (("min", "m_Min"), ("max", "m_Max"))}
-        rest = [replay.f32_from_bits(v) for v in capture["rest"]["transforms"][bones[bone]["node"]]["rotation"]]
-        found[bone], nodes[bone] = dict(axes=axes, rest=rest), node
+        found[bone] = dict(axes=axes, rest=rest)
+        nodes[bone] = node
     for source, receiver in PAIR_BONES + ((14, 16), (16, 18), (2, 4), (4, 6)):
-        replay.require(skeleton["m_Node"][nodes[receiver]]["m_ParentId"] == nodes[source],
+        replay.require(source in nodes and receiver in nodes
+                       and skeleton["m_Node"][nodes[receiver]]["m_ParentId"] == nodes[source],
                        f"{rig}: bone {receiver}'s skeleton parent is not bone {source}")
     toes = {side: TOES[side] in found for side in model.SIDES}
     signs = {side: [found[s + k]["axes"]["sign"][0] * found[r + k]["axes"]["sign"][0]
                     for s, r in PAIR_BONES] for side, k in (("Left", 0), ("Right", 1))}
-    return dict(rig=found, toes=toes, signs=signs, case=path.name[:-len(".pending.json")])
+    return dict(rig=found, toes=toes, signs=signs, reach=model.x_reach(found), case=case)
 
 
 def rows():
-    """[(case, index, rig, tuple name, vector, group)]: every exploration and selection row, in search order: the
+    """[(case, sample, rig, tuple name, vector, group)]: every exploration and selection row, in search order: the
     core vectors of exploration's all-equal tuples, then its single-field tuples, then its full-set extras and the
-    toe-absent rows, then selection."""
+    toe-absent rows, then selection. `sample` is the vector's capture sample index (anchors counted:
+    anim_twist_tables.sample_index), the index a recording names it by."""
     core = {tuple(sorted(v.items())) for v in tables.core()}
     found = []
     for case, (rig, name, kind, part) in tables.cases().items():
         if part == "confirmation":
             continue
-        for index, vector in enumerate(tables.SETS[kind]()):
+        vectors = tables.SETS[kind]()
+        for index, vector in enumerate(vectors):
             if part == "selection":
                 group = "selection"
             elif kind == "toe-absent":
@@ -122,7 +174,7 @@ def rows():
                 group = "exploration all-equal core"
             else:
                 group = "exploration single-field core"
-            found.append((case, index, rig, name, vector, group))
+            found.append((case, tables.sample_index(index, len(vectors)), rig, name, vector, group))
     order = ("exploration all-equal core", "exploration single-field core", "exploration full-set extras",
              "exploration toe-absent", "selection")
     return sorted(found, key=lambda row: order.index(row[5]))
@@ -139,16 +191,20 @@ def predict(rig, vector, settings, limb, foot, side):
 
 
 def margin(a, b):
-    """How much further apart two predictions (unit quaternion, radius) are than their bounds' sum, in radians."""
+    """How much further apart two predictions (quaternion, radius) are than their bounds' sum, in radians: their
+    separation less its own f64 error and both bounds."""
     (p, ep), (q, eq) = a, b
-    dot = abs(sum(x * y for x, y in zip(p, q)))
-    turn = 2 * math.acos(min(1., dot / (bound.norm(p) * bound.norm(q))))
-    return turn - (bound.angle_bound(ep) + bound.angle_bound(eq))
+    turn, error = bound.separation(p, q)
+    return turn - error - (bound.angle_bound(ep) + bound.angle_bound(eq))
 
 
 def _apart(a, b):
     """Whether two predictions are further apart than their bounds' sum: one recording cannot meet both."""
     return margin(a, b) > 0
+
+
+def _best(a, b, bones):
+    return max(margin(a[k], b[k]) for k in bones if k in a and k in b)
 
 
 def _sides(vector):
@@ -159,14 +215,21 @@ def _sides(vector):
     return sides
 
 
+def _joint(l, f):
+    return l * len(model.FEET) + f
+
+
 def search(rigs, log=print):
-    """The witnesses: {limb pair: row}, {foot pair: row}, {joint pair: row}, and the joint pairs with none."""
+    """The witnesses: {limb pair: row}, {foot pair: row}, {joint pair: row} and the joint pairs with none, each row
+    (case, sample, side, group, margin). A limb or foot witness credits a joint pair only where both of its joint
+    candidates predict on that row (a pole anywhere on the side refuses the whole side); every other joint pair is
+    searched on all chain bones of every row."""
     limb_open = set(itertools.combinations(range(len(model.LIMBS)), 2))
     foot_open = set(itertools.combinations(range(len(model.FEET)), 2))
     limb_found, foot_found = {}, {}
     plan = rows()
     started = time.time()
-    for n, (case, index, rig_name, name, vector, group) in enumerate(plan):
+    for n, (case, sample, rig_name, name, vector, group) in enumerate(plan):
         rig, settings = rigs[model_rig(rig_name)], tables.TUPLES[name]
         for side in _sides(vector):
             if limb_open:
@@ -174,30 +237,46 @@ def search(rigs, log=print):
                 for pair in list(limb_open):
                     a, b = preds[pair[0]], preds[pair[1]]
                     if a is not None and b is not None:
-                        best = max(margin(a[k], b[k]) for k in LIMB_ONLY[side])
+                        best = _best(a, b, LIMB_ONLY[side])
                         if best > 0:
                             limb_open.discard(pair)
-                            limb_found[pair] = (case, index, group, best)
+                            limb_found[pair] = (case, sample, side, group, best)
             if foot_open and rig["toes"][side]:
                 preds = [predict(rig, vector, settings, model.LIMBS[0], foot, side) for foot in model.FEET]
                 for pair in list(foot_open):
                     a, b = preds[pair[0]], preds[pair[1]]
                     if a is not None and b is not None and margin(a[TOES[side]], b[TOES[side]]) > 0:
                         foot_open.discard(pair)
-                        foot_found[pair] = (case, index, group, margin(a[TOES[side]], b[TOES[side]]))
+                        foot_found[pair] = (case, sample, side, group, margin(a[TOES[side]], b[TOES[side]]))
         if n % 200 == 0:
             log(f"row {n}/{len(plan)}: {len(limb_open)} limb and {len(foot_open)} foot pairs open "
                 f"({time.time() - started:.0f} s)")
-    # Joint pairs neither pass settles: the limbs equal or unwitnessed, the feet equal or unwitnessed.
-    # Two different limbs meet a foot pair in either orientation; one limb needs the foot pair once.
-    same_limbs = [(i, i) for i in range(len(model.LIMBS))]
-    same_feet = [(f, f) for f in range(len(model.FEET))]
-    feet_both = sorted(foot_open) + [(f2, f1) for f1, f2 in sorted(foot_open)]
-    joint_open = {(li, fi) for li in same_limbs for fi in sorted(foot_open)}
-    joint_open |= {(li, fi) for li in sorted(limb_open) for fi in same_feet + feet_both}
+    # Which joint candidates predict on each witness row and side.
+    by_row = {(case, sample): (rig_name, name, vector) for case, sample, rig_name, name, vector, _ in plan}
+    predicts = {}
+    for case, sample, side, _, _ in itertools.chain(limb_found.values(), foot_found.values()):
+        if (case, sample, side) not in predicts:
+            rig_name, name, vector = by_row[(case, sample)]
+            rig, settings = rigs[model_rig(rig_name)], tables.TUPLES[name]
+            predicts[(case, sample, side)] = {
+                _joint(l, f) for l, limb in enumerate(model.LIMBS) for f, foot in enumerate(model.FEET)
+                if predict(rig, vector, settings, limb, foot, side) is not None}
+
+    def credited(found, pair, first, second):
+        row = found.get(pair)
+        return row is not None and {first, second} <= predicts[row[:3]]
+    joint_open, credits = set(), 0
+    for (l1, f1), (l2, f2) in itertools.combinations(itertools.product(range(len(model.LIMBS)),
+                                                                       range(len(model.FEET))), 2):
+        first, second = _joint(l1, f1), _joint(l2, f2)
+        if (l1 != l2 and credited(limb_found, (min(l1, l2), max(l1, l2)), first, second)) or \
+                (f1 != f2 and credited(foot_found, (min(f1, f2), max(f1, f2)), first, second)):
+            credits += 1
+        else:
+            joint_open.add(((l1, l2), (f1, f2)))
     joint_found = {}
-    log(f"{len(joint_open)} joint pairs left for the Foot")
-    for case, index, rig_name, name, vector, group in plan:
+    log(f"{credits} joint pairs credited, {len(joint_open)} left for every chain bone")
+    for case, sample, rig_name, name, vector, group in plan:
         if not joint_open:
             break
         rig, settings = rigs[model_rig(rig_name)], tables.TUPLES[name]
@@ -206,15 +285,16 @@ def search(rigs, log=print):
 
             def at(limb, foot):
                 if (limb, foot) not in cache:
-                    found = predict(rig, vector, settings, model.LIMBS[limb], model.FEET[foot], side)
-                    cache[(limb, foot)] = None if found is None else found[FOOT[side]]
+                    cache[(limb, foot)] = predict(rig, vector, settings, model.LIMBS[limb], model.FEET[foot], side)
                 return cache[(limb, foot)]
             for pair in list(joint_open):
                 (l1, l2), (f1, f2) = pair
                 a, b = at(l1, f1), at(l2, f2)
-                if a is not None and b is not None and margin(a, b) > 0:
-                    joint_open.discard(pair)
-                    joint_found[pair] = (case, index, group, margin(a, b))
+                if a is not None and b is not None:
+                    best = _best(a, b, CHAIN_BONES)
+                    if best > 0:
+                        joint_open.discard(pair)
+                        joint_found[pair] = (case, sample, side, group, best)
     return limb_found, foot_found, joint_found, joint_open
 
 
@@ -230,7 +310,8 @@ def cells(rigs, joint_open):
         settings = tables.TUPLES[name]
         for rig_name in rig_names:
             rig = rigs[rig_name]
-            keys = [model.canonical(limb, foot, settings, rig["toes"], rig["signs"]) for limb, foot in joint]
+            keys = [model.canonical(limb, foot, settings, rig["toes"], rig["signs"], rig["reach"])
+                    for limb, foot in joint]
             groups = {}
             for key in keys:
                 groups[key] = groups.get(key, 0) + 1
@@ -248,31 +329,42 @@ def describe(pair):
     return [dict(limb=model.LIMBS[l]._asdict(), foot=model.FEET[f]._asdict()) for l, f in pair]
 
 
+def _row(found):
+    case, sample, side, group, best = found
+    return dict(case=case, sample=sample, side=side, group=group, margin_degrees=math.degrees(best))
+
+
 def run(folder, unityrs, log=print):
+    from anim_replay_complete import read_manifest
+
+    _, identity = read_manifest(folder, replay)
     views = {}
     rigs = {}
     for rig in SCOPED_RIGS:
-        rigs[rig] = load_rig(folder, rig, unityrs, views)
+        rigs[rig] = load_rig(folder, rig, unityrs, views, identity)
         log(f"read {rig}")
     limb_found, foot_found, joint_found, joint_open = search(rigs, log)
     groups = {}
     for found in (limb_found, foot_found, joint_found):
-        for case, index, group, _ in found.values():
-            groups.setdefault(group, set()).add((case, index))
+        for case, sample, _, group, _ in found.values():
+            groups.setdefault(group, set()).add((case, sample))
     summary = {group: dict(rows=len(rows_), cases=sorted({c for c, _ in rows_})) for group, rows_ in groups.items()}
-    # Each witness's margin at its first row, in degrees: how far a recording must stray from the f32 equation to
-    # meet both candidates.
-    margins = sorted(math.degrees(found[3]) for table in (limb_found, foot_found, joint_found)
+    # Each witness's margin at its row, in degrees: how far a recording must stray from the f32 equation to meet
+    # both candidates.
+    margins = sorted(math.degrees(found[4]) for table in (limb_found, foot_found, joint_found)
                      for found in table.values())
     spread = dict(pairs=len(margins), smallest_degrees=margins[0] if margins else None,
                   under={f"{limit:g}": sum(m < limit for m in margins) for limit in (1e-3, 1e-2, .1, 1.)})
-    manifest = replay.read_json((folder / "run.json").read_text(encoding="utf-8"))
-    return dict(format=FORMAT, editor=manifest["run"]["editor_version"], run_id=manifest["run"]["run_id"],
+    return dict(format=FORMAT, editor=identity["editor_version"], run_id=identity["run_id"],
                 tables=tables.digest(), limb_candidates=len(model.LIMBS), foot_candidates=len(model.FEET),
                 limb_pairs_unwitnessed=len(model.LIMBS) * (len(model.LIMBS) - 1) // 2 - len(limb_found),
                 foot_pairs_unwitnessed=10 - len(foot_found), joint_pairs_unwitnessed=len(joint_open),
                 witness_rows=summary, witness_margins=spread, cells=cells(rigs, joint_open),
-                unwitnessed=[describe(((l1, f1), (l2, f2))) for (l1, l2), (f1, f2) in sorted(joint_open)])
+                unwitnessed=[describe(((l1, f1), (l2, f2))) for (l1, l2), (f1, f2) in sorted(joint_open)],
+                limb_witnesses=[dict(limbs=list(pair), **_row(found)) for pair, found in sorted(limb_found.items())],
+                foot_witnesses=[dict(feet=list(pair), **_row(found)) for pair, found in sorted(foot_found.items())],
+                joint_witnesses=[dict(joint=[[l1, f1], [l2, f2]], **_row(found))
+                                 for ((l1, l2), (f1, f2)), found in sorted(joint_found.items())])
 
 
 def main():

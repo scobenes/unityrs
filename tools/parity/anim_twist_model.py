@@ -18,11 +18,13 @@ Toes take T(n(rest_T pre_T y))(+-theta_F) on the left of their own local; withou
 
 `chains` runs one side's arm and leg, proximal to distal, through anim_twist_bound's arithmetic, so each bone's
 prediction is the f64 value with its derived radius. With every limb-twist value 0 it is B5a's equation bit for bit.
-`canonical` keys a candidate on a cell (the twist tuple, toes per side, the Avatar's x signs): equal keys are
-algebraically one equation there, by the rules its docstring proves; anything else needs a witness.
+`canonical` keys a candidate on a cell (the twist tuple, toes per side, the Avatar's x signs and x reaches): equal
+keys are algebraically one equation there, refusing exactly where each other refuses, by the rules its docstring
+proves; anything else needs a witness.
 """
 
 import itertools
+import math
 import sys
 from collections import namedtuple
 from pathlib import Path
@@ -48,6 +50,12 @@ SIDES = {
                   toes=20, foot_twist=35)}
 LIMB_TWISTS = (23, 25, 27, 31, 33, 35, 41, 43, 50, 52)
 X, Y = (1., 0., 0.), (0., 1., 0.)
+# Each pair's source bone (FIELDS order) and each receiver (LowerArm, Hand, LowerLeg, Foot), per side.
+SOURCES = {"Left": (13, 15, 1, 3), "Right": (14, 16, 2, 4)}
+RECEIVERS = {"Left": (15, 17, 3, 5), "Right": (16, 18, 4, 6)}
+# How far below pi an x angle's reach must stay for two candidates that differ only past a tangent there to refuse
+# alike: far above any chain radius (the tangent refuses at |theta| + e >= pi).
+REACH_SLACK = 1e-3
 
 
 def _vector(v):
@@ -65,8 +73,10 @@ def own_angles(bone, axes, values, errors):
 
 
 def _weights(limb, t):
-    """(own w, receiver 1 - w) for a setting t, the subtraction Unity's f32 rounding."""
-    return (b.exact(t), b.one_minus(t)) if limb.d == 1 else (b.one_minus(t), b.exact(t))
+    """(own w, receiver 1 - w) for a setting t, each subtraction Unity's f32 rounding: under D2, w = 1 - t rounds,
+    then 1 - w rounds again (sequential subtraction), so the receiver's share carries both."""
+    own = b.exact(t) if limb.d == 1 else b.one_minus(b.exact(t))
+    return own, b.one_minus(own)
 
 
 def _split(limb, theta, t):
@@ -159,37 +169,46 @@ def chains(rig, values, errors, settings, limb, foot, side):
     return finals
 
 
-def canonical(limb, foot, settings, toes, signs):
+def canonical(limb, foot, settings, toes, signs, reach):
     """The key of a joint candidate on a cell: `settings` the four twist settings, `toes` {side: bool}, `signs`
-    {side: {pair field: the source's x sign times the receiver's}}. Equal keys are one equation on the cell:
+    {side: {pair field: the source's x sign times the receiver's}}, `reach` `x_reach` of the cell's Avatar. Equal
+    keys are one equation on the cell, and refuse alike (a tangent meets its pole on both or on neither):
 
-    - w is the number the cell gives, so D1 and D2 meet where t = .5.
+    - w is the f32 number the cell gives (D2's 1 - t rounded), so D1 and D2 meet where t = .5.
     - w = 1 moves nothing (phi = 0 under every S, the source's joint B5a's), so S, R and sigma drop for that pair.
-    - w = 0: S1 and S2 are both the zero x angle and phi = theta (2 atan(tan(theta/2)) = theta, limits under pi);
-      S3 stays distinct (its counter-rotation is outside the swing).
+    - w = 0: S1 and S2 are both the zero x angle and phi = theta (2 atan(tan(theta/2)) = theta), where the source's
+      x angle stays below pi: its own reach, plus under C1 its source's when one feeds it, and REACH_SLACK. S2 takes
+      tan(theta/2) and S1 does not, so past that they refuse differently and stay apart. S3 stays distinct (its
+      counter-rotation is outside the swing).
     - sigma is the resolved sign per side.
     - C1 is R1 at a receiver whose own pair keeps everything (w = 1) or with no source pair (Hand, Foot): adding
-      to the x angle composes T_x on the joint's right, which is R1's T(post x) on the local's right.
+      to the x angle composes T_x on the joint's right, which is R1's T(post x) on the local's right. Likewise only
+      where the receiver's x angle plus what it receives stays below pi: C1 takes the sum's tangent, R1 does not.
     - Foot: with toes F2 and F3 of a sign are one; without, F2's signs are one (lost) and F3 is F1.
     """
     key = []
     for side in sorted(toes):
-        pairs = []
+        pairs, carried = [], []
         for field in range(4):
             t = settings[field]
-            w = t if limb.d == 1 else 1. - t
+            w = t if limb.d == 1 else _f32(1. - t)
+            # The source's x angle: its own, plus under C1 what the pair before it sends (FIELDS 1 and 3).
+            fed = limb.c == 1 and field in (1, 3) and pairs[field - 1] != ("keep",)
+            carried.append(reach[side][SOURCES[side][field]] + (carried[field - 1] if fed else 0.))
             if w == 1.:
                 pairs.append(("keep",))
                 continue
-            split = "S12" if w == 0. and limb.s in (1, 2) else limb.s
+            below = carried[field] + REACH_SLACK < math.pi
+            split = "S12" if w == 0. and limb.s in (1, 2) and below else limb.s
             sign = {"+": 1., "-": -1., "s": signs[side][field]}[limb.sigma]
             pairs.append((w, split, sign))
         receivers = []
         # (incoming field, outgoing field or None) per receiver: LowerArm, Hand, LowerLeg, Foot.
         for incoming, outgoing in ((0, 1), (1, None), (2, 3), (3, None)):
+            total = reach[side][RECEIVERS[side][incoming]] + carried[incoming] + REACH_SLACK
             if pairs[incoming] == ("keep",):
                 receivers.append(None)
-            elif limb.c == 1 and outgoing is not None and pairs[outgoing] != ("keep",):
+            elif limb.c == 1 and ((outgoing is not None and pairs[outgoing] != ("keep",)) or total >= math.pi):
                 receivers.append("C1")
             else:
                 receivers.append(f"R{limb.r}")
@@ -201,6 +220,23 @@ def canonical(limb, foot, settings, toes, signs):
             feet = ("lost",)
         key.append((side, tuple(pairs), tuple(receivers), feet))
     return tuple(key)
+
+
+def x_reach(rig):
+    """{side: {bone: the largest |x angle| its own muscles give}} over muscle values in [-1, 1], the tables'
+    (0 on a bone no muscle turns on x): canonical's refusal rule."""
+    reach = {}
+    for side in SIDES:
+        reach[side] = {}
+        for bone in SOURCES[side] + RECEIVERS[side]:
+            axes = rig[bone]["axes"]
+            moved = any(MUSCLE_AXES[m] == 0 for m in bone_muscles(bone))
+            reach[side][bone] = max(abs(axes["min"][0]), abs(axes["max"][0])) if moved else 0.
+    return reach
+
+
+def _f32(x):
+    return b._f32(x)
 
 
 def candidates():

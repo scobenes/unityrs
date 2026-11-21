@@ -108,7 +108,7 @@ class F32Ops:
             return ((f32(s * axis[0][0]), f32(s * axis[0][1]), f32(s * axis[0][2]), c), 0.)
         return dict(limit_angle=limit_angle, unit=unit, unit3=unit3, tan_half=tan_half, axis_angle=axis_angle,
                     scale=lambda x, y: (f32(x[0] * y[0]), 0.), add=lambda x, y: (f32(x[0] + y[0]), 0.),
-                    one_minus=lambda w: (f32(1. - w), 0.), atan2_half=lambda t: (f32(2 * f32(math.atan(t[0]))), 0.),
+                    one_minus=lambda w: (f32(1. - w[0]), 0.), atan2_half=lambda t: (f32(2 * f32(math.atan(t[0]))), 0.),
                     product=lambda x, y: (ops.multiply(x[0], y[0]), 0.),
                     exact=lambda v: (tuple(f32(x) for x in v) if isinstance(v, tuple) else v, 0.))
 
@@ -181,6 +181,52 @@ class CandidateTests(unittest.TestCase):
             b.tan_half((3., .2))
         self.assertEqual(b.tan_half((0., 0.))[0], 0.)
 
+    def test_rounding_at_the_worst_endpoint(self):
+        # Value 0 with radius .75 and limit 1 + 2^-23: at the interval's end the f32 product rounds up to
+        # .75 + 2^-23, beyond .75 times the limit; the radius charges that rounding at the endpoint.
+        limit = f32(1 + 2. ** -23)
+        axes = dict(max=[limit] * 3, min=[-1.] * 3, sign=[1.] * 3)
+        theta, radius = b.limit_angle(axes, 0, 0., .75)
+        self.assertEqual(f32(.75 * limit), .75 + 2. ** -23)
+        self.assertLessEqual(abs(f32(.75 * limit) - theta), radius)
+        # tan, atan, sin and cos likewise round at the interval's widest end.
+        for e in (.75, 1e-3, 2. ** -20):
+            value, radius = b.tan_half((0., e))
+            self.assertLessEqual(f32(math.tan(f32(e / 2))), value + radius)
+            value, radius = b.atan2_half((0., e))
+            self.assertLessEqual(f32(2 * f32(math.atan(e))), value + radius)
+            (q, radius) = b.axis_angle(((1., 0., 0.), 0.), (0., e))
+            self.assertLessEqual(f32(math.sin(f32(e / 2))) - q[0], radius)
+
+    def test_d2_subtracts_twice(self):
+        # D2 under sequential subtraction: t = 2^-26 makes f32 w = 1, then 1 - w = 0; both radii cover it.
+        t = 2. ** -26
+        own, rest = model._weights(model.Limb(2, 1, 1, "+", 0), t)
+        w = f32(1. - t)
+        self.assertEqual((w, f32(1. - w)), (1., 0.))
+        self.assertLessEqual(abs(w - own[0]), own[1])
+        self.assertLessEqual(abs(f32(1. - w) - rest[0]), rest[1])
+        # Exact shares stay exact: B5a's bits where nothing rounds.
+        self.assertEqual(model._weights(model.Limb(2, 1, 1, "+", 0), 0.), ((1., 0.), (0., 0.)))
+        self.assertEqual(model._weights(model.Limb(2, 1, 1, "+", 0), .25), ((.75, 0.), (.25, 0.)))
+
+    def test_the_separation_near_the_identity(self):
+        # 2 atan2(|v|, |w|) keeps a 2^-40 rad turn that acos of the dot product rounds to 0 or worse; its own error
+        # is a few f64 ulps, far under the angle floor; the double cover is one rotation.
+        q = (0., 0., 0., 1.)
+        for turn in (2. ** -40, 1e-9, .5, 3.):
+            r = (math.sin(turn / 2), 0., 0., math.cos(turn / 2))
+            found, error = b.separation(q, r)
+            self.assertAlmostEqual(found, turn, delta=turn * 1e-15 + error)
+            self.assertLess(error, 1e-14)
+            self.assertAlmostEqual(b.separation(q, tuple(-x for x in r))[0], turn, delta=turn * 1e-15 + error)
+        # A stored quaternion within e of a unit one, its norm free, turns by up to 2 asin(e): the bound covers it.
+        e = .1
+        stored = (e * math.sqrt(1 - e * e), 0., 0., 1 - e * e)
+        self.assertLessEqual(math.hypot(stored[0], stored[3] - 1), e + 1e-15)
+        self.assertLessEqual(b.separation(q, stored)[0], b.angle_bound(e))
+        self.assertGreater(b.separation(q, stored)[0], 4 * math.asin(e / 2))
+
     def test_perturbed_norm_products(self):
         a, c = ((0., 0., 0., 2.), .5), ((0., 0., 0., 3.), .25)
         value, error = b.product(a, c)
@@ -217,7 +263,8 @@ class EquivalenceTests(unittest.TestCase):
                 for side, k in (("Left", 0), ("Right", 1))}
 
     def key(self, limb, foot, settings, toes=True):
-        return model.canonical(limb, foot, settings, {"Left": toes, "Right": toes}, self.signs)
+        return model.canonical(limb, foot, settings, {"Left": toes, "Right": toes}, self.signs,
+                               model.x_reach(self.rig))
 
     def assertSame(self, first, second, settings, toes=True):
         rig = self.rig if toes else {k: v for k, v in self.rig.items() if k not in (19, 20)}
@@ -262,6 +309,21 @@ class EquivalenceTests(unittest.TestCase):
             self.rig[bone]["axes"]["sign"][0] = -1.
         self.assertSame((model.Limb(1, 1, 3, "s", 0), f1), (model.Limb(1, 1, 3, "+", 0), f1), (.25,) * 4)
         self.assertDiffer((model.Limb(1, 1, 3, "s", 0), f1), (model.Limb(1, 1, 3, "-", 0), f1), (.25,) * 4)
+
+    def test_refusal_keeps_s1_and_s2_apart_where_a_sum_reaches_pi(self):
+        # Under C1 the LowerArm's x angle is its own plus the UpperArm's share: limits of 2 rad each can reach pi,
+        # where S2 takes a tangent S1 does not, so at w = 0 the two stay apart; limits of 1 rad cannot.
+        f1 = model.FEET[0]
+        first, second = (model.Limb(1, 1, 1, "+", 1), f1), (model.Limb(1, 2, 1, "+", 1), f1)
+        for bone in CHAIN:
+            self.rig[bone]["axes"]["min"], self.rig[bone]["axes"]["max"] = [-2.] * 3, [2.] * 3
+        self.assertNotEqual(self.key(*first, (0.,) * 4), self.key(*second, (0.,) * 4))
+        # C1 against R1 at the Hand: its sum can reach pi too, though nothing moves on.
+        self.assertNotEqual(self.key(model.Limb(1, 1, 1, "+", 1), f1, (.25, 1., .25, 1.)),
+                            self.key(model.Limb(1, 1, 1, "+", 0), f1, (.25, 1., .25, 1.)))
+        for bone in CHAIN:
+            self.rig[bone]["axes"]["min"], self.rig[bone]["axes"]["max"] = [-1.] * 3, [1.] * 3
+        self.assertSame(first, second, (0.,) * 4)
 
     def test_c1_is_r1_where_nothing_moves_on(self):
         f1 = model.FEET[0]

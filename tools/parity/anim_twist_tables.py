@@ -137,6 +137,14 @@ def cases():
 SETS = {"full": full, "core": core, "toe-absent": toe_absent}
 
 
+def sample_index(k, count):
+    """Vector k's capture sample index among `count`, as the builder's Scheduled (UnityrsBodyFixtures.cs) lays a
+    probe case out: an anchor at 0, the first ceil(count/2) vectors, an anchor at .5, the rest, an anchor at 1."""
+    if not 0 <= k < count:
+        raise ValueError(f"vector {k} outside a set of {count}")
+    return 1 + k + (k >= (count + 1) // 2)
+
+
 def digest():
     """The sha256 of the canonical tables: what the owner manifest and the intake digest pin."""
     tables = {"tuples": TUPLES, "cases": cases(),

@@ -18,16 +18,20 @@ def rig_entry(seed, toes=True):
     rig = synthetic_rig(seed, toes=toes)
     signs = {side: [rig[s + k]["axes"]["sign"][0] * rig[r + k]["axes"]["sign"][0] for s, r in witness.PAIR_BONES]
              for side, k in (("Left", 0), ("Right", 1))}
-    return dict(rig=rig, toes={"Left": toes, "Right": toes}, signs=signs, case=f"synthetic-{seed}")
+    return dict(rig=rig, toes={"Left": toes, "Right": toes}, signs=signs, reach=model.x_reach(rig),
+                case=f"synthetic-{seed}")
 
 
 class RowTests(unittest.TestCase):
     def test_only_exploration_and_selection(self):
         rows = witness.rows()
         groups = {}
-        for case, index, rig, name, vector, group in rows:
+        for case, sample, rig, name, vector, group in rows:
             groups[group] = groups.get(group, 0) + 1
             self.assertNotEqual(tables.cases()[case][3], "confirmation")
+            # Capture sample indices: the anchors at 0, .5 and 1 are never a vector's.
+            count = len(tables.SETS[tables.cases()[case][2]]())
+            self.assertNotIn(sample, (0, (count + 1) // 2 + 1, count + 2))
         self.assertEqual(groups, {"exploration all-equal core": 339, "exploration single-field core": 452,
                                   "exploration full-set extras": 294, "exploration toe-absent": 29, "selection": 633})
         order = [row[5] for row in rows]
@@ -35,16 +39,35 @@ class RowTests(unittest.TestCase):
                                                    "exploration full-set extras", "exploration toe-absent",
                                                    "selection"].index))
 
-    def test_the_allowlist_reads_an_identity_root_clip(self):
-        with scratch.folder() as folder:
-            body = folder / "replays" / "body"
-            body.mkdir(parents=True)
-            for name in ("body-clip-tall-scoped-level-offset", "body-clip-tall-scoped-level",
-                         "body-clip-tall-scoped-bake-o0-y0-xz1-offset", "body-probes-fingers"):
-                (body / f"{name}.pending.json").write_text("{}", encoding="utf-8")
-            self.assertEqual(witness.allowlisted(folder, "tall").name, "body-clip-tall-scoped-level.pending.json")
+    def test_the_allowlist_names_one_identity_root_clip_per_rig(self):
+        import anim_fixture_round11 as r11
+
+        cases = {rig: witness.allowlisted(rig) for rig in witness.SCOPED_RIGS}
+        self.assertEqual(len(set(cases.values())), 27)
+        for rig, case in cases.items():
+            self.assertTrue(case.startswith(f"body-clip-{rig}-scoped-") and not case.endswith("-offset"), case)
+            self.assertEqual(r11.ROUND11_INFO[case]["root"], "identity")
+        for rig in ("fingers", "holdout", "compact-scoped", "eyes-jaw"):
             with self.assertRaises(ValueError):
-                witness.allowlisted(folder, "compact")
+                witness.allowlisted(rig)
+
+    def test_run_files_refuse_symlinks_and_escapes(self):
+        with scratch.folder() as root:
+            run, outside = root / "run", root / "outside"
+            (run / "replays" / "body").mkdir(parents=True)
+            outside.mkdir()
+            (outside / "sealed.pending.json").write_text("{}", encoding="utf-8")
+            (run / "replays" / "body" / "real.pending.json").write_text("{}", encoding="utf-8")
+            (run / "replays" / "body" / "link.pending.json").symlink_to(outside / "sealed.pending.json")
+            (run / "replays" / "inner.pending.json").write_text("{}", encoding="utf-8")
+            (run / "replays" / "body" / "near.pending.json").symlink_to(run / "replays" / "inner.pending.json")
+            (run / "bundles").symlink_to(outside, target_is_directory=True)
+            self.assertEqual(witness.run_file(run, "replays", "body", "real.pending.json").name, "real.pending.json")
+            for parts in (("replays", "body", "link.pending.json"), ("replays", "body", "near.pending.json"),
+                          ("bundles", "sealed.pending.json"), ("replays", "..", "outside"),
+                          ("replays", "body/real.pending.json"), ("replays", "body", "missing.pending.json")):
+                with self.assertRaises(ValueError, msg=parts):
+                    witness.run_file(run, *parts)
 
     def test_apart_needs_more_than_both_bounds(self):
         q = (0., 0., 0., 1.)
@@ -54,6 +77,10 @@ class RowTests(unittest.TestCase):
         self.assertFalse(witness._apart((q, 2 ** -19), (turned, 0.)))
         self.assertAlmostEqual(witness.margin((q, 0.), (turned, 0.)) + 2 * witness.bound.angle_bound(0.),
                                2 * 2 ** -20, delta=1e-12)
+        # Near the identity the separation is atan2's, never acos's: 2^-40 rad apart is apart.
+        tiny = (2 ** -41, 0., 0., 1.)
+        self.assertTrue(witness._apart((q, 0.), (tiny, 0.)))
+        self.assertLess(witness.margin((q, 0.), (tiny, 0.)), 2 ** -40)
 
 
 class RuleTests(unittest.TestCase):
@@ -66,8 +93,8 @@ class RuleTests(unittest.TestCase):
     def run_rule(self, admission):
         rigs = {"compact": rig_entry(11), "tall": rig_entry(12), "no-toes": rig_entry(13, toes=False)}
         twist = {m: .5 for m in model.LIMB_TWISTS}
-        plan = [("body-twist-compact-t0", 0, "compact", "t0", twist, "exploration all-equal core"),
-                ("body-twist-compact-t0", 1, "compact", "t0", {41: -1., 39: .5, 23: .5, 27: .5},
+        plan = [("body-twist-compact-t0", 1, "compact", "t0", twist, "exploration all-equal core"),
+                ("body-twist-compact-t0", 2, "compact", "t0", {41: -1., 39: .5, 23: .5, 27: .5},
                  "exploration all-equal core")]
         with mock.patch.multiple(model, LIMBS=self.LIMBS, FEET=self.FEET), \
                 mock.patch.object(witness, "rows", lambda: plan), mock.patch.object(witness, "ADMISSION", admission):
@@ -88,10 +115,24 @@ class RuleTests(unittest.TestCase):
 
     def test_witness_rows_are_named(self):
         limb_found, _, _, _ = self.run_rule((("t0", ("compact",)),))
-        for case, index, group, found in limb_found.values():
+        for case, sample, side, group, found in limb_found.values():
             self.assertEqual((case, group), ("body-twist-compact-t0", "exploration all-equal core"))
-            self.assertIn(index, (0, 1))
+            self.assertIn(sample, (1, 2))
+            self.assertIn(side, ("Left", "Right"))
             self.assertGreater(found, 0)
+
+    def test_a_component_witness_needs_both_joint_candidates_to_predict(self):
+        # A pole on a row refuses that candidate's whole side: a limb witness found there with F1 cannot credit a
+        # joint pair whose other foot candidate refuses on it, so that pair is searched on every chain bone.
+        real = witness.predict
+
+        def refusing(rig, vector, settings, limb, foot, side):
+            return None if foot == self.FEET[2] else real(rig, vector, settings, limb, foot, side)
+        with mock.patch.object(witness, "predict", refusing):
+            limb_found, _, joint_open, _ = self.run_rule((("t0", ("compact",)),))
+        self.assertIn((0, 2), limb_found)
+        self.assertIn(((0, 2), (2, 2)), joint_open)
+        self.assertNotIn(((0, 2), (0, 0)), joint_open)
 
 
 if __name__ == "__main__":
