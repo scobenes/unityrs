@@ -61,11 +61,12 @@ nothing) and running to the next marker or the section's end. And:
 - a crate holds a section when one of its files names the section's source in
   its header, or the section lists one of its files. It then has each of
   the section's notices, the same words, as its own file of the name the
-  marker gives (a symlink to another crate's is one), so `cargo package`,
-  which packs every file of the crate's folder, ships them with the code; a
-  crate whose
-  manifest sets `include` or `exclude` is refused, since this check cannot
-  then say what is packed;
+  marker gives (a symlink to another crate's is one), so `cargo package`
+  ships them with the code; a crate whose manifest sets `include` or
+  `exclude` must pack each such file at its root: an `include` pattern names
+  it (`/LICENSE-*`), or, with no `include`, no `exclude` pattern does, and a
+  negated (`!`) pattern is refused, since this check cannot then say what is
+  packed;
 - each licence of a workspace member beyond the repository's own (MIT,
   Apache-2.0) is a section's, whose notices the crate has as those files, so
   cargo-about lists the member with that text (custom licences reach Ported
@@ -80,6 +81,7 @@ Python 3.11 or later).
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 import sys
@@ -549,6 +551,22 @@ def _source_files(root: Path) -> list[Path]:
     return files
 
 
+def _packed(package: dict, name: str) -> bool | None:
+    """Whether `cargo package` packs the crate-root file `name` under the manifest's include/exclude; None for a
+    negated pattern, which this check does not read. As cargo, a set `include` overrides `exclude`."""
+    patterns = package.get("include", package.get("exclude", []))
+    if any(p.startswith("!") for p in patterns):
+        return None
+
+    def matches(pattern: str) -> bool:
+        pattern = pattern.removeprefix("/").removeprefix("**/")
+        return not pattern.endswith("/") and fnmatch.fnmatchcase(name, pattern)
+
+    if "include" in package:
+        return any(matches(p) for p in patterns)
+    return not any(matches(p) for p in patterns)
+
+
 def _notice_problem(root: Path, crate: str, section: Section) -> str | None:
     """Why the crate does not carry each of the section's notices as its own file, or None when it does."""
     for name, notice in section.notices:
@@ -667,10 +685,16 @@ def port_problems(root: Path) -> list[str]:
 
     for crate in crates:
         needed = {s for s in held[crate] if s.notices}
-        if needed and {"include", "exclude"} & set(_manifest(root, crate)):
-            problems.append(
-                f"crates/{crate}: its manifest sets include or exclude, so this check cannot say its notices are packed"
-            )
+        for name in sorted({name for s in needed for name, _ in s.notices}):
+            packed = _packed(_manifest(root, crate), name)
+            if packed is None:
+                problems.append(
+                    f"crates/{crate}: its manifest negates an include or exclude pattern, so this check cannot say "
+                    "its notices are packed"
+                )
+                break
+            if not packed:
+                problems.append(f"crates/{crate}: its manifest's include or exclude leaves {name} out of its package")
         for section in sorted(needed, key=lambda s: s.title):
             if why := _notice_problem(root, crate, section):
                 problems.append(f"crates/{crate}: it holds {section.source}'s code, but {why}")

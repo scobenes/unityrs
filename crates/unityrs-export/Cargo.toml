@@ -1,6 +1,6 @@
 [package]
 name = "unityrs-export"
-description = "Exports beside the textures: Sprites, the NGUI atlas cutter, its crops, its JSON and its winners."
+description = "Unity asset exports beside the textures: sprites, the NGUI atlas cutter and its crops, and the UnityPy extractor tree."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,21 +18,27 @@ rust-version.workspace = true
 license = "(MIT OR Apache-2.0) AND MIT"
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords = ["unity", "unitypy", "sprite", "extract", "gamedev"]
+categories = ["game-development", "multimedia::images"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*"]
 
 [dependencies]
-unityrs-anim = { path = "../unityrs-anim", optional = true }
-unityrs-gltf = { path = "../unityrs-gltf", optional = true }
-unityrs-scene = { path = "../unityrs-scene", optional = true }
-unityrs-audio = { path = "../unityrs-audio", default-features = false }
-unityrs-mesh = { path = "../unityrs-mesh" }
-unityrs-core = { path = "../unityrs-core" }
+unityrs-anim = { version = "1.0.0", path = "../unityrs-anim", optional = true }
+unityrs-gltf = { version = "1.0.0", path = "../unityrs-gltf", optional = true }
+unityrs-scene = { version = "1.0.0", path = "../unityrs-scene", optional = true }
+unityrs-audio = { version = "1.0.0", path = "../unityrs-audio", default-features = false }
+unityrs-mesh = { version = "1.0.0", path = "../unityrs-mesh" }
+unityrs-core = { version = "1.0.0", path = "../unityrs-core" }
 # The sheets' decoders and E66's texture selection.
-unityrs-texture = { path = "../unityrs-texture" }
+unityrs-texture = { version = "1.0.0", path = "../unityrs-texture" }
 # A tight Sprite's mesh (E16), which the sprite renderer masks or maps by.
-unityrs-meshdecode = { path = "../unityrs-meshdecode" }
+unityrs-meshdecode = { version = "1.0.0", path = "../unityrs-meshdecode" }
 # The crops' and textures' PNGs, byte-equal to Pillow 9.5.0's, and the
 # visible-pixel hash.
-unityrs-imageio = { path = "../unityrs-imageio" }
+unityrs-imageio = { version = "1.0.0", path = "../unityrs-imageio" }
 thiserror = "=2.0.21"
 # Each output's MD5, which the winners compare (docs/plans/extract.md E31).
 # RustCrypto's, on the digest 0.11 sha2 0.11 already brings; named by its

@@ -718,8 +718,14 @@ class PortTests(unittest.TestCase):
                     "has a LICENSE-X that is not about.hbs's",
                     self.problems(**kw, licence_file=LICENCE.split("\n\n")[1]),
                 )
-        self.assert_named("sets include or exclude", self.problems(manifest='include = ["src/**", "Cargo.toml"]\n'))
-        self.assert_named("sets include or exclude", self.problems(manifest='exclude = ["LICENSE-*"]\n'))
+        leaves = "include or exclude leaves LICENSE-X out of its package"
+        self.assert_named(leaves, self.problems(manifest='include = ["src/**", "Cargo.toml"]\n'))
+        self.assert_named(leaves, self.problems(manifest='exclude = ["LICENSE-*"]\n'))
+        self.assert_named(leaves, self.problems(manifest='include = ["/src/**"]\nexclude = ["/tests/"]\n'))
+        self.assert_named("negates an include", self.problems(manifest='include = ["/*", "!/LICENSE-X"]\n'))
+        for manifest in ('include = ["/src/**", "/LICENSE-*"]\n', 'include = ["LICENSE-X"]\n', 'exclude = ["/tests/"]\n'):
+            with self.subTest(manifest):
+                self.assertEqual(self.problems(manifest=manifest), [])
 
     def test_every_notice_of_a_section_is_carried(self):
         # A summary of changes the licence asks for, beside the licence: both are the crate's.
