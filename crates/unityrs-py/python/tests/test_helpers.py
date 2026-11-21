@@ -65,6 +65,47 @@ def test_row_copy_releases_gil_between_python_extractions(save=False):
     assert not errors, errors
 
 
+def test_core_call_releases_gil():
+    """Invoked by the Rust test harness, which supplies the cfg(test) barrier:
+    `parse_as_dict`'s core call, as it starts detached, waits for another
+    Python thread to run and acknowledge, which it can only do while the GIL
+    is released (held, the wait times out and the read raises)."""
+    import threading
+    from unityrs import _native
+
+    node = S.Node("TextAsset", "Base", [S.vec("items", S.Node("int", "data"))])
+    data = S.serialized_file(
+        [S.Type(49, node)], [S.Obj(1, 0, struct.pack("<i", 32768) + b"\0" * (32768 * 4))])
+    obj = unityrs.Environment(data).objects[0]
+    barrier = _native._RowCopyBarrier()
+    progress = []
+    errors = []
+
+    def other():
+        try:
+            barrier.wait_for_copy()
+            progress.append(True)
+            barrier.acknowledge()
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=other)
+    thread.start()
+    interval = sys.getswitchinterval()
+    # No switch while the caller holds the GIL: the other thread runs only
+    # where the core call releases it.
+    sys.setswitchinterval(30)
+    try:
+        barrier.arm_core()
+        value = obj.parse_as_dict()
+    finally:
+        sys.setswitchinterval(interval)
+        thread.join()
+    assert not errors, errors
+    assert progress == [True], "no other Python thread ran during the core call"
+    assert value == {"items": [0] * 32768}, "the read's value changed"
+
+
 class TypeTreeHelpers(unittest.TestCase):
     def test_head_reconstruction_retries_after_python_allocation_failure(self):
         from unittest.mock import patch

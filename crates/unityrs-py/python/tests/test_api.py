@@ -331,34 +331,6 @@ assert result == [1], result
                                      stdout=child.PIPE, stderr=child.PIPE, text=True, timeout=45)
                     self.assertEqual(proc.returncode, 0, proc.stderr)
 
-    def test_core_call_releases_gil(self):
-        import child
-        script = r"""
-import sys, threading, struct
-sys.path.insert(0, sys.argv[1])
-import synth as S
-import unityrs
-node = S.Node("TextAsset", "Base", [S.vec("items", S.Node("int", "data"))])
-data = S.serialized_file([S.Type(49, node)], [S.Obj(1, 0, struct.pack("<i", 32768) + b"\0" * (32768*4))])
-obj = unityrs.Environment(data).objects[0]
-start = threading.Event()
-progress = threading.Event()
-def other():
-    start.wait()
-    progress.set()
-t = threading.Thread(target=other)
-t.start()
-sys.setswitchinterval(30)
-start.set()
-obj.parse_as_dict()
-assert progress.is_set(), "no other Python thread ran during the core call"
-sys.setswitchinterval(0.005)
-t.join()
-"""
-        proc = child.run([sys.executable, "-c", script, str(ROOT / "tools/parity/tests")],
-                         stdout=child.PIPE, stderr=child.PIPE, text=True, timeout=45)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-
     def test_wheel_contains_dependency_notices(self):
         import importlib.metadata
         files = importlib.metadata.files("unityrs")

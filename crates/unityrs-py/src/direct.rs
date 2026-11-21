@@ -507,7 +507,11 @@ pub(crate) fn read(
         if object.serialized_type().is_none_or(|ty| ty.nodes.is_none()) {
             return Ok(None);
         }
-        match py.detach(|| object.tree(None)) {
+        match py.detach(|| {
+            #[cfg(test)]
+            crate::row_copy_test::before_core()?;
+            Ok::<_, PyErr>(object.tree(None))
+        })? {
             Ok(Some(tree)) => tree.tree,
             Ok(None) => return Ok(None),
             Err(error) => {

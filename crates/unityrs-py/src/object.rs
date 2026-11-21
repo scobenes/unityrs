@@ -183,6 +183,8 @@ impl NativeObject {
             .transpose()?;
         let meter = self.inner.file().meter();
         let native = py.detach(|| {
+            #[cfg(test)]
+            crate::row_copy_test::before_core()?;
             crate::worker::run_read(&self.inner, tree.is_some(), || {
                 let parsed = self
                     .inner
