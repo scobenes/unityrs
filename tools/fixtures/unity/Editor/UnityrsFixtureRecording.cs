@@ -102,6 +102,8 @@ public static partial class AnimReplayRecorder
         {
             bool mixed = RecordCase(fixture, bundles, output, runId, log);
             completed = true;
+            // The capture is written: only now the Spine endpoint evaluations, whose failure is a diagnostic.
+            RunDeferred();
             return mixed;
         }
         finally { EndDiagnostics(fixture, output, runId); }
@@ -358,16 +360,25 @@ public static partial class AnimReplayRecorder
 
         const float tolerance = .25f;
         var last = capture.samples[capture.samples.Length - 1];
-        // A round 12 clip's end may lie past 1 (its subset clip's keys run to 7 s): the authored end is its last.
-        var expectedStart = AuthoredRotation(0);
-        var expectedStop = AuthoredRotation(diagnostics == null ? 1 : (float)last.local);
         var neutral = Rotation(capture.samples[0]);
         var combined = Rotation(last);
-        string endpoint = "Built Spine rotation differs from the authored endpoint pose in " + name + ".";
-        Check(Quaternion.Angle(neutral, expectedStart) <= tolerance, "spine_start", 0,
-            Quaternion.Angle(neutral, expectedStart), tolerance, endpoint);
-        Check(Quaternion.Angle(combined, expectedStop) <= tolerance, "spine_stop", capture.samples.Length - 1,
-            Quaternion.Angle(combined, expectedStop), tolerance, endpoint);
+        // The authored endpoints, evaluated on preview instances. A round 12 case evaluates them after its capture
+        // is written (RunDeferred), at its clip's last sample (its subset clip's keys run to 7 s), as diagnostics.
+        void Endpoints()
+        {
+            var expectedStart = AuthoredRotation(0);
+            var expectedStop = AuthoredRotation(diagnostics == null ? 1 : (float)last.local);
+            string endpoint = "Built Spine rotation differs from the authored endpoint pose in " + name + ".";
+            Check(Quaternion.Angle(neutral, expectedStart) <= tolerance, "spine_start", 0,
+                Quaternion.Angle(neutral, expectedStart), tolerance, endpoint);
+            Check(Quaternion.Angle(combined, expectedStop) <= tolerance, "spine_stop", capture.samples.Length - 1,
+                Quaternion.Angle(combined, expectedStop), tolerance, endpoint);
+            if (diagnostics != null) return;
+            editor.spine_start_f32 = Bits(expectedStart);
+            editor.spine_stop_f32 = Bits(expectedStop);
+        }
+        if (diagnostics == null) Endpoints();
+        else deferred = Endpoints;
         string moved = "Humanoid playback did not move the Spine at the authored probes for " + name + ".";
         var middle = diagnostics == null ? capture.samples.Single(sample => sample.local == .5)
             : capture.samples.FirstOrDefault(sample => sample.local == .5);
@@ -380,8 +391,6 @@ public static partial class AnimReplayRecorder
             Check(Quaternion.Angle(neutral, single) > 1, "spine_turn_first", index, Quaternion.Angle(neutral, single), 1, moved);
             Check(Quaternion.Angle(single, combined) > 1, "spine_turn_second", index, Quaternion.Angle(single, combined), 1, moved);
         }
-        editor.spine_start_f32 = Bits(expectedStart);
-        editor.spine_stop_f32 = Bits(expectedStop);
         editor.spine_endpoint_tolerance_degrees = tolerance;
         clock.start.probe.value = capture.samples[0].pose.transforms[spine].rotation[clock.start.probe.component];
         clock.stop.probe.value = last.pose.transforms[spine].rotation[clock.stop.probe.component];

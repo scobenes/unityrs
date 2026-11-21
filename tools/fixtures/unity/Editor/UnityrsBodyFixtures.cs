@@ -350,8 +350,10 @@ static partial class UnityrsFixtureBuilder
         public BodyCase Body;
         public BodyProbe[] BodyProbes;
         public BodyClipVariant BodyClip;
-        // Round 12: motion checks are diagnostics written beside the capture (AnimReplayRecorder.Check).
+        // Round 12: motion checks are diagnostics written beside the capture (AnimReplayRecorder.Check), and a
+        // subset clip's exact compiled tracks (CheckTracks).
         public bool Diagnose;
+        public (string track, int attribute)[] Tracks;
     }
 
     sealed partial class Build
@@ -815,6 +817,9 @@ static partial class UnityrsFixtureBuilder
                 extraReplay.Diagnose = rig.Round12;
                 if (sweep == "subset")
                 {
+                    string authored = Round12Authored(muscles, new[] { extra.name });
+                    Require(authored == null, authored);
+                    extraReplay.Tracks = SubsetTracks(Round12Case(extra.name));
                     build.Replays.Add(extraReplay);
                     return;
                 }

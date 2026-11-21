@@ -142,6 +142,13 @@ static partial class UnityrsFixtureBuilder
         public void Note(string name, string note) => notes[name] = note;
         public void Log(string message) => log(message);
 
+        // Fail a case, keeping the reason of one that has already failed.
+        public void Fail(string name, string reason)
+        {
+            if (cases[name].status == "failed") cases[name].reason += " (" + reason + ")";
+            else Set(name, "failed", reason);
+        }
+
         public void Set(string name, string status, string reason = "")
         {
             cases[name].status = status;
@@ -219,6 +226,8 @@ static partial class UnityrsFixtureBuilder
         bool publishing = false, preserveStaging = variant.KeepStaging;
         string[] failures;
         string finished = null;
+        // A run with failures never replaces an earlier output: it publishes beside it, under its own name.
+        string destination = output, shown = relative;
         try
         {
             CheckOwned(output);
@@ -251,8 +260,20 @@ static partial class UnityrsFixtureBuilder
                     Progress("Preparing fixtures", .05f);
                     var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
                     BuildAndCapture(build, report, staging, run, target, variant.Record, Log, variant.BodyOnly);
-                    finished = variant.Finish?.Invoke(report, staging, run);
+                    // The last step (round 12's inventory) cannot stop the manifest from being written.
+                    try { finished = variant.Finish?.Invoke(report, staging, run); }
+                    catch (Exception error)
+                    {
+                        Log("ERROR in the last step: " + error.Message);
+                        finished = "The last step failed: " + error.Message + " See build.log.";
+                    }
                     failures = report.Write(staging, projectPath, run);
+                    if (failures.Length > 0 && Directory.Exists(output))
+                    {
+                        destination = output + "-partial-" + shortId;
+                        shown = relative + "-partial-" + shortId;
+                        Log("This run has failures, so it is published to " + shown + " and the earlier output stays.");
+                    }
                     // Only a recorded run is a round: a build-only run's replays are skipped, which completion refuses.
                     if (run.variant == "builtin" && variant.Record) WriteRound(staging, run.run_id);
                     Log(failures.Length == 0 ? "Finished." : "Finished with fixture errors: " + string.Join(", ", failures));
@@ -266,10 +287,10 @@ static partial class UnityrsFixtureBuilder
             }
             Progress("Publishing results", .98f);
             publishing = true;
-            Publish(staging, output);
+            Publish(staging, destination);
             publishing = false;
             EditorUtility.ClearProgressBar();
-            string location = "Unity " + version + " / " + target + "\n\nOutput in your project folder:\n" + relative
+            string location = "Unity " + version + " / " + target + "\n\nOutput in your project folder:\n" + shown
                 + (finished == null ? "" : "\n\n" + finished);
             // "Ready" for a recorded Built-in run and for the URP and Android runs, whose bundles are
             // the run (they record nothing by design). Only the Built-in build-only menu item's

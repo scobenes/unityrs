@@ -29,7 +29,8 @@ static partial class UnityrsFixtureBuilder
     [Serializable] sealed class R12Name { public string name; public int ordinal; }
     [Serializable] sealed class R12Vector { public string[] muscles, bits; }
     [Serializable] sealed class R12Set { public string name; public R12Vector[] vectors; }
-    [Serializable] internal sealed class R12Case { public string name, family, rig, tuple, set, partition; public string[] times; }
+    [Serializable] internal sealed class R12Case { public string name, family, rig, tuple, set, partition, bindings; public string[] times; }
+    [Serializable] sealed class R12Bindings { public string name; public string[] properties; }
     [Serializable] sealed class R12Tables
     {
         public string format, tables_digest;
@@ -37,6 +38,7 @@ static partial class UnityrsFixtureBuilder
         public R12Tuple[] tuples;
         public R12Name[] names;
         public R12Set[] sets;
+        public R12Bindings[] bindings;
         public R12Case[] cases;
     }
 
@@ -157,10 +159,14 @@ static partial class UnityrsFixtureBuilder
             .Select(F32Bits).SequenceEqual(twist.Select(F32Bits)), "The " + name + " Avatar did not keep its twist settings.");
     }
 
-    // The defaults probe: a default-initialized HumanDescription's twist settings, with their f32 bits.
+    // The defaults probe: a default-initialized HumanDescription's twist settings, with their f32 bits. A
+    // ModelImporter's Humanoid default is not measured here: it needs an imported model, which this run has none of.
+    const string ImporterDefault = "not measured (needs an imported model)";
+    static string DefaultsLine() => "Unity " + Application.unityVersion + " "
+        + TwistLine("new HumanDescription()", new HumanDescription()) + "; importer default: " + ImporterDefault;
+
     [MenuItem("Tools/unityrs/Print humanoid twist defaults")]
-    static void PrintTwistDefaults() => Debug.Log("Unity " + Application.unityVersion + " "
-        + TwistLine("new HumanDescription()", new HumanDescription()));
+    static void PrintTwistDefaults() => Debug.Log(DefaultsLine());
 
     [MenuItem("Tools/unityrs/Build and record round 12 (body)")]
     static void BuildRound12()
@@ -177,7 +183,9 @@ static partial class UnityrsFixtureBuilder
     {
         var tables = Round12;
         var build = new Build();
-        report.Log("Unity " + Application.unityVersion + " " + TwistLine("new HumanDescription()", new HumanDescription()));
+        round12Clips = new List<R12Clip>();
+        round12Log = report.Log;
+        report.Log(DefaultsLine());
         // The full-body clip cases: each in-scope rig as a twist rig and a twin, whose ClipCases must be the tables'.
         var clipRigs = ScopedRigs.SelectMany(rig => new[] {
             (family: "twist-clip", spec: rig.With(rig.Name + "-twist", Round12Twist("t5"))),
@@ -202,67 +210,6 @@ static partial class UnityrsFixtureBuilder
         report.FailUnreached(tables.cases.Select(row => row.name).Where(name => !prepared.Contains(name)),
             "No preparation step produced this round 12 case.");
         return build;
-    }
-
-    [Serializable] sealed class R12Sample { public double local; }
-    [Serializable] sealed class R12Capture { public R12Sample[] samples; }
-    [Serializable] sealed class R12Pending { public R12Capture capture; }
-    [Serializable] sealed class R12Row { public string name, status, reason; public int samples; }
-    [Serializable] sealed class R12Inventory
-    {
-        public string format = "unityrs.round12_inventory", run_id, tables_sha256;
-        public int cases, matched;
-        public R12Row[] rows;
-    }
-    [Serializable] sealed class R12Round
-    {
-        public string format = "unityrs.fixture_round";
-        public int round = 12;
-        public string run_id, tables_sha256, tables_digest, editor_sources_sha256;
-    }
-
-    // The end of the session: every table case's capture against its table row (sample count and times), into
-    // inventory.json, a mismatch failing its case; then round.json. Captures are only read, never removed.
-    static string FinishRound12(RunReport report, string staging, RunIdentity run)
-    {
-        var rows = new List<R12Row>();
-        foreach (var row in Round12.cases)
-        {
-            string path = Path.Combine(staging, "replays", "body", row.name + ".pending.json");
-            var found = new R12Row { name = row.name, status = "missing", reason = "no capture", samples = -1 };
-            if (File.Exists(path))
-            {
-                var samples = JsonUtility.FromJson<R12Pending>(File.ReadAllText(path))?.capture?.samples;
-                found.samples = samples?.Length ?? -1;
-                bool same = samples != null && samples.Select(sample => F32Bits((float)sample.local)).SequenceEqual(row.times);
-                found.status = same ? "matched" : "mismatch";
-                found.reason = same ? "" : "its samples are not the tables' " + row.times.Length + " times";
-                if (!same) report.Set(row.name, "failed", "The capture's samples differ from the round 12 tables' (inventory.json).");
-            }
-            rows.Add(found);
-        }
-        var inventory = new R12Inventory {
-            run_id = run.run_id, tables_sha256 = Round12TablesSha256, cases = rows.Count,
-            matched = rows.Count(row => row.status == "matched"), rows = rows.ToArray()
-        };
-        File.WriteAllText(Path.Combine(staging, "inventory.json"), JsonUtility.ToJson(inventory, true));
-        File.WriteAllText(Path.Combine(staging, "round.json"), JsonUtility.ToJson(new R12Round {
-            run_id = run.run_id, tables_sha256 = Round12TablesSha256, tables_digest = Round12.tables_digest,
-            editor_sources_sha256 = EditorSourcesSha256()
-        }, true));
-        return "Inventory: " + inventory.matched + " of " + inventory.cases
-            + " round 12 cases recorded with the tables' samples and times (inventory.json).";
-    }
-
-    // The sha256 of this Editor folder's C# sources, by file name and content in ordinal order.
-    static string EditorSourcesSha256()
-    {
-        var self = Directory.GetFiles(Application.dataPath, "UnityrsRound12.cs", SearchOption.AllDirectories);
-        Require(self.Length == 1, "Expected one UnityrsRound12.cs under Assets.");
-        var text = new StringBuilder();
-        foreach (var file in Directory.GetFiles(Path.GetDirectoryName(self[0]), "*.cs").OrderBy(path => Path.GetFileName(path), StringComparer.Ordinal))
-            text.Append(Path.GetFileName(file)).Append('\n').Append(Sha256(File.ReadAllBytes(file))).Append('\n');
-        return Sha256(Encoding.UTF8.GetBytes(text.ToString()));
     }
 }
 #endif

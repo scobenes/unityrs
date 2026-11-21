@@ -15,13 +15,18 @@ times against the document (inventory.json). The families:
 - **twist-clip** and **twin**: round 11's 318 in-scope full-body clips on their rigs, at t = .5 (curves unchanged)
   and at t = 0 without the ten limb-twist curves.
 
-Vectors name their muscles (HumanTrait names); every value and time is f32 bits. Run with `--check` (the committed
-file is current) or `--write`.
+Vectors name their muscles (HumanTrait names); every value and time is f32 bits. Each clip case names its muscle
+binding list (`bindings`: a full-body rig's, its twin's without the ten limb-twist curves, the subset's), which the
+builder requires of every clip it authors. The run writes those clips' curves to authored.json (each Animator binding's
+key times, values and tangents); `check_authored` compares it with these tables and the full-body curves
+(anim_fixture_full.full_groups). Run with `--check` (the committed file is current), `--write`, or
+`--authored FILE` (a run's authored.json).
 """
 
 import argparse
 import hashlib
 import json
+import math
 import struct
 import sys
 from pathlib import Path
@@ -97,6 +102,23 @@ def _rows(vectors, names):
     return rows
 
 
+def binding_lists():
+    """{list name: sorted Animator muscle properties}: each full-body clip rig's (its twist clips'), its twin's (the
+    same without the ten limb-twist curves) and the clip subset's."""
+    from anim_fixture_full import full_groups, muscle_property
+    from anim_fixture_muscles import LIMB_TWISTS
+    from anim_muscle_confirm import builder_muscles
+
+    names, twists = list(builder_muscles()), {muscle_property(m) for m, _ in LIMB_TWISTS}
+    found = {}
+    for rig in sorted({row[2] for row in full_clips()}):
+        properties = sorted(prop for (prop, *_), in full_groups(names, rig))
+        found[rig], found[f"{rig}-twin"] = properties, [p for p in properties if p not in twists]
+    limbs = {m: n for n, m in tables.NAMES.items()}
+    found["subset"] = sorted({muscle_property(n) for v in subset_vectors() for n in _named(v, limbs)})
+    return found
+
+
 def full_clips():
     """[(name, family, rig, variant, root)]: round 11's in-scope full-body clips, each as a twist clip and a twin."""
     import anim_fixture_round11 as r11
@@ -120,9 +142,9 @@ def document():
     sets["subset"] = subset_vectors()
     cases = []
 
-    def case(name, family, rig, tuple_name, set_name, partition, times):
+    def case(name, family, rig, tuple_name, set_name, partition, times, bindings=""):
         cases.append(dict(name=name, family=family, rig=rig, tuple=tuple_name, set=set_name, partition=partition,
-                          times=[bits(t) for t in times]))
+                          bindings=bindings, times=[bits(t) for t in times]))
     for rig in SWEEP_RIGS:
         name = f"sweep-{rig}"
         case(f"body-twist-{name}", "sweep", rig, "t0", name, "confirmation", scheduled(len(sets[name])))
@@ -132,14 +154,96 @@ def document():
     for rig, tuple_name in SUBSET:
         keys = [k / 16 for k in range(len(sets["subset"]))]
         case(f"body-twist-clip-{rig}-{tuple_name}", "subset", rig, tuple_name, "subset", "confirmation",
-             clip_times(keys))
+             clip_times(keys), "subset")
     for name, family, rig, variant, _ in full_clips():
         case(name, family, rig, "t5" if family == "twist-clip" else "t0", "", "confirmation",
-             clip_times(clip_keys(rig, variant)))
+             clip_times(clip_keys(rig, variant)), rig if family == "twist-clip" else f"{rig}-twin")
     return dict(format=FORMAT, version=1, tables_digest=tables.digest(),
                 tuples=[dict(name=n, bits=[bits(v) for v in t]) for n, t in tables.TUPLES.items()],
                 names=[dict(name=n, ordinal=m) for n, m in sorted(tables.NAMES.items(), key=lambda row: row[1])],
-                sets=[dict(name=n, vectors=_rows(v, names)) for n, v in sets.items()], cases=cases)
+                sets=[dict(name=n, vectors=_rows(v, names)) for n, v in sets.items()],
+                bindings=[dict(name=n, properties=p) for n, p in binding_lists().items()], cases=cases)
+
+
+def expected_curves(row, names, doc):
+    """{Animator muscle property: (key times, values)} a clip case authors: the subset's vector k at k/16 s (0 where
+    the vector leaves the muscle out), or the full-body clip's curves on its rig (`names` HumanTrait's 95 in order),
+    a twin's without the limb twists; each list the case's `bindings`."""
+    from anim_fixture_full import full_groups
+
+    wanted = {row2["name"]: row2["properties"] for row2 in doc["bindings"]}[row["bindings"]]
+    if row["family"] == "subset":
+        vectors = {s["name"]: s["vectors"] for s in doc["sets"]}[row["set"]]
+        times = tuple(k / 16 for k in range(len(vectors)))
+        found = {}
+        for prop in wanted:
+            values = []
+            for vector in vectors:
+                by_name = dict(zip(vector["muscles"], vector["bits"]))
+                values.append(_value(by_name[prop]) if prop in by_name else 0.)
+            found[prop] = (times, tuple(values))
+        return found
+    curves = {prop: (tuple(times), tuple(values)) for (prop, _, times, values), in full_groups(list(names), row["rig"])}
+    return {prop: curves[prop] for prop in wanted}
+
+
+def _value(hex_bits):
+    return struct.unpack(">f", bytes.fromhex(hex_bits))[0]
+
+
+def _linear(times, values, left, right):
+    """Whether every interval's tangents are Linear's: the f32 slope between its keys (AnimationUtility's
+    CalculateLinearTangent), to a millionth."""
+    for i in range(len(times) - 1):
+        slope = f32(f32(values[i + 1] - values[i]) / f32(times[i + 1] - times[i]))
+        for tangent in (right[i], left[i + 1]):
+            if not (math.isfinite(tangent) and abs(tangent - slope) <= 1e-6 * max(1., abs(slope))):
+                return False
+    return True
+
+
+def check_authored(authored, doc=None):
+    """The problems with a run's authored.json against the tables: every subset, twist-clip and twin case authored
+    once; each clip's Animator muscle bindings exactly its case's list (a twin's no limb-twist curve); each curve's
+    key times and values the tables' or full_groups' bit for bit, its tangents Linear."""
+    from anim_fixture_full import muscle_property
+
+    doc = document() if doc is None else doc
+    problems = []
+    names = authored.get("muscle_names") or []
+    if len(names) != 95 or any(names[row["ordinal"]] != row["name"] for row in doc["names"]):
+        return ["authored.json's muscle names are not HumanTrait's (anim_twist_tables.NAMES)"]
+    properties = {muscle_property(name) for name in names}
+    rows = {row["name"]: row for row in doc["cases"] if row["bindings"]}
+    seen = set()
+    for clip in authored.get("clips") or []:
+        label, cases = clip.get("clip"), clip.get("cases") or []
+        if not cases or any(case not in rows or case in seen for case in cases):
+            problems.append(f"{label}: cases {cases} are not unseen round 12 clip cases")
+            continue
+        seen |= set(cases)
+        row = rows[cases[0]]
+        if any((rows[case]["bindings"], rows[case]["rig"]) != (row["bindings"], row["rig"]) for case in cases):
+            problems.append(f"{label}: its cases {cases} differ in rig or bindings")
+            continue
+        curves = {b["property"]: b for b in clip.get("bindings") or []
+                  if b.get("path") == "" and b.get("type") == "UnityEngine.Animator" and b.get("property") in properties}
+        want = expected_curves(row, names, doc)
+        if sorted(curves) != sorted(want):
+            problems.append(f"{label}: muscle bindings {sorted(set(curves) - set(want))} extra, "
+                            f"{sorted(set(want) - set(curves))} missing (list {row['bindings']})")
+            continue
+        for prop, (times, values) in want.items():
+            curve = curves[prop]
+            got = {key: [_value(b) for b in curve.get(key) or []] for key in ("times", "values", "in_tangents",
+                                                                          "out_tangents")}
+            if curve.get("times") != [bits(t) for t in times] or curve.get("values") != [bits(v) for v in values]:
+                problems.append(f"{label}: {prop}'s keys differ from the tables'")
+            elif not (len(got["in_tangents"]) == len(got["out_tangents"]) == len(times)
+                      and _linear(got["times"], got["values"], got["in_tangents"], got["out_tangents"])):
+                problems.append(f"{label}: {prop}'s tangents are not Linear")
+    problems += [f"{case}: no authored clip" for case in rows if case not in seen]
+    return problems
 
 
 def canonical(doc=None):
@@ -183,7 +287,13 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--write", action="store_true")
+    mode.add_argument("--authored", metavar="FILE", help="a round 12 run's authored.json")
     args = parser.parse_args()
+    if args.authored:
+        problems = check_authored(json.loads(Path(args.authored).read_text(encoding="utf-8")))
+        for problem in problems:
+            print(problem)
+        return 1 if problems else 0
     text = render_cs()
     if args.write:
         CS_PATH.write_text(text, encoding="utf-8", newline="\n")

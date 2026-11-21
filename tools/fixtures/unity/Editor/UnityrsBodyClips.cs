@@ -409,6 +409,10 @@ static partial class UnityrsFixtureBuilder
                     missing = "The Editor dropped the authored MotionT and MotionQ curves.";
                 if (missing == null && variant.Goals && !KeepsCurves(clip, "LeftFootT.x", "RightFootQ.w"))
                     missing = "The Editor dropped the authored foot goal curves.";
+                // A round 12 clip has exactly its tables' muscle curves (a twin no limb twist), its curves recorded.
+                if (missing == null && rigSpec.Round12)
+                    missing = Round12Authored(clip, (Placed(spec) ? new[] { "", "-offset" } : new[] { "" })
+                        .Select(suffix => ClipName(spec, variant) + suffix).ToArray());
                 if (missing != null)
                 {
                     foreach (string suffix in Placed(spec) ? new[] { "", "-offset" } : new[] { "" })
@@ -472,6 +476,7 @@ static partial class UnityrsFixtureBuilder
                 "The built body clip lost its playback mode in " + replay.Bundle + ".");
             var avatar = bundle.LoadAsset<Avatar>(Key(replay.Avatar));
             Require(avatar != null && avatar.isValid && avatar.isHuman, "The built body Avatar is invalid in " + replay.Bundle + ".");
+            LogBuiltTwist(avatar, replay);
             if (replay.BodyClip != null)
             {
                 Require(BodySettingsMatch(AnimationUtility.GetAnimationClipSettings(clip), replay.BodyClip),
@@ -479,6 +484,9 @@ static partial class UnityrsFixtureBuilder
                 indexed = CheckCompiledTracks(clip, replay.BodyClip, replay.OutputName, replay.Body.Spec.Full,
                     replay.Body.Spec.Scoped, replay.Body.Mapped, replay.Body.Spec.NoLimbTwist);
             }
+            // A round 12 subset clip: exactly its muscles' tracks.
+            else if (replay.Tracks != null)
+                indexed = CheckTracks(clip, replay.Tracks, replay.OutputName, null, exact: true);
         }
         finally { bundle.Unload(true); }
         return indexed;
@@ -524,15 +532,28 @@ static partial class UnityrsFixtureBuilder
     // verifies the serialized index offline, as round 10 did. Completion
     // checks the slots' values either way.
     static bool CheckCompiledTracks(AnimationClip clip, BodyClipVariant variant, string name, bool full, bool scoped,
-        string[] mapped, bool twin = false)
+        string[] mapped, bool twin = false) =>
+        CheckTracks(clip, CompiledTracks(variant, full, scoped, mapped, twin), name, twin ? LimbTwistAttributes : null);
+
+    // The tracks above, then (round 12) no compiled binding at a `forbidden` attribute (a twin's limb twists), or,
+    // `exact`, no compiled muscle binding beyond `tracks` (a subset clip's): Unity binding a curve it was not given.
+    static bool CheckTracks(AnimationClip clip, IEnumerable<(string track, int attribute)> tracks, string name,
+        int[] forbidden, bool exact = false)
     {
         using (var serialized = new SerializedObject(clip))
         {
             var slots = CompiledSlots(serialized);
             Require(slots != null, "Unity did not expose the compiled track table of the built clip for " + name + ".");
+            var bound = new HashSet<int>(slots.Keys.Concat(HumanBindings(serialized).Select(row => row.attribute)));
+            if (forbidden != null)
+                Require(!bound.Overlaps(forbidden), "The built clip binds a limb-twist track its twin omits in " + name + ".");
+            if (exact)
+                Require(bound.Where(attribute => attribute >= MuscleAttribute).OrderBy(attribute => attribute)
+                    .SequenceEqual(tracks.Select(track => track.attribute).Where(attribute => attribute >= MuscleAttribute)
+                        .OrderBy(attribute => attribute)), "The built clip binds other muscle tracks than its own in " + name + ".");
             var index = serialized.FindProperty("m_MuscleClip.m_IndexArray");
             bool indexed = index != null && index.isArray;
-            var missing = CompiledTracks(variant, full, scoped, mapped, twin).Where(track => !slots.TryGetValue(track.attribute, out int slot)
+            var missing = tracks.Where(track => !slots.TryGetValue(track.attribute, out int slot)
                 || indexed && (track.attribute >= index.arraySize
                     || index.GetArrayElementAtIndex(track.attribute).intValue != slot)).Select(track => track.track).ToArray();
             Require(missing.Length == 0, "The built clip lost or moved its compiled " + string.Join(", ", missing)

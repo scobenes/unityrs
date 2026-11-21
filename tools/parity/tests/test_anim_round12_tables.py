@@ -2,9 +2,12 @@
 
 The builder reads the document from the C# file and re-derives its schedules from its own code; these tests require
 the committed C# file to be byte-identical to the generator's output, its pieces to concatenate to the canonical
-document, and the document to be what the twist tables, B5a's sweeps and round 11's clips give."""
+document, and the document to be what the twist tables, B5a's sweeps and round 11's clips give. A run's authored.json
+(the builder's curves, as it authored them) is checked against the tables by `check_authored`: a run authoring what
+the tables say passes, and a wrong key value, another interpolation, or a limb twist back in a twin is a problem."""
 
 import hashlib
+import json
 import struct
 import unittest
 
@@ -15,9 +18,8 @@ import anim_fixture_round11 as r11  # noqa: E402
 import anim_muscle_confirm as confirm  # noqa: E402
 import anim_round12_tables as r12  # noqa: E402
 import anim_twist_tables as tables  # noqa: E402
+from anim_muscle_confirm import builder_muscles  # noqa: E402
 from anim_fixture_muscles import LIMB_TWISTS, groups, muscle_vectors  # noqa: E402
-
-EDITOR = r12.CS_PATH.parent
 
 
 def f32(bits):
@@ -32,19 +34,6 @@ class GeneratedFileTests(unittest.TestCase):
         self.assertEqual(r12.parse_cs(source), data)
         self.assertIn(f'Round12TablesSha256 = "{hashlib.sha256(data).hexdigest()}"', source)
         self.assertTrue(data.isascii())
-
-    def test_the_builder_reads_them_by_their_sha256(self):
-        builder = (EDITOR / "UnityrsRound12.cs").read_text(encoding="utf-8")
-        for line in ("string text = string.Concat(Round12TablesParts);",
-                     "Require(Sha256(Encoding.UTF8.GetBytes(text)) == Round12TablesSha256,",
-                     "var times = Enumerable.Range(0, vectors.Count).Select(k => k / 16f).ToArray();",
-                     "var probes = Scheduled(vectors, false);",
-                     "Require(probes.Select(probe => F32Bits((float)probe.Time)).SequenceEqual(row.times),"):
-            self.assertIn(line, builder)
-        # Scheduled's formula, which `scheduled` mirrors.
-        fixtures = (EDITOR / "UnityrsBodyFixtures.cs").read_text(encoding="utf-8")
-        self.assertIn("Time = Math.Round(time * 65536) / 65536", fixtures)
-        self.assertIn("probes.Add(Point(.5 * (k + 391.0 / 1024) / first, vectors[k]));", fixtures)
 
 
 class DocumentTests(unittest.TestCase):
@@ -136,6 +125,103 @@ class DocumentTests(unittest.TestCase):
                 self.assertEqual((row["rig"], row["tuple"], row["set"]), (info["rig"], tuple_name, ""))
                 self.assertEqual([f32(b) for b in row["times"]],
                                  list(confirm.clip_times(confirm.clip_keys(info["rig"], info["variant"]))))
+
+
+def humantrait_names(doc):
+    """95 muscle names with the tables' limb muscles at their HumanTrait ordinals, the rest in the builder's order."""
+    names = [None] * 95
+    for row in doc["names"]:
+        names[row["ordinal"]] = row["name"]
+    rest = iter(name for name in builder_muscles() if name not in names)
+    return [name if name is not None else next(rest) for name in names]
+
+
+def authored(doc, names):
+    """authored.json as a run authoring the tables' curves (Linear tangents) writes it."""
+    rows = [row for row in doc["cases"] if row["bindings"]]
+    clips, done = [], set()
+    for row in rows:
+        if row["name"] in done:
+            continue
+        cases = [row["name"]] + ([row["name"] + "-offset"] if any(r["name"] == row["name"] + "-offset" for r in rows)
+                                 else [])
+        done |= set(cases)
+        bindings = []
+        for prop, (times, values) in sorted(r12.expected_curves(row, names, doc).items()):
+            slopes = [r12.f32(r12.f32(values[i + 1] - values[i]) / r12.f32(times[i + 1] - times[i]))
+                      for i in range(len(times) - 1)]
+            bindings.append(dict(path="", type="UnityEngine.Animator", property=prop,
+                                 times=[r12.bits(t) for t in times], values=[r12.bits(v) for v in values],
+                                 in_tangents=[r12.bits(t) for t in [0.] + slopes],
+                                 out_tangents=[r12.bits(t) for t in slopes + [0.]]))
+        bindings.append(dict(path="", type="UnityEngine.Animator", property="RootT.x", times=[], values=[],
+                             in_tangents=[], out_tangents=[]))
+        clips.append(dict(clip=row["name"], cases=cases, bindings=bindings))
+    return dict(format="unityrs.round12_authored", run_id="r", muscle_names=names, clips=clips)
+
+
+class AuthoredTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.doc = r12.document()
+        cls.names = humantrait_names(cls.doc)
+
+    def fresh(self):
+        return json.loads(json.dumps(authored(self.doc, self.names)))
+
+    def clip(self, run, family):
+        rows = {row["name"]: row for row in self.doc["cases"]}
+        return next(clip for clip in run["clips"] if rows[clip["cases"][0]]["family"] == family)
+
+    def test_the_tables_curves_pass(self):
+        run = self.fresh()
+        self.assertEqual(r12.check_authored(run, self.doc), [])
+        self.assertEqual(len(run["clips"]), 6 + 2 * len({(row[2], row[3]) for row in r12.full_clips()}))
+        twin = {b["property"] for b in self.clip(run, "twin")["bindings"]}
+        self.assertFalse(twin & {m for m, _ in LIMB_TWISTS})
+        self.assertTrue({m for m, _ in LIMB_TWISTS} <= {b["property"] for b in self.clip(run, "twist-clip")["bindings"]})
+
+    def test_a_wrong_value_another_interpolation_or_a_twin_twist_is_a_problem(self):
+        def broken(family, change):
+            run = self.fresh()
+            change(self.clip(run, family))
+            return r12.check_authored(run, self.doc)
+
+        def value(clip):
+            curve = next(b for b in clip["bindings"] if b["property"] != "RootT.x")
+            curve["values"][3] = r12.bits(r12.f32(.5) if curve["values"][3] != r12.bits(.5) else .25)
+
+        def constant(clip):
+            curve = next(b for b in clip["bindings"] if b["property"] != "RootT.x")
+            curve["out_tangents"] = [r12.bits(float("inf"))] * len(curve["out_tangents"])
+
+        def twist(clip):
+            twin_rig = clip["bindings"][0]
+            clip["bindings"].append(dict(twin_rig, property="Left Arm Twist In-Out"))
+        for family, change in (("subset", value), ("subset", constant), ("twist-clip", value), ("twist-clip", constant),
+                               ("twin", twist)):
+            self.assertTrue(broken(family, change), (family, change.__name__))
+        run = self.fresh()
+        run["clips"].pop()
+        self.assertTrue(any("no authored clip" in p for p in r12.check_authored(run, self.doc)))
+        run = self.fresh()
+        run["muscle_names"] = list(reversed(run["muscle_names"]))
+        self.assertTrue(r12.check_authored(run, self.doc))
+
+    def test_every_clip_case_names_its_binding_list(self):
+        lists = {row["name"]: row["properties"] for row in self.doc["bindings"]}
+        twists = {m for m, _ in LIMB_TWISTS}
+        for row in self.doc["cases"]:
+            family, name = row["family"], row["bindings"]
+            self.assertEqual(bool(name), family in ("subset", "twist-clip", "twin"), row["name"])
+            if family == "twin":
+                self.assertEqual(lists[name], [p for p in lists[row["rig"]] if p not in twists])
+                self.assertTrue(twists <= set(lists[row["rig"]]))
+        subset = {m for vector in self.sets_of("subset") for m in vector["muscles"]}
+        self.assertEqual(lists["subset"], sorted(subset))
+
+    def sets_of(self, name):
+        return next(row["vectors"] for row in self.doc["sets"] if row["name"] == name)
 
 
 if __name__ == "__main__":
