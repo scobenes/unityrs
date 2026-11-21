@@ -7,6 +7,12 @@ rust-version.workspace = true
 license = "(MIT OR Apache-2.0) AND BSD-2-Clause"
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords = ["unity", "lz4", "lzma", "compression", "assetbundle"]
+categories = ["compression", "game-development", "external-ffi-bindings"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*", "/build.rs", "/vendor/**"]
 
 [dependencies]
 # Already linked by unityrs-core, same version and features. The raw API

@@ -1,6 +1,6 @@
 [package]
 name = "unityrs-testkit"
-description = "Synthetic Unity files built in code, for unityrs tests. Never game data."
+description = "Synthetic Unity files built in code, for unityrs's own tests and the CLI's test hooks; not a stable API. Never game data."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,14 @@ rust-version.workspace = true
 license = "(MIT OR Apache-2.0) AND MIT"
 repository.workspace = true
 authors.workspace = true
-publish = false
+# Published only because unityrs-cli's `test-hooks` feature depends on it
+# (an optional dependency must be on the registry); no API promise.
+readme.workspace = true
+keywords = ["unity", "testing", "fixtures", "synthetic", "assetbundle"]
+categories = ["development-tools::testing", "game-development"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*"]
 
 # The testkit builds bytes only. Its library never depends on unityrs-core
 # (but under its `test-counters` feature, below, which only enables the
@@ -25,7 +32,7 @@ lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "
 # CI runs `cargo test -p unityrs-core -p unityrs-testkit --features
 # unityrs-testkit/test-counters`. Without it the library never depends on
 # the core.
-unityrs-core = { path = "../unityrs-core", optional = true }
+unityrs-core = { version = "1.0.0", path = "../unityrs-core", optional = true }
 
 [features]
 test-counters = ["dep:unityrs-core", "unityrs-core/test-counters"]

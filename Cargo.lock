@@ -1509,8 +1509,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs"
+version = "1.0.0"
+dependencies = [
+ "unityrs-anim",
+ "unityrs-audio",
+ "unityrs-batch",
+ "unityrs-core",
+ "unityrs-export",
+ "unityrs-gltf",
+ "unityrs-imageio",
+ "unityrs-mesh",
+ "unityrs-meshdecode",
+ "unityrs-scene",
+ "unityrs-texture",
+ "unityrs-tpk",
+]
+
+[[package]]
 name = "unityrs-anim"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "serde_json",
  "unityrs-core",
@@ -1521,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-audio"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "lewton",
  "serde_json",
@@ -1532,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-batch"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "aes",
  "boon",
@@ -1565,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-bench"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "serde_json",
  "sha2 0.11.1",
@@ -1578,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-bench-lzma"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "liblzma",
  "lz4_flex",
@@ -1588,7 +1606,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-cli"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "aes",
  "caseless",
@@ -1609,7 +1627,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-compress-sys"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "cc",
  "liblzma-sys",
@@ -1619,7 +1637,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-core"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "aes",
  "brotli-decompressor",
@@ -1636,7 +1654,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-dump"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "flate2",
  "rayon",
@@ -1651,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-export"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "aes",
  "flate2",
@@ -1673,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-gltf"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "serde_json",
  "unityrs-core",
@@ -1687,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-imageio"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "cc",
  "flate2",
@@ -1699,7 +1717,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-mesh"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "serde_json",
  "thiserror",
@@ -1714,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-meshdecode"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "serde_json",
  "thiserror",
@@ -1724,7 +1742,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-py"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "libc",
  "pyo3",
@@ -1741,14 +1759,14 @@ dependencies = [
 
 [[package]]
 name = "unityrs-pysum"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "unityrs-scene"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "serde_json",
  "unityrs-core",
@@ -1757,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-testkit"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "libc",
  "liblzma",
@@ -1769,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-texture"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "cc",
  "serde_json",
@@ -1783,7 +1801,7 @@ dependencies = [
 
 [[package]]
 name = "unityrs-tpk"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "serde_json",
  "thiserror",

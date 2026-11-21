@@ -39,11 +39,10 @@ pub const SPEC_VERSION: u64 = 3;
 
 /// `docs/batch/spec-v3.schema.json`, byte for byte, the schema of the
 /// highest version: what `unityrs batch --schema` prints. `tests/schema.rs`
-/// holds it, and version 1's file, to the parser's tables.
-pub const SCHEMA: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/batch/spec-v3.schema.json"
-));
+/// holds it, and version 1's file, to the parser's tables. It is read
+/// through `src/spec/spec-v3.schema.json`, a link to the docs file, so the
+/// crate's package carries the schema.
+pub const SCHEMA: &[u8] = include_bytes!("spec-v3.schema.json");
 
 /// The largest `JOB.json`, in bytes (`docs/BATCH_SPEC.md` section 1).
 pub const MAX_SPEC_BYTES: u64 = 64 << 20;
