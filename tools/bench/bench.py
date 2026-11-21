@@ -18,10 +18,12 @@
   (decision 7). It writes the job summary to `$GITHUB_STEP_SUMMARY` (or DIR/summary.md) and fails on what fails
   the gate. `--repeat N` runs every workload N times and reports each count's spread (calibration only);
   `--aslr-probe NAME` adds whether libc's count repeats with ASLR off.
-- `render` writes the README's section between its markers and BENCHMARKS.md from `benchmarks/wall.json` and
-  `benchmarks/gate.json`; without wall.json the section reads "Results pending" and BENCHMARKS.md does not exist.
-  `--check` fails when the committed text differs.
-- `check --wall-run` (CI) verifies a committed wall.json the PR changes against the named `bench-wall.yml` run:
+- `render` writes the README's section between its markers and BENCHMARKS.md from `benchmarks/wall.json`, any
+  `benchmarks/wall-<cpu>.json` (a run on another runner CPU, `wall_paths`) and `benchmarks/gate.json`; without
+  wall.json the section reads "Results pending" and BENCHMARKS.md does not exist. `--check` fails when the
+  committed text differs.
+- `check --wall-run` (CI) verifies each committed results file the PR changes (wall.json or a wall-<cpu>.json)
+  against the `bench-wall.yml` run it names (RUN_ID, if given, must be that run):
   its workflow, event, branch (main) and conclusion, no change to the measured paths (`measured_paths`: the
   workflow, the build configuration, the inputs and every repository module the measurement imports at the run's
   commit or in the checkout) between its commit and the base or the head, and the run's artifact byte-equal to
@@ -65,6 +67,8 @@ import scratch  # noqa: E402
 
 FIXTURES = ROOT / "benchmarks" / "fixtures.json"
 WALL = ROOT / "benchmarks" / "wall.json"
+# A published run on another runner CPU than wall.json's: its bench-wall.yml artifact, committed under this name.
+EXTRA_WALLS = "wall-*.json"
 GATE = ROOT / "benchmarks" / "gate.json"
 README = ROOT / "README.md"
 BENCHMARKS = ROOT / "BENCHMARKS.md"
@@ -238,7 +242,7 @@ def stack_info() -> tuple[dict, str | None]:
 
     rustc = child.run(["rustc", "-vV"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
     try:
-        unityrs = importlib.metadata.version("unityrs")
+        unityrs = importlib.metadata.version("unityrs-py")
     except importlib.metadata.PackageNotFoundError:
         unityrs = None
     tools = {
@@ -557,24 +561,54 @@ def repeat_lines(runs: list) -> list[str]:
 # render
 
 
+def wall_paths(root: Path = ROOT) -> list[Path]:
+    """The committed results files under `root`: wall.json (when present) first, then each wall-<cpu>.json by
+    name."""
+    folder = root / WALL.parent.relative_to(ROOT)
+    first = folder / WALL.name
+    return ([first] if first.is_symlink() or first.exists() else []) + sorted(folder.glob(EXTRA_WALLS))
+
+
+def not_regular(path: Path) -> str | None:
+    """Why `path` is not a results file a check can trust: a symlink (its target can change while the link's own
+    path stays unchanged in git) or anything but a regular file."""
+    if path.is_symlink():
+        return f"benchmarks/{path.name}: a symlink; a results file must be a regular file"
+    if path.exists() and not path.is_file():
+        return f"benchmarks/{path.name}: not a regular file"
+    return None
+
+
 def rendered(root: Path) -> tuple[str, str | None, list[str]]:
     """(README.md, BENCHMARKS.md or None, problems) as `render` makes them under `root`."""
     table = load_json(root / WORKLOADS.relative_to(ROOT))
-    wall_path, gate_path = root / WALL.relative_to(ROOT), root / GATE.relative_to(ROOT)
-    wall = load_json(wall_path) if wall_path.exists() else None
+    gate_path = root / GATE.relative_to(ROOT)
     gate = load_json(gate_path) if gate_path.exists() else None
     bad = gate_file_problems(gate, table)
     if bad:
         return "", None, [f"benchmarks/gate.json: {b}" for b in bad]
-    if wall is not None:
+    paths = wall_paths(root)
+    if paths and paths[0].name != WALL.name:
+        return "", None, [f"benchmarks/{paths[0].name}: a run on another CPU needs benchmarks/wall.json beside it"]
+    walls, cpus = [], {}
+    for path in paths:
+        if not_regular(path):
+            return "", None, [not_regular(path)]
+        wall = load_json(path)
         bad = results.problems(wall, table) or results.publish_problems(wall, table)
         if bad:
-            return "", None, [f"benchmarks/wall.json: {b}" for b in bad]
-    readme = results.splice((root / "README.md").read_text(encoding="utf-8"), results.readme_section(wall, table))
-    if wall is None:
+            return "", None, [f"benchmarks/{path.name}: {b}" for b in bad]
+        cpu = wall["machine"]["cpu"]
+        if cpu in cpus:
+            return "", None, [f"benchmarks/{path.name}: its CPU {cpu!r} is benchmarks/{cpus[cpu]}'s; keep one run "
+                              "a CPU"]
+        cpus[cpu] = path.name
+        walls.append(wall)
+    readme = results.splice((root / "README.md").read_text(encoding="utf-8"), results.readme_section(walls, table))
+    if not walls:
         return readme, None, []
     fixtures = load_json(root / FIXTURES.relative_to(ROOT))
-    return readme, results.benchmarks_md(wall, gate, table, fixtures), []
+    return readme, results.benchmarks_md(walls, gate, table, fixtures), []
 
 
 def gate_file_problems(gate: dict | None, table: dict) -> list[str]:
@@ -633,22 +667,24 @@ def gh_api(path: str) -> bytes:
 
 def check_wall_run(run_id, base: str, repo: str, gh=gh_api, git=git, wall_path: Path = WALL, say=print,
                    sources_at=commit_sources) -> list[str]:
-    """Why the committed wall.json is not the named run's published result; empty when it is, or when the change
-    under test (`base`..HEAD) leaves wall.json alone."""
-    rel = str(wall_path.relative_to(ROOT)) if wall_path.is_relative_to(ROOT) else "benchmarks/wall.json"
+    """Why the committed results file `wall_path` (wall.json or a wall-<cpu>.json) is not the named run's published
+    result; empty when it is, or when the change under test (`base`..HEAD) leaves the file alone."""
+    rel = str(wall_path.relative_to(ROOT)) if wall_path.is_relative_to(ROOT) else f"benchmarks/{wall_path.name}"
+    if not_regular(wall_path):  # before the unchanged-file return: an unchanged link can point at changed data
+        return [not_regular(wall_path)]
     rc, _ = git("diff", "--quiet", base, "HEAD", "--", rel)
     if rc == 0:
-        say("bench check: wall.json is unchanged; nothing to verify")
+        say(f"bench check: {wall_path.name} is unchanged; nothing to verify")
         return []
     if not wall_path.exists():
-        say("bench check: wall.json is removed; nothing to verify")
+        say(f"bench check: {wall_path.name} is removed; nothing to verify")
         return []
     data = wall_path.read_bytes()
     wall = json.loads(data)
     table = load_json(WORKLOADS)
     bad = results.problems(wall, table) or results.publish_problems(wall, table)
     if run_id is not None and int(run_id) != wall["run_id"]:
-        bad.append(f"run {run_id} is not wall.json's run {wall['run_id']}")
+        bad.append(f"run {run_id} is not {wall_path.name}'s run {wall['run_id']}")
     rid, attempt = wall["run_id"], wall["run_attempt"]
     run = json.loads(gh(f"repos/{repo}/actions/runs/{rid}/attempts/{attempt}"))
     if run.get("path", "").split("@")[0] != WORKFLOW:
@@ -675,12 +711,13 @@ def check_wall_run(run_id, base: str, repo: str, gh=gh_api, git=git, wall_path: 
     with zipfile.ZipFile(io.BytesIO(gh(f"repos/{repo}/actions/artifacts/{found[0]['id']}/zip"))) as z:
         published = z.read("wall.json") if "wall.json" in z.namelist() else None
     if published != data:
-        bad.append(f"benchmarks/wall.json is not byte-equal to run {rid}'s artifact {name}")
+        bad.append(f"{rel} is not byte-equal to run {rid}'s artifact {name}")
     return bad
 
 
 def cmd_check(args) -> int:
-    bad = check_wall_run(args.wall_run or None, args.base, args.repo)
+    bad = [b for path in wall_paths() for b in check_wall_run(args.wall_run or None, args.base, args.repo,
+                                                                wall_path=path)]
     for b in bad:
         print(f"bench check: {b}", file=sys.stderr)
     return 1 if bad else 0
