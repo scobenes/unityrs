@@ -2,7 +2,9 @@
 freeze v8's frozen Run, and a round 11 run's declaration."""
 
 import json
+import os
 import unittest
+from pathlib import Path
 
 import test_anim_replay_coverage  # noqa: F401  (puts tools/parity on the path)
 
@@ -59,7 +61,7 @@ class RunTests(unittest.TestCase):
     def folder(self, recorded=(), round_json=True, run_id="r", bundle=None, identity=None):
         """A round 11 run folder; each recorded capture names its own case, run, Editor and bundle, as
         `identity` (case: (case, run, Editor version)) overrides."""
-        folder = scratch.for_case(self)
+        folder = Path(os.path.realpath(scratch.for_case(self)))  # resolved: a macOS scratch root sits under the /var symlink, which run_file refuses
         rows = [dict(name=name, status="recorded" if name in recorded else "not_covered") for name in round11.CASES]
         (folder / "run.json").write_text(json.dumps(dict(run=dict(run_id="r", editor_version="6000.6.9f1"),
                                                          cases=rows)), encoding="utf-8")

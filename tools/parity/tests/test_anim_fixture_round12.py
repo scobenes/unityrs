@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import shutil
+import os
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -34,6 +35,11 @@ SELECTION = "body-twist-tall-t0"
 
 def rows():
     return round12.rows()
+
+
+def real(path):
+    """A scratch root resolved: on macOS it sits under the /var symlink, which run_file refuses (rightly)."""
+    return Path(os.path.realpath(path))
 
 
 def write_json(path, value):
@@ -151,7 +157,7 @@ class Runs:
     def setUpClass(cls):
         doc = round12.tables()[0]
         text = json.dumps(authored(doc, r12tables.humantrait_order()), indent=1) if cls.REAL else STUB
-        cls.template = scratch.for_class(cls)
+        cls.template = real(scratch.for_class(cls))
         for editor in VERSIONS:
             make_round12(cls.template / f"r12-{editor}", editor, text)
             make_round11(cls.template / f"r11-{editor}", editor)
@@ -166,7 +172,7 @@ class Runs:
 
     def runs(self):
         """({Editor: round 12 run}, {Editor: round 11 run}), fresh copies."""
-        top = scratch.for_case(self)
+        top = real(scratch.for_case(self))
         copies = [{e: Path(shutil.copytree(self.template / f"{kind}-{e}", top / f"{kind}-{e}")) for e in VERSIONS}
                   for kind in ("r12", "r11")]
         return copies[0], copies[1]
@@ -487,7 +493,7 @@ class FixtureTests(unittest.TestCase):
 
             def value(self, key):
                 return {"asset": key}
-        folder = make_round12(scratch.for_case(self) / "run", "2022", STUB, [EXPLORATION])
+        folder = make_round12(real(scratch.for_case(self)) / "run", "2022", STUB, [EXPLORATION])
         view = round12.round12_view(folder)
         doc = view.capture(EXPLORATION)
         with mock.patch.object(complete, "BundleView", Bundle), \
@@ -550,7 +556,7 @@ class ClipTests(unittest.TestCase):
 
 class Round11CompletionTests(unittest.TestCase):
     def test_round_12s_sealed_evidence_opens_only_through_its_own_intakes_claim(self):
-        folder = scratch.for_case(self) / "run"
+        folder = real(scratch.for_case(self)) / "run"
         body = folder / "replays" / "body"
         reused = sorted(round12.round11_cases())
         names = (*reused, "body-clip-tall-scoped-level-offset")

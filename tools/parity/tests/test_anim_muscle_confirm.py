@@ -9,7 +9,9 @@ import math
 import re
 import struct
 import sys
+import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import test_anim_replay_coverage  # noqa: F401  (puts tools/parity on the path)
@@ -190,7 +192,7 @@ class ConfirmTests(unittest.TestCase):
 
     def folder(self, editor, docs, version=None, declared=True):
         """A round 11 run of Editor `editor`, recording every case and holding the captures `docs`."""
-        folder = scratch.for_case(self)
+        folder = Path(os.path.realpath(scratch.for_case(self)))  # resolved: a macOS scratch root sits under the /var symlink, which run_file refuses
         names = sorted(body.BODY_CASES.keys() | r11.ROUND11_CASES.keys())
         (folder / "run.json").write_text(json.dumps(dict(
             run=dict(run_id="r" + editor, editor_version=version or VERSIONS[editor]),
