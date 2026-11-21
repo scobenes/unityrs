@@ -15,7 +15,7 @@ a run elsewhere is for comparison, and an emulated host's is never published.
 
 ## 2. This run
 
-- Run 44843857998, attempt 1, commit 4ac902aacf70b2fcfb1653c208ab5d6c6395e100, 2026-11-21.
+- Run 44864172167, attempt 1, commit b4b4443667bddd38130ffe89fbd7b75c9691d7b1, 2026-11-21.
 - Machine: Intel(R) Xeon(R) 6975P-C, 4 cores, 15701.6 MiB, kernel 7.0.0-1014-aws, runner image 20261116.133.1.
 - unityrs 0.0.1; rustc 1.99.1 (58cf8f9c3 2026-10-13); UnityPy 1.25.2 with UnityPyBoost (sha256 40ee4f60b3d700f3…); Pillow 9.5.0; Python 3.11.18.
 - Fixtures: the full scale, manifest sha256 2d1ee783e59fe858….
@@ -49,9 +49,9 @@ a run elsewhere is for comparison, and an emulated host's is never published.
 
 | operation (timer contains) | inventory | UnityPy | unityrs | speedup |
 |---|---|---|---|---|
-| load and list objects | objects-lz4 (20,000 objects), objects-lzma (20,000 objects), objects-2019 (20,000 objects), many-blocks (64.0 MiB entry) | 504.5 ms | 454.8 ms | ×1.1 (1.00–1.15) |
-| read every typetree | 40,000 objects in 2 layouts | 723.5 ms | 859.8 ms | ×0.84 (0.81–0.89) |
-| read and decode textures | 15 formats, 113.2 Mpixel | 1.12 s | 818.9 ms | ×1.4 (1.33–1.39) |
+| load and list objects | objects-lz4 (20,000 objects), objects-lzma (20,000 objects), objects-2019 (20,000 objects), many-blocks (64.0 MiB entry) | 497.3 ms | 404.8 ms | ×1.2 (1.02–1.26) |
+| read every typetree | 40,000 objects in 2 layouts | 687.3 ms | 811.7 ms | ×0.85 (0.76–0.90) |
+| read and decode textures | 15 formats, 113.2 Mpixel | 1.11 s | 812.8 ms | ×1.4 (1.34–1.39) |
 
 ## 5. By category
 
@@ -59,58 +59,58 @@ a run elsewhere is for comparison, and an emulated host's is never published.
 
 | workload | timer | impl | median (min–max) | process CPU (with warm-up) | peak PSS (with warm-up) | throughput | speedup |
 |---|---|---|---|---|---|---|---|
-| load-objects-lz4 | load from bytes; list every file's object table | UnityPy | 71.4 ms (70.3 ms–74.2 ms) | 919.6 ms | 135.1 MiB | 71.2 MB/s, 280,120 objects/s |  |
-| load-objects-lz4 | load from bytes; list every file's object table | unityrs wheel | 75.7 ms (71.1 ms–79.0 ms) | 289.7 ms | 68.5 MiB | 67.2 MB/s, 264,301 objects/s | ×0.94 (0.89–1.04) |
-| load-objects-lzma | load from bytes; list every file's object table | UnityPy | 260.8 ms (259.2 ms–262.9 ms) | 1.29 s | 140.6 MiB | 14.7 MB/s, 76,674 objects/s |  |
-| load-objects-lzma | load from bytes; list every file's object table | unityrs wheel | 189.1 ms (186.9 ms–190.6 ms) | 522.7 ms | 67.6 MiB | 20.2 MB/s, 105,738 objects/s | ×1.4 (1.36–1.41) |
-| load-objects-2019 | load from bytes; list every file's object table | UnityPy | 44.1 ms (43.5 ms–44.2 ms) | 867.1 ms | 108.0 MiB | 524.5 MB/s, 453,645 objects/s |  |
-| load-objects-2019 | load from bytes; list every file's object table | unityrs wheel | 36.1 ms (35.3 ms–36.7 ms) | 232.4 ms | 64.2 MiB | 641.3 MB/s, 554,712 objects/s | ×1.2 (1.19–1.25) |
-| load-many-blocks | load from bytes; read every entry's bytes | UnityPy | 127.7 ms (125.2 ms–130.4 ms) | 1.06 s | 308.8 MiB | 305.8 MB/s, 501 MiB/s decoded |  |
-| load-many-blocks | load from bytes; read every entry's bytes | unityrs wheel | 157.2 ms (140.0 ms–199.3 ms) | 499.4 ms | 197.8 MiB | 248.5 MB/s, 407 MiB/s decoded | ×0.81 (0.63–0.93) |
+| load-objects-lz4 | load from bytes; list every file's object table | UnityPy | 70.2 ms (69.6 ms–71.1 ms) | 879.2 ms | 133.1 MiB | 72.5 MB/s, 284,842 objects/s |  |
+| load-objects-lz4 | load from bytes; list every file's object table | unityrs wheel | 72.7 ms (68.4 ms–78.2 ms) | 285.0 ms | 68.5 MiB | 70.0 MB/s, 275,103 objects/s | ×0.97 (0.89–1.04) |
+| load-objects-lzma | load from bytes; list every file's object table | UnityPy | 259.3 ms (257.8 ms–260.3 ms) | 1.26 s | 139.4 MiB | 14.8 MB/s, 77,129 objects/s |  |
+| load-objects-lzma | load from bytes; list every file's object table | unityrs wheel | 188.0 ms (186.8 ms–190.3 ms) | 517.1 ms | 67.6 MiB | 20.3 MB/s, 106,364 objects/s | ×1.4 (1.35–1.39) |
+| load-objects-2019 | load from bytes; list every file's object table | UnityPy | 43.8 ms (43.3 ms–44.5 ms) | 828.7 ms | 107.9 MiB | 528.3 MB/s, 456,992 objects/s |  |
+| load-objects-2019 | load from bytes; list every file's object table | unityrs wheel | 35.4 ms (34.8 ms–36.8 ms) | 223.3 ms | 57.4 MiB | 653.0 MB/s, 564,823 objects/s | ×1.2 (1.18–1.28) |
+| load-many-blocks | load from bytes; read every entry's bytes | UnityPy | 124.3 ms (118.0 ms–124.9 ms) | 1.02 s | 325.8 MiB | 314.3 MB/s, 515 MiB/s decoded |  |
+| load-many-blocks | load from bytes; read every entry's bytes | unityrs wheel | 109.4 ms (101.3 ms–190.2 ms) | 445.2 ms | 197.8 MiB | 357.0 MB/s, 585 MiB/s decoded | ×1.1 (0.62–1.23) |
 
 ### read every typetree
 
 | workload | timer | impl | median (min–max) | process CPU (with warm-up) | peak PSS (with warm-up) | throughput | speedup |
 |---|---|---|---|---|---|---|---|
-| typetree-objects-lz4 | parse_as_dict() on every object | UnityPy | 357.7 ms (350.1 ms–370.0 ms) | 4.42 s | 320.6 MiB | 14.2 MB/s, 55,915 objects/s |  |
-| typetree-objects-lz4 | parse_as_dict() on every object | unityrs wheel | 429.2 ms (407.6 ms–440.0 ms) | 3.88 s | 276.4 MiB | 11.9 MB/s, 46,595 objects/s | ×0.83 (0.80–0.91) |
-| typetree-objects-2019 | parse_as_dict() on every object | UnityPy | 365.8 ms (354.8 ms–375.0 ms) | 4.40 s | 315.8 MiB | 63.2 MB/s, 54,675 objects/s |  |
-| typetree-objects-2019 | parse_as_dict() on every object | unityrs wheel | 427.2 ms (412.4 ms–437.3 ms) | 3.86 s | 270.6 MiB | 54.1 MB/s, 46,816 objects/s | ×0.86 (0.81–0.91) |
+| typetree-objects-lz4 | parse_as_dict() on every object | UnityPy | 340.3 ms (316.1 ms–350.2 ms) | 4.35 s | 320.6 MiB | 15.0 MB/s, 58,780 objects/s |  |
+| typetree-objects-lz4 | parse_as_dict() on every object | unityrs wheel | 404.6 ms (389.0 ms–417.6 ms) | 3.84 s | 276.4 MiB | 12.6 MB/s, 49,427 objects/s | ×0.84 (0.76–0.90) |
+| typetree-objects-2019 | parse_as_dict() on every object | UnityPy | 343.9 ms (327.6 ms–352.6 ms) | 4.34 s | 315.7 MiB | 67.2 MB/s, 58,163 objects/s |  |
+| typetree-objects-2019 | parse_as_dict() on every object | unityrs wheel | 405.8 ms (378.8 ms–425.4 ms) | 3.84 s | 270.6 MiB | 57.0 MB/s, 49,282 objects/s | ×0.85 (0.77–0.93) |
 
 ### read and decode textures
 
 | workload | timer | impl | median (min–max) | process CPU (with warm-up) | peak PSS (with warm-up) | throughput | speedup |
 |---|---|---|---|---|---|---|---|
-| texture-RGBA32 | obj.read().image.tobytes() for each Texture2D | UnityPy | 19.0 ms (18.3 ms–19.4 ms) | 1.19 s | 157.8 MiB | 885.2 MB/s, 221.3 Mpixel/s |  |
-| texture-RGBA32 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 27.4 ms (23.7 ms–28.8 ms) | 1.14 s | 159.9 MiB | 611.5 MB/s, 152.9 Mpixel/s | ×0.69 (0.63–0.82) |
-| texture-RGB24 | obj.read().image.tobytes() for each Texture2D | UnityPy | 19.1 ms (18.2 ms–19.3 ms) | 1.17 s | 150.8 MiB | 660.1 MB/s, 220.0 Mpixel/s |  |
-| texture-RGB24 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 27.7 ms (27.1 ms–28.5 ms) | 1.13 s | 139.5 MiB | 454.3 MB/s, 151.4 Mpixel/s | ×0.69 (0.64–0.71) |
-| texture-ARGB4444 | obj.read().image.tobytes() for each Texture2D | UnityPy | 31.7 ms (31.3 ms–31.9 ms) | 1.19 s | 142.0 MiB | 264.4 MB/s, 132.2 Mpixel/s |  |
-| texture-ARGB4444 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 23.8 ms (22.5 ms–24.8 ms) | 1.12 s | 143.9 MiB | 352.1 MB/s, 176.0 Mpixel/s | ×1.3 (1.26–1.42) |
-| texture-DXT1 | obj.read().image.tobytes() for each Texture2D | UnityPy | 34.3 ms (33.6 ms–37.1 ms) | 1.20 s | 138.9 MiB | 122.2 MB/s, 244.3 Mpixel/s |  |
-| texture-DXT1 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 37.4 ms (35.9 ms–37.8 ms) | 1.14 s | 152.0 MiB | 112.1 MB/s, 224.1 Mpixel/s | ×0.92 (0.89–1.03) |
-| texture-BC4 | obj.read().image.tobytes() for each Texture2D | UnityPy | 15.8 ms (15.5 ms–18.6 ms) | 1.15 s | 105.9 MiB | 265.1 MB/s, 529.9 Mpixel/s |  |
-| texture-BC4 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 12.5 ms (12.1 ms–13.1 ms) | 1.08 s | 119.4 MiB | 336.2 MB/s, 672.0 Mpixel/s | ×1.3 (1.18–1.54) |
-| texture-ETC_RGB4 | obj.read().image.tobytes() for each Texture2D | UnityPy | 56.9 ms (56.2 ms–59.7 ms) | 1.22 s | 141.9 MiB | 73.7 MB/s, 147.4 Mpixel/s |  |
-| texture-ETC_RGB4 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 46.8 ms (46.0 ms–49.0 ms) | 1.15 s | 151.9 MiB | 89.6 MB/s, 179.2 Mpixel/s | ×1.2 (1.15–1.30) |
-| texture-EAC_R | obj.read().image.tobytes() for each Texture2D | UnityPy | 47.1 ms (45.6 ms–49.5 ms) | 1.21 s | 145.9 MiB | 89.0 MB/s, 178.0 Mpixel/s |  |
-| texture-EAC_R | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 35.7 ms (35.2 ms–37.0 ms) | 1.15 s | 151.9 MiB | 117.6 MB/s, 235.0 Mpixel/s | ×1.3 (1.23–1.41) |
-| texture-PVRTC_RGBA4 | obj.read().image.tobytes() for each Texture2D | UnityPy | 318.9 ms (311.3 ms–325.6 ms) | 1.48 s | 146.0 MiB | 13.2 MB/s, 26.3 Mpixel/s |  |
-| texture-PVRTC_RGBA4 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 123.5 ms (122.4 ms–133.2 ms) | 1.24 s | 152.1 MiB | 34.0 MB/s, 67.9 Mpixel/s | ×2.6 (2.34–2.66) |
-| texture-DXT5 | obj.read().image.tobytes() for each Texture2D | UnityPy | 41.2 ms (39.2 ms–42.7 ms) | 1.22 s | 155.8 MiB | 203.5 MB/s, 203.5 Mpixel/s |  |
-| texture-DXT5 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 41.1 ms (40.1 ms–42.2 ms) | 1.16 s | 160.0 MiB | 204.3 MB/s, 204.3 Mpixel/s | ×1.0 (0.93–1.07) |
-| texture-BC5 | obj.read().image.tobytes() for each Texture2D | UnityPy | 43.1 ms (39.8 ms–45.4 ms) | 1.21 s | 150.8 MiB | 194.9 MB/s, 194.8 Mpixel/s |  |
-| texture-BC5 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 44.6 ms (43.9 ms–45.1 ms) | 1.16 s | 154.5 MiB | 188.1 MB/s, 188.1 Mpixel/s | ×0.97 (0.88–1.03) |
-| texture-BC7 | obj.read().image.tobytes() for each Texture2D | UnityPy | 79.9 ms (79.0 ms–82.5 ms) | 1.25 s | 155.8 MiB | 105.0 MB/s, 104.9 Mpixel/s |  |
-| texture-BC7 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 44.3 ms (44.2 ms–46.8 ms) | 1.16 s | 160.0 MiB | 189.3 MB/s, 189.3 Mpixel/s | ×1.8 (1.69–1.86) |
-| texture-ETC2_RGBA8 | obj.read().image.tobytes() for each Texture2D | UnityPy | 69.9 ms (66.1 ms–71.2 ms) | 1.25 s | 157.9 MiB | 120.0 MB/s, 120.0 Mpixel/s |  |
-| texture-ETC2_RGBA8 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 54.6 ms (53.8 ms–55.3 ms) | 1.17 s | 159.9 MiB | 153.8 MB/s, 153.8 Mpixel/s | ×1.3 (1.19–1.32) |
-| texture-ATC_RGBA8 | obj.read().image.tobytes() for each Texture2D | UnityPy | 59.1 ms (57.3 ms–60.2 ms) | 1.24 s | 157.8 MiB | 141.9 MB/s, 141.9 Mpixel/s |  |
-| texture-ATC_RGBA8 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 53.8 ms (52.9 ms–56.4 ms) | 1.17 s | 159.9 MiB | 155.8 MB/s, 155.8 Mpixel/s | ×1.1 (1.01–1.14) |
-| texture-ASTC_RGBA_4x4 | obj.read().image.tobytes() for each Texture2D | UnityPy | 160.3 ms (157.5 ms–163.7 ms) | 1.34 s | 161.6 MiB | 52.4 MB/s, 52.3 Mpixel/s |  |
-| texture-ASTC_RGBA_4x4 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 138.1 ms (137.2 ms–139.7 ms) | 1.26 s | 160.1 MiB | 60.8 MB/s, 60.8 Mpixel/s | ×1.2 (1.13–1.19) |
-| texture-ASTC_RGBA_8x8 | obj.read().image.tobytes() for each Texture2D | UnityPy | 121.7 ms (119.6 ms–123.4 ms) | 1.27 s | 146.6 MiB | 17.3 MB/s, 68.9 Mpixel/s |  |
-| texture-ASTC_RGBA_8x8 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 104.8 ms (104.3 ms–107.3 ms) | 1.21 s | 148.0 MiB | 20.0 MB/s, 80.0 Mpixel/s | ×1.2 (1.11–1.18) |
+| texture-RGBA32 | obj.read().image.tobytes() for each Texture2D | UnityPy | 18.0 ms (17.4 ms–19.0 ms) | 1.16 s | 157.8 MiB | 930.3 MB/s, 232.5 Mpixel/s |  |
+| texture-RGBA32 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 26.7 ms (22.6 ms–28.7 ms) | 1.10 s | 154.0 MiB | 627.8 MB/s, 156.9 Mpixel/s | ×0.67 (0.61–0.84) |
+| texture-RGB24 | obj.read().image.tobytes() for each Texture2D | UnityPy | 19.0 ms (18.0 ms–19.5 ms) | 1.16 s | 129.9 MiB | 662.0 MB/s, 220.6 Mpixel/s |  |
+| texture-RGB24 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 28.6 ms (27.4 ms–29.7 ms) | 1.10 s | 142.9 MiB | 440.7 MB/s, 146.9 Mpixel/s | ×0.67 (0.60–0.71) |
+| texture-ARGB4444 | obj.read().image.tobytes() for each Texture2D | UnityPy | 31.1 ms (30.7 ms–32.0 ms) | 1.17 s | 133.8 MiB | 270.1 MB/s, 135.0 Mpixel/s |  |
+| texture-ARGB4444 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 22.9 ms (22.4 ms–24.9 ms) | 1.10 s | 144.0 MiB | 367.1 MB/s, 183.5 Mpixel/s | ×1.4 (1.23–1.43) |
+| texture-DXT1 | obj.read().image.tobytes() for each Texture2D | UnityPy | 34.9 ms (33.0 ms–36.5 ms) | 1.17 s | 138.9 MiB | 120.3 MB/s, 240.4 Mpixel/s |  |
+| texture-DXT1 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 36.8 ms (35.5 ms–38.1 ms) | 1.11 s | 148.0 MiB | 114.1 MB/s, 228.0 Mpixel/s | ×0.95 (0.87–1.03) |
+| texture-BC4 | obj.read().image.tobytes() for each Texture2D | UnityPy | 16.3 ms (16.0 ms–18.8 ms) | 1.13 s | 112.9 MiB | 257.1 MB/s, 513.8 Mpixel/s |  |
+| texture-BC4 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 12.4 ms (12.2 ms–12.5 ms) | 1.06 s | 119.4 MiB | 339.7 MB/s, 679.0 Mpixel/s | ×1.3 (1.28–1.54) |
+| texture-ETC_RGB4 | obj.read().image.tobytes() for each Texture2D | UnityPy | 57.9 ms (55.0 ms–59.8 ms) | 1.20 s | 145.8 MiB | 72.4 MB/s, 144.8 Mpixel/s |  |
+| texture-ETC_RGB4 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 46.4 ms (45.7 ms–47.2 ms) | 1.12 s | 151.9 MiB | 90.5 MB/s, 181.0 Mpixel/s | ×1.2 (1.17–1.31) |
+| texture-EAC_R | obj.read().image.tobytes() for each Texture2D | UnityPy | 46.9 ms (45.8 ms–49.3 ms) | 1.20 s | 145.8 MiB | 89.4 MB/s, 178.7 Mpixel/s |  |
+| texture-EAC_R | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 36.1 ms (35.0 ms–38.2 ms) | 1.11 s | 151.9 MiB | 116.4 MB/s, 232.7 Mpixel/s | ×1.3 (1.20–1.41) |
+| texture-PVRTC_RGBA4 | obj.read().image.tobytes() for each Texture2D | UnityPy | 315.9 ms (308.7 ms–320.7 ms) | 1.45 s | 145.8 MiB | 13.3 MB/s, 26.6 Mpixel/s |  |
+| texture-PVRTC_RGBA4 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 123.3 ms (122.1 ms–125.1 ms) | 1.20 s | 152.1 MiB | 34.0 MB/s, 68.0 Mpixel/s | ×2.6 (2.47–2.63) |
+| texture-DXT5 | obj.read().image.tobytes() for each Texture2D | UnityPy | 40.1 ms (39.4 ms–42.0 ms) | 1.18 s | 155.8 MiB | 209.1 MB/s, 209.1 Mpixel/s |  |
+| texture-DXT5 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 40.4 ms (39.1 ms–41.8 ms) | 1.12 s | 160.0 MiB | 207.9 MB/s, 207.9 Mpixel/s | ×0.99 (0.94–1.07) |
+| texture-BC5 | obj.read().image.tobytes() for each Texture2D | UnityPy | 42.0 ms (40.5 ms–43.9 ms) | 1.20 s | 150.8 MiB | 200.0 MB/s, 199.9 Mpixel/s |  |
+| texture-BC5 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 44.2 ms (43.1 ms–47.2 ms) | 1.14 s | 148.1 MiB | 189.7 MB/s, 189.6 Mpixel/s | ×0.95 (0.86–1.02) |
+| texture-BC7 | obj.read().image.tobytes() for each Texture2D | UnityPy | 79.4 ms (77.6 ms–82.7 ms) | 1.24 s | 155.8 MiB | 105.7 MB/s, 105.6 Mpixel/s |  |
+| texture-BC7 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 43.7 ms (42.8 ms–45.7 ms) | 1.14 s | 160.0 MiB | 192.1 MB/s, 192.1 Mpixel/s | ×1.8 (1.70–1.94) |
+| texture-ETC2_RGBA8 | obj.read().image.tobytes() for each Texture2D | UnityPy | 68.9 ms (67.9 ms–72.7 ms) | 1.23 s | 153.8 MiB | 121.8 MB/s, 121.7 Mpixel/s |  |
+| texture-ETC2_RGBA8 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 53.6 ms (52.9 ms–56.0 ms) | 1.15 s | 159.9 MiB | 156.7 MB/s, 156.6 Mpixel/s | ×1.3 (1.21–1.37) |
+| texture-ATC_RGBA8 | obj.read().image.tobytes() for each Texture2D | UnityPy | 57.2 ms (56.1 ms–60.5 ms) | 1.20 s | 157.8 MiB | 146.7 MB/s, 146.7 Mpixel/s |  |
+| texture-ATC_RGBA8 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 52.3 ms (51.8 ms–53.3 ms) | 1.13 s | 159.9 MiB | 160.4 MB/s, 160.4 Mpixel/s | ×1.1 (1.05–1.17) |
+| texture-ASTC_RGBA_4x4 | obj.read().image.tobytes() for each Texture2D | UnityPy | 160.7 ms (158.3 ms–162.2 ms) | 1.31 s | 161.6 MiB | 52.2 MB/s, 52.2 Mpixel/s |  |
+| texture-ASTC_RGBA_4x4 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 137.7 ms (136.7 ms–138.7 ms) | 1.22 s | 156.1 MiB | 60.9 MB/s, 60.9 Mpixel/s | ×1.2 (1.14–1.19) |
+| texture-ASTC_RGBA_8x8 | obj.read().image.tobytes() for each Texture2D | UnityPy | 121.9 ms (118.1 ms–123.1 ms) | 1.25 s | 146.6 MiB | 17.2 MB/s, 68.8 Mpixel/s |  |
+| texture-ASTC_RGBA_8x8 | obj.read().image.tobytes() for each Texture2D | unityrs wheel | 104.0 ms (103.3 ms–107.4 ms) | 1.17 s | 144.0 MiB | 20.2 MB/s, 80.6 Mpixel/s | ×1.2 (1.10–1.19) |
 
 ## 6. unityrs-only rows
 
@@ -118,7 +118,7 @@ Unpaired workloads: no speedup is published for them (decision 4).
 
 | workload | reason | unityrs wheel |
 |---|---|---|
-| texture-BC6H | PARITY.md row is Tier B | 68.2 ms |
+| texture-BC6H | PARITY.md row is Tier B | 68.3 ms |
 
 ## 7. The gate
 
