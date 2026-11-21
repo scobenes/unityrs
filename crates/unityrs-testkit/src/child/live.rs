@@ -274,6 +274,10 @@ pub struct Fifo {
     path: PathBuf,
     rx: Receiver<String>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Reads the reader found the FIFO empty: [`Self::line_while`] waits for
+    /// two more once its child has ended, so every line the child wrote has
+    /// been sent before it calls the FIFO done.
+    empty: std::sync::Arc<std::sync::atomic::AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
 impl Fifo {
@@ -287,6 +291,8 @@ impl Fifo {
             .open(&path)?;
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping = stop.clone();
+        let empty = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let emptied = empty.clone();
         let (tx, rx) = mpsc::channel();
         let thread = std::thread::spawn(move || {
             let mut pending = Vec::new();
@@ -309,6 +315,7 @@ impl Fifo {
                         }
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        emptied.fetch_add(1, std::sync::atomic::Ordering::Release);
                         std::thread::sleep(Duration::from_millis(1));
                     }
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -320,6 +327,7 @@ impl Fifo {
             path,
             rx,
             stop,
+            empty,
             thread: Some(thread),
         })
     }
@@ -334,6 +342,9 @@ impl Fifo {
     /// Wait for a trace while also observing child death. An outside SIGKILL
     /// returns to scene arbitration immediately instead of spending the guard
     /// waiting on a FIFO whose read/write keeper intentionally prevents EOF.
+    /// A line the child wrote before it ended is still returned: the reader
+    /// polls, so it can lag an exit, and calling the FIFO done then lost a
+    /// stopped engine's last trace (URS-33).
     ///
     /// # Panics
     /// When no line arrives before the testkit deadlock guard.
@@ -348,13 +359,36 @@ impl Fifo {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
             if !scene.running(live)? {
-                return Err(io::ErrorKind::BrokenPipe.into());
+                return self.rest();
             }
             assert!(
                 Instant::now() < deadline,
                 "deadlock guard: lifecycle FIFO line missing"
             );
         }
+    }
+    /// A line its ended writer left, or `BrokenPipe` when there is none. The
+    /// read that bumps the empty count to `seen + 1` may have started before
+    /// the exit; the one after it started later, so it found every byte the
+    /// writer wrote, and the reader sent their lines before it.
+    fn rest(&self) -> io::Result<String> {
+        use std::sync::atomic::Ordering;
+        let deadline = Instant::now() + DEADLOCK_GUARD;
+        let seen = self.empty.load(Ordering::Acquire);
+        while self.empty.load(Ordering::Acquire) < seen + 2 {
+            match self.rx.recv_timeout(Duration::from_millis(1)) {
+                Ok(text) => return Ok(text),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            assert!(
+                Instant::now() < deadline,
+                "deadlock guard: FIFO reader after its writer ended"
+            );
+        }
+        self.rx
+            .try_recv()
+            .map_err(|_| io::ErrorKind::BrokenPipe.into())
     }
 }
 impl Drop for Fifo {
