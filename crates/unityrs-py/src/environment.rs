@@ -16,7 +16,30 @@ use unityrs_core::{
 
 // Error outcomes retain constructor reader state until the facade applies it
 // and publishes any successful child CABs, then raises on the caller thread.
-type ParsedFile = (Option<NativeFile>, i128, Option<char>, Option<PyErr>);
+/// `(file, position, endian, error)`, made fallibly: a returned Rust tuple
+/// is converted with constructors that panic on a failed allocation.
+fn parsed_file(
+    py: Python<'_>,
+    file: Option<NativeFile>,
+    position: i128,
+    endian: Option<char>,
+    error: Option<PyErr>,
+) -> PyResult<Py<PyAny>> {
+    use crate::python::held as h;
+    let items = [
+        match file {
+            Some(file) => Bound::new(py, file)?.into_any(),
+            None => h::none(py),
+        },
+        crate::python::wide_int(position)?.into_bound(py),
+        endian.map_or_else(|| Ok(h::none(py)), |endian| h::char(py, endian))?,
+        error.map_or_else(
+            || h::none(py),
+            |error| error.into_value(py).into_bound(py).into_any(),
+        ),
+    ];
+    h::tuple_of(py, &items).map(Bound::unbind)
+}
 
 fn reader_kind(kind: u8) -> unityrs_core::stream::ReaderKind {
     use unityrs_core::stream::ReaderKind;
@@ -124,7 +147,7 @@ impl NativeEnvironment {
         size: i128,
     ) -> PyResult<Py<PyAny>> {
         let unityrs_core::File::Serialized(file) = &file.inner else {
-            return Err(pyo3::exceptions::PyTypeError::new_err(
+            return Err(crate::errors::new::<pyo3::exceptions::PyTypeError>(
                 "resource owner is not a SerializedFile",
             ));
         };
@@ -290,14 +313,14 @@ impl NativeEnvironment {
         typ: u8,
         stream: u8,
         parent: Option<&NativeFile>,
-    ) -> PyResult<ParsedFile> {
+    ) -> PyResult<Py<PyAny>> {
         use unityrs_core::detect::FileType;
         let ty = match typ {
             0 => FileType::AssetsFile,
             1 => FileType::BundleFile,
             2 => FileType::WebFile,
             _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
+                return Err(crate::errors::new::<pyo3::exceptions::PyValueError>(
                     "invalid parser type",
                 ));
             }
@@ -338,18 +361,13 @@ impl NativeEnvironment {
                         '>'
                     }
                 });
-                return Ok((
-                    None,
-                    0,
-                    endian,
-                    // A fallback callback error otherwise escapes from
-                    // config._load's finally before the facade receives state.
-                    Some(
-                        self.take_fallback_warnings(py)
-                            .err()
-                            .unwrap_or_else(|| error.file_parse(&data, stream != 0, &meter)),
-                    ),
-                ));
+                // A fallback callback error otherwise escapes from
+                // config._load's finally before the facade receives state.
+                let error = self
+                    .take_fallback_warnings(py)
+                    .err()
+                    .unwrap_or_else(|| error.file_parse(&data, stream != 0, &meter));
+                return parsed_file(py, None, 0, endian, Some(error));
             }
         };
         let (position, endian) = match &file {
@@ -371,7 +389,7 @@ impl NativeEnvironment {
             }
             _ => (0, None),
         };
-        Ok((Some(NativeFile::new(file)), position, endian, None))
+        parsed_file(py, Some(NativeFile::new(file)), position, endian, None)
     }
     #[pyo3(signature = (path, constructor, dependency, root=None))]
     fn load_path(

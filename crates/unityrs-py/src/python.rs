@@ -123,9 +123,9 @@ pub(crate) mod held {
                 return Err(PyErr::fetch(py));
             }
             let mut items = Vec::new();
-            items
-                .try_reserve_exact(usize::try_from(n)?)
-                .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("tuple items"))?;
+            items.try_reserve_exact(usize::try_from(n)?).map_err(|_| {
+                crate::errors::new::<pyo3::exceptions::PyMemoryError>("tuple items")
+            })?;
             for at in 0..n {
                 let item = ffi::PySequence_GetItem(list.as_ptr(), at);
                 items.push(Bound::from_owned_ptr_or_err(py, item)?);
@@ -152,6 +152,56 @@ pub(crate) mod held {
             }
             Ok(tuple)
         }
+    }
+    /// `f(arg)`, its argument tuple made fallibly (PyO3's tuple
+    /// conversions panic on a failed allocation).
+    pub(crate) fn call1<'py>(
+        f: &Bound<'py, PyAny>,
+        arg: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let py = f.py();
+        // SAFETY: one live item; a new tuple or null with an exception set.
+        let args = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyTuple_Pack(1, arg.as_ptr())) }?;
+        // SAFETY: live objects; a new reference or null with an exception set.
+        unsafe {
+            Bound::from_owned_ptr_or_err(
+                py,
+                ffi::PyObject_Call(f.as_ptr(), args.as_ptr(), std::ptr::null_mut()),
+            )
+        }
+    }
+    /// `f(*items)`, its argument tuple made fallibly.
+    pub(crate) fn call<'py>(
+        f: &Bound<'py, PyAny>,
+        items: &[Bound<'py, PyAny>],
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let args = tuple_of(f.py(), items)?;
+        // SAFETY: live objects; a new reference or null with an exception set.
+        unsafe {
+            Bound::from_owned_ptr_or_err(
+                f.py(),
+                ffi::PyObject_Call(f.as_ptr(), args.as_ptr(), std::ptr::null_mut()),
+            )
+        }
+    }
+    /// `(rows, guard)`, the guard's object and the tuple made fallibly (a
+    /// returned Rust tuple is converted with constructors that panic on a
+    /// failed allocation).
+    pub(crate) fn with_guard(
+        py: Python<'_>,
+        (rows, guard): (Py<PyAny>, crate::traversal::TreeTraversal),
+    ) -> PyResult<Py<PyAny>> {
+        let guard = Bound::new(py, guard)?.into_any();
+        tuple_of(py, &[rows.into_bound(py), guard]).map(Bound::unbind)
+    }
+    /// A one-character `str`.
+    pub(crate) fn char(py: Python<'_>, value: char) -> PyResult<Bound<'_, PyAny>> {
+        string(py, value.encode_utf8(&mut [0; 4]).as_bytes())
+    }
+    /// `seq[at]`, the index's `int` made fallibly (PyO3 boxes a Rust
+    /// integer with a constructor that panics on a failed allocation).
+    pub(crate) fn item<'py>(seq: &Bound<'py, PyAny>, at: usize) -> PyResult<Bound<'py, PyAny>> {
+        seq.get_item(uint(seq.py(), at as u64)?)
     }
     pub(crate) fn none(py: Python<'_>) -> Bound<'_, PyAny> {
         py.None().into_bound(py)

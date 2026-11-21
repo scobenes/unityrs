@@ -133,8 +133,10 @@ fn names(input: Option<&Bound<'_, PyAny>>, meter: &Arc<Meter>) -> PyResult<Meter
             meter.count_decode(count as u64).map_err(errors::charge)?;
             out.reserve(count).map_err(errors::charge)?;
             for i in 0..count {
-                let value =
-                    crate::buffer_snapshot::BufferSnapshot::new(&input.get_item(i)?, meter)?;
+                let value = crate::buffer_snapshot::BufferSnapshot::new(
+                    &crate::python::held::item(input, i)?,
+                    meter,
+                )?;
                 out.push(RawStr::charged(&value, meter).map_err(errors::charge)?)
                     .map_err(errors::charge)?;
             }
@@ -234,7 +236,7 @@ fn resolved_names(
     meter.count_decode(count as u64).map_err(errors::charge)?;
     let mut out = MeteredVec::with_capacity(meter, count).map_err(errors::charge)?;
     for i in 0..count {
-        let row = input.get_item(i)?;
+        let row = crate::python::held::item(input, i)?;
         let key = crate::buffer_snapshot::BufferSnapshot::new(&row.get_item(0)?, meter)?;
         let name = crate::buffer_snapshot::BufferSnapshot::new(&row.get_item(1)?, meter)?;
         out.push((
@@ -252,9 +254,9 @@ pub(crate) fn decode_error(error: unityrs_meshdecode::MeshError) -> PyErr {
         unityrs_meshdecode::MeshError::Resource(error) => errors::core(error),
         _ => {
             if let Some((name, message)) = error.python() {
-                named_error(name, message)
+                named_error(name, &message)
             } else {
-                PyNotImplementedError::new_err(errors::message(&error))
+                crate::errors::new::<PyNotImplementedError>(errors::message(&error))
             }
         }
     }
@@ -265,6 +267,6 @@ pub(crate) fn mesh_error(error: MeshError) -> PyErr {
         MeshError::Decode(error) => decode_error(error),
         MeshError::Charge(error) => errors::charge(error),
         MeshError::Core(error) => errors::core(error),
-        _ => PyValueError::new_err(errors::message(&error)),
+        _ => crate::errors::new::<PyValueError>(errors::message(&error)),
     }
 }

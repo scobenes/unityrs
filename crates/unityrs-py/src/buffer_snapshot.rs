@@ -1,5 +1,5 @@
 //! Charged immutable buffer snapshots, read on the calling Python thread.
-use crate::errors;
+use crate::{direct_keys::name, errors};
 use pyo3::{
     prelude::*,
     pybacked::PyBackedBytes,
@@ -28,7 +28,9 @@ impl BufferSnapshot {
         }
         let charge = meter.charge(256).map_err(errors::charge)?;
         let view = PyMemoryView::from(input)?;
-        let size = view.getattr("nbytes")?.extract::<u64>()?;
+        let size = view
+            .getattr(name!(input.py(), c"nbytes")?)?
+            .extract::<u64>()?;
         check_size(size, cap)?;
         Self::from_view(input, &view, charge)
     }
@@ -44,18 +46,23 @@ impl BufferSnapshot {
     pub(crate) fn writer(input: &Bound<'_, PyAny>, meter: &Arc<Meter>) -> PyResult<Self> {
         let charge = meter.charge(256).map_err(errors::charge)?;
         let view = match PyMemoryView::from(input) {
-            Ok(view) if view.getattr("c_contiguous")?.is_truthy()? => view,
+            Ok(view)
+                if view
+                    .getattr(name!(input.py(), c"c_contiguous")?)?
+                    .is_truthy()? =>
+            {
+                view
+            }
             Err(error) if !error.is_instance_of::<pyo3::exceptions::PyTypeError>(input.py()) => {
                 return Err(error);
             }
             _ => {
-                input
-                    .py()
-                    .import("io")?
-                    .getattr("BytesIO")?
-                    .call0()?
-                    .call_method1("write", (input,))?;
-                return Err(pyo3::exceptions::PyTypeError::new_err(
+                let py = input.py();
+                let writer =
+                    crate::direct_keys::import_attr(py, name!(py, c"io")?, name!(py, c"BytesIO")?)?
+                        .call0()?;
+                crate::python::held::call1(&writer.getattr(name!(py, c"write")?)?, input)?;
+                return Err(crate::errors::new::<pyo3::exceptions::PyTypeError>(
                     "invalid writer buffer",
                 ));
             }
@@ -69,7 +76,9 @@ impl BufferSnapshot {
         mut charge: Charge,
     ) -> PyResult<Self> {
         let meter = charge.meter().clone();
-        let size = view.getattr("nbytes")?.extract::<u64>()?;
+        let size = view
+            .getattr(name!(input.py(), c"nbytes")?)?
+            .extract::<u64>()?;
         charge.grow(size).map_err(errors::charge)?;
         // Only exact bytes have no caller-defined finalizer. Normalize buffer
         // subclasses while attached, so their finalizers also run on the
@@ -78,7 +87,9 @@ impl BufferSnapshot {
             input.extract()?
         } else {
             meter.count_decode(size).map_err(errors::charge)?;
-            view.call_method0("tobytes")?.extract()?
+            view.getattr(name!(input.py(), c"tobytes")?)?
+                .call0()?
+                .extract()?
         };
         Ok(Self {
             bytes,

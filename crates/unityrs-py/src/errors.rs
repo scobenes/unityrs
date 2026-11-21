@@ -1,5 +1,7 @@
 // Ported from UnityPy 1.25.2 (MIT): UnityPy/files/ObjectReader.py, UnityPy/files/BundleFile.py, UnityPy/files/WebFile.py, UnityPy/streams/EndianBinaryReader.py, UnityPy/helpers/TypeTreeHelper.py, UnityPy/helpers/ImportHelper.py, UnityPy/helpers/ResourceReader.py. See THIRD_PARTY_LICENSES.
 //! Python exception classes for the corresponding core failures.
+use crate::direct_keys::name;
+use pyo3::PyTypeInfo;
 use pyo3::{
     create_exception,
     exceptions::{
@@ -7,7 +9,9 @@ use pyo3::{
         PyIndexError, PyIsADirectoryError, PyKeyError, PyMemoryError, PyNotImplementedError,
         PyOSError, PyOverflowError, PyPermissionError, PyRecursionError, PyTypeError, PyValueError,
     },
+    ffi,
     prelude::*,
+    types::PyType,
 };
 use unityrs_core::{
     Error,
@@ -18,6 +22,87 @@ use unityrs_core::{
 
 create_exception!(unityrs, LimitError, PyMemoryError);
 create_exception!(unityrs, TypeTreeError, PyException);
+
+/// `T(text)`, its message made now. PyO3's `new_err` converts its argument
+/// as the error is raised, with constructors that panic on a failed
+/// allocation (a `PanicException` where Python raises `MemoryError`); here
+/// a failed allocation is the `MemoryError` it raised ([`no_memory`]).
+pub(crate) fn new<T: PyTypeInfo>(text: impl AsRef<str>) -> PyErr {
+    let text = text.as_ref();
+    crate::python::relay::attach(|py| typed(&py.get_type::<T>(), text))
+}
+
+/// `T(arg)`, `arg` made now by `make`; its failure raised as it is.
+pub(crate) fn new_with<T: PyTypeInfo>(
+    make: impl for<'py> FnOnce(Python<'py>) -> PyResult<Bound<'py, PyAny>> + Send,
+) -> PyErr {
+    crate::python::relay::attach(|py| match make(py) {
+        Ok(arg) => PyErr::from_type(py.get_type::<T>(), arg.unbind()),
+        Err(error) => error,
+    })
+}
+
+/// `class(text)`, attached, as [`new`] makes it. The argument is the one
+/// `str`, never a tuple of it: raising it allocates nothing more of ours.
+pub(crate) fn typed(class: &Bound<'_, PyType>, text: &str) -> PyErr {
+    match text_of(class.py(), text) {
+        Ok(text) => PyErr::from_type(class.clone(), text.unbind()),
+        Err(error) => error,
+    }
+}
+
+/// A new `str` of `text`, a failed allocation raised ([`no_memory`]).
+pub(crate) fn text_of<'py>(py: Python<'py>, text: &str) -> PyResult<Bound<'py, PyAny>> {
+    let Ok(len) = isize::try_from(text.len()) else {
+        return Err(no_memory(py));
+    };
+    // SAFETY: the bytes are borrowed for the call; a new reference or null
+    // with an exception set.
+    let made = unsafe { ffi::PyUnicode_FromStringAndSize(text.as_ptr().cast(), len) };
+    if made.is_null() {
+        return Err(no_memory(py));
+    }
+    // SAFETY: a new, non-null reference.
+    Ok(unsafe { Bound::from_owned_ptr(py, made) })
+}
+
+/// The `MemoryError` a failed allocation set, taken; with none pending, a
+/// `MemoryError` whose raising allocates nothing of ours: its argument is
+/// the interpreter's cached empty tuple. This is best effort, not a
+/// guarantee: its instance comes from `CPython`'s finite `MemoryError` free
+/// list, and once that is empty `CPython` allocates one; if allocations keep
+/// failing, normalising the exception can still abort the interpreter
+/// (`CPython` 3.10 and 3.11), though never through a panic of ours.
+pub(crate) fn no_memory(py: Python<'_>) -> PyErr {
+    PyErr::take(py).unwrap_or_else(|| PyMemoryError::new_err(()))
+}
+
+/// `module.name`, a class, its names made fallibly (`builtins.KeyError`).
+pub(crate) fn class_named<'py>(
+    py: Python<'py>,
+    module: &str,
+    name: &str,
+) -> PyResult<Bound<'py, PyType>> {
+    let module = text_of(py, module)?.cast_into::<pyo3::types::PyString>()?;
+    let name = text_of(py, name)?.cast_into::<pyo3::types::PyString>()?;
+    class_of(py, &module, &name)
+}
+
+/// A failed integer narrowing as PyO3 maps it (`ValueError` with the
+/// error's text), its message made now ([`new`]).
+#[allow(clippy::needless_pass_by_value, reason = "used as a map_err function")]
+pub(crate) fn narrowing(error: std::num::TryFromIntError) -> PyErr {
+    new::<PyValueError>(message(&error))
+}
+
+/// A module's class by interned names (`struct.error`).
+fn class_of<'py>(
+    py: Python<'py>,
+    module: &Bound<'py, pyo3::types::PyString>,
+    name: &Bound<'py, pyo3::types::PyString>,
+) -> PyResult<Bound<'py, PyType>> {
+    Ok(crate::direct_keys::import_attr(py, module, name)?.cast_into::<PyType>()?)
+}
 
 pub(crate) fn charge(error: unityrs_core::limits::ChargeError) -> PyErr {
     core(error.into())
@@ -112,9 +197,9 @@ fn file_parse_bounds(
 ) -> PyErr {
     if what == "string to null" {
         return if stream {
-            PyValueError::new_err("Unterminated string: [b'']")
+            new::<PyValueError>("Unterminated string: [b'']")
         } else {
-            PyException::new_err("String not terminated")
+            new::<PyException>("String not terminated")
         };
     }
     // Fixed-width numeric fields bound this message well below 512 bytes.
@@ -139,18 +224,15 @@ fn file_parse_bounds(
             "unpack_from requires a buffer of at least {end} bytes for unpacking {need} bytes at offset {pos} (actual buffer size is {length})"
         ))
     };
-    crate::python::relay::attach(|py| {
-        match py
-            .import("struct")
-            .and_then(|module| module.getattr("error"))
-        {
-            Ok(class) => match class.cast_into::<pyo3::types::PyType>() {
-                Ok(class) => PyErr::from_type(class, (text,)),
-                Err(error) => error.into(),
-            },
-            Err(error) => error,
-        }
+    crate::python::relay::attach(|py| match struct_error(py) {
+        Ok(class) => typed(&class, &text),
+        Err(error) => error,
     })
+}
+
+/// `struct.error`.
+fn struct_error(py: Python<'_>) -> PyResult<Bound<'_, PyType>> {
+    class_of(py, name!(py, c"struct")?, name!(py, c"error")?)
 }
 
 fn file_signature(
@@ -195,15 +277,14 @@ fn signature_error(
     };
     crate::python::relay::attach(|py| {
         let rendered = (|| {
-            let signature = crate::python::string(signature)?;
-            let text =
-                pyo3::types::PyString::new(py, template).call_method1("format", (signature,))?;
+            let signature = crate::python::held::string(py, signature)?;
+            let text = format(py, template, &signature)?;
             let class = if bundle {
                 py.get_type::<PyNotImplementedError>()
             } else {
                 py.get_type::<PyValueError>()
             };
-            Ok::<_, PyErr>(PyErr::from_type(class, (text.unbind(),)))
+            Ok::<_, PyErr>(PyErr::from_type(class, text.unbind()))
         })();
         rendered.unwrap_or_else(|error| error)
     })
@@ -212,12 +293,16 @@ fn signature_error(
 pub(crate) fn resource(error: Error, path: &unityrs_core::RawStr) -> PyErr {
     if matches!(error, Error::NotFound(_)) {
         crate::python::relay::attach(|py| {
-            let name = py
-                .import("ntpath")?
-                .getattr("basename")?
-                .call1((crate::python::string(path.as_bytes())?,))?;
-            let message = pyo3::types::PyString::new(py, "Resource file {} not found")
-                .call_method1("format", (name,))?;
+            let basename = crate::direct_keys::import_attr(
+                py,
+                name!(py, c"ntpath")?,
+                name!(py, c"basename")?,
+            )?;
+            let name = crate::python::held::call1(
+                &basename,
+                &crate::python::held::string(py, path.as_bytes())?,
+            )?;
+            let message = format(py, "Resource file {} not found", &name)?;
             Ok::<_, PyErr>(PyFileNotFoundError::new_err(message.unbind()))
         })
         .unwrap_or_else(|e| e)
@@ -226,25 +311,35 @@ pub(crate) fn resource(error: Error, path: &unityrs_core::RawStr) -> PyErr {
     }
 }
 
+/// `template.format(arg)`, every object made fallibly.
+fn format<'py>(
+    py: Python<'py>,
+    template: &str,
+    arg: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let method = text_of(py, template)?.getattr(name!(py, c"format")?)?;
+    crate::python::held::call1(&method, arg)
+}
+
 pub(crate) fn core(error: Error) -> PyErr {
     if error.is_meter_refusal() {
         return match error {
-            Error::Limit(_) => LimitError::new_err(message(&error)),
-            _ => PyMemoryError::new_err(message(&error)),
+            Error::Limit(_) => new::<LimitError>(message(&error)),
+            _ => new::<PyMemoryError>(message(&error)),
         };
     }
     match error {
         Error::Entry { source, .. } => core((*source).clone()),
         Error::AssetBundle(source) => parse((*source).clone()),
-        Error::Detect(DetectError::Unterminated) => PyException::new_err("String not terminated"),
+        Error::Detect(DetectError::Unterminated) => new::<PyException>("String not terminated"),
         Error::Detect(DetectError::UnterminatedStream) => {
-            PyValueError::new_err("Unterminated string: [b'']")
+            new::<PyValueError>("Unterminated string: [b'']")
         }
         Error::Detect(DetectError::InflateLimit(_) | DetectError::Work(_)) | Error::Limit(_) => {
-            LimitError::new_err(message(&error))
+            new::<LimitError>(message(&error))
         }
         Error::Detect(DetectError::Allocator(_)) | Error::Allocator(_) | Error::Budget(_) => {
-            PyMemoryError::new_err(message(&error))
+            new::<PyMemoryError>(message(&error))
         }
         Error::Detect(DetectError::GzipCrc {
             expected, actual, ..
@@ -256,11 +351,22 @@ pub(crate) fn core(error: Error) -> PyErr {
         ),
         Error::Detect(DetectError::Gzip(detail)) => gzip(&detail),
         Error::OutOfBounds { .. } => crate::python::relay::attach(|py| {
-            match py.import("struct").and_then(|m| m.getattr("error")) {
-                Ok(cls) => PyErr::from_type(
-                    cls.cast_into()
+            let class = crate::direct_keys::import_attr(
+                py,
+                match name!(py, c"struct") {
+                    Ok(module) => module,
+                    Err(error) => return error,
+                },
+                match name!(py, c"error") {
+                    Ok(name) => name,
+                    Err(error) => return error,
+                },
+            );
+            match class {
+                Ok(cls) => typed(
+                    &cls.cast_into()
                         .unwrap_or_else(|_| py.get_type::<PyEOFError>()),
-                    (message(&error),),
+                    &message(&error),
                 ),
                 Err(e) => e,
             }
@@ -268,54 +374,53 @@ pub(crate) fn core(error: Error) -> PyErr {
         Error::Io(e) => {
             let message = message(&e.0);
             match e.0.kind() {
-                std::io::ErrorKind::NotFound => PyFileNotFoundError::new_err(message),
-                std::io::ErrorKind::PermissionDenied => PyPermissionError::new_err(message),
-                std::io::ErrorKind::IsADirectory => PyIsADirectoryError::new_err(message),
-                _ => PyOSError::new_err(message),
+                std::io::ErrorKind::NotFound => new::<PyFileNotFoundError>(message),
+                std::io::ErrorKind::PermissionDenied => new::<PyPermissionError>(message),
+                std::io::ErrorKind::IsADirectory => new::<PyIsADirectoryError>(message),
+                _ => new::<PyOSError>(message),
             }
         }
-        Error::NotFound(_) => PyFileNotFoundError::new_err(message(&error)),
-        Error::TypeIndex { .. } => PyIndexError::new_err(message(&error)),
+        Error::NotFound(_) => new::<PyFileNotFoundError>(message(&error)),
+        Error::TypeIndex { .. } => new::<PyIndexError>(message(&error)),
         Error::Tree(
             unityrs_core::typetree::TreeError::Empty
             | unityrs_core::typetree::TreeError::LevelUnderflow { .. },
-        ) => PyIndexError::new_err("list index out of range"),
+        ) => new::<PyIndexError>("list index out of range"),
         Error::Malformed {
             what: "HEAD typetree",
             ref detail,
         } if detail.as_ref() == "shared subtree hash not found" => {
-            PyKeyError::new_err(message(&error))
+            new::<PyKeyError>(message(&error))
         }
         Error::Malformed {
             what: "HEAD typetree",
             ref detail,
         } if detail.as_ref() == "shared hash index out of range" => {
-            PyIndexError::new_err("list index out of range")
+            new::<PyIndexError>("list index out of range")
         }
         Error::Malformed {
             what: "HEAD typetree",
             ref detail,
         } if detail.as_ref() == "cyclic shared subtree" => {
-            PyRecursionError::new_err("maximum recursion depth exceeded")
+            new::<PyRecursionError>("maximum recursion depth exceeded")
         }
         Error::Version(unityrs_core::version::VersionError::NoFallback) => {
             crate::python::relay::attach(|py| {
-                match py
-                    .import("unityrs.exceptions")
-                    .and_then(|m| m.getattr("UnityVersionFallbackError"))
-                {
-                    Ok(cls) => match cls.cast_into::<pyo3::types::PyType>() {
-                        Ok(cls) => PyErr::from_type(cls, (message(&error),)),
-                        Err(error) => error.into(),
-                    },
-                    Err(error) => error,
+                match class_of(
+                    py,
+                    name!(py, c"unityrs.exceptions")?,
+                    name!(py, c"UnityVersionFallbackError")?,
+                ) {
+                    Ok(cls) => Ok(typed(&cls, &message(&error))),
+                    Err(error) => Err(error),
                 }
             })
+            .unwrap_or_else(|error| error)
         }
         Error::Version(unityrs_core::version::VersionError::NoMatch(ref raw)) => {
             invalid_version(raw.as_bytes())
         }
-        _ => PyValueError::new_err(message(&error)),
+        _ => new::<PyValueError>(message(&error)),
     }
 }
 
@@ -323,16 +428,16 @@ fn invalid_version(raw: &[u8]) -> PyErr {
     let prefix = b"Invalid version string: ";
     let mut bytes = Vec::new();
     let Some(len) = prefix.len().checked_add(raw.len()) else {
-        return PyMemoryError::new_err("version error message is too large");
+        return new::<PyMemoryError>("version error message is too large");
     };
     if bytes.try_reserve_exact(len).is_err() {
-        return PyMemoryError::new_err("version error message allocation refused");
+        return new::<PyMemoryError>("version error message allocation refused");
     }
     bytes.extend_from_slice(prefix);
     bytes.extend_from_slice(raw);
     match crate::python::string(&bytes) {
         Ok(message) => crate::python::relay::attach(|py| {
-            PyErr::from_type(py.get_type::<PyValueError>(), (message,))
+            PyErr::from_type(py.get_type::<PyValueError>(), message)
         }),
         Err(error) => error,
     }
@@ -350,19 +455,15 @@ fn gzip(detail: &str) -> PyErr {
         } else {
             message(&text)
         };
-        let (module, name) = if detail.starts_with("EOFError:") {
-            return PyEOFError::new_err(text);
+        let class = if detail.starts_with("EOFError:") {
+            Ok(py.get_type::<PyEOFError>())
         } else if detail.starts_with("zlib.error:") {
-            ("zlib", "error")
+            name!(py, c"zlib").and_then(|m| class_of(py, m, name!(py, c"error")?))
         } else {
-            ("gzip", "BadGzipFile")
+            name!(py, c"gzip").and_then(|m| class_of(py, m, name!(py, c"BadGzipFile")?))
         };
-        match py
-            .import(module)
-            .and_then(|m| m.getattr(name))
-            .and_then(|c| c.cast_into::<pyo3::types::PyType>().map_err(Into::into))
-        {
-            Ok(cls) => PyErr::from_type(cls, (text,)),
+        match class {
+            Ok(cls) => typed(&cls, &text),
             Err(error) => error,
         }
     })
@@ -380,7 +481,7 @@ pub(crate) fn parse_reader(error: &ParseError, boost: bool) -> PyErr {
     // files/ObjectReader.py:244-262, files/ObjectReader.py:285-307;
     // helpers/TypeTreeHelper.py:123-158. Boost's short read is EOFError.
     if error.is_meter_refusal() {
-        return PyMemoryError::new_err(message(&error));
+        return new::<PyMemoryError>(message(&error));
     }
     match error {
         ParseError::Tree(unityrs_core::typetree::TreeError::Charge(error))
@@ -397,49 +498,48 @@ pub(crate) fn parse_reader(error: &ParseError, boost: bool) -> PyErr {
             why: Some(why),
             class_id,
         } => match why.exception() {
-            "KeyError" => PyKeyError::new_err(*class_id),
-            "ValueError" => PyValueError::new_err("Could not find exact version"),
+            "KeyError" => {
+                let class_id = i64::from(*class_id);
+                new_with::<PyKeyError>(move |py| crate::python::held::int(py, class_id))
+            }
+            "ValueError" => new::<PyValueError>("Could not find exact version"),
+            // `()` is the interpreter's empty tuple: raising it allocates
+            // nothing of ours.
             "AssertionError" => PyAssertionError::new_err(()),
-            "NotImplementedError" => PyNotImplementedError::new_err("Unsupported comparison"),
-            _ => TypeTreeError::new_err("There are no TypeTree nodes for this object."),
+            "NotImplementedError" => new::<PyNotImplementedError>("Unsupported comparison"),
+            _ => new::<TypeTreeError>("There are no TypeTree nodes for this object."),
         },
         ParseError::NoTypeTree { .. } => {
-            TypeTreeError::new_err("There are no TypeTree nodes for this object.")
+            new::<TypeTreeError>("There are no TypeTree nodes for this object.")
         }
         ParseError::Read(r) => match &r.detail {
-            ReadDetail::Limit(_) => LimitError::new_err(message(&error)),
-            ReadDetail::RefTypeNoTree => PyAttributeError::new_err(message(&r.detail)),
+            ReadDetail::Limit(_) => new::<LimitError>(message(&error)),
+            ReadDetail::RefTypeNoTree => new::<PyAttributeError>(message(&r.detail)),
             ReadDetail::NoRefTypes {
                 reader: unityrs_core::value::ReadBy::Boost,
                 ..
-            } => PyValueError::new_err("Failed to get ref type node"),
+            } => new::<PyValueError>("Failed to get ref type node"),
             ReadDetail::NoRefTypes { absent: true, .. } => {
-                PyAttributeError::new_err("'SerializedFile' object has no attribute 'ref_types'")
+                new::<PyAttributeError>("'SerializedFile' object has no attribute 'ref_types'")
             }
-            ReadDetail::NoRefTypes { .. } => {
-                PyValueError::new_err("SerializedFile has no ref_types")
-            }
+            ReadDetail::NoRefTypes { .. } => new::<PyValueError>("SerializedFile has no ref_types"),
             ReadDetail::Stream(s) => exception(s.exception(), message(s)),
             ReadDetail::BoostEof {
                 method,
                 exception: kind,
                 ..
-            } => exception(kind, format!("{method} out of bounds")),
-            ReadDetail::Eof { need, .. } => crate::python::relay::attach(|py| {
-                match py
-                    .import("struct")
-                    .and_then(|m| m.getattr("error"))
-                    .and_then(|c| c.cast_into::<pyo3::types::PyType>().map_err(Into::into))
-                {
-                    Ok(cls) => PyErr::from_type(
-                        cls,
-                        (format!("unpack requires a buffer of {need} bytes"),),
+            } => exception(kind, message(&format_args!("{method} out of bounds"))),
+            ReadDetail::Eof { need, .. } => {
+                crate::python::relay::attach(|py| match struct_error(py) {
+                    Ok(cls) => typed(
+                        &cls,
+                        &message(&format_args!("unpack requires a buffer of {need} bytes")),
                     ),
                     Err(error) => error,
-                }
-            }),
+                })
+            }
             ReadDetail::NegativeLength(_) if boost => {
-                PyValueError::new_err("Negative length read from TypeTree")
+                new::<PyValueError>("Negative length read from TypeTree")
             }
             ReadDetail::Python(s) => {
                 let (name, text) = s.split_once(": ").unwrap_or((s, s));
@@ -454,22 +554,22 @@ pub(crate) fn parse_reader(error: &ParseError, boost: bool) -> PyErr {
                 };
                 exception(name, message(&text))
             }
-            _ if r.kind == ReadErrorKind::OutOfBounds => PyEOFError::new_err(message(&r.detail)),
-            _ => PyValueError::new_err(message(&r.detail)),
+            _ if r.kind == ReadErrorKind::OutOfBounds => new::<PyEOFError>(message(&r.detail)),
+            _ => new::<PyValueError>(message(&r.detail)),
         },
-        _ => PyValueError::new_err(message(&error)),
+        _ => new::<PyValueError>(message(&error)),
     }
 }
 fn exception(name: &str, message: String) -> PyErr {
     match name {
-        "IndexError" => PyIndexError::new_err(message),
-        "AttributeError" => PyAttributeError::new_err(message),
-        "KeyError" => PyKeyError::new_err(message),
-        "TypeError" => PyTypeError::new_err(message),
-        "EOFError" => PyEOFError::new_err(message),
-        "OverflowError" => PyOverflowError::new_err(message),
-        "OSError" => PyOSError::new_err(message),
-        _ => PyValueError::new_err(message),
+        "IndexError" => new::<PyIndexError>(message),
+        "AttributeError" => new::<PyAttributeError>(message),
+        "KeyError" => new::<PyKeyError>(message),
+        "TypeError" => new::<PyTypeError>(message),
+        "EOFError" => new::<PyEOFError>(message),
+        "OverflowError" => new::<PyOverflowError>(message),
+        "OSError" => new::<PyOSError>(message),
+        _ => new::<PyValueError>(message),
     }
 }
 

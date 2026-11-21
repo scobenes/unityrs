@@ -78,7 +78,11 @@ pub(crate) fn standalone_tree_read(
     let endian = match endian {
         "<" => unityrs_core::stream::Endian::Little,
         ">" => unityrs_core::stream::Endian::Big,
-        _ => return Err(pyo3::exceptions::PyValueError::new_err("Invalid endian")),
+        _ => {
+            return Err(crate::errors::new::<pyo3::exceptions::PyValueError>(
+                "Invalid endian",
+            ));
+        }
     };
     let data =
         crate::buffer_snapshot::BufferSnapshot::source(data, &meter, limits.max_input_bytes)?;
