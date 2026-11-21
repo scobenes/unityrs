@@ -189,6 +189,36 @@ def _poles(limb, settings, reach, side, error):
     return False
 
 
+def _inside(first, second):
+    """Whether two predictions (quaternion, radius) lie each inside the other's bound."""
+    (p, ep), (q, eq) = first, second
+    turn, error = b.separation(p, q)
+    return turn + error <= min(b.angle_bound(ep), b.angle_bound(eq))
+
+
+def row_chains(rig, values, errors, settings, limb, foot, side):
+    """`chains` on one row under the equation `canonical` keys `limb` in: where the key merges S1 and S2 (every
+    field's w 0 or 1, and `_poles` finding none), both are evaluated on this row, and the merge holds only where both
+    predict, each prediction inside the other's bound on every bone, or both refuse. Anything else refuses the row
+    (`Pole`): the key proposes the merge, the row decides it."""
+    def run(candidate):
+        try:
+            return chains(rig, values, errors, settings, candidate, foot, side)
+        except b.Pole:
+            return None
+    own = run(limb)
+    w = [t if limb.d == 1 else _f32(1. - t) for t in settings]
+    if limb.s in (1, 2) and all(x in (0., 1.) for x in w) and not _poles(limb, settings, x_reach(rig), side,
+                                                                           max(errors)):
+        twin = run(limb._replace(s=3 - limb.s))
+        if (own is None) != (twin is None) or own is not None and not (
+                own.keys() == twin.keys() and all(_inside(own[k], twin[k]) for k in own)):
+            raise b.Pole("S1 and S2 do not agree on this row: their merge does not hold")
+    if own is None:
+        raise b.Pole("the candidate refuses this row")
+    return own
+
+
 def canonical(limb, foot, settings, toes, signs, reach, error=0.):
     """The key of a joint candidate on a cell: `settings` the four twist settings, `toes` {side: bool}, `signs`
     {side: {pair field: the source's x sign times the receiver's}}, `reach` `x_reach` of the cell's Avatar, `error`
@@ -199,7 +229,8 @@ def canonical(limb, foot, settings, toes, signs, reach, error=0.):
     - w = 1 moves nothing (phi = 0 under every S, the source's joint B5a's), so S, R and sigma drop for that pair.
     - w = 0: S1 and S2 are both the zero x angle and phi = theta (2 atan(tan(theta/2)) = theta), where no tangent
       of the side's chains can reach its pole under the propagated radii (`_poles`). S2 takes tan(theta/2) and S1
-      does not, so past that they refuse differently and stay apart. S3 stays distinct (its counter-rotation is
+      does not, so past that they refuse differently and stay apart. The key only proposes the merge: each row
+      decides it (`row_chains`: both predict, each inside the other's bound, or both refuse). S3 stays distinct (its counter-rotation is
       outside the swing).
     - sigma is the resolved sign per side.
     - C1 is R1 at a receiver whose own pair keeps everything (w = 1) or with no source pair (Hand, Foot): adding

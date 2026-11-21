@@ -53,10 +53,20 @@ class RowTests(unittest.TestCase):
 
     def test_a_rest_must_be_a_unit_quaternion(self):
         for q in ((0., 0., 0., 1.), (0., 0., 0., 1. + 2. ** -22), (.5, .5, .5, .5)):
-            witness.unit_rest(q, "rest")
-        for q in ((0., 0., 0., 2. ** -100), (0., 0., 0., 2.), (0., 0., 0., 1e30), (0., 0., float("nan"), 1.), (0., 1.)):
+            witness.unit_quaternion(q, "rest")
+        for q in ((0., 0., 0., 2. ** -100), (0., 0., 0., 2. ** -80), (0., 0., 0., 2.), (0., 0., 0., 1e30), (0., 0., float("nan"), 1.), (0., 1.)):
             with self.assertRaises(ValueError, msg=q):
-                witness.unit_rest(q, "rest")
+                witness.unit_quaternion(q, "rest")
+
+    def test_pre_and_post_rotations_must_be_unit_quaternions(self):
+        unit, tiny = dict(x=0., y=0., z=0., w=1.), dict(x=0., y=0., z=0., w=2. ** -80)
+        limit = dict(m_Min=dict(x=-1., y=-1., z=-1.), m_Max=dict(x=1., y=1., z=1.))
+        sign = dict(x=1., y=1., z=1., w=1.)
+        axes = witness.axes_of(dict(m_PreQ=unit, m_PostQ=unit, m_Sgn=sign, m_Limit=limit), "bone")
+        self.assertEqual((axes["pre"], axes["max"]), ([0., 0., 0., 1.], [1., 1., 1.]))
+        for pre, post in ((tiny, unit), (unit, tiny)):
+            with self.assertRaises(ValueError, msg=(pre, post)):
+                witness.axes_of(dict(m_PreQ=pre, m_PostQ=post, m_Sgn=sign, m_Limit=limit), "bone")
 
     def test_run_files_refuse_symlinks_and_escapes(self):
         with scratch.folder() as root:
@@ -82,6 +92,10 @@ class RowTests(unittest.TestCase):
             (root / "linked").symlink_to(run, target_is_directory=True)
             with self.assertRaises(ValueError):
                 witness.run_file(root / "linked", "replays", "body", "real.pending.json")
+            # A symlinked ancestor of a plain run folder: /parent/alias/run.
+            (root / "alias").symlink_to(root, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                witness.run_file(root / "alias" / "run", "replays", "body", "real.pending.json")
             with self.assertRaises(ValueError):
                 witness.run(run, "unityrs", log=lambda *_: None)
 

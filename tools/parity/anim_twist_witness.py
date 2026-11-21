@@ -23,6 +23,7 @@ import argparse
 import itertools
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -50,8 +51,9 @@ PAIR_BONES = ((13, 15), (15, 17), (1, 3), (3, 5))
 # How far a chain bone's recorded rest may turn from the Avatar's m_SkeletonPose: f32 storage, far under any
 # other Avatar's rest.
 REST_MATCH = 1e-5
-# A recorded rest is a unit quaternion as Unity stores it: its f32 squared norm finite and normal, and its norm within
-# REST_NORM of 1 (a few f32 ulps), so the f32 path normalizes it as the f64 one assumes.
+# A recorded rest, and every chain bone's m_PreQ and m_PostQ, is a unit quaternion as Unity stores it: its f32 squared
+# norm finite and normal, and its norm within REST_NORM of 1 (a few f32 ulps), so the f32 path normalizes it as the
+# f64 one assumes.
 REST_NORM = 1e-5
 ADMISSION = (("t0", ("compact", "tall")), ("t1", ("compact", "tall")), ("m1", ("compact", "tall")),
              ("t5", SCOPED_RIGS))
@@ -73,9 +75,10 @@ def allowlisted(rig):
     return case
 
 
-def unit_rest(q, label):
-    """Refuse a rest quaternion whose f32 squared norm (Unity's sum order) is not finite and normal, or whose norm is
-    not within REST_NORM of 1: (0, 0, 0, 2^-100) points at the identity but its squared norm underflows to 0."""
+def unit_quaternion(q, label):
+    """Refuse a rest, m_PreQ or m_PostQ quaternion whose f32 squared norm (Unity's sum order) is not finite and
+    normal, or whose norm is not within REST_NORM of 1: (0, 0, 0, 2^-100) points at the identity but its squared norm
+    underflows to 0."""
     def f32(x):
         try:
             return bound._f32(x)
@@ -85,13 +88,27 @@ def unit_rest(q, label):
     for x in q:
         total = f32(total + f32(x * x))
     replay.require(len(q) == 4 and math.isfinite(total) and total >= 2. ** -126
-                   and abs(math.sqrt(total) - 1) <= REST_NORM, f"{label}: the rest rotation is not a unit quaternion")
+                   and abs(math.sqrt(total) - 1) <= REST_NORM, f"{label} is not a unit quaternion")
+
+
+def axes_of(record, label):
+    """A chain bone's m_AxesArray record as the model reads it, its m_PreQ and m_PostQ unit quaternions."""
+    from anim_humanoid_qualify import vec
+    from anim_muscle_pose import f32
+
+    axes = {key: [f32(v) for v in vec(record[name])] for key, name in
+            (("pre", "m_PreQ"), ("post", "m_PostQ"), ("sign", "m_Sgn"))}
+    axes |= {key: [f32(v) for v in vec(record["m_Limit"][name])] for key, name in (("min", "m_Min"), ("max", "m_Max"))}
+    unit_quaternion(axes["pre"], f"{label} m_PreQ")
+    unit_quaternion(axes["post"], f"{label} m_PostQ")
+    return axes
 
 
 def run_file(folder, *parts):
-    """A file of the run itself: no component a symlink (lstat), the run folder itself included, and resolving
-    inside the run folder."""
+    """A file of the run itself: no component a symlink (lstat), the run folder itself included, no ancestor of it
+    a symlink either (its real path its absolute one), and resolving inside the run folder."""
     replay.require(not folder.is_symlink() and folder.is_dir(), f"{folder.name} is a symlink or not a folder")
+    replay.require(os.path.realpath(folder) == os.path.abspath(folder), f"{folder.name} is reached through a symlink")
     root = folder.resolve()
     path = folder
     for part in parts:
@@ -111,9 +128,9 @@ def load_rig(folder, rig, unityrs, views, run):
     import anim_fixture_round11 as r11
     from anim_body_runs import human_of
     from anim_fixture_contract import check_identity
-    from anim_humanoid_qualify import node_paths, tos_paths, vec
+    from anim_humanoid_qualify import node_paths, tos_paths
     from anim_muscle_confirm import placement
-    from anim_muscle_pose import avatar_node, f32
+    from anim_muscle_pose import avatar_node
     from anim_replay_complete import BundleView, bundle_digest, check_recording_run, read_manifest
 
     case = allowlisted(rig)
@@ -151,16 +168,12 @@ def load_rig(folder, rig, unityrs, views, run):
         replay.require(recorded_paths.get(recorded) == paths.get(skeleton["m_ID"][node]) is not None,
                        f"{case}: bone {bone} is recorded from another transform than the Avatar's")
         rest = [replay.f32_from_bits(v) for v in capture["rest"]["transforms"][recorded]["rotation"]]
-        unit_rest(rest, f"{case}: bone {bone}")
+        unit_quaternion(rest, f"{case}: bone {bone}'s rest")
         # The Avatar stores its pose in f32 off unit by an ulp or two (w 1 + 2^-22 at the identity): the same
         # rotation, to REST_MATCH.
         replay.require(bound.separation(rest, [float(poses[node]["q"][a]) for a in "xyzw"])[0] <= REST_MATCH,
                        f"{case}: bone {bone} is recorded at a rest rotation not the Avatar's")
-        record = skeleton["m_AxesArray"][axes_id]
-        axes = {key: [f32(v) for v in vec(record[name])] for key, name in
-                (("pre", "m_PreQ"), ("post", "m_PostQ"), ("sign", "m_Sgn"))}
-        axes |= {key: [f32(v) for v in vec(record["m_Limit"][name])] for key, name in
-                 (("min", "m_Min"), ("max", "m_Max"))}
+        axes = axes_of(skeleton["m_AxesArray"][axes_id], f"{case}: bone {bone}'s")
         found[bone] = dict(axes=axes, rest=rest)
         nodes[bone] = node
     for source, receiver in PAIR_BONES + ((14, 16), (16, 18), (2, 4), (4, 6)):

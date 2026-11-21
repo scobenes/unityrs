@@ -146,7 +146,8 @@ def atan2_half(t):
 def product(a, b):
     (p, ep), (q, eq) = a, b
     np_, nq = norm(p), norm(q)
-    rounding = 2 * GAMMA4 * (np_ + ep) * (nq + eq) + (TINY if (np_ + ep) * (nq + eq) > 0 else 0.)
+    # Four subnormal ulps, one per component: each component's f32 sum can flush a 2^-149 result to 0.
+    rounding = 2 * GAMMA4 * (np_ + ep) * (nq + eq) + (4 * TINY if (np_ + ep) * (nq + eq) > 0 else 0.)
     return (multiply(p, q), np_ * eq + nq * ep + ep * eq + rounding)
 
 

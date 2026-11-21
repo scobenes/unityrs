@@ -227,6 +227,15 @@ class CandidateTests(unittest.TestCase):
         self.assertLessEqual(b.separation(q, stored)[0], b.angle_bound(e))
         self.assertGreater(b.separation(q, stored)[0], 4 * math.asin(e / 2))
 
+    def test_a_product_flushed_to_zero_stays_inside_its_bound(self):
+        # Every component of both operands 2^-75: every f32 partial product (2^-150) rounds to 0, so Unity's product
+        # is 0 while each exact component is 2^-149 in magnitude (norm 2^-148, two subnormal ulps).
+        p = (2. ** -75,) * 4
+        value, error = b.product(b.exact(p), b.exact(p))
+        self.assertEqual([abs(x) for x in value], [2. ** -149] * 4)
+        self.assertEqual([f32(x * y) for x in p for y in p], [0.] * 16)
+        self.assertGreaterEqual(error, math.sqrt(sum(x * x for x in value)))
+
     def test_perturbed_norm_products(self):
         a, c = ((0., 0., 0., 2.), .5), ((0., 0., 0., 3.), .25)
         value, error = b.product(a, c)
@@ -340,6 +349,28 @@ class EquivalenceTests(unittest.TestCase):
         model.chains(self.rig, values, [0.] * 95, (0.,) * 4, *first, "Left")
         with self.assertRaises(b.Pole):
             model.chains(self.rig, values, [0.] * 95, (0.,) * 4, *second, "Left")
+
+    def test_the_row_decides_the_s1_s2_merge(self):
+        # C0/R1 at w = 0 with an upper-arm x limit of 3.141592264175415: the key merges S1 and S2 (no C1 carry
+        # reaches a pole), but on a row turning the arm to that limit the propagated tangent interval clears pi, S2's
+        # outgoing radius exceeds a radian and the receiver's normalization refuses while S1 predicts. The row
+        # refuses the merge for both; a row turning nothing keeps it.
+        f1 = model.FEET[0]
+        first, second = model.Limb(1, 1, 1, "+", 0), model.Limb(1, 2, 1, "+", 0)
+        limit = 3.141592264175415
+        self.assertEqual(f32(limit), limit)
+        self.rig[13]["axes"]["min"], self.rig[13]["axes"]["max"] = [-limit] * 3, [limit] * 3
+        self.assertEqual(self.key(first, f1, (0.,) * 4), self.key(second, f1, (0.,) * 4))
+        values = [0.] * 95
+        values[41] = 1.
+        model.chains(self.rig, values, [0.] * 95, (0.,) * 4, first, f1, "Left")
+        with self.assertRaises(b.Pole):
+            model.chains(self.rig, values, [0.] * 95, (0.,) * 4, second, f1, "Left")
+        for limb in (first, second):
+            with self.assertRaises(b.Pole):
+                model.row_chains(self.rig, values, [0.] * 95, (0.,) * 4, limb, f1, "Left")
+            self.assertEqual(model.row_chains(self.rig, [0.] * 95, [0.] * 95, (0.,) * 4, limb, f1, "Left"),
+                             model.chains(self.rig, [0.] * 95, [0.] * 95, (0.,) * 4, limb, f1, "Left"))
 
     def test_c1_is_r1_where_nothing_moves_on(self):
         f1 = model.FEET[0]

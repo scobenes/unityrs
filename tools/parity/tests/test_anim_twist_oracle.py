@@ -11,6 +11,7 @@ the model cannot pass both paths. It runs every one of the 630 candidates on syn
 
 import math
 import random
+import struct
 import unittest
 
 import test_anim_replay_coverage  # noqa: F401  (puts tools/parity on the path)
@@ -249,7 +250,8 @@ class OracleTests(unittest.TestCase):
                     except b.Pole:
                         continue
                     for draw in range(2):
-                        moved = [f32(v + rng.choice((-e, e, rng.uniform(-e, e)))) for v, e in zip(values, errors)]
+                        moved = [inside(v + rng.choice((-e, e, rng.uniform(-e, e))), v, e)
+                                 for v, e in zip(values, errors)]
                         want = oracle(rig, moved, settings, limb, foot, side)
                         for bone, (q, radius) in found.items():
                             ROUND[0] = lambda x: x
@@ -260,6 +262,20 @@ class OracleTests(unittest.TestCase):
         finally:
             ROUND[0] = lambda x: x
         self.assertGreater(checked, 2000)
+
+
+def inside(x, v, e):
+    """x rounded to f32, then stepped an f32 ulp at a time toward v while the rounding left [v - e, v + e]: v is an
+    f32 inside it, so the sample stays inside the declared interval."""
+    y = f32(x)
+    while abs(y - v) > e:
+        if y == 0:
+            y = math.copysign(2. ** -149, v)
+            continue
+        bits = struct.unpack("<I", struct.pack("<f", y))[0]
+        bits += 1 if (v > y) == (y > 0) else -1
+        y = struct.unpack("<f", struct.pack("<I", bits))[0]
+    return y
 
 
 if __name__ == "__main__":
