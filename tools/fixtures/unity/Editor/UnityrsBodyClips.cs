@@ -544,7 +544,14 @@ static partial class UnityrsFixtureBuilder
         {
             var slots = CompiledSlots(serialized);
             Require(slots != null, "Unity did not expose the compiled track table of the built clip for " + name + ".");
-            var bound = new HashSet<int>(slots.Keys.Concat(HumanBindings(serialized).Select(row => row.attribute)));
+            // Each Animator attribute has one compiled owner: a second is a conflicting mapping (never collapsed
+            // into the set below), whether or not m_IndexArray is exposed.
+            var owners = HumanBindings(serialized).ToArray();
+            var shared = owners.GroupBy(row => row.attribute).Where(group => group.Count() > 1).Select(group => group.Key)
+                .OrderBy(attribute => attribute).ToArray();
+            Require(shared.Length == 0, "The built clip binds Animator attribute(s) " + string.Join(", ", shared)
+                + " more than once in " + name + ".");
+            var bound = new HashSet<int>(slots.Keys.Concat(owners.Select(row => row.attribute)));
             if (forbidden != null)
                 Require(!bound.Overlaps(forbidden), "The built clip binds a limb-twist track its twin omits in " + name + ".");
             if (exact)
@@ -563,11 +570,25 @@ static partial class UnityrsFixtureBuilder
             // attribute is a conflicting mapping the runtime refuses (clip.rs, ConflictingHumanMapping).
             if (indexed)
             {
-                var conflicting = HumanBindings(serialized).Where(row => row.attribute >= index.arraySize
+                var conflicting = owners.Where(row => row.attribute >= index.arraySize
                     || index.GetArrayElementAtIndex(row.attribute).intValue != row.slot).Select(row => row.attribute).ToArray();
                 Require(conflicting.Length == 0, "The built clip binds Animator attribute(s) " + string.Join(", ", conflicting)
                     + " at slots its m_IndexArray does not name (orphaned or conflicting) in " + name + ".");
+                // And from the index back to the bindings: every attribute m_IndexArray gives a slot (any value but
+                // the absent -1) must own that slot's binding. An attribute the clip omits (a twin's limb twist)
+                // whose entry points at another track's slot would play that track.
+                var owner = owners.ToDictionary(row => row.slot, row => row.attribute);
+                var strays = Enumerable.Range(0, index.arraySize).Where(attribute => {
+                    int slot = index.GetArrayElementAtIndex(attribute).intValue;
+                    return slot != -1 && !(owner.TryGetValue(slot, out int held) && held == attribute);
+                }).ToArray();
+                Require(strays.Length == 0, "The built clip's m_IndexArray gives Animator attribute(s) " + string.Join(", ", strays)
+                    + " a slot no binding of theirs owns in " + name + ".");
             }
+            // Where m_IndexArray is hidden, the checks above are the strongest the Editor can make: each attribute
+            // has at most one binding, the tracks are bound, and no forbidden (or, exact, extra) attribute is bound.
+            // They cannot see the index playback reads: an attribute routed to another track's slot, or an omitted
+            // one given a slot. Completion checks the serialized index offline (IndexUnverified in run.json).
             return indexed;
         }
     }

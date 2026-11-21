@@ -257,17 +257,36 @@ static partial class UnityrsFixtureBuilder
 
                     var report = new RunReport(Log, variant.Cases);
                     variant.AddDeferred(report);
-                    Progress("Preparing fixtures", .05f);
-                    var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
-                    BuildAndCapture(build, report, staging, run, target, variant.Record, Log, variant.BodyOnly);
-                    // The last step (round 12's inventory) cannot stop the manifest from being written.
+                    // A run with a last step (round 12) writes it and run.json even when building or recording
+                    // stops, then fails: its staging folder is kept and nothing is published.
+                    Exception stopped = null;
+                    try
+                    {
+                        Progress("Preparing fixtures", .05f);
+                        var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
+                        BuildAndCapture(build, report, staging, run, target, variant.Record, Log, variant.BodyOnly);
+                    }
+                    catch (Exception error) when (variant.Finish != null)
+                    {
+                        stopped = error;
+                        preserveStaging = true;
+                    }
+                    // A last step (round 12's inventory, authored.json and round.json) that fails fails the run
+                    // after run.json is written: the staging folder is kept, and nothing is published.
+                    string lastStep = null;
                     try { finished = variant.Finish?.Invoke(report, staging, run); }
                     catch (Exception error)
                     {
                         Log("ERROR in the last step: " + error.Message);
-                        finished = "The last step failed: " + error.Message + " See build.log.";
+                        lastStep = error.Message;
+                        preserveStaging = true;
                     }
                     failures = report.Write(staging, projectPath, run);
+                    if (stopped != null)
+                        throw new InvalidOperationException(stopped.Message + (lastStep == null ? "" : " The last step failed too: "
+                            + lastStep) + " Nothing was published.", stopped);
+                    if (lastStep != null)
+                        throw new InvalidOperationException("The last step failed: " + lastStep + " Nothing was published.");
                     if (failures.Length > 0 && Directory.Exists(output))
                     {
                         destination = output + "-partial-" + shortId;

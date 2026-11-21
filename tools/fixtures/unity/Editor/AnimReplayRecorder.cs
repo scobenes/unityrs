@@ -132,17 +132,26 @@ public static partial class AnimReplayRecorder
     {
         string staging = Path.Combine(Path.GetDirectoryName(output), "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".tmp");
         var stream = new FileStream(staging, FileMode.CreateNew);
+        bool written = false;
         try
         {
             using (stream)
             using (var writer = new StreamWriter(stream))
                 writer.Write("{\"format\":\"" + format + "\",\"version\":1,\"spec\":" + spec
                     + ",\"capture\":" + JsonUtility.ToJson(capture, true) + "}\n");
-            File.Move(staging, output);
+            written = true;
+            try { File.Move(staging, output); }
+            catch (Exception error)
+            {
+                // The complete capture stays where it was written, and the failure names it.
+                throw new IOException("The capture was written but could not be moved to " + output + " (" + error.Message
+                    + "); it is kept at " + staging + ".", error);
+            }
         }
         finally
         {
-            if (File.Exists(staging)) File.Delete(staging);
+            // Only an incomplete capture is removed.
+            if (!written && File.Exists(staging)) File.Delete(staging);
         }
     }
 
