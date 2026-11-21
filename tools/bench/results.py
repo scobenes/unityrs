@@ -213,12 +213,12 @@ def speedup(slow: list[float], fast: list[float]) -> dict:
 
 
 def round_totals(wall: dict, names: list[str], impl: str, field: str) -> list[float] | None:
-    """The per-round sums of `field` over the workloads `names` for `impl`, or None when a run lacks it (a peak PSS
-    the host could not sample)."""
+    """The per-round sums of `field` over the workloads `names` for `impl`, or None when a run lacks it: a peak PSS
+    the host could not sample, which is null, or zero when the sampler caught no process (mem_peak.py)."""
     rounds = []
     for n in names:
         got = [r[field] for r in sorted(entries(wall, n)[impl]["runs"], key=lambda r: r["round"])]
-        if None in got:
+        if None in got or (field == "peak_pss_bytes" and 0 in got):
             return None
         rounds.append(got)
     return [sum(r) for r in zip(*rounds, strict=True)]
@@ -235,10 +235,12 @@ def category_totals(wall: dict, workloads: dict, category: str, field: str = "sc
 
 
 def ratio(totals: dict) -> float | None:
-    """UnityPy's median round total over unityrs's, or None when either side lacks one."""
+    """UnityPy's median round total over unityrs's, or None when either side lacks one or unityrs's median is
+    zero. Only the medians are divided: a zero round elsewhere cannot fail it."""
     if totals["unitypy"] is None or totals["unityrs"] is None:
         return None
-    return speedup(totals["unitypy"], totals["unityrs"])["ratio"]
+    fast = statistics.median(totals["unityrs"])
+    return statistics.median(totals["unitypy"]) / fast if fast > 0 else None
 
 
 def summary(wall: dict, workloads: dict) -> list[dict]:
@@ -271,7 +273,7 @@ def workload_figures(wall: dict, name: str) -> dict:
         if not ok:
             out[impl] = None
             continue
-        pss = [r["peak_pss_bytes"] for r in ok if r["peak_pss_bytes"] is not None]
+        pss = [r["peak_pss_bytes"] for r in ok if r["peak_pss_bytes"]]  # null or zero: not sampled
         out[impl] = {
             **spread([r["scope_s"] for r in ok]),
             "cpu_s": statistics.median([r["cpu_s"] for r in ok]),
@@ -339,7 +341,8 @@ def fmt_ratio(r: float | None) -> str:
 
 
 def summary_table(wall: dict, workloads: dict, ranges: bool) -> list[str]:
-    lines = ["| operation (timer contains) | inventory | UnityPy | unityrs | speedup | peak memory | process CPU |",
+    lines = ["| operation (timer contains) | inventory | UnityPy | unityrs | speedup | peak memory (sum of workload "
+             "peaks) | process CPU |",
              "|---|---|---|---|---|---|---|"]
     for row in summary(wall, workloads):
         x = row["speedup"]
@@ -351,7 +354,8 @@ def summary_table(wall: dict, workloads: dict, ranges: bool) -> list[str]:
 
 
 def run_label(wall: dict) -> str:
-    return f"Runner CPU: {wall['machine']['cpu']} (commit {wall['commit'][:12]}, {wall['date']})."
+    return (f"Runner CPU: {wall['machine']['cpu']}; UnityPy {wall['tools']['unitypy']}; commit {wall['commit'][:12]}, "
+            f"{wall['date']}.")
 
 
 def summaries(walls: list[dict], workloads: dict, ranges: bool) -> list[str]:
@@ -363,7 +367,9 @@ def summaries(walls: list[dict], workloads: dict, ranges: bool) -> list[str]:
 
 
 RATIOS = ("The speedup, peak memory and process CPU columns are each UnityPy's figure over unityrs's, so ×2.0 means "
-          "unityrs needs half. Memory (peak summed PSS) and CPU cover the whole process, imports included.")
+          "unityrs needs half. Each workload runs in its own process; peak memory adds up those processes' peaks "
+          "(summed PSS) over a row's workloads, and CPU their CPU time, imports included, each the median over "
+          "rounds.")
 
 
 def cpu_note(walls: list[dict]) -> str:
@@ -380,7 +386,7 @@ def readme_section(walls: list[dict], workloads: dict) -> str:
         return PENDING
     first = walls[0]
     head = (
-        f"unityrs against UnityPy {first['tools']['unitypy']} with UnityPyBoost, the same Python script on both, on "
+        "unityrs against UnityPy with UnityPyBoost, the same Python script on both, on "
         f"public synthetic fixtures, on GitHub's ubuntu-24.04 runner. Median of {first['rounds']} rounds, each a "
         "fresh process with a warm file cache. API rows time the operation after imports; the extraction row times "
         f"the whole process, imports included. {RATIOS}"

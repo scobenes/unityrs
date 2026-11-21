@@ -49,8 +49,8 @@ class RenderTests(unittest.TestCase):
         root = scratch_tree(self, wall())
         self.assertEqual(bench.render(root, check=False), [])
         inner = (root / "README.md").read_text(encoding="utf-8").split(results.BEGIN)[1].split(results.END)[0]
-        self.assertEqual(inner.count("Runner CPU: Synthetic CPU (commit 0123456789ab, 2026-11-19)."), 1)
-        self.assertIn("| speedup | peak memory | process CPU |", inner)
+        self.assertEqual(inner.count("Runner CPU: Synthetic CPU; UnityPy 1.25.2; commit 0123456789ab, 2026-11-19."), 1)
+        self.assertIn("| speedup | peak memory (sum of workload peaks) | process CPU |", inner)
         self.assertIn("only this CPU's run is committed so far", inner)
 
     def test_a_run_on_another_cpu_renders_its_own_table(self):
@@ -84,6 +84,15 @@ class RenderTests(unittest.TestCase):
         (root / "benchmarks" / "wall-other.json").write_text(bench.dump_json(doc), encoding="utf-8")
         bad = bench.render(root, check=True)
         self.assertTrue(bad and bad[0].startswith("benchmarks/wall-other.json: ") and "emulated" in bad[0], bad)
+
+    def test_a_results_file_that_is_a_symlink_is_refused(self):
+        other = wall()
+        other["machine"]["cpu"] = "Other CPU"
+        root = scratch_tree(self, wall())
+        (root / "elsewhere.json").write_text(bench.dump_json(other), encoding="utf-8")
+        (root / "benchmarks" / "wall-other.json").symlink_to(root / "elsewhere.json")
+        self.assertEqual(bench.render(root, check=True),
+                         ["benchmarks/wall-other.json: a symlink; a results file must be a regular file"])
 
     def test_a_stale_section_or_benchmarks_md_fails_the_check(self):
         root = scratch_tree(self, wall())

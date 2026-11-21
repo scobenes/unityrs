@@ -35,7 +35,7 @@ fewer rounds than `workloads.json` names or missing a workload is refused.
 run on a CPU `wall.json` does not hold, commit its artifact beside it as `benchmarks/wall-<cpu>.json` (say
 `wall-epyc.json`), byte-equal, and run `render`: the README and BENCHMARKS.md then show one summary table per
 CPU, `wall.json`'s first. `check --wall-run` verifies every results file a PR changes; `render` refuses a
-`wall-<cpu>.json` without `wall.json`, or two files on one CPU.
+`wall-<cpu>.json` without `wall.json`, two files on one CPU, or a results file that is a symlink.
 
 **The gate.** CI's `bench-gate` job (`ci.yml`) counts instructions instead of timing: in `debian:bookworm`, pinned
 by digest, with valgrind from `install_valgrind.sh`, `bench.py gate` runs each workload's Rust scope

@@ -565,8 +565,18 @@ def wall_paths(root: Path = ROOT) -> list[Path]:
     """The committed results files under `root`: wall.json (when present) first, then each wall-<cpu>.json by
     name."""
     folder = root / WALL.parent.relative_to(ROOT)
-    first = [folder / WALL.name] if (folder / WALL.name).exists() else []
-    return first + sorted(folder.glob(EXTRA_WALLS))
+    first = folder / WALL.name
+    return ([first] if first.is_symlink() or first.exists() else []) + sorted(folder.glob(EXTRA_WALLS))
+
+
+def not_regular(path: Path) -> str | None:
+    """Why `path` is not a results file a check can trust: a symlink (its target can change while the link's own
+    path stays unchanged in git) or anything but a regular file."""
+    if path.is_symlink():
+        return f"benchmarks/{path.name}: a symlink; a results file must be a regular file"
+    if path.exists() and not path.is_file():
+        return f"benchmarks/{path.name}: not a regular file"
+    return None
 
 
 def rendered(root: Path) -> tuple[str, str | None, list[str]]:
@@ -582,6 +592,8 @@ def rendered(root: Path) -> tuple[str, str | None, list[str]]:
         return "", None, [f"benchmarks/{paths[0].name}: a run on another CPU needs benchmarks/wall.json beside it"]
     walls, cpus = [], {}
     for path in paths:
+        if not_regular(path):
+            return "", None, [not_regular(path)]
         wall = load_json(path)
         bad = results.problems(wall, table) or results.publish_problems(wall, table)
         if bad:
@@ -658,6 +670,8 @@ def check_wall_run(run_id, base: str, repo: str, gh=gh_api, git=git, wall_path: 
     """Why the committed results file `wall_path` (wall.json or a wall-<cpu>.json) is not the named run's published
     result; empty when it is, or when the change under test (`base`..HEAD) leaves the file alone."""
     rel = str(wall_path.relative_to(ROOT)) if wall_path.is_relative_to(ROOT) else f"benchmarks/{wall_path.name}"
+    if not_regular(wall_path):  # before the unchanged-file return: an unchanged link can point at changed data
+        return [not_regular(wall_path)]
     rc, _ = git("diff", "--quiet", base, "HEAD", "--", rel)
     if rc == 0:
         say(f"bench check: {wall_path.name} is unchanged; nothing to verify")

@@ -395,7 +395,7 @@ jobs:
       # The benchmark harness's own tests (docs/plans/bench.md section 5.3):
       # standard library only, so they need no oracle; an exact minimum.
       - name: Self-tests (benchmark harness)
-        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/bench/tests=99'
+        run: '"$RUNNER_TEMP/scripts/bin/python" scripts/unittest-suites tools/bench/tests=102'
 
   # A PR that changes benchmarks/wall.json publishes a run: the file must be
   # the artifact of the bench-wall.yml run it names, dispatched, successful,

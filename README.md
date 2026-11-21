@@ -88,11 +88,11 @@ and the threat model.
 ## Performance
 
 <!-- bench:begin -->
-unityrs against UnityPy 1.25.2 with UnityPyBoost, the same Python script on both, on public synthetic fixtures, on GitHub's ubuntu-24.04 runner. Median of 7 rounds, each a fresh process with a warm file cache. API rows time the operation after imports; the extraction row times the whole process, imports included. The speedup, peak memory and process CPU columns are each UnityPy's figure over unityrs's, so ×2.0 means unityrs needs half. Memory (peak summed PSS) and CPU cover the whole process, imports included.
+unityrs against UnityPy with UnityPyBoost, the same Python script on both, on public synthetic fixtures, on GitHub's ubuntu-24.04 runner. Median of 7 rounds, each a fresh process with a warm file cache. API rows time the operation after imports; the extraction row times the whole process, imports included. The speedup, peak memory and process CPU columns are each UnityPy's figure over unityrs's, so ×2.0 means unityrs needs half. Each workload runs in its own process; peak memory adds up those processes' peaks (summed PSS) over a row's workloads, and CPU their CPU time, imports included, each the median over rounds.
 
-Runner CPU: Intel(R) Xeon(R) 6975P-C (commit b4b4443667bd, 2026-11-21).
+Runner CPU: Intel(R) Xeon(R) 6975P-C; UnityPy 1.25.2; commit b4b4443667bd, 2026-11-21.
 
-| operation (timer contains) | inventory | UnityPy | unityrs | speedup | peak memory | process CPU |
+| operation (timer contains) | inventory | UnityPy | unityrs | speedup | peak memory (sum of workload peaks) | process CPU |
 |---|---|---|---|---|---|---|
 | load and list objects | objects-lz4 (20,000 objects), objects-lzma (20,000 objects), objects-2019 (20,000 objects), many-blocks (64.0 MiB entry) | 497.3 ms | 404.8 ms | ×1.2 | ×1.8 | ×2.7 |
 | read every typetree | 40,000 objects in 2 layouts | 687.3 ms | 811.7 ms | ×0.85 | ×1.2 | ×1.1 |

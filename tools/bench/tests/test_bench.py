@@ -103,6 +103,13 @@ class WallRunTests(unittest.TestCase):
                                              "benchmarks/wall-other.json is not byte-equal to run 12345's artifact "
                                              "bench-wall-12345-1"])
 
+    def test_a_symlinked_results_file_fails_even_when_git_sees_it_unchanged(self):
+        self.changed_wall = False  # the link's own path is unchanged; its target's data is not checked by git
+        target = self.root / "elsewhere.json"
+        self.path.rename(target)
+        self.path.symlink_to(target)
+        self.assertEqual(self.check(), ["benchmarks/wall.json: a symlink; a results file must be a regular file"])
+
     def test_another_run_id_or_an_emulated_run_fails(self):
         self.assertEqual(self.check("777"), ["run 777 is not wall.json's run 12345"])
         self.path.write_text(bench.dump_json(wall(emulated=True)), encoding="utf-8")

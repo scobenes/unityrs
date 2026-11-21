@@ -72,6 +72,19 @@ class AggregationTests(unittest.TestCase):
         self.assertIsNotNone(row["cpu"])
         self.assertTrue(results.summary_table(doc, WORKLOADS, ranges=False)[2].endswith("| — | ×2.8 |"))
 
+    def test_a_zero_round_total_or_an_unsampled_pss_never_fails_the_ratio(self):
+        doc = wall(names=("texture-DXT1",))
+        rs = next(e for e in doc["workloads"] if e["impl"] == "unityrs")
+        rs["runs"][0]["cpu_s"] = 0.0  # a zero round total; the median stays positive
+        row = results.summary(doc, WORKLOADS)[0]
+        self.assertAlmostEqual(row["cpu"], 1.43 / 0.503)  # medians: UnityPy 1.03 + 0.4; unityrs 0, then 0.501 up
+        self.assertEqual(results.ratio({"unitypy": [1, 2, 3], "unityrs": [0, 0, 1]}), None)  # a zero median
+        rs["runs"][3]["peak_pss_bytes"] = 0  # the sampler caught no process: not sampled
+        row = results.summary(doc, WORKLOADS)[0]
+        self.assertIsNone(row["memory"])
+        self.assertTrue(results.summary_table(doc, WORKLOADS, ranges=False)[2].endswith("| — | ×2.8 |"))
+        self.assertEqual(results.workload_figures(doc, "texture-DXT1")["unityrs"]["peak_pss_bytes"], 64 * 2**20)
+
     def test_unpaired_workloads_count_in_no_category(self):
         doc = wall(NAMES, status={("texture-DXT1", "unitypy", 0): "raised:KeyError"})
         cats = [r["category"] for r in results.summary(doc, WORKLOADS)]

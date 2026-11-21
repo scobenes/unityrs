@@ -90,7 +90,7 @@ The full set is about 460 MB (the column sums to 457), counting `many-blocks` at
   - A workload's figure is the median of its 7 round times, with the min and max as the spread.
   - A category's figure (a README row) is the sum of its paired workloads' times in each round, then the median of those 7 round totals. The min and max of the round totals give its spread.
   - The speedup is the ratio of the two medians. Its range is min(UnityPy) / max(unityrs) to max(UnityPy) / min(unityrs), from the round totals.
-  - A category's peak-memory and process-CPU ratios are aggregated the same way, from each run's peak PSS and CPU time: the per-round sums over its paired workloads, then UnityPy's median over unityrs's. A run without a peak PSS (no `/proc` to sample) leaves its category's memory ratio out.
+  - A category's peak-memory and process-CPU ratios are aggregated the same way, from each run's peak PSS and CPU time: the per-round sums over its paired workloads, then UnityPy's median over unityrs's. A run without a peak PSS (null with no `/proc` to sample, or zero when the sampler caught no process) leaves its category's memory ratio out, rendered "—"; so does a zero unityrs median. Only the medians are divided.
 - **Throughput** is source MB/s plus the row's own unit, computed from the inventory counts.
 
 ---
@@ -166,7 +166,7 @@ Only then is the row paired. The gate's Rust scope for this row is `run_extract`
 scripts/dev python tools/bench/bench.py run --out DIR           # the full comparison
 scripts/dev python tools/bench/bench.py run --out DIR --quick   # gate scale, 3 rounds
 python tools/bench/bench.py render [--check]
-python tools/bench/bench.py check --wall-run RUN_ID             # CI: wall.json equals that run's artifact
+python tools/bench/bench.py check --wall-run --base SHA --repo OWNER/REPO   # CI: each changed results file is its own run's artifact
 python3 tools/bench/bench.py gate --valgrind PREFIX --out DIR    # CI: the instruction-count gate (5.1)
 ```
 
@@ -186,7 +186,7 @@ python3 tools/bench/bench.py gate --valgrind PREFIX --out DIR    # CI: the instr
 
 No field holds a host path or a user name.
 
-**Several runner CPUs.** GitHub's `ubuntu-24.04` runners differ in CPU model between runs (AMD EPYC or Intel Xeon), and some rows move with it. `benchmarks/wall.json` is the primary run. A run on another CPU is committed beside it as `benchmarks/wall-<cpu>.json`, for example `wall-epyc.json`: the artifact of another `bench-wall.yml` run, renamed and otherwise byte-equal. Each file is validated as `wall.json` is. `render` refuses one without `wall.json` beside it, and two files on the same CPU model.
+**Several runner CPUs.** GitHub's `ubuntu-24.04` runners differ in CPU model between runs (AMD EPYC or Intel Xeon), and some rows move with it. `benchmarks/wall.json` is the primary run. A run on another CPU is committed beside it as `benchmarks/wall-<cpu>.json`, for example `wall-epyc.json`: the artifact of another `bench-wall.yml` run, renamed and otherwise byte-equal. Each file is validated as `wall.json` is. `render` refuses one without `wall.json` beside it, and two files on the same CPU model. Every results file must be a regular file, not a symlink: `render` and `check --wall-run` refuse a link, whose target could change while the link's own path stays unchanged in git.
 
 ---
 
@@ -245,15 +245,16 @@ The README gets a "Performance" section after "Goals":
 ```markdown
 ## Performance
 
-unityrs against UnityPy 1.25.2 with UnityPyBoost, the same Python script on both, on public synthetic
+unityrs against UnityPy with UnityPyBoost, the same Python script on both, on public synthetic
 fixtures, on GitHub's ubuntu-24.04 runner. Median of 7 rounds, each a fresh process with a warm file cache.
 API rows time the operation after imports; the extraction row times the whole process, imports included.
 The speedup, peak memory and process CPU columns are each UnityPy's figure over unityrs's, so ×2.0 means
-unityrs needs half. Memory (peak summed PSS) and CPU cover the whole process, imports included.
+unityrs needs half. Each workload runs in its own process; peak memory adds up those processes' peaks
+(summed PSS) over a row's workloads, and CPU their CPU time, imports included, each the median over rounds.
 
-Runner CPU: <CPU> (commit <sha>, <date>).
+Runner CPU: <CPU>; UnityPy <version>; commit <sha>, <date>.
 
-| operation (timer contains) | inventory | UnityPy | unityrs | speedup | peak memory | process CPU |
+| operation (timer contains) | inventory | UnityPy | unityrs | speedup | peak memory (sum of workload peaks) | process CPU |
 |---|---|---|---|---|---|---|
 | load and list objects | <the paired load fixtures, listed from their rows> | … | … | ×… | ×… | ×… |
 | read every typetree | <n> objects in 2 layouts | … | … | ×… | ×… | ×… |
