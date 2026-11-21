@@ -132,7 +132,9 @@ pub(crate) fn unreplaced(py: Python<'_>, classes: &Classes) -> bool {
         None => absent(key),
         Some(kept) => entry(key).is_some_and(|now| now.is(kept)),
     };
-    let [kept_reader, kept_hook, kept_missing] = kept;
+    let [Some(kept_reader), kept_hook, kept_missing] = kept else {
+        return false;
+    };
     classes
         .object
         .bind(py)
@@ -140,11 +142,12 @@ pub(crate) fn unreplaced(py: Python<'_>, classes: &Classes) -> bool {
         .is_ok_and(|now| now.is(&classes.object_mro))
         && same(hook, kept_hook)
         && same(missing, kept_missing)
-        && same(reader, kept_reader)
         && entry(reader).is_some_and(|now| {
-            now.getattr(fget)
-                .and_then(|get| get.getattr(code_name))
-                .is_ok_and(|now| now.is(code))
+            now.is(kept_reader)
+                && now
+                    .getattr(fget)
+                    .and_then(|get| get.getattr(code_name))
+                    .is_ok_and(|now| now.is(code))
         })
         && absent(shadow)
 }
