@@ -3,11 +3,13 @@
 //! This crate gathers the unityrs library crates behind one name. The
 //! reader, [`unityrs_core`], is re-exported at the root: the
 //! [`Environment`](env::Environment), files, objects and typetrees. Each other
-//! crate is a module behind a feature of the same name:
+//! crate is a module behind a feature of the same name, except `tpk`, which
+//! is always present (a feature named for it would trip the guard that no
+//! build enables a `*tpk*` feature, such as an embedded TPK):
 //!
 //! | module | crate | what it does | default |
 //! |---|---|---|---|
-//! | [`tpk`] | `unityrs-tpk` | typetrees for stripped files from a TPK | yes |
+//! | [`tpk`] | `unityrs-tpk` | typetrees for stripped files from a TPK | always |
 //! | [`texture`] | `unityrs-texture` | `Texture2D` decoders (`encode`: the encoders) | yes |
 //! | [`imageio`] | `unityrs-imageio` | PNG, WebP and the other image writers | yes |
 //! | [`meshdecode`] | `unityrs-meshdecode` | vertex data, index formats and triangles | yes |
@@ -64,5 +66,4 @@ pub use unityrs_meshdecode as meshdecode;
 pub use unityrs_scene as scene;
 #[cfg(feature = "texture")]
 pub use unityrs_texture as texture;
-#[cfg(feature = "tpk")]
 pub use unityrs_tpk as tpk;
