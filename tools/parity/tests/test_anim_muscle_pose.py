@@ -302,15 +302,15 @@ class AgreementTests(unittest.TestCase):
 
 
 class FailureTests(unittest.TestCase):
-    """`agree`'s exit status: it fails unless both Editors compare, every acceptance and confirmation sample is
-    within its bound, and every required case was recorded and compared."""
+    """`agree`'s exit status, acceptance alone: it fails unless both Editors compare acceptance samples, every
+    one within its bound, and the acceptance runs lack no required case. Round 11 is `confirm`'s
+    (test_anim_muscle_round11.ConfirmTests)."""
 
     def document(self, **changes):
         cases = AgreementTests.case
         entries = [cases(self, editor=editor)["entries"][0] for editor in pose.EDITORS]
         document = dict(format=pose.FORMAT, kind="cases", reference=pose.REFERENCE, entries=entries,
-                        required={editor: ["x"] for editor in pose.EDITORS},
-                        missing={editor: [] for editor in pose.EDITORS})
+                        missing={editor: [] for editor in pose.EDITORS}, round11={})
         return document | changes
 
     def test_a_complete_agreeing_document_passes(self):
@@ -318,18 +318,18 @@ class FailureTests(unittest.TestCase):
         self.assertEqual(self.agree(self.document()), (0, ""))
 
     def test_no_comparison_fails(self):
-        document = self.document(required={})
+        document = self.document()
         self.assertEqual(pose.failures(dict(document, entries=[])),
-                         ["no comparison in Editor 2022", "no comparison in Editor 6000"])
+                         ["no acceptance comparison in Editor 2022", "no acceptance comparison in Editor 6000"])
         self.assertEqual(pose.failures(dict(document, entries=document["entries"][:1])),
-                         ["no comparison in Editor 6000"])
+                         ["no acceptance comparison in Editor 6000"])
         # Rows without a recording compare nothing.
         bare = [dict(entry, vectors=[{k: v for k, v in row.items() if k != "recorded"} for row in entry["vectors"]])
                 for entry in document["entries"]]
         self.assertEqual(len(pose.failures(dict(document, entries=bare))), 2)
         code, message = self.agree(dict(document, entries=[]))
         self.assertEqual(code, 1)
-        self.assertIn("no comparison", message)
+        self.assertIn("no acceptance comparison", message)
 
     def test_any_sample_outside_its_bound_fails(self):
         turned = AgreementTests.case(self, math.radians(.5))["entries"][0]
@@ -342,61 +342,53 @@ class FailureTests(unittest.TestCase):
         (_, (_, _, _, outside, _, was)), = pose.agreement(dict(document, entries=document["entries"][1:])).items()
         self.assertGreater(min(outside, was), 0)
         self.assertEqual(len(pose.failures(document)), 1)
-        # Round 11's confirmation alike; the refusal table never counts.
-        document["entries"][1] = dict(turned, editor="6000", confirmation=True)
-        self.assertEqual(pose.failures(document), ["confirmation samples outside their bound: 6000 Spine in 20"])
-        document["entries"][1] = dict(turned, editor="6000", refusal=True)
-        document["entries"].append(self.document()["entries"][1])
-        self.assertEqual(pose.failures(document), [])
-        self.assertEqual(self.agree(dict(document, entries=[document["entries"][0], dict(turned, editor="6000")]))[0],
-                         1)
+        # A row counts each sample it stands for.
+        document["entries"][1] = dict(turned, editor="6000", vectors=[dict(turned["vectors"][0], samples=7)])
+        self.assertEqual(pose.failures(document), ["acceptance samples outside their bound: 6000 Spine in 7"])
+        # Round 11's rows and the refusal table never count toward acceptance, either way.
+        for flags in (dict(confirmation=True), dict(refusal=True)):
+            document["entries"][1:] = [dict(turned, editor="6000", **flags), self.document()["entries"][1]]
+            self.assertEqual(pose.failures(document), [])
+            document["entries"][2:] = []
+            self.assertEqual(pose.failures(document), ["no acceptance comparison in Editor 6000"])
+            self.assertEqual(self.agree(document)[0], 1)
 
-    def test_scope_is_the_avatars_twist_configuration(self):
+    def test_scope_is_the_runtimes_twist_admission(self):
+        # Out of scope exactly where the runtime refuses: a twist setting off neutral and the case animating a
+        # bone it redistributes over (Rust's TWIST_BONES).
+        self.assertEqual(qualify.LIMBS["m_ArmTwist"], (13, 14, 15, 16))
         neutral = {field: 0. for field in qualify.TWIST}
         refusals = {"humanoid-twist-refusal": "unsupported_humanoid_twist"}
-        self.assertIsNone(pose.refusal_reason("body-probes-muscles-compact", neutral, refusals))
+        every = set(range(55))
+        self.assertIsNone(pose.refusal_reason("body-probes-muscles-compact", neutral, refusals, every))
         for field in qualify.TWIST:
-            self.assertEqual(pose.refusal_reason("x", dict(neutral, **{field: .5}), refusals),
-                             "unsupported_humanoid_twist")
-        self.assertEqual(pose.refusal_reason("humanoid-twist-refusal", neutral, refusals), "unsupported_humanoid_twist")
+            twisted = dict(neutral, **{field: .5})
+            for bone in qualify.LIMBS[field]:
+                self.assertEqual(pose.refusal_reason("x", twisted, refusals, {7, bone}), "unsupported_humanoid_twist")
+            # A clip that leaves those bones still is in scope on the same Avatar: a Spine-only one, say.
+            self.assertIsNone(pose.refusal_reason("x", twisted, refusals, every - set(qualify.LIMBS[field])))
+            self.assertIsNone(pose.refusal_reason("x", twisted, refusals, {7, 8, 54}))
+        self.assertEqual(pose.refusal_reason("humanoid-twist-refusal", neutral, refusals, set()),
+                         "unsupported_humanoid_twist")
         with self.assertRaisesRegex(ValueError, "lacks a twist setting"):
-            pose.refusal_reason("x", {}, refusals)
-
-    def test_a_twist_sample_never_decides_confirmation(self):
-        turned = AgreementTests.case(self, math.radians(.5))["entries"][0]
-        document = self.document(required={"2022": ["x"], "6000": ["x", "twisted"]})
-        # A limb twist on a non-neutral twist Avatar, outside its bound: refusal evidence, reported apart.
-        twisted = dict(turned, editor="6000", case="twisted", confirmation=True, refusal=True,
-                       refusal_reason="unsupported_humanoid_twist")
-        document["entries"].append(twisted)
-        self.assertEqual(pose.agreement(document, confirmation=True), {})
-        self.assertEqual(pose.agreement(document, True)[("6000", "Spine")][3], 20)
-        # It cannot stand in for a required case either: only in-scope samples confirm one.
-        self.assertEqual(pose.failures(document),
-                         ["Editor 6000 compares no sample of 1 required case(s): twisted"])
-        document["required"]["6000"] = ["x"]
-        self.assertEqual(pose.failures(document), [])
-        # The same failure in scope (a neutral Avatar, limb twists included) fails confirmation.
-        document["entries"][-1] = dict(twisted, refusal=False, refusal_reason=None)
-        self.assertEqual(pose.failures(document), ["confirmation samples outside their bound: 6000 Spine in 20"])
+            pose.refusal_reason("x", {}, refusals, set())
 
     def test_a_missing_required_case_fails(self):
-        document = self.document(missing={"2022": [], "6000": ["body-probes-face"]})
-        self.assertEqual(pose.failures(document), ["Editor 6000's runs lack 1 required case(s): body-probes-face"])
-        document = self.document(required={"2022": ["x", "body-probes-face"], "6000": ["x"]})
-        self.assertEqual(pose.failures(document),
-                         ["Editor 2022 compares no sample of 1 required case(s): body-probes-face"])
+        document = self.document(missing={"2022": [], "6000": ["body-probes-tall"]})
+        self.assertEqual(pose.failures(document), ["Editor 6000's runs lack 1 required case(s): body-probes-tall"])
         self.assertEqual(self.agree(document)[0], 1)
 
     def test_a_document_without_its_inventory_is_refused(self):
-        document = self.document()
-        del document["required"]
-        code, message = self.agree(document)
-        self.assertEqual(code, 1)
-        self.assertIn("make it again", message)
+        for key in ("round11", "missing"):
+            document = self.document()
+            del document[key]
+            for mode in ("agree", "confirm"):
+                code, message = self.agree(document, mode)
+                self.assertEqual(code, 1)
+                self.assertIn("make it again", message)
 
-    def agree(self, document):
-        """`agree`'s exit status and stderr on `document`."""
+    def agree(self, document, mode="agree"):
+        """`agree`'s (or `mode`'s) exit status and stderr on `document`."""
         import contextlib
         import io
         import json
@@ -406,7 +398,7 @@ class FailureTests(unittest.TestCase):
         path = scratch.for_case(self) / "cases.json"
         path.write_text(json.dumps(document), encoding="utf-8")
         argv, err = sys.argv, io.StringIO()
-        sys.argv = ["anim_muscle_pose.py", "agree", str(path)]
+        sys.argv = ["anim_muscle_pose.py", mode, str(path)]
         try:
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
                 pose.main()

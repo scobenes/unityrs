@@ -8,10 +8,13 @@ The names are round 11's builder's (UnityrsBodyMuscles.cs and UnityrsBodyClips.c
 case table (`anim_fixture_round11.ROUND11_CASES`) lists them: 4 sweeps, 25 refusal-evidence and 318
 in-scope full-body clips. A run declares round 11 in `round.json`. Each run's required cases are
 this inventory together with any full-body clip its `run.json` lists, so neither the inventory
-nor the run can drop one unseen. Each must be recorded; `anim_muscle_pose.py agree` fails
-otherwise. No round 11 rig is a hold-out rig. Only an in-scope sample confirms a required case: one on an
-Avatar with a non-neutral twist setting is refusal evidence (`anim_muscle_pose.refusal_reason`, the plan's
-B5a (g)), and every round 11 rig's are neutral.
+nor the run can drop one unseen. Each must be recorded, its capture's own metadata naming its
+case, run, Editor version and bundle, and compared in full (`expected_samples`);
+`anim_muscle_pose.py confirm` fails otherwise. No round 11 rig is a hold-out rig. Only an
+in-scope sample confirms a required case: one the runtime refuses as `unsupported_humanoid_twist`
+(a non-neutral twist setting and a case animating a bone it redistributes over) is refusal
+evidence (`anim_muscle_pose.refusal_reason`, the plan's B5a (g)), and every round 11 rig's twist
+settings are neutral.
 """
 
 import sys
@@ -59,6 +62,17 @@ def _full_clips():
 FULL_CLIPS = _full_clips()
 # case: bundle
 CASES = SWEEPS | FULL_CLIPS
+# Each sweep's sample count: its known vectors (each muscle alone at ten values, then each bone's muscles jointly
+# twice) and the three spine anchors (round 11's anim_fixture_round11.probe_schedule).
+SWEEP_SAMPLES = {"body-probes-muscles-compact": 535, "body-probes-muscles-tall": 503, "body-probes-fingers": 423,
+                 "body-probes-face": 69}
+# A full-body clip's: its five key times and an off-key sample in each of its four intervals, as every F4 clip.
+CLIP_SAMPLES = 9
+
+
+def expected_samples(case):
+    """The samples a complete capture of a round 11 required case records."""
+    return SWEEP_SAMPLES.get(case, CLIP_SAMPLES)
 
 
 def full_clip_bundle(name):
@@ -99,7 +113,7 @@ class Recordings:
         import anim_body_runs as runs
 
         manifest = replay.read_json((folder / "run.json").read_text(encoding="utf-8"))
-        self.folder, self.version = folder, manifest["run"]["editor_version"]
+        self.folder, self.version, self.run_id = folder, manifest["run"]["editor_version"], manifest["run"]["run_id"]
         statuses = runs.statuses(manifest)
         self.required = required(statuses)
         self.documents, self.missing = {}, []
@@ -109,6 +123,12 @@ class Recordings:
                 self.missing.append(case)
                 continue
             doc = replay.read_json(path.read_text(encoding="utf-8"))
+            # The capture's own identity, never its file name: its case, run, Editor and bundle.
+            editor = doc["spec"]["evidence"]["editor"]
+            replay.require(editor.get("fixture_case") == case, f"{path.name} records another case than {case}")
+            replay.require(editor.get("run_id") == self.run_id, f"{case} was recorded by another run")
+            replay.require(doc["capture"].get("editor_version") == self.version,
+                           f"{case} was recorded by another Editor version than {self.version}")
             replay.require([row["name"] for row in doc["spec"]["bundles"]] == [bundle],
                            f"{case} plays another bundle than {bundle}")
             self.documents[case] = doc

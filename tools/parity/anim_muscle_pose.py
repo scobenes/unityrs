@@ -37,11 +37,15 @@ or a zero or NaN quaternion, which a NaN or infinite muscle value gives (`tangen
         ones its runs lack. They stay private; `UNITYRS_MUSCLE_POSE_CASES=FILE cargo test` checks Rust
         against them.
     python3 -I tools/parity/anim_muscle_pose.py agree FILE
-        Each bone's worst angle to Unity's recording against its bound, the Spine first, for acceptance
-        (rounds 1 to 10) and confirmation (round 11), and the refusal cases apart; how many of its recorded
-        rows reference 2 changes from reference 1. It exits non-zero (`failures`) on an Editor with no
-        comparison, any acceptance or confirmation sample outside its bound, a required case missing or
-        never compared, or a changed row on a bone reference 1 agreed on.
+        Acceptance (rounds 1 to 10): each bone's worst angle to Unity's recording against its bound, the
+        Spine first, and the refusal cases apart; how many of its recorded rows reference 2 changes from
+        reference 1. It exits non-zero (`failures`) on an Editor with no acceptance comparison, any
+        acceptance sample outside its bound, a required case the runs lack, or a changed row on a bone
+        reference 1 agreed on. Round 11 never counts here.
+    python3 -I tools/parity/anim_muscle_pose.py confirm FILE
+        Confirmation (round 11) alone, never combined with acceptance: it exits non-zero
+        (`confirm_failures`) unless both Editors have a declared round 11 run, with the whole inventory,
+        each required case compared in full (its expected sample count), and every sample within its bound.
 
 **The agreement bound** (`unity_bound`) is derived, never fitted: Unity's own f32 error along the same path,
 each operation bounded at its actual operands as section 2.5 of docs/plans/humanoid-body.md derives E3a's,
@@ -310,16 +314,16 @@ def clip_values(doc, sample, names):
 def cases(unityrs, folders):
     """Real-Avatar cases from training runs: each bone's recorded samples, known vectors and clip playback alike,
     and the schedule on its axes. A round 11 run (`round.json`) adds its inventory (anim_muscle_round11: the
-    sweeps and full-body clips), and its entries are confirmation, never acceptance. Each Editor's required
-    cases and the ones its runs lack are recorded for `agree`."""
+    sweeps and full-body clips), and its entries are confirmation, never acceptance. `missing` records the
+    required cases the acceptance runs lack; `round11`, each Editor's declared round 11 runs, their required
+    cases and the ones they lack, for `confirm`."""
     import anim_body_runs as runs
     import anim_muscle_round11 as round11
     from anim_body_freeze import readers
     from anim_fixture_coverage import REFUSALS
-    from anim_humanoid_qualify import vec
 
     avatar_of, _ = readers(unityrs)
-    entries, generated, required, missing = [], {}, {}, {}
+    entries, generated, missing, rounds = [], {}, {}, {}
     for folder in folders:
         run = runs.Run(folder, "training", pending=True)
         editor = run.version.split(".")[0]
@@ -330,82 +334,117 @@ def cases(unityrs, folders):
             extra = round11.Recordings(folder)
             replay.require(not documents.keys() & extra.documents.keys(), f"{folder.name}: a case is read twice")
             documents |= extra.documents
-            required.setdefault(editor, set()).update(extra.required)
-            missing[editor].update(extra.missing)
+            row = rounds.setdefault(editor, dict(runs=[], required=set(), missing=set()))
+            row["runs"].append(extra.run_id)
+            row["required"].update(extra.required)
+            row["missing"].update(extra.missing)
         for case, doc in sorted(documents.items()):
-            capture = doc["capture"]
-            if not capture["samples"] or "humanoid" not in capture:
-                continue
-            known = bool(capture["samples"][0].get("muscles_f32"))
-            playback = not known and doc["spec"]["mode"] == "animator" and bool(doc["spec"]["clip_asset"])
-            if not (known or playback):
-                continue
-            muscles = capture["humanoid"]["muscles"]
-            replay.require([(row["bone"], row["axis"]) for row in muscles]
-                           == [(muscle_bone(m), MUSCLE_AXES[m]) for m in range(MUSCLE_COUNT)],
-                           f"{case}: the recorded muscle axes differ from MUSCLE_AXES")
-            names = [row["name"] for row in muscles]
-            sampled = []
-            for sample in capture["samples"]:
-                if known:
-                    sampled.append(([replay.f32_from_bits(v) for v in sample["muscles_f32"]], [0.] * MUSCLE_COUNT))
-                else:
-                    sampled.append(clip_values(doc, sample, names))
-            human = runs.human_of(avatar_of(run, doc))
-            reason = refusal_reason(case, human, REFUSALS)
-            skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
-            bones = capture["humanoid"]["bones"]
-            for bone in sorted({row["bone"] for row in muscles}):
-                # A bone the capture marks absent is skipped before the Avatar is indexed for it.
-                if bones[bone]["node"] < 0:
-                    continue
-                node = avatar_node(human, bone)
-                if node is None or skeleton["m_Node"][node]["m_AxesId"] < 0:
-                    continue
-                record = skeleton["m_AxesArray"][skeleton["m_Node"][node]["m_AxesId"]]
-                axes = {key: [f32(v) for v in vec(record[name])] for key, name in
-                        (("pre", "m_PreQ"), ("post", "m_PostQ"), ("sign", "m_Sgn"))}
-                axes |= {key: [f32(v) for v in vec(record["m_Limit"][name])] for key, name in
-                         (("min", "m_Min"), ("max", "m_Max"))}
-                transforms = capture["rest"]["transforms"]
-                rest = [replay.f32_from_bits(v) for v in transforms[bones[bone]["node"]]["rotation"]]
-                ordinals = bone_muscles(bone)
-                rows, seen = [], set()
-                for sample, (vector, value_errors) in zip(capture["samples"], sampled):
-                    values = [(vector[m], MUSCLE_AXES[m]) for m in ordinals]
-                    recorded = [replay.f32_from_bits(v) for v in sample["pose"]["transforms"][bones[bone]["node"]]
-                                ["rotation"]]
-                    key = (tuple(map(f64_hex, (v for v, _ in values))), tuple(recorded))
-                    if key not in seen:
-                        seen.add(key)
-                        rows.append(vector_row(rest, axes, values, recorded, [value_errors[m] for m in ordinals]))
-                entries.append(dict(editor=editor, case=case, bone=bone, name=bones[bone]["name"],
-                                    playback=playback, refusal=reason is not None, refusal_reason=reason,
-                                    confirmation=confirmation,
-                                    axes=axes_row(axes),
-                                    rest=f32_hexes(rest), vectors=rows))
-                generated.setdefault((editor, bone, json.dumps(axes_row(axes))), (axes, rest))
+            human = runs.human_of(avatar_of(run, doc)) if doc["capture"]["samples"] else None
+            found, axes = capture_entries(editor, case, doc, human, confirmation, REFUSALS)
+            entries += found
+            for key, value in axes:
+                generated.setdefault(key, value)
     for (editor, bone, _), (axes, rest) in sorted(generated.items()):
         entries.append(dict(editor=editor, case="generated", bone=bone, axes=axes_row(axes), rest=f32_hexes(rest),
                             vectors=[vector_row(rest, axes, values) for values in schedule(bone)]))
     return dict(format=FORMAT, kind="cases", reference=REFERENCE, muscle_axes=list(MUSCLE_AXES),
-                required={editor: sorted(cases) for editor, cases in sorted(required.items())},
-                missing={editor: sorted(cases) for editor, cases in sorted(missing.items())}, entries=entries)
+                missing={editor: sorted(cases) for editor, cases in sorted(missing.items())},
+                round11={editor: dict(runs=sorted(row["runs"]), required=sorted(row["required"]),
+                                      missing=sorted(row["missing"])) for editor, row in sorted(rounds.items())},
+                entries=entries)
 
 
-def refusal_reason(case, human, refusals):
-    """Why a case's samples are refusal evidence, or None when they are in B5a's scope. B5a claims all 95 muscles,
-    limb twists included, on Avatars whose four twist settings are neutral (0, `humanoid::NEUTRAL_TWIST`): the
-    runtime refuses a clip on any other Avatar that animates a twisted limb (`unsupported_humanoid_twist`), and
-    Unity spreads a limb's twist over its neighbours there, which one bone's equation does not model. A coverage
-    refusal case (anim_fixture_coverage.REFUSALS) is refusal evidence too."""
-    from anim_humanoid_qualify import TWIST
+def capture_entries(editor, case, doc, human, confirmation, refusals):
+    """One recorded capture's entries, one per bone with axes, and its ((editor, bone, axes), (axes, rest)) pairs
+    for the schedule. Each entry's rows are its samples with distinct muscle values and recorded rotation; of
+    samples that share both, the row kept is the one with the tightest bound, so no in-scope sample escapes a
+    stricter comparison, and each row counts the samples it stands for (`samples`)."""
+    from anim_humanoid_qualify import vec
+
+    capture = doc["capture"]
+    if not capture["samples"] or "humanoid" not in capture:
+        return [], []
+    known = bool(capture["samples"][0].get("muscles_f32"))
+    playback = not known and doc["spec"]["mode"] == "animator" and bool(doc["spec"]["clip_asset"])
+    if not (known or playback):
+        return [], []
+    muscles = capture["humanoid"]["muscles"]
+    replay.require([(row["bone"], row["axis"]) for row in muscles]
+                   == [(muscle_bone(m), MUSCLE_AXES[m]) for m in range(MUSCLE_COUNT)],
+                   f"{case}: the recorded muscle axes differ from MUSCLE_AXES")
+    names = [row["name"] for row in muscles]
+    sampled = []
+    for sample in capture["samples"]:
+        if known:
+            sampled.append(([replay.f32_from_bits(v) for v in sample["muscles_f32"]], [0.] * MUSCLE_COUNT))
+        else:
+            sampled.append(clip_values(doc, sample, names))
+    reason = refusal_reason(case, human, refusals, animated_bones(doc, names, sampled, known))
+    skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
+    bones = capture["humanoid"]["bones"]
+    entries, generated = [], []
+    for bone in sorted({row["bone"] for row in muscles}):
+        # A bone the capture marks absent is skipped before the Avatar is indexed for it.
+        if bones[bone]["node"] < 0:
+            continue
+        node = avatar_node(human, bone)
+        if node is None or skeleton["m_Node"][node]["m_AxesId"] < 0:
+            continue
+        record = skeleton["m_AxesArray"][skeleton["m_Node"][node]["m_AxesId"]]
+        axes = {key: [f32(v) for v in vec(record[name])] for key, name in
+                (("pre", "m_PreQ"), ("post", "m_PostQ"), ("sign", "m_Sgn"))}
+        axes |= {key: [f32(v) for v in vec(record["m_Limit"][name])] for key, name in
+                 (("min", "m_Min"), ("max", "m_Max"))}
+        rest = [replay.f32_from_bits(v) for v in capture["rest"]["transforms"][bones[bone]["node"]]["rotation"]]
+        ordinals = bone_muscles(bone)
+        rows = {}
+        for sample, (vector, value_errors) in zip(capture["samples"], sampled):
+            values = [(vector[m], MUSCLE_AXES[m]) for m in ordinals]
+            recorded = [replay.f32_from_bits(v) for v in sample["pose"]["transforms"][bones[bone]["node"]]
+                        ["rotation"]]
+            key = (tuple(map(f64_hex, (v for v, _ in values))), tuple(recorded))
+            row = vector_row(rest, axes, values, recorded, [value_errors[m] for m in ordinals])
+            kept = rows.get(key)
+            row["samples"] = 1 + (kept["samples"] if kept else 0)
+            if kept and kept["bound"] <= row["bound"]:
+                row = dict(kept, samples=row["samples"])
+            rows[key] = row
+        entries.append(dict(editor=editor, case=case, bone=bone, name=bones[bone]["name"], playback=playback,
+                            refusal=reason is not None, refusal_reason=reason, confirmation=confirmation,
+                            axes=axes_row(axes), rest=f32_hexes(rest), vectors=list(rows.values())))
+        generated.append(((editor, bone, json.dumps(axes_row(axes))), (axes, rest)))
+    return entries, generated
+
+
+def animated_bones(doc, names, sampled, known):
+    """The bones a case animates, as the runtime's twist admission reads a clip (`humanoid_refusal`): those of
+    every muscle a clip curves (each Animator muscle curve the clip authors), or, for known vectors, of every
+    muscle some sample sets to a nonzero value."""
+    if known:
+        moved = {m for vector, _ in sampled for m, value in enumerate(vector) if value != 0}
+    else:
+        curved = {row["property"] for row in doc["spec"]["evidence"]["editor"]["bindings"]
+                  if (row["path"], row["type"]) == ("", "UnityEngine.Animator") and row.get("keys")}
+        moved = {m for m, name in enumerate(names) if muscle_property(name) in curved}
+    return {muscle_bone(m) for m in moved}
+
+
+def refusal_reason(case, human, refusals, animated):
+    """Why a case's samples are refusal evidence, or None when they are in B5a's scope, which is exactly the
+    runtime's twist admission (`humanoid_refusal`, `unsupported_humanoid_twist`): out of scope where some twist
+    setting is not neutral (0, `humanoid::NEUTRAL_TWIST`) and the case animates a bone that setting
+    redistributes over (`anim_humanoid_qualify.LIMBS`, Rust's TWIST_BONES), since Unity spreads that limb's twist
+    over its neighbours, which one bone's equation does not model. Anything else is in scope, a Spine-only clip
+    on a twisted Avatar included. A coverage refusal case (anim_fixture_coverage.REFUSALS) is refusal evidence
+    too."""
+    from anim_humanoid_qualify import LIMBS, TWIST
 
     if case in refusals:
         return refusals[case]
     values = [human.get(field) for field in TWIST]
     replay.require(all(type(v) in (int, float) for v in values), f"{case}: the Avatar lacks a twist setting")
-    return None if all(v == 0 for v in values) else "unsupported_humanoid_twist"
+    twisted = any(value != 0 and set(LIMBS[field]) & set(animated) for field, value in zip(TWIST, values))
+    return "unsupported_humanoid_twist" if twisted else None
 
 
 def avatar_node(human, bone):
@@ -443,7 +482,9 @@ def agreement(document, refusal=False, confirmation=False):
             worst, bound, count, outside, changed, was = result.get(key, (0., 0., 0, 0, 0, 0))
             if turn > worst:
                 worst, bound = turn, row["bound"]
-            result[key] = (worst, bound, count + 1, outside + (turn > row["bound"]),
+            # A row stands for its `samples`; the regression columns count rows.
+            samples = row.get("samples", 1)
+            result[key] = (worst, bound, count + samples, outside + samples * (turn > row["bound"]),
                            changed + (list(map(f64_hex, before)) != row["local"]), was + (earlier > row["bound"]))
     return result
 
@@ -457,31 +498,62 @@ EDITORS = ("2022", "6000")
 
 
 def failures(document):
-    """Why `agree` fails, empty when it passes: an Editor with no comparison; an acceptance or confirmation
-    sample outside its bound, on any bone (one reference 1 already failed included); a required case missing
-    from its run or with no compared sample; a regression from reference 1. The refusal table never counts."""
+    """Why `agree` (acceptance, rounds 1 to 10) fails, empty when it passes: an Editor with no acceptance
+    comparison; an acceptance sample outside its bound, on any bone (one reference 1 already failed included); a
+    required case the acceptance runs lack; a regression from reference 1. Round 11 never counts here: `confirm`
+    judges it, and the refusal table never counts."""
     found = []
-    tables = {"acceptance": agreement(document), "confirmation": agreement(document, confirmation=True)}
-    for title, table in tables.items():
-        outside = [f"{editor} {name} in {rows[3]}" for (editor, name), rows in sorted(table.items()) if rows[3]]
-        if outside:
-            found.append(f"{title} samples outside their bound: " + ", ".join(outside))
+    table = agreement(document)
+    outside = [f"{editor} {name} in {rows[3]}" for (editor, name), rows in sorted(table.items()) if rows[3]]
+    if outside:
+        found.append("acceptance samples outside their bound: " + ", ".join(outside))
     for editor in EDITORS:
-        if not sum(rows[2] for table in tables.values() for (e, _), rows in table.items() if e == editor):
-            found.append(f"no comparison in Editor {editor}")
+        if not sum(rows[2] for (e, _), rows in table.items() if e == editor):
+            found.append(f"no acceptance comparison in Editor {editor}")
     for editor, cases in sorted(document["missing"].items()):
         if cases:
             found.append(f"Editor {editor}'s runs lack {len(cases)} required case(s): " + ", ".join(cases[:20]))
-    for editor, cases in sorted(document["required"].items()):
-        # Only an in-scope sample confirms a required case; refusal evidence never does.
-        compared = {entry["case"] for entry in document["entries"] if entry["editor"] == editor
-                    and not entry.get("refusal", False) and any("recorded" in row for row in entry["vectors"])}
-        lacking = sorted(set(cases) - compared)
-        if lacking:
-            found.append(f"Editor {editor} compares no sample of {len(lacking)} required case(s): "
-                         + ", ".join(lacking[:20]))
-    if regressions(tables["acceptance"]):
-        found.append(f"reference 2 changes bones reference 1 agreed on: {regressions(tables['acceptance'])}")
+    if regressions(table):
+        found.append(f"reference 2 changes bones reference 1 agreed on: {regressions(table)}")
+    return found
+
+
+def confirm_failures(document):
+    """Why `confirm` (round 11) fails, empty when it passes. It counts `confirmation` rows alone, never
+    acceptance's or the refusal table's, and needs, in both Editors: a declared round 11 run; its required cases,
+    the whole inventory (anim_muscle_round11.CASES) at least, none missing; every one compared in full, each of
+    its in-scope bone entries standing for the case's whole expected sample count (`expected_samples`); one
+    comparison or more; and every confirmation sample within its bound."""
+    import anim_muscle_round11 as round11
+
+    found = []
+    table = agreement(document, confirmation=True)
+    outside = [f"{editor} {name} in {rows[3]}" for (editor, name), rows in sorted(table.items()) if rows[3]]
+    if outside:
+        found.append("confirmation samples outside their bound: " + ", ".join(outside))
+    for editor in EDITORS:
+        run = document["round11"].get(editor, {})
+        if not run.get("runs"):
+            found.append(f"no declared round 11 run in Editor {editor}")
+        if not sum(rows[2] for (e, _), rows in table.items() if e == editor):
+            found.append(f"no confirmation comparison in Editor {editor}")
+        required = set(run.get("required", ()))
+        short = sorted(round11.CASES.keys() - required)
+        if run.get("runs") and short:
+            found.append(f"Editor {editor}'s round 11 inventory lacks {len(short)} case(s): " + ", ".join(short[:20]))
+        if run.get("missing"):
+            found.append(f"Editor {editor}'s round 11 runs lack {len(run['missing'])} required case(s): "
+                         + ", ".join(run["missing"][:20]))
+        counts = {}
+        for entry in document["entries"]:
+            if entry["editor"] == editor and entry.get("confirmation") is True and not entry.get("refusal", False):
+                counts.setdefault(entry["case"], []).append(
+                    sum(row.get("samples", 1) for row in entry["vectors"] if "recorded" in row))
+        partial = sorted(case for case in required
+                         if not counts.get(case) or set(counts[case]) != {round11.expected_samples(case)})
+        if partial:
+            found.append(f"Editor {editor} compares {len(partial)} required case(s) short of their full sample "
+                         "count: " + ", ".join(partial[:20]))
     return found
 
 
@@ -494,8 +566,8 @@ def main():
     made.add_argument("--unityrs", required=True)
     made.add_argument("--out", type=Path, required=True)
     made.add_argument("folders", type=Path, nargs="+")
-    agree = sub.add_parser("agree")
-    agree.add_argument("file", type=Path)
+    for mode in ("agree", "confirm"):
+        sub.add_parser(mode).add_argument("file", type=Path)
     args = parser.parse_args()
     try:
         if args.mode == "golden":
@@ -510,11 +582,11 @@ def main():
         else:
             document = replay.read_json(args.file.read_text(encoding="utf-8"))
             replay.require(document.get("reference") == REFERENCE, f"{args.file.name} is not reference {REFERENCE}'s")
-            replay.require("required" in document and "missing" in document,
+            replay.require("round11" in document and "missing" in document,
                            f"{args.file.name} records no required cases: make it again with `cases`")
-            for title, table in (("Acceptance (rounds 1 to 10)", agreement(document)),
-                                 ("Confirmation (round 11)", agreement(document, confirmation=True)),
-                                 ("Refusal cases (not acceptance)", agreement(document, True))):
+            judged = (("Acceptance (rounds 1 to 10)", agreement(document)) if args.mode == "agree" else
+                      ("Confirmation (round 11)", agreement(document, confirmation=True)))
+            for title, table in (judged, ("Refusal cases (never counted)", agreement(document, True))):
                 print(f"{title}:")
                 for (editor, name), (worst, bound, count, outside, changed, was) in sorted(
                         table.items(), key=lambda kv: (kv[0][1] != "Spine", kv[0][1], kv[0][0])):
@@ -522,7 +594,7 @@ def main():
                     print(f"{editor} {name:16s} worst {math.degrees(worst):.3e} deg  bound "
                           f"{math.degrees(bound):.3e} deg  {count} samples  {verdict}  ({changed} changed from "
                           f"reference 1, outside in {was})")
-            found = failures(document)
+            found = failures(document) if args.mode == "agree" else confirm_failures(document)
             replay.require(not found, "; ".join(found))
     except (ValueError, OSError) as exc:
         parser.exit(1, f"anim_muscle_pose: {exc}\n")

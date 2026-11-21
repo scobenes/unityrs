@@ -322,7 +322,7 @@ fn real_avatar_cases_when_given() {
 }
 
 /// A refusal case's rows go to their own table, never acceptance's or
-/// confirmation's, as Python's `agree` sorts them.
+/// confirmation's, as Python's `agree` and `confirm` sort them.
 #[test]
 fn refusal_rows_are_a_table_apart() {
     let entry = |refusal: bool, confirmation: bool| serde_json::json!({"refusal": refusal, "confirmation": confirmation});
