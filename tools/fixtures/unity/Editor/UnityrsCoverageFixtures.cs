@@ -83,8 +83,10 @@ static partial class UnityrsFixtureBuilder
 
     static void AddCoverageCases(RunReport report)
     {
+        // Completion requires both humanoid refusal probes in each Editor (anim_fixture_coverage.py
+        // REQUIRED_COVERAGE), so a run that leaves either not covered is not ready.
         foreach (string name in CoverageCases.Concat(BasisCases))
-            report.AddDeferred(name, "The coverage fixture was not prepared.");
+            report.AddDeferred(name, "The coverage fixture was not prepared.", name == TwistCase || name == SettingsCase);
     }
 
     static void BuildCoverage(Build build, RunReport report)
@@ -128,23 +130,27 @@ static partial class UnityrsFixtureBuilder
         // built settings Unity changed is not covered. Cases sharing a bundle,
         // Avatar and clip (an identity and an offset root) share one check
         // and its outcome, and each keeps its own capture.
-        var outcomes = new Dictionary<string, Exception>(StringComparer.Ordinal);
+        // A body clip whose m_IndexArray Unity did not expose records with that noted,
+        // for completion to verify offline (CheckCompiledTracks).
+        var outcomes = new Dictionary<string, (Exception failure, bool indexed)>(StringComparer.Ordinal);
         build.Replays.RemoveAll(replay => {
             if (!replay.Optional || !member(replay)) return false;
             string key = replay.Bundle + "\n" + replay.Avatar + "\n" + replay.Clip;
-            if (!outcomes.TryGetValue(key, out var failure))
+            if (!outcomes.TryGetValue(key, out var outcome))
             {
+                outcome.indexed = true;
                 try
                 {
                     string path = Path.Combine(bundles, replay.Bundle);
-                    if (replay.Body != null) CheckBuiltBody(replay, path);
+                    if (replay.Body != null) outcome.indexed = CheckBuiltBody(replay, path);
                     else CheckBuiltCoverage(replay, path);
                 }
-                catch (Exception error) { failure = error; }
-                outcomes.Add(key, failure);
+                catch (Exception error) { outcome.failure = error; }
+                outcomes.Add(key, outcome);
             }
+            if (!outcome.indexed) report.Note(replay.OutputName, IndexUnverified);
             return !report.Try("Check built " + replay.OutputName, new[] { replay.OutputName }, () => {
-                if (failure != null) throw failure;
+                if (outcome.failure != null) throw outcome.failure;
             }, optional: replay.Body != null);
         });
         return contents;
