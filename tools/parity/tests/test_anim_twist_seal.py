@@ -8,6 +8,7 @@ import inspect
 import io
 import itertools
 import json
+import platform
 import sys
 import tarfile
 import unittest
@@ -27,6 +28,7 @@ from test_anim_fixture_round12 import (EXPLORATION, TWIN, TWIST_CLIP, VERSIONS, 
 from test_anim_twist_b5a import observation  # noqa: E402
 
 CANDIDATE = dict(limb=list(model.LIMBS[0]), foot=list(model.FEET[0]))
+IMAGE = "sha256:" + "4d" * 32
 HOOK_MODULE = "round12_test_hooks"
 HOOKS = dict(observe_b5a=f"{HOOK_MODULE}:observe", twist_rule=f"{HOOK_MODULE}:rule")
 # The hook module the tests freeze: it forwards to the running test (CURRENT), as a frozen module would compute.
@@ -61,7 +63,8 @@ def bound(top, code, digest, candidate="none", hooks=None):
                   hooks=hooks or (dict(HOOKS, twist_rule=None) if none else HOOKS), code=code,
                   reader=dict(sha256=hashlib.sha256(b"built").hexdigest(), commit=code["commit"],
                               command=list(seal.READER_BUILD), remap="r"),
-                  editors=sorted(VERSIONS), verdict=seal.VERDICT, b5a=seal.b5a_pins())
+                  interpreter=seal.interpreter(IMAGE), editors=sorted(VERSIONS), verdict=seal.VERDICT,
+                  b5a=seal.b5a_pins())
     path = top / f"freeze-{next(FREEZES)}.json"
     path.write_text(json.dumps(record), encoding="utf-8")
     with mock.patch.object(seal, "canonical"), mock.patch.object(anim_body_seal, "bind_artifact"), \
@@ -175,9 +178,15 @@ class FreezeTests(unittest.TestCase):
         with mock.patch.object(seal, "code_state", return_value=code), \
                 mock.patch.object(seal, "build_reader", return_value=reader) as built:
             record = seal.make_freeze("e" * 64, "none", dict(observe_b5a=HOOKS["observe_b5a"]), top / "u",
-                                      seal.REASONS[0], top)
+                                      seal.REASONS[0], top, image=IMAGE)
             self.assertEqual(built.call_args.args[:2], (code["commit"], top / "u"))
-            self.assertEqual(seal.make_freeze("e" * 64, CANDIDATE, HOOKS, top / "u", top=top)["candidate"], CANDIDATE)
+            chosen = seal.make_freeze("e" * 64, CANDIDATE, HOOKS, top / "u", top=top, image=IMAGE)
+            self.assertEqual(chosen["candidate"], CANDIDATE)
+            self.assertEqual(chosen["interpreter"], dict(implementation=platform.python_implementation(),
+                                                         python=platform.python_version(), image=IMAGE))
+            for image in (None, "4d8d", "sha256:" + "A" * 64):
+                with self.subTest(image=image), self.assertRaisesRegex(ValueError, "container image"):
+                    seal.make_freeze("e" * 64, CANDIDATE, HOOKS, top / "u", top=top, image=image)
             for candidate, reason, hooks, pattern in (
                     ("none", None, HOOKS, "names one of"), (CANDIDATE, seal.REASONS[0], HOOKS, "only it"),
                     ("none", "tired", HOOKS, "names one of"),
@@ -189,13 +198,14 @@ class FreezeTests(unittest.TestCase):
                     ("none", seal.REASONS[0], dict(observe_b5a="anim_absent:f"), "not in a pinned module")):
                 with self.subTest(candidate=candidate, reason=reason, pattern=pattern), \
                         self.assertRaisesRegex(ValueError, pattern):
-                    seal.make_freeze("e" * 64, candidate, hooks, top / "u", reason, top)
+                    seal.make_freeze("e" * 64, candidate, hooks, top / "u", reason, top, image=IMAGE)
             with self.assertRaisesRegex(ValueError, "intake digest"):
                 seal.make_freeze("e", "none", HOOKS, top / "u", seal.REASONS[0], top)
             # The freeze never executes a hook: a module that fails on import is recorded by path and sha256.
             (top / code["files"][0]).write_text("raise ImportError('executed at the freeze')\n", encoding="utf-8")
             code["sha256"][code["files"][0]] = hashlib.sha256((top / code["files"][0]).read_bytes()).hexdigest()
-            self.assertEqual(seal.make_freeze("e" * 64, CANDIDATE, HOOKS, top / "u", top=top)["hooks"], HOOKS)
+            self.assertEqual(seal.make_freeze("e" * 64, CANDIDATE, HOOKS, top / "u", top=top,
+                                              image=IMAGE)["hooks"], HOOKS)
         self.assertEqual(record["b5a"]["pinned"], b5a.pinned_refusals())
         self.assertEqual((record["verdict"], record["reader"], record["hooks"]),
                          (seal.VERDICT, reader, dict(observe_b5a=HOOKS["observe_b5a"], twist_rule=None)))
@@ -206,7 +216,9 @@ class FreezeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "written once"):
             seal.write_freeze(record, path)
         for change in (dict(format="other"), dict(reason=None), dict(candidate=CANDIDATE), dict(extra=1),
-                       dict(hooks=dict(observe_b5a=None, twist_rule=None)), dict(hooks=HOOKS)):
+                       dict(hooks=dict(observe_b5a=None, twist_rule=None)), dict(hooks=HOOKS),
+                       dict(interpreter=None), dict(interpreter=dict(record["interpreter"], image="sha256:x")),
+                       dict(interpreter=dict(record["interpreter"], python=""))):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 seal.read_freeze(json.dumps(record | change).encode())
         # Only the canonical freeze path is read.
@@ -263,7 +275,8 @@ class FreezeTests(unittest.TestCase):
                       reason=seal.REASONS[0], hooks=dict(observe_b5a=HOOKS["observe_b5a"], twist_rule=None),
                       code=code, reader=dict(sha256=hashlib.sha256(b"built").hexdigest(), commit=code["commit"],
                                              command=list(seal.READER_BUILD), remap="r"),
-                      editors=sorted(VERSIONS), verdict=seal.VERDICT, b5a=seal.b5a_pins())
+                      interpreter=seal.interpreter(IMAGE), editors=sorted(VERSIONS), verdict=seal.VERDICT,
+                      b5a=seal.b5a_pins())
         path = top / "freeze.json"
         path.write_text(json.dumps(record), encoding="utf-8")
         with mock.patch.object(seal, "canonical"), mock.patch.object(anim_body_seal, "bind_artifact"), \

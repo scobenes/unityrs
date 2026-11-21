@@ -265,15 +265,16 @@ def _joint(l, f):
     return l * len(model.FEET) + f
 
 
-def search(rigs, log=print):
+def search(rigs, log=print, plan=None):
     """The witnesses: {limb pair: row}, {foot pair: row}, {joint pair: row} and the joint pairs with none, each row
     (case, sample, side, group, margin). A limb or foot witness credits a joint pair only where both of its joint
     candidates predict on that row (a pole anywhere on the side refuses the whole side); every other joint pair is
-    searched on all chain bones of every row."""
+    searched on all chain bones of every row. `plan` is `rows()` by default, or a subset of it in its order
+    (anim_twist_fit: exploration's rows alone, on round 12's own Avatars)."""
     limb_open = set(itertools.combinations(range(len(model.LIMBS)), 2))
     foot_open = set(itertools.combinations(range(len(model.FEET)), 2))
     limb_found, foot_found = {}, {}
-    plan = rows()
+    plan = rows() if plan is None else plan
     started = time.time()
     for n, (case, sample, rig_name, name, vector, group) in enumerate(plan):
         rig, settings = rigs[model_rig(rig_name)], tables.TUPLES[name]

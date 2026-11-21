@@ -19,17 +19,28 @@ It opens only round 12's exploration view (anim_fixture_round12.round12_view's d
 `complete`), and, for the cells' keys, round 11's allowlisted Avatars (anim_twist_witness.scoped_rigs). It calls
 nothing of the seal and writes nothing to its ledger.
 
-    python3 -I tools/parity/anim_twist_fit.py rows --unityrs PATH --shard K N --out FILE <round 12 run folder>
+**Witnesses** (`witnesses`, v4 section 2 at intake). Every pair of candidates whose keys differ on a proposed cell
+needs a named row in each Editor where their predictions lie further apart than both bounds
+(anim_twist_witness.search), here among exploration's rows on round 12's own Avatars (the compact and no-toes
+probe rigs, from their bundles). A pair with none leaves its cell to selection's rows, which only selection opens.
+
+Every output records the interpreter (anim_twist_seal.interpreter: CPython's exact version and the container
+image's id); shards from different interpreters never merge.
+
+    python3 -I tools/parity/anim_twist_fit.py rows --unityrs PATH --image ID --shard K N --out FILE <round 12 run>
         One Editor's exploration rows, every Nth from the Kth, against all 630 joint candidates.
-    python3 -I tools/parity/anim_twist_fit.py combine --unityrs PATH --round11 FOLDER --out FILE SHARD...
-        One Editor's shards, all N of one run, with that Editor's round 11 Avatars for the cells' keys: the feasible
-        candidates, each cell's equations among them, the unresolved cells, and the slacks.
+    python3 -I tools/parity/anim_twist_fit.py witness --unityrs PATH --image ID --round11 FOLDER --out FILE <run>
+        One Editor's witness rule on its exploration rows and Avatars, the cells keyed on its round 11 Avatars.
+    python3 -I tools/parity/anim_twist_fit.py combine --unityrs PATH --round11 FOLDER --witness FILE --out FILE
+            SHARD...
+        One Editor's shards, all N of one run, with that Editor's round 11 Avatars for the cells' keys and its
+        witness result: the feasible candidates, each cell's equations among them, the unresolved and unwitnessed
+        cells, whether selection opens, and the slacks (each worst one's bound and separation apart).
 """
 
 import argparse
 import json
 import math
-import platform
 import sys
 import time
 from pathlib import Path
@@ -122,15 +133,16 @@ def load(folder, unityrs):
 
 
 def slack(predictions, recorded):
-    """(the smallest slack in radians, its bone) over the predicted bones: each bound less the separation net of
-    its own f64 error, so negative is out of bound."""
+    """(the smallest slack in radians, its bone, that bone's bound, its separation, the separation's own f64 error)
+    over the predicted bones: each bound less the separation net of its own error, so negative is out of bound."""
     worst = None
     for bone, (q, error) in sorted(predictions.items()):
         replay.require(bone in recorded, f"bone {bone} is predicted but not recorded")
         turn, own = bound.separation(q, recorded[bone])
-        found = bound.angle_bound(error) - (turn - own)
+        allowed = bound.angle_bound(error)
+        found = allowed - (turn - own)
         if worst is None or found < worst[0]:
-            worst = (found, bone)
+            worst = (found, bone, allowed, turn, own)
     return worst
 
 
@@ -153,10 +165,10 @@ def fit_rows(cases, shard=(0, 1), log=print):
                 except bound.Pole:
                     refused[j] += 1
                     continue
-                found, bone = slack(predictions, recorded)
+                found, bone, allowed, turn, own = slack(predictions, recorded)
                 out[j] += found < 0
                 if worst[j] is None or found < worst[j][0]:
-                    worst[j] = (found, case, sample, side, bone)
+                    worst[j] = (found, case, sample, side, bone, allowed, turn, own)
         if done % 20 == 0:
             log(f"shard {k}/{n}: row {done}/{len(mine)} ({time.time() - started:.0f} s)")
     return dict(shard=[k, n], rows=len(mine), total_rows=len(plan),
@@ -176,7 +188,7 @@ def merge(shards):
     n = first["shard"][1]
     replay.require(sorted(s["shard"][0] for s in shards) == list(range(n)) and all(s["shard"][1] == n for s in shards),
                    f"the shards are not each of 0..{n - 1} of {n} once")
-    for key in ("format", "run", "tables", "candidates_count", "total_rows", "rigs"):
+    for key in ("format", "run", "tables", "candidates_count", "total_rows", "rigs", "interpreter"):
         replay.require(all(s[key] == first[key] for s in shards), f"the shards differ in {key}")
     replay.require(sum(s["rows"] for s in shards) == first["total_rows"], "the shards do not cover every row")
     merged = []
@@ -211,72 +223,151 @@ def cells(feasible, rigs):
     return found
 
 
-def combine(shards, rigs, round11_run):
+def exploration_rigs(cases):
+    """{probe rig: its rig} from round 12's exploration cases (`load`), every case of a rig the same Avatar chain:
+    the same axes and rests, toes, x signs and reaches."""
+    rigs = {}
+    for case, (rig, _, _) in sorted(cases.items()):
+        first = rigs.setdefault(tables.cases()[case][0], rig)
+        replay.require(all(first[key] == rig[key] for key in ("rig", "toes", "signs", "reach")),
+                       f"{case}'s Avatar differs from its rig's other cases")
+    return rigs
+
+
+def exploration_plan():
+    """anim_twist_witness's rows, in its order, of exploration's cases alone: never a selection row."""
+    allowed = set(exploration_cases())
+    plan = [row for row in witness.rows() if row[0] in allowed]
+    replay.require(plan and all(row[5].startswith("exploration") for row in plan),
+                   "the exploration plan holds a row of another partition")
+    return plan
+
+
+def witnesses(rigs12, rigs11, log=print):
+    """v4 section 2's witness rule at intake, one Editor: every joint pair's witness (anim_twist_witness.search)
+    among exploration's rows on round 12's own Avatars, and per proposed admission cell (its keys on round 11's
+    Avatars of the same rigs) the pairs those keys separate that no witness splits. A pair without one refuses its
+    cell; only selection's rows can still name it."""
+    limb_found, foot_found, joint_found, joint_open, credits = witness.search(rigs12, log, exploration_plan())
+    n = len(model.candidates())
+    margins = sorted(row[4] for table in (limb_found, foot_found, joint_found) for row in table.values())
+    found = witness.cells(rigs11, joint_open)
+    smallest = min(((row[4], row) for table in (limb_found, foot_found, joint_found) for row in table.values()),
+                   default=None)
+    return dict(pairs=n * (n - 1) // 2, witnessed=len(credits) + len(joint_found), open=len(joint_open),
+                limb_pairs_open=len(model.LIMBS) * (len(model.LIMBS) - 1) // 2 - len(limb_found),
+                foot_pairs_open=len(model.FEET) * (len(model.FEET) - 1) // 2 - len(foot_found),
+                smallest_margin=None if smallest is None else witness._row(smallest[1]),
+                margins_under_degrees={f"{limit:g}": sum(math.degrees(m) < limit for m in margins)
+                                       for limit in (1e-3, 1e-2, .1, 1.)},
+                cells=[{key: cell[key] for key in ("tuple", "rig", "equations", "separated_pairs", "unwitnessed",
+                                                   "examples")} for cell in found],
+                unwitnessed_cells=[f"{cell['tuple']}/{cell['rig']}" for cell in found if cell["unwitnessed"]])
+
+
+def _degrees(worst):
+    """A worst slack's row with the bound and the measured separation apart, in degrees."""
+    if worst is None:
+        return None
+    found, case, sample, side, bone, allowed, turn, own = worst
+    return dict(degrees=math.degrees(found), case=case, sample=sample, side=side, bone=bone,
+                bound_degrees=math.degrees(allowed), separation_degrees=math.degrees(turn),
+                separation_error_degrees=math.degrees(own))
+
+
+def combine(shards, rigs, round11_run, witnessed):
     """The fit of one Editor: its shards merged, every cell's equations among the feasible candidates (round 11's
-    Avatars of the same Editor, for the cells' keys), the unresolved cells, and the slacks in degrees."""
+    Avatars of the same Editor, for the cells' keys), the unresolved cells, the witness rule's result (`witnesses`,
+    the same run's), and the slacks in degrees. Selection opens where a cell is unresolved or a pair its keys
+    separate has no exploration witness."""
     first = shards[0]
     replay.require(round11_run["editor_version"] == first["run"]["editor"],
                    f"round 11's run is Editor {round11_run['editor_version']}, not {first['run']['editor']}")
+    replay.require(witnessed.get("run") == first["run"] and witnessed.get("round11_run_id") == round11_run["run_id"]
+                   and witnessed.get("interpreter") == first["interpreter"],
+                   "the witness result is another run's, Editor's or interpreter's")
     merged = merge(shards)
     feasible = [j for j, c in enumerate(merged) if c["out"] == 0 and c["refused"] == 0]
     found = cells(feasible, rigs)
     unresolved = [f"{c['tuple']}/{c['rig']}" for c in found if c["unresolved"]]
     # Round 12's own exploration Avatars against round 11's of the same rig: the cells' keys read round 11's.
     same = {rig: rig_summary(rigs[rig]) == summary for rig, summary in first["rigs"].items() if rig in rigs}
-
-    def degrees(w):
-        return None if w is None else dict(degrees=math.degrees(w[0]), case=w[1], sample=w[2], side=w[3], bone=w[4])
     near = sorted((j for j, c in enumerate(merged) if j not in feasible and c["worst"] is not None),
                   key=lambda j: -merged[j]["worst"][0])[:10]
+    unwitnessed = witnessed["unwitnessed_cells"]
     return dict(format=FORMAT, editor=first["run"]["editor"], run_id=first["run"]["run_id"],
-                round11_run_id=round11_run["run_id"], tables=first["tables"], python=first["python"],
+                round11_run_id=round11_run["run_id"], tables=first["tables"], interpreter=first["interpreter"],
                 rows=first["total_rows"], candidates=len(merged), feasible=len(feasible),
-                feasible_candidates=[dict(describe(j), out=merged[j]["out"], slack=degrees(merged[j]["worst"]))
+                feasible_candidates=[dict(describe(j), out=merged[j]["out"], slack=_degrees(merged[j]["worst"]))
                                      for j in feasible],
                 refusing=sum(1 for c in merged if c["refused"]),
-                cells=found, unresolved_cells=unresolved, resolved=bool(feasible) and not unresolved,
+                cells=found, unresolved_cells=unresolved, unwitnessed_cells=unwitnessed,
+                witness={key: value for key, value in witnessed.items() if key not in ("format", "cells")},
+                resolved=bool(feasible) and not unresolved and not unwitnessed,
+                selection_opens=bool(unresolved or unwitnessed),
                 round12_rigs_match_round11=same,
                 nearest_infeasible=[dict(describe(j), out=merged[j]["out"], refused=merged[j]["refused"],
-                                         slack=degrees(merged[j]["worst"])) for j in near])
+                                         slack=_degrees(merged[j]["worst"])) for j in near])
+
+
+def _log(line):
+    print(line, file=sys.stderr, flush=True)
 
 
 def rows_main(args):
+    from anim_twist_seal import interpreter
+
+    running = interpreter(args.image)
     identity, cases = load(args.folder, str(Path(args.unityrs).resolve()))
-    result = fit_rows(cases, tuple(args.shard), log=lambda line: print(line, file=sys.stderr, flush=True))
-    # Each probe rig's Avatar summary, the same in every case of the rig.
-    rigs = {}
-    for case, (rig, _, _) in sorted(cases.items()):
-        name = tables.cases()[case][0]
-        replay.require(rigs.setdefault(name, rig_summary(rig)) == rig_summary(rig),
-                       f"{case}'s Avatar differs from its rig's other cases")
-    return dict(format=FORMAT, run=identity, tables=tables.digest(), python=platform.python_version(),
+    result = fit_rows(cases, tuple(args.shard), log=_log)
+    rigs = {name: rig_summary(rig) for name, rig in exploration_rigs(cases).items()}
+    return dict(format=FORMAT, run=identity, tables=tables.digest(), interpreter=running,
                 candidates_count=len(model.candidates()), rigs=rigs, **result)
+
+
+def witness_main(args):
+    from anim_twist_seal import interpreter
+
+    running = interpreter(args.image)
+    unityrs = str(Path(args.unityrs).resolve())
+    identity, cases = load(args.folder, unityrs)
+    round11_run, rigs11 = witness.scoped_rigs(args.round11, unityrs, log=_log)
+    replay.require(round11_run["editor_version"] == identity["editor"],
+                   f"round 11's run is Editor {round11_run['editor_version']}, not {identity['editor']}")
+    return dict(format=FORMAT + ".witness", run=identity, round11_run_id=round11_run["run_id"],
+                tables=tables.digest(), interpreter=running,
+                **witnesses(exploration_rigs(cases), rigs11, log=_log))
 
 
 def combine_main(args):
     shards = [json.loads(path.read_text(encoding="utf-8")) for path in args.shards]
     replay.require(shards and all(s.get("format") == FORMAT for s in shards), "not twist fit shards")
-    identity, rigs = witness.scoped_rigs(args.round11, str(Path(args.unityrs).resolve()),
-                                         log=lambda line: print(line, file=sys.stderr, flush=True))
-    return combine(shards, rigs, identity)
+    witnessed = json.loads(args.witness.read_text(encoding="utf-8"))
+    replay.require(witnessed.get("format") == FORMAT + ".witness", "not a twist fit witness result")
+    identity, rigs = witness.scoped_rigs(args.round11, str(Path(args.unityrs).resolve()), log=_log)
+    return combine(shards, rigs, identity, witnessed)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     rows = sub.add_parser("rows")
-    rows.add_argument("--unityrs", required=True)
     rows.add_argument("--shard", nargs=2, type=int, default=(0, 1))
-    rows.add_argument("--out", type=Path, required=True)
-    rows.add_argument("folder", type=Path)
+    found = sub.add_parser("witness")
+    found.add_argument("--round11", type=Path, required=True)
+    for each in (rows, found):
+        each.add_argument("--image", required=True, help="the container image's id, sha256:...")
+        each.add_argument("folder", type=Path)
     joined = sub.add_parser("combine")
-    joined.add_argument("--unityrs", required=True)
     joined.add_argument("--round11", type=Path, required=True)
-    joined.add_argument("--out", type=Path, required=True)
+    joined.add_argument("--witness", type=Path, required=True)
     joined.add_argument("shards", type=Path, nargs="+")
+    for each in (rows, found, joined):
+        each.add_argument("--unityrs", required=True)
+        each.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     try:
-        result = rows_main(args) if args.command == "rows" else combine_main(args)
+        result = dict(rows=rows_main, witness=witness_main, combine=combine_main)[args.command](args)
         args.out.write_text(json.dumps(result, separators=(",", ":"), ensure_ascii=False) + "\n", encoding="utf-8")
     except (ValueError, OSError) as exc:
         parser.exit(1, f"anim_twist_fit: {exc}\n")
