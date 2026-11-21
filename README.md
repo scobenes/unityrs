@@ -31,9 +31,15 @@ Agents and scripts: see [the agent interface guide](docs/AGENTS.md) for `describ
 ## Performance
 
 <!-- bench:begin -->
-Results pending. The harness in [tools/bench](tools/bench/README.md) times unityrs against UnityPy 1.25.2 with
-UnityPyBoost, the same Python script on both, on public synthetic fixtures; the first run published from
-GitHub's ubuntu-24.04 runner will be summarised here, with the full breakdown in BENCHMARKS.md.
+unityrs against UnityPy 1.25.2 with UnityPyBoost, the same Python script on both, on public synthetic fixtures, on GitHub's ubuntu-24.04 runner (Intel(R) Xeon(R) 6975P-C), commit 4ac902aacf70, 2026-11-21. Median of 7 rounds, each a fresh process with a warm file cache. API rows time the operation after imports; the extraction row times the whole process, imports included.
+
+| operation (timer contains) | inventory | UnityPy | unityrs | speedup |
+|---|---|---|---|---|
+| load and list objects | objects-lz4 (20,000 objects), objects-lzma (20,000 objects), objects-2019 (20,000 objects), many-blocks (64.0 MiB entry) | 504.5 ms | 454.8 ms | ×1.1 |
+| read every typetree | 40,000 objects in 2 layouts | 723.5 ms | 859.8 ms | ×0.84 |
+| read and decode textures | 15 formats, 113.2 Mpixel | 1.12 s | 818.9 ms | ×1.4 |
+
+Breakdown, memory, unityrs-only rows and how to rerun: [BENCHMARKS.md](BENCHMARKS.md).
 <!-- bench:end -->
 
 ## Static 3D export
