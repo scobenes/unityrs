@@ -24,7 +24,9 @@ impl Lookups {
         let count = tree
             .map_or(0, |tree| tree.list().len())
             .checked_mul(2)
-            .ok_or_else(|| pyo3::exceptions::PyMemoryError::new_err("schema index size"))?;
+            .ok_or_else(|| {
+                crate::errors::new::<pyo3::exceptions::PyMemoryError>("schema index size")
+            })?;
         let mut slots = MeteredVec::with_capacity(meter, count).map_err(errors::charge)?;
         meter.count_decode(count as u64).map_err(errors::charge)?;
         for _ in 0..count {
@@ -46,7 +48,9 @@ impl Lookups {
         let slot = usize::try_from(node.0)?
             .checked_mul(2)
             .and_then(|n| n.checked_add(usize::from(dict)))
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("schema node index"))?;
+            .ok_or_else(|| {
+                crate::errors::new::<pyo3::exceptions::PyValueError>("schema node index")
+            })?;
         let old = self.slots.as_slice().get(slot).copied().flatten();
         let index = if let Some(index) = old {
             index
@@ -54,19 +58,15 @@ impl Lookups {
             let table = Table::new(tree, node, dict, meter)?;
             let index = self.tables.len();
             self.tables.push(table).map_err(errors::charge)?;
-            let entry = self
-                .slots
-                .as_mut_slice()
-                .get_mut(slot)
-                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("schema node index"))?;
+            let entry = self.slots.as_mut_slice().get_mut(slot).ok_or_else(|| {
+                crate::errors::new::<pyo3::exceptions::PyValueError>("schema node index")
+            })?;
             *entry = Some(index);
             index
         };
-        let table = self
-            .tables
-            .as_slice()
-            .get(index)
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("schema lookup index"))?;
+        let table = self.tables.as_slice().get(index).ok_or_else(|| {
+            crate::errors::new::<pyo3::exceptions::PyValueError>("schema lookup index")
+        })?;
         let comparisons = logarithm(table.entries.len()).saturating_add(2);
         meter
             .count_decode(

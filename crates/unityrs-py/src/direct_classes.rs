@@ -46,7 +46,7 @@ pub(crate) fn _direct_originals(object: &Bound<'_, PyAny>) -> PyResult<()> {
     }
     let reader = kept[0]
         .as_ref()
-        .ok_or_else(|| pyo3::exceptions::PyTypeError::new_err("no reader property"))?;
+        .ok_or_else(|| crate::errors::new::<pyo3::exceptions::PyTypeError>("no reader property"))?;
     let code = reader
         .bind(py)
         .getattr(name!(py, c"fget")?)?
@@ -68,7 +68,9 @@ pub(crate) fn classes(py: Python<'_>) -> Option<&Classes> {
                 name!(py, c"ObjectReader")?,
             )?;
             if !object.get_type().is(py.get_type::<pyo3::types::PyType>()) {
-                return Err(pyo3::exceptions::PyTypeError::new_err("not a plain class"));
+                return Err(crate::errors::new::<pyo3::exceptions::PyTypeError>(
+                    "not a plain class",
+                ));
             }
             Ok::<_, PyErr>(Classes {
                 object_dict: object.getattr(name!(py, c"__dict__")?)?.unbind(),

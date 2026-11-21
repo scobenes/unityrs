@@ -29,7 +29,7 @@ impl ReferenceInput {
             0 => Ok(Self::NoFile),
             1 => Ok(Self::Absent),
             2 => Ok(Self::Resolver(Arc::new(input.get_item(1)?.unbind()))),
-            _ => Err(pyo3::exceptions::PyValueError::new_err(
+            _ => Err(crate::errors::new::<pyo3::exceptions::PyValueError>(
                 "Invalid reference snapshot state",
             )),
         }
@@ -64,11 +64,14 @@ pub(crate) fn invoke(call: &Call) -> PyResult<crate::python::relay::Response> {
             )
             .map_err(errors::charge)?;
         let [cls, ns, asm] = &call.names;
-        let row = call.resolver.bind(py).call1((
-            crate::python::string(cls.as_bytes())?,
-            crate::python::string(ns.as_bytes())?,
-            crate::python::string(asm.as_bytes())?,
-        ))?;
+        let row = crate::python::held::call(
+            call.resolver.bind(py),
+            &[
+                crate::python::held::string(py, cls.as_bytes())?,
+                crate::python::held::string(py, ns.as_bytes())?,
+                crate::python::held::string(py, asm.as_bytes())?,
+            ],
+        )?;
         if row.is_none() {
             return Ok(crate::python::relay::Response::ReferenceMissing);
         }
@@ -116,7 +119,7 @@ pub(crate) fn resolve(
             Response::Reference(tree) => tree,
             Response::ReferenceMissing => return Ok(Err(failure())),
             _ => {
-                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                return Err(crate::errors::new::<pyo3::exceptions::PyRuntimeError>(
                     "invalid reference relay response",
                 ));
             }

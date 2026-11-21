@@ -440,17 +440,16 @@ impl State<'_> {
                     return Ok((node, value));
                 }
             }
-            let frame = frames
-                .as_mut_slice()
-                .last_mut()
-                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("missing snapshot frame"))?;
+            let frame = frames.as_mut_slice().last_mut().ok_or_else(|| {
+                crate::errors::new::<pyo3::exceptions::PyValueError>("missing snapshot frame")
+            })?;
             if let Some(visit) = frame.next(self)? {
                 next = Some(visit);
                 continue;
             }
-            let frame = frames
-                .pop()
-                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("missing snapshot frame"))?;
+            let frame = frames.pop().ok_or_else(|| {
+                crate::errors::new::<pyo3::exceptions::PyValueError>("missing snapshot frame")
+            })?;
             self.active.pop();
             let node = frame.node;
             if let Container::Sequence {
@@ -547,13 +546,13 @@ impl State<'_> {
             shape,
         } = visit;
         if depth > self.limits.max_value_depth {
-            return Err(errors::LimitError::new_err(
+            return Err(crate::errors::new::<crate::errors::LimitError>(
                 "Python value depth exceeds max_value_depth",
             ));
         }
         self.count = self.count.saturating_add(1);
         if self.count > self.limits.max_values_per_object {
-            return Err(errors::LimitError::new_err(
+            return Err(crate::errors::new::<crate::errors::LimitError>(
                 "Python snapshot exceeds max_values_per_object",
             ));
         }
@@ -583,7 +582,7 @@ impl State<'_> {
             .count_decode(self.active.len() as u64)
             .map_err(errors::charge)?;
         if self.active.as_slice().contains(&identity) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
+            return Err(crate::errors::new::<pyo3::exceptions::PyValueError>(
                 "cyclic Python value",
             ));
         }
@@ -619,7 +618,7 @@ impl State<'_> {
                 }
             }
             Inspect::Scalar(_) | Inspect::Sized(_, _) => {
-                return Err(pyo3::exceptions::PyTypeError::new_err(
+                return Err(crate::errors::new::<pyo3::exceptions::PyTypeError>(
                     "invalid snapshot state",
                 ));
             }

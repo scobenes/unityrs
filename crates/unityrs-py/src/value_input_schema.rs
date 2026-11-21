@@ -68,11 +68,9 @@ impl<'a> Schemas<'a> {
         key: &[u8],
         meter: &Arc<Meter>,
     ) -> PyResult<Option<Shape>> {
-        let schema = self
-            .0
-            .as_mut_slice()
-            .get_mut(shape.schema)
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("snapshot schema index"))?;
+        let schema = self.0.as_mut_slice().get_mut(shape.schema).ok_or_else(|| {
+            crate::errors::new::<pyo3::exceptions::PyValueError>("snapshot schema index")
+        })?;
         Ok(schema
             .lookups
             .find(schema.tree.tree(), shape.node, dict, key, meter)?

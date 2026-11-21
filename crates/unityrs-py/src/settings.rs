@@ -7,7 +7,6 @@ use unityrs_core::{budget::Counting, limits::Limits as CoreLimits};
 #[derive(Clone)]
 pub(crate) struct Budget {
     pub(crate) inner: Arc<Counting>,
-    #[pyo3(get)]
     limit: u64,
 }
 #[pymethods]
@@ -20,8 +19,13 @@ impl Budget {
         })
     }
     #[getter]
-    fn used(&self, py: Python<'_>) -> u64 {
-        py.detach(|| self.inner.used())
+    fn limit(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        crate::python::held::uint(py, self.limit).map(Bound::unbind)
+    }
+    #[getter]
+    fn used(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let used = py.detach(|| self.inner.used());
+        crate::python::held::uint(py, used).map(Bound::unbind)
     }
 }
 
@@ -60,10 +64,11 @@ impl Limits {
         clippy::cast_lossless,
         reason = "one macro handles usize and u32 counters"
     )]
-    fn __getattr__(&self, py: Python<'_>, name: &str) -> PyResult<u64> {
-        py.detach(|| {
-            macro_rules! fields { ($($field:ident),*) => { match name { $(stringify!($field) => Ok(self.inner.$field as u64),)* _ => Err(pyo3::exceptions::PyAttributeError::new_err("unknown limit")) } }; }
+    fn __getattr__(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+        let value = py.detach(|| {
+            macro_rules! fields { ($($field:ident),*) => { match name { $(stringify!($field) => Ok(self.inner.$field as u64),)* _ => Err(crate::errors::new::<pyo3::exceptions::PyAttributeError>("unknown limit")) } }; }
             fields!(max_input_memory, max_input_bytes, max_block_output, max_decode_work, max_inflate, max_container_depth, max_tree_depth, max_value_depth, max_values_per_object, max_zero_size_elements, max_prealloc)
-        })
+        })?;
+        crate::python::held::uint(py, value).map(Bound::unbind)
     }
 }

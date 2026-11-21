@@ -23,15 +23,15 @@ pub(crate) fn error(error: SaveError) -> PyErr {
     match error {
         SaveError::Charge(e) => errors::charge(e),
         SaveError::Read(e) => errors::core(e),
-        SaveError::CabExists => {
-            PyValueError::new_err("This cab already exists and isn't an EndianBinaryWriter")
-        }
+        SaveError::CabExists => crate::errors::new::<PyValueError>(
+            "This cab already exists and isn't an EndianBinaryWriter",
+        ),
         SaveError::Unsupported(_)
         | SaveError::UnsupportedCodec(_)
         | SaveError::HeadTierWritesNotImplemented => {
-            PyNotImplementedError::new_err(errors::message(&error))
+            crate::errors::new::<PyNotImplementedError>(errors::message(&error))
         }
-        _ => PyValueError::new_err(errors::message(&error)),
+        _ => crate::errors::new::<PyValueError>(errors::message(&error)),
     }
 }
 
@@ -62,10 +62,7 @@ fn packer(
             "lz4" => Ok(BundlePacker::Lz4),
             "lzma" => Ok(BundlePacker::Lzma),
             "lz4hc" => Ok(BundlePacker::Lz4Hc),
-            _ => Err(PyNotImplementedError::new_err((
-                "UnityFS - Packer:",
-                value.clone().unbind(),
-            ))),
+            _ => Err(packer_error(value)),
         }?;
         return Ok((pack, charge));
     }
@@ -73,10 +70,19 @@ fn packer(
         let (data, blocks) = value.extract::<(u32, u16)>()?;
         return Ok((BundlePacker::Flags { data, blocks }, Charge::zero(meter)));
     }
-    Err(PyNotImplementedError::new_err((
-        "UnityFS - Packer:",
-        value.clone().unbind(),
-    )))
+    Err(packer_error(value))
+}
+
+/// `NotImplementedError("UnityFS - Packer:", value)`, its arguments made
+/// now ([`crate::errors::new`]).
+fn packer_error(value: &Bound<'_, PyAny>) -> PyErr {
+    let py = value.py();
+    let made = crate::errors::text_of(py, "UnityFS - Packer:")
+        .and_then(|text| crate::python::held::tuple_of(py, &[text, value.clone()]));
+    match made {
+        Ok(args) => PyErr::from_type(py.get_type::<PyNotImplementedError>(), args.unbind()),
+        Err(error) => error,
+    }
 }
 
 fn web_packer(
@@ -316,17 +322,19 @@ impl NativeCab {
         py: Python<'_>,
         value: &Bound<'_, PyAny>,
         position: u64,
-    ) -> PyResult<usize> {
+    ) -> PyResult<Py<PyAny>> {
         let value = crate::buffer_snapshot::BufferSnapshot::writer(value, &self.meter)?;
-        py.detach(move || {
+        let written = py.detach(move || {
             self.inner
                 .write_at(position, value.as_ref())
                 .map_err(error)?;
-            Ok(value.as_ref().len())
-        })
+            Ok::<_, PyErr>(value.as_ref().len())
+        })?;
+        crate::python::held::uint(py, written as u64).map(Bound::unbind)
     }
-    fn length(&self, py: Python<'_>) -> usize {
-        py.detach(|| self.inner.len())
+    fn length(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let length = py.detach(|| self.inner.len());
+        crate::python::held::uint(py, length as u64).map(Bound::unbind)
     }
     fn write_zeroes(&self, py: Python<'_>, position: u64, count: usize) -> PyResult<()> {
         py.detach(|| self.inner.write_zeroes_at(position, count).map_err(error))
@@ -399,7 +407,7 @@ pub(crate) fn file_get_writeable_cab(
             File::Bundle(f) => f.get_writeable_cab(Some(&name)).map(Some),
             File::Web(f) => f.get_writeable_cab(Some(&name)).map(Some),
             File::Raw(_) => {
-                return Err(PyTypeError::new_err(
+                return Err(crate::errors::new::<PyTypeError>(
                     "raw readers cannot create CAB writers",
                 ));
             }
@@ -424,7 +432,7 @@ pub(crate) fn file_create_cab(
     let endian = match endian {
         '<' => unityrs_core::stream::Endian::Little,
         '>' => unityrs_core::stream::Endian::Big,
-        _ => return Err(PyValueError::new_err("invalid endian")),
+        _ => return Err(crate::errors::new::<PyValueError>("invalid endian")),
     };
     py.detach(move || {
         let name = RawStr::charged(&name, meter).map_err(errors::charge)?;
@@ -445,7 +453,7 @@ pub(crate) fn save_web_entries(
     signature: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     let File::Web(web) = &file.inner else {
-        return Err(PyTypeError::new_err("not a WebFile"));
+        return Err(crate::errors::new::<PyTypeError>("not a WebFile"));
     };
     let meter = file.inner.meter();
     let (pack, _pack_charge) = web_packer(packer, web.packer(), meter)?;
@@ -604,7 +612,7 @@ pub(crate) fn save_bundle_entries(
     let player = crate::buffer_snapshot::BufferSnapshot::new(player.bind(py), meter)?;
     let engine = crate::buffer_snapshot::BufferSnapshot::new(engine.bind(py), meter)?;
     let File::Bundle(bundle) = &file.inner else {
-        return Err(PyTypeError::new_err("not a bundle"));
+        return Err(crate::errors::new::<PyTypeError>("not a bundle"));
     };
     let (pack, _pack_charge) = if mode != "web_raw" && signature.as_ref() == b"UnityFS" {
         packer(value, meter)?

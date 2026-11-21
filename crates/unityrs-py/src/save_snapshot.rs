@@ -43,7 +43,7 @@ pub(crate) fn serialized(
     externals: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     let File::Serialized(source) = &file.inner else {
-        return Err(PyTypeError::new_err("not a SerializedFile"));
+        return Err(crate::errors::new::<PyTypeError>("not a SerializedFile"));
     };
     let meter = source.meter();
     // The Python facade charges its lists and encodings before construction;
@@ -59,7 +59,9 @@ pub(crate) fn serialized(
     for row in rows.try_iter()? {
         let (object, path_id, type_id, class_id, destroyed, stripped, script, data) =
             row?.extract::<ObjectRow>()?;
-        let logical_len = u32::try_from(data.bind(py).len()?)?;
+        // Checked here: a length past `u32` raises PyO3's `ValueError`, its
+        // message made fallibly.
+        let logical_len = u32::try_from(data.bind(py).len()?).map_err(errors::narrowing)?;
         let data = crate::buffer_snapshot::BufferSnapshot::writer(data.bind(py), meter)?;
         let mut info = object.borrow(py).inner.info().clone();
         info.byte_size = logical_len;

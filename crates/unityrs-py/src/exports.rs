@@ -97,9 +97,9 @@ pub(crate) fn audio_error(error: unityrs_audio::Error) -> PyErr {
         | unityrs_audio::Error::EmptyFirstSubsound
         | unityrs_audio::Error::VorbisHeadersRequired
         | unityrs_audio::Error::VorbisShortSubsound => {
-            PyNotImplementedError::new_err(errors::message(&error))
+            crate::errors::new::<PyNotImplementedError>(errors::message(&error))
         }
-        _ => PyValueError::new_err(errors::message(&error)),
+        _ => crate::errors::new::<PyValueError>(errors::message(&error)),
     }
 }
 
@@ -139,7 +139,7 @@ pub(crate) fn shader_error(error: unityrs_export::shader::Error, meter: &Arc<Met
         Error::Charge(error) => errors::charge(error),
         Error::Core(unityrs_core::Error::Decompress { detail, .. }) => {
             let (name, message) = detail.split_once(": ").unwrap_or(("ValueError", &detail));
-            named_error(name, errors::message(&message))
+            named_error(name, &errors::message(&message))
         }
         Error::Core(error) => errors::core(error),
         Error::Parse(error) => errors::parse(error),
@@ -150,9 +150,16 @@ pub(crate) fn shader_error(error: unityrs_export::shader::Error, meter: &Arc<Met
             }
             match p::bytes(data.as_ref()) {
                 Ok(bytes) => crate::python::relay::attach(|py| {
-                    match bytes.bind(py).call_method1("decode", ("utf8",)) {
+                    let decoded = crate::direct_keys::name!(py, c"decode")
+                        .and_then(|decode| bytes.bind(py).getattr(decode))
+                        .and_then(|decode| {
+                            p::held::call1(&decode, crate::direct_keys::name!(py, c"utf8")?)
+                        });
+                    match decoded {
                         Err(error) => error,
-                        Ok(_) => PyValueError::new_err("invalid UTF-8 error contained valid bytes"),
+                        Ok(_) => crate::errors::new::<PyValueError>(
+                            "invalid UTF-8 error contained valid bytes",
+                        ),
                     }
                 }),
                 Err(error) => error,
@@ -160,27 +167,22 @@ pub(crate) fn shader_error(error: unityrs_export::shader::Error, meter: &Arc<Met
         }
         _ => named_error(
             error.exception().unwrap_or("NotImplementedError"),
-            errors::message(&error),
+            &errors::message(&error),
         ),
     }
 }
 
-pub(super) fn named_error(name: &str, message: String) -> PyErr {
+pub(super) fn named_error(name: &str, message: &str) -> PyErr {
     crate::python::relay::attach(|py| {
-        let class = match name {
-            "brotli.error" => py
-                .import("unityrs.helpers.CompressionHelper")
-                .and_then(|m| m.getattr("_BrotliError")),
-            "error" => py.import("struct").and_then(|m| m.getattr("error")),
-            "LZ4BlockError" => py
-                .import("unityrs._native")
-                .and_then(|m| m.getattr("LZ4BlockError")),
-            "LZMAError" => py.import("lzma").and_then(|m| m.getattr("LZMAError")),
-            "struct.error" => py.import("struct").and_then(|m| m.getattr("error")),
-            _ => py.import("builtins").and_then(|m| m.getattr(name)),
+        let (module, name) = match name {
+            "brotli.error" => ("unityrs.helpers.CompressionHelper", "_BrotliError"),
+            "error" | "struct.error" => ("struct", "error"),
+            "LZ4BlockError" => ("unityrs._native", "LZ4BlockError"),
+            "LZMAError" => ("lzma", "LZMAError"),
+            _ => ("builtins", name),
         };
-        match class.and_then(|class| class.cast_into::<pyo3::types::PyType>().map_err(Into::into)) {
-            Ok(class) => PyErr::from_type(class, (message,)),
+        match errors::class_named(py, module, name) {
+            Ok(class) => errors::typed(&class, message),
             Err(error) => error,
         }
     })
