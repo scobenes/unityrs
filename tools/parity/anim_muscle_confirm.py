@@ -4,6 +4,11 @@
 
 It reads no case file, only the run folders.
 
+**What it guards against.** Confirmation guards against an incomplete, buggy or misrouted collection: a recorder
+or collector that skips a case, a bone or a sample, repeats one, files a capture under the wrong case, or reads
+the wrong transform or clip. It does not guard against someone hand-editing capture files. Integrity against
+later edits is to come from a sha256 manifest the Editor writes at record time.
+
 **Expected** (`expected`): every (Editor, case, bone, sample) that round 11 must record. It is computed from
 round 11's builder tables, never from literals:
 - the cases: the four muscle sweeps (anim_fixture_muscles.MUSCLE_SWEEPS), and every full-body clip of round
@@ -18,15 +23,20 @@ round 11's builder tables, never from literals:
 **Observed** (`observe`): what the run folders recorded, from their raw captures and bundles.
 - Each run must declare round 11 and record its whole body inventory (anim_fixture_round11.check_inventory).
 - Each capture's own metadata names its case, run, Editor and bundle (anim_muscle_round11.Recordings).
-- A sample is identified as above. A sweep's must be one of the builder's vectors, at its time and with its
-  values, and a clip's must be one of the schedule's times. A sample recorded twice is refused.
+- A sample is identified as above, its time from the same source time the prediction and bound use (one
+  whose recorded local time disagrees is refused). A sweep's must be one of the builder's vectors, at its time
+  and with its values, and a clip's must be one of the schedule's times. A sample recorded twice is refused.
+- Each recorded bone's transform must be the Avatar's node for that bone, by path (`m_Skeleton.m_ID` through
+  `m_TOS` against the capture's node paths).
+- A clip's capture must play the builder's clip: its name, and its authored and compiled muscle curves within
+  f32 rounding of the builder's (anim_muscle_clip). The compiled index array must hold the runtime's layout.
 - Each (bone, sample) is compared with reference 2 on the bundle's Avatar, using the capture's recorded
-  rotation. Its bound comes from the frozen rule (`anim_muscle_pose.unity_bound`) at the sample's own values,
-  never from a file.
+  rotation. A clip's muscle values and their errors come from the compiled curves. The bound comes from the
+  frozen rule (`anim_muscle_pose.unity_bound`) at the sample's own values, never from a file.
 
 **Scope** (`scope`) is the runtime's admission, `humanoid_refusal` (mod.rs), computed from the same inputs:
-- a clip's animated bones are those of its compiled muscle slots (`m_IndexArray` >= 0) whose bones the Avatar
-  maps with axes. A sweep plays no clip, so its animated bones are those the builder's vectors move.
+- a clip's animated bones are those of its mapped muscle slots (an `m_IndexArray` entry naming stored data,
+  anim_muscle_clip.compiled_muscles) whose bones the Avatar maps with axes. A sweep plays no clip, so its animated bones are those the builder's vectors move.
 - An unmapped required bone, or a mapped one without axes, is refused as Rust refuses it.
 - A case is twist evidence where a twist setting is not neutral and the case animates a bone that setting
   redistributes over.
@@ -50,7 +60,9 @@ from anim_humanoid_qualify import LIMBS, MUSCLE_COUNT, REQUIRED_BONES, TWIST, mu
 
 # The two Editor series the plan freezes, round 10's and round 11's: {Editor: its version's prefix}.
 EDITORS = {"2022": "2022.3.", "6000": "6000.6."}
-MUSCLE_DOFS = range(42, 42 + MUSCLE_COUNT)
+# The recorder's off-key sample, this far into each key interval (UnityrsFixtureRecording.cs Schedule; a test
+# reads it there).
+RECORDER_OFFSET = 391 / 1024
 
 
 def f32_bits(value):
@@ -108,12 +120,12 @@ def case_bones(rig):
 
 def clip_times(keys):
     """The recorder's samples of a clip that starts at 0 (UnityrsFixtureRecording.cs Schedule, no held boundary):
-    each key, and an off-key sample 391/1024 of the way into each interval where it is a distinct f32."""
+    each key, and an off-key sample RECORDER_OFFSET of the way into each interval where it is a distinct f32."""
     times = {}
     for i, key in enumerate(keys):
         times[f32(key)] = key
         if i:
-            off = keys[i - 1] + (key - keys[i - 1]) * (391 / 1024)
+            off = keys[i - 1] + (key - keys[i - 1]) * RECORDER_OFFSET
             if f32(keys[i - 1]) < f32(off) < f32(key):
                 times[f32(off)] = off
     times[0.] = 0.
@@ -156,15 +168,13 @@ def expected(cases=None):
     return found
 
 
-def scope(human, index, moved):
-    """None for a case in B5a's scope, else the runtime's refusal. `index` is the compiled clip's m_IndexArray; a
-    sweep passes None, with `moved` the muscle ordinals its vectors set."""
+def scope(human, moved):
+    """None for a case in B5a's scope, else the runtime's refusal. `moved` is the muscle ordinals a clip maps
+    (anim_muscle_clip.compiled_muscles), or those a sweep's vectors set."""
     import anim_muscle_pose as pose
 
     if any(pose.avatar_node(human, bone) is None for bone in REQUIRED_BONES):
         return "missing_human_bone"
-    if index is not None:
-        moved = {dof - 42 for dof in MUSCLE_DOFS if dof < len(index) and index[dof] >= 0}
     skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
     animated = set()
     for muscle in sorted(moved):
@@ -208,23 +218,39 @@ def check_tables(case, capture):
     return names
 
 
-def observe_capture(editor, case, spec, doc, human, index, seen):
-    """One capture's comparisons into `seen`. `spec` is the builder's (kind, rig, variant) and `index` the built
-    clip's m_IndexArray (None for a sweep)."""
+def observe_capture(editor, case, spec, doc, avatar, clip, seen):
+    """One capture's comparisons into `seen`. `spec` is the builder's (kind, rig, variant), `avatar` the bundle's
+    Avatar and `clip` its built clip (None for a sweep)."""
+    import anim_body_runs as runs
+    import anim_fixture_round11 as r11
+    import anim_muscle_clip as clips
     import anim_muscle_pose as pose
-    from anim_humanoid_qualify import vec
+    from anim_humanoid_qualify import node_paths, tos_paths, vec
     from anim_reference import angle
 
     capture = doc["capture"]
     names = check_tables(case, capture)
     ids = samples(case, *spec)
     sweep = spec[0] == "probes"
+    human = runs.human_of(avatar)
     # A sweep's vectors by (time, values), its values in the capture's muscle order.
     vectors = {(time, tuple(dict(values)[name] for name in names)): k for k, (time, values) in ids.items()} \
         if sweep else {}
+    tracks = {}
+    if not sweep:
+        curves = clips.builder_curves(names, spec[1], spec[2])
+        clips.check_authored(case, doc, curves, r11.ROUND11_CASES[case].clip)
+        tracks = clips.compiled_muscles(case, clip, curves, names)
     sampled = {}
     for sample in capture["samples"]:
-        time = str(sample.get("local_f32", "")).lower()
+        # The id, the prediction and the bound all take the sample's source time.
+        source = sample.get("effective_source")
+        replay.require(type(source) in (int, float) and math.isfinite(source),
+                       f"Editor {editor}'s {case} records a sample without a source time")
+        time = f32_bits(source)
+        replay.require(str(sample.get("local_f32", "")).lower() == time,
+                       f"Editor {editor}'s {case} records a sample whose local time {sample.get('local_f32')} "
+                       f"disagrees with its source time {time}")
         if sweep:
             sid = vectors.get((time, tuple(str(v).lower() for v in sample["muscles_f32"])))
         else:
@@ -233,14 +259,15 @@ def observe_capture(editor, case, spec, doc, human, index, seen):
                                         f"(at {time})")
         replay.require(sid not in sampled, f"Editor {editor}'s {case} records sample {sid} twice")
         values = (([replay.f32_from_bits(v) for v in sample["muscles_f32"]], [0.] * MUSCLE_COUNT) if sweep
-                  else pose.clip_values(doc, sample, names))
+                  else clips.compiled_values(tracks, source))
         sampled[sid] = (sample, values)
     nonzero = {name for _, values in ids.values() for name, bits in values if replay.f32_from_bits(bits) != 0} \
         if sweep else set()
-    moved = {m for m, name in enumerate(names) if name in nonzero} if sweep else None
-    reason = scope(human, index, moved)
+    moved = {m for m, name in enumerate(names) if name in nonzero} if sweep else set(tracks)
+    reason = scope(human, moved)
     skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
     bones = capture["humanoid"]["bones"]
+    paths, nodes = tos_paths(avatar), node_paths(doc["spec"])
     for bone in sorted({muscle_bone(m) for m in range(MUSCLE_COUNT)}):
         node = bones[bone]["node"]
         if node < 0:
@@ -250,6 +277,10 @@ def observe_capture(editor, case, spec, doc, human, index, seen):
             seen.errors.append(f"Editor {editor}'s {case} records {bones[bone]['name']}, which its Avatar maps "
                                "without axes")
             continue
+        path = paths.get(skeleton["m_ID"][found])
+        replay.require(path is not None and nodes.get(node) == path,
+                       f"Editor {editor}'s {case} records {bones[bone]['name']} from transform {node} "
+                       f"({nodes.get(node)!r}), not the Avatar's {path!r}")
         record = skeleton["m_AxesArray"][skeleton["m_Node"][found]["m_AxesId"]]
         axes = {key: [pose.f32(v) for v in vec(record[name])] for key, name in
                 (("pre", "m_PreQ"), ("post", "m_PostQ"), ("sign", "m_Sgn"))}
@@ -272,7 +303,6 @@ def observe_capture(editor, case, spec, doc, human, index, seen):
 
 def observe(folders, avatar_of, clip_of, cases=None):
     """The round 11 runs' comparisons, through `avatar_of` and `clip_of` (anim_body_freeze.readers)."""
-    import anim_body_runs as runs
     import anim_fixture_round11 as r11
     import anim_muscle_round11 as round11
 
@@ -293,12 +323,8 @@ def observe(folders, avatar_of, clip_of, cases=None):
                 seen.errors.append(f"Editor {editor}'s run records {case}, a full-body clip the builder never made")
             if case not in cases:
                 continue
-            index = None
-            if cases[case][0] != "probes":
-                index = clip_of(run, doc).get("m_MuscleClip", {}).get("m_IndexArray")
-                replay.require(isinstance(index, list) and all(type(v) is int for v in index),
-                               f"{case}: the built clip has no m_IndexArray")
-            observe_capture(editor, case, cases[case], doc, runs.human_of(avatar_of(run, doc)), index, seen)
+            clip = None if cases[case][0] == "probes" else clip_of(run, doc)
+            observe_capture(editor, case, cases[case], doc, avatar_of(run, doc), clip, seen)
     return seen
 
 
