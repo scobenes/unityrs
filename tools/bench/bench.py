@@ -242,7 +242,7 @@ def stack_info() -> tuple[dict, str | None]:
 
     rustc = child.run(["rustc", "-vV"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
     try:
-        unityrs = importlib.metadata.version("unityrs")
+        unityrs = importlib.metadata.version("unityrs-py")
     except importlib.metadata.PackageNotFoundError:
         unityrs = None
     tools = {

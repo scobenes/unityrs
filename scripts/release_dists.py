@@ -31,7 +31,10 @@ from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
 
-NAME = "unityrs"
+# The distribution is `unityrs-py` on PyPI (`unityrs` is too close to an
+# existing project there); its files carry the normalised `unityrs_py`. The
+# import name stays `unityrs`.
+NAME = "unityrs_py"
 # The abi3 wheel's Python and ABI tags (pyo3's abi3-py310).
 ABI = "cp310-abi3"
 # One wheel per row of the workflow's wheel matrix: its label, and the one

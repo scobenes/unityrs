@@ -51,11 +51,12 @@ unityrs extract level0.bundle -o out
 
 ### Python
 
-The `unityrs` package follows UnityPy's API. Wheels are abi3, for CPython
-3.10 and later on Linux and macOS.
+The `unityrs` package follows UnityPy's API. It's `unityrs-py` on PyPI and
+imports as `unityrs`. Wheels are abi3, for CPython 3.10 and later on Linux
+and macOS.
 
 ```sh
-pip install unityrs
+pip install unityrs-py
 ```
 
 ```python
