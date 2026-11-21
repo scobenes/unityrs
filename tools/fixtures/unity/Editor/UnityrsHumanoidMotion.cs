@@ -60,6 +60,23 @@ static partial class UnityrsFixtureBuilder
         return vector;
     }
 
+    // A clip's own authored muscle vector at a time: each HumanTrait muscle's
+    // Animator curve (MuscleProperty) evaluated there, 0 where it has none. The
+    // recorder's Spine reference pose, so every clip is checked against the
+    // values it authors (anim_fixture_full.authored_muscles mirrors it).
+    internal static float[] AuthoredMuscles(AnimationClip clip, float time)
+    {
+        var names = HumanTrait.MuscleName;
+        var vector = new float[names.Length];
+        for (int i = 0; i < names.Length; i++)
+        {
+            var curve = UnityEditor.AnimationUtility.GetEditorCurve(clip,
+                UnityEditor.EditorCurveBinding.FloatCurve("", typeof(Animator), MuscleProperty(names[i])));
+            if (curve != null) vector[i] = curve.Evaluate(time);
+        }
+        return vector;
+    }
+
     static int MuscleIndex(string[] names, string property)
     {
         int index = Array.IndexOf(names, property);
