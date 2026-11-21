@@ -8,10 +8,13 @@ refusal-evidence and 318 in-scope full-body clips. Freeze v8's `anim_body_runs.R
 edited; `Recordings` reads them beside it, from the same run folder. A run declares round 11 in `round.json`.
 Each run's required cases are this inventory together with any full-body clip its `run.json` lists, so neither
 can drop one unseen. Each capture's own metadata names its case, run, Editor version and bundle.
-anim_muscle_confirm.py judges them. No round 11 rig is a hold-out rig.
+anim_muscle_confirm.py judges them. No round 11 rig is a hold-out rig. Round 12 reuses some of them: each opens
+only through its allowlist (anim_fixture_round12.View), lazily.
 """
 
+import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -64,29 +67,58 @@ def required(statuses):
 
 
 class Recordings:
-    """One round 11 training run's B5a cases: Unity's recordings (`.pending.json`, as `Run(pending=True)` reads
-    them) by case, and the required cases it lacks."""
+    """One round 11 training run's B5a cases, behind the round 12 allowlist (anim_fixture_round12.View): Unity's
+    recordings (`.pending.json`, as `Run(pending=True)` reads them) by case, opened lazily through `view` only when
+    a document is read, and the required cases it lacks, by names alone. The default view opens round 11's
+    exploration cases only (anim_fixture_round12.round11_view), so a sealed case is refused when read, never
+    opened."""
 
-    def __init__(self, folder):
+    def __init__(self, folder, view=None):
         import anim_body_runs as runs
+        import anim_fixture_round12 as round12
 
-        manifest = replay.read_json((folder / "run.json").read_text(encoding="utf-8"))
+        self.view = view or round12.round11_view(folder)
+        replay.require(Path(self.view.folder) == Path(folder), f"the view is another folder's than {folder}")
+        manifest = replay.read_json(self.view.run_file("run.json").decode("utf-8"))
         self.folder, self.version, self.run_id = folder, manifest["run"]["editor_version"], manifest["run"]["run_id"]
         statuses = runs.statuses(manifest)
         self.required = required(statuses)
-        self.documents, self.missing = {}, []
-        for case, bundle in self.required.items():
-            path = folder / "replays" / "body" / f"{case}.pending.json"
-            if statuses.get(case) != "recorded" or not path.is_file():
-                self.missing.append(case)
-                continue
-            doc = replay.read_json(path.read_text(encoding="utf-8"))
-            # The capture's own identity, never its file name: its case, run, Editor and bundle.
-            editor = doc["spec"]["evidence"]["editor"]
-            replay.require(editor.get("fixture_case") == case, f"{path.name} records another case than {case}")
-            replay.require(editor.get("run_id") == self.run_id, f"{case} was recorded by another run")
-            replay.require(doc["capture"].get("editor_version") == self.version,
-                           f"{case} was recorded by another Editor version than {self.version}")
-            replay.require([row["name"] for row in doc["spec"]["bundles"]] == [bundle],
-                           f"{case} plays another bundle than {bundle}")
-            self.documents[case] = doc
+        top = folder / "replays" / "body"
+        names = set(os.listdir(top)) if top.is_dir() else set()
+        present = [case for case in self.required
+                   if statuses.get(case) == "recorded" and f"{case}.pending.json" in names]
+        self.missing = [case for case in self.required if case not in present]
+        self.documents = _Lazy(present, self._read)
+
+    def _read(self, case):
+        doc = self.view.capture(case)
+        bundle = self.required[case]
+        # The capture's own identity, never its file name: its case, run, Editor and bundle.
+        editor = doc["spec"]["evidence"]["editor"]
+        replay.require(editor.get("fixture_case") == case, f"{case}.pending.json records another case than {case}")
+        replay.require(editor.get("run_id") == self.run_id, f"{case} was recorded by another run")
+        replay.require(doc["capture"].get("editor_version") == self.version,
+                       f"{case} was recorded by another Editor version than {self.version}")
+        replay.require([row["name"] for row in doc["spec"]["bundles"]] == [bundle],
+                       f"{case} plays another bundle than {bundle}")
+        return doc
+
+
+class _Lazy(Mapping):
+    """{case: document} over the present cases, each read once, on first access."""
+
+    def __init__(self, cases, read):
+        self._cases, self._read, self._docs = tuple(cases), read, {}
+
+    def __getitem__(self, case):
+        if case not in self._cases:
+            raise KeyError(case)
+        if case not in self._docs:
+            self._docs[case] = self._read(case)
+        return self._docs[case]
+
+    def __iter__(self):
+        return iter(self._cases)
+
+    def __len__(self):
+        return len(self._cases)

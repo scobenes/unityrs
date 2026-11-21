@@ -14,7 +14,7 @@ chain bone of every row.
     python3 -I tools/parity/anim_twist_witness.py --unityrs PATH --out FILE <round 11 run folder>
         One Editor's run folder. It opens only the named exploration captures (`allowlisted`: one identity-root
         in-scope clip per scoped rig, for its Avatar and rest pose; never a sweep, fingers, face or hold-out, never
-        through a symlink), and writes the result: per cell, the pairs its keys separate and those without a
+        through a symlink), through round 12's allowlist (anim_fixture_round12.round11_view), and writes the result: per cell, the pairs its keys separate and those without a
         witness; every limb, foot and searched joint pair's witness row; per row group, the rows that witness some
         pair; the witnesses' margins over their bounds.
 """
@@ -133,9 +133,12 @@ def load_rig(folder, rig, unityrs, views, run):
     from anim_muscle_pose import avatar_node
     from anim_replay_complete import BundleView, bundle_digest, check_recording_run, read_manifest
 
+    import anim_fixture_round12 as round12
+
     case = allowlisted(rig)
-    path = run_file(folder, "replays", "body", case + ".pending.json")
-    doc = replay.read_json(path.read_text(encoding="utf-8"))
+    # Through round 12's allowlist (anim_fixture_round12.round11_view): its exploration cases alone open.
+    allow = views.setdefault("allowlist", round12.round11_view(folder))
+    doc = allow.capture(case)
     spec, capture = doc["spec"], doc["capture"]
     check_recording_run(doc, run, replay, case)
     check_identity(case, r11.ROUND11_CASES[case], spec, capture, replay)
@@ -143,7 +146,7 @@ def load_rig(folder, rig, unityrs, views, run):
     names = [row["name"] for row in capture["humanoid"]["muscles"]]
     replay.require(all(names[m] == name for name, m in tables.NAMES.items()),
                    f"{case}: the muscle names differ from anim_twist_tables.NAMES")
-    bundle = run_file(folder, "bundles", spec["bundles"][0]["name"]).resolve()
+    bundle = allow.bundle(case, doc).resolve()
     digest = bundle_digest(bundle)
     replay.require(capture["bundle_sha256"] == [digest], f"{bundle.name} differs from the capture's pinned sha256")
     if (bundle, digest) not in views:

@@ -18,6 +18,7 @@ import anim_fixture_body as body  # noqa: E402
 import anim_fixture_full as full  # noqa: E402
 import anim_fixture_muscles as muscles  # noqa: E402
 import anim_fixture_round11 as r11  # noqa: E402
+import anim_fixture_round12 as round12  # noqa: E402
 import anim_humanoid_qualify as qualify  # noqa: E402
 import anim_muscle_clip as clips  # noqa: E402
 import anim_muscle_confirm as confirm  # noqa: E402
@@ -180,6 +181,11 @@ def recorder_offset(text):
     return float(numerator) / float(denominator)
 
 
+def open_view(folder):
+    """A view opening every round 11 case, as the round 12 seal's after its claim."""
+    return round12.View(folder, {case: ("exploration", r11.ROUND11_CASES[case].bundle) for case in r11.ROUND11_CASES})
+
+
 class ConfirmTests(unittest.TestCase):
     CASES = {case: confirm.b5a_cases()[case] for case in (SWEEP, CLIP)}
 
@@ -208,7 +214,7 @@ class ConfirmTests(unittest.TestCase):
         folders = [self.folder(editor, {case: doc for (e, case), doc in docs.items() if e == editor},
                                (versions or {}).get(editor)) for editor in editors]
         seen = confirm.observe(folders, lambda run, doc: avatar(twist),
-                               lambda run, doc: clip or built(builder_curves()), self.CASES)
+                               lambda run, doc: clip or built(builder_curves()), self.CASES, open_view)
         return seen, confirm.failures(seen, confirm.expected(self.CASES))
 
     def test_a_complete_round_in_both_editors_passes(self):
@@ -408,7 +414,7 @@ class ConfirmTests(unittest.TestCase):
         self.assertIn("confirm reads no case file", message)
         folders = [self.folder(editor, {}) for editor in VERSIONS]
         (folders[0] / "cases.json").write_text(forged.read_text(encoding="utf-8"), encoding="utf-8")
-        seen = confirm.observe(folders, None, None, self.CASES)
+        seen = confirm.observe(folders, None, None, self.CASES, open_view)
         found = confirm.failures(seen, confirm.expected(self.CASES))
         # Each Editor's run lacks both cases, and nothing in scope is compared.
         self.assertEqual(len(found), 5, found)
@@ -458,10 +464,19 @@ class ConfirmTests(unittest.TestCase):
         # One Editor alone fails.
         self.assertEqual(self.run_confirm(editors=("2022",))[1][0], "no round 11 run of Editor 6000")
 
+    def test_round_11_captures_open_only_through_the_round_12_allowlist(self):
+        # Without a claimed view, B5a's face sweep is sealed and an unreused clip is no case of the allowlist.
+        folders = [self.folder(editor, {case: doc for (e, case), doc in self.docs.items() if e == editor})
+                   for editor in VERSIONS]
+        with self.assertRaisesRegex(ValueError, "sealed|not a case this view can open"):
+            confirm.observe(folders, lambda run, doc: avatar(0.), lambda run, doc: built(builder_curves()), self.CASES)
+        with self.assertRaisesRegex(ValueError, "sealed"):
+            confirm.observe(folders, None, None, {SWEEP: self.CASES[SWEEP]})
+
     def test_a_round_10_run_is_refused(self):
         folder = self.folder("2022", {}, declared=False)
         with self.assertRaisesRegex(ValueError, "not a declared round 11 run"):
-            confirm.observe([folder], None, None, self.CASES)
+            confirm.observe([folder], None, None, self.CASES, open_view)
 
     def test_any_sample_outside_its_bound_fails(self):
         _, found = self.run_confirm({("6000", CLIP): capture(CLIP, "6000", turned={SPINE})})
