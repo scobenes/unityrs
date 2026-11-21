@@ -6,7 +6,9 @@ Every operation states its assumption; the f64 value is the reference, and the r
 same equation in f32 (u = 2^-24), with its inputs' errors propagated:
 
 Every rounding allowance is charged at the input interval's worst endpoint (the largest magnitude any input within
-its radius gives), never at the nominal value: an f32 operation on a perturbed input rounds at that input.
+its radius gives), never at the nominal value: an f32 operation on a perturbed input rounds at that input. Each
+also carries one subnormal ulp (2^-149, `ulps`), so a result near the subnormal range is covered absolutely; an exact
+zero carries none.
 
 - **A limit product** (`limit_angle`): a value's own error moves the angle by at most the larger limit's magnitude
   times it, since the error can carry the value across 0; the product rounds once at the perturbed angle,
@@ -42,6 +44,9 @@ U = 2.0 ** -24
 GAMMA4 = 4 * U / (1 - 4 * U)
 GAMMA3 = 3 * U / (1 - 3 * U)
 # f64's unit roundoff, for the witness's own separation angle (`separation`).
+# The smallest f32 subnormal: an absolute floor under every relative allowance (a product or a function
+# of magnitude m rounds within u m, or within one subnormal ulp where m is tiny).
+TINY = 2.0 ** -149
 U64 = 2.0 ** -53
 GAMMA4_64 = 4 * U64 / (1 - 4 * U64)
 
@@ -79,13 +84,19 @@ def limit_angle(axes, axis, value, value_error=0.):
     limit = axes["max"][axis] if value >= 0 else -axes["min"][axis]
     theta = axes["sign"][axis] * (value * limit)
     moved = max(abs(axes["max"][axis]), abs(axes["min"][axis])) * value_error
-    return (theta, moved + U * (abs(theta) + moved))
+    return (theta, moved + (0. if value_error == 0 and _f32(theta) == theta else ulps(abs(theta) + moved)))
 
 
 def scale(a, b):
     """a * b, both scalars with radii, rounded once."""
     (x, ex), (y, ey) = a, b
-    return (x * y, abs(x) * ey + abs(y) * ex + ex * ey + U * (abs(x) + ex) * (abs(y) + ey))
+    return (x * y, abs(x) * ey + abs(y) * ex + ex * ey + ulps((abs(x) + ex) * (abs(y) + ey)))
+
+
+def ulps(magnitude, count=1):
+    """`count` roundings of a result of at most `magnitude`: count u magnitude plus count subnormal ulps, none where
+    the magnitude is 0 (an exact zero)."""
+    return count * (U * magnitude + TINY) if magnitude > 0 else 0.
 
 
 def _f32(x):
@@ -95,7 +106,7 @@ def _f32(x):
 def _sum(value, error):
     """A sum's radius: its inputs' errors, then one rounding at the perturbed result, none where the inputs are
     exact and the result is an f32 (1 - 0, 1 - .25: Unity's subtraction is exact there too)."""
-    return error + (0. if error == 0 and _f32(value) == value else U * (abs(value) + error))
+    return error + (0. if error == 0 and _f32(value) == value else ulps(abs(value) + error))
 
 
 def add(a, b):
@@ -122,20 +133,20 @@ def tan_half(a):
     value = math.tan(theta / 2)
     widest = math.tan(outer / 2)
     slope = (1 + widest ** 2) / 2
-    return (value, slope * error + 2 * U * widest)
+    return (value, slope * error + ulps(widest, 2))
 
 
 def atan2_half(t):
     """2 atan(t): the inverse of `tan_half`, its derivative bounded by 2 (half angle) and one ulp."""
     value, error = t
     angle = 2 * math.atan(value)
-    return (angle, 2 * error + 2 * U * 2 * math.atan(abs(value) + error))
+    return (angle, 2 * error + ulps(2 * math.atan(abs(value) + error), 2))
 
 
 def product(a, b):
     (p, ep), (q, eq) = a, b
     np_, nq = norm(p), norm(q)
-    rounding = 2 * GAMMA4 * (np_ + ep) * (nq + eq)
+    rounding = 2 * GAMMA4 * (np_ + ep) * (nq + eq) + (TINY if (np_ + ep) * (nq + eq) > 0 else 0.)
     return (multiply(p, q), np_ * eq + nq * ep + ep * eq + rounding)
 
 
@@ -144,7 +155,7 @@ def unit(a):
     n = norm(q)
     if not n > error:
         raise Pole(f"a quaternion's norm {n!r} does not exceed its error {error!r}")
-    return (tuple(x / n for x in q), 2 * error / n + 4 * U)
+    return (tuple(x / n for x in q), 2 * error / n + 4 * U + TINY)
 
 
 def unit3(a):
@@ -152,7 +163,7 @@ def unit3(a):
     n = norm(v)
     if not n > error:
         raise Pole(f"an axis's norm {n!r} does not exceed its error {error!r}")
-    return (tuple(x / n for x in v), 2 * error / n + 3 * U + GAMMA3)
+    return (tuple(x / n for x in v), 2 * error / n + 3 * U + GAMMA3 + TINY)
 
 
 def conjugate(a):
@@ -171,9 +182,9 @@ def axis_angle(axis, phi):
     (a, ea), (angle, e) = axis, phi
     half, eh = angle / 2, e / 2
     s, c = math.sin(half), math.cos(half)
-    es, ec = eh + 2 * U * min(1., abs(s) + eh), eh + 2 * U * min(1., abs(c) + eh)
+    es, ec = eh + ulps(min(1., abs(s) + eh), 2), eh + ulps(min(1., abs(c) + eh), 2)
     # The three components s * a_i: |s| e_a + e_s |a| + e_s e_a, then their rounding.
-    vector = abs(s) * ea + es + es * ea + U * (abs(s) + es) * (1 + ea)
+    vector = abs(s) * ea + es + es * ea + ulps((abs(s) + es) * (1 + ea))
     return ((s * a[0], s * a[1], s * a[2], c), vector + ec)
 
 

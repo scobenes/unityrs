@@ -26,10 +26,23 @@ ARM = {"Left": (13, 15, 17), "Right": (14, 16, 18)}
 LEG = {"Left": (1, 3, 5), "Right": (2, 4, 6)}
 TOES = {"Left": 19, "Right": 20}
 EX, EY = (1., 0., 0.), (0., 1., 0.)
+# Every arithmetic result passes through r: the identity (f64), or f32 rounding (`in_f32`).
+ROUND = [lambda x: x]
+
+
+def r(x):
+    return ROUND[0](x)
+
+
+def dot(terms):
+    total = r(terms[0][0] * terms[0][1])
+    for x, y in terms[1:]:
+        total = r(total + r(x * y))
+    return total
 
 
 def matmul(a, c):
-    return [[sum(a[i][k] * c[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+    return [[dot([(a[i][k], c[k][j]) for k in range(3)]) for j in range(3)] for i in range(3)]
 
 
 def transpose(a):
@@ -37,29 +50,45 @@ def transpose(a):
 
 
 def apply(a, v):
-    return [sum(a[i][k] * v[k] for k in range(3)) for i in range(3)]
+    return [dot([(a[i][k], v[k]) for k in range(3)]) for i in range(3)]
 
 
 def rotation(axis, angle):
     """Rodrigues: the rotation by `angle` about `axis` (normalized here)."""
-    n = math.sqrt(sum(x * x for x in axis))
+    n = r(math.sqrt(dot([(v, v) for v in axis])))
     if n == 0 or angle == 0:
         return [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
-    x, y, z = (v / n for v in axis)
-    c, s = math.cos(angle), math.sin(angle)
-    t = 1 - c
-    return [[c + x * x * t, x * y * t - z * s, x * z * t + y * s],
-            [y * x * t + z * s, c + y * y * t, y * z * t - x * s],
-            [z * x * t - y * s, z * y * t + x * s, c + z * z * t]]
+    x, y, z = (r(v / n) for v in axis)
+    c, s = r(math.cos(angle)), r(math.sin(angle))
+    t = r(1 - c)
+    rows = [[(c, 0, 0, 1), (x * y, t, z, -1), (x * z, t, y, 1)],
+            [(y * x, t, z, 1), (c, 0, 0, 1), (y * z, t, x, -1)],
+            [(z * x, t, y, -1), (z * y, t, x, 1), (c, 0, 0, 1)]]
+    out = [[0.] * 3 for _ in range(3)]
+    for i in range(3):
+        for j in range(3):
+            if i == j:
+                square = (x, y, z)[i]
+                out[i][j] = r(c + r(r(square * square) * t))
+            else:
+                (_, _, k, sign), (a, b_) = rows[i][j], ((x, y, z)[i], (x, y, z)[j])
+                out[i][j] = r(r(r(a * b_) * t) + sign * r(k * s))
+    return out
 
 
 def matrix(q):
     """A quaternion (x, y, z, w), normalized here, as the rotation it applies to a column vector."""
-    n = math.sqrt(sum(v * v for v in q))
-    x, y, z, w = (v / n for v in q)
-    return [[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]]
+    n = r(math.sqrt(dot([(v, v) for v in q])))
+    x, y, z, w = (r(v / n) for v in q)
+
+    def two(a, b_, c, d, sign):
+        return r(2 * r(r(a * b_) + sign * r(c * d)))
+
+    def diagonal(a, b_):
+        return r(1 - r(2 * r(r(a * a) + r(b_ * b_))))
+    return [[diagonal(y, z), two(x, y, z, w, -1), two(x, z, y, w, 1)],
+            [two(x, y, z, w, 1), diagonal(x, z), two(y, z, x, w, -1)],
+            [two(x, z, y, w, -1), two(y, z, x, w, 1), diagonal(x, y)]]
 
 
 def turn(a, c):
@@ -74,15 +103,16 @@ def angles(bone, axes, values):
     out = [0., 0., 0.]
     for m in bone_muscles(bone):
         a, v = MUSCLE_AXES[m], values[m]
-        out[a] = axes["sign"][a] * v * (axes["max"][a] if v >= 0 else -axes["min"][a])
+        out[a] = r(axes["sign"][a] * r(v * (axes["max"][a] if v >= 0 else -axes["min"][a])))
     return out
 
 
 def swing_twist(x, y, z):
     """B5a's joint as rotations: the swing about (0, tan(y/2), tan(z/2)) by 2 atan of its length, after the twist
     about x by x."""
-    ty, tz = math.tan(y / 2), math.tan(z / 2)
-    return matmul(rotation((0., ty, tz), 2 * math.atan(math.hypot(ty, tz))), rotation(EX, x))
+    ty, tz = r(math.tan(r(y / 2))), r(math.tan(r(z / 2)))
+    return matmul(rotation((0., ty, tz), r(2 * r(math.atan(r(math.sqrt(dot([(ty, ty), (tz, tz)]))))))),
+                  rotation(EX, x))
 
 
 def oracle(rig, values, settings, limb, foot, side):
@@ -101,18 +131,19 @@ def oracle(rig, values, settings, limb, foot, side):
                 if foot.kind == 2 or (foot.kind == 3 and toes is not None):
                     y = 0.
             if carry is not None and limb.c == 1:
-                x, carry = x + carry[0], None
+                x, carry = r(x + carry[0]), None
             sent = None
             if k < 2:
                 t = settings[fields[k]]
-                w = t if limb.d == 1 else 1 - t
+                w = t if limb.d == 1 else r(1 - t)
                 if limb.s == 1:
-                    joint, sent = swing_twist(w * x, y, z), (1 - w) * x
+                    joint, sent = swing_twist(r(w * x), y, z), r(r(1 - w) * x)
                 elif limb.s == 2:
-                    half = math.tan(x / 2)
-                    joint, sent = swing_twist(2 * math.atan(w * half), y, z), 2 * math.atan((1 - w) * half)
+                    half = r(math.tan(r(x / 2)))
+                    joint = swing_twist(r(2 * r(math.atan(r(w * half)))), y, z)
+                    sent = r(2 * r(math.atan(r(r(1 - w) * half))))
                 else:
-                    sent = (1 - w) * x
+                    sent = r(r(1 - w) * x)
                     joint = matmul(rotation(EX, -sent), swing_twist(x, y, z))
             else:
                 joint = swing_twist(x, y, z)
@@ -133,14 +164,14 @@ def oracle(rig, values, settings, limb, foot, side):
                 sign = {"+": 1., "-": -1.}.get(limb.sigma)
                 if sign is None:
                     sign = axes["sign"][0] * rig[receiver]["axes"]["sign"][0]
-                carry = (sign * sent, bone)
+                carry = (r(sign * sent), bone)
     if toes is not None:
         axes, rest = rig[toes]["axes"], rig[toes]["rest"]
         local = matmul(matmul(matmul(matrix(rest), matrix(axes["pre"])), swing_twist(*angles(toes, axes, values))),
                        transpose(matrix(axes["post"])))
         if foot.kind != 1:
             around = apply(matmul(matrix(rest), matrix(axes["pre"])), EY)
-            local = matmul(rotation(around, foot.sign * foot_y), local)
+            local = matmul(rotation(around, r(foot.sign * foot_y)), local)
         out[toes] = local
     return out
 
@@ -196,6 +227,39 @@ class OracleTests(unittest.TestCase):
                                              (trial, limb, foot, side, bone, draw))
                         checked += 1
         self.assertGreater(checked, 3000)
+
+    def test_an_f32_oracle_at_perturbed_inputs_stays_within_the_bound(self):
+        # The oracle in f32 (every product, sum, division, root and function rounded), at inputs moved to the ends
+        # of nonzero radii and inside them: the model's bound covers both the input errors and an independent f32
+        # evaluation's rounding.
+        rng = random.Random(600)
+        checked = 0
+        ROUND[0] = f32
+        try:
+            for trial, settings in enumerate(self.SETTINGS):
+                rig = synthetic_rig(320 + trial, toes=trial != 0)
+                values = inputs(rng)
+                errors = [0.] * 95
+                for m in chain_muscles():
+                    errors[m] = rng.choice((2. ** -12, 1e-5, 2. ** -20))
+                for limb, foot in rng.sample(model.candidates(), 120):
+                    side = rng.choice(("Left", "Right"))
+                    try:
+                        found = model.chains(rig, values, errors, settings, limb, foot, side)
+                    except b.Pole:
+                        continue
+                    for draw in range(2):
+                        moved = [f32(v + rng.choice((-e, e, rng.uniform(-e, e)))) for v, e in zip(values, errors)]
+                        want = oracle(rig, moved, settings, limb, foot, side)
+                        for bone, (q, radius) in found.items():
+                            ROUND[0] = lambda x: x
+                            measured = turn(matrix(q), want[bone])
+                            ROUND[0] = f32
+                            self.assertLessEqual(measured, b.angle_bound(radius), (trial, limb, foot, side, bone))
+                            checked += 1
+        finally:
+            ROUND[0] = lambda x: x
+        self.assertGreater(checked, 2000)
 
 
 if __name__ == "__main__":

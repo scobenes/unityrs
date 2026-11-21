@@ -24,7 +24,6 @@ proves; anything else needs a witness.
 """
 
 import itertools
-import math
 import sys
 from collections import namedtuple
 from pathlib import Path
@@ -53,9 +52,6 @@ X, Y = (1., 0., 0.), (0., 1., 0.)
 # Each pair's source bone (FIELDS order) and each receiver (LowerArm, Hand, LowerLeg, Foot), per side.
 SOURCES = {"Left": (13, 15, 1, 3), "Right": (14, 16, 2, 4)}
 RECEIVERS = {"Left": (15, 17, 3, 5), "Right": (16, 18, 4, 6)}
-# How far below pi an x angle's reach must stay for two candidates that differ only past a tangent there to refuse
-# alike: far above any chain radius (the tangent refuses at |theta| + e >= pi).
-REACH_SLACK = 1e-3
 
 
 def _vector(v):
@@ -169,46 +165,67 @@ def chains(rig, values, errors, settings, limb, foot, side):
     return finals
 
 
-def canonical(limb, foot, settings, toes, signs, reach):
+def _poles(limb, settings, reach, side, error):
+    """Whether a tangent of this limb candidate's chains can meet its pole on the cell: every chain bone's x angle at
+    its largest reach (radius `error` times it, rounded), the shares all of one sign, run through anim_twist_bound
+    under the candidate's D and C and the wider split (S2 for S1 and S2: its tangent and its share's radius are the
+    larger; S3's own). Every pole condition grows with |theta| and its radius, so none here is none anywhere."""
+    s3 = limb.s == 3
+    for fields, terminal in (((0, 1), RECEIVERS[side][1]), ((2, 3), RECEIVERS[side][3])):
+        carry = None
+        for bone, field in ((SOURCES[side][fields[0]], fields[0]), (SOURCES[side][fields[1]], fields[1]),
+                            (terminal, None)):
+            r = reach[side][bone]
+            theta = (r, r * error + b.ulps(r * (1 + error)))
+            if carry is not None and limb.c == 1:
+                theta, carry = b.add(theta, carry), None
+            try:
+                half = b.tan_half(theta)
+                if field is not None:
+                    rest = _weights(limb, settings[field])[1]
+                    carry = b.scale(rest, theta) if s3 else b.atan2_half(b.scale(rest, half))
+            except b.Pole:
+                return True
+    return False
+
+
+def canonical(limb, foot, settings, toes, signs, reach, error=0.):
     """The key of a joint candidate on a cell: `settings` the four twist settings, `toes` {side: bool}, `signs`
-    {side: {pair field: the source's x sign times the receiver's}}, `reach` `x_reach` of the cell's Avatar. Equal
-    keys are one equation on the cell, and refuse alike (a tangent meets its pole on both or on neither):
+    {side: {pair field: the source's x sign times the receiver's}}, `reach` `x_reach` of the cell's Avatar, `error`
+    the largest muscle-value error its rows carry (0 for known vectors). Equal keys are one equation on the cell, and
+    refuse alike (a tangent meets its pole on both or on neither):
 
     - w is the f32 number the cell gives (D2's 1 - t rounded), so D1 and D2 meet where t = .5.
     - w = 1 moves nothing (phi = 0 under every S, the source's joint B5a's), so S, R and sigma drop for that pair.
-    - w = 0: S1 and S2 are both the zero x angle and phi = theta (2 atan(tan(theta/2)) = theta), where the source's
-      x angle stays below pi: its own reach, plus under C1 its source's when one feeds it, and REACH_SLACK. S2 takes
-      tan(theta/2) and S1 does not, so past that they refuse differently and stay apart. S3 stays distinct (its
-      counter-rotation is outside the swing).
+    - w = 0: S1 and S2 are both the zero x angle and phi = theta (2 atan(tan(theta/2)) = theta), where no tangent
+      of the side's chains can reach its pole under the propagated radii (`_poles`). S2 takes tan(theta/2) and S1
+      does not, so past that they refuse differently and stay apart. S3 stays distinct (its counter-rotation is
+      outside the swing).
     - sigma is the resolved sign per side.
     - C1 is R1 at a receiver whose own pair keeps everything (w = 1) or with no source pair (Hand, Foot): adding
       to the x angle composes T_x on the joint's right, which is R1's T(post x) on the local's right. Likewise only
-      where the receiver's x angle plus what it receives stays below pi: C1 takes the sum's tangent, R1 does not.
+      where `_poles` finds none: C1 takes the sum's tangent, R1 does not.
     - Foot: with toes F2 and F3 of a sign are one; without, F2's signs are one (lost) and F3 is F1.
     """
     key = []
     for side in sorted(toes):
-        pairs, carried = [], []
+        pole = _poles(limb, settings, reach, side, error)
+        pairs = []
         for field in range(4):
             t = settings[field]
             w = t if limb.d == 1 else _f32(1. - t)
-            # The source's x angle: its own, plus under C1 what the pair before it sends (FIELDS 1 and 3).
-            fed = limb.c == 1 and field in (1, 3) and pairs[field - 1] != ("keep",)
-            carried.append(reach[side][SOURCES[side][field]] + (carried[field - 1] if fed else 0.))
             if w == 1.:
                 pairs.append(("keep",))
                 continue
-            below = carried[field] + REACH_SLACK < math.pi
-            split = "S12" if w == 0. and limb.s in (1, 2) and below else limb.s
+            split = "S12" if w == 0. and limb.s in (1, 2) and not pole else limb.s
             sign = {"+": 1., "-": -1., "s": signs[side][field]}[limb.sigma]
             pairs.append((w, split, sign))
         receivers = []
         # (incoming field, outgoing field or None) per receiver: LowerArm, Hand, LowerLeg, Foot.
         for incoming, outgoing in ((0, 1), (1, None), (2, 3), (3, None)):
-            total = reach[side][RECEIVERS[side][incoming]] + carried[incoming] + REACH_SLACK
             if pairs[incoming] == ("keep",):
                 receivers.append(None)
-            elif limb.c == 1 and ((outgoing is not None and pairs[outgoing] != ("keep",)) or total >= math.pi):
+            elif limb.c == 1 and ((outgoing is not None and pairs[outgoing] != ("keep",)) or pole):
                 receivers.append("C1")
             else:
                 receivers.append(f"R{limb.r}")

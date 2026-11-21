@@ -50,6 +50,9 @@ PAIR_BONES = ((13, 15), (15, 17), (1, 3), (3, 5))
 # How far a chain bone's recorded rest may turn from the Avatar's m_SkeletonPose: f32 storage, far under any
 # other Avatar's rest.
 REST_MATCH = 1e-5
+# A recorded rest is a unit quaternion as Unity stores it: its f32 squared norm finite and normal, and its norm within
+# REST_NORM of 1 (a few f32 ulps), so the f32 path normalizes it as the f64 one assumes.
+REST_NORM = 1e-5
 ADMISSION = (("t0", ("compact", "tall")), ("t1", ("compact", "tall")), ("m1", ("compact", "tall")),
              ("t5", SCOPED_RIGS))
 
@@ -70,8 +73,25 @@ def allowlisted(rig):
     return case
 
 
+def unit_rest(q, label):
+    """Refuse a rest quaternion whose f32 squared norm (Unity's sum order) is not finite and normal, or whose norm is
+    not within REST_NORM of 1: (0, 0, 0, 2^-100) points at the identity but its squared norm underflows to 0."""
+    def f32(x):
+        try:
+            return bound._f32(x)
+        except OverflowError:
+            return math.inf
+    total = 0.
+    for x in q:
+        total = f32(total + f32(x * x))
+    replay.require(len(q) == 4 and math.isfinite(total) and total >= 2. ** -126
+                   and abs(math.sqrt(total) - 1) <= REST_NORM, f"{label}: the rest rotation is not a unit quaternion")
+
+
 def run_file(folder, *parts):
-    """A file of the run itself: no component a symlink (lstat), and resolving inside the run folder."""
+    """A file of the run itself: no component a symlink (lstat), the run folder itself included, and resolving
+    inside the run folder."""
+    replay.require(not folder.is_symlink() and folder.is_dir(), f"{folder.name} is a symlink or not a folder")
     root = folder.resolve()
     path = folder
     for part in parts:
@@ -131,6 +151,7 @@ def load_rig(folder, rig, unityrs, views, run):
         replay.require(recorded_paths.get(recorded) == paths.get(skeleton["m_ID"][node]) is not None,
                        f"{case}: bone {bone} is recorded from another transform than the Avatar's")
         rest = [replay.f32_from_bits(v) for v in capture["rest"]["transforms"][recorded]["rotation"]]
+        unit_rest(rest, f"{case}: bone {bone}")
         # The Avatar stores its pose in f32 off unit by an ulp or two (w 1 + 2^-22 at the identity): the same
         # rotation, to REST_MATCH.
         replay.require(bound.separation(rest, [float(poses[node]["q"][a]) for a in "xyzw"])[0] <= REST_MATCH,
@@ -265,17 +286,19 @@ def search(rigs, log=print):
     def credited(found, pair, first, second):
         row = found.get(pair)
         return row is not None and {first, second} <= predicts[row[:3]]
-    joint_open, credits = set(), 0
+    joint_open, credits = set(), {}
     for (l1, f1), (l2, f2) in itertools.combinations(itertools.product(range(len(model.LIMBS)),
                                                                        range(len(model.FEET))), 2):
         first, second = _joint(l1, f1), _joint(l2, f2)
-        if (l1 != l2 and credited(limb_found, (min(l1, l2), max(l1, l2)), first, second)) or \
-                (f1 != f2 and credited(foot_found, (min(f1, f2), max(f1, f2)), first, second)):
-            credits += 1
+        limbs, feet = (min(l1, l2), max(l1, l2)), (min(f1, f2), max(f1, f2))
+        if l1 != l2 and credited(limb_found, limbs, first, second):
+            credits[((l1, l2), (f1, f2))] = ("limb", limbs)
+        elif f1 != f2 and credited(foot_found, feet, first, second):
+            credits[((l1, l2), (f1, f2))] = ("foot", feet)
         else:
             joint_open.add(((l1, l2), (f1, f2)))
     joint_found = {}
-    log(f"{credits} joint pairs credited, {len(joint_open)} left for every chain bone")
+    log(f"{len(credits)} joint pairs credited, {len(joint_open)} left for every chain bone")
     for case, sample, rig_name, name, vector, group in plan:
         if not joint_open:
             break
@@ -295,7 +318,7 @@ def search(rigs, log=print):
                     if best > 0:
                         joint_open.discard(pair)
                         joint_found[pair] = (case, sample, side, group, best)
-    return limb_found, foot_found, joint_found, joint_open
+    return limb_found, foot_found, joint_found, joint_open, credits
 
 
 def model_rig(name):
@@ -337,13 +360,14 @@ def _row(found):
 def run(folder, unityrs, log=print):
     from anim_replay_complete import read_manifest
 
+    run_file(folder, "run.json")
     _, identity = read_manifest(folder, replay)
     views = {}
     rigs = {}
     for rig in SCOPED_RIGS:
         rigs[rig] = load_rig(folder, rig, unityrs, views, identity)
         log(f"read {rig}")
-    limb_found, foot_found, joint_found, joint_open = search(rigs, log)
+    limb_found, foot_found, joint_found, joint_open, credits = search(rigs, log)
     groups = {}
     for found in (limb_found, foot_found, joint_found):
         for case, sample, _, group, _ in found.values():
@@ -364,7 +388,12 @@ def run(folder, unityrs, log=print):
                 limb_witnesses=[dict(limbs=list(pair), **_row(found)) for pair, found in sorted(limb_found.items())],
                 foot_witnesses=[dict(feet=list(pair), **_row(found)) for pair, found in sorted(foot_found.items())],
                 joint_witnesses=[dict(joint=[[l1, f1], [l2, f2]], **_row(found))
-                                 for ((l1, l2), (f1, f2)), found in sorted(joint_found.items())])
+                                 for ((l1, l2), (f1, f2)), found in sorted(joint_found.items())],
+                # Every joint pair a limb or foot witness credits, with that witness's row: [limb 1, foot 1, limb 2,
+                # foot 2, "limb" or "foot", case, capture sample index, side].
+                joint_credits=[[l1, f1, l2, f2, kind,
+                                *(limb_found if kind == "limb" else foot_found)[component][:3]]
+                               for ((l1, l2), (f1, f2)), (kind, component) in sorted(credits.items())])
 
 
 def main():
@@ -375,7 +404,7 @@ def main():
     args = parser.parse_args()
     try:
         result = run(args.folder, str(Path(args.unityrs).resolve()))
-        args.out.write_text(json.dumps(result, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        args.out.write_text(json.dumps(result, separators=(",", ":"), ensure_ascii=False) + "\n", encoding="utf-8")
     except (ValueError, OSError) as exc:
         parser.exit(1, f"anim_twist_witness: {exc}\n")
 

@@ -51,6 +51,13 @@ class RowTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 witness.allowlisted(rig)
 
+    def test_a_rest_must_be_a_unit_quaternion(self):
+        for q in ((0., 0., 0., 1.), (0., 0., 0., 1. + 2. ** -22), (.5, .5, .5, .5)):
+            witness.unit_rest(q, "rest")
+        for q in ((0., 0., 0., 2. ** -100), (0., 0., 0., 2.), (0., 0., 0., 1e30), (0., 0., float("nan"), 1.), (0., 1.)):
+            with self.assertRaises(ValueError, msg=q):
+                witness.unit_rest(q, "rest")
+
     def test_run_files_refuse_symlinks_and_escapes(self):
         with scratch.folder() as root:
             run, outside = root / "run", root / "outside"
@@ -68,6 +75,15 @@ class RowTests(unittest.TestCase):
                           ("replays", "body/real.pending.json"), ("replays", "body", "missing.pending.json")):
                 with self.assertRaises(ValueError, msg=parts):
                     witness.run_file(run, *parts)
+            # run.json too, and the run folder itself.
+            (run / "run.json").symlink_to(outside / "sealed.pending.json")
+            with self.assertRaises(ValueError):
+                witness.run_file(run, "run.json")
+            (root / "linked").symlink_to(run, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                witness.run_file(root / "linked", "replays", "body", "real.pending.json")
+            with self.assertRaises(ValueError):
+                witness.run(run, "unityrs", log=lambda *_: None)
 
     def test_apart_needs_more_than_both_bounds(self):
         q = (0., 0., 0., 1.)
@@ -98,7 +114,13 @@ class RuleTests(unittest.TestCase):
                  "exploration all-equal core")]
         with mock.patch.multiple(model, LIMBS=self.LIMBS, FEET=self.FEET), \
                 mock.patch.object(witness, "rows", lambda: plan), mock.patch.object(witness, "ADMISSION", admission):
-            limb_found, foot_found, joint_found, joint_open = witness.search(rigs, log=lambda *_: None)
+            limb_found, foot_found, joint_found, joint_open, credits = witness.search(rigs, log=lambda *_: None)
+            # Every joint pair is credited (with its component's row), searched, or open: each exactly once.
+            searched = set(joint_found) | joint_open
+            assert not set(credits) & searched and len(credits) + len(searched) == 9 * 8 // 2, credits
+            for (l1, l2), (f1, f2) in credits:
+                kind, component = credits[((l1, l2), (f1, f2))]
+                assert component in (limb_found if kind == "limb" else foot_found)
             return limb_found, foot_found, joint_open, witness.cells(rigs, joint_open)
 
     def test_a_missed_pair_refuses_only_where_its_keys_differ(self):

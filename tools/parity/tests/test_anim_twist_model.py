@@ -325,6 +325,22 @@ class EquivalenceTests(unittest.TestCase):
             self.rig[bone]["axes"]["min"], self.rig[bone]["axes"]["max"] = [-1.] * 3, [1.] * 3
         self.assertSame(first, second, (0.,) * 4)
 
+    def test_refusal_is_judged_under_the_propagated_radius(self):
+        # Arm and forearm twist limits of 1.57: the nominal sum 3.14 stays under pi, but S2's tangent at the LowerArm
+        # inflates its share's radius until the Hand's tangent meets its pole. S1 predicts there, so the two stay
+        # apart, and the chains show it.
+        f1 = model.FEET[0]
+        first, second = (model.Limb(1, 1, 1, "+", 1), f1), (model.Limb(1, 2, 1, "+", 1), f1)
+        for bone in (13, 15):
+            self.rig[bone]["axes"]["min"], self.rig[bone]["axes"]["max"] = [-f32(1.57)] * 3, [f32(1.57)] * 3
+            self.rig[bone]["axes"]["sign"][0] = 1.
+        self.assertNotEqual(self.key(*first, (0.,) * 4), self.key(*second, (0.,) * 4))
+        values = [0.] * 95
+        values[41] = values[43] = 1.
+        model.chains(self.rig, values, [0.] * 95, (0.,) * 4, *first, "Left")
+        with self.assertRaises(b.Pole):
+            model.chains(self.rig, values, [0.] * 95, (0.,) * 4, *second, "Left")
+
     def test_c1_is_r1_where_nothing_moves_on(self):
         f1 = model.FEET[0]
         # Forearm and leg settings 1 keep the received share on the LowerArm and LowerLeg.
