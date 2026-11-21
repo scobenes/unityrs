@@ -175,6 +175,11 @@ class ExpectedFailureTests(unittest.TestCase):
             self.assertEqual(opened, [("body-muscles-compact", "assets/unityrsfixtures/body-muscles-compact/"
                                                                "identity.prefab"),
                                       ("body-muscles-tall", "assets/unityrsfixtures/body-muscles-tall/identity.prefab")])
+            # A case held back (round 12's sealed evidence before its claim) is listed, never opened.
+            opened.clear()
+            self.assertEqual(r11.check_accepted_bundles(folder, replay, lambda path: View(path, prefabs),
+                                                        {SWEEPS[0]}), [SWEEPS[0]])
+            self.assertEqual([name for name, _ in opened], ["body-muscles-tall"])
             # A stale bundle without the sweep's prefab fails.
             with self.assertRaisesRegex(ValueError, "expected one AssetBundle container entry"):
                 r11.check_accepted_bundles(folder, replay, lambda path: View(path, set()))

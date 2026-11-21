@@ -9,7 +9,9 @@ import math
 import re
 import struct
 import sys
+import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import test_anim_replay_coverage  # noqa: F401  (puts tools/parity on the path)
@@ -18,6 +20,7 @@ import anim_fixture_body as body  # noqa: E402
 import anim_fixture_full as full  # noqa: E402
 import anim_fixture_muscles as muscles  # noqa: E402
 import anim_fixture_round11 as r11  # noqa: E402
+import anim_fixture_round12 as round12  # noqa: E402
 import anim_humanoid_qualify as qualify  # noqa: E402
 import anim_muscle_clip as clips  # noqa: E402
 import anim_muscle_confirm as confirm  # noqa: E402
@@ -189,7 +192,7 @@ class ConfirmTests(unittest.TestCase):
 
     def folder(self, editor, docs, version=None, declared=True):
         """A round 11 run of Editor `editor`, recording every case and holding the captures `docs`."""
-        folder = scratch.for_case(self)
+        folder = Path(os.path.realpath(scratch.for_case(self)))  # resolved: a macOS scratch root sits under the /var symlink, which run_file refuses
         names = sorted(body.BODY_CASES.keys() | r11.ROUND11_CASES.keys())
         (folder / "run.json").write_text(json.dumps(dict(
             run=dict(run_id="r" + editor, editor_version=version or VERSIONS[editor]),
@@ -457,6 +460,18 @@ class ConfirmTests(unittest.TestCase):
             self.run_confirm(versions={"2022": "2022.2.21f1"})
         # One Editor alone fails.
         self.assertEqual(self.run_confirm(editors=("2022",))[1][0], "no round 11 run of Editor 6000")
+
+    def test_round_11s_own_confirmation_needs_no_view_and_round_12s_view_seals(self):
+        # Round 11's standalone confirmation opens through round 11's own view by default (run_confirm injects
+        # none); round 12's exploration view refuses B5a's sealed face sweep and an unreused clip.
+        self.assertEqual(self.run_confirm()[1], [])
+        folders = [self.folder(editor, {case: doc for (e, case), doc in self.docs.items() if e == editor})
+                   for editor in VERSIONS]
+        with self.assertRaisesRegex(ValueError, "sealed|not a case this view can open"):
+            confirm.observe(folders, lambda run, doc: avatar(0.), lambda run, doc: built(builder_curves()), self.CASES,
+                            round12.round11_view)
+        with self.assertRaisesRegex(ValueError, "sealed"):
+            confirm.observe(folders, None, None, {SWEEP: self.CASES[SWEEP]}, round12.round11_view)
 
     def test_a_round_10_run_is_refused(self):
         folder = self.folder("2022", {}, declared=False)
